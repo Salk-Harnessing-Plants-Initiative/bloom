@@ -291,7 +291,25 @@ worktree alone is a one-command undo.
       whose own comment says "bump all three together") — to the immutable `sha-…` tag, never
       the mutable `staging` tag — `runai-busch-lab` is shared with production, so a mutable tag there
       means the next unrelated bloomcli merge silently redeploys production.
-- [x] 9.6 **DONE** — verified independently 2026-09-21 via `scripts/check_registered_templates.py`: all five registered templates report IN SYNC with the pin, exit 0, four days after the bump. Original: `argo template update` in `runai-busch-lab`; re-run `check_cluster_drift.sh`.
+- [x] 9.6 **DONE — but the 2026-09-21 evidence below is RETRACTED as unreproducible; see bloom#879.**
+      The retracted claim read: "verified independently 2026-09-21 via
+      `scripts/check_registered_templates.py`: all five registered templates report IN SYNC with the
+      pin, exit 0, four days after the bump." That cannot have happened, on two independent grounds.
+      It is self-contradicting: this task was confirming the `bloomctl` bump to `sha-28034f6` had
+      reached the cluster, and that comparator reporting "IN SYNC **with the pin**" would have meant
+      the bump had *not* landed — it cannot evidence both. And `SLEAP_ROOTS_PIPELINE_REF` has not moved
+      since #866 set it to `310aae63`, while the templates diverged from it on 2026-09-17, so a
+      2026-09-21 run of that comparator could only have reported DRIFT. Which comparator actually ran
+      is **not recoverable** from the record, and no attribution should be guessed — that
+      irrecoverability is the point, and bloom#879 adds a requirement that such records name their
+      comparator, namespace, date and exit code.
+      **Re-established 2026-09-22 with named evidence.** The substantive conclusion holds: the cluster
+      does carry the bumped pins. `sleap-roots-pipeline/scripts/check_cluster_drift.sh`, run from a
+      clean sibling checkout at `04c2fc1c` on `main` against `runai-busch-lab`, reports IN SYNC on all
+      five, exit 0, and prints `bloomctl:sha-28034f6` on images-downloader, write-back and exit-gate.
+      Independently, `scripts/check_template_contract.py` (bloom#879's rewrite of the comparator named
+      above) reports the contract satisfied, exit 0, printing the same three references.
+      Same recurring pattern as bloom#780: a tick recorded without reproducible evidence.
 - [ ] 9.7 Record explicitly that production now runs the new image **without** the grant (this PR
       targets `staging`; `origin/main` is 22 migrations / 241 commits behind), so production behaviour is
       today's behaviour, not the fix.

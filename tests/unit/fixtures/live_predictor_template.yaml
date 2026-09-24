@@ -1,0 +1,64 @@
+# Captured live from `runai-busch-lab` on 2026-09-22 via
+#   kubectl get workflowtemplate sleap-roots-predictor-template -n runai-busch-lab -o yaml
+# Volatile metadata (creationTimestamp, generation, resourceVersion, uid) stripped;
+# everything else is verbatim, including the API server's own defaulting
+# (`arguments: {}`, `inputs: {}`, `outputs: {}`, `metadata: {}`, `name: ""`).
+#
+# The point of committing a REAL object rather than a hand-built one: the parser must
+# find `inputs.parameters`, `volumeMounts` and `templates[].name` where the server
+# actually puts them. Note `inputs: {}` -- present but empty, NOT absent, which is the
+# shape four of the five templates have.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  annotations:
+    preemptible: 'true'
+  labels:
+    project: busch-lab
+  name: sleap-roots-predictor-template
+  namespace: runai-busch-lab
+spec:
+  arguments: {}
+  templates:
+  - container:
+      args:
+      - /workspace/images_input
+      - /workspace/output
+      env:
+      - name: ARGO_WORKFLOW_NAME
+        value: '{{workflow.name}}'
+      - name: SRP_PREDICT_CONTAINER_DIGEST
+        value: sha256:4d4064c6ac8dadc1bedcba594c74f0d7c4b9d907ee9001999d34e664317a4060
+      - name: WANDB_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: WANDB_API_KEY
+            name: genericsecret-wandb-api-key
+      image: ghcr.io/talmolab/sleap-roots-predict:sha-e025e309230de52cef0ccffa199048fe1dbd1b24@sha256:4d4064c6ac8dadc1bedcba594c74f0d7c4b9d907ee9001999d34e664317a4060
+      imagePullPolicy: Always
+      name: ''
+      resources:
+        limits:
+          memory: 24Gi
+        requests:
+          cpu: '2'
+          memory: 8Gi
+      volumeMounts:
+      - mountPath: /workspace/images_input
+        name: images-input-dir
+      - mountPath: /workspace/output
+        name: predictions-output-dir
+    inputs: {}
+    metadata:
+      annotations:
+        gpu-memory: '8192'
+    name: predictor
+    outputs: {}
+    priorityClassName: high
+    retryStrategy:
+      backoff:
+        duration: 2m
+        factor: 2
+      limit: 3
+      retryPolicy: Always
+    schedulerName: runai-scheduler
