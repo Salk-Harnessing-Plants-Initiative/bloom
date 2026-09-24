@@ -179,10 +179,10 @@ def _refuse_links(h5py, root) -> None:
 
     Walked with a stack rather than recursion, so a deeply nested file is refused, not a crash.
     """
-    seen: set[int] = set()
-    pending = [root]
+    seen: set[int] = {h5py.h5o.get_info(root.id).addr}
+    pending = [(root, frozenset(seen))]
     while pending:
-        group = pending.pop()
+        group, ancestors = pending.pop()
         for name in group:
             where = name if group.name == "/" else f"{group.name.strip('/')}/{name}"
             if not isinstance(group.get(name, getlink=True), h5py.HardLink):
@@ -195,10 +195,12 @@ def _refuse_links(h5py, root) -> None:
                 _refuse_outside_storage(h5py, member, where)
             elif isinstance(member, h5py.Group):
                 address = h5py.h5o.get_info(member.id).addr
-                if address in seen:
+                if address in ancestors:
                     raise FormatError(f"{where} links back into the file; it cannot be read through")
+                if address in seen:
+                    continue  # reached again by a second hard link, and already walked through
                 seen.add(address)
-                pending.append(member)
+                pending.append((member, ancestors | {address}))
 
 
 def _refuse_outside_storage(h5py, dataset, where: str) -> None:

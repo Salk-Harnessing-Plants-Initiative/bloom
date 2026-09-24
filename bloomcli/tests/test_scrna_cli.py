@@ -1,7 +1,8 @@
-"""bloomctl scrna upload / download — the commands, end to end against fakes."""
+"""bloomctl scrna hdf5 upload / download / list — the commands, end to end against fakes."""
 
 import gzip
 import hashlib
+import json
 
 import httpx
 import pytest
@@ -28,6 +29,9 @@ class _Query:
     def is_(self, column, value):
         assert value == "null"
         return _Query([r for r in self.rows if r.get(column) is None])
+
+    def in_(self, column, values):
+        return _Query([r for r in self.rows if r.get(column) in values])
 
     def execute(self):
         return type("R", (), {"data": self.rows})()
@@ -69,7 +73,7 @@ def env(monkeypatch, tmp_path, storage):
 
 
 def _run(*args):
-    return CliRunner().invoke(cli, ["scrna", *args])
+    return CliRunner().invoke(cli, ["scrna", "hdf5", *args])
 
 
 def _stored(storage, path):
@@ -504,6 +508,45 @@ def test_an_expired_session_mid_upload_is_not_an_internal_error(tmp_path, env, s
     assert "Run the same command again to resume" not in result.output
 
 
+def test_a_session_that_expires_mid_upload_is_renewed_not_failed(tmp_path, env, storage, monkeypatch):
+    """A login lasts about an hour and a large file can take longer. The credentials that made
+    the session are on disk, so an expiry is ours to put right rather than the user's."""
+    monkeypatch.setattr(_transfer, "CHUNK_BYTES", 64)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    storage.expire_after = 1  # one chunk lands, then the token runs out
+    logins = []
+    signing_in = _session.connect
+
+    def connect(profile):
+        logins.append(profile)
+        if len(logins) > 1:
+            storage.expire_after = None  # a fresh login is accepted, as it would be
+        return signing_in(profile)
+
+    monkeypatch.setattr(_session, "connect", connect)
+    result = _run("upload", str(path))
+    assert result.exit_code == 0, result.output
+    assert "Uploaded" in result.output
+    assert len(logins) == 2, "the expired session was not renewed"
+    assert _stored(storage, path) == path.read_bytes(), "the file did not arrive whole"
+
+
+def test_a_session_that_expires_twice_is_not_retried_forever(tmp_path, env, storage, monkeypatch):
+    """Signing in again and expiring again is not a token running out; say so and stop."""
+    monkeypatch.setattr(_transfer, "CHUNK_BYTES", 64)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    storage.expired = True
+    logins = []
+    signing_in = _session.connect
+    monkeypatch.setattr(
+        _session, "connect", lambda profile: (logins.append(profile), signing_in(profile))[1]
+    )
+    result = _run("upload", str(path))
+    assert result.exit_code != 0
+    assert len(logins) == 2, "one retry, not a loop"
+    assert "once you are logged in" in result.output
+
+
 def test_a_record_naming_an_unusable_upload_is_forgotten(tmp_path, env, storage):
     """A record the command cannot use must not fail every later run."""
     import json
@@ -530,3 +573,175 @@ def test_a_file_that_appears_between_the_check_and_the_create_is_reported_stored
     assert result.exit_code == 0, result.output
     assert "Already uploaded" in result.output
     assert not list((tmp_path / "stage").glob("*")), "the staged copy was kept for nothing"
+
+
+
+def test_a_session_that_expires_mid_download_is_renewed_not_failed(tmp_path, env, storage, monkeypatch):
+    """The same hour-long login, and a download of the same size; nothing about it differs."""
+    path = write_h5ad(tmp_path / "data.h5ad")
+    assert _run("upload", str(path)).exit_code == 0
+    env["client"] = FakeClient(
+        [{"id": 3, "name": "Periderm atlas", "source_checksum": _object.fingerprint_of(path)}]
+    )
+    storage.expired = True
+    logins = []
+    signing_in = _session.connect
+
+    def connect(profile):
+        logins.append(profile)
+        if len(logins) > 1:
+            storage.expired = False
+        return signing_in(profile)
+
+    monkeypatch.setattr(_session, "connect", connect)
+    out = tmp_path / "back.h5ad"
+    result = _run("download", "Periderm atlas", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert len(logins) == 2, "the expired session was not renewed"
+    assert out.read_bytes() == path.read_bytes(), "the file did not come back whole"
+
+
+# --- list ---------------------------------------------------------------------
+
+
+def _upload(tmp_path, name="data.h5ad", **kwargs):
+    """Put one file in fake storage and return its path and fingerprint."""
+    path = write_h5ad(tmp_path / name, **kwargs)
+    assert _run("upload", str(path)).exit_code == 0
+    return path, _object.fingerprint_of(path)
+
+
+def test_a_stored_file_is_listed_with_its_size(tmp_path, env, storage):
+    """The question the command exists for: what is in the bucket, and how big is it."""
+    path, fingerprint = _upload(tmp_path)
+    stored = len(storage.objects[f"scrna/{_object.object_path(fingerprint)}"])
+    result = _run("list", "--output", "csv")
+    assert result.exit_code == 0, result.output
+    assert f"{fingerprint}," in result.output
+    assert f",{stored}," in result.output, f"the byte count storage reports\n{result.output}"
+
+
+def test_an_object_no_dataset_points_at_is_still_listed(tmp_path, env, storage):
+    """A file is uploaded before its dataset row exists; the listing must not hide it."""
+    _upload(tmp_path)
+    result = _run("list")
+    assert result.exit_code == 0, result.output
+    assert "—" in result.output, "an object with no dataset row should read as unnamed"
+
+
+def test_a_listed_object_is_named_by_the_dataset_that_points_at_it(tmp_path, env, storage):
+    """Once a dataset records the fingerprint, the listing says which dataset it is."""
+    _, fingerprint = _upload(tmp_path)
+    env["client"] = FakeClient([{"id": 7, "name": "Periderm atlas", "source_checksum": fingerprint}])
+    result = _run("list")
+    assert result.exit_code == 0, result.output
+    assert "Periderm atlas" in result.output
+
+
+def test_a_search_keeps_only_what_matches_the_fingerprint(tmp_path, env, storage):
+    """Searching by fingerprint is how a fingerprint printed by upload is looked up again."""
+    _, first = _upload(tmp_path, "a.h5ad")
+    _, second = _upload(tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
+    assert first != second
+    result = _run("list", first[:10], "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert [r["fingerprint"] for r in json.loads(result.output)] == [first]
+
+
+def test_a_search_matches_a_dataset_name_too(tmp_path, env, storage):
+    """A scientist knows the dataset's name, not its SHA-256."""
+    _, first = _upload(tmp_path, "a.h5ad")
+    _, second = _upload(tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
+    assert first != second
+    env["client"] = FakeClient([{"id": 7, "name": "Periderm atlas", "source_checksum": first}])
+    result = _run("list", "periderm", "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert [r["fingerprint"] for r in json.loads(result.output)] == [first]
+
+
+def test_a_search_that_matches_nothing_says_so(tmp_path, env, storage):
+    """An empty table would read as "the bucket is empty", which is a different answer."""
+    _upload(tmp_path)
+    result = _run("list", "nosuchthing")
+    assert result.exit_code == 0, result.output
+    assert "No stored dataset file matches" in result.output
+
+
+def test_an_empty_bucket_says_it_holds_nothing(env, storage):
+    result = _run("list")
+    assert result.exit_code == 0, result.output
+    assert "holds no dataset files" in result.output
+
+
+def test_a_local_file_already_stored_is_found_by_its_fingerprint(tmp_path, env, storage):
+    """--file answers "did my upload land?" without the user handling a hash at all."""
+    path, fingerprint = _upload(tmp_path)
+    result = _run("list", "--file", str(path), "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert [r["fingerprint"] for r in json.loads(result.output)] == [fingerprint]
+
+
+def test_a_local_file_that_was_never_uploaded_is_reported_as_not_stored(tmp_path, env, storage):
+    """Saying nothing, or printing an empty table, would read as "it is there"."""
+    path = write_h5ad(tmp_path / "unsent.h5ad")
+    result = _run("list", "--file", str(path))
+    assert result.exit_code != 0
+    assert "is not stored" in result.output
+    assert _object.fingerprint_of(path) in result.output
+
+
+def test_a_search_and_a_file_together_is_a_usage_error(tmp_path, env, storage):
+    """Two different questions; answering one silently would be the wrong answer to the other."""
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("list", "abc", "--file", str(path))
+    assert result.exit_code != 0
+    assert "not both" in result.output
+
+
+def test_more_objects_than_one_page_are_all_listed(tmp_path, env, storage, monkeypatch):
+    """Storage pages its listing; a command that reads one page under-reports the bucket."""
+    monkeypatch.setattr(_transfer, "LIST_PAGE", 2)
+    for index in range(5):
+        _upload(tmp_path, f"f{index}.h5ad", obs_ids=[f"c{index}a", "c2", "c3"])
+    result = _run("list", "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert len(json.loads(result.output)) == 5
+
+
+def test_a_limit_stops_the_listing_there(tmp_path, env, storage, monkeypatch):
+    """The listing is bounded, so a bucket that grows can never hang the command."""
+    monkeypatch.setattr(_transfer, "LIST_PAGE", 2)
+    for index in range(5):
+        _upload(tmp_path, f"f{index}.h5ad", obs_ids=[f"c{index}a", "c2", "c3"])
+    result = _run("list", "--limit", "3", "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert len(json.loads(result.output)) == 3
+
+
+def test_something_that_is_not_a_dataset_file_is_left_out(tmp_path, env, storage):
+    """The folder is not guaranteed to hold only h5ad objects; a stray one must not crash it."""
+    _upload(tmp_path)
+    storage.objects[f"scrna/{_object.FOLDER}/notes.txt"] = b"stray"
+    result = _run("list", "--output", "json")
+    assert result.exit_code == 0, result.output
+    records = json.loads(result.output)
+    assert len(records) == 1
+    assert all(record["path"].endswith(".h5ad.gz") for record in records)
+
+
+def test_an_expired_session_listing_is_not_an_internal_error(env, storage):
+    """A stack trace tells a scientist nothing about logging in again."""
+    storage.expired = True
+    result = _run("list")
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, _transfer.SessionExpired), "escaped as an internal error"
+    assert "session" in result.output.lower()
+
+
+def test_a_storage_that_will_not_answer_says_that_much(env, storage):
+    """Reporting an empty bucket when storage refused the question is a wrong answer."""
+    storage.list_status = 503
+    result = _run("list")
+    assert result.exit_code != 0
+    assert "could not be asked" in result.output
+    assert "holds no dataset files" not in result.output

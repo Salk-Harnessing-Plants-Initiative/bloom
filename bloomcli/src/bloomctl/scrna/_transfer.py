@@ -13,7 +13,7 @@ import re
 import time
 import zlib
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 import httpx
 
@@ -21,6 +21,9 @@ TUS_VERSION = "1.0.0"
 
 # The storage service's resumable chunk size; every chunk but the last must be this long.
 CHUNK_BYTES = 6 * 1024 * 1024
+
+# How many entries one listing request asks for; the storage service caps a page at 100.
+LIST_PAGE = 100
 
 # A moment before asking a server again, so one that is overloaded is not asked twice at once.
 RETRY_PAUSE_SECONDS = 0.5
@@ -109,6 +112,36 @@ def _refuse_if_refused(response: httpx.Response) -> None:
         )
 
 
+def list_objects(
+    http: httpx.Client,
+    ep: Endpoint,
+    bucket: str,
+    prefix: str,
+    *,
+    search: str = "",
+    limit: int = LIST_PAGE,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """One page of what storage holds under `prefix`: each entry's name, size and arrival."""
+    response = http.post(
+        ep.url(f"object/list/{bucket}"),
+        headers=ep.headers(),
+        json={"prefix": prefix, "search": search, "limit": limit, "offset": offset},
+    )
+    _refuse_if_refused(response)
+    if response.status_code != 200:
+        raise TransferError(
+            f"storage answered {response.status_code} when asked what {bucket}/{prefix} holds"
+        )
+    try:
+        listed = response.json()
+    except ValueError as exc:
+        raise TransferError(f"storage did not say what {bucket}/{prefix} holds") from exc
+    if not isinstance(listed, list):
+        raise TransferError(f"storage did not say what {bucket}/{prefix} holds")
+    return [entry for entry in listed if isinstance(entry, dict)]
+
+
 def stored_size(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> int | None:
     """How many bytes storage holds under this name, or None when it holds nothing there.
 
@@ -117,24 +150,15 @@ def stored_size(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> int
     sent rather than the object it came from.
     """
     folder, _, name = path.rpartition("/")
-    response = http.post(
-        ep.url(f"object/list/{bucket}"),
-        headers=ep.headers(),
-        json={"prefix": folder, "search": name, "limit": 100},
-    )
-    _refuse_if_refused(response)
-    if response.status_code != 200:
-        raise TransferError(
-            f"storage answered {response.status_code} when looking for {bucket}/{path}"
-        )
-    try:
-        listed = response.json()
-    except ValueError as exc:
-        raise TransferError(f"storage did not say what {bucket}/{path} is") from exc
-    for entry in listed if isinstance(listed, list) else ():
+    for entry in list_objects(http, ep, bucket, folder, search=name):
         if entry.get("name") == name:
-            return int((entry.get("metadata") or {}).get("size") or 0)
+            return object_size(entry)
     return None
+
+
+def object_size(entry: dict[str, Any]) -> int:
+    """The byte count a listing entry reports."""
+    return int((entry.get("metadata") or {}).get("size") or 0)
 
 
 def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size: int) -> str:

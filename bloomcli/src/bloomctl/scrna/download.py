@@ -80,7 +80,7 @@ def download(dataset: str | None, fingerprint: str | None, out: Path | None, pro
     tmp = dest.with_name(f".{dest.name}.{uuid4().hex}.tmp")
     try:
         with _transfer.open_client() as http:
-            got = _transfer.download_to(http, conn.endpoint, _object.BUCKET, path, tmp)
+            got = _fetch_through_expiry(http, conn, profile, path, tmp)
         if got != fingerprint:
             raise click.ClickException(
                 f"the downloaded file's fingerprint {got} does not match {fingerprint}; "
@@ -105,6 +105,19 @@ def download(dataset: str | None, fingerprint: str | None, out: Path | None, pro
     finally:
         tmp.unlink(missing_ok=True)
     click.echo(f"Downloaded {dest}\n  fingerprint  {fingerprint}")
+
+
+def _fetch_through_expiry(http, conn, profile: str, path: str, tmp: Path) -> str:
+    """Fetch the object, signing in again if the session expires while it is in flight.
+
+    A login lasts about an hour and a large file can take longer. The credentials that made the
+    session are on disk, so an expiry part-way is ours to put right. One retry only.
+    """
+    try:
+        return _transfer.download_to(http, conn.endpoint, _object.BUCKET, path, tmp)
+    except _transfer.SessionExpired:
+        endpoint = _session.connect(profile).endpoint
+    return _transfer.download_to(http, endpoint, _object.BUCKET, path, tmp)
 
 
 def _resolve(client: Any, value: str) -> dict[str, Any]:

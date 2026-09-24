@@ -26,6 +26,8 @@ class FakeStorage:
         self.drop_after: int | None = None
         self.patches = 0
         self.hide_objects = False
+        # When each object arrived, as the listing reports it.
+        self.created_at: dict[str, str] = {}
         # Hide the object for this many reads, then show it: a race the pre-flight loses.
         self.hide_reads = 0
         # Storage takes the bytes but never creates the object (a finalisation failure).
@@ -39,6 +41,9 @@ class FakeStorage:
         self.offset_status: int | None = None
         # Storage answers an unauthenticated caller much as it answers a missing object.
         self.expired = False
+        # Let this many chunks land, then answer as a token that has run out: what a login
+        # outlived by the transfer it started looks like from here.
+        self.expire_after: int | None = None
         # Refuse to start an upload as though the name were taken.
         self.duplicate_creates = False
         # Fail this many object reads once bytes are flowing, as a blip on the confirming
@@ -75,7 +80,7 @@ class FakeStorage:
             # Storage answers with its own address, not the gateway's.
             return httpx.Response(201, headers={"Location": f"http://storage:5000/upload/resumable/{upload_id}"})
         if path.startswith("/storage/v1/upload/resumable/"):
-            if self.expired:
+            if self.expired or (self.expire_after is not None and self.patches >= self.expire_after):
                 return httpx.Response(401, json={"message": "jwt expired"})
             if self.offset_status is not None and request.method == "HEAD":
                 return httpx.Response(self.offset_status)
@@ -113,17 +118,24 @@ class FakeStorage:
                 return httpx.Response(self.list_status, text="no")
             if self.expired:
                 return httpx.Response(401, json={"message": "jwt expired"})
-            wanted = json.loads(request.content or b"{}").get("search", "")
+            asked = json.loads(request.content or b"{}")
+            wanted, prefix = asked.get("search", ""), asked.get("prefix", "")
             bucket = path.rsplit("/", 1)[-1]
+            under = f"{bucket}/{prefix}".rstrip("/") + "/"
+            sizes = {} if self.hide_objects else {n: len(d) for n, d in self.objects.items()}
+            sizes.update({name: 0 for name in self.empty_objects})
             listed = [
-                {"name": name.split("/")[-1], "metadata": {"size": len(data)}}
-                for name, data in self.objects.items()
-                if name.startswith(f"{bucket}/") and name.endswith(wanted) and not self.hide_objects
+                {
+                    "name": name.split("/")[-1],
+                    "created_at": self.created_at.get(name, "2026-09-24T10:00:00.000Z"),
+                    "metadata": {"size": size, "mimetype": "application/gzip"},
+                }
+                for name, size in sorted(sizes.items())
+                if name.startswith(under) and wanted in name.split("/")[-1]
             ]
-            for name in self.empty_objects:
-                if name.startswith(f"{bucket}/") and name.endswith(wanted):
-                    listed.append({"name": name.split("/")[-1], "metadata": {"size": 0}})
-            return httpx.Response(200, json=listed)
+            # Storage pages a listing; a caller that ignores limit/offset sees only the first page.
+            start = int(asked.get("offset") or 0)
+            return httpx.Response(200, json=listed[start : start + int(asked.get("limit") or 100)])
         prefix = "/storage/v1/object/authenticated/"
         if path.startswith(prefix):
             # HTTP forbids a body on a HEAD response, so the fake withholds one too: a

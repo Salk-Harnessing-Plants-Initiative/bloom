@@ -378,6 +378,20 @@ def test_a_file_that_links_back_to_itself_is_refused(tmp_path):
     _refused(path, "links back into the file")
 
 
+def test_one_group_reached_by_two_names_is_not_mistaken_for_a_loop(tmp_path):
+    """HDF5 lets two names point at one group. Nothing recurses, so refusing it turns away a
+    file that reads back correctly anywhere."""
+    import h5py
+
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        shared = f["uns"].create_group("shared")
+        shared.create_dataset("value", data=[1])
+        f["uns"]["also_shared"] = shared          # a second hard link, not a loop
+
+    fmt.check_structure(path)
+
+
 def test_a_umap_of_text_says_so_rather_than_quoting_numpy(tmp_path):
     """isfinite on strings raises a ufunc message no scientist can act on."""
     import h5py

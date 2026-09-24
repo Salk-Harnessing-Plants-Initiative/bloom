@@ -9,8 +9,8 @@ from typing import Any
 
 import click
 
+from .._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 from ..credentials import DEFAULT_PROFILE
-from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 
 # Table headers for `qc list-sets`, in display order. Wording is inherited from
 # the legacy CLI so users moving across recognise the output.

@@ -12,9 +12,9 @@ from typing import Any
 
 import click
 
+from .._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 from .._postgrest import fetch_in_batches
 from ..credentials import DEFAULT_PROFILE
-from ._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 from ._select import select_from_menu
 
 

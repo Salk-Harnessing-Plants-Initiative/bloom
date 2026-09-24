@@ -1,6 +1,6 @@
 """The scrna extra has to reach the two places that ship and check it.
 
-`scrna upload` reads HDF5, so it needs the optional extra. Both the published image and the
+`scrna hdf5 upload` reads HDF5, so it needs the optional extra. Both the published image and the
 dependency audit install from the lock file, and neither takes extras unless told to — so a
 new dependency can be shipped broken, and audited by nothing, with every check green.
 
@@ -49,7 +49,7 @@ def test_the_extra_installs_what_reading_a_file_needs():
 
 
 def test_the_image_installs_the_scrna_extra():
-    """Without it, `bloomctl scrna upload` inside the published image cannot check a file."""
+    """Without it, `bloomctl scrna hdf5 upload` inside the published image cannot check a file."""
     project_sync = [
         line for line in _commands(DOCKERFILE.read_text())
         if "uv sync" in line and "--no-install-project" not in line

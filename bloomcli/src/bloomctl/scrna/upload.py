@@ -64,7 +64,29 @@ def upload(file: Path, profile: str) -> None:
         raise
 
     with _transfer.open_client() as http:
-        _send(http, conn.endpoint, stage, staged, file.name)
+        _send_through_expiry(http, conn, profile, stage, staged, file.name)
+
+
+def _send_through_expiry(http, conn, profile: str, stage, staged, name: str) -> None:
+    """Send the file, signing in again if the session expires while it is in flight.
+
+    A login lasts about an hour and a large file can take longer, so an expiry part-way is
+    ordinary rather than exceptional. The credentials that made the session are on disk, so
+    this is ours to put right: sign in again and carry on from the last byte storage took.
+    One retry only -- a second expiry is not a token running out.
+    """
+    try:
+        _send(http, conn.endpoint, stage, staged, name)
+        return
+    except _transfer.SessionExpired:
+        pass
+    try:
+        _send(http, _session.connect(profile).endpoint, stage, staged, name)
+    except _transfer.SessionExpired as exc:
+        raise click.ClickException(
+            f"{exc} Nothing was lost: what has been sent of {name} is kept, and the same "
+            "command continues it once you are logged in."
+        ) from exc
 
 
 def _normalization_on_record(client: Any, fingerprint: str, layers) -> bool:
@@ -125,7 +147,7 @@ def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, *, sent: b
     if size == "unknown":
         raise click.ClickException(
             f"{name} may be stored — storage could not be asked. Nothing was lost: what is "
-            f"prepared is kept in {stage}. Run the same command again."
+            "prepared is kept. Run the same command again."
         )
     if size:
         _object.clear(stage, staged.fingerprint)
@@ -142,7 +164,7 @@ def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, *, sent: b
         raise click.ClickException(
             f"{bucket}/{path} is stored and holds nothing, so {name} cannot be sent under that "
             f"name — a stored object cannot be replaced. Ask an admin to remove it. What is "
-            f"prepared is kept in {stage}."
+            "prepared is kept."
         )
     if sent:
         # Storage took every byte and made nothing of them; the protocol will not finish an
@@ -150,12 +172,12 @@ def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, *, sent: b
         _object.forget_upload(stage, staged.fingerprint)
         raise click.ClickException(
             f"storage took every byte of {name} but has not stored it. What is prepared is "
-            f"kept in {stage}; run the same command again to send it as a new upload."
+            "kept; run the same command again to send it as a new upload."
         )
     raise click.ClickException(
         f"storage refused the name {bucket}/{path} and holds nothing under it — another upload "
-        f"of the same file may be in flight. Nothing was sent; what is prepared is kept in "
-        f"{stage}. Run the same command again shortly."
+        "of the same file may be in flight. Nothing was sent; what is prepared is kept. "
+        "Run the same command again shortly."
     )
 
 
@@ -197,11 +219,12 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
         # Storage refused the name. Whether that means the file is there is its answer to give.
         _settle(http, ep, stage, staged, name, sent=held > 0)
         return
-    except (_transfer.SessionExpired, _transfer.Forbidden) as exc:
+    except _transfer.Forbidden as exc:
         raise click.ClickException(
-            f"{exc} Nothing was lost: what has been sent of {name} is kept in {stage}, and the "
-            "same command continues it once you are logged in."
+            f"{exc} Nothing was lost: what has been sent of {name} is kept."
         ) from exc
+    except _transfer.SessionExpired:
+        raise  # a token that ran out is answered by signing in again, not by stopping
     except (_transfer.TransferError, httpx.HTTPError) as exc:
         reason = str(exc) or type(exc).__name__
         if held:

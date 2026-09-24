@@ -13,6 +13,8 @@ from uuid import uuid4
 
 BUCKET = "scrna"
 FOLDER = "h5ad"
+# What every stored dataset file is named after its fingerprint.
+SUFFIX = ".h5ad.gz"
 
 # The storage service's per-file limit (FILE_SIZE_LIMIT in both compose files).
 MAX_OBJECT_BYTES = 500 * 1024 * 1024
@@ -33,7 +35,7 @@ def object_path(fingerprint: str) -> str:
     """The object's path inside the bucket: `h5ad/{sha256}.h5ad.gz`."""
     if not _FINGERPRINT.match(fingerprint):
         raise ValueError(f"not a SHA-256 fingerprint: {fingerprint!r}")
-    return f"{FOLDER}/{fingerprint}.h5ad.gz"
+    return f"{FOLDER}/{fingerprint}{SUFFIX}"
 
 
 def is_hdf5(path: Path) -> bool:
