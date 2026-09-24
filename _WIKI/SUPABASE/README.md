@@ -123,6 +123,13 @@ Phase 1 of the A4 pipeline-trigger route (`POST /workflows/pipeline`, bloom #11/
 - **How the cache is refreshed.** The pg_cron job `refresh-cyl-experiment-trait-counts` runs nightly at 06:00 UTC as `postgres` and calls `refresh_changed_cyl_experiment_trait_counts()`. That function recounts only the logged experiments, then stamps every cache row's `updated_at`.
 - **The weekly re-check.** The trigger can't see a plant's accession changing, a scan, plant or wave moving, or trait rows edited within a scan's current result. So a second job, `mark-all-cyl-experiments-for-trait-recount`, calls `mark_all_cyl_experiment_trait_count_changes()` on Sundays at 05:00 UTC, which puts every experiment on the log, and that night's run recounts them all. A count is at most a day old after a new result, and at most a week old after those other edits.
 - **Access.** The trigger function and both job functions are `SECURITY DEFINER`. Only `postgres` can execute the two job functions. No API role can read or write the change log.
+- **After a manual edit, queue the experiment.** The edits the trigger can't see are all made by hand — nothing in this repo writes `cyl_plants`. So whoever sets or corrects a plant's accession, moves a plant, wave or scan, or edits trait rows inside a scan's current result should queue that experiment in the same sitting, and the next night's run picks it up:
+
+  ```sql
+  INSERT INTO public.cyl_experiment_trait_count_changes (experiment_id) VALUES (<experiment_id>);
+  ```
+
+  Forgetting costs at most a week, since the Sunday re-check catches it anyway. This just turns that week into a night.
 - **Manual repair.** To correct a count straight away, run `refresh_cyl_experiment_trait_counts()`, which recounts every experiment.
 
 ## pgmq queues
