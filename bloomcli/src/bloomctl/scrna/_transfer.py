@@ -67,28 +67,17 @@ def _metadata(**pairs: str) -> str:
 
 
 def _duplicate(response: httpx.Response) -> bool:
-    """Storage's answer when an object with this name exists (not a TUS offset conflict)."""
-    if response.status_code != 409:
-        return False
-    try:
-        body = response.json()
-    except ValueError:
-        return False
-    return isinstance(body, dict) and (
-        body.get("error") == "Duplicate" or "already exists" in str(body.get("message", "")).lower()
-    )
+    """Storage refusing to start an upload under a name it already holds.
+
+    Read from the status: the body is plain text on one storage version and JSON on another.
+    Only the create is asked this -- TUS answers 409 to a chunk whose offset does not match,
+    which is a different thing entirely.
+    """
+    return response.status_code == 409
 
 
 # What storage says when the token itself is the problem, as opposed to what it may reach.
 _EXPIRED_IN_BODY = ("jwt expired", "invalid jwt", "bad_jwt", "token is expired")
-
-
-def _session_expired(response: httpx.Response) -> bool:
-    """Storage answers a caller whose session is no longer valid much as it answers a missing
-    object, so the message is the only signal — the same trap `_storage.py` documents."""
-    from .._storage import looks_like_expired_session
-
-    return looks_like_expired_session(RuntimeError(response.text))
 
 
 EXPIRED_HINT = "your session is no longer valid — log in again with `bloomctl login`."
@@ -109,7 +98,8 @@ def _refuse_if_refused(response: httpx.Response) -> None:
 
     Both arrive as 401/403, and telling someone to log in again does nothing about the second.
     """
-    body = (response.text or "").lower()
+    refused = 400 <= response.status_code < 500
+    body = (response.text or "").lower() if refused else ""
     if any(marker in body for marker in _EXPIRED_IN_BODY) or response.status_code == 401:
         raise SessionExpired(EXPIRED_HINT)
     if response.status_code == 403:
@@ -119,43 +109,32 @@ def _refuse_if_refused(response: httpx.Response) -> None:
         )
 
 
-def object_length(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> int | None:
+def stored_size(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> int | None:
     """How many bytes storage holds under this name, or None when it holds nothing there.
 
-    Asked with a one-byte ranged GET, streamed: a whole object is never pulled in to answer a
-    question about its size, and storage names a refusal in the body, which a HEAD cannot
-    carry. An answer naming no length is not an answer -- taking it for "stored" has deleted
-    the only local copy of a file nobody had.
+    Read from the listing, which reports a size outright. A ranged read cannot answer it: an
+    empty object comes back as a server error, and a partial response describes the range it
+    sent rather than the object it came from.
     """
-    with http.stream(
-        "GET",
-        ep.url(f"object/authenticated/{bucket}/{path}"),
-        headers=ep.headers({"Range": "bytes=0-0"}),
-    ) as response:
-        # 416 is the answer to a ranged read of an object holding nothing: the name is taken
-        # and the file is not there, which is the failure this question exists to catch.
-        if response.status_code == 416:
-            return 0
-        if response.status_code in (200, 206):
-            return _length_of(response, bucket, path)
-        response.read()
-        _refuse_if_refused(response)
-        if response.status_code in (400, 404):
-            return None
+    folder, _, name = path.rpartition("/")
+    response = http.post(
+        ep.url(f"object/list/{bucket}"),
+        headers=ep.headers(),
+        json={"prefix": folder, "search": name, "limit": 100},
+    )
+    _refuse_if_refused(response)
+    if response.status_code != 200:
         raise TransferError(
             f"storage answered {response.status_code} when looking for {bucket}/{path}"
         )
-
-
-def _length_of(response: httpx.Response, bucket: str, path: str) -> int:
-    """The object's size from a ranged answer: the range's total, or the whole body's length."""
-    total = response.headers.get("content-range", "").rpartition("/")[2]
-    if total.isdigit():
-        return int(total)
-    length = response.headers.get("content-length", "")
-    if length.isdigit():
-        return int(length)
-    raise TransferError(f"storage did not say how large {bucket}/{path} is")
+    try:
+        listed = response.json()
+    except ValueError as exc:
+        raise TransferError(f"storage did not say what {bucket}/{path} is") from exc
+    for entry in listed if isinstance(listed, list) else ():
+        if entry.get("name") == name:
+            return int((entry.get("metadata") or {}).get("size") or 0)
+    return None
 
 
 def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size: int) -> str:
@@ -265,8 +244,6 @@ def send(
                     "Content-Type": "application/offset+octet-stream",
                 }),
             )
-            if _duplicate(response):
-                raise AlreadyStored(url)
             _refuse_if_refused(response)
             if response.status_code != 204:
                 raise TransferError(

@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import json
 
 import httpx
 import pytest
@@ -11,7 +12,8 @@ from bloomctl.scrna import _transfer as tr
 
 API = "http://api.test"
 EP = tr.Endpoint(api_url=API, anon_key="anon", token="tok")
-DUPLICATE = {"statusCode": "409", "error": "Duplicate", "message": "The resource already exists"}
+# What storage 1.48.14 actually sends for a name it already holds: plain text, not JSON.
+DUPLICATE = "The resource already exists"
 
 
 class FakeStorage:
@@ -42,6 +44,8 @@ class FakeStorage:
         # Fail this many object reads once bytes are flowing, as a blip on the confirming
         # read would; the check made before anything is sent is left alone.
         self.fail_reads = 0
+        # Answer every listing with this status, whatever else is true.
+        self.list_status: int | None = None
         # Answer every object read with this status, whatever else is true.
         self.object_status: int | None = None
         # One answer per object read, in order, before the normal behaviour resumes: a server
@@ -62,8 +66,8 @@ class FakeStorage:
                 return httpx.Response(401, json={"message": "jwt expired"})
             meta = dict(item.split(" ") for item in request.headers["upload-metadata"].split(","))
             name = "/".join(base64.b64decode(meta[k]).decode() for k in ("bucketName", "objectName"))
-            if self.duplicate_creates or name in self.objects:
-                return httpx.Response(409, json=DUPLICATE)
+            if self.duplicate_creates or name in self.objects or name in self.empty_objects:
+                return httpx.Response(409, text=DUPLICATE)
             upload_id = f"u{len(self.uploads)}"
             self.uploads[upload_id] = {
                 "name": name, "length": int(request.headers["upload-length"]), "data": bytearray(),
@@ -100,10 +104,26 @@ class FakeStorage:
             upload["data"] += kept
             if len(upload["data"]) == upload["length"] and self.finalise:
                 if upload["name"] in self.objects:
-                    return httpx.Response(409, json=DUPLICATE)
+                    return httpx.Response(409, text=DUPLICATE)
                 self.objects[upload["name"]] = bytes(upload["data"])
             offset = self.offset_header or str(len(upload["data"]))
             return httpx.Response(204, headers={"Upload-Offset": offset})
+        if request.method == "POST" and path.startswith("/storage/v1/object/list/"):
+            if self.list_status is not None:
+                return httpx.Response(self.list_status, text="no")
+            if self.expired:
+                return httpx.Response(401, json={"message": "jwt expired"})
+            wanted = json.loads(request.content or b"{}").get("search", "")
+            bucket = path.rsplit("/", 1)[-1]
+            listed = [
+                {"name": name.split("/")[-1], "metadata": {"size": len(data)}}
+                for name, data in self.objects.items()
+                if name.startswith(f"{bucket}/") and name.endswith(wanted) and not self.hide_objects
+            ]
+            for name in self.empty_objects:
+                if name.startswith(f"{bucket}/") and name.endswith(wanted):
+                    listed.append({"name": name.split("/")[-1], "metadata": {"size": 0}})
+            return httpx.Response(200, json=listed)
         prefix = "/storage/v1/object/authenticated/"
         if path.startswith(prefix):
             # HTTP forbids a body on a HEAD response, so the fake withholds one too: a
@@ -213,12 +233,14 @@ def test_creating_an_upload_for_a_stored_object_says_so(http, storage):
         tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", 1)
 
 
-def test_an_object_stored_first_by_another_upload_says_so(tmp_path, http, storage, small_chunks):
+def test_an_object_stored_first_by_another_upload_stops_the_send(tmp_path, http, storage, small_chunks):
+    """Storage refuses the bytes; what it now holds is the listing's answer, not this one's."""
     path, data = _source(tmp_path)
     url = tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", len(data))
     storage.objects["scrna/h5ad/f.h5ad.gz"] = data
-    with pytest.raises(tr.AlreadyStored):
+    with pytest.raises(tr.TransferError):
         tr.send(http, EP, url, path, 0, len(data))
+    assert tr.stored_size(http, EP, "scrna", "h5ad/f.h5ad.gz") == len(data)
 
 
 def test_an_offset_conflict_is_not_mistaken_for_a_stored_object(tmp_path, http, small_chunks):
@@ -226,13 +248,13 @@ def test_an_offset_conflict_is_not_mistaken_for_a_stored_object(tmp_path, http, 
     url = tr.create_upload(http, EP, "scrna", "h5ad/f.h5ad.gz", len(data))
     with pytest.raises(tr.TransferError) as exc:
         tr.send(http, EP, url, path, 10, len(data))
-    assert not isinstance(exc.value, tr.AlreadyStored)
+    assert not isinstance(exc.value, tr.AlreadyStored)  # a conflict while sending is an offset
 
 
 def test_an_object_is_measured_or_not_there(http, storage):
     storage.objects["scrna/h5ad/f.h5ad.gz"] = b"xyz"
-    assert tr.object_length(http, EP, "scrna", "h5ad/f.h5ad.gz") == 3
-    assert tr.object_length(http, EP, "scrna", "h5ad/g.h5ad.gz") is None
+    assert tr.stored_size(http, EP, "scrna", "h5ad/f.h5ad.gz") == 3
+    assert tr.stored_size(http, EP, "scrna", "h5ad/g.h5ad.gz") is None
 
 
 def test_a_download_is_decompressed_and_fingerprinted(tmp_path, http, storage):
@@ -316,7 +338,7 @@ def test_an_expired_session_is_seen_even_though_the_check_carries_no_body(http, 
     """storage names an expired session only in the body, so the check has to ask for one."""
     storage.expired = True
     with pytest.raises(tr.SessionExpired):
-        tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz")
+        tr.stored_size(http, EP, "scrna", "h5ad/a.h5ad.gz")
 
 
 def test_an_expired_session_is_named_when_the_upload_is_started(http, storage):
@@ -360,46 +382,36 @@ def test_an_upload_that_cannot_be_interrogated_is_forgotten(http, storage):
 
 def test_a_token_storage_no_longer_accepts_says_so(http, storage):
     """401 is the credentials themselves being refused; logging in again is the answer."""
-    storage.object_status = 401
+    storage.list_status = 401
     with pytest.raises(tr.SessionExpired):
-        tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz")
+        tr.stored_size(http, EP, "scrna", "h5ad/a.h5ad.gz")
 
 
 def test_a_login_that_is_not_allowed_is_not_called_expired(http, storage):
     """Telling someone to log in again does nothing about a permission they do not have."""
-    storage.object_status = 403
+    storage.list_status = 403
     with pytest.raises(tr.Forbidden) as caught:
-        tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz")
+        tr.stored_size(http, EP, "scrna", "h5ad/a.h5ad.gz")
     assert "will not change it" in str(caught.value)
 
 
 def test_a_missing_object_measures_as_nothing_there(http, storage):
-    """A real gateway answers a plain 404; reading that as an error aborts the upload."""
-    storage.object_status = 404
-    assert tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz") is None
+    """Nothing under that name is an empty listing, not an error."""
+    assert tr.stored_size(http, EP, "scrna", "h5ad/a.h5ad.gz") is None
 
 
 @pytest.mark.parametrize("status", [500, 503])
-def test_an_object_read_that_is_not_an_answer_is_refused(http, storage, status):
+def test_a_listing_that_is_not_an_answer_is_refused(http, storage, status):
     """Counting any of these as stored deletes the only local copy of a file nobody has."""
-    storage.object_status = status
+    storage.list_status = status
     with pytest.raises(tr.TransferError):
-        tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz")
+        tr.stored_size(http, EP, "scrna", "h5ad/a.h5ad.gz")
 
 
 def test_an_object_of_no_bytes_measures_as_empty(http, storage):
     """A finalisation that keeps nothing leaves the name taken and the object empty."""
     storage.empty_objects.add("scrna/h5ad/a.h5ad.gz")
-    assert tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz") == 0
-
-
-def test_measuring_an_object_does_not_download_it(tmp_path, http, storage):
-    """A backend that drops Range would otherwise pull a whole dataset in to answer a question."""
-    storage.objects["scrna/h5ad/a.h5ad.gz"] = b"x" * 2_000_000
-    storage.ignore_range = True
-    assert tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz") == 2_000_000
-    sent = [r for r in storage.requests if "object/authenticated" in r.url.path]
-    assert sent and sent[-1].headers.get("range") == "bytes=0-0", "the read asked for one byte"
+    assert tr.stored_size(http, EP, "scrna", "h5ad/a.h5ad.gz") == 0
 
 
 def test_an_offset_past_the_end_of_the_file_is_not_resumed(http, storage):
@@ -430,12 +442,6 @@ def test_an_upload_id_that_is_not_one_is_refused_including_dot_segments(crafted)
         tr.resumable_url(EP, crafted)
 
 
-def test_an_object_stored_with_no_bytes_measures_as_empty(http, storage):
-    """Storage answers normally and says the length is zero; the file is still not there."""
-    storage.objects["scrna/h5ad/a.h5ad.gz"] = b""
-    assert tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz") == 0
-
-
 def test_an_expired_session_when_starting_an_upload_says_so(http, storage):
     """Otherwise it reads as storage refusing the name, with raw JSON as the reason."""
     storage.expired = True
@@ -455,20 +461,3 @@ def test_a_resume_probe_that_keeps_failing_starts_over(http, storage):
     storage.offset_answers = [503, 503]
     assert tr.upload_offset(http, EP, f"{API}/storage/v1/upload/resumable/u0", size=10) is None
 
-
-def test_an_empty_object_behind_a_server_that_drops_range_measures_as_empty(http, storage):
-    """The one defence against a length-less answer, on the server the flag exists to model."""
-    storage.objects["scrna/h5ad/a.h5ad.gz"] = b""
-    storage.ignore_range = True
-    assert tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz") == 0
-
-
-@pytest.mark.parametrize("answer", [
-    httpx.Response(200),                                        # no length at all
-    httpx.Response(206, headers={"Content-Range": "bytes 0-0/*"}),   # unparseable total
-])
-def test_an_answer_that_names_no_length_is_refused(http, storage, answer):
-    """'Stored' has to mean a known number of bytes, not that something replied."""
-    storage.object_answers = [answer]
-    with pytest.raises(tr.TransferError, match="how large"):
-        tr.object_length(http, EP, "scrna", "h5ad/a.h5ad.gz")

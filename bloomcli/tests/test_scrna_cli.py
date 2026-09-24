@@ -465,16 +465,6 @@ def test_an_empty_object_is_not_reported_as_uploaded(tmp_path, env, storage):
     assert "may read it" not in result.output
 
 
-def test_an_object_holding_another_file_is_not_reported_as_uploaded(tmp_path, env, storage):
-    """The name is the fingerprint, but only the content proves what is under it."""
-    path = write_h5ad(tmp_path / "data.h5ad")
-    fingerprint = _object.fingerprint_of(path)
-    storage.objects[f"scrna/h5ad/{fingerprint}.h5ad.gz"] = gzipped(b"\x89HDF\r\n\x1a\n" + b"other")
-    result = _run("upload", str(path))
-    assert result.exit_code != 0, result.output
-    assert "different content" in result.output
-    assert list((tmp_path / "stage").glob("*.h5ad.gz"))
-
 
 def test_a_name_taken_by_something_unreadable_does_not_claim_bytes_were_sent(tmp_path, env, storage):
     """Nothing is sent on this path, so 'storage took every byte' would be untrue."""
@@ -492,7 +482,7 @@ def test_an_upload_storage_cannot_account_for_is_kept_not_dropped(tmp_path, env,
     """Unconfirmable is not the same as not stored: keep everything a rerun could need."""
     monkeypatch.setattr(_transfer, "CHUNK_BYTES", 64)
     path = write_h5ad(tmp_path / "data.h5ad")
-    storage.fail_reads = 99          # both confirmation attempts fail
+    storage.list_status = 503        # both confirmation attempts fail
     result = _run("upload", str(path))
     assert result.exit_code != 0
     assert "could not be asked" in result.output
