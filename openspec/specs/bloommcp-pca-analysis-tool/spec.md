@@ -337,7 +337,9 @@ into the **existing** PCA run (alongside loadings, scores, and `pca_result.json`
 `ResultStore` port, and SHALL return them as additional entries in the existing
 `outputs: dict[str, str]` result field — not as a separate `plot_links` field. Every figure
 SHALL be closed in a `finally` block that wraps both figure generation and the persistence
-scope, regardless of success or failure.
+scope, regardless of success or failure — including a figure a plotter callable allocates
+internally (e.g. via `plt.subplots()`) before raising partway through the same call, before
+the callable ever returns.
 
 #### Scenario: Plot PNGs round-trip as valid PNG bytes
 
@@ -357,6 +359,13 @@ scope, regardless of success or failure.
 - **THEN** `result.outputs` contains both the three existing data keys
   (`loadings.csv`, `scores.csv`, `pca_result.json`) and the requested plot PNG keys
   (e.g. `create_pca_scree_plot.png`)
+
+#### Scenario: A figure allocated then abandoned mid-call is still closed
+
+- **WHEN** a requested plot's callable internally allocates a matplotlib figure (e.g. via
+  `plt.subplots()`) and then raises before returning it
+- **THEN** that figure is closed too (`matplotlib.pyplot.get_fignums() == []` afterward),
+  even though it was never recorded into the tool's own `figures` dict
 
 ### Requirement: PCA Plot Generation Delegates Entirely to the Upstream Plotters
 
@@ -406,4 +415,216 @@ importable and unit-testable with no live stack.
 - **AND** `validate_plot_keys(["k1", "k1"], {"k1"})` raises `BloomMCPError(invalid_input)`
   naming the duplicate
 - **AND** `validate_plot_keys([], {"k1"})` raises `BloomMCPError(invalid_input)`
+
+### Requirement: PCA Analysis Accepts an Optional Font-Style Override for Generated Plots
+
+The `pca_analysis` tool input SHALL accept `plot_font_family: Optional[str] = None` and
+`plot_font_size: Optional[float] = None` in `PCAAnalysisParams`. When `include_plots` is
+`True`, either value SHALL be applied uniformly to every generated figure's title, axis
+labels, tick labels, standalone annotation text, figure-level text (e.g. a `fig.suptitle`),
+and legend text and title (via the shared `bloom_mcp.tools._plots` figure-generation path) —
+no per-plot or per-text-element styling. When both are `None` (the
+default), every generated plot keeps its plotter's default matplotlib styling, unchanged from
+pre-existing behavior. `plot_font_size` SHALL be rejected as `invalid_input` when not strictly
+positive. Both fields SHALL be silently ignored (no error) when `include_plots=False`,
+matching the existing ignore policy for `plots`.
+
+#### Scenario: Default call keeps default matplotlib styling
+
+- **WHEN** `pca_analysis` is called with `include_plots=True` and neither `plot_font_family`
+  nor `plot_font_size` set
+- **THEN** every generated figure's text elements keep the styling the upstream plotter drew
+  them with, unchanged from behavior before this change
+
+#### Scenario: A font family override is applied to every generated figure
+
+- **WHEN** `pca_analysis` is called with `include_plots=True` and `plot_font_family="serif"`
+- **THEN** every generated figure's title, axis labels, tick labels, standalone annotation
+  text, figure-level text, and legend text and title (when present) have their font family
+  set to `"serif"`
+
+#### Scenario: A font size override is applied to every generated figure
+
+- **WHEN** `pca_analysis` is called with `include_plots=True` and `plot_font_size=22`
+- **THEN** every generated figure's title, axis labels, tick labels, standalone annotation
+  text, figure-level text, and legend text and title (when present) have their font size set
+  to `22`
+
+#### Scenario: Both overrides apply together
+
+- **WHEN** `pca_analysis` is called with `include_plots=True`, `plot_font_family="serif"`,
+  and `plot_font_size=22`
+- **THEN** every generated figure's text elements reflect both the family and the size
+
+#### Scenario: A non-positive font size is rejected as invalid_input
+
+- **WHEN** `pca_analysis` is called with `plot_font_size` less than or equal to `0`
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, and no run is
+  committed
+
+#### Scenario: Font-style fields are ignored when include_plots is False
+
+- **WHEN** `pca_analysis` is called with `include_plots=False` and either
+  `plot_font_family` or `plot_font_size` set
+- **THEN** the tool returns successfully with no `BloomMCPError`, and no figures are
+  generated — the font-style fields have no effect
+
+### Requirement: Font-Style Override Is Applied via a Shared, Tool-Agnostic Helper
+
+`bloom_mcp/tools/_plots.py` SHALL expose `apply_font_style(fig, *, font_family=None,
+font_size=None)`, invoked from `generate_figures` on each figure immediately after it is
+recorded into the caller's `figures` dict (recording happens first, styling second — so a
+hypothetical future exception from `apply_font_style` cannot leak a figure that was never
+recorded) — so `pca_analysis`, `umap_analysis`, and any future consumer of `generate_figures`
+share identical font-override behavior with no tool-specific styling code. The helper SHALL be
+a no-op — touching no attribute of the passed-in object — when both `font_family` and
+`font_size` are `None`, preserving compatibility with existing test doubles that exercise
+`generate_figures`'s dispatch/error-propagation contract using non-`Figure` return values.
+
+#### Scenario: generate_figures forwards font kwargs to every generated figure
+
+- **WHEN** `generate_figures` is called with `font_family` and/or `font_size` set
+- **THEN** `apply_font_style` is invoked on each figure produced by `resolved_calls`, after
+  that figure is recorded into the caller's `figures` dict
+
+#### Scenario: apply_font_style is a no-op when both are None
+
+- **WHEN** `apply_font_style` is called with `font_family=None` and `font_size=None` on any
+  object, including one that is not a `matplotlib.figure.Figure`
+- **THEN** no exception is raised and no attribute of the object is accessed
+
+#### Scenario: apply_font_style covers title, axis labels, tick labels, and legend text
+
+- **WHEN** `apply_font_style` is called on a real `Figure` with a title, x/y axis labels,
+  tick labels, and a legend
+- **THEN** the font family and/or size is applied to all of: the title, the x-axis label,
+  the y-axis label, every tick label, and every legend text entry
+
+#### Scenario: apply_font_style covers figure-level text, including a suptitle
+
+- **WHEN** `apply_font_style` is called on a `Figure` that carries figure-level text (e.g. a
+  `fig.suptitle(...)`, the same call `create_umap_colored_by_top_traits` makes) — text that
+  lives on the `Figure` itself, not on any `Axes`
+- **THEN** the font family and/or size is applied to that figure-level text too, not just
+  text reachable via `fig.axes`
+
+#### Scenario: apply_font_style covers standalone annotation text distinct from title/labels/legend
+
+- **WHEN** `apply_font_style` is called on a `Figure` whose `Axes` carries standalone
+  annotation text added via `ax.text(...)` — the same mechanism `create_pca_biplot`'s
+  per-arrow trait-name labels, `create_pca_scree_plot`'s per-bar annotations, and
+  `create_feature_contribution_heatmap`'s seaborn `annot=True` cell values all use
+- **THEN** the font family and/or size is applied to that standalone annotation text too,
+  not just the title, axis labels, tick labels, and legend
+
+#### Scenario: apply_font_style covers the legend's own title, not just its entries
+
+- **WHEN** `apply_font_style` is called on a `Figure` whose `Axes` has a legend created with
+  an explicit title (e.g. `ax.legend(title="Genotype")`, the same call shape
+  `create_pca_biplot` uses)
+- **THEN** the legend title's font family and/or size is overridden in addition to its
+  individual entry labels — not skipped
+
+#### Scenario: apply_font_style covers every Axes on a figure with more than one
+
+- **WHEN** `apply_font_style` is called on a `Figure` with more than one `Axes` (e.g. a
+  heatmap-plus-colorbar figure like `create_feature_contribution_heatmap` produces, where the
+  colorbar occupies its own `Axes` alongside the main heatmap `Axes`)
+- **THEN** the font family and/or size is applied to every `Axes` in `fig.axes`, not just the
+  first
+
+#### Scenario: apply_font_style skips axes with no legend
+
+- **WHEN** `apply_font_style` is called on a `Figure` whose `Axes` has no legend
+- **THEN** no exception is raised
+
+### Requirement: PCA Biplot Alpha Override
+
+The `pca_analysis` tool SHALL accept an optional `plot_alpha: float | None = None`
+(`ge=0.0, le=1.0`) field in `PCAAnalysisParams`, forwarded to the upstream
+`create_pca_biplot` plotter call only when set (omitted from the call entirely when `None`,
+preserving the plotter's own default `alpha=0.6`). This field SHALL have no effect on
+`create_pca_scree_plot`, `create_feature_contribution_plot`, or
+`create_feature_contribution_heatmap`, none of whose upstream signatures accept `alpha`.
+`PCAAnalysisParams` SHALL NOT expose `plot_cmap` or `plot_point_size` fields: no PCA catalog
+plotter's current upstream signature accepts either kwarg. A **valid** `plot_alpha` value
+SHALL be ignored (not rejected) when `include_plots=False` — it is simply never read on that
+path. This is distinct from an **out-of-range** value: `ge=0.0, le=1.0` is a Pydantic field
+constraint on `PCAAnalysisParams` itself, enforced at input-validation time before the tool
+body (and therefore before `include_plots` is examined) — an out-of-range `plot_alpha` is
+rejected as `invalid_input` regardless of `include_plots`'s value.
+
+#### Scenario: plot_alpha is forwarded to create_pca_biplot
+
+- **WHEN** `pca_analysis` is called with `include_plots=True`, `plots=["create_pca_biplot"]`,
+  and `plot_alpha=0.3`
+- **THEN** `create_pca_biplot` is invoked with `alpha=0.3`
+
+#### Scenario: Unset plot_alpha reproduces today's default figure
+
+- **WHEN** `pca_analysis` is called with `include_plots=True`, `plots=["create_pca_biplot"]`,
+  and no `plot_alpha` value
+- **THEN** `create_pca_biplot` is invoked with no `alpha` argument in its call kwargs — the
+  plotter's own default (`alpha=0.6`) applies, unchanged from before this change
+
+#### Scenario: plot_alpha has no effect on the other three plot keys
+
+- **WHEN** `pca_analysis` is called with `include_plots=True`, all four plot keys requested,
+  and `plot_alpha=0.3`
+- **THEN** only `create_pca_biplot`'s call receives `alpha=0.3`; the calls to
+  `create_pca_scree_plot`, `create_feature_contribution_plot`, and
+  `create_feature_contribution_heatmap` are unchanged
+
+#### Scenario: plot_alpha is ignored when include_plots is False
+
+- **WHEN** `pca_analysis` is called with `include_plots=False` and `plot_alpha` set
+- **THEN** the tool returns successfully with no figures generated and no error raised
+
+#### Scenario: Out-of-range plot_alpha is rejected regardless of include_plots
+
+- **WHEN** `pca_analysis` is called with `plot_alpha=1.5` (or a negative value) — with
+  `include_plots` set to either `True` or `False`
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, before any figure is
+  generated, in both cases
+
+#### Scenario: Boundary values 0.0 and 1.0 for plot_alpha are accepted
+
+- **WHEN** `pca_analysis` is called with `include_plots=True`, `plots=["create_pca_biplot"]`,
+  and `plot_alpha=0.0` (or `plot_alpha=1.0`)
+- **THEN** the tool succeeds and `create_pca_biplot` is invoked with `alpha=0.0` (or
+  `alpha=1.0`) — the inclusive bounds are valid values, not rejected
+
+### Requirement: PCA Plot Font Size Has a Sanity Ceiling
+
+`PCAAnalysisParams.plot_font_size` SHALL be rejected as `invalid_input` when not in
+`(0, 100]`, checked in the `pca_analysis` tool body (via the shared
+`bloom_mcp.tools._plots.check_plot_style_ceiling` helper, the same one UMAP uses), before
+`reader.load_experiment` is called, rather than as a Pydantic `Field(gt=0, le=100)`
+constraint. A `Field` constraint's violation is mapped by the contract layer's
+`BloomMCPError.from_input_validation` into a message naming only the field and error type —
+never the submitted value or the ceiling. The check runs regardless of `include_plots`'s
+value and before any I/O, the same rule already established for `plot_alpha`. The field's
+declared JSON schema SHALL still expose the ceiling as `maximum`/`exclusiveMinimum`
+metadata (via Pydantic's `json_schema_extra`, not `Field(le=...)`) so a schema-reading
+caller can discover the bound without needing to trigger a rejection first.
+
+#### Scenario: An excessive plot_font_size is rejected regardless of include_plots
+
+- **WHEN** `pca_analysis` is called with `plot_font_size` greater than `100` (including
+  `float("inf")` or `float("nan")`) — with `include_plots` set to either `True` or `False`
+- **THEN** the tool returns a `BloomMCPError` with code `invalid_input`, naming the
+  submitted value and the ceiling, before any figure is generated, in both cases
+
+#### Scenario: Boundary value 100 is accepted
+
+- **WHEN** `pca_analysis` is called with `include_plots=True`, `plots=["create_pca_biplot"]`,
+  and `plot_font_size=100`
+- **THEN** the tool succeeds and the figure is generated with the font size applied — the
+  inclusive ceiling is a valid value, not rejected
+
+#### Scenario: The declared ceiling is discoverable in the tool's JSON schema
+
+- **WHEN** `pca_analysis`'s input schema is inspected (e.g. via MCP tool discovery)
+- **THEN** `plot_font_size`'s schema entry declares `maximum: 100`, even though it is not
+  enforced via a Pydantic `Field` constraint
 
