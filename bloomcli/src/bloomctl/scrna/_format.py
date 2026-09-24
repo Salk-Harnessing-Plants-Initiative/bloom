@@ -168,36 +168,52 @@ def normalization_problem(block: dict[str, Any], *, layers) -> str | None:
     return None
 
 
-def _refuse_links(h5py, group, seen: set | None = None) -> None:
-    """Refuse a file whose data lives in another file.
+def _refuse_links(h5py, root) -> None:
+    """Refuse a file that does not carry its own contents.
 
-    Two shapes do that, and only one announces itself: an external link, and a virtual dataset,
-    which reads as ordinary data here and as nothing on any other machine. Both make the stored
-    object depend on the uploader's disk, and both let a refusal quote a file nobody handed in.
-    A soft link points within this same file, which anndata reads and this accepts.
+    HDF5 can put a dataset's bytes somewhere else -- a virtual dataset reads them from other
+    datasets, external storage keeps them in a plain file on disk -- and a link can name
+    something outside the file, or nothing at all. All of those read correctly on the machine
+    that wrote them and are empty or broken anywhere else, which an object named by its own
+    fingerprint and impossible to replace must never be.
 
-    Hard links can make the walk cyclic, so each group is visited once, by address.
+    Walked with a stack rather than recursion, so a deeply nested file is refused, not a crash.
     """
-    seen = set() if seen is None else seen
-    for name in group:
-        where = name if group.name == "/" else f"{group.name.strip('/')}/{name}"
-        if isinstance(group.get(name, getlink=True), h5py.ExternalLink):
-            raise FormatError(
-                f"{where} points outside itself, to another file; a dataset has to hold its "
-                f"own data"
-            )
-        member = group.get(name)
-        if isinstance(member, h5py.Dataset) and member.is_virtual:
-            raise FormatError(
-                f"{where} reads its values from outside itself; it is a virtual dataset, so "
-                f"the file holds only a pointer. Re-save it so the values travel with it"
-            )
-        if isinstance(member, h5py.Group):
-            address = h5py.h5o.get_info(member.id).addr
-            if address in seen:
-                continue
-            seen.add(address)
-            _refuse_links(h5py, member, seen)
+    seen: set[int] = set()
+    pending = [root]
+    while pending:
+        group = pending.pop()
+        for name in group:
+            where = name if group.name == "/" else f"{group.name.strip('/')}/{name}"
+            if not isinstance(group.get(name, getlink=True), h5py.HardLink):
+                raise FormatError(
+                    f"{where} is a link rather than data held here; re-save the file so every "
+                    f"array carries its own values"
+                )
+            member = group[name]
+            if isinstance(member, h5py.Dataset):
+                _refuse_outside_storage(h5py, member, where)
+            elif isinstance(member, h5py.Group):
+                address = h5py.h5o.get_info(member.id).addr
+                if address in seen:
+                    raise FormatError(f"{where} links back into the file; it cannot be read through")
+                seen.add(address)
+                pending.append(member)
+
+
+def _refuse_outside_storage(h5py, dataset, where: str) -> None:
+    """Whether this dataset's bytes are in this file. HDF5 has two ways for them not to be."""
+    layout = dataset.id.get_create_plist()
+    if layout.get_layout() == h5py.h5d.VIRTUAL:
+        raise FormatError(
+            f"{where} reads its values from outside this file; it is a virtual dataset, so the "
+            f"file holds only a pointer. Re-save it so the values travel with it"
+        )
+    if layout.get_external_count() > 0:
+        raise FormatError(
+            f"{where} keeps its values in another file on disk. Re-save it so the values "
+            f"travel with it"
+        )
 
 
 def _shape(h5py, node, what: str) -> tuple[int, int]:

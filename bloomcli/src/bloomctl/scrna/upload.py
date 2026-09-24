@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import click
 import httpx
@@ -98,58 +99,89 @@ def _resumable(ep, saved) -> str | None:
         return None
 
 
-def _stored(http, ep, bucket: str, path: str) -> bool | None:
-    """Whether storage holds the object: True, False, or None when it could not be asked.
+def _stored(http, ep, stage: Path, staged: _object.Staged) -> str:
+    """What storage holds under this file's name.
 
-    Asked twice, because one blip on this question must not report a stored object as an
-    upload to send again.
+    "stored" this exact file · "empty" the name taken by nothing · "other" taken by different
+    content · "absent" nothing there · "unknown" storage could not be asked.
     """
+    bucket, path = _object.BUCKET, _object.object_path(staged.fingerprint)
     for attempt in (1, 2):
         try:
-            return _transfer.object_exists(http, ep, bucket, path)
-        except _transfer.SessionExpired:
+            length = _transfer.object_length(http, ep, bucket, path)
+            break
+        except (_transfer.SessionExpired, _transfer.Forbidden):
             raise
         except (_transfer.TransferError, httpx.HTTPError):
             if attempt == 2:
-                return None
+                return "unknown"
             # A server that is overloaded needs a moment, not a second request at once.
             time.sleep(_transfer.RETRY_PAUSE_SECONDS)
-    return None
+    if length is None:
+        return "absent"
+    if length == 0:
+        return "empty"
+    if length == staged.size:
+        return "stored"
+    # Another writer's gzip of the same file is a different length, so only the content says.
+    return _holds_this_file(http, ep, stage, staged, bucket, path)
 
 
-def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, *, sent: int) -> None:
-    """Report only what storage confirms, and leave behind only what a rerun needs.
+def _holds_this_file(http, ep, stage: Path, staged: _object.Staged, bucket, path) -> str:
+    """Fetch what is stored and fingerprint it; nothing else tells these two apart."""
+    checking = stage / f".checking-{uuid4().hex}.tmp"
+    try:
+        got = _transfer.download_to(http, ep, bucket, path, checking)
+    except (_transfer.SessionExpired, _transfer.Forbidden):
+        raise
+    except (_transfer.TransferError, httpx.HTTPError):
+        return "unknown"
+    finally:
+        checking.unlink(missing_ok=True)
+    return "stored" if got == staged.fingerprint else "other"
 
-    ``sent`` is how many bytes this run gave storage, which is what tells a finished upload
-    that was never stored apart from a name taken by something this login cannot read.
+
+def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, *, finished: bool) -> None:
+    """Report what storage holds, and leave behind only what a rerun needs.
+
+    ``finished`` is whether this run sent the file to its end, which separates an upload
+    storage never made an object of from a name that was taken before it started.
     """
     bucket, path = _object.BUCKET, _object.object_path(staged.fingerprint)
-    stored = _stored(http, ep, bucket, path)
-    if stored:
+    state = _stored(http, ep, stage, staged)
+    if state == "stored":
         _object.clear(stage, staged.fingerprint)
         click.echo(
-            f"Already uploaded: {bucket}/{path}" if sent == 0 else
             f"Uploaded {name}\n  fingerprint  {staged.fingerprint}\n"
-            f"  stored at    {bucket}/{path}"
+            f"  stored at    {bucket}/{path}" if finished else
+            f"Already uploaded: {bucket}/{path}"
         )
         return
-    if stored is None:
+    if state == "unknown":
         raise click.ClickException(
-            f"{name} may be stored — storage could not be asked. Nothing was lost: the prepared "
-            f"copy and this upload are both kept in {stage}. Run the same command again."
+            f"{name} may be stored — storage could not be asked. Nothing was lost: what is "
+            f"prepared is kept in {stage}. Run the same command again."
         )
-    if sent == 0:
+    if state in ("empty", "other"):
+        held = "nothing" if state == "empty" else "different content"
+        _object.forget_upload(stage, staged.fingerprint)
         raise click.ClickException(
-            f"storage says {bucket}/{path} is taken but will not show it to this login. Nothing "
-            f"was sent. Ask an admin whether the object is there, or whether this login may "
-            f"read it; the prepared copy is kept in {stage}."
+            f"{bucket}/{path} is already stored and holds {held}, so {name} cannot be sent "
+            f"under that name — a stored object cannot be replaced. Ask an admin to remove it. "
+            f"What is prepared is kept in {stage}."
         )
-    # Storage holds every byte and made nothing of them. The protocol will not finish an upload
-    # that is already at full length, so the record goes and the gzipped form starts a new one.
-    _object.forget_upload(stage, staged.fingerprint)
+    if finished:
+        # Storage holds every byte and made nothing of them. The protocol will not finish an
+        # upload already at full length, so the record goes and the gzipped form starts anew.
+        _object.forget_upload(stage, staged.fingerprint)
+        raise click.ClickException(
+            f"storage took every byte of {name} but has not stored it. What is prepared is "
+            f"kept in {stage}; run the same command again to send it as a new upload."
+        )
     raise click.ClickException(
-        f"storage took every byte of {name} but has not stored it. The prepared copy is kept "
-        f"in {stage}; run the same command again to send it as a new upload."
+        f"storage refused the name {bucket}/{path} and holds nothing under it — another "
+        f"upload of the same file may be in flight. Nothing was sent; what is prepared is "
+        f"kept in {stage}. Run the same command again shortly."
     )
 
 
@@ -162,8 +194,7 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
         held = offset
 
     try:
-        if _transfer.object_exists(http, ep, bucket, path):
-            # Asked and answered; the name is the content's fingerprint, so this is the file.
+        if _stored(http, ep, stage, staged) == "stored":
             _object.clear(stage, staged.fingerprint)
             click.echo(f"Already uploaded: {bucket}/{path}")
             return
@@ -185,9 +216,9 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
         )
     except _transfer.AlreadyStored:
         # Storage refused the name. Whether that means the file is there is its answer to give.
-        _settle(http, ep, stage, staged, name, sent=held)
+        _settle(http, ep, stage, staged, name, finished=False)
         return
-    except _transfer.SessionExpired as exc:
+    except (_transfer.SessionExpired, _transfer.Forbidden) as exc:
         raise click.ClickException(
             f"{exc} Nothing was lost: what has been sent of {name} is kept in {stage}, and the "
             "same command continues it once you are logged in."
@@ -209,4 +240,4 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
             "run the same command again to finish it."
         )
     # Sending every byte is not the same as storage having stored the object.
-    _settle(http, ep, stage, staged, name, sent=final)
+    _settle(http, ep, stage, staged, name, finished=True)

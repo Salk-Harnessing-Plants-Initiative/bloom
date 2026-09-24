@@ -38,6 +38,10 @@ class NotStored(TransferError):
     """No object with this name is stored."""
 
 
+class Forbidden(TransferError):
+    """The login is understood and not permitted; logging in again changes nothing."""
+
+
 class SessionExpired(TransferError):
     """Storage refused the request because this session is no longer valid."""
 
@@ -75,6 +79,10 @@ def _duplicate(response: httpx.Response) -> bool:
     )
 
 
+# What storage says when the token itself is the problem, as opposed to what it may reach.
+_EXPIRED_IN_BODY = ("jwt expired", "invalid jwt", "bad_jwt", "token is expired")
+
+
 def _session_expired(response: httpx.Response) -> bool:
     """Storage answers a caller whose session is no longer valid much as it answers a missing
     object, so the message is the only signal — the same trap `_storage.py` documents."""
@@ -96,15 +104,29 @@ def _checked_id(upload_id: str) -> str:
     return upload_id
 
 
-def _refuse_if_expired(response: httpx.Response) -> None:
-    """Storage says so in the status on some endpoints and only in the body on others."""
-    if response.status_code in (401, 403) or _session_expired(response):
+def _refuse_if_refused(response: httpx.Response) -> None:
+    """Separate a session that has ended from a login that was never allowed this.
+
+    Both arrive as 401/403, and telling someone to log in again does nothing about the second.
+    """
+    body = (response.text or "").lower()
+    if any(marker in body for marker in _EXPIRED_IN_BODY) or response.status_code == 401:
         raise SessionExpired(EXPIRED_HINT)
+    if response.status_code == 403:
+        raise Forbidden(
+            "this login is not allowed to do that here. Logging in again will not change it; "
+            "ask an admin what this account may read and write."
+        )
 
 
-def object_exists(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> bool:
-    """Whether the object is stored. Asked with a one-byte GET, not a HEAD: storage names an
-    expired session only in the body, and HTTP forbids a body on a HEAD response."""
+def object_length(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> int | None:
+    """How many bytes storage holds under this name, or None when it holds nothing there.
+
+    Asked with a one-byte ranged GET, streamed: a whole object is never pulled in to answer a
+    question about its size, and storage names a refusal in the body, which a HEAD cannot
+    carry. An answer naming no length is not an answer -- taking it for "stored" has deleted
+    the only local copy of a file nobody had.
+    """
     with http.stream(
         "GET",
         ep.url(f"object/authenticated/{bucket}/{path}"),
@@ -113,25 +135,27 @@ def object_exists(http: httpx.Client, ep: Endpoint, bucket: str, path: str) -> b
         # 416 is the answer to a ranged read of an object holding nothing: the name is taken
         # and the file is not there, which is the failure this question exists to catch.
         if response.status_code == 416:
-            return False
+            return 0
         if response.status_code in (200, 206):
-            return _holds_bytes(response)
+            return _length_of(response, bucket, path)
         response.read()
-        _refuse_if_expired(response)
+        _refuse_if_refused(response)
         if response.status_code in (400, 404):
-            return False
+            return None
         raise TransferError(
             f"storage answered {response.status_code} when looking for {bucket}/{path}"
         )
 
 
-def _holds_bytes(response: httpx.Response) -> bool:
-    """Whether the ranged answer describes an object with anything in it."""
+def _length_of(response: httpx.Response, bucket: str, path: str) -> int:
+    """The object's size from a ranged answer: the range's total, or the whole body's length."""
     total = response.headers.get("content-range", "").rpartition("/")[2]
     if total.isdigit():
-        return int(total) > 0
+        return int(total)
     length = response.headers.get("content-length", "")
-    return int(length) > 0 if length.isdigit() else True
+    if length.isdigit():
+        return int(length)
+    raise TransferError(f"storage did not say how large {bucket}/{path} is")
 
 
 def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size: int) -> str:
@@ -147,7 +171,7 @@ def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size
             "x-upsert": "false",
         }),
     )
-    _refuse_if_expired(response)
+    _refuse_if_refused(response)
     if _duplicate(response):
         raise AlreadyStored(f"{bucket}/{path}")
     location = response.headers.get("location")
@@ -192,11 +216,11 @@ def upload_offset(
                 return None
             time.sleep(RETRY_PAUSE_SECONDS)
             continue
-        _refuse_if_expired(response)
         if response.status_code == 200:
             break
         # A server that cannot answer right now may answer the next time; one that says the
-        # upload is gone never will, and re-asking only delays starting again.
+        # upload is gone -- or will not discuss it with this login -- never will, and re-asking
+        # only delays starting again. The refusal itself is reported by the next call.
         if attempt == 2 or response.status_code < 500:
             return None
         time.sleep(RETRY_PAUSE_SECONDS)
@@ -243,7 +267,7 @@ def send(
             )
             if _duplicate(response):
                 raise AlreadyStored(url)
-            _refuse_if_expired(response)
+            _refuse_if_refused(response)
             if response.status_code != 204:
                 raise TransferError(
                     f"storage refused bytes {offset:,} to {offset + len(chunk):,} "
@@ -270,11 +294,11 @@ def download_to(http: httpx.Client, ep: Endpoint, bucket: str, path: str, dest: 
     with http.stream(
         "GET", ep.url(f"object/authenticated/{bucket}/{path}"), headers=ep.headers()
     ) as response:
-        if response.status_code in (400, 404):
-            response.read()  # a streamed response holds nothing until it is read
-            _refuse_if_expired(response)
-            raise NotStored(f"{bucket}/{path}")
         if response.status_code != 200:
+            response.read()  # a streamed response holds nothing until it is read
+            _refuse_if_refused(response)
+            if response.status_code in (400, 404):
+                raise NotStored(f"{bucket}/{path}")
             raise TransferError(f"storage answered {response.status_code} for {bucket}/{path}")
         try:
             with dest.open("wb") as out:

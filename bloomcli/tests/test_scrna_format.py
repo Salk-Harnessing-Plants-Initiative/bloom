@@ -281,7 +281,7 @@ def test_a_file_that_points_outside_itself_is_refused(tmp_path):
     path = write_h5ad(tmp_path / "x.h5ad")
     with h5py.File(path, "a") as f:
         f["uns"]["elsewhere"] = h5py.ExternalLink(str(secret), "/value")
-    _refused(path, "outside itself")
+    _refused(path, "link rather than data")
 
 
 def test_a_file_whose_data_lives_in_another_file_is_refused(tmp_path):
@@ -299,17 +299,56 @@ def test_a_file_whose_data_lives_in_another_file_is_refused(tmp_path):
         f["obsm"].create_virtual_dataset("X_umap", layout)
         f["obsm"]["X_umap"].attrs["encoding-type"] = "array"
         f["obsm"]["X_umap"].attrs["encoding-version"] = "0.2.0"
-    _refused(path, "outside itself")
+    _refused(path, "outside this file")
 
 
-def test_a_link_inside_the_same_file_is_accepted(tmp_path):
-    """A soft link resolves within the file; anndata reads it, and so should this."""
+def test_a_link_rather_than_data_is_refused(tmp_path):
+    """anndata writes no soft links, and allowing them let dangling and cyclic ones through."""
     import h5py
 
     path = write_h5ad(tmp_path / "x.h5ad")
     with h5py.File(path, "a") as f:
         f["obsm"]["X_umap_copy"] = h5py.SoftLink("/obsm/X_umap")
-    assert fmt.check_structure(path).n_cells == 3
+    _refused(path, "link rather than data")
+
+
+def test_a_link_to_nothing_is_refused(tmp_path):
+    """anndata raises KeyError on these; the checker used to accept them."""
+    import h5py
+
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        f["uns"]["gone"] = h5py.SoftLink("/nowhere")
+    _refused(path, "link rather than data")
+
+
+def test_a_dataset_whose_bytes_live_in_another_file_is_refused(tmp_path):
+    """External storage is neither a link nor virtual, and the source need not be HDF5."""
+    import h5py
+
+    raw = tmp_path / "raw.bin"
+    np.arange(6, dtype="f8").tofile(raw)
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        del f["obsm"]["X_umap"]
+        d = f["obsm"].create_dataset("X_umap", shape=(3, 2), dtype="f8",
+                                     external=[(str(raw), 0, 48)])
+        d.attrs["encoding-type"] = "array"
+        d.attrs["encoding-version"] = "0.2.0"
+    _refused(path, "another file on disk")
+
+
+def test_a_file_nested_beyond_reason_is_refused_not_crashed(tmp_path):
+    """A recursive walk raised RecursionError, which is not a fact about the file."""
+    import h5py
+
+    path = write_h5ad(tmp_path / "x.h5ad")
+    with h5py.File(path, "a") as f:
+        group = f["uns"]
+        for level in range(2000):
+            group = group.create_group(f"n{level}")
+        group["out"] = h5py.ExternalLink(str(tmp_path / "nope.h5"), "/v")
+    _refused(path, "link rather than data")
 
 
 def test_a_link_out_of_the_file_is_refused_however_deep(tmp_path):
@@ -325,18 +364,18 @@ def test_a_link_out_of_the_file_is_refused_however_deep(tmp_path):
         for level in range(10):
             group = group.create_group(f"n{level}")
         group["deep"] = h5py.ExternalLink(str(secret), "/value")
-    _refused(path, "outside itself")
+    _refused(path, "link rather than data")
 
 
-def test_a_file_that_links_back_to_itself_does_not_hang(tmp_path):
-    """Hard links can make the walk cyclic; it has to notice rather than recurse forever."""
+def test_a_file_that_links_back_to_itself_is_refused(tmp_path):
+    """anndata recurses forever on these, so accepting one stores a file nobody can open."""
     import h5py
 
     path = write_h5ad(tmp_path / "x.h5ad")
     with h5py.File(path, "a") as f:
         loop = f["uns"].create_group("loop")
         loop["self"] = loop
-    assert fmt.check_structure(path).n_cells == 3
+    _refused(path, "links back into the file")
 
 
 def test_a_umap_of_text_says_so_rather_than_quoting_numpy(tmp_path):

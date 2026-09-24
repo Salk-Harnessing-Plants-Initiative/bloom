@@ -459,6 +459,21 @@ def test_an_empty_object_is_not_reported_as_uploaded(tmp_path, env, storage):
     assert result.exit_code != 0, result.output
     assert "Already uploaded" not in result.output and "Uploaded" not in result.output
     assert list((tmp_path / "stage").glob("*.h5ad.gz")), "the only copy was deleted"
+    # Storage is showing the object — it is empty. Blaming the login sends the user nowhere.
+    assert "holds nothing" in result.output
+    assert "admin to remove it" in result.output
+    assert "may read it" not in result.output
+
+
+def test_an_object_holding_another_file_is_not_reported_as_uploaded(tmp_path, env, storage):
+    """The name is the fingerprint, but only the content proves what is under it."""
+    path = write_h5ad(tmp_path / "data.h5ad")
+    fingerprint = _object.fingerprint_of(path)
+    storage.objects[f"scrna/h5ad/{fingerprint}.h5ad.gz"] = gzipped(b"\x89HDF\r\n\x1a\n" + b"other")
+    result = _run("upload", str(path))
+    assert result.exit_code != 0, result.output
+    assert "different content" in result.output
+    assert list((tmp_path / "stage").glob("*.h5ad.gz"))
 
 
 def test_a_name_taken_by_something_unreadable_does_not_claim_bytes_were_sent(tmp_path, env, storage):
