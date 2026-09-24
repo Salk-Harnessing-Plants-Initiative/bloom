@@ -153,6 +153,15 @@ services:
     volumes:
       - ./services/workflows:/app
     command: ["python", "dispatch_worker.py"]
+    # No HTTP server to probe, so the loop records a heartbeat each time round
+    # and this reads its age — a wedged loop stops refreshing it. 90s clears
+    # one submission's 15s timeout plus its RPC round trips.
+    healthcheck:
+      test: ["CMD", "python", "heartbeat.py", "--max-age", "90"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     networks:
       - supanet
     depends_on:
@@ -203,6 +212,14 @@ services:
     volumes:
       - ./services/workflows:/app
     command: ["python", "status_poller.py"]
+    # Same heartbeat probe as cyl-pipeline-worker, with a longer ceiling: one
+    # sweep issues a request per distinct workflow across every candidate run.
+    healthcheck:
+      test: ["CMD", "python", "heartbeat.py", "--max-age", "180"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     networks:
       - supanet
     depends_on:

@@ -307,6 +307,15 @@ services:
     # section already flags for crashes.
     stop_grace_period: 30s
     command: ["python", "dispatch_worker.py"]
+    # No HTTP server to probe, so the loop records a heartbeat each time round
+    # and this reads its age — a wedged loop stops refreshing it. 90s clears
+    # one submission's 15s timeout plus its RPC round trips.
+    healthcheck:
+      test: ["CMD", "python", "heartbeat.py", "--max-age", "90"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   # Periodically polls Argo for each in-flight run's real Workflow phase(s)
   # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
@@ -351,6 +360,14 @@ services:
       - db-prod
     restart: unless-stopped
     command: ["python", "status_poller.py"]
+    # Same heartbeat probe as cyl-pipeline-worker, with a longer ceiling: one
+    # sweep issues a request per distinct workflow across every candidate run.
+    healthcheck:
+      test: ["CMD", "python", "heartbeat.py", "--max-age", "180"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     # Larger than cyl-pipeline-worker's 30s (found during /review-pr round 1,
     # not a blind copy): one sweep can issue one get_workflow_status GET per
     # distinct workflow name across EVERY candidate run this cycle, not a
