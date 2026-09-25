@@ -12,8 +12,9 @@ returned right away. Best for a single scan a user is looking at now.
 **Batch / workflow-driven** generation (cyl scan, graviscan, or any pipeline
 producing many videos) is a separate, **job-queue-based** mechanism (submit a
 job → a worker processes it → poll/subscribe for the result), not this route.
-That async path is intentionally kept out of this endpoint; see
-`services/video-worker` and the `video_jobs` queue.
+That async path is intentionally kept out of this endpoint. `services/video-worker`
+and its `video_jobs` queue were the first attempt at it and are retired, commented
+out in place.
 
 This service also hosts a **third**, distinct dispatch path: `POST /pipeline`
 (the A4 sleap-roots pipeline trigger, bloom #11/#404 — see below) enumerates
@@ -48,17 +49,17 @@ internal-only and not exposed through the public proxy.
 
 ## Endpoints
 
-| Method | Path                                          | Auth | Purpose                                   |
-| ------ | --------------------------------------------- | ---- | ----------------------------------------- |
-| GET    | `/health`                                   | none (internal-only) | Liveness — kept for the in-container probe; **not** exposed via the public proxy |
-| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT | Generate a scan's video, upload to Storage |
-| POST   | `/pipeline` (external: `/workflows/pipeline`) | Supabase user JWT | Trigger an A4 sleap-roots pipeline run for a scan/wave/experiment/explicit scan list |
-| GET    | `/runs/{run_id}` (external: `/workflows/runs/{run_id}`) | Supabase user JWT | Read a pipeline run's current status + its scans — a plain DB read, does **not** itself query Argo/K8s |
+| Method | Path                                                     | Auth                 | Purpose                                                                                                |
+| ------ | -------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ |
+| GET    | `/health`                                                | none (internal-only) | Liveness — kept for the in-container probe; **not** exposed via the public proxy                       |
+| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT    | Generate a scan's video, upload to Storage                                                             |
+| POST   | `/pipeline` (external: `/workflows/pipeline`)            | Supabase user JWT    | Trigger an A4 sleap-roots pipeline run for a scan/wave/experiment/explicit scan list                   |
+| GET    | `/runs/{run_id}` (external: `/workflows/runs/{run_id}`)  | Supabase user JWT    | Read a pipeline run's current status + its scans — a plain DB read, does **not** itself query Argo/K8s |
 
 ### Video generation
 
 A video is **per scan** — one cylinder scan has many frames (~72 rotation
-images), and that set of frames is one video. An experiment has *many* scans, so
+images), and that set of frames is one video. An experiment has _many_ scans, so
 the route takes **both** ids: `scan_id` identifies the video, and `experiment_id`
 scopes it (the scan must belong to that experiment, else 404).
 
@@ -79,6 +80,72 @@ curl -X POST http://localhost:5100/cyl/experiments/123/scans/456/video \
 # Response:
 # {"experiment_id": 123, "scan_id": 456, "frames": 72, "path": "cyl-videos/456.mp4", "download_url": "https://.../456.mp4?..."}
 ```
+
+### Rendering one video from a container
+
+`plate_video_worker.py` and `cyl_video_worker.py` render a single item through the
+same code these routes call, from a container built on this image. Both sit behind a
+compose profile, so `docker compose up -d` never starts them — and never builds them
+either, which is why the commands below pass `--build`.
+
+> **Dev only until the render queue lands.** These commands are not approved to run
+> against staging or production before then — not even for an item nobody appears to be
+> using. The per-plate and per-scan locks that keep two renders off one object key live
+> in the service's own process and do not hold against a second container, so a container
+> render alongside a click on the same item can leave the recorded frame count describing
+> the other render's file, and the page then treats that video as current and never offers
+> to remake it. Nobody can see the collision coming either: the plate page's progress
+> endpoint reads a record held in the service's process, so it shows nothing while a
+> container render runs, and a scientist seeing no progress is being invited to click.
+
+```bash
+# Dev — the only environment these are approved for until the queue lands.
+docker compose -f docker-compose.dev.yml --env-file .env.dev \
+  run --rm --no-deps --build plate-video-worker \
+  python plate_video_worker.py render --experiment 1886 --plate Plate_19 --wave 13
+
+docker compose -f docker-compose.dev.yml --env-file .env.dev \
+  run --rm --no-deps --build cyl-video-worker \
+  python cyl_video_worker.py render --experiment 1 --scan 456
+```
+
+Once the queue lands and the hold is lifted, the same commands take the stack's own
+project name and env file — `-p bloom_v2_prod … --env-file .env.prod` from
+`/data/bloom/production`, `-p bloom_v2_staging … --env-file .env.staging` from
+`/data/bloom/staging`, both against `-f docker-compose.prod.yml`. The project name is
+not optional there: the compose file pins the production name, so a staging run without
+`-p` reaches the production stack. A render outlives an SSH session, so run it under
+`tmux` or `nohup`.
+
+Each flag earns its place. `--no-deps` because the stack is already up, and `run` would
+otherwise start — and can recreate — Kong and Postgres. `--build` because a deploy never
+builds a profiled service, so without it a render uses whatever image the first run
+happened to bake. With the stack down, the render fails at its first request; bring the
+stack up rather than retrying.
+
+Use `--wave none` for a plate with no wave; omitting `--wave` means the same thing.
+
+**Exit codes.** `0` rendered or kept, `1` failed — this service, storage or the database
+did not answer, or something else holds the item, so a retry may help — and `3` refused,
+meaning the renderer declined and retrying will not change that. `2` is argparse's own
+usage error, which is why refusal is not 2. Both commands take the classification from
+the route, so the word they print and the code they exit with always agree.
+
+A cylinder 5xx can be raised after the object was uploaded — signing its URL is the last
+step before the row is written — so the command prints a line telling you to check the
+stored video against its record before retrying.
+
+While a container render runs, the plate page's progress endpoint shows nothing: it
+reads a record held in the service's own process.
+
+#### Where the frame ceilings come from
+
+Every bound in `plate_encode.py` is derived from the scanner's own configuration,
+not chosen as a round number. The scanner fixes its regions in millimetres and its
+resolutions to a fixed set, so there are eighteen possible images, and the largest
+is 519 MB decoded and 124 MB on the wire. Read that arithmetic before changing any
+of those numbers: a ceiling below 124 MB refuses frames a scanner really produces,
+and one above the decoded size stops bounding the render's memory.
 
 ### Pipeline trigger
 
@@ -123,7 +190,7 @@ and for each claimed batch:
    vendored, CI-drift-checked copy of `sleap-roots-pipeline`'s canonical
    `sleap-roots-pipeline.yaml` (`vendored/sleap-roots-pipeline.yaml`, pin
    recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — a CI job checks the copy
-   against the *pinned commit*, which catches "the copy and the pin disagree",
+   against the _pinned commit_, which catches "the copy and the pin disagree",
    not "upstream has moved on"; see bloom #737) and applying exactly
    four overrides on top of it: the batch's own `scan-ids`; attribution
    labels — `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index`/
@@ -157,10 +224,10 @@ a submission whose body namespace differs from the URL's.
 
 **`bloom-pipeline` vs. `bloom-workflow` — two different ServiceAccounts, easy
 to confuse by name.** `bloom-pipeline` (provisioned below) is the identity
-this worker authenticates as to *submit* Workflows to the K8s API.
+this worker authenticates as to _submit_ Workflows to the K8s API.
 `bloom-workflow` (`spec.serviceAccountName`, set inside the submitted object,
 now loaded from the vendored file rather than hardcoded here) is the identity
-each DAG step's own *pod* runs as once Argo's controller picks it up, needed
+each DAG step's own _pod_ runs as once Argo's controller picks it up, needed
 so each step can report results back to Argo (`workflowtaskresults
 create`/`patch`). This change doesn't alter either identity or its RBAC —
 only how the value `"bloom-workflow"` reaches the submitted object.
@@ -243,7 +310,7 @@ deliberate departure from Phase 2's own "aggregate in SQL" precedent).
 ### Reading a run's outcome: use the counts, not `status`
 
 **If you are building a UI or any other consumer over `cyl_pipeline_runs`, read
-this section first.** `status` is a *batch-level* outcome. It answers "did the
+this section first.** `status` is a _batch-level_ outcome. It answers "did the
 Argo Workflows reach a terminal success phase", not "did every requested scan
 produce a result", and the two diverged when the pipeline DAG gained its
 terminal exit gate (`sleap-roots-pipeline#56`). Branch on
@@ -254,7 +321,7 @@ Concretely:
   some scans' failures and completes the rest exits `3`; the gate accepts that
   code, so the Workflow is `Succeeded` and the run is `'complete'` — with real
   failures in `failed_count`.
-- **`'complete'` does not even imply that *any* scan succeeded.** The exit code
+- **`'complete'` does not even imply that _any_ scan succeeded.** The exit code
   has no floor: one scan failing and every scan failing both exit `3`. A
   totally-failed batch therefore reads `'complete'` with `done_count = 0`. This
   is the case most likely to mislead a UI, because it is exactly what a shared
@@ -265,7 +332,7 @@ Concretely:
   `'failed'` run. An automated consumer that re-dispatches on `'failed'` will
   re-dispatch work that already succeeded.
 - **`'partial'` no longer means what its name suggests.** It no longer arises
-  from partial failure *within* a batch — only from terminal phases differing
+  from partial failure _within_ a batch — only from terminal phases differing
   across a multi-batch run. Do not treat its absence as "nothing was partial".
 - **The counts can be absent, not just zero.** When any of a run's workflows
   404s (normally because it was TTL-GC'd), the poller withholds a `'complete'`
@@ -310,7 +377,7 @@ and storage policies are the boundary**. The app user needs only:
   `UPDATE`, by design: `claim_cyl_pipeline_batch`/`complete_cyl_pipeline_batch`/
   `fail_cyl_pipeline_batch` (below) write `argo_workflow_name`/`status`/
   `attempts`/`error_message`/`submitted_at`/`completed_at` as `SECURITY
-  DEFINER`, under the function owner's privileges, so `bloom_workflows` itself
+DEFINER`, under the function owner's privileges, so `bloom_workflows` itself
   never needs a table-level grant to get those columns written
 - `SELECT (scan_id, source_id)` on `cyl_scan_traits`, `SELECT (id, metadata)` on
   `cyl_trait_sources` (the pipeline-trigger dedup preview's all-sources join),
@@ -352,29 +419,29 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 
 ## Configuration
 
-| Env var                          | Default                   | Notes                                              |
-| -------------------------------- | ------------------------- | -------------------------------------------------- |
-| `WORKFLOWS_CORS_ORIGINS`       | `http://localhost:3000` | Comma-separated browser origins allowed (frontend)   |
-| `SUPABASE_URL`                 | –                        | Supabase gateway URL (login + caller-JWT validation) |
-| `SUPABASE_ANON_KEY`            | –                        | Supabase anon key                                    |
-| `WORKFLOWS_SUPABASE_EMAIL`     | –                        | App user's email (least-privilege identity)          |
-| `WORKFLOWS_SUPABASE_PASSWORD`  | –                        | App user's password                                  |
-| `WORKFLOWS_IMAGES_BUCKET`      | `images`                | Storage bucket to read frames from                   |
-| `WORKFLOWS_VIDEOS_BUCKET`      | `videos`                | Storage bucket to write the MP4 to                   |
-| `WORKFLOWS_VIDEO_TABLE`        | `cyl_scan_videos`       | Record table (`scan_id -> path`)                     |
-| `WORKFLOWS_RATE_LIMIT`         | `5`                     | Max requests per user per window, per process, shared across all application routes (429 over) |
-| `WORKFLOWS_RATE_WINDOW_SECONDS`| `60`                    | Rate-limit window                                    |
-| `WORKFLOWS_PUBLIC_SUPABASE_URL`| –                        | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged. |
-| `WORKFLOWS_K8S_TOKEN`          | –                        | `cyl-pipeline-worker` **and** `cyl-status-poller`. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing) |
-| `WORKFLOWS_K8S_CA_CERT`        | –                        | `cyl-pipeline-worker` **and** `cyl-status-poller`. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required |
-| `WORKFLOWS_K8S_API_URL`        | –                        | `cyl-pipeline-worker` **and** `cyl-status-poller`. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required |
-| `WORKFLOWS_K8S_NAMESPACE`      | `runai-busch-lab`        | `cyl-pipeline-worker` **and** `cyl-status-poller`. Single hardcoded namespace for v1 (not a credential — never eagerly required) |
-| `WORKFLOWS_K8S_TTL_SECONDS`    | `3600`                   | `cyl-pipeline-worker` only. `ttlStrategy.secondsAfterCompletion` on every submitted Workflow, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required) |
-| `WORKFLOWS_K8S_ENV_LABEL`      | `dev`                    | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required) |
-| `WORKFLOWS_WORKER_POLL_SECONDS`| `5`                      | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check |
-| `WORKFLOWS_STATUS_POLL_SECONDS`| `15`                     | `cyl-status-poller` only. Sleep between sweep cycles, and the retry interval for the startup Supabase connection check. Not wired into either compose file's `environment:` block, matching `WORKFLOWS_WORKER_POLL_SECONDS`'s own treatment — the code-side default governs every deployed environment today |
-| `WORKFLOWS_DISPATCH_VT_SECONDS`| `60`                     | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery |
-| `WORKFLOWS_DISPATCH_MAX_READS`| `5`                       | `cyl-pipeline-worker` only. Poison-message threshold passed to `claim_cyl_pipeline_batch` — a batch redelivered more than this many times is dead-lettered (marked failed) instead of claimed again |
+| Env var                         | Default                 | Notes                                                                                                                                                                                                                                                                                                        |
+| ------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WORKFLOWS_CORS_ORIGINS`        | `http://localhost:3000` | Comma-separated browser origins allowed (frontend)                                                                                                                                                                                                                                                           |
+| `SUPABASE_URL`                  | –                       | Supabase gateway URL (login + caller-JWT validation)                                                                                                                                                                                                                                                         |
+| `SUPABASE_ANON_KEY`             | –                       | Supabase anon key                                                                                                                                                                                                                                                                                            |
+| `WORKFLOWS_SUPABASE_EMAIL`      | –                       | App user's email (least-privilege identity)                                                                                                                                                                                                                                                                  |
+| `WORKFLOWS_SUPABASE_PASSWORD`   | –                       | App user's password                                                                                                                                                                                                                                                                                          |
+| `WORKFLOWS_IMAGES_BUCKET`       | `images`                | Storage bucket to read frames from                                                                                                                                                                                                                                                                           |
+| `WORKFLOWS_VIDEOS_BUCKET`       | `videos`                | Storage bucket to write the MP4 to                                                                                                                                                                                                                                                                           |
+| `WORKFLOWS_VIDEO_TABLE`         | `cyl_scan_videos`       | Record table (`scan_id -> path`)                                                                                                                                                                                                                                                                             |
+| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes (429 over)                                                                                                                                                                                                               |
+| `WORKFLOWS_RATE_WINDOW_SECONDS` | `60`                    | Rate-limit window                                                                                                                                                                                                                                                                                            |
+| `WORKFLOWS_PUBLIC_SUPABASE_URL` | –                       | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged.                                                                                                  |
+| `WORKFLOWS_K8S_TOKEN`           | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing)                                                                                                                    |
+| `WORKFLOWS_K8S_CA_CERT`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required                                                                                                                                           |
+| `WORKFLOWS_K8S_API_URL`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required                                                                                                                                                                     |
+| `WORKFLOWS_K8S_NAMESPACE`       | `runai-busch-lab`       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Single hardcoded namespace for v1 (not a credential — never eagerly required)                                                                                                                                                                             |
+| `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `cyl-pipeline-worker` only. `ttlStrategy.secondsAfterCompletion` on every submitted Workflow, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required)                                                                                                                 |
+| `WORKFLOWS_K8S_ENV_LABEL`       | `dev`                   | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required)                |
+| `WORKFLOWS_WORKER_POLL_SECONDS` | `5`                     | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check                                                                                                                                                                           |
+| `WORKFLOWS_STATUS_POLL_SECONDS` | `15`                    | `cyl-status-poller` only. Sleep between sweep cycles, and the retry interval for the startup Supabase connection check. Not wired into either compose file's `environment:` block, matching `WORKFLOWS_WORKER_POLL_SECONDS`'s own treatment — the code-side default governs every deployed environment today |
+| `WORKFLOWS_DISPATCH_VT_SECONDS` | `60`                    | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery                                                                                                                                      |
+| `WORKFLOWS_DISPATCH_MAX_READS`  | `5`                     | `cyl-pipeline-worker` only. Poison-message threshold passed to `claim_cyl_pipeline_batch` — a batch redelivered more than this many times is dead-lettered (marked failed) instead of claimed again                                                                                                          |
 
 > `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).
 > Caller auth is delegated to Supabase (`/auth/v1/user`), so `JWT_SECRET` is **not** needed by this service.
