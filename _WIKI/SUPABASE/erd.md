@@ -1053,4 +1053,9 @@ erDiagram
   bigint experiment_id FK
   timestamp_with_time_zone created_at
 }
+"public.cyl_pipeline_run_experiments" {
+  bigint run_id
+  bigint experiment_id
+  timestamp_with_time_zone created_at
+}
 ```

@@ -28,7 +28,7 @@
 ## 0. Preconditions
 
 - [ ] 0.1 Run `npm ci`, then read `node_modules/next/dist/docs/` (route handlers, async `params`/`searchParams`, `notFound`, client components). Record any divergence from the video route's patterns here.
-- [ ] 0.2 On the dev stack (`make dev-up && make migrate-local`), record in the PR:
+- [x] 0.2 On the dev stack (`make dev-up && make migrate-local`), record in the PR: **(done 2026-09-25 on a rebuilt dev DB: both run tables published; bloom_user reads all four relations.)**
   - `pg_publication_tables` for `supabase_realtime` includes both run tables;
   - under `SET ROLE bloom_user`, rows are readable from `cyl_pipeline_runs`, `cyl_pipeline_run_scans`, `cyl_scan_latest_source` and `cyl_scans_extended`.
 - [ ] 0.3 Capture real Realtime payloads with a throwaway Node 22 script in the scratchpad, using the repo-root `@supabase/supabase-js`:
@@ -39,7 +39,7 @@
 
 ## 1. `cyl_pipeline_run_experiments` view + index
 
-- [ ] 1.1 **Test first.** Write `tests/integration/test_cyl_pipeline_run_experiments.py`.
+- [x] 1.1 **Test first.** Write `tests/integration/test_cyl_pipeline_run_experiments.py`.
   - **Setup:**
     - Seed with the helpers in `test_cyl_read_model_views.py:28-69`, inserting the run and scan rows as the connection superuser.
     - Each test applies `_sql_body(MIGRATION)` (`test_cyl_pipeline_dispatch.py:53`) inside its rolled-back transaction. This works over CI's already-applied schema because the file is idempotent.
@@ -58,7 +58,7 @@
     - (k) The migration text contains `SET LOCAL lock_timeout` and `NOTIFY pgrst, 'reload schema'`, and the rollback text contains `SET LOCAL lock_timeout`.
     - (l) Rollback, then re-apply.
     - (m) `_sql_body()` of both files contains no `\bBEGIN\b` or `\bCOMMIT\b` token.
-- [ ] 1.2 Write `supabase/migrations/20260924120000_add_cyl_pipeline_run_experiments.sql` per the `/database-migration` skill and design D5.
+- [x] 1.2 Write `supabase/migrations/20260924120000_add_cyl_pipeline_run_experiments.sql` per the `/database-migration` skill and design D5.
   - Header comment: why `lock_timeout` (there is no repo precedent), why REVOKE comes first, and why NOTIFY.
   - Layout:
     - `BEGIN;` alone on a line;
@@ -71,8 +71,8 @@
     - `NOTIFY pgrst, 'reload schema';` on the next line.
   - The file must be fully idempotent.
   - Bump the timestamp if another migration lands first.
-- [ ] 1.3 Write `supabase/rollbacks/20260924120000_add_cyl_pipeline_run_experiments_rollback.sql` in the same layout: `BEGIN;` alone; `SET LOCAL lock_timeout = '5s';`; `DROP VIEW IF EXISTS …;`; `DROP INDEX IF EXISTS …;`; `COMMIT;` alone; `NOTIFY pgrst, 'reload schema';`.
-- [ ] 1.4 Run:
+- [x] 1.3 Write `supabase/rollbacks/20260924120000_add_cyl_pipeline_run_experiments_rollback.sql` in the same layout: `BEGIN;` alone; `SET LOCAL lock_timeout = '5s';`; `DROP VIEW IF EXISTS …;`; `DROP INDEX IF EXISTS …;`; `COMMIT;` alone; `NOTIFY pgrst, 'reload schema';`.
+- [x] 1.4 Run: **(done: 23/23 view tests + sibling suites green; lint passed; PostgREST 200 as bloom_user; EXPLAIN 40.5 ms / 69.9 ms on 150k rows. Also fixed `test_cyl_pipeline_dispatch.py::test_rollback_removes_everything` to apply this rollback first.)**
   - `make migrate-local`;
   - `uv run --extra test pytest tests/integration/test_cyl_pipeline_run_experiments.py -v`;
   - `scripts/lint_migrations.sh origin/staging`;
@@ -81,17 +81,17 @@
   Also:
   - Through PostgREST, `GET /rest/v1/cyl_pipeline_run_experiments?limit=1` with a `bloom_user` JWT returns 200, not PGRST205.
   - On about 100k seeded run-scan rows, as `bloom_user`, record `EXPLAIN (ANALYZE, BUFFERS)` for the panel query (`experiment_id = X order by created_at desc limit 10`) and for the list's names query (`run_id in (50 ids)`).
-- [ ] 1.5 **(characterization)** Write `tests/integration/test_cyl_scan_latest_source_precheck.py`, in SQL on `pg_conn`, rolled back.
+- [x] 1.5 **(characterization)** Write `tests/integration/test_cyl_scan_latest_source_precheck.py`, in SQL on `pg_conn`, rolled back.
   - Seed 40 scans. Insert `cyl_scan_traits` rows so that 38 scans have a real `source_id`, 1 has only NULL `source_id`s, and 1 has no traits. The rows go through the maintaining trigger.
   - Under `SET LOCAL ROLE bloom_user`, a single `select scan_id, max_source_id … where scan_id = any(…)` gives K = 38 (non-null), L = 1 (null) and 1 absent.
-- [ ] 1.6 Types:
+- [x] 1.6 Types:
   1. Back up the four generated `database.types.ts` copies: `web/lib/`, `packages/bloom-js/src/types/`, `packages/bloom-fs/src/types/`, `packages/bloom-nextjs-auth/src/lib/`.
   2. Run `make gen-types`, which overwrites them.
   3. Restore the backups and hand-merge **only** the view entry into each copy.
   4. Confirm the diff contains only that entry.
 
   Leave `web/types/database.types.ts` untouched.
-- [ ] 1.7 Docs:
+- [x] 1.7 Docs: **(done: `erd-snapshot CHANGED=` ignores view-only changes, so the PR uses `TABLES=`.)**
   - Run `make erd`, confirm the view appears, and commit `_WIKI/SUPABASE/erd.md`.
   - Check whether `make erd-snapshot CHANGED=origin/staging` picks up a view-only change, and note the result in the PR.
   - `_WIKI/SUPABASE/README.md`: replace "future live-status panel" and document the view and the index.
