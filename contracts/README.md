@@ -33,8 +33,27 @@ sequenced it first, and added `read-path` #298); the design doc uses the `A–H`
 | `pin.json`                           | The pin manifest: `package`, `version`, full schema `$id`, `source`, file paths                              | The declared pin                                          |
 | `generated/result-envelope.ts`       | TypeScript types (`ResultEnvelope`/`Provenance`/`TraitValue`/`BlobRef` + sub-defs) generated from the schema | Emitted by codegen — **do not edit by hand**              |
 
-**Currently pinned: `v0.1.0a7`.** These are the _contract_ types (from the JSON Schema), distinct
+**Currently pinned: `v0.1.0a9`.** These are the _contract_ types (from the JSON Schema), distinct
 from the Supabase `database.types.ts` (generated from the database by `make gen-types`).
+
+> Note on `v0.1.0a9`: re-pinned from `v0.1.0a7` for Bloom change `repin-cyl-contract-a9` (bloom
+> #895) — an **`$id`-only structural no-op for the JSON Schema** (the published `a9` schema differs
+> from the vendored `a7` copy only in its `$id` line; `ResultEnvelope`/`Provenance`/`TraitValue`/
+> `BlobRef` are AST-identical in `models.py` between the tags, and `identity.py`/`hashing.py` are
+> unchanged). The generated TS is unchanged. The substantive addition is on the Python package
+> side: per-run run-manifest **naming and resolution** for `talmolab/sleap-roots-pipeline#71` —
+> writer helpers (`run_manifest_name_for_writing`, `pipeline_run_id_from_env`) and the reader entry
+> point `load_run_manifest`. It is additive (`RunManifest`/`RUN_MANIFEST_FILENAME` are unchanged).
+> `bloomctl` still writes and reads the legacy `run_manifest.json`, which the a9 traits reader
+> accepts via `allow_legacy=True` until `talmolab/sleap-roots-pipeline#82`. The write-back RPC's
+> literal moved to `a9` in the same change — see
+> `supabase/migrations/20260925120000_cyl_writeback_contract_a9.sql`.
+
+> Note on `v0.1.0a8` (skipped by Bloom's re-pins; documented for completeness): an **`$id`-only
+> structural no-op for the JSON Schema**. The change is predict-side and **BREAKING** on the Python
+> package side: `ModelCard` reshaped from flat `species`/`mode`/`age_min`/`age_max` to a non-empty
+> `selectors` tuple of the new `Selector` type (no tolerant read of the old shape). Bloom imports
+> neither `ModelCard` nor `Selector`.
 
 > Note on `v0.1.0a7`: re-pinned from `v0.1.0a5` for Bloom change `repin-cyl-contract-a7` (bloom
 > #685) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched
@@ -91,7 +110,9 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
   (`node --test scripts/contract_types.test.mjs`), same job.
 - **Migration-matches-schema** — `tests/integration/test_contract_migration_match.py` (in
   `compose-health-check`): asserts Bloom's applied DB schema agrees with the pinned contract for
-  the mappings built today, and the contract-side facts that justify them.
+  the mappings built today, and the contract-side facts that justify them. It also asserts that
+  the live `insert_cyl_result_envelope(jsonb, text)`'s `pinned_version` equals `pin.json`'s
+  `version` (leading `v` removed), so the vendored pin and the RPC cannot drift apart again.
 
 ## The `$id`-restamp-is-a-no-op rule
 
@@ -106,26 +127,34 @@ field change produces a TS diff and fails the drift guard — that is the signal
 
 1. Replace `schema/result_envelope.schema.json` with the new published schema (keep it LF; it is
    excluded from repo prettier — see below).
-2. Update `pin.json` `version` and `id` to the new version.
+2. Update `pin.json` `version`, `id` and `source` to the new version (the check validates `id` and
+   `version`; review `source` by eye).
 3. Run `npm run contracts:gen` to regenerate `generated/result-envelope.ts`; commit it.
    (`--write` runs the pin-consistency check first and **refuses to write** if `pin.json` and the
    schema `$id` disagree — so do step 2 before step 3.)
 4. Run `npm run contracts:check` — it passes when `pin.json`, the schema `$id`, and the regenerated
    types all agree. For a `$id`-only bump the types diff is empty; any other diff is a real contract
    change to review.
-5. **If the migration for this re-pin adds a cutover guard** (a `DO` block that raises if real
-   historical data would be silently orphaned by the re-pin — the pattern in
-   `supabase/migrations/20260706170000_cyl_writeback_contract_a3.sql` and
-   `supabase/migrations/20260831130000_cyl_writeback_contract_a7.sql`, and any later migration
-   following the same pattern): before merging, check the real state of staging via SSH to the
+5. **Re-pin the write-back RPC's literal in the same change**: a new forward migration that
+   `CREATE OR REPLACE`s the **current** `insert_cyl_result_envelope` body (find it with
+   `git grep -n insert_cyl_result_envelope -- supabase/migrations` — take the newest definition,
+   never an older re-pin's body) with only `pinned_version` changed, plus a rollback restoring that
+   same body. The CI tie in `test_contract_migration_match.py` fails if the pin and the RPC
+   disagree. **Do not add a cutover guard** that raises because rows stamped with the retiring
+   version exist. The pin gates new inserts only; existing rows keep their own `contract_version`
+   as truthful provenance, and nothing reads or filters on it. The `a3` and `a7` migrations carried
+   such a guard; the `a7` one wedged every staging deploy for six days on legitimate rows (bloom
+   #685), cleared only by restamping them (bloom #787). Never restamp real rows. See the
+   `cyl-trait-writeback` requirement "A contract re-pin leaves existing rows untouched".
+6. **If the re-pin's migration genuinely depends on existing data** (for example, a real contract
+   revision that needs a backfill): before merging, check the real state of staging via SSH to the
    deploy host, using the same `scripts/deploy_run_supabase.sh` / in-container `psql` pattern
    `deploy.yml` already uses for schema grants. **Check production too, unless you can positively
-   confirm from schema/migration history that the guarded condition cannot exist there** —
+   confirm from schema/migration history that the relevant condition cannot exist there** —
    "probably fine, we already checked staging" is exactly the unfalsifiable judgment call that
-   let bloom#685 happen (the guard correctly blocked the staging deploy on real pre-existing rows
-   nobody had checked for before merging); skipping the production check requires an affirmative,
-   checkable reason, not an absence of curiosity. If either check finds rows that would trip the
-   guard, fold the reconciliation into the same PR rather than discovering it at deploy time.
+   let bloom#685 happen; skipping the production check requires an affirmative, checkable reason,
+   not an absence of curiosity. If either check finds rows the migration would mishandle, fold the
+   reconciliation into the same PR rather than discovering it at deploy time.
 
    This step is **manual, not a CI gate**: regular pull request CI has no route to
    staging/production secrets (they are scoped behind `environment: staging`/
@@ -147,12 +176,14 @@ The write-back RPC (`insert_cyl_result_envelope`, change D) has been the live co
 types since `repin-cyl-contract-a3`. At the write boundary it:
 
 - validates `provenance.contract_version` against the single pinned `version` — never an explicit
-  compatibility set, a range, or a set of accepted versions. That alternative was considered and
-  rejected twice (`repin-cyl-contract-a3`, then again in `repin-cyl-contract-a7`): it would dilute
-  the per-row provenance-of-origin anchor this field exists to provide, and every version bump
-  since `a3` has been schema-identical, so there is no functional case for a range — only a
-  literal-churn cost for keeping the single pin exact on each re-pin (see this contract's own
-  history above);
+  compatibility set, a range, or a set of accepted versions. That alternative was considered in
+  `repin-cyl-contract-a3` and `repin-cyl-contract-a7` (no real envelope of the old version existed)
+  and again in `repin-cyl-contract-a9`, where it did have a case — a deployed a7 producer on a
+  cluster shared by staging and production (bloom#895 option (b)). It was declined each time: a set
+  dilutes the per-row provenance-of-origin anchor, and a single-literal cutover's rejection window
+  is loud (the write-back step fails and `bloomctl` names the `contract_version` mismatch) and
+  loses nothing — the first run after the producer's pin bump recomputes the affected scans under
+  a new `traits_code_sha`;
 - validates each `TraitValue.value` is finite-or-null (the contract normalizes NaN/inf → null).
 
 The reproducibility anchors `inputs.images_checksum` / `image_ids` and `params.param_hash` ride
