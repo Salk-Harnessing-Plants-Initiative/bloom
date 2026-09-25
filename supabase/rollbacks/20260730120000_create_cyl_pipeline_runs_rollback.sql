@@ -6,6 +6,11 @@
 -- both tables from the Realtime publication, and reverts the new read policy +
 -- column-scoped grants added to the EXISTING cyl_scan_traits/cyl_trait_sources
 -- tables. Any data in the two new tables is lost.
+--
+-- Order: run 20260924120000_add_cyl_pipeline_run_experiments_rollback.sql FIRST. Its
+-- cyl_pipeline_run_experiments view depends on both tables, and the DROP TABLEs below (no
+-- CASCADE) fail with "other objects depend on it" while the view exists. The failure is safe:
+-- this file is one transaction, so nothing is half-dropped.
 
 BEGIN;
 

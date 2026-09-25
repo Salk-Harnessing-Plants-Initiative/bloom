@@ -2,8 +2,11 @@
 --
 -- Drops the view, then the index. DROP INDEX takes an ACCESS EXCLUSIVE lock on
 -- cyl_pipeline_run_scans, so this sets its own lock_timeout and fails fast rather than queueing
--- the poller's and write-back's writes. Nothing else depends on either object: the web UI's
--- experiment panel shows "Runs unavailable" without the view.
+-- the trigger's, poller's and write-back's writes. No database object depends on the view. (The
+-- planned web runs panel is specified to show "Runs unavailable" without it.)
+--
+-- Order: this must run before 20260730120000_create_cyl_pipeline_runs_rollback.sql, which drops
+-- two of the view's base tables.
 
 BEGIN;
 

@@ -228,7 +228,7 @@
   - under StrictMode, two topics are created, the first is removed, and one remains;
   - unmount removes the channel;
   - with the baseline taken after the initial resync, `advanceTimersByTimeAsync(300_000)` adds no `from()` calls per table, and there is no `/workflows/runs` fetch;
-  - requester, target and experiment links render, and soft-deleted experiments are shown unnamed;
+  - requester, target and experiment links render, and a run whose only experiment is soft-deleted renders with no experiment link;
   - the failed-count link;
   - the empty and error states.
 - [ ] 6.2 **Test first.** Write `page.test.tsx` (expression style): the snapshot renders, and a failure shows the error.

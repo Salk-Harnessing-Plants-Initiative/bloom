@@ -302,7 +302,7 @@ The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigati
 **Row contents.** Each row SHALL show:
 - the run id;
 - the target: level, plus the scan count, and for `scan_ids` runs "N selected scans";
-- the experiment name(s) from `cyl_pipeline_run_experiments`, linked. These are absent until looked up; soft-deleted experiments are shown without a name.
+- the experiment name(s) from `cyl_pipeline_run_experiments`, linked. These are absent until looked up. A soft-deleted experiment is absent for `bloom_user`, because the view drops it, so a run whose only experiment is soft-deleted shows no experiment link.
 - the requester: "you" for the current user, otherwise "another member · " followed by the first 8 characters of `requested_by`;
 - the elapsed time since creation;
 - the counts-first display state, with the failed count linking to the drill-down.
@@ -432,7 +432,7 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 - **THEN** no bloom#900 note is shown, even if the scan has pipeline results
 
 ### Requirement: Experiment page shows that experiment's runs
-The experiment page SHALL show the 10 most recent runs that include at least one of its scans. It SHALL read them from `cyl_pipeline_run_experiments`, ordered by `created_at` descending, and show each run's counts-first display state.
+The experiment page SHALL show the 10 most recent runs that include at least one of its scans. It SHALL read them from `cyl_pipeline_run_experiments`, ordered by `created_at` then `run_id`, both descending, and show each run's counts-first display state.
 
 **Links.** Each run SHALL link to its drill-down. The panel SHALL link to "All pipeline runs".
 

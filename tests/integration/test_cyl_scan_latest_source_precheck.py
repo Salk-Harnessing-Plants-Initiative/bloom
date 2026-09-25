@@ -7,8 +7,9 @@ details, "L more scans have only traits without a recorded source". It gets K an
 `cyl_scan_latest_source` read per chunk of scan ids:
 
     K = scans whose row has max_source_id IS NOT NULL
-    L = scans whose row has max_source_id IS NULL (source-less legacy traits, or all traits deleted)
-    a scan with no traits at all has no row
+    L = scans whose row has max_source_id IS NULL: source-less legacy traits only, or (rarely,
+        admin-only) every trait deleted after the row was created
+    a scan that never had traits has no row
 
 This pins those semantics against the real producer: rows are written by the maintaining trigger
 on `cyl_scan_traits`, not inserted by hand. It also pins that `bloom_user`, the role the browser
@@ -75,37 +76,42 @@ def _source(cur) -> int:
     return cur.fetchone()[0]
 
 
+def _trait(cur, scan_id: int, source_id: int | None) -> None:
+    cur.execute(
+        "INSERT INTO cyl_scan_traits (scan_id, source_id, value) VALUES (%s, %s, 1.0)",
+        (scan_id, source_id),
+    )
+
+
 def test_precheck_k_and_l_as_bloom_user(pg_conn):
     with pg_conn.cursor() as cur:
-        scans = _scans(cur, 40)
-        with_results, legacy_only, no_traits = scans[:38], scans[38], scans[39]
-
+        with_result, mixed, legacy_only, all_deleted, no_traits = _scans(cur, 5)
         source_id = _source(cur)
-        for scan_id in with_results:
-            cur.execute(
-                "INSERT INTO cyl_scan_traits (scan_id, source_id, value) VALUES (%s, %s, 1.0)",
-                (scan_id, source_id),
-            )
-        cur.execute(
-            "INSERT INTO cyl_scan_traits (scan_id, source_id, value) VALUES (%s, NULL, 1.0)",
-            (legacy_only,),
-        )
-        # no_traits: nothing inserted.
+
+        _trait(cur, with_result, source_id)
+        # A source-less trait alongside a sourced one still counts as a pipeline result.
+        _trait(cur, mixed, None)
+        _trait(cur, mixed, source_id)
+        _trait(cur, legacy_only, None)
+        # Deleting every trait leaves the maintained row behind with max_source_id NULL, so this
+        # scan counts in L even though it now has no traits at all. It only happens through
+        # bloom_admin break-glass deletes, which is why the dialog copy says "typically".
+        _trait(cur, all_deleted, source_id)
+        cur.execute("DELETE FROM cyl_scan_traits WHERE scan_id = %s", (all_deleted,))
 
         cur.execute("SET LOCAL ROLE bloom_user")
         cur.execute(
             "SELECT scan_id, max_source_id FROM cyl_scan_latest_source WHERE scan_id = ANY(%s)",
-            (scans,),
+            ([with_result, mixed, legacy_only, all_deleted, no_traits],),
         )
         rows = dict(cur.fetchall())
 
     pg_conn.rollback()
 
-    k = sum(1 for v in rows.values() if v is not None)
-    l_count = sum(1 for v in rows.values() if v is None)
-    assert k == 38
-    assert l_count == 1
-    assert rows[legacy_only] is None
+    k = {scan for scan, max_source in rows.items() if max_source is not None}
+    l_scans = {scan for scan, max_source in rows.items() if max_source is None}
+    assert k == {with_result, mixed}
+    assert l_scans == {legacy_only, all_deleted}
     assert (
         no_traits not in rows
-    ), "a scan with no traits must have no cyl_scan_latest_source row"
+    ), "a scan that never had traits must have no cyl_scan_latest_source row"

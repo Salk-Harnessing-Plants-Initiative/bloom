@@ -181,6 +181,10 @@ JOIN public.cyl_experiments e ON e.id = w.experiment_id;
 - **Why NOTIFY.** `NOTIFY pgrst` follows `20260916120000:41-49`, because deploy.yml never restarts `rest`. It runs after `COMMIT`, so it lands in `db push`'s next implicit transaction.
 - **Idempotent.** The file must be fully re-runnable: CI applies migrations before pytest, and the tests re-apply the body.
 
+- **Membership is live.** It follows *current* plant and wave assignments, so correcting a plant's `wave_id` or a wave's `experiment_id` moves that run's rows. Runs don't snapshot their experiments; nothing in v1 needs the historical assignment.
+- **Soft-delete hiding is a UI filter, not an access boundary.** `bloom_user`/`bloom_agent` can still reach a deleted experiment's id through the base tables, and `bloom_writer` sees those runs through its own `cyl_experiments` policy.
+- **Runs that never appear on a panel.** A zero-scan run has no scan rows, so it appears on no experiment panel, only in the global list. The same goes for a run whose scan-row insert failed after its run row was committed (the trigger isn't transactional).
+
 Rejected alternatives:
 - target-only matching, which misses every `scan_ids` run;
 - a client-side join, which is an unbounded transfer.

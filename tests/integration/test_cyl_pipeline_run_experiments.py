@@ -49,6 +49,17 @@ CHECKED_ROLES = (
 )
 # bloom_writer holds no grant of its own; it reads through `GRANT bloom_user TO bloom_writer`.
 EXPECTED_SELECT = READ_ROLES | {"bloom_writer"}
+# Every table privilege; the default ACL grants all seven (arwdDxt), so all seven are pinned.
+ALL_PRIVILEGES = (
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+)
+REQUESTED_BY = "00000000-0000-0000-0000-000000000001"
 
 
 def _find_one(directory: str, glob: str) -> Path | None:
@@ -136,14 +147,15 @@ def _run(cur, *scan_ids: int) -> tuple[int, object]:
     cur.execute(
         "INSERT INTO cyl_pipeline_runs (target_level, params, requested_by, scan_count) "
         "VALUES ('scan_ids', '{}'::jsonb, %s, %s) RETURNING id, created_at",
-        ("00000000-0000-0000-0000-000000000001", len(scan_ids)),
+        (REQUESTED_BY, len(scan_ids)),
     )
     run_id, created_at = cur.fetchone()
-    for i, scan_id in enumerate(scan_ids):
+    for scan_id in scan_ids:
+        # batch_index plays no part in the view.
         cur.execute(
             "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, batch_index) "
-            "VALUES (%s, %s, %s)",
-            (run_id, scan_id, i // 25),
+            "VALUES (%s, %s, 0)",
+            (run_id, scan_id),
         )
     return run_id, created_at
 
@@ -211,17 +223,42 @@ def test_bloom_user_reads_the_view(cur):
     assert _view_rows(cur, run_id) == [(run_id, exp, created_at)]
 
 
-def test_soft_deleted_experiment_is_hidden_from_bloom_user_not_admin(cur):
+@pytest.mark.parametrize(
+    "role, sees_it",
+    [
+        ("bloom_user", False),
+        ("bloom_agent", False),
+        ("bloom_admin", True),
+        # bloom_writer's own cyl_experiments policy (writer_select_cyl_experiments, USING true)
+        # is OR'd with the deleted_at filter it inherits from bloom_user, so it sees them.
+        ("bloom_writer", True),
+    ],
+)
+def test_soft_deleted_experiment_visibility_follows_each_roles_policy(
+    cur, role, sees_it
+):
+    """The hiding is a UI filter, not an access boundary: the base tables still expose the
+    experiment id. It only follows each role's cyl_experiments policy."""
     exp = _experiment(cur)
     run_id, _ = _run(cur, _scan_in(cur, exp))
     cur.execute("UPDATE cyl_experiments SET deleted_at = now() WHERE id = %s", (exp,))
+    cur.execute(f"SET LOCAL ROLE {role}")
+    assert [r[1] for r in _view_rows(cur, run_id)] == ([exp] if sees_it else [])
 
+
+def test_panel_query_returns_each_run_once_newest_first(cur):
+    """The experiment panel's query: 10 most recent runs, newest first, ties broken by run id
+    (every run seeded in one transaction shares created_at). A run with several scans in the
+    experiment appears once."""
+    exp = _experiment(cur)
+    run_ids = [_run(cur, _scan_in(cur, exp), _scan_in(cur, exp))[0] for _ in range(12)]
     cur.execute("SET LOCAL ROLE bloom_user")
-    assert _view_rows(cur, run_id) == []
-    cur.execute("RESET ROLE")
-
-    cur.execute("SET LOCAL ROLE bloom_admin")
-    assert [r[1] for r in _view_rows(cur, run_id)] == [exp]
+    cur.execute(
+        f"SELECT run_id FROM {VIEW} WHERE experiment_id = %s "
+        "ORDER BY created_at DESC, run_id DESC LIMIT 10",
+        (exp,),
+    )
+    assert [r[0] for r in cur.fetchall()] == sorted(run_ids, reverse=True)[:10]
 
 
 def test_view_checks_base_table_privileges_as_the_invoker(pg_conn, cur):
@@ -260,9 +297,8 @@ def test_view_is_security_invoker(cur):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("role", CHECKED_ROLES)
-def test_privilege_matrix(cur, role):
-    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+def _assert_privileges(cur, role: str) -> None:
+    for privilege in ALL_PRIVILEGES:
         cur.execute(
             "SELECT has_table_privilege(%s, %s, %s)",
             (role, f"public.{VIEW}", privilege),
@@ -270,6 +306,11 @@ def test_privilege_matrix(cur, role):
         held = cur.fetchone()[0]
         expected = privilege == "SELECT" and role in EXPECTED_SELECT
         assert held is expected, f"{role} {privilege}: expected {expected}, got {held}"
+
+
+@pytest.mark.parametrize("role", CHECKED_ROLES)
+def test_privilege_matrix(cur, role):
+    _assert_privileges(cur, role)
 
 
 # --------------------------------------------------------------------------- #
@@ -296,9 +337,12 @@ def test_migration_and_rollback_files_have_the_required_statements():
     assert MIGRATION is not None and ROLLBACK is not None
     migration = MIGRATION.read_text()
     rollback = ROLLBACK.read_text()
-    assert "SET LOCAL lock_timeout" in migration
-    assert "NOTIFY pgrst, 'reload schema'" in migration
-    assert "SET LOCAL lock_timeout" in rollback
+    for text in (migration, rollback):
+        assert "SET LOCAL lock_timeout" in text
+        # NOTIFY must follow COMMIT: PostgREST should reload only once the DDL is committed.
+        notify = text.index("NOTIFY pgrst, 'reload schema'")
+        commit = re.search(r"^\s*COMMIT\s*;\s*$", text, re.MULTILINE | re.IGNORECASE)
+        assert commit is not None and commit.start() < notify
 
 
 @pytest.mark.parametrize("which", ["migration", "rollback"])
@@ -333,3 +377,8 @@ def test_rollback_then_reapply(cur):
     assert _exists(cur) == (False, False)
     cur.execute(_sql_body(MIGRATION))
     assert _exists(cur) == (True, True)
+    # The re-create runs as supabase_admin, whose default privileges fire on it, so REVOKE-first
+    # and security_invoker have to hold again here, not only on CI's fresh db push.
+    for role in CHECKED_ROLES:
+        _assert_privileges(cur, role)
+    test_view_is_security_invoker(cur)
