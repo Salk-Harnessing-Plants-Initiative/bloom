@@ -88,10 +88,19 @@ class BloomMCPError(Exception):
         logged server-side, never returned to the agent.
         """
         if isinstance(exc, declared):
+            # A declared type may carry its own `agent_remedy` (a class or
+            # instance attribute) when the default retry advice would be
+            # wrong — e.g. #573's foreign-catalog errors describe a permanent
+            # condition, and pairing their message with "…and retry." would
+            # have the remedy field (the one designed to drive agent
+            # behaviour) contradict the message it accompanies.
+            remedy = getattr(exc, "agent_remedy", None) or (
+                "Check the inputs/experiment for this tool and retry."
+            )
             return cls(
                 code="tool_error",
                 message=str(exc) or exc.__class__.__name__,
-                remedy="Check the inputs/experiment for this tool and retry.",
+                remedy=remedy,
             )
         ref = uuid.uuid4().hex[:12]
         logger.error("internal tool error [%s]", ref, exc_info=exc)

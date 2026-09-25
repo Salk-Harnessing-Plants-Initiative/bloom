@@ -44,6 +44,33 @@ class CleanedVersionRequiredError(ExperimentReadError):
     """``require_clean=True`` was requested but no cleaned version exists."""
 
 
+class ForeignCatalogError(ExperimentReadError):
+    """The experiment's cleaned catalog was written by a different storage
+    backend than the active one — #573's *foreign catalog* (a copied/synced
+    bucket, a restored backup, or a shared root; an accident-detection signal,
+    not tamper-proof — whoever can edit the manifest controls the compared
+    value).
+
+    Deliberately a sibling of :class:`CleanedVersionRequiredError`, never a
+    subclass: the "run ``qc_clean`` first" remedy would direct an agent to
+    commit fresh runs on top of the foreign catalog, and
+    :class:`ExperimentNotFoundError` would misreport a present-but-foreign
+    catalog as absent. Subclasses :class:`ExperimentReadError` so every
+    consumer tool's existing ``errors=(ExperimentReadError, …)`` declaration
+    passes the message (both backend names + the catalog's logical storage
+    prefix — leak-safe by construction) through the contract envelope, where
+    ``agent_remedy`` overrides the default "…and retry." advice for this
+    permanent condition (see ``contract/errors.py``).
+    """
+
+    agent_remedy = (
+        "Stop and determine which storage backend owns this experiment's "
+        "history (see bloommcp/docs/storage-backends.md, 'Do not mix "
+        "backends'); the condition is permanent until an operator untangles "
+        "the catalogs."
+    )
+
+
 class AmbiguousSourceSelectionError(ExperimentReadError):
     """Both ``source_id`` and ``run_id`` were given; the DB read surface rejects that."""
 

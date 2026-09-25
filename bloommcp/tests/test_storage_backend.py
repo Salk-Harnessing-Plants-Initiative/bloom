@@ -2150,3 +2150,369 @@ def test_get_object_size_real_dispatch_through_active_backend(monkeypatch):
 
     assert size == 12
     sb.reset_backend_for_tests()
+
+
+# ─── 9. Foreign-catalog manifest read guard (#573) ─────────────────────────────
+#
+# A foreign manifest can only be manufactured by hand-patching the stored
+# sentinel: `write_manifest` always re-stamps from `active_backend_name()`, and
+# flipping `BLOOM_STORAGE_BACKEND` between write and read points at a
+# physically different store (which has NO manifest), never a mismatched one.
+
+_SENTINEL_ABSENT = object()
+
+
+def _patch_sentinel(root: Path, stem: str, tool_class: str, value) -> None:
+    """Rewrite the on-disk manifest's `storage_backend` field directly."""
+    path = root / "bloommcp_output" / f"{tool_class}_{stem}" / "manifest.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if value is _SENTINEL_ABSENT:
+        raw.pop("storage_backend", None)
+    else:
+        raw["storage_backend"] = value
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _bloom_records(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name.startswith("bloom_mcp")]
+
+
+def test_read_manifest_foreign_catalog_fails_closed(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """Spec: "A foreign catalog fails closed" — the raise names both backends
+    and the storage prefix, and leaks no absolute host path."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "supabase")
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    msg = str(exc_info.value)
+    assert "'supabase'" in msg and "'local'" in msg
+    assert "bloommcp_output/qc_exp" in msg
+    assert str(tmp_path) not in msg
+
+
+def test_read_manifest_matching_sentinel_reads_as_before(
+    monkeypatch, local_manifest_backend, tmp_path, caplog
+):
+    """Spec: "A matching sentinel reads as before" — returned unchanged, and no
+    new bloom_mcp log record at any level."""
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+
+    with caplog.at_level(logging.DEBUG):
+        caplog.clear()
+        manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert manifest is not None
+    assert manifest.latest == "v1"
+    assert manifest.storage_backend == "local"
+    assert _bloom_records(caplog) == []
+
+
+@pytest.mark.parametrize("sentinel", [_SENTINEL_ABSENT, None, ""])
+def test_read_manifest_missing_or_empty_sentinel_passes(
+    monkeypatch, local_manifest_backend, tmp_path, sentinel
+):
+    """Spec: "A manifest with no usable sentinel passes" — pre-v5 manifests
+    (absent/None) and a stripped empty string are served unguarded."""
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", sentinel)
+
+    manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert manifest is not None
+    assert manifest.latest == "v1"
+
+
+def test_schema_error_takes_precedence_over_foreign_sentinel(
+    monkeypatch, local_manifest_backend
+):
+    """Spec: "Schema validation takes precedence over the guard" — a manifest
+    that is both schema-incompatible and foreign raises ManifestSchemaError."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestSchemaError
+    from bloom_mcp.supabase_client import write_json
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_json(
+        "bloommcp_output/qc_exp/manifest.json",
+        {"manifest_schema_version": 999, "storage_backend": "supabase"},
+    )
+
+    with pytest.raises(ManifestSchemaError):
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+
+def test_escape_hatch_warns_per_read_and_serves_the_manifest(
+    monkeypatch, local_manifest_backend, tmp_path, caplog
+):
+    """Spec: "The escape hatch downgrades to a warning on every read" — two
+    consecutive reads each return the manifest and each emit their own
+    warning naming both backends and the prefix."""
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", "1")
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "supabase")
+
+    adir = AnalysisDir("bloommcp_output", "exp.csv", "qc")
+    with caplog.at_level(logging.WARNING, logger="bloom_mcp.manifest.manifest"):
+        caplog.clear()
+        first = adir.read_manifest()
+        second = adir.read_manifest()
+
+    assert first is not None and second is not None
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "foreign catalog" in r.getMessage()
+    ]
+    assert len(warnings) == 2
+    for record in warnings:
+        msg = record.getMessage()
+        assert "'supabase'" in msg and "'local'" in msg
+        assert "bloommcp_output/qc_exp" in msg
+
+
+def test_escape_hatch_with_matching_sentinel_emits_no_warning(
+    monkeypatch, local_manifest_backend, tmp_path, caplog
+):
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", "1")
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+
+    with caplog.at_level(logging.DEBUG):
+        caplog.clear()
+        manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert manifest is not None
+    assert _bloom_records(caplog) == []
+
+
+@pytest.mark.parametrize("value", ["0", "", "  ", "yes"])
+def test_guard_stays_closed_unless_hatch_is_exactly_one(
+    monkeypatch, local_manifest_backend, tmp_path, value
+):
+    """Spec: "An empty value behaves as unset" + "An invalid value at guard
+    time keeps the guard closed" — only the exact value "1" enables the hatch,
+    even for an invalid value that escaped boot validation."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", value)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "supabase")
+
+    with pytest.raises(ManifestBackendMismatchError):
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+
+def test_allow_foreign_manifest_reads_env_per_call(monkeypatch):
+    """The accessor is never memoized — a copy-pasted `_active`-style memo
+    would break the per-read warning contract and test isolation."""
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", "1")
+    assert sb.allow_foreign_manifest() is True
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", "0")
+    assert sb.allow_foreign_manifest() is False
+
+
+@pytest.mark.parametrize("value", ["yes", "true", "2"])
+def test_validate_storage_backend_rejects_invalid_allow_foreign(monkeypatch, value):
+    """Spec: "An invalid escape-hatch value fails fast at startup"."""
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+    monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", value)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        sb.validate_storage_backend()
+
+    msg = str(exc_info.value)
+    assert "BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST" in msg
+    assert value in msg
+    assert "'0'" in msg and "'1'" in msg
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", "0", "1"])
+def test_validate_storage_backend_accepts_allow_foreign_values(monkeypatch, value):
+    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
+    if value is None:
+        monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    else:
+        monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", value)
+
+    sb.validate_storage_backend()
+
+
+def test_foreign_message_names_no_bypass_and_stays_under_redaction_cap(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """#573 review: bloommcp is LLM-driven — the raised message must direct
+    investigation, never advertise the env var that disables the guard, and
+    must survive safe_error_text's 300-char cap without losing its meaning."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "supabase")
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    msg = str(exc_info.value)
+    assert "ALLOW_FOREIGN_MANIFEST" not in msg
+    assert "storage-backends.md" in msg  # investigation pointer instead
+    assert len(msg) <= 300
+
+
+def test_foreign_check_runs_before_model_validation(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """#573 review: a version-valid, foreign manifest that is otherwise
+    unparseable (one unknown key under extra="forbid" — a restored backup
+    arriving malformed) must be identified as foreign, not fall into the
+    generic ValidationError path (which the readers would demote to the
+    forbidden "run the QC workflow first")."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    path = tmp_path / "root" / "bloommcp_output" / "qc_exp" / "manifest.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["storage_backend"] = "supabase"
+    raw["unknown_key_from_a_malformed_backup"] = True
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ManifestBackendMismatchError):
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+
+@pytest.mark.parametrize(
+    "poison",
+    ["x" * 1000, "evil\x1b[31mvalue", "minio", 12345, ["supabase"]],
+)
+def test_unrecognized_sentinel_is_clamped_in_the_message(
+    monkeypatch, local_manifest_backend, tmp_path, poison
+):
+    """#573 review: the sentinel is unvalidated storage bytes writable by any
+    bloom_agent-key holder and flows into agent-facing error text on paths
+    with no length cap — an unrecognized value (wrong string, non-string,
+    oversized, control chars) still fails closed but is reported via the
+    clamped placeholder, never interpolated verbatim."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", poison)
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    msg = str(exc_info.value)
+    assert "<unrecognized backend name>" in msg
+    assert "x" * 50 not in msg
+    assert "\x1b" not in msg
+    assert "minio" not in msg
+
+
+def test_sentinel_comparison_is_case_insensitive(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """#573 review: a hand-edited "LOCAL" matches the active `local` backend
+    (mirroring _selected_backend_name's lower-casing) instead of bricking the
+    catalog; an upper-cased foreign name still mismatches, reported
+    normalized."""
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "LOCAL")
+    manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert manifest is not None and manifest.latest == "v1"
+
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "SUPABASE")
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert "'supabase'" in str(exc_info.value)
+
+
+def test_hatch_value_one_with_surrounding_whitespace_enables(monkeypatch):
+    """#573 review: boot validation and the guard both strip, so ` 1 ` and
+    `1\\n` enable the hatch — pinned so the docstring's wording ("after
+    surrounding whitespace is stripped") matches behaviour."""
+    for value in (" 1 ", "1\n"):
+        monkeypatch.setenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", value)
+        assert sb.allow_foreign_manifest(), repr(value)
+        sb.validate_storage_backend()  # accepted at boot too
+
+
+def test_long_experiment_name_never_truncates_the_backend_names(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """PR #782 review: `safe_error_text` caps consumer-facing error text at 300
+    chars, and two discovery paths run this message through it. The catalog
+    identity is the only variable-length part, so it must sit AFTER the backend
+    names and be clamped — otherwise a long experiment name pushes the one
+    piece of information this feature exists to surface past the cut."""
+    from bloom_mcp.experiment_utils import safe_error_text
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    stem = "turface_" + "x" * 200  # far past the cap on its own
+    write_cleaned_manifest(tmp_path, stem, "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", stem, "qc", "supabase")
+
+    with pytest.raises(ManifestBackendMismatchError) as exc_info:
+        AnalysisDir("bloommcp_output", f"{stem}.csv", "qc").read_manifest()
+
+    raw = str(exc_info.value)
+    truncated = safe_error_text(exc_info.value)
+    for text, label in ((raw, "raw"), (truncated, "truncated")):
+        assert "'supabase'" in text, f"recorded backend lost in {label} message"
+        assert "'local'" in text, f"active backend lost in {label} message"
+        assert "storage-backends.md" in text, f"doc pointer lost in {label}"
+    assert len(raw) <= 300, f"message must self-limit, got {len(raw)}"
+    assert "x" * 100 not in raw  # the identity itself is clamped
+
+
+def test_unstamped_catalog_read_leaves_a_debug_trace(
+    monkeypatch, local_manifest_backend, tmp_path, caplog
+):
+    """PR #782 review: a pre-v5 catalog passes the guard completely unguarded.
+    That blind spot now leaves a debug-level trace naming the catalog — debug,
+    not info/warning, because on a pre-#572 environment it fires on every read
+    of every catalog and describes the absence of a check, not a fault."""
+    import logging
+
+    from bloom_mcp.manifest import AnalysisDir
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "exp", "qc", _SENTINEL_ABSENT)
+
+    with caplog.at_level(logging.DEBUG, logger="bloom_mcp.manifest.manifest"):
+        caplog.clear()
+        manifest = AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert manifest is not None and manifest.latest == "v1"  # still served
+    traces = [
+        r for r in caplog.records if "no storage_backend sentinel" in r.getMessage()
+    ]
+    assert len(traces) == 1 and traces[0].levelno == logging.DEBUG
+    assert "qc_exp" in traces[0].getMessage()
+
+    # And a *stamped, matching* catalog stays silent at every level.
+    _patch_sentinel(tmp_path / "root", "exp", "qc", "local")
+    with caplog.at_level(logging.DEBUG, logger="bloom_mcp.manifest.manifest"):
+        caplog.clear()
+        AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+    assert caplog.records == []

@@ -274,6 +274,12 @@ services:
       BLOOM_STORAGE_LOCAL_ROOT: ${BLOOM_STORAGE_LOCAL_ROOT:-}
       BLOOM_EXPERIMENT_LOCAL_ROOT: ${BLOOM_EXPERIMENT_LOCAL_ROOT:-}
       BLOOM_LOCAL_ROOT: ${BLOOM_LOCAL_ROOT:-}
+      # Reads-only escape hatch for the #573 foreign-catalog read guard: set =1
+      # in your own .env.dev ONLY to deliberately inspect a catalog another
+      # backend wrote (e.g. a downloaded prod bucket under the local backend);
+      # each guarded read then logs a warning. Empty behaves exactly like
+      # unset (guard active). See bloommcp/docs/storage-backends.md.
+      BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST: ${BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST:-}
       # Served-URL base for LocalStorageBackend.create_signed_url (bloom#581) —
       # NOT used by bloommcp's own output_links (bloom#642: those carry a
       # direct filesystem path for the local backend, no URL needed at all).

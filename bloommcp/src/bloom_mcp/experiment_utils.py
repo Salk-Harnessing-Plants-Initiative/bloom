@@ -475,12 +475,39 @@ def _resolve_one_class(
     """
     import tempfile
 
-    from bloom_mcp.manifest import AnalysisDir, ManifestSchemaError
+    from bloom_mcp.manifest import (
+        AnalysisDir,
+        ManifestBackendMismatchError,
+        ManifestSchemaError,
+    )
     from bloom_mcp.supabase_client import download_file, list_prefix
 
     analysis_dir = AnalysisDir("bloommcp_output", f"{stem}.csv", tool_class)
     try:
         entry = analysis_dir.get_version(version)
+    except ManifestBackendMismatchError as e:
+        # #573: a foreign catalog is a hard, typed error on every caller path —
+        # never stringified into this function's soft (None, None, error)
+        # channel, whose readers discard the string and demote it
+        # (`LocalReader` to CleanedVersionRequiredError, whose "run qc_clean
+        # first" remedy would invite committing on top of the foreign catalog;
+        # `SupabaseReader` to ExperimentNotFoundError, misreporting a
+        # present-but-foreign catalog as absent). Raised as the reader-port
+        # type here, at the shared resolution helper, so every consumer
+        # surfaces the same typed error: the envelope-wrapped analysis tools
+        # (including the #462 plotters and heritability_analysis) through
+        # their `errors=(ExperimentReadError, …)` declarations, and the
+        # plain string-returning `sections.core.load_experiment_data`
+        # discovery tool through its explicit `except ForeignCatalogError`
+        # branch — its bare fall-through would otherwise flatten this into an
+        # unactionable "could not be read" (#573 review, finding 2a). The
+        # import is lazy (like AnalysisDir's above): `bloom_mcp.data_access`
+        # imports this module at package-import time, so a top-level import
+        # here would be circular. Message passthrough is leak-safe by
+        # construction (logical prefix + backend names only).
+        from bloom_mcp.data_access.ports import ForeignCatalogError
+
+        raise ForeignCatalogError(str(e)) from e
     except ManifestSchemaError as e:
         return None, None, f"manifest schema error for '{stem}': {e}"
     except Exception as e:
@@ -757,16 +784,25 @@ def trim_staleness(stem: str) -> Optional[TrimStaleness]:
     `_log_if_trim_is_stale`, which does swallow, against
     `sections.core.list_existing_analyses`, which does not).
     """
-    from bloom_mcp.manifest import AnalysisDir
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
 
-    outliers_entry = AnalysisDir(
-        "bloommcp_output", f"{stem}.csv", OUTLIERS_TOOL_CLASS
-    ).get_version("latest")
-    if outliers_entry is None:
-        return None
-    qc_entry = AnalysisDir("bloommcp_output", f"{stem}.csv", QC_TOOL_CLASS).get_version(
-        "latest"
-    )
+    try:
+        outliers_entry = AnalysisDir(
+            "bloommcp_output", f"{stem}.csv", OUTLIERS_TOOL_CLASS
+        ).get_version("latest")
+        if outliers_entry is None:
+            return None
+        qc_entry = AnalysisDir(
+            "bloommcp_output", f"{stem}.csv", QC_TOOL_CLASS
+        ).get_version("latest")
+    except ManifestBackendMismatchError as e:
+        # #573 review: "propagates any manifest read failure" must not mean
+        # leaking a `bloom_mcp.manifest` type through a function whose callers
+        # handle reader-port errors — wrap it exactly as `_resolve_one_class`
+        # does (lazy import for the same circularity reason documented there).
+        from bloom_mcp.data_access.ports import ForeignCatalogError
+
+        raise ForeignCatalogError(str(e)) from e
     if qc_entry is None:
         return TrimStaleness(
             is_stale=True,
@@ -859,6 +895,11 @@ def load_experiment_data(
         source_label is one of "raw", "legacy_cleaned", "v<N>_cleaned", or
         "outliers_v<N>_cleaned".
         On error: (None, None, None, error_string)
+
+    Raises:
+        ForeignCatalogError: the resolved catalog was written by a different
+            storage backend than the active one (#573) — a hard, typed error,
+            deliberately not folded into the error-string channel.
     """
     t_dir = traits_dir or TRAITS_DIR
     o_dir = output_dir or OUTPUT_DIR
