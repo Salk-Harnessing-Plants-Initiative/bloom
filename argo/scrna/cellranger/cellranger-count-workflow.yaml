@@ -1,0 +1,40 @@
+# argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
+#   -p samples='["sample_a","sample_b"]' -p reference=tair10_araport11
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: cellranger-count-
+  namespace: runai-busch-lab
+  labels:
+    project: busch-lab
+spec:
+  entrypoint: main
+  # Step pods report results as bloom-workflow; without it every step fails on workflowtaskresults.
+  serviceAccountName: bloom-workflow
+  imagePullSecrets:
+    - name: GHCR_PULL_SECRET_NAME   # the k8s secret the Run:ai project credential creates
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  arguments:
+    parameters:
+      - name: samples
+        value: '[]'
+      - name: reference
+        value: ""
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: count
+            templateRef:
+              name: cellranger-count-template
+              template: count
+            withParam: "{{workflow.parameters.samples}}"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{item}}"
+                - name: reference
+                  value: "{{workflow.parameters.reference}}"
+                - name: run-id
+                  value: "{{item}}"

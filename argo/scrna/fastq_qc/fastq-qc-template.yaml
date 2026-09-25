@@ -1,0 +1,66 @@
+# Register once: argo template create argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-lab
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fastq-qc-template
+  labels:
+    project: busch-lab
+spec:
+  templates:
+    # One sample: read counts, lengths, R1/R2 pairing, chemistry guess and FastQC -> runs_output/<run-id>/qc/
+    - name: fastq-qc
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+          - name: sample-reads
+            value: "200000"
+          - name: cores
+            value: "4"
+          - name: memory
+            value: "8Gi"
+          - name: scratch
+            value: "300Gi"
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: OnError
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-1
+        command: [run-qc]
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: SAMPLE_READS
+            value: "{{inputs.parameters.sample-reads}}"
+          - name: CORES
+            value: "{{inputs.parameters.cores}}"
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests:
+            cpu: "{{inputs.parameters.cores}}"
+            memory: "{{inputs.parameters.memory}}"
+          limits:
+            cpu: "{{inputs.parameters.cores}}"
+            memory: "{{inputs.parameters.memory}}"
+        volumeMounts:
+          - name: work
+            mountPath: /work
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: "{{inputs.parameters.scratch}}"
