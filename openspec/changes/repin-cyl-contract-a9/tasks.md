@@ -43,16 +43,16 @@
 
 ## 1. Re-pin the vendored contract, `v0.1.0a7` → `v0.1.0a9` (C3)
 
-- [ ] 1.1 Re-verify against the bytes about to be committed:
+- [x] 1.1 Re-verify against the bytes about to be committed:
       `git -C ../sleap-roots-contracts show v0.1.0a9:schema/result_envelope.schema.json`, diffed
       against the vendored copy, differs only in the `$id` line.
-- [ ] 1.2 Write that exact output to `contracts/schema/result_envelope.schema.json` (LF, as
+- [x] 1.2 Write that exact output to `contracts/schema/result_envelope.schema.json` (LF, as
       published). Don't run prettier from inside `contracts/`.
-- [ ] 1.3 In `contracts/pin.json`, set `version`, `id` and `source` to `v0.1.0a9`. Check `source` by
+- [x] 1.3 In `contracts/pin.json`, set `version`, `id` and `source` to `v0.1.0a9`. Check `source` by
       eye, because the drift guard doesn't check it.
-- [ ] 1.4 `npm run contracts:gen` must leave `generated/result-envelope.ts` unchanged, since it has
+- [x] 1.4 `npm run contracts:gen` must leave `generated/result-envelope.ts` unchanged, since it has
       no `$id` or version string. **If it shows a diff, stop and re-scope.**
-- [ ] 1.5 `contracts/README.md`:
+- [x] 1.5 `contracts/README.md`:
       - set "Currently pinned: `v0.1.0a9`";
       - add an **a9 note**: per-run run-manifest naming and resolution (writer helpers plus
         `load_run_manifest`, srp#71). bloomctl still uses the legacy name, which the a9 traits reader
@@ -70,11 +70,11 @@
       - "Consumer hand-offs": the compatibility set was reconsidered for a9 (bloom#895 option (b),
         with a live a7 producer) and declined because the window is loud and recovered by recompute.
         Drop the claim "no functional case for a range".
-- [ ] 1.6 `npm run contracts:check` and `npm run contracts:test` pass.
+- [x] 1.6 `npm run contracts:check` and `npm run contracts:test` pass.
 
 ## 2. Write-back RPC accepts `0.1.0a9`, with no guard (C4, TDD)
 
-- [ ] 2.1 RED, in `tests/integration/test_cyl_writeback_rpc.py`:
+- [x] 2.1 RED, in `tests/integration/test_cyl_writeback_rpc.py`:
       - set `PINNED_VERSION = "0.1.0a9"`;
       - move the literal-bearing boundary tests to a9: bare, `v`-prefixed, and
         `test_version_boundary_forms_rejected[V0.1.0a9,0.1.0a9 ,0.1.0a90,vv0.1.0a9,0.1.0a8]`;
@@ -86,7 +86,7 @@
       Against the a7 DB, expect only these to go RED: bare a9 accepted, `v0.1.0a9` accepted, and a7
       rejected. The boundary forms and `0.1.0a8` stay green under a7 as well. They are
       normalization regressions, not RED discriminators.
-- [ ] 2.2 RED, file-level, in the new `tests/unit/test_cyl_writeback_a9_migration_files.py` (no DB).
+- [x] 2.2 RED, file-level, in the new `tests/unit/test_cyl_writeback_a9_migration_files.py` (no DB).
       For each file, take the region from the `CREATE OR REPLACE FUNCTION` line through the final
       `GRANT … bloom_workflows;` line:
       - read with `read_text(encoding="utf-8").splitlines()`, which is CRLF-safe;
@@ -98,7 +98,7 @@
       - the rollback against `20260917140000` must give `diffs == []`;
       - the migration's text outside the function region, excluding `--` comments, must contain no
         `DO $`, `RAISE`, `UPDATE` or `DELETE`.
-- [ ] 2.3 RED, integration, each in an uncommitted transaction. The CI DB will already be a9, so
+- [x] 2.3 RED, integration, each in an uncommitted transaction. The CI DB will already be a9, so
       every test **first restores the a7 body in-transaction** with
       `_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK)`:
       - `test_a9_migration_body_is_idempotent`:
@@ -125,43 +125,43 @@
 
         Never commit, so the cross-file invariant noted in `test_a7_cutover_guard_raises_on_a3_row`
         still holds.
-- [ ] 2.4 GREEN: add `supabase/migrations/20260925120000_cyl_writeback_contract_a9.sql`:
+- [x] 2.4 GREEN: add `supabase/migrations/20260925120000_cyl_writeback_contract_a9.sql`:
       - the `20260917140000` region, verbatim except the literal, inside `BEGIN;`/`COMMIT;`;
       - no `DROP FUNCTION` and no `DO` guard;
       - a header that explains why and links design.md, with no closing keywords.
-- [ ] 2.5 GREEN: add `supabase/rollbacks/20260925120000_cyl_writeback_contract_a9_rollback.sql`,
+- [x] 2.5 GREEN: add `supabase/rollbacks/20260925120000_cyl_writeback_contract_a9_rollback.sql`,
       holding the `20260917140000` region verbatim (a7). Its header states:
       - it is the staging hot-apply only; a durable rollback is a new forward migration plus the
         `PINNED_VERSION` flip plus the traits re-pin to `sha-689cffb@sha256:ab5a1f43…`, all together
         (design § Rollback);
       - applying it by hand leaves `20260925120000` recorded as applied.
-- [ ] 2.6 GREEN: `test_rpc_pinned_version_matches_vendored_contract_pin` in
+- [x] 2.6 GREEN: `test_rpc_pinned_version_matches_vendored_contract_pin` in
       `tests/integration/test_contract_migration_match.py`. It regex-extracts
       `pinned_version constant text := '([^']*)'` from
       `pg_get_functiondef('public.insert_cyl_result_envelope(jsonb,text)'::regprocedure)` and asserts
       it equals `pin.json`'s `version` with the leading `v` removed. The failure message names both
       values.
-- [ ] 2.7 Apply locally and confirm GREEN for §2.1–§2.3 and §2.6, with `test_execute_grants_*`
+- [x] 2.7 Apply locally and confirm GREEN for §2.1–§2.3 and §2.6, with `test_execute_grants_*`
       unchanged. Then confirm, before C2's explicit versions are present, that exactly the three §3.1
       tests fail. That is the check that the list in §3.1 is exhaustive.
 
 ## 3. Dependent tests and references
 
-- [ ] 3.1 (C2, lands before C4) Add an explicit `contract_version="0.1.0a7"` to
+- [x] 3.1 (C2, lands before C4) Add an explicit `contract_version="0.1.0a7"` to
       `test_scan_status_rollback_restores_1arg_signature`,
       `test_redelivery_status_fallback_migration_is_idempotent` and
       `test_redelivery_status_fallback_rollback_restores_prior_body`. Each re-applies an a7-pinned
       body and then calls with the default version.
-- [ ] 3.2 (C4) `tests/integration/test_cyl_read_path.py`: set `PINNED_VERSION = "0.1.0a9"`.
-- [ ] 3.3 (C3) `tests/integration/test_contract_migration_match.py`: move the `v0.1.0a7` docstring
+- [x] 3.2 (C4) `tests/integration/test_cyl_read_path.py`: set `PINNED_VERSION = "0.1.0a9"`.
+- [x] 3.3 (C3) `tests/integration/test_contract_migration_match.py`: move the `v0.1.0a7` docstring
       references to `v0.1.0a9`.
-- [ ] 3.4 (C5) `bloomcli/tests/test_cyl_ingest.py`:
+- [x] 3.4 (C5) `bloomcli/tests/test_cyl_ingest.py`:
       - move the mocked `pinned 0.1.0a7` string and its assertion to a9;
       - update the stale migration path in the comment at around line 34. `_current_migration_sql`
         will now pick the a9 file, since it globs `*cyl_writeback*`;
       - run the CI command from `bloomcli/`: `uv run --extra test pytest tests/ -m "not integration"`.
       No `bloomctl` source, pin or lock change.
-- [ ] 3.5 `git grep -n "0\.1\.0a7"` outside `openspec/changes/archive/`. List every remaining hit as
+- [x] 3.5 `git grep -n "0\.1\.0a7"` outside `openspec/changes/archive/`. List every remaining hit as
       intentional in the PR body:
       - the a7, `20260912110000` and `20260917140000` migrations and their rollbacks;
       - the new a9 rollback;
@@ -176,13 +176,21 @@
 
 ## 4. Validate
 
-- [ ] 4.1 `openspec validate repin-cyl-contract-a9 --strict` and `openspec validate --specs --strict`.
-- [ ] 4.2 `scripts/lint_migrations.sh origin/staging`, and
+- [x] 4.1 `openspec validate repin-cyl-contract-a9 --strict` and `openspec validate --specs --strict`.
+- [x] 4.2 `scripts/lint_migrations.sh origin/staging`, and
       `python3 scripts/lint_migration_isolation.py origin/staging`. The isolation lint's warning is
       expected and justified in the PR body.
-- [ ] 4.3 `uv run pre-commit run --files <changed files>`, and `uvx ruff@0.9.9 check bloomcli/`.
+- [x] 4.3 `uv run pre-commit run --files <changed files>`, and `uvx ruff@0.9.9 check bloomcli/`.
+      Ruff, black, gitleaks and the other hooks pass. The prettier hook's rewrites were **not**
+      applied: on these files it corrupts content (it turned the live spec's
+      `length(idempotency_key)` / `> 0` line break into a blockquote, and mangled two lines of an
+      unrelated `contracts/README.md` note). Those files are not prettier-clean on `staging`
+      either, and no CI job runs prettier on them.
 - [ ] 4.4 Run the cyl integration suites and `tests/unit/` locally against a live Postgres. Then
       observe CI's *Docker Compose Health Check* green on the final head before merge.
+      Local half done: RED 75 failed for the expected reasons; GREEN 169 passed, 2 skipped (dev DB
+      migrated through `20260924120000`, a9 applied by psql, then restored byte-identically).
+      CI half pending.
 - [ ] 4.5 The PR body says "Part of #895", includes `No schema changes.` under Schema changes and
       the §3.5 list, and notes the #902 timestamp ordering and the stuck staging deploy.
 
