@@ -1527,3 +1527,51 @@ def test_poll_interval_logs_a_warning_when_falling_back_for_a_bad_value(
     assert any(
         "WORKFLOWS_STATUS_POLL_SECONDS" in record.message for record in caplog.records
     )
+
+
+# --- liveness heartbeat -----------------------------------------------------
+#
+# Existence alone is not a guard: the startup connect writes a heartbeat too,
+# so these record the order of beats and sweeps instead.
+
+def _beat_log(monkeypatch):
+    events: list[str] = []
+    monkeypatch.setattr(worker.heartbeat, "touch", lambda path=None: events.append("beat"))
+    return events
+
+
+def test_every_sweep_cycle_records_a_heartbeat(monkeypatch):
+    events = _beat_log(monkeypatch)
+    monkeypatch.setattr(worker, "app_client", lambda: object())
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    cycles = {"n": 0}
+
+    def fake_sweep(c):
+        cycles["n"] += 1
+        events.append("sweep")
+        if cycles["n"] >= 3:
+            worker._running = False
+        return True
+
+    monkeypatch.setattr(worker, "sweep_once", fake_sweep)
+    worker.run()
+
+    assert events == ["beat", "beat", "sweep", "beat", "sweep", "beat", "sweep"], events
+
+
+def test_the_heartbeat_comes_before_the_sweep_not_after(monkeypatch):
+    """A sweep hung on one workflow's GET must stop refreshing the heartbeat."""
+    events = _beat_log(monkeypatch)
+    monkeypatch.setattr(worker, "app_client", lambda: object())
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    def fake_sweep(c):
+        events.append("sweep")
+        worker._running = False
+        return True
+
+    monkeypatch.setattr(worker, "sweep_once", fake_sweep)
+    worker.run()
+
+    assert events[-2:] == ["beat", "sweep"], f"beat must precede the sweep: {events}"

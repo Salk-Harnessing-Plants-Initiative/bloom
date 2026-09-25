@@ -717,6 +717,9 @@ jobs:
       # custom services so PR CI can build locally even after PR-3 flips
       # docker-compose.prod.yml to `image: ghcr.io/...` refs.
       COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.ci.yml
+      # The same two files for scripts/check_health.py, which takes them as
+      # --compose-file. test_pr_checks_workflow_shape pins the two in sync.
+      COMPOSE_FILE_ARGS: --compose-file docker-compose.prod.yml --compose-file docker-compose.ci.yml
       # tbls draws _WIKI/SUPABASE/erd.md; same pin as the Makefile's TBLS_IMAGE.
       TBLS_IMAGE: ghcr.io/salk-harnessing-plants-initiative/k1low-tbls:v1.96.0@sha256:35e29e5c2e2d8a4555b36eacfdac9d78d8af5aee5c73cc68219cac9cf3723ee1
     steps:
@@ -925,7 +928,9 @@ jobs:
         run: |
           docker compose $COMPOSE_FILES --env-file .env.ci up -d supabase-minio
           echo "Waiting for MinIO to be healthy..."
-          timeout 60 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps supabase-minio --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          uv run --extra test python scripts/check_health.py --services-only \
+            $COMPOSE_FILE_ARGS --env-file .env.ci \
+            --service supabase-minio --strict --require-all --timeout 60
           echo "MinIO is healthy!"
           docker compose $COMPOSE_FILES --env-file .env.ci run --rm minio-init
           echo "Buckets created!"
@@ -934,7 +939,9 @@ jobs:
         run: |
           docker compose $COMPOSE_FILES --env-file .env.ci up -d db-prod
           echo "Waiting for database to be healthy..."
-          timeout 180 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          uv run --extra test python scripts/check_health.py --services-only \
+            $COMPOSE_FILE_ARGS --env-file .env.ci \
+            --service db-prod --require-all --timeout 180
           echo "Database is healthy!"
 
       - name: Start remaining services
@@ -946,27 +953,14 @@ jobs:
           COMPOSE_BAKE: "true"
         run: docker compose $COMPOSE_FILES -f docker-compose.ci-cache.yml --env-file .env.ci up -d --build
 
+      # Fails the job if any declared service is missing, unhealthy, still
+      # starting, in a non-running state, or exited with an error. Must never
+      # pass while something is broken (issue #163).
       - name: Wait for services to be healthy
         run: |
-          echo "Waiting for services to become healthy..."
-          TIMEOUT=180
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            UNHEALTHY=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
-            EXITED=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
-            if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
-              echo "All services healthy!"
-              docker compose $COMPOSE_FILES --env-file .env.ci ps
-              exit 0
-            fi
-            echo "Waiting... (${ELAPSED}s / ${TIMEOUT}s) — ${UNHEALTHY} unhealthy, ${EXITED} failed"
-            sleep 5
-            ELAPSED=$((ELAPSED + 5))
-          done
-          echo "::error::Services did not become healthy within ${TIMEOUT}s"
-          docker compose $COMPOSE_FILES --env-file .env.ci ps
-          docker compose $COMPOSE_FILES --env-file .env.ci logs --tail=50
-          exit 1
+          uv run --extra test python scripts/check_health.py --services-only \
+            $COMPOSE_FILE_ARGS --env-file .env.ci \
+            --strict --require-all --timeout 180
 
       - name: Wait for storage schema
         env:
@@ -1206,19 +1200,21 @@ jobs:
         run: |
           [ -s .env.ci ] || { echo "::notice::skipping — .env.ci was never generated (an earlier step failed before this ran)"; exit 0; }
           echo "=== Container Status ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci ps
+          # -a, or a container that crashed and stayed down is simply absent.
+          # `|| true` so one failing dump doesn't skip the rest (bash -e).
+          docker compose $COMPOSE_FILES --env-file .env.ci ps -a || true
           echo "=== db-prod logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs db-prod --tail=100
+          docker compose $COMPOSE_FILES --env-file .env.ci logs db-prod --tail=100 || true
           echo "=== kong logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs kong --tail=50
+          docker compose $COMPOSE_FILES --env-file .env.ci logs kong --tail=50 || true
           echo "=== caddy logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs caddy --tail=100
+          docker compose $COMPOSE_FILES --env-file .env.ci logs caddy --tail=100 || true
           echo "=== bloom-web logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs bloom-web --tail=200
+          docker compose $COMPOSE_FILES --env-file .env.ci logs bloom-web --tail=200 || true
           echo "=== langchain-agent logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50
+          docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50 || true
           echo "=== bloommcp logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
+          docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50 || true
 
       # Guarded: if: always() fires both when a superseding push cancels this
       # run and when an earlier step fails, before .env.ci is ever generated
@@ -1386,11 +1382,11 @@ jobs:
           echo "=== supabase-minio logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs supabase-minio --tail=50
           echo "=== kong logs ==="
-          docker compose -f docker-compose.dev.yml --env-file .env.dev logs kong --tail=50
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs kong --tail=50 || true
           echo "=== bloommcp logs ==="
-          docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50 || true
           echo "=== langchain-agent logs ==="
-          docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50
+          docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50 || true
 
       # Guarded: if: always() fires both when the workflow-level
       # cancel-in-progress concurrency group cancels this job and when an

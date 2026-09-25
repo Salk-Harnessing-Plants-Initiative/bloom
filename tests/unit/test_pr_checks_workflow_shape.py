@@ -421,3 +421,79 @@ def test_overlay_build_context_matches_prod(service: str) -> None:
             f"({overlay_dockerfile!r}) doesn't match prod compose's "
             f"({prod_dockerfile!r})."
         )
+
+
+# --------------------------------------------------------------------------- #
+# The compose health gate (issue #163).
+#
+# The gate used to pass no matter what was running. It now calls
+# scripts/check_health.py, so what is pinned here is the wiring: the same two
+# compose files, and the two flags without which the gate goes blind again.
+# What "healthy" means is tested in tests/unit/test_compose_health.py.
+# --------------------------------------------------------------------------- #
+
+EXPECTED_COMPOSE_FILE_ARGS = (
+    "--compose-file docker-compose.prod.yml --compose-file docker-compose.ci.yml"
+)
+
+
+def test_compose_file_args_lists_the_same_files_as_compose_files():
+    """Two env vars name the same stack, in docker's syntax and the script's.
+    They must not drift, or the gate would check a different stack than it ran."""
+    env = _load_workflow()["jobs"]["compose-health-check"]["env"]
+    assert env["COMPOSE_FILES"] == EXPECTED_COMPOSE_FILES
+    assert env["COMPOSE_FILE_ARGS"] == EXPECTED_COMPOSE_FILE_ARGS
+    docker_files = re.findall(r"-f (\S+)", env["COMPOSE_FILES"])
+    script_files = re.findall(r"--compose-file (\S+)", env["COMPOSE_FILE_ARGS"])
+    assert docker_files == script_files, (
+        f"COMPOSE_FILES lists {docker_files} but COMPOSE_FILE_ARGS lists "
+        f"{script_files}; the gate would check a different stack than it started."
+    )
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    ["Start MinIO and create buckets", "Start database",
+     "Wait for services to be healthy"],
+)
+def test_every_health_wait_uses_the_shared_checker(step_name):
+    """One implementation decides what healthy means. A wait that hand-rolls
+    its own `docker compose ps` filter is how the shape bug got in."""
+    job = _load_workflow()["jobs"]["compose-health-check"]
+    step = next(s for s in job["steps"] if s.get("name") == step_name)
+    run = step["run"]
+    assert "scripts/check_health.py --services-only" in run, (
+        f"{step_name!r} must wait via the shared checker, not its own filter"
+    )
+    assert "$COMPOSE_FILE_ARGS" in run
+    assert "ps --format json" not in run, (
+        f"{step_name!r} still parses `docker compose ps` itself"
+    )
+
+
+@pytest.mark.parametrize("flag", ["--strict", "--require-all"])
+def test_the_gate_keeps_the_flags_that_make_it_bite(flag):
+    """--strict stops the gate inheriting the dev stack's 'optional service'
+    excuse; --require-all is what notices a service that is absent rather than
+    unhealthy. Dropping either one silently widens what passes."""
+    job = _load_workflow()["jobs"]["compose-health-check"]
+    step = next(
+        s for s in job["steps"] if s.get("name") == "Wait for services to be healthy"
+    )
+    assert flag in step["run"]
+
+
+def test_the_failure_diagnostics_show_crashed_containers_and_survive_an_error():
+    """`ps` without -a hides the container that crashed — the one worth seeing.
+    And under bash -e an unguarded dump that fails skips every dump after it,
+    so each is guarded with `|| true`, as deploy.yml does."""
+    job = _load_workflow()["jobs"]["compose-health-check"]
+    step = next(s for s in job["steps"] if s.get("name") == "Debug logs on failure")
+    assert step.get("if") == "failure()"
+    assert "ps -a" in step["run"], "a crashed container only shows under ps -a"
+    dumps = [
+        ln for ln in step["run"].splitlines()
+        if "docker compose" in ln and ("logs " in ln or " ps " in ln)
+    ]
+    unguarded = [ln.strip() for ln in dumps if "|| true" not in ln]
+    assert not unguarded, f"these would skip the dumps after them: {unguarded}"
