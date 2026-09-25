@@ -1504,9 +1504,12 @@ def test_scan_status_rollback_restores_1arg_signature(pg_conn):
         assert cur.fetchone() is not None, "rollback did not restore the 1-arg signature"
         cur.execute("SELECT 1 FROM pg_proc WHERE proname='fail_cyl_pipeline_run_scans_without_result'")
         assert cur.fetchone() is None, "rollback did not drop the new RPC"
-        # the restored 1-arg signature is genuinely callable via the old shape
+        # the restored 1-arg signature is genuinely callable via the old shape. Explicit
+        # 0.1.0a7: ROLLBACK_SCAN_STATUS restores an a7-pinned body, whatever PINNED_VERSION
+        # the live RPC has since moved to.
         _, imgs = _seed_scan(cur)
-        cur.execute(f"SELECT {RPC}(%s::jsonb)", (json.dumps(_envelope(imgs, idempotency_key="rb1")),))
+        env = _envelope(imgs, contract_version="0.1.0a7", idempotency_key="rb1")
+        cur.execute(f"SELECT {RPC}(%s::jsonb)", (json.dumps(env),))
         res = cur.fetchone()[0]
         res = json.loads(res) if isinstance(res, str) else res
         assert res["was_noop"] is False
@@ -1649,7 +1652,9 @@ def test_redelivery_status_fallback_migration_is_idempotent(pg_conn):
         # the fallback is genuinely present and callable, not just non-erroring
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-idem-a")
-        env = _envelope(imgs, idempotency_key="idem-875")
+        # Explicit 0.1.0a7: this migration's body is a7-pinned, whatever PINNED_VERSION the
+        # live RPC has since moved to.
+        env = _envelope(imgs, contract_version="0.1.0a7", idempotency_key="idem-875")
         _call(cur, env, argo_workflow_name="wf-idem-a")
         _seed_run_scan_for_writeback(cur, scan_id, "wf-idem-b")
         res = _call(cur, env, argo_workflow_name="wf-idem-b")
@@ -1671,7 +1676,8 @@ def test_redelivery_status_fallback_rollback_restores_prior_body(pg_conn):
 
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-rb-a")
-        env = _envelope(imgs, idempotency_key="rb-875")
+        # Explicit 0.1.0a7: the migration and its rollback are both a7-pinned.
+        env = _envelope(imgs, contract_version="0.1.0a7", idempotency_key="rb-875")
         _call(cur, env, argo_workflow_name="wf-rb-a")
         _seed_run_scan_for_writeback(cur, scan_id, "wf-rb-b")
         res = _call(cur, env, argo_workflow_name="wf-rb-b")
