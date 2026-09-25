@@ -29,6 +29,7 @@ after migrations are applied (`uv run --extra test pytest tests/integration/ -v`
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -291,6 +292,57 @@ def test_writeback_rpc_regression_is_detected(pg_conn):
 
 
 # --------------------------------------------------------------------------- #
+# Vendored pin <-> RPC literal tie (repin-cyl-contract-a9). Nothing coupled the two
+# before: the RPC stayed pinned to 0.1.0a3 while contracts/pin.json had moved to
+# v0.1.0a5, until repin-cyl-contract-a7. Reads the literal from the live catalog,
+# not from a migration file.
+# --------------------------------------------------------------------------- #
+
+PIN_PATH = REPO_ROOT / "contracts" / "pin.json"
+_PINNED_LITERAL = re.compile(r"pinned_version\s+constant\s+text\s*:=\s*'([^']*)'")
+
+
+def _rpc_pinned_version(cur) -> str:
+    cur.execute(
+        "SELECT pg_get_functiondef("
+        "'public.insert_cyl_result_envelope(jsonb, text)'::regprocedure)"
+    )
+    found = _PINNED_LITERAL.findall(cur.fetchone()[0])
+    assert len(found) == 1, f"expected exactly one pinned_version literal, found {found}"
+    return found[0]
+
+
+def _pin_mismatch(pin_version: str, rpc_version: str) -> str | None:
+    """None when pin.json's version (single leading lowercase `v` removed) equals the
+    RPC's pinned literal; otherwise a message naming both values."""
+    normalized = pin_version[1:] if pin_version.startswith("v") else pin_version
+    if normalized == rpc_version:
+        return None
+    return (
+        f"contracts/pin.json pins {pin_version!r} but insert_cyl_result_envelope "
+        f"accepts {rpc_version!r}; re-pin both in the same change"
+    )
+
+
+def test_rpc_pinned_version_matches_vendored_contract_pin(pg_conn):
+    pin_version = json.loads(PIN_PATH.read_text(encoding="utf-8"))["version"]
+    with pg_conn.cursor() as cur:
+        rpc_version = _rpc_pinned_version(cur)
+    pg_conn.rollback()
+    mismatch = _pin_mismatch(pin_version, rpc_version)
+    assert mismatch is None, mismatch
+
+
+def test_pin_mismatch_names_both_values():
+    # The negative path of the tie above, without mutating the catalog.
+    assert _pin_mismatch("v0.1.0a9", "0.1.0a9") is None
+    assert _pin_mismatch("0.1.0a9", "0.1.0a9") is None
+    msg = _pin_mismatch("v0.1.0a9", "0.1.0a7")
+    assert msg is not None and "v0.1.0a9" in msg and "0.1.0a7" in msg
+    assert _pin_mismatch("V0.1.0a9", "0.1.0a9") is not None  # only a lowercase v is stripped
+
+
+# --------------------------------------------------------------------------- #
 # BlobRef active mapping (change C): cyl_scan_intermediates.
 # --------------------------------------------------------------------------- #
 
@@ -421,7 +473,7 @@ def _probe_accepted(cur, source_id, scan_id, *, column, fixed, candidates) -> se
 def test_db_kind_vocab_matches_contract_blobref_enum(pg_conn):
     """The DB `kind` CHECK vocabulary equals the pinned contract `BlobRef.kind` enum,
     proved by a behavioral INSERT probe. Unconditional since the contract is pinned at
-    `v0.1.0a7` (`BlobRef.kind == {predictions_slp}`, unchanged since `v0.1.0a2`); a future
+    `v0.1.0a9` (`BlobRef.kind == {predictions_slp}`, unchanged since `v0.1.0a2`); a future
     re-pin diverging from the DB CHECK fails loudly."""
     contract_kinds = _blobref_enum(_load_schema(), "kind")
     negatives = {"h5", "labels", "qc_image", "bogus"} - contract_kinds
@@ -443,7 +495,7 @@ def test_db_kind_vocab_matches_contract_blobref_enum(pg_conn):
 
 def test_db_root_type_vocab_matches_contract_blobref_enum(pg_conn):
     """The DB `root_type` CHECK vocabulary equals the pinned contract `BlobRef.root_type`
-    enum — symmetric with the `kind` probe. As of `v0.1.0a7` the contract owns `root_type`
+    enum — symmetric with the `kind` probe. As of `v0.1.0a9` the contract owns `root_type`
     (`{primary, lateral, crown}`, unchanged since `v0.1.0a2`), so it is contract-anchored
     (design D3, revised): a contract/DB divergence on `root_type` fails CI just like `kind`."""
     contract_root_types = _blobref_enum(_load_schema(), "root_type")
