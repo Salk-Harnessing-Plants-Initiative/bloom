@@ -41,7 +41,7 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 ## Commands
 
 `login` is flat; assay-specific commands are grouped by data type (`cyl`,
-`plate`). Each command is tagged **[read]** or **[write]** — see
+`plate`, `scrna`). Each command is tagged **[read]** or **[write]** — see
 [Access & roles](#access--roles).
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
@@ -99,6 +99,14 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
+- **[write]** `bloomctl scrna hdf5 upload <file.h5ad>` — store a single-cell dataset's
+  AnnData file, gzipped and named by its SHA-256, after checking its structure
+  (see below).
+- **[read]** `bloomctl scrna hdf5 download <dataset>` — fetch a dataset's AnnData file,
+  by name, id or `--checksum`, checked against its fingerprint (see below).
+- **[read]** `bloomctl scrna hdf5 list [search]` — the dataset files storage holds, each
+  with its size and the dataset that points at it; `--file` says whether one local
+  file is already stored. `--output csv|json` for machine-readable output.
 
 Run `bloomctl <command> --help` for the full option list of any command.
 
@@ -481,6 +489,85 @@ Example:
 bloomctl cyl batch-download-for-predict ./staged --scan-ids-file scan_ids.json
 ```
 
+## `bloomctl scrna hdf5 upload` / `download` / `list`
+
+A single-cell dataset's whole AnnData file (`.h5ad`) is kept in the `scrna`
+bucket's `h5ad/` folder, gzipped as it is and named by the SHA-256 of the
+uncompressed file. The bucket holds other kinds of object besides — per-gene
+counts above all — so these commands sit under the form they act on, `hdf5`. That SHA-256 is the dataset's `source_checksum`, so a dataset
+finds its file with no lookup table, and the same file uploaded twice is one
+object.
+
+```bash
+pip install 'bloomctl[scrna]'                   # upload's structure check needs h5py
+
+bloomctl scrna hdf5 upload myb41_transgene_load.h5ad -p staging
+bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
+bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id
+bloomctl scrna hdf5 download --checksum 82278a…a54f -p staging       # by fingerprint
+bloomctl scrna hdf5 list -p staging                                  # what is stored
+bloomctl scrna hdf5 list myb41 -p staging                            # by dataset name
+bloomctl scrna hdf5 list --file myb41_transgene_load.h5ad -p staging # is this one stored?
+```
+
+**Upload** needs a writer or admin login. Before sending anything it checks the
+file's structure:
+
+- every cell has an ID and none repeats (a barcode shared across samples cannot
+  be the index); the same for genes, in whatever form the species' annotation
+  writes them
+- `X` holds only finite values
+- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates small
+  enough for the explorer to store, and does not pile more than a thousandth of the cells on
+  a single point — an array allocated and never filled passes every other check and draws the
+  whole dataset as one dot. These two limits are the loader's own, so a UMAP this accepts is a
+  UMAP the loader accepts; the loader checks more besides, so passing here is not a promise
+  that the load will succeed
+- the file's data is in the file: an external link, or a virtual dataset whose values live in
+  another file, is refused, and so is a link that stands in for an array rather than the
+  array itself — each would store an object that reads differently on every machine, and
+  would let a refusal quote a file nobody handed in
+- `layers['counts']`, when present, matches `X`'s shape and holds no negative value
+- `uns['normalization']` says how `X` was made:
+  `transform` (`log1p`, `log2p`, `none`), `scaling` (`library_size`, `none`,
+  `other`), `target_sum` for `library_size`, a `description` for `other`, and
+  optionally `counts_layer`. A file a dataset was loaded from before this existed
+  is accepted without the block when that dataset records it.
+
+It then gzips the file and sends it through storage's resumable upload. Because an object is
+named by the fingerprint of its contents, storage already holding that name means it holds
+this very file, byte for byte: the command says so and sends nothing. If the connection
+drops, run the same command again: the gzipped copy and what identifies the upload wait in
+`~/.bloom/scrna-uploads/`, and the transfer continues from the last byte storage received.
+That is also where "what is prepared is kept" refers to, in the messages below — delete the
+files there to start an upload over from the beginning. An upload recorded for another
+server, or for a gzipped copy that has since been rewritten, is started afresh rather than
+resumed.
+
+Where storage takes every byte and still stores nothing, the command says so and forgets the
+server's upload while keeping the gzipped copy: the protocol will not finish an upload that
+is already at full length, so the next run sends a fresh one rather than repeating the same
+failure. A login lasts about an hour and a large file can take longer, so a session expiring
+part-way through is ordinary rather than exceptional: the credentials that made it are the
+ones on disk, so the command signs in again itself and carries on from the last byte
+storage took. It does that once — a second expiry is not a token running out, and is
+reported. A login that is refused outright is reported at once instead, since signing in
+again does nothing about a permission the account does not have.
+
+**List** needs any login. It reports what the bucket holds — each object's fingerprint,
+its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
+does; an object can be stored before any dataset points at it, so an unnamed row is
+expected rather than a fault. A search keeps the entries whose fingerprint or dataset name
+contains it, and `--file` puts the question the other way round: it fingerprints a local
+file and reports whether storage already holds it, which is how to tell an interrupted
+upload from a finished one. The table shortens each fingerprint; `--output json` carries
+all 64 characters.
+
+**Download** needs any login. It streams the object, decompresses it and checks
+its SHA-256 as it goes, and moves the file into place only when the fingerprint
+matches; a mismatch leaves nothing behind. A file already at the destination with
+the right fingerprint is left alone, and a different one is never overwritten.
+
 ## Access & roles
 
 Commands run **as the logged-in user** — every query and mutation is RLS-enforced
@@ -489,8 +576,8 @@ profile maps to determines what works:
 
 | Command tag                                                                                    | Required role                         | Intended user                                                                             |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
-| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the

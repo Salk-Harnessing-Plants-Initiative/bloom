@@ -10,6 +10,27 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `scrna hdf5 upload`, `scrna hdf5 download` and `scrna hdf5 list`: a single-cell dataset's whole
+  AnnData file (`.h5ad`) goes into the `scrna` bucket's `h5ad/` folder gzipped as it
+  is, named by the SHA-256 of the uncompressed file, and comes back out checked
+  against it. `upload` needs a writer or admin login, checks the file's structure
+  before sending anything (unique cell and gene IDs, a finite `X`, an
+  `obsm['X_umap']` held to the loader's own limits on coordinate size and on cells
+  piled at one point, a `uns['normalization']` block saying how `X` was made, and
+  every array's values held in the file itself rather than reached through a link),
+  and resumes an interrupted transfer when run again. Because the object's name is
+  the fingerprint of its contents, storage already holding that name means it holds
+  this very file, byte for byte, and the command says so instead of sending it again.
+  `download` takes a dataset's name or id, or `--checksum`, and writes the file only
+  once its fingerprint matches. `list` needs any login and reports what the bucket
+  holds — each object's fingerprint, size in bytes and arrival time, and the dataset
+  recording that fingerprint where one does; `--file` fingerprints a local file and
+  says whether it is already stored. A session that expires mid-transfer is renewed from
+  the credentials already on disk and the transfer carries on, so an upload or download
+  that outlasts its login does not have to be started again. The structure check needs
+  the new optional extra: `pip install 'bloomctl[scrna]'`, which the published image now
+  carries.
+
 - `cyl ingest-result`/`cyl batch-ingest-result` now link write-back to the
   originating pipeline run when the `ARGO_WORKFLOW_NAME` environment
   variable is set (Argo sets it automatically inside the write-back
