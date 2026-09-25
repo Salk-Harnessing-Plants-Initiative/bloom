@@ -75,13 +75,11 @@
       environment, check `talmolab/sleap-roots-pipeline#52`'s status first**: if that issue's image
       pin bump has already landed, rolling back reproduces the exact silent-rejection failure this
       change closes
-- [ ] 2.4 **NOT VERIFIED IN THIS ENVIRONMENT** — no Docker daemon / Supabase CLI available here
-      (confirmed: `docker ps` fails to reach the engine, no `supabase` binary on PATH). Apply the
-      a7 migration to a live Postgres and re-run the writeback suite — confirm every test from
-      §2.1 now passes (GREEN), plus `test_execute_grants_*` still confirms exactly
-      `bloom_writer`/`service_role`/`bloom_admin`/`bloom_workflows`. **Must be run before merge** —
-      CI's `compose-health-check` job will run this authoritatively, but do not treat this task as
-      complete until a live-Postgres run (CI or local) is actually observed green
+- [x] 2.4 Confirmed via CI (`Docker Compose Health Check`, run 33524629806 and again on the
+      post-branch-update run 33566795258): 838 passed / 7 skipped, including every test from §2.1
+      (`test_bare_contract_version_accepted`, `test_v_prefixed_contract_version_accepted`,
+      `test_a3_contract_version_rejected[...]`, `test_version_boundary_forms_rejected[...]`) and
+      `test_execute_grants_are_exactly_the_sanctioned_roles`
 - [x] 2.5 Added `test_a7_migration_body_is_idempotent` + `test_a7_rollback_restores_strict_a3`
       (mirroring the existing a3-keyed idempotency/rollback tests), and
       `test_a7_cutover_guard_raises_on_a3_row` (seeds a `cyl_trait_sources` row with
@@ -133,10 +131,8 @@
 ## 4. Validate
 
 - [x] 4.1 `openspec validate repin-cyl-contract-a7 --strict` — valid
-- [ ] 4.2 **NOT VERIFIED IN THIS ENVIRONMENT** (no Docker/Supabase CLI available — see §2.4). Run
-      the cyl integration suites (writeback, read-path, contract-migration-match) against a live
-      Postgres — all green. CI re-runs the full suite against the clean compose stack
-      (authoritative) — **must be observed green in CI (or a local run) before merge**
+- [x] 4.2 Confirmed green in CI (see §2.4) — the writeback, read-path, and contract-migration-match
+      suites all passed as part of the same 838-passed run
 - [x] 4.3 Migration lint passes: `scripts/lint_migrations.sh origin/staging` → "Migration lint
       passed (checked 1 new file(s) against origin/staging; latest base timestamp
       20260825220000)."
