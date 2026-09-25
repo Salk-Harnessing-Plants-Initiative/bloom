@@ -19,9 +19,18 @@ spec:
             value: "4"
           - name: memory
             value: "8Gi"
-          - name: scratch
-            value: "300Gi"
       schedulerName: runai-scheduler
+      # CPU and memory come from parameters, so they are set when the pod starts, not at registration.
+      podSpecPatch: |
+        containers:
+          - name: main
+            resources:
+              requests:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
+              limits:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
       priorityClassName: high
       retryStrategy:
         limit: 1
@@ -50,17 +59,10 @@ spec:
               secretKeyRef:
                 name: genericsecret-bloomv2-s3
                 key: AWS_SECRET_ACCESS_KEY
-        resources:
-          requests:
-            cpu: "{{inputs.parameters.cores}}"
-            memory: "{{inputs.parameters.memory}}"
-          limits:
-            cpu: "{{inputs.parameters.cores}}"
-            memory: "{{inputs.parameters.memory}}"
         volumeMounts:
           - name: work
             mountPath: /work
       volumes:
         - name: work
           emptyDir:
-            sizeLimit: "{{inputs.parameters.scratch}}"
+            sizeLimit: 300Gi

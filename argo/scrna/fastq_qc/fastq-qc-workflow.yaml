@@ -10,7 +10,7 @@ spec:
   entrypoint: main
   serviceAccountName: bloom-workflow
   imagePullSecrets:
-    - name: GHCR_PULL_SECRET_NAME   # the k8s secret the Run:ai project credential creates
+    - name: dockerregistry-bloom-ghcr-pull   # from the busch-lab Run:ai credential bloom-ghcr-pull
   ttlStrategy:
     secondsAfterCompletion: 86400
   arguments:

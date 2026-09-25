@@ -49,7 +49,7 @@ gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq
 - The shared `argo-user` kubeconfig for `runai-busch-lab`, and the `argo` CLI.
 - Two Run:ai credentials with **Project scope: busch-lab**, created in the Run:ai console:
   - Generic secret `bloomv2-s3` with keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (becomes the Kubernetes secret `genericsecret-bloomv2-s3`).
-  - Docker registry credential for `ghcr.io` with a `read:packages` token. Put the Kubernetes secret it creates in `imagePullSecrets` in both workflow files.
+  - Docker registry credential `bloom-ghcr-pull` for `ghcr.io` with a `read:packages` token (becomes the Kubernetes secret `dockerregistry-bloom-ghcr-pull`, used in `imagePullSecrets` in the workflow files).
 
 ## Running
 

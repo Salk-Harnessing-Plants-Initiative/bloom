@@ -20,9 +20,18 @@ spec:
             value: "64Gi"
           - name: mem-gb
             value: "60"
-          - name: scratch
-            value: "500Gi"
       schedulerName: runai-scheduler
+      # CPU and memory come from parameters, so they are set when the pod starts, not at registration.
+      podSpecPatch: |
+        containers:
+          - name: main
+            resources:
+              requests:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
+              limits:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
       # Non-preemptible class used by the sleap-roots trait-extractor; confirm with the cluster admin.
       priorityClassName: high
       retryStrategy:
@@ -54,20 +63,13 @@ spec:
               secretKeyRef:
                 name: genericsecret-bloomv2-s3
                 key: AWS_SECRET_ACCESS_KEY
-        resources:
-          requests:
-            cpu: "{{inputs.parameters.cores}}"
-            memory: "{{inputs.parameters.memory}}"
-          limits:
-            cpu: "{{inputs.parameters.cores}}"
-            memory: "{{inputs.parameters.memory}}"
         volumeMounts:
           - name: work
             mountPath: /work
       volumes:
         - name: work
           emptyDir:
-            sizeLimit: "{{inputs.parameters.scratch}}"
+            sizeLimit: 500Gi
 
     # Smoke test: bundled tiny dataset, no reads or reference needed.
     - name: testrun
