@@ -976,6 +976,11 @@ def test_phase2_rollback_removes_new_functions_only(pg_conn):
 
 MIGRATION = _find_one("migrations", _MIGRATION_GLOB)
 ROLLBACK = _find_one("rollbacks", _ROLLBACK_GLOB)
+# add-cyl-pipeline-ui's cyl_pipeline_run_experiments view depends on both run tables, so its
+# rollback has to run first (rollbacks apply in reverse-chronological order).
+RUN_EXPERIMENTS_ROLLBACK = _find_one(
+    "rollbacks", "*_add_cyl_pipeline_run_experiments_rollback.sql"
+)
 
 
 def test_migration_body_is_idempotent(pg_conn):
@@ -996,6 +1001,8 @@ def test_rollback_removes_everything(pg_conn):
     if MIGRATION is None or ROLLBACK is None:
         pytest.skip("migration/rollback not written yet")
     with pg_conn.cursor() as cur:
+        if RUN_EXPERIMENTS_ROLLBACK is not None:
+            cur.execute(_sql_body(RUN_EXPERIMENTS_ROLLBACK))
         cur.execute(_sql_body(ROLLBACK))
 
         for table in (RUNS_TABLE, SCANS_TABLE):
