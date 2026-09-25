@@ -99,7 +99,7 @@
     - use `"params": {}` and show `"reused_count": 0`;
     - one sentence saying params are recorded but not yet applied (#897);
     - one sentence naming `/api/cyl/pipeline` as the web caller.
-- [ ] 1.8 PR body:
+- [x] 1.8 PR body: **(done: #902, merged 2026-09-25 as 683f8e1e.)**
   - **Schema changes** section: ER snapshot, plus a constraints-table row for the index with "How it is added" = `IF NOT EXISTS (index)`.
   - Run `make pr-body-check BODY=<file>` and `openspec validate add-cyl-pipeline-ui --strict`.
   - Use "Refs #15".
@@ -108,22 +108,22 @@
 
 ## 2. `wave`/`age` search params on the traits page
 
-- [ ] 2.1 **Test first.** Write `web/app/app/traits/[speciesId]/[experimentId]/initial-selection.test.ts` for a pure `resolveSelection(options, requested, current)`:
+- [x] 2.1 **Test first.** Write `web/app/app/traits/[speciesId]/[experimentId]/initial-selection.test.ts` for a pure `resolveSelection(options, requested, current)`:
   - a requested pair that is available is selected;
   - an unavailable requested pair falls back to the defaults (last wave, max age for that wave) and returns a note;
   - `current` is kept on a trait change when still available, otherwise it falls back with a note;
   - an age that exists but not for the chosen wave falls back.
-- [ ] 2.2 **Test first.** Write `parse-search-params.test.ts` for `parseWaveAge(searchParams)`:
+- [x] 2.2 **Test first.** Write `parse-search-params.test.ts` for `parseWaveAge(searchParams)`:
   - `'1'` and `'14'` give numbers;
   - `'0x1'`, `''`, `'07'`, `'1.5'` and arrays (`?wave=1&wave=2`) are ignored.
-- [ ] 2.3 **Test first.** Write `TraitExplorer.test.tsx` (jsdom, real timers):
+- [x] 2.3 **Test first.** Write `TraitExplorer.test.tsx` (jsdom, real timers):
   - mock `@/lib/supabase/client` `rpc` to resolve rows, and `@/components/scan-trait-boxplot` to a stub;
   - with `initialWave`/`initialAge` set, the selects show them after `await act(...)`;
   - after changing trait, the selection is kept if still valid;
   - an unavailable pair shows the fallback note.
 
   Also write a traits `page.test.tsx` (expression-page style, mocking `./TraitExplorer` to capture its props): `searchParams` `{wave: '1', age: '14'}` become numeric props.
-- [ ] 2.4 Implement:
+- [x] 2.4 Implement: **(done. Defaults stay the page's existing ones, last wave and oldest age overall, so no-parameter visits are unchanged; the red run was 25/25 helper tests and 6 component/page tests failing on assertions against stubs.)**
   - `page.tsx` awaits `searchParams` (typed `Promise<Record<string, string | string[] | undefined>>`) and passes the parsed values;
   - `TraitExplorer` calls `resolveSelection` **inside** its data effect, after the options are computed. A ref marks the URL params as consumed after the first load;
   - key `TraitExplorer` on `${wave}-${age}`.
