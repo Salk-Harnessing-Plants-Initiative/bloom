@@ -1,9 +1,9 @@
-"""`bloomctl scrna list`: what dataset files storage holds, and which dataset each belongs to."""
+"""`bloomctl scrna hdf5 list`: what dataset files storage holds, and which dataset each belongs to."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 import httpx
@@ -22,8 +22,6 @@ RECORD_FIELDS = ["dataset", "dataset_id", "fingerprint", "bytes", "uploaded", "p
 
 # A ceiling on how many objects to fetch, so the listing is never unbounded.
 DEFAULT_LIMIT = 1000
-# How many fingerprints one lookup of the dataset table asks about.
-LOOKUP_CHUNK = 100
 
 
 @click.command(name="list")
@@ -68,20 +66,25 @@ def list_files(
     fmt = resolve_output_format(output_fmt, as_json)
     if local_file and search:
         raise click.UsageError("Pass a SEARCH or --file, not both.")
-    if local_file:
-        search = _object.fingerprint_of(local_file)
     conn = _session.connect(profile)
     with _transfer.open_client() as http:
-        entries = _fetch(http, conn.endpoint, limit)
+        if local_file:
+            # One name, so ask storage about that name rather than reading the folder: the
+            # answer is exact however many objects the bucket holds.
+            fingerprint = _object.fingerprint_of(local_file)
+            entries = _named(http, conn.endpoint, fingerprint)
+            if not entries:
+                raise click.ClickException(
+                    f"{local_file.name} is not stored. Its fingerprint is {fingerprint}, and "
+                    f"storage holds no object under that name — run `bloomctl scrna hdf5 "
+                    f"upload` to send it."
+                )
+        else:
+            entries = _fetch(http, conn.endpoint, limit)
     records = _annotate(conn.client, entries)
     if search:
         wanted = search.lower()
         records = [r for r in records if wanted in _searchable(r)]
-    if local_file and not records:
-        raise click.ClickException(
-            f"{local_file.name} is not stored. Its fingerprint is {search}, and storage holds "
-            f"no object under that name — run `bloomctl scrna upload` to send it."
-        )
     if fmt:
         click.echo(render(records, RECORD_FIELDS, fmt))
         return
@@ -104,12 +107,34 @@ def _nothing_found(search: str | None) -> str:
     return "Storage holds no dataset files."
 
 
+def _named(http: httpx.Client, endpoint: Any, fingerprint: str) -> list[dict[str, Any]]:
+    """The one object stored under this fingerprint, or nothing, in a single request."""
+    name = f"{fingerprint}{_object.SUFFIX}"
+    found = _asked(
+        lambda: _transfer.list_objects(
+            http, endpoint, _object.BUCKET, _object.FOLDER, search=name
+        )
+    )
+    return [entry for entry in found if entry.get("name") == name]
+
+
+def _asked(call: Callable[[], list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Put a question to storage, turning a refusal into a sentence rather than a traceback."""
+    try:
+        return call()
+    except (_transfer.SessionExpired, _transfer.Forbidden) as exc:
+        raise click.ClickException(str(exc)) from exc
+    except (_transfer.TransferError, httpx.HTTPError) as exc:
+        reason = str(exc) or type(exc).__name__
+        raise click.ClickException(f"storage could not be asked what it holds: {reason}") from exc
+
+
 def _fetch(http: httpx.Client, endpoint: Any, limit: int) -> list[dict[str, Any]]:
     """Every object under the bucket's h5ad folder, a page at a time, up to `limit`."""
     entries: list[dict[str, Any]] = []
-    try:
-        while len(entries) < limit:
-            page = _transfer.list_objects(
+    while len(entries) < limit:
+        page = _asked(
+            lambda: _transfer.list_objects(
                 http,
                 endpoint,
                 _object.BUCKET,
@@ -117,14 +142,10 @@ def _fetch(http: httpx.Client, endpoint: Any, limit: int) -> list[dict[str, Any]
                 limit=min(_transfer.LIST_PAGE, limit - len(entries)),
                 offset=len(entries),
             )
-            entries.extend(page)
-            if len(page) < _transfer.LIST_PAGE:
-                break
-    except (_transfer.SessionExpired, _transfer.Forbidden) as exc:
-        raise click.ClickException(str(exc)) from exc
-    except (_transfer.TransferError, httpx.HTTPError) as exc:
-        reason = str(exc) or type(exc).__name__
-        raise click.ClickException(f"storage could not be asked what it holds: {reason}") from exc
+        )
+        entries.extend(page)
+        if len(page) < _transfer.LIST_PAGE:
+            break
     return entries
 
 
@@ -162,24 +183,26 @@ def _datasets_by_checksum(client: Any, fingerprints: list[str]) -> dict[str, dic
     """The dataset row recorded against each fingerprint, for those that have one.
 
     An object can be stored before any dataset row points at it, so a fingerprint with no row
-    is expected, not an error.
+    is expected, not an error. Batched by ``fetch_in_batches`` because the `in.(…)` filter
+    travels in the URL and a SHA-256 is 64 characters of it.
     """
-    from .._postgrest import queried
+    from .._postgrest import fetch_in_batches, queried
 
-    found: dict[str, dict[str, Any]] = {}
-    for start in range(0, len(fingerprints), LOOKUP_CHUNK):
-        chunk = fingerprints[start : start + LOOKUP_CHUNK]
-        rows = queried(
-            "datasets",
-            lambda: client.table("scrna_datasets")
+    if not fingerprints:
+        return {}
+    rows = queried(
+        "datasets",
+        lambda: fetch_in_batches(
+            lambda batch: client.table("scrna_datasets")
             .select("id, name, source_checksum")
-            .in_("source_checksum", chunk)
-            .is_("deleted_at", "null")
-            .execute()
-            .data,
-        ) or []
-        for row in rows:
-            found.setdefault(row.get("source_checksum") or "", row)
+            .in_("source_checksum", batch)
+            .is_("deleted_at", "null"),
+            fingerprints,
+        ),
+    ) or []
+    found: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        found.setdefault(row.get("source_checksum") or "", row)
     return found
 
 

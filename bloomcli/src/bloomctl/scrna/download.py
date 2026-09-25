@@ -1,4 +1,4 @@
-"""`bloomctl scrna download`: fetch a dataset's h5ad, decompressed and checked against its fingerprint."""
+"""`bloomctl scrna hdf5 download`: fetch a dataset's h5ad, decompressed and checked against its fingerprint."""
 
 from __future__ import annotations
 

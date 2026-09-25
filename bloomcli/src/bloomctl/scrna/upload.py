@@ -1,4 +1,4 @@
-"""`bloomctl scrna upload`: put a dataset's h5ad into storage, gzipped, under its fingerprint."""
+"""`bloomctl scrna hdf5 upload`: put a dataset's h5ad into storage, gzipped, under its fingerprint."""
 
 from __future__ import annotations
 

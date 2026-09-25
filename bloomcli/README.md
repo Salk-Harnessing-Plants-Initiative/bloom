@@ -537,9 +537,12 @@ file's structure:
 It then gzips the file and sends it through storage's resumable upload. Because an object is
 named by the fingerprint of its contents, storage already holding that name means it holds
 this very file, byte for byte: the command says so and sends nothing. If the connection
-drops, run the same command again: the gzipped copy and what identifies the upload are kept,
-and the transfer continues from the last byte storage received. An upload recorded for another server, or for a gzipped copy that has
-since been rewritten, is started afresh rather than resumed.
+drops, run the same command again: the gzipped copy and what identifies the upload wait in
+`~/.bloom/scrna-uploads/`, and the transfer continues from the last byte storage received.
+That is also where "what is prepared is kept" refers to, in the messages below — delete the
+files there to start an upload over from the beginning. An upload recorded for another
+server, or for a gzipped copy that has since been rewritten, is started afresh rather than
+resumed.
 
 Where storage takes every byte and still stores nothing, the command says so and forgets the
 server's upload while keeping the gzipped copy: the protocol will not finish an upload that

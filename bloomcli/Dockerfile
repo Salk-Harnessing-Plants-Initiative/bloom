@@ -20,7 +20,7 @@ WORKDIR /app
 USER bloom
 
 # Install dependencies only (cached independently of source code changes).
-# --extra scrna: `scrna upload` reads HDF5, so the image needs h5py/numpy or half
+# --extra scrna: `scrna hdf5 upload` reads HDF5, so the image needs h5py/numpy or half
 # the command is dead in the published artifact.
 COPY --chown=bloom:bloom pyproject.toml uv.lock README.pypi.md ./
 RUN uv sync --frozen --no-dev --no-cache --no-install-project --extra scrna

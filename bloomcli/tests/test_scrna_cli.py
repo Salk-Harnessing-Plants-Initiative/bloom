@@ -3,6 +3,7 @@
 import gzip
 import hashlib
 import json
+import re
 
 import httpx
 import pytest
@@ -17,21 +18,23 @@ NORMALIZATION = {"transform": "log1p", "scaling": "library_size", "target_sum": 
 
 
 class _Query:
-    def __init__(self, rows):
+    def __init__(self, rows, asked=None):
         self.rows = rows
+        self.asked = asked if asked is not None else []
 
     def select(self, _columns):
         return self
 
     def eq(self, column, value):
-        return _Query([r for r in self.rows if str(r.get(column)) == str(value)])
+        return _Query([r for r in self.rows if str(r.get(column)) == str(value)], self.asked)
 
     def is_(self, column, value):
         assert value == "null"
-        return _Query([r for r in self.rows if r.get(column) is None])
+        return _Query([r for r in self.rows if r.get(column) is None], self.asked)
 
     def in_(self, column, values):
-        return _Query([r for r in self.rows if r.get(column) in values])
+        self.asked.append(list(values))  # what each request filtered on, to size the URL
+        return _Query([r for r in self.rows if r.get(column) in values], self.asked)
 
     def execute(self):
         return type("R", (), {"data": self.rows})()
@@ -40,10 +43,11 @@ class _Query:
 class FakeClient:
     def __init__(self, datasets=()):
         self.datasets = [dict({"deleted_at": None, "metadata": {}}, **d) for d in datasets]
+        self.asked: list[list] = []
 
     def table(self, name):
         assert name == "scrna_datasets"
-        return _Query(self.datasets)
+        return _Query(self.datasets, self.asked)
 
 
 @pytest.fixture
@@ -74,6 +78,19 @@ def env(monkeypatch, tmp_path, storage):
 
 def _run(*args):
     return CliRunner().invoke(cli, ["scrna", "hdf5", *args])
+
+
+def _commands_it_names_must_exist(output: str) -> None:
+    """Every `bloomctl ...` a message tells the user to run has to resolve.
+
+    Grouping the verbs under `hdf5` left one message quoting a path that no longer existed,
+    and asserting on the wording alone would not have caught it.
+    """
+    named = re.findall(r"`bloomctl ([^`]+)`", output)
+    assert named, f"the message names no command to run:\n{output}"
+    for command in named:
+        found = CliRunner().invoke(cli, [*command.split(), "--help"])
+        assert found.exit_code == 0, f"it says to run `bloomctl {command}`, which does not exist"
 
 
 def _stored(storage, path):
@@ -621,6 +638,27 @@ def test_a_stored_file_is_listed_with_its_size(tmp_path, env, storage):
     assert f",{stored}," in result.output, f"the byte count storage reports\n{result.output}"
 
 
+def test_the_newest_upload_is_listed_first(tmp_path, env, storage):
+    """Someone checking a load that just ran should not have to hunt for it down the table."""
+    _, first = _upload(tmp_path, "a.h5ad")
+    _, second = _upload(tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
+    storage.created_at[f"scrna/{_object.object_path(first)}"] = "2026-09-01T09:00:00.000Z"
+    storage.created_at[f"scrna/{_object.object_path(second)}"] = "2026-09-24T09:00:00.000Z"
+    result = _run("list", "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert [r["fingerprint"] for r in json.loads(result.output)] == [second, first]
+
+
+def test_each_object_says_when_it_arrived(tmp_path, env, storage):
+    """A blank column passes every other assertion while telling the reader nothing."""
+    _, fingerprint = _upload(tmp_path)
+    storage.created_at[f"scrna/{_object.object_path(fingerprint)}"] = "2026-09-24T21:35:49.000Z"
+    result = _run("list", "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["uploaded"] == "2026-09-24 21:35"
+    assert "2026-09-24 21:35" in _run("list").output, "the table dropped it"
+
+
 def test_an_object_no_dataset_points_at_is_still_listed(tmp_path, env, storage):
     """A file is uploaded before its dataset row exists; the listing must not hide it."""
     _upload(tmp_path)
@@ -681,6 +719,18 @@ def test_a_local_file_already_stored_is_found_by_its_fingerprint(tmp_path, env, 
     assert [r["fingerprint"] for r in json.loads(result.output)] == [fingerprint]
 
 
+def test_a_stored_file_is_found_however_many_others_are_in_the_bucket(tmp_path, env, storage, monkeypatch):
+    """--file asks about one name. Scanning the folder instead would answer "not stored" for a
+    file that is there, as soon as the bucket outgrew the page it read."""
+    path, fingerprint = _upload(tmp_path)
+    for index in range(50):
+        storage.objects[f"scrna/{_object.FOLDER}/{index:064x}{_object.SUFFIX}"] = b"x"
+    monkeypatch.setattr(_transfer, "LIST_PAGE", 2)
+    result = _run("list", "--file", str(path), "--limit", "2", "--output", "json")
+    assert result.exit_code == 0, result.output
+    assert [r["fingerprint"] for r in json.loads(result.output)] == [fingerprint]
+
+
 def test_a_local_file_that_was_never_uploaded_is_reported_as_not_stored(tmp_path, env, storage):
     """Saying nothing, or printing an empty table, would read as "it is there"."""
     path = write_h5ad(tmp_path / "unsent.h5ad")
@@ -688,6 +738,7 @@ def test_a_local_file_that_was_never_uploaded_is_reported_as_not_stored(tmp_path
     assert result.exit_code != 0
     assert "is not stored" in result.output
     assert _object.fingerprint_of(path) in result.output
+    _commands_it_names_must_exist(result.output)
 
 
 def test_a_search_and_a_file_together_is_a_usage_error(tmp_path, env, storage):
@@ -727,6 +778,22 @@ def test_something_that_is_not_a_dataset_file_is_left_out(tmp_path, env, storage
     records = json.loads(result.output)
     assert len(records) == 1
     assert all(record["path"].endswith(".h5ad.gz") for record in records)
+
+
+def test_the_dataset_lookup_is_split_to_fit_the_url(env, storage):
+    """The `in.(…)` filter travels in the URL and a SHA-256 is 64 characters of it. The gateway
+    answers 414 past a few kilobytes, so one request per hundred objects would stop working."""
+    from bloomctl._postgrest import ID_FILTER_BUDGET_CHARS
+
+    for index in range(130):
+        storage.objects[f"scrna/{_object.FOLDER}/{index:064x}{_object.SUFFIX}"] = b"x"
+    assert _run("list", "--output", "json").exit_code == 0
+
+    asked = env["client"].asked
+    assert len(asked) > 1, "130 fingerprints went out as one request"
+    assert sum(len(batch) for batch in asked) == 130, "some fingerprints were never asked about"
+    longest = max(len(",".join(batch)) for batch in asked)
+    assert longest <= ID_FILTER_BUDGET_CHARS, f"a filter of {longest} chars exceeds the budget"
 
 
 def test_an_expired_session_listing_is_not_an_internal_error(env, storage):
