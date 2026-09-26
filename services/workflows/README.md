@@ -94,16 +94,21 @@ This route itself does not submit anything to Argo/Kubernetes — a separate
 worker (`dispatch_worker.py`, Phase 2, see below) claims each enqueued batch
 and submits it.
 
+`params` is recorded on the run and hashed for the preview, but not yet applied: the cluster
+resolves species/mode/age from each scan's own metadata (bloom #897). Send `{}` unless you are
+testing the preview itself. The planned web UI (OpenSpec change `add-cyl-pipeline-ui`)
+will call this route through a `POST /api/cyl/pipeline` proxy.
+
 ```bash
 # Request: trigger every scan in experiment 123 — requires the caller's Supabase user JWT
 curl -X POST http://localhost:5100/pipeline \
   -H "Authorization: Bearer <supabase-user-jwt>" \
   -H "apikey: <anon-key>" \
   -H "Content-Type: application/json" \
-  -d '{"target_level": "experiment", "target_id": 123, "params": {"age": 14}}'
+  -d '{"target_level": "experiment", "target_id": 123, "params": {}}'
 
-# Response:
-# {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 2}
+# Response (reused_count is 0 in practice for params: {}; see bloom #584/#897/#901):
+# {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 0}
 ```
 
 ### Pipeline dispatch worker
