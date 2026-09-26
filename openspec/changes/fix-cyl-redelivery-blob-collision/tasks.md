@@ -257,35 +257,83 @@ worktree alone is a one-command undo.
 
 ## 9. Post-merge — the deployment tail (NOT done at merge)
 
-- [ ] 9.1 Verify the grant on **staging**, two ways: query `information_schema.column_privileges`
+- [ ] 9.1 **PARTIALLY CONFIRMED 2026-09-21 — behaviourally, not by direct query.** The served-request
+      half is satisfied in the strongest available form: across six captured write-back logs spanning
+      five workflows (`7wxm2`, `bxpmt`, `fkfkz`, `9s92h`, `p6lz2`, `hpdpf`), covering dozens of
+      deliveries including genuine no-op re-deliveries where the gate must have been consulted,
+      there are **zero `WARNING` lines**. That is dispositive because of how the gate reports:
+      `source_already_ingested`'s `degraded_reason` is assigned to `gate_warning`
+      (`ingest.py:761`) and attached to **every** `ScanResult` (`:832-833`), and `_batch.py:103`
+      prints it as `WARNING {scan_key}:` — surfaced in both the summary and the JSON report
+      precisely "because the log sink it would otherwise go to is unreadable in the Argo
+      deployment" (`_batch.py:46-54`). A missing grant makes the gate **fail open** and emit that
+      warning on every delivery. Zero warnings ⇒ the gate was answerable every time ⇒ the read
+      grant is present in staging.
+      **Still open:** the ACL half — `information_schema.column_privileges` / `has_table_privilege`
+      was never queried directly. This task deliberately asks for *both* because "the ACL row and
+      the served request are different claims"; only one has been established. Left unticked for
+      that reason rather than rounded up.
+      Original task: Verify the grant on **staging**, two ways: query `information_schema.column_privileges`
       _and_ issue a real `GET /rest/v1/cyl_trait_sources?select=id&idempotency_key=eq.<known>&limit=1`
       with a `bloom_workflows` token. The ACL row and the served request are different claims, and
       the gap between them is what cost 84,748 video rows. CI's DB is always empty, so the merge
       proves nothing — bloom#780's root cause.
 - [ ] 9.2 Confirm the migration filename that landed is the one staging applied
       (`supabase migration list`); the retimestamp churn in 4.2 means it may have been renamed.
-- [ ] 9.3 Wait for `docker-build-bloomcli` on the merge commit (it fires automatically on the
+- [x] 9.3 **DONE** — the image built and is live: the cluster runs `bloomctl:sha-28034f6` (= merge commit `28034f6d`); previous tag for rollback was `sha-0614889`. Original: Wait for `docker-build-bloomcli` on the merge commit (it fires automatically on the
       `staging` push, path filter `bloomcli/**`) and record the immutable `sha-…` tag **and the
       previous one**, for rollback. Nothing is built by hand.
 - [ ] 9.4 `bash scripts/check_cluster_drift.sh` in `sleap-roots-pipeline`; record the before
       state.
-- [ ] 9.5 Bump the pin in **all three** templates that carry it —
+- [x] 9.5 **DONE via sleap-roots-pipeline PR #79** ("bump bloomctl to sha-28034f6 across all three templates", merged 2026-09-17T18:18:10Z) — immutable `sha-` tag, all three sites. Original: Bump the pin in **all three** templates that carry it —
       `sleap-roots-write-back-template.yaml`, `sleap-roots-images-downloader-template.yaml`
       **and `sleap-roots-exit-gate-template.yaml`** (added by sleap-roots-pipeline PR #75,
       whose own comment says "bump all three together") — to the immutable `sha-…` tag, never
       the mutable `staging` tag — `runai-busch-lab` is shared with production, so a mutable tag there
       means the next unrelated bloomcli merge silently redeploys production.
-- [ ] 9.6 `argo template update` in `runai-busch-lab`; re-run `check_cluster_drift.sh`.
+- [x] 9.6 **DONE — but the 2026-09-21 evidence below is RETRACTED as unreproducible; see bloom#879.**
+      The retracted claim read: "verified independently 2026-09-21 via
+      `scripts/check_registered_templates.py`: all five registered templates report IN SYNC with the
+      pin, exit 0, four days after the bump." That cannot have happened, on two independent grounds.
+      It is self-contradicting: this task was confirming the `bloomctl` bump to `sha-28034f6` had
+      reached the cluster, and that comparator reporting "IN SYNC **with the pin**" would have meant
+      the bump had *not* landed — it cannot evidence both. And `SLEAP_ROOTS_PIPELINE_REF` has not moved
+      since #866 set it to `310aae63`, while the templates diverged from it on 2026-09-17, so a
+      2026-09-21 run of that comparator could only have reported DRIFT. Which comparator actually ran
+      is **not recoverable** from the record, and no attribution should be guessed — that
+      irrecoverability is the point, and bloom#879 adds a requirement that such records name their
+      comparator, namespace, date and exit code.
+      **Re-established 2026-09-22 with named evidence.** The substantive conclusion holds: the cluster
+      does carry the bumped pins. `sleap-roots-pipeline/scripts/check_cluster_drift.sh`, run from a
+      clean sibling checkout at `04c2fc1c` on `main` against `runai-busch-lab`, reports IN SYNC on all
+      five, exit 0, and prints `bloomctl:sha-28034f6` on images-downloader, write-back and exit-gate.
+      Independently, `scripts/check_template_contract.py` (bloom#879's rewrite of the comparator named
+      above) reports the contract satisfied, exit 0, printing the same three references.
+      Same recurring pattern as bloom#780: a tick recorded without reproducible evidence.
 - [ ] 9.7 Record explicitly that production now runs the new image **without** the grant (this PR
       targets `staging`; `origin/main` is 22 migrations / 241 commits behind), so production behaviour is
       today's behaviour, not the fix.
-- [ ] 9.8 Reproduce the original failure against staging; confirm exit zero.
+- [x] 9.8 **DONE — reproduced twice, independently, outside Argo and through the deployed path.**
+      1. **Original repro, 2026-09-17 17:34Z** (Elizabeth): `bloomctl` directly against the same
+         `a4_scratch_74` directories and the same two scans that produced srp#76.
+         Before: `Ingested 0/2 (2 failed)` with "refusing to overwrite".
+         After: **`Ingested 0/2 (2 skipped)`, EXIT=0.** Recorded in srp#76's closing comment; this
+         is the closest match to the original failure and the cleanest evidence for this task.
+      2. **In-cluster equivalent, 2026-09-21**, through the deployed WorkflowTemplate and image:
+         on a fresh synthetic scan, only its prediction artifacts were deleted (checksums
+         recorded), then re-run at an **unchanged** `predict_code_sha` — so predict genuinely
+         rewrote different bytes at a fixed key (`lateral fc69ed2f…→6f33e9be…`,
+         `primary f4a06804…→18366b91…`, `idempotency_key 4e17ca1c…` unchanged). Workflow
+         `sleap-roots-pipeline-hpdpf`, `Succeeded`, write-back exit 0, write-back succeeded
+         (`source_id=133`), **zero** occurrences of "refusing to overwrite" or any blob error.
+      The second is the stronger form: it exercises the recompute-at-unchanged-key condition that
+      is the actual trigger, through the path production will use.
 - [ ] 9.9 After the staging→main promotion merges, re-run 9.1 against the production DB and 9.8
       against production.
 - [ ] 9.10 Only once 9.1–9.9 are ticked: close sleap-roots-pipeline#76, then open the
       `chore(openspec): archive fix-cyl-redelivery-blob-collision` PR. Do not archive earlier —
       bloom#708 and bloom#806 both still carry unfinished deploy-verification tails.
-- [ ] 9.11 sleap-roots-pipeline PR #75 has **merged**, so the earlier hold on editing its
+- [x] 9.11 **CONFIRMED** — PR #75 merged 2026-09-16T18:50:18Z (`561d0571`); its change is now archived upstream as `2026-09-21-add-partial-success-exit-gate`. sleap-roots-pipeline PR #75 has **merged**, so the earlier hold on editing its
       `docs/bloom-integration/roadmap.md` and `add-partial-success-exit-gate/tasks.md` is
       lifted. That merge is what introduced the third pin site in 9.5 — re-read it before
       bumping.

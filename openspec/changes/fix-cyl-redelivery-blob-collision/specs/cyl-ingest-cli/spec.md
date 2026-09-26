@@ -51,6 +51,13 @@ gate is reached (sleap-roots-pipeline#76).
   `ARGO_WORKFLOW_NAME` currently always does; that case is reported `failed` with
   `retriable=false` by the `cyl-pipeline-run-scan-status` contract, and reconciling the two
   contracts is tracked as bloom#875 (see `design.md` Risks)
+  <!-- RESOLVED — see fix-cyl-redelivery-status-fallback (bloom#875, PR #880, migration
+  20260917140000, live on staging 2026-09-18). "currently always does" is no longer true: the RPC
+  now falls back to a scan_id-keyed UPDATE when the source_id join matches nothing, so a
+  cross-workflow re-delivery reports status_update_matched=true. The normative text above is left
+  as written deliberately — it belongs to this change, not that one, and rewriting another
+  unarchived change's delta blind is the archive-ordering hazard that change's design.md warns
+  against. Supersede it properly when this change is next revisited or archived. -->
 
 #### Scenario: A first delivery is unaffected
 
@@ -231,14 +238,26 @@ already-ingested check does not fire — and requires the recovery the collision
 - **THEN** the retry fails at the path collision rather than succeeding, because no source row
   exists for the already-ingested check to find
 
+<!-- 2026-09-21: this requirement's text was RAISED to match the current live spec, which already
+carries it. `fix-cyl-redelivery-status-fallback` archived first (bloom#875/#880) and its delta was
+written as a strict superset of this one's — adding the `status_update_matched` clause and a fourth
+scenario, "Re-delivery under a new ARGO_WORKFLOW_NAME is reported as a benign no-op". This block
+previously held the pre-#880 text (3 scenarios, no status_update_matched clause), so archiving this
+change as-is would have replaced the live block wholesale and silently dropped both. It is now
+byte-identical to `openspec/specs/cyl-ingest-cli/spec.md`, making this requirement a no-op at
+archive time — which is correct, since this change's own contribution to it is already live. -->
 ### Requirement: Re-ingest is a benign, distinctly-reported no-op
 
 The command SHALL report the RPC's first-writer-wins no-op — `was_noop=true`, which the RPC
 returns without raising for an already-ingested envelope — as a success distinct from a real
 error, exiting zero. Re-ingesting the same envelope therefore MUST NOT be reported as a failure.
 This SHALL hold end to end, not only for the RPC's response: a re-delivery whose producer
-regenerated its artifacts MUST NOT fail at the blob-upload step before the RPC's gate is
-reached.
+regenerated its artifacts MUST NOT fail at the blob-upload step before the RPC's gate is reached,
+and it MUST NOT be reported as a failure on account of the RPC's `status_update_matched` field
+regardless of which `ARGO_WORKFLOW_NAME` re-delivers it — a fresh pipeline run re-dispatching an
+already-ingested scan under a **new** workflow name is exactly as benign a no-op as one
+re-dispatched under the same workflow name, and the `cyl-trait-writeback` capability's fallback
+update is what makes that true at the RPC layer.
 
 #### Scenario: First ingest of an envelope
 
@@ -258,3 +277,15 @@ reached.
   `.slp` bytes that differ from those already stored at the derived path
 - **THEN** the command still reports a benign, distinctly-reported no-op and exits zero, because
   the upload is skipped before the divergence can be observed
+
+#### Scenario: Re-delivery under a new ARGO_WORKFLOW_NAME is reported as a benign no-op
+
+- **WHEN** an envelope is first delivered successfully under one `ARGO_WORKFLOW_NAME`, the same
+  scan is later re-dispatched under a **different** `ARGO_WORKFLOW_NAME` (a fresh pipeline run
+  over an already-ingested scan), and the same envelope is re-delivered with that new workflow
+  name threaded through to the RPC
+- **THEN** the RPC's `cyl-trait-writeback` fallback marks the new workflow's
+  `cyl_pipeline_run_scans` row `'written'` and returns `status_update_matched: true`, so the
+  command (and the shared per-envelope batch helper `ingest_one_envelope`, used by `cyl
+  batch-ingest-result`) reports the delivery as a benign, distinctly-reported no-op and exits
+  zero — not a failure, and not counted against the pipeline run's `failed_count`

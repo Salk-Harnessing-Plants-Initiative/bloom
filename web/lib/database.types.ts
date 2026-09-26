@@ -3984,6 +3984,71 @@ export type Database = {
           },
         ]
       }
+      cyl_pipeline_run_experiments: {
+        Row: {
+          created_at: string | null
+          experiment_id: number | null
+          run_id: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_pipeline_run_scans_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_pipeline_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plants_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_trait_by_experiment_wave"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "recent_experiments_by_cyl_scanner"
+            referencedColumns: ["experiment_id"]
+          },
+        ]
+      }
       cyl_plant_search: {
         Row: {
           accession_id: number | null
