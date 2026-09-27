@@ -285,28 +285,29 @@ Tasks 2.1-2.5 land in one atomic commit. Spy discipline from section 1 applies.
       closed record would otherwise read as a silently dropped location.
 - [x] 6.7 Set every task above to `- [x]` only once the work it describes is actually done.
 
-## 7. Recommended follow-ups (not implemented here)
+## 7. Follow-ups (not implemented here)
 
-Listed rather than filed, since opening public issues was not in scope for this change. Each
-is a `proposal.md` Non-Goal with no existing issue tracking it.
+Now **filed as GitHub issues** rather than left as bullets. The approving review noted that
+unchecked `tasks.md` bullets risk disappearing when this OpenSpec change archives — which is
+the same "no owner" failure that produced #808 itself.
 
-- [ ] 7.1 Retire `PLOTS_DIR`'s remaining plumbing (static mount, env validation, compose
+- [x] 7.1 **Filed as #908.** Retire *bloommcp's* `PLOTS_DIR` plumbing (static mount, env validation, compose
       bind-mount). `_viz_shared.py`'s docstring already calls it "a separate retirement" with
       no issue link; #476 and #591 cover `BLOOM_TRAITS_DIR`, not this.
-- [ ] 7.2 Migrate `qc_inspect`/`remove_outliers` to `generate_figures`, so the `dict`-holding
+- [x] 7.2 **Filed as #907.** Migrate `qc_inspect`/`remove_outliers` to `generate_figures`, so the `dict`-holding
       tools converge on one figure-lifecycle path. Task 3.4's comment rewrite should point at
       this issue once filed, rather than leaving it unowned — the same "no owner PR" failure
       that produced #808.
 - [ ] 7.3 Add `pytest-timeout` to `bloommcp`'s `test` extra with a per-test timeout on the
       lock tests, converting a nested-acquisition hang into a named failure (currently
       bounded only by `pr-checks.yml`'s `timeout-minutes: 20`; cf. #454).
-- [ ] 7.4 Give the 3 converged `plot_*` tools the same non-raising close posture
+- [x] 7.4 **Filed as #905.** Give the 3 converged `plot_*` tools the same non-raising close posture
       (`design.md` Decision 3, "Divergence left in place"): their bare `plt.close(fig)` runs
       in a `finally` *after* `store.commit`, so a raising close there can still produce a
       committed-but-reported-failed run.
 - [ ] 7.5 Guard `qc_inspect`'s heatmap `savefig`, whose failure aborts the whole tool despite
       the surrounding block being documented as best-effort.
-- [ ] 7.6 `remove_outliers` accepts `plots=[]` and silently persists nothing.
+- [x] 7.6 **Filed as #906.** `remove_outliers` accepts `plots=[]` and silently persists nothing.
       `_make_figures` never calls `validate_plot_keys` (which exists to reject `[]` and is
       what `clustering`/`pca_analysis`/`umap_analysis`/`heritability_analysis` all use), and
       `plots` carries no `min_length`, so `include_plots=True, plots=[]` takes the
@@ -320,6 +321,43 @@ is a `proposal.md` Non-Goal with no existing issue tracking it.
       no logging configuration and no metrics surface in `bloommcp` at all, the new
       swallowed-close `WARNING` lands in an unaggregated stream on an unbounded container —
       the right thing to log, but not yet operator-actionable.
+      Not filed: an ops/infra change with no bloommcp code in it, and 7.4's #905 is the
+      higher-value observability item. Raise separately if wanted.
+
+## 9. Approval-review fixes (round 3)
+
+PR #832 was approved with no blocking issues. Remaining items addressed here.
+
+- [x] 9.1 **File the deferred follow-ups as issues** (#905, #906, #907, #908) rather than
+      leaving them as bullets that vanish on archive. While writing #908 I found the
+      framing was wrong: `langchain` still writes to `BLOOM_PLOTS_DIR`
+      (`plot_renderer.py:52`, mounted at `server.py:94-96`), so this is not "retire an
+      unused directory" — only bloommcp's side is dead. The issue says so up front, since
+      a PR acting on the original wording would have broken the agent's plot rendering.
+      7.3 (pytest-timeout), 7.5 (heatmap `savefig`) and 7.7 (ops) are left in this file.
+- [x] 9.2 **Add a close-vs-close serialization test.** Only create-vs-close and
+      create-vs-create were tested. Provably fine given one shared mutex — but round 2
+      established that `Gcf.destroy`'s `pop` raises mid-scan, so close-vs-close is a
+      genuine racing pair, and this change's own standard is to verify by execution.
+      Keyed on figure identity rather than a mutable flag, which would have made the
+      observed order timing-dependent. Verified RED when one batch is put on a separate
+      lock: `order=['second-closed', 'first-closed', 'first-closed']`.
+- [x] 9.3 **Test `close_figures(None)`.** `design.md` Decision 1 advertises it as safe and
+      it is, but only via the `if not figures:` truthiness guard — accidentally rather
+      than by contract, and untested. Pinned, so a guard rewritten as `len(figures) == 0`
+      fails here rather than raising `TypeError` from inside a `finally` at runtime.
+- [x] 9.4 **Close the meta-guard's dual-importer gap.** The call-site-list test used
+      `if/elif`, so a future module importing *both* `call_with_figure_cleanup` and
+      `generate_figures` would be checked against only the first list. Now checked
+      against both, with the "listed in the wrong block" assertion exempting dual
+      importers rather than flagging them. Latent, not live.
+- [x] 9.5 **Correct the stale test count in the PR body** (1723 → 1725).
+- [x] 9.6 **Diagnose the one red CI check.** "Lint CVE changes are isolated" is a false
+      positive, as the review suspected: it compares against a base commit predating this
+      branch's staging merge, so it attributes `.trivyignore` (changed on staging by
+      #848) plus ~20 unrelated `web/components/expression-*` files to this PR. Verified
+      `gh pr diff 832 --name-only` is 11 files with no `.trivyignore`. Re-merging staging
+      refreshes the base.
 
 ## 8. Follow-up review fixes (round 2)
 

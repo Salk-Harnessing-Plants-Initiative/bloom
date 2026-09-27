@@ -1038,9 +1038,14 @@ def test_the_lock_comments_call_site_lists_are_exhaustive():
             and (node.module or "").endswith("tools._plots")
             for a in node.names
         }
+        # Not `elif`: a module may legitimately import both (a tool that wraps one
+        # delegate call directly and reaches others through generate_figures), and it
+        # then belongs in BOTH lists. An `elif` here would silently excuse it from the
+        # second — latent rather than live today, but exactly the kind of drift this
+        # test exists to catch.
         if "call_with_figure_cleanup" in imported:
             direct.add(py.stem)
-        elif "generate_figures" in imported:
+        if "generate_figures" in imported:
             via_generate.add(py.stem)
 
     src = Path(_plots.__file__).read_text(encoding="utf-8")
@@ -1060,9 +1065,13 @@ def test_the_lock_comments_call_site_lists_are_exhaustive():
         f"modules reaching the lock via generate_figures but absent from the comment's "
         f"list: {missing_via}"
     )
-    # And no module named in one block belongs in the other.
-    assert not [m for m in via_generate if m in direct_block], (
-        "a generate_figures user is listed as a direct caller — the drift #808 fixed"
+    # A module that reaches the lock ONLY via generate_figures must not be listed as a
+    # direct caller — the exact drift #808 corrected for `clustering`. A dual importer
+    # is legitimately in both, so exempt those rather than flagging them.
+    only_via = via_generate - direct
+    assert not [m for m in only_via if m in direct_block], (
+        "a generate_figures-only user is listed as a direct caller — the drift #808 "
+        f"fixed: {sorted(m for m in only_via if m in direct_block)}"
     )
 
 
@@ -1142,3 +1151,88 @@ def test_create_and_close_are_serialized_against_each_other():
         f"are not serialized against each other (order={order})"
     )
     plt.close("all")
+
+
+def test_two_close_batches_are_serialized_against_each_other():
+    """Close-vs-close is a racing pair in its own right — assert it directly.
+
+    `Gcf.destroy` does `cls.figs.pop(num)`, and a `pop` mid-`.values()`-iteration raises
+    `RuntimeError("OrderedDict mutated during iteration")` just as an insert does (see
+    `_plots.py`'s lock comment for the measured matrix). So two *unlocked* closes can
+    break each other with no create involved at all.
+
+    Provably fine given both batches take the same mutex — but this PR's own standard is
+    to verify by execution rather than by design reasoning, and the create-vs-close test
+    above would not notice a future refactor that gave the close path its own separate
+    lock (it would still serialize against creates but no longer against other closes).
+    """
+    import threading
+    import time
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from bloom_mcp.tools import _plots
+
+    order: list[str] = []
+    first_inside = threading.Event()
+    real_close = plt.close
+
+    batch_a = {"a1": plt.figure(), "a2": plt.figure()}
+    batch_b = {"b1": plt.figure()}
+    slow_figs = {id(f) for f in batch_a.values()}
+
+    def _slow_close(fig=None):
+        # Keyed on figure identity, not a mutable flag: a flag flipped by the first
+        # thread would still be set when the second acquires the lock, making the
+        # observed order timing-dependent.
+        if id(fig) in slow_figs:
+            first_inside.set()
+            time.sleep(0.2)
+            order.append("first-closed")
+        return real_close(fig) if fig is not None else real_close()
+
+    def _first():
+        _plots.close_figures(batch_a)
+
+    def _second():
+        first_inside.wait(timeout=5)
+        _plots.close_figures(batch_b)
+        order.append("second-closed")
+
+    plt.close = _slow_close
+    try:
+        threads = [threading.Thread(target=_first), threading.Thread(target=_second)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        assert not any(t.is_alive() for t in threads), (
+            "a thread hung — possible deadlock"
+        )
+    finally:
+        plt.close = real_close
+
+    assert order and order[0] == "first-closed", (
+        "the second close batch did not wait for the first — the two are not "
+        f"serialized against each other (order={order})"
+    )
+    assert order[-1] == "second-closed", order
+    plt.close("all")
+
+
+def test_close_figures_tolerates_none_as_documented():
+    """`design.md` Decision 1 advertises `close_figures(None)` as safe, and
+    `qc_inspect`'s site 2 relies on the equivalent for a delegate that returns nothing.
+
+    It is currently safe via the `if not figures: return` truthiness guard rather than
+    an explicit `None` check — i.e. accidentally rather than by contract, and untested.
+    Pin it, so a future guard rewritten as `if len(figures) == 0:` (which raises on
+    `None`) fails here rather than in a `finally` at runtime, where it would replace a
+    real error with a `TypeError`.
+    """
+    close_figures(None)  # must not raise
+    close_figures({})  # the documented empty case
+    assert not FIGURE_REGISTRY_LOCK.locked(), "a no-op cleanup left the lock held"
