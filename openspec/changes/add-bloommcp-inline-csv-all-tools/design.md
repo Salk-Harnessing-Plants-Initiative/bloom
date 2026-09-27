@@ -212,13 +212,37 @@ class InlineInput:
     is_inline: bool
     label: str                    # experiment name, or "csv_content"
 
-def resolve_inline_or_experiment(*, experiment, csv_content, tool, registered_only=(), reader_call=None) -> InlineInput
+def resolve_inline_or_experiment(
+    *,
+    experiment: Optional[str],
+    csv_content: Optional[str],
+    reader_call: Optional[Callable[[], Any]] = None,
+    registered_only: Optional[Mapping[str, Any]] = None,
+    registered_field: str = "experiment",
+    csv_content_field: str = "csv_content",
+) -> InlineInput
 ```
 
 It owns: the exactly-one-of check, `reject_registered_only_params`, the parse (inline) or the
 supplied `reader_call` (registered), and `compute_input_sha256`. Everything genuinely per-tool —
 `require_clean` error mapping, `version` kwargs, the `source_note`, the fit gate — stays in the
 tool, passed in as `reader_call`.
+
+Two details of that signature were settled during review and matter to the tools still to adopt
+it, so the shape above is the shipped one rather than the first draft:
+
+- **`registered_field` / `csv_content_field`** name the caller's own parameters. There is no
+  `tool=` argument. `load_experiment_data` pairs `csv_content` with `filename`, and
+  `cross_experiment_correlations` resolves each side separately (`experiment_2` /
+  `csv_content_2`), so a single hardcoded vocabulary could not serve them. Messages are therefore
+  identical across tools *modulo those names* — which is the strongest equality that is actually
+  true, and what the roster test asserts.
+- **`registered_only` is a mapping, not a tuple, and tools should not build it by hand.** Pass
+  `registered_only_fields(params)`, which reads each field's own
+  `json_schema_extra={REGISTERED_ONLY: True}` marker and filters out values equal to the field's
+  declared default. The default-filtering is load-bearing, not a nicety: `include_plots: bool =
+  False` exists on five of the tools still to adopt this path, and a `None`-based filter would
+  reject the default and kill every inline call the moment that field was marked.
 
 **`qc_clean` is refactored onto it in the same change.** Leaving it on its hand-rolled version
 would give us two implementations of "exactly one is required" immediately. Its existing inline

@@ -141,12 +141,18 @@ _wider_ than the header is also refused: pandas would silently shift the values
 into the wrong columns, which is worse than a refusal for data you intend to
 analyse. A row narrower than the header is fine and is padded with blanks.
 
-### One caveat worth stating plainly
+### If inline calls start being refused at DEBUG
 
-`csv_content` is never written anywhere and never logged — but that guarantee is about
-bloommcp's normal operation. Raising the server's log level to `DEBUG` makes the MCP transport
-log whole request bodies, inline CSV included, into the container's logs. Don't run a shared
-bloommcp at `DEBUG` while callers are passing data they chose not to register.
+`csv_content` is never written anywhere and never logged. One thing could have broken that: the
+MCP transport logs whole request bodies — inline CSV included — when the server runs at `DEBUG`,
+and a log level is exactly what gets raised during an incident by someone not thinking about this
+feature.
+
+So the server disables the inline path itself while it is running at `DEBUG`, rather than leaving
+the guarantee to operator discipline. Inline calls are refused with a message naming `DEBUG`;
+everything using a registered `experiment` keeps working, so debugging is unaffected. Lower the
+log level to restore inline input. This does not apply when you are running bloommcp fully
+locally, where the logs are your own machine's.
 
 ## Retired tools and what replaced them
 

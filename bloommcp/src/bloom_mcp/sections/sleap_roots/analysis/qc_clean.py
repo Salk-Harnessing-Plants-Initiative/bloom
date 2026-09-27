@@ -766,17 +766,40 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
     # pca_analysis already rejects it, just later and less legibly. Called out
     # explicitly rather than quietly narrowed to inline to preserve a promise.
     if kept_cols:
-        numeric = cleaned_df[kept_cols].apply(pd.to_numeric, errors="coerce")
-        nonfinite_by_col = (~np.isfinite(numeric.to_numpy(dtype=float))).sum(axis=0)
-        infinite_cols = [
-            col for col, n in zip(kept_cols, nonfinite_by_col) if int(n) > 0
-        ]
+        kept_frame = cleaned_df[kept_cols]
+        numeric = kept_frame.apply(pd.to_numeric, errors="coerce")
+        numeric_values = numeric.to_numpy(dtype=float)
+
+        # `to_numeric(errors="coerce")` turns a genuinely non-numeric value into
+        # NaN, which then fails a finiteness test exactly like a real ±inf does.
+        # Reporting both as "found ±inf" would hand the caller a wrong diagnosis
+        # for a different defect — and "recompute the ratio that divided by zero"
+        # is useless advice for a cell that says "banana". The two are separated
+        # here rather than merged, even though `resolve_columns` should keep a
+        # non-numeric column out of `kept_cols` in the first place: the coercion
+        # call above is what anticipates such a column, so the message must too.
+        infinite_cols = sorted(
+            col
+            for col, has in zip(kept_cols, np.isinf(numeric_values).any(axis=0))
+            if bool(has)
+        )
+        # Coerced to NaN but not NaN in the source ⇒ the value was unparseable.
+        # (True NaN in a kept column is already impossible here — the no-NaN
+        # guard above rejects it — so this isolates the coercion casualties.)
+        coerced_cols = sorted(
+            col
+            for col, has in zip(
+                kept_cols, (numeric.isna() & ~kept_frame.isna()).any(axis=0)
+            )
+            if bool(has)
+        )
+
         if infinite_cols:
             raise BloomMCPError(
                 code="assumption_violated",
                 message=(
                     f"Cleanup produced no analysis-ready table — it left "
-                    f"non-finite values (±inf) in {sorted(infinite_cols)}. "
+                    f"non-finite values (±inf) in {infinite_cols}. "
                     f"These are not NaN, so the cleanup thresholds do not remove "
                     f"them, and every downstream analysis rejects them."
                 ),
@@ -785,6 +808,19 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
                     "upstream trait computation (a ratio or angle). Drop or "
                     "recompute the affected columns in your source data, or "
                     "exclude them with exclude_columns, then retry."
+                ),
+            )
+        if coerced_cols:
+            raise BloomMCPError(
+                code="assumption_violated",
+                message=(
+                    f"Cleanup produced no analysis-ready table — {coerced_cols} "
+                    f"survived as trait column(s) but contain values that are "
+                    f"not numbers at all."
+                ),
+                remedy=(
+                    "Remove or correct the non-numeric values in those columns, "
+                    "or exclude them with exclude_columns, then retry."
                 ),
             )
 

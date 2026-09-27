@@ -42,6 +42,31 @@ inline `qc_inspect` call.
       models plus `SummarizeTraitResult`, and `experiment_1`/`experiment_2`/`source_1`/`source_2`
       on `CrossExperimentCorrelationsResult`. Add `input_sha256: Optional[str]` to each.
 
+## 0a. qc_clean's finiteness guard (round-5 review: shipped without tasks or tests)
+
+- [x] 0a.1 Test: ±inf in a kept trait column is refused, for every spelling `read_csv` parses as
+      an infinity (`inf`, `-inf`, `Infinity`, `-Infinity`) — with a companion test asserting each
+      spelling really does parse to a float infinity, so a dropped column cannot make the others
+      pass for the wrong reason.
+- [x] 0a.2 Test: the refusal applies on the **registered** path too, and commits no run. This is a
+      deliberate behaviour change to a path this change otherwise holds byte-identical; the
+      fixture must build a float64 column, because a mixed Python list is object-dtype and
+      `resolve_columns` would drop it before the guard ever ran.
+- [x] 0a.3 Test: a finite table is unaffected.
+- [x] 0a.4 Test: `isna()` counts zero on an inf-bearing table — pinning *why* the guard exists, so
+      removing it fails loudly rather than quietly.
+- [x] 0a.5 Test: the remedy loop terminates — a caller following a consumer's non-finite remedy to
+      `qc_clean(csv_content=..., return_cleaned_csv=true)` gets an actionable error rather than a
+      certified table the consumer will reject again.
+- [x] 0a.6 Implement: separate ±inf from non-numeric. `to_numeric(errors="coerce")` turns
+      unparseable text into NaN, which fails the same finiteness test, so both were reported as
+      "found ±inf" — a wrong diagnosis for a different defect. Test the discrimination at the
+      guard's own expression, since `resolve_columns` keeps object-dtype columns out of
+      `kept_cols` and the tool cannot currently reach that branch.
+- [x] 0a.7 Test: the **persisted** cleaned CSV's pinned line terminator, read at commit time —
+      that is the byte sequence `hash_outputs` sees, and the staging directory is removed
+      immediately afterwards.
+
 ## 1. Shared resolver (`_inline_input`) — built and tested once
 
 - [x] 1.1 Test: `resolve_inline_or_experiment` rejects both-supplied with `invalid_input`, calling
@@ -67,6 +92,11 @@ inline `qc_inspect` call.
       naming the row count and the limit; a frame at exactly the cap is accepted.
 - [x] 1.10 Test: `BLOOMMCP_INLINE_CSV_ENABLED` set false rejects every `csv_content` call with a
       remedy naming the registered path, and leaves the registered path untouched.
+- [x] 1.10a Test: unset means enabled, but any **unrecognized** value means disabled — a typo at
+      the switch during an incident must not leave the risky path running.
+- [x] 1.10b Test: the inline path disables itself when the MCP dispatcher logs at `DEBUG` (whole
+      request bodies, inline content included) outside fully-local mode; the registered path is
+      unaffected, the refusal names `DEBUG`, and the configuration-disabled refusal does not.
 - [x] 1.11 Implement `InlineInput`, `resolve_inline_or_experiment`,
       `reject_registered_only_params`, `serialize_table_csv`, `MAX_INLINE_CSV_ROWS`, and the kill
       switch; rewrite the module docstring, which still says `qc_clean` is the only caller.
@@ -440,14 +470,12 @@ marker, run in the `dev-stack-smoke` CI job.
 - [ ] 15.6 Fix `BLOOM_PLOTS_URL`: the configured `/plots` path has no Caddy route and 404s.
 - [ ] 15.7 Add auth to `langchain/server.py`'s `/plots` static mount, which is reachable
       unauthenticated from the public ingress.
-- [ ] 15.9 Consider refusing `DEBUG` log levels in a deployed environment while the inline path
-      is enabled. The MCP transport logs full tool-call arguments — `csv_content` included — at
-      `DEBUG`; confirmed in the installed dependency, not merely inferred from docs. PR 1
-      documents the hazard in `connecting-claude-code.md` and `csv_content`'s field description,
-      but that leaves confidentiality resting entirely on operator discipline for data a
-      researcher deliberately chose not to register. A startup check (refuse to boot at `DEBUG`
-      when inline input is enabled, or force the inline path off) would make it structural.
-      Raised in PR #778's review.
+- [x] 15.9 **Done in PR 1**, not deferred: the inline path now disables itself when the MCP
+      dispatcher logs at `DEBUG` outside fully-local mode, rather than resting confidentiality
+      on operator discipline. The transport logs full tool-call arguments — `csv_content`
+      included — at that level, and a log level is exactly what gets raised during an incident
+      by someone not thinking about this feature. Disabling rather than refusing to boot: an
+      operator reaching for `DEBUG` needs the server up, and the registered path is unaffected.
 - [ ] 15.8 Consider whether the opt-in table returns should escape formula-prefixed cells. Low
       severity as scoped — the tools echo a caller's own data back to that same caller, and the
       field description and connect guide now say so — but PR 2's `return_trimmed_csv` adds a

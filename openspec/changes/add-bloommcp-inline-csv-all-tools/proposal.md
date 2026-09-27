@@ -132,12 +132,18 @@ that experiments are *always* identified by an experiment identifier — are all
 
 ## Explicitly Out of Scope
 
-- **The five legacy plot tools** (`plot_trait_histograms`, `plot_trait_boxplots`,
-  `plot_correlation_matrix`, `plot_heritability_bar`, `plot_variance_decomposition`). Their only
-  output channel is a PNG in the shared plots directory; for §4's reasons there is no inline-safe
-  way to give them a `csv_content` path.
-- **`heritability_analysis`** — not on `staging`; it lands with #462. One-tool follow-up
-  (tasks.md §13).
+- **The legacy plot tools** (`plot_trait_histograms`, `plot_trait_boxplots`,
+  `plot_correlation_matrix`). Their only output channel is a PNG in the shared plots directory;
+  for §4's reasons there is no inline-safe way to give them a `csv_content` path.
+  (`plot_heritability_bar` and `plot_variance_decomposition` were listed here too until #462
+  retired them into `heritability_analysis`; they no longer exist.)
+- **`heritability_analysis`** — **it is on `staging`**, having landed with #462 on 2026-09-11;
+  an earlier draft of this line said otherwise and is corrected here. It is out of scope for
+  *this PR* rather than absent from the repo: PR 1 gives no tool a `csv_content` parameter beyond
+  `qc_clean`, so `heritability_analysis` has none, carries no `REGISTERED_ONLY` markers, and is
+  correctly absent from `_INLINE_CAPABLE_TOOLS`. Marking its `version` / `include_plots` /
+  `plots` / `user_label` fields is part of adding its inline path in PR 2 or PR 3
+  (tasks.md §15.1), not something PR 1 could have done.
 - **`compute_min` / `compute_median` / `compute_mode`** — demo tools reading numbers from a
   `.txt`. No `ExperimentFrame`, nothing to parse.
 - **`list_available_experiments`, `list_existing_analyses`, `get_download_links`,

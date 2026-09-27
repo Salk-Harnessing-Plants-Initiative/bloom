@@ -741,11 +741,54 @@ undeclared switch is not an operable one: the compose files enumerate each servi
 explicitly, so a variable absent from them never reaches the container, and an operator has no way
 to discover the switch exists without reading source.
 
+**Unset SHALL mean enabled; any unrecognized value SHALL mean disabled.** The two are different
+situations. Absent is the documented default, chosen deliberately. A value parsing as neither
+true nor false is someone typing at the switch — overwhelmingly during an incident, the only time
+anyone touches it — and a typo such as `falsed` must not leave the risky path running because the
+parse missed. Failing to the safe side costs a legible refusal; failing open costs the thing the
+switch exists to stop.
+
+**The inline path SHALL additionally disable itself when this process would log whole request
+bodies.** The MCP dispatcher logs the entire JSON-RPC message at `DEBUG`, so up to
+`MAX_INLINE_CSV_BYTES` of caller-supplied data reaches the container's logs — on a path whose
+premise is data a researcher deliberately chose not to register, and whose logs the deploy
+workflow echoes into a public repository's CI output when a deploy fails. A log level is exactly
+what an operator raises during an incident, without this feature in mind, so a documentation-level
+mitigation cannot hold the property.
+
+The response SHALL be to disable the inline path, not to refuse to start: an operator reaching for
+`DEBUG` needs the server up, and the registered path is unaffected. The refusal SHALL name `DEBUG`
+explicitly so it cannot read as an unexplained outage, and SHALL be distinguishable from the
+configuration-disabled refusal. This guard SHALL NOT apply in fully-local mode, where the operator
+and the data owner are the same person and the logs are their own machine's.
+
 #### Scenario: The switch is declared in the deployment configuration
 
 - **WHEN** the compose files and environment defaults are inspected
 - **THEN** `BLOOMMCP_INLINE_CSV_ENABLED` appears in the bloommcp service's environment and in the
   environment defaults, with its default value stated
+
+#### Scenario: An unrecognized value disables rather than enables
+
+- **WHEN** the variable is set to a value that is neither a recognized true nor a recognized false
+  spelling — a typo such as `falsed`, or an empty string
+- **THEN** the inline path is disabled, and the registered path is unaffected
+
+#### Scenario: Running at DEBUG disables the inline path
+
+- **WHEN** the MCP dispatcher's effective log level is `DEBUG` and the backend is not fully-local
+- **THEN** every inline call is rejected with a message naming `DEBUG` and a remedy offering to
+  lower the log level, while every registered call succeeds unchanged
+
+#### Scenario: The DEBUG guard does not apply in fully-local mode
+
+- **WHEN** the backend is fully-local and the dispatcher logs at `DEBUG`
+- **THEN** the inline path remains enabled
+
+#### Scenario: The two reasons for refusal are distinguishable
+
+- **WHEN** the path is disabled by configuration while the log level is below `DEBUG`
+- **THEN** the refusal says so and does not mention `DEBUG`
 
 #### Scenario: Disabling the flag rejects every inline call
 

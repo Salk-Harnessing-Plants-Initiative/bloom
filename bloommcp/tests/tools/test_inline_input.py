@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 from unittest.mock import patch
 
@@ -1540,3 +1541,154 @@ def test_reserializing_a_returned_table_is_byte_stable():
     first = helper.serialize_table_csv(df)
     second = helper.serialize_table_csv(helper.parse_inline_csv_frame(first).df)
     assert first == second
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", " on ", "1", "yes", "On"])
+def test_kill_switch_recognized_true_values_enable(monkeypatch, value):
+    helper = _import_helper()
+    monkeypatch.setenv("BLOOMMCP_INLINE_CSV_ENABLED", value)
+    assert helper.inline_enabled() is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "false",
+        "0",
+        "off",
+        "no",
+        # ...and the ones that matter: typos at the switch.
+        "falsed",
+        "FALSE ",
+        "ture",
+        "",
+        "maybe",
+        "0 # off",
+    ],
+)
+def test_kill_switch_fails_closed_on_anything_unrecognized(monkeypatch, value):
+    """Unset means enabled; an unrecognized value means *disabled*.
+
+    The two are different situations. Absent is the documented default. A value
+    that parses as neither true nor false is someone typing at the switch —
+    overwhelmingly during an incident, the only time anyone touches it — and
+    "falsed" must not leave the risky path running because the parse missed.
+    Failing to the safe side costs a legible refusal; failing open costs the
+    thing the switch exists to stop.
+    """
+    helper = _import_helper()
+    monkeypatch.setenv("BLOOMMCP_INLINE_CSV_ENABLED", value)
+    assert helper.inline_enabled() is False
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.resolve_inline_or_experiment(experiment=None, csv_content=_ROLE_CSV)
+    assert exc.value.code == "invalid_input"
+
+
+def test_kill_switch_unset_is_enabled(monkeypatch):
+    """The documented default is deliberate and must not be confused with the
+    ambiguous case above."""
+    helper = _import_helper()
+    monkeypatch.delenv("BLOOMMCP_INLINE_CSV_ENABLED", raising=False)
+    assert helper.inline_enabled() is True
+
+
+# ── DEBUG-level transport logging is a code-level guard, not just a doc ─────
+
+
+@pytest.fixture
+def deployed_backend(monkeypatch):
+    """Not fully-local mode, so the DEBUG guard applies."""
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "supabase")
+    monkeypatch.delenv("BLOOMMCP_INLINE_CSV_ENABLED", raising=False)
+
+
+def _set_dispatch_level(monkeypatch, level):
+    helper = _import_helper()
+    logger = logging.getLogger(helper._MCP_DISPATCH_LOGGER)
+    original = logger.level
+    monkeypatch.setattr(logger, "level", level, raising=False)
+    logger.setLevel(level)
+    return lambda: logger.setLevel(original)
+
+
+def test_inline_is_disabled_when_the_dispatcher_logs_at_debug(
+    deployed_backend, monkeypatch
+):
+    """The MCP dispatcher logs whole JSON-RPC messages at DEBUG, so up to 5 MiB
+    of a caller's own data reaches the container's logs — on a path whose entire
+    premise is data they chose not to register, and whose logs the deploy
+    workflow echoes into a public repository's CI output on failure.
+
+    A log level is exactly what gets raised during an incident, by someone not
+    thinking about this feature. Documentation cannot catch that; this does.
+    """
+    helper = _import_helper()
+    restore = _set_dispatch_level(monkeypatch, logging.DEBUG)
+    try:
+        assert helper.inline_enabled() is False
+        with pytest.raises(BloomMCPError) as exc:
+            helper.resolve_inline_or_experiment(experiment=None, csv_content=_ROLE_CSV)
+        # Must name DEBUG, or it reads as an unexplained outage.
+        assert "DEBUG" in exc.value.message
+        assert "log level" in exc.value.remedy
+    finally:
+        restore()
+
+
+@pytest.mark.parametrize("level", [logging.WARNING, logging.INFO])
+def test_inline_stays_enabled_below_debug(deployed_backend, monkeypatch, level):
+    helper = _import_helper()
+    restore = _set_dispatch_level(monkeypatch, level)
+    try:
+        assert helper.inline_enabled() is True
+    finally:
+        restore()
+
+
+def test_the_debug_guard_does_not_apply_in_fully_local_mode(monkeypatch):
+    """In fully-local mode the operator and the data owner are the same person
+    and the logs are their own machine's — disabling their feature to protect
+    them from themselves would be officious."""
+    helper = _import_helper()
+    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
+    monkeypatch.delenv("BLOOMMCP_INLINE_CSV_ENABLED", raising=False)
+    restore = _set_dispatch_level(monkeypatch, logging.DEBUG)
+    try:
+        assert helper.inline_enabled() is True
+    finally:
+        restore()
+
+
+def test_the_registered_path_is_untouched_at_debug(deployed_backend, monkeypatch):
+    """Disabling rather than refusing to start is the point: an operator who
+    reaches for DEBUG needs the server up."""
+    helper = _import_helper()
+    restore = _set_dispatch_level(monkeypatch, logging.DEBUG)
+    try:
+        sentinel = object()
+        resolved = helper.resolve_inline_or_experiment(
+            experiment="turface_19.csv",
+            csv_content=None,
+            reader_call=lambda: sentinel,
+        )
+        assert resolved.frame is sentinel
+        assert resolved.is_inline is False
+    finally:
+        restore()
+
+
+def test_the_configuration_off_message_does_not_blame_debug(
+    deployed_backend, monkeypatch
+):
+    """Two different reasons the path can be off; the message must say which."""
+    helper = _import_helper()
+    monkeypatch.setenv("BLOOMMCP_INLINE_CSV_ENABLED", "false")
+    restore = _set_dispatch_level(monkeypatch, logging.WARNING)
+    try:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.resolve_inline_or_experiment(experiment=None, csv_content=_ROLE_CSV)
+        assert "by configuration" in exc.value.message
+        assert "DEBUG" not in exc.value.message
+    finally:
+        restore()

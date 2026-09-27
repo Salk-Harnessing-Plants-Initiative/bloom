@@ -224,6 +224,13 @@ matching its contents; the finiteness check is a separate guard with its own mes
 - **WHEN** a registered experiment's cleanup leaves ±inf in a kept trait column
 - **THEN** the same refusal occurs and no run is committed
 
+#### Scenario: Non-numeric values are reported as such, not as infinities
+
+- **WHEN** a kept trait column contains a value that is not a number at all, so that coercion
+  turns it into NaN and it fails the same finiteness test a real ±inf does
+- **THEN** the refusal names it as non-numeric rather than as ±inf, because "recompute the ratio
+  that divided by zero" is not actionable advice for a cell that says "banana"
+
 #### Scenario: A finite table is unaffected
 
 - **WHEN** `qc_clean` cleans content whose surviving trait columns are all finite

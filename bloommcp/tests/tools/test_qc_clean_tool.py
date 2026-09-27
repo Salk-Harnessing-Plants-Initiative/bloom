@@ -24,8 +24,9 @@ import pytest
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
-from bloom_mcp.tools import _ports
+from bloom_mcp.tools import _inline_input, _ports
 from bloom_mcp.data_access.columns import resolve_columns
+from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 from bloom_mcp.tools._inline_input import compute_input_sha256
 from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
 from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
@@ -1332,9 +1333,24 @@ def _capture_all_logs():
     for lg in loggers:
         lg.addHandler(handler)
         lg.setLevel(logging.DEBUG)
+
+    # Raising *root* to DEBUG is this harness's capture mechanism, and the MCP
+    # dispatcher logger inherits its effective level from root. The inline path
+    # disables itself when that dispatcher would log at DEBUG (it records whole
+    # request bodies there), so without this pin the helper would put the server
+    # into the very state that guard exists to refuse — and every test using it
+    # would fail with "disabled at DEBUG" instead of exercising what it means to.
+    #
+    # Pinning the dispatcher above DEBUG says "this is a test harness, not a
+    # DEBUG deployment". The guard's own behaviour is exercised directly in
+    # test_inline_input.py rather than incidentally here.
+    dispatch_logger = logging.getLogger(_inline_input._MCP_DISPATCH_LOGGER)
+    dispatch_level = dispatch_logger.level
+    dispatch_logger.setLevel(logging.WARNING)
     try:
         yield records
     finally:
+        dispatch_logger.setLevel(dispatch_level)
         for lg in loggers:
             lg.removeHandler(handler)
             lg.setLevel(old_levels[lg])
@@ -1805,3 +1821,196 @@ def test_return_cleaned_csv_with_experiment_alone_still_rejects_before_reading(
     with pytest.raises(BloomMCPError) as exc:
         qc_clean(QCCleanParams(experiment=_EXPERIMENT, return_cleaned_csv=True))
     assert "return_cleaned_csv" in exc.value.message
+
+
+# ── ±inf is not NaN (PR #778 round 5, blocking) ─────────────────────────────
+#
+# `isna()` returns False for infinity, so a table carrying ±inf passed the
+# no-NaN guarantee with cleaned_nan_cells_remaining == 0 and no warning, was
+# certified analysis-ready, and then failed in every downstream consumer with
+# "Input X contains infinity". That closed a loop this change's own spec opens:
+# a non-finite consumer's remedy points the caller at
+# qc_clean(csv_content=..., return_cleaned_csv=true), qc_clean certifies the
+# inf-bearing table, and the consumer rejects it again.
+#
+# The guard applies to BOTH paths — a deliberate registered-path behaviour
+# change in a PR that otherwise holds that path byte-identical — so both are
+# covered here rather than only the new one.
+
+
+def _trait_table(bad_value: float | None = None, *, n: int = 40) -> pd.DataFrame:
+    """A minimal clean-able table, optionally with one poisoned trait cell.
+
+    `bad_value` is a float, not a string: a mixed Python list would make the
+    column object-dtype, which `resolve_columns` then excludes from `trait_cols`
+    — so the poisoned column would never reach the guard and the test would pass
+    for the wrong reason. The registered path reads a frame directly, so the
+    dtype has to be right at construction.
+    """
+    return pd.DataFrame(
+        {
+            "Barcode": [f"B{i}" for i in range(n)],
+            "genotype": [f"g{i % 4}" for i in range(n)],
+            "trait.a": [
+                bad_value if (bad_value is not None and i == 3) else float(i)
+                for i in range(n)
+            ],
+            "trait.b": [float(i * 2) for i in range(n)],
+        },
+    ).astype({"trait.a": "float64", "trait.b": "float64"})
+
+
+def _as_csv(df: pd.DataFrame) -> str:
+    return df.to_csv(index=False, lineterminator="\n")
+
+
+def _csv_with_sentinel(sentinel: str, *, n: int = 40) -> str:
+    """CSV *text* carrying a literal infinity spelling, for the inline path —
+    where `read_csv` is what turns the token into a float64 infinity."""
+    rows = [
+        f"B{i},g{i % 4},{sentinel if i == 3 else float(i)},{float(i * 2)}"
+        for i in range(n)
+    ]
+    return "Barcode,genotype,trait.a,trait.b\n" + "\n".join(rows) + "\n"
+
+
+@pytest.mark.parametrize("sentinel", ["inf", "-inf", "Infinity", "-Infinity"])
+def test_inf_in_a_kept_trait_is_refused_not_certified(injected_ports, sentinel):
+    """Every spelling pandas parses as an infinity must be refused."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_csv_with_sentinel(sentinel), min_samples_per_trait=1
+            )
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "±inf" in exc.value.message
+    assert "trait.a" in exc.value.message
+    assert "divide-by-zero" in exc.value.remedy
+
+
+def test_every_tested_sentinel_really_parses_to_an_infinity(injected_ports):
+    """Guards the guard: if a spelling above did not parse to an infinity, its
+    test would pass only because the column was dropped for some other reason."""
+    import numpy as np
+
+    for sentinel in ("inf", "-inf", "Infinity", "-Infinity"):
+        parsed = pd.read_csv(io.StringIO(_csv_with_sentinel(sentinel)))["trait.a"]
+        assert parsed.dtype.kind == "f", sentinel
+        assert bool(np.isinf(parsed).any()), sentinel
+
+
+def test_inf_is_refused_on_the_registered_path_too(injected_ports):
+    """The deliberate registered-path change. An experiment whose cleanup leaves
+    ±inf previously committed a run; it now fails, and no run is written."""
+    reader, store = injected_ports
+    reader.add_experiment("inf_exp.csv", _trait_table(float("inf")))
+
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="inf_exp.csv", min_samples_per_trait=1))
+
+    assert exc.value.code == "assumption_violated"
+    assert "±inf" in exc.value.message
+    assert store.list_runs("inf_exp.csv", "qc") == [], "no run may be committed"
+
+
+def test_a_finite_table_is_unaffected_by_the_inf_guard(injected_ports):
+    """The guard must not become a refusal of ordinary data."""
+    result = qc_clean(
+        QCCleanParams(csv_content=_as_csv(_trait_table()), min_samples_per_trait=1)
+    )
+    assert result.cleaned_nan_cells_remaining == 0
+    assert "trait.a" in result.kept_trait_columns
+
+
+def test_non_numeric_garbage_is_not_misreported_as_inf(injected_ports):
+    """`to_numeric(errors="coerce")` turns unparseable text into NaN, which fails
+    the same finiteness test a real ±inf does — so both would be reported as
+    "found ±inf", and "recompute the ratio that divided by zero" is useless
+    advice for a cell that says "banana".
+
+    Exercised at the guard's own expression rather than through the tool,
+    because `resolve_columns` keeps an object-dtype column out of `kept_cols`,
+    so the tool cannot currently reach this branch. The coercion call is what
+    anticipates such a column; the diagnosis has to match it.
+    """
+    import numpy as np
+
+    kept = ["trait.a"]
+    frame = pd.DataFrame({"trait.a": pd.Series([1.0, "banana", 3.0], dtype=object)})
+    numeric = frame[kept].apply(pd.to_numeric, errors="coerce")
+
+    infinite = [
+        c
+        for c, h in zip(kept, np.isinf(numeric.to_numpy(dtype=float)).any(axis=0))
+        if bool(h)
+    ]
+    coerced = [
+        c
+        for c, h in zip(kept, (numeric.isna() & ~frame[kept].isna()).any(axis=0))
+        if bool(h)
+    ]
+    assert infinite == [], "garbage must not be reported as an infinity"
+    assert coerced == ["trait.a"], "garbage must be reported as non-numeric"
+
+
+def test_the_remedy_loop_terminates(injected_ports):
+    """The failure this guard exists to prevent, end to end.
+
+    A consumer's non-finite remedy sends the caller to
+    `qc_clean(csv_content=..., return_cleaned_csv=true)`. Before the guard, that
+    returned a certified table still carrying the infinity, which the consumer
+    rejected again — an instruction loop with no exit. It must now stop with an
+    actionable error instead.
+    """
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_as_csv(_trait_table(float("inf"))),
+                min_samples_per_trait=1,
+                return_cleaned_csv=True,
+            )
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "exclude_columns" in exc.value.remedy
+
+
+def test_inf_would_have_passed_the_nan_only_check(injected_ports):
+    """Pins *why* the guard is needed, so removing it fails loudly rather than
+    quietly: `isna()` does not see an infinity, so the pre-existing no-NaN
+    check counts zero and certifies the table."""
+    poisoned = _trait_table(float("inf"))
+    numeric = poisoned[["trait.a", "trait.b"]].apply(pd.to_numeric, errors="coerce")
+    assert int(numeric.isna().sum().sum()) == 0, (
+        "isna() sees nothing wrong with this table — which is the bug"
+    )
+
+
+def test_the_persisted_cleaned_csv_pins_its_line_terminator(injected_ports):
+    """The ephemeral copy's terminator was pinned and tested; the *committed*
+    file's was pinned and not.
+
+    It matters more here, not less: this file is content-hashed into the
+    manifest, so an unpinned `os.linesep` would make the recorded digest depend
+    on which platform produced the run. Read at commit time, because that is
+    exactly the byte sequence `hash_outputs` sees — and the staging directory is
+    removed immediately afterwards.
+    """
+    _reader, store = injected_ports
+    captured: dict[str, bytes] = {}
+    real_commit = store.commit
+
+    def _capture(run, outputs):
+        captured["bytes"] = (run.staging_dir / CLEANED_CSV_NAME).read_bytes()
+        return real_commit(run, outputs)
+
+    with patch.object(store, "commit", side_effect=_capture):
+        _run()
+
+    written = captured["bytes"]
+    assert written, "the cleaned CSV should have been written before commit"
+    assert b"\r" not in written, (
+        "the committed, manifest-hashed artifact must not inherit the "
+        "platform's line terminator"
+    )
+    assert written.endswith(b"\n")

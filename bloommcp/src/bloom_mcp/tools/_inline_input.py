@@ -23,6 +23,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -92,7 +93,15 @@ MAX_INLINE_CSV_ROWS = 20_000
 # ten tools at once, so one variable and a container restart is a proportionate
 # off switch. Read per call, not at import, so a restart is enough.
 _KILL_SWITCH_ENV = "BLOOMMCP_INLINE_CSV_ENABLED"
-_FALSEY = {"0", "false", "no", "off"}
+# Only these enable the path when the variable is set at all. Everything else —
+# including a typo — disables it; see `inline_enabled` for why the ambiguous
+# case resolves to off rather than on.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+# The logger whose DEBUG output contains whole JSON-RPC messages — `csv_content`
+# included. Named rather than inferred, so the guard checks the thing that
+# actually leaks rather than a proxy for it.
+_MCP_DISPATCH_LOGGER = "mcp.server.lowlevel.server"
 
 _BOM = "﻿"
 
@@ -646,11 +655,47 @@ def inline_enabled() -> bool:
     Read per call rather than cached at import so flipping
     ``BLOOMMCP_INLINE_CSV_ENABLED`` takes effect on a container restart instead
     of a rebuild — see ``_KILL_SWITCH_ENV`` above.
+
+    **Unset means enabled; an unrecognized value means disabled.** The two are
+    not the same situation. Absent is the documented default, chosen
+    deliberately. A value that parses as neither true nor false is someone
+    typing at the switch — overwhelmingly during an incident, which is the only
+    time anyone touches it — and "falsed" or "FALSE " or "0 # off" must not
+    leave the risky path running because the parse missed. Failing to the safe
+    side costs a legible refusal; failing open costs the thing the switch exists
+    to stop.
     """
     raw = os.getenv(_KILL_SWITCH_ENV)
-    if raw is None:
-        return True
-    return raw.strip().lower() not in _FALSEY
+    enabled = True if raw is None else raw.strip().lower() in _TRUTHY
+    if enabled and _debug_logging_would_capture_content():
+        return False
+    return enabled
+
+
+def _debug_logging_would_capture_content() -> bool:
+    """Whether this process would log whole request bodies, inline CSV included.
+
+    The MCP dispatcher logs the entire JSON-RPC message at ``DEBUG``. With up to
+    5 MiB of caller-supplied data per call, on a path whose whole premise is data
+    a researcher deliberately chose *not* to register, that turns a log-level
+    change into a disclosure — and a log level is exactly what gets raised during
+    an incident, by someone not thinking about this feature at all. Container
+    logs are not a private destination here: the deploy workflow echoes them into
+    a public repository's CI output when a deploy fails.
+
+    Disabling the inline path is the response rather than refusing to start: an
+    operator reaching for DEBUG needs the server *up*, and the registered path is
+    unaffected. The refusal names DEBUG explicitly, so this cannot read as an
+    unexplained outage.
+
+    Not applied in fully-local mode, where the operator and the data owner are
+    the same person and the logs are their own machine's.
+    """
+    from bloom_mcp.storage_backend import is_local_backend
+
+    if is_local_backend():
+        return False
+    return logging.getLogger(_MCP_DISPATCH_LOGGER).getEffectiveLevel() <= logging.DEBUG
 
 
 @dataclass(frozen=True)
@@ -899,11 +944,24 @@ def resolve_inline_or_experiment(
     if not inline_enabled():
         raise BloomMCPError(
             code="invalid_input",
-            message=(f"Inline {csv_content_field} input is disabled on this server."),
+            message=(
+                f"Inline {csv_content_field} input is disabled on this server "
+                + (
+                    "because it is running at DEBUG log level, where the MCP "
+                    "transport records whole request bodies — inline content "
+                    "would be written to the container's logs."
+                    if _debug_logging_would_capture_content()
+                    else "by configuration."
+                )
+            ),
             remedy=(
                 f"Register the data as an experiment and supply "
-                f"{registered_field} instead, or ask an administrator to "
-                f"re-enable inline input."
+                f"{registered_field} instead"
+                + (
+                    ", or lower the server's log level below DEBUG and retry."
+                    if _debug_logging_would_capture_content()
+                    else ", or ask an administrator to re-enable inline input."
+                )
             ),
         )
 
