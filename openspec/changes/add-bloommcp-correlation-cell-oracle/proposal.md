@@ -24,9 +24,10 @@ suite catches.
   the correlation heatmap, the first of the two paths #768 names ("extract and compare each
   heatmap cell individually"), asserting each drawn cell against a `df[trait_cols].corr()`
   recomputed in the test rather than against a whole-image statistic:
-  - the `QuadMesh`'s drawn-cell set equals `np.triu(ones_like, dtype=bool) | ~np.isfinite(corr)`
-    — the caller's upper-triangle-and-diagonal mask **combined with the delegate's own
-    `masked_invalid` pass** — and its unmasked values equal the recomputed matrix. Stating the
+  - the `QuadMesh`'s drawn-cell set equals `np.triu(ones_like, dtype=bool) | pd.isnull(corr)`
+    — the caller's upper-triangle-and-diagonal mask **unioned with the data's own missing
+    values**, which is what `seaborn.matrix._matrix_mask` does before `_HeatMapper` applies the
+    union via `np.ma.masked_where` — and its unmasked values equal the recomputed matrix. Stating the
     mask this way rather than as a flat "55 lower-triangle cells" is what makes the check
     correct on a fixture with a zero-variance or low-overlap trait, where the delegate draws
     fewer cells (measured: forcing one constant trait into `turface_19` drops 55 drawn cells
@@ -44,7 +45,9 @@ suite catches.
     against the image's own axis labels";
   - and, closing the loop to the actual bytes, **each drawn cell's pixels in the saved PNG**
     match the color its own correlation value implies (median-sampled; worst legitimate
-    disagreement measured at 0.00196 across all 55 cells, checked at `atol=0.01`).
+    disagreement measured at 0.00196 across all 55 cells, checked at `atol=0.01`) — with the
+    cell geometry itself pinned at its boundaries, so that a change in how matplotlib crops
+    `bbox_inches="tight"` fails by name at ~3px of drift instead of hiding until ~37px.
 - **ADD** the negative control that is the entire point of #768:
   `test_single_cell_defect_rms_misses_but_cell_oracle_catches` makes the delegate render a
   **doctored correlation matrix** — one cell shifted, via a patched `DataFrame.corr` around the

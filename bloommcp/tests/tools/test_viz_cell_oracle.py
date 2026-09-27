@@ -43,12 +43,22 @@ just described here): the RMS layer answers "does this figure still rasterize li
 baseline?" -- global regressions, layout shifts, dependency bumps. This file answers "does each
 drawn cell carry the value it should?". Both are kept.
 
-Residual, stated plainly: a defect confined to matplotlib's rasterizer -- one that painted a
-cell's pixels wrongly while leaving the figure's artist state correct -- is caught by neither
-layer, since the assertions here read artist state and the pixel check samples a render produced
-by that same rasterizer. That is not the failure mode #768 describes (a wrong *value* reaching a
-researcher) and no realistic bug here produces it; recorded so the boundary is known rather than
-inferred.
+Residual, stated plainly -- two of them:
+
+  1. A defect confined to matplotlib's rasterizer -- one that painted a cell's pixels wrongly
+     while leaving the figure's artist state correct -- is caught by neither layer, since the
+     assertions here read artist state and the pixel check samples a render produced by that
+     same rasterizer. That is not the failure mode #768 describes (a wrong *value* reaching a
+     researcher) and no realistic bug here produces it.
+  2. `_cell_pixel_box` reconstructs where `savefig(bbox_inches="tight")` crops the canvas, from
+     `fig.get_tightbbox(renderer)` minus `pad_inches`. That mirrors matplotlib's behavior but is
+     not an API contract it promises to keep, so a future release could move the crop.
+     `test_predicted_cell_geometry_is_tight` exists to make that fail loudly and by name rather
+     than as a confusing color mismatch -- it catches a drift of ~3px, where the whole-cell
+     sample alone tolerated ~37px (a third of a cell) before anything tripped, and then only
+     incidentally. Below ~3px the prediction is still unpinned; that is the honest boundary.
+
+Both are recorded so the limits are known rather than inferred.
 """
 
 from __future__ import annotations
@@ -96,6 +106,12 @@ _CELL_ATOL = 0.01
 _WIDE_INSET = (0.10, 0.90)
 _NARROW_INSET = (0.12, 0.30)
 
+# Edge-strip geometry for test_predicted_cell_geometry_is_tight, as fractions of a cell: how far
+# inside the predicted boundary to start sampling, and how thick the strip is. Tuned against a
+# measured drift sweep -- see that test's docstring for the sweep and why 0.015 is safe.
+_EDGE_INSET = 0.015
+_EDGE_THICKNESS = 0.05
+
 # Read from the delegate's own signature rather than duplicated as a literal, so a change to its
 # default fails `test_annotation_threshold_is_read_from_the_delegate` instead of silently
 # invalidating every annotation assertion here (the same self-verifying-constant lesson
@@ -138,17 +154,28 @@ def _fixture_frame_and_corr():
 def _drawn_mask(corr: pd.DataFrame) -> np.ndarray:
     """True where the delegate leaves a cell blank.
 
-    NOT simply the `np.triu(...)` mask the delegate passes to seaborn: seaborn's `_HeatMapper`
-    applies its own `np.ma.masked_invalid` ON TOP of it, so a NaN correlation is blank too.
-    Measured: forcing one trait in this fixture to a constant drops the drawn cells from 55 to
-    45. That matters here specifically because this tool reads raw, uncleaned data, where a
+    NOT simply the `np.triu(...)` mask the delegate passes to seaborn. Seaborn unions that mask
+    with the data's own missing values before drawing -- `_matrix_mask` does
+    `mask = mask | pd.isnull(data)`, and `_HeatMapper.__init__` then applies the union via
+    `np.ma.masked_where` -- so a NaN correlation is blank too. Measured: forcing one trait in
+    this fixture to a constant drops the drawn cells from 55 to 45.
+
+    `pd.isnull` here rather than `~np.isfinite` on purpose, so this mirrors the mechanism it
+    claims to mirror. The two differ only on +/-inf (`pd.isnull` says "present", `~isfinite`
+    says "missing"), which a Pearson correlation cannot produce -- `.corr()` is bounded to
+    [-1, 1] or NaN, and even an overflowing input yields NaN, not inf. So the choice is
+    behaviorally identical today and the point is exactness: a reader chasing this coupling
+    during a library upgrade should find the real mechanism named, not a near-synonym that
+    happens to agree.
+
+    This matters here specifically because this tool reads raw, uncleaned data, where a
     zero-variance or low-overlap trait is a first-class case (`zero_variance_traits` and
     `low_overlap_trait_pairs` are shipped result fields). Deriving the set this way -- rather
     than hardcoding "the 55 lower-triangle cells" -- is also what lets this file distinguish
     "legitimately blank" from "should have carried a value and was left blank".
     """
     values = corr.to_numpy()
-    return np.triu(np.ones(values.shape, dtype=bool)) | ~np.isfinite(values)
+    return np.triu(np.ones(values.shape, dtype=bool)) | pd.isnull(values)
 
 
 def _render(df, trait_cols):
@@ -461,6 +488,83 @@ def test_saved_png_cell_pixels_match_their_correlation_value(heatmap):
     assert not wrong, (
         f"saved-PNG cells whose pixels do not match their own correlation value "
         f"(atol={_CELL_ATOL}): {wrong}"
+    )
+
+
+def test_predicted_cell_geometry_is_tight(heatmap):
+    """Pin the `bbox_inches="tight"` coupling directly, not as a side effect.
+
+    `_cell_pixel_box` reconstructs savefig's tight crop from `fig.get_tightbbox(renderer)`
+    minus `pad_inches`. That reconstruction mirrors matplotlib's *behavior*; it is not a
+    contract matplotlib promises to keep, so a future release could change where the crop
+    lands. `test_saved_png_cell_pixels_match_their_correlation_value` alone is a weak guard
+    against that: it samples an inset of a uniformly-colored cell, so the prediction can slip
+    by nearly a third of a cell before the sample leaves the right cell. Measured -- a 0.25in
+    injected crop drift leaves that test green and trips only the glyph-bias test, and only
+    incidentally.
+
+    This test closes that slack by sampling four thin strips just inside each predicted cell
+    boundary. A correctly located box has the cell's own color right up to its edges; a box
+    that has slipped puts at least one strip into a neighbouring cell or into the blank masked
+    triangle, which is a large color difference. It names the geometry as the thing that broke.
+
+    Measured sensitivity, by injecting a crop-origin drift and re-running (drift in inches, and
+    the px it is at the save dpi of 150):
+
+        drift     px   what fails
+        0.02in   3.0   this test
+        0.05in   7.5   this test
+        0.10in  15.0   this test
+        0.25in  37.5   this test + the glyph-bias test (the latter only incidentally)
+
+    Before this test existed, nothing failed below 0.25in. The strip inset (`_EDGE_INSET`) and
+    thickness (`_EDGE_THICKNESS`) were tuned against that sweep: the worst legitimate strip
+    disagreement on a clean render is 0.00196 -- identical at every inset from 0.04 down to
+    0.01, i.e. the cell interiors are flat right up to the boundary and no antialiasing bleeds
+    in -- so 0.015 buys the sensitivity with the same 5.1x headroom against `_CELL_ATOL` that a
+    far wider strip had. If this ever fails on a platform whose cell borders antialias more
+    widely, widen `_EDGE_INSET`; do not loosen `_CELL_ATOL`, which is calibrated for a
+    different purpose.
+    """
+    qm, values, mask = heatmap["qm"], heatmap["values"], heatmap["mask"]
+    pixels = np.asarray(Image.open(heatmap["png"]).convert("RGB"), dtype=float)
+    fig, ax, height = heatmap["fig"], heatmap["ax"], pixels.shape[0]
+
+    def strip(box, kind):
+        x0, y0, x1, y1 = box
+        w, h = x1 - x0, y1 - y0
+        edge, thick, along = _EDGE_INSET, _EDGE_THICKNESS, (0.25, 0.75)
+        if kind in ("top", "bottom"):
+            ys = (
+                (y0 + edge * h, y0 + thick * h)
+                if kind == "top"
+                else (y1 - thick * h, y1 - edge * h)
+            )
+            xs = (x0 + along[0] * w, x0 + along[1] * w)
+        else:
+            xs = (
+                (x0 + edge * w, x0 + thick * w)
+                if kind == "left"
+                else (x1 - thick * w, x1 - edge * w)
+            )
+            ys = (y0 + along[0] * h, y0 + along[1] * h)
+        patch = pixels[int(ys[0]) : int(ys[1]), int(xs[0]) : int(xs[1]), :]
+        return np.median(patch.reshape(-1, 3), axis=0) / 255.0
+
+    wrong = {}
+    for r in range(mask.shape[0]):
+        for c in range(mask.shape[1]):
+            if mask[r, c]:
+                continue
+            box = _cell_pixel_box(fig, ax, height, r, c)
+            expected = np.asarray(qm.cmap(qm.norm(values[r, c]))[:3])
+            for kind in ("top", "bottom", "left", "right"):
+                if not np.allclose(strip(box, kind), expected, atol=_CELL_ATOL):
+                    wrong[(r, c, kind)] = strip(box, kind).round(4).tolist()
+    assert not wrong, (
+        "predicted cell boxes are not landing tightly on their cells -- the reconstruction of "
+        'savefig\'s `bbox_inches="tight"` crop in `_cell_pixel_box` no longer matches what '
+        f"matplotlib actually does. Offending edges: {wrong}"
     )
 
 

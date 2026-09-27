@@ -14,7 +14,7 @@
       measured numbers (noise floor 0.00196, `atol=0.01`, the RMS-vs-per-cell table, both
       measurement methods) and the division of labor against `test_viz_snapshot.py`
 - [x] 2.2 Oracle helper: recompute `df[trait_cols].corr()` from the raw fixture and derive the
-      drawn-cell set as `~(np.triu(ones_like, dtype=bool) | ~np.isfinite(corr))`, deriving grid
+      drawn-cell set as `~(np.triu(ones_like, dtype=bool) | pd.isnull(corr))`, deriving grid
       size from `len(trait_cols)` — no hardcoded 11 or 55 (design.md Decision 5)
 - [x] 2.3 `test_drawn_cell_set_is_the_finite_lower_triangle` — QuadMesh mask equals the derived
       set; unmasked values equal the recomputed matrix; assert the drawn set **and** its
@@ -34,7 +34,7 @@
 - [x] 2.10 `test_annotation_precondition_fails_loudly_above_the_threshold` — exercise the guard's
       failure path directly against a synthetic count, since the 11-trait fixture never can
 - [x] 2.11 **Added during implementation, not in the original plan.** A mutation check found
-      that deleting the `~isfinite` term from the drawn-cell set left every other test green —
+      that deleting the NaN-union term from the drawn-cell set left every other test green —
       the clean fixture has no NaN correlation, so half of the invariant this change went out of
       its way to state correctly was unenforced. `test_drawn_cell_set_shrinks_when_a_trait_
       carries_no_variance` forces one trait constant and pins the measured 55 → 45 drop, and
@@ -106,3 +106,40 @@
       hinting difference would surface), and all four negative-control shifts — so "whole-image
       RMS misses a single-cell defect" is now verified on the CI platform too, not only where
       it was measured
+
+## 7. PR review round (#840)
+
+- [x] 7.1 **Masking mechanism was misattributed.** The docstring and design.md cited
+      `np.ma.masked_invalid`; seaborn actually unions via `seaborn.matrix._matrix_mask`
+      (`mask = mask | pd.isnull(data)`) and applies it with `np.ma.masked_where`. Right about
+      the outcome, wrong about the mechanism — and not academic, since `pd.isnull` and
+      `~np.isfinite` disagree on ±inf, so a maintainer tracing this through a seaborn upgrade
+      would have been sent to the wrong function. `_drawn_mask` now uses `pd.isnull`, mirroring
+      what seaborn does; verified no behavior change (Pearson `.corr()` is bounded to [-1, 1]
+      or NaN, so ±inf is unreachable — even an overflowing input yields NaN)
+- [x] 7.2 **The `bbox_inches="tight"` coupling was under-guarded, not just under-documented.**
+      The review asked for a line in "Residual, stated plainly". Measuring first showed the
+      weakness was real and worse than a docs gap: injecting a crop-origin drift, *nothing*
+      failed at 3/7.5/15px, and at 37.5px only the glyph-bias test tripped, incidentally —
+      because the whole-cell check samples an inset of a uniformly-colored cell and tolerates
+      ~1/3 cell of slip. Added `test_predicted_cell_geometry_is_tight`, which samples four thin
+      strips just inside each predicted boundary and now fails at 3px, by name. Strip inset
+      tuned against the sweep: worst legitimate disagreement is 0.00196 at every inset from
+      0.04 down to 0.01, so the sensitivity costs no headroom
+- [x] 7.3 Residual section updated to name the tight-crop coupling explicitly (what the review
+      asked for), alongside the rasterizer residual already there, including the drift floor
+      below which the prediction stays unpinned
+- [x] 7.4 **design.md Decision 1 overstated the existing numeric test.**
+      `test_pins_one_off_diagonal_cell_and_high_correlation_counts` asserts
+      `df[trait_cols].corr().loc[a,b] == df[[a,b]].corr().loc[a,b]` — pandas against pandas,
+      with `result` appearing nowhere. Its counts half is a real assertion; its cell half pins
+      nothing. Decision 1 corrected; this makes its argument stronger, since path (2) is even
+      less covered than assumed. Filed as #909 rather than fixed here (different test file,
+      JSON-summary concern rather than rendering)
+- [x] 7.5 Sibling-archive reminder moved from this change's design notes into
+      `add-bloommcp-plot-snapshot-tests`' own `tasks.md`, so whoever archives it sees the
+      5-baselines-vs-3 correction at the moment it matters
+- [ ] 7.6 Re-verify on `ubuntu-latest` after pushing: the new edge-strip check samples 1.6px
+      inside each cell boundary, so a platform whose cell borders antialias more widely is the
+      one plausible false-failure mode. If it fires, widen `_EDGE_INSET` — do not loosen
+      `_CELL_ATOL`, which is calibrated for a different purpose

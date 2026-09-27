@@ -21,10 +21,11 @@ than it makes.
 #### Scenario: The drawn cell set is exactly the finite lower-triangle cells
 
 - **WHEN** the correlation heatmap is rendered for the `turface_19` fixture
-- **THEN** the `QuadMesh`'s mask equals `np.triu(ones_like, dtype=bool) | ~np.isfinite(corr)` —
-  the caller's upper-triangle-and-diagonal mask combined with the delegate's own
-  `masked_invalid` pass — so a cell that should carry a finite correlation but was left blank,
-  and a cell that should be blank but was filled in, both fail
+- **THEN** the `QuadMesh`'s mask equals `np.triu(ones_like, dtype=bool) | pd.isnull(corr)` —
+  the caller's upper-triangle-and-diagonal mask unioned with the data's own missing values, as
+  `seaborn.matrix._matrix_mask` does before `_HeatMapper` applies the union via
+  `np.ma.masked_where` — so a cell that should carry a correlation but was left blank, and a
+  cell that should be blank but was filled in, both fail
 - **AND** the unmasked entries of the `QuadMesh`'s data array equal the test's recomputed
   `df[trait_cols].corr()` at the same positions
 
@@ -102,6 +103,16 @@ entirely in that window.
   color, within the same documented tolerance — demonstrating rather than asserting that the
   sampling is unbiased by glyph placement, and keeping the check independent of the
   cross-platform font-rendering differences that constrain the whole-image RMS tolerance
+
+#### Scenario: Predicted cell geometry is pinned tightly to the saved image
+
+- **WHEN** each drawn cell's predicted box is checked against the saved image at its own
+  boundary, rather than only at its interior
+- **THEN** a reconstruction of savefig's `bbox_inches="tight"` crop that has drifted from what
+  matplotlib actually does fails with a message naming the geometry as the cause, at a drift
+  materially smaller than the cell size — the interior-only check tolerates a drift of roughly a
+  third of a cell, which is too loose to guard a coupling to behavior matplotlib does not
+  promise to keep stable
 
 #### Scenario: The oracle's subject is the tool's real output
 

@@ -27,10 +27,18 @@ real delegate against the real fixture, not estimated.
 ## Decision 1: path (1), structural per-cell comparison — not path (2), a numeric assertion
 
 #768's path (2) ("a numeric assertion on the correlation matrix values themselves") was
-evaluated first, because it looked cheaper and because a partial version already exists:
-`test_plot_correlation_matrix_tool.py::test_pins_one_off_diagonal_cell_and_high_correlation_counts`
-already pins one off-diagonal cell and the strong-correlation counts against an independently
-computed `df[trait_cols].corr()`.
+evaluated first, because it looked cheaper and because a partial version appeared to exist
+already: `test_plot_correlation_matrix_tool.py::test_pins_one_off_diagonal_cell_and_high_correlation_counts`.
+
+**That test is weaker than its name claims, which a later PR review caught and this section
+originally repeated uncritically.** Its counts half is a real assertion against the tool
+(`result.strong_positive_correlations == expected_high_pos`). Its cell half is not: it asserts
+`df[trait_cols].corr().loc[a, b] == df[[a, b]].corr().loc[a, b]` — pandas against pandas, with
+`result` appearing nowhere in it. That is an identity true by construction of pandas' pairwise
+Pearson, so no off-diagonal cell is in fact pinned to anything the tool produced. Tracked
+separately rather than fixed here (it is a defect in a different test file, about the JSON
+summary rather than the render), but it makes the argument below *stronger*, not weaker: path
+(2) is even less covered today than this section first assumed.
 
 **Rejected as insufficient on its own, because it does not cover the gap #768 is about.** The
 tool computes its *summary* from its own guarded `.corr(min_periods=...)`, while the *image* is
@@ -139,21 +147,33 @@ would then correctly flag, prompting a deliberate update rather than a silent pa
 matrices are identical on this fixture today; the distinction is about which one the test
 *names* as its oracle, and therefore how it behaves when that stops being true.
 
-## Decision 5: the drawn-cell set is `triu | ~isfinite`, not "the 55 lower-triangle cells"
+## Decision 5: the drawn-cell set is `triu | pd.isnull`, not "the 55 lower-triangle cells"
 
 The first draft of this change specified the mask as exactly
 `np.triu(np.ones_like(corr), dtype=bool)` — the mask `create_correlation_heatmap` passes to
 `sns.heatmap` — and spoke throughout of "the 55 cells". **That is wrong for any fixture whose
-correlation matrix contains a NaN,** and a review caught it before implementation. Seaborn's
-`_HeatMapper` applies its own `np.ma.masked_invalid` *on top of* the caller's mask, so the real
+correlation matrix contains a NaN,** and a review caught it before implementation. Seaborn
+unions the caller's mask with the data's own missing values before drawing, so the real
 invariant is:
 
 ```
-drawn cells = ~( np.triu(ones_like(corr), dtype=bool) | ~np.isfinite(corr) )
+drawn cells = ~( np.triu(ones_like(corr), dtype=bool) | pd.isnull(corr) )
 ```
 
+**The mechanism, named precisely** (a later PR review corrected this, and the correction is
+worth keeping rather than quietly fixing): it is `seaborn.matrix._matrix_mask` doing
+`mask = mask | pd.isnull(data)`, after which `_HeatMapper.__init__` applies the union via
+`np.ma.masked_where`. An earlier version of this section, and of the test's own docstring, cited
+`np.ma.masked_invalid` instead. That was wrong about the mechanism even though it was right
+about the outcome, and the distinction is not academic: `pd.isnull` and `~np.isfinite` disagree
+on ±inf, so a maintainer tracing this coupling through a seaborn upgrade would have been sent
+to the wrong function. The implementation now uses `pd.isnull`, mirroring what seaborn actually
+does rather than a near-synonym. Measured: the two differ only on ±inf, which Pearson
+correlation cannot produce — `.corr()` is bounded to [-1, 1] or NaN, and even an overflowing
+input yields NaN — so this is an exactness fix with no behavior change.
+
 Measured, by forcing one trait in `turface_19` to a constant: drawn cells drop 55 → **45** and
-annotations drop 55 → **45**, and the observed mask matches `triu | ~isfinite` exactly.
+annotations drop 55 → **45**, and the observed mask matches `triu | pd.isnull` exactly.
 
 This matters beyond pedantry, because a NaN correlation is a *first-class, realistic* case for
 this tool specifically — it reads raw, uncleaned data, and `zero_variance_traits` /
@@ -176,7 +196,7 @@ Measured facts about the live render (verified against `turface_19`, all exact):
 |---|---|
 | `ax.collections[0]` | a `QuadMesh`, 11×11 masked array, 55 unmasked (all values finite here) |
 | its array vs. recomputed `corr` at unmasked positions | equal |
-| its mask vs. `triu \| ~isfinite` | identical (Decision 5) |
+| its mask vs. `triu \| pd.isnull` | identical (Decision 5) |
 | `norm.vmin` / `norm.vmax` | −0.30798709623699355 / 0.9942108612743239 = min/max of the drawn values |
 | all 55 facecolors vs. `cmap(norm(value))` | equal to 1e-12 |
 | `ax.texts` | exactly 55, each `== f"{corr[r,c]:.2f}"` at position `(c+0.5, r+0.5)` |
@@ -197,10 +217,30 @@ in-memory figure leaves "figure correct, file wrong" unexamined by any per-cell 
 Mapping a cell to saved-PNG pixels through `bbox_inches="tight"` is the one non-obvious
 mechanic: `fig.get_tightbbox(renderer)` minus savefig's default `pad_inches=0.1` gives the crop
 origin, and display coordinates are then rescaled by `dpi/fig.dpi` and flipped vertically.
-Verified: the predicted canvas is 1690.68×1539.82px against an actual 1690×1539 saved image, and
-the predicted cell boxes land on the right cells — which is what the 0.00196 worst-case
-agreement in Decision 2 *is*; a geometry error would show up immediately as a wildly wrong
-sampled color.
+Verified: the predicted canvas is 1690.68×1539.82px against an actual 1690×1539 saved image.
+
+**This reconstruction is a coupling to matplotlib behavior, not to an API contract**, and a PR
+review was right to flag it — though the first response to it ("a geometry error shows up as a
+wildly wrong sampled color") turned out to be too comfortable when measured. Injecting a
+crop-origin drift and re-running the suite:
+
+| injected drift | px at dpi=150 | what failed, before the fix |
+|---|---|---|
+| 0.02in | 3.0 | nothing |
+| 0.05in | 7.5 | nothing |
+| 0.10in | 15.0 | nothing |
+| 0.25in | 37.5 | the glyph-bias test only, and only incidentally |
+
+Because the whole-cell check samples an *inset* of a uniformly-colored cell, the prediction
+could slip by nearly a third of a cell before any sample left the right cell — so the coupling
+was real and the guard against it was weak. `test_predicted_cell_geometry_is_tight` was added
+for this: it samples four thin strips just inside each predicted boundary, where a slipped box
+lands in a neighbouring cell or the blank triangle. It now fails at 3px, and fails *by name*
+rather than as a confusing color mismatch. The strip inset was tuned against that sweep — the
+worst legitimate strip disagreement is 0.00196 at every inset from 0.04 down to 0.01 (the cell
+interiors are flat right up to the boundary; no antialiasing bleeds in), so the sensitivity is
+bought at no cost in headroom. Below ~3px the prediction remains unpinned: the honest boundary,
+recorded rather than papered over.
 
 Cells are sampled by **median** over an inset rather than mean, so the centered annotation text
 cannot bias the sample. Rather than asserting that property in prose, the suite demonstrates it:
@@ -227,6 +267,12 @@ generalize it against the second real case, when there is one to generalize *fro
 
 ## Risks / Trade-offs
 
+- **Coupling to matplotlib's tight-crop behavior** → `_cell_pixel_box` reconstructs where
+  `savefig(bbox_inches="tight")` crops, which matplotlib does not promise to keep stable.
+  Mitigated, not eliminated: `test_predicted_cell_geometry_is_tight` turns a crop change into a
+  named failure at ~3px drift (Decision 6 has the sweep). It is the right shape of mitigation
+  because the alternative — not sampling the saved PNG at all — gives up the only per-cell layer
+  that survives an artist-tree restructure.
 - **Coupling to seaborn/matplotlib artist internals** (`ax.collections[0]`, `ax.texts`,
   `norm`/`cmap`) → a seaborn upgrade that restructures the artist tree breaks these tests.
   Accepted: it breaks *loudly*, at the exact assertion whose premise changed, and the alternative
@@ -244,7 +290,7 @@ generalize it against the second real case, when there is one to generalize *fro
   point is to verify what was *drawn*, given the selection — but the spec says so rather than
   letting "independently computed" be read as stronger than it is.
 - **Fixture-shape dependence** → the oracle derives the grid size from `len(trait_cols)` and the
-  drawn set from `triu | ~isfinite` at runtime rather than hardcoding 11 or 55, so a fixture
+  drawn set from `triu | pd.isnull` at runtime rather than hardcoding 11 or 55, so a fixture
   change re-derives instead of going stale. It does still assume annotations are on, which holds
   at or below `annot_threshold`; the threshold is read from the delegate's own parameter default
   and the guard's failure path is exercised by a dedicated test against a synthetic count, since
@@ -265,9 +311,16 @@ RMS layer's blind spot. Kept for now — it is the regression guard on Decision 
 labor, and deleting it would make a future `_TOL` change silently reintroduce the confusion #768
 was filed to end.
 
-One thing found while reviewing this change and deliberately **not** fixed here: the sibling
-`add-bloommcp-plot-snapshot-tests` spec still requires 5 baseline PNGs for 5 plotting tools,
-while bloom#462 retired two of those tools and the repo now carries 3. Archiving that change
-unamended writes a knowingly-false requirement into `openspec/specs/`. It belongs to that
-change, not this one; recorded here because this change is the only other thing touching that
-capability and the next person to notice should not have to re-derive it.
+Two things found while reviewing this change and deliberately **not** fixed here, both tracked
+so neither depends on someone re-deriving it:
+
+1. The sibling `add-bloommcp-plot-snapshot-tests` spec still requires 5 baseline PNGs for 5
+   plotting tools, while bloom#462 retired two of those tools and the repo now carries 3.
+   Archiving that change unamended writes a knowingly-false requirement into `openspec/specs/`.
+   It belongs to that change, not this one — a note has been added to its own `tasks.md` so
+   whoever archives it sees the correction at the moment it matters, rather than only in this
+   change's design notes.
+2. `test_pins_one_off_diagonal_cell_and_high_correlation_counts` does not pin a cell to the
+   tool's output at all (Decision 1). Fixing it means asserting against `result`, which is a
+   change to the JSON-summary test file and orthogonal to this change's rendering concern.
+   Filed as #909 rather than folded in here.
