@@ -25,19 +25,25 @@ export function ExpressionCockpit({
   datasetName,
 }: ExpressionCockpitProps) {
   const [tab, setTab] = useState<Tab>("umap");
+  // A tab stays on the page once opened, hidden while another shows, so it keeps its choices and data.
+  const [opened, setOpened] = useState<ReadonlySet<Tab>>(() => new Set<Tab>(["umap"]));
+  const open = (next: Tab) => {
+    setTab(next);
+    setOpened((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+  };
 
   return (
     <ExpressionThemeProvider>
     <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
       {/* Tab strip */}
       <div className="border-b border-stone-200 bg-white px-5 flex items-center gap-1 overflow-x-auto">
-        <TabBtn active={tab === "umap"} onClick={() => setTab("umap")}>
+        <TabBtn active={tab === "umap"} onClick={() => open("umap")}>
           UMAP
         </TabBtn>
-        <TabBtn active={tab === "genes"} onClick={() => setTab("genes")}>
+        <TabBtn active={tab === "genes"} onClick={() => open("genes")}>
           Genes by cell type
         </TabBtn>
-        <TabBtn active={tab === "de"} onClick={() => setTab("de")}>
+        <TabBtn active={tab === "de"} onClick={() => open("de")}>
           Differential expression
         </TabBtn>
         {/*
@@ -55,12 +61,20 @@ export function ExpressionCockpit({
 
       {/* Tab body */}
       <div className="p-5 bg-stone-50 min-h-[640px]">
-        {tab === "umap" && (
-          <ExpressionView datasetId={datasetId} datasetName={datasetName} />
+        {opened.has("umap") && (
+          <div hidden={tab !== "umap"}>
+            <ExpressionView datasetId={datasetId} datasetName={datasetName} />
+          </div>
         )}
-        {tab === "genes" && <ExpressionGenesByCellType datasetId={datasetId} />}
-        {tab === "de" && (
-          <DifferentialExpressionAnalysis file_id={datasetId} />
+        {opened.has("genes") && (
+          <div hidden={tab !== "genes"}>
+            <ExpressionGenesByCellType datasetId={datasetId} />
+          </div>
+        )}
+        {opened.has("de") && (
+          <div hidden={tab !== "de"}>
+            <DifferentialExpressionAnalysis file_id={datasetId} />
+          </div>
         )}
         {/*
         {tab === "correlation" && <ExpressionCorrelation file_id={datasetId} />}

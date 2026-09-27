@@ -9,8 +9,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.11@sha256:b1e699368d24c57cda93c338a57a8c5a119
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"
 
 # bloomctl's dependencies (click, rich, httpx, supabase, python-dotenv,
-# cryptography, sleap-roots-contracts) are all pure-Python / prebuilt-wheel —
-# no apt-get block needed here, unlike bloommcp's matplotlib/scipy native deps.
+# cryptography, sleap-roots-contracts) and the scrna extra's h5py/numpy all ship
+# prebuilt wheels — no apt-get block needed here, unlike bloommcp's matplotlib/scipy.
 
 RUN addgroup --system bloom && adduser --system --ingroup bloom bloom \
     && mkdir -p /opt/venv \
@@ -20,12 +20,14 @@ WORKDIR /app
 USER bloom
 
 # Install dependencies only (cached independently of source code changes).
+# --extra scrna: `scrna hdf5 upload` reads HDF5, so the image needs h5py/numpy or half
+# the command is dead in the published artifact.
 COPY --chown=bloom:bloom pyproject.toml uv.lock README.pypi.md ./
-RUN uv sync --frozen --no-dev --no-cache --no-install-project
+RUN uv sync --frozen --no-dev --no-cache --no-install-project --extra scrna
 
 COPY --chown=bloom:bloom . .
 
 # Install the project itself now that src/ is present.
-RUN uv sync --frozen --no-dev --no-cache
+RUN uv sync --frozen --no-dev --no-cache --extra scrna
 
 ENTRYPOINT ["bloomctl"]

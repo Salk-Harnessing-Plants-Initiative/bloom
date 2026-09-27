@@ -19,13 +19,11 @@ Exit codes:
   0 = every planned object copied (or dry run completed), or another run held
       the lock and this one stood down
   1 = one or more objects failed after retries
-  2 = configuration or preflight error
+  2 = configuration or preflight error, or the rclone daemon stopped working
   3 = interrupted; progress is in the ledger and the next run resumes
   4 = copying reported success but verification found objects missing from Box
   5 = one or more objects were refused because two names collide on one Box
       path; rename one of each pair in Supabase
-  6 = every object copied, but the ledger's Box copy is stale or ahead of this
-      host — the record that makes a re-seed unnecessary is not safe
 """
 
 from __future__ import annotations
@@ -44,7 +42,8 @@ from typing import Iterator
 sys.path.insert(0, str(Path(__file__).parent))
 
 import backup_lib as lib  # noqa: E402
-import docker_env as dock  # noqa: E402
+import postgres  # noqa: E402
+import rclone_daemon  # noqa: E402
 import report  # noqa: E402
 from copier import (  # noqa: E402
     MAX_ATTEMPTS,
@@ -60,8 +59,8 @@ from runlock import ACTIONS_RUN_ENV, SKIP_MARKER, LockHeld, RunLock  # noqa: E40
 
 logger = logging.getLogger("bloom_box_object_backup")
 
-DEFAULT_STATE_DIR = "/var/lib/bloom-box-object-backup"
-DEFAULT_WORKERS = 8
+DEFAULT_STATE_DIR = "/data/bloom/box-object-backup"
+DEFAULT_WORKERS = 4
 
 # Objects planned per pass. Big enough that the per-batch ledger lookup is
 # amortized, small enough that a seed run's memory stays flat.
@@ -70,21 +69,6 @@ BATCH_SIZE = 20_000
 # Verification samples from the objects this run copied; cap what we retain
 # so a multi-million-object seed doesn't hold them all to check 50.
 VERIFY_POOL_CAP = 5_000
-
-# Printed when the ledger changed and its Box copy did not, because the upload
-# could not be made. The upload is best-effort by design — the objects are
-# already on Box — so the run still exits 0 and the summary would otherwise read
-# "succeeded" while the only copy of the resume record sits on the host this job
-# exists to survive losing.
-LEDGER_STALE_MARKER = "the Box copy of the ledger is STALE"
-
-# The opposite situation, and it needs the opposite remedy, so it cannot share
-# the marker above. Here the upload was REFUSED because Box holds the larger
-# ledger: Box is the good copy and this host's is a stub — a rebuilt host, or a
-# wiped state dir. Told to "fix" a stale Box copy, an operator would overwrite
-# eight million rows with twenty and buy a three-week re-seed, which is the
-# exact disaster the size guard exists to prevent.
-LEDGER_AHEAD_MARKER = "the ledger on Box is AHEAD of this host"
 
 # Printed when Box did not answer for every object the pass sampled. A failed
 # stat is not evidence against the backup and must not fail the run — but a
@@ -114,6 +98,9 @@ SKIPPED_NAME_MARKER = "object(s) were SKIPPED for their names"
 ENV_KEYS = (
     "POSTGRES_USER",
     "POSTGRES_DB",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_PASSWORD",
     "MINIO_ROOT_USER",
     "MINIO_ROOT_PASSWORD",
     "OBJECT_BACKUP_MINIO_BUCKET",
@@ -128,12 +115,12 @@ ENV_KEYS = (
     "OBJECT_BACKUP_RCLONE_CONFIG",
 )
 
-# Returned to the caller instead of exported. Every `docker` child this job
-# starts inherits our environment, so a secret left in it travels further than
-# the one function that needs it.
+# Returned to the caller instead of exported. Every child this job starts
+# inherits our environment, so a secret left in it travels further than the
+# one function that needs it.
 # `.env.prod.defaults` classifies both of these as credentials rather than
 # config: they pair with an admin password.
-SECRET_ENV_KEYS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
+SECRET_ENV_KEYS = ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "POSTGRES_PASSWORD")
 
 # The renderer anchors on this shape — timestamp, level, then the key — so the
 # two are named in one place. `asctime` contains a space.
@@ -152,8 +139,6 @@ FLAG_VALUES = (
     "skipped_names",
     "verify_mismatch",
     "verify_incomplete",
-    "ledger_stale",
-    "ledger_ahead",
     "source_gone",
 )
 
@@ -216,6 +201,17 @@ def apply_env_file(path: Path) -> dict[str, str]:
             os.environ.setdefault(key, value)
     logger.info("loaded %d of %d values from %s", len(found), len(values), path.name)
     return found
+
+
+def scrub_credentials() -> None:
+    """Take the credentials out of this process's environment once they are on `args`.
+
+    Every child process inherits the environment, and each of these belongs to
+    one consumer: psql is handed its password explicitly, and MinIO's keys
+    reach rclone only inside remote-control calls.
+    """
+    for key in SECRET_ENV_KEYS:
+        os.environ.pop(key, None)
 
 
 def emit_status(status: str, flags=(), stats=None) -> None:
@@ -281,10 +277,9 @@ def _status_for(code: int, outcome: str, stopped: bool = False) -> str:
     if code in (1, 2):
         return "failed"
     # Taken directly rather than read off code 3, which a higher-ranked
-    # condition takes first. A seed night stopped by the job's time limit
-    # whose ledger upload was throttled exits 6, and it is still a stopped
-    # night — "stopped, progress kept" is exactly what its operator needs to
-    # read, and it is the one headline meaning "this is fine".
+    # condition takes first. A stopped night that also found a mismatch or a
+    # collision exits 4 or 5, and it is still a stopped night — "stopped,
+    # progress kept" is exactly what its operator needs to read.
     if stopped or code == 3:
         return "stopped"
     return "partial" if outcome == "partial" else "ok"
@@ -294,8 +289,7 @@ def _flags_for(totals: "Totals") -> tuple:
     """The conditions that are independent of the headline verdict.
 
     Each can occur on a night that otherwise succeeded, so none of them can be
-    a branch of the result — that is what made the ledger notice invisible
-    before, and it applies to all of these.
+    a branch of the result.
     """
     flags = []
     if totals.collisions:
@@ -306,8 +300,6 @@ def _flags_for(totals: "Totals") -> tuple:
         flags.append("verify_mismatch")
     if totals.verify_unverified:
         flags.append("verify_incomplete")
-    if totals.ledger_flag:
-        flags.append(totals.ledger_flag)
     if totals.source_gone:
         flags.append("source_gone")
     return tuple(flags)
@@ -341,10 +333,10 @@ def env_file_for(argv: list[str] | None) -> tuple[Path, bool]:
 def check_state_dir(args: argparse.Namespace, configured: str) -> None:
     """Refuse when the env file and the caller name different directories.
 
-    The workflow's cancel step and its summary both read this directory over
-    separate ssh connections that see no env file. Pointed elsewhere here, the
-    job would work while those two silently watched an empty one — a cancel
-    that stops nothing and a verdict that is never recovered.
+    The workflow's summary reads this directory over a separate ssh connection
+    that sees no env file. Pointed elsewhere here, the job would work while the
+    summary silently watched an empty one, and a lost verdict would never be
+    recovered.
     """
     if configured and str(args.state_dir) != configured:
         raise lib.BackupError(
@@ -376,10 +368,13 @@ def main(argv: list[str] | None = None) -> int:
         # an operator who exports a corrected password silently gets the
         # file's.
         args.minio_access = args.minio_access or found.get("MINIO_ROOT_USER", "")
+        args.pg_password = args.pg_password or found.get("POSTGRES_PASSWORD", "")
         args.minio_secret = args.minio_secret or found.get("MINIO_ROOT_PASSWORD", "")
+        # Held on `args` from here on, and nowhere else, so no child inherits them.
+        scrub_credentials()
         check_state_dir(args, found.get("OBJECT_BACKUP_STATE_DIR", ""))
         return run_backup(args)
-    except (dock.DockerError, lib.BackupError) as exc:
+    except lib.BackupError as exc:
         logger.error("%s", exc)
         return 2
     except KeyboardInterrupt:
@@ -500,6 +495,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     # are used, so neither value need ever be exported. `main` replaces them
     # with what the env file held; a plain export still works for a run by hand.
     args.minio_access = os.environ.get("MINIO_ROOT_USER", "")
+    args.pg_password = os.environ.get("POSTGRES_PASSWORD", "")
     args.minio_secret = os.environ.get("MINIO_ROOT_PASSWORD", "")
     return args
 
@@ -524,22 +520,10 @@ def run_backup(args: argparse.Namespace) -> int:
 
 
 def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
-    project = dock.project_name(args.env)
     box_fs = f"{args.box_remote}:"
 
     ledger = Ledger.open(str(state_dir / "ledger.db"))
 
-    db_container = dock.find_container(project, dock.DB_SERVICE)
-
-    # Taken from the database, BEFORE the manifest snapshot — not from the
-    # host afterwards. Anchoring on a moment the snapshot cannot precede means
-    # an object written while enumeration runs is re-checked next week rather
-    # than falling into a gap nothing ever revisits.
-    watermark = dock.database_now(
-        db_container,
-        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
-        database=os.environ.get("POSTGRES_DB", "postgres"),
-    )
     # Config first, before the manifest read. Every check below is a string
     # or a file on this host — none of them can pass at 02:00 and fail at
     # 05:00 — and reading eight million rows before finding out that
@@ -551,6 +535,13 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
     check_destination(ledger, destination)
     minio = minio_source_from_env(args)
     require_rclone_config(args.rclone_config, args.box_remote)
+    conn = postgres.connection_from_env(args.pg_password)
+
+    # Taken from the database, BEFORE the manifest snapshot — not from the
+    # host afterwards. Anchoring on a moment the snapshot cannot precede means
+    # an object written while enumeration runs is re-checked next week rather
+    # than falling into a gap nothing ever revisits.
+    watermark = postgres.database_now(conn)
 
     since = None if args.full else ledger.last_successful_run()
     logger.info(
@@ -559,15 +550,13 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         f"changed since {since}" if since else "full listing",
     )
     manifest = state_dir / "manifest.tsv"
-    listed = dock.psql_query_to_file(
-        db_container,
+    listed = postgres.query_to_file(
+        conn,
         lib.objects_query(
             buckets=[b.strip() for b in args.buckets.split(",") if b.strip()] or None,
             since=since,
         ),
-        user=os.environ.get("POSTGRES_USER", "supabase_admin"),
-        database=os.environ.get("POSTGRES_DB", "postgres"),
-        destination=manifest,
+        manifest,
     )
     logger.info("listed %d object(s)", listed)
 
@@ -576,32 +565,29 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         ledger.close()
         return dry_run_verdict(totals, listed)
 
-    # Left here rather than moved up with the config checks: it is the one
-    # that reads live state, and it is answered right before the daemon it
-    # is about would start.
-    check_no_stale_daemon()
     # Recorded only now — a dry run must not claim a destination it never
     # wrote to.
     ledger.remember_destination(destination)
     run_id = ledger.start_run(now=watermark)
-    network = dock.find_network(project)
-    daemon = dock.start_rc_daemon(
-        network=network,
-        rclone_config=str(Path(args.rclone_config).resolve()),
-        port=args.rc_port,
-        transfers=args.workers,
-        bwlimit=args.bwlimit,
-        state_dir=str(state_dir.resolve()),
-    )
     totals = Totals()
     if args.verify:
         totals.verify_pool = VerifyReservoir(VERIFY_POOL_CAP)
     started_at = datetime.now(timezone.utc)
     crashed = False
+    daemon = None
     try:
+        # Inside the try, so a daemon that cannot start still ends with a record.
+        daemon = rclone_daemon.start(
+            rclone_config=str(Path(args.rclone_config).resolve()),
+            port=args.rc_port,
+            transfers=args.workers,
+            bwlimit=args.bwlimit,
+        )
         client = wait_for_daemon(daemon)
         preflight_source(client, minio, sample_planned_objects(manifest))
-        copy_manifest(client, manifest, ledger, minio, box_fs, args, totals)
+        copy_manifest(
+            client, manifest, ledger, minio, box_fs, args, totals, daemon=daemon
+        )
         if args.verify and totals.verify_pool and len(totals.verify_pool):
             result = verify_sample(
                 client,
@@ -656,16 +642,14 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             outcome,
             stopped=stopping.stopping(),
         )
-        # The four flags already final go in too, or a cancelled night recovers
-        # its headline and loses every notice — including the refused-filename
-        # one, whose whole justification is that you get exactly one. The ledger
-        # flags cannot: the upload has not run. Those reach a human by exit code
-        # 6, which notifies whether or not the summary renders anything.
+        # The flags go in too, or a cancelled night recovers its headline and
+        # loses every notice — including the refused-filename one, whose whole
+        # justification is that you get exactly one.
         report_flags = _flags_for(totals)
         # Nested so the teardown below cannot be skipped. Everything in this
         # block can raise — the ledger writes raise sqlite3.Error on a full disk
-        # — and a container left holding the RC port makes every later night
-        # fail at check_no_stale_daemon until someone clears it by hand.
+        # — and a daemon left running holds the RC port, so the next run on
+        # this host could not start its own.
         try:
             publish_report(
                 daemon,
@@ -689,23 +673,14 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
             # record matters most, and it is the local audit trail this job's own
             # error messages tell operators to read.
             ledger.finish_run(run_id, outcome, stats)
-            # Closed BEFORE it is uploaded. SQLite runs in WAL mode here, so
-            # committed rows can still be sitting in ledger.db-wal; a copy of
-            # ledger.db on its own would be missing them. close() checkpoints
-            # the WAL into the file, which makes the uploaded copy complete.
+            # close() checkpoints the WAL into ledger.db, so the file on the
+            # host is complete between runs.
             ledger.close()
-            totals.ledger_flag = publish_ledger(
-                daemon,
-                state_dir,
-                box_fs,
-                args,
-                copied=totals.copied,
-                crashed=crashed,
-            )
         finally:
-            # Last, so the daemon is still alive for both uploads above, and
-            # unconditional, so nothing above can strand the container.
-            daemon.stop()
+            # Last, so the daemon is still alive for the report upload above,
+            # and unconditional, so nothing above can strand the daemon.
+            if daemon is not None:
+                daemon.stop()
     logger.info(
         "done — copied %d, failed %d, already current %d, skipped %d",
         totals.copied,
@@ -799,7 +774,6 @@ def run_locked(args: argparse.Namespace, state_dir: Path) -> int:
         verify_mismatched=totals.verify_mismatched,
         stopped=stopping.stopping(),
         collisions=totals.collisions,
-        ledger_flag=totals.ledger_flag,
     )
     # Same verdict the report already carries; printed here because the log is
     # the faster route when the connection does survive.
@@ -832,10 +806,6 @@ class Totals:
     # re-read the whole table. Same treatment, and the same reason, as a
     # filename Box cannot store.
     source_gone: int = 0
-    # Which way the ledger upload went, if it did not go cleanly. Set by
-    # publish_ledger, read by _flags_for — the two conditions are
-    # opposites and the summary must tell them apart.
-    ledger_flag: str | None = None
     failures: list = field(default_factory=list)
     gone: list = field(default_factory=list)
     # Objects refused before any copy was attempted, and objects the check
@@ -880,7 +850,6 @@ def exit_code(
     verify_mismatched: int,
     stopped: bool = False,
     collisions: int = 0,
-    ledger_flag: str | None = None,
 ) -> int:
     """What the run tells its caller, which for a scheduled run is everything.
 
@@ -911,15 +880,6 @@ def exit_code(
     # for ever.
     if collisions:
         return 5
-    # The ledger's Box copy is not what it should be — either stale or ahead
-    # of this host. Its own code, and non-zero deliberately: every other route
-    # to a human is a notice inside a SUCCESSFUL run's summary, which notifies
-    # nobody. This is the one condition that silently erodes the record that
-    # makes a re-seed unnecessary, so it is worth a red tick and an email even
-    # though every object copied fine. The run still records `ok`, so the
-    # watermark is unaffected — the exit code and the watermark are separate.
-    if ledger_flag:
-        return 6
     # 3 is the documented "interrupted; progress is in the ledger and the
     # next run resumes". A signal handler means SIGINT no longer raises
     # KeyboardInterrupt, so without this a stopped run reports the clean 0
@@ -991,7 +951,7 @@ def run_outcome(
 
 
 def publish_report(
-    daemon: dock.RcDaemon,
+    daemon: rclone_daemon.Daemon | None,
     state_dir: Path,
     box_fs: str,
     args: argparse.Namespace,
@@ -1046,10 +1006,14 @@ def publish_report(
     except OSError as exc:
         logger.error("could not write the run report locally: %s", exc)
         return
+    if daemon is None or daemon.exit_code() is not None:
+        logger.error("run report stayed local at %s — rclone is not running", local)
+        return
     try:
         client = RcloneRC(daemon.url, daemon.user, daemon.password)
         client.copy_file(
-            dock.STATE_MOUNT + "/" + report.REPORTS_DIRNAME,
+            # rclone runs beside the job, so it reads the state dir directly.
+            str(state_dir.resolve() / report.REPORTS_DIRNAME),
             entry.filename(),
             box_fs,
             report.box_remote_path(entry),
@@ -1057,85 +1021,6 @@ def publish_report(
         logger.info("run report on Box: %s", report.box_remote_path(entry))
     except RcloneError as exc:
         logger.error("run report stayed local at %s — upload failed: %s", local, exc)
-
-
-def publish_ledger(
-    daemon: dock.RcDaemon,
-    state_dir: Path,
-    box_fs: str,
-    args: argparse.Namespace,
-    *,
-    copied: int,
-    crashed: bool,
-) -> str | None:
-    """Copy the ledger to Box, so losing the host does not mean re-seeding.
-
-    The ledger records which version of every object is on Box, and it is what
-    lets a multi-week seed stop and carry on. It lives on the deploy host —
-    the machine this job exists to survive losing. Without a copy, a rebuilt
-    host starts from an empty ledger, concludes nothing has ever been copied,
-    and re-transfers all eight million objects. Listing Box cannot rebuild it:
-    the ledger is keyed on each object's version, and a listing shows only
-    that a path exists.
-
-    Skipped in three cases: after a run that copied nothing — the file is a
-    gigabyte or two once seeded and a quiet night has not meaningfully changed
-    it; after one that crashed, so a half-written ledger cannot replace a good
-    copy; and when the copy on Box is larger than this one, which means this
-    host did not build the mirror that copy describes.
-
-    Best-effort, like the run report: the objects are already safely on Box
-    and a failed upload must not turn a good run into a failed one.
-    """
-    if crashed:
-        logger.info("ledger not uploaded: the run did not finish cleanly")
-        return None
-    if not copied:
-        logger.info("ledger not uploaded: nothing was copied this run")
-        return None
-    local = state_dir / report.LEDGER_FILENAME
-    try:
-        local_size = local.stat().st_size
-    except OSError as exc:
-        logger.error("cannot read %s: %s — %s", local, exc, LEDGER_STALE_MARKER)
-        return "ledger_stale"
-    destination = report.box_ledger_path(args.box_root)
-    try:
-        client = RcloneRC(daemon.url, daemon.user, daemon.password)
-        # Never replace a bigger copy with a smaller one. A ledger only grows,
-        # so a smaller one means this host did not build the mirror the copy on
-        # Box describes — a rebuilt host, or a wiped state dir. The smoke test
-        # in the wiki copies twenty objects, which is enough to trigger this
-        # upload, so without the check the first command an operator runs after
-        # losing the host would replace the record of eight million objects
-        # with a record of twenty.
-        existing = client.stat(box_fs, destination)
-        remote_size = existing.get("Size") if existing else None
-        if isinstance(remote_size, int) and local_size < remote_size:
-            logger.error(
-                "ledger NOT uploaded: %s. The copy at %s is %s and this run's "
-                "is only %s, so this host is not the one that built that "
-                "mirror. The Box copy is the good one — RESTORE it onto this "
-                "host before running again, and do not upload over it. See "
-                "'If the deploy host itself is gone' in the wiki. Uploading "
-                "now would lose the record of what is already backed up.",
-                LEDGER_AHEAD_MARKER,
-                destination,
-                lib.format_bytes(remote_size),
-                lib.format_bytes(local_size),
-            )
-            return "ledger_ahead"
-        client.copy_file(dock.STATE_MOUNT, report.LEDGER_FILENAME, box_fs, destination)
-        logger.info("ledger on Box: %s (%s)", destination, lib.format_bytes(local_size))
-    except Exception as exc:
-        # Deliberately broad: this runs in the cleanup path, and anything
-        # raised here would skip the container teardown below it.
-        logger.error(
-            "ledger stayed on the host only — upload failed: %s — %s",
-            exc,
-            LEDGER_STALE_MARKER,
-        )
-        return "ledger_stale"
 
 
 def plan_batches(
@@ -1225,7 +1110,10 @@ def copy_manifest(
     box_fs: str,
     args: argparse.Namespace,
     totals: Totals,
+    daemon: rclone_daemon.Daemon | None = None,
 ) -> None:
+    # Stop as soon as the daemon is gone, rather than retrying every object left.
+    alive = (lambda: daemon.exit_code() is None) if daemon is not None else None
     for plan in plan_batches(manifest, ledger, args.limit):
         # Between batches as well as between objects: a batch is 20,000
         # objects, and a stop should not have to wait for the rest of one.
@@ -1272,11 +1160,14 @@ def copy_manifest(
             failures=totals.failures,
             gone=totals.gone,
             succeeded=totals.verify_pool,
+            alive=alive,
         )
         totals.copied += copied
         totals.failed += failed
         totals.source_gone += gone
         # The reservoir is offered every successful copy inside copy_all.
+        if daemon is not None:
+            rclone_daemon.ensure_running(daemon, "during the run")
 
 
 def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
@@ -1302,34 +1193,6 @@ def minio_source_from_env(args: argparse.Namespace) -> MinioSource:
         secret_key=secret,
         bucket=args.minio_bucket,
         prefix=args.minio_prefix,
-    )
-
-
-def check_no_stale_daemon() -> None:
-    """Refuse to start while a previous run's container is still around.
-
-    Deliberately a refusal rather than a cleanup. Removing a container is
-    destructive and this job should not do destructive things on its own
-    initiative — a person can look, confirm it is a leftover, and remove it.
-
-    The alternative is what happens today: `docker run` fails with `port is
-    already allocated`, which says nothing about a run three nights ago being
-    the cause, and gives no hint that a `docker rm` is all that is needed.
-    """
-    stale = dock.find_stale_daemons()
-    if not stale:
-        return
-    listed = "\n".join(f"    {line}" for line in stale)
-    raise lib.BackupError(
-        "an rclone container from an earlier run is still present:\n"
-        f"{listed}\n"
-        "It holds the RC port and a live Box session, so this run cannot start "
-        "its own. `kill -9`, the OOM killer, a hard reboot or a crash skip the "
-        "cleanup that would normally remove it; a plain `kill`, a cancelled "
-        "workflow and Ctrl-C do not, and leave nothing behind.\n"
-        "Nothing else is using it: this run already holds the lock, so there is "
-        "no other backup in progress. Remove it and re-run:\n"
-        f"    docker rm --force $(docker ps -aq --filter name={dock.RC_CONTAINER_PREFIX})"
     )
 
 
@@ -1462,7 +1325,7 @@ def require_rclone_config(path: str, remote: str) -> None:
 DAEMON_READY_TIMEOUT_SECONDS = 10
 
 
-def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
+def wait_for_daemon(daemon: rclone_daemon.Daemon, attempts: int = 30) -> RcloneRC:
     """Poll rc/noop until the daemon answers, so the first copy isn't a race."""
     poll = RcloneRC(
         daemon.url,
@@ -1475,6 +1338,7 @@ def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
         # stop arriving while the daemon starts must not wait out the poll.
         if stopping.stopping():
             raise lib.Stopped("stopped while waiting for the rclone daemon")
+        rclone_daemon.ensure_running(daemon, "before it was ready")
         try:
             poll.noop()
             logger.info("rclone daemon ready (%s)", poll.version())
@@ -1483,9 +1347,8 @@ def wait_for_daemon(daemon: dock.RcDaemon, attempts: int = 30) -> RcloneRC:
             return RcloneRC(daemon.url, daemon.user, daemon.password)
         except RcloneError:
             time.sleep(0.5)
-    raise lib.BackupError(
-        "rclone daemon never became ready. Container logs:\n"
-        + dock.daemon_logs(daemon.container)
+    raise rclone_daemon.DaemonError(
+        "rclone daemon never became ready. Its log:\n" + daemon.log_tail()
     )
 
 

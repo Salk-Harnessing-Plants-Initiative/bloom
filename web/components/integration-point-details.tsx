@@ -30,20 +30,19 @@ export function IntegrationPointDetails({ embeddingId, index, member, values, on
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     setPoint(null);
     setError(null);
-    fetchPoint(embeddingId, index).then(
+    fetchPoint(embeddingId, index, signal).then(
       (p) => {
-        if (!cancelled) setPoint(p);
+        if (!signal.aborted) setPoint(p);
       },
       (err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!signal.aborted) setError(err instanceof Error ? err.message : String(err));
       },
     );
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [embeddingId, index]);
 
   const labels = values.filter((v) => v.key !== DATASET_KEY);
