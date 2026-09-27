@@ -1,7 +1,7 @@
 """Regression guard for ``.github/workflows/weekly-backup.yml``.
 
 The traps pinned here are the ones this repo has already been bitten by once, in
-``refresh-cyl-experiment-trait-counts.yml``:
+an earlier scheduled workflow (since removed):
 
 - A scheduled run routed through a GitHub Environment that carries a
   required-reviewer gate sits "Waiting" forever, because nobody approves a 02:00

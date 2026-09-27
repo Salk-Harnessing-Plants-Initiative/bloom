@@ -29,9 +29,10 @@ export default async function Species({
 
   if (!species) return <div>Species not found.</div>;
 
-  // NULL_DATASET is a placeholder sentinel — hide from the UI.
+  // NULL_DATASET is a placeholder sentinel, and a reference atlas has no cells
+  // of its own — it is only seen on an integration map. Hide both.
   const datasets = (species.scrna_datasets ?? []).filter(
-    (d) => d.name !== "NULL_DATASET",
+    (d) => d.name !== "NULL_DATASET" && d.kind !== "reference",
   );
 
   return (

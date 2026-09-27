@@ -86,6 +86,19 @@
 		Cross-Origin-Resource-Policy same-origin
 	}
 
+	# Compress these text types, except on the stream routes: encode holds headers until the first body byte.
+	@compress not path /langchain/* /bloommcp/*
+	encode @compress zstd gzip {
+		match {
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type text/javascript*
+			header Content-Type text/css*
+			header Content-Type text/html*
+			header Content-Type text/plain*
+		}
+	}
+
 	# -------------------
 	# Main Application — DOMAIN_MAIN
 	# -------------------

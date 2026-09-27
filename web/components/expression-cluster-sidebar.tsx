@@ -1,6 +1,7 @@
 "use client";
 
 import type { Database } from "@/lib/database.types";
+import type { TransgeneCount } from "@/components/expression-lib/transgene";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
@@ -9,6 +10,9 @@ export interface ExpressionClusterSidebarProps {
   hiddenOrdinals: ReadonlySet<number>;
   /** Per-cluster cell counts, keyed by ordinal. */
   cellCounts?: Record<number, number>;
+  /** Per cluster ordinal, its transgene-positive cells; absent when the
+   *  dataset records no transgene status. */
+  transgene?: ReadonlyMap<number, TransgeneCount>;
   onVisibilityChange: (ordinal: number, visible: boolean) => void;
   /** Hide all clusters except this one. Clicking again restores full visibility. */
   onSolo: (ordinal: number) => void;
@@ -22,6 +26,7 @@ export function ExpressionClusterSidebar({
   clusters,
   hiddenOrdinals,
   cellCounts,
+  transgene,
   onVisibilityChange,
   onSolo,
   onShowAll,
@@ -64,6 +69,7 @@ export function ExpressionClusterSidebar({
           const color = c.color ?? "#a8a29e";
           const label = c.name ?? c.cluster_id;
           const source = c.source?.trim() || null;
+          const carriers = transgene?.get(c.ordinal);
 
           return (
             <li key={c.ordinal}>
@@ -102,6 +108,15 @@ export function ExpressionClusterSidebar({
                       title={`Label transferred from ${source}`}
                     >
                       from {source}
+                    </span>
+                  )}
+                  {carriers && carriers.positive > 0 && (
+                    <span
+                      className="mt-1 inline-flex w-fit items-center rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white"
+                      title={`${carriers.positive} of ${carriers.total} cells in this cluster carry the transgene`}
+                    >
+                      {carriers.positive} transgene+ ·{" "}
+                      {((carriers.positive / carriers.total) * 100).toFixed(1)}%
                     </span>
                   )}
                 </span>

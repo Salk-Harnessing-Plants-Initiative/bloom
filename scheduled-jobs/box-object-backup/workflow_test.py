@@ -20,6 +20,7 @@ import logging
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -38,6 +39,9 @@ WORKFLOW = (
     / "workflows"
     / "box-object-backup.yml"
 )
+COMPOSE = Path(__file__).resolve().parent / "compose.yml"
+# How the run step starts the job; the launch checks anchor on it.
+LAUNCH = "docker compose -f scheduled-jobs/box-object-backup/compose.yml"
 
 
 @pytest.fixture(scope="module")
@@ -271,10 +275,10 @@ class TestRunInvocation:
         assert "--full" not in workflow
 
     def test_the_deploy_path_comes_from_a_secret(self, workflow: str):
-        # Never a hardcoded path: an earlier installer assumed /data/bloom,
-        # which is not where this repo deploys.
-        assert "secrets.PROD_DEPLOY_PATH" in workflow
-        assert "/data/bloom" not in workflow
+        # Never a hardcoded deploy tree: every DEPLOY_PATH is the secret.
+        values = re.findall(r"^\s*DEPLOY_PATH:\s*(.+?)\s*$", workflow, re.M)
+        assert values, "the workflow sets no DEPLOY_PATH"
+        assert set(values) == {"${{ secrets.PROD_DEPLOY_PATH }}"}
 
 
 class TestSupersededSchedulingIsGone:
@@ -297,13 +301,12 @@ class TestSupersededSchedulingIsGone:
 
 
 class TestTheRemoteRunGetsItsConfiguration:
-    """The job reads every setting from a deploy env file, and only the run
-    step knows where the deploy directory is.
+    """Compose passes the credentials from the deploy env file, and the job
+    reads its settings from the committed defaults compose.yml mounts. Only the
+    run step knows where the deploy directory is.
 
-    The systemd unit this replaced carried `EnvironmentFile=`. With nothing in
-    its place every scheduled run dies at the first config lookup, after a full
-    scan of storage.objects. Which keys are taken is an allow-list in Python —
-    `ENV_KEYS` — and is tested against real files in backup_objects_test.py.
+    Which keys the job takes is an allow-list in Python — `ENV_KEYS` — tested
+    against real files in backup_objects_test.py.
     """
 
     def run_step(self, parsed: dict) -> str:
@@ -314,10 +317,58 @@ class TestTheRemoteRunGetsItsConfiguration:
     def test_the_job_is_started_where_the_env_file_is(self, parsed: dict):
         script = self.run_step(parsed)
         assert 'cd "$deploy_path"' in script, (
-            "the job would look for .env.<env> wherever the shell landed"
+            "compose would look for .env.<env> wherever the shell landed"
         )
-        assert script.index('cd "$deploy_path"') < script.index(
-            "python3 scheduled-jobs/box-object-backup/backup_objects.py"
+        assert script.index('cd "$deploy_path"') < script.index(LAUNCH)
+
+    def test_compose_reads_the_credentials_from_the_deploy_env_file(self, parsed: dict):
+        assert '--env-file ".env.$env_name"' in _strip_comments(self.run_step(parsed))
+
+    def test_the_job_no_longer_runs_on_the_host(self, parsed: dict):
+        assert "backup_objects.py" not in _strip_comments(self.run_step(parsed))
+
+    def test_each_run_is_one_container_named_for_the_run(self, parsed: dict):
+        script = _strip_comments(self.run_step(parsed))
+        assert 'run --rm -T --name "box-object-backup-$run_tag"' in script
+        guard = '[[ "$run_tag" =~ ^[0-9]+-[0-9]+$ ]]'
+        assert guard in script, "the container name is built from an unchecked tag"
+        assert script.index(guard) < script.index(LAUNCH)
+
+    def test_the_run_command_is_exactly_the_reviewed_one(self, parsed: dict):
+        """Every option, not a pattern.
+
+        `-e NAME` alone copies NAME in from .env.prod, and `-v`, `--cap-add`
+        or `--entrypoint` here would bypass compose.yml's own checks.
+        """
+        script = _strip_comments(self.run_step(parsed)).replace("\\\n", " ")
+        line = next(ln for ln in script.splitlines() if ln.strip().startswith(LAUNCH))
+        words = shlex.split(line)
+        run = words.index("run")
+        service = words.index("box-object-backup")
+        assert words[:run] == shlex.split(LAUNCH) + ["--env-file", ".env.$env_name"]
+        assert words[run + 1 : service] == [
+            "--rm",
+            "-T",
+            "--name",
+            "box-object-backup-$run_tag",
+            "--user",
+            "$(id -u):$(id -g)",
+            "-e",
+            f"{runlock.ACTIONS_RUN_ENV}=$run_tag",
+        ]
+
+    def test_the_container_runs_as_the_deploy_user(self, parsed: dict):
+        # The rclone config is the deploy user's, mode 600, and the ledger and
+        # reports must stay readable on the host.
+        assert '--user "$(id -u):$(id -g)"' in _strip_comments(self.run_step(parsed))
+
+    def test_it_runs_the_service_compose_yml_defines(self, parsed: dict):
+        import yaml
+
+        (service,) = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+        script = _strip_comments(self.run_step(parsed))
+        assert re.search(rf"^\s*{re.escape(service)} \\$", script, re.M), (
+            f"the run step does not start the {service!r} service"
         )
 
     def test_the_workflow_no_longer_exports_the_file_itself(self, parsed: dict):
@@ -380,7 +431,7 @@ class TestDispatchInputCannotReachTheRemoteShell:
             "RUN_TAG": "1-1",
             "DRY_RUN": "",
             "RUNNER_TEMP": "/tmp",
-            "STATE_DIR": "/var/lib/bloom-box-object-backup",
+            "STATE_DIR": "/data/bloom/box-object-backup",
             "PATH": os.environ["PATH"],
         }
         env.update(values)
@@ -472,12 +523,12 @@ class TestDispatchInputCannotReachTheRemoteShell:
 
 
 class TestTheWorkflowAndTheJobWatchOneDirectory:
-    """Three ssh sessions, and only one of them reads the env file.
+    """The run and the summary share one directory; only the run reads the env file.
 
-    The run takes the lock there, the cancel step finds it there, and the
-    summary falls back to the reports there. Pointed somewhere else, the job
-    would work perfectly while those two watched an empty directory: a cancel
-    that stops nothing and a verdict never recovered, both silent.
+    The run takes its lock and writes its reports there, and the summary falls
+    back to those reports over a separate ssh session. Pointed somewhere else,
+    the job would work while the summary watched an empty directory, and a lost
+    verdict would never be recovered.
     """
 
     def test_the_directory_is_defined_once(self, parsed: dict, workflow: str):
@@ -500,7 +551,7 @@ class TestTheWorkflowAndTheJobWatchOneDirectory:
         )
 
     def test_a_job_pointed_elsewhere_refuses_to_start(self, tmp_path):
-        """Loud on the run step rather than silent in the other two."""
+        """Loud on the run step rather than silent in the summary."""
         env_file = tmp_path / ".env.prod"
         env_file.write_text(f"OBJECT_BACKUP_STATE_DIR={tmp_path}/elsewhere\n")
         code = job.main(
@@ -551,11 +602,11 @@ class TestTheSummaryStepCannotHangTheRunner:
 
 
 class TestCancellingTheJobStopsTheRun:
-    """Cancelling kills the ssh client on the runner, not the run on the host.
+    """Cancelling ends the ssh session on the runner, not the container on the host.
 
-    The remote sees the connection drop, which arrives as SIGHUP. That used to
-    be a hard kill — the cleanup in `finally` never ran and the rclone
-    container was left holding the RC port, so the next run refused to start.
+    The compose client dies with the session and the container keeps copying.
+    The cancel step stops it by name, and the job puts itself away within
+    compose.yml's grace period.
     """
 
     def step(self, parsed: dict) -> dict:
@@ -580,31 +631,25 @@ class TestCancellingTheJobStopsTheRun:
         )
         assert stop < summary
 
-    def test_it_finds_the_process_through_the_lock_file(self, parsed: dict):
-        # runlock.py writes the pid and the owning job there; nothing else
-        # knows what is running or who started it.
-        script = self.step(parsed)["run"]
-        assert "backup.lock" in script
-        # One read, not two: the file must not change between them.
-        assert script.count("json.load(open(") == 1, (
-            "the lock is opened more than once, so the pid and the owner can "
-            "come from different states of the file"
-        )
-        assert 'd.get("pid"' in script and 'd.get("actions_run"' in script
+    def test_it_stops_the_container_this_run_started(self, parsed: dict):
+        script = _strip_comments(self.step(parsed)["run"])
+        assert 'name="box-object-backup-$run_tag"' in script
+        assert 'docker stop "$name"' in script
+
+    def test_it_never_looks_through_the_lock(self, parsed: dict):
+        # The lock's pid is a process inside a container: on the host it means
+        # nothing, or belongs to something else.
+        script = _strip_comments(self.step(parsed)["run"])
+        assert "backup.lock" not in script
+        assert "kill " not in script
 
     def test_it_asks_rather_than_kills(self, parsed: dict):
-        # SIGKILL is the hard kill this whole change exists to avoid: it would
-        # leave the container behind exactly as before.
-        # Comments stripped: the script's own comment explains why it does NOT
-        # escalate to SIGKILL, and a substring check on the raw text trips over
-        # that explanation rather than on any code.
+        # `docker stop` sends SIGTERM and waits the container's own grace
+        # period, which compose.yml sets; a timeout here would override it.
         script = _strip_comments(self.step(parsed)["run"])
-        assert "kill -TERM" in script
-        # `kill -9` specifically: a bare "-9" also appears inside the [!0-9]
-        # character class that validates the pid.
-        assert "kill -9" not in script
-        assert "-KILL" not in script
-        assert "SIGKILL" not in script
+        assert "docker kill" not in script
+        assert "--signal" not in script and "-s KILL" not in script
+        assert "--time" not in script and " -t " not in script
 
     def test_it_cannot_hang_the_job(self, parsed: dict):
         step = self.step(parsed)
@@ -627,10 +672,10 @@ class TestCancellingTheJobStopsTheRun:
 class TestTheRunNamesTheJobThatStartedIt:
     """The other half of the ownership guard.
 
-    The cancel step refuses to signal anything unless the run was started by
-    this job, and the summary finds this night's report the same way. If the
-    run step stops passing the name, a cancelled run keeps going on the host
-    and a lost verdict is never recovered — and nothing else would notice.
+    The cancel step stops only the container named for this run, and the
+    summary finds this night's report by the same name. If the run step stops
+    passing it, a lost verdict is never recovered — and nothing else would
+    notice.
     """
 
     def remote_script(self, parsed: dict) -> str:
@@ -640,16 +685,16 @@ class TestTheRunNamesTheJobThatStartedIt:
         )["run"]
         return outer.split("<<'REMOTE'", 1)[1].split("\n          REMOTE", 1)[0]
 
-    def test_the_name_is_exported_before_the_job_is_launched(self, parsed: dict):
-        script = self.remote_script(parsed)
-        export = f"export {runlock.ACTIONS_RUN_ENV}="
-        assert export in script, "the run step never names the job to the run"
-        launch = script.index(
-            "python3 scheduled-jobs/box-object-backup/backup_objects.py"
-        )
-        assert script.index(export) < launch, (
-            "exported after the job starts, so the run would not see it"
-        )
+    def test_the_name_is_passed_into_the_container(self, parsed: dict):
+        """Exported on the host, it would never reach the job inside the container."""
+        script = _strip_comments(self.remote_script(parsed))
+        passed = f'-e {runlock.ACTIONS_RUN_ENV}="$run_tag"'
+        assert passed in script, "the run step never names the job to the run"
+        assert f"export {runlock.ACTIONS_RUN_ENV}" not in script
+        service = re.search(r"^\s*box-object-backup \\$", script, re.M)
+        assert service, "the run step starts no box-object-backup service"
+        # Before `run`, compose rejects it; after the service name, the job takes it.
+        assert script.index("run --rm -T") < script.index(passed) < service.start()
 
     def test_it_is_the_tag_the_cancel_and_summary_steps_compare(self, parsed: dict):
         assert f'{runlock.ACTIONS_RUN_ENV}="$run_tag"' in self.remote_script(parsed)
@@ -663,14 +708,14 @@ class TestTheRunNamesTheJobThatStartedIt:
                 "${{ github.run_id }}-${{ github.run_attempt }}"
             ), f"{name} compares against a different tag than the run records"
 
-    def test_the_run_records_that_name_where_both_steps_look(
+    def test_the_run_records_that_name_where_the_summary_looks(
         self, tmp_path, monkeypatch
     ):
         """End to end through the real writers, not the string in the YAML.
 
-        The lock answers the cancel step and the report answers the summary,
-        and the two are written by different modules at different moments —
-        the lock as the run starts, the report as it ends.
+        The lock names the run to anyone who finds it held, and the report
+        answers the summary. They are written by different modules at
+        different moments: the lock as the run starts, the report as it ends.
         """
         monkeypatch.setenv(runlock.ACTIONS_RUN_ENV, "42-7")
         held = runlock.RunLock(tmp_path).acquire()
@@ -699,7 +744,11 @@ class TestTheRunNamesTheJobThatStartedIt:
 
 
 class TestTheStopScriptBehaves:
-    """Run the remote half against real lock files, with a fake ssh."""
+    """Run the remote half against a fake `docker`, and read back what it asked for."""
+
+    RUN_TAG = "1234567890-1"
+    NAME = f"box-object-backup-{RUN_TAG}"
+    PROJECT = "bloom-box-object-backup"
 
     def remote_script(self, parsed: dict) -> str:
         steps = parsed["jobs"]["mirror"]["steps"]
@@ -709,98 +758,68 @@ class TestTheStopScriptBehaves:
         # The remote half is the quoted heredoc body.
         return outer.split("<<'REMOTE'", 1)[1].split("REMOTE", 1)[0].split("\n", 1)[1]
 
-    RUN_TAG = "1234567890-1"
+    def fake_docker(self, tmp_path, containers: dict[str, str], stop_fails: bool):
+        """Answers `container inspect` from `containers` (name -> project label)."""
+        known = tmp_path / "containers"
+        known.mkdir()
+        for name, project in containers.items():
+            (known / name).write_text(project)
+        calls = tmp_path / "calls"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        docker = bin_dir / "docker"
+        docker.write_text(
+            "#!/bin/sh\n"
+            f'echo "$*" >> "{calls}"\n'
+            "for last; do :; done\n"
+            'if [ "$1 $2" = "container inspect" ]; then\n'
+            f'  [ -f "{known}/$last" ] || exit 1\n'
+            f'  cat "{known}/$last"\n'
+            "  exit 0\n"
+            "fi\n"
+            f'[ "$1" = stop ] && exit {1 if stop_fails else 0}\n'
+            "exit 0\n"
+        )
+        docker.chmod(0o755)
+        return bin_dir, calls
 
-    def run_remote(self, parsed: dict, lock_dir, contents=None):
-        """Run the remote half against a real lock file under `lock_dir`.
-
-        The state directory is an argument, so the harness supplies a
-        temporary one rather than rewriting paths out of the script — what
-        runs here is the script as written, character for character.
-        """
-        import subprocess
-
-        script = self.remote_script(parsed)
-        if contents is not None:
-            (lock_dir / "backup.lock").write_text(contents)
-        return subprocess.run(
-            ["bash", "-c", script, "bash", self.RUN_TAG, str(lock_dir)],
+    def run_remote(
+        self, parsed: dict, tmp_path, containers, run_tag=RUN_TAG, stop_fails=False
+    ):
+        """Returns the result, every docker call, and the `docker stop` calls."""
+        bin_dir, calls = self.fake_docker(tmp_path, containers, stop_fails)
+        result = subprocess.run(
+            ["bash", "-c", self.remote_script(parsed), "bash", run_tag],
             capture_output=True,
             text=True,
+            env={"PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"])},
         )
+        made = calls.read_text().splitlines() if calls.exists() else []
+        return result, made, [c for c in made if c.startswith("stop")]
 
-    def lock(self, pid, owner=RUN_TAG):
-        """A lock file as runlock.py writes one. `owner=None` for a hand-run."""
-        body = {"pid": pid, "started_at": 1_700_000_000}
-        if owner is not None:
-            body["actions_run"] = owner
-        return json.dumps(body)
-
-    def test_no_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
-        result = self.run_remote(parsed, tmp_path)
-        assert result.returncode == 0
+    def test_no_container_means_nothing_to_stop(self, parsed: dict, tmp_path):
+        result, _, stops = self.run_remote(parsed, tmp_path, {})
+        assert result.returncode == 0, result.stderr
         assert "nothing was running" in result.stdout
+        assert stops == []
 
-    def test_a_lock_without_a_pid_is_not_an_error(self, parsed: dict, tmp_path):
-        result = self.run_remote(parsed, tmp_path, contents="{}")
-        assert result.returncode == 0
-        assert "nothing to stop" in result.stdout
+    def test_its_own_container_is_stopped_by_its_exact_name(
+        self, parsed: dict, tmp_path
+    ):
+        result, _, stops = self.run_remote(parsed, tmp_path, {self.NAME: self.PROJECT})
+        assert result.returncode == 0, result.stderr
+        assert stops == [f"stop {self.NAME}"]
+        assert f"{self.NAME} has stopped" in result.stdout
 
-    def test_a_stale_pid_is_not_an_error(self, parsed: dict, tmp_path):
-        # The kernel drops the flock when the holder dies, but the metadata can
-        # outlive it.
-        result = self.run_remote(parsed, tmp_path, contents=self.lock(999999))
-        assert result.returncode == 0
-        assert "gone already" in result.stdout
-
-    def test_garbage_in_the_lock_file_is_not_an_error(self, parsed: dict, tmp_path):
-        result = self.run_remote(parsed, tmp_path, contents="not json at all")
-        assert result.returncode == 0
-
-    @contextlib.contextmanager
-    def live_child(self):
-        """A process that exits 3 on SIGTERM, so being signalled is visible.
-
-        Reaped in a thread throughout. `kill -0` succeeds on a zombie, so an
-        unreaped child makes the script wait out its whole minute before
-        reporting — which turns a guard that fails to spare the process into a
-        one-minute test instead of an immediate one.
-        """
-        import subprocess
-        import sys
-        import threading
-
-        child = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                "import signal,sys,time\n"
-                "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
-                "print('up', flush=True)\n"
-                "time.sleep(60)",
-            ],
-            stdout=subprocess.PIPE,
-            text=True,
+    def test_a_container_outside_the_backup_project_is_left_alone(
+        self, parsed: dict, tmp_path
+    ):
+        """The name alone is not enough: nothing of the Bloom stack may be stopped."""
+        result, _, stops = self.run_remote(
+            parsed, tmp_path, {self.NAME: "bloom_v2_prod"}
         )
-        assert child.stdout is not None
-        assert child.stdout.readline().strip() == "up"
-        reaper = threading.Thread(target=child.wait, daemon=True)
-        reaper.start()
-        try:
-            yield child
-        finally:
-            child.kill()
-            reaper.join(timeout=10)
-
-    def test_a_run_another_job_started_is_spared(self, parsed: dict, tmp_path):
-        """A lock read from last night's job and signalled today is the same
-        mistake as having no guard at all."""
-        with self.live_child() as child:
-            result = self.run_remote(
-                parsed, tmp_path, contents=self.lock(child.pid, owner="999-1")
-            )
-            assert "started by 999-1" in result.stdout, result.stdout
-            assert child.poll() is None, "signalled a run this job never started"
+        assert "leaving it alone" in result.stdout, result.stdout
+        assert stops == []
 
     def test_the_seed_is_spared_when_a_stood_down_job_is_cancelled(
         self, parsed: dict, tmp_path
@@ -808,71 +827,38 @@ class TestTheStopScriptBehaves:
         """The case this guard exists for.
 
         The seed holds the lock for days. A nightly starts, finds it held, and
-        stands down — leaving the seed's pid in the lock. Cancelling that
-        stood-down job must not stop the seed: weeks of copying halted
-        silently, with the Actions run reporting only that it was cancelled.
-
-        The seed is started by hand, so its lock carries no job name, and no
-        job name can equal that.
+        stands down. Cancelling that stood-down job must not stop the seed:
+        weeks of copying halted silently, with the Actions run reporting only
+        that it was cancelled. The seed's name is not one a run tag can make.
         """
-        with self.live_child() as seed:
-            result = self.run_remote(
-                parsed, tmp_path, contents=self.lock(seed.pid, owner=None)
-            )
-            assert "a person, not a GitHub job" in result.stdout, result.stdout
-            assert seed.poll() is None, "stopped the seed while cancelling another job"
+        result, _, stops = self.run_remote(
+            parsed, tmp_path, {"box-object-backup-seed": self.PROJECT}
+        )
+        assert "nothing was running" in result.stdout, result.stdout
+        assert stops == []
 
-    def test_a_lock_that_names_no_job_at_all_spares_the_run(
+    @pytest.mark.parametrize(
+        "tag", ["seed", "", "1", "-1-1", "1-1-1", "1-1; docker stop x"]
+    )
+    def test_a_tag_that_is_not_a_run_id_reaches_no_docker_command(
+        self, parsed: dict, tmp_path, tag: str
+    ):
+        result, calls, _ = self.run_remote(
+            parsed, tmp_path, {"box-object-backup-seed": self.PROJECT}, run_tag=tag
+        )
+        assert result.returncode == 0, result.stderr
+        assert "stopping nothing" in result.stdout
+        assert calls == [], f"docker was called with an unchecked tag: {calls}"
+
+    def test_a_failed_stop_is_reported_and_does_not_fail_the_step(
         self, parsed: dict, tmp_path
     ):
-        # An empty value, which is what the run writes when nothing set it.
-        with self.live_child() as child:
-            result = self.run_remote(
-                parsed, tmp_path, contents=self.lock(child.pid, owner="")
-            )
-            assert "leaving it alone" in result.stdout, result.stdout
-            assert child.poll() is None
-
-    def test_a_live_process_is_asked_to_stop(self, parsed: dict, tmp_path):
-        """A running process is signalled, exits on its own, and is seen to.
-
-        The child is reaped in a thread while the script polls. Without that it
-        lingers as a zombie, and `kill -0` succeeds on a zombie — so the script
-        would wait out its full timeout against a process that had already
-        exited. Real runs do not hit this: a seed in tmux is reaped by tmux,
-        and a workflow run is orphaned to init when the ssh shell exits.
-        """
-        import subprocess
-        import sys
-        import threading
-
-        child = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                "import signal,sys,time\n"
-                "signal.signal(signal.SIGTERM, lambda *a: sys.exit(3))\n"
-                "print('up', flush=True)\n"
-                "time.sleep(60)",
-            ],
-            stdout=subprocess.PIPE,
-            text=True,
+        result, _, stops = self.run_remote(
+            parsed, tmp_path, {self.NAME: self.PROJECT}, stop_fails=True
         )
-        assert child.stdout is not None
-        assert child.stdout.readline().strip() == "up"
-
-        status = {}
-        reaper = threading.Thread(target=lambda: status.setdefault("rc", child.wait()))
-        reaper.start()
-        try:
-            result = self.run_remote(parsed, tmp_path, contents=self.lock(child.pid))
-            assert "asking pid" in result.stdout, result.stdout
-            reaper.join(timeout=15)
-            assert status.get("rc") == 3, "it was killed rather than asked to stop"
-        finally:
-            if child.poll() is None:
-                child.kill()
-                child.wait(timeout=5)
+        assert result.returncode == 0
+        assert stops == [f"stop {self.NAME}"]
+        assert "::warning::" in result.stdout
 
 
 class TestGitHubCanActuallyLoadThisWorkflow:
@@ -1121,7 +1107,7 @@ class TestTheSummaryStepFeedsTheRenderer:
 
 class TestProductionIsTheOnlyTarget:
     """Both environments share this host, so they share the ledger, the
-    watermark, the run lock, the rclone container name and the RC port. Two
+    watermark and the run lock. Two
     runs would advance each other's watermark, silently and in both
     directions. The job takes no environment input at all."""
 
@@ -1181,7 +1167,7 @@ def shell_lines(script: str) -> int:
 
 class TestNoStepGrowsIntoAProgram:
     """A `run:` block is for plumbing — ssh, secrets, `$GITHUB_OUTPUT`,
-    signalling a pid. Anything that parses, formats, or branches on state
+    starting or stopping a container. Anything that parses, formats, or branches on state
     belongs in a module beside the job, where a test can call it directly.
     """
 
@@ -1220,14 +1206,21 @@ class TestTheCancelStepCannotSignalTheWrongThing:
             if s.get("name", "").startswith("Ask the host to stop")
         )
 
-    def test_it_never_signals_a_process_group(self, parsed: dict):
-        # `kill -TERM 0` signals the caller's entire process group. os.getpid()
-        # is never 0, so this is unreachable — and much too expensive to leave
-        # resting on that.
-        assert '[ "$pid" -gt 0 ]' in self.step(parsed)
+    def test_it_only_stops_the_backup_projects_containers(self, parsed: dict):
+        import yaml
 
-    def test_it_reads_the_lock_once(self, parsed: dict):
-        assert self.step(parsed).count("json.load(open(") == 1
+        project = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["name"]
+        script = self.step(parsed)
+        assert 'index .Config.Labels "com.docker.compose.project"' in script
+        assert f'[ "$project" != "{project}" ]' in script, (
+            "the label is compared against a different project than compose.yml's"
+        )
+
+    def test_the_name_is_built_only_from_the_run_id_and_attempt(self, parsed: dict):
+        script = _strip_comments(self.step(parsed))
+        guard = '[[ "$run_tag" =~ ^[0-9]+-[0-9]+$ ]]'
+        assert guard in script
+        assert script.index(guard) < script.index("docker ")
 
     def test_its_ssh_carries_the_same_options_as_the_summary_step(self, parsed: dict):
         # Without BatchMode a rejected key becomes a password prompt reading

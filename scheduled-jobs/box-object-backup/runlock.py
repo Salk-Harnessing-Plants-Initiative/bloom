@@ -22,6 +22,7 @@ import errno
 import fcntl
 import json
 import os
+import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,9 @@ LOCK_FILENAME = "backup.lock"
 # Set by the workflow to the id of the job launching the run. Absent for a run
 # started by hand, which is how the seed runs.
 ACTIONS_RUN_ENV = "OBJECT_BACKUP_ACTIONS_RUN"
+
+# Docker creates this file in every container; a container's hostname is its short id.
+DOCKER_MARKER = Path("/.dockerenv")
 
 # Printed verbatim when a run stands down, for a person reading the job log.
 # The machine-readable verdict is the `BOX_BACKUP_STATUS=skipped` line that
@@ -50,11 +54,17 @@ class LockHolder:
     # seed is launched by hand. That distinction is what lets the workflow
     # cancel its own run without touching one it did not start.
     actions_run: str | None = None
+    # The container the run is in, if any. Inside one the pid means nothing on the host.
+    container: str | None = None
 
     def describe(self) -> str:
         if self.pid is None:
             return "an unidentified process (the lock file held no readable metadata)"
-        parts = [f"pid {self.pid}"]
+        parts = (
+            [f"container {self.container} (pid {self.pid} inside it)"]
+            if self.container
+            else [f"pid {self.pid}"]
+        )
         if self.started_at is not None:
             elapsed = max(0.0, time.time() - self.started_at)
             parts.append(f"running for {_format_elapsed(elapsed)}")
@@ -77,6 +87,11 @@ def _format_elapsed(seconds: float) -> str:
     if hours:
         return f"{hours}h {minutes}m"
     return f"{minutes}m"
+
+
+def _container_name() -> str:
+    """This process's container id, or "" when it is not running in a container."""
+    return socket.gethostname() if DOCKER_MARKER.exists() else ""
 
 
 class LockHeld(Exception):
@@ -133,6 +148,7 @@ class RunLock:
             json.dumps(
                 {
                     "pid": os.getpid(),
+                    "container": _container_name(),
                     "started_at": time.time(),
                     "argv": " ".join(os.sys.argv[:4]),
                     "actions_run": os.environ.get(ACTIONS_RUN_ENV, ""),
@@ -178,6 +194,7 @@ def _read_holder(fd: int) -> LockHolder:
             started_at=_as_float(data.get("started_at")),
             argv=data.get("argv") or None,
             actions_run=_as_str(data.get("actions_run")),
+            container=_as_str(data.get("container")),
         )
     except (OSError, ValueError, TypeError):
         return LockHolder(None, None, None)

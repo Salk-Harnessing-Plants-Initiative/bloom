@@ -39,9 +39,10 @@ export default async function AllSpecies() {
       <ul className="divide-y divide-stone-200 border-y border-stone-200">
         {speciesList.map((species) => {
           // NULL_DATASET is a sentinel for placeholder rows with no real
-          // expression data attached yet — hide them from the UI.
+          // expression data attached yet, and a reference atlas has no cells of
+          // its own — it is only seen on an integration map. Hide both.
           const datasets = (species.scrna_datasets ?? []).filter(
-            (d) => d.name !== "NULL_DATASET",
+            (d) => d.name !== "NULL_DATASET" && d.kind !== "reference",
           );
           const n = datasets.length;
           const suffix = n === 1 ? "" : "s";

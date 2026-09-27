@@ -133,7 +133,7 @@ CVE-2026-11940
 # Reassess when Next ships a build with the patched vendored tar.
 CVE-2026-59873
 
-# golang.org/x/crypto/ssh (compiled into the caddy binary via xcaddy) — affects: caddy
+# golang.org/x/crypto/ssh (compiled into the caddy and minio binaries) — affects: caddy, minio
 # Auth bypass: an SSH server can fail to enforce a certificate's critical
 # `source-address` option, letting a client connect from an address the certificate was
 # meant to exclude. Reaching it needs something speaking SSH. Caddy is used here only as
@@ -152,5 +152,12 @@ CVE-2026-59873
 # it pins the library ahead of what Caddy is tested against, for no exposure this
 # deployment can reach. Reassess when a caddy release declares
 # golang.org/x/crypto >= 0.55.0. See bloom#775.
+# MinIO (ghcr.io/salk-harnessing-plants-initiative/minio:RELEASE.2025-01-20T14-49-07Z) links
+# the same package (golang.org/x/crypto v0.32.0, with github.com/pkg/sftp) for its optional
+# SFTP server, which starts only when SFTP settings are given: the `--sftp` flag, or an
+# SFTP section in a `--config` file (cmd/server-main.go at that release). Both compose
+# files start it as `server --console-address ":9001" /data`, with neither, so no SSH
+# listener exists and the code path is unreachable. Reassess if MinIO's command gains
+# `--sftp` or `--config`.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-56854
 CVE-2026-56854

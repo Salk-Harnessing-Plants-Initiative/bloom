@@ -41,7 +41,7 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 ## Commands
 
 `login` is flat; assay-specific commands are grouped by data type (`cyl`,
-`plate`). Each command is tagged **[read]** or **[write]** — see
+`plate`, `scrna`). Each command is tagged **[read]** or **[write]** — see
 [Access & roles](#access--roles).
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
@@ -67,6 +67,13 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[write]** `bloomctl cyl batch-ingest-result <envelopes_dir>` — write back a
   batch of per-scan `ResultEnvelope`s in one invocation (see below); the batch
   sibling of `ingest-result`, for the A4 per-batch pipeline.
+- **[write]** `bloomctl cyl create-test-scan --poison | --good --frames-dir <dir>` —
+  developer tool: create one synthetic cylinder scan in the staging test
+  experiment `A4-PIPELINE-E2E-TEST` (`experiment_id 12880747`) only. `--poison`
+  makes a scan that will fail to download; `--good` makes a real, downloadable
+  one from frame images you supply (e.g. via `cyl download`). One scan per
+  invocation — run it again for another. Requires a write-capable profile (e.g.
+  `staging-writer`); `pipeline-staging` lacks the grants it needs.
 - **[read]** `bloomctl cyl datasets list` — list cylinder trait datasets (all by
   default). Scope to one experiment with `--experiment-id N` (scriptable) or
   `--experiment` to **pick one from a menu** (needs a terminal). `--output csv|json`
@@ -92,6 +99,14 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
+- **[write]** `bloomctl scrna hdf5 upload <file.h5ad>` — store a single-cell dataset's
+  AnnData file, gzipped and named by its SHA-256, after checking its structure
+  (see below).
+- **[read]** `bloomctl scrna hdf5 download <dataset>` — fetch a dataset's AnnData file,
+  by name, id or `--checksum`, checked against its fingerprint (see below).
+- **[read]** `bloomctl scrna hdf5 list [search]` — the dataset files storage holds, each
+  with its size and the dataset that points at it; `--file` says whether one local
+  file is already stored. `--output csv|json` for machine-readable output.
 
 Run `bloomctl <command> --help` for the full option list of any command.
 
@@ -457,8 +472,14 @@ bloomctl cyl batch-download-for-predict <out_dir>
   rather than treated as still held.
 - `--json` prints one entry per scan_id (`scan_key`, `status`, `error`) as a
   JSON array; without it, a human-readable summary plus one line per failure.
-- **Exit code:** non-zero if any scan in the batch failed; zero if every scan
-  succeeded, was skipped, or the input was empty.
+- **Exit code:** `0` if every scan succeeded, was skipped, or the input was
+  empty; `3` if at least one scan failed — whether that's one scan out of many
+  or every scan in the batch, since `3` only means "not every scan succeeded,"
+  never "some scan did" (mirrors `sleap_roots_predict`/`trait_extractor`'s own
+  `0`/`3` convention, bloom #772). Check `run_manifest.json` or `--json`
+  output to see which scans, if any, actually staged. A usage error or
+  manifest-lock/write failure still exits `2`/`1` respectively, independent
+  of any scan's outcome.
 
 Auth: same saved login profile as other `cyl` commands.
 
@@ -468,6 +489,85 @@ Example:
 bloomctl cyl batch-download-for-predict ./staged --scan-ids-file scan_ids.json
 ```
 
+## `bloomctl scrna hdf5 upload` / `download` / `list`
+
+A single-cell dataset's whole AnnData file (`.h5ad`) is kept in the `scrna`
+bucket's `h5ad/` folder, gzipped as it is and named by the SHA-256 of the
+uncompressed file. The bucket holds other kinds of object besides — per-gene
+counts above all — so these commands sit under the form they act on, `hdf5`. That SHA-256 is the dataset's `source_checksum`, so a dataset
+finds its file with no lookup table, and the same file uploaded twice is one
+object.
+
+```bash
+pip install 'bloomctl[scrna]'                   # upload's structure check needs h5py
+
+bloomctl scrna hdf5 upload myb41_transgene_load.h5ad -p staging
+bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
+bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id
+bloomctl scrna hdf5 download --checksum 82278a…a54f -p staging       # by fingerprint
+bloomctl scrna hdf5 list -p staging                                  # what is stored
+bloomctl scrna hdf5 list myb41 -p staging                            # by dataset name
+bloomctl scrna hdf5 list --file myb41_transgene_load.h5ad -p staging # is this one stored?
+```
+
+**Upload** needs a writer or admin login. Before sending anything it checks the
+file's structure:
+
+- every cell has an ID and none repeats (a barcode shared across samples cannot
+  be the index); the same for genes, in whatever form the species' annotation
+  writes them
+- `X` holds only finite values
+- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates small
+  enough for the explorer to store, and does not pile more than a thousandth of the cells on
+  a single point — an array allocated and never filled passes every other check and draws the
+  whole dataset as one dot. These two limits are the loader's own, so a UMAP this accepts is a
+  UMAP the loader accepts; the loader checks more besides, so passing here is not a promise
+  that the load will succeed
+- the file's data is in the file: an external link, or a virtual dataset whose values live in
+  another file, is refused, and so is a link that stands in for an array rather than the
+  array itself — each would store an object that reads differently on every machine, and
+  would let a refusal quote a file nobody handed in
+- `layers['counts']`, when present, matches `X`'s shape and holds no negative value
+- `uns['normalization']` says how `X` was made:
+  `transform` (`log1p`, `log2p`, `none`), `scaling` (`library_size`, `none`,
+  `other`), `target_sum` for `library_size`, a `description` for `other`, and
+  optionally `counts_layer`. A file a dataset was loaded from before this existed
+  is accepted without the block when that dataset records it.
+
+It then gzips the file and sends it through storage's resumable upload. Because an object is
+named by the fingerprint of its contents, storage already holding that name means it holds
+this very file, byte for byte: the command says so and sends nothing. If the connection
+drops, run the same command again: the gzipped copy and what identifies the upload wait in
+`~/.bloom/scrna-uploads/`, and the transfer continues from the last byte storage received.
+That is also where "what is prepared is kept" refers to, in the messages below — delete the
+files there to start an upload over from the beginning. An upload recorded for another
+server, or for a gzipped copy that has since been rewritten, is started afresh rather than
+resumed.
+
+Where storage takes every byte and still stores nothing, the command says so and forgets the
+server's upload while keeping the gzipped copy: the protocol will not finish an upload that
+is already at full length, so the next run sends a fresh one rather than repeating the same
+failure. A login lasts about an hour and a large file can take longer, so a session expiring
+part-way through is ordinary rather than exceptional: the credentials that made it are the
+ones on disk, so the command signs in again itself and carries on from the last byte
+storage took. It does that once — a second expiry is not a token running out, and is
+reported. A login that is refused outright is reported at once instead, since signing in
+again does nothing about a permission the account does not have.
+
+**List** needs any login. It reports what the bucket holds — each object's fingerprint,
+its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
+does; an object can be stored before any dataset points at it, so an unnamed row is
+expected rather than a fault. A search keeps the entries whose fingerprint or dataset name
+contains it, and `--file` puts the question the other way round: it fingerprints a local
+file and reports whether storage already holds it, which is how to tell an interrupted
+upload from a finished one. The table shortens each fingerprint; `--output json` carries
+all 64 characters.
+
+**Download** needs any login. It streams the object, decompresses it and checks
+its SHA-256 as it goes, and moves the file into place only when the fingerprint
+matches; a mismatch leaves nothing behind. A file already at the destination with
+the right fingerprint is left alone, and a different one is never overwritten.
+
 ## Access & roles
 
 Commands run **as the logged-in user** — every query and mutation is RLS-enforced
@@ -476,8 +576,8 @@ profile maps to determines what works:
 
 | Command tag                                                                                    | Required role                         | Intended user                                                                             |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
-| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
@@ -511,6 +611,22 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   RPC call — on a missing/malformed manifest, a missing `.slp` file, a
   checksum mismatch, or a blob already present in the envelope. Omit to
   forward `blobs` unchanged, exactly as before this flag existed.
+
+  If the envelope's `idempotency_key` is already in `cyl_trait_sources`, the
+  upload is skipped and the constructed blobs are not merged: the RPC discards
+  them anyway, and re-uploading is the one step that can fail once the producer
+  has recomputed its artifacts, since `.slp` output is not byte-reproducible
+  and the object path embeds the key (talmolab/sleap-roots-pipeline#76).
+  Checksum verification is part of the upload, so it is skipped on that path
+  too — the local bytes are never stored, so their integrity is not something
+  the delivery can affect. Every other guarantee above still applies to a
+  re-delivery, because the check runs after the manifest is read.
+- When the `ARGO_WORKFLOW_NAME` environment variable is set (Argo sets it
+  automatically inside the write-back container — see
+  `sleap-roots-write-back-template.yaml`), also links the matching
+  `cyl_pipeline_run_scans` row to this write-back (`'written'`), so the
+  pipeline run's `done_count`/`failed_count` can reflect it. Omit or unset it
+  for the existing manual/ad-hoc invocation shape, which is unaffected.
 
 The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
@@ -556,15 +672,34 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - `--predictions-dir DIR`: predict's own nested batch output root
   (`DIR/{scan_key}/{scan_key}.predictions.json` + `.slp` files per scan).
   Constructs, verifies, and uploads blobs per envelope from its own scan_key's
-  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged. A
-  missing manifest or upload failure isolates that envelope without aborting
-  the others.
-- `--json` prints one entry per envelope (`scan_key`, `status`, `error`) as a
-  JSON array; without it, a human-readable summary plus one line per failure.
+  subdirectory, reusing `ingest-result --predictions-dir`'s logic unchanged — so
+  an envelope whose `idempotency_key` is already in `cyl_trait_sources` has its
+  upload and merge skipped, exactly as for the single-envelope command. Blob
+  construction still runs either way, so a missing manifest or a missing `.slp`
+  fails that envelope whether or not it was already ingested. A missing manifest
+  or upload failure isolates that envelope without aborting the others.
+- `--json` prints one entry per envelope (`scan_key`, `status`, `error`,
+  `retriable`, `warning`) as a JSON array; without it, a human-readable summary
+  plus one line per failure and one `WARNING` line per degraded item. `warning`
+  is non-empty when the idempotency-gate check could not run and the command
+  fell back to uploading — most likely a missing column grant.
 - **Exit code:** non-zero if any envelope in the batch failed; zero if every
   envelope succeeded, was a no-op re-delivery, or the directory was empty
   (a directory containing only a manifest with no matching files is not the
   empty case — it exits non-zero).
+- When `ARGO_WORKFLOW_NAME` is set, after every discovered envelope has been
+  processed, marks every scan dispatched under that workflow name that never
+  produced a result as `'failed'` (one call, regardless of batch size —
+  including a batch of zero envelopes, since every scan under that workflow
+  name having failed prediction before producing any file is exactly the
+  case this closes out). Skipped entirely when the env var is unset (manual/
+  local runs, unaffected). A failure of this call is isolated, not a crash —
+  it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
+  batch's summary/`--json` output and reflected in the exit code, alongside
+  every real envelope's own outcome; a successful call logs how many scans it
+  closed out. An unreadable envelope file at any earlier stage (e.g. a
+  truncated file left by an OOM-killed producer) is isolated the same way and
+  never prevents this call from running.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 

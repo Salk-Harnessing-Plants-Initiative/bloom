@@ -23,6 +23,7 @@ const navSections = [
       { name: "Traits", href: "/app/traits" },
       { name: "Genes", href: "/app/genes" },
       { name: "Expression", href: "/app/expression" },
+      { name: "Multi-dataset\nIntegration", href: "/app/integrations" },
     ],
   },
   {

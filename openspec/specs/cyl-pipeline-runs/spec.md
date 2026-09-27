@@ -14,16 +14,59 @@ in the trigger request body — no phase through Phase 3 calls `resolve_params()
 overrides, if needed, is the caller's responsibility), `requested_by` (`uuid`, attribution only — not
 a visibility filter), `status` (`text`, one of
 `'queued'|'submitted'|'running'|'complete'|'partial'|'failed'`, defaulting to `'queued'`),
-`scan_count`/`done_count`/`reused_count`/`failed_count` (`integer`, defaulting to `0`), and
-`created_at`/`submitted_at`/`completed_at` (`timestamptz`) plus `error_message` (`text`,
-nullable). `'queued'` means enumerated but not yet dispatched; `'submitted'`/dispatch-level `'failed'`/
-`'partial'` describe whether every batch reached the K8s API successfully (set by the
-`claim`/`complete`/`fail_cyl_pipeline_batch` functions); `'running'` and pipeline-outcome
-`'complete'`/`'failed'`/`'partial'` describe the real Argo Workflow outcome once dispatched, set by
-`update_cyl_pipeline_run_status` (the `cyl-pipeline-status-polling` capability) — `'partial'` and
-`'failed'` are each reused across both dispatch-level and pipeline-level meaning rather than given
-separate values, since both describe "some or all scans got no useful pipeline result" regardless of
-which stage produced that outcome.
+`scan_count`/`done_count`/`reused_count`/`failed_count` (`integer`, defaulting to `0` — `done_count`
+and `failed_count` are kept current by the `cyl-pipeline-status-polling` capability's poller, which
+recomputes them from `cyl_pipeline_run_scans.status` on every sweep of a run with outstanding scans;
+`scan_count` and `reused_count` are set once, at row-insertion time, by the trigger route and are not
+touched by the poller), and `created_at`/`submitted_at`/`completed_at` (`timestamptz`) plus
+`error_message` (`text`, nullable). `'queued'` means enumerated but not yet dispatched;
+`'submitted'`/dispatch-level `'failed'`/`'partial'` describe whether every batch reached the K8s API
+successfully (set by the `claim`/`complete`/`fail_cyl_pipeline_batch` functions); `'running'` and
+pipeline-outcome `'complete'`/`'failed'`/`'partial'` describe the real Argo Workflow outcome once
+dispatched, set by `update_cyl_pipeline_run_status` (the `cyl-pipeline-status-polling` capability) —
+`'partial'` and `'failed'` are each reused across both dispatch-level and pipeline-level meaning
+rather than given separate values.
+
+*(The clause that used to end this paragraph — "since both describe 'some or all scans got no useful
+pipeline result' regardless of which stage produced that outcome" — is deliberately removed, not
+lost. The exit gate falsifies it: `'complete'` now describes that outcome too. Do not restore it.)*
+
+**`status` is a batch-level outcome and SHALL NOT be read as a per-scan completeness guarantee.**
+Since the pipeline DAG gained its terminal exit gate, a batch in which `images-downloader` isolated
+some scans' failures and staged the rest exits `3`, the gate accepts that code, and the batch's
+Workflow phase is `Succeeded` — so a run all of whose batches do that reads `'complete'` **with
+`failed_count > 0`**. Consumers SHALL treat `failed_count`/`done_count`, and the per-scan
+`cyl_pipeline_run_scans` rows, as the authoritative signal for whether every requested scan produced
+a result; `status = 'complete'` means only "every batch's Workflow reached a terminal success
+phase". A run enumerating zero scans is also `'complete'`.
+
+Four bounds on that statement, all load-bearing:
+
+- **It holds for an `images-downloader`-stage isolation, not for every stage.** A scan that
+  `images-downloader` fails is left out of the scan_keys *that invocation contributes* to the
+  `RunManifest` (only `ok`/`skipped` are recorded). A scan isolated later, by `predictor` or
+  `trait-extractor`, is already in that manifest, so write-back finds a declared `scan_key` with no
+  result, reports a batch failure, and exits non-zero — and because `write-back` carries no
+  `continueOn`, the gate is omitted and the Workflow ends `Failed`.
+- **And only when the manifest does not already carry that scan_key.** `write_run_manifest` writes
+  the **union** of its own usable keys with whatever manifest is already on disk, and never prunes,
+  over a directory shared by every run. So a deterministically-failing scan is excluded only on its
+  *first* occurrence; on every later run over those paths its key is still present from before,
+  write-back again finds a declared key with no result, and the run reads `'failed'`.
+- **`'failed'` does not imply nothing was written.** Each envelope's per-scan `'written'` update is
+  committed in that envelope's own transaction, so a write-back that ingests some envelopes and
+  then exits non-zero leaves `done_count > 0` on a `'failed'` run. This is not new — it was already
+  reachable whenever write-back ran and partially failed — but the exit gate adds a second route to
+  it, by rejecting a producer exit code outside `{0,3}` after write-back has already committed.
+- **`'complete'` does not imply that *any* scan succeeded.** The producers' partial-success exit
+  code carries no floor: a batch in which one scan failed and a batch in which *every* scan failed
+  both exit `3`, the gate accepts both, and both read `'complete'`. A totally-failed batch therefore
+  reports `'complete'` with `done_count = 0`. This matters most for common-mode failures — an
+  unavailable NFS mount, a revoked credential — which fail every scan identically.
+
+Pipeline-level `'partial'` consequently no longer arises from partial failure *within* a batch — the
+case it was originally introduced for — and now arises only when whole batch Workflows differ in
+outcome across a multi-batch run.
 
 #### Scenario: A run row is created with defaults
 
@@ -36,6 +79,43 @@ which stage produced that outcome.
 
 - **WHEN** a row is inserted with `target_level = 'scan_ids'` and `target_id = NULL`
 - **THEN** the insert succeeds
+
+#### Scenario: done_count and failed_count reflect real per-scan outcomes, not just dispatch outcomes
+
+- **WHEN** a run's scans have genuinely completed write-back (some `'written'`/`'reused'`, some
+  `'failed'` with no result ever produced) and the status poller has swept at least once since
+- **THEN** `done_count` equals the number of that run's `cyl_pipeline_run_scans` rows with `status IN
+  ('written', 'reused')`, and `failed_count` equals the number with `status = 'failed'` — not the
+  number of batches that merely reached the K8s API
+
+#### Scenario: A complete run may still have failed scans
+
+- **WHEN** a single-batch run's `images-downloader` isolates one scan's failure, stages the other
+  two, and exits `3`, and the exit gate accepts that code so the Workflow phase is `Succeeded`
+- **THEN** the run's `status` is `'complete'`
+- **AND** `failed_count` is `1` and `done_count` is `2`
+- **AND** a consumer deciding whether the run produced a result for every requested scan reads
+  `failed_count`/`done_count` or the per-scan `cyl_pipeline_run_scans` rows, never `status` alone
+
+#### Scenario: A later-stage isolation fails a single-batch run rather than completing it
+
+- **WHEN** a **single-batch** run has a scan pass `images-downloader` — so it is recorded in the
+  `RunManifest` — and that scan is then isolated as failed by `predictor` or `trait-extractor`
+- **THEN** write-back finds a manifest `scan_key` with no result, reports a batch failure and exits
+  non-zero, the exit gate is omitted, and the run's `status` is `'failed'`
+- **AND** `done_count` may still be greater than zero, because the scans that did produce results
+  were committed by their own envelope transactions before write-back exited
+- **AND** in a *multi-batch* run whose other batches succeeded, the same isolation yields
+  `'partial'` rather than `'failed'`, since the rollup sees a mix of terminal phases
+
+#### Scenario: A batch in which every scan failed still reads complete
+
+- **WHEN** every scan in a single-batch run fails at `images-downloader` — a shared mount being
+  unavailable, say — so the producer exits `3` with no scan staged
+- **THEN** the exit gate accepts `3`, the Workflow phase is `Succeeded`, and the run's `status` is
+  `'complete'`
+- **AND** `done_count` is `0` and `failed_count` equals `scan_count`, which is the only signal that
+  the run produced nothing
 
 ### Requirement: `cyl_pipeline_run_scans` table
 
