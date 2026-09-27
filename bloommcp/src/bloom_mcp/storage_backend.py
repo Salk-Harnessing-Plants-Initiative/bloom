@@ -68,14 +68,25 @@ _TMP_PREFIX = ".tmp-"
 # `supabase>=2.0.0,<3`) and a bump could otherwise void it silently.
 _SUPABASE_LIST_PAGE_SIZE = 100
 
-# Hard backstop on requests per listing, *not* the primary guard -- a server that
-# disregards `offset` is caught on the second request by the no-progress check
-# below. Exact ceiling: a listing ends when a page comes back short, so up to
-# 4,999 children enumerate fully and a 5,000-child prefix raises rather than
-# returning a silently truncated list. Sized well above any real prefix while
-# still bounding the worst-case stall, since `list_prefix` builds its client
-# without a `timeout_seconds` deadline.
-_SUPABASE_LIST_MAX_PAGES = 50
+# Hard backstop against a sweep that never terminates -- *not* the primary guard.
+# A backend that disregards `offset` is caught on the second request by the
+# no-progress check below, so this only ever fires for a listing that keeps
+# genuinely making progress, i.e. one that is truly enormous.
+#
+# Exact ceiling: a listing ends when a page comes back short, so N requests
+# enumerate up to N*PAGE_SIZE - 1 children; at 500 that is 49,999, and a
+# 50,000-child prefix raises rather than returning a silently truncated list.
+#
+# Sized for the *root* prefix, not a per-experiment one. `bloommcp_output/` is a
+# single shared namespace across every user, and its immediate children are
+# `<tool_class>_<stem>` dirs over 16 canonical tool classes -- so it grows ~16x
+# faster than the experiment count and is the only prefix realistically near a
+# cap. Both audit scripts sweep exactly it, and a collective hard failure there
+# would take down every tenant's audit at once, so the backstop is set far above
+# plausible growth (~3,000 experiments) rather than snugly. Cost of the slack is
+# bounded: the no-progress check still catches a broken backend on request two,
+# so a large cap cannot turn a pathological server into a long stall.
+_SUPABASE_LIST_MAX_PAGES = 500
 
 
 @runtime_checkable
@@ -159,6 +170,24 @@ class StorageBackendError(OSError):
     agent-facing message names only the logical storage key or prefix — never an
     absolute host path (which would reveal the server's local root layout). The
     raw error (errno + path) is logged server-side only.
+    """
+
+
+class StorageListingError(StorageBackendError):
+    """A listing could not be enumerated completely (``list_prefix``, #396).
+
+    Raised only for the two *synthetic* pagination failures the adapter detects
+    itself — a backend that disregards ``offset`` (no progress), or a sweep that
+    exceeds the request backstop. Both are deterministic: the identical call will
+    fail the identical way, so a caller that classifies failures for retry
+    purposes MUST treat this as permanent, not transient
+    (``SupabaseResultStore.commit`` does).
+
+    Deliberately *not* raised for an error the storage client itself throws
+    mid-sweep (a network blip, a 5xx). Those keep propagating unwrapped, exactly
+    as they did from the single-request version, because such a failure genuinely
+    *is* retryable — wrapping it here would mislabel it permanent and strand a
+    commit that a retry would have completed.
     """
 
 
@@ -253,10 +282,25 @@ class SupabaseStorageBackend:
         Names are de-duplicated order-preservingly, so a child shifted across a
         page seam by a concurrent write is reported once.
 
-        Raises :class:`StorageBackendError` rather than ever returning a
+        Raises :class:`StorageListingError` rather than ever returning a
         partially-enumerated list, which would read as complete: a page that
         contributes no new names means the server disregarded ``offset``, and
-        ``_SUPABASE_LIST_MAX_PAGES`` backstops a sweep that never ends.
+        ``_SUPABASE_LIST_MAX_PAGES`` backstops a sweep that never ends. That
+        type is deterministic-by-construction, so callers classifying failures
+        for retry must treat it as permanent. An error raised by the storage
+        client itself mid-sweep is deliberately *not* wrapped — it propagates
+        unchanged, as it did from the single-request version, because a network
+        blip is genuinely retryable and typing it permanent would strand work.
+
+        One gap is disclosed rather than solved: this is robust against a page
+        seam being raced by an *insert* (de-duplication handles the shifted
+        name), but not against a *delete* ahead of the cursor, which shifts the
+        tail backward so one name moves into an already-fetched range and is
+        missed. Detecting that needs a snapshot or cursor the endpoint does not
+        offer; bloommcp is single-writer per experiment, and the root prefix
+        only ever gains children during a commit. See
+        ``test_supabase_list_prefix_concurrent_delete_can_skip_is_known_gap``,
+        which pins the behavior so it stays deliberate.
         """
         from bloom_mcp.supabase_client import get_storage_client
 
@@ -294,7 +338,7 @@ class SupabaseStorageBackend:
                     prefix,
                     offset,
                 )
-                raise StorageBackendError(
+                raise StorageListingError(
                     f"listing for prefix {prefix} made no progress at offset "
                     f"{offset}; the storage backend appears to ignore pagination"
                 )
@@ -304,7 +348,7 @@ class SupabaseStorageBackend:
             prefix,
             _SUPABASE_LIST_MAX_PAGES,
         )
-        raise StorageBackendError(
+        raise StorageListingError(
             f"listing for prefix {prefix} did not terminate within "
             f"{_SUPABASE_LIST_MAX_PAGES} requests"
         )

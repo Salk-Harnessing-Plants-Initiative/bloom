@@ -6,8 +6,8 @@ than 100 immediate children returns a **silently truncated** list on the deploye
 backend: no error, no warning, just a short answer that reads as complete (#396, follow-up
 from #389, whose review raised the cap and deferred the fix).
 
-`list_prefix` has exactly five callers, and the truncation is not confined to a remote corner
-of them:
+`list_prefix` has exactly four production callers, and the truncation is not confined to a
+remote corner of them:
 
 - **`read_manifest` gates the entire manifest read on a `list_prefix` membership test** —
   `if _MANIFEST_BASENAME not in list_prefix(prefix)` (`manifest/manifest.py:47`). A listing
@@ -86,16 +86,30 @@ failure.
   - No change required, but listed as verified-unaffected: `supabase_client.list_prefix`
     (`:242-250`, whose docstring documents the listing contract), both audit scripts, and
     `scripts/gen_plot_snapshots_golden.py:172-173` (stubs `list_prefix` to `[]`)
+- **Retry classification**: `SupabaseResultStore.commit` re-reads the manifest twice through
+  the *unguarded* `adir.read_manifest()`, so the two synthetic pagination failures surface in
+  commit's own handler. They are deterministic, so they are raised as a distinct
+  `StorageListingError` and classified "do not retry" rather than falling through to the
+  generic "(transient — retry)" message, which would invite a retry loop that can never
+  succeed. A raw client error (a genuine network blip) is deliberately *not* of that type and
+  keeps its transient classification.
 - **Operational follow-up**: every report under `bloommcp_output/_audit_reports/` was written
   through the truncating enumeration and carries no field recording whether the listing was
   complete. After deploy, re-run both audits and compare `experiments_scanned` and the stem
   set against the last reports; if they differ, the #585/#593 forensic sweeps that drove #420
   remediation status were incomplete and that needs saying out loud.
-- **Merge order**: PR #782 (`#573`, open) edits `storage_backend.py`, `test_storage_backend.py`,
-  and `CHANGELOG.md`, appending a test section at EOF. This change deliberately places its
-  constants beside `_TMP_PREFIX` and its tests inside the existing section-5 `list_prefix`
-  family to stay clear of those hunks; whoever lands second should still expect a CHANGELOG
-  rebase. #782 also adds a third root-sweeping audit, which inherits this fix.
+- **Correctness dependency on PR #782, not merely a merge-order one.** #782 (`#573`, open) adds
+  a fail-closed guard against serving a foreign-backend catalog — but that guard runs only
+  *after* the same `read_manifest` → `list_prefix` gate this change fixes. A foreign catalog
+  whose prefix spans more than one listing page can therefore make #782's guard silently never
+  execute: the truncated listing omits `manifest.json`, `read_manifest` returns `None`, and the
+  guard has nothing to inspect — precisely the bypass #782 exists to prevent. #782's own new
+  root-sweeping audit script independently re-implements the same vulnerable enumeration.
+  **This change should land before, or together with, #782**; landing #782 alone leaves its
+  guarantee conditional on prefix size. (The two also touch the same three files, so expect a
+  trivial `CHANGELOG` rebase — this change deliberately places its constants beside
+  `_TMP_PREFIX` and its tests inside the section-5 `list_prefix` family to stay clear of #782's
+  hunks.)
 - See also #498 — the same defect class one layer down (`bloomctl cyl list` reads unbounded
   via PostgREST); out of scope here.
 - No API, schema, env-var, or dependency change. A prefix at or under one page still costs

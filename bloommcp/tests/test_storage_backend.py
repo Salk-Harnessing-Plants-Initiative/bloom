@@ -1199,6 +1199,89 @@ def test_supabase_list_prefix_deduplicates_across_page_boundary(monkeypatch):
     assert len(names) == len(set(names))  # no duplicate survives
 
 
+def test_supabase_list_prefix_raises_when_request_cap_is_exhausted(monkeypatch):
+    """The backstop itself fires, on a sweep that keeps making real progress.
+
+    Distinct from the no-progress case: every page here carries *new* names, so
+    only the request cap can stop it. Exercised with the cap patched small
+    rather than by seeding 50k objects — the loop's bound is the behavior under
+    test, not the constant's production value.
+    """
+    import re
+
+    monkeypatch.setattr(sb, "_SUPABASE_LIST_MAX_PAGES", 3)
+    client = _FakeSbStorageClient()
+    prefix = "bloommcp_output/qc_x/"
+    _seed_children(client, prefix, 1000)  # far more than 3 pages
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(sb.StorageListingError, match=re.escape(prefix)) as exc:
+        sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    assert len(client.calls) == 3  # stopped exactly at the cap
+    assert "did not terminate" in str(exc.value)
+    assert "3 requests" in str(exc.value)  # names the bound it hit
+
+
+def test_supabase_list_prefix_cap_error_is_not_retryable_type():
+    """Both synthetic failures are `StorageListingError`, not a bare backend error.
+
+    `SupabaseResultStore.commit` keys its "do not retry" branch off this type,
+    so the subclass relationship is load-bearing rather than cosmetic.
+    """
+    assert issubclass(sb.StorageListingError, sb.StorageBackendError)
+    assert issubclass(sb.StorageListingError, OSError)
+
+
+def test_supabase_list_prefix_concurrent_delete_can_skip_is_known_gap(monkeypatch):
+    """Pins a disclosed gap: a delete ahead of the cursor can skip one name.
+
+    De-duplication covers a page seam raced by an *insert* (the shifted name is
+    seen twice and collapsed). The mirror case cannot be covered the same way: a
+    delete ahead of the cursor shifts the tail backward, so one name moves into
+    a range already fetched and is never returned. Detecting it needs a snapshot
+    or cursor `object/list` does not offer.
+
+    This test exists so the limit is deliberate and reviewable rather than
+    discovered later. If a future change makes the sweep delete-safe, it should
+    fail loudly and be rewritten — that is the point.
+    """
+    prefix = "bloommcp_output/qc_x/"
+    page = sb._SUPABASE_LIST_PAGE_SIZE
+    # Deleted from *within* page 1, i.e. behind the cursor once page 1 is read.
+    deleted = f"v{50:04d}_2026-07-06"
+    # First name of page 2. The delete shifts the tail back one position, so
+    # this slides into the already-fetched range and is never requested again.
+    skipped = f"v{page + 1:04d}_2026-07-06"
+
+    class _DeletingMidSweepClient(_FakeSbStorageClient):
+        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
+            result = super().list(prefix, options)
+            if (options or {}).get("offset", 0) == 0:
+                for key in [k for k in self.objects if f"/{deleted}/" in k]:
+                    del self.objects[key]
+            return result
+
+    client = _DeletingMidSweepClient()
+    _seed_children(client, prefix, 150)
+    _patch_client(monkeypatch, client)
+
+    names = sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    remaining = {
+        k[len(prefix) :].split("/", 1)[0]
+        for k in client.objects
+        if k.startswith(prefix)
+    }
+    assert deleted not in remaining  # it really was removed mid-sweep
+    assert skipped in remaining  # this one still exists ...
+    assert skipped not in names, (
+        "expected the backward shift to skip the first name of page 2 — if this "
+        "now holds, the sweep became delete-safe and this known-gap test should "
+        "be replaced by a real guarantee"
+    )
+
+
 def test_list_prefix_parity_paginated_supabase_vs_local(monkeypatch, tmp_path):
     """Cross-backend parity at >1 page — the gap #396 names.
 

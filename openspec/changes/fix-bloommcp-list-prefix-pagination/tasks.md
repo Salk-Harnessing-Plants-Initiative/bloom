@@ -30,7 +30,8 @@ appends its own section there, and the file already has two sections numbered `9
 - [x] 1.5 `test_supabase_list_prefix_request_pins_page_size_and_sort_order`: assert the first
       call's options are `{"limit": sb._SUPABASE_LIST_PAGE_SIZE, "offset": 0, "sortBy":
       {"column": "name", "order": "asc"}}`, and parametrize over prefixes `["",
-      "bloommcp_output", "bloommcp_output/"]` asserting the recorded prefix is byte-identical
+      "bloommcp_output", "bloommcp_output/", "bloommcp_output/qc_x/"]` asserting the recorded
+      prefix is byte-identical
       to what was passed (the adapter forwards it verbatim while the local backend strips
       slashes, so normalization is where a >1-page divergence would hide). Plus
       `test_supabase_list_page_size_matches_client_default`: import
@@ -119,6 +120,42 @@ appends its own section there, and the file already has two sections numbered `9
 - [x] 2.5 Add a `### Fixed` entry under `## [Unreleased]` in `bloommcp/CHANGELOG.md` (the
       package ships to PyPI as of `0.1.0a1`). Expect a trivial rebase against PR #782, which
       also adds one.
+
+## 4. PR review follow-ups (eberrigan, #854)
+
+- [x] 4.1 Add `StorageListingError(StorageBackendError)` for the two *synthetic* pagination
+      failures, and raise it in place of the bare backend error. Raw client exceptions stay
+      unwrapped on purpose: a network blip is retryable, and typing it permanent would strand
+      work — the opposite of 4.2's concern.
+- [x] 4.2 `SupabaseResultStore.commit` re-reads the manifest twice via the *unguarded*
+      `adir.read_manifest()`, so a listing failure reaches commit's handler and fell through to
+      its generic "(transient — retry)" message. Add a non-transient branch alongside the
+      existing `KeyScopeGuardError` one. Tests:
+      `test_commit_listing_error_is_labelled_do_not_retry` and, guarding against
+      over-broadening, `test_commit_generic_storage_failure_stays_transient`.
+- [x] 4.3 Scope the spec's "SHALL NEVER silently truncate" to the client's default page limit,
+      and disclose the concurrent-*delete* gap: de-duplication covers a raced insert, but a
+      delete behind the cursor shifts the tail backward so one name lands in an already-fetched
+      range and is missed. Pin it with
+      `test_supabase_list_prefix_concurrent_delete_can_skip_is_known_gap` (empirically
+      confirmed: the first name of page 2 is skipped), document it at the implementation, and
+      add a spec scenario.
+- [x] 4.4 Exercise the request-cap backstop, which no test reached — the loop never ran to
+      exhaustion. `test_supabase_list_prefix_raises_when_request_cap_is_exhausted` patches the
+      cap small and feeds pages of genuinely new names, so only the cap can stop it.
+- [x] 4.5 Re-size the cap for the *shared root* prefix: `bloommcp_output/` is one namespace
+      across all users, growing ~16x the experiment count, and both audits sweep it — a snug
+      bound would hard-fail every tenant's audit collectively. 50 → 500 requests (~50,000
+      children). Safe because the cap is a non-termination backstop, not the broken-backend
+      guard: no-progress still fires on request two.
+- [x] 4.6 State the PR #782 relationship as a **correctness** dependency, not just a
+      same-files merge note: #782's foreign-catalog guard runs only after the `read_manifest`
+      → `list_prefix` gate this change fixes, so a foreign catalog spanning >1 page makes that
+      guard silently never execute. Recommend landing this before or with #782.
+- [x] 4.7 Doc accuracy: `list_prefix` has **four** production callers, not five (the snapshot
+      script assigns a stub rather than calling it, and `supabase_client.list_prefix` is the
+      delegating helper). Correct the 1.5 parametrization count to the four prefixes the test
+      actually sweeps.
 
 ## 3. Verification
 

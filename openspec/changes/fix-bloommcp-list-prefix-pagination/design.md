@@ -36,7 +36,10 @@ Constraints:
 - Goals: no silent truncation at any prefix size; one request for the common (≤1 page) case;
   a bounded, loud, early failure if the server does not honor `offset`; tests that pin the
   paging contract rather than a page-limitless fake's.
-- Non-Goals: migrating to `list_v2` (cursor-based, returns a pydantic `SearchV2Result` rather
+- Non-Goals: **delete-safe** concurrent enumeration (see the Risks entry — a delete behind the
+  cursor can skip one name; offset paging cannot see it without a snapshot or cursor the
+  endpoint does not offer, and the behavior is pinned by a test rather than left implicit);
+  migrating to `list_v2` (cursor-based, returns a pydantic `SearchV2Result` rather
   than `list[dict]`, and needs a newer server); making `list_prefix` lazy/streaming; paging the
   local backend (nothing to page); **full** concurrent-mutation safety — de-duplication makes
   double-reporting impossible, but a child *deleted* mid-sweep can still be missed, and this
@@ -93,12 +96,29 @@ something stronger than the deployed backend delivers.
   `offset` would return a full page forever; a pure short-page loop never terminates. A page
   that contributes **no new names** is the direct observation of that condition and catches it
   on the *second* request rather than the hundredth — and, unlike a bare request cap, it never
-  mislabels a legitimately large prefix as a broken server. The cap remains as a hard backstop
-  at 50 requests. Being exact about the boundary, since the earlier draft was not: a listing
-  ends normally when a page comes back short, so up to 4,999 children enumerate fully and a
-  5,000-child prefix raises. Raising rather than returning what was gathered is deliberate — a
-  truncated list that *looks* complete is the defect under repair — and the error names the
-  knob to raise.
+  mislabels a legitimately large prefix as a broken server. The cap remains as a hard backstop,
+  at 500 requests. Being exact about the boundary, since the earlier draft was not: a listing
+  ends normally when a page comes back short, so N requests enumerate up to N*100-1 children —
+  49,999 at 500, with a 50,000-child prefix raising. Raising rather than returning what was
+  gathered is deliberate — a truncated list that *looks* complete is the defect under repair.
+  The bound is sized for the **root** prefix rather than a per-experiment one: `bloommcp_output/`
+  is a single namespace shared across every user, growing with tool classes times experiments
+  (~16x the experiment count), and both audit sweeps run over exactly it — so a snug cap would
+  eventually hard-fail every tenant's audit at once. Slack is cheap here precisely because the
+  cap is not the guard that catches broken backends; the no-progress check does that on request
+  two, so a large cap cannot convert a pathological server into a long stall.
+- **Decision: raise the two synthetic failures as a distinct `StorageListingError`, and do not
+  wrap raw client errors in it.** `SupabaseResultStore.commit` classifies failures for retry,
+  and its default is "(transient — retry)". Both pagination failures are deterministic — the
+  backend ignored `offset`, or the prefix exceeded the bound — so the identical retry fails
+  identically, and commit's two *unguarded* `adir.read_manifest()` calls mean they land in that
+  handler. A dedicated subtype lets commit say "do not retry" for exactly those, without
+  over-broadening to every `StorageBackendError` (a local permission or I/O error has its own,
+  different retry story). The inverse matters just as much: an error thrown by the storage
+  client mid-sweep stays unwrapped, because a network blip genuinely *is* retryable and typing
+  it permanent would strand a commit a retry would have completed. This is why the reviewer's
+  suggestion to wrap every client exception into the typed error is declined — it would invert
+  the classification the same review asks us to get right.
 - **Decision: log at error level before raising.** Not cosmetic. On one production path the
   message is discarded outright: `_resolve_one_class` returns `f"Could not list {path}: {e}"`
   without logging (`experiment_utils.py:516-519`), and `supabase_reader.py:87-94` then drops
@@ -127,6 +147,14 @@ something stronger than the deployed backend delivers.
   — precisely the low-numbered, legacy manifests whose `version_dir` is empty and which
   therefore need the sibling-enumeration fallback. (`startswith(f"{entry.id}_")` cannot
   false-positive: `"v10_…"` does not start with `"v1_"`, so a wrong directory is never selected.)
+- **A concurrent delete behind the cursor can silently skip one name.** De-duplication covers
+  the insert case (the shifted name is collapsed); the delete case is the mirror image and is
+  *not* covered — the tail shifts backward, so a name moves into an already-fetched range and
+  is never requested again. Disclosed rather than solved: bloommcp is single-writer per
+  experiment, and the root prefix only gains children during a commit.
+  `test_supabase_list_prefix_concurrent_delete_can_skip_is_known_gap` pins it so a future change
+  that accidentally alters the behavior has to confront it. This is why the spec's completeness
+  claim is scoped to the client's default page limit rather than stated absolutely.
 - **More round-trips for large prefixes** (one per 100 entries) → accepted; `list_prefix` is
   called on manifest-existence checks and audit sweeps, not per-row, and the alternative is a
   wrong answer.

@@ -41,12 +41,28 @@ once per page.
 
 The sweep SHALL detect a server that disregards the advancing `offset` by observing that a
 page contributed no new names, and SHALL additionally be bounded by a maximum request count as
-a backstop. On either condition the backend SHALL log at error level and raise a
-`StorageBackendError` naming the prefix, rather than looping without bound or returning the
-entries gathered so far. Returning a partial list that reads as complete is the defect this
-requirement removes, so the adapter SHALL NEVER silently truncate. The prefix SHALL appear
-early in the message, because the text reaches persisted audit reports through a helper that
+a backstop. On either condition the backend SHALL log at error level and raise, rather than
+looping without bound or returning the entries gathered so far. The prefix SHALL appear early
+in the message, because the text reaches persisted audit reports through a helper that
 truncates it. The message SHALL NOT embed the accumulated entry names.
+
+Scoped precisely, because the guarantee is narrower than "never wrong": the adapter SHALL NEVER
+truncate silently **as a consequence of the client's default page limit** — the defect this
+requirement removes. It does NOT guarantee a listing is complete with respect to a prefix being
+mutated during the sweep. De-duplication makes a concurrent *insert* safe (the shifted name is
+collapsed), but a concurrent *delete* behind the cursor shifts the tail backward so that one
+name moves into an already-fetched range and is silently missed. Offset paging cannot detect
+this without a snapshot or cursor the endpoint does not provide. This limit SHALL be documented
+at the implementation and covered by a test that pins the behavior, so it remains a disclosed
+trade-off rather than an accident.
+
+The two synthetic failures the adapter detects itself SHALL be raised as a distinct
+`StorageBackendError` subtype, so that a caller classifying failures for retry can tell them
+apart from an ordinary storage error. Both are deterministic — the identical call fails the
+identical way — and callers that classify SHALL treat them as permanent rather than transient.
+An error raised by the storage client itself mid-sweep SHALL NOT be wrapped in that subtype: a
+network failure is genuinely retryable, and typing it permanent would strand work a retry would
+have completed.
 
 Callers SHALL be left to their existing error handling: this requirement governs the adapter
 boundary only, and SHALL NOT be read as a promise about how far up any particular caller
@@ -58,7 +74,8 @@ surfaces the failure.
   more immediate children than one page (e.g. 250 version directories)
 - **THEN** it returns the names of **all** of them, by issuing successive list calls whose
   `offset` advances until a short page ends the sweep, with no entry missing and no entry
-  repeated
+  repeated — for a prefix not being mutated during the sweep, per the concurrent-delete limit
+  scoped above
 
 #### Scenario: A single-page prefix costs one request
 
@@ -98,14 +115,40 @@ surfaces the failure.
 - **WHEN** the storage client keeps returning the same full page for every request, so a page
   contributes no new names
 - **THEN** the backend stops at that point — not after exhausting the request cap — logs at
-  error level, and raises a `StorageBackendError` naming the prefix, rather than requesting
+  error level, and raises the listing-failure subtype naming the prefix, rather than requesting
   without bound or returning a silently truncated list
 
 #### Scenario: A listing that never terminates is bounded
 
 - **WHEN** a sweep keeps making progress but exceeds the maximum request count
-- **THEN** the backend logs at error level and raises a `StorageBackendError` naming the prefix
-  and the bound, rather than continuing indefinitely
+- **THEN** the backend logs at error level and raises the listing-failure subtype naming the
+  prefix and the bound, rather than continuing indefinitely, and this path is exercised by a
+  test rather than left as unreached code
+
+#### Scenario: The request bound is sized for the shared root prefix
+
+- **WHEN** the maximum request count is chosen
+- **THEN** it accounts for the root analysis prefix being a single namespace shared across all
+  users — growing with tool classes times experiments, not with experiments alone — so that the
+  audit sweeps over it cannot hard-fail collectively at a plausible scale; the bound is a
+  backstop against non-termination only, since a backend ignoring pagination is already caught
+  on the second request
+
+#### Scenario: An un-enumerable listing is not sold to the caller as retryable
+
+- **WHEN** a commit's manifest re-read raises the listing-failure subtype, because the backend
+  disregarded pagination or the prefix exceeded the request bound
+- **THEN** the commit failure names it as one not to retry, rather than reporting it under the
+  generic transient-and-retryable wording, because the identical retry fails identically — while
+  an ordinary storage or network error raised by the client keeps its transient classification
+
+#### Scenario: A prefix mutated by a concurrent delete is a disclosed gap
+
+- **WHEN** a child behind the sweep's cursor is deleted between two page requests, shifting the
+  remaining entries backward across the page boundary
+- **THEN** one name may be missed, and this is documented at the implementation and pinned by a
+  test as a known limit of offset pagination rather than treated as a guarantee — the
+  completeness promise covers the client's default page limit, not concurrent mutation
 
 #### Scenario: A version directory beyond the first page still resolves
 
