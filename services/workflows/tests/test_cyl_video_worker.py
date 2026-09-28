@@ -205,14 +205,7 @@ def test_a_failure_after_the_upload_warns_that_the_record_may_disagree(
         raises=HTTPException(status_code=500, detail="Could not create a download URL"),
     )
     assert worker.main(_argv()) == worker.EXIT_FAILED
-    assert "its record may be stale" in capsys.readouterr().out
-
-
-def test_help_exits_zero_and_carries_the_hold():
-    with pytest.raises(SystemExit) as exit_info:
-        worker.parse_args(["--help"])
-    assert exit_info.value.code == 0
-    assert "until the render queue lands" in worker.build_parser().epilog
+    assert "the video was stored; its record was not updated" in capsys.readouterr().out
 
 
 def test_an_oversized_id_is_accepted_because_the_columns_are_bigint():
@@ -240,3 +233,17 @@ def test_help_carries_the_hold_at_both_levels(argv, capsys):
 
     assert exit_info.value.code == 0
     assert "until the render queue lands" in capsys.readouterr().out
+
+
+def test_only_a_failure_after_the_upload_mentions_the_record(
+    monkeypatch, stub_client, capsys
+):
+    """The other failures stop before anything is written; claiming a stale
+    record there cries wolf on an ordinary re-render."""
+    _stub_render(
+        monkeypatch,
+        raises=HTTPException(status_code=503, detail="Nothing was changed."),
+    )
+    worker.main(_argv())
+
+    assert "its record was not updated" not in capsys.readouterr().out

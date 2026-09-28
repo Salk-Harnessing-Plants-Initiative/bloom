@@ -242,13 +242,18 @@ def test_every_exception_the_route_classifies_is_classified_here(monkeypatch):
     chain = source[source.index("def render(") : source.index("def _read(")]
     # Each `except X as exc:` and the status of the HTTPException it raises.
     clauses = re.findall(
-        r"except \(?([A-Za-z, ]+?)\)? as exc:.*?status_code=(\d+)", chain, re.S
+        r"except \(?([\w., ]+?)\)? as exc:.*?status_code=(\d+)", chain, re.S
     )
     routed = {
         name.strip(): int(status)
         for names, status in clauses
         for name in names.split(",")
     }
+    assert routed, (
+        "no except clauses were found — the markers this reads between have "
+        "moved, and the check is silently measuring nothing"
+    )
+
     # Handled by their own branch or deliberately reclassified, with a reason
     # in the source next to each.
     exempt = {"EncoderBusy", "PlateMismatch", "HTTPException", "Exception"}

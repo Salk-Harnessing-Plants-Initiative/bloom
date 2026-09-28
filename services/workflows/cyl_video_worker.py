@@ -27,6 +27,9 @@ from video_worker_cli import (
 
 logger = logging.getLogger(__name__)
 
+# video.py raises this after uploading, when it cannot sign the URL.
+POST_UPLOAD_FAILURE = "Could not create a download URL"
+
 HOLD = (
     "Not to be run against staging or production until the render queue lands: "
     "the service renders the same scans, and neither process can see the other's lock."
@@ -73,12 +76,13 @@ def main(argv=None) -> int:
         if exit_code == EXIT_REFUSED:
             print(f"refused ({exc.status_code}): {exc.detail}")
             return exit_code
-        # Most 5xx are raised before anything is stored, but signing the URL is
-        # the last step after the upload — so the advice is conditional rather
-        # than asserted, and says nothing when nothing was written.
         logger.error("scan %s could not be rendered: %s", args.scan, exc.detail)
         print(f"failed ({exc.status_code}): {exc.detail}")
-        print("  if a video now exists at this path, its record may be stale")
+        if POST_UPLOAD_FAILURE in exc.detail:
+            # The only failure raised after the object is written: signing its
+            # URL is the last step before the row. Every other 5xx stops before
+            # anything is stored, and saying otherwise cries wolf on a re-render.
+            print("  the video was stored; its record was not updated")
         return exit_code
     except Exception as exc:
         logger.exception("scan %s could not be rendered", args.scan)

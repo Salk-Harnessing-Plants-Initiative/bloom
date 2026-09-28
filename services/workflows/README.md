@@ -128,12 +128,16 @@ Use `--wave none` for a plate with no wave; omitting `--wave` means the same thi
 **Exit codes.** `0` rendered or kept, `1` failed — this service, storage or the database
 did not answer, or something else holds the item, so a retry may help — and `3` refused,
 meaning the renderer declined and retrying will not change that. `2` is argparse's own
-usage error, which is why refusal is not 2. Both commands take the classification from
-the route, so the word they print and the code they exit with always agree.
+usage error, which is why refusal is not 2. The word a command prints is derived from
+the code it exits with, so the two always agree.
 
-A cylinder 5xx can be raised after the object was uploaded — signing its URL is the last
-step before the row is written — so the command prints a line telling you to check the
-stored video against its record before retrying.
+Both take the classification from the route, with one deliberate exception: a plate whose
+stored key and identity disagree is answered 500 by the route, but it cannot come right on
+a second attempt, so the command refuses it rather than inviting a retry.
+
+One cylinder failure is raised after the object was uploaded — signing its URL is the last
+step before the row is written. Only that one adds a line saying the video was stored and
+its record was not updated.
 
 While a container render runs, the plate page's progress endpoint shows nothing: it
 reads a record held in the service's own process.
