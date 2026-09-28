@@ -1,4 +1,4 @@
-"""load_experiment_data — discovery tool: summarize a CSV experiment.
+"""load_experiment_data — discovery tool: summarize one experiment.
 
 Not a ``sleap-roots-analyze`` wrapper — reads through the injected
 ``ExperimentReader`` port (via ``_ports.load_frame``, the legacy 4-tuple read
@@ -18,13 +18,17 @@ def load_experiment_data(
     source_id: Optional[int] = None,
     run_id: Optional[str] = None,
 ) -> str:
-    """Load a SLEAP experiment CSV and show a summary of its contents.
+    """Load one experiment and show a summary of its contents.
 
     Shows the number of samples, genotypes, replicates, trait columns,
     and a preview of missing data.
 
     Args:
-        filename: experiment identifier from list_available_experiments
+        filename: experiment identifier (from list_available_experiments) —
+            under the default `supabase` backend the numeric experiment id
+            (e.g. "7206207"), not a file on disk; under `local` a CSV
+            basename. Named `filename` for backward compatibility with
+            callers that predate the Tier-2 database read path (#551).
         source_id: pin the summary to a specific raw DB source (see
             core_list_experiment_sources). Omit to use the latest source,
             same as today. Mutually exclusive with run_id.

@@ -88,21 +88,28 @@ not duplicated here to avoid the two docs drifting out of sync. (This is the sam
 
 ## File reading and writing
 
-Use the helper in `bloommcp/src/bloom_mcp/supabase_client.py` — don't call
-`supabase.create_client()` directly:
+> **OUT OF DATE — do not follow this section for a new tool.** Two things are
+> wrong with the example that used to sit here. (1) `write_output_csv` **does not
+> exist** anywhere in the codebase — `supabase_client.py`'s write surface is
+> `write_json`, `upload_file` and `delete_files`. (2) `read_input_csv` does still
+> exist, but it is not how experiment traits are read any more: Tier 2 (#551)
+> moved the default `supabase` backend off bucket CSVs onto direct Postgres reads,
+> and `read_input_csv` has **zero call sites repo-wide** and does not route through
+> `active_backend()`, so a tool using it would bypass the `local` backend entirely.
+> Full retirement is tracked in
+> [#853](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/853).
 
-```python
-from bloom_mcp.supabase_client import read_input_csv, write_output_csv
+**What to do instead.** Read experiment data through the injected
+`ExperimentReader` port, not a storage helper — see
+[adding-a-section-tool.md](./adding-a-section-tool.md) for the current pattern.
+Persist analysis outputs through the `ResultStore` port, which writes a versioned
+run directory rather than a loose object. Both are backend-agnostic, so the same
+tool works under `supabase` and `local`.
 
-df = read_input_csv("plant_traits.csv")
-# reads bloommcp-data/bloommcp_input/plant_traits.csv
-
-write_output_csv("results.csv", df)
-# writes bloommcp-data/bloommcp_output/results.csv
-```
-
-Pass a basename — no slashes. The helper prepends the right folder, so
-the input/output split is enforced in code.
+Reach for `supabase_client.py` directly only for object-storage work that is *not*
+experiment traits or analysis runs (signed URLs, JSON blobs, raw uploads), and
+still don't call `supabase.create_client()` yourself — use the module's helpers so
+the input/output split and the basename validation stay enforced in code.
 
 ## Supabase data access
 
