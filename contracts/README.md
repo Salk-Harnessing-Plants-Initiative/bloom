@@ -136,16 +136,16 @@ field change produces a TS diff and fails the drift guard — that is the signal
    types all agree. For a `$id`-only bump the types diff is empty; any other diff is a real contract
    change to review.
 5. **Re-pin the write-back RPC's literal in the same change**: a new forward migration that
-   `CREATE OR REPLACE`s the **current** `insert_cyl_result_envelope` body (find it with
-   `git grep -n insert_cyl_result_envelope -- supabase/migrations` — take the newest definition,
-   never an older re-pin's body) with only `pinned_version` changed, plus a rollback restoring that
-   same body. The CI tie in `test_contract_migration_match.py` fails if the pin and the RPC
+   `CREATE OR REPLACE`s the **current** `insert_cyl_result_envelope` body (the newest definition:
+   `git grep -l "CREATE OR REPLACE FUNCTION public.insert_cyl_result_envelope" -- supabase/migrations | sort | tail -1`
+   — never an older re-pin's body) with only `pinned_version` changed, plus a rollback restoring
+   that same body. The CI tie in `test_contract_migration_match.py` fails if the pin and the RPC
    disagree. **Do not add a cutover guard** that raises because rows stamped with the retiring
-   version exist. The pin gates new inserts only; existing rows keep their own `contract_version`
-   as truthful provenance, and nothing reads or filters on it. The `a3` and `a7` migrations carried
-   such a guard; the `a7` one wedged every staging deploy for six days on legitimate rows (bloom
-   #685), cleared only by restamping them (bloom #787). Never restamp real rows. See the
-   `cyl-trait-writeback` requirement "A contract re-pin leaves existing rows untouched".
+   version exist, and never restamp them: the pin gates new inserts only, and each row keeps its
+   own `contract_version` as provenance. (The `a7` migration's guard wedged staging deploys for six
+   days on ten `a3` rows, bloom #685, cleared by the bloom #787 restamp.) See the
+   `cyl-trait-writeback` requirement "A contract re-pin leaves existing rows untouched" and
+   `repin-cyl-contract-a9`'s design.
 6. **If the re-pin's migration genuinely depends on existing data** (for example, a real contract
    revision that needs a backfill): before merging, check the real state of staging via SSH to the
    deploy host, using the same `scripts/deploy_run_supabase.sh` / in-container `psql` pattern
@@ -178,8 +178,8 @@ types since `repin-cyl-contract-a3`. At the write boundary it:
 - validates `provenance.contract_version` against the single pinned `version` — never an explicit
   compatibility set, a range, or a set of accepted versions. That alternative was considered in
   `repin-cyl-contract-a3` and `repin-cyl-contract-a7` (no real envelope of the old version existed)
-  and again in `repin-cyl-contract-a9`, where it did have a case — a deployed a7 producer on a
-  cluster shared by staging and production (bloom#895 option (b)). It was declined each time: a set
+  and again in `repin-cyl-contract-a9`, where it did have a case — a deployed a7 producer on the
+  cluster both staging- and production-dispatched runs use (bloom#895 option (b)). It was declined each time: a set
   dilutes the per-row provenance-of-origin anchor, and a single-literal cutover's rejection window
   is loud (the write-back step fails and `bloomctl` names the `contract_version` mismatch) and
   loses nothing — the first run after the producer's pin bump recomputes the affected scans under

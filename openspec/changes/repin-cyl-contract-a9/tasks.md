@@ -155,12 +155,11 @@
 - [x] 3.2 (C4) `tests/integration/test_cyl_read_path.py`: set `PINNED_VERSION = "0.1.0a9"`.
 - [x] 3.3 (C3) `tests/integration/test_contract_migration_match.py`: move the `v0.1.0a7` docstring
       references to `v0.1.0a9`.
-- [x] 3.4 (C5) `bloomcli/tests/test_cyl_ingest.py`:
-      - move the mocked `pinned 0.1.0a7` string and its assertion to a9;
-      - update the stale migration path in the comment at around line 34. `_current_migration_sql`
-        will now pick the a9 file, since it globs `*cyl_writeback*`;
-      - run the CI command from `bloomcli/`: `uv run --extra test pytest tests/ -m "not integration"`.
-      No `bloomctl` source, pin or lock change.
+- [x] 3.4 (C5) `bloomcli/tests/test_cyl_ingest.py`: **dropped in `/review-pr`.** The change only
+      touched a mocked error string, which is self-consistent with either literal, and it fell
+      outside the migration surface. The file is identical to `staging`. `_current_migration_sql`
+      (globs `*cyl_writeback*`) now picks the a9 migration; its marker and raise-string sync tests
+      pass against it. No `bloomctl` source, pin or lock change.
 - [x] 3.5 `git grep -n "0\.1\.0a7"` outside `openspec/changes/archive/`. List every remaining hit as
       intentional in the PR body:
       - the a7, `20260912110000` and `20260917140000` migrations and their rollbacks;

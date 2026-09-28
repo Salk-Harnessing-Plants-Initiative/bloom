@@ -61,9 +61,19 @@ Between this migration applying to the staging Supabase and the traits template 
 - **Re-delivery does not recover anything.** Re-running a scan in the window re-delivers the same a7
   envelope, which is rejected again. That includes scans whose a7 data was already ingested, whose
   bloom#875 no-op status path is unreachable because the call raises first.
-- **Recovery is recompute.** The first run after the bump uses a new image with a new
-  `traits_code_sha`, which gives a new idempotency key. Skip-if-done therefore recomputes every
-  in-scope scan (per sleap-roots#269) and delivers a fresh a9 envelope.
+- **Already-ingested scans show `failed` too.** The same-key re-delivery that used to be a benign
+  no-op now raises, so during the window a run marks every in-scope scan `failed`, including ones
+  whose data in Bloom is already correct. That data is untouched; only the run's status is noisy.
+  If the a9 extractor itself fails after the bump (it runs with `continueOn: failed`,
+  sleap-roots-pipeline#86), write-back re-delivers the stale a7 files and the same noise returns.
+  The `contract_version mismatch` hint then points at a pin, while the real cause is the extractor.
+- **Recovery is recompute.** The a9 extractor skips a scan only when both the idempotency key and
+  the `contract_version` of its existing result match (`trait_extractor/extractor.py`), so the
+  version change alone makes it recompute every in-scope scan. The new image's `traits_code_sha`
+  also gives a new key. Each recompute delivers a fresh a9 envelope, which becomes the scan's latest
+  source (highest `source_id`); the a7 rows stay as superseded history. Because the legacy
+  `run_manifest.json` still accumulates keys until sleap-roots-pipeline#82, "in-scope" can be wider
+  than the requested scans, so expect a burst of new source and trait rows after the bump.
   - Scans that were rejected in the window must be re-triggered after the bump. The trigger does not
     re-queue them itself.
   - Nothing already ingested is lost, and nothing is written twice under one key.
@@ -155,12 +165,13 @@ half-done re-pin fails CI.
 - **The rejection window.** Covered above. It is bounded by preparing the pipeline PR in advance.
 - **The pipeline bump landing first by mistake.** That produces the same loud, recover-by-recompute
   failure. The bloom#895 gate (verified apply first) prevents it.
-- **Stuck staging deploys.** Run 35657797607 (2026-09-21) awaits environment approval, and every
-  later deploy was cancelled. This PR's migration applies only after that queue is cleared, and it
-  may apply in one `db push` batch with `20260921130000` and any other pending file. A failure in an
+- **Stuck staging deploys.** The staging environment's approval gate held run 35657797607 from
+  2026-09-21, and holds run 36196049972 since 2026-09-25; later deploys were cancelled. This PR's migration applies only after that queue is cleared, and it
+  may apply in one `db push` batch with `20260921130000`, #902's `20260924120000` and any other pending file. A failure in an
   earlier file stops a9.
-- **The migration-isolation lint (warning mode) flags `contracts/` and `bloomcli/tests/`.** The
-  coupling is intended: the new pin/RPC tie makes them one unit. The PR body explains this.
+- **The migration-isolation lint (warning mode) flags `contracts/pin.json` and the vendored
+  schema.** The coupling is intended: the new pin/RPC tie makes them one unit. The PR body explains
+  this. A cosmetic `bloomcli/tests` edit was dropped in review to keep the exception to that pair.
 - **Exact-pin churn** continues. Each restamp needs a migration. This is accepted, as before.
 
 ## Migration Plan

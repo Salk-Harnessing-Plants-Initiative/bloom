@@ -40,16 +40,17 @@ pure version restamp. The verification is in design.md.
   - `contracts/{schema/result_envelope.schema.json,pin.json,README.md}`.
   - `tests/integration/{test_cyl_writeback_rpc.py,test_cyl_read_path.py,test_contract_migration_match.py}`
     and a new `tests/unit/test_cyl_writeback_a9_migration_files.py`.
-  - `bloomcli/tests/test_cyl_ingest.py`, which only needs the mocked error string changed.
   - The `repin-cyl-contract-a7` archive move and the `openspec/specs/` updates.
 - **Operational:**
   - This opens a **rejection window**: from the moment it applies to the staging Supabase until the
     traits template bump lands in `talmolab/sleap-roots-pipeline`, a7 write-backs are rejected.
   - The rejections are loud: Workflows go red and `bloomctl` reports a `contract_version` mismatch.
   - They are also recoverable: the first run after the bump recomputes the affected scans. Nothing is
-    replayed (design: *Rejection window*).
-  - Staging deploys are currently stuck on a pending environment approval (run 35657797607), so the
-    migration applies only after that approval is given.
+    replayed. During the window even scans already ingested under a7 show `failed`, because the
+    version check runs before the idempotency gate (design: *Rejection window*).
+  - Staging deploys are currently stuck on a pending environment approval (run 36196049972, waiting since
+    2026-09-25; an earlier run waited from 2026-09-21), so the migration applies only after that
+    approval is given.
 - **Out of scope:**
   - The pipeline template bump, which follows the verified apply.
   - `bloomctl` source, pins and image. Its image builds `--frozen` against a7 and needs nothing.
