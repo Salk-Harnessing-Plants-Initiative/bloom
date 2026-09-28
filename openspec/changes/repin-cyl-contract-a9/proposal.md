@@ -27,6 +27,12 @@ pure version restamp. The verification is in design.md.
 - **Tests:** `PINNED_VERSION` moves to a9. New tests cover a7 rejection, the migration's
   idempotency, the rollback, no-guard regression, a body-diff check, and the pin/RPC tie. Three tests
   that re-apply a7 bodies get an explicit `0.1.0a7`.
+- **Restrict the RPC's `EXECUTE` grants to the four sanctioned roles** (a bug fix restoring what
+  `cyl-trait-writeback` already requires; no spec delta). An ACL-only migration revokes the grants
+  Supabase's default privileges add for `anon` and `authenticated`, which every definition of this
+  RPC left in place by revoking only `FROM PUBLIC`. The grants test now compares the whole grantee
+  set, and a catalog-wide test keeps every `SECURITY DEFINER` function in `public` closed to `anon`
+  (design: *Restrict the RPC's EXECUTE grants*).
 
 ## Impact
 
@@ -37,9 +43,12 @@ pure version restamp. The verification is in design.md.
     *The write-back RPC's pinned version matches the vendored pin*.
 - **Affected code:**
   - `supabase/migrations/20260925120000_cyl_writeback_contract_a9.sql` and its rollback.
+  - `supabase/migrations/20260925120100_revoke_default_grants_cyl_writeback_rpc.sql` and its
+    rollback.
   - `contracts/{schema/result_envelope.schema.json,pin.json,README.md}`.
   - `tests/integration/{test_cyl_writeback_rpc.py,test_cyl_read_path.py,test_contract_migration_match.py}`
-    and a new `tests/unit/test_cyl_writeback_a9_migration_files.py`.
+    and new `tests/unit/test_cyl_writeback_a9_migration_files.py` and
+    `tests/integration/test_security_definer_grants.py`.
   - The `repin-cyl-contract-a7` archive move and the `openspec/specs/` updates.
 - **Operational:**
   - This opens a **rejection window**: from the moment it applies to the staging Supabase until the
@@ -47,11 +56,10 @@ pure version restamp. The verification is in design.md.
   - The rejections are loud: Workflows go red and `bloomctl` reports a `contract_version` mismatch.
   - They are also recoverable: the first run after the bump recomputes the affected scans. Nothing is
     replayed. During the window even scans already ingested under a7 show `failed`, because the
-    version check runs before the idempotency gate (design: *Rejection window*).
+    version check runs before the source gate (design: *Rejection window*).
   - Every staging deploy waits for a reviewer's approval on the `staging` environment, so the
-    migration applies only once the merge's deploy is approved. The earlier backlog cleared on
-    2026-09-28 (run 36456935639 succeeded with nothing pending), so a9 will be the only pending
-    migration.
+    migrations apply only once the merge's deploy is approved. Nothing else is pending on staging
+    (run 36456935639, 2026-09-28), so these two will be the only pending migrations.
 - **Out of scope:**
   - The pipeline template bump, which follows the verified apply.
   - `bloomctl` source, pins and image. Its image builds `--frozen` against a7 and needs nothing.

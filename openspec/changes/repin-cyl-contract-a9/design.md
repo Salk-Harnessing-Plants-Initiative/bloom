@@ -72,8 +72,16 @@ Between this migration applying to the staging Supabase and the traits template 
   version change alone makes it recompute every in-scope scan. The new image's `traits_code_sha`
   also gives a new key. Each recompute delivers a fresh a9 envelope, which becomes the scan's latest
   source (highest `source_id`); the a7 rows stay as superseded history. Because the legacy
-  `run_manifest.json` still accumulates keys until sleap-roots-pipeline#82, "in-scope" can be wider
+  `run_manifest.json` still accumulates keys until the a9 `bloomctl` writer is live and the legacy
+  files are deleted (sleap-roots-pipeline roadmap step 6, #88), "in-scope" can be wider
   than the requested scans, so expect a burst of new source and trait rows after the bump.
+- **Values from two extractor builds.** Until every scan is recomputed, one experiment can hold
+  `sha-689cffb` and `sha-e373b0f` values side by side, and no read path shows which build produced
+  a value. Between those sleap-roots commits the `sleap_roots` trait library is unchanged, the only
+  dependency change is the contracts pin, and the extractor diff touches no computation path
+  (`load_series`, `choose_pipeline`, `compute_scan_traits`, `scan_trait_values`), so recomputed
+  values are expected to be identical. Acceptance (tasks §5.3) compares one recomputed scan's a9
+  values against its a7 source to confirm it.
   - Scans that were rejected in the window must be re-triggered after the bump. The trigger does not
     re-queue them itself.
   - Nothing already ingested is lost, and nothing is written twice under one key.
@@ -120,15 +128,27 @@ verbatim.
 
 The rollback file is only the emergency hot-apply for staging. Applying it by hand leaves
 `20260925120000` recorded as applied, and CI, fresh stacks and the next promotion to production would
-still apply a9. A **durable** rollback is three steps, taken together:
+still apply a9. A **durable** rollback is, taken together:
 
-1. a new forward migration whose body is the rollback file;
-2. `PINNED_VERSION` flipped back;
-3. the traits template re-pinned to
+1. drain first: no sleap-roots workflow running (the hot-applied a7 RPC rejects in-flight a9
+   envelopes, the mirror of the forward window), and a `check_cluster_drift.sh` pre-image;
+2. a new forward migration whose body is the rollback file (it restores the body only; the
+   `20260925120100` grant fix stays, because `CREATE OR REPLACE` keeps the ACL);
+3. `contracts/` re-pinned to `v0.1.0a7` (`pin.json`, schema `$id`) and `PINNED_VERSION` flipped
+   back, with the version tests inverted, or the pin/RPC tie and the a9 tests fail;
+4. the traits template re-pinned to
    `sha-689cffb@sha256:ab5a1f43a74f2d00e809f2deb0dc886876028cc3028b0fdaf600f408e860f369`, with the
    tag, digest and `SRT_TRAITS_CONTAINER_DIGEST` moving together.
 
-Moving only one side reopens the mismatch. Do not `git revert` the squash commit: it would remove an
+Moving only one side reopens the mismatch. Hot-apply over SSH to the deploy host as `postgres`
+(`docker compose … exec -T db-prod psql -U postgres -v ON_ERROR_STOP=1 < <rollback file>`).
+
+**A rollback does not restore a7 values as what readers see.** Every a9 source keeps the highest
+`source_id` for its scan, so it stays "latest". The re-pinned a7 extractor recomputes each scan
+(its key and version both differ from the a9 result on disk) and overwrites the a9 file, but its
+envelope carries the scan's original a7 key, so the a7 RPC treats it as a no-op. Rolling back
+stops new a9 writes; it does not remove a9 data. If a9 values themselves were wrong, that needs a
+separate, deliberate data fix. Do not `git revert` the squash commit: it would remove an
 applied migration from the tree and take the a7 archive with it.
 
 ### Archive `repin-cyl-contract-a7` here, superseding PR #779
@@ -139,9 +159,10 @@ restores a7 text, which a dry run confirmed, and `--strict` cannot see it.
 
 PR #779 (open since 2026-09-02) already archives a7, but merging it separately leaves the ordering to
 chance. The owner decided to archive a7 in this PR as its own first commit and close #779 as
-superseded. The archive carries #779's recorded evidence for a7's §2.4 and §4.2: *Docker Compose
-Health Check* runs 33524629806 and 33566795258, 838 passed and 7 skipped, on the head merged
-2026-09-02. The a7 body has been live on staging since #787 closed (2026-09-08).
+superseded. The archive carries #779's recorded evidence for a7's §2.4 and §4.2: the *Docker Compose
+Health Check* job passed (838 passed, 7 skipped) in workflow runs 33524629806 (head `ff4e160e`) and
+33566795258 (the merged head `b4282d8b`). Both workflow runs concluded `failure` on an unrelated
+image-scan job; the integration job itself was green. The a7 body has been live on staging since #787 closed (2026-09-08).
 
 ### Only the staging Supabase is a write-back target today
 
@@ -152,6 +173,32 @@ therefore "applied to staging Supabase".
 When this reaches `main`, production's RPC also moves to a9. That has no producer impact **only
 while #863 stands**. If #863 gives production its own write-back before the pipeline bump,
 production-dispatched a7 envelopes would be rejected there too.
+
+### Restrict the RPC's EXECUTE grants (a bug fix restoring the specified behaviour)
+
+`cyl-trait-writeback` already requires that `EXECUTE` on the write-back RPC is granted only to
+`bloom_writer`, `service_role`, `bloom_admin` and `bloom_workflows` (*Write-back RPC ingests a
+ResultEnvelope*, and its scenario "exactly [those four] hold `EXECUTE`"). The deployed function did
+not meet it. Supabase's default privileges grant `EXECUTE` on every new `public` function to `anon`
+and `authenticated` directly, and every definition of this RPC revoked only `FROM PUBLIC`, which does
+not remove those direct grants. Of the 18 `SECURITY DEFINER` functions in `public`, it was the only
+one without the repo's usual `REVOKE … FROM PUBLIC, anon, authenticated`: it predates the team
+learning about the default privileges (PR #469, 2026-07-20), and each re-pin copied its grant lines
+forward. `test_execute_grants_are_exactly_the_sanctioned_roles` checked only selected roles, so CI
+never saw it.
+
+- **Fix:** a separate ACL-only migration, `20260925120100`, revokes `FROM PUBLIC, anon, authenticated`
+  and re-asserts the four grants. No body, owner or signature change, so the a9 migration stays the
+  newest definition and its one-line-diff tests are untouched.
+- **No spec delta.** The requirement already states the intended behaviour, so this restores it
+  rather than changing it. MODIFYing that requirement here would also collide with the unarchived
+  `fix-cyl-pipeline-run-scan-status`, which MODIFIES the same requirement (the archive-ordering
+  hazard this change otherwise avoids).
+- **Tests:** the grants test now compares the whole grantee set (`aclexplode`) and the effective
+  privilege of `anon`/`authenticated`; a new catalog-wide test fails if any `SECURITY DEFINER`
+  function in `public` is executable by `anon`, or by `authenticated` without an allowlisted,
+  read-only reason; a unit test pins the migration to ACL-only statements.
+- **Future re-pins** that copy this body must carry the full `REVOKE`; the catalog test enforces it.
 
 ### Pin-to-RPC tie
 
@@ -166,9 +213,9 @@ half-done re-pin fails CI.
 - **The pipeline bump landing first by mistake.** That produces the same loud, recover-by-recompute
   failure. The bloom#895 gate (verified apply first) prevents it.
 - **Staging deploys need approval.** Each staging deploy waits on the `staging` environment's
-  required reviewers; runs held from 2026-09-21 and 2026-09-25 lapsed while waiting. The backlog
-  cleared on 2026-09-28 (run 36456935639: `20260921130000` and `20260924120000` were already
-  applied, nothing pending), so a9 should apply alone. In `deploy.yml` the stack and smoke test run
+  required reviewers. Runs 35657797607 and 36196049972 were held and then rejected as superseded;
+  `20260921130000` and `20260924120000` were applied on 2026-09-25 by run 36192393915, and run
+  36456935639 (2026-09-28) found nothing pending, so a9 should apply alone. In `deploy.yml` the stack and smoke test run
   before migrations, so a smoke failure also stops a9.
 - **Out-of-order migration with #910.** #910 (open) adds `20260928120000`. If it merges and deploys
   first, `supabase db push` refuses this PR's older `20260925120000`; the migration lint catches it

@@ -6,7 +6,7 @@
 >   any commit message, the PR title or the PR body. Use "Part of #895" and "Refs #N". bloom#895 is
 >   closed by hand after §5.3.
 >
-> Commit order:
+> Commits as they landed (plus merges of `staging`):
 >
 > | # | Commit | Tasks | CI after it |
 > |---|---|---|---|
@@ -15,9 +15,14 @@
 > | C2 | `test(cyl): pin contract_version explicitly where a7 bodies are re-applied` | §3.1 | green, because the explicit version equals the current pin |
 > | C3 | `chore(contracts): re-pin vendored contract v0.1.0a7 -> v0.1.0a9` | §1, §3.3 | green |
 > | C4 | `feat(db): re-pin insert_cyl_result_envelope to 0.1.0a9, no cutover guard` | §2, §3.2 | green only as a whole |
-> | C5 | `test(bloomctl): move the mocked mismatch message to 0.1.0a9` | §3.4 | green |
+> | C5 | `test(bloomctl): move the mocked mismatch message to 0.1.0a9` | §3.4 | green; **reverted in review** |
 > | C6 | `docs(openspec): tick repin-cyl-contract-a9 tasks` | — | green |
+> | R1 | `fix(db): correct the a9 migration header's account of the a7 guard`, `test(cyl): apply the review findings…`, two docs commits | review round 1 | green (CI on `fca98ab2`) |
+> | R2 | the grant fix (§4A) and review round 2's test and doc fixes | §4A | green only with the revoke migration |
 >
+> - **Squash message.** Two early commit bodies (C1, C4) repeat the "a7 guard tripped on a7 rows"
+>   error that R1 corrected, and C5 describes a change that R1 reverted. Edit the squash body at
+>   merge; the PR body carries a clean one.
 > - C4 cannot be split. The migration without the `PINNED_VERSION` flip is red, and so is the flip
 >   without the migration.
 > - RED-before-GREEN is a **local** discipline. Record the observed RED failures in C4's body. Never
@@ -104,7 +109,7 @@
       - `test_a9_migration_body_is_idempotent`:
         - restore a7, then apply a9 twice;
         - assert `SELECT pronargs … WHERE proname='insert_cyl_result_envelope'` returns exactly
-          `[(2,)]`;
+          `[2]`;
         - a9 is accepted;
         - under a `SAVEPOINT`, a7 is rejected with `contract_version mismatch`.
       - `test_a9_rollback_restores_a7_with_redelivery_fallback`:
@@ -187,30 +192,71 @@
       either, and no CI job runs prettier on them.
 - [ ] 4.4 Run the cyl integration suites and `tests/unit/` locally against a live Postgres. Then
       observe CI's *Docker Compose Health Check* green on the final head before merge.
-      Local half done: RED 75 failed for the expected reasons; GREEN 169 passed, 2 skipped (dev DB
-      migrated through `20260924120000`, a9 applied by psql, then restored byte-identically).
-      CI half pending.
+      Local: RED 75 failed for the expected reasons; GREEN, after both review rounds and the grant
+      fix, 176 passed, 2 skipped (dev DB migrated through `20260924120000`, a9 and the revoke
+      applied by psql, then restored: identical function md5, owner, grantee set). CI on
+      `fca98ab2` (before the grant fix): Docker Compose Health Check 1310 passed, 7 skipped, with
+      every new test named PASSED; the unit tests ran in the Python audit job. Re-check on the
+      final head.
 - [ ] 4.5 The PR body says "Part of #895", includes `No schema changes.` under Schema changes and
       the §3.5 list, and notes the #902 timestamp ordering and the stuck staging deploy.
 
+## 4A. Restrict the write-back RPC's EXECUTE grants (TDD, pre-merge)
+
+A bug fix restoring what `cyl-trait-writeback` already requires; no spec delta (design:
+*Restrict the RPC's EXECUTE grants*).
+
+- [x] 4A.1 RED: `test_execute_grants_are_exactly_the_sanctioned_roles` compares the whole grantee set
+      (`aclexplode(proacl)` must equal {`postgres`, `bloom_writer`, `service_role`, `bloom_admin`,
+      `bloom_workflows`}) and checks the effective privilege of `public`, `anon`, `authenticated`,
+      `bloom_user` and `bloom_agent`. New `tests/integration/test_security_definer_grants.py`: no
+      `SECURITY DEFINER` function in `public` is executable by `anon`, nor by `authenticated`
+      unless allowlisted with a read-only reason, plus a non-vacuity check. Against the dev DB,
+      3 failed for the expected reason: `insert_cyl_result_envelope(jsonb,text)` was the only
+      function reachable by either role, with exactly `anon` and `authenticated` as extra grantees.
+- [x] 4A.2 RED: unit tests pin the new migration and its rollback to ACL-only statements (2 failed:
+      files missing).
+- [x] 4A.3 GREEN: `supabase/migrations/20260925120100_revoke_default_grants_cyl_writeback_rpc.sql`
+      (`REVOKE … FROM PUBLIC, anon, authenticated`; re-`GRANT` the four) and its rollback. Unit
+      8 passed; with a9 and the revoke applied, the integration run above passed.
+- [x] 4A.4 Review round 2's test fixes: the "nothing written" assertions that could not fail are
+      removed (a raising plpgsql call undoes its own writes); `match="contract_version mismatch"`
+      added to the remaining rejection tests; `_sql_body` reads UTF-8.
+
 ## 5. After merge: the gate is APPLIED, not merged (not part of this PR's diff)
 
-- [ ] 5.1 The user approves the `staging` environment deployment for the merge commit, the deploy runs, and the live
-      literal is verified by a read-only query: `pg_proc` returns exactly one row,
-      `insert_cyl_result_envelope(jsonb,text)`, whose extracted `pinned_version` is `0.1.0a9`.
-      Alternatively, a `contract_version: "probe"` call through the cluster's credential returns
-      `pinned 0.1.0a9`. The colour of the "Apply database migrations" step alone is not evidence,
-      because a zero-pending run shows as skipped.
-- [ ] 5.2 Bump the traits template in `talmolab/sleap-roots-pipeline` (prepared before this merges,
-      merged only after 5.1):
+- [ ] 5.0 Before merging: the sleap-roots-pipeline bump PR is open and passes
+      `scripts/check_manifests.py` (that repo has no CI), with the template comments that become
+      false fixed ("a7-emitting envelopes will be accepted", "`ARGO_WORKFLOW_NAME` inert"). Record
+      `SELECT max(id) FROM cyl_trait_sources` on staging.
+- [ ] 5.1 The user approves the `staging` environment deployment for the merge commit. Verify the
+      apply over SSH to the deploy host with a read-only query
+      (`docker compose -p bloom_v2_staging … exec -T db-prod psql -U postgres`):
+      ```sql
+      SELECT p.oid::regprocedure,
+             (regexp_match(pg_get_functiondef(p.oid),
+               $$pinned_version\s+constant\s+text\s*:=\s*'([^']*)'$$))[1],
+             has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_exec
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND p.proname = 'insert_cyl_result_envelope';
+      ```
+      Expect exactly one row: `insert_cyl_result_envelope(jsonb,text) | 0.1.0a9 | f`. Also
+      `scripts/deploy_run_supabase.sh staging 'migration list'` shows `20260925120000` and
+      `20260925120100` applied. The "Apply database migrations" step's colour alone is not
+      evidence (a zero-pending run shows as skipped).
+- [ ] 5.2 Bump the traits template in `talmolab/sleap-roots-pipeline`, merged only after 5.1:
       - `image:` becomes `sha-e373b0f@sha256:<re-verified index digest>`, changed together with
-        `SRT_TRAITS_CONTAINER_DIGEST`;
-      - confirm the image bakes `SRT_TRAITS_CODE_SHA` (sleap-roots `docker-trait-extractor.yml`
-        passes `github.sha`), so recomputes get new keys rather than landing on the a7 no-op path;
-      - wait until no sleap-roots workflow is running, then `argo template update`, then
-        `scripts/check_cluster_drift.sh`.
-- [ ] 5.3 Acceptance (bloom#895): new `cyl_trait_sources` rows carry `contract_version: 0.1.0a9`,
-      judged by `write-back succeeded (source_id=…)` lines and the rows themselves. Re-trigger scans
-      that were rejected during the window with a **new** trigger (`POST /workflows/pipeline`), never
-      `argo retry`/`resubmit` of a window workflow. Then #895 is shut by hand.
+        `SRT_TRAITS_CONTAINER_DIGEST`; the image bakes `SRT_TRAITS_CODE_SHA` (sleap-roots
+        `docker-trait-extractor.yml` passes `github.sha`), so recomputes get new keys;
+      - wait until no sleap-roots workflow is running; from a clean checkout at the merged commit,
+        run `scripts/check_cluster_drift.sh` (pre-image), `argo template update`, then
+        `check_cluster_drift.sh` again and bloom's `scripts/check_template_contract.py`.
+- [ ] 5.3 Acceptance (bloom#895): rows with `id >` the 5.0 maximum carry
+      `metadata->>'contract_version' = '0.1.0a9'`, alongside `write-back succeeded (source_id=…)`
+      lines. Compare one recomputed scan's a9 trait values with its a7 source (expected identical;
+      design: *Values from two extractor builds*). Find the scans rejected during the window
+      (`cyl_pipeline_run_scans` with `status = 'failed'` updated after the 5.1 apply) and
+      re-trigger them with a **new** Bloom trigger: `POST /workflows/pipeline` with a Supabase user
+      JWT and `apikey`, body `{"target_level":"scan_ids","target_id":null,"scan_ids":[…],"params":{}}`.
+      Never `argo retry`/`resubmit` a window workflow. Then #895 is shut by hand.
 - [ ] 5.4 Archive `repin-cyl-contract-a9` in a follow-up PR once 5.1–5.3 hold.

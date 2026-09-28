@@ -140,5 +140,6 @@
       20260825220000)."
 - [x] 4.4 Opened the bundled PR (proposal + implementation) targeting `staging`:
       https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/766 — links bloom #685 and
-      `talmolab/sleap-roots-pipeline#52`; still needs CI green (§2.4/§4.2 unverified locally) and a
+      `talmolab/sleap-roots-pipeline#52`; still needs CI green (§2.4/§4.2 unverified locally; since
+      ticked with CI evidence when archived by `repin-cyl-contract-a9`) and a
       non-author reviewer (branch protection)

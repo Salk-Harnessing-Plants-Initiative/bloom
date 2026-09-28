@@ -42,7 +42,8 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
 > `BlobRef` are AST-identical in `models.py` between the tags, and `identity.py`/`hashing.py` are
 > unchanged). The generated TS is unchanged. The substantive addition is on the Python package
 > side: per-run run-manifest **naming and resolution** for `talmolab/sleap-roots-pipeline#71` —
-> writer helpers (`run_manifest_name_for_writing`, `pipeline_run_id_from_env`) and the reader entry
+> naming helpers shared by writers and readers (`run_manifest_filename`, `pipeline_run_id_from_env`,
+> `run_manifest_name_for_writing`) and the reader entry
 > point `load_run_manifest`. It is additive (`RunManifest`/`RUN_MANIFEST_FILENAME` are unchanged).
 > `bloomctl` still writes and reads the legacy `run_manifest.json`, which the a9 traits reader
 > accepts via `allow_legacy=True` until `talmolab/sleap-roots-pipeline#82`. The write-back RPC's

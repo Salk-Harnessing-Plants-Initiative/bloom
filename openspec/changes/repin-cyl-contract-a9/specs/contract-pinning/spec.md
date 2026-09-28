@@ -34,7 +34,7 @@ Bloom SHALL vendor the `sleap-roots-contracts` `result_envelope.schema.json` as 
 - **WHEN** they consult `contracts/README.md`'s documented re-pin procedure
 - **THEN** it instructs them to re-pin the RPC literal in a new forward migration in the same change
 - **AND** it tells them not to add a guard that raises on rows stamped with the retiring version, and
-  explains why (the `0.1.0a7` guard wedged staging deploys on legitimate rows, bloom#685, cleared only
+  explains why (the `0.1.0a7` guard wedged staging deploys on ten `0.1.0a3` rows, bloom#685, cleared only
   by the bloom#787 restamp)
 
 #### Scenario: An author of a data-dependent re-pin checks real staging state before merging
@@ -42,7 +42,7 @@ Bloom SHALL vendor the `sleap-roots-contracts` `result_envelope.schema.json` as 
 - **GIVEN** a developer is writing a re-pin migration whose success or effect depends on existing data
 - **WHEN** they consult `contracts/README.md`'s documented re-pin procedure
 - **THEN** it instructs them to query the real staging database (via SSH + the deploy host's existing tooling) for the relevant rows, before opening or merging the PR
-- **AND** to fold any needed reconciliation into the same PR if the query finds blocking rows
+- **AND** to fold any needed reconciliation into the same PR if the query finds rows that need it
 
 #### Scenario: The documentation does not claim this is enforced by CI
 

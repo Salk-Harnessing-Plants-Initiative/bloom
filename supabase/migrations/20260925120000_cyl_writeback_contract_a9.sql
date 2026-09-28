@@ -30,7 +30,7 @@
 -- BREAKING (planned cutover): from apply until the traits template's pin bump
 --   lands, a7 envelopes are rejected ("contract_version mismatch"), loudly --
 --   including re-deliveries of scans already ingested under a7, because the
---   version check (step 2) runs before the idempotency gate (step 5). The first
+--   version check (step 2) runs before the source gate (step 5). The first
 --   run after the bump recomputes those scans (the a9 extractor skips a scan
 --   only when both its idempotency key and contract_version match) and delivers
 --   a9 envelopes under new keys.
