@@ -20,6 +20,7 @@ QUEUE = "scrna_cellranger_dispatch"
 REQUEST_FN = "request_scrna_cellranger_run"
 REQUEST_SIG = "public.request_scrna_cellranger_run(text, text, uuid)"
 USER = "00000000-0000-0000-0000-000000000001"
+OTHER_USER = "00000000-0000-0000-0000-000000000002"
 
 
 def _find_one(directory: str, glob: str) -> Path:
@@ -49,9 +50,9 @@ def cur(pg_conn):
     pg_conn.rollback()
 
 
-def _request(cur, sample="tinygex", reference="tiny_ref"):
+def _request(cur, sample="tinygex", reference="tiny_ref", user=USER):
     cur.execute("SET LOCAL ROLE bloom_workflows")
-    cur.execute(f"SELECT {REQUEST_FN}(%s, %s, %s)", (sample, reference, USER))
+    cur.execute(f"SELECT {REQUEST_FN}(%s, %s, %s)", (sample, reference, user))
     run_id = cur.fetchone()[0]
     cur.execute("RESET ROLE")
     return run_id
@@ -62,11 +63,12 @@ def _queue_run_ids(cur) -> list[int]:
     return [int(r[0]) for r in cur.fetchall()]
 
 
-def _insert(cur, sample="s", reference="r", run_key=None, **extra):
+def _insert(cur, sample="s", reference="r", run_key=None, requested_by=USER, **extra):
     fields = {
         "sample": sample,
         "reference": reference,
-        "run_key": run_key or f"{sample}__{reference}",
+        "requested_by": requested_by,
+        "run_key": run_key or f"{sample}__{reference}__{requested_by}",
         **extra,
     }
     cols = ", ".join(fields)
@@ -104,16 +106,21 @@ def test_unknown_current_step_is_rejected(cur):
 
 
 @pytest.mark.parametrize("column", ["sample", "reference"])
-@pytest.mark.parametrize("name", ["../etc", "a/b", "", ".hidden", "x" * 101])
+@pytest.mark.parametrize("name", ["../etc", "a/b", "", ".hidden", "x" * 101, "a__b"])
 def test_unsafe_names_are_rejected_by_the_table(cur, column, name):
     values = {"sample": "s", "reference": "r", column: name}
     with pytest.raises(psycopg.errors.CheckViolation):
         _insert(cur, run_key="whatever", **values)
 
 
-def test_run_key_must_be_sample_and_reference(cur):
+def test_run_key_must_be_sample_reference_and_requester(cur):
     with pytest.raises(psycopg.errors.CheckViolation):
-        _insert(cur, sample="s", reference="r", run_key="other")
+        _insert(cur, sample="s", reference="r", run_key="s__r")
+
+
+def test_requested_by_is_required(cur):
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        _insert(cur, requested_by=None, run_key="s__r__")
 
 
 # --------------------------------------------------------------------------- #
@@ -132,7 +139,14 @@ def test_read_roles_can_select(cur, role):
 
 @pytest.mark.parametrize(
     "role",
-    ["bloom_user", "bloom_agent", "bloom_workflows", "bloom_writer", "anon", "authenticated"],
+    [
+        "bloom_user",
+        "bloom_agent",
+        "bloom_workflows",
+        "bloom_writer",
+        "anon",
+        "authenticated",
+    ],
 )
 @pytest.mark.parametrize("privilege", ["INSERT", "UPDATE", "DELETE"])
 def test_only_admin_can_write_the_table_directly(cur, role, privilege):
@@ -169,7 +183,13 @@ def test_request_writes_the_run_and_one_message(cur):
         f"FROM {RUNS_TABLE} WHERE id = %s",
         (run_id,),
     )
-    assert cur.fetchone() == ("tinygex", "tiny_ref", "tinygex__tiny_ref", "queued", USER)
+    assert cur.fetchone() == (
+        "tinygex",
+        "tiny_ref",
+        f"tinygex__tiny_ref__{USER}",
+        "queued",
+        USER,
+    )
     assert _queue_run_ids(cur) == before + [run_id]
 
 
@@ -179,27 +199,45 @@ def test_the_same_sample_against_two_references_gets_two_run_keys(cur):
     cur.execute(
         f"SELECT run_key FROM {RUNS_TABLE} WHERE id IN (%s, %s) ORDER BY id", (a, b)
     )
-    assert [r[0] for r in cur.fetchall()] == ["root_a__tair10", "root_a__tair10_v2"]
+    assert [r[0] for r in cur.fetchall()] == [
+        f"root_a__tair10__{USER}",
+        f"root_a__tair10_v2__{USER}",
+    ]
+
+
+def test_two_users_running_the_same_pair_get_two_run_keys(cur):
+    a = _request(cur, sample="root_a", reference="tair10", user=USER)
+    b = _request(cur, sample="root_a", reference="tair10", user=OTHER_USER)
+    cur.execute(
+        f"SELECT run_key FROM {RUNS_TABLE} WHERE id IN (%s, %s) ORDER BY id", (a, b)
+    )
+    assert [r[0] for r in cur.fetchall()] == [
+        f"root_a__tair10__{USER}",
+        f"root_a__tair10__{OTHER_USER}",
+    ]
 
 
 @pytest.mark.parametrize(
-    "sample, reference",
+    "sample, reference, user",
     [
-        ("../x", "tiny_ref"),
-        ("a/b", "tiny_ref"),
-        ("tinygex", "../etc"),
-        (None, "tiny_ref"),
-        ("tinygex", None),
+        ("../x", "tiny_ref", USER),
+        ("a/b", "tiny_ref", USER),
+        ("a__b", "tiny_ref", USER),
+        ("tinygex", "../etc", USER),
+        ("tinygex", "b__c", USER),
+        (None, "tiny_ref", USER),
+        ("tinygex", None, USER),
+        ("tinygex", "tiny_ref", None),
     ],
 )
-def test_request_refuses_bad_input_and_writes_nothing(cur, sample, reference):
+def test_request_refuses_bad_input_and_writes_nothing(cur, sample, reference, user):
     cur.execute(f"SELECT count(*) FROM {RUNS_TABLE}")
     runs_before = cur.fetchone()[0]
     queued_before = _queue_run_ids(cur)
     cur.execute("SAVEPOINT bad_request")
     cur.execute("SET LOCAL ROLE bloom_workflows")
     with pytest.raises(psycopg.errors.InvalidParameterValue):
-        cur.execute(f"SELECT {REQUEST_FN}(%s, %s, %s)", (sample, reference, USER))
+        cur.execute(f"SELECT {REQUEST_FN}(%s, %s, %s)", (sample, reference, user))
     cur.execute("ROLLBACK TO SAVEPOINT bad_request")
     cur.execute(f"SELECT count(*) FROM {RUNS_TABLE}")
     assert cur.fetchone()[0] == runs_before
@@ -225,7 +263,9 @@ def test_request_execute_is_granted_to_bloom_workflows_only(cur, role, allowed):
             (REQUEST_SIG,),
         )
     else:
-        cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, REQUEST_SIG))
+        cur.execute(
+            "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, REQUEST_SIG)
+        )
     assert cur.fetchone()[0] is allowed
 
 
@@ -246,7 +286,9 @@ def test_request_function_is_security_definer_with_pinned_search_path(cur):
 
 def test_migration_body_is_idempotent(cur):
     cur.execute(_sql_body(MIGRATION))
-    cur.execute("SELECT count(*) FROM pgmq.list_queues() WHERE queue_name = %s", (QUEUE,))
+    cur.execute(
+        "SELECT count(*) FROM pgmq.list_queues() WHERE queue_name = %s", (QUEUE,)
+    )
     assert cur.fetchone()[0] == 1
 
 
