@@ -1,4 +1,5 @@
-/** Reads for the joint embedding map: its points, one label, and a clicked point. */
+/** Reads for the joint embedding map: its points, one label, and a clicked point.
+ *  Each takes an optional signal that cancels the request itself. */
 
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 
@@ -11,9 +12,13 @@ export interface JointArrays {
 
 /** Every point's position and dataset, in point order; null when the map has no
  *  finished points to show. */
-export async function fetchJointArrays(embeddingId: number): Promise<JointArrays | null> {
+export async function fetchJointArrays(
+  embeddingId: number,
+  signal?: AbortSignal,
+): Promise<JointArrays | null> {
   const supabase = createClientSupabaseClient();
-  const { data, error } = await supabase.rpc("scrna_embedding_arrays", { emb_id: embeddingId });
+  const request = supabase.rpc("scrna_embedding_arrays", { emb_id: embeddingId });
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw new Error(`Could not load the map's cells: ${error.message}`);
   const row = data?.[0];
   if (!row) return null;
@@ -24,12 +29,14 @@ export async function fetchJointArrays(embeddingId: number): Promise<JointArrays
 export async function fetchLabelCodes(
   embeddingId: number,
   key: string,
+  signal?: AbortSignal,
 ): Promise<{ levels: string[]; codes: number[] }> {
   const supabase = createClientSupabaseClient();
-  const { data, error } = await supabase.rpc("scrna_embedding_label_codes", {
+  const request = supabase.rpc("scrna_embedding_label_codes", {
     emb_id: embeddingId,
     label_key: key,
   });
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw new Error(`Could not load ${key}: ${error.message}`);
   const row = data?.[0];
   return { levels: row?.levels ?? [], codes: row?.codes ?? [] };
@@ -43,14 +50,19 @@ export interface PointRecord {
 
 /** The index-th point in point order. The arrays carry no barcodes, so a
  *  clicked point's record is read on its own. */
-export async function fetchPoint(embeddingId: number, index: number): Promise<PointRecord | null> {
+export async function fetchPoint(
+  embeddingId: number,
+  index: number,
+  signal?: AbortSignal,
+): Promise<PointRecord | null> {
   const supabase = createClientSupabaseClient();
-  const { data, error } = await supabase
+  const request = supabase
     .from("scrna_embedding_points")
     .select("barcode, dataset_id, cell_id")
     .eq("embedding_id", embeddingId)
     .order("ordinal")
     .range(index, index);
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw new Error(`Could not load the cell: ${error.message}`);
   const row = data?.[0];
   return row ? { barcode: row.barcode, datasetId: row.dataset_id, cellId: row.cell_id } : null;

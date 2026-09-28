@@ -18,7 +18,7 @@ export default async function Dataset({
   const datasetIdNum = Number(datasetId);
   const speciesIdNum = Number(speciesId);
   if (!Number.isFinite(datasetIdNum) || !Number.isFinite(speciesIdNum)) notFound();
-  const dataset = await getDataset(datasetIdNum);
+  const { data: dataset, error } = await getDataset(datasetIdNum);
 
   const user = await getUser();
   const mixpanel = process.env.MIXPANEL_TOKEN
@@ -28,6 +28,22 @@ export default async function Dataset({
     distinct_id: user?.email,
     url: `/app/expression/${speciesId}/${datasetId}`,
   });
+
+  // A failed lookup is not a missing dataset: say which it was.
+  if (error) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        <div className="text-sm mb-6 select-none">
+          <Link href="/app/expression" className="text-stone-400 hover:underline">
+            All species
+          </Link>
+        </div>
+        <div role="alert" className="text-sm text-rose-700">
+          Could not load this dataset: {error.message}
+        </div>
+      </div>
+    );
+  }
 
   // NULL_DATASET rows are placeholders without real expression data, and a
   // reference atlas has no cells of its own — treat both as not-found rather
@@ -80,12 +96,12 @@ export default async function Dataset({
   );
 }
 
+/** The dataset, or null when there is none; a database failure comes back as the error. */
 async function getDataset(datasetId: number) {
   const supabase = await createServerSupabaseClient();
-  const { data } = await supabase
+  return supabase
     .from("scrna_datasets")
     .select("*, people(*), species(*)")
     .eq("id", datasetId)
-    .single();
-  return data;
+    .maybeSingle();
 }

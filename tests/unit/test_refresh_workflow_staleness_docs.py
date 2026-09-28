@@ -1,14 +1,9 @@
-"""bloom#736 (fix-cyl-scan-traits-latest-rollup Section 15): the doc/comment sites describing
-production's `n_traits` refresh staleness must not claim it is already bounded.
+"""The docs describing how `n_traits` is refreshed must describe the mechanism that actually runs.
 
-Found by `/review-pr` on PR #738: the refresh workflow's `runs-on: ubuntu-latest` had no network
-route to either host, so `refresh_cyl_experiment_trait_counts()` had never once actually succeeded
-via GitHub Actions -- production's staleness was, in fact, unbounded, identically to staging,
-despite two doc/comment sites previously asserting a bounded claim as settled fact. Both sites were
-corrected to state the bound holds only once 15.7 confirms an actual successful refresh.
+Both files describe the nightly pg_cron job. Neither may describe the GitHub Action that used to
+do this: it is deleted, and its `on: schedule` / `workflow_dispatch` split no longer makes staging
+and production differ in how fresh a cache row is.
 
-This test pins the corrected wording and fences against the old, unconditional claim silently
-reappearing -- mirroring `test_bloommcp_local_mode_docs.py`'s banned/required-phrase pattern.
 Whitespace (including newlines) is normalized before matching, since both files hard-wrap prose.
 """
 
@@ -16,59 +11,48 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 WIKI_README = "_WIKI/BLOOMMCP/README.md"
-LIST_EXPERIMENTS_MODULE = "bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py"
+LIST_EXPERIMENTS_MODULE = (
+    "bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py"
+)
 
-# The pre-fix, unconditional claim each file made -- must not reappear verbatim.
 BANNED_PHRASES = {
     WIKI_README: (
-        "bounded to roughly one refresh interval on production, but still unbounded on staging"
+        "bounded to roughly one refresh interval on production, but still unbounded on staging",
+        ".github/workflows/refresh-cyl-experiment-trait-counts.yml",
     ),
     LIST_EXPERIMENTS_MODULE: (
-        "bounded to roughly one refresh interval, but a missed or delayed scheduled run"
+        "bounded to roughly one refresh interval, but a missed or delayed scheduled run",
+        "`on: schedule`",
+        "workflow_dispatch",
+        "on a schedule or on demand",
+        "the environment's own refresh cadence",
     ),
 }
 
-# Every site must condition the bound claim on this same reference -- one shared constant,
-# not a per-file dict, since the required text doesn't actually vary between files.
-REQUIRED_PHRASE = "bloom#736"
-
-# bloom#806 (Section 16): bloom#736's network fix was necessary but not sufficient -- the first
-# live run it enabled reached Postgres and hit a second, independent bug (an unqualified DELETE
-# rejected by the database's own safeupdate guard). Both sites must condition the bound claim on
-# BOTH issues now, not bloom#736 alone.
-REQUIRED_PHRASE_806 = "bloom#806"
+REQUIRED_PHRASES = {
+    WIKI_README: ("pg_cron", "refresh_changed_cyl_experiment_trait_counts()"),
+    LIST_EXPERIMENTS_MODULE: ("pg_cron", "nightly"),
+}
 
 
 def _normalized_text(filename: str) -> str:
     return " ".join((REPO_ROOT / filename).read_text(encoding="utf-8").split())
 
 
-def test_staleness_docs_have_no_stale_unconditional_bound_claim():
-    for filename, banned in BANNED_PHRASES.items():
-        text = _normalized_text(filename)
-        assert banned not in text, (
-            f"{filename}: stale unconditional staleness-bound claim {banned!r} -- "
-            "reword to the bloom#736-conditional guarantee (Section 15)."
-        )
+@pytest.mark.parametrize("filename", sorted(BANNED_PHRASES))
+def test_staleness_docs_have_no_banned_phrase(filename):
+    text = _normalized_text(filename)
+    for banned in BANNED_PHRASES[filename]:
+        assert banned not in text, f"{filename}: must not say {banned!r}"
 
 
-def test_staleness_docs_reference_bloom_736():
-    for filename in BANNED_PHRASES:
-        text = _normalized_text(filename)
-        assert REQUIRED_PHRASE in text, (
-            f"{filename}: expected a reference to {REQUIRED_PHRASE!r} conditioning the "
-            "staleness-bound claim on an actual successful refresh (Section 15)."
-        )
-
-
-def test_staleness_docs_reference_bloom_806():
-    for filename in BANNED_PHRASES:
-        text = _normalized_text(filename)
-        assert REQUIRED_PHRASE_806 in text, (
-            f"{filename}: expected a reference to {REQUIRED_PHRASE_806!r} -- bloom#736's network "
-            "fix alone was not sufficient; the bound claim must also condition on bloom#806's "
-            "fix (Section 16)."
-        )
+@pytest.mark.parametrize("filename", sorted(REQUIRED_PHRASES))
+def test_staleness_docs_name_the_current_refresh_mechanism(filename):
+    text = _normalized_text(filename)
+    for required in REQUIRED_PHRASES[filename]:
+        assert required in text, f"{filename}: expected {required!r}"

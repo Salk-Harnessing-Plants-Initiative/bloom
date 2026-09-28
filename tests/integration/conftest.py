@@ -39,6 +39,7 @@ _env = _load_env(".env.prod") or _load_env(".env.ci") or _load_env(".env.dev")
 BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost")
 ANON_KEY = os.environ.get("ANON_KEY", _env.get("ANON_KEY", ""))
 SERVICE_ROLE_KEY = os.environ.get("SERVICE_ROLE_KEY", _env.get("SERVICE_ROLE_KEY", ""))
+BLOOMMCP_API_KEY = os.environ.get("BLOOMMCP_API_KEY", _env.get("BLOOMMCP_API_KEY", ""))
 # `null` and `[]` are the compose defaults for an unprovisioned stack, not a JWKS.
 JWT_JWKS = os.environ.get("JWT_JWKS", _env.get("JWT_JWKS", "")).strip()
 
@@ -68,6 +69,11 @@ def base_url():
 @pytest.fixture
 def anon_key():
     return ANON_KEY
+
+
+@pytest.fixture
+def bloommcp_api_key():
+    return BLOOMMCP_API_KEY
 
 
 @pytest.fixture

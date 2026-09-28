@@ -28,6 +28,7 @@ export function ExpressionGeneSearch({
   const [options, setOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // keep internal input in sync with outer-selected value
   useEffect(() => {
@@ -38,21 +39,31 @@ export function ExpressionGeneSearch({
     const trimmed = input.trim();
     if (!trimmed) {
       setOptions([]);
+      setError(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
+    // A search replaced by a newer one keeps quiet, whenever its answer lands.
+    let stale = false;
     const id = setTimeout(async () => {
       try {
         const results = await searchGenes(datasetId, trimmed, MAX_RESULTS);
+        if (stale) return;
         setOptions(results);
+        setError(null);
       } catch (err) {
-        console.error("[ExpressionGeneSearch] searchGenes failed:", err);
+        if (stale) return;
         setOptions([]);
+        setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        if (!stale) setLoading(false);
       }
     }, DEBOUNCE_MS);
-    return () => clearTimeout(id);
+    return () => {
+      stale = true;
+      clearTimeout(id);
+    };
   }, [input, datasetId]);
 
   // always include the current selected value in the options list so MUI
@@ -82,6 +93,8 @@ export function ExpressionGeneSearch({
           {...params}
           label="Gene"
           placeholder="e.g. AT1G01010"
+          error={Boolean(error)}
+          helperText={error ? `Could not search genes: ${error}` : undefined}
           InputProps={{
             ...params.InputProps,
             endAdornment: (

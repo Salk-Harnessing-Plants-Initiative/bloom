@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   countFocused,
+  countsFor,
   describeFocus,
   focusIsSet,
   packFocus,
@@ -57,6 +58,33 @@ describe("countFocused", () => {
     expect(countFocused(CELLS, both, focus({ sample: ["pFACT"] }))).toBe(0);
     expect(countFocused(CELLS, focus({ transgene_pos: ["True"] }), focus({ sample: ["pFACT"] })))
       .toBe(1);
+  });
+});
+
+describe("counting with a cell type hidden", () => {
+  // Cell type 0 holds one Col-0 and one pFACT cell; cell type 1 holds two pFACT.
+  const TYPED = [
+    { replicate: "Col-0", cluster_ordinal: 0, facets: null },
+    { replicate: "pFACT", cluster_ordinal: 0, facets: null },
+    { replicate: "pFACT", cluster_ordinal: 1, facets: null },
+    { replicate: "pFACT", cluster_ordinal: 1, facets: null },
+  ];
+  const typeOneHidden = new Set([1]);
+
+  it("counts only the focused cells of the types shown", () => {
+    expect(countFocused(TYPED, focus({ sample: ["pFACT"] }), new Map())).toBe(3);
+    expect(countFocused(TYPED, focus({ sample: ["pFACT"] }), new Map(), typeOneHidden)).toBe(1);
+  });
+
+  it("counts each value over the types shown, keeping a value no shown cell holds", () => {
+    expect(countsFor(TYPED, new Map(), "sample", typeOneHidden)).toEqual([
+      { name: "Col-0", count: 1 },
+      { name: "pFACT", count: 1 },
+    ]);
+    expect(countsFor(TYPED, new Map(), "sample", new Set([0, 1]))).toEqual([
+      { name: "Col-0", count: 0 },
+      { name: "pFACT", count: 0 },
+    ]);
   });
 });
 

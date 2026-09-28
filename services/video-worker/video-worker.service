@@ -7,7 +7,9 @@ Type=simple
 User=bloom
 Group=bloom
 WorkingDirectory=/opt/bloom/services/video-worker
-ExecStart=/opt/bloom/venv/bin/python video_listener.py
+# Retired: the workflows service renders cyl videos. Without ExecStart the unit
+# cannot start; `systemctl disable --now video-worker` clears it from a host.
+#ExecStart=/opt/bloom/venv/bin/python video_listener.py
 Restart=always
 RestartSec=5
 

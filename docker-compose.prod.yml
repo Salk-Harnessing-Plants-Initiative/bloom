@@ -253,6 +253,8 @@ services:
     # not that. Start here and watch — raise it when this one is actually saturated, or once
     # the encode moves to a worker container and the database enforces the serialisation
     # instead, whichever comes first.
+    # The worker containers now exist; the database half does not, so they are profiled
+    # off and dev-only until it does.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -268,8 +270,12 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # Submits and polls, and writes nothing to /tmp, so a small RAM disk
+    # well inside the limit — tmpfs pages are charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
-      - /tmp:mode=1777,size=512m
+      - /tmp:mode=1777,size=128m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -329,8 +335,12 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
+    # Submits and polls, and writes nothing to /tmp, so a small RAM disk
+    # well inside the limit — tmpfs pages are charged to this same cgroup.
+    mem_limit: 1g
+    memswap_limit: 1g
     tmpfs:
-      - /tmp:mode=1777,size=512m
+      - /tmp:mode=1777,size=128m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -357,6 +367,76 @@ services:
     # single call per claim, so 30s isn't necessarily enough headroom for
     # _stop()'s documented "let the in-flight sweep finish" guarantee.
     stop_grace_period: 60s
+
+  # Renders one plate on command. Behind a profile, so `up -d` never starts it.
+  # Dev-only until the render queue lands; see services/workflows/README.md.
+  plate-video-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    profiles:
+      - plate-video-worker
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The workflows service's own limit, until a render here is measured.
+    mem_limit: 8g
+    memswap_limit: 8g
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    # Rendering takes its arguments, so the default command only says how.
+    command:
+      - python
+      - plate_video_worker.py
+      - --help
+
+  # Renders one cyl scan on command. Behind a profile, so `up -d` never starts it.
+  # Dev-only until the render queue lands; see services/workflows/README.md.
+  cyl-video-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    profiles:
+      - cyl-video-worker
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # A scan is capped at MAX_IMAGES decimated frames, far under a plate; this
+    # stays at the plate's limit until a render here is measured.
+    mem_limit: 8g
+    memswap_limit: 8g
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+    networks:
+      - supanet
+    depends_on:
+      - kong
+      - db-prod
+    command:
+      - python
+      - cyl_video_worker.py
+      - --help
 
   # -------------------
   # Bloom MCP Server
@@ -435,7 +515,7 @@ services:
   #  Kong Gateway
   # -------------------
   kong:
-    image: kong:2.8.1
+    image: ghcr.io/salk-harnessing-plants-initiative/kong:2.8.1@sha256:1b53405d8680a09d6f44494b7990bf7da2ea43f84a258c59717d4539abf09f6d
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -472,7 +552,7 @@ services:
   # Auth (GoTrue)
   # -------------------
   auth:
-    image: supabase/gotrue:v2.188.1@sha256:87db8c737af49a64236c461882ed3925f8b1e5c2c47176c64694dedc65153573
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-gotrue:v2.188.1@sha256:87db8c737af49a64236c461882ed3925f8b1e5c2c47176c64694dedc65153573
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -534,7 +614,7 @@ services:
   # PostgREST
   # -------------------
   rest:
-    image: postgrest/postgrest:v12.2.12@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
+    image: ghcr.io/salk-harnessing-plants-initiative/postgrest:v12.2.12@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -563,7 +643,7 @@ services:
   # Realtime Analytics
   # -------------------
   realtime:
-    image: supabase/realtime:v2.34.47
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-realtime:v2.34.47@sha256:4d2460cb6eb081b7cfec0e6b0af57f547497f60cf897621555303992d299f6e8
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -651,13 +731,16 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
-
   # -------------------
   # Supabase Storage
   # -------------------
   storage:
-    image: supabase/storage-api:v1.48.14
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-storage-api:v1.48.14@sha256:14a7e837e44a5f1d59c4af0a7fb0066a6ab3b9146690a48f8e018dd60f3bf91f
     restart: unless-stopped
+    # Waits for the buckets; otherwise `up --wait` fails once the one-shot minio-init exits.
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -704,7 +787,7 @@ services:
   # Database (Postgres)
   # -------------------
   db-prod:
-    image: supabase/postgres:15.14.1.104
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-postgres:15.14.1.104@sha256:bc49dde9849c1f8ee5c48f08600b49e2b0911f17c1b055a696d610cea48b6ba1
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -763,7 +846,7 @@ services:
   # Supavisor (Connection Pooler)
   # -------------------
   supavisor:
-    image: supabase/supavisor:2.7.4
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-supavisor:2.7.4@sha256:466297ba00956e2d1cbd56a4362fbd5dbc9c2a47ad83e8ca9bdb877f743315ee
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -816,7 +899,7 @@ services:
   # -------------------
   studio:
     # Digest-pinned for the same reason as supabase-minio above.
-    image: supabase/studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-studio:2026.03.30-sha-12a43e5@sha256:d73df17a81b897bb61326b3160b29558ca4c2cdbe32d25b7bb11e15a2cd13488
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -863,7 +946,7 @@ services:
   # ImgProxy
   # -------------------
   imgproxy:
-    image: darthsim/imgproxy:v3.31.1
+    image: ghcr.io/salk-harnessing-plants-initiative/darthsim-imgproxy:v3.31.1@sha256:2b7a56dbf9c8a8e12e7109a5bdd27d31a8c1aa49f2116c927c6aedc37e18db98
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -884,7 +967,7 @@ services:
       start_period: 20s
 
   meta:
-    image: supabase/postgres-meta:v0.96.2
+    image: ghcr.io/salk-harnessing-plants-initiative/supabase-postgres-meta:v0.96.2@sha256:4ed8f7c5d3b2e25aa4aa29794605b49799b66da4b36a3c70894cd5241af63f97
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
