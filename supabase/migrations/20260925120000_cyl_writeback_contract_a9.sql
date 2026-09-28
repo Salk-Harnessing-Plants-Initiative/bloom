@@ -19,17 +19,21 @@
 --   tests/unit/test_cyl_writeback_a9_migration_files.py enforces the one-line diff.
 --
 -- NO CUTOVER GUARD (deliberate): the a3/a7 re-pins prepended a DO block that
---   raised if rows stamped with the retiring version existed. Rows stamped
---   0.1.0a7 are the expected, legitimate result of a7 being live; the a7 guard
---   wedged every staging deploy for six days on exactly such rows (bloom#685),
+--   raised if rows stamped with the retiring version existed. Such rows are the
+--   expected, legitimate result of the previous pin being live: the a7 guard
+--   wedged every staging deploy for six days on ten 0.1.0a3 rows (bloom#685),
 --   cleared only by restamping them (bloom#787). The pin gates NEW inserts only --
 --   existing rows keep their own contract_version as provenance, and no view, read
 --   RPC or reader filters on it. See cyl-trait-writeback, "A contract re-pin leaves
 --   existing rows untouched". Never restamp real rows.
 --
 -- BREAKING (planned cutover): from apply until the traits template's pin bump
---   lands, a7 envelopes are rejected ("contract_version mismatch"), loudly; the
---   first run after the bump recomputes those scans under the new traits_code_sha.
+--   lands, a7 envelopes are rejected ("contract_version mismatch"), loudly --
+--   including re-deliveries of scans already ingested under a7, because the
+--   version check (step 2) runs before the idempotency gate (step 5). The first
+--   run after the bump recomputes those scans (the a9 extractor skips a scan
+--   only when both its idempotency key and contract_version match) and delivers
+--   a9 envelopes under new keys.
 --
 -- No table/column changes. Forward-only.
 -- Manual rollback (staging hot-apply only -- see its header):
