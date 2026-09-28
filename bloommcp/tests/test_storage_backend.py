@@ -1125,7 +1125,7 @@ def test_supabase_list_prefix_raises_when_server_ignores_offset(monkeypatch):
     prefix = "bloommcp_output/qc_x/"
 
     class _OffsetIgnoringClient(_FakeSbStorageClient):
-        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
+        def list(self, prefix, options=None):  # mirrors the real client method
             opts = dict(options or {})
             opts["offset"] = 0  # pretend offset has no effect
             return super().list(prefix, opts)
@@ -1154,7 +1154,7 @@ def test_supabase_list_prefix_over_long_page_is_not_skipped_past(monkeypatch):
     expected = _seed_children(client, prefix, 250)
 
     class _OverLongPageClient(_FakeSbStorageClient):
-        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
+        def list(self, prefix, options=None):  # mirrors the real client method
             opts = dict(options or {})
             opts["limit"] = 150  # ignore the requested 100, return more
             return super().list(prefix, opts)
@@ -1170,33 +1170,73 @@ def test_supabase_list_prefix_over_long_page_is_not_skipped_past(monkeypatch):
 
 
 def test_supabase_list_prefix_deduplicates_across_page_boundary(monkeypatch):
-    """A child shifted across a page seam by a concurrent write is not double-counted.
+    """A child shifted across a page seam by a concurrent insert is collapsed.
 
     Names are unique within a prefix, so a repeat can only come from a race.
     `experiments_scanned` in a persisted audit report is exactly the integrity
     counter that would otherwise absorb the double-count.
+
+    Models the race the way it actually happens — an insert *behind* the cursor
+    shifts the tail forward, so the last name of page 1 reappears at the head of
+    page 2 — rather than by splicing a repeat into the page. That distinction is
+    load-bearing: a fake that injects a duplicate by displacing an entry drops a
+    real child, and a no-duplicates assertion cannot tell the two apart. Hence
+    the completeness assertion below, which is the one that would catch it.
     """
     prefix = "bloommcp_output/qc_x/"
 
-    class _RepeatingClient(_FakeSbStorageClient):
-        """Re-emits the previous page's last name at the head of the next page."""
+    class _InsertingMidSweepClient(_FakeSbStorageClient):
+        """Inserts an early-sorting child once page 1 has been read."""
 
-        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
-            page = super().list(prefix, options)
-            opts = options or {}
-            if opts.get("offset", 0) and page:
-                return [{"name": self._last}] + page[:-1]
-            if page:
-                self._last = page[-1]["name"]
-            return page
+        def list(self, prefix, options=None):  # mirrors the real client method
+            result = super().list(prefix, options)
+            if (options or {}).get("offset", 0) == 0:
+                # Sorts before every seeded name, so it lands in the range
+                # already fetched and shifts everything after it forward one.
+                self.objects[f"{prefix}v0000_2026-07-06/_cleaned.csv"] = b"x"
+            return result
 
-    client = _RepeatingClient()
-    _seed_children(client, prefix, 150)
+    client = _InsertingMidSweepClient()
+    expected = _seed_children(client, prefix, 150)
     _patch_client(monkeypatch, client)
 
     names = sb.SupabaseStorageBackend().list_prefix(prefix)
 
-    assert len(names) == len(set(names))  # no duplicate survives
+    # The shift re-serves the last name of page 1 at the head of page 2.
+    assert len(names) == len(set(names)), "a duplicate survived de-duplication"
+    # ... and collapsing it must not cost a real child: every seeded name is
+    # still present. Without this, the test passes even when an entry vanishes
+    # at the seam, which is the failure mode that actually matters.
+    assert set(names) == set(expected)
+    assert len(names) == 150
+
+
+def test_supabase_list_prefix_client_error_mid_sweep_propagates_unwrapped(monkeypatch):
+    """A client error on page 2 stays raw — it must not become a listing error.
+
+    The typed `StorageListingError` means "deterministic, do not retry", and
+    `SupabaseResultStore.commit` keys its do-not-retry branch off it. A network
+    blip mid-sweep is the opposite: retryable. Pagination adds round-trips, so
+    it widens the window for exactly this, and page 1 alone would not have
+    covered the multi-request case.
+    """
+    prefix = "bloommcp_output/qc_x/"
+
+    class _FailsOnSecondPageClient(_FakeSbStorageClient):
+        def list(self, prefix, options=None):  # mirrors the real client method
+            if (options or {}).get("offset", 0):
+                raise RuntimeError("network down mid-sweep")
+            return super().list(prefix, options)
+
+    client = _FailsOnSecondPageClient()
+    _seed_children(client, prefix, 250)  # forces a second request
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(RuntimeError, match="network down mid-sweep") as exc:
+        sb.SupabaseStorageBackend().list_prefix(prefix)
+
+    # Raw type preserved, so commit() keeps classifying it transient/retryable.
+    assert not isinstance(exc.value, sb.StorageBackendError)
 
 
 def test_supabase_list_prefix_raises_when_request_cap_is_exhausted(monkeypatch):
@@ -1255,7 +1295,7 @@ def test_supabase_list_prefix_concurrent_delete_can_skip_is_known_gap(monkeypatc
     skipped = f"v{page + 1:04d}_2026-07-06"
 
     class _DeletingMidSweepClient(_FakeSbStorageClient):
-        def list(self, prefix, options=None):  # noqa: A002 - mirrors the real name
+        def list(self, prefix, options=None):  # mirrors the real client method
             result = super().list(prefix, options)
             if (options or {}).get("offset", 0) == 0:
                 for key in [k for k in self.objects if f"/{deleted}/" in k]:

@@ -86,6 +86,11 @@ _SUPABASE_LIST_PAGE_SIZE = 100
 # plausible growth (~3,000 experiments) rather than snugly. Cost of the slack is
 # bounded: the no-progress check still catches a broken backend on request two,
 # so a large cap cannot turn a pathological server into a long stall.
+#
+# This is a mitigation, not a structural fix -- the root prefix is still one flat
+# un-scoped namespace whose sweeps are all-or-nothing across tenants. Tracked in
+# #919 (partition the key layout, index instead of enumerate, or scope the
+# sweeps); this constant is the knob until then.
 _SUPABASE_LIST_MAX_PAGES = 500
 
 

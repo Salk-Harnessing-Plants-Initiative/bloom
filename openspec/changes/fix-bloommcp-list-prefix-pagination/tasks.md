@@ -157,6 +157,33 @@ appends its own section there, and the file already has two sections numbered `9
       delegating helper). Correct the 1.5 parametrization count to the four prefixes the test
       actually sweeps.
 
+## 5. PR re-review follow-ups (eberrigan, #854, round 2)
+
+- [x] 5.1 Strengthen `test_supabase_list_prefix_deduplicates_across_page_boundary`: it asserted
+      only `len(names) == len(set(names))`, which passes even when a real child vanishes at the
+      seam. Confirmed by tracing the old fake — with 150 children it returned 149, all unique,
+      dropping `v0150`, because injecting a duplicate via `[last] + page[:-1]` *displaces* an
+      entry. Replaced with an honest race model (a concurrent insert behind the cursor shifts
+      the tail forward, re-serving page 1's last name) and added completeness assertions
+      (`set(names) == set(expected)`, `len(names) == 150`). Mutation-checked both directions:
+      disabling de-duplication fails on 151 vs 150, and dropping one child fails the
+      completeness assertion while the no-duplicates assertion still passes — i.e. the exact
+      blind spot the review identified.
+- [x] 5.2 `test_supabase_list_prefix_client_error_mid_sweep_propagates_unwrapped`: a raw client
+      exception on page 2 (not just page 1) must keep its own type, so commit's transient
+      classification still applies. Asserts `not isinstance(exc, StorageBackendError)`.
+- [x] 5.3 File the tracking issue the shared-root deferral lacked: **#919**. Cross-referenced
+      from `_SUPABASE_LIST_MAX_PAGES`'s comment and from `design.md`, so the mitigation is
+      traceable to the structural work from the code itself.
+- [x] 5.4 Drop the `# noqa: A002` on the four test-only `list` overrides. The code was wrong
+      (argument-shadowing, not method-shadowing) and inert — the repo configures no
+      `[tool.ruff]` section, so flake8-builtins is not enabled at all. Replaced with a plain
+      explanatory comment.
+- [x] 5.5 No action on the partial-progress adversarial backend burning up to the cap before
+      failing: the no-progress check is defined on a page contributing *no* new names, and a
+      backend that dribbles one new name per page is pathological rather than a Supabase
+      failure mode. Recorded in `design.md` Risks so the choice is explicit.
+
 ## 3. Verification
 
 - [x] 3.1 RED before GREEN, without interactive stashing: write 1.1–1.5 and 1.7–1.9 and 2.1,

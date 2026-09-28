@@ -106,7 +106,11 @@ something stronger than the deployed backend delivers.
   (~16x the experiment count), and both audit sweeps run over exactly it — so a snug cap would
   eventually hard-fail every tenant's audit at once. Slack is cheap here precisely because the
   cap is not the guard that catches broken backends; the no-progress check does that on request
-  two, so a large cap cannot convert a pathological server into a long stall.
+  two, so a large cap cannot convert a pathological server into a long stall. This is explicitly
+  a mitigation rather than a structural fix — the root prefix remains one flat un-scoped
+  namespace whose sweeps are all-or-nothing across tenants — so the deferral is tracked in
+  **#919** rather than left in this document, matching how the other deferrals here (#498,
+  #585/#593) each carry their own issue.
 - **Decision: raise the two synthetic failures as a distinct `StorageListingError`, and do not
   wrap raw client errors in it.** `SupabaseResultStore.commit` classifies failures for retry,
   and its default is "(transient — retry)". Both pagination failures are deterministic — the
@@ -155,6 +159,13 @@ something stronger than the deployed backend delivers.
   `test_supabase_list_prefix_concurrent_delete_can_skip_is_known_gap` pins it so a future change
   that accidentally alters the behavior has to confront it. This is why the spec's completeness
   claim is scoped to the client's default page limit rather than stated absolutely.
+- **A backend that dribbles progress defeats the early check, not the bound.** The no-progress
+  guard fires on a page contributing *no* new names, so an adversarial backend returning one
+  new name per page burns the full request budget before failing rather than stopping at the
+  theoretical minimum of two requests. Accepted: that is a pathological or malicious server,
+  not a Supabase Storage failure mode, and tightening the check (say, "fewer than N new names")
+  would risk false-positives against a legitimately racing prefix. The bound still terminates
+  it.
 - **More round-trips for large prefixes** (one per 100 entries) → accepted; `list_prefix` is
   called on manifest-existence checks and audit sweeps, not per-row, and the alternative is a
   wrong answer.
