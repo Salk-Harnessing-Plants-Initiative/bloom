@@ -1,4 +1,4 @@
-"""Tests for the shared `cyl` machine-readable output renderer."""
+"""Tests for the shared machine-readable output renderer."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import json
 import click
 import pytest
 
-from bloomctl.cyl._output import render, resolve_output_format
+from bloomctl._output import render, resolve_output_format
 
 
 def test_resolve_output_format_selection_and_alias():

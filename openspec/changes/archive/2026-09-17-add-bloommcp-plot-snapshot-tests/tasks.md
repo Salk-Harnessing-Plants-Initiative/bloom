@@ -266,3 +266,15 @@ verified on only one of the 5 plot types.
   sweep** (`uv run --frozen --extra test pytest tests/ -m "not integration and not
   live_smoke"`, 1385 passed) — confirmed green, including the previously-leaking tests,
   before pushing.
+
+## Before archiving this change
+
+- [ ] **Correct the baseline count first.** This change's spec requires 5 baseline PNGs for 5
+      plotting tools (`specs/bloommcp-plot-snapshot-testing/spec.md`, "Baseline Coverage For The
+      5 Plotting Tools"). bloom#462 has since retired `plot_heritability_bar` and
+      `plot_variance_decomposition` into `heritability_analysis`, which persists through
+      `ResultStore` rather than `PLOTS_DIR`; `tests/fixtures/plot_baselines/` now holds 3
+      baselines, and `test_viz_snapshot.py`'s `_SNAPSHOT_TOOLS` covers 3 tools. Archiving as-is
+      writes a knowingly-false requirement into `openspec/specs/`. Noticed while reviewing
+      `add-bloommcp-correlation-cell-oracle` (#768), which touches the same capability but
+      correctly left this to the change that owns it.
