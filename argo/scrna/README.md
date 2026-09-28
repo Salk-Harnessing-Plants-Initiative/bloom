@@ -12,11 +12,11 @@ argo/scrna/
 │   ├── qc_report.py            installed as qc-report: writes README.md for the QC folder
 │   ├── run-qc.sh               installed as run-qc: downloads one sample, runs fastq-qc and FastQC, uploads the report
 │   ├── fastq-qc-template.yaml  WorkflowTemplate with the fastq-qc step
-│   └── fastq-qc-workflow.yaml  QC for a list of samples in parallel
+│   └── fastq-qc-workflow.yaml  QC only, for a list of samples: a quick look before counting
 └── cellranger/                 then: cellranger count
     ├── run-count.sh            installed as run-count: one sample from S3 through cellranger count and back
-    ├── cellranger-count-template.yaml   WorkflowTemplate with the count and testrun steps
-    ├── cellranger-count-workflow.yaml   count for a list of samples in parallel
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (stage → qc → count → cleanup), stage-reference, testrun
+    ├── cellranger-count-workflow.yaml   stage the reference once, then the sample pipeline for a list of samples in parallel
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 ```
 
@@ -39,8 +39,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-1 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-1
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
@@ -57,6 +57,7 @@ gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq
 export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml
 argo template create argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
 argo template create argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-lab
+# after editing a template: kubectl replace -f <template file> -n runai-busch-lab
 argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p samples='["sample_a","sample_b"]' --watch
 argo submit argo/scrna/cellranger/cellranger-testrun-workflow.yaml -n runai-busch-lab --watch
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
@@ -67,7 +68,7 @@ Steps run under `priorityClassName: high` (non-preemptible) and retry up to twic
 
 ## QC and chemistry
 
-Run the QC workflow before counting. `runs_output/<sample>/qc/` then holds:
+The count workflow runs each sample as four pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once `_SUCCESS` is written. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. A sample that already has `_SUCCESS` skips all four. The QC workflow runs QC alone, for a look at the reads before committing to a count. Either way, `runs_output/<sample>/qc/` holds:
 
 - `fastq_stats.tsv`: reads and min/mean/max length for every FASTQ.
 - `qc_summary.json`: total read pairs, R1/R2 lengths, the FASTQ prefix to pass as `--sample`, the chemistry guess and each barcode list's score.
@@ -81,4 +82,4 @@ Cell Ranger itself runs with `--chemistry auto`. After each count, `run-count` c
 
 ## Scratch storage
 
-`/work` is an `emptyDir`, deleted when the pod ends. A retry or rerun downloads the reads and reference from S3 again and starts Cell Ranger from the beginning; finished samples are still skipped through `_SUCCESS`. Pointing `/work` at a ReadWriteMany PVC in the project keeps downloads between runs and lets Cell Ranger resume; `run-count` needs no change for that.
+The count workflow's pods mount `/hpi/hpi_dev/users/bfernando/scrna` (NFS, mounted on every GPU node, `hostPath` with `type: Directory`). Staged reads and references survive retries, so a retried step never downloads them again; the run folder is deleted after success and kept after a failure. Cell Ranger's own working folder needs symlinks, which the share does not support, so it lives on the count pod's `emptyDir` and a retried count restarts Cell Ranger from the staged files. If count fails, its log and Cell Ranger's errors are uploaded to `runs_output/<run-id>/logs/count.log`. The share is readable by every pod on the cluster, so reads sit there only while a run is in progress. The QC-only workflow and `testrun` use an `emptyDir` deleted with the pod.

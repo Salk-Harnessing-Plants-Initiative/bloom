@@ -1,4 +1,5 @@
 # Register once: argo template create argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-lab
+# After changes: kubectl replace -f argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-lab
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -36,7 +37,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-1
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
         command: [run-qc]
         env:
           - name: SAMPLE

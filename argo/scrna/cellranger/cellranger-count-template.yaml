@@ -1,4 +1,10 @@
 # Register once: argo template create argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
+# After changes: kubectl replace -f argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
+#
+# Every step mounts the same NFS folder at /shared:
+#   /shared/ref/<reference>/  references, downloaded once and kept
+#   /shared/runs/<run-id>/    one sample's reads and QC files, deleted after success
+# The share does not support symlinks, so Cell Ranger's working folder is the count pod's own /work.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -7,8 +13,8 @@ metadata:
     project: busch-lab
 spec:
   templates:
-    # One sample: S3 reads + reference -> cellranger count -> runs_output/<run-id>/
-    - name: count
+    # One sample: stage -> qc -> count -> cleanup. Skips everything if the run already finished.
+    - name: sample-pipeline
       inputs:
         parameters:
           - name: sample
@@ -20,6 +26,251 @@ spec:
             value: "64Gi"
           - name: mem-gb
             value: "60"
+      dag:
+        tasks:
+          - name: stage
+            template: stage-sample
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: qc
+            template: qc
+            depends: stage
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: count
+            template: count
+            depends: qc
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: reference
+                  value: "{{inputs.parameters.reference}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: cores
+                  value: "{{inputs.parameters.cores}}"
+                - name: memory
+                  value: "{{inputs.parameters.memory}}"
+                - name: mem-gb
+                  value: "{{inputs.parameters.mem-gb}}"
+          - name: cleanup
+            template: cleanup
+            depends: count
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+
+    # Once per workflow: stage the reference at /shared/ref/<reference>/, or reuse it if already there.
+    - name: stage-reference
+      inputs:
+        parameters:
+          - name: reference
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            case "${REFERENCE}" in
+              ""|.|..|*/*) echo "ERROR: bad reference name '${REFERENCE}'"; exit 3 ;;
+            esac
+            ref="/shared/ref/${REFERENCE}"
+            # References never change once uploaded, so a staged copy is reused as-is.
+            if [ -f "${ref}/reference.json" ]; then
+              echo "Reference ${REFERENCE} already staged at ${ref}; nothing to download."
+              exit 0
+            fi
+            tmp="/shared/ref/.partial-${REFERENCE}-${WORKFLOW_NAME}"
+            rm -rf -- "${tmp}"
+            mkdir -p "${tmp}"
+            aws s3 sync "s3://bloomv2-workflows/reference_genome/${REFERENCE}/" "${tmp}/"
+            # sync from a missing prefix copies nothing and still exits 0
+            if [ ! -f "${tmp}/reference.json" ]; then
+              echo "ERROR: no Cell Ranger reference at s3://bloomv2-workflows/reference_genome/${REFERENCE}/ (expected reference.json)"
+              rm -rf -- "${tmp}"
+              exit 3
+            fi
+            # Publish with one rename so a half-copied reference never looks complete.
+            if [ -f "${ref}/reference.json" ]; then
+              echo "Reference ${REFERENCE} was staged by another run meanwhile; keeping that copy."
+              rm -rf -- "${tmp}"
+            else
+              rm -rf -- "${ref}"
+              mv -- "${tmp}" "${ref}"
+              echo "Reference ${REFERENCE} staged at ${ref}"
+            fi
+        env:
+          - name: REFERENCE
+            value: "{{inputs.parameters.reference}}"
+          - name: WORKFLOW_NAME
+            value: "{{workflow.name}}"
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "2", memory: 4Gi}
+          limits: {cpu: "2", memory: 4Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Create /shared/runs/<run-id>/ and download the reads; outputs done=true if the run already finished.
+    - name: stage-sample
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+      outputs:
+        parameters:
+          - name: done
+            valueFrom:
+              path: /tmp/done
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            if aws s3 ls "s3://bloomv2-workflows/runs_output/${RUN_ID}/_SUCCESS" >/dev/null 2>&1; then
+              echo "Already done: runs_output/${RUN_ID}/_SUCCESS exists, nothing to do."
+              echo true > /tmp/done
+              exit 0
+            fi
+            mkdir -p "/shared/runs/${RUN_ID}/fastq/${SAMPLE}"
+            aws s3 sync "s3://bloomv2-workflows/raw_reads/${SAMPLE}/" "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"
+            # sync from a missing prefix copies nothing and still exits 0
+            if ! ls "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"*.fastq.gz >/dev/null 2>&1; then
+              echo "ERROR: no FASTQs at s3://bloomv2-workflows/raw_reads/${SAMPLE}/"
+              exit 4
+            fi
+            echo false > /tmp/done
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "2", memory: 4Gi}
+          limits: {cpu: "2", memory: 4Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # QC on the staged reads (run-qc's download finds them already there); uploads runs_output/<run-id>/qc/.
+    - name: qc
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: OnError
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        command: [run-qc]
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: CORES
+            value: "4"
+          - name: WORK_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}"
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "4", memory: 8Gi}
+          limits: {cpu: "4", memory: 8Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # cellranger count on the staged reads and shared reference; working files on the pod's own disk.
+    - name: count
+      inputs:
+        parameters:
+          - name: sample
+          - name: reference
+          - name: run-id
+          - name: cores
+          - name: memory
+          - name: mem-gb
       schedulerName: runai-scheduler
       # CPU and memory come from parameters, so they are set when the pod starts, not at registration.
       podSpecPatch: |
@@ -37,8 +288,10 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
+        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-1
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
         command: [run-count]
         env:
           - name: SAMPLE
@@ -51,6 +304,12 @@ spec:
             value: "{{inputs.parameters.cores}}"
           - name: MEM_GB
             value: "{{inputs.parameters.mem-gb}}"
+          - name: WORK_DIR
+            value: /work
+          - name: FASTQ_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}/fastq/{{inputs.parameters.sample}}"
+          - name: REF_DIR
+            value: "/shared/ref/{{inputs.parameters.reference}}"
           - name: AWS_DEFAULT_REGION
             value: us-west-2
           - name: AWS_ACCESS_KEY_ID
@@ -64,19 +323,59 @@ spec:
                 name: genericsecret-bloomv2-s3
                 key: AWS_SECRET_ACCESS_KEY
         volumeMounts:
+          - name: shared
+            mountPath: /shared
           - name: work
             mountPath: /work
       volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
         - name: work
           emptyDir:
             sizeLimit: 500Gi
+
+    # Delete /shared/runs/<run-id>/ after a successful count; results and raw reads stay in S3.
+    - name: cleanup
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            case "${RUN_ID}" in
+              ""|.|..|*/*) echo "refusing to delete: bad run id '${RUN_ID}'"; exit 1 ;;
+            esac
+            target="/shared/runs/${RUN_ID}"
+            if [ -d "${target}" ]; then rm -rf -- "${target}"; fi
+            echo "removed ${target}"
+        env:
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+        resources:
+          requests: {cpu: "0.5", memory: 512Mi}
+          limits: {cpu: "0.5", memory: 512Mi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
 
     # Smoke test: bundled tiny dataset, no reads or reference needed.
     - name: testrun
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-1
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
         command: [bash, -c]
         args:
           - |

@@ -25,10 +25,19 @@ spec:
     - name: main
       dag:
         tasks:
-          - name: count
+          - name: stage-reference
             templateRef:
               name: cellranger-count-template
-              template: count
+              template: stage-reference
+            arguments:
+              parameters:
+                - name: reference
+                  value: "{{workflow.parameters.reference}}"
+          - name: sample
+            depends: stage-reference
+            templateRef:
+              name: cellranger-count-template
+              template: sample-pipeline
             withParam: "{{workflow.parameters.samples}}"
             arguments:
               parameters:
