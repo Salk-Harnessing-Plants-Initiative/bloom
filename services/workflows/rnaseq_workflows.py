@@ -1,10 +1,10 @@
 """
 RNA-seq workflow types the rnaseq worker dispatches to Argo.
 
-Each type names its claim/complete/fail database functions and builds the Workflow
-body for one claimed run. Every claim returns at least `run_id` and `msg_id`;
-complete takes (p_run_id, p_msg_id, p_argo_workflow_name) and fail takes
-(p_run_id, p_msg_id, p_message).
+Every type's runs share the rnaseq_runs table and the rnaseq_dispatch queue, so the
+worker claims, completes and fails them with the same three database functions. A
+type only says how to build the Argo Workflow for one claimed run, which carries
+`run_id`, `workflow_type`, `params`, `run_key` and `msg_id`.
 """
 
 import hashlib
@@ -16,12 +16,16 @@ import k8s_client
 from k8s_client import K8sConfigError
 
 
+# The shared dispatch functions from the rnaseq_runs migration.
+CLAIM_FN = "claim_rnaseq_run"
+COMPLETE_FN = "complete_rnaseq_run"
+FAIL_FN = "fail_rnaseq_run"
+
+
 @dataclass(frozen=True)
 class WorkflowType:
+    # The rnaseq_runs.workflow_type value this entry handles.
     name: str
-    claim_fn: str
-    complete_fn: str
-    fail_fn: str
     build_body: Callable[[dict], dict]
 
 
@@ -75,8 +79,8 @@ def build_cellranger_body(run: dict) -> dict:
             "ttlStrategy": {"secondsAfterCompletion": k8s_client.TTL_SECONDS},
             "arguments": {
                 "parameters": [
-                    {"name": "sample", "value": run["sample"]},
-                    {"name": "reference", "value": run["reference"]},
+                    {"name": "sample", "value": run["params"]["sample"]},
+                    {"name": "reference", "value": run["params"]["reference"]},
                     {"name": "run-id", "value": run["run_key"]},
                 ]
             },
@@ -132,12 +136,7 @@ def build_cellranger_body(run: dict) -> dict:
     }
 
 
-CELLRANGER = WorkflowType(
-    name="scrna-cellranger",
-    claim_fn="claim_scrna_cellranger_run",
-    complete_fn="complete_scrna_cellranger_run",
-    fail_fn="fail_scrna_cellranger_run",
-    build_body=build_cellranger_body,
-)
+CELLRANGER = WorkflowType(name="scrna-cellranger", build_body=build_cellranger_body)
 
-WORKFLOW_TYPES: tuple[WorkflowType, ...] = (CELLRANGER,)
+# Keyed by workflow_type; a claimed run of a type missing here is failed.
+WORKFLOW_TYPES: dict[str, WorkflowType] = {wf.name: wf for wf in (CELLRANGER,)}

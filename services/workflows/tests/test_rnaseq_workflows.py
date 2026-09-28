@@ -17,8 +17,8 @@ MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
 
 RUN = {
     "run_id": 7,
-    "sample": "tinygex",
-    "reference": "tiny_ref",
+    "workflow_type": "scrna-cellranger",
+    "params": {"sample": "tinygex", "reference": "tiny_ref"},
     "run_key": "tinygex__tiny_ref__00000000-0000-0000-0000-000000000001",
     "msg_id": 12,
 }
@@ -168,15 +168,22 @@ def test_each_step_passes_exactly_the_templates_required_inputs(step):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_registered_functions_exist_in_a_migration():
+def test_the_shared_dispatch_functions_exist_in_a_migration():
     sql = "\n".join(p.read_text() for p in sorted(MIGRATIONS.glob("*.sql")))
-    for fn in (
-        wfs.CELLRANGER.claim_fn,
-        wfs.CELLRANGER.complete_fn,
-        wfs.CELLRANGER.fail_fn,
-    ):
+    for fn in (wfs.CLAIM_FN, wfs.COMPLETE_FN, wfs.FAIL_FN):
         assert re.search(rf"CREATE OR REPLACE FUNCTION public\.{fn}\(", sql), fn
 
 
+def test_every_registered_type_is_allowed_by_the_runs_table():
+    sql = "\n".join(p.read_text() for p in sorted(MIGRATIONS.glob("*.sql")))
+    checks = re.findall(
+        r"rnaseq_runs_workflow_type_check\s+CHECK \(workflow_type IN \(([^)]*)\)\)",
+        sql,
+    )
+    assert checks, "no rnaseq_runs_workflow_type_check in the migrations"
+    allowed = set(re.findall(r"'([^']+)'", checks[-1]))
+    assert set(wfs.WORKFLOW_TYPES) <= allowed
+
+
 def test_cellranger_is_the_one_registered_type():
-    assert wfs.WORKFLOW_TYPES == (wfs.CELLRANGER,)
+    assert wfs.WORKFLOW_TYPES == {"scrna-cellranger": wfs.CELLRANGER}

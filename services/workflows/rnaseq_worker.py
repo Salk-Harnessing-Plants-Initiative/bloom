@@ -1,14 +1,15 @@
 """
 RNA-seq dispatch worker.
 
-For each workflow type in rnaseq_workflows.WORKFLOW_TYPES, claims the next queued run,
-submits its Argo Workflow through k8s_client, and records the outcome with the type's
-complete or fail function. Runs as the bloom_workflows app user.
+Claims the next queued run of any type from the shared rnaseq_dispatch queue, builds
+its Argo Workflow with the entry for its workflow_type in rnaseq_workflows, submits it
+through k8s_client, and records it as submitted or failed. Runs as the bloom_workflows
+app user.
 
 Deploy: a container off the workflows image with `command: python rnaseq_worker.py`.
 
 Env:
-    WORKFLOWS_WORKER_POLL_SECONDS  idle sleep when no type had a run (default 5)
+    WORKFLOWS_WORKER_POLL_SECONDS  idle sleep when the queue is empty (default 5)
     WORKFLOWS_DISPATCH_VT_SECONDS  seconds a claimed run is hidden (default 60)
     WORKFLOWS_DISPATCH_MAX_READS   deliveries before a run is failed (default 5)
 """
@@ -25,7 +26,7 @@ from k8s_client import (
     submit_workflow,
 )
 from pipeline_queue import MAX_READS, VISIBILITY_TIMEOUT
-from rnaseq_workflows import WORKFLOW_TYPES, WorkflowType
+from rnaseq_workflows import CLAIM_FN, COMPLETE_FN, FAIL_FN, WORKFLOW_TYPES
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
 
@@ -51,44 +52,84 @@ def _stop(signum, _frame):
     _running = False
 
 
-def _claim(client, wf: WorkflowType) -> dict | None:
+def _claim(client) -> dict | None:
     rows = (
-        client.rpc(wf.claim_fn, {"p_vt": VISIBILITY_TIMEOUT, "p_max_reads": MAX_READS})
+        client.rpc(CLAIM_FN, {"p_vt": VISIBILITY_TIMEOUT, "p_max_reads": MAX_READS})
         .execute()
         .data
     )
     return rows[0] if rows else None
 
 
-def _complete(client, wf: WorkflowType, run: dict, workflow_name: str) -> None:
-    client.rpc(
-        wf.complete_fn,
-        {
-            "p_run_id": run["run_id"],
-            "p_msg_id": run["msg_id"],
-            "p_argo_workflow_name": workflow_name,
-        },
-    ).execute()
+def _complete(client, run: dict, workflow_name: str) -> bool:
+    """Returns False if the run had already moved past queued."""
+    return (
+        client.rpc(
+            COMPLETE_FN,
+            {
+                "p_run_id": run["run_id"],
+                "p_msg_id": run["msg_id"],
+                "p_argo_workflow_name": workflow_name,
+            },
+        )
+        .execute()
+        .data
+    )
 
 
-def _fail(client, wf: WorkflowType, run: dict, message: str) -> None:
-    client.rpc(
-        wf.fail_fn,
-        {"p_run_id": run["run_id"], "p_msg_id": run["msg_id"], "p_message": message},
-    ).execute()
+def _fail(client, run: dict, message: str) -> bool:
+    """Returns False if the run had already moved past queued."""
+    return (
+        client.rpc(
+            FAIL_FN,
+            {
+                "p_run_id": run["run_id"],
+                "p_msg_id": run["msg_id"],
+                "p_message": message,
+            },
+        )
+        .execute()
+        .data
+    )
 
 
-def process_one(client, wf: WorkflowType) -> bool:
-    """Claim and dispatch one run of `wf`. Returns True if a run was claimed."""
+def _fail_logged(client, run: dict, message: str) -> None:
+    """Records a failure; if that call errors, the run comes back later."""
     try:
-        run = _claim(client, wf)
+        _fail(client, run, message)
     except Exception as exc:
-        logger.warning("rnaseq_worker: %s claim failed: %s", wf.name, exc)
+        logger.error(
+            "rnaseq_worker: run %s failed (%s) and recording it also failed; "
+            "it will come back: %s",
+            run["run_id"],
+            message,
+            exc,
+        )
+
+
+def process_one(client) -> bool:
+    """Claim and dispatch one run. Returns True if a run was claimed."""
+    try:
+        run = _claim(client)
+    except Exception as exc:
+        logger.warning("rnaseq_worker: claim failed: %s", exc)
         return False
     if not run:
         return False
 
     run_id = run["run_id"]
+    wf = WORKFLOW_TYPES.get(run["workflow_type"])
+    if wf is None:
+        # A type the database accepts but this worker version does not know.
+        logger.error(
+            "rnaseq_worker: run %s has unhandled workflow type %r",
+            run_id,
+            run["workflow_type"],
+        )
+        _fail_logged(
+            client, run, f"workflow type {run['workflow_type']!r} is not supported"
+        )
+        return True
     logger.info("rnaseq_worker: claimed %s run %s", wf.name, run_id)
 
     try:
@@ -116,24 +157,26 @@ def process_one(client, wf: WorkflowType) -> bool:
         logger.warning(
             "rnaseq_worker: %s run %s submission failed: %s", wf.name, run_id, exc
         )
-        try:
-            _fail(client, wf, run, SUBMISSION_FAILED)
-        except Exception as fail_exc:
-            logger.error(
-                "rnaseq_worker: %s run %s failed and recording it also failed; "
-                "it will come back: %s",
-                wf.name,
-                run_id,
-                fail_exc,
-            )
+        _fail_logged(client, run, SUBMISSION_FAILED)
         return True
 
     # The Workflow exists now, so an error here must never mark the run failed.
     try:
-        _complete(client, wf, run, workflow_name)
-        logger.info(
-            "rnaseq_worker: submitted %s run %s as %s", wf.name, run_id, workflow_name
-        )
+        if _complete(client, run, workflow_name):
+            logger.info(
+                "rnaseq_worker: submitted %s run %s as %s",
+                wf.name,
+                run_id,
+                workflow_name,
+            )
+        else:
+            logger.warning(
+                "rnaseq_worker: %s run %s was submitted as %s but had already "
+                "moved past queued",
+                wf.name,
+                run_id,
+                workflow_name,
+            )
     except Exception as exc:
         logger.error(
             "rnaseq_worker: %s run %s submitted as %s but recording it failed; "
@@ -144,16 +187,6 @@ def process_one(client, wf: WorkflowType) -> bool:
             exc,
         )
     return True
-
-
-def process_all(client) -> bool:
-    """One pass over every workflow type. Returns True if any run was claimed."""
-    handled = False
-    for wf in WORKFLOW_TYPES:
-        if not _running:
-            break
-        handled = process_one(client, wf) or handled
-    return handled
 
 
 def _connect_with_retry():
@@ -182,11 +215,11 @@ def run():
     logger.info(
         "rnaseq worker started (poll=%ss, types=%s)",
         POLL_INTERVAL,
-        ", ".join(wf.name for wf in WORKFLOW_TYPES),
+        ", ".join(WORKFLOW_TYPES),
     )
     while _running:
         try:
-            handled = process_all(client)
+            handled = process_one(client)
         except Exception as exc:
             logger.exception("rnaseq_worker: loop error, reconnecting: %s", exc)
             time.sleep(POLL_INTERVAL)
