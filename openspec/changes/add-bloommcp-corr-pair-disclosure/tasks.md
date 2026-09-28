@@ -309,3 +309,39 @@ One blocking item (the PR description, not the code), two "important", two sugge
       third uncapped name-list in the manifest, with the worst-case sizes and the reason a
       fix should bound the manifest tier as a whole rather than this field alone. The code
       comment at the stamping site says the same and points at #837.
+
+## 8. #833 review round 3 (APPROVED, no blocking) — applied
+
+- [x] 8.1 **Important — the fix is tool-specific and the scope was never stated.**
+      `cross_experiment_correlations` makes a similar-sounding claim with no per-pair
+      evidence in its result, and Decision 6 named #747/#748 but not it. Added design.md
+      **Decision 11**, with one correction to the finding: that tool is not silent on sample
+      size — its delegate emits per-pair `n_samples`/`n_genotypes` and the tool persists them
+      in `correlations.csv` plus both genotype-means tables (its own D12). What is
+      aggregate-only is its MCP *result model*. It also does real significance testing with
+      FDR correction, so porting a Fisher-z interval there would put a weaker per-pair
+      statement beside a stronger one. CIs there are already deferred upstream
+      (talmolab/sleap-roots-analyze#205), so no new issue — the gap was discoverability, and
+      the decision plus a PR-body scope note closes it.
+- [x] 8.2 **Important — the PNG cannot show evidence strength.** Correctly distinguished
+      from #747 (there the cell is degenerate and there is something to mask; here the
+      coefficient is valid and the cell is honestly colored). Added design.md **Decision 12**
+      and filed **#920**, which proposes the cheapest fix that needs no cell geometry and
+      does not rewrite `heatmap_caveat`'s existing text: a second footnote line driven by
+      `strong_pair_overlap_min`. Not fixed in this PR — widening the caveat's *meaning* is a
+      larger contract change than Decision 4 already declined to make on its *trigger*.
+- [x] 8.3 **Suggestion — `_fisher_ci` boundary coverage.** Added a 7-case parametrization
+      (n=3, n=2, n=0, r=+1, r=-1, |r|>1, r=NaN) plus a sign-symmetry test. Previously only
+      the positive arm of each guard was exercised.
+- [x] 8.4 **Suggestion — typed model, flagged in all three rounds.** Held, but the reasoning
+      moved from `tasks.md` to a comment **at the field itself**, so it stops being
+      re-litigated from the asymmetry alone. The split is name-lists vs record-lists:
+      this field and `low_overlap_trait_pairs` carry identical payloads and are iterated
+      interchangeably, and the latter cannot be retyped without breaking callers.
+- [x] 8.5 **Suggestion — `_MAX_CAVEAT_NAMES` not a stamped constant.** Pre-existing and out
+      of scope, as the review notes; folded into #920, which is where the footnote logic
+      would be touched anyway.
+- [x] 8.6 **Suggestion — #840 rebase check.** Nothing to change: the docstring makes no
+      claim about #768 either way by design. Whichever of #833/#840 merges second resolves a
+      real textual conflict (they overlap on the `heatmap_caveat` paragraph, which #840
+      branched before), so the check is forced rather than relied on.

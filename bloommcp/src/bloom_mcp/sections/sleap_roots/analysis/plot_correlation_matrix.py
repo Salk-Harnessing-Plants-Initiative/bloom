@@ -518,6 +518,17 @@ class PlotCorrelationMatrixResult(RunLinks):
         "produce a spurious exact +/-1.0 'strong correlation'. Excludes any pair already "
         "explained by zero_variance_traits. Empty when every pair had enough overlap.",
     )
+    # list[list[str]], NOT a typed model like StrongCorrelationPair — a settled decision,
+    # raised and held across three review rounds (#784/#785 reviews 1-3), recorded here so
+    # the next reader does not have to re-litigate it from the asymmetry alone.
+    #
+    # The split is between NAME-lists and RECORD-lists, not an oversight. This field and
+    # low_overlap_trait_pairs carry the same payload — two trait names — and callers
+    # iterate them interchangeably; low_overlap_trait_pairs predates this change and cannot
+    # be retyped without breaking them, so making only the new one a model would fork two
+    # fields that are otherwise identical in shape and meaning. StrongCorrelationPair is a
+    # model because it carries four heterogeneous fields that need names. Wrapping a pair of
+    # strings in a single-field model buys nothing but JSON verbosity.
     locally_constant_trait_pairs: list[list[str]] = Field(
         default_factory=list,
         description="The third and final reason a heatmap cell can be blank (#785): the "

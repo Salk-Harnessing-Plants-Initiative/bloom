@@ -432,3 +432,71 @@ negligible, and still the right call; the number is simply the honest one. Repea
 same machine land between 3.9% and 4.2%, so the figure is quoted as "about 4%" rather than to
 two significant figures — and absolute seconds do not reproduce across machines at all (the
 benchmark says so in its own header). The ratio is the part that carries.
+
+### Decision 11 — Why `cross_experiment_correlations` does not get the same treatment
+
+Raised in the #833 review round 3: a scientist who learns to trust `overlap_n`/`ci_low`/
+`ci_high` on this tool has no equivalent on `cross_experiment_correlations`, a sibling in the
+same folder that also reports "significant"/"highly significant" correlations — and Decision 6
+scopes out #747 and #748 by name while never mentioning it. The recommendation (a scope note
+rather than a fix) is right, and this is it. One factual correction first, because it narrows
+what is actually missing.
+
+**The sibling is not silent on sample size.** Its delegate emits per-pair `n_samples` and
+`n_genotypes` alongside `correlation` and `p_value`, and this tool persists that frame as
+`correlations.csv`, plus both experiments' full genotype-means tables (with per-genotype
+`n_samples` post-`min_samples` filter) specifically so a surprising correlation can be audited
+— that is its design.md D12. What is aggregate-only is its **MCP result model**
+(`n_correlations`, `n_significant`, `n_highly_significant`); the per-pair evidence is one tier
+down, in the persisted CSV, not absent.
+
+**The two tools make different claims, so symmetry would be the wrong goal.**
+`cross_experiment_correlations` performs actual significance testing with FDR correction
+(`p_value`, `p_value_corrected`, `significant_fdr`). This tool explicitly does **not** — its
+counts are "coefficients past a fixed magnitude cutoff", and the whole point of #784 is that
+such a count is not a finding. Porting a Fisher-z interval onto a tool that already reports
+corrected p-values would add a *weaker* per-pair statement beside a stronger one, which is
+more likely to mislead than to help.
+
+**Confidence intervals there are already deferred, upstream.** That tool's own docstring lists
+`calculate_correlation_confidence_intervals` in its out-of-scope set, tied to
+talmolab/sleap-roots-analyze#205 — the same upstream issue as its `min_samples` no-op. So the
+capability is tracked; what was missing is a pointer from this change saying the asymmetry is
+known rather than accidental.
+
+**Decision:** no code change to the sibling, no new issue (#205 already holds the CI half). The
+gap is a discoverability one and is closed by this decision plus the PR body's scope note. If
+the sibling's per-pair evidence should be promoted from CSV into its result model, that is a
+change to *that* tool's contract and belongs in its own proposal.
+
+### Decision 12 — The rendered PNG still cannot show evidence strength, and that is deferred
+
+Also raised in round 3, and correctly distinguished from #747. #747 is about cells that are
+*degenerate* — `NaN` from zero variance or too little overlap — where there is something to
+mask. This is the opposite case: a pair clears the overlap floor and the magnitude cutoff, the
+coefficient is numerically valid, and the cell is honestly colored — but a coefficient resting
+on n=10 with a 95% interval of [0.13, 0.92] renders identically to one built on n=800. Since
+disclosing evidence strength is this change's entire purpose, the primary visual artifact
+staying silent about it deserves a stated decision rather than silence.
+
+**Not fixed here, for three reasons.**
+
+1. `heatmap_caveat` is the only channel that reaches a PNG-only reader, and its text is the
+   string every existing caller already receives. Decision 4 declined to widen its *trigger*
+   for exactly this reason; widening its *meaning* — from "these cells are degenerate" to
+   "these cells are degenerate **and** those others are thinly supported" — is a larger
+   rewrite of that contract than a same-PR addition should make.
+2. A per-cell visual treatment needs the vendored delegate's exact cell geometry, which is the
+   same blocker #747 documents and the same reason a per-cell hatch was rejected there: a
+   wrong guess marks the wrong cell, which is worse than the current whole-figure footnote.
+3. The JSON now answers the question completely — `strong_correlation_pairs` is ordered
+   weakest-evidence-first precisely so the thinnest support is the first thing a caller sees,
+   and `strong_pair_overlap_min`/`_median`/`_max` describe the whole population uncapped. The
+   gap is confined to readers who open only the PNG.
+
+**Decision:** documented limitation, deferred, and filed as **#920** rather than left in a
+design doc. The cheapest real fix is probably a second footnote line driven by
+`strong_pair_overlap_min` (no cell geometry needed, no change to `heatmap_caveat`'s existing
+text), which is what that issue proposes. #920 also carries the `_MAX_CAVEAT_NAMES` cleanup
+raised in the same round — it is the one threshold in this file still not promoted to a
+stamped, provenance-tracked constant, and the footnote logic is where it would be touched.

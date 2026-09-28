@@ -1878,6 +1878,39 @@ def test_fisher_ci_at_the_smallest_defined_overlap():
     assert plot_correlation_matrix_tool._fisher_ci(0.7, 3) == (None, None)
 
 
+@pytest.mark.parametrize(
+    "r, n",
+    [
+        (0.7, 3),  # n == 3: sqrt(n - 3) is zero, division undefined
+        (0.7, 2),  # n < 3: the radicand itself is negative
+        (0.7, 0),
+        (1.0, 50),  # |r| == 1: arctanh diverges
+        (-1.0, 50),  # the negative arm, which only the +1.0 case covered before
+        (-1.5, 50),  # outside [-1, 1] entirely, should it ever arrive
+        (float("nan"), 50),
+    ],
+)
+def test_fisher_ci_is_null_wherever_the_transform_is_undefined(r, n):
+    """Suggestion (#833 review round 3): the guard is symmetric, but only its positive arm
+    was exercised — n=3 for the overlap side and r=+1.0 for the magnitude side.
+
+    Every one of these must return (None, None) rather than raising, returning a zero-width
+    [r, r], or emitting a non-finite token: `_fisher_ci`'s bounds go straight into the result
+    model and the manifest, and manifests are written with json.dumps' default
+    allow_nan=True, so a NaN or Infinity here becomes invalid JSON rather than an error.
+    """
+    assert plot_correlation_matrix_tool._fisher_ci(r, n) == (None, None)
+
+
+def test_fisher_ci_is_symmetric_under_sign_flip():
+    """The interval for -r must be the mirror of the interval for +r. Pins that the guard
+    and the arithmetic treat both arms alike, which the single-sided tests could not."""
+    lo_pos, hi_pos = plot_correlation_matrix_tool._fisher_ci(0.85, 30)
+    lo_neg, hi_neg = plot_correlation_matrix_tool._fisher_ci(-0.85, 30)
+    assert lo_neg == pytest.approx(-hi_pos, rel=1e-12)
+    assert hi_neg == pytest.approx(-lo_pos, rel=1e-12)
+
+
 def test_field_descriptions_record_the_taxonomy_they_promise():
     """Suggestion (#784 review): the spec requires these descriptions to name specific cases,
     but only the behaviour was asserted — a future edit deleting the sentences kept the suite
