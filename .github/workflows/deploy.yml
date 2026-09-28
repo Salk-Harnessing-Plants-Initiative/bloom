@@ -960,7 +960,8 @@ jobs:
   # older waiting runs lets the newest push through to the approval gate.
   supersede-stale-staging-waits:
     name: Cancel older staging runs awaiting approval
-    if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
+    # Only a run from the staging branch can pass the staging gate, so only it may supersede.
+    if: github.ref == 'refs/heads/staging' && (github.event_name == 'push' || github.event.inputs.environment == 'staging')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -979,9 +980,13 @@ jobs:
             # Production waits are left alone; only the staging gate is superseded.
             envs=$(gh api "repos/$REPO/actions/runs/$id/pending_deployments" \
               --jq '[.[].environment.name] | join(",")')
-            if [[ ",$envs," == *",staging,"* ]]; then
-              gh api -X POST "repos/$REPO/actions/runs/$id/cancel" --silent
-              echo "::notice::Cancelled run $id: it was waiting for staging approval and run $RUN_ID supersedes it"
+            if [[ "$envs" == "staging" ]]; then
+              # A 409 here means the run finished or was approved since the check.
+              if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" --silent; then
+                echo "::notice::Cancelled run $id: it was waiting for staging approval and run $RUN_ID supersedes it"
+              else
+                echo "::warning::Could not cancel run $id; it may have been approved or finished since the check"
+              fi
             fi
           done
 
@@ -1104,13 +1109,15 @@ jobs:
             echo \"Saved previous SHA: \$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')\"
           "
 
-      - name: Pull latest code
+      - name: Check out the commit to deploy
         id: pull_staging
         env:
           # A push deploys its own commit, not whatever staging's tip is by approval time.
           DEPLOY_REF: ${{ github.event_name == 'push' && github.sha || 'origin/staging' }}
         run: |
+          set -o pipefail
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             if ! git diff --quiet || ! git diff --cached --quiet; then
               echo '::error::Working tree is dirty on staging server — deploy aborted'
@@ -1125,16 +1132,24 @@ jobs:
             fi
             BEFORE=\$(git rev-parse HEAD)
             git fetch origin staging
+            # \$DEPLOY_REF is expanded on the runner; a pinned commit must not move staging backwards.
+            if [ '$DEPLOY_REF' != origin/staging ] && ! git merge-base --is-ancestor \"\$BEFORE\" '$DEPLOY_REF'; then
+              echo \"::error::$DEPLOY_REF is not ahead of the deployed commit \$BEFORE — refusing to move staging backwards. Run Deploy manually from the staging branch to redeploy the tip.\"
+              exit 1
+            fi
             git reset --hard '$DEPLOY_REF'
             AFTER=\$(git rev-parse HEAD)
+            [ \"\$AFTER\" = \"\$(git rev-parse '$DEPLOY_REF^{commit}')\" ] \
+              || { echo \"::error::Reset landed on \$AFTER, not $DEPLOY_REF\"; exit 1; }
+            echo \"Deployed \$AFTER (was \$BEFORE)\"
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- volumes/api/kong.yml \
               && echo 'KONGFILE_CHANGED=false' || echo 'KONGFILE_CHANGED=true'
           " | tee /tmp/pull_staging.out
-          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2 || true)
           echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
-          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2 || true)
           echo "kongfile_changed=${kong_changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
