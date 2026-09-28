@@ -24,6 +24,7 @@ from plate_encode import (
     VideoNotStored,
     render_plate_video,
 )
+from video_writer import VideoEncodeError
 from plate_request import MAX_EXPERIMENT_ID, MAX_WAVE_NUMBER, REFUSAL_STATUS
 from supabase_client import app_client
 from video_worker_cli import (
@@ -43,6 +44,11 @@ HOLD = (
 
 # The status the route answers for each of these, so one classification serves
 # both. Subclasses first, as in plate_request's own chain.
+#
+# `PlateMismatch` is the one deliberate divergence: the route answers 500, but
+# its own docstring says there is nothing to repair and nothing to retry — the
+# key and the identity cannot both be right, and they will not become right on
+# a second attempt. A caller reading 500 would retry it forever.
 STATUS_BY_EXCEPTION = (
     (FrameDepthUnsupported, 422),
     (FrameSizeMismatch, 422),
@@ -50,7 +56,9 @@ STATUS_BY_EXCEPTION = (
     (FrameUnreadable, 502),
     (VideoNotStored, 503),
     (NotRecorded, 500),
-    (PlateMismatch, 500),
+    (VideoEncodeError, 500),
+    (BrokenPipeError, 500),
+    (PlateMismatch, 409),
 )
 
 
@@ -67,8 +75,8 @@ def wave(value: str) -> int | None:
 
 
 def experiment(value: str) -> int:
-    """The route's own bounds, so an out-of-range id is refused here rather than
-    overflowing the wave column and reporting itself as a database outage."""
+    """The route's own bounds, so an out-of-range id is refused by name here
+    rather than reaching the database and reporting itself as an outage."""
     number = int(value)
     if number < 1 or number > MAX_EXPERIMENT_ID:
         raise argparse.ArgumentTypeError(

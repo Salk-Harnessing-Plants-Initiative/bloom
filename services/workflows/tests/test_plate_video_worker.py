@@ -4,8 +4,11 @@ seam — no DB, storage or ffmpeg), matching test_dispatch_worker.py's conventio
 import pytest
 
 import plate_video_worker as worker
+import pathlib
+
 from plate_encode import (
     EncoderBusy,
+    FrameUnreadable,
     FrameDepthUnsupported,
     FrameSizeMismatch,
     FrameTooLarge,
@@ -15,6 +18,7 @@ from plate_encode import (
     VideoNotStored,
 )
 from plate_request import MAX_EXPERIMENT_ID, MAX_WAVE_NUMBER
+from video_writer import VideoEncodeError
 
 
 def _argv(*extra):
@@ -220,6 +224,45 @@ def test_a_permanent_refusal_says_do_not_retry(monkeypatch, stub_client, capsys,
     assert capsys.readouterr().out.startswith("refused")
 
 
+def test_a_crossed_plate_identity_is_not_retried(monkeypatch, stub_client, capsys):
+    """The route answers 500, but the key and the identity cannot both be right
+    and will not become right on a second attempt. A caller reading "retry"
+    would loop on it forever."""
+    _stub_render(monkeypatch, raises=PlateMismatch("key names Plate_2"))
+    assert worker.main(_argv("--wave", "13")) == worker.EXIT_REFUSED
+    assert capsys.readouterr().out.startswith("refused")
+
+
+def test_every_exception_the_route_classifies_is_classified_here(monkeypatch):
+    """The table claims to carry the route's own answers. Reading the route's
+    source keeps that true when someone adds a clause to it."""
+    import re
+
+    source = pathlib.Path(worker.__file__).with_name("plate_request.py").read_text()
+    chain = source[source.index("def render(") : source.index("def _read(")]
+    # Each `except X as exc:` and the status of the HTTPException it raises.
+    clauses = re.findall(
+        r"except \(?([A-Za-z, ]+?)\)? as exc:.*?status_code=(\d+)", chain, re.S
+    )
+    routed = {
+        name.strip(): int(status)
+        for names, status in clauses
+        for name in names.split(",")
+    }
+    # Handled by their own branch or deliberately reclassified, with a reason
+    # in the source next to each.
+    exempt = {"EncoderBusy", "PlateMismatch", "HTTPException", "Exception"}
+    table = {kind.__name__: status for kind, status in worker.STATUS_BY_EXCEPTION}
+
+    missing = {
+        name: status
+        for name, status in routed.items()
+        if name not in exempt and table.get(name) != status
+    }
+
+    assert not missing, f"the route classifies these differently: {missing}"
+
+
 @pytest.mark.parametrize(
     "exc",
     [
@@ -244,7 +287,10 @@ def test_a_permanent_frame_problem_is_refused_not_retried(
     "exc",
     [
         VideoNotStored("storage did not answer"),
-        PlateMismatch("refusing to store a crossed identity"),
+        # Bare, not one of its subclasses: a frame that could not be downloaded
+        # or decoded is the transient case this classification exists for.
+        FrameUnreadable("could not download 12/wave-1/P7_3.tif: timeout"),
+        VideoEncodeError("ffmpeg exited -9"),
     ],
 )
 def test_this_service_failing_is_retryable(monkeypatch, stub_client, capsys, exc):
@@ -264,18 +310,22 @@ def test_a_stored_but_unrecorded_video_says_so(monkeypatch, stub_client, capsys)
 def test_the_legal_maximum_wave_and_experiment_are_accepted():
     """The off-by-one the "way too big" cases cannot see."""
     assert worker.wave(str(MAX_WAVE_NUMBER)) == MAX_WAVE_NUMBER
+    assert worker.experiment("1") == 1
     args = worker.parse_args(
         ["render", "--experiment", str(MAX_EXPERIMENT_ID), "--plate", "P1"]
     )
     assert args.experiment == MAX_EXPERIMENT_ID
 
 
-def test_help_exits_zero_and_carries_the_hold():
-    """`--help` is the container's default command, so it is the one surface an
-    operator meets by default."""
+@pytest.mark.parametrize("argv", [["--help"], ["render", "--help"]])
+def test_help_exits_zero_and_carries_the_hold(argv, capsys):
+    """`--help` is the container's default command, and `render --help` is what
+    an operator types before running one, so both have to state the hold."""
     with pytest.raises(SystemExit) as exit_info:
-        worker.parse_args(["--help"])
+        worker.parse_args(argv)
+
     assert exit_info.value.code == 0
+    assert "until the render queue lands" in capsys.readouterr().out
 
 
 def test_the_hold_is_stated_where_help_will_print_it():

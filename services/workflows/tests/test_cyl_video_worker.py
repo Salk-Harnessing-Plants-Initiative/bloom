@@ -119,7 +119,9 @@ def test_the_renderer_declining_exits_refused(
 ):
     _stub_render(monkeypatch, raises=HTTPException(status_code=status, detail=detail))
     assert worker.main(_argv()) == worker.EXIT_REFUSED
-    assert detail in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert out.startswith("refused")
+    assert detail in out
 
 
 @pytest.mark.parametrize(
@@ -139,7 +141,8 @@ def test_this_service_failing_exits_failed_not_refused(
     _stub_render(monkeypatch, raises=HTTPException(status_code=status, detail=detail))
     assert worker.main(_argv()) == worker.EXIT_FAILED
     out = capsys.readouterr().out
-    assert "failed" in out and detail in out
+    assert out.startswith("failed"), "the word must agree with the exit code"
+    assert detail in out
 
 
 def test_refused_is_not_argparse_s_own_exit_code():
@@ -202,7 +205,7 @@ def test_a_failure_after_the_upload_warns_that_the_record_may_disagree(
         raises=HTTPException(status_code=500, detail="Could not create a download URL"),
     )
     assert worker.main(_argv()) == worker.EXIT_FAILED
-    assert "check the stored video against its record" in capsys.readouterr().out
+    assert "its record may be stale" in capsys.readouterr().out
 
 
 def test_help_exits_zero_and_carries_the_hold():
@@ -216,3 +219,24 @@ def test_an_oversized_id_is_accepted_because_the_columns_are_bigint():
     """The cyl id columns are BIGINT and the route bounds nothing, so a bound
     here would refuse ids the database accepts. It finds no row and is refused."""
     assert worker.identifier("99999999999999999999") == 99999999999999999999
+
+
+def test_an_untruncated_scan_says_nothing_about_the_cap(
+    monkeypatch, stub_client, capsys
+):
+    """Without this, making the suffix unconditional would have every render and
+    every keep claim the scan exceeds the cap."""
+    _stub_render(monkeypatch, result=_rendered(truncated=False))
+    worker.main(_argv())
+    assert "encoder's cap" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv", [["--help"], ["render", "--help"]])
+def test_help_carries_the_hold_at_both_levels(argv, capsys):
+    """`render --help` is what an operator types when they are about to run it,
+    so the hold has to reach the subparser too, not only the top level."""
+    with pytest.raises(SystemExit) as exit_info:
+        worker.parse_args(argv)
+
+    assert exit_info.value.code == 0
+    assert "until the render queue lands" in capsys.readouterr().out

@@ -73,12 +73,12 @@ def main(argv=None) -> int:
         if exit_code == EXIT_REFUSED:
             print(f"refused ({exc.status_code}): {exc.detail}")
             return exit_code
-        # A 5xx can be raised after the object was uploaded — signing its URL is
-        # the last step before the row is written — so the stored video and the
-        # recorded row may now disagree.
+        # Most 5xx are raised before anything is stored, but signing the URL is
+        # the last step after the upload — so the advice is conditional rather
+        # than asserted, and says nothing when nothing was written.
         logger.error("scan %s could not be rendered: %s", args.scan, exc.detail)
         print(f"failed ({exc.status_code}): {exc.detail}")
-        print("  check the stored video against its record before retrying")
+        print("  if a video now exists at this path, its record may be stale")
         return exit_code
     except Exception as exc:
         logger.exception("scan %s could not be rendered", args.scan)

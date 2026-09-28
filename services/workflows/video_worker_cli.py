@@ -3,6 +3,11 @@
 PR 3's claim loops read these codes to decide retry from dead-letter, so both
 commands have to mean the same thing by them, and one definition is how that
 stays true.
+
+What lives here is the decision — given the status the route would answer, is
+this worth another attempt. What each renderer can raise stays beside that
+renderer, because the exception types are its own and importing the plate
+encoder into this module would drag the imaging stack into the cyl command.
 """
 
 import logging
