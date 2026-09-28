@@ -234,6 +234,28 @@ flip-and-read.
   must `monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST",
 raising=False)` so an ambient export can't flip it. The new var joins
   `test_package_baseline.py`'s env scrub list.
+- **The guard rides `list_prefix`, which does not paginate (#396) — analysed,
+  and not currently exploitable for a catalog prefix.** `read_manifest`
+  returns `None` unless `manifest.json` appears in `list_prefix(prefix)`, and
+  `SupabaseStorageBackend.list_prefix` returns a single upstream page
+  (storage3 `DEFAULT_SEARCH_OPTIONS`: `limit: 100`, `sortBy: name asc`; fix in
+  flight as PR #854). If the cap ever cut `manifest.json` out, every call site
+  would fall through to the fresh-catalog path with no error and no log —
+  verified empirically as the failure mode, not assumed. It cannot happen for
+  a catalog prefix today because of two properties, now pinned by tests:
+  the listing is **name-ascending**, and every sibling of `manifest.json`
+  there is a version directory that `version_dir_name` always names
+  `v<N>_<date>[_slug]` (the user label is a suffix, never a prefix). Since
+  `"m" < "v"`, the manifest is always on page one however many versions
+  exist. The `bloommcp_output/` **root** listing does overflow (~16 tool
+  classes × ~6-7 experiments), but `read_manifest` is never handed the root —
+  also pinned. **Residual:** both properties are implicit, so a rename of the
+  version-dir prefix to anything sorting before `m`, or a storage3 default
+  sort change, turns this into a live bypass; the two tests fail loudly if
+  either moves. The genuinely affected consumer is the task 5.6 audit's own
+  root enumeration, which is why that script now refuses to certify a
+  possibly-truncated sweep (exit 4) rather than reporting a false "0 foreign"
+  (PR #782 review round 3).
 - **The sticky flag is a real operational trap, accepted deliberately.** A
   developer who sets `BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1` to inspect one
   stale catalog silently loses the ability to commit _anything_, on any

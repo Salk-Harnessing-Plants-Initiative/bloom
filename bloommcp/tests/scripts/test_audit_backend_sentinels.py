@@ -97,3 +97,79 @@ def test_classify_sentinel_mirrors_the_guard_predicate():
     assert audit.classify_sentinel("local", "supabase") == "foreign"
     assert audit.classify_sentinel("minio", "supabase") == "unrecognized"
     assert audit.classify_sentinel(123, "supabase") == "unrecognized"
+
+
+def test_sweep_refuses_to_certify_a_possibly_truncated_listing(
+    local_manifest_backend, monkeypatch, capsys
+):
+    """#396 / PR #782 review round 3: `list_prefix` returns one unpaginated
+    upstream page, and BOTH the catalog enumeration and each manifest probe
+    ride it. A "0 foreign" verdict off a listing that may have been cut at the
+    page cap is exactly the false assurance task 5.6 exists to prevent, so the
+    sweep refuses to certify instead of reporting clean."""
+    ts = "2026-07-06T00:00:00Z"
+    write_cleaned_manifest(local_manifest_backend, "native", "qc", "v1", ts, b"a\n1\n")
+
+    real_list = audit.list_prefix
+    root = f"{audit._OUTPUT_ROOT}/"
+
+    def _capped(prefix):
+        names = real_list(prefix)
+        if prefix == root:
+            # Simulate the upstream page cap: a full page came back, so we
+            # cannot know whether more catalogs exist beyond it.
+            return (names + [f"qc_filler{i}" for i in range(200)])[
+                : audit._SUSPECTED_PAGE_LIMIT
+            ]
+        return names
+
+    monkeypatch.setattr(audit, "list_prefix", _capped)
+
+    report = audit.scan_backend_sentinels()
+    assert report["truncation_suspected"], "a full-page listing must be flagged"
+    assert report["truncation_suspected"][0]["prefix"] == root
+    assert report["counts"]["foreign"] == 0  # nothing foreign was actually seen…
+
+    # …and yet the gate must NOT certify that as clean.
+    assert audit.run([]) == 4
+    err = capsys.readouterr().err
+    assert "TRUNCATION SUSPECTED" in err
+    assert "#854" in err  # points at the fix that must land first
+
+
+def test_truncation_outranks_the_other_exit_codes(
+    local_manifest_backend, monkeypatch, capsys
+):
+    """Even with a genuinely foreign catalog present, an untrustworthy
+    inventory is the more fundamental problem: the operator must land #854 and
+    re-run rather than act on counts drawn from a partial listing."""
+    ts = "2026-07-06T00:00:00Z"
+    write_cleaned_manifest(local_manifest_backend, "bad", "qc", "v1", ts, b"a\n1\n")
+    _patch_sentinel(local_manifest_backend, "qc_bad", "supabase")
+
+    real_list = audit.list_prefix
+
+    def _capped(prefix):
+        names = real_list(prefix)
+        if prefix == f"{audit._OUTPUT_ROOT}/":
+            return (names + [f"qc_f{i}" for i in range(200)])[
+                : audit._SUSPECTED_PAGE_LIMIT
+            ]
+        return names
+
+    monkeypatch.setattr(audit, "list_prefix", _capped)
+
+    assert audit.run([]) == 4  # not 2
+    assert audit.run(["--allow-unstamped"]) == 4  # and not maskable
+    assert "REFUSING TO CERTIFY" in capsys.readouterr().err
+
+
+def test_a_normal_small_sweep_still_certifies(local_manifest_backend, capsys):
+    """The guard must not fire on ordinary inventories — otherwise 5.6 could
+    never pass."""
+    ts = "2026-07-06T00:00:00Z"
+    write_cleaned_manifest(local_manifest_backend, "native", "qc", "v1", ts, b"a\n1\n")
+
+    report = audit.scan_backend_sentinels()
+    assert report["truncation_suspected"] == []
+    assert audit.run([]) == 0

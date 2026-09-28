@@ -208,7 +208,10 @@ live_smoke"` (matching `python-audit`), with the pre-existing
       them — the guard's day-one blind spot). Exit 0 = verified clean; 2 =
       a catalog the guard would refuse, resolve before merging; 3 = blind
       spot present, acknowledge with `ALLOW_UNSTAMPED=1` after recording the
-      number; 1 = the sweep could not run.
+      number; 4 = a listing may have been truncated by the unpaginated
+      `list_prefix` (#396) so the inventory is not known to be complete —
+      land PR #854 and re-run before trusting any count; 1 = the sweep
+      could not run.
 
 ## Status notes
 
@@ -216,6 +219,13 @@ live_smoke"` (matching `python-audit`), with the pre-existing
   implementing environment does not have (no `.env.prod`/`.env.staging`
   locally — only the secret-free `*.defaults`). `make bloommcp-audit-sentinels`
   is the runnable form; paste its two summary lines into the PR body.
+- **Ordering with #396/PR #854:** the audit's own root enumeration rides the
+  unpaginated `list_prefix`, so on a bucket with more than ~100 catalog
+  prefixes it would under-report the inventory it is meant to certify. The
+  script now detects that and exits 4 rather than reporting a false clean, so
+  running 5.6 early is safe (it will tell you to wait) — but a *certifying*
+  run should happen after #854 lands. The read guard itself is not exposed;
+  see design.md for the analysis and the two tests that pin it.
 
 ## 7. PR #782 review round 2 (@eberrigan, 2026-09-23)
 
@@ -244,3 +254,23 @@ live_smoke"` (matching `python-audit`), with the pre-existing
       without an explicit `SUPABASE_URL`/`BLOOM_AGENT_KEY` so a staging/prod
       audit can never silently hit the local stack) and the PR body's stale
       test numbers regenerated.
+
+## 8. PR #782 review round 3 (@eberrigan, 2026-09-28)
+
+- [x] 8.1 Investigated the reported `list_prefix` pagination bypass (#396).
+      Confirmed the mechanism empirically (a listing without `manifest.json`
+      makes `read_manifest` return `None` silently), but established it is not
+      reachable for a catalog prefix: storage3 lists name-ascending and every
+      sibling is a `v<N>_...` version dir, so `manifest.json` is always on
+      page one; and `read_manifest` never lists the `bloommcp_output/` root.
+      Both properties are now pinned by tests.
+- [x] 8.2 Closed the real exposure: `audit_backend_sentinels.py` flags any
+      listing that comes back at or above the page cap and exits 4 — refusing
+      to certify an inventory it cannot prove complete — instead of reporting
+      a false "0 foreign". Three tests cover it, including that truncation
+      outranks the foreign/unstamped codes.
+- [x] 8.3 Recorded the analysis, the residual (both protective properties are
+      implicit) and the #854 ordering in design.md and in task 5.6.
+- [ ] 8.4 Task 5.6 itself — still blocked on staging/prod credentials. A
+      certifying run should follow #854; an early run is now safe because it
+      fails closed on a truncated sweep.

@@ -42,6 +42,17 @@ from bloom_mcp.supabase_client import list_prefix, read_json
 _OUTPUT_ROOT = "bloommcp_output"
 _MANIFEST_BASENAME = "manifest.json"
 
+# `SupabaseStorageBackend.list_prefix` returns a single upstream page and does
+# not paginate (#396; fix in flight as PR #854), so a listing that comes back
+# at or above the page size may be silently truncated. This audit is the task
+# 5.6 merge gate — certifying "0 foreign" off a truncated inventory would be
+# worse than not running it at all, so any suspect listing fails the sweep
+# instead of being reported as clean. Compared with `>=`, not `==`: a backend
+# that returns a different page size must still trip this, and the local
+# backend (which lists a real directory, unpaginated) only reaches it with a
+# genuinely enormous prefix, where a manual check is warranted anyway.
+_SUSPECTED_PAGE_LIMIT = 100
+
 
 def classify_sentinel(value: object, active: str) -> str:
     """One catalog's classification — mirrors `manifest.foreign_sentinel`'s
@@ -68,6 +79,11 @@ def scan_backend_sentinels() -> dict[str, Any]:
     not report an empty, misleadingly clean bucket — same policy as the other
     audit scripts). A failure reading one catalog's manifest is recorded in
     `errors` and the sweep continues.
+
+    Every listing is checked for possible truncation (#396) and recorded in
+    `truncation_suspected`; `run()` refuses to certify a sweep that has any,
+    because both the catalog enumeration and each manifest probe ride the
+    same unpaginated `list_prefix`.
     """
     active = active_backend_name()
     catalogs: dict[str, list[str]] = {
@@ -77,12 +93,21 @@ def scan_backend_sentinels() -> dict[str, Any]:
         "unrecognized": [],
     }
     errors: list[dict[str, str]] = []
+    truncation_suspected: list[dict[str, Any]] = []
     scanned = 0
 
-    for name in list_prefix(f"{_OUTPUT_ROOT}/"):
+    def _listed(prefix: str, what: str) -> list[str]:
+        names = list_prefix(prefix)
+        if len(names) >= _SUSPECTED_PAGE_LIMIT:
+            truncation_suspected.append(
+                {"prefix": prefix, "returned": len(names), "listing": what}
+            )
+        return names
+
+    for name in _listed(f"{_OUTPUT_ROOT}/", "catalog enumeration"):
         prefix = f"{_OUTPUT_ROOT}/{name}"
         try:
-            if _MANIFEST_BASENAME not in list_prefix(prefix):
+            if _MANIFEST_BASENAME not in _listed(prefix, "manifest probe"):
                 continue  # a prefix with no manifest is a normal legacy state
             raw = read_json(f"{prefix}/{_MANIFEST_BASENAME}")
         except Exception as exc:  # noqa: BLE001 - best-effort forensic sweep
@@ -98,6 +123,7 @@ def scan_backend_sentinels() -> dict[str, Any]:
         "counts": {k: len(v) for k, v in catalogs.items()},
         "catalogs": catalogs,
         "errors": errors,
+        "truncation_suspected": truncation_suspected,
     }
 
 
@@ -116,6 +142,11 @@ def run(argv: Optional[list[str]] = None) -> int:
       Not a deploy risk, but it is the guard's day-one blind spot and must be
       acknowledged rather than silently passed: re-run with
       ``--allow-unstamped`` to accept it and exit 0.
+    * ``4`` — at least one listing may have been truncated by the unpaginated
+      ``list_prefix`` (#396, fix in flight as PR #854), so the inventory this
+      sweep saw is not known to be complete. Outranks every other code: a
+      "0 foreign" verdict off a partial listing is exactly the false
+      assurance task 5.6 exists to prevent. Land #854, then re-run.
     * ``1`` — the sweep could not run (enumeration failed); nothing verified.
     """
     parser = argparse.ArgumentParser(
@@ -157,7 +188,24 @@ def run(argv: Optional[list[str]] = None) -> int:
     print(
         "RECORD BOTH NUMBERS in the PR before merging (task 5.6): "
         f"foreign+unrecognized={refused}, unstamped={counts['unstamped']}"
+        f" (listings suspected truncated: {len(report['truncation_suspected'])})"
     )
+    suspect = report["truncation_suspected"]
+    if suspect:
+        for item in suspect:
+            print(
+                f"TRUNCATION SUSPECTED: {item['listing']} for "
+                f"{item['prefix']!r} returned {item['returned']} entries "
+                f"(>= the {_SUSPECTED_PAGE_LIMIT}-item page cap).",
+                file=sys.stderr,
+            )
+        print(
+            "REFUSING TO CERTIFY: list_prefix does not paginate (#396), so "
+            "this inventory may be incomplete and any '0 foreign' result "
+            "unreliable. Land PR #854, then re-run this audit.",
+            file=sys.stderr,
+        )
+        return 4
     if refused:
         print(
             f"FAIL: {refused} catalog(s) would fail every read on deploy.",

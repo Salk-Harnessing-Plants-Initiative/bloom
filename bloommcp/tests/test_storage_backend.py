@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from datetime import date
 import os
 import subprocess
 import sys
@@ -2161,6 +2162,10 @@ def test_get_object_size_real_dispatch_through_active_backend(monkeypatch):
 
 _SENTINEL_ABSENT = object()
 
+# The manifest basename, spelled here rather than imported, so a rename in the
+# source cannot silently satisfy the page-one ordering tests below.
+_MANIFEST_BASENAME_FOR_TEST = "manifest.json"
+
 
 def _patch_sentinel(root: Path, stem: str, tool_class: str, value) -> None:
     """Rewrite the on-disk manifest's `storage_backend` field directly."""
@@ -2516,3 +2521,87 @@ def test_unstamped_catalog_read_leaves_a_debug_trace(
         caplog.clear()
         AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
     assert caplog.records == []
+
+
+def test_manifest_stays_on_page_one_of_a_name_ascending_listing(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """PR #782 review round 3 raised #396 (unpaginated `list_prefix`, ~100-item
+    cap) as a way to bypass the guard: `read_manifest` gates on `manifest.json`
+    appearing in that listing, so if the cap cut it out the whole check would
+    fall through to the fresh-catalog path.
+
+    It does not, for a catalog prefix — but only because of two implicit
+    properties this test exists to pin:
+
+    1. storage3 lists with ``sortBy={"column": "name", "order": "asc"}``
+       (its `DEFAULT_SEARCH_OPTIONS`), and
+    2. every sibling of `manifest.json` in a catalog prefix is a version
+       directory, which `version_dir_name` always names ``v<N>_<date>[_slug]``
+       — the user label is a suffix, never a prefix.
+
+    Since ``"m" < "v"``, `manifest.json` is always on page one no matter how
+    many versions exist. Rename version dirs to something sorting before "m",
+    or change the sort, and the bypass becomes real — so this fails loudly.
+    """
+    from bloom_mcp.manifest import AnalysisDir, ManifestBackendMismatchError
+    from bloom_mcp.manifest import manifest as manifest_mod
+    from bloom_mcp.manifest.versioning import version_dir_name
+
+    # Property 2, directly: no version dir can sort before the manifest.
+    for vid in ("v1", "v9", "v100", "v999"):
+        for label in (None, "aaa", "0001", "Alpha", "___"):
+            assert version_dir_name(vid, label) > _MANIFEST_BASENAME_FOR_TEST
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "big", "qc", "v1", "2026-07-06", b"t\n1\n")
+    _patch_sentinel(tmp_path / "root", "big", "qc", "supabase")
+
+    # Property 1, behaviourally: a 500-version catalog listed the way storage3
+    # lists it (name-ascending, first 100) still surfaces the manifest, so the
+    # guard fires instead of silently reporting a fresh catalog.
+    real_list = manifest_mod.list_prefix
+
+    def _page_one(prefix):
+        names = list(real_list(prefix))
+        names += [version_dir_name(f"v{i}", None, date(2026, 7, 6)) for i in range(500)]
+        return sorted(names)[:100]
+
+    monkeypatch.setattr(manifest_mod, "list_prefix", _page_one)
+
+    assert _MANIFEST_BASENAME_FOR_TEST in _page_one("bloommcp_output/qc_big/")
+    with pytest.raises(ManifestBackendMismatchError):
+        AnalysisDir("bloommcp_output", "big.csv", "qc").read_manifest()
+
+
+def test_read_manifest_never_lists_the_output_root(
+    monkeypatch, local_manifest_backend, tmp_path
+):
+    """The other half of the #396 concern was the `bloommcp_output/` root
+    listing overflowing (~6-7 experiments x ~16 tool classes). That cannot
+    bypass the guard either: `read_manifest` is only ever handed a single
+    catalog prefix, never the root. Pinned so a future refactor that starts
+    enumerating the root inside the read path has to confront the cap.
+    """
+    from bloom_mcp.manifest import AnalysisDir
+    from bloom_mcp.manifest import manifest as manifest_mod
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    write_cleaned_manifest(tmp_path, "exp", "qc", "v1", "2026-07-06", b"t\n1\n")
+
+    seen: list[str] = []
+    real_list = manifest_mod.list_prefix
+
+    def _record(prefix):
+        seen.append(prefix)
+        return real_list(prefix)
+
+    monkeypatch.setattr(manifest_mod, "list_prefix", _record)
+    AnalysisDir("bloommcp_output", "exp.csv", "qc").read_manifest()
+
+    assert seen, "read_manifest must have listed something"
+    for prefix in seen:
+        assert prefix.rstrip("/") != "bloommcp_output", (
+            f"read_manifest listed the output root ({prefix!r}) — that listing "
+            "is subject to the #396 page cap"
+        )
