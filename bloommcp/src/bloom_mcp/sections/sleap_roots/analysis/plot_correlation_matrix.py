@@ -193,22 +193,32 @@ being folded into a warning about miscoloring.
 If #747 is ever fixed upstream, this whole trigger set should be revisited, since the caveat's
 reason to exist disappears with it.
 
-**Known test-coverage gap (#768, carried forward from PR #724 via staging):**
-``tests/tools/test_viz_snapshot.py``'s pixel-diff regression check cannot reliably catch a
-single-cell rendering defect in this heatmap — one real cell is a tiny fraction of the whole
-image, small enough that even the most-detectable-possible miscoloring scores an RMS in the
-same range as ordinary cross-platform rendering noise. See that test file's module docstring
-and ``openspec/changes/add-bloommcp-plot-snapshot-tests/design.md`` (Decisions 2 & 7) for the
-full measurement and why this is a structural limit, not a TODO. Note this compounds the
-``heatmap_caveat`` disclosure above: the rendered PNG's untrustworthy cells are caught by
-neither the vendored delegate's own masking (there is none, #747) nor the snapshot test.
-What #784 contributes here, if anything: ``strong_correlation_pairs`` puts each counted pair's
-``r`` and ``overlap_n`` into both the result and the manifest, which is the numeric data a
-value-level assertion would otherwise have to recompute. It asserts nothing about the rendered
-image — this change does not touch the render path — so it narrows what a per-cell check has
-to do without being one. Deliberately written with no claim about whether #768 is still open:
-PR #840 lands a per-cell oracle that closes it and rewrites the paragraph above, so a status
-claim here would contradict that paragraph depending on which branch merged last.
+**How this heatmap's rendering is verified (#768, closed):** ``tests/tools/
+test_viz_snapshot.py``'s whole-image pixel-diff cannot catch a single-cell rendering defect
+here — one cell is a tiny fraction of the image, and even the widest error this colormap can
+express scores an RMS inside the range of ordinary cross-platform rendering noise. That is a
+structural limit of whole-image RMS, not a TODO, so it is closed from the other side rather
+than by tuning a tolerance: ``tests/tools/test_viz_cell_oracle.py`` asserts every cell the
+delegate draws — its value, its annotation, its color, and its pixels in the saved PNG —
+against a correlation matrix recomputed independently in the test. See that file's module
+docstring for the measurements, and
+``openspec/changes/add-bloommcp-correlation-cell-oracle/design.md`` for why a per-cell oracle
+was chosen over a lower tolerance.
+
+Note what this does and does not settle for the ``heatmap_caveat`` disclosure above. The cell
+oracle proves the image faithfully draws *the matrix the delegate was given*; it deliberately
+compares against that same unguarded ``.corr()``, so it does not — and is not meant to — flag
+a cell that is confidently colored despite too little real data behind it. Two distinct gaps
+live there and it is worth keeping them apart: a *degenerate* cell (``NaN`` from zero variance
+or sub-floor overlap) that the delegate colors anyway is #747; a *numerically valid*
+coefficient resting on thin evidence — n=10 with a 95% interval of [0.13, 0.92] renders exactly
+like n=800 — is #920. Both remain open, and together they are why the footnote exists.
+
+What #784 contributes here: ``strong_correlation_pairs`` puts each counted pair's ``r`` and
+``overlap_n`` into both the result and the manifest, which is the numeric data a value-level
+assertion would otherwise have to recompute. It asserts nothing about the rendered image —
+this change does not touch the render path — so it narrows what a per-cell check has to do
+without being one.
 
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``
