@@ -110,6 +110,9 @@ erDiagram
 "public.scrna_embedding_points" }o--|| "public.scrna_cells" : "FOREIGN KEY (dataset_id, cell_id) REFERENCES scrna_cells(dataset_id, id) ON DELETE RESTRICT"
 "public.scrna_embedding_points" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_count_changes" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
+"public.gravi_plate_video_jobs" }o--|| "public.gravi_experiments" : "FOREIGN KEY (experiment_id) REFERENCES gravi_experiments(id)"
+"public.cyl_video_jobs" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id)"
+"public.cyl_video_jobs" }o--|| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id)"
 
 "public.species" {
   bigint id
@@ -1045,5 +1048,57 @@ erDiagram
   bigint run_id
   bigint experiment_id
   timestamp_with_time_zone created_at
+}
+"public.rnaseq_runs" {
+  bigint id
+  text run_key
+  uuid requested_by
+  text status
+  text current_step
+  integer exit_code
+  text message
+  jsonb step_pods
+  text argo_workflow_name
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone submitted_at
+  timestamp_with_time_zone completed_at
+  timestamp_with_time_zone updated_at
+  text workflow_type
+  jsonb params
+}
+"public.gravi_plate_video_jobs" {
+  uuid id
+  bigint experiment_id FK
+  text plate_id
+  integer wave_number
+  text status
+  text stage
+  integer frames_done
+  integer frames_total
+  text error_code
+  text error
+  uuid requested_by
+  bigint msg_id
+  integer reads
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone started_at
+  timestamp_with_time_zone finished_at
+}
+"public.cyl_video_jobs" {
+  uuid id
+  bigint scan_id FK
+  bigint experiment_id FK
+  text status
+  text stage
+  integer frames_done
+  integer frames_total
+  text error_code
+  text error
+  uuid requested_by
+  bigint msg_id
+  integer reads
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone started_at
+  timestamp_with_time_zone finished_at
 }
 ```
