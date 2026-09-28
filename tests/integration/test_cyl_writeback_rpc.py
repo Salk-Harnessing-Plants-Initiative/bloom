@@ -296,8 +296,11 @@ def test_a2_contract_version_rejected(pg_conn, ver):
     # fails if the a3 migration is reverted; bare `0.1.0a2` rejects either way.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
+        cur.execute("SAVEPOINT expect_rejected")
         with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva2"))
+        cur.execute("ROLLBACK TO SAVEPOINT expect_rejected")
+        assert _source_id(cur, "cva2") is None, "a rejected envelope must write nothing"
     pg_conn.rollback()
 
 
@@ -310,8 +313,11 @@ def test_a3_contract_version_rejected(pg_conn, ver):
     # migration is reverted; bare `0.1.0a3` rejects either way.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
+        cur.execute("SAVEPOINT expect_rejected")
         with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva3"))
+        cur.execute("ROLLBACK TO SAVEPOINT expect_rejected")
+        assert _source_id(cur, "cva3") is None, "a rejected envelope must write nothing"
     pg_conn.rollback()
 
 
@@ -347,8 +353,11 @@ def test_version_boundary_forms_rejected(pg_conn, ver):
     # never-pinned 0.1.0a8 (skipped between a7 and a9).
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        cur.execute("SAVEPOINT expect_rejected")
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvbound"))
+        cur.execute("ROLLBACK TO SAVEPOINT expect_rejected")
+        assert _source_id(cur, "cvbound") is None, "a rejected envelope must write nothing"
     pg_conn.rollback()
 
 
@@ -1711,8 +1720,8 @@ def test_redelivery_status_fallback_rollback_restores_prior_body(pg_conn):
 # rollback restores the a7 body WITH the bloom#875 fallback, and no cutover guard.
 #
 # CI's ambient DB already has the a9 migration applied, so every test below first
-# restores the a7 body live on staging today (MIGRATION_REDELIVERY_STATUS_FALLBACK)
-# inside its own uncommitted transaction -- otherwise re-applying a9 would be a
+# restores the pre-a9 (a7) body, MIGRATION_REDELIVERY_STATUS_FALLBACK, inside its own
+# uncommitted transaction -- otherwise re-applying a9 would be a
 # no-op over a9 and the tests could never fail. Nothing here commits.
 # --------------------------------------------------------------------------- #
 
@@ -1724,7 +1733,7 @@ ROLLBACK_A9 = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS_A9}_rollback.sql"
 def _rpc_overload_arg_counts(cur):
     cur.execute(
         "SELECT pronargs FROM pg_proc WHERE proname = 'insert_cyl_result_envelope' "
-        "ORDER BY pronargs"
+        "AND pronamespace = 'public'::regnamespace ORDER BY pronargs"
     )
     return [r[0] for r in cur.fetchall()]
 
@@ -1755,7 +1764,7 @@ def test_a9_migration_body_is_idempotent(pg_conn):
     # Re-applying the a9 migration over itself is a clean no-op: same 2-arg signature,
     # CREATE OR REPLACE only, no stale 1-arg overload recreated.
     with pg_conn.cursor() as cur:
-        cur.execute(_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK))  # a7, as on staging
+        cur.execute(_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK))  # the pre-a9 (a7) body
         cur.execute(_sql_body(MIGRATION_A9))
         cur.execute(_sql_body(MIGRATION_A9))  # second apply: must be a no-op, not an error
         assert _rpc_overload_arg_counts(cur) == [2], "a9 must not recreate the (jsonb) overload"
@@ -1805,7 +1814,7 @@ def test_a9_migration_applies_over_existing_a7_rows(pg_conn):
     blobs byte-for-byte unchanged and still readable. A same-key a7 re-delivery is then
     rejected before the source gate (it raises; it is NOT reported as a no-op)."""
     with pg_conn.cursor() as cur:
-        cur.execute(_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK))  # a7, as on staging
+        cur.execute(_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK))  # the pre-a9 (a7) body
         scan_id, imgs = _seed_scan(cur)
         env = _envelope(
             imgs, contract_version="0.1.0a7", idempotency_key="a9-over-a7",
@@ -1834,5 +1843,25 @@ def test_a9_migration_applies_over_existing_a7_rows(pg_conn):
         with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, env)  # same idempotency key
         cur.execute("ROLLBACK TO SAVEPOINT expect_a7_redelivery_rejected")
+        assert _source_snapshot(cur, "a9-over-a7") == before
+
+        # Recovery: the bumped traits image delivers an a9 envelope for the same scan
+        # under a new key (new traits_code_sha). It becomes the scan's latest source;
+        # the a7 row stays, unchanged, as superseded history.
+        recomputed = _call(cur, _envelope(
+            imgs, contract_version="0.1.0a9", idempotency_key="a9-over-a7-recomputed",
+            traits=[_trait("t_a9_over_a7", 2.5)],
+            blobs=[_blob(s3_location="s3://bloom/p-a9-recomputed.slp")],
+        ))
+        assert recomputed["was_noop"] is False and recomputed["scan_id"] == scan_id
+        cur.execute(
+            "SELECT source_id, value, is_latest FROM cyl_scan_traits_source "
+            "WHERE scan_id = %s AND trait_name = 't_a9_over_a7' ORDER BY source_id",
+            (scan_id,),
+        )
+        assert cur.fetchall() == [
+            (before["source"]["id"], 1.5, False),
+            (recomputed["source_id"], 2.5, True),
+        ]
         assert _source_snapshot(cur, "a9-over-a7") == before
     pg_conn.rollback()

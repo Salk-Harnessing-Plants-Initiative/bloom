@@ -8,7 +8,7 @@ body that ``20260917140000``'s own rollback restores.
 
 Why a unit test: the integration suite proves behavior against a live Postgres, but
 only a textual check catches silent drift in the copied ~270-line body (a dropped
-``SECURITY DEFINER``, a recreated 1-arg overload, a changed grant) and a copied
+``SECURITY DEFINER``, a recreated 1-arg overload, an edited GRANT statement) and a copied
 guard outside the function region. No database needed.
 """
 
@@ -35,8 +35,8 @@ PIN_A9 = "    pinned_version constant text := '0.1.0a9';"
 
 def _lines(path: Path) -> list[str]:
     assert path.exists(), f"{path.relative_to(REPO_ROOT)} does not exist"
-    # splitlines() absorbs CRLF, so a Windows checkout (.gitattributes has no *.sql rule)
-    # compares the same as LF.
+    # .gitattributes pins *.sql to LF; splitlines() additionally absorbs CRLF from a
+    # hand-edited or unnormalized working copy, so such a file compares the same.
     return path.read_text(encoding="utf-8").splitlines()
 
 
@@ -95,3 +95,18 @@ def test_nothing_outside_the_function_but_the_transaction(path):
     # untouched").
     _, outside = _split(path)
     assert _statements_outside(outside) == ["BEGIN;", "COMMIT;"]
+
+
+def test_base_is_the_newest_definition_before_a9():
+    # The a9 body is a copy of BASE. If another migration between BASE and a9 had
+    # redefined the function (e.g. a concurrent PR), a9 would silently revert it
+    # while the diff tests above stayed green.
+    definers = sorted(
+        p.name
+        for p in MIGRATIONS.glob("*.sql")
+        if REGION_START in p.read_text(encoding="utf-8")
+    )
+    assert MIGRATION_A9.name in definers
+    assert definers[definers.index(MIGRATION_A9.name) - 1] == BASE.name, (
+        f"the newest definition before a9 is not {BASE.name}: {definers}"
+    )
