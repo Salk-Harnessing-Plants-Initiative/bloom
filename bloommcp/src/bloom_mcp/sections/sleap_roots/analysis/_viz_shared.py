@@ -20,9 +20,12 @@ as a plotted observation. The pre-#466 generation of helpers —
 import math
 import textwrap
 from collections import Counter
+from collections.abc import Callable, Sequence
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+from matplotlib.figure import Figure
 
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.tools._qc_shared import _validate_trait_subset
@@ -179,7 +182,7 @@ TRAIT_TABLE_COLUMNS = [
 ]
 
 
-def native(value):
+def native(value: object) -> Optional[float | int | bool]:
     """Coerce a numpy/pandas scalar to a JSON-safe native Python value (``None`` if not finite).
 
     Not belt-and-braces (#748): every count here comes out of ``groupby().count()``,
@@ -204,7 +207,7 @@ def native(value):
     return numeric if math.isfinite(numeric) else None
 
 
-def _non_finite_mask(df, trait_cols):
+def _non_finite_mask(df: pd.DataFrame, trait_cols: Sequence[str]) -> np.ndarray:
     """Boolean (rows x traits) mask of ``+inf``/``-inf``.
 
     ``na_value=np.nan`` is free insurance against a future nullable dtype (``Float64`` with
@@ -214,7 +217,9 @@ def _non_finite_mask(df, trait_cols):
     return np.isinf(df[trait_cols].to_numpy(dtype="float64", na_value=np.nan))
 
 
-def trait_sample_size_table(df, trait_cols):
+def trait_sample_size_table(
+    df: pd.DataFrame, trait_cols: Sequence[str]
+) -> pd.DataFrame:
     """Per-trait plotted/missing counts for ``plot_trait_histograms`` (#748).
 
     ``n_plotted`` is ``pandas`` ``count()`` — non-null values, which **includes** ``+/-inf``,
@@ -251,7 +256,9 @@ def trait_sample_size_table(df, trait_cols):
 MAX_GROUP_TABLE_CELLS = 250_000
 
 
-def group_sample_size_table(df, trait_cols, genotype_col):
+def group_sample_size_table(
+    df: pd.DataFrame, trait_cols: Sequence[str], genotype_col: str
+) -> pd.DataFrame:
     """Per-(trait, genotype) counts for ``plot_trait_boxplots`` (#748).
 
     One row per (resolved trait x observed genotype) cell, including cells with **no** data —
@@ -335,14 +342,14 @@ NOTE_PAD_INCHES = 0.2
 # summarize different units -- boxes vs panels); the capping and the drawing are common.
 
 
-def flagged_names(entries, formatter):
+def flagged_names(entries: Sequence[Any], formatter: Callable[[Any], str]) -> str:
     """Cap a flagged list for the drawn note, summarizing the remainder as "+N more"."""
     shown = [formatter(e) for e in entries[:MAX_NOTE_NAMES]]
     remainder = len(entries) - len(shown)
     return ", ".join(shown) + (f", +{remainder} more" if remainder else "")
 
 
-def draw_disclosure_note(fig, note, flagged):
+def draw_disclosure_note(fig: Figure, note: str, flagged: bool) -> None:
     """Draw the note below the axes, growing the figure so it cannot land on top of them.
 
     A figure-level footnote, not a per-box annotation — the same choice

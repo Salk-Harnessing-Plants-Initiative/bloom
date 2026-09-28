@@ -93,6 +93,7 @@ unrecorded.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from shutil import rmtree
 from typing import Optional
 
@@ -100,6 +101,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.figure import Figure
 from matplotlib.ticker import FixedLocator
 from pydantic import BaseModel, ConfigDict, Field
 from sleap_roots_analyze.visualization import (
@@ -140,14 +143,14 @@ _DELEGATE_BATCH_SIZE = 16
 
 
 def _sample_size_note(
-    page_table,
-    page_no_data_traits,
-    n_page_traits,
-    n_total_traits,
-    n_groups,
-    rows_missing_genotype,
-    scoped,
-):
+    page_table: pd.DataFrame,
+    page_no_data_traits: Sequence[str],
+    n_page_traits: int,
+    n_total_traits: int,
+    n_groups: int,
+    rows_missing_genotype: int,
+    scoped: bool,
+) -> str:
     """Build the sample-size note drawn below the axes (#748).
 
     Always produced, not only when something is flagged: a note that appeared only on flagged
@@ -275,7 +278,12 @@ def _sample_size_note(
     )
 
 
-def _annotate_genotype_ticks(fig, finite_counts, plotted_genotypes, no_data_traits):
+def _annotate_genotype_ticks(
+    fig: Figure,
+    finite_counts: Mapping[tuple[str, str], int],
+    plotted_genotypes: Mapping[str, set[str]],
+    no_data_traits: Sequence[str],
+) -> bool:
     """Append each box's own ``(n=…)`` to its genotype tick label; report whether it worked.
 
     The delegate labels these ticks with the genotype **values themselves** in both
@@ -477,8 +485,12 @@ class PlotTraitBoxplotsResult(RunLinks):
         default_factory=list,
         description="Cells carrying at least one +/-inf. Such a box is drawn but corrupted — "
         "its median shifts to a value no observation supports and its upper quartile/whisker "
-        "are NaN — so it does not read as broken data. Ordered by (trait, genotype), capped "
-        f"at {MAX_FLAGGED_REPORTED}.",
+        "are NaN — so it does not read as broken data. Ordered worst-first like every other "
+        "capped bucket, but in this bucket's own terms: DESCENDING by n_non_finite, then "
+        "(trait, genotype). Severity here is how many values are non-finite, so ascending "
+        "order would let a cell with one inf survive the cap while one with hundreds is "
+        f"truncated away. Capped at {MAX_FLAGGED_REPORTED}; see non_finite_group_count for "
+        "the true total.",
     )
     non_finite_group_count: int = Field(
         default=0, description="Uncapped non-finite-cell total."
@@ -545,10 +557,13 @@ class PlotTraitBoxplotsResult(RunLinks):
     )
     sample_size_note: str = Field(
         default="",
-        description="The run-wide sample-size note. On a single-page render this is exactly "
-        "the text drawn on the image; on a paginated render each page carries its own "
-        "page-scoped text instead (those are stamped into the persisted run's "
-        "params['page_sample_size_notes'], since a run-wide string matches no page).",
+        description="The run-wide sample-size note, and the value stamped into the persisted "
+        "run's params. On a single-page render this is exactly the text drawn on the image. "
+        "On a paginated render each page instead carries its own page-scoped text, which is "
+        "NOT stamped: a page's note is a pure function of that page's entry in page_traits, "
+        "the committed sample-size table, and the documented floor and caps, so recording "
+        "the rendered strings would append tens of KB of prose per version to a manifest "
+        "that is re-validated in full on every subsequent run.",
     )
     batched: bool = Field(
         description="True once the selection exceeds TRAIT_BATCH_THRESHOLD traits, in which "

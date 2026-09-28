@@ -328,6 +328,48 @@ Listed separately because they do **not** fail against today's code; §1.0's gat
       it as "null genotype" — truthful-looking and materially misleading. Pre-existing, in the
       read path.
 
+## 6c. PR #839 review round 3 (@eberrigan) — applied
+
+The review named a *recurring pattern* across all three rounds: a fix lands in one place and a
+sibling docstring keeps asserting the old behavior. Both new instances are fixed, and the
+pattern itself is now guarded by test rather than by care.
+
+- [x] 6c.1 `sample_size_note`'s description still pointed readers at
+      `params["page_sample_size_notes"]`, which round 2 deliberately stopped stamping — and
+      which `test_paginated_notes_are_page_scoped` asserts is absent. Corrected.
+- [x] 6c.2 `non_finite_groups`' description still claimed "Ordered by (trait, genotype)" after
+      round 2 changed the code to sort descending by `n_non_finite`. Corrected. A schema-reading
+      agent trusts this surface, so it is a real defect rather than a typo.
+- [x] 6c.3 **Guarded the pattern, not just the instances.** Two new tests:
+      `test_no_field_description_names_a_params_key_that_is_not_stamped` parses every field
+      description for `params["..."]` references and asserts each key is really stamped; and
+      `test_bucket_descriptions_state_the_sort_order_the_code_uses` pins each capped bucket's
+      documented ordering against its observed ordering. Both were confirmed to FAIL against
+      the pre-fix wording before being kept — they would have caught this round's findings.
+      An audit of every remaining ordering/params claim in both tools found no other drift.
+- [x] 6c.4 The `MAX_GROUP_TABLE_CELLS` guard's test was real but hardcoded its magnitude and
+      never named the constant (hence the reviewer's empty grep). Rewritten to derive the frame
+      from the constant and exercise **both sides** of the boundary, plus a second test proving
+      the guard fires before the grid is allocated (a `groupby` spy asserting zero calls) —
+      which is the whole point of a cheap `nunique()` pre-check.
+- [x] 6c.5 Type annotations added to every helper this PR introduced, matching `_qc_shared.py`.
+- [x] 6c.6 Added the missing boxplot edge cases: a genuine zero-row frame, and a
+      single-genotype-group run (every denominator collapses to 1 and must not read as an error
+      or trip a bucket).
+- [x] 6c.7 Merged `origin/staging` locally — the branch was 66 commits behind, which is what the
+      red "Lint CVE changes are isolated" check was reporting (~800 unrelated files in the
+      diff). Merged locally rather than via GitHub's Update-branch, and re-verified with
+      `py_compile` plus the full suite.
+- [ ] 6c.8 **NOT DONE — needs a live dev stack this environment does not have** (Docker is
+      unavailable here). Run the cylinder `live_smoke_slow` boxplot test via `/pre-merge` before
+      merge. The ~115-117s figure in the PR body remains an estimate against a 120s client
+      timeout; if a real run exceeds ~115s, raise that timeout in this PR.
+- [ ] 6c.9 **Not fixable from this branch**: the `gen_plot_snapshots_golden.py` conflict with
+      open PR #841. Both branches add `except ImageComparisonFailure` to `_report_regeneration`
+      for different reasons (#841 for dpi-free optional-key renders, this one for the note's
+      canvas growth); #841 binds `as exc`, this one does not, so it is not a mechanical union.
+      Whoever merges second should keep both rationales in one except block.
+
 ## 7. Follow-up issues to file (not fixed here)
 
 - [x] 7.1 Filed as **#837**: `resolved_trait_columns`/`page_traits` exceed the family's 5,000-char

@@ -87,6 +87,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 from sleap_roots_analyze.visualization import (
     create_trait_histograms,
@@ -126,7 +127,13 @@ _SAMPLE_SIZES_CSV = "trait_sample_sizes.csv"
 _DELEGATE_BATCH_SIZE = 16
 
 
-def _missingness_note(page_table, n_page_traits, n_total_traits, n_rows_read, scoped):
+def _missingness_note(
+    page_table: pd.DataFrame,
+    n_page_traits: int,
+    n_total_traits: int,
+    n_rows_read: int,
+    scoped: bool,
+) -> str:
     """Build the note drawn below a histogram page (#748, PR review round 2).
 
     The delegate already titles every panel ``f"{trait}\n(n={count})"``, which is why this tool
