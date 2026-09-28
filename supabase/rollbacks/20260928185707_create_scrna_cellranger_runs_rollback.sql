@@ -1,4 +1,4 @@
--- Rollback for 20260928120000_create_scrna_cellranger_runs.sql (run by hand).
+-- Rollback for 20260928185707_create_scrna_cellranger_runs.sql (run by hand).
 -- Drops the request function, the dispatch queue and the run table; their data is lost.
 
 BEGIN;
