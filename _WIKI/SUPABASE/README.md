@@ -123,6 +123,12 @@ Phase 1 of the A4 pipeline-trigger route (`POST /workflows/pipeline`, bloom #11/
 
 Access follows the `scrna_embeddings` convention: Supabase's default grants are revoked, then `bloom_user`, `bloom_agent` and `bloom_workflows` get `SELECT` and `bloom_admin` gets full access. **No role other than `bloom_admin` can write the table directly.** Runs are created only through `request_scrna_cellranger_run(p_sample, p_reference, p_requested_by)`, a `SECURITY DEFINER` function (`EXECUTE` for `bloom_workflows` only) that validates the names and writes the run and one `scrna_cellranger_dispatch` message in a single transaction, so a run can never exist without its queue message.
 
+`20260928203335` adds the dispatch worker's three calls, also `SECURITY DEFINER` with `EXECUTE` for `bloom_workflows` only. Each changes the run and its queue message in one transaction, and only while the run is still `queued`, so a late or repeated call never overwrites a newer state.
+
+- `claim_scrna_cellranger_run(p_vt, p_max_reads)` returns the next queued run (`run_id`, `sample`, `reference`, `run_key`, `msg_id`) and hides its message for `p_vt` seconds, so a worker that dies mid-submit gets the run back. A message whose run is gone or no longer queued is deleted; a message without a numeric `run_id` is archived; a run whose message comes back more than `p_max_reads` times is failed with "not submitted after N attempts".
+- `complete_scrna_cellranger_run(p_run_id, p_msg_id, p_argo_workflow_name)` sets the run `submitted` with the workflow's name and `submitted_at`, and deletes the message.
+- `fail_scrna_cellranger_run(p_run_id, p_msg_id, p_message)` sets the run `failed` with the message and `completed_at`, and archives the message.
+
 ### Trait-count cache refresh (pg_cron)
 
 `cyl_experiment_trait_counts` caches each experiment's count of distinct latest-source traits.
