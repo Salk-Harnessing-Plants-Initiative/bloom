@@ -955,6 +955,36 @@ jobs:
         if: always()
         run: rm -f ~/.ssh/deploy_key
 
+  # A staging run left waiting for approval holds the deploy-bloom slot, and
+  # every later push then queues behind it and gets cancelled. Cancelling the
+  # older waiting runs lets the newest push through to the approval gate.
+  supersede-stale-staging-waits:
+    name: Cancel older staging runs awaiting approval
+    if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel older runs waiting at the staging gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api "repos/$REPO/actions/workflows/deploy.yml/runs?status=waiting&per_page=100" \
+            --jq '.workflow_runs[] | select(.id < (env.RUN_ID | tonumber)) | .id')
+          for id in $ids; do
+            # Production waits are left alone; only the staging gate is superseded.
+            envs=$(gh api "repos/$REPO/actions/runs/$id/pending_deployments" \
+              --jq '[.[].environment.name] | join(",")')
+            if [[ ",$envs," == *",staging,"* ]]; then
+              gh api -X POST "repos/$REPO/actions/runs/$id/cancel" --silent
+              echo "::notice::Cancelled run $id: it was waiting for staging approval and run $RUN_ID supersedes it"
+            fi
+          done
+
   deploy-staging:
     name: Deploy to Staging
     if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
@@ -1076,6 +1106,9 @@ jobs:
 
       - name: Pull latest code
         id: pull_staging
+        env:
+          # A push deploys its own commit, not whatever staging's tip is by approval time.
+          DEPLOY_REF: ${{ github.event_name == 'push' && github.sha || 'origin/staging' }}
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
@@ -1092,7 +1125,7 @@ jobs:
             fi
             BEFORE=\$(git rev-parse HEAD)
             git fetch origin staging
-            git reset --hard origin/staging
+            git reset --hard '$DEPLOY_REF'
             AFTER=\$(git rev-parse HEAD)
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
