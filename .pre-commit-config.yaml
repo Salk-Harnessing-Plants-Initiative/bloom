@@ -4,8 +4,17 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
     hooks:
+      # Both exclude the vendored Argo Workflow: it is a byte-exact copy of
+      # upstream (scripts/check_vendored_workflow_drift.py compares read_bytes()
+      # against the pinned commit), and upstream's file has no trailing newline.
+      # end-of-file-fixer adds one, which flips the blocking drift check to
+      # "the vendored copy was hand-edited without bumping the pin" — a
+      # misleading failure for a file nobody edited. Verified: the hook takes it
+      # from 10833 to 10834 bytes.
       - id: trailing-whitespace
+        exclude: ^services/workflows/vendored/
       - id: end-of-file-fixer
+        exclude: ^services/workflows/vendored/
       - id: check-yaml
         exclude: ^uv\.lock$
       - id: check-added-large-files

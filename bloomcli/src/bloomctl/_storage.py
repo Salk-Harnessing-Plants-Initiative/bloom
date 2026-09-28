@@ -110,6 +110,38 @@ def _fetch(client: Any, bucket: str, object_path: str) -> bytes:
     return data
 
 
+def upload_object(client: Any, data: bytes, object_path: str, *, bucket: str) -> None:
+    """Upload ``data`` to ``bucket`` at ``object_path``. Retries once on a transient failure.
+
+    No pre-existence/checksum check, unlike ``cyl/ingest.py::upload_blob`` — callers of this
+    helper always write to a freshly generated object path, so there is no re-delivery case to
+    reconcile.
+
+    Unlike ``download_object``'s retry (a GET, naturally idempotent), this retries a create: if
+    the first attempt actually succeeds server-side but the client sees a transient error
+    (timeout, dropped connection) before learning that, the retry hits the same ``object_path``
+    and gets a non-retryable "already exists" response — not one of ``is_retryable``'s 429/5xx
+    codes — so the caller sees a confusing failure for what was really a first-attempt success.
+    Narrow window (a timeout landing exactly after the write commits but before the response is
+    read); accepted here since every current caller writes to a fresh, never-reused path with no
+    other writer racing it.
+    """
+    try:
+        _upload(client, bucket, object_path, data)
+    except Exception as exc:
+        if not is_retryable(exc):
+            raise describe_storage_error(exc) from exc
+        time.sleep(RETRY_DELAY_SECONDS)
+        try:
+            _upload(client, bucket, object_path, data)
+        except Exception as retry_exc:
+            raise describe_storage_error(retry_exc) from retry_exc
+
+
+def _upload(client: Any, bucket: str, object_path: str, data: bytes) -> None:
+    client.storage.from_(bucket).upload(object_path, data)
+
+
 def _unlink_quietly(path: str) -> None:
     try:
         os.unlink(path)

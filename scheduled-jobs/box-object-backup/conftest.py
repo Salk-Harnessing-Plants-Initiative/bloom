@@ -2,16 +2,16 @@
 
 The suite is advertised as needing no network, no database and no Box account,
 and it was not true: thirty tests reached a real socket on 127.0.0.1:5572
-because `publish_report` and `publish_ledger` build their own `RcloneRC` from
-the daemon's credentials rather than taking the one the run already holds, so
-faking `wait_for_daemon` did not cover them.
+because `publish_report` builds its own `RcloneRC` from the daemon's
+credentials rather than taking the one the run already holds, so faking
+`wait_for_daemon` did not cover it.
 
 That port is `rclone_rc.DEFAULT_RC_PORT` — the port this job's own rclone
-daemon binds on the deploy host. The tests passed only because nothing was
-listening on the machines they ran on. On the deploy host during a seed
-something is: a daemon holding the Box OAuth token and MinIO's root
-credentials, and these tests would have POSTed `operations/copyfile` and
-`operations/stat` at it, with a Basic-auth header.
+daemon binds. The tests passed only because nothing was listening on the
+machines they ran on. Wherever a run is going something is: a daemon holding
+the Box OAuth token and MinIO's root credentials, and these tests would have
+POSTed `operations/copyfile` and `operations/stat` at it, with a Basic-auth
+header.
 
 The consequences were not only theoretical. Every one of those tests took the
 `except RcloneError` branch, so `publish_report`'s success path had never been

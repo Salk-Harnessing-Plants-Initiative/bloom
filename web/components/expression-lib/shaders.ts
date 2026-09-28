@@ -70,6 +70,39 @@ export const CLUSTER_FRAG = `
   }
 `;
 
+/** Which of a gene's cells an expression pass draws: all, those at zero, or those above zero. */
+export const VALUE_PASS = { ALL: 0, ZERO: 1, POSITIVE: 2 } as const;
+export type ValuePass = (typeof VALUE_PASS)[keyof typeof VALUE_PASS];
+
+/** Whether a cell's raw value belongs in a pass: the shader's inValuePass, in JS. */
+export function inValuePass(value: number, pass: ValuePass): boolean {
+  if (pass === VALUE_PASS.ALL) return true;
+  return pass === VALUE_PASS.ZERO ? !(value > 0) : value > 0;
+}
+
+/** One frame's expression passes, in order: greyed-out cells whole, then the
+ *  highlighted cells at zero, then the highlighted cells above zero on top. */
+export function expressionPasses(focusSet: boolean): { focusMode: number; valuePass: ValuePass }[] {
+  const lit = focusSet ? 2 : 0;
+  return [
+    ...(focusSet ? [{ focusMode: 1, valuePass: VALUE_PASS.ALL }] : []),
+    { focusMode: lit, valuePass: VALUE_PASS.ZERO },
+    { focusMode: lit, valuePass: VALUE_PASS.POSITIVE },
+  ];
+}
+
+/** Halfway between two pass numbers, so the float uniform compares safely. */
+const between = (a: number, b: number) => ((a + b) / 2).toFixed(1);
+
+/** GLSL twin of inValuePass; split on the raw value, never on the colour. */
+const VALUE_PASS_GLSL = `
+  float inValuePass(float expression, float valuePass) {
+    if (valuePass < ${between(VALUE_PASS.ALL, VALUE_PASS.ZERO)}) return 1.0;
+    if (valuePass < ${between(VALUE_PASS.ZERO, VALUE_PASS.POSITIVE)}) return expression > 0.0 ? 0.0 : 1.0;
+    return expression > 0.0 ? 1.0 : 0.0;
+  }
+`;
+
 /** Gene-expression vertex shader — normalizes per-cell expression against expMin/expMax. */
 export const EXPRESSION_VERT = `
   precision mediump float;
@@ -83,11 +116,13 @@ export const EXPRESSION_VERT = `
   uniform float expMin;
   uniform float expMax;
   uniform float focusMode;
+  uniform float valuePass;
   varying float t;
   varying float v_visible;
   varying float v_inPass;
   varying float v_grey;
   ${FOCUS_PASS}
+  ${VALUE_PASS_GLSL}
   void main() {
     vec2 p = (position + translate) * zoom;
     gl_Position = vec4(p, 0.0, 1.0);
@@ -95,7 +130,7 @@ export const EXPRESSION_VERT = `
     float denom = max(expMax - expMin, 1e-6);
     t = clamp((expression - expMin) / denom, 0.0, 1.0);
     v_visible = visible;
-    v_inPass = inFocusPass(focus, focusMode);
+    v_inPass = inFocusPass(focus, focusMode) * inValuePass(expression, valuePass);
     v_grey = (focusMode > 0.5 && focusMode < 1.5) ? 1.0 : 0.0;
   }
 `;

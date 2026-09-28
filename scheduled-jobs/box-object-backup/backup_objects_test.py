@@ -236,6 +236,44 @@ def test_one_object_failing_does_not_abort_the_rest(ledger):
 # ---------- verification pass ----------
 
 
+def test_a_dead_daemon_is_not_retried():
+    """A refused connection from a daemon that has exited will not clear."""
+    calls = []
+
+    class Refused:
+        def copy_file(self, *args):
+            calls.append(args)
+            raise RcloneError("connection refused", retryable=True)
+
+    with pytest.raises(RcloneError):
+        copier.copy_one(Refused(), "s:", "a", BOX_FS, "b", obj(), alive=lambda: False)
+    assert len(calls) == 1
+
+
+def test_queued_objects_do_not_start_once_the_daemon_is_gone(ledger):
+    alive = {"yes": True}
+    copies = []
+
+    class DiesAfterOne:
+        def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
+            copies.append(src_remote)
+            alive["yes"] = False
+
+    objects = [obj(f"exp/{i}.png") for i in range(3)]
+    result = copier.copy_all(
+        DiesAfterOne(),
+        make_plan(objects),
+        MINIO,
+        BOX_FS,
+        "root",
+        ledger,
+        1,
+        alive=lambda: alive["yes"],
+    )
+    assert result == (1, 0, 0)
+    assert len(copies) == 1
+
+
 def make_plan(objects):
     return build_plan(objects, {})
 
@@ -794,36 +832,21 @@ class TestWatermarkOrdering:
 
         This read the source and compared index positions, which a comment
         naming the function satisfied — moving the real call below the snapshot
-        while leaving `# previously: dock.database_now(` above it passed.
+        while leaving `# previously: postgres.database_now(` above it passed.
         """
         calls = []
 
-        class FakeDock:
-            DB_SERVICE = "db-prod"
-            DockerError = job.dock.DockerError
+        def database_now(conn):
+            calls.append("watermark")
+            return "2026-08-31T02:17:03+00"
 
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
+        def query_to_file(conn, sql, destination):
+            calls.append("snapshot")
+            destination.write_text("")
+            return 0
 
-            @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                calls.append("watermark")
-                return "2026-08-31T02:17:03+00"
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                calls.append("snapshot")
-                destination.write_text("")
-                return 0
-
-        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(job.postgres, "database_now", database_now)
+        monkeypatch.setattr(job.postgres, "query_to_file", query_to_file)
         # The connection config is validated before the manifest read now, so
         # a dry run reaches both. Stubbed rather than supplied: this test is
         # about call order, and the checks have their own.
@@ -862,30 +885,7 @@ class TestWatermarkOrdering:
         """
         db_time = "2019-01-01T00:00:00+00"
 
-        class FakeDock:
-            DB_SERVICE = "db-prod"
-            DockerError = job.dock.DockerError
-
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
-
-            @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                return db_time
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                destination.write_text("")
-                return 0
-
-        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(job.postgres, "database_now", lambda conn: db_time)
         # A dry run returns before start_run, so drive the ledger directly with
         # the value run_locked would hand it and prove it survives the round trip.
         led = Ledger.open(str(tmp_path / "ledger.db"))
@@ -938,6 +938,29 @@ class TestExitCodeReachesTheWorkflow:
 
     def test_failed_copies_outrank_a_mismatch(self):
         assert job.exit_code(failed=2, verify_mismatched=5) == 1
+
+    def test_there_is_no_exit_six(self):
+        # Nothing about a copy of the ledger on Box can fail a run.
+        import inspect
+        import itertools
+
+        assert "6 =" not in job.__doc__
+        assert set(inspect.signature(job.exit_code).parameters) == {
+            "failed",
+            "verify_mismatched",
+            "stopped",
+            "collisions",
+        }
+        for failed, mismatched, stopped, collisions in itertools.product(
+            (0, 1), (0, 1), (False, True), (0, 1)
+        ):
+            code = job.exit_code(
+                failed=failed,
+                verify_mismatched=mismatched,
+                stopped=stopped,
+                collisions=collisions,
+            )
+            assert code in range(6), code
 
     def test_the_documented_codes_match_what_is_returned(self):
         doc = job.__doc__
@@ -1013,7 +1036,7 @@ class TestRunLockedWiresItsPartsTogether:
 
     @pytest.fixture
     def harness(self, monkeypatch, tmp_path):
-        """Fakes for docker and rclone; everything between them is real."""
+        """Fakes for the database and rclone; everything between them is real."""
         state = {
             "copied": [],
             "stat_calls": [],
@@ -1022,7 +1045,6 @@ class TestRunLockedWiresItsPartsTogether:
         }
 
         class FakeDaemon:
-            container = "c"
             url = "http://127.0.0.1:5572"
             user = "u"
             password = "p"
@@ -1030,46 +1052,22 @@ class TestRunLockedWiresItsPartsTogether:
             def stop(self):
                 state["daemon_stopped"] = True
 
-        class FakeDock:
-            DB_SERVICE = "db-prod"
-            STATE_MOUNT = "/state"
-            RC_CONTAINER_PREFIX = job.dock.RC_CONTAINER_PREFIX
-            DockerError = job.dock.DockerError
+            def exit_code(self):
+                return state.get("exit_code")
 
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
+            def log_tail(self, lines=40):
+                return state.get("log", "")
 
-            @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
-            def find_network(project):
-                return "supanet"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                return "2026-08-31T02:17:03+00"
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
-                return 2
-
-            @staticmethod
-            def find_stale_daemons():
-                return state.get("stale", [])
-
-            @staticmethod
-            def start_rc_daemon(**kwargs):
-                return FakeDaemon()
+        def query_to_file(conn, sql, destination):
+            destination.write_text(TestRunLockedWiresItsPartsTogether.MANIFEST)
+            return 2
 
         class FakeClient:
             def copy_file(self, src_fs, src_remote, dst_fs, dst_remote):
                 state["copied"].append((src_fs, src_remote, dst_remote))
+                # The daemon dies once this many copies have gone through.
+                if len(state["copied"]) == state.get("die_after"):
+                    state["exit_code"] = 137
 
             def stat(self, fs, remote):
                 # Sizes must match the manifest or real verification correctly
@@ -1085,7 +1083,11 @@ class TestRunLockedWiresItsPartsTogether:
             def version(self):
                 return "fake"
 
-        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(
+            job.postgres, "database_now", lambda conn: "2026-08-31T02:17:03+00"
+        )
+        monkeypatch.setattr(job.postgres, "query_to_file", query_to_file)
+        monkeypatch.setattr(job.rclone_daemon, "start", lambda **kwargs: FakeDaemon())
         monkeypatch.setattr(
             job, "wait_for_daemon", lambda daemon, attempts=30: FakeClient()
         )
@@ -1094,32 +1096,28 @@ class TestRunLockedWiresItsPartsTogether:
         monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
         monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret")
         state["client"] = FakeClient()
-        # publish_report and publish_ledger build their own client from the
-        # daemon's credentials rather than taking the one the run already has,
-        # so faking `wait_for_daemon` alone left both uploads talking to a real
-        # socket on 127.0.0.1:5572 — DEFAULT_RC_PORT, the port this job's own
-        # rclone daemon binds on the deploy host. Thirty tests here were
-        # quietly logging "upload failed: Connection refused" and exercising
-        # the error path, and publish_report's success path had never run.
+        # publish_report builds its own client from the daemon's credentials
+        # rather than taking the one the run already has, so faking
+        # `wait_for_daemon` alone left the upload talking to a real socket on
+        # 127.0.0.1:5572 — DEFAULT_RC_PORT, the port this job's own rclone
+        # daemon binds. Thirty tests here were quietly logging "upload failed:
+        # Connection refused" and exercising the error path, and
+        # publish_report's success path had never run.
         #
-        # They passed only because nothing was listening locally. On the
-        # deploy host during a seed something is: a daemon holding the Box
-        # OAuth token and MinIO's root credentials, which these tests would
-        # have POSTed operations/copyfile at.
+        # They passed only because nothing was listening locally. Wherever a
+        # run is going something is: a daemon holding the Box OAuth token and
+        # MinIO's root credentials, which these tests would have POSTed
+        # operations/copyfile at.
         monkeypatch.setattr(job, "RcloneRC", lambda *a, **kw: state["client"])
         return state, tmp_path
 
     def object_copies(self, state):
-        """The mirrored objects, without the report and ledger uploads.
+        """The mirrored objects, without the report upload.
 
-        Those two reach the fake now, so anything counting `copied` sees them
+        That reaches the fake too, so anything counting `copied` sees it
         unless it says otherwise.
         """
-        return [
-            c
-            for c in state["copied"]
-            if c[1] != "ledger.db" and not c[2].endswith(".json")
-        ]
+        return [c for c in state["copied"] if not c[2].endswith(".json")]
 
     def args(self, tmp_path, **overrides):
         argv = [
@@ -1142,7 +1140,7 @@ class TestRunLockedWiresItsPartsTogether:
         self, harness, caplog
     ):
         """Without it the summary falls back to the step's own outcome, and
-        every branch keyed on a flag — stale ledger, refused name, incomplete
+        every branch keyed on a flag — a refused name, an incomplete
         verification — silently stops firing."""
         import logging as _logging
 
@@ -1152,28 +1150,85 @@ class TestRunLockedWiresItsPartsTogether:
         assert f"{job.STATUS_KEY}=ok" in caplog.text
         assert f"{job.FLAGS_KEY}=" in caplog.text
 
-    def test_the_status_line_carries_the_flags_that_apply(self, harness, caplog):
-        """A run can succeed AND have left the Box ledger behind. The flags
-        are separate from the verdict for exactly that reason."""
+    def test_the_status_line_carries_the_flags_that_apply(
+        self, harness, monkeypatch, caplog
+    ):
+        """A run can succeed AND have refused a name. The flags are separate
+        from the verdict for exactly that reason."""
         import logging as _logging
 
         caplog.set_level(_logging.INFO)
+        monkeypatch.setattr(
+            TestRunLockedWiresItsPartsTogether,
+            "MANIFEST",
+            f"images\t{self.ILLEGAL}\tv1\t100\t2026-08-31T00:00:00+00\n"
+            "images\texp-42/fine.png\tv2\t200\t2026-08-31T00:00:01+00\n",
+        )
         state, tmp_path = harness
-        monkeypatch_target = state["client"]
-
-        def refuse(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("Box said no")
-            return None
-
-        monkeypatch_target.copy_file = refuse
         job.run_locked(self.args(tmp_path), tmp_path)
         flags = [
             ln.split("=", 1)[1]
             for ln in caplog.text.splitlines()
             if f"{job.FLAGS_KEY}=" in ln
         ]
-        assert flags and "ledger_stale" in flags[-1], flags
+        assert flags and "skipped_names" in flags[-1], flags
+
+    def test_the_ledger_stays_on_the_host(self, harness):
+        """The objects and the run reports on Box are the backup; the ledger
+        is this host's record of what it has copied."""
+        state, tmp_path = harness
+        assert job.run_locked(self.args(tmp_path), tmp_path) == 0
+        uploads = [c for c in state["copied"] if "ledger" in c[1] or "ledger" in c[2]]
+        assert uploads == [], uploads
+        assert any(c[2].endswith(".json") for c in state["copied"]), "no report went up"
+
+    def test_a_daemon_that_dies_mid_run_ends_it_at_once(self, harness):
+        """Not four retries with back-off for every object left in the manifest."""
+        state, tmp_path = harness
+        state.update(die_after=1, log="CRITICAL: signal: killed")
+        with pytest.raises(
+            job.rclone_daemon.DaemonError, match="during the run"
+        ) as caught:
+            job.run_locked(self.args(tmp_path, workers=1), tmp_path)
+        assert "signal: killed" in str(caught.value), "the daemon's log is missing"
+        assert len(self.object_copies(state)) == 1, "it kept copying without a daemon"
+        uploads = [c for c in state["copied"] if c[2].endswith(".json")]
+        assert uploads == [], "it uploaded the report to a dead daemon"
+        outcome = (
+            sqlite3.connect(tmp_path / "ledger.db")
+            .execute("SELECT outcome FROM runs ORDER BY id DESC LIMIT 1")
+            .fetchone()[0]
+        )
+        assert outcome == "error"
+        assert list((tmp_path / "_runs").glob("*.json")), "no report kept on the host"
+
+    def test_a_daemon_that_cannot_start_still_leaves_a_record(
+        self, harness, monkeypatch
+    ):
+        state, tmp_path = harness
+
+        def refuse(**kwargs):
+            raise job.rclone_daemon.DaemonError("could not start rclone: read-only")
+
+        monkeypatch.setattr(job.rclone_daemon, "start", refuse)
+        with pytest.raises(job.rclone_daemon.DaemonError):
+            job.run_locked(self.args(tmp_path), tmp_path)
+        finished_at, outcome = (
+            sqlite3.connect(tmp_path / "ledger.db")
+            .execute("SELECT finished_at, outcome FROM runs ORDER BY id DESC LIMIT 1")
+            .fetchone()
+        )
+        assert finished_at is not None and outcome == "error", (finished_at, outcome)
+        assert list((tmp_path / "_runs").glob("*.json")), "no report was written"
+        assert state["copied"] == [], "something was uploaded without a daemon"
+
+    def test_the_report_is_uploaded_from_the_state_dir(self, harness):
+        # rclone runs beside the job, so it reads the state dir itself.
+        state, tmp_path = harness
+        job.run_locked(self.args(tmp_path), tmp_path)
+        reports = [c for c in state["copied"] if c[2].endswith(".json")]
+        assert reports, "no report was uploaded"
+        assert reports[-1][0] == str(tmp_path.resolve() / "_runs")
 
     def test_the_run_copies_from_the_tenant_prefixed_path(self, harness):
         # The prefix was dropped from the run and no test noticed: the shared
@@ -1616,10 +1671,10 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
 
         def boom(*a, **kw):
-            raise job.dock.DockerError("the daemon container died")
+            raise job.rclone_daemon.DaemonError("the rclone daemon died")
 
         monkeypatch.setattr(job, "copy_manifest", boom)
-        with pytest.raises(job.dock.DockerError):
+        with pytest.raises(job.rclone_daemon.DaemonError):
             job.run_locked(self.args(tmp_path), tmp_path)
         written = sorted((tmp_path / "_runs").glob("*.json"))
         assert written, "a crashed run wrote no report"
@@ -1686,16 +1741,6 @@ class TestRunLockedWiresItsPartsTogether:
         state, tmp_path = harness
         assert job.run_locked(self.args(tmp_path, verify=2), tmp_path) == 0
 
-    def test_a_leftover_container_stops_the_run_before_anything_is_copied(
-        self, harness
-    ):
-        # The check must be reachable from the run, not merely importable.
-        state, tmp_path = harness
-        state["stale"] = ["bloom-box-backup-rclone-dead (Up 3 days)"]
-        with pytest.raises(job.lib.BackupError, match="earlier run"):
-            job.run_locked(self.args(tmp_path), tmp_path)
-        assert state["copied"] == [], "copied despite a stale daemon holding the port"
-
     def test_a_bucket_scoped_run_does_not_record_itself_as_clean(self, harness):
         # run_outcome knowing about --buckets is useless if the run never tells
         # it. Removing the argument from the call site left the suite green.
@@ -1738,52 +1783,58 @@ class TestRunLockedWiresItsPartsTogether:
         )
         with pytest.raises(job.lib.BackupError):
             job.run_locked(self.args(tmp_path), tmp_path)
-        assert state["daemon_stopped"], "the rclone container was left running"
+        assert state["daemon_stopped"], "the rclone daemon was left running"
 
 
-class TestStaleDaemonStopsTheRun:
-    """A leftover container is refused, not removed.
+class TestTheJobNeverRunsDocker:
+    """The job runs in its own container, with no Docker socket.
 
-    Removing one is destructive, and this job should not do that on its own
-    initiative. What it owes the operator is a message that names the container
-    and the command — rather than docker's `port is already allocated`, which
-    says nothing about a run three nights ago.
+    A `docker` call would fail there on the night rather than in a test, so no
+    module may import the old plumbing or name the binary.
     """
 
-    def test_a_leftover_refuses_the_run(self, monkeypatch):
-        monkeypatch.setattr(
-            job.dock,
-            "find_stale_daemons",
-            lambda: ["bloom-box-backup-rclone-a1b2 (Up 3 days)"],
-        )
-        with pytest.raises(job.lib.BackupError) as caught:
-            job.check_no_stale_daemon()
-        message = str(caught.value)
-        assert "bloom-box-backup-rclone-a1b2" in message, "the container is not named"
-        assert "docker rm" in message, "no command to act on"
+    def modules(self):
+        here = Path(__file__).parent
+        return [
+            p
+            for p in sorted(here.glob("*.py"))
+            if not p.name.endswith("_test.py") and p.name != "conftest.py"
+        ]
 
-    def test_a_clean_host_passes(self, monkeypatch):
-        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: [])
-        job.check_no_stale_daemon()
+    def test_the_scan_sees_the_job(self):
+        names = {p.name for p in self.modules()}
+        assert {"backup_objects.py", "postgres.py", "rclone_daemon.py"} <= names
 
-    def test_the_message_says_why_it_is_safe_to_remove(self, monkeypatch):
-        # The operator's first worry is "is a backup using this?" — the run
-        # lock is already held here, so nothing else can be.
-        monkeypatch.setattr(job.dock, "find_stale_daemons", lambda: ["x (Up 1 day)"])
-        with pytest.raises(job.lib.BackupError) as caught:
-            job.check_no_stale_daemon()
-        assert "lock" in str(caught.value)
+    def test_no_module_names_the_docker_binary(self):
+        import ast
 
-    def test_the_check_runs_before_the_daemon_is_started(self):
-        # Order is the property: checking after `docker run` has already failed
-        # is no better than the error it replaces.
-        source = (Path(__file__).parent / "backup_objects.py").read_text()
-        executable = "\n".join(
-            line for line in source.splitlines() if not line.lstrip().startswith("#")
-        )
-        assert executable.index("check_no_stale_daemon()") < executable.index(
-            "dock.start_rc_daemon("
-        )
+        offenders = []
+        for path in self.modules():
+            tree = ast.parse(path.read_text())
+            docstrings = {
+                id(node.body[0].value)
+                for node in ast.walk(tree)
+                if isinstance(
+                    node,
+                    (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                )
+                and node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+            }
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                    continue
+                if id(node) in docstrings:
+                    continue
+                words = node.value.split()
+                if (words and words[0] == "docker") or node.value.endswith("/docker"):
+                    offenders.append((path.name, node.lineno, node.value[:40]))
+        assert not offenders, offenders
+
+    def test_no_module_imports_the_old_plumbing(self):
+        for path in self.modules():
+            assert "docker_env" not in path.read_text(), path.name
 
 
 class TestBucketScopedRunsCannotBecomeTheWatermark:
@@ -1886,11 +1937,11 @@ class TestAStoppedRunIsResumable:
         assert "3 = interrupted" in job.__doc__
 
 
-class TestTheContainerIsAlwaysTornDown:
+class TestTheDaemonIsAlwaysStopped:
     """`daemon.stop()` is the one thing in the cleanup that must not be skipped.
 
-    A container left holding the RC port makes every later night fail at
-    check_no_stale_daemon until someone SSHes in. Reordering the cleanup so the
+    A daemon left running holds the RC port, so the next run on the host cannot
+    start its own. Reordering the cleanup so the
     ledger is closed before it is uploaded put daemon.stop() last, behind steps
     that can raise: publish_report catches only OSError and RcloneError, and
     the ledger writes can raise sqlite3.Error on a full disk — realistic on a
@@ -1913,16 +1964,7 @@ class TestTheContainerIsAlwaysTornDown:
             job.run_locked(
                 TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
             )
-        assert state["daemon_stopped"], "the rclone container was stranded"
-
-    def test_it_is_stopped_when_the_ledger_upload_raises(self, harness, monkeypatch):
-        state, tmp_path = harness
-        monkeypatch.setattr(job, "publish_ledger", self.boom)
-        with pytest.raises(RuntimeError):
-            job.run_locked(
-                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-            )
-        assert state["daemon_stopped"], "the rclone container was stranded"
+        assert state["daemon_stopped"], "the rclone daemon was stranded"
 
     def test_it_is_stopped_on_an_ordinary_clean_run(self, harness):
         state, tmp_path = harness
@@ -2017,6 +2059,19 @@ class TestRunBackupTakesTheHostLock:
         assert "held by" in caplog.text
         assert str(os.getpid()) in caplog.text, "does not say which process has it"
 
+    def test_a_stood_down_run_names_the_container_holding_it(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # Inside a container the pid means nothing on the host; the container does.
+        monkeypatch.setattr("runlock._container_name", lambda: "3f2a9c1b7d4e")
+        monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
+        first = RunLock(tmp_path).acquire()
+        try:
+            job.run_backup(self.args(tmp_path))
+        finally:
+            first.release()
+        assert "held by container 3f2a9c1b7d4e" in caplog.text
+
     def test_the_lock_is_released_when_the_run_finishes(self, tmp_path, monkeypatch):
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 0)
         job.run_backup(self.args(tmp_path))
@@ -2052,473 +2107,6 @@ class TestRunBackupTakesTheHostLock:
     def test_the_exit_code_is_whatever_the_run_returned(self, tmp_path, monkeypatch):
         monkeypatch.setattr(job, "run_locked", lambda *a, **kw: 4)
         assert job.run_backup(self.args(tmp_path)) == 4
-
-
-class TestTheLedgerIsCopiedToBox:
-    """The ledger lives on the host this job exists to survive losing.
-
-    It records which version of every object is on Box, and it is what lets a
-    multi-week seed stop and carry on. Without a copy off the host, rebuilding
-    the server means re-transferring all eight million objects — and listing
-    Box cannot reconstruct it, because the ledger is keyed on each object's
-    version and a listing shows only that a path exists.
-    """
-
-    @pytest.fixture
-    def harness(self, monkeypatch, tmp_path):
-        state, tmp_path = TestRunLockedWiresItsPartsTogether().harness.__wrapped__(
-            TestRunLockedWiresItsPartsTogether(), monkeypatch, tmp_path
-        )
-        # publish_report and publish_ledger build their own client from the
-        # daemon's credentials rather than taking the one the run already has,
-        # so the harness's fake never sees either upload — every harness test
-        # has been quietly logging "upload failed: Connection refused" and
-        # falling back to the local copy. Substitute the class so the uploads
-        # are observable.
-        monkeypatch.setattr(job, "RcloneRC", lambda *a, **kw: state["client"])
-        return state, tmp_path
-
-    def uploads(self, state):
-        return [c for c in state["copied"] if c[1] == "ledger.db"]
-
-    def test_it_is_uploaded_to_its_own_folder(self, harness):
-        state, tmp_path = harness
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        sent = self.uploads(state)
-        assert len(sent) == 1, "the ledger was not uploaded"
-        assert sent[0][2] == (
-            "Bloom-Backups/BloomV2-Data-Backup/prod/storage/_state/ledger.db"
-        ), sent[0][2]
-
-    def test_it_is_not_mixed_in_with_the_objects(self, harness):
-        state, tmp_path = harness
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        for _, _, dst in self.uploads(state):
-            assert "/_state/" in dst, f"the ledger landed among the mirror: {dst}"
-
-    def test_the_uploaded_copy_is_complete(self, harness, monkeypatch, tmp_path):
-        """The reason it is closed before being sent.
-
-        SQLite runs in WAL mode, so committed rows sit in ledger.db-wal until
-        the file is checkpointed. Uploading ledger.db while the connection is
-        open ships a file missing everything the run just recorded — which
-        would look fine until the day it was restored.
-
-        So: take a copy of ledger.db ALONE at the moment it is uploaded, the
-        way rclone would, and read it back with no WAL beside it.
-        """
-        import shutil
-        import sqlite3
-
-        state, tmp_path = harness
-        snapshot = tmp_path / "snapshot" / "ledger.db"
-        snapshot.parent.mkdir()
-        real_copy = state["client"].copy_file
-
-        def snapshotting_copy(src_fs, src_remote, dst_fs, dst_remote):
-            real_copy(src_fs, src_remote, dst_fs, dst_remote)
-            if src_remote == "ledger.db":
-                shutil.copyfile(tmp_path / "ledger.db", snapshot)
-
-        monkeypatch.setattr(state["client"], "copy_file", snapshotting_copy)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-
-        assert snapshot.exists(), "the ledger was never uploaded"
-        conn = sqlite3.connect(str(snapshot))
-        copied = conn.execute("SELECT count(*) FROM copied").fetchone()[0]
-        runs = conn.execute(
-            "SELECT count(*) FROM runs WHERE outcome IS NOT NULL"
-        ).fetchone()[0]
-        conn.close()
-        assert copied == 2, f"the copy is missing rows the run recorded: {copied}"
-        assert runs == 1, "the copy does not record the run that made it"
-
-    DEST = "Bloom-Backups/BloomV2-Data-Backup/prod/storage/_state/ledger.db"
-
-    def with_remote_size(self, state, monkeypatch, size):
-        """Make Box report a ledger of `size` bytes at the destination."""
-        real_stat = state["client"].stat
-
-        def sized(fs, remote):
-            if remote == TestTheLedgerIsCopiedToBox.DEST:
-                return None if size is None else {"Size": size}
-            return real_stat(fs, remote)
-
-        monkeypatch.setattr(state["client"], "stat", sized)
-
-    def test_it_refuses_to_replace_a_larger_copy(self, harness, monkeypatch, caplog):
-        """The scenario the whole feature exists for, and would have broken.
-
-        Host dies, gets rebuilt, ledger is empty. The wiki's smoke test copies
-        twenty objects — enough to trigger this upload — and without a floor it
-        replaces the record of eight million copied objects with a record of
-        twenty. The one thing needed to avoid a three-week re-seed, destroyed
-        by the first command the operator runs.
-        """
-        state, tmp_path = harness
-        self.with_remote_size(state, monkeypatch, 1_700_000_000)
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert self.uploads(state) == [], "overwrote a larger ledger on Box"
-        assert code == 6, (
-            "a refused ledger upload must fail the run: every other route to a "
-            "human is a notice inside a SUCCESSFUL run's summary, and GitHub "
-            "notifies nobody on those"
-        )
-        assert "NOT uploaded" in caplog.text
-        assert "RESTORE it onto this host" in caplog.text, "did not say how to recover"
-
-    def test_a_refused_upload_says_the_box_ledger_is_ahead_not_stale(
-        self, harness, monkeypatch, caplog
-    ):
-        """The run still exits 0, so the summary would read "succeeded" — but
-        this case needs the OPPOSITE remedy to a stale Box copy.
-
-        Here Box holds the eight-million-row ledger and this host holds a
-        stub, which is exactly why the upload was refused. Reported as
-        "stale", an operator is told the host has the good copy and Box needs
-        fixing — so they overwrite the only good record and buy a three-week
-        re-seed, which is the disaster the size guard exists to prevent. The
-        two situations must never share a marker.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        self.with_remote_size(state, monkeypatch, 1_700_000_000)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert job.LEDGER_AHEAD_MARKER in caplog.text
-        assert job.LEDGER_STALE_MARKER not in caplog.text, (
-            "a refused upload was reported as a stale Box copy"
-        )
-        assert "RESTORE it onto this host" in caplog.text, "does not say to restore"
-        # The FLAG, not just the log line. The summary branches on this, and
-        # swapping the two return values survived the suite entirely — the
-        # operator would then be told to fix a stale Box copy, and overwrite
-        # eight million rows with twenty.
-        assert f"{job.FLAGS_KEY}=ledger_ahead" in caplog.text, (
-            "the refusal reaches the summary as the wrong condition"
-        )
-        assert "ledger_stale" not in caplog.text
-
-    def test_a_ledger_that_cannot_be_read_says_the_box_copy_is_stale(
-        self, harness, monkeypatch, caplog
-    ):
-        """The third failure path, and the one that had no test at all.
-
-        Deleting this branch outright left the suite green, while the PR
-        described all three paths as covered. It is reached by the real
-        failures this feature exists for — a full disk, a wiped state dir, a
-        permissions change — and it is one where the run still exits 0 and
-        the summary would otherwise read "succeeded".
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        real_stat = Path.stat
-
-        def refuse(self, *args, **kwargs):
-            if self.name == "ledger.db":
-                raise OSError(13, "Permission denied")
-            return real_stat(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "stat", refuse)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert job.LEDGER_STALE_MARKER in caplog.text
-        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
-            "the unreadable-ledger path reaches the summary as nothing at all"
-        )
-        assert self.uploads(state) == [], "uploaded a ledger it could not read"
-
-    def test_a_failed_upload_says_the_box_copy_is_stale(
-        self, harness, monkeypatch, caplog
-    ):
-        """The other way it goes stale: the upload itself throws.
-
-        Caught broadly on purpose, because it runs in the cleanup path — so
-        without the marker it is one ERROR line in a job reporting success.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-
-        def refuse(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("Box said no")
-            return None
-
-        monkeypatch.setattr(state["client"], "copy_file", refuse)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert job.LEDGER_STALE_MARKER in caplog.text
-        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
-            "a failed upload reaches the summary as the wrong condition"
-        )
-
-    def test_a_real_run_records_where_it_mirrored_to(self, harness):
-        """The other half of the destination guard.
-
-        The guard is only as good as the recording: with nothing written, a
-        ledger seeded against the wrong folder never has anything to be
-        compared against, and every later run is waved through.
-        """
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)
-        recorded = Ledger.open(str(tmp_path / "ledger.db")).destination()
-        assert recorded == f"{args.box_remote}:{args.box_root}", (
-            f"the run mirrored somewhere and recorded {recorded!r}"
-        )
-
-    def test_the_next_run_against_another_folder_is_refused(self, harness):
-        """End to end: one run records, the next one is stopped."""
-        state, tmp_path = harness
-        base = TestRunLockedWiresItsPartsTogether()
-        job.run_locked(base.args(tmp_path), tmp_path)
-        moved = base.args(tmp_path)
-        moved.box_root = "Bloom-Backups/BloomV2-Data-Backup/prod/storag"
-        with pytest.raises(lib.BackupError, match="different place on Box"):
-            job.run_locked(moved, tmp_path)
-
-    def test_a_row_with_no_image_behind_it_leaves_the_run_clean(
-        self, harness, monkeypatch, caplog
-    ):
-        """Driven end to end, because the damage is in what the run RECORDS.
-
-        Folding the count back into `totals.failed` leaves every unit test
-        green — and makes `run_outcome` return `partial`, so no run is ever
-        recorded `ok`, `last_successful_run()` stays None, and every night
-        re-reads all eight million rows for ever. Only a whole run shows it.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        dead = "storage-single-tenant/images/exp-42/a.png/v1"
-        # Absent from MinIO, so the confirming stat says so.
-        state["missing"].add(dead)
-        original = state["client"].copy_file
-
-        def copy(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == dead:
-                raise RcloneError("404 not found", retryable=False)
-            return original(src_fs, src_remote, dst_fs, dst_remote)
-
-        monkeypatch.setattr(state["client"], "copy_file", copy)
-        # The copy loop takes the client `wait_for_daemon` returns, which the
-        # harness builds fresh — patching `state["client"]` alone reaches the
-        # report and ledger uploads and NOTHING in the copy path, so the dead
-        # row was never actually hit and every assertion below passed on a run
-        # where nothing went wrong.
-        monkeypatch.setattr(
-            job, "wait_for_daemon", lambda daemon, attempts=30: state["client"]
-        )
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert code == 0, f"one dead row failed the whole run (exit {code})"
-        led = Ledger.open(str(tmp_path / "ledger.db"))
-        assert [r[0] for r in led.conn.execute("SELECT outcome FROM runs")] == ["ok"]
-        assert led.last_successful_run() is not None, (
-            "the watermark never engages, so every night re-reads the table"
-        )
-        assert copier.SOURCE_GONE_MARKER in caplog.text, (
-            "the dead row was never reached, so this proves nothing"
-        )
-        assert f"{job.STATUS_KEY}=ok" in caplog.text
-        assert f"{job.FLAGS_KEY}=source_gone" in caplog.text
-        # It is NOT recorded as backed up — the run stopped chasing it, which
-        # is not the same as believing it is on Box.
-        assert led.copied_versions().get(("images", "exp-42/a.png")) is None
-        # And the object it COULD copy still got copied.
-        assert any(
-            "b.png" in dst
-            for _, _, dst in TestRunLockedWiresItsPartsTogether().object_copies(state)
-        ), "the healthy object beside the dead row was not copied"
-
-    def test_a_stopped_night_whose_ledger_upload_failed_still_says_stopped(
-        self, harness, monkeypatch, caplog
-    ):
-        """The commonest night of the seed, driven end to end.
-
-        The 240-minute job limit stops the run; the multi-GB ledger upload is
-        then throttled by Box. `exit_code` ranks the ledger condition above
-        the stop — deliberately, so it keeps its own number — which meant the
-        status line was computed from code 6 and the night reported FAILED,
-        with "some or all of tonight's objects were not mirrored" over a run
-        that had copied and recorded everything it reached.
-
-        Driven rather than asserted on `_status_for` directly, because the
-        defect was in what `run_locked` PASSES it: dropping the `stopped=`
-        argument leaves every unit test green.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-
-        # The stop lands AFTER the first object, not before it: a run that
-        # copied nothing does not upload its ledger at all, so a
-        # stop-everything fake never reaches the condition under test.
-        stopped = [False]
-        original = state["client"].copy_file
-
-        def copy_then_stop(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("Box said no")
-            result = original(src_fs, src_remote, dst_fs, dst_remote)
-            stopped[0] = True
-            return result
-
-        monkeypatch.setattr(state["client"], "copy_file", copy_then_stop)
-        monkeypatch.setattr(job.stopping, "stopping", lambda: stopped[0])
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert state["copied"], "nothing was copied, so the ledger was never uploaded"
-        assert code == 6, "the ledger condition lost its own exit code"
-        assert f"{job.STATUS_KEY}=stopped" in caplog.text, (
-            "a stopped night reported something other than stopped: "
-            + next(
-                (ln for ln in caplog.text.splitlines() if job.STATUS_KEY in ln), "none"
-            )
-        )
-        assert f"{job.FLAGS_KEY}=ledger_stale" in caplog.text, (
-            "the ledger condition vanished when the headline changed"
-        )
-
-    def test_a_stop_while_the_daemon_starts_is_reported_as_stopped(
-        self, harness, monkeypatch, caplog
-    ):
-        """`lib.Stopped` exists so this is not reported as a crash.
-
-        Nothing exercised `run_locked` CATCHING it — disabling the catch left
-        the whole suite green while a stop during startup unwound as an
-        error, which renders FAILED on a night that is fine.
-        """
-        state, tmp_path = harness
-        caplog.set_level(logging.INFO)
-        monkeypatch.setattr(job.stopping, "stopping", lambda: True)
-
-        def stop_during_startup(daemon, attempts=30):
-            raise lib.Stopped("stopped while waiting for the rclone daemon")
-
-        monkeypatch.setattr(job, "wait_for_daemon", stop_during_startup)
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert code == 3, f"a deliberate stop exited {code}"
-        assert f"{job.STATUS_KEY}=stopped" in caplog.text
-        assert f"{job.STATUS_KEY}=failed" not in caplog.text
-        assert state["daemon_stopped"], "the rclone container was left running"
-        # The run must still be recorded, or the next night cannot resume.
-        rows = (
-            Ledger.open(str(tmp_path / "ledger.db"))
-            .conn.execute("SELECT outcome FROM runs")
-            .fetchall()
-        )
-        assert rows == [("partial",)], rows
-
-    def test_a_night_that_copied_nothing_is_not_called_stale(self, harness, caplog):
-        """The copy is only stale if the ledger changed without it.
-
-        A quiet night changed nothing, so the copy on Box is still current.
-        Crying stale here would train people to ignore the marker, which is
-        the only signal the real case has.
-        """
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)
-        state["copied"].clear()
-        caplog.clear()
-        job.run_locked(args, tmp_path)
-        assert job.LEDGER_STALE_MARKER not in caplog.text
-
-    def test_it_uploads_when_the_copy_on_box_is_smaller(self, harness, monkeypatch):
-        state, tmp_path = harness
-        self.with_remote_size(state, monkeypatch, 1)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert len(self.uploads(state)) == 1, "refused to update a stale copy"
-
-    def test_it_uploads_when_box_has_no_copy_yet(self, harness, monkeypatch):
-        state, tmp_path = harness
-        self.with_remote_size(state, monkeypatch, None)
-        job.run_locked(TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path)
-        assert len(self.uploads(state)) == 1, "the first upload never happens"
-
-    def test_an_equal_sized_copy_is_still_replaced(
-        self, harness, monkeypatch, tmp_path
-    ):
-        """Only SMALLER is refused. Equal means the same ledger, and a run that
-        copied something has almost certainly changed it."""
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)  # first run creates the ledger
-        size = (tmp_path / "ledger.db").stat().st_size
-        state["copied"].clear()
-        self.with_remote_size(state, monkeypatch, size)
-        # Something new to copy, so the upload is reached at all.
-        monkeypatch.setattr(
-            TestRunLockedWiresItsPartsTogether,
-            "MANIFEST",
-            "images\texp-42/c.png\tv3\t100\t2026-08-31T00:00:02+00\n",
-        )
-        job.run_locked(args, tmp_path)
-        assert len(self.uploads(state)) == 1
-
-    def test_a_night_that_copied_nothing_does_not_send_it(self, harness):
-        """It is a gigabyte or two once seeded, and an unchanged file."""
-        state, tmp_path = harness
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path)
-        job.run_locked(args, tmp_path)
-        state["copied"].clear()
-        job.run_locked(args, tmp_path)  # everything already current
-        assert self.uploads(state) == [], "re-sent an unchanged ledger"
-
-    def test_a_crashed_run_does_not_replace_the_good_copy(self, harness, monkeypatch):
-        """Crashing AFTER copying, which is the case the guard is for.
-
-        A run that dies before copying anything is already covered by the
-        nothing-copied rule; only a run that copied and then crashed can reach
-        the upload with a ledger the run never finished writing.
-        """
-        state, tmp_path = harness
-
-        def boom(*a, **kw):
-            raise RuntimeError("Box refused during verification")
-
-        monkeypatch.setattr(job, "verify_sample", boom)
-        args = TestRunLockedWiresItsPartsTogether().args(tmp_path, verify=50)
-        with pytest.raises(RuntimeError):
-            job.run_locked(args, tmp_path)
-        assert state["copied"], "nothing was copied, so this proves nothing"
-        assert self.uploads(state) == [], "a half-written ledger was uploaded"
-
-    def test_a_run_that_copied_nothing_and_crashed_is_also_skipped(
-        self, harness, monkeypatch
-    ):
-        state, tmp_path = harness
-
-        def boom(*a, **kw):
-            raise RuntimeError("preflight could not reach MinIO")
-
-        monkeypatch.setattr(job, "preflight_source", boom)
-        with pytest.raises(RuntimeError):
-            job.run_locked(
-                TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-            )
-        assert self.uploads(state) == []
-
-    def test_a_failed_upload_neither_fails_the_run_nor_strands_the_container(
-        self, harness, monkeypatch, caplog
-    ):
-        state, tmp_path = harness
-        real_copy = state["client"].copy_file
-
-        def refuse_the_ledger(src_fs, src_remote, dst_fs, dst_remote):
-            if src_remote == "ledger.db":
-                raise RcloneError("box: quota exceeded", retryable=False)
-            return real_copy(src_fs, src_remote, dst_fs, dst_remote)
-
-        monkeypatch.setattr(state["client"], "copy_file", refuse_the_ledger)
-        code = job.run_locked(
-            TestRunLockedWiresItsPartsTogether().args(tmp_path), tmp_path
-        )
-        assert code == 6, "a failed ledger upload must fail the run"
-        assert state["daemon_stopped"], "the rclone container was left behind"
-        assert "upload failed" in caplog.text
 
 
 class TestACrashedRunStillLeavesARecord:
@@ -3040,17 +2628,16 @@ class TestTheVerdictTheSummaryReads:
             assert job._status_for(code, "partial") == "failed", code
 
     def test_a_condition_the_run_found_is_not_a_failed_run(self):
-        """4, 5 and 6 exit non-zero, and none of them means copying failed.
+        """4 and 5 exit non-zero, and neither means copying failed.
 
-        Exit 4 is a verification mismatch, 5 a refused collision, 6 a ledger
-        upload that did not land — on all three, every copy the run attempted
-        succeeded. Reported as `failed`, the summary told the operator that
-        objects had not been mirrored on a night when they had, contradicting
-        the log two lines below it and, for exit 6, its own notice one line
-        below. The condition still reaches them: it is in the flags, and the
-        non-zero exit still raises the red tick.
+        Exit 4 is a verification mismatch and 5 a refused collision — on both,
+        every copy the run attempted succeeded. Reported as `failed`, the
+        summary told the operator that objects had not been mirrored on a night
+        when they had, contradicting the log two lines below it. The condition
+        still reaches them: it is in the flags, and the non-zero exit still
+        raises the red tick.
         """
-        for code in (4, 5, 6):
+        for code in (4, 5):
             assert job._status_for(code, "ok") == "ok", code
             assert job._status_for(code, "partial") == "partial", code
 
@@ -3070,15 +2657,13 @@ class TestTheVerdictTheSummaryReads:
     def test_a_stop_is_still_a_stop_when_a_condition_outranks_it(self):
         """Exit code and headline answer different questions.
 
-        A seed night stopped by the job's 240-minute limit whose ledger
-        upload was throttled exits 6, because the ledger is the thing worth
-        a person's attention. It is still a stopped night, and "stopped,
-        progress kept — nothing is lost" is what its operator must read.
+        A seed night stopped by the job's 240-minute limit that also refused a
+        collision exits 5, because the collision is the thing worth a person's
+        attention. It is still a stopped night, and "stopped, progress kept —
+        nothing is lost" is what its operator must read.
         """
-        code = job.exit_code(
-            failed=0, verify_mismatched=0, stopped=True, ledger_flag="ledger_stale"
-        )
-        assert code == 6, "the ledger condition lost its own exit code"
+        code = job.exit_code(failed=0, verify_mismatched=0, stopped=True, collisions=1)
+        assert code == 5, "the collision lost its own exit code"
         assert job._status_for(code, "partial", stopped=True) == "stopped"
 
     def test_failed_copies_outrank_a_stop_in_the_headline(self):
@@ -3124,8 +2709,6 @@ class TestTheVerdictTheSummaryReads:
             "skipped_names": self.totals(skipped=1),
             "verify_mismatch": self.totals(verify_mismatched=1),
             "verify_incomplete": self.totals(verify_unverified=1),
-            "ledger_stale": self.totals(ledger_flag="ledger_stale"),
-            "ledger_ahead": self.totals(ledger_flag="ledger_ahead"),
         }
         for flag, totals in cases.items():
             assert flag in job._flags_for(totals), f"{flag} never reaches the summary"
@@ -3148,7 +2731,7 @@ class TestTheVerdictTheSummaryReads:
             skipped=5,
             verify_mismatched=1,
             verify_unverified=1,
-            ledger_flag="ledger_stale",
+            source_gone=1,
         )
         flags = job._flags_for(every)
         assert set(flags) <= set(job.FLAG_VALUES)
@@ -3161,9 +2744,9 @@ class TestTheVerdictTheSummaryReads:
         import logging as _logging
 
         caplog.set_level(_logging.INFO)
-        job.emit_status("ok", ("collisions", "ledger_stale"))
+        job.emit_status("ok", ("collisions", "source_gone"))
         line = [ln for ln in caplog.text.splitlines() if job.FLAGS_KEY in ln][-1]
-        assert "collisions,ledger_stale" in line, line
+        assert "collisions,source_gone" in line, line
 
 
 class TestTheStandDownVerdictReachesTheSummary:
@@ -3334,7 +2917,11 @@ class TestTheReadinessPollIsImpatient:
 
         monkeypatch.setattr(job, "RcloneRC", Recorder)
         daemon = types.SimpleNamespace(
-            url="http://127.0.0.1:5572", user="u", password="p", container="c"
+            url="http://127.0.0.1:5572",
+            user="u",
+            password="p",
+            exit_code=lambda: None,
+            log_tail=lambda lines=40: "",
         )
         client = job.wait_for_daemon(daemon)
         assert seen[0] == job.DAEMON_READY_TIMEOUT_SECONDS
@@ -3353,7 +2940,11 @@ class TestTheReadinessPollIsImpatient:
         """
         monkeypatch.setattr(job.stopping, "stopping", lambda: True)
         daemon = types.SimpleNamespace(
-            url="http://127.0.0.1:5572", user="u", password="p", container="c"
+            url="http://127.0.0.1:5572",
+            user="u",
+            password="p",
+            exit_code=lambda: None,
+            log_tail=lambda lines=40: "",
         )
         with pytest.raises(lib.Stopped):
             job.wait_for_daemon(daemon)
@@ -3361,6 +2952,200 @@ class TestTheReadinessPollIsImpatient:
     def test_a_stop_is_not_a_backup_error(self):
         """They end the run for opposite reasons, so one cannot catch both."""
         assert not issubclass(lib.Stopped, lib.BackupError)
+
+
+class TestADaemonThatNeverAnswersIsASetupError:
+    """A daemon that dies or never listens ends the run as a setup error, with
+    its own log, rather than as thirty polls and a generic timeout."""
+
+    def daemon(self, exit_code=None):
+        return types.SimpleNamespace(
+            url="http://127.0.0.1:5572",
+            user="u",
+            password="p",
+            exit_code=lambda: exit_code,
+            log_tail=lambda lines=40: "ERROR : bind: address already in use",
+        )
+
+    def refusing_client(self, monkeypatch, polled):
+        class Refuse(job.RcloneRC):
+            def noop(self):
+                polled.append(1)
+                raise RcloneError("connection refused", retryable=True)
+
+        monkeypatch.setattr(job, "RcloneRC", Refuse)
+
+    def test_one_that_exited_fails_at_once_with_its_log(self, monkeypatch):
+        polled = []
+        self.refusing_client(monkeypatch, polled)
+        with pytest.raises(
+            job.rclone_daemon.DaemonError, match="address already in use"
+        ):
+            job.wait_for_daemon(self.daemon(exit_code=1))
+        assert polled == [], "it polled a daemon that had already exited"
+
+    def test_one_that_never_answers_fails_with_its_log(self, monkeypatch):
+        polled = []
+        self.refusing_client(monkeypatch, polled)
+        with pytest.raises(
+            job.rclone_daemon.DaemonError, match="never became ready"
+        ) as caught:
+            job.wait_for_daemon(self.daemon(), attempts=3)
+        assert "address already in use" in str(caught.value), "its log is missing"
+        assert len(polled) == 3
+
+    def test_either_one_exits_two(self):
+        assert issubclass(job.rclone_daemon.DaemonError, lib.BackupError)
+
+
+class TestADatabaseFailureIsASetupError:
+    """A rejected password or an unreachable host exits 2 and moves nothing.
+
+    Raised as anything but a BackupError it would escape `main` as a traceback
+    and exit 1, which the workflow reads as "objects failed after retries".
+    """
+
+    def test_a_rejected_password_exits_two_before_a_run_is_recorded(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        def reject(conn):
+            raise job.postgres.PostgresError(
+                "psql failed (2): FATAL:  password authentication failed "
+                'for user "supabase_admin"'
+            )
+
+        monkeypatch.setattr(job.postgres, "database_now", reject)
+        monkeypatch.setattr(job, "require_rclone_config", lambda path, remote: None)
+        monkeypatch.setenv("MINIO_ROOT_USER", "root")
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", "secret")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "wrong")
+        env_file = tmp_path / ".env.prod"
+        env_file.write_text(
+            "OBJECT_BACKUP_MINIO_BUCKET=bloom-storage\n"
+            "OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage\n"
+        )
+        state = tmp_path / "state"
+
+        code = job.main(
+            ["--env", "prod", "--env-file", str(env_file), "--state-dir", str(state)]
+        )
+
+        assert code == 2
+        assert "password authentication failed" in caplog.text
+        assert "Traceback" not in caplog.text
+        runs = sqlite3.connect(state / "ledger.db").execute("SELECT count(*) FROM runs")
+        assert runs.fetchone()[0] == 0, "a run was started against a refused database"
+
+
+class TestCredentialsReachOnlyWhatUsesThem:
+    """The run holds the Postgres password and MinIO's root keys on `args`.
+
+    Left in the environment, every child process would inherit them. Taken out
+    at start-up, psql gets only its own password and rclone gets none.
+    """
+
+    PG = "pg-sentinel-7Q"
+    MINIO_USER = "minio-user-sentinel-3K"
+    MINIO_PASS = "minio-pass-sentinel-9Z"
+    CREDENTIALS = ("POSTGRES_PASSWORD", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
+
+    def setup_env(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("POSTGRES_PASSWORD", self.PG)
+        monkeypatch.setenv("MINIO_ROOT_USER", self.MINIO_USER)
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", self.MINIO_PASS)
+        monkeypatch.setattr(job, "require_rclone_config", lambda path, remote: None)
+        env_file = tmp_path / ".env.prod"
+        env_file.write_text(
+            "OBJECT_BACKUP_MINIO_BUCKET=bloom-storage\n"
+            "OBJECT_BACKUP_BOX_ROOT=Bloom-Backups/BloomV2-Data-Backup/prod/storage\n"
+        )
+        return [
+            "--env",
+            "prod",
+            "--env-file",
+            str(env_file),
+            "--state-dir",
+            str(tmp_path / "state"),
+        ]
+
+    def drive_dry_run(self, monkeypatch, tmp_path, *, psql_rc=0, psql_stderr=""):
+        """`main` through a dry run, with psql faked at the process boundary."""
+        import subprocess
+
+        envs = []
+
+        def fake_run(argv, *, input=None, capture_output=None, text=None, env=None):
+            envs.append(env)
+            return subprocess.CompletedProcess(
+                argv,
+                psql_rc,
+                "2026-08-31T02:17:03+00\n" if not psql_rc else "",
+                psql_stderr,
+            )
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, input=None):
+                return ("", "")
+
+        def fake_popen(argv, **kwargs):
+            envs.append(kwargs.get("env"))
+            return FakeProc()
+
+        monkeypatch.setattr(job.postgres.subprocess, "run", fake_run)
+        monkeypatch.setattr(job.postgres.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            job.postgres.shutil, "which", lambda name: f"/usr/bin/{name}"
+        )
+        argv = self.setup_env(monkeypatch, tmp_path) + ["--dry-run"]
+        return job.main(argv), envs
+
+    def test_after_start_up_the_environment_holds_no_credential(
+        self, monkeypatch, tmp_path
+    ):
+        seen = {}
+
+        def capture(args):
+            seen["environ"] = dict(os.environ)
+            seen["args"] = args
+            return 0
+
+        monkeypatch.setattr(job, "run_backup", capture)
+        assert job.main(self.setup_env(monkeypatch, tmp_path)) == 0
+        for key in self.CREDENTIALS:
+            assert key not in seen["environ"], f"{key} is still in the environment"
+        assert seen["args"].pg_password == self.PG
+        assert seen["args"].minio_access == self.MINIO_USER
+        assert seen["args"].minio_secret == self.MINIO_PASS
+
+    def test_psql_gets_its_password_and_no_other_credential(
+        self, monkeypatch, tmp_path
+    ):
+        code, envs = self.drive_dry_run(monkeypatch, tmp_path)
+        assert code == 0
+        assert envs, "psql was never run"
+        for env in envs:
+            assert env["PGPASSWORD"] == self.PG
+            for key in self.CREDENTIALS:
+                assert key not in env, f"psql inherited {key}"
+
+    @pytest.mark.parametrize("refused", [False, True], ids=["clean", "refused"])
+    def test_no_log_record_carries_a_credential(
+        self, refused, monkeypatch, tmp_path, caplog
+    ):
+        caplog.set_level(logging.DEBUG)
+        code, _ = self.drive_dry_run(
+            monkeypatch,
+            tmp_path,
+            psql_rc=2 if refused else 0,
+            psql_stderr='FATAL:  password authentication failed for user "x"'
+            if refused
+            else "",
+        )
+        assert code == (2 if refused else 0)
+        for secret in (self.PG, self.MINIO_USER, self.MINIO_PASS):
+            assert secret not in caplog.text
 
 
 class TestConfigIsCheckedBeforeTheEightMillionRowRead:
@@ -3375,31 +3160,15 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         calls = []
         monkeypatch.setenv("POSTGRES_PASSWORD", "db-secret")
 
-        class FakeDock:
-            DB_SERVICE = "db-prod"
-            DockerError = job.dock.DockerError
+        def query_to_file(conn, sql, destination):
+            calls.append("manifest")
+            destination.write_text("")
+            return 0
 
-            @staticmethod
-            def project_name(env):
-                return f"bloom_v2_{env}"
-
-            @staticmethod
-            def find_container(project, service):
-                return "container"
-
-            @staticmethod
-            def database_now(container, user, database, password=""):
-                return "2026-08-31T02:17:03+00"
-
-            @staticmethod
-            def psql_query_to_file(
-                container, sql, user, database, destination, password=""
-            ):
-                calls.append("manifest")
-                destination.write_text("")
-                return 0
-
-        monkeypatch.setattr(job, "dock", FakeDock)
+        monkeypatch.setattr(
+            job.postgres, "database_now", lambda conn: "2026-08-31T02:17:03+00"
+        )
+        monkeypatch.setattr(job.postgres, "query_to_file", query_to_file)
         for name, value in stubs.items():
             monkeypatch.setattr(job, name, value)
         args = job.parse_args(
@@ -3455,9 +3224,9 @@ class TestConfigIsCheckedBeforeTheEightMillionRowRead:
         )
         args.pg_password = ""
         monkeypatch.setattr(
-            job.dock,
+            job.postgres,
             "database_now",
-            staticmethod(lambda *a, **k: calls.append("watermark")),
+            lambda *a, **k: calls.append("watermark"),
         )
         with pytest.raises(lib.BackupError, match="POSTGRES_PASSWORD is not set"):
             job.run_locked(args, tmp_path)
@@ -4094,7 +3863,7 @@ class TestItReadsItsSettingsFromTheDeployEnvFile:
             assert leaked not in found
 
     def test_the_minio_secret_is_returned_and_not_exported(self, tmp_path, monkeypatch):
-        """Every `docker` child inherits this process's environment.
+        """Every child process inherits this process's environment.
 
         A secret left in it travels to all of them; returned instead, it
         reaches only the one function that builds the S3 source.
@@ -4234,7 +4003,7 @@ class TestAMalformedNumberIsAConfigFailure:
 
     @pytest.mark.parametrize("key", ["OBJECT_BACKUP_WORKERS", "OBJECT_BACKUP_RC_PORT"])
     # Blank is not malformed — `apply_env_file` treats it as absent and the
-    # default stands, so these would run on into a real `docker ps`.
+    # default stands, so these would run on into a real database connection.
     # `test_a_blank_value_still_falls_back_to_the_default` covers that.
     @pytest.mark.parametrize("bad", ["lots", "5572x", "8.5"])
     def test_it_names_the_key_and_exits_two(
@@ -4246,7 +4015,7 @@ class TestAMalformedNumberIsAConfigFailure:
 
         assert job.main(["--env", "prod", "--state-dir", str(tmp_path)]) == 2
         # The reason, not just the code: exit 2 is also what a run that reaches
-        # a real `docker ps` returns, so the code alone proves nothing.
+        # a real database connection returns, so the code alone proves nothing.
         assert key in caplog.text and "must be a whole number" in caplog.text
 
     def test_a_blank_value_still_falls_back_to_the_default(self, monkeypatch):
@@ -4383,7 +4152,7 @@ class TestTheAllowListCoversEverySettingTheJobReads:
     def test_neither_credential_reaches_the_environment(
         self, key, monkeypatch, tmp_path
     ):
-        """Every docker child inherits this process's environment."""
+        """Every child process inherits this process's environment."""
         monkeypatch.delenv(key, raising=False)
         (tmp_path / ".env.prod").write_text(f"{key}=from-the-file\n")
 
@@ -4395,7 +4164,7 @@ class TestTheAllowListCoversEverySettingTheJobReads:
     def test_a_half_filled_file_is_refused(self, monkeypatch, tmp_path):
         """The guard that refused every night until it was fixed must still refuse.
 
-        Driven to the guard rather than through `main`, whose container lookup
+        Driven to the guard rather than through `main`, whose database read
         comes first and would answer with an unrelated failure.
         """
         for key in self.CREDENTIALS:
