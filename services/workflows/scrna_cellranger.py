@@ -1,15 +1,15 @@
 """
-Cell Ranger trigger: list the samples and references in the bucket, validate a
-run request against them, and create the run with `request_scrna_cellranger_run`.
+Cell Ranger trigger: validate a run request and create the run with
+`request_scrna_cellranger_run`.
 
-A run is one sample (one folder of FASTQs under raw_reads/) and one reference.
+A run is one sample (one folder of FASTQs under raw_reads/) and one reference. The
+pipeline checks that the reference and the FASTQs exist and fails the run if not.
 """
 
 import re
 
 from fastapi import HTTPException
 
-import scrna_s3
 from supabase_client import app_client
 
 # Allowed sample and reference names ('__' separates run_key parts); the database checks the same rule.
@@ -19,49 +19,12 @@ NAME_HELP = (
     "with no '__' (at most 100)"
 )
 
-# Most folders returned by one inputs listing.
-MAX_LISTED_FOLDERS = 200
-
 RUNS_TABLE = "scrna_cellranger_runs"
 REQUEST_FN = "request_scrna_cellranger_run"
 
 
 def _valid_name(value) -> bool:
     return isinstance(value, str) and bool(NAME_RULE.match(value))
-
-
-def list_inputs() -> dict:
-    """Samples (with FASTQ count and size) and references available in the bucket."""
-    s3 = scrna_s3.client()
-
-    sample_names, samples_truncated = scrna_s3.list_sample_folders(
-        s3, MAX_LISTED_FOLDERS
-    )
-    samples = []
-    unusable = []
-    for name in sample_names:
-        if not _valid_name(name):
-            unusable.append(name)
-            continue
-        count, size = scrna_s3.sample_fastqs(s3, name)
-        samples.append({"name": name, "fastq_count": count, "total_bytes": size})
-
-    reference_names, references_truncated = scrna_s3.list_reference_folders(
-        s3, MAX_LISTED_FOLDERS
-    )
-    references = [
-        name
-        for name in reference_names
-        if _valid_name(name) and scrna_s3.reference_exists(s3, name)
-    ]
-
-    return {
-        "samples": samples,
-        "references": references,
-        "unusable_sample_folders": unusable,
-        "samples_truncated": samples_truncated,
-        "references_truncated": references_truncated,
-    }
 
 
 def _validate_request(body) -> tuple[str, str]:
@@ -84,15 +47,6 @@ def _validate_request(body) -> tuple[str, str]:
 
 def trigger_run(body, user_id: str) -> dict:
     sample, reference = _validate_request(body)
-
-    s3 = scrna_s3.client()
-    if not scrna_s3.reference_exists(s3, reference):
-        raise HTTPException(
-            status_code=404,
-            detail=f"no Cell Ranger reference at reference_genome/{reference}/ (expected reference.json)",
-        )
-    if scrna_s3.sample_fastqs(s3, sample)[0] == 0:
-        raise HTTPException(status_code=404, detail=f"no FASTQs at raw_reads/{sample}/")
 
     client = app_client()
     run_id = (

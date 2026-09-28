@@ -27,9 +27,6 @@ dependencies = [
     # Already present transitively via sleap-roots-contracts; declared directly since
     # this module imports it itself (bloom #737).
     "pyyaml>=6",
-    # Lists raw_reads/ and reference_genome/ in the scRNA workflows bucket for the
-    # Cell Ranger trigger (scrna_s3.py).
-    "boto3>=1.35",
 ]
 
 [project.optional-dependencies]

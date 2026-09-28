@@ -40,11 +40,6 @@ Endpoints:
                                                        Argo/K8s; live reconciliation is
                                                        exclusively status_poller.py's job
                                                        (requires a Supabase user JWT)
-    GET  /scrna/cellranger/inputs                   - samples (raw_reads/ folders with
-                                                       FASTQ count and size) and
-                                                       references available to a
-                                                       Cell Ranger run
-                                                       (requires a Supabase user JWT)
     POST /scrna/cellranger/runs                     - start a Cell Ranger run for one
                                                        sample + a reference: writes
                                                        the run and queues it for the
@@ -232,18 +227,6 @@ def get_pipeline_run_route(
     """
     enforce_rate_limit(user_id)
     return pipeline.get_run(run_id)
-
-
-@app.get("/scrna/cellranger/inputs")
-def list_scrna_cellranger_inputs_route(
-    user_id: str = Depends(require_supabase_user),
-):
-    """Samples and references a Cell Ranger run can use, listed live from the bucket.
-
-    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
-    """
-    enforce_rate_limit(user_id)
-    return scrna_cellranger.list_inputs()
 
 
 @app.post("/scrna/cellranger/runs", status_code=201)
