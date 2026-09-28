@@ -182,6 +182,24 @@ curl -X POST http://localhost:5100/pipeline \
 # {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 0}
 ```
 
+### Cell Ranger trigger
+
+Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per run**. A sample is one 10x library: a first-level folder under `raw_reads/` in the scRNA workflows bucket (`bloomv2-workflows`), holding all its lanes and re-sequencing runs. Separate captures are separate runs. A reference is a first-level folder under `reference_genome/` that contains `reference.json`.
+
+- `POST /scrna/cellranger/runs` takes `{"sample": ..., "reference": ...}`. Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` and may not contain `__` (422 otherwise). It calls `request_scrna_cellranger_run`, which writes the run to `rnaseq_runs` (`workflow_type` `scrna-cellranger`, the names in `params`) and one `rnaseq_dispatch` message in a single transaction, and returns 201.
+- `GET /scrna/cellranger/runs/{run_id}` returns the run's `rnaseq_runs` row; a run of another workflow type is a 404.
+
+This service does not read the bucket. The pipeline checks that the reference and the FASTQs exist, and fails the run with exit 3 (no reference) or exit 4 (no FASTQs) if not. The results go to `runs_output/<sample>__<reference>__<user id>/`, so one sample can be counted against several references, and two users running the same pair get separate folders. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
+
+```bash
+curl -X POST http://localhost:5100/scrna/cellranger/runs \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"sample": "tinygex", "reference": "tiny_ref"}'
+
+# 201 {"run_id": 1, "sample": "tinygex", "reference": "tiny_ref", "run_key": "tinygex__tiny_ref__<user id>"}
+```
+
 ### Pipeline dispatch worker
 
 `dispatch_worker.py` (bloom #11/#404, Phase 2 of 3 — see
