@@ -104,7 +104,8 @@ class ClusteringParams(BaseModel):
 
     experiment: str = Field(
         ...,
-        description="Experiment (CSV filename) to cluster. Must have a cleaned version "
+        description="Experiment identifier (from list_available_experiments) "
+        "to cluster. Must have a cleaned version "
         "produced by qc_clean; clustering consumes it (require_clean). Resolves the most "
         "recent outlier trim when one exists for the experiment, not merely the most "
         "recent clean.",

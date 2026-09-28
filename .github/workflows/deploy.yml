@@ -960,7 +960,8 @@ jobs:
   # older waiting runs lets the newest push through to the approval gate.
   supersede-stale-staging-waits:
     name: Cancel older staging runs awaiting approval
-    if: github.ref == 'refs/heads/staging' || github.event.inputs.environment == 'staging'
+    # Only a run from the staging branch can pass the staging gate, so only it may supersede.
+    if: github.ref == 'refs/heads/staging' && (github.event_name == 'push' || github.event.inputs.environment == 'staging')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -979,11 +980,16 @@ jobs:
             # Production waits are left alone; only the staging gate is superseded.
             envs=$(gh api "repos/$REPO/actions/runs/$id/pending_deployments" \
               --jq '[.[].environment.name] | join(",")')
-            if [[ ",$envs," == *",staging,"* ]]; then
-              gh api -X POST "repos/$REPO/actions/runs/$id/cancel" --silent
-              echo "::notice::Cancelled run $id: it was waiting for staging approval and run $RUN_ID supersedes it"
+            if [[ "$envs" == "staging" ]]; then
+              if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" --silent; then
+                echo "::notice::Cancelled run $id: it was waiting for staging approval and run $RUN_ID supersedes it"
+              else
+                echo "::error::Could not cancel run $id, which is waiting for staging approval; it may still be holding the deploy queue"
+                failed=1
+              fi
             fi
           done
+          exit "${failed:-0}"
 
   deploy-staging:
     name: Deploy to Staging
@@ -1002,6 +1008,9 @@ jobs:
       # time across the whole repo (single Salk server, single docker daemon).
       group: deploy-bloom
       cancel-in-progress: false
+    env:
+      # A push deploys its own commit, not whatever staging's tip is by approval time.
+      DEPLOY_REF: ${{ github.event_name == 'push' && github.sha || 'origin/staging' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -1013,6 +1022,45 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
+
+      # Every refusal happens here, before anything on the server changes, so
+      # "Rollback on failure" skips a run this step stopped.
+      - name: Check the commit can be deployed
+        id: preflight_staging
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              echo '::error::Working tree is dirty on staging server — deploy aborted'
+              echo 'Uncommitted changes detected:'
+              git status --short
+              echo ''
+              echo 'Someone made local changes on the server. Resolve before deploying:'
+              echo '  1. SSH to the server and commit + push the changes, or'
+              echo '  2. Discard them: git checkout -- .'
+              echo 'Previous deployment remains running.'
+              exit 1
+            fi
+            git fetch origin staging
+            # \$DEPLOY_REF is expanded on the runner.
+            git cat-file -e '$DEPLOY_REF^{commit}' 2>/dev/null \
+              || { echo \"::error::$DEPLOY_REF not found after fetching staging — it may have been force-pushed away. Run Deploy manually from the staging branch to deploy the tip.\"; exit 1; }
+            if [ '$DEPLOY_REF' != origin/staging ] && ! git merge-base --is-ancestor HEAD '$DEPLOY_REF'; then
+              echo \"::error::$DEPLOY_REF is not a descendant of the deployed commit \$(git rev-parse HEAD) — refusing to move staging backwards. Run Deploy manually from the staging branch to redeploy the tip.\"
+              exit 1
+            fi
+            echo \"OK to deploy $DEPLOY_REF over \$(git rev-parse HEAD)\"
+          "
+
+      - name: Save previous SHA for rollback
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            mkdir -p '${{ secrets.STAGING_DEPLOY_PATH }}.state'
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            git rev-parse HEAD > '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha'
+            echo \"Saved previous SHA: \$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')\"
+          "
 
       # The runner is co-located with the deploy target (same host, running as
       # bloom-deploy). Env-file assembly uses direct local filesystem commands
@@ -1095,46 +1143,28 @@ jobs:
             "test -r ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" \
             || { echo "::error::DEPLOY_USER cannot read .env.staging — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
-      - name: Save previous SHA for rollback
-        run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            mkdir -p '${{ secrets.STAGING_DEPLOY_PATH }}.state'
-            cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            git rev-parse HEAD > '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha'
-            echo \"Saved previous SHA: \$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')\"
-          "
-
-      - name: Pull latest code
+      - name: Check out the commit to deploy
         id: pull_staging
-        env:
-          # A push deploys its own commit, not whatever staging's tip is by approval time.
-          DEPLOY_REF: ${{ github.event_name == 'push' && github.sha || 'origin/staging' }}
         run: |
+          set -o pipefail
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            if ! git diff --quiet || ! git diff --cached --quiet; then
-              echo '::error::Working tree is dirty on staging server — deploy aborted'
-              echo 'Uncommitted changes detected:'
-              git status --short
-              echo ''
-              echo 'Someone made local changes on the server. Resolve before deploying:'
-              echo '  1. SSH to the server and commit + push the changes, or'
-              echo '  2. Discard them: git checkout -- .'
-              echo 'Previous deployment remains running.'
-              exit 1
-            fi
             BEFORE=\$(git rev-parse HEAD)
-            git fetch origin staging
+            # \$DEPLOY_REF is expanded on the runner; the preflight step already fetched and checked it.
             git reset --hard '$DEPLOY_REF'
             AFTER=\$(git rev-parse HEAD)
+            [ \"\$AFTER\" = \"\$(git rev-parse '$DEPLOY_REF^{commit}')\" ] \
+              || { echo \"::error::Reset landed on \$AFTER, not $DEPLOY_REF\"; exit 1; }
+            echo \"Deployed \$AFTER (was \$BEFORE)\"
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- volumes/api/kong.yml \
               && echo 'KONGFILE_CHANGED=false' || echo 'KONGFILE_CHANGED=true'
           " | tee /tmp/pull_staging.out
-          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2 || true)
           echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
-          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2 || true)
           echo "kongfile_changed=${kong_changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
@@ -1692,7 +1722,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rollback on failure
-        if: failure()
+        # A run the preflight stopped changed nothing on the server, so there is nothing to roll back.
+        if: failure() && steps.preflight_staging.outcome == 'success'
         run: |
           # DB state is NOT rolled back by this step. See the matching comment
           # on the production rollback step above and issue #177.
