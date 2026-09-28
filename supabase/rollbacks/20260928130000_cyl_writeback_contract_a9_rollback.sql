@@ -1,43 +1,26 @@
--- Re-pin the cyl write-back RPC's accepted contract_version 0.1.0a7 -> 0.1.0a9.
--- Change: repin-cyl-contract-a9 (bloom#895).
+-- Rollback for 20260928130000_cyl_writeback_contract_a9.sql
+-- Manual break-glass only.
 --
--- WHY: the trait extractor moves to sleap-roots-contracts==0.1.0a9
---   (talmolab/sleap-roots#269) and stamps every envelope contract_version =
---   "0.1.0a9"; this RPC accepted only 0.1.0a7. For the RPC the bump is a pure
---   version restamp: result_envelope.schema.json differs from a7 only in its $id
---   (a7->a8 and a8->a9 both $id-only), ResultEnvelope/Provenance/TraitValue/BlobRef
---   are AST-identical between the tags, and identity.py/hashing.py are unchanged.
+-- Restores insert_cyl_result_envelope to 0.1.0a7: everything from CREATE through
+-- the final GRANT is copied verbatim from
+-- 20260917140000_fix_cyl_redelivery_status_fallback.sql, the exact definition the
+-- a9 migration replaced -- WITH the bloom#875 no-op fallback. (Not
+-- 20260917140000's own rollback, which restores the older pre-fallback body.)
+-- Same 2-arg signature, so CREATE OR REPLACE only.
 --
--- WHAT: CREATE OR REPLACE the live 2-arg insert_cyl_result_envelope(jsonb, text).
---   Everything from CREATE through the final GRANT is copied verbatim, comments
---   included, from 20260917140000_fix_cyl_redelivery_status_fallback.sql (the
---   newest definition; it carries the bloom#875 no-op fallback) -- only the
---   pinned_version literal changes. Not #766's 1-arg a7 body: 20260912110000
---   dropped the (jsonb) overload, and recreating it would regress bloom#875.
---   Same signature, so no DROP FUNCTION and no PGRST202 window. Owner and grants
---   are re-asserted, matching 20260917140000's convention.
---   tests/unit/test_cyl_writeback_a9_migration_files.py enforces the one-line diff.
---
--- NO CUTOVER GUARD (deliberate): the a3/a7 re-pins prepended a DO block that
---   raised if rows stamped with the retiring version existed. Such rows are the
---   expected, legitimate result of the previous pin being live: the a7 guard
---   wedged every staging deploy for six days on ten 0.1.0a3 rows (bloom#685),
---   cleared only by restamping them (bloom#787). The pin gates NEW inserts only --
---   existing rows keep their own contract_version as provenance, and no view, read
---   RPC or reader filters on it. See cyl-trait-writeback, "A contract re-pin leaves
---   existing rows untouched". Never restamp real rows.
---
--- BREAKING (planned cutover): from apply until the traits template's pin bump
---   lands, a7 envelopes are rejected ("contract_version mismatch"), loudly --
---   including re-deliveries of scans already ingested under a7, because the
---   version check (step 2) runs before the source gate (step 5). The first
---   run after the bump recomputes those scans (the a9 extractor skips a scan
---   only when both its idempotency key and contract_version match) and delivers
---   a9 envelopes under new keys.
---
--- No table/column changes. Forward-only.
--- Manual rollback (staging hot-apply only -- see its header):
---   supabase/rollbacks/20260925120000_cyl_writeback_contract_a9_rollback.sql
+-- This is the STAGING HOT-APPLY only. Applying it by hand leaves 20260928130000
+-- recorded as applied in supabase_migrations.schema_migrations, so CI, fresh
+-- stacks and the next promotion to production would still apply a9. A durable
+-- rollback is, together:
+--   1. a new forward migration whose body is this file;
+--   2. PINNED_VERSION flipped back to 0.1.0a7 in the integration tests (and
+--      contracts/ re-pinned, or the pin/RPC tie in test_contract_migration_match.py
+--      fails);
+--   3. the traits template in talmolab/sleap-roots-pipeline re-pinned to
+--      sha-689cffb@sha256:ab5a1f43a74f2d00e809f2deb0dc886876028cc3028b0fdaf600f408e860f369
+--      (tag, digest and SRT_TRAITS_CONTAINER_DIGEST together).
+-- Rolling back only one side reopens the a7/a9 mismatch: whichever version the
+-- producer stamps and the RPC does not accept is rejected.
 
 BEGIN;
 
@@ -51,7 +34,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $fn$
 DECLARE
-    pinned_version constant text := '0.1.0a9';
+    pinned_version constant text := '0.1.0a7';
     prov           jsonb;
     v_idem         text;
     v_scan_key     text;

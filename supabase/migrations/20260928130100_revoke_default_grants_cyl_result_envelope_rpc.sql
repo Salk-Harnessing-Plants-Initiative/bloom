@@ -19,7 +19,7 @@
 --   tests/integration/test_security_definer_grants.py.
 --
 -- Forward-only. Manual rollback (re-opens the default grants):
---   supabase/rollbacks/20260925120100_revoke_default_grants_cyl_writeback_rpc_rollback.sql
+--   supabase/rollbacks/20260928130100_revoke_default_grants_cyl_result_envelope_rpc_rollback.sql
 
 BEGIN;
 

@@ -42,8 +42,8 @@ pure version restamp. The verification is in design.md.
   - `contract-pinning`: MODIFIED *Pinned contract schema is vendored at an explicit version*; ADDED
     *The write-back RPC's pinned version matches the vendored pin*.
 - **Affected code:**
-  - `supabase/migrations/20260925120000_cyl_writeback_contract_a9.sql` and its rollback.
-  - `supabase/migrations/20260925120100_revoke_default_grants_cyl_writeback_rpc.sql` and its
+  - `supabase/migrations/20260928130000_cyl_writeback_contract_a9.sql` and its rollback.
+  - `supabase/migrations/20260928130100_revoke_default_grants_cyl_result_envelope_rpc.sql` and its
     rollback.
   - `contracts/{schema/result_envelope.schema.json,pin.json,README.md}`.
   - `tests/integration/{test_cyl_writeback_rpc.py,test_cyl_read_path.py,test_contract_migration_match.py}`

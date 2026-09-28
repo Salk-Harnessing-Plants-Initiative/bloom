@@ -48,7 +48,7 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
 > `bloomctl` still writes and reads the legacy `run_manifest.json`, which the a9 traits reader
 > accepts via `allow_legacy=True` until `talmolab/sleap-roots-pipeline#82`. The write-back RPC's
 > literal moved to `a9` in the same change — see
-> `supabase/migrations/20260925120000_cyl_writeback_contract_a9.sql`.
+> `supabase/migrations/20260928130000_cyl_writeback_contract_a9.sql`.
 
 > Note on `v0.1.0a8` (skipped by Bloom's re-pins; documented for completeness): an **`$id`-only
 > structural no-op for the JSON Schema**. The change is predict-side and **BREAKING** on the Python

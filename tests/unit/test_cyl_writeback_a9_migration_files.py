@@ -23,8 +23,8 @@ MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
 ROLLBACKS = REPO_ROOT / "supabase" / "rollbacks"
 
 BASE = MIGRATIONS / "20260917140000_fix_cyl_redelivery_status_fallback.sql"
-MIGRATION_A9 = MIGRATIONS / "20260925120000_cyl_writeback_contract_a9.sql"
-ROLLBACK_A9 = ROLLBACKS / "20260925120000_cyl_writeback_contract_a9_rollback.sql"
+MIGRATION_A9 = MIGRATIONS / "20260928130000_cyl_writeback_contract_a9.sql"
+ROLLBACK_A9 = ROLLBACKS / "20260928130000_cyl_writeback_contract_a9_rollback.sql"
 BASE_ROLLBACK = ROLLBACKS / "20260917140000_fix_cyl_redelivery_status_fallback_rollback.sql"
 
 REGION_START = "CREATE OR REPLACE FUNCTION public.insert_cyl_result_envelope("
@@ -112,8 +112,8 @@ def test_base_is_the_newest_definition_before_a9():
     )
 
 
-REVOKE_MIGRATION = MIGRATIONS / "20260925120100_revoke_default_grants_cyl_writeback_rpc.sql"
-REVOKE_ROLLBACK = ROLLBACKS / "20260925120100_revoke_default_grants_cyl_writeback_rpc_rollback.sql"
+REVOKE_MIGRATION = MIGRATIONS / "20260928130100_revoke_default_grants_cyl_result_envelope_rpc.sql"
+REVOKE_ROLLBACK = ROLLBACKS / "20260928130100_revoke_default_grants_cyl_result_envelope_rpc_rollback.sql"
 
 
 def _statements(path: Path) -> list[str]:

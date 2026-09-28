@@ -130,16 +130,16 @@
 
         Never commit, so the cross-file invariant noted in `test_a7_cutover_guard_raises_on_a3_row`
         still holds.
-- [x] 2.4 GREEN: add `supabase/migrations/20260925120000_cyl_writeback_contract_a9.sql`:
+- [x] 2.4 GREEN: add `supabase/migrations/20260928130000_cyl_writeback_contract_a9.sql`:
       - the `20260917140000` region, verbatim except the literal, inside `BEGIN;`/`COMMIT;`;
       - no `DROP FUNCTION` and no `DO` guard;
       - a header that explains why and links design.md, with no closing keywords.
-- [x] 2.5 GREEN: add `supabase/rollbacks/20260925120000_cyl_writeback_contract_a9_rollback.sql`,
+- [x] 2.5 GREEN: add `supabase/rollbacks/20260928130000_cyl_writeback_contract_a9_rollback.sql`,
       holding the `20260917140000` region verbatim (a7). Its header states:
       - it is the staging hot-apply only; a durable rollback is a new forward migration plus the
         `PINNED_VERSION` flip plus the traits re-pin to `sha-689cffb@sha256:ab5a1f43…`, all together
         (design § Rollback);
-      - applying it by hand leaves `20260925120000` recorded as applied.
+      - applying it by hand leaves `20260928130000` recorded as applied.
 - [x] 2.6 GREEN: `test_rpc_pinned_version_matches_vendored_contract_pin` in
       `tests/integration/test_contract_migration_match.py`. It regex-extracts
       `pinned_version constant text := '([^']*)'` from
@@ -216,7 +216,7 @@ A bug fix restoring what `cyl-trait-writeback` already requires; no spec delta (
       function reachable by either role, with exactly `anon` and `authenticated` as extra grantees.
 - [x] 4A.2 RED: unit tests pin the new migration and its rollback to ACL-only statements (2 failed:
       files missing).
-- [x] 4A.3 GREEN: `supabase/migrations/20260925120100_revoke_default_grants_cyl_writeback_rpc.sql`
+- [x] 4A.3 GREEN: `supabase/migrations/20260928130100_revoke_default_grants_cyl_result_envelope_rpc.sql`
       (`REVOKE … FROM PUBLIC, anon, authenticated`; re-`GRANT` the four) and its rollback. Unit
       8 passed; with a9 and the revoke applied, the integration run above passed.
 - [x] 4A.4 Review round 2's test fixes: the "nothing written" assertions that could not fail are
@@ -241,8 +241,8 @@ A bug fix restoring what `cyl-trait-writeback` already requires; no spec delta (
        WHERE n.nspname = 'public' AND p.proname = 'insert_cyl_result_envelope';
       ```
       Expect exactly one row: `insert_cyl_result_envelope(jsonb,text) | 0.1.0a9 | f`. Also
-      `scripts/deploy_run_supabase.sh staging 'migration list'` shows `20260925120000` and
-      `20260925120100` applied. The "Apply database migrations" step's colour alone is not
+      `scripts/deploy_run_supabase.sh staging 'migration list'` shows `20260928130000` and
+      `20260928130100` applied. The "Apply database migrations" step's colour alone is not
       evidence (a zero-pending run shows as skipped).
 - [ ] 5.2 Bump the traits template in `talmolab/sleap-roots-pipeline`, merged only after 5.1:
       - `image:` becomes `sha-e373b0f@sha256:<re-verified index digest>`, changed together with

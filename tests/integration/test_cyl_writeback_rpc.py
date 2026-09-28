@@ -1736,7 +1736,7 @@ def test_redelivery_status_fallback_rollback_restores_prior_body(pg_conn):
 # no-op over a9 and the tests could never fail. Nothing here commits.
 # --------------------------------------------------------------------------- #
 
-_TS_A9 = "20260925120000_cyl_writeback_contract_a9"
+_TS_A9 = "20260928130000_cyl_writeback_contract_a9"
 MIGRATION_A9 = REPO_ROOT / "supabase" / "migrations" / f"{_TS_A9}.sql"
 ROLLBACK_A9 = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS_A9}_rollback.sql"
 

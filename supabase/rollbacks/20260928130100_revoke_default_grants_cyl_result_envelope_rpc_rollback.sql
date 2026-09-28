@@ -1,4 +1,4 @@
--- Rollback for 20260925120100_revoke_default_grants_cyl_writeback_rpc.sql
+-- Rollback for 20260928130100_revoke_default_grants_cyl_result_envelope_rpc.sql
 -- Manual break-glass only. Apply as postgres.
 --
 -- Re-grants EXECUTE on insert_cyl_result_envelope to anon and authenticated,

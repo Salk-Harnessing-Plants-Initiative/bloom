@@ -127,13 +127,13 @@ the fallback, so it is not the template. The new rollback carries the `202609171
 verbatim.
 
 The rollback file is only the emergency hot-apply for staging. Applying it by hand leaves
-`20260925120000` recorded as applied, and CI, fresh stacks and the next promotion to production would
+`20260928130000` recorded as applied, and CI, fresh stacks and the next promotion to production would
 still apply a9. A **durable** rollback is, taken together:
 
 1. drain first: no sleap-roots workflow running (the hot-applied a7 RPC rejects in-flight a9
    envelopes, the mirror of the forward window), and a `check_cluster_drift.sh` pre-image;
 2. a new forward migration whose body is the rollback file (it restores the body only; the
-   `20260925120100` grant fix stays, because `CREATE OR REPLACE` keeps the ACL);
+   `20260928130100` grant fix stays, because `CREATE OR REPLACE` keeps the ACL);
 3. `contracts/` re-pinned to `v0.1.0a7` (`pin.json`, schema `$id`) and `PINNED_VERSION` flipped
    back, with the version tests inverted, or the pin/RPC tie and the a9 tests fail;
 4. the traits template re-pinned to
@@ -187,7 +187,7 @@ learning about the default privileges (PR #469, 2026-07-20), and each re-pin cop
 forward. `test_execute_grants_are_exactly_the_sanctioned_roles` checked only selected roles, so CI
 never saw it.
 
-- **Fix:** a separate ACL-only migration, `20260925120100`, revokes `FROM PUBLIC, anon, authenticated`
+- **Fix:** a separate ACL-only migration, `20260928130100`, revokes `FROM PUBLIC, anon, authenticated`
   and re-asserts the four grants. No body, owner or signature change, so the a9 migration stays the
   newest definition and its one-line-diff tests are untouched.
 - **No spec delta.** The requirement already states the intended behaviour, so this restores it
@@ -217,9 +217,12 @@ half-done re-pin fails CI.
   `20260921130000` and `20260924120000` were applied on 2026-09-25 by run 36192393915, and run
   36456935639 (2026-09-28) found nothing pending, so a9 should apply alone. In `deploy.yml` the stack and smoke test run
   before migrations, so a smoke failure also stops a9.
-- **Out-of-order migration with #910.** #910 (open) adds `20260928120000`. If it merges and deploys
-  first, `supabase db push` refuses this PR's older `20260925120000`; the migration lint catches it
-  once this branch is updated. Merge this PR first, or re-timestamp it.
+- **Migration timestamps race other PRs.** The lint requires a new migration to be newer than every
+  migration on `staging`, and `supabase db push` refuses an older one. This PR's migrations were
+  first stamped `20260925…` and had to move to `20260928130000`/`20260928130100` when
+  `20260928101118_drop_retired_video_jobs` landed on `staging` first. They now sort after #910's
+  `20260928120000` (open), so if this PR merges first, #910 needs a later timestamp; if another
+  migration lands on `staging` before this merges, re-stamp again.
 - **Blobs uploaded during the window stay unreferenced.** For a scan first computed during the
   window, `bloomctl` uploads its `.slp` under the a7 key before the RPC rejects the envelope. No a9
   delivery references that object. It is harmless clutter; keeping the window short keeps it small.
