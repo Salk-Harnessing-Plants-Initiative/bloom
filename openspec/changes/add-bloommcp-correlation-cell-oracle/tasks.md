@@ -139,7 +139,24 @@
 - [x] 7.5 Sibling-archive reminder moved from this change's design notes into
       `add-bloommcp-plot-snapshot-tests`' own `tasks.md`, so whoever archives it sees the
       5-baselines-vs-3 correction at the moment it matters
-- [ ] 7.6 Re-verify on `ubuntu-latest` after pushing: the new edge-strip check samples 1.6px
+- [x] 7.6 Re-verify on `ubuntu-latest` after pushing: the new edge-strip check samples 1.6px
       inside each cell boundary, so a platform whose cell borders antialias more widely is the
       one plausible false-failure mode. If it fires, widen `_EDGE_INSET` — do not loosen
-      `_CELL_ATOL`, which is calibrated for a different purpose
+      `_CELL_ATOL`, which is calibrated for a different purpose.
+      **Outcome: passed, no widening needed.** Read from the job log (run 36367858329, job
+      108757759890) on Ubuntu 24.04.5: all 17 cell-oracle tests PASSED including
+      `test_predicted_cell_geometry_is_tight`, and the sweep reported `1726 passed, 31
+      deselected` — matching the local run exactly. So Linux cell borders do not antialias more
+      widely than the macOS measurement assumed, and `_EDGE_INSET = 0.015` holds on both.
+- [x] 7.7 **`pr-checks.yml` had silently stopped running on this PR.** Only CodeQL fired on the
+      review-fix push. Cause: GitHub had the PR marked `mergeable: CONFLICTING` /
+      `mergeStateStatus: DIRTY`, and a `pull_request` workflow needs a constructible merge ref,
+      so the whole suite was skipped — not slow, never triggered. The conflict was stale: a
+      local three-way merge against the identical staging tip (`f3a84d7c`) was clean with zero
+      conflicted files. Fixed by merging `origin/staging` locally — deliberately not GitHub's
+      Update-branch button, which has previously spliced a sibling PR into wholesale-rewritten
+      files with no conflict — then verifying the merge (`py_compile` on all four touched files,
+      key markers present, full sweep green) before pushing. `mergeable` went to `MERGEABLE` and
+      PR Checks queued immediately. Worth remembering: a PR left behind long enough for GitHub
+      to stale-mark it stops running CI entirely, and a green tick list can be green because
+      almost nothing ran
