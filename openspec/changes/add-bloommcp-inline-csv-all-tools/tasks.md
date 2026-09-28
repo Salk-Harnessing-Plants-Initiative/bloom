@@ -67,6 +67,33 @@ inline `qc_inspect` call.
       that is the byte sequence `hash_outputs` sees, and the staging directory is removed
       immediately afterwards.
 
+## 0b. Symmetric row skipping (round-6 review: leading blank rejected valid content)
+
+- [x] 0b.1 Test: a blank, CRLF-blank, whitespace-only or tab-only row *before* the header does
+      not reject content `pandas.read_csv` parses — ground truth asserted against `read_csv` on
+      the same bytes, not against an expectation written by hand.
+- [x] 0b.2 Test: the scan finds the real header past skipped rows, and skips independently in
+      both positions (a file with a blank line before *and* after the header still resolves).
+- [x] 0b.3 Test: a leading skipped row is not a new bypass — wide data behind a narrow header is
+      still rejected before `pandas.read_csv` is called, and a wide *header* behind a leading
+      blank is still rejected.
+- [x] 0b.4 Test: a header-only file behind a skipped row, and content of only skipped rows, both
+      fail on "no data rows" rather than a phantom width mismatch (the suggestion filed with the
+      report).
+- [x] 0b.5 Implement: apply `_is_skipped_by_read_csv` to the header search as well. Round 4 fixed
+      this asymmetry for rows *after* the header; taking the literal first row as the header left
+      the mirror image. Mutation-tested: reverting the header search fails 9 tests.
+
+## 0c. The literal "NA" accession trap (round-6 review; raised as a suggestion in round 4)
+
+- [x] 0c.1 Test: a genotype value literally named `NA`, in a file with no blank cells, produces a
+      remedy naming the sentinel and explaining that pandas parses it as missing regardless.
+- [x] 0c.2 Test: when the resolved column's name differs from the role's, the message names the
+      caller's own column — otherwise it sends them looking for a `genotype` column that is not
+      in their file.
+- [x] 0c.3 Test: no disambiguating clause when the column and role share a name; and a clean
+      table is unaffected, since the hint is a failure-path addition only.
+
 ## 1. Shared resolver (`_inline_input`) — built and tested once
 
 - [x] 1.1 Test: `resolve_inline_or_experiment` rejects both-supplied with `invalid_input`, calling
@@ -476,6 +503,12 @@ marker, run in the `dev-stack-smoke` CI job.
       included — at that level, and a log level is exactly what gets raised during an incident
       by someone not thinking about this feature. Disabling rather than refusing to boot: an
       operator reaching for `DEBUG` needs the server up, and the registered path is unaffected.
+- [ ] 15.10 **For PR 2/3 authors:** `qc_clean`'s cleaning thresholds against zero-inflated and
+      otherwise degenerate distributions rest on the 71-test suite that predates this change. PR 1
+      adds no consumer of that behaviour, but PR 2 and PR 3 put five tools directly on
+      `qc_clean`'s output, so a threshold that behaves oddly on a degenerate trait stops being
+      contained to one tool's summary. Worth a deliberate pass rather than inheriting the
+      assumption. Raised in PR #778's round-6 review.
 - [ ] 15.8 Consider whether the opt-in table returns should escape formula-prefixed cells. Low
       severity as scoped — the tools echo a caller's own data back to that same caller, and the
       field description and connect guide now say so — but PR 2's `return_trimmed_csv` adds a

@@ -1692,3 +1692,112 @@ def test_the_configuration_off_message_does_not_blame_debug(
         assert "DEBUG" not in exc.value.message
     finally:
         restore()
+
+
+# ── a skipped row BEFORE the header (PR #778 round 6, blocking) ─────────────
+#
+# Round 4 made the scan skip exactly what `read_csv` skips — but only for rows
+# *after* the header, taking the literal first row as the header unconditionally.
+# The mirror image was still broken: a leading blank line made the scan report a
+# 0-field header, which then "diverged" from an ordinary 3-field data row and
+# rejected a CSV `read_csv` parses without complaint, blaming a width mismatch
+# that does not exist.
+#
+# It failed closed rather than open, so this was a usability defect rather than a
+# bypass — but a spreadsheet export or a copy-paste beginning with a newline is
+# ordinary input, and "your header has 0 fields" is a baffling thing to be told
+# about a file that looks fine.
+
+
+@pytest.mark.parametrize(
+    "label,leader",
+    [
+        ("blank line", "\n"),
+        ("two blank lines", "\n\n"),
+        ("CRLF blank line", "\r\n"),
+        ("whitespace-only row", "   \n"),
+        ("tab-only row", "\t\n"),
+    ],
+)
+def test_a_skipped_row_before_the_header_does_not_reject_valid_content(label, leader):
+    """Ground truth is what `read_csv` does with the same bytes: it parses these."""
+    helper = _import_helper()
+    payload = f"{leader}Barcode,geno,traitA\nS1,g1,1.0\nS2,g2,2.0\n"
+
+    expected = pd.read_csv(io.StringIO(payload))
+    frame = helper.parse_inline_csv_frame(payload)
+
+    assert list(frame.df.columns) == list(expected.columns), label
+    assert list(frame.df["Barcode"]) == ["S1", "S2"], label
+    assert frame.df.index.nlevels == 1
+
+
+def test_the_scan_finds_the_real_header_past_skipped_rows():
+    """Pins the mechanism: the header search must skip too, not only the search
+    for the first data row."""
+    helper = _import_helper()
+    assert helper._scan_leading_row_widths("\n\nBarcode,geno,traitA\n1,2,3\n") == (3, 3)
+    assert helper._scan_leading_row_widths("   \nBarcode,geno,traitA\n1,2,3\n") == (
+        3,
+        3,
+    )
+
+
+def test_skipped_rows_before_and_after_the_header_together():
+    """Both searches skip independently, so a file with a blank line in each
+    position still resolves to the true widths."""
+    helper = _import_helper()
+    payload = "\nBarcode,geno,traitA\n\nS1,g1,1.0\nS2,g2,2.0\n"
+    assert helper._scan_leading_row_widths(payload) == (3, 3)
+    assert len(helper.parse_inline_csv_frame(payload).df) == 2
+
+
+def test_a_header_only_file_behind_a_blank_line_reports_no_data_rows():
+    """The suggestion that came with the report: a leading blank must not make a
+    header-only file look like something else. `read_csv` yields a 0-row frame
+    with the right columns; the scan reports the header width and no data row,
+    and the parse fails on 'no data rows' rather than on a phantom mismatch."""
+    helper = _import_helper()
+    assert helper._scan_leading_row_widths("\nBarcode,geno,traitA\n") == (3, None)
+
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame("\nBarcode,geno,traitA\n")
+    assert "no data rows" in exc.value.message
+
+
+def test_content_of_only_skipped_rows_is_rejected_as_empty():
+    helper = _import_helper()
+    assert helper._scan_leading_row_widths("\n\n\n") == (0, None)
+    with pytest.raises(BloomMCPError) as exc:
+        helper.parse_inline_csv_frame("\n\n\n")
+    assert exc.value.code == "invalid_input"
+
+
+@pytest.mark.parametrize(
+    "label,leader",
+    [("blank line", "\n"), ("whitespace-only row", "   \n"), ("CRLF blank", "\r\n")],
+)
+def test_a_leading_skipped_row_is_not_a_new_bypass(label, leader):
+    """The fix must not reopen round 4's hole from the other side: a leading
+    blank must not let wide data rows through behind a narrow header."""
+    helper = _import_helper()
+    wide = ",".join(str(i % 10) for i in range(60_000))
+    payload = f"{leader}Barcode,geno,trait.a\n{wide}\n{wide}\n"
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(payload)
+        mock_read_csv.assert_not_called()
+    assert exc.value.code == "invalid_input", label
+
+
+def test_a_wide_header_behind_a_leading_blank_is_still_rejected():
+    """The header guard has to survive the header no longer being row zero."""
+    helper = _import_helper()
+    wide = ",".join(f"c{i}" for i in range(helper.MAX_INLINE_CSV_COLUMNS + 500))
+
+    with patch("pandas.read_csv") as mock_read_csv:
+        with pytest.raises(BloomMCPError) as exc:
+            helper.parse_inline_csv_frame(f"\n{wide}\n1,2,3\n")
+        mock_read_csv.assert_not_called()
+    assert "header" in exc.value.message

@@ -2014,3 +2014,80 @@ def test_the_persisted_cleaned_csv_pins_its_line_terminator(injected_ports):
         "platform's line terminator"
     )
     assert written.endswith(b"\n")
+
+
+# ── the literal "NA" accession trap (PR #778 round 6) ──────────────────────
+#
+# pandas' default `na_values` converts a set of literal strings to NaN, so an
+# accession genuinely named NA becomes missing data in a file with zero blank
+# cells — and the upstream contract then reports the *role* it validated, not
+# the column the caller wrote. Free-text inline CSV is exactly where a
+# researcher hand-types such a value.
+
+
+def _na_accession_csv(geno_header: str) -> str:
+    rows = "\n".join(
+        f"B{i},{'NA' if i % 2 else 'Col-0'},{i}.0,{i * 2}.0" for i in range(40)
+    )
+    return f"Barcode,{geno_header},trait.a,trait.b\n{rows}\n"
+
+
+def test_a_literal_na_accession_names_the_sentinel_in_the_remedy(injected_ports):
+    """ "Ensure the genotype column has no blank/NaN values" is advice the caller
+    cannot act on: their file has no blank cells. Naming the sentinel actually
+    present turns a contradictory-looking error into a fixable one."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_na_accession_csv("genotype"), min_samples_per_trait=1
+            )
+        )
+    assert "'NA'" in exc.value.remedy
+    assert "parsed as missing data" in exc.value.remedy
+    assert "not blank" in exc.value.remedy
+
+
+def test_the_error_names_the_callers_column_not_just_the_role(injected_ports):
+    """The upstream contract reports the role it validated. With
+    `genotype_column="accession"` that sends the caller looking for a column
+    named 'genotype', which does not exist in their file."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_na_accession_csv("accession"),
+                genotype_column="accession",
+                min_samples_per_trait=1,
+            )
+        )
+    assert "'accession'" in exc.value.message, (
+        "the caller's own column name must appear, or they are sent looking for "
+        "a column that is not in their file"
+    )
+    # The upstream wording is kept rather than rewritten, so it stays clear which
+    # contract rule fired.
+    assert "contains missing values" in exc.value.message
+
+
+def test_no_redundant_clause_when_the_column_is_named_after_its_role(
+    injected_ports,
+):
+    """Nothing to disambiguate when the caller's column *is* called 'genotype'."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_na_accession_csv("genotype"), min_samples_per_trait=1
+            )
+        )
+    assert "is your column" not in exc.value.message
+
+
+def test_a_clean_table_with_no_sentinels_is_unaffected(injected_ports):
+    """The hint is a failure-path addition only."""
+    rows = "\n".join(f"B{i},Col-0,{i}.0,{i * 2}.0" for i in range(40))
+    result = qc_clean(
+        QCCleanParams(
+            csv_content=f"Barcode,genotype,trait.a,trait.b\n{rows}\n",
+            min_samples_per_trait=1,
+        )
+    )
+    assert result.n_samples_out > 0

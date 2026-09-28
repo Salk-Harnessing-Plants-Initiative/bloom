@@ -254,3 +254,37 @@ depend on which platform produced the run.
 
 - **WHEN** `qc_clean` commits a run for a registered experiment
 - **THEN** the written `_cleaned.csv` contains no carriage returns, regardless of host platform
+
+### Requirement: QC Clean Names the Caller's Own Column and Sentinel on a Validation Failure
+
+When the analysis contract rejects inline content for missing values, the error SHALL name what
+the caller can act on, not only what the contract validated.
+
+`pandas` converts a set of literal strings — `NA`, `N/A`, `NULL`, `NaN`, `None` among them — to
+missing data even when the cell is populated. A plant accession genuinely named `NA` therefore
+becomes NaN in a file with zero blank cells, and "ensure the genotype column has no blank/NaN
+values" is advice the caller cannot act on. Where such a sentinel is present in the supplied
+content, the remedy SHALL name it and explain that it is parsed as missing despite not being
+blank. Free-text inline CSV is where a researcher is most likely to hand-type such a value.
+
+The upstream contract reports the *role* it validated (`column 'genotype' ...`), not the column
+the caller wrote. Where the resolved column differs from the role name — `genotype_column
+="accession"` — the message SHALL additionally name the caller's own column, since otherwise it
+sends them looking for a column absent from their file. The upstream wording SHALL be kept rather
+than rewritten, so which contract rule fired stays legible.
+
+#### Scenario: A literal NA accession names the sentinel in the remedy
+
+- **WHEN** inline content contains a genotype value that is literally `NA` and no blank cells
+- **THEN** the remedy names `NA`, states that it is parsed as missing data despite not being
+  blank, and directs the caller to rename it
+
+#### Scenario: The message names the caller's column when it differs from the role
+
+- **WHEN** the failing role resolved to a column with a different name
+- **THEN** the message names that column alongside the contract's own wording
+
+#### Scenario: No redundant clause when the column is named after its role
+
+- **WHEN** the resolved column and the role share a name
+- **THEN** no disambiguating clause is added

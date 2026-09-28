@@ -665,9 +665,27 @@ def qc_clean(params: QCCleanParams, *, provenance: Provenance) -> QCCleanResult:
                     f"Rename the affected value(s) in your CSV, then retry. "
                     f"Otherwise: {remedy}"
                 )
+        # The upstream contract reports the *role* it validated ("column
+        # 'genotype' contains missing values"), not the column the caller
+        # actually wrote. When those differ — `genotype_column="accession"`, say
+        # — the caller is sent looking for a column that does not exist in their
+        # file. Their own name is appended rather than substituted: the upstream
+        # wording is the contract's, and rewriting it would hide which rule fired.
+        message = f"Input failed the analysis contract: {exc}"
+        renamed = [
+            f"{role} is your column {actual!r}"
+            for role, actual in (
+                ("genotype", resolved.genotype),
+                ("sample_id", resolved.sample_id),
+                ("replicate", resolved.replicate),
+            )
+            if actual is not None and actual != role and role in str(exc)
+        ]
+        if renamed:
+            message += f" (here {'; '.join(renamed)})"
         raise BloomMCPError(
             code="assumption_violated",
-            message=f"Input failed the analysis contract: {exc}",
+            message=message,
             remedy=remedy,
         ) from None
     # BLOCK-4: absorbed_warnings (role-absorbed exclusions) prepended so they appear

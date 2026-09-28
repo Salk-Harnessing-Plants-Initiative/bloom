@@ -219,10 +219,24 @@ def _scan_leading_row_widths(csv_content: str) -> tuple[int, Optional[int]]:
     total bytes consumed.
     """
     reader = csv.reader(_bounded_lines(csv_content))
-    try:
-        header = next(reader)
-    except StopIteration:
+
+    # Both searches skip, because `read_csv` skips in both positions. Taking the
+    # literal first row as the header was the mirror image of the bug round 4
+    # fixed for the row *after* it: a leading blank line made the scan report a
+    # 0-field header, which then "diverged" from a perfectly ordinary 3-field
+    # data row and rejected a CSV `read_csv` parses without complaint — blaming a
+    # width mismatch that does not exist. It failed closed rather than open, so
+    # it was a usability defect rather than a bypass, but a spreadsheet export or
+    # a copy-paste that begins with a newline is ordinary input, not an attack.
+    header = None
+    for row in reader:
+        if _is_skipped_by_read_csv(row):
+            continue
+        header = row
+        break
+    if header is None:
         return 0, None
+
     for row in reader:
         if _is_skipped_by_read_csv(row):
             continue

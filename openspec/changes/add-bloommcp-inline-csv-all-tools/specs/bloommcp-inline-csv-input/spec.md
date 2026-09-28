@@ -15,7 +15,18 @@ approximately 7.7 seconds of CPU) — a real, reproducible denial-of-service vec
 shared container, which has no rate limiting in front of this path and no persistence step to
 create natural backpressure.
 
-**The scan SHALL skip exactly the rows `pandas.read_csv` skips, and no others.** `csv.reader`
+**The scan SHALL skip exactly the rows `pandas.read_csv` skips, and no others — in
+*both* positions.** The header search and the first-data-row search SHALL each skip, because
+`read_csv` skips in both. An earlier version applied the rule only after the header and took the
+literal first row as the header, so a leading blank line reported a 0-field header that then
+"diverged" from an ordinary 3-field data row, rejecting content `read_csv` parses without
+complaint and blaming a width mismatch that did not exist. That direction failed *closed* rather
+than open, making it a usability defect rather than a bypass — but a spreadsheet export or a
+copy-paste beginning with a newline is ordinary input, and the guard must not refuse it.
+
+Content consisting only of skippable rows SHALL report no header and no data row, and a
+header-only file behind a skippable row SHALL report the header's width and no data row — so both
+fail on "no data rows" rather than on a phantom width mismatch. `csv.reader`
 yields `[]` for a blank line and `['   ']` for a whitespace-only one; `read_csv` runs with
 `skip_blank_lines=True` and discards both. Taking literally the second row the reader yields made
 the scanner and the parser disagree about which row is the first data row — and the disagreement
@@ -105,6 +116,26 @@ the bypass above showed, in the implicit-index case it does not fire at all.
 - **THEN** it raises `BloomMCPError(code="invalid_input")`, `pandas.read_csv` is never called,
   and rejection happens in well under one second — where the header-only guard accepted this
   same payload after approximately 16 seconds and returned a 3-column frame
+
+#### Scenario: A skipped row before the header does not reject valid content
+
+- **WHEN** `parse_inline_csv_frame` is called with content whose first line is blank, a CRLF
+  blank, a whitespace-only row or a tab-only row, followed by a well-formed header and data
+- **THEN** the content is accepted with the same columns and rows `pandas.read_csv` produces for
+  the same bytes, and no width mismatch is reported
+
+#### Scenario: A skipped row before the header is not a new bypass
+
+- **WHEN** such a leading row is followed by a narrow header and data rows exceeding
+  `MAX_INLINE_CSV_COLUMNS`
+- **THEN** the content is rejected before `pandas.read_csv` is called, exactly as without the
+  leading row
+
+#### Scenario: A header-only file behind a skipped row reports no data rows
+
+- **WHEN** content is a skippable row followed by a header and nothing else, or consists only of
+  skippable rows
+- **THEN** it is rejected for having no data rows, not for a width mismatch
 
 #### Scenario: A row the parser skips cannot hide wide data behind it
 
