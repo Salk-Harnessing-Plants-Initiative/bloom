@@ -469,9 +469,11 @@ Result links SHALL be derived only from a run's `cyl_pipeline_run_scans` rows an
 
 **Traits page.** The traits page SHALL accept optional `wave` and `age` search params.
 - It SHALL parse each as a single strict positive integer, and ignore arrays and other values.
-- It SHALL use them as the selection on its first data load, when they match that load's options.
-- On a later trait change, it SHALL keep the current wave and age when they are still available, and otherwise fall back to its defaults.
-- Whenever a requested or kept selection is unavailable, it SHALL show a visible note naming what was requested and what is shown.
+- Its default selection SHALL be the last wave at the oldest plant age *within that wave*, a pair that always has data.
+- The preferred wave and age SHALL be the params' until the user picks a wave or age, which then becomes the preference. A data load MUST NOT change the preference.
+- Each data load, including trait changes, SHALL show the preferred pair when the trait has rows for it, and otherwise the default. A missing half of the pair takes the default's rule (last wave, or oldest age) among matching rows.
+- Whenever a preferred pair is unavailable, it SHALL show a note naming what was preferred and what is shown, in a status region that stays mounted. A manual pick SHALL clear the note.
+- The wave and age pickers SHALL be disabled while a trait's data loads.
 
 **Guard.** Source files under `web/lib/cyl-pipeline`, `web/components/cyl-pipeline` and `web/app/app/cyl-pipeline-runs`, and the `@/lib` modules they import transitively, SHALL be checked, excluding the generated `database.types.ts` files. They MUST NOT contain any of these run-id matching surfaces:
 - `get_scan_traits`;
@@ -500,6 +502,10 @@ Provenance run ids are unpopulated (bloom#864), so no source can be tied to a ru
 #### Scenario: Unavailable selection is explained
 - **WHEN** the traits page opens with `?wave=9` and wave 9 does not exist
 - **THEN** it shows its default selection and a note that wave 9 has no data
+
+#### Scenario: The run's pair survives a detour
+- **WHEN** the page opens with `?wave=1&age=14`, the user switches to a trait with no wave 1 · day 14 data, and then back
+- **THEN** the second trait shows the default with a note, and the first trait shows wave 1 · day 14 again, with no note
 
 #### Scenario: Forbidden identifiers are absent
 - **WHEN** the static guard scans the three directories (each non-empty) and their transitive `@/lib` imports, excluding generated types

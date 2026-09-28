@@ -37,7 +37,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
         command: [run-qc]
         env:
           - name: SAMPLE
