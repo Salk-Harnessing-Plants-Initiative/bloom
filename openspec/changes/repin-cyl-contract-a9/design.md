@@ -165,10 +165,25 @@ half-done re-pin fails CI.
 - **The rejection window.** Covered above. It is bounded by preparing the pipeline PR in advance.
 - **The pipeline bump landing first by mistake.** That produces the same loud, recover-by-recompute
   failure. The bloom#895 gate (verified apply first) prevents it.
-- **Stuck staging deploys.** The staging environment's approval gate held run 35657797607 from
-  2026-09-21, and holds run 36196049972 since 2026-09-25; later deploys were cancelled. This PR's migration applies only after that queue is cleared, and it
-  may apply in one `db push` batch with `20260921130000`, #902's `20260924120000` and any other pending file. A failure in an
-  earlier file stops a9.
+- **Staging deploys need approval.** Each staging deploy waits on the `staging` environment's
+  required reviewers; runs held from 2026-09-21 and 2026-09-25 lapsed while waiting. The backlog
+  cleared on 2026-09-28 (run 36456935639: `20260921130000` and `20260924120000` were already
+  applied, nothing pending), so a9 should apply alone. In `deploy.yml` the stack and smoke test run
+  before migrations, so a smoke failure also stops a9.
+- **Out-of-order migration with #910.** #910 (open) adds `20260928120000`. If it merges and deploys
+  first, `supabase db push` refuses this PR's older `20260925120000`; the migration lint catches it
+  once this branch is updated. Merge this PR first, or re-timestamp it.
+- **Blobs uploaded during the window stay unreferenced.** For a scan first computed during the
+  window, `bloomctl` uploads its `.slp` under the a7 key before the RPC rejects the envelope. No a9
+  delivery references that object. It is harmless clutter; keeping the window short keeps it small.
+- **Retrying a window workflow does not recover it.** The window run's `cyl_pipeline_run_scans`
+  rows end `failed`, and the RPC's `status != 'failed'` guard keeps them there, so `argo retry`
+  cannot fix its bookkeeping (and re-runs the stored a7 template). `argo resubmit` gets a new
+  workflow name that Bloom has no rows for. Recovery is a **new** Bloom trigger
+  (`POST /workflows/pipeline`), whose own rows start `queued` and are matched normally.
+- **Drain before the template bump.** The traits directory is a shared hostPath. A window workflow
+  still retrying with the stored a7 template would recompute over a fresh a9 result (different key)
+  and write an a7 envelope back. Update the template only when no sleap-roots workflow is running.
 - **The migration-isolation lint (warning mode) flags `contracts/pin.json` and the vendored
   schema.** The coupling is intended: the new pin/RPC tie makes them one unit. The PR body explains
   this. A cosmetic `bloomcli/tests` edit was dropped in review to keep the exception to that pair.

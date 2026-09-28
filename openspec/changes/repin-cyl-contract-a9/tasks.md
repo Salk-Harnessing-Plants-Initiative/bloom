@@ -195,7 +195,7 @@
 
 ## 5. After merge: the gate is APPLIED, not merged (not part of this PR's diff)
 
-- [ ] 5.1 The user clears the pending staging environment approval, the deploy runs, and the live
+- [ ] 5.1 The user approves the `staging` environment deployment for the merge commit, the deploy runs, and the live
       literal is verified by a read-only query: `pg_proc` returns exactly one row,
       `insert_cyl_result_envelope(jsonb,text)`, whose extracted `pinned_version` is `0.1.0a9`.
       Alternatively, a `contract_version: "probe"` call through the cluster's credential returns
@@ -205,8 +205,12 @@
       merged only after 5.1):
       - `image:` becomes `sha-e373b0f@sha256:<re-verified index digest>`, changed together with
         `SRT_TRAITS_CONTAINER_DIGEST`;
-      - `argo template update`, then `scripts/check_cluster_drift.sh`.
+      - confirm the image bakes `SRT_TRAITS_CODE_SHA` (sleap-roots `docker-trait-extractor.yml`
+        passes `github.sha`), so recomputes get new keys rather than landing on the a7 no-op path;
+      - wait until no sleap-roots workflow is running, then `argo template update`, then
+        `scripts/check_cluster_drift.sh`.
 - [ ] 5.3 Acceptance (bloom#895): new `cyl_trait_sources` rows carry `contract_version: 0.1.0a9`,
       judged by `write-back succeeded (source_id=…)` lines and the rows themselves. Re-trigger scans
-      that were rejected during the window. Then close #895 by hand.
+      that were rejected during the window with a **new** trigger (`POST /workflows/pipeline`), never
+      `argo retry`/`resubmit` of a window workflow. Then #895 is shut by hand.
 - [ ] 5.4 Archive `repin-cyl-contract-a9` in a follow-up PR once 5.1–5.3 hold.

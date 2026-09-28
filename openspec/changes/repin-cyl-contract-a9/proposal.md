@@ -48,9 +48,10 @@ pure version restamp. The verification is in design.md.
   - They are also recoverable: the first run after the bump recomputes the affected scans. Nothing is
     replayed. During the window even scans already ingested under a7 show `failed`, because the
     version check runs before the idempotency gate (design: *Rejection window*).
-  - Staging deploys are currently stuck on a pending environment approval (run 36196049972, waiting since
-    2026-09-25; an earlier run waited from 2026-09-21), so the migration applies only after that
-    approval is given.
+  - Every staging deploy waits for a reviewer's approval on the `staging` environment, so the
+    migration applies only once the merge's deploy is approved. The earlier backlog cleared on
+    2026-09-28 (run 36456935639 succeeded with nothing pending), so a9 will be the only pending
+    migration.
 - **Out of scope:**
   - The pipeline template bump, which follows the verified apply.
   - `bloomctl` source, pins and image. Its image builds `--frozen` against a7 and needs nothing.
