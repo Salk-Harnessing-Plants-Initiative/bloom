@@ -1,0 +1,39 @@
+/**
+ * Hints for a failed run-scan row in the drill-down (design D7).
+ */
+
+import type { RunScanRow } from "./realtime-reducer";
+import type { ScanMeta } from "./scan-meta";
+import { stageInProblems, type StageInProblem } from "./stage-in";
+
+/**
+ * The status poller's backstop text, for a scan still `queued` when its run
+ * ended (`services/workflows/status_poller.py`, `_reconcile_unresolved_scans`).
+ * failure-hints.test.ts reads the poller's source to keep the two equal.
+ */
+export const BACKSTOP_MESSAGE = "workflow reached a terminal status before write-back produced a result for this scan";
+
+export const NO_OP_NOTE =
+  "If this scan already had results before this run, this may be an unrecognised no-op re-delivery; re-running won't change it (bloom#900).";
+
+const CAUSES: Record<StageInProblem, string> = {
+  "species-missing": "species missing",
+  "age-missing": "plant age missing",
+  "age-not-whole": "plant age is not a whole number",
+};
+
+export function likelyCause(meta: Pick<ScanMeta, "species_name" | "plant_age_days"> | undefined): string | null {
+  if (!meta) return null;
+  const problems = stageInProblems(meta);
+  return problems.length ? `Likely cause: ${problems.map((p) => CAUSES[p]).join("; ")}` : null;
+}
+
+/**
+ * bloom#900: re-running a scan whose only source was ingested outside any run
+ * is reported failed with the backstop text, because the redelivery fallback
+ * only matches sources a run-scan row already carries. Narrow on purpose: the
+ * note needs that exact text and a scan that currently has pipeline results.
+ */
+export function isNoOpCandidate(row: Pick<RunScanRow, "status" | "error_message">, hasResults: boolean): boolean {
+  return row.status === "failed" && row.error_message === BACKSTOP_MESSAGE && hasResults;
+}
