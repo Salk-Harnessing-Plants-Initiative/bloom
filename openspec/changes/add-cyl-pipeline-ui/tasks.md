@@ -27,15 +27,26 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Run `npm ci`, then read `node_modules/next/dist/docs/` (route handlers, async `params`/`searchParams`, `notFound`, client components). Record any divergence from the video route's patterns here.
+- [x] 0.1 Run `npm ci`, then read `node_modules/next/dist/docs/` (route handlers, async `params`/`searchParams`, `notFound`, client components). Record any divergence from the video route's patterns here. **(done 2026-09-28 in PR 3's worktree: `npm ci` now installs Next 16.3.4, so the stale-16.2.0 note in design.md no longer applies. No divergence from the video route:**
+  - **`params`/`searchParams` are promises, typed inline as `Promise<{…}>`, as the video route and every existing page already do. The docs' global `PageProps`/`RouteContext` helpers need `next typegen`, and nothing in `web/` uses them, so PR 3 doesn't either;**
+  - **`notFound()` throws `NEXT_HTTP_ERROR_FALLBACK;404` and only renders the 404 when thrown in the render path (a component or an awaited function), never from an un-awaited promise. The drill-down page therefore calls it directly after its awaited lookup;**
+  - **client-component props must be serializable, so pages pass snapshot rows, never the Supabase client or callbacks.)**
 - [x] 0.2 On the dev stack (`make dev-up && make migrate-local`), record in the PR: **(done 2026-09-25 on a rebuilt dev DB: both run tables published; bloom_user reads all four relations.)**
   - `pg_publication_tables` for `supabase_realtime` includes both run tables;
   - under `SET ROLE bloom_user`, rows are readable from `cyl_pipeline_runs`, `cyl_pipeline_run_scans`, `cyl_scan_latest_source` and `cyl_scans_extended`.
-- [ ] 0.3 Capture real Realtime payloads with a throwaway Node 22 script in the scratchpad, using the repo-root `@supabase/supabase-js`:
+- [x] 0.3 Capture real Realtime payloads with a throwaway Node 22 script in the scratchpad, using the repo-root `@supabase/supabase-js`:
   1. `createClient(<dev supabase url>, <anon key>)`, then `auth.signInWithPassword` as a dev `bloom_user`.
   2. `channel(...).on('postgres_changes', {event: '*', schema: 'public', table}, p => console.log(JSON.stringify(p)))` for each run table.
   3. Drive the rows by SQL. For the TOAST case, set `error_message` to more than 4 KB of incompressible text (`SELECT string_agg(md5(random()::text), '') FROM generate_series(1,200)`) and confirm it is stored out of line (`pg_column_size`). Then UPDATE only `done_count`, and capture that event. Do this for both tables.
   4. Commit the captures in PR 3 as `web/lib/cyl-pipeline/__fixtures__/realtime-*.json`, and record the timestamp format.
+
+  **(done 2026-09-28: `realtime-runs.json` and `realtime-run-scans.json`, plus `postgrest-timestamps.json`. Findings:**
+  - **Kong can't reach the dev tenant.** Every socket through `localhost:8000/realtime/v1/` fails with `TenantNotFound: realtime`. Realtime takes the tenant from the first label of the upstream Host, and Kong's upstream has been `realtime:4000` since 86decda6 (2026-06-11), while the only seeded tenant is `realtime-dev`. Staging runs the same `kong.yml`, image and compose settings, and its `_realtime.tenants` also holds only `realtime-dev`. This is outside PR 3's scope; the captures were therefore taken by connecting to `realtime:4000` from inside `bloom-web` with `Host: realtime-dev.supabase-realtime`. The payload shapes are Realtime's own, so bypassing Kong doesn't change them. That container runs Node 20, not 22, with the same `@supabase/realtime-js` 2.106.2 as the repo root.
+  - **The token role is `bloom_user`** (decoded), and events arrive for it on both tables.
+  - **TOAST.** `error_message` set to 6400 bytes was stored out of line (`pg_column_size` 6400, uncompressed; both toast relations non-empty). A later UPDATE of only `done_count` (runs), or only `attempts` (run scans), **omits the `error_message` key**, rather than sending `null`. Merging is required.
+  - **Shape.** `eventType`, `new`, `old`, `commit_timestamp`, `errors: null`. UPDATE and DELETE `old` carry only `{id}` (replica identity DEFAULT). DELETE's `new` is `{}`.
+  - **Timestamp format.** Realtime and PostgREST both render `timestamptz` as `YYYY-MM-DDTHH:MM:SS[.f{1,6}]+00:00`, with trailing zeros trimmed: `.123400` arrives as `.1234`, `.5` as `.5`, and a whole second has no fraction.
+  - **Delivery.** A timed probe (50 inserts, 150 ms apart) delivered all 50, including ones committed before the `Subscribed to PostgreSQL` system message, so `SUBSCRIBED` is a sound resync trigger. In the first capture, one run INSERT (about 1 s after `SUBSCRIBED`) was never delivered; it didn't reproduce in two later sessions, about 1 miss in 61 events overall. A drop during a steady `SUBSCRIBED` is not recovered by resync; only a reload or reconnect corrects it.)**
 
 ## 1. `cyl_pipeline_run_experiments` view + index
 
