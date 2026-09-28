@@ -2,12 +2,13 @@
 
 A staging run waiting for approval holds the shared ``deploy-bloom`` slot, so every
 later push used to be cancelled behind it. ``supersede-stale-staging-waits`` cancels
-older runs waiting at the staging gate, and the staging pull step deploys the run's
-own commit and refuses to move staging backwards.
+older runs waiting at the staging gate. The staging deploy checks out the run's own
+commit, and a preflight step refuses a dirty tree, an unknown commit or a move
+backwards before anything on the server changes, so the rollback skips it.
 
 Neither can run in PR CI, so the shape tests pin the YAML and the behaviour tests run
-both scripts: the cancel loop against a fake ``gh``, the pull step against a local
-bare repo standing in for ``origin``.
+the scripts: the cancel loop against a fake ``gh``, the preflight and checkout steps
+against a local bare repo standing in for ``origin``.
 """
 
 from __future__ import annotations
@@ -28,10 +29,13 @@ DEPLOY_YML = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 SUPERSEDE_JOB = "supersede-stale-staging-waits"
 STAGING_JOB = "deploy-staging"
 PULL_STEP_ID = "pull_staging"
+PREFLIGHT_STEP_ID = "preflight_staging"
 DEPLOY_REF_EXPR = "${{ github.event_name == 'push' && github.sha || 'origin/staging' }}"
 SSH_PREFIX = (
     'ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "'
 )
+# The server's shell doesn't inherit the runner's env, so neither does the stand-in.
+LOCAL_SHELL = 'env -u DEPLOY_REF -u GITHUB_OUTPUT bash -c "'
 DEPLOY_PATH_EXPR = "${{ secrets.STAGING_DEPLOY_PATH }}"
 CURRENT_RUN_ID = 500
 
@@ -85,16 +89,42 @@ class TestSupersedeJobShape:
 
 
 class TestPullStepShape:
+    def _step_names(self) -> list[str]:
+        return [s.get("id") or s["name"] for s in _jobs()[STAGING_JOB]["steps"]]
+
     def test_push_pins_to_the_run_commit(self):
-        assert (
-            _step(STAGING_JOB, step_id=PULL_STEP_ID)["env"]["DEPLOY_REF"]
-            == DEPLOY_REF_EXPR
-        )
+        assert _jobs()[STAGING_JOB]["env"]["DEPLOY_REF"] == DEPLOY_REF_EXPR
 
     def test_reset_uses_deploy_ref_not_the_branch_tip(self):
         run = _step(STAGING_JOB, step_id=PULL_STEP_ID)["run"]
         assert "git reset --hard '$DEPLOY_REF'" in run
         assert "reset --hard origin/staging" not in run
+
+    def test_preflight_runs_before_anything_touches_the_server(self):
+        names = self._step_names()
+        assert names.index(PREFLIGHT_STEP_ID) == names.index("Set up SSH") + 1
+        assert names.index(PREFLIGHT_STEP_ID) < names.index(
+            "Save previous SHA for rollback"
+        )
+        assert names.index("Save previous SHA for rollback") < names.index(
+            "Snapshot existing .env.staging for rollback"
+        )
+
+    def test_rollback_skips_runs_the_preflight_stopped(self):
+        rollback = next(
+            s
+            for s in _jobs()[STAGING_JOB]["steps"]
+            if s["name"] == "Rollback on failure"
+        )
+        assert (
+            rollback["if"]
+            == "failure() && steps.preflight_staging.outcome == 'success'"
+        )
+
+    def test_refusals_live_only_in_the_preflight(self):
+        run = _step(STAGING_JOB, step_id=PULL_STEP_ID)["run"]
+        assert "Working tree is dirty" not in run
+        assert "is-ancestor" not in run
 
     def test_production_pull_is_unchanged(self):
         run = _step("deploy-production", step_id="pull_prod")["run"]
@@ -189,22 +219,30 @@ esac
         assert result.returncode == 0, result.stderr
         assert cancelled == []
 
-    def test_failed_cancel_warns_without_failing(self, tmp_path):
-        result, cancelled = self._run(tmp_path, {100: ["staging"]}, cancel_fails=True)
-        assert result.returncode == 0, result.stderr
-        assert cancelled == ["100"]
-        assert "::warning::Could not cancel run 100" in result.stdout
+    def test_failed_cancel_fails_the_job_after_trying_the_rest(self, tmp_path):
+        result, cancelled = self._run(
+            tmp_path, {100: ["staging"], 200: ["staging"]}, cancel_fails=True
+        )
+        assert result.returncode != 0
+        assert cancelled == ["100", "200"]
+        assert "::error::Could not cancel run 100" in result.stdout
+        assert "::error::Could not cancel run 200" in result.stdout
 
 
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
-class TestPullStepBehaviour:
-    """Runs the staging pull step with ``ssh`` swapped for a local ``bash -c``."""
+class TestDeployStepsBehaviour:
+    """Runs the preflight then the checkout step, as the job does, with ``ssh``
+    swapped for a local shell that doesn't inherit the runner's env."""
 
     @pytest.fixture
     def repos(self, tmp_path):
@@ -219,83 +257,136 @@ class TestPullStepBehaviour:
             if name == "C":
                 (seed / "caddy").mkdir()
                 (seed / "caddy" / "Caddyfile").write_text("changed\n")
-            (seed / "file.txt").write_text(name)
-            _git(seed, "add", "-A")
-            _git(seed, "commit", "-q", "-m", name)
-            shas[name] = _git(seed, "rev-parse", "HEAD")
+            shas[name] = self._commit(seed, name)
         origin = tmp_path / "origin.git"
         _git(tmp_path, "clone", "-q", "--bare", str(seed), str(origin))
         server = tmp_path / "server"
         _git(tmp_path, "clone", "-q", "-b", "staging", str(origin), str(server))
         _git(server, "reset", "-q", "--hard", shas["A"])
-        return tmp_path, server, shas
+        return tmp_path, seed, origin, server, shas
 
-    def _run(self, tmp_path: Path, server: Path, deploy_ref: str):
-        run = _step(STAGING_JOB, step_id=PULL_STEP_ID)["run"]
+    @staticmethod
+    def _commit(seed: Path, name: str) -> str:
+        (seed / "file.txt").write_text(name)
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-q", "-m", name)
+        return _git(seed, "rev-parse", "HEAD")
+
+    @staticmethod
+    def _run_step(tmp_path: Path, server: Path, step_id: str, deploy_ref: str):
+        run = _step(STAGING_JOB, step_id=step_id)["run"]
         assert SSH_PREFIX in run and DEPLOY_PATH_EXPR in run
         script = (
-            run.replace(SSH_PREFIX, 'bash -c "')
+            run.replace(SSH_PREFIX, LOCAL_SHELL)
             .replace(DEPLOY_PATH_EXPR, str(server))
             .replace("/tmp/pull_staging.out", str(tmp_path / "pull.out"))
         )
         assert "${{" not in script
-        output = tmp_path / "gh_output"
-        env = {**os.environ, "DEPLOY_REF": deploy_ref, "GITHUB_OUTPUT": str(output)}
-        result = subprocess.run(
+        env = {
+            **os.environ,
+            "DEPLOY_REF": deploy_ref,
+            "GITHUB_OUTPUT": str(tmp_path / "gh_output"),
+        }
+        return subprocess.run(
             [BASH, "-e", "-c", script],
             env=env,
+            cwd=tmp_path,
             capture_output=True,
             text=True,
             check=False,
         )
+
+    def _deploy(self, tmp_path: Path, server: Path, deploy_ref: str):
+        """(preflight result, checkout result or None if refused, server HEAD, outputs)."""
+        preflight = self._run_step(tmp_path, server, PREFLIGHT_STEP_ID, deploy_ref)
+        pull = None
+        if preflight.returncode == 0:
+            pull = self._run_step(tmp_path, server, PULL_STEP_ID, deploy_ref)
+        output = tmp_path / "gh_output"
         outputs = output.read_text() if output.exists() else ""
-        return result, _git(server, "rev-parse", "HEAD"), outputs
+        return preflight, pull, _git(server, "rev-parse", "HEAD"), outputs
+
+    @staticmethod
+    def _ok(result) -> None:
+        assert result is not None and result.returncode == 0, (
+            result and result.stdout + result.stderr
+        )
 
     def test_push_deploys_its_own_commit_not_the_tip(self, repos):
-        tmp_path, server, shas = repos
-        result, head, outputs = self._run(tmp_path, server, shas["B"])
-        assert result.returncode == 0, result.stdout + result.stderr
+        tmp_path, _seed, _origin, server, shas = repos
+        preflight, pull, head, outputs = self._deploy(tmp_path, server, shas["B"])
+        self._ok(preflight)
+        self._ok(pull)
         assert head == shas["B"]
-        assert f"Deployed {shas['B']}" in result.stdout
+        assert f"Deployed {shas['B']}" in pull.stdout
         assert "caddyfile_changed=false" in outputs
+        assert "kongfile_changed=false" in outputs
 
-    def test_reports_config_changes_between_commits(self, repos):
-        tmp_path, server, shas = repos
-        result, head, outputs = self._run(tmp_path, server, shas["C"])
-        assert result.returncode == 0, result.stdout + result.stderr
+    def test_fetches_a_commit_pushed_after_the_last_deploy(self, repos):
+        tmp_path, seed, origin, server, _shas = repos
+        new = self._commit(seed, "D")
+        _git(seed, "push", "-q", str(origin), "staging")
+        preflight, pull, head, _ = self._deploy(tmp_path, server, new)
+        self._ok(preflight)
+        self._ok(pull)
+        assert head == new
+
+    def test_reports_caddyfile_changes_between_commits(self, repos):
+        tmp_path, _seed, _origin, server, shas = repos
+        _preflight, pull, head, outputs = self._deploy(tmp_path, server, shas["C"])
+        self._ok(pull)
         assert head == shas["C"]
         assert "caddyfile_changed=true" in outputs
 
     def test_refuses_to_move_staging_backwards(self, repos):
-        tmp_path, server, shas = repos
+        tmp_path, _seed, _origin, server, shas = repos
         _git(server, "reset", "-q", "--hard", shas["C"])
-        result, head, _ = self._run(tmp_path, server, shas["B"])
-        assert result.returncode != 0
+        preflight, pull, head, _ = self._deploy(tmp_path, server, shas["B"])
+        assert preflight.returncode != 0 and pull is None
         assert head == shas["C"]
-        assert "refusing to move staging backwards" in result.stdout
+        assert "refusing to move staging backwards" in preflight.stdout
 
     def test_redeploying_the_same_commit_is_allowed(self, repos):
-        tmp_path, server, shas = repos
-        result, head, _ = self._run(tmp_path, server, shas["A"])
-        assert result.returncode == 0, result.stdout + result.stderr
+        tmp_path, _seed, _origin, server, shas = repos
+        _preflight, pull, head, _ = self._deploy(tmp_path, server, shas["A"])
+        self._ok(pull)
         assert head == shas["A"]
 
-    def test_unknown_commit_fails_the_step(self, repos):
-        tmp_path, server, shas = repos
-        result, head, _ = self._run(tmp_path, server, "f" * 40)
-        assert result.returncode != 0
+    def test_refuses_an_unknown_commit(self, repos):
+        tmp_path, _seed, _origin, server, shas = repos
+        preflight, pull, head, _ = self._deploy(tmp_path, server, "f" * 40)
+        assert preflight.returncode != 0 and pull is None
         assert head == shas["A"]
+        assert "not found after fetching staging" in preflight.stdout
 
-    def test_dirty_tree_fails_the_step(self, repos):
-        tmp_path, server, shas = repos
+    def test_refuses_a_dirty_tree_and_keeps_the_edits(self, repos):
+        tmp_path, _seed, _origin, server, shas = repos
         (server / "file.txt").write_text("local edit")
-        result, head, _ = self._run(tmp_path, server, shas["B"])
-        assert result.returncode != 0
+        preflight, pull, head, _ = self._deploy(tmp_path, server, shas["B"])
+        assert preflight.returncode != 0 and pull is None
         assert head == shas["A"]
-        assert "Working tree is dirty" in result.stdout
+        assert (server / "file.txt").read_text() == "local edit"
+        assert "Working tree is dirty" in preflight.stdout
 
     def test_manual_dispatch_deploys_the_staging_tip(self, repos):
-        tmp_path, server, shas = repos
-        result, head, _ = self._run(tmp_path, server, "origin/staging")
-        assert result.returncode == 0, result.stdout + result.stderr
+        tmp_path, _seed, _origin, server, shas = repos
+        _preflight, pull, head, _ = self._deploy(tmp_path, server, "origin/staging")
+        self._ok(pull)
         assert head == shas["C"]
+
+    def test_manual_dispatch_is_exempt_from_the_backwards_check(self, repos):
+        tmp_path, seed, origin, server, shas = repos
+        _git(server, "reset", "-q", "--hard", shas["C"])
+        _git(seed, "push", "-q", "--force", str(origin), f"{shas['B']}:staging")
+        _preflight, pull, head, _ = self._deploy(tmp_path, server, "origin/staging")
+        self._ok(pull)
+        assert head == shas["B"]
+
+    def test_failed_fetch_stops_a_manual_dispatch(self, repos):
+        tmp_path, seed, origin, server, shas = repos
+        self._commit(seed, "D")
+        _git(seed, "push", "-q", str(origin), "staging")
+        _git(server, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+        preflight, pull, head, _ = self._deploy(tmp_path, server, "origin/staging")
+        assert preflight.returncode != 0 and pull is None
+        assert head == shas["A"]
