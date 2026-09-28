@@ -23,13 +23,17 @@ $$;
 
 -- The wrappers below are SECURITY DEFINER owned by postgres, and pgmq's own functions
 -- are SECURITY INVOKER, so postgres needs these privileges directly or every call fails.
--- send INSERTs into q_, read and set_vt UPDATE it, delete DELETEs from it, and archive
--- moves a row from q_ to a_. Granted here rather than in supabase/grants/: this migration
--- creates the tables, so it always holds grant authority on them.
+-- send INSERTs into q_, read and set_vt UPDATE it, and archive moves a row from q_ to a_.
+--
+-- These stick because migrations are applied as supabase_admin, which owns the pgmq
+-- objects. A grant issued by a role without authority over them would not raise; it would
+-- warn and continue, and the wrappers would then fail at first use rather than at deploy.
+-- test_postgres_can_reach_the_pgmq_tables_the_wrappers_use asserts each one, so that
+-- failure surfaces in CI instead.
 GRANT SELECT, INSERT, UPDATE, DELETE ON pgmq.q_gravi_plate_video TO postgres;
-GRANT SELECT, INSERT, DELETE ON pgmq.a_gravi_plate_video TO postgres;
+GRANT SELECT, INSERT ON pgmq.a_gravi_plate_video TO postgres;
 GRANT SELECT, INSERT, UPDATE, DELETE ON pgmq.q_cyl_video_generation TO postgres;
-GRANT SELECT, INSERT, DELETE ON pgmq.a_cyl_video_generation TO postgres;
+GRANT SELECT, INSERT ON pgmq.a_cyl_video_generation TO postgres;
 
 -- 2. Job tables ------------------------------------------------------------
 -- A pgmq message is invisible while claimed and gone once deleted, so it cannot back a
@@ -111,15 +115,36 @@ CREATE POLICY cyl_video_jobs_read ON public.cyl_video_jobs
 -- Default privileges grant every new public table to the bloom_* roles and to
 -- anon/authenticated/service_role, so revoke explicitly. service_role is BYPASSRLS,
 -- which no policy would stop.
-REVOKE INSERT, UPDATE, DELETE ON public.gravi_plate_video_jobs
-  FROM bloom_user, bloom_writer, bloom_admin;
-REVOKE INSERT, UPDATE, DELETE ON public.cyl_video_jobs
-  FROM bloom_user, bloom_writer, bloom_admin;
-REVOKE ALL ON public.gravi_plate_video_jobs FROM anon, authenticated, service_role, bloom_agent;
-REVOKE ALL ON public.cyl_video_jobs FROM anon, authenticated, service_role, bloom_agent;
+REVOKE ALL ON public.gravi_plate_video_jobs
+  FROM bloom_user, bloom_writer, bloom_admin, anon, authenticated, service_role, bloom_agent;
+REVOKE ALL ON public.cyl_video_jobs
+  FROM bloom_user, bloom_writer, bloom_admin, anon, authenticated, service_role, bloom_agent;
+
+-- Granted by column rather than by table, and stated here rather than inherited from a
+-- default privilege whose grantor varies by environment.
+--
+-- `error` is withheld: it is the renderer's own failure text, which carries the internal
+-- gateway host and port, the database role and PostgREST's codes — the same content
+-- services/workflows/tests/test_plate_request.py asserts must never reach a caller. The UI
+-- reads `error_code`, a controlled vocabulary, instead. `msg_id` and `reads` are queue
+-- plumbing that nothing outside the wrappers needs.
+GRANT SELECT (
+  id, experiment_id, plate_id, wave_number, status, stage, frames_done, frames_total,
+  error_code, requested_by, created_at, started_at, finished_at
+) ON public.gravi_plate_video_jobs TO bloom_user, bloom_writer, bloom_admin;
+GRANT SELECT (
+  id, scan_id, experiment_id, status, stage, frames_done, frames_total,
+  error_code, requested_by, created_at, started_at, finished_at
+) ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 
 -- 4. Wrappers --------------------------------------------------------------
 -- SECURITY DEFINER, owned by postgres (section 5), EXECUTE for bloom_workflows only.
+--
+-- The settle guards assume ONE claimant per queue. A redelivered message keeps its msg_id,
+-- so `msg_id = p_msg_id` cannot tell a slow worker from the replacement that took over its
+-- job, and with two workers the slow one can settle a job the other is still rendering.
+-- Before running a second worker on either queue, fence the guards on the delivery count
+-- that claim already returns: take p_reads and add `AND reads = p_reads`.
 -- p_vt defaults are longer than one encode plus the upload and the recording that
 -- follow it, so the one stage that reports no progress cannot outlive its visibility.
 -- PR 3's worker passes the value it computes from ENCODE_TIMEOUT_SECONDS.
@@ -149,7 +174,7 @@ CREATE OR REPLACE FUNCTION public.enqueue_gravi_plate_video(
 RETURNS TABLE(job_id uuid, created boolean)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 DECLARE
   v_job_id uuid;
@@ -197,7 +222,7 @@ CREATE OR REPLACE FUNCTION public.claim_gravi_plate_video_job(
 RETURNS TABLE(job_id uuid, experiment_id bigint, plate_id text, wave_number integer, msg_id bigint, reads integer)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 DECLARE
   r pgmq.message_record;
@@ -206,6 +231,19 @@ DECLARE
   v_plate_id text;
   v_wave_number integer;
 BEGIN
+  -- A caller-supplied timeout is how a job gets stranded: too large and the message is
+  -- invisible past any useful horizon while the row stays active, blocking every later
+  -- request for the same item. One hour is far longer than a render plus its upload.
+  IF p_vt IS NULL OR p_vt < 0 OR p_vt > 3600 THEN
+    RAISE EXCEPTION 'p_vt must be between 0 and 3600 seconds, got %', p_vt
+      USING ERRCODE = 'check_violation';
+  END IF;
+  -- Below 1 every delivery is past the limit, so the first claim dead-letters the job.
+  IF p_max_reads IS NULL OR p_max_reads < 1 THEN
+    RAISE EXCEPTION 'p_max_reads must be at least 1, got %', p_max_reads
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   SELECT * INTO r FROM pgmq.read('gravi_plate_video', p_vt, 1);
   IF NOT FOUND THEN
     RETURN;
@@ -268,11 +306,16 @@ CREATE OR REPLACE FUNCTION public.report_gravi_plate_video_progress(
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
+  IF p_vt IS NULL OR p_vt < 0 OR p_vt > 3600 THEN
+    RAISE EXCEPTION 'p_vt must be between 0 and 3600 seconds, got %', p_vt
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   UPDATE public.gravi_plate_video_jobs
-  SET stage = p_stage,
+  SET stage = left(p_stage, 200),
       frames_done = COALESCE(p_frames_done, frames_done),
       frames_total = COALESCE(p_frames_total, frames_total)
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
@@ -294,10 +337,10 @@ CREATE OR REPLACE FUNCTION public.complete_gravi_plate_video_job(
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
-  IF p_outcome NOT IN ('rendered', 'kept') THEN
+  IF p_outcome IS NULL OR p_outcome NOT IN ('rendered', 'kept') THEN
     RAISE EXCEPTION 'outcome must be rendered or kept, got %', p_outcome
       USING ERRCODE = 'check_violation';
   END IF;
@@ -322,7 +365,7 @@ CREATE OR REPLACE FUNCTION public.fail_gravi_plate_video_job(
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
   UPDATE public.gravi_plate_video_jobs
@@ -351,11 +394,12 @@ CREATE OR REPLACE FUNCTION public.enqueue_cyl_video(
 RETURNS TABLE(job_id uuid, created boolean)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 DECLARE
   v_job_id uuid;
   v_msg_id bigint;
+  v_active_experiment bigint;
 BEGIN
   -- The foreign key proves the experiment exists, not that it is this scan's. Every hop
   -- is nullable, so reject only where the chain resolves and disagrees.
@@ -372,10 +416,19 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
-  SELECT j.id INTO v_job_id
+  SELECT j.id, j.experiment_id INTO v_job_id, v_active_experiment
   FROM public.cyl_video_jobs j
   WHERE j.scan_id = p_scan_id AND j.status IN ('queued', 'rendering');
   IF v_job_id IS NOT NULL THEN
+    -- Where the scan's own chain is broken the active job's experiment is all there is
+    -- to go on, so a request naming a different one is a disagreement, not a duplicate.
+    -- Returning the job anyway would file the video under the other experiment and
+    -- silently discard the correction.
+    IF v_active_experiment IS DISTINCT FROM p_experiment_id THEN
+      RAISE EXCEPTION 'scan % has an active video job under experiment %, not %',
+        p_scan_id, v_active_experiment, p_experiment_id
+        USING ERRCODE = 'check_violation';
+    END IF;
     RETURN QUERY SELECT v_job_id, false;
     RETURN;
   END IF;
@@ -385,9 +438,14 @@ BEGIN
     VALUES (p_scan_id, p_experiment_id, p_requested_by)
     RETURNING id INTO v_job_id;
   EXCEPTION WHEN unique_violation THEN
-    SELECT j.id INTO v_job_id
+    SELECT j.id, j.experiment_id INTO v_job_id, v_active_experiment
     FROM public.cyl_video_jobs j
     WHERE j.scan_id = p_scan_id AND j.status IN ('queued', 'rendering');
+    IF v_job_id IS NOT NULL AND v_active_experiment IS DISTINCT FROM p_experiment_id THEN
+      RAISE EXCEPTION 'scan % has an active video job under experiment %, not %',
+        p_scan_id, v_active_experiment, p_experiment_id
+        USING ERRCODE = 'check_violation';
+    END IF;
     RETURN QUERY SELECT v_job_id, false;
     RETURN;
   END;
@@ -405,7 +463,7 @@ CREATE OR REPLACE FUNCTION public.claim_cyl_video_job(
 RETURNS TABLE(job_id uuid, scan_id bigint, experiment_id bigint, msg_id bigint, reads integer)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 DECLARE
   r pgmq.message_record;
@@ -413,6 +471,19 @@ DECLARE
   v_scan_id bigint;
   v_experiment_id bigint;
 BEGIN
+  -- A caller-supplied timeout is how a job gets stranded: too large and the message is
+  -- invisible past any useful horizon while the row stays active, blocking every later
+  -- request for the same item. One hour is far longer than a render plus its upload.
+  IF p_vt IS NULL OR p_vt < 0 OR p_vt > 3600 THEN
+    RAISE EXCEPTION 'p_vt must be between 0 and 3600 seconds, got %', p_vt
+      USING ERRCODE = 'check_violation';
+  END IF;
+  -- Below 1 every delivery is past the limit, so the first claim dead-letters the job.
+  IF p_max_reads IS NULL OR p_max_reads < 1 THEN
+    RAISE EXCEPTION 'p_max_reads must be at least 1, got %', p_max_reads
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   SELECT * INTO r FROM pgmq.read('cyl_video_generation', p_vt, 1);
   IF NOT FOUND THEN
     RETURN;
@@ -465,11 +536,16 @@ CREATE OR REPLACE FUNCTION public.report_cyl_video_progress(
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
+  IF p_vt IS NULL OR p_vt < 0 OR p_vt > 3600 THEN
+    RAISE EXCEPTION 'p_vt must be between 0 and 3600 seconds, got %', p_vt
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   UPDATE public.cyl_video_jobs
-  SET stage = p_stage,
+  SET stage = left(p_stage, 200),
       frames_done = COALESCE(p_frames_done, frames_done),
       frames_total = COALESCE(p_frames_total, frames_total)
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
@@ -489,10 +565,10 @@ CREATE OR REPLACE FUNCTION public.complete_cyl_video_job(
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
-  IF p_outcome NOT IN ('rendered', 'kept') THEN
+  IF p_outcome IS NULL OR p_outcome NOT IN ('rendered', 'kept') THEN
     RAISE EXCEPTION 'outcome must be rendered or kept, got %', p_outcome
       USING ERRCODE = 'check_violation';
   END IF;
@@ -516,7 +592,7 @@ CREATE OR REPLACE FUNCTION public.fail_cyl_video_job(
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
   UPDATE public.cyl_video_jobs

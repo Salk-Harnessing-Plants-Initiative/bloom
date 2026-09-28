@@ -191,9 +191,37 @@ def test_job_tables_are_read_only_for_signed_in_roles(cur, queue, privilege, rol
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 @pytest.mark.parametrize("role", ["bloom_user", "bloom_writer", "bloom_admin"])
-def test_signed_in_roles_may_read_the_queue(cur, queue, role):
-    cur.execute("SELECT has_table_privilege(%s, %s, 'SELECT')", (role, f"public.{queue.table}"))
-    assert cur.fetchone()[0] is True, f"{role} cannot read {queue.table}"
+@pytest.mark.parametrize("column", ["status", "stage", "frames_done", "error_code", "created_at"])
+def test_signed_in_roles_may_read_the_progress_columns(cur, queue, role, column):
+    cur.execute(
+        "SELECT has_column_privilege(%s, %s, %s, 'SELECT')",
+        (role, f"public.{queue.table}", column),
+    )
+    assert cur.fetchone()[0] is True, f"{role} cannot read {queue.table}.{column}"
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("role", ["bloom_user", "bloom_writer", "bloom_admin"])
+@pytest.mark.parametrize("column", ["error", "msg_id", "reads"])
+def test_internal_columns_are_withheld_from_signed_in_roles(cur, queue, role, column):
+    """`error` is the renderer's own failure text and carries the internal gateway host,
+    the database role and PostgREST's codes; msg_id and reads are queue plumbing."""
+    cur.execute(
+        "SELECT has_column_privilege(%s, %s, %s, 'SELECT')",
+        (role, f"public.{queue.table}", column),
+    )
+    assert cur.fetchone()[0] is False, f"{role} can read {queue.table}.{column}"
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("role", DENIED_ROLES + ["bloom_agent"])
+def test_denied_roles_cannot_read_any_column(cur, queue, role):
+    for column in ("status", "error_code", "error", "id"):
+        cur.execute(
+            "SELECT has_column_privilege(%s, %s, %s, 'SELECT')",
+            (role, f"public.{queue.table}", column),
+        )
+        assert cur.fetchone()[0] is False, f"{role} can read {queue.table}.{column}"
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
@@ -486,3 +514,112 @@ def test_a_settled_job_with_a_stray_message_is_archived_not_rerun(cur, queue):
     )
     assert _claim(cur, queue, vt=0) is None
     assert _status(cur, queue, job_id) == "rendered"
+
+# --------------------------------------------------------------------------- #
+# Input guards
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("bad_vt", [3601, 2147483647, -1, None])
+def test_claim_refuses_an_out_of_range_visibility_timeout(cur, queue, bad_vt):
+    """An unbounded timeout strands the job: the message stays invisible while the row
+    stays active, so every later request for that item returns the stranded job."""
+    import psycopg
+
+    with pytest.raises(psycopg.errors.CheckViolation, match="p_vt must be between"):
+        cur.execute(f"SELECT * FROM public.{queue.claim}(%s, 3)", (bad_vt,))
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("bad_vt", [3601, 2147483647, -1, None])
+def test_progress_refuses_an_out_of_range_visibility_timeout(cur, queue, bad_vt):
+    import psycopg
+
+    args = _target(cur, queue)
+    job_id, _ = _enqueue(cur, queue, args)
+    claimed = _claim(cur, queue)
+    msg_id = claimed[queue.claim_cols.index("msg_id")]
+    with pytest.raises(psycopg.errors.CheckViolation, match="p_vt must be between"):
+        cur.execute(
+            f"SELECT public.{queue.progress}(%s, %s, 'encoding', 1, 2, %s)",
+            (job_id, msg_id, bad_vt),
+        )
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("bad_max", [0, -1, None])
+def test_claim_refuses_a_delivery_limit_below_one(cur, queue, bad_max):
+    """Below 1 the first delivery is already past the limit, so the first claim
+    dead-letters the job instead of handing it out."""
+    import psycopg
+
+    with pytest.raises(psycopg.errors.CheckViolation, match="p_max_reads must be at least 1"):
+        cur.execute(f"SELECT * FROM public.{queue.claim}(0, %s)", (bad_max,))
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_a_rejected_claim_leaves_the_job_queued(cur, queue):
+    args = _target(cur, queue)
+    job_id, _ = _enqueue(cur, queue, args)
+    cur.execute("SAVEPOINT before_bad_claim")
+    import psycopg
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        cur.execute(f"SELECT * FROM public.{queue.claim}(%s, 3)", (999999,))
+    cur.execute("ROLLBACK TO SAVEPOINT before_bad_claim")
+    assert _status(cur, queue, job_id) == "queued"
+    assert _queue_depth(cur, queue) == 1
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_complete_refuses_a_null_outcome(cur, queue):
+    """NULL NOT IN (...) is NULL, so without an explicit check the guard is skipped and
+    the UPDATE aborts the caller's transaction on the status constraint instead."""
+    import psycopg
+
+    args = _target(cur, queue)
+    job_id, _ = _enqueue(cur, queue, args)
+    claimed = _claim(cur, queue)
+    msg_id = claimed[queue.claim_cols.index("msg_id")]
+    with pytest.raises(psycopg.errors.CheckViolation, match="outcome must be rendered or kept"):
+        cur.execute(f"SELECT public.{queue.complete}(%s, %s, NULL)", (job_id, msg_id))
+
+
+def test_a_scan_whose_chain_is_broken_cannot_be_refiled_under_another_experiment(cur):
+    """With no resolvable scan -> plant -> wave -> experiment chain the active job's
+    experiment is all there is to go on, so a request naming a different one is a
+    disagreement rather than a duplicate."""
+    import psycopg
+
+    cur.execute("INSERT INTO cyl_experiments (name) VALUES ('queue-test-a') RETURNING id")
+    first_experiment = cur.fetchone()[0]
+    cur.execute("INSERT INTO cyl_experiments (name) VALUES ('queue-test-b') RETURNING id")
+    other_experiment = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO cyl_scans (plant_id, date_scanned, plant_age_days) "
+        "VALUES (NULL, now(), 1) RETURNING id"
+    )
+    scan_id = cur.fetchone()[0]
+
+    cur.execute(
+        "SELECT job_id, created FROM public.enqueue_cyl_video(%s, %s, NULL)",
+        (scan_id, first_experiment),
+    )
+    job_id, created = cur.fetchone()
+    assert created is True
+
+    cur.execute("SAVEPOINT before_disagreement")
+    with pytest.raises(psycopg.errors.CheckViolation, match="has an active video job under"):
+        cur.execute(
+            "SELECT job_id, created FROM public.enqueue_cyl_video(%s, %s, NULL)",
+            (scan_id, other_experiment),
+        )
+    cur.execute("ROLLBACK TO SAVEPOINT before_disagreement")
+
+    cur.execute(
+        "SELECT job_id, created FROM public.enqueue_cyl_video(%s, %s, NULL)",
+        (scan_id, first_experiment),
+    )
+    same_job, created_again = cur.fetchone()
+    assert created_again is False and same_job == job_id
+    cur.execute("SELECT experiment_id FROM public.cyl_video_jobs WHERE id = %s", (job_id,))
+    assert cur.fetchone()[0] == first_experiment
