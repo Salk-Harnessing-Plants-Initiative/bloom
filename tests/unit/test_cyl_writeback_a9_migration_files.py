@@ -110,3 +110,35 @@ def test_base_is_the_newest_definition_before_a9():
     assert definers[definers.index(MIGRATION_A9.name) - 1] == BASE.name, (
         f"the newest definition before a9 is not {BASE.name}: {definers}"
     )
+
+
+REVOKE_MIGRATION = MIGRATIONS / "20260925120100_revoke_default_grants_cyl_writeback_rpc.sql"
+REVOKE_ROLLBACK = ROLLBACKS / "20260925120100_revoke_default_grants_cyl_writeback_rpc_rollback.sql"
+
+
+def _statements(path: Path) -> list[str]:
+    """SQL statements (comments stripped, whitespace collapsed), without the trailing ';'."""
+    text = "\n".join(line.split("--", 1)[0] for line in _lines(path))
+    return [" ".join(s.split()) for s in text.split(";") if s.strip()]
+
+
+def test_revoke_migration_is_acl_only():
+    # The grant fix must not redefine the function (the a9 migration is the newest
+    # definition) or touch anything else: BEGIN, the REVOKE, the GRANT, COMMIT.
+    assert _statements(REVOKE_MIGRATION) == [
+        "BEGIN",
+        "REVOKE EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text) "
+        "FROM PUBLIC, anon, authenticated",
+        "GRANT EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text) "
+        "TO bloom_writer, service_role, bloom_admin, bloom_workflows",
+        "COMMIT",
+    ]
+
+
+def test_revoke_rollback_restores_only_the_default_grants():
+    assert _statements(REVOKE_ROLLBACK) == [
+        "BEGIN",
+        "GRANT EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text) "
+        "TO anon, authenticated",
+        "COMMIT",
+    ]

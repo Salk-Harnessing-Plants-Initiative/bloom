@@ -296,11 +296,8 @@ def test_a2_contract_version_rejected(pg_conn, ver):
     # fails if the a3 migration is reverted; bare `0.1.0a2` rejects either way.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        cur.execute("SAVEPOINT expect_rejected")
         with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva2"))
-        cur.execute("ROLLBACK TO SAVEPOINT expect_rejected")
-        assert _source_id(cur, "cva2") is None, "a rejected envelope must write nothing"
     pg_conn.rollback()
 
 
@@ -313,27 +310,23 @@ def test_a3_contract_version_rejected(pg_conn, ver):
     # migration is reverted; bare `0.1.0a3` rejects either way.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        cur.execute("SAVEPOINT expect_rejected")
         with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva3"))
-        cur.execute("ROLLBACK TO SAVEPOINT expect_rejected")
-        assert _source_id(cur, "cva3") is None, "a rejected envelope must write nothing"
     pg_conn.rollback()
 
 
 @pytest.mark.parametrize("ver", ["0.1.0a7", "v0.1.0a7"])
 def test_a7_contract_version_rejected(pg_conn, ver):
     # Hard cutover (repin-cyl-contract-a9, bloom#895): the previous pin (a7, either
-    # form) is refused with the mismatch error bloomctl classifies, and nothing is
-    # written. `v0.1.0a7` is the revert-detector for this re-pin -- the a7 RPC accepted
-    # it, so this case fails if the a9 migration is reverted.
+    # form) is refused with the mismatch error bloomctl classifies. The a7 RPC accepted
+    # both forms (it is prefix-tolerant), so either case fails if the a9 migration is
+    # reverted. ("Nothing is written" needs no separate assertion: a raising plpgsql
+    # call undoes its own writes; the source-gate ordering is proven by the raise
+    # itself, since a gate-first body would return was_noop instead.)
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        cur.execute("SAVEPOINT expect_a7_rejected")
         with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva7"))
-        cur.execute("ROLLBACK TO SAVEPOINT expect_a7_rejected")
-        assert _source_id(cur, "cva7") is None, "a rejected envelope must write nothing"
     pg_conn.rollback()
 
 
@@ -341,7 +334,7 @@ def test_contract_version_mismatch_rejected(pg_conn):
     # An arbitrary unrelated version is rejected.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version="v0.0.0a0", idempotency_key="cv"))
     pg_conn.rollback()
 
@@ -353,11 +346,8 @@ def test_version_boundary_forms_rejected(pg_conn, ver):
     # never-pinned 0.1.0a8 (skipped between a7 and a9).
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        cur.execute("SAVEPOINT expect_rejected")
         with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvbound"))
-        cur.execute("ROLLBACK TO SAVEPOINT expect_rejected")
-        assert _source_id(cur, "cvbound") is None, "a rejected envelope must write nothing"
     pg_conn.rollback()
 
 
@@ -368,7 +358,7 @@ def test_non_string_contract_version_rejected(pg_conn, ver):
     # accept.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvns"))
     pg_conn.rollback()
 
@@ -381,7 +371,7 @@ def test_absent_or_empty_contract_version_rejected(pg_conn, kwargs):
     # match rather than passing (the one way a naive `= pinned` would get wrong).
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, idempotency_key="cvae", **kwargs))
     pg_conn.rollback()
 
@@ -1245,22 +1235,43 @@ def test_function_is_hardened(pg_conn):
     pg_conn.rollback()
 
 
+# The owner appears in the ACL once it is non-default; the other four are the only
+# sanctioned callers (cyl-trait-writeback: "EXECUTE SHALL be granted only to ...").
+SANCTIONED_EXECUTE = {"postgres", "bloom_writer", "service_role", "bloom_admin", "bloom_workflows"}
+
+
 def test_execute_grants_are_exactly_the_sanctioned_roles(pg_conn):
     # Signature is (jsonb, text) as of fix-cyl-pipeline-run-scan-status — the
     # 1-arg overload no longer exists (dropped by the new migration), so
     # has_function_privilege against the old signature would raise, not fail.
+    #
+    # Compares the WHOLE grantee set (repin-cyl-contract-a9). The earlier version
+    # checked only chosen roles, so it never noticed that Supabase's default
+    # privileges had also granted EXECUTE to anon and authenticated directly — a
+    # REVOKE ... FROM PUBLIC does not remove those.
+    sig = f"{RPC}(jsonb, text)"
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT has_function_privilege('public', %s, 'EXECUTE')",
-                    (f"{RPC}(jsonb, text)",))
-        assert cur.fetchone()[0] is False, "PUBLIC must not execute the RPC"
-        for role in ["bloom_writer", "service_role", "bloom_admin", "bloom_workflows"]:
-            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')",
-                        (role, f"{RPC}(jsonb, text)"))
-            assert cur.fetchone()[0] is True, f"{role} should hold EXECUTE"
-        for role in ["bloom_user", "bloom_agent"]:
-            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')",
-                        (role, f"{RPC}(jsonb, text)"))
+        cur.execute("SELECT proacl IS NULL FROM pg_proc WHERE oid = %s::regprocedure", (sig,))
+        assert cur.fetchone()[0] is False, "NULL proacl is the default ACL: PUBLIC may execute"
+        cur.execute(
+            "SELECT coalesce(r.rolname, 'PUBLIC') "
+            "FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) a "
+            "LEFT JOIN pg_roles r ON r.oid = a.grantee "
+            "WHERE p.oid = %s::regprocedure AND a.privilege_type = 'EXECUTE'",
+            (sig,),
+        )
+        grantees = {row[0] for row in cur.fetchall()}
+        assert grantees == SANCTIONED_EXECUTE, (
+            f"unexpected EXECUTE grantees {sorted(grantees - SANCTIONED_EXECUTE)}, "
+            f"missing {sorted(SANCTIONED_EXECUTE - grantees)}"
+        )
+        # Effective privilege too (catches grants reached through role membership).
+        for role in ["public", "anon", "authenticated", "bloom_user", "bloom_agent"]:
+            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig))
             assert cur.fetchone()[0] is False, f"{role} must not hold EXECUTE"
+        for role in ["bloom_writer", "service_role", "bloom_admin", "bloom_workflows"]:
+            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig))
+            assert cur.fetchone()[0] is True, f"{role} should hold EXECUTE"
     pg_conn.rollback()
 
 
@@ -1366,7 +1377,7 @@ def _sql_body(path: Path) -> str:
     """The migration/rollback body minus its BEGIN;/COMMIT; wrapper, applied inside
     the fixture's uncommitted transaction (CRLF-safe, matching the change-C pattern)."""
     return "\n".join(
-        line for line in path.read_text().splitlines()
+        line for line in path.read_text(encoding="utf-8").splitlines()
         if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
     )
 

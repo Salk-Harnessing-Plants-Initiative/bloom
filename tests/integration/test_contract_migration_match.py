@@ -346,11 +346,11 @@ def test_pin_tie_detects_a_live_rpc_on_another_version(pg_conn):
     """The live negative path: restore the pre-a9 (a7) body in an uncommitted
     transaction, then check the extraction reads 0.1.0a7 from pg_get_functiondef and
     the tie reports both values. Guards the regex against the real catalog output."""
-    a7_body = REPO_ROOT / "supabase" / "migrations" / (
+    a7_migration = REPO_ROOT / "supabase" / "migrations" / (
         "20260917140000_fix_cyl_redelivery_status_fallback.sql"
     )
     sql = "\n".join(
-        line for line in a7_body.read_text(encoding="utf-8").splitlines()
+        line for line in a7_migration.read_text(encoding="utf-8").splitlines()
         if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
     )
     pin_version = json.loads(PIN_PATH.read_text(encoding="utf-8"))["version"]
