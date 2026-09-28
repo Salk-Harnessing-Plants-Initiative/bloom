@@ -19,7 +19,9 @@ NAME_HELP = (
     "with no '__' (at most 100)"
 )
 
-RUNS_TABLE = "scrna_cellranger_runs"
+# The runs table shared by every RNA-seq workflow type; this module serves Cell Ranger rows.
+RUNS_TABLE = "rnaseq_runs"
+WORKFLOW_TYPE = "scrna-cellranger"
 REQUEST_FN = "request_scrna_cellranger_run"
 
 
@@ -67,10 +69,16 @@ def trigger_run(body, user_id: str) -> dict:
 
 
 def get_run(run_id: int) -> dict:
-    """The run's row."""
+    """The run's row, if it is a Cell Ranger run."""
     client = app_client()
     rows = (
-        client.table(RUNS_TABLE).select("*").eq("id", run_id).limit(1).execute().data
+        client.table(RUNS_TABLE)
+        .select("*")
+        .eq("id", run_id)
+        .eq("workflow_type", WORKFLOW_TYPE)
+        .limit(1)
+        .execute()
+        .data
         or []
     )
     if not rows:

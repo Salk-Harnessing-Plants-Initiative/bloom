@@ -131,17 +131,35 @@ def test_a_valid_request_calls_the_request_function_once(db):
 # --------------------------------------------------------------------------- #
 
 
+_CELLRANGER_ROW = {
+    "id": 3,
+    "workflow_type": "scrna-cellranger",
+    "params": {"sample": "a", "reference": "r"},
+    "status": "queued",
+}
+
+
 def test_get_run_returns_the_stored_row(monkeypatch):
     fake = FakeSupabase(
         tables={
-            "scrna_cellranger_runs": [
-                {"id": 3, "sample": "a", "status": "queued"},
-                {"id": 4, "sample": "b", "status": "running"},
+            "rnaseq_runs": [
+                _CELLRANGER_ROW,
+                {**_CELLRANGER_ROW, "id": 4, "status": "running"},
             ]
         }
     )
     monkeypatch.setattr(scrna_cellranger, "app_client", lambda: fake)
-    assert scrna_cellranger.get_run(3) == {"id": 3, "sample": "a", "status": "queued"}
+    assert scrna_cellranger.get_run(3) == _CELLRANGER_ROW
+
+
+def test_get_run_of_another_workflow_type_is_404(monkeypatch):
+    fake = FakeSupabase(
+        tables={"rnaseq_runs": [{**_CELLRANGER_ROW, "workflow_type": "fastqc"}]}
+    )
+    monkeypatch.setattr(scrna_cellranger, "app_client", lambda: fake)
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.get_run(3)
+    assert exc.value.status_code == 404
 
 
 def test_get_run_of_an_unknown_run_is_404(monkeypatch):
