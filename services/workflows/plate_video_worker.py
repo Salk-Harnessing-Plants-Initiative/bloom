@@ -111,6 +111,12 @@ def frames_in(outcome: dict) -> int | None:
     return held
 
 
+def label_for(exit_code: int) -> str:
+    """The word an operator reads, taken from the code a caller reads, so the
+    two can never say opposite things about the same outcome."""
+    return "refused" if exit_code == EXIT_REFUSED else "failed"
+
+
 def exit_for_exception(exc: Exception) -> int:
     for kind, status in STATUS_BY_EXCEPTION:
         if isinstance(exc, kind):
@@ -137,8 +143,12 @@ def main(argv=None) -> int:
         return exit_for_exception(exc)
     except Exception as exc:
         logger.exception("plate %r could not be rendered", args.plate)
-        print(f"failed: {exc}")
-        return exit_for_exception(exc)
+        # The word has to come from the code: an oversized or unsupported frame
+        # is the plate's own, and telling an operator "failed" invites a retry
+        # of something that cannot succeed.
+        exit_code = exit_for_exception(exc)
+        print(f"{label_for(exit_code)}: {exc}")
+        return exit_code
 
     action = outcome.get("action")
     if action == "refuse":
@@ -147,8 +157,7 @@ def main(argv=None) -> int:
         # database not answering. Those are this service failing, not the
         # renderer declining, so both the word and the code have to say retry.
         exit_code = exit_for_status(REFUSAL_STATUS.get(code, 409))
-        label = "refused" if exit_code == EXIT_REFUSED else "failed"
-        print(f"{label} ({code}): {outcome.get('reason')}")
+        print(f"{label_for(exit_code)} ({code}): {outcome.get('reason')}")
         return exit_code
 
     frames = frames_in(outcome)

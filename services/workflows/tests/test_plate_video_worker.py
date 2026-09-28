@@ -229,12 +229,15 @@ def test_a_permanent_refusal_says_do_not_retry(monkeypatch, stub_client, capsys,
     ],
 )
 def test_a_permanent_frame_problem_is_refused_not_retried(
-    monkeypatch, stub_client, exc
+    monkeypatch, stub_client, capsys, exc
 ):
     """These are permanent properties of the plate's own images; the route
     answers 413/422. A loop that retries re-downloads and re-encodes forever."""
     _stub_render(monkeypatch, raises=exc)
     assert worker.main(_argv("--wave", "13")) == worker.EXIT_REFUSED
+    assert capsys.readouterr().out.startswith("refused"), (
+        "the word an operator reads must agree with the code a caller reads"
+    )
 
 
 @pytest.mark.parametrize(
@@ -244,9 +247,10 @@ def test_a_permanent_frame_problem_is_refused_not_retried(
         PlateMismatch("refusing to store a crossed identity"),
     ],
 )
-def test_this_service_failing_is_retryable(monkeypatch, stub_client, exc):
+def test_this_service_failing_is_retryable(monkeypatch, stub_client, capsys, exc):
     _stub_render(monkeypatch, raises=exc)
     assert worker.main(_argv("--wave", "13")) == worker.EXIT_FAILED
+    assert capsys.readouterr().out.startswith("failed")
 
 
 def test_a_stored_but_unrecorded_video_says_so(monkeypatch, stub_client, capsys):
