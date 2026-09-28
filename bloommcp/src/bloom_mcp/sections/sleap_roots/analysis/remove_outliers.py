@@ -105,10 +105,10 @@ from bloom_mcp.experiment_utils import (
     fit_is_trustworthy,
 )
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._plots import call_with_figure_cleanup
+from bloom_mcp.tools._plots import call_with_figure_cleanup, close_figures
 from bloom_mcp.tools._qc_shared import _role_kwargs, _validate_trait_subset
 
-if TYPE_CHECKING:  # matplotlib stays out of the runtime import graph (Tier-0)
+if TYPE_CHECKING:  # type-only; see the note on the lazy import in _make_figures
     from matplotlib.figure import Figure
 
 _TOOL_CLASS = OUTLIERS_TOOL_CLASS
@@ -544,8 +544,12 @@ def remove_outliers(
             outputs[rel] = rel
         stored = store.commit(run, outputs)
     finally:
-        for fig in figures.values():
-            _close_figure(fig)
+        # One FIGURE_REGISTRY_LOCK acquisition for the batch, taken here rather than
+        # around the persistence region above: the lock must never span disk I/O.
+        # close_figures never raises, which matters specifically at this site — it
+        # runs after store.commit, so a raising close would report failure for a trim
+        # that is already visible to every require_clean=True consumer.
+        close_figures(figures)
 
     return RemoveOutliersResult(
         experiment=params.experiment,
@@ -590,8 +594,15 @@ def _make_figures(
     invalid_input) rather than surfacing the delegate's opaque ValueError.
     """
     # Import matplotlib lazily and select the headless Agg backend only on the plots
-    # path — this preserves the Tier-0 import-clean guarantee (matplotlib stays out of
-    # the module's runtime import graph), unlike the top-level viz_tools/correlation_tools.
+    # path. NOTE: this does NOT keep matplotlib out of this module's runtime import
+    # graph, despite what this comment claimed before #808 — the module-level
+    # `from sleap_roots_analyze import ...` above imports `matplotlib.pyplot` eagerly,
+    # so pyplot is already in `sys.modules` before any tool call (and the section
+    # `__init__` pulls in `qc_inspect`'s module-level `matplotlib.use("Agg")` too).
+    # What the laziness does buy is narrower but real, and is what the no-plots path
+    # is tested for: an `include_plots=False` call executes no `import matplotlib`
+    # statement of its own, and `close_figures`' empty-dict early return (ahead of its
+    # own lazy import) preserves that on the cleanup side.
     import matplotlib
 
     matplotlib.use("Agg")
@@ -614,8 +625,7 @@ def _make_figures(
         return available
     unknown = [k for k in params.plots if k not in available]
     if unknown:
-        for fig in available.values():
-            _close_figure(fig)
+        close_figures(available)
         raise BloomMCPError(
             code="invalid_input",
             message=f"plots names figure key(s) not produced by method={params.method!r}: "
@@ -623,16 +633,5 @@ def _make_figures(
             remedy="Use one of the available figure keys, or omit plots to persist all.",
         )
     selected = {k: available[k] for k in params.plots}
-    for name, fig in available.items():
-        if name not in selected:
-            _close_figure(fig)
+    close_figures({k: v for k, v in available.items() if k not in selected})
     return selected
-
-
-def _close_figure(fig: "Figure") -> None:
-    try:
-        import matplotlib.pyplot as plt
-
-        plt.close(fig)
-    except Exception:  # pragma: no cover - best-effort cleanup
-        pass
