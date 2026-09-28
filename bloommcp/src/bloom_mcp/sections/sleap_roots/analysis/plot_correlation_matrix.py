@@ -97,15 +97,23 @@ this same order, naming the flagged names directly lets that viewer cross-refere
 they can already see on the image, with none of the "wrong cell" geometry risk a per-cell
 hatch/marker would carry).
 
-**Known test-coverage gap (#768, carried forward from PR #724 via staging):**
-``tests/tools/test_viz_snapshot.py``'s pixel-diff regression check cannot reliably catch a
-single-cell rendering defect in this heatmap — one real cell is a tiny fraction of the whole
-image, small enough that even the most-detectable-possible miscoloring scores an RMS in the
-same range as ordinary cross-platform rendering noise. See that test file's module docstring
-and ``openspec/changes/add-bloommcp-plot-snapshot-tests/design.md`` (Decisions 2 & 7) for the
-full measurement and why this is a structural limit, not a TODO. Note this compounds the
-``heatmap_caveat`` disclosure above: the rendered PNG's untrustworthy cells are caught by
-neither the vendored delegate's own masking (there is none, #747) nor the snapshot test.
+**How this heatmap's rendering is verified (#768, closed):** ``tests/tools/
+test_viz_snapshot.py``'s whole-image pixel-diff cannot catch a single-cell rendering defect
+here — one cell is a tiny fraction of the image, and even the widest error this colormap can
+express scores an RMS inside the range of ordinary cross-platform rendering noise. That is a
+structural limit of whole-image RMS, not a TODO, so it is closed from the other side rather
+than by tuning a tolerance: ``tests/tools/test_viz_cell_oracle.py`` asserts every cell the
+delegate draws — its value, its annotation, its color, and its pixels in the saved PNG —
+against a correlation matrix recomputed independently in the test. See that file's module
+docstring for the measurements, and
+``openspec/changes/add-bloommcp-correlation-cell-oracle/design.md`` for why a per-cell oracle
+was chosen over a lower tolerance.
+
+Note what this does and does not settle for the ``heatmap_caveat`` disclosure above. The cell
+oracle proves the image faithfully draws *the matrix the delegate was given*; it deliberately
+compares against that same unguarded ``.corr()``, so it does not — and is not meant to — flag
+a cell that is confidently colored despite too little real data behind it. That remains open
+under #747, and remains the reason the footnote exists.
 
 Persists a versioned run under its own tool class ``correlation_matrix`` (not the shared,
 unclaimed legacy ``viz`` slot — see ``openspec/changes/converge-bloommcp-viz-tools/design.md``

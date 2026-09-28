@@ -1,4 +1,4 @@
-"""Shared output helpers for `cyl` commands (table and machine-readable rendering)."""
+"""Shared output helpers for list commands (table and machine-readable rendering)."""
 
 from __future__ import annotations
 
