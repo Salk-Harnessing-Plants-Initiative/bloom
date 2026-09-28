@@ -3894,45 +3894,6 @@ export type Database = {
         }
         Relationships: []
       }
-      video_jobs: {
-        Row: {
-          completed_at: string | null
-          created_at: string | null
-          download_url: string | null
-          error_message: string | null
-          id: number
-          progress: number | null
-          scan_id: number
-          started_at: string | null
-          status: string | null
-          total_frames: number | null
-        }
-        Insert: {
-          completed_at?: string | null
-          created_at?: string | null
-          download_url?: string | null
-          error_message?: string | null
-          id?: number
-          progress?: number | null
-          scan_id: number
-          started_at?: string | null
-          status?: string | null
-          total_frames?: number | null
-        }
-        Update: {
-          completed_at?: string | null
-          created_at?: string | null
-          download_url?: string | null
-          error_message?: string | null
-          id?: number
-          progress?: number | null
-          scan_id?: number
-          started_at?: string | null
-          status?: string | null
-          total_frames?: number | null
-        }
-        Relationships: []
-      }
     }
     Views: {
       cyl_accession_sample_counts: {
