@@ -5,7 +5,7 @@
 -- 'rendering') -> report progress (renews the message's visibility) -> complete
 -- ('rendered' or 'kept' + pgmq.delete) or fail ('failed' + pgmq.archive).
 --
--- Rollback: supabase/rollbacks/20260928190000_create_video_generation_queues_rollback.sql
+-- Rollback: supabase/rollbacks/20260928220000_create_video_generation_queues_rollback.sql
 
 BEGIN;
 

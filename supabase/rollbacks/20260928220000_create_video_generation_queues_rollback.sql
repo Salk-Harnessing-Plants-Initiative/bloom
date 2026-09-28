@@ -1,11 +1,11 @@
--- Rollback for 20260928190000_create_video_generation_queues.sql.
+-- Rollback for 20260928220000_create_video_generation_queues.sql.
 --
 -- Nothing applies this automatically. Apply it by hand as supabase_admin:
 --   docker compose -f docker-compose.<env>.yml exec -T db \
 --     psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
---     < supabase/rollbacks/20260928190000_create_video_generation_queues_rollback.sql
+--     < supabase/rollbacks/20260928220000_create_video_generation_queues_rollback.sql
 --
--- A hand-apply leaves 20260928190000 recorded in supabase_migrations.schema_migrations,
+-- A hand-apply leaves 20260928220000 recorded in supabase_migrations.schema_migrations,
 -- so CI, a fresh stack and the next promotion will re-apply the migration. To roll back
 -- durably, delete that row as well.
 --
