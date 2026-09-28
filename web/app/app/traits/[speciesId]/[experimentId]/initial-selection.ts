@@ -1,10 +1,11 @@
 /**
  * Which wave and plant age the traits page shows for a trait's rows.
  *
- * The defaults are the page's long-standing ones: the last wave and the oldest plant age across
- * the trait's rows. A preference — the `?wave=&age=` a pipeline run links with, or, after a trait
- * change, whatever the user was already looking at — wins whenever the trait has rows for it. When
- * it doesn't, the defaults apply and the returned note says what was asked for and what is shown.
+ * The default is the last wave, at the oldest plant age *within that wave*, so the default always
+ * has data (the last wave is often the youngest, so the oldest age overall may not occur in it).
+ * A preference, meaning the `?wave=&age=` a pipeline run links with or a wave/age the user picked,
+ * wins whenever the trait has rows for it. When it doesn't, the default applies and the returned
+ * note says what was asked for and what is shown.
  */
 
 export interface Selection {
@@ -26,17 +27,18 @@ export function resolveSelection(
   rows: SelectionRow[],
   preferred: Partial<Selection> | null,
 ): ResolvedSelection {
-  if (rows.length === 0) return { selection: null, note: null };
-
-  const fallback: Selection = {
-    wave: Math.max(...rows.map((r) => r.wave_number)),
-    age: Math.max(...rows.map((r) => r.plant_age_days)),
-  };
-
   const wanted = preferred ?? {};
-  if (wanted.wave === undefined && wanted.age === undefined) {
-    return { selection: fallback, note: null };
+  const asked = wanted.wave !== undefined || wanted.age !== undefined;
+
+  if (rows.length === 0) {
+    return {
+      selection: null,
+      note: asked ? `${formatSelection(wanted)} has no data for this trait.` : null,
+    };
   }
+
+  const fallback = defaultSelection(rows);
+  if (!asked) return { selection: fallback, note: null };
 
   // Rows matching whatever was asked for; a missing half matches anything.
   const matching = rows.filter(
@@ -48,21 +50,34 @@ export function resolveSelection(
   if (matching.length === 0) {
     return {
       selection: fallback,
-      note: `${describe(wanted)} has no data for this trait; showing ${describe(fallback).toLowerCase()}.`,
+      note:
+        `${formatSelection(wanted)} has no data for this trait; ` +
+        `showing ${formatSelection(fallback).toLowerCase()}.`,
     };
   }
 
-  // Fill in a missing half the way the defaults do: the last wave, or the oldest age.
+  // Fill in a missing half the way the default does: the last wave, or the oldest age.
   return {
     selection: {
-      wave: wanted.wave ?? Math.max(...matching.map((r) => r.wave_number)),
-      age: wanted.age ?? Math.max(...matching.map((r) => r.plant_age_days)),
+      wave: wanted.wave ?? max(matching.map((r) => r.wave_number)),
+      age: wanted.age ?? max(matching.map((r) => r.plant_age_days)),
     },
     note: null,
   };
 }
 
-function describe({ wave, age }: Partial<Selection>): string {
+function defaultSelection(rows: SelectionRow[]): Selection {
+  const wave = max(rows.map((r) => r.wave_number));
+  const age = max(rows.filter((r) => r.wave_number === wave).map((r) => r.plant_age_days));
+  return { wave, age };
+}
+
+/** `Math.max(...values)` without the argument-count limit of a spread. */
+function max(values: number[]): number {
+  return values.reduce((a, b) => (b > a ? b : a), -Infinity);
+}
+
+function formatSelection({ wave, age }: Partial<Selection>): string {
   if (wave !== undefined && age !== undefined) return `Wave ${wave} · day ${age}`;
   if (wave !== undefined) return `Wave ${wave}`;
   return `Day ${age}`;

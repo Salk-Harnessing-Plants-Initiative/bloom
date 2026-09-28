@@ -4,7 +4,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 
-const explorerProps = vi.hoisted(() => ({ last: null as Record<string, unknown> | null }));
+const explorerProps = vi.hoisted(() => ({
+  last: null as Record<string, unknown> | null,
+  mounts: 0,
+}));
 
 vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: async () => ({
@@ -26,27 +29,38 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 vi.mock("mixpanel", () => ({ default: { init: vi.fn() } }));
 vi.mock("@/components/scientist-badge", () => ({ default: () => null }));
-vi.mock("./TraitExplorer", () => ({
-  default: (props: Record<string, unknown>) => {
-    explorerProps.last = props;
-    return <div data-testid="explorer" />;
-  },
-}));
+vi.mock("./TraitExplorer", async () => {
+  const { useEffect } = await import("react");
+  return {
+    default: (props: Record<string, unknown>) => {
+      explorerProps.last = props;
+      useEffect(() => {
+        explorerProps.mounts += 1;
+      }, []);
+      return <div data-testid="explorer" />;
+    },
+  };
+});
 
 import Experiment from "./page";
 
 afterEach(() => {
   cleanup();
   explorerProps.last = null;
+  explorerProps.mounts = 0;
 });
 
-async function renderPage(searchParams: Record<string, string | string[] | undefined>) {
-  render(
-    await Experiment({
-      params: Promise.resolve({ speciesId: "2", experimentId: "5" }),
-      searchParams: Promise.resolve(searchParams),
-    }),
-  );
+type Params = Record<string, string | string[] | undefined>;
+
+function page(searchParams: Params) {
+  return Experiment({
+    params: Promise.resolve({ speciesId: "2", experimentId: "5" }),
+    searchParams: Promise.resolve(searchParams),
+  });
+}
+
+async function renderPage(searchParams: Params) {
+  return render(await page(searchParams));
 }
 
 describe("the traits page", () => {
@@ -57,7 +71,18 @@ describe("the traits page", () => {
 
   it("passes nothing for missing or invalid values", async () => {
     await renderPage({ wave: ["1", "2"], age: "abc" });
+    expect(explorerProps.last).not.toBeNull();
     expect(explorerProps.last?.initialWave).toBeUndefined();
     expect(explorerProps.last?.initialAge).toBeUndefined();
+  });
+
+  it("remounts the explorer when a different run link opens the same page", async () => {
+    // Next keeps client state on soft navigation; the key is what re-seeds the explorer.
+    const view = await renderPage({ wave: "1", age: "14" });
+    expect(explorerProps.mounts).toBe(1);
+    view.rerender(await page({ wave: "1", age: "14" }));
+    expect(explorerProps.mounts).toBe(1);
+    view.rerender(await page({ wave: "2", age: "21" }));
+    expect(explorerProps.mounts).toBe(2);
   });
 });

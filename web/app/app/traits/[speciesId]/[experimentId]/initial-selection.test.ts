@@ -69,8 +69,29 @@ describe("resolveSelection", () => {
     );
   });
 
-  it("has no selection and no note when the trait has no data at all", () => {
-    expect(resolveSelection([], { wave: 1, age: 14 })).toEqual({ selection: null, note: null });
+  it("has no selection, and says so, when a requested pair meets a trait with no data", () => {
+    expect(resolveSelection([], { wave: 1, age: 14 })).toEqual({
+      selection: null,
+      note: "Wave 1 · day 14 has no data for this trait.",
+    });
+  });
+
+  it("has no selection and no note for a trait with no data when nothing was asked for", () => {
+    expect(resolveSelection([], null)).toEqual({ selection: null, note: null });
+  });
+
+  it("defaults to the oldest age within the last wave, so the default always has data", () => {
+    // The last wave is the youngest here: overall-oldest day 21 does not exist in wave 3.
+    const young = rows([1, 7], [1, 21], [3, 7]);
+    expect(resolveSelection(young, null)).toEqual({ selection: { wave: 3, age: 7 }, note: null });
+  });
+
+  it("falls back to a pair that has data, never one the note would contradict", () => {
+    const young = rows([1, 7], [1, 21], [3, 7]);
+    expect(resolveSelection(young, { wave: 9, age: 21 })).toEqual({
+      selection: { wave: 3, age: 7 },
+      note: "Wave 9 · day 21 has no data for this trait; showing wave 3 · day 7.",
+    });
   });
 
   it("treats an empty preference like no preference", () => {

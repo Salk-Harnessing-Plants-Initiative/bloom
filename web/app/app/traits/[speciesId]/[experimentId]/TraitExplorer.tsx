@@ -9,9 +9,11 @@
  * badge so the first paint doesn't wait on a client-side roundtrip.
  *
  * `initialWave`/`initialAge` come from the page's `?wave=&age=`, which a pipeline run's traits
- * link sets. They seed the first load only. After that, a trait change keeps the wave and age the
- * user is looking at when the new trait has data there, and otherwise falls back to the defaults
- * with a visible note (see `resolveSelection`).
+ * link sets. That pair is the preferred wave and age on every load until the user picks a wave or
+ * age themselves, which then becomes the preference. Each load shows the preference when the trait
+ * has data there. Otherwise it shows the default (last wave, oldest age within it) with a visible
+ * note (see `resolveSelection`), without forgetting the preference, so returning to a trait that
+ * has the run's wave and age shows them again.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -54,8 +56,9 @@ export default function TraitExplorer({
   const [plantAge, setPlantAge] = useState<number>(0);
   const [selectionNote, setSelectionNote] = useState<string | null>(null);
 
-  // The selection each data load should try to keep: the URL's on the first load, then whatever
-  // is on screen. A ref, so the data effect reads the latest value without re-running on it.
+  // The wave and age each data load should show if the trait has them: the link's, until the user
+  // picks one. Only the pickers write it, never a load, so a fallback or an empty trait can't
+  // overwrite it. A ref, so the data effect reads the latest value without re-running on it.
   const preferred = useRef<Partial<Selection> | null>(
     initialWave === undefined && initialAge === undefined
       ? null
@@ -105,10 +108,12 @@ export default function TraitExplorer({
     };
   }, [experimentId, selectedTraitName]);
 
-  // From the first load on, the preference is simply what the user is looking at.
-  useEffect(() => {
-    if (!isLoading) preferred.current = { wave: waveNumber, age: plantAge };
-  }, [isLoading, waveNumber, plantAge]);
+  const pick = (wave: number, age: number) => {
+    setWaveNumber(wave);
+    setPlantAge(age);
+    preferred.current = { wave, age };
+    setSelectionNote(null);
+  };
 
   const filteredData = traitData?.filter(
     (row) =>
@@ -141,8 +146,8 @@ export default function TraitExplorer({
           <select
             className="block w-72 rounded-md border-gray-300 shadow-sm focus:border-neutral-300 focus:ring focus:ring-neutral-200 focus:ring-opacity-50 disabled:opacity-50"
             value={waveNumber}
-            onChange={(e) => setWaveNumber(parseInt(e.target.value))}
-            disabled={waves.length === 0}
+            onChange={(e) => pick(parseInt(e.target.value), plantAge)}
+            disabled={isLoading || waves.length === 0}
           >
             {waves.map((wave) => (
               <option key={wave.waveNumber} value={wave.waveNumber}>
@@ -157,8 +162,8 @@ export default function TraitExplorer({
           <select
             className="block w-36 rounded-md border-gray-300 shadow-sm focus:border-neutral-300 focus:ring focus:ring-neutral-200 focus:ring-opacity-50 disabled:opacity-50"
             value={plantAge}
-            onChange={(e) => setPlantAge(parseInt(e.target.value))}
-            disabled={plantAges.length === 0}
+            onChange={(e) => pick(waveNumber, parseInt(e.target.value))}
+            disabled={isLoading || plantAges.length === 0}
           >
             {plantAges.map((i) => (
               <option key={i} value={i}>
@@ -169,14 +174,18 @@ export default function TraitExplorer({
         </Field>
       </div>
 
-      {selectionNote && !isLoading && (
-        <p
-          role="status"
-          className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
-        >
-          {selectionNote}
-        </p>
-      )}
+      {/* Always mounted, so screen readers announce the note when it appears. */}
+      <p
+        role="status"
+        aria-live="polite"
+        className={
+          selectionNote && !isLoading
+            ? "mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+            : "sr-only"
+        }
+      >
+        {selectionNote && !isLoading ? selectionNote : ""}
+      </p>
 
       {isLoading ? (
         <LoadingState />

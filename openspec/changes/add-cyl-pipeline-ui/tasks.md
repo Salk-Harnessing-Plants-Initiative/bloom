@@ -108,11 +108,11 @@
 
 ## 2. `wave`/`age` search params on the traits page
 
-- [x] 2.1 **Test first.** Write `web/app/app/traits/[speciesId]/[experimentId]/initial-selection.test.ts` for a pure `resolveSelection(options, requested, current)`:
-  - a requested pair that is available is selected;
-  - an unavailable requested pair falls back to the defaults (last wave, max age for that wave) and returns a note;
-  - `current` is kept on a trait change when still available, otherwise it falls back with a note;
-  - an age that exists but not for the chosen wave falls back.
+- [x] 2.1 **Test first.** Write `web/app/app/traits/[speciesId]/[experimentId]/initial-selection.test.ts` for a pure `resolveSelection(rows, preferred)`. The preference, whether requested or hand-picked, is one argument:
+  - a preferred pair that is available is selected;
+  - an unavailable preferred pair falls back to the default (last wave, oldest age within that wave) and returns a note;
+  - an age that exists but not for the chosen wave falls back;
+  - a trait with no rows returns a note when a pair was preferred.
 - [x] 2.2 **Test first.** Write `parse-search-params.test.ts` for `parseWaveAge(searchParams)`:
   - `'1'` and `'14'` give numbers;
   - `'0x1'`, `''`, `'07'`, `'1.5'` and arrays (`?wave=1&wave=2`) are ignored.

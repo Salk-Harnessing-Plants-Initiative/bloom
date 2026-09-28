@@ -24,11 +24,37 @@ const ROWS: Record<string, Row[]> = vi.hoisted(() => ({
     { wave_number: 2, plant_age_days: 21 },
     { wave_number: 3, plant_age_days: 21 },
   ],
+  // The last wave is the youngest: the overall-oldest day (21) never occurs in wave 3.
+  young_a: [
+    { wave_number: 1, plant_age_days: 7 },
+    { wave_number: 1, plant_age_days: 21 },
+    { wave_number: 3, plant_age_days: 7 },
+  ],
+  young_b: [
+    { wave_number: 1, plant_age_days: 7 },
+    { wave_number: 1, plant_age_days: 21 },
+    { wave_number: 3, plant_age_days: 7 },
+  ],
+  empty: [],
 }));
+
+/** When set, the next rpc call waits for this promise before answering. */
+const gate = vi.hoisted(() => ({ next: null as Promise<void> | null }));
+/** Trait names whose rpc call fails, the way getTraitData sees an RPC error. */
+const failing = vi.hoisted(() => new Set<string>());
 
 vi.mock("@/lib/supabase/client", () => ({
   createClientSupabaseClient: () => ({
-    rpc: async (_fn: string, args: { trait_name_: string }) => ({
+    rpc: async (_fn: string, args: { trait_name_: string }) => {
+      if (gate.next) {
+        const wait = gate.next;
+        gate.next = null;
+        await wait;
+      }
+      if (failing.has(args.trait_name_)) {
+        return { data: null, error: { message: "boom" } };
+      }
+      return {
       data: (ROWS[args.trait_name_] ?? []).map((r, i) => ({
         ...r,
         scan_id: i + 1,
@@ -41,7 +67,8 @@ vi.mock("@/lib/supabase/client", () => ({
         trait_value: 1,
       })),
       error: null,
-    }),
+      };
+    },
   }),
 }));
 vi.mock("@/components/scan-trait-boxplot", () => ({
@@ -52,19 +79,36 @@ vi.mock("@/components/scan-trait-boxplot", () => ({
 
 import TraitExplorer from "./TraitExplorer";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  failing.clear();
+  gate.next = null;
+  vi.restoreAllMocks();
+});
 
-async function renderExplorer(props: { initialWave?: number; initialAge?: number } = {}) {
+async function renderExplorer(
+  props: {
+    initialWave?: number;
+    initialAge?: number;
+    traitNames?: string[];
+    defaultTraitName?: string;
+  } = {},
+) {
+  const { traitNames = ["trait_a", "trait_b"], defaultTraitName = traitNames[0], ...rest } = props;
   await act(async () => {
     render(
       <TraitExplorer
         experimentId={5}
-        traitNames={["trait_a", "trait_b"]}
-        defaultTraitName="trait_a"
-        {...props}
+        traitNames={traitNames}
+        defaultTraitName={defaultTraitName}
+        {...rest}
       />,
     );
   });
+}
+
+function note(): string {
+  return screen.getByRole("status").textContent ?? "";
 }
 
 function selects() {
@@ -83,7 +127,7 @@ describe("TraitExplorer's initial wave and age", () => {
     await renderExplorer();
     expect(selects().wave.value).toBe("3");
     expect(selects().age.value).toBe("21");
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(note()).toBe("");
   });
 
   it("opens on the wave and age a run links to", async () => {
@@ -96,7 +140,7 @@ describe("TraitExplorer's initial wave and age", () => {
   it("falls back, and says so, when the linked pair has no data", async () => {
     await renderExplorer({ initialWave: 9, initialAge: 14 });
     expect(selects().wave.value).toBe("3");
-    expect(screen.getByRole("status").textContent).toBe(
+    expect(note()).toBe(
       "Wave 9 · day 14 has no data for this trait; showing wave 3 · day 21.",
     );
   });
@@ -106,7 +150,7 @@ describe("TraitExplorer's initial wave and age", () => {
     await changeTrait("trait_b");
     expect(selects().wave.value).toBe("2");
     expect(selects().age.value).toBe("21");
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(note()).toBe("");
   });
 
   it("falls back with a note on a trait change when the new trait lacks them", async () => {
@@ -114,7 +158,7 @@ describe("TraitExplorer's initial wave and age", () => {
     await changeTrait("trait_b");
     expect(selects().wave.value).toBe("3");
     expect(selects().age.value).toBe("21");
-    expect(screen.getByRole("status").textContent).toBe(
+    expect(note()).toBe(
       "Wave 1 · day 14 has no data for this trait; showing wave 3 · day 21.",
     );
   });
@@ -132,5 +176,100 @@ describe("TraitExplorer's initial wave and age", () => {
     await changeTrait("trait_a");
     expect(selects().wave.value).toBe("2");
     expect(selects().age.value).toBe("21");
+  });
+
+  it("keeps the old behaviour on a visit without parameters: no note on a trait change", async () => {
+    await renderExplorer({ traitNames: ["young_a", "young_b"] });
+    expect(selects().wave.value).toBe("3");
+    expect(selects().age.value).toBe("7");
+    await changeTrait("young_b");
+    expect(selects().wave.value).toBe("3");
+    expect(note()).toBe("");
+  });
+
+  it("returns to the run's wave and age after a detour through a trait that lacks them", async () => {
+    await renderExplorer({ initialWave: 1, initialAge: 14 });
+    await changeTrait("trait_b");
+    expect(selects().wave.value).toBe("3");
+    await changeTrait("trait_a");
+    expect(selects().wave.value).toBe("1");
+    expect(selects().age.value).toBe("14");
+    expect(note()).toBe("");
+  });
+
+  it("says so when the linked trait has no data, and still honours the link afterwards", async () => {
+    await renderExplorer({
+      traitNames: ["empty", "trait_a"],
+      initialWave: 1,
+      initialAge: 14,
+    });
+    expect(note()).toBe("Wave 1 · day 14 has no data for this trait.");
+    await changeTrait("trait_a");
+    expect(selects().wave.value).toBe("1");
+    expect(selects().age.value).toBe("14");
+    expect(note()).toBe("");
+  });
+
+  it("clears the note when the user picks a wave or age", async () => {
+    await renderExplorer({ initialWave: 9, initialAge: 14 });
+    expect(note()).not.toBe("");
+    await act(async () => {
+      fireEvent.change(selects().wave, { target: { value: "1" } });
+    });
+    expect(note()).toBe("");
+  });
+
+  it("keeps the note's status region mounted so screen readers announce it", async () => {
+    await renderExplorer();
+    expect(screen.getByRole("status").getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("disables the wave and age pickers while a trait is loading", async () => {
+    await renderExplorer();
+    let release!: () => void;
+    gate.next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await changeTrait("trait_b");
+    expect(selects().wave.disabled).toBe(true);
+    expect(selects().age.disabled).toBe(true);
+    await act(async () => {
+      release();
+    });
+    expect(selects().wave.disabled).toBe(false);
+  });
+
+  it("explains a wave-only link whose wave does not exist", async () => {
+    await renderExplorer({ initialWave: 9 });
+    expect(note()).toBe("Wave 9 has no data for this trait; showing wave 3 · day 21.");
+  });
+
+  it("treats a failed load as no data and keeps the link for the next trait", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    failing.add("trait_b");
+    await renderExplorer({
+      traitNames: ["trait_b", "trait_a"],
+      initialWave: 1,
+      initialAge: 14,
+    });
+    expect(note()).toBe("Wave 1 · day 14 has no data for this trait.");
+    await changeTrait("trait_a");
+    expect(selects().wave.value).toBe("1");
+    expect(selects().age.value).toBe("14");
+    expect(note()).toBe("");
+  });
+
+  it("hides the note while the next trait loads", async () => {
+    await renderExplorer({ initialWave: 9, initialAge: 14 });
+    expect(note()).not.toBe("");
+    let release!: () => void;
+    gate.next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await changeTrait("trait_b");
+    expect(note()).toBe("");
+    await act(async () => {
+      release();
+    });
   });
 });
