@@ -61,6 +61,9 @@ SENSITIVE_INVENTORY = {
     "WORKFLOWS_K8S_TOKEN",
     "WORKFLOWS_K8S_CA_CERT",
     "WORKFLOWS_K8S_API_URL",
+    # Cell Ranger trigger: list-only key for the scRNA workflows bucket.
+    "WORKFLOWS_SCRNA_S3_ACCESS_KEY_ID",
+    "WORKFLOWS_SCRNA_S3_SECRET_ACCESS_KEY",
 }
 
 # Patterns that indicate a secret value (not just a key name). Case-insensitive.

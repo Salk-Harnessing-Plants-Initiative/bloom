@@ -40,17 +40,31 @@ Endpoints:
                                                        Argo/K8s; live reconciliation is
                                                        exclusively status_poller.py's job
                                                        (requires a Supabase user JWT)
+    GET  /scrna/cellranger/inputs                   - samples (raw_reads/ folders with
+                                                       FASTQ count and size) and
+                                                       references available to a
+                                                       Cell Ranger run
+                                                       (requires a Supabase user JWT)
+    POST /scrna/cellranger/runs                     - start a Cell Ranger run for one
+                                                       sample + a reference: writes
+                                                       the run and queues it for the
+                                                       dispatch worker
+                                                       (requires a Supabase user JWT)
+    GET  /scrna/cellranger/runs/{run_id}            - a Cell Ranger run as stored
+                                                       (requires a Supabase user JWT)
 """
 
 import logging
 import os
 
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
 import pipeline
 import plate_progress
 import plate_request
+import scrna_cellranger
 from auth import enforce_rate_limit, require_supabase_user
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from video import generate_experiment_scan_video
 
 logging.basicConfig(
@@ -218,3 +232,49 @@ def get_pipeline_run_route(
     """
     enforce_rate_limit(user_id)
     return pipeline.get_run(run_id)
+
+
+@app.get("/scrna/cellranger/inputs")
+def list_scrna_cellranger_inputs_route(
+    user_id: str = Depends(require_supabase_user),
+):
+    """Samples and references a Cell Ranger run can use, listed live from the bucket.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
+    """
+    enforce_rate_limit(user_id)
+    return scrna_cellranger.list_inputs()
+
+
+@app.post("/scrna/cellranger/runs", status_code=201)
+def trigger_scrna_cellranger_run_route(
+    body: dict,
+    user_id: str = Depends(require_supabase_user),
+):
+    """Start a Cell Ranger run for one sample and a reference, and queue it.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
+    """
+    enforce_rate_limit(user_id)
+    result = scrna_cellranger.trigger_run(body, user_id)
+    logger.info(
+        "Cell Ranger run %s triggered by %s (sample %s, reference %s)",
+        result["run_id"],
+        user_id,
+        result["sample"],
+        result["reference"],
+    )
+    return result
+
+
+@app.get("/scrna/cellranger/runs/{run_id}")
+def get_scrna_cellranger_run_route(
+    run_id: int,
+    user_id: str = Depends(require_supabase_user),
+):
+    """A Cell Ranger run's row.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
+    """
+    enforce_rate_limit(user_id)
+    return scrna_cellranger.get_run(run_id)

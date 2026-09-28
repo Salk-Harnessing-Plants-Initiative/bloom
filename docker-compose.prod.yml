@@ -235,6 +235,11 @@ services:
       # Public base for rewriting signed URLs off the internal kong host so
       # download_url is usable by outside callers.
       WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      # List-only key for the scRNA workflows bucket (Cell Ranger trigger).
+      WORKFLOWS_SCRNA_S3_BUCKET: ${WORKFLOWS_SCRNA_S3_BUCKET}
+      WORKFLOWS_SCRNA_S3_REGION: ${WORKFLOWS_SCRNA_S3_REGION}
+      WORKFLOWS_SCRNA_S3_ACCESS_KEY_ID: ${WORKFLOWS_SCRNA_S3_ACCESS_KEY_ID}
+      WORKFLOWS_SCRNA_S3_SECRET_ACCESS_KEY: ${WORKFLOWS_SCRNA_S3_SECRET_ACCESS_KEY}
     networks:
       - supanet
     healthcheck:

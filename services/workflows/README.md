@@ -111,6 +111,25 @@ curl -X POST http://localhost:5100/pipeline \
 # {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 0}
 ```
 
+### Cell Ranger trigger
+
+Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per run**. A sample is one 10x library: a first-level folder under `raw_reads/` in the scRNA workflows bucket (`bloomv2-workflows`), holding all its lanes and re-sequencing runs. Separate captures are separate runs. A reference is a first-level folder under `reference_genome/` that contains `reference.json`.
+
+- `GET /scrna/cellranger/inputs` lists samples (with FASTQ count and total size), references, and folders whose names cannot be run.
+- `POST /scrna/cellranger/runs` takes `{"sample": ..., "reference": ...}`. Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` (422 otherwise); a reference without `reference.json` or a sample without FASTQs is a 404 naming it. On success it calls `request_scrna_cellranger_run`, which writes the run and one `scrna_cellranger_dispatch` message in a single transaction, and returns 201.
+- `GET /scrna/cellranger/runs/{run_id}` returns the run as stored.
+
+The results go to `runs_output/<sample>__<reference>/`, so one sample can be counted against several references. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
+
+```bash
+curl -X POST http://localhost:5100/scrna/cellranger/runs \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"sample": "tinygex", "reference": "tiny_ref"}'
+
+# 201 {"run_id": 1, "sample": "tinygex", "reference": "tiny_ref", "run_key": "tinygex__tiny_ref"}
+```
+
 ### Pipeline dispatch worker
 
 `dispatch_worker.py` (bloom #11/#404, Phase 2 of 3 — see
@@ -349,6 +368,11 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
    certificate's embedded newlines would break every one of those tools if
    stored raw. `k8s_client.py` un-escapes before constructing the TLS
    verification context.
+5. For the Cell Ranger trigger: create an IAM user whose only permission is
+   `s3:ListBucket` on `bloomv2-workflows` with an `s3:prefix` condition of
+   `raw_reads/`, `raw_reads/*`, `reference_genome/` and `reference_genome/*`,
+   and set its key as `PROD_/STAGING_WORKFLOWS_SCRNA_S3_ACCESS_KEY_ID` and
+   `_SECRET_ACCESS_KEY`. The trigger never reads an object; every check is a listing.
 
 ## Configuration
 
@@ -374,6 +398,10 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_WORKER_POLL_SECONDS`| `5`                      | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check |
 | `WORKFLOWS_STATUS_POLL_SECONDS`| `15`                     | `cyl-status-poller` only. Sleep between sweep cycles, and the retry interval for the startup Supabase connection check. Not wired into either compose file's `environment:` block, matching `WORKFLOWS_WORKER_POLL_SECONDS`'s own treatment — the code-side default governs every deployed environment today |
 | `WORKFLOWS_DISPATCH_VT_SECONDS`| `60`                     | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery |
+| `WORKFLOWS_SCRNA_S3_ACCESS_KEY_ID` | –                     | Cell Ranger trigger. List-only key for the scRNA workflows bucket (see Provisioning); the Cell Ranger routes return 500 "not configured" without it |
+| `WORKFLOWS_SCRNA_S3_SECRET_ACCESS_KEY` | –                 | Cell Ranger trigger. Secret for the key above |
+| `WORKFLOWS_SCRNA_S3_BUCKET`    | `bloomv2-workflows`      | Cell Ranger trigger. Bucket holding `raw_reads/`, `reference_genome/` and `runs_output/` |
+| `WORKFLOWS_SCRNA_S3_REGION`    | `us-west-2`              | Cell Ranger trigger. The bucket's region |
 | `WORKFLOWS_DISPATCH_MAX_READS`| `5`                       | `cyl-pipeline-worker` only. Poison-message threshold passed to `claim_cyl_pipeline_batch` — a batch redelivered more than this many times is dead-lettered (marked failed) instead of claimed again |
 
 > `ffmpeg` must be present in the runtime image — the Dockerfile copies a digest-pinned static `ffmpeg` binary (avoids apt's ffmpeg pulling in vulnerable GPU/TLS libraries).
