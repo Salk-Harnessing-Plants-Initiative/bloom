@@ -518,3 +518,47 @@ describe("ExpressionView — cell counts in the cluster list", () => {
     expect(await screen.findByText("Could not load the cell counts: permission denied")).toBeTruthy();
   });
 });
+
+describe("ExpressionView — a gene that is still loading", () => {
+  it("says the gene is loading until its values arrive", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Col-0 4" })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Pick AT1G01010" }));
+    expect(await screen.findByText("Loading AT1G01010…")).toBeTruthy();
+
+    act(() => latest().onExpressionRangeChanged?.({ min: 0, max: 3 }));
+    await waitFor(() => expect(screen.queryByText("Loading AT1G01010…")).toBeNull());
+    expect(screen.getByText(/Cells are coloured by AT1G01010/)).toBeTruthy();
+  });
+});
+
+describe("ExpressionView — what the transgene bar counts", () => {
+  const CARRIERS: LoadedPayload = {
+    ...LOADED,
+    cellCount: 3,
+    filters: ["transgene_pos"],
+    unlabelled: { transgene_pos: 0 },
+    cells: [
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "Col-0", cluster_ordinal: 0, facets: { transgene_pos: "True" } },
+      { replicate: "pFACT", cluster_ordinal: 0, facets: { transgene_pos: "False" } },
+    ],
+  };
+
+  it("says it counts the whole dataset once something on the map is hidden", async () => {
+    const { ExpressionView } = await import("./expression-view");
+    render(<ExpressionView datasetId={1} />);
+    loadData(CARRIERS);
+    const bar = await screen.findByTestId("transgene-summary");
+    expect(within(bar).queryByText(/whole dataset/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "False 1" }));
+    await waitFor(() =>
+      expect(within(screen.getByTestId("transgene-summary")).getByText(/of 3 cells in the whole dataset/))
+        .toBeTruthy(),
+    );
+  });
+});

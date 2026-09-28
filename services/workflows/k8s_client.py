@@ -150,7 +150,12 @@ def _load_vendored_workflow() -> dict:
         )
 
     try:
-        raw = _VENDORED_WORKFLOW_PATH.read_text()
+        # encoding= is explicit, not incidental: bare read_text() decodes with the
+        # platform locale (cp1252 on a Windows dev box, UTF-8 in the container),
+        # and this file carries non-ASCII characters. Harmless while they all sit
+        # in comments that safe_load drops, but a silent Windows/Linux divergence
+        # the moment upstream puts one in a value.
+        raw = _VENDORED_WORKFLOW_PATH.read_text(encoding="utf-8")
     except OSError as exc:
         raise K8sConfigError(
             "K8s client not configured: vendored Workflow source is missing"
@@ -179,7 +184,7 @@ def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
     """Construct the Workflow CRD body for one batch by loading the vendored
     canonical `sleap-roots-pipeline.yaml` and applying exactly four overrides
     on top of it — see the module docstring for why each one exists. The
-    vendored file's DAG (referencing the four already-registered
+    vendored file's DAG (referencing the five already-registered
     WorkflowTemplates), volumes, entrypoint, and serviceAccountName all pass
     through unmodified."""
     body = _load_vendored_workflow()

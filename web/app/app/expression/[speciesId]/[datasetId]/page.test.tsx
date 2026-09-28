@@ -13,10 +13,8 @@ vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: async () => ({
     from: () => ({
       select: () => ({
-        eq: () => ({
-          single: async () => lookup.result,
-          maybeSingle: async () => lookup.result,
-        }),
+        // Only maybeSingle: `.single()` turns "no such dataset" into an error.
+        eq: () => ({ maybeSingle: async () => lookup.result }),
       }),
     }),
   }),

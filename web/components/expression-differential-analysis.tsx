@@ -396,7 +396,10 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
   useEffect(() => {
     const svg = chartRef.current;
     if (!svg || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => setChartWidth(svg.clientWidth));
+    // A hidden tab reports zero: keep the last real width rather than redraw for nothing.
+    const observer = new ResizeObserver(() => {
+      if (svg.clientWidth > 0) setChartWidth(svg.clientWidth);
+    });
     observer.observe(svg);
     return () => observer.disconnect();
   }, [chartData]);
@@ -407,6 +410,8 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
 
     const svg = d3.select(chartRef.current);
     svg.selectAll("*").remove();
+    // Start unzoomed: d3 keeps the last zoom on the element, and the next scroll would jump to it.
+    svg.property("__zoom", d3.zoomIdentity);
 
     const width = chartRef.current.clientWidth || 600;
     const height = 500;

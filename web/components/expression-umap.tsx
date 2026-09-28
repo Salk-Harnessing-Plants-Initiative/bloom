@@ -344,10 +344,11 @@ export function ExpressionUmap({
       onGeneError?.(null);
       return;
     }
-    // A new gene starts from nothing, never from the previous gene's colours.
+    // A new gene starts from nothing: none of the previous gene's colours, range or error.
     setExpressionArr(null);
     setExpressionRange(null);
     onExpressionRangeChanged?.(null);
+    onGeneError?.(null);
     let cancelled = false;
     (async () => {
       try {
