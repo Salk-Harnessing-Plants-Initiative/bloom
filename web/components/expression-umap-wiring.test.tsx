@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 
 import type { CellArraysRow } from "./expression-lib/scrna-client";
-import { EXPRESSION_VERT, VALUE_PASS } from "./expression-lib/shaders";
+import { EXPRESSION_VERT, POINT_VERT, VALUE_PASS } from "./expression-lib/shaders";
 
 interface StubBuffer {
   initial: unknown;
@@ -63,9 +63,10 @@ const CELLS: CellArraysRow[] = [
   { x: 30, y: 55, cluster_ordinal: 1, replicate: null },
 ];
 
-/** Each gene's values, released only when a test says so. */
+/** Each gene's values, released or refused only when a test says so. */
 const genes = vi.hoisted(() => ({
   release: new Map<string, (values: Float32Array) => void>(),
+  refuse: new Map<string, (error: Error) => void>(),
 }));
 
 vi.mock("./expression-lib/scrna-client", async (importOriginal) => {
@@ -82,7 +83,10 @@ vi.mock("./expression-lib/scrna-client", async (importOriginal) => {
     fetchCells: vi.fn(async () => CELLS),
     fetchGeneCounts: vi.fn(
       (_datasetId: number, gene: string) =>
-        new Promise<Float32Array>((resolve) => genes.release.set(gene, resolve)),
+        new Promise<Float32Array>((resolve, reject) => {
+          genes.release.set(gene, resolve);
+          genes.refuse.set(gene, reject);
+        }),
     ),
   };
 });
@@ -108,6 +112,7 @@ beforeEach(() => {
   buffers.length = 0;
   draws.length = 0;
   genes.release.clear();
+  genes.refuse.clear();
   frames = [];
   packPositions.mockClear();
   vi.stubGlobal(
@@ -133,8 +138,9 @@ const positionBuffer = () => buffers[0];
 const visibilityBuffer = () => buffers[2];
 const expressionBuffer = () => buffers[3];
 
-/** The expression draw command, and the passes it was asked for. */
+/** The expression and cell-type draw commands, and what they were asked for. */
 const expressionDraw = () => draws.find((d) => d.vert === EXPRESSION_VERT)?.draw;
+const clusterDraw = () => draws.find((d) => d.vert === POINT_VERT)?.draw;
 const passesDrawn = () =>
   (expressionDraw()?.mock.calls ?? []).map(([props]) => ({
     focusMode: props.focusMode,
@@ -269,6 +275,63 @@ describe("ExpressionUmap — changing gene", () => {
     act(() => genes.release.get("B")!(B));
     await waitFor(() => expect(lastWritten()).toEqual([1, 0, 0, 0]));
     expect(onRange).toHaveBeenLastCalledWith({ min: 0, max: 1 });
+  });
+
+  it("keeps the second gene when the first gene's values arrive late", async () => {
+    const { ExpressionUmap } = await import("./expression-umap");
+    const onRange = vi.fn();
+    const { rerender } = render(
+      <ExpressionUmap datasetId={1} geneName="A" onExpressionRangeChanged={onRange} />,
+    );
+    await waitFor(() => expect(genes.release.has("A")).toBe(true));
+    rerender(<ExpressionUmap datasetId={1} geneName="B" onExpressionRangeChanged={onRange} />);
+    await waitFor(() => expect(genes.release.has("B")).toBe(true));
+
+    act(() => genes.release.get("B")!(B));
+    await waitFor(() => expect(lastWritten()).toEqual([1, 0, 0, 0]));
+    await act(async () => genes.release.get("A")!(A));
+
+    expect(lastWritten()).toEqual([1, 0, 0, 0]);
+    expect(onRange).toHaveBeenLastCalledWith({ min: 0, max: 1 });
+  });
+
+  it("clears the first gene's error the moment another gene is picked", async () => {
+    const { ExpressionUmap } = await import("./expression-umap");
+    const onGeneError = vi.fn();
+    const { rerender } = render(
+      <ExpressionUmap datasetId={1} geneName="A" onGeneError={onGeneError} />,
+    );
+    await waitFor(() => expect(genes.refuse.has("A")).toBe(true));
+    act(() => genes.refuse.get("A")!(new Error("storage unreachable")));
+    await waitFor(() =>
+      expect(onGeneError).toHaveBeenLastCalledWith("Could not load A: storage unreachable"),
+    );
+
+    rerender(<ExpressionUmap datasetId={1} geneName="B" onGeneError={onGeneError} />);
+    await waitFor(() => expect(genes.release.has("B")).toBe(true));
+    expect(onGeneError).toHaveBeenLastCalledWith(null);
+  });
+
+  it("draws cell types while a new gene loads, and the gene once it lands", async () => {
+    const { ExpressionUmap } = await import("./expression-umap");
+    const { rerender } = render(<ExpressionUmap datasetId={1} geneName="A" />);
+    await waitFor(() => expect(genes.release.has("A")).toBe(true));
+    act(() => genes.release.get("A")!(A));
+    await waitFor(() => expect(lastWritten()).toEqual([0, 2, 0, 4]));
+    expressionDraw()?.mockClear();
+    clusterDraw()?.mockClear();
+    act(() => runFrame());
+    expect(expressionDraw()?.mock.calls.length).toBe(2);
+    expect(clusterDraw()?.mock.calls.length).toBe(0);
+
+    rerender(<ExpressionUmap datasetId={1} geneName="B" />);
+    await waitFor(() => expect(genes.release.has("B")).toBe(true));
+    await waitFor(() => expect(lastWritten()).toEqual([0, 0, 0, 0]));
+    expressionDraw()?.mockClear();
+    clusterDraw()?.mockClear();
+    act(() => runFrame());
+    expect(expressionDraw()?.mock.calls.length).toBe(0);
+    expect(clusterDraw()?.mock.calls.length).toBeGreaterThan(0);
   });
 });
 

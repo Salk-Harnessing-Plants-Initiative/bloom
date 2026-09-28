@@ -91,11 +91,14 @@ export function expressionPasses(focusSet: boolean): { focusMode: number; valueP
   ];
 }
 
+/** Halfway between two pass numbers, so the float uniform compares safely. */
+const between = (a: number, b: number) => ((a + b) / 2).toFixed(1);
+
 /** GLSL twin of inValuePass; split on the raw value, never on the colour. */
 const VALUE_PASS_GLSL = `
   float inValuePass(float expression, float valuePass) {
-    if (valuePass < 0.5) return 1.0;
-    if (valuePass < 1.5) return expression > 0.0 ? 0.0 : 1.0;
+    if (valuePass < ${between(VALUE_PASS.ALL, VALUE_PASS.ZERO)}) return 1.0;
+    if (valuePass < ${between(VALUE_PASS.ZERO, VALUE_PASS.POSITIVE)}) return expression > 0.0 ? 0.0 : 1.0;
     return expression > 0.0 ? 1.0 : 0.0;
   }
 `;

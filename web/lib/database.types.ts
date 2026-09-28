@@ -3894,45 +3894,6 @@ export type Database = {
         }
         Relationships: []
       }
-      video_jobs: {
-        Row: {
-          completed_at: string | null
-          created_at: string | null
-          download_url: string | null
-          error_message: string | null
-          id: number
-          progress: number | null
-          scan_id: number
-          started_at: string | null
-          status: string | null
-          total_frames: number | null
-        }
-        Insert: {
-          completed_at?: string | null
-          created_at?: string | null
-          download_url?: string | null
-          error_message?: string | null
-          id?: number
-          progress?: number | null
-          scan_id: number
-          started_at?: string | null
-          status?: string | null
-          total_frames?: number | null
-        }
-        Update: {
-          completed_at?: string | null
-          created_at?: string | null
-          download_url?: string | null
-          error_message?: string | null
-          id?: number
-          progress?: number | null
-          scan_id?: number
-          started_at?: string | null
-          status?: string | null
-          total_frames?: number | null
-        }
-        Relationships: []
-      }
     }
     Views: {
       cyl_accession_sample_counts: {
@@ -3981,6 +3942,71 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "accessions"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      cyl_pipeline_run_experiments: {
+        Row: {
+          created_at: string | null
+          experiment_id: number | null
+          run_id: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_pipeline_run_scans_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_pipeline_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plants_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_trait_by_experiment_wave"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_waves_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "recent_experiments_by_cyl_scanner"
+            referencedColumns: ["experiment_id"]
           },
         ]
       }

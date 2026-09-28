@@ -57,7 +57,9 @@ def get_download_links(
     schema from the start, so even a legacy v2-era run has them).
 
     Args:
-        experiment: experiment identifier, e.g. "alfalfa_gwas_wave2.csv"
+        experiment: experiment identifier — under the default `supabase`
+            backend the numeric experiment id (e.g. "7206207"); under
+            `BLOOM_STORAGE_BACKEND=local`, the input file's stem
         tool_class: the tool's storage class, e.g. "qc", "pca", "clustering"
             (see `list_existing_analyses`'s response for the exact classes
             recorded for a given experiment — including retired-but-historical
