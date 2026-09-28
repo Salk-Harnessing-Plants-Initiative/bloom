@@ -24,7 +24,7 @@ REQUEST_FN = "request_scrna_cellranger_run"
 
 
 def _valid_name(value) -> bool:
-    return isinstance(value, str) and bool(NAME_RULE.match(value))
+    return isinstance(value, str) and bool(NAME_RULE.fullmatch(value))
 
 
 def _validate_request(body) -> tuple[str, str]:

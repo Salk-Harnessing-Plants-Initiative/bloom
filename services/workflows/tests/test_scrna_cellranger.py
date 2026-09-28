@@ -86,10 +86,12 @@ def db(monkeypatch):
         {"sample": ["root_a"], "reference": "tiny_ref"},
         {"sample": "x" * 101, "reference": "tiny_ref"},
         {"sample": "a__b", "reference": "tiny_ref"},
+        {"sample": "tinygex\n", "reference": "tiny_ref"},
         {"sample": "root_a", "reference": "../etc"},
         {"sample": "root_a", "reference": "a/b"},
         {"sample": "root_a", "reference": 5},
         {"sample": "root_a", "reference": "b__c"},
+        {"sample": "root_a", "reference": "tiny_ref\n"},
     ],
 )
 def test_invalid_requests_are_rejected_before_the_database(body, monkeypatch):
