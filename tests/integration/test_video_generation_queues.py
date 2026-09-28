@@ -153,7 +153,7 @@ def test_wrapper_is_definer_owned_by_postgres_with_a_pinned_search_path(cur, sig
     owner, secdef, config = cur.fetchone()
     assert owner == "postgres", f"{signature} is owned by {owner}"
     assert secdef is True, f"{signature} is not SECURITY DEFINER"
-    assert config == ["search_path=pg_catalog, public, pgmq"], f"{signature}: {config}"
+    assert config == ["search_path=pg_catalog, public, pgmq, pg_temp"], f"{signature}: {config}"
 
 
 # --------------------------------------------------------------------------- #
