@@ -587,18 +587,6 @@ erDiagram
   integer surface_area
   jsonb other_features
 }
-"public.video_jobs" {
-  integer id
-  integer scan_id
-  text status
-  integer progress
-  integer total_frames
-  text error_message
-  text download_url
-  timestamp_with_time_zone created_at
-  timestamp_with_time_zone started_at
-  timestamp_with_time_zone completed_at
-}
 "public.chat_threads" {
   uuid id
   uuid user_id FK

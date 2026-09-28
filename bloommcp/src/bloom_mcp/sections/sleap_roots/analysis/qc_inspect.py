@@ -53,7 +53,6 @@ import matplotlib
 # mistake a figure created here for its own and close it mid-render. See that helper's own
 # comment for the full reasoning and the complete list of call sites that share it.
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from sleap_roots_analyze import (
     apply_data_cleanup_filters,
     create_exploratory_summary_plots,
@@ -66,7 +65,7 @@ from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.tools import _ports
-from bloom_mcp.tools._plots import call_with_figure_cleanup
+from bloom_mcp.tools._plots import call_with_figure_cleanup, close_figures
 
 # Canonical thresholds + shared helpers are single-sourced in _qc_shared so qc_inspect's
 # overlays/recommendation cannot silently desync from the clean qc_clean would apply.
@@ -371,9 +370,17 @@ def _render_report(
 
     Returns the ``{logical_name: relative_path}`` map for the figures/CSV. All
     matplotlib figures the delegates create are closed before returning (no handle
-    leak in a long-lived server process). The missingness heatmap is best-effort: on
-    a degenerate frame it may be absent from the output set (logged, never raised), so
-    consumers must treat ``missing_data_pattern.png`` as optional.
+    leak in a long-lived server process), via ``close_figures`` — one
+    ``FIGURE_REGISTRY_LOCK`` acquisition per batch, best-effort, and logged rather
+    than raised, so a cleanup failure can neither strand the rest of the batch nor
+    replace an error already propagating out of the ``try`` body (#808).
+
+    The missingness heatmap is best-effort in its *creation*: on a degenerate frame
+    ``create_exploratory_summary_plots`` may fail or omit it, and it is then absent
+    from the output set (logged, never raised), so consumers must treat
+    ``missing_data_pattern.png`` as optional. Note this does not extend to its
+    ``savefig`` below, which has no ``except`` of its own — a failing write still
+    aborts the tool.
     """
     outputs: dict[str, str] = {}
 
@@ -399,8 +406,10 @@ def _render_report(
             fig.savefig(staging_dir / fname, dpi=120, bbox_inches="tight")
             outputs[fname] = fname
     finally:
-        for fig in eda_figs.values():
-            plt.close(fig)
+        # One acquisition of FIGURE_REGISTRY_LOCK for the batch, taken here and not
+        # around the savefig loop above: the lock must never span disk I/O. See that
+        # lock's comment in tools/_plots.py for why the close side needs it at all.
+        close_figures(eda_figs)
 
     # 2. The sample x trait missingness heatmap (best-effort — the secondary panels of
     #    create_exploratory_summary_plots can be fragile on tiny/degenerate frames; the
@@ -436,8 +445,9 @@ def _render_report(
                 _HEATMAP_PNG,
             )
     finally:
-        for fig in summary_figs.values():
-            plt.close(fig)
+        # Same as above. A degenerate frame leaves summary_figs empty, in which case
+        # close_figures returns before acquiring anything.
+        close_figures(summary_figs)
 
     # 3. Per-sample NaN report (which samples, which traits, nan_fraction).
     nan_samples = inspect_nan_samples(df, trait_cols, verbose=False, **role_kwargs)
