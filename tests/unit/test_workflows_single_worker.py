@@ -6,6 +6,10 @@ process: with two workers, two requests for the same scan land in different inte
 both read the recorded frame count before either uploads, and both write the same
 unversioned `cyl-videos/{scan_id}.mp4`. The worse encode can land last and win.
 
+This pin covers this service only: the video worker containers are separate processes
+the lock cannot reach, which is why they stay profiled off until the queue enforces one
+active job per item in the database.
+
 The service ran `--workers 2` until this was pinned, which made the lock a no-op in
 production while the code read as if the race were closed. Raising the count again is
 only safe once the lock moves into the database.
@@ -18,6 +22,8 @@ from pathlib import Path
 import re
 
 import yaml
+
+from tests.unit._compose_helpers import _bytes, _mount_options
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
@@ -44,36 +50,6 @@ def test_workflows_runs_a_single_uvicorn_worker():
 def _workflows_service() -> dict:
     compose = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))
     return compose["services"]["workflows"]
-
-
-def _bytes(value) -> int:
-    """A compose size as bytes. `2g`, `2G`, `2048m` and 2147483648 are one limit.
-
-    Parsed rather than string-matched so a correct edit in a different spelling
-    is not reported as a broken one — a test that accepts only the spelling it
-    was written against is a trap for whoever touches the file next.
-    """
-    if isinstance(value, int):
-        return value
-    text = str(value).strip().lower()
-    # Compose accepts b/kb/mb/gb as well as the bare letter, so `2gb` and `2g`
-    # are one limit. Dropping a trailing `b` first keeps the lookup to one form.
-    if text.endswith("b") and len(text) > 1 and text[-2].isalpha():
-        text = text[:-1]
-    for suffix, scale in (("g", 1 << 30), ("m", 1 << 20), ("k", 1 << 10), ("b", 1)):
-        if text.endswith(suffix):
-            return int(float(text[: -len(suffix)]) * scale)
-    return int(text)
-
-
-def _mount_options(entry: str) -> dict[str, str]:
-    """The options of a tmpfs mount, by name — order is not meaning."""
-    _, _, options = entry.partition(":")
-    parsed = {}
-    for option in options.split(","):
-        name, _, value = option.partition("=")
-        parsed[name] = value
-    return parsed
 
 
 def _max_concurrent_encodes() -> int:
