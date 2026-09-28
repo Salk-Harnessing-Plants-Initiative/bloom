@@ -182,6 +182,21 @@ curl -X POST http://localhost:5100/pipeline \
 # {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 0}
 ```
 
+### RNA-seq dispatch worker
+
+`rnaseq_worker.py` runs as the always-on `rnaseq-worker` container and sends queued RNA-seq runs to Argo. Each workflow type it handles is one entry in `rnaseq_workflows.py`: its claim, complete and fail database functions and how to build its Workflow body. Cell Ranger (`scrna_cellranger_runs`) is the first type.
+
+For each type in turn, the worker claims the next queued run, submits its Workflow to the Kubernetes API as the `bloom-pipeline` account (the same credentials as `cyl-pipeline-worker`), and records the outcome:
+
+- accepted: the run becomes `submitted` with the Workflow's name;
+- refused because a Workflow with that name exists: an earlier attempt submitted it without recording it, so the run is recorded as `submitted` with that name;
+- rejected for any other reason: the run becomes `failed` with "Argo Workflow submission failed" (the detail is only in this service's log);
+- the K8s settings are missing: the run is left queued and comes back once they are fixed.
+
+A Cell Ranger Workflow runs the registered `cellranger-count-template`: `stage-reference`, then `sample-pipeline` with the run's `run_key` as its run id, so results go to `runs_output/<run_key>/`. Its name is fixed per run (`scrna-cellranger-<environment>-<run id>-<hash of run_key>`), so the same run is never submitted twice. It runs as `bloom-workflow` with the GHCR pull secret, and is deleted `WORKFLOWS_K8S_TTL_SECONDS` after it finishes. Tests compare the body with `argo/scrna/cellranger/cellranger-count-workflow.yaml` and the template's inputs, so a change to either shows up as a failing test.
+
+The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none.
+
 ### Pipeline dispatch worker
 
 `dispatch_worker.py` (bloom #11/#404, Phase 2 of 3 — see
