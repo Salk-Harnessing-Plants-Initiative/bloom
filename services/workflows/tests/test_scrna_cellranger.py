@@ -93,9 +93,10 @@ def test_inputs_offers_only_references_with_reference_json(s3):
 
 def test_inputs_reports_folders_whose_names_cannot_be_run(s3):
     s3.objects["raw_reads/bad name/x_S1_L001_R1_001.fastq.gz"] = 1
+    s3.objects["raw_reads/a__b/a__b_S1_L001_R1_001.fastq.gz"] = 1
     out = scrna_cellranger.list_inputs()
-    assert out["unusable_sample_folders"] == ["bad name"]
-    assert "bad name" not in [s["name"] for s in out["samples"]]
+    assert sorted(out["unusable_sample_folders"]) == ["a__b", "bad name"]
+    assert not {"a__b", "bad name"} & {s["name"] for s in out["samples"]}
 
 
 def test_inputs_reports_truncation(s3, monkeypatch):
@@ -126,9 +127,11 @@ def test_inputs_reports_truncation(s3, monkeypatch):
         {"sample": 123, "reference": "tiny_ref"},
         {"sample": ["root_a"], "reference": "tiny_ref"},
         {"sample": "x" * 101, "reference": "tiny_ref"},
+        {"sample": "a__b", "reference": "tiny_ref"},
         {"sample": "root_a", "reference": "../etc"},
         {"sample": "root_a", "reference": "a/b"},
         {"sample": "root_a", "reference": 5},
+        {"sample": "root_a", "reference": "b__c"},
     ],
 )
 def test_invalid_requests_are_rejected_before_any_io(body, monkeypatch):
@@ -177,7 +180,7 @@ def test_a_valid_request_calls_the_request_function_once(s3, db):
         "run_id": 7,
         "sample": "root_b",
         "reference": "tiny_ref",
-        "run_key": "root_b__tiny_ref",
+        "run_key": f"root_b__tiny_ref__{USER}",
     }
 
 
@@ -247,7 +250,7 @@ def test_start_run_returns_201(app_as_user, s3, db):
         "/scrna/cellranger/runs", json={"sample": "root_a", "reference": "tiny_ref"}
     )
     assert resp.status_code == 201
-    assert resp.json()["run_key"] == "root_a__tiny_ref"
+    assert resp.json()["run_key"] == f"root_a__tiny_ref__{USER}"
 
 
 def test_start_run_validation_error_is_422(app_as_user, s3, db):

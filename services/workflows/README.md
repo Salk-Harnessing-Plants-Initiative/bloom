@@ -116,10 +116,10 @@ curl -X POST http://localhost:5100/pipeline \
 Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per run**. A sample is one 10x library: a first-level folder under `raw_reads/` in the scRNA workflows bucket (`bloomv2-workflows`), holding all its lanes and re-sequencing runs. Separate captures are separate runs. A reference is a first-level folder under `reference_genome/` that contains `reference.json`.
 
 - `GET /scrna/cellranger/inputs` lists samples (with FASTQ count and total size), references, and folders whose names cannot be run.
-- `POST /scrna/cellranger/runs` takes `{"sample": ..., "reference": ...}`. Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` (422 otherwise); a reference without `reference.json` or a sample without FASTQs is a 404 naming it. On success it calls `request_scrna_cellranger_run`, which writes the run and one `scrna_cellranger_dispatch` message in a single transaction, and returns 201.
+- `POST /scrna/cellranger/runs` takes `{"sample": ..., "reference": ...}`. Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` and may not contain `__` (422 otherwise); a reference without `reference.json` or a sample without FASTQs is a 404 naming it. On success it calls `request_scrna_cellranger_run`, which writes the run and one `scrna_cellranger_dispatch` message in a single transaction, and returns 201.
 - `GET /scrna/cellranger/runs/{run_id}` returns the run as stored.
 
-The results go to `runs_output/<sample>__<reference>/`, so one sample can be counted against several references. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
+The results go to `runs_output/<sample>__<reference>__<user id>/`, so one sample can be counted against several references, and two users running the same pair get separate folders. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
 
 ```bash
 curl -X POST http://localhost:5100/scrna/cellranger/runs \
@@ -127,7 +127,7 @@ curl -X POST http://localhost:5100/scrna/cellranger/runs \
   -H "Content-Type: application/json" \
   -d '{"sample": "tinygex", "reference": "tiny_ref"}'
 
-# 201 {"run_id": 1, "sample": "tinygex", "reference": "tiny_ref", "run_key": "tinygex__tiny_ref"}
+# 201 {"run_id": 1, "sample": "tinygex", "reference": "tiny_ref", "run_key": "tinygex__tiny_ref__<user id>"}
 ```
 
 ### Pipeline dispatch worker

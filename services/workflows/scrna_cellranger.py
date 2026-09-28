@@ -12,10 +12,11 @@ from fastapi import HTTPException
 import scrna_s3
 from supabase_client import app_client
 
-# Allowed sample and reference names; the database checks the same rule.
-NAME_RULE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+# Allowed sample and reference names ('__' separates run_key parts); the database checks the same rule.
+NAME_RULE = re.compile(r"^(?!.*__)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 NAME_HELP = (
-    "letters, digits, '.', '_' or '-', starting with a letter or digit (at most 100)"
+    "letters, digits, '.', '_' or '-', starting with a letter or digit, "
+    "with no '__' (at most 100)"
 )
 
 # Most folders returned by one inputs listing.
@@ -107,7 +108,7 @@ def trigger_run(body, user_id: str) -> dict:
         "run_id": run_id,
         "sample": sample,
         "reference": reference,
-        "run_key": f"{sample}__{reference}",
+        "run_key": f"{sample}__{reference}__{user_id}",
     }
 
 
