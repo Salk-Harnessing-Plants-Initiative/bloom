@@ -22,8 +22,17 @@ import { BACKSTOP_MESSAGE, NO_OP_NOTE } from "@/lib/cyl-pipeline/failure-hints";
 import type { RunRow, RunScanRow } from "@/lib/cyl-pipeline/realtime-reducer";
 import type { ScanMeta } from "@/lib/cyl-pipeline/scan-meta";
 import type { ScanTableRow } from "./RunScansTable";
+import type { RunPipelineDialogProps } from "@/components/cyl-pipeline/RunPipelineDialog";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
+// The re-run actions' dialog: the real button, a dialog that only records its target.
+const dialog = vi.hoisted(() => ({ props: null as RunPipelineDialogProps | null }));
+vi.mock("@/components/cyl-pipeline/RunPipelineDialog", () => ({
+  RunPipelineDialog: (props: RunPipelineDialogProps) => {
+    dialog.props = props;
+    return <div role="dialog" />;
+  },
+}));
 vi.mock("./RunScansTable", () => ({
   RunScansTable: ({ rows, initialFilter }: { rows: ScanTableRow[]; initialFilter?: string }) => (
     <div data-testid="table" data-count={rows.length} data-filter={initialFilter}>
@@ -92,6 +101,7 @@ beforeEach(() => {
   resetSupabaseMock(respond);
   fetchSpy.mockReset();
   vi.stubGlobal("fetch", fetchSpy);
+  dialog.props = null;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -520,5 +530,130 @@ describe("sync", () => {
     await tick(300_000);
     expect(supabaseMock.queries.length).toBe(before);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("re-run actions", () => {
+  const rows = (spec: [number, string][]) => spec.map(([scan_id, status], i) => scanRow(i + 1, scan_id, { status }));
+  const rerunFailed = () => screen.queryByRole("button", { name: /^Re-run failed scans/ }) as HTMLButtonElement | null;
+  const rerunUnresulted = () => screen.queryByRole("button", { name: /^Re-run scans without a result/ }) as HTMLButtonElement | null;
+
+  it("hides Re-run failed until the header counts settle", async () => {
+    run = { ...run, scan_count: 2, status: "running" };
+    scans = rows([
+      [577, "queued"],
+      [578, "failed"],
+    ]);
+    mount();
+    expect(rerunFailed()).toBeNull();
+    await subscribe();
+    expect(rerunFailed()).toBeNull();
+    await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, status: "written" });
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (1)");
+  });
+
+  it("submits exactly the failed scans once the counts settle", async () => {
+    run = { ...run, scan_count: 3, status: "running" };
+    scans = rows([
+      [577, "written"],
+      [578, "failed"],
+      [579, "failed"],
+    ]);
+    mount();
+    await subscribe();
+    fireEvent.click(rerunFailed()!);
+    expect(dialog.props!.target).toEqual({ target_level: "scan_ids", scan_ids: [578, 579] });
+    expect(screen.queryByText(/bloom#900/)).toBeNull();
+  });
+
+  it("warns when a failed row carries the #900 note", async () => {
+    run = { ...run, scan_count: 2, status: "complete" };
+    scans = [scanRow(1, 577, { status: "written", source_id: 5 }), scanRow(2, 578, { status: "failed", error_message: BACKSTOP_MESSAGE })];
+    latest = [
+      { scan_id: 577, max_source_id: 5 },
+      { scan_id: 578, max_source_id: 7 },
+    ];
+    mount();
+    await subscribe();
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (1)");
+    expect(screen.getByTestId("rerun-actions").textContent).toContain(
+      "Some of these scans already have pipeline results this run didn't record (bloom#900); re-running won't change them. Check their traits before re-running.",
+    );
+  });
+
+  it.each(["complete", "failed"])("offers Re-run scans without a result on a %s run with unresulted scans", async (status) => {
+    run = { ...run, scan_count: 40, status };
+    scans = [
+      ...Array.from({ length: 30 }, (_, i) => scanRow(i + 1, 1000 + i, { status: "written" })),
+      ...Array.from({ length: 2 }, (_, i) => scanRow(31 + i, 2000 + i, { status: "failed" })),
+      ...Array.from({ length: 8 }, (_, i) => scanRow(33 + i, 3000 + i, { status: "queued" })),
+    ];
+    mount();
+    await subscribe();
+    expect(rerunUnresulted()!.textContent).toBe("Re-run scans without a result (10)");
+    expect(screen.getByTestId("rerun-actions").textContent).toContain(
+      "Scans still processing on the cluster could be processed twice.",
+    );
+    expect(rerunFailed()).toBeNull();
+    fireEvent.click(rerunUnresulted()!);
+    const ids = (dialog.props!.target as { scan_ids: number[] }).scan_ids;
+    expect([...ids].sort((a, b) => a - b)).toEqual([2000, 2001, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007]);
+  });
+
+  it.each(["running", "partial", "queued", "submitted"])("offers no retry of unresulted scans on a %s run", async (status) => {
+    run = { ...run, scan_count: 3, status };
+    scans = rows([
+      [577, "written"],
+      [578, "failed"],
+      [579, "queued"],
+    ]);
+    mount();
+    await subscribe();
+    expect(rerunUnresulted()).toBeNull();
+    expect(rerunFailed()).toBeNull();
+  });
+
+  it("offers only Re-run failed once a complete run's counts settle", async () => {
+    run = { ...run, scan_count: 40, status: "complete" };
+    scans = [
+      ...Array.from({ length: 38 }, (_, i) => scanRow(i + 1, 1000 + i, { status: "written" })),
+      ...Array.from({ length: 2 }, (_, i) => scanRow(39 + i, 2000 + i, { status: "failed" })),
+    ];
+    mount();
+    await subscribe();
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (2)");
+    expect(rerunUnresulted()).toBeNull();
+  });
+
+  it("offers nothing on a run with no failures", async () => {
+    run = { ...run, scan_count: 2, status: "complete" };
+    scans = rows([
+      [577, "written"],
+      [578, "written"],
+    ]);
+    mount();
+    await subscribe();
+    expect(screen.queryByTestId("rerun-actions")).toBeNull();
+  });
+
+  it("disables both over MAX_TRIGGER_SCAN_IDS", async () => {
+    run = { ...run, scan_count: 5002, status: "failed" };
+    scans = [
+      ...Array.from({ length: 5001 }, (_, i) => scanRow(i + 1, i + 1, { status: "failed" })),
+      scanRow(5002, 5002, { status: "queued" }),
+    ];
+    mount();
+    await subscribe();
+    expect(rerunUnresulted()!.textContent).toBe("Re-run scans without a result (5002)");
+    expect(rerunUnresulted()!.disabled).toBe(true);
+
+    run = { ...run, scan_count: 5001, status: "complete" };
+    scans = Array.from({ length: 5001 }, (_, i) => scanRow(i + 1, i + 1, { status: "failed" }));
+    cleanup();
+    resetSupabaseMock(respond);
+    mount();
+    await subscribe();
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (5001)");
+    expect(rerunFailed()!.disabled).toBe(true);
   });
 });

@@ -22,10 +22,15 @@
  *   empty envelope marks a row written without raising the latest source.
  * - A row that turns failed live gets one metadata and latest-source lookup,
  *   for its likely cause and the bloom#900 note.
+ * - Re-run actions (design D7) submit `scan_ids` targets from the held rows.
+ *   "Re-run failed" waits for settled header counts; "Re-run scans without
+ *   a result" is offered only on a `complete` or `failed` run with U > 0, so
+ *   the two are never offered together.
  */
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef } from "react";
+import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
 import { RunState } from "@/components/cyl-pipeline/RunState";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
@@ -49,7 +54,7 @@ import {
   type RunRow,
   type RunScanRow,
 } from "@/lib/cyl-pipeline/realtime-reducer";
-import { scanStatusLabel } from "@/lib/cyl-pipeline/run-display";
+import { runDisplay, scanStatusLabel } from "@/lib/cyl-pipeline/run-display";
 import { scanImagesHref, traitsLinks } from "@/lib/cyl-pipeline/run-links";
 import type { ScanMeta } from "@/lib/cyl-pipeline/scan-meta";
 import { compareTimestamps } from "@/lib/cyl-pipeline/timestamps";
@@ -75,6 +80,12 @@ interface DetailView {
 
 /** How long a burst of rows turning failed is collected before one lookup. */
 export const FAILED_LOOKUP_BATCH_MS = 500;
+
+export const NO_OP_RERUN_WARNING =
+  "Some of these scans already have pipeline results this run didn't record (bloom#900); re-running won't change them. Check their traits before re-running.";
+
+export const DOUBLE_PROCESSING_WARNING =
+  "The run has ended, but some of these scans have no outcome. Scans still processing on the cluster could be processed twice.";
 
 export const TIMING_NOTE =
   "Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.";
@@ -264,6 +275,15 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
   const tallies = countsFromScanRows(scanRows);
   // Until the rows load, the run row's own counts are all there is.
   const headerRun = loaded ? { ...detail.run, done_count: tallies.done, failed_count: tallies.failed } : detail.run;
+  // Re-run targets, from the held rows only.
+  const failedIds = scanRows.filter((r) => r.status === "failed").map((r) => r.scan_id);
+  const unresultedIds = scanRows.filter((r) => r.status !== "written" && r.status !== "reused").map((r) => r.scan_id);
+  const settled = loaded && tallies.done + tallies.failed >= detail.run.scan_count;
+  const ended = detail.run.status === "complete" || detail.run.status === "failed";
+  const offerFailed = settled && failedIds.length > 0;
+  const offerUnresulted = loaded && ended && runDisplay(headerRun).counts.U > 0 && unresultedIds.length > 0;
+  const noOpAmongFailed = tableRows.some((r) => r.noOpNote !== null);
+
   const lastUpdate = scanRows.reduce<string | null>(
     (max, r) => (max === null || compareTimestamps(r.updated_at, max) > 0 ? r.updated_at : max),
     null,
@@ -281,6 +301,26 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
           {now !== null && lastUpdate && <span> · Last scan update {formatElapsed(lastUpdate, now)} ago</span>}
         </div>
         <div className="text-stone-600">{paramsText(detail.run.params)}</div>
+        {(offerFailed || offerUnresulted) && (
+          <div data-testid="rerun-actions" className="flex flex-wrap gap-4">
+            {offerFailed && (
+              <RunPipelineButton
+                target={{ target_level: "scan_ids", scan_ids: failedIds }}
+                label={`Re-run failed scans (${failedIds.length})`}
+                title={`the failed scans of run ${runId}`}
+                note={noOpAmongFailed ? NO_OP_RERUN_WARNING : undefined}
+              />
+            )}
+            {offerUnresulted && (
+              <RunPipelineButton
+                target={{ target_level: "scan_ids", scan_ids: unresultedIds }}
+                label={`Re-run scans without a result (${unresultedIds.length})`}
+                title={`the scans of run ${runId} without a result`}
+                note={DOUBLE_PROCESSING_WARNING}
+              />
+            )}
+          </div>
+        )}
         {experiments && experiments.length > 0 && (
           <div className="flex flex-wrap gap-x-3">
             <span className="text-stone-500">Experiments:</span>
