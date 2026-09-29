@@ -288,7 +288,7 @@ A live view MUST NOT call the workflows `GET /runs/{run_id}` route.
 - **THEN** it issues no further queries and no requests to `/workflows/runs`
 
 ### Requirement: Shared runs list at `/app/cyl-pipeline-runs`
-The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigation as "Pipeline runs", listing `cyl_pipeline_runs` for every signed-in member.
+The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigation as "Cylinder Pipeline Runs" and headed "Cylinder pipeline runs", listing `cyl_pipeline_runs` for every signed-in member. The name says which pipeline: other pipelines (such as RNA-seq) have runs of their own.
 
 **Ordering and paging.** The list SHALL:
 - order by `created_at` then `id`, both descending, and show the most recent 50;
@@ -308,6 +308,10 @@ The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigati
 - the counts-first display state, with the failed count linking to the drill-down.
 
 **Empty and error states.** With no runs, the list SHALL show "No pipeline runs yet". When the snapshot fails, it SHALL show an error rather than an empty list.
+
+#### Scenario: The navigation names the cylinder pipeline
+- **WHEN** a signed-in member opens the app navigation
+- **THEN** it has a "Cylinder Pipeline Runs" entry linking to `/app/cyl-pipeline-runs`, and no entry named "Pipeline runs"
 
 #### Scenario: A run update arrives live
 - **WHEN** run 91 shows "12 / 40 succeeded" and an `UPDATE` arrives with `done_count = 13`
@@ -384,7 +388,7 @@ The web app SHALL provide `/app/cyl-pipeline-runs/[runId]`. It SHALL:
 It SHALL show:
 - **Header:**
   - links to the experiment(s) the run touches;
-  - the requested params: "from each scan's metadata (no overrides)" when `params` is `{}`, otherwise key=value pairs;
+  - the requested params: "from each scan's metadata (no overrides)" when `params` is `{}`, otherwise key=value pairs labelled as requested overrides not applied yet (#897);
   - the elapsed time since `created_at`;
   - "last scan update", the maximum `updated_at`;
   - the counts-first display state, computed from the held rows.
@@ -396,12 +400,12 @@ It SHALL show:
   - `error_message`;
   - `argo_workflow_name`;
   - `source_id`;
-  - "current in trait views" (yes when `source_id` equals the scan's `cyl_scan_latest_source.max_source_id`);
+  - "current in trait views" (yes when `source_id` equals the scan's `cyl_scan_latest_source.max_source_id` as last read; unknown when that read failed, or when the row's `source_id` changed since it);
   - `updated_at`;
-  - a "Scan images" link.
+  - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 - **Failed rows:**
   - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
-  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*If this scan already had results before this run, this may be an unrecognised no-op re-delivery; re-running won't change it (bloom#900).*"
+  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
@@ -434,7 +438,7 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 ### Requirement: Experiment page shows that experiment's runs
 The experiment page SHALL show the 10 most recent runs that include at least one of its scans. It SHALL read them from `cyl_pipeline_run_experiments`, ordered by `created_at` then `run_id`, both descending, and show each run's counts-first display state.
 
-**Links.** Each run SHALL link to its drill-down. The panel SHALL link to "All pipeline runs".
+**Links.** Each run SHALL link to its drill-down. The panel SHALL link to "All cylinder pipeline runs".
 
 **Live events.**
 - The panel SHALL apply live events for runs it holds.
@@ -468,14 +472,14 @@ Result links SHALL be derived only from a run's `cyl_pipeline_run_scans` rows an
   - Each link is labelled "Wave W · day A traits (all scans in the experiment, latest result per scan)" and points at `/app/traits/{speciesId}/{experimentId}?wave=<W>&age=<A>`.
 
 **Traits page.** The traits page SHALL accept optional `wave` and `age` search params.
-- It SHALL parse each as a single strict positive integer, and ignore arrays and other values.
+- It SHALL parse each as a single strict non-negative integer (wave 0 and day 0 are real data), and ignore arrays and other values.
 - Its default selection SHALL be the last wave at the oldest plant age *within that wave*, a pair that always has data.
 - The preferred wave and age SHALL be the params' until the user picks a wave or age, which then becomes the preference. A data load MUST NOT change the preference.
 - Each data load, including trait changes, SHALL show the preferred pair when the trait has rows for it, and otherwise the default. A missing half of the pair takes the default's rule (last wave, or oldest age) among matching rows.
 - Whenever a preferred pair is unavailable, it SHALL show a note naming what was preferred and what is shown, in a status region that stays mounted. A manual pick SHALL clear the note.
 - The wave and age pickers SHALL be disabled while a trait's data loads.
 
-**Guard.** Source files under `web/lib/cyl-pipeline`, `web/components/cyl-pipeline` and `web/app/app/cyl-pipeline-runs`, and the `@/lib` modules they import transitively, SHALL be checked, excluding the generated `database.types.ts` files. They MUST NOT contain any of these run-id matching surfaces:
+**Guard.** Source files under `web/lib/cyl-pipeline`, `web/components/cyl-pipeline` and `web/app/app/cyl-pipeline-runs`, and the `@/lib` modules they import transitively, SHALL be checked, excluding the generated `database.types.ts` files and the guard's own test file. They MUST NOT contain any of these run-id matching surfaces:
 - `get_scan_traits`;
 - `cyl_scan_traits_source`;
 - `cyl_scan_traits_latest`;

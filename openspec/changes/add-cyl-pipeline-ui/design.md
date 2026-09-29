@@ -59,7 +59,7 @@ Claims are checked against `origin/staging` @ `7f3ff94a` (2026-09-24). Paths are
 **Web.**
 
 - **Stack:**
-  - Next 16.3.4 App Router (docs under repo-root `node_modules/next/dist/docs/`; the local install is stale at 16.2.0, see task 0.1) and React 19.
+  - Next 16.3.4 App Router (docs under repo-root `node_modules/next/dist/docs/`; task 0.1 found a fresh `npm ci` installs 16.3.4) and React 19.
   - MUI x-data-grid is a webpack `externals` entry (`next.config.js:52-57`), so its components are `"use client"`.
   - Next's build type-check rejects extra named exports from `page.tsx`/`layout.tsx`/`route.ts`.
 - **Reusable pieces:**
