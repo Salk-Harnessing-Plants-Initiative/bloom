@@ -229,6 +229,10 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
     assert stored.tool == "plot_correlation_matrix"
     assert stored.seed is None  # deterministic, no random_state
 
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
     assert set(result.outputs) == set(stored.output_keys)
