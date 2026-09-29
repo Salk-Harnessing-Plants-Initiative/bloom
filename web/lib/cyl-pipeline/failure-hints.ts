@@ -14,7 +14,7 @@ import { stageInProblems, type StageInProblem } from "./stage-in";
 export const BACKSTOP_MESSAGE = "workflow reached a terminal status before write-back produced a result for this scan";
 
 export const NO_OP_NOTE =
-  "If this scan already had results before this run, this may be an unrecognised no-op re-delivery; re-running won't change it (bloom#900).";
+  "If this scan already had results before this run, this may be an unrecognised no-op re-delivery, which re-running won't change (bloom#900), or its result may have arrived after the run closed. Check the scan's traits before re-running.";
 
 const CAUSES: Record<StageInProblem, string> = {
   "species-missing": "species missing",
@@ -33,6 +33,10 @@ export function likelyCause(meta: Pick<ScanMeta, "species_name" | "plant_age_day
  * is reported failed with the backstop text, because the redelivery fallback
  * only matches sources a run-scan row already carries. Narrow on purpose: the
  * note needs that exact text and a scan that currently has pipeline results.
+ * It names a second cause too: a write-back that lands after the backstop has
+ * failed the row adds traits but leaves the row failed with no source_id (the
+ * a9 write-back RPC's status != 'failed' guard), so the scan has results the
+ * row doesn't show.
  */
 export function isNoOpCandidate(row: Pick<RunScanRow, "status" | "error_message">, hasResults: boolean): boolean {
   return row.status === "failed" && row.error_message === BACKSTOP_MESSAGE && hasResults;

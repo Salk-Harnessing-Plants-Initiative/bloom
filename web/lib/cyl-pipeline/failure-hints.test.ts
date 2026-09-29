@@ -70,7 +70,7 @@ describe("isNoOpCandidate", () => {
 
   it("carries the spec's note text", () => {
     expect(NO_OP_NOTE).toBe(
-      "If this scan already had results before this run, this may be an unrecognised no-op re-delivery; re-running won't change it (bloom#900).",
+      "If this scan already had results before this run, this may be an unrecognised no-op re-delivery, which re-running won't change (bloom#900), or its result may have arrived after the run closed. Check the scan's traits before re-running.",
     );
   });
 });

@@ -90,6 +90,12 @@ describe("traitsLinks", () => {
     expect(experiment.links[1].age).toBeNull();
   });
 
+  it("links wave 0 and day 0 explicitly, which the traits page reads", () => {
+    const [experiment] = traitsLinks([1], byId([meta(1, { wave_number: 0, plant_age_days: 0 })]));
+    expect(experiment.links[0].href).toBe("/app/traits/2/5?wave=0&age=0");
+    expect(experiment.links[0].label).toBe(`Wave 0 · day 0 ${LABEL_TAIL}`);
+  });
+
   it("gives at most 3 links per experiment", () => {
     const rows = [1, 2, 3, 4, 5].map((id) => meta(id, { plant_age_days: id }));
     expect(traitsLinks([1, 2, 3, 4, 5], byId(rows))[0].links).toHaveLength(3);

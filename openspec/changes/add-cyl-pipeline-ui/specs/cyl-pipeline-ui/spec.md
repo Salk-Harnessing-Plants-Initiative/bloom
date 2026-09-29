@@ -384,7 +384,7 @@ The web app SHALL provide `/app/cyl-pipeline-runs/[runId]`. It SHALL:
 It SHALL show:
 - **Header:**
   - links to the experiment(s) the run touches;
-  - the requested params: "from each scan's metadata (no overrides)" when `params` is `{}`, otherwise key=value pairs;
+  - the requested params: "from each scan's metadata (no overrides)" when `params` is `{}`, otherwise key=value pairs labelled as requested overrides not applied yet (#897);
   - the elapsed time since `created_at`;
   - "last scan update", the maximum `updated_at`;
   - the counts-first display state, computed from the held rows.
@@ -396,12 +396,12 @@ It SHALL show:
   - `error_message`;
   - `argo_workflow_name`;
   - `source_id`;
-  - "current in trait views" (yes when `source_id` equals the scan's `cyl_scan_latest_source.max_source_id`);
+  - "current in trait views" (yes when `source_id` equals the scan's `cyl_scan_latest_source.max_source_id` as last read; unknown when that read failed, or when the row's `source_id` changed since it);
   - `updated_at`;
   - a "Scan images" link.
 - **Failed rows:**
   - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
-  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*If this scan already had results before this run, this may be an unrecognised no-op re-delivery; re-running won't change it (bloom#900).*"
+  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*If this scan already had results before this run, this may be an unrecognised no-op re-delivery, which re-running won't change (bloom#900), or its result may have arrived after the run closed. Check the scan's traits before re-running.*"
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
@@ -468,7 +468,7 @@ Result links SHALL be derived only from a run's `cyl_pipeline_run_scans` rows an
   - Each link is labelled "Wave W · day A traits (all scans in the experiment, latest result per scan)" and points at `/app/traits/{speciesId}/{experimentId}?wave=<W>&age=<A>`.
 
 **Traits page.** The traits page SHALL accept optional `wave` and `age` search params.
-- It SHALL parse each as a single strict positive integer, and ignore arrays and other values.
+- It SHALL parse each as a single strict non-negative integer (wave 0 and day 0 are real data), and ignore arrays and other values.
 - Its default selection SHALL be the last wave at the oldest plant age *within that wave*, a pair that always has data.
 - The preferred wave and age SHALL be the params' until the user picks a wave or age, which then becomes the preference. A data load MUST NOT change the preference.
 - Each data load, including trait changes, SHALL show the preferred pair when the trait has rows for it, and otherwise the default. A missing half of the pair takes the default's rule (last wave, or oldest age) among matching rows.
