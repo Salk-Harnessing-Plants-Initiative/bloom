@@ -78,7 +78,6 @@ def _run_change_check(tmp_path: Path, changed_file: str) -> str:
     head = _git(repo, "rev-parse", "HEAD")
 
     script = _step(_job(DETECT), "Check for changes to the backup job")["run"]
-    script = script.replace("${{ github.event.pull_request.base.sha }}", base)
     script = script.replace("${{ github.sha }}", head)
     assert "${{" not in script
     output = tmp_path / "github_output"
@@ -86,7 +85,7 @@ def _run_change_check(tmp_path: Path, changed_file: str) -> str:
     subprocess.run(
         [BASH, "-c", script],
         cwd=repo,
-        env={**os.environ, "GITHUB_OUTPUT": str(output)},
+        env={**os.environ, "GITHUB_OUTPUT": str(output), "BASE_SHA": base},
         check=True,
     )
     return output.read_text()
