@@ -32,7 +32,8 @@ function row(scan_id: number, overrides: Partial<ScanTableRow> = {}): ScanTableR
 const bodyRows = () => screen.getAllByRole("row").filter((r) => within(r).queryAllByRole("gridcell").length > 0);
 
 describe("RunScansTable", () => {
-  it("pages 5000 rows 100 at a time", () => {
+  // Rendering 100 auto-height DataGrid rows in jsdom takes about 2 s alone, more under a full parallel run.
+  it("pages 5000 rows 100 at a time", { timeout: 20_000 }, () => {
     render(<RunScansTable rows={Array.from({ length: 5000 }, (_, i) => row(i + 1))} disableVirtualization />);
     expect(screen.getByText(/1–100 of 5000/)).toBeTruthy();
     expect(bodyRows()).toHaveLength(100);
