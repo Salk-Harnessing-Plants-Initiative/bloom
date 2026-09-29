@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import k8s_client
 from k8s_client import K8sConfigError
+from rnaseq_status import RunStatus, read_cellranger_status
 
 
 # The shared dispatch functions from the rnaseq_runs migration.
@@ -27,6 +28,8 @@ class WorkflowType:
     # The rnaseq_runs.workflow_type value this entry handles.
     name: str
     build_body: Callable[[dict], dict]
+    # Reads the run's status from its Workflow (Workflow, run row); None = nothing to report yet.
+    read_status: Callable[[dict, dict], RunStatus | None]
 
 
 # Registered once in runai-busch-lab from argo/scrna/cellranger/cellranger-count-template.yaml.
@@ -136,7 +139,11 @@ def build_cellranger_body(run: dict) -> dict:
     }
 
 
-CELLRANGER = WorkflowType(name="scrna-cellranger", build_body=build_cellranger_body)
+CELLRANGER = WorkflowType(
+    name="scrna-cellranger",
+    build_body=build_cellranger_body,
+    read_status=read_cellranger_status,
+)
 
 # Keyed by workflow_type; a claimed run of a type missing here is failed.
 WORKFLOW_TYPES: dict[str, WorkflowType] = {wf.name: wf for wf in (CELLRANGER,)}

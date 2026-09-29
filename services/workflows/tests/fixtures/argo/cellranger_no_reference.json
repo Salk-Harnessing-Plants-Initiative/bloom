@@ -1,0 +1,82 @@
+{
+ "metadata": {
+  "name": "scrna-cellranger-dev-900002-28b84579"
+ },
+ "status": {
+  "finishedAt": "2026-09-29T01:02:31Z",
+  "nodes": {
+   "scrna-cellranger-dev-900002-28b84579": {
+    "children": [
+     "scrna-cellranger-dev-900002-28b84579-2032636926"
+    ],
+    "displayName": "scrna-cellranger-dev-900002-28b84579",
+    "finishedAt": "2026-09-29T01:02:31Z",
+    "id": "scrna-cellranger-dev-900002-28b84579",
+    "name": "scrna-cellranger-dev-900002-28b84579",
+    "phase": "Failed",
+    "startedAt": "2026-09-29T01:02:21Z",
+    "templateName": "main",
+    "type": "DAG"
+   },
+   "scrna-cellranger-dev-900002-28b84579-2032636926": {
+    "boundaryID": "scrna-cellranger-dev-900002-28b84579",
+    "children": [
+     "scrna-cellranger-dev-900002-28b84579-2584972205"
+    ],
+    "displayName": "stage-reference",
+    "finishedAt": "2026-09-29T01:02:31Z",
+    "id": "scrna-cellranger-dev-900002-28b84579-2032636926",
+    "message": "retryStrategy.expression evaluated to false",
+    "name": "scrna-cellranger-dev-900002-28b84579.stage-reference",
+    "outputs": {
+     "exitCode": "3"
+    },
+    "phase": "Failed",
+    "startedAt": "2026-09-29T01:02:21Z",
+    "templateRef": {
+     "name": "cellranger-count-template",
+     "template": "stage-reference"
+    },
+    "type": "Retry"
+   },
+   "scrna-cellranger-dev-900002-28b84579-2584972205": {
+    "boundaryID": "scrna-cellranger-dev-900002-28b84579",
+    "children": [
+     "scrna-cellranger-dev-900002-28b84579-739430378"
+    ],
+    "displayName": "stage-reference(0)",
+    "finishedAt": "2026-09-29T01:02:27Z",
+    "id": "scrna-cellranger-dev-900002-28b84579-2584972205",
+    "message": "Error (exit code 3)",
+    "name": "scrna-cellranger-dev-900002-28b84579.stage-reference(0)",
+    "outputs": {
+     "exitCode": "3"
+    },
+    "phase": "Failed",
+    "startedAt": "2026-09-29T01:02:21Z",
+    "templateRef": {
+     "name": "cellranger-count-template",
+     "template": "stage-reference"
+    },
+    "type": "Pod"
+   },
+   "scrna-cellranger-dev-900002-28b84579-739430378": {
+    "boundaryID": "scrna-cellranger-dev-900002-28b84579",
+    "displayName": "sample",
+    "finishedAt": "2026-09-29T01:02:31Z",
+    "id": "scrna-cellranger-dev-900002-28b84579-739430378",
+    "message": "omitted: depends condition not met",
+    "name": "scrna-cellranger-dev-900002-28b84579.sample",
+    "phase": "Omitted",
+    "startedAt": "2026-09-29T01:02:31Z",
+    "templateRef": {
+     "name": "cellranger-count-template",
+     "template": "sample-pipeline"
+    },
+    "type": "Skipped"
+   }
+  },
+  "phase": "Failed",
+  "startedAt": "2026-09-29T01:02:21Z"
+ }
+}
