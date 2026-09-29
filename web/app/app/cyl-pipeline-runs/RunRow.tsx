@@ -27,7 +27,7 @@ export function RunRow({
         <Link href={href} className="font-medium text-lime-700 hover:underline">
           Run {run.id}
         </Link>
-        <div className="text-xs text-stone-500">{now === null ? "" : `started ${formatElapsed(run.created_at, now)} ago`}</div>
+        <div className="text-xs text-stone-500">{now === null ? "" : `requested ${formatElapsed(run.created_at, now)} ago`}</div>
       </div>
       <div className="col-span-3">
         <div>{targetText(run)}</div>

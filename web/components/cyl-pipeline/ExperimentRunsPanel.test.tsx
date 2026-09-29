@@ -182,6 +182,27 @@ describe("live events", () => {
     expect(shown()[0]).toBe(95);
   });
 
+  it("never lets a late membership answer overwrite a run it already shows with an older state", async () => {
+    mount();
+    await subscribe();
+    const answer = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_run_experiments" && q.arg("in") ? answer.promise : respond(q));
+    const r = runRow(99, at(99), { status: "submitted" });
+    runs.push(r);
+    members.add(99);
+    await emit("UPDATE", r);
+    await tick(1000); // flush #1 asks, and waits
+    await emit("UPDATE", { ...r, status: "running" }); // queued again: not yet a member
+    await act(async () => answer.resolve({ data: [{ run_id: 99 }], error: null }));
+    await tick();
+    supabaseMock.respond = respond;
+    // Counts that haven't settled, so the label follows the status.
+    await emit("UPDATE", { ...r, status: "failed", failed_count: 5, error_message: "dispatch rejected" }); // held now: merged
+    expect(screen.getByTestId("panel-run-99").textContent).toContain("Failed · 0 succeeded · 5 failed · 35 without a result");
+    await tick(1000); // flush #2 would re-add the "running" payload
+    expect(screen.getByTestId("panel-run-99").textContent).toContain("Failed · 0 succeeded · 5 failed · 35 without a result");
+  });
+
   it("debounces the membership query by 1 s", async () => {
     mount();
     await subscribe();

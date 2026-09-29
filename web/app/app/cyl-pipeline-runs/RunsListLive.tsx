@@ -65,8 +65,8 @@ export function RunsListLive({ initialRuns, initialExperiments, currentUserId, i
       const rows = await fetchRunExperiments(createClientSupabaseClient(), fresh);
       setNames((prev) => byRun(rows, new Map(prev)));
     } catch {
-      // Names are decoration; a run without them still shows its state.
-      fresh.forEach((id) => looked.current.delete(id));
+      // Names are decoration; a run without them still shows its state. No
+      // retry: a live run gets at most one lookup (the next snapshot re-reads).
     }
   };
 
@@ -96,7 +96,9 @@ export function RunsListLive({ initialRuns, initialExperiments, currentUserId, i
 
   const loadOlder = async () => {
     const cursor = live.current().cursor;
-    if (!cursor) return;
+    // The store, not the last render: a click can land after a resync started
+    // but before the disabled button re-renders.
+    if (!cursor || live.isFetching()) return;
     // A page read against one snapshot must not be appended to another: its
     // cursor would jump past rows neither holds, or mix Only-mine filters.
     const started = live.generation();
@@ -118,7 +120,9 @@ export function RunsListLive({ initialRuns, initialExperiments, currentUserId, i
   };
 
   const error = live.error ?? serverError;
-  const { rows, hasOlder } = live.view;
+  const { hasOlder } = live.view;
+  // Ticking Only mine hides other members' runs at once, not only when the filtered snapshot lands.
+  const rows = mineOnly ? live.view.rows.filter(accept) : live.view.rows;
 
   return (
     <div>

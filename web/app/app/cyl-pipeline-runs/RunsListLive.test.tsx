@@ -244,6 +244,36 @@ describe("races between load older and a resync", () => {
     expect((screen.getByRole("button", { name: /load older/i }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("ignores a load-older click that lands in the same tick a resync starts, before the button re-renders", async () => {
+    db = Array.from({ length: 50 }, (_, i) => runRow(60 - i, at(600 - i * 5)));
+    mount();
+    await subscribe();
+    await tick(2000);
+    const before = queriesFor("cyl_pipeline_runs").filter((q) => q.arg("or")).length;
+    await act(async () => {
+      channel().status("CLOSED");
+      channel().status("SUBSCRIBED"); // starts a snapshot synchronously
+      fireEvent.click(screen.getByRole("button", { name: /load older/i })); // still enabled in the DOM
+    });
+    await tick();
+    expect(queriesFor("cyl_pipeline_runs").filter((q) => q.arg("or")).length).toBe(before);
+  });
+
+  it("drops a load-older page when Only mine is toggled while it loads", async () => {
+    db = Array.from({ length: 50 }, (_, i) => runRow(60 - i, at(600 - i * 5), { requested_by: i % 2 ? ME : OTHER }));
+    mount();
+    await subscribe();
+    const older = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_runs" && q.arg("or") ? older.promise : respond(q));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /load older/i })));
+    await act(async () => fireEvent.click(screen.getByRole("checkbox", { name: "Only mine" })));
+    await tick();
+    await act(async () => older.resolve({ data: [runRow(5, at(100), { requested_by: OTHER })], error: null }));
+    await tick();
+    expect(rowIds()).not.toContain(5);
+  });
+
+  // (characterization) The hook's generation guard already did this; the test keeps it covered.
   it("keeps only the newest snapshot when an older one resolves last (Only mine stays mine)", async () => {
     db = [runRow(92, at(2), { requested_by: OTHER }), runRow(91, at(1), { requested_by: ME })];
     mount();
@@ -267,6 +297,19 @@ describe("races between load older and a resync", () => {
 });
 
 describe("Only mine", () => {
+  it("hides other members' runs as soon as it is ticked, before the filtered snapshot arrives", async () => {
+    db = [runRow(92, at(2), { requested_by: OTHER }), runRow(91, at(1), { requested_by: ME })];
+    mount();
+    await subscribe();
+    const pending = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_runs" ? pending.promise : respond(q));
+    await act(async () => fireEvent.click(screen.getByRole("checkbox", { name: "Only mine" })));
+    expect(rowIds()).toEqual([91]);
+    await act(async () => pending.resolve({ data: [db[1]], error: null }));
+    await tick();
+    expect(rowIds()).toEqual([91]);
+  });
+
   it("filters by requester on the server and ignores other members' live runs", async () => {
     db = [runRow(92, at(2), { requested_by: OTHER }), runRow(91, at(1), { requested_by: ME })];
     mount();
@@ -283,6 +326,23 @@ describe("Only mine", () => {
     expect(rowIds()).toEqual([91]);
     await emit("INSERT", runRow(94, at(4), { requested_by: ME }));
     expect(rowIds()).toEqual([94, 91]);
+  });
+});
+
+describe("experiment names", () => {
+  it("looks a live run's names up at most once, even when that lookup fails", async () => {
+    db = [runRow(90, at(1))];
+    mount();
+    await subscribe();
+    const fresh = runRow(95, at(100), { status: "queued" });
+    await emit("INSERT", fresh);
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_run_experiments" ? { data: null, error: { message: "timeout" } } : respond(q));
+    const before = queriesFor("cyl_pipeline_run_experiments").length;
+    await emit("UPDATE", { id: 95, status: "submitted" });
+    await tick();
+    await emit("UPDATE", { id: 95, status: "running" });
+    await tick();
+    expect(queriesFor("cyl_pipeline_run_experiments").length).toBe(before + 1);
   });
 });
 
@@ -352,7 +412,7 @@ describe("row contents", () => {
     expect(within(row(92)).getByRole("link", { name: "exp-six" }).getAttribute("href")).toBe("/app/phenotypes/3/6");
     expect(row(91).textContent).toContain("experiment 5 · 40 scans");
     await tick();
-    expect(row(91).textContent).toContain("29 min");
+    expect(row(91).textContent).toContain("requested 29 min ago");
   });
 
   it("shows no experiment link for a run whose only experiment is soft-deleted (the view has no row)", () => {

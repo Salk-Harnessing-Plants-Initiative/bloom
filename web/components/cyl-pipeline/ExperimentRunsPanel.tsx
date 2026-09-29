@@ -41,6 +41,15 @@ interface PanelView {
 const isWholeRow = (row: Partial<RunRow>): row is RunRow =>
   typeof row.id === "number" && typeof row.created_at === "string" && typeof row.scan_count === "number" && typeof row.status === "string";
 
+/**
+ * Add runs the panel doesn't hold yet. A held run is kept as it is: its own
+ * events keep it current, while this row may be older (an earlier event, or
+ * a read made before a snapshot that is being replayed onto).
+ */
+function addUnheld(runs: RunRow[], rows: RunRow[]): RunRow[] {
+  return rows.reduce((acc, r) => (acc.some((h) => h.id === r.id) ? acc : addPanelRun(acc, r)), runs);
+}
+
 export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) {
   const now = useNow();
   // true: touches this experiment; false: doesn't (cached only past queued).
@@ -72,7 +81,7 @@ export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) 
     for (const [id, row] of asked) {
       if (yes.has(id)) {
         members.current.set(id, true);
-        if (isWholeRow(row)) live.update((v) => ({ ...v, runs: addPanelRun(v.runs, row) }));
+        if (isWholeRow(row)) live.update((v) => ({ ...v, runs: addUnheld(v.runs, [row]) }));
         else toRead.push(id);
       } else if (row.status !== "queued") {
         members.current.set(id, false);
@@ -81,7 +90,7 @@ export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) 
     if (toRead.length) {
       try {
         const rows = await fetchRunsByIds(client, toRead);
-        live.update((v) => ({ ...v, runs: rows.reduce((acc, r) => addPanelRun(acc, r), v.runs) }));
+        live.update((v) => ({ ...v, runs: addUnheld(v.runs, rows) }));
       } catch {
         // Shown on the next snapshot.
       }
@@ -167,7 +176,7 @@ export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) 
                 <Link href={`/app/cyl-pipeline-runs/${run.id}`} className="font-medium text-lime-700 hover:underline">
                   Run {run.id}
                 </Link>
-                <div className="text-xs text-stone-500">{now === null ? "" : `started ${formatElapsed(run.created_at, now)} ago`}</div>
+                <div className="text-xs text-stone-500">{now === null ? "" : `requested ${formatElapsed(run.created_at, now)} ago`}</div>
               </div>
               <RunState run={run} failedHref={`/app/cyl-pipeline-runs/${run.id}?status=failed`} />
             </li>
