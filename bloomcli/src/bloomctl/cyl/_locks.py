@@ -20,10 +20,11 @@ from typing import Any, Iterator
 DEFAULT_LOCK_STALENESS_SECONDS = 900
 
 # The directory (sibling of every {scan_key}/ directory, at out_dir's own root) that holds every
-# lock file this module manages, and the manifest lock's fixed filename within it. Named here,
-# not re-literaled at each call site, for the same reason RUN_MANIFEST_FILENAME is imported
-# rather than copied: a typo in one of two otherwise-identical string literals wouldn't be
-# caught by anything.
+# lock file this module manages, and the manifest lock's fixed filename within it — one lock per
+# out_dir, whatever the manifest file itself is named. Named here, not re-literaled at each call
+# site, for the same reason the manifest's own name comes from sleap_roots_contracts
+# (`run_manifest_name_for_writing`) rather than being copied: a typo in one of two
+# otherwise-identical string literals wouldn't be caught by anything.
 LOCKS_DIRNAME = ".locks"
 MANIFEST_LOCK_FILENAME = "manifest.lock"
 
