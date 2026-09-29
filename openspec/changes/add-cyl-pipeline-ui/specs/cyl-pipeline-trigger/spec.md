@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Id-list filters stay within the gateway's URL limit
-Every PostgREST `in.(…)` filter the route issues SHALL be split into batches so that no batch's rendered id list exceeds a character budget of 4000. The budget matches bloomctl's `ID_FILTER_BUDGET_CHARS`, which sits below the ~5.4 KB `414 URI Too Long` ceiling measured in bloom#674. Results from all batches SHALL be merged before use.
+Every PostgREST `in.(…)` filter the route issues SHALL be split into batches so that no batch's rendered id list exceeds a character budget of 4000. The budget matches bloomctl's `ID_FILTER_BUDGET_CHARS`, which sits below the ~5.4 KB `414 URI Too Long` ceiling measured for PR #650. Results from all batches SHALL be merged before use.
 
 This covers:
 - the `scan_ids` existence check against `cyl_scans_extended`;
@@ -53,9 +53,11 @@ The check across all enumerated scans MUST NOT be a per-scan query loop: it SHAL
 required by the "Id-list filters stay within the gateway's URL limit" requirement, so the number of
 queries grows with the rendered length of the id lists and never with one query per scan.
 **When the request's `params` is the empty object `{}`, the route SHALL skip both preview queries and
-use `reused_count = 0`:** stored `param_hash` values are computed over resolved params
-(`species`/`mode`/`age`), so `compute_param_hash({})` cannot equal any of them, and skipping the
-queries yields the identical result.
+use `reused_count = 0`:** the stored `param_hash` is written by traits, which requires the full
+resolved `species`/`mode`/`age` (its sidecars come from bloomctl's `resolve_params`, and predict
+checks the same keys), so `compute_param_hash({})` matches no source the pipeline writes, and skipping the
+queries yields the same result for that data. Neither the contract nor the write-back RPC rejects
+empty params, so this rests on the producers.
 **This check is informational only: it MUST NOT change the scan's initial `status` (always written as
 `'queued'`) and MUST NOT exclude the scan from batching or enqueue.** Every enumerated scan is always
 written and enqueued regardless of dedup-preview outcome — the real GPU-avoidance decision is made
