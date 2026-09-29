@@ -19,99 +19,99 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
 
 ## 3. Dependency: contracts 0.1.0a9 (commit B)
 
-- [ ] 3.1 RED: in `bloomcli/tests/test_contracts_pin.py`, import `pipeline_run_id_from_env`, `run_manifest_name_for_writing`, `load_run_manifest`, `RunManifestMissingError` and `RunManifestIdentityError`. Assert `run_manifest_name_for_writing(None) == "run_manifest.json"` and `run_manifest_name_for_writing("wf-1") == "run_manifest.wf-1.json"`. Keep `test_run_manifest_filename_is_the_pinned_literal`.
+- [x] 3.1 RED: in `bloomcli/tests/test_contracts_pin.py`, import `pipeline_run_id_from_env`, `run_manifest_name_for_writing`, `load_run_manifest`, `RunManifestMissingError` and `RunManifestIdentityError`. Assert `run_manifest_name_for_writing(None) == "run_manifest.json"` and `run_manifest_name_for_writing("wf-1") == "run_manifest.wf-1.json"`. Keep `test_run_manifest_filename_is_the_pinned_literal`.
   - Confirm `ImportError` on a7.
   - These tests prove the *resolved* environment has a9, not that the committed lock does. 3.2's checks cover the lock.
-- [ ] 3.2 GREEN:
-  - [ ] Set the pin to `"sleap-roots-contracts>=0.1.0a9"` and update the comment above it.
-  - [ ] Run `cd bloomcli && uv lock --upgrade-package sleap-roots-contracts`.
-  - [ ] `git diff -- bloomcli/uv.lock` must touch only the specifier and the `sleap-roots-contracts` package entry, with `version = "0.1.0a9"` and no header/`revision` churn.
-  - [ ] From the repo root, `python scripts/check-uv-locks.py` passes. It runs `uv lock --check` for every service, including bloomcli.
-  - [ ] In Git Bash, `cd bloomcli && uv export --frozen --no-hashes | grep sleap-roots-contracts` shows `0.1.0a9`.
-  - [ ] `git diff` may show a whole-file `uv.lock` change on Windows, because the worktree checks the file out with CRLF and uv writes LF. With `text=auto`, git normalizes it, so check `git diff --ignore-cr-at-eol` if that happens.
-- [ ] 3.3 Run the full suite on a9 before any code change. It must pass unchanged, because every contracts symbol bloomctl imports (`RunManifest`, `RUN_MANIFEST_FILENAME`, `ResultEnvelope`, `InputRef`, `PredictionManifest`, `resolve_params`) behaves the same in a7 and a9. a8's `ModelCard` `selectors` rework touches nothing bloomctl uses.
+- [x] 3.2 GREEN:
+  - [x] Set the pin to `"sleap-roots-contracts>=0.1.0a9"` and update the comment above it.
+  - [x] Run `cd bloomcli && uv lock --upgrade-package sleap-roots-contracts`.
+  - [x] `git diff -- bloomcli/uv.lock` must touch only the specifier and the `sleap-roots-contracts` package entry, with `version = "0.1.0a9"` and no header/`revision` churn.
+  - [x] From the repo root, `python scripts/check-uv-locks.py` passes. It runs `uv lock --check` for every service, including bloomcli.
+  - [x] In Git Bash, `cd bloomcli && uv export --frozen --no-hashes | grep sleap-roots-contracts` shows `0.1.0a9`.
+  - [x] `git diff` may show a whole-file `uv.lock` change on Windows, because the worktree checks the file out with CRLF and uv writes LF. With `text=auto`, git normalizes it, so check `git diff --ignore-cr-at-eol` if that happens.
+- [x] 3.3 Run the full suite on a9 before any code change. It must pass unchanged, because every contracts symbol bloomctl imports (`RunManifest`, `RUN_MANIFEST_FILENAME`, `ResultEnvelope`, `InputRef`, `PredictionManifest`, `resolve_params`) behaves the same in a7 and a9. a8's `ModelCard` `selectors` rework touches nothing bloomctl uses.
 
 ## 4. Writer: per-run name, overwrite, fail fast (commit C)
 
-- [ ] 4.1 Add an autouse `delenv("ARGO_WORKFLOW_NAME")` fixture to `test_cyl_download_for_predict.py`, as `test_cyl_ingest.py:62-69` has.
-- [ ] 4.2 RED: change `_read_manifest(out_dir)` (~l.1279) to `_read_manifest(out_dir, name="run_manifest.json")`. Then add or change these tests:
-  - [ ] **Per-run name.** `ARGO_WORKFLOW_NAME=wf-abc123` writes `run_manifest.wf-abc123.json` with `pipeline_run_id == "wf-abc123"`, and `run_manifest.json` does not exist. Also change `…pipeline_run_id_from_argo_workflow_name` (~l.1331), which sets the variable and reads the legacy name, to read the per-run name.
-  - [ ] **Padded id.** `" wf-abc123\n"` names the file `run_manifest.wf-abc123.json` and stamps `"wf-abc123"`.
-  - [ ] **Blank id.** `"   "` writes `run_manifest.json` stamped `local-[0-9a-f]{8}`. The existing unset-case tests (`…falls_back_to_generated_local_placeholder`, `…two_invocations…distinguishable_ids`) are **(guard)**.
-  - [ ] **Retry overwrite.** Pre-stage `scan_2` so it really comes back `skipped`, by writing its sidecar as ~l.1312-1318 does or calling `dfp.stage_one_scan(auth.make_authed_client(None), 2, out)` as ~l.1606-1609 does. Confirm the skip through `--json`. Pre-write `run_manifest.wf-abc123.json` with `[scan_1, scan_2]`, then stage `[2, 3]`. The result must be exactly `[scan_2, scan_3]`. This replaces `…second_invocation_merges_disjoint_scan_keys`.
-  - [ ] **Duplicate scan_id.** `--scan-ids 2,2,3` gives exactly `[scan_2, scan_3]`. This replaces `…overlapping_scan_keys_has_no_duplicates`. Without an id it is a **(guard)**, since today's set already dedups. The RED variant sets `ARGO_WORKFLOW_NAME=wf-abc123` and reads `run_manifest.wf-abc123.json`.
-  - [ ] **No-id overwrite.** A prior legacy `[scan_1, scan_2]`, then staging `3`, gives `[scan_3]`.
-  - [ ] **Stale legacy untouched.** Using the l.1434 fixture (`wf-old`/`scan_9`) with the id set, the legacy file stays byte-identical and the per-run file holds only this run's keys.
-  - [ ] **Corrupt file replaced.** A corrupt same-name file is replaced by a valid manifest, and the command exits `0`. This replaces `…corrupt_existing_manifest_fails_loud…` (~l.1490).
-  - [ ] **Invalid id.** `"../wf"` exits `1` naming the value, and none of the following happen:
+- [x] 4.1 Add an autouse `delenv("ARGO_WORKFLOW_NAME")` fixture to `test_cyl_download_for_predict.py`, as `test_cyl_ingest.py:62-69` has.
+- [x] 4.2 RED: change `_read_manifest(out_dir)` (~l.1279) to `_read_manifest(out_dir, name="run_manifest.json")`. Then add or change these tests:
+  - [x] **Per-run name.** `ARGO_WORKFLOW_NAME=wf-abc123` writes `run_manifest.wf-abc123.json` with `pipeline_run_id == "wf-abc123"`, and `run_manifest.json` does not exist. Also change `…pipeline_run_id_from_argo_workflow_name` (~l.1331), which sets the variable and reads the legacy name, to read the per-run name.
+  - [x] **Padded id.** `" wf-abc123\n"` names the file `run_manifest.wf-abc123.json` and stamps `"wf-abc123"`.
+  - [x] **Blank id.** `"   "` writes `run_manifest.json` stamped `local-[0-9a-f]{8}`. The existing unset-case tests (`…falls_back_to_generated_local_placeholder`, `…two_invocations…distinguishable_ids`) are **(guard)**.
+  - [x] **Retry overwrite.** Pre-stage `scan_2` so it really comes back `skipped`, by writing its sidecar as ~l.1312-1318 does or calling `dfp.stage_one_scan(auth.make_authed_client(None), 2, out)` as ~l.1606-1609 does. Confirm the skip through `--json`. Pre-write `run_manifest.wf-abc123.json` with `[scan_1, scan_2]`, then stage `[2, 3]`. The result must be exactly `[scan_2, scan_3]`. This replaces `…second_invocation_merges_disjoint_scan_keys`.
+  - [x] **Duplicate scan_id.** `--scan-ids 2,2,3` gives exactly `[scan_2, scan_3]`. This replaces `…overlapping_scan_keys_has_no_duplicates`. Without an id it is a **(guard)**, since today's set already dedups. The RED variant sets `ARGO_WORKFLOW_NAME=wf-abc123` and reads `run_manifest.wf-abc123.json`.
+  - [x] **No-id overwrite.** A prior legacy `[scan_1, scan_2]`, then staging `3`, gives `[scan_3]`.
+  - [x] **Stale legacy untouched.** Using the l.1434 fixture (`wf-old`/`scan_9`) with the id set, the legacy file stays byte-identical and the per-run file holds only this run's keys.
+  - [x] **Corrupt file replaced.** A corrupt same-name file is replaced by a valid manifest, and the command exits `0`. This replaces `…corrupt_existing_manifest_fails_loud…` (~l.1490).
+  - [x] **Invalid id.** `"../wf"` exits `1` naming the value, and none of the following happen:
     - a call to `make_authed_client` or `stage_one_scan` (spies)
     - creation of a `.locks/` entry
     - creation of any `run_manifest*` file
 
     With empty `--scan-ids` and the same value, it exits `0` and writes nothing: the name is resolved after the empty-input return (spec scenario "An invalid run identity fails before any staging"). Spy on `climod._authed_client` as well as `auth.make_authed_client`.
-  - [ ] **Length bounds.** A 237-character id is written. A 238-character id exits `1` before staging. The 237-character case makes a path longer than 260 characters, which works on Windows only with `LongPathsEnabled`. Skip it with a clear reason where `OSError` shows the path is too long.
-  - [ ] **All-failed.** Every scan fails: exit `3`, nothing written, and an existing same-name file stays byte-identical. Without an id this is RED, because today's union rewrites the legacy file with a new `local-*` id. With `wf-abc123` it is a **(guard)**.
-  - [ ] **Lock with an id (guard).** Add one variant of the manifest-lock contention test with the id set, asserting the per-run file isn't created or modified. It passes today, because today's code never creates a per-run file; the RED coverage for per-run names comes from **Per-run name**. The existing no-id contention and `OSError` tests (~l.1428, 1463, 1636) are **(guard)**. Their l.1649 `Path(path).name == RUN_MANIFEST_FILENAME` match stays valid, because no id means the legacy name.
+  - [x] **Length bounds.** A 237-character id is written. A 238-character id exits `1` before staging. The 237-character case makes a path longer than 260 characters, which works on Windows only with `LongPathsEnabled`. Skip it with a clear reason where `OSError` shows the path is too long.
+  - [x] **All-failed.** Every scan fails: exit `3`, nothing written, and an existing same-name file stays byte-identical. Without an id this is RED, because today's union rewrites the legacy file with a new `local-*` id. With `wf-abc123` it is a **(guard)**.
+  - [x] **Lock with an id (guard).** Add one variant of the manifest-lock contention test with the id set, asserting the per-run file isn't created or modified. It passes today, because today's code never creates a per-run file; the RED coverage for per-run names comes from **Per-run name**. The existing no-id contention and `OSError` tests (~l.1428, 1463, 1636) are **(guard)**. Their l.1649 `Path(path).name == RUN_MANIFEST_FILENAME` match stays valid, because no id means the legacy name.
 
       Confirm the new and changed tests fail against today's code.
-- [ ] 4.3 GREEN:
-  - [ ] Change `resolve_pipeline_run_id(run_id: str | None) -> str` to return `run_id or f"local-{uuid4().hex[:8]}"`, with no env read.
-  - [ ] In `batch_download_for_predict`, after the empty-input return (~l.622) and before `_authed_client`: call `pipeline_run_id_from_env()` once, compute the name, and turn a `ValueError` into `ClickException`. The both/neither `UsageError` (exit `2`) and the `--lock-staleness-seconds` check still come first.
-  - [ ] `write_run_manifest(out_dir, result, *, manifest_name, pipeline_run_id, staleness_seconds)` writes `sorted(set(usable))` under the lock with `atomic_write_bytes`, with no read, parse or merge. It returns early when the list is empty.
-  - [ ] Delete the corrupt-existing branch.
-  - [ ] Update the section header (l.445), the docstrings (l.448-469), the `--help` text (~l.575-584, including its exit-code paragraph, which gains the invalid-id exit `1`), and the `_locks.py:24` comment. Cite sleap-roots-pipeline#71's design doc §2.3/§2.4, not this change's design.md, which is archived later.
-- [ ] 4.4 Section 4.2 passes, and the full suite passes. That includes `test_cyl_locks.py` and `test_download_for_predict_concurrency.py`, which imports this file's `_patch_batch`/`_patch_common`/`_FakeClient` helpers.
+- [x] 4.3 GREEN:
+  - [x] Change `resolve_pipeline_run_id(run_id: str | None) -> str` to return `run_id or f"local-{uuid4().hex[:8]}"`, with no env read.
+  - [x] In `batch_download_for_predict`, after the empty-input return (~l.622) and before `_authed_client`: call `pipeline_run_id_from_env()` once, compute the name, and turn a `ValueError` into `ClickException`. The both/neither `UsageError` (exit `2`) and the `--lock-staleness-seconds` check still come first.
+  - [x] `write_run_manifest(out_dir, result, *, manifest_name, pipeline_run_id, staleness_seconds)` writes `sorted(set(usable))` under the lock with `atomic_write_bytes`, with no read, parse or merge. It returns early when the list is empty.
+  - [x] Delete the corrupt-existing branch.
+  - [x] Update the section header (l.445), the docstrings (l.448-469), the `--help` text (~l.575-584, including its exit-code paragraph, which gains the invalid-id exit `1`), and the `_locks.py:24` comment. Cite sleap-roots-pipeline#71's design doc §2.3/§2.4, not this change's design.md, which is archived later.
+- [x] 4.4 Section 4.2 passes, and the full suite passes. That includes `test_cyl_locks.py` and `test_download_for_predict_concurrency.py`, which imports this file's `_patch_batch`/`_patch_common`/`_FakeClient` helpers.
 
 ## 5. Reader: `load_run_manifest`, fail loud, reconcile (commit D)
 
-- [ ] 5.1 Signature: `discover_envelopes(envelopes_dir, pipeline_run_id: str | None = None)`. Add the parameter first, accepted and ignored, so every RED test in 5.2 and 6.1 fails on an assertion, not a `TypeError`. The default keeps the 17 existing one-argument call sites (`test_cyl_ingest.py:1197`–`1357`, `:2240`) valid and meaning "no run identity". Discover-level tests pass the id as an argument. Env-var cases (padded, blank) are tested only at the CLI level, because `load_run_manifest` rejects `"   "` with `ValueError` and only `pipeline_run_id_from_env` strips.
-- [ ] 5.2 RED at discover level: extend `_write_run_manifest` (~l.1188) with a `filename=` argument (default legacy), then:
-  - [ ] **Per-run scopes.** With the id set, the per-run file scopes discovery.
-  - [ ] **Per-run wins.** The per-run file wins over a stale legacy file.
-  - [ ] **Other run ignored.** Another run's per-run file is ignored.
-  - [ ] **Stale legacy warns.** A legacy fallback naming another run scopes to it and emits one `WARNING` naming both ids. Use `caplog.at_level("WARNING", logger="bloomctl.cyl.ingest")`.
-  - [ ] **Same-run legacy is quiet.** A legacy fallback naming the same run emits no warning.
-  - [ ] **Id mismatch.** A per-run file with a different `pipeline_run_id` raises `EnvelopeError`.
-  - [ ] **Missing with an id.** With the id set and neither file present, it raises `RunManifestNotFoundError(EnvelopeError)` carrying both names.
-  - [ ] **Invalid id.** An id of `"../wf"` raises `EnvelopeError`, not a bare `ValueError`.
-  - [ ] **Dangling symlink.** A dangling symlink at the per-run path, with a legacy file listing `scan_2` beside it, raises. It must not fall through to the legacy file. Follow sleap-roots `tests/trait_extractor/test_batch.py:852-863`: `try: os.symlink(...) except OSError: pytest.skip(...)`.
-  - [ ] **Rewritten tests.** Rewrite `…unreadable` (~l.1318) and `…permission_error` (~l.1339). They patch `Path.read_text`, which `load_run_manifest` no longer calls (it uses `(base / name).open("rb")`), so after GREEN they would fail because nothing raises. Patch `Path.open` instead:
+- [x] 5.1 Signature: `discover_envelopes(envelopes_dir, pipeline_run_id: str | None = None)`. Add the parameter first, accepted and ignored, so every RED test in 5.2 and 6.1 fails on an assertion, not a `TypeError`. The default keeps the 17 existing one-argument call sites (`test_cyl_ingest.py:1197`–`1357`, `:2240`) valid and meaning "no run identity". Discover-level tests pass the id as an argument. Env-var cases (padded, blank) are tested only at the CLI level, because `load_run_manifest` rejects `"   "` with `ValueError` and only `pipeline_run_id_from_env` strips.
+- [x] 5.2 RED at discover level: extend `_write_run_manifest` (~l.1188) with a `filename=` argument (default legacy), then:
+  - [x] **Per-run scopes.** With the id set, the per-run file scopes discovery.
+  - [x] **Per-run wins.** The per-run file wins over a stale legacy file.
+  - [x] **Other run ignored.** Another run's per-run file is ignored.
+  - [x] **Stale legacy warns.** A legacy fallback naming another run scopes to it and emits one `WARNING` naming both ids. Use `caplog.at_level("WARNING", logger="bloomctl.cyl.ingest")`.
+  - [x] **Same-run legacy is quiet.** A legacy fallback naming the same run emits no warning.
+  - [x] **Id mismatch.** A per-run file with a different `pipeline_run_id` raises `EnvelopeError`.
+  - [x] **Missing with an id.** With the id set and neither file present, it raises `RunManifestNotFoundError(EnvelopeError)` carrying both names.
+  - [x] **Invalid id.** An id of `"../wf"` raises `EnvelopeError`, not a bare `ValueError`.
+  - [x] **Dangling symlink.** A dangling symlink at the per-run path, with a legacy file listing `scan_2` beside it, raises. It must not fall through to the legacy file. Follow sleap-roots `tests/trait_extractor/test_batch.py:852-863`: `try: os.symlink(...) except OSError: pytest.skip(...)`.
+  - [x] **Rewritten tests.** Rewrite `…unreadable` (~l.1318) and `…permission_error` (~l.1339). They patch `Path.read_text`, which `load_run_manifest` no longer calls (it uses `(base / name).open("rb")`), so after GREEN they would fail because nothing raises. Patch `Path.open` instead:
     - raise `OSError`/`PermissionError` only when `self.name == target_name`, so the legacy variant's per-run candidate is absent, not raising;
     - install the patch after `_write_run_manifest`, since `write_text` goes through `self.open`;
     - parameterize over the legacy and per-run names. The no-id legacy variants are **(guard)**, because `Path.read_text` calls `self.open` on Python 3.11-3.13.
 
     Parameterize the malformed/wrong-schema/as-directory tests too.
-  - [ ] **Guards.** No id with no legacy file stays unscoped even with `run_manifest.wf-a.json` present, and no id with a legacy file scopes to it. Both are **(guard)**.
-  - [ ] **Single load call.** `monkeypatch.setattr(ing, "load_run_manifest", spy)` (the name as imported into the ingest module, as in sleap-roots `test_batch.py:884`), then assert `calls == [((Path(tmp_path), "wf-a"), {"allow_legacy": True})]`.
-  - [ ] **Messages.** The debug log and the missing-scan_key message both name the manifest file that was actually read.
-- [ ] 5.3 RED at CLI level (`batch-ingest-result`, CliRunner, `_authed_client` and RPCs mocked):
-  - [ ] **Existing tests.** Every existing batch test that sets `ARGO_WORKFLOW_NAME` but writes no manifest now gets a per-run manifest via `_write_run_manifest(..., pipeline_run_id=<id>, filename=f"run_manifest.{id}.json")`. That covers ~l.1530, 1745, 1826, 1859, 1892, 1920, 1942, 1969, 2028, 2113, 2146 and 2176. Also convert ~l.1801 (`…missing_scan_key_alone_still_reconciles_when_workflow_name_set`): it sets `wf-missing-only` but writes a legacy manifest stamped `"wf-test"`, which would otherwise take the stale-legacy warning path. Each per-run manifest must list every envelope stem its test asserts on (e.g. l.1530 needs `"scan_corrupt"`), or that entry is excluded as out of scope. Re-express l.1779 (zero envelopes, exit 0) and l.2002 (`len(payload) == 1`) against the new missing-manifest path.
-  - [ ] **Missing manifest, id set.** No `insert_cyl_result_envelope` call even though `scan_1.result.json` exists. Exactly one reconcile call, with the id. A failed retriable entry with the `scan_key` sentinel `"<run-manifest>"` that names both files, in both the summary and `--json`. Exit `1`.
-  - [ ] **Missing manifest, reconcile raises.** Both failures are reported, the exit is `1`, and there is no traceback.
-  - [ ] **No reconcile on other failures.** For a per-run manifest that is malformed, names another run, raises `PermissionError`, or is a directory or dangling symlink, and for an invalid id `"../wf"`: exit `1`, `_authed_client` never called, `reconcile_unresolved_scans` never called.
-  - [ ] **Padded id.** `ARGO_WORKFLOW_NAME=" wf-a\n"` with `run_manifest.wf-a.json` listing `scan_1`, and `scan_1.result.json` and `scan_2.result.json` present: only `scan_1` is ingested.
-  - [ ] **Blank id (guard).** `"   "`, no manifest, `scan_1.result.json` and `scan_2.result.json` present: both are ingested (unscoped), exit `0`, exactly one reconcile call under `"   "`. Repeat with an empty directory: exit `0`, one reconcile call. It passes today; the spec scenario "A blank ARGO_WORKFLOW_NAME is unscoped but still reconciles once" pins it.
-  - [ ] **No id, only missing keys.** A legacy manifest declaring only missing keys still makes no `_authed_client` call. This keeps the existing test ~l.2330 (`…missing_scan_key_alone_makes_no_auth_call`) as a **(guard)**.
-  - [ ] **Missing-key message.** It names `run_manifest.wf-a.json`. No existing test asserts the old literal text, so assert on the filename.
+  - [x] **Guards.** No id with no legacy file stays unscoped even with `run_manifest.wf-a.json` present, and no id with a legacy file scopes to it. Both are **(guard)**.
+  - [x] **Single load call.** `monkeypatch.setattr(ing, "load_run_manifest", spy)` (the name as imported into the ingest module, as in sleap-roots `test_batch.py:884`), then assert `calls == [((Path(tmp_path), "wf-a"), {"allow_legacy": True})]`.
+  - [x] **Messages.** The debug log and the missing-scan_key message both name the manifest file that was actually read.
+- [x] 5.3 RED at CLI level (`batch-ingest-result`, CliRunner, `_authed_client` and RPCs mocked):
+  - [x] **Existing tests.** Every existing batch test that sets `ARGO_WORKFLOW_NAME` but writes no manifest now gets a per-run manifest via `_write_run_manifest(..., pipeline_run_id=<id>, filename=f"run_manifest.{id}.json")`. That covers ~l.1530, 1745, 1826, 1859, 1892, 1920, 1942, 1969, 2028, 2113, 2146 and 2176. Also convert ~l.1801 (`…missing_scan_key_alone_still_reconciles_when_workflow_name_set`): it sets `wf-missing-only` but writes a legacy manifest stamped `"wf-test"`, which would otherwise take the stale-legacy warning path. Each per-run manifest must list every envelope stem its test asserts on (e.g. l.1530 needs `"scan_corrupt"`), or that entry is excluded as out of scope. Re-express l.1779 (zero envelopes, exit 0) and l.2002 (`len(payload) == 1`) against the new missing-manifest path.
+  - [x] **Missing manifest, id set.** No `insert_cyl_result_envelope` call even though `scan_1.result.json` exists. Exactly one reconcile call, with the id. A failed retriable entry with the `scan_key` sentinel `"<run-manifest>"` that names both files, in both the summary and `--json`. Exit `1`.
+  - [x] **Missing manifest, reconcile raises.** Both failures are reported, the exit is `1`, and there is no traceback.
+  - [x] **No reconcile on other failures.** For a per-run manifest that is malformed, names another run, raises `PermissionError`, or is a directory or dangling symlink, and for an invalid id `"../wf"`: exit `1`, `_authed_client` never called, `reconcile_unresolved_scans` never called.
+  - [x] **Padded id.** `ARGO_WORKFLOW_NAME=" wf-a\n"` with `run_manifest.wf-a.json` listing `scan_1`, and `scan_1.result.json` and `scan_2.result.json` present: only `scan_1` is ingested.
+  - [x] **Blank id (guard).** `"   "`, no manifest, `scan_1.result.json` and `scan_2.result.json` present: both are ingested (unscoped), exit `0`, exactly one reconcile call under `"   "`. Repeat with an empty directory: exit `0`, one reconcile call. It passes today; the spec scenario "A blank ARGO_WORKFLOW_NAME is unscoped but still reconciles once" pins it.
+  - [x] **No id, only missing keys.** A legacy manifest declaring only missing keys still makes no `_authed_client` call. This keeps the existing test ~l.2330 (`…missing_scan_key_alone_makes_no_auth_call`) as a **(guard)**.
+  - [x] **Missing-key message.** It names `run_manifest.wf-a.json`. No existing test asserts the old literal text, so assert on the filename.
 
       Confirm the 5.2 and 5.3 tests fail against today's code, apart from the guards.
-- [ ] 5.4 GREEN:
-  - [ ] Imports.
-  - [ ] `discover_envelopes` calls `load_run_manifest(path, pipeline_run_id, allow_legacy=True)`, with a comment citing sleap-roots-pipeline#82.
-  - [ ] Catch in this order:
+- [x] 5.4 GREEN:
+  - [x] Imports.
+  - [x] `discover_envelopes` calls `load_run_manifest(path, pipeline_run_id, allow_legacy=True)`, with a comment citing sleap-roots-pipeline#82.
+  - [x] Catch in this order:
     1. `RunManifestMissingError` → `RunManifestNotFoundError`.
     2. `RunManifestIdentityError`, `ValidationError`, `ValueError` and `OSError` → `EnvelopeError`, in one clause.
-  - [ ] Warn on a legacy fallback whose `pipeline_run_id` differs from the id.
-  - [ ] Add `DiscoveredEnvelopes.manifest_filename: str | None`.
-  - [ ] In `batch_ingest_result`, call `discover_envelopes(envelopes_dir, pipeline_run_id_from_env())`. On `RunManifestNotFoundError`: authenticate, call `_reconcile_unresolved_scans_result`, emit the `BatchResult`, and exit `1`. Any other `EnvelopeError` keeps today's `ClickException` path.
-  - [ ] Keep the `not paths and not missing` branch's reconciliation call. With a run identity the branch can't be reached, but the blank-value edge still reaches it with a truthy `ARGO_WORKFLOW_NAME` (design Decision 3).
-  - [ ] Leave `resolve_argo_workflow_name()` unchanged.
-  - [ ] Update the docstrings (l.82, 94-104), the `--help` text (l.1044-1051) and the debug log text (l.150).
-- [ ] 5.5 Sections 5.2 and 5.3 pass, and so does the full suite.
+  - [x] Warn on a legacy fallback whose `pipeline_run_id` differs from the id.
+  - [x] Add `DiscoveredEnvelopes.manifest_filename: str | None`.
+  - [x] In `batch_ingest_result`, call `discover_envelopes(envelopes_dir, pipeline_run_id_from_env())`. On `RunManifestNotFoundError`: authenticate, call `_reconcile_unresolved_scans_result`, emit the `BatchResult`, and exit `1`. Any other `EnvelopeError` keeps today's `ClickException` path.
+  - [x] Keep the `not paths and not missing` branch's reconciliation call. With a run identity the branch can't be reached, but the blank-value edge still reaches it with a truthy `ARGO_WORKFLOW_NAME` (design Decision 3).
+  - [x] Leave `resolve_argo_workflow_name()` unchanged.
+  - [x] Update the docstrings (l.82, 94-104), the `--help` text (l.1044-1051) and the debug log text (l.150).
+- [x] 5.5 Sections 5.2 and 5.3 pass, and so does the full suite.
 
 ## 6. Writer → reader handoff (commit D)
 
-- [ ] 6.1 RED, written before 5.4 lands, in its own `tests/test_run_manifest_handoff.py` (importing from `test_cyl_download_for_predict`, as `test_download_for_predict_concurrency.py:19` does):
+- [x] 6.1 RED, written before 5.4 lands, in its own `tests/test_run_manifest_handoff.py` (importing from `test_cyl_download_for_predict`, as `test_download_for_predict_concurrency.py:19` does):
   1. Drive `batch-download-for-predict` into `tmp/stage` with `ARGO_WORKFLOW_NAME=" wf-e2e"`, reusing `_patch_batch`.
   2. Copy the written `run_manifest.*.json` by its own name into `tmp/traits`, standing in for predict/traits forwarding under `read.filename`.
   3. Add `scan_1.result.json`, a stray `scan_9.result.json`, and a stale legacy `run_manifest.json` listing `scan_9`.
@@ -121,29 +121,29 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
 
 ## 7. Docs (commit E)
 
-- [ ] 7.1 `bloomcli/README.md`:
-  - [ ] l.459-482: the per-run name, overwrite, the no-id legacy name, and an invalid id exiting `1`.
-  - [ ] l.660-666: ingest resolution. l.665-666 ("With no manifest present, discovery is fully unscoped") holds only without a run id.
-  - [ ] l.686-695: the exit-zero and zero-envelope statements no longer hold when an id is set with no manifest.
-  - [ ] Near l.697, which documents `"<reconciliation>"`: document the `"<run-manifest>"` sentinel entry.
-  - [ ] A note on the `allow_legacy=True` rollout.
-- [ ] 7.2 `bloomcli/CHANGELOG.md` `[Unreleased]`:
-  - [ ] Add a `### Changed` section between Added and Fixed, following Keep a Changelog order.
-  - [ ] Two entries, each starting `**Breaking:**`: the writer overwrites and names per run; the reader fails when it knows its run id and has no manifest.
-  - [ ] One entry worded like the l.131 precedent: "Bumped the `sleap-roots-contracts` floor to `>=0.1.0a9` for …".
-  - [ ] Don't touch the historical 0.1.0a5 entry.
-- [ ] 7.3 `contracts/README.md:48`: "With `ARGO_WORKFLOW_NAME` set, bloomctl writes and reads `run_manifest.<id>.json` (reads fall back to the legacy name via `allow_legacy=True`); without it, it uses `run_manifest.json`."
+- [x] 7.1 `bloomcli/README.md`:
+  - [x] l.459-482: the per-run name, overwrite, the no-id legacy name, and an invalid id exiting `1`.
+  - [x] l.660-666: ingest resolution. l.665-666 ("With no manifest present, discovery is fully unscoped") holds only without a run id.
+  - [x] l.686-695: the exit-zero and zero-envelope statements no longer hold when an id is set with no manifest.
+  - [x] Near l.697, which documents `"<reconciliation>"`: document the `"<run-manifest>"` sentinel entry.
+  - [x] A note on the `allow_legacy=True` rollout.
+- [x] 7.2 `bloomcli/CHANGELOG.md` `[Unreleased]`:
+  - [x] Add a `### Changed` section between Added and Fixed, following Keep a Changelog order.
+  - [x] Two entries, each starting `**Breaking:**`: the writer overwrites and names per run; the reader fails when it knows its run id and has no manifest.
+  - [x] One entry worded like the l.131 precedent: "Bumped the `sleap-roots-contracts` floor to `>=0.1.0a9` for …".
+  - [x] Don't touch the historical 0.1.0a5 entry.
+- [x] 7.3 `contracts/README.md:48`: "With `ARGO_WORKFLOW_NAME` set, bloomctl writes and reads `run_manifest.<id>.json` (reads fall back to the legacy name via `allow_legacy=True`); without it, it uses `run_manifest.json`."
 
 ## 8. Verification
 
-- [ ] 8.1 Full suite with `--locked` at every commit B–E. Record the pass counts in each commit message.
-- [ ] 8.2 `uvx ruff@0.9.9 check bloomcli/` and, from the repo root, `python scripts/check-uv-locks.py`. Then the bloomcli pip-audit step:
+- [x] 8.1 Full suite with `--locked` at every commit B–E. Record the pass counts in each commit message.
+- [x] 8.2 `uvx ruff@0.9.9 check bloomcli/` and, from the repo root, `python scripts/check-uv-locks.py`. Then the bloomcli pip-audit step:
   - CI's command (`pr-checks.yml:242`): `cd bloomcli && uv export --frozen --no-hashes --extra scrna | uvx pip-audit@2.10.0 -r /dev/stdin`.
   - On Windows (`/dev/stdin` fails in Git Bash): `uv export --frozen --no-hashes --extra scrna -o <scratchpad>/req.txt && uvx pip-audit@2.10.0 -r <scratchpad>/req.txt`. Keep `--extra scrna`.
-- [ ] 8.3 Build the image locally and check `docker run --rm --entrypoint python <img> -c "import importlib.metadata as m; print(m.version('sleap-roots-contracts'))"` prints `0.1.0a9`. The PR-time `bloomcli:ci` image never leaves the runner, so it can't be used.
-- [ ] 8.4 Grep `openspec/specs/**`, `openspec/changes/*/specs/**`, `bloomcli/**`, `contracts/**` and `services/workflows/**` for leftover claims that contradict the new behavior (`run_manifest.json` literals, "union", "merge"). Fix the ones in files this change owns, and list the rest. The `repin-cyl-contract-a9` design.md:31 and tasks.md:63 claim ("bloomctl still writes and reads the legacy") goes stale, but it is change history, so leave it.
-- [ ] 8.5 Two spec scenarios have no automated test: cyl-pipeline-runs "A batch in which every scan failed at images-downloader reads failed" and cyl-pipeline-status-polling "A batch whose downloader staged nothing rolls up to failed". Only 10.3 step 5 (live) verifies them.
-- [ ] 8.6 `/pre-merge`.
+- [x] 8.3 Build the image locally and check `docker run --rm --entrypoint python <img> -c "import importlib.metadata as m; print(m.version('sleap-roots-contracts'))"` prints `0.1.0a9`. The PR-time `bloomcli:ci` image never leaves the runner, so it can't be used.
+- [x] 8.4 Grep `openspec/specs/**`, `openspec/changes/*/specs/**`, `bloomcli/**`, `contracts/**` and `services/workflows/**` for leftover claims that contradict the new behavior (`run_manifest.json` literals, "union", "merge"). Fix the ones in files this change owns, and list the rest. The `repin-cyl-contract-a9` design.md:31 and tasks.md:63 claim ("bloomctl still writes and reads the legacy") goes stale, but it is change history, so leave it.
+- [x] 8.5 Two spec scenarios have no automated test: cyl-pipeline-runs "A batch in which every scan failed at images-downloader reads failed" and cyl-pipeline-status-polling "A batch whose downloader staged nothing rolls up to failed". Only 10.3 step 5 (live) verifies them.
+- [x] 8.6 `/pre-merge`.
 
 ## 9. Commit plan (one PR against `staging`)
 
@@ -153,13 +153,13 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
 - **Commit messages:** they must also avoid close/fix/resolve + `#N`, including cross-repo references such as `talmolab/sleap-roots-pipeline#71`. The squash body is the joined commit messages (`COMMIT_MESSAGES`), and it reaches `main` at promotion, where GitHub's own keyword closing applies to commits. Don't paste `fix-cyl-pipeline-run-scan-status/design.md:138` ("fix #1 hardens") into either.
 - **Commit bodies:** keep them short. At merge, trim the squash body to the PR summary.
 
-- [ ] 9.1 A1 `docs(openspec): rebuild fix-cyl-pipeline-run-scan-status's stale cyl-trait-writeback delta` (Section 1)
-- [ ] 9.2 A2 `docs(openspec): propose adopt-cyl-contract-a9-run-manifest` (Section 2)
-- [ ] 9.3 B `build(bloomctl): require sleap-roots-contracts 0.1.0a9` (Section 3)
-- [ ] 9.4 C `feat(bloomctl)!: name the run manifest per run and overwrite it` (Section 4). Never revert or cherry-pick this commit without D, since its writer doesn't match the old reader.
-- [ ] 9.5 D `feat(bloomctl)!: resolve the run manifest by run id and fail when it is missing` (Sections 5 and 6)
-- [ ] 9.6 E `docs(bloomctl): document per-run run manifests` (Section 7)
-- [ ] 9.7 F `docs(openspec): tick adopt-cyl-contract-a9-run-manifest tasks`
+- [x] 9.1 A1 `docs(openspec): rebuild fix-cyl-pipeline-run-scan-status's stale cyl-trait-writeback delta` (Section 1)
+- [x] 9.2 A2 `docs(openspec): propose adopt-cyl-contract-a9-run-manifest` (Section 2)
+- [x] 9.3 B `build(bloomctl): require sleap-roots-contracts 0.1.0a9` (Section 3)
+- [x] 9.4 C `feat(bloomctl)!: name the run manifest per run and overwrite it` (Section 4). Never revert or cherry-pick this commit without D, since its writer doesn't match the old reader.
+- [x] 9.5 D `feat(bloomctl)!: resolve the run manifest by run id and fail when it is missing` (Sections 5 and 6)
+- [x] 9.6 E `docs(bloomctl): document per-run run manifests` (Section 7)
+- [x] 9.7 F `docs(openspec): tick adopt-cyl-contract-a9-run-manifest tasks`
 
 ## 10. Post-merge (each step needs explicit user approval)
 
