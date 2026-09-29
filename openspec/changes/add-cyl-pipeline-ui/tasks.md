@@ -305,7 +305,7 @@
     - exclude exactly the two generated type files and the guard itself;
     - assert that none of the files contains any spec-forbidden pattern.
 - [x] 8.5 Add a "Pipeline runs" section to `web/README.md`.
-- [ ] 8.6 Live check on the dev stack.
+- [x] 8.6 Live check on the dev stack.
   - **Setup:**
     1. Confirm `WORKFLOWS_K8S_TOKEN` is empty in `.env.dev`.
     2. Run `docker compose -f docker-compose.dev.yml stop cyl-pipeline-worker cyl-status-poller`.
@@ -320,6 +320,21 @@
   - **Cleanup:**
     1. `SELECT pgmq.purge_queue('cyl_pipeline_dispatch')`.
     2. Restart both services.
+
+  **(done 2026-09-29, 23/23 checks, with these deviations:**
+  - **Where it ran.** `next dev -p 3001` from PR 3's worktree against the running dev Supabase, with env on the command line only, because the Docker stack serves the main checkout. Edge was driven by a throwaway Playwright script as the dev `bloom_user`.
+  - **Realtime through Kong** needed a temporary `realtime` tenant: a copy of `realtime-dev` in `_realtime.tenants` and `_realtime.extensions`, deleted afterwards, with Realtime restarted. Without it every socket fails `TenantNotFound: realtime` (see 0.3); that defect needs its own fix.
+  - **The trigger curl returns 500** on the dev stack ("missing WORKFLOWS_SUPABASE_EMAIL, WORKFLOWS_SUPABASE_PASSWORD"), before any write. The run was created by SQL instead, in the trigger's order: run row `queued`, then its scan row, then `submitted`. `WORKFLOWS_K8S_TOKEN` was empty, and the worker and poller were stopped throughout.
+  - **Bug found and fixed.** The first pass showed channels reaching `SUBSCRIBED` with no events delivered. On a full page load the views' `phx_join` carried no user token (anon), so RLS dropped every run event. `useLiveSync` now calls `realtime.setAuth(session.access_token)` before subscribing (commit "join Realtime as the signed-in user", tested red first).
+  - **Verified live, with no reload:**
+    - a new run appears on top of the list, attributed to "you";
+    - its experiment name appears after `submitted`;
+    - the drill-down's scan row turns "Result recorded" and its header "Finished · 1 succeeded" when the scan row is updated, while the list's row waits for the run row's rollup and then follows;
+    - the experiment panel lists the run, and adds a second run once its scan rows land;
+    - with 57 runs, the list shows 50, and "Load older" gives all 57 in exact `(created_at, id)` order with no duplicates;
+    - 60 quiet seconds made no REST requests, and no `/workflows/runs` request was ever made.
+  - **Cold-start drop.** The one-event losses in 0.3 recur only on a tenant's first subscription after Realtime starts (twice on a fresh tenant, 0 of 10 on warm runs). A later full-row UPDATE for the run repairs the view, since the list admits unknown runs and merges held ones.
+  - **Cleanup.** Queue purged (it was empty), services restarted, no run rows left.)**
 - [ ] 8.7 Verify:
   - `openspec validate add-cyl-pipeline-ui --strict`;
   - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`;
