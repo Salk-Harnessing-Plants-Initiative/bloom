@@ -79,12 +79,8 @@ about to pull. `--workers` raises the download concurrency here too, and `--limi
 most that many scans, for looking at a sample — it is not a way to export an experiment in
 parts, so give a sample and a full download separate directories.
 
-Resume works as it does for cylinder downloads, and a little better: plate images record their
-size, so a file is skipped only when its size matches the database. A download truncated by a
-dropped connection is re-fetched rather than treated as complete.
-
-> `plate download` needs the `gravi_scans_extended` view on the server, and
-> `gravi_experiment_search` if you select by `--experiment-name`.
+**If a download stops part-way, run the same command again.** Finished images are kept, and any
+image cut off by a dropped connection is downloaded again.
 
 ## Quickstart for Finding Data
 
