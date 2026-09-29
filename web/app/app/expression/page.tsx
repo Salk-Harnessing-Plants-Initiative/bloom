@@ -47,6 +47,7 @@ export default async function AllSpecies() {
           samples={samples}
           references={references}
           species={sortedSpeciesOptions(speciesList)}
+          startedBy={user?.email ?? null}
         />
       </div>
 

@@ -17,22 +17,26 @@ export default function ScrnaSpeciesPicker({
   species,
   value,
   onChange,
+  onAdded,
   fieldClass,
   labelClass,
 }: {
   species: SpeciesOption[];
   value: number | null;
   onChange: (id: number | null) => void;
+  // A species added here, for the caller to keep in its list.
+  onAdded: (option: SpeciesOption) => void;
   fieldClass: string;
   labelClass: string;
 }) {
-  const [options, setOptions] = useState(species);
   const [addStatus, setAddStatus] = useState<AddStatus>("closed");
   const [genus, setGenus] = useState("");
   const [epithet, setEpithet] = useState("");
   const [commonName, setCommonName] = useState("");
   const [problem, setProblem] = useState("");
   const [notice, setNotice] = useState("");
+  // The species chosen before "Add a species", restored on Cancel.
+  const [previous, setPrevious] = useState<number | null>(null);
 
   const saving = addStatus === "saving";
   const typed = Boolean(genus.trim() || epithet.trim() || commonName.trim());
@@ -47,12 +51,19 @@ export default function ScrnaSpeciesPicker({
   function choose(selected: string) {
     setNotice("");
     if (selected === ADD_NEW) {
+      setPrevious(value);
       setAddStatus("open");
       onChange(null);
       return;
     }
     setAddStatus("closed");
     onChange(selected ? Number(selected) : null);
+  }
+
+  function cancelAdd() {
+    setProblem("");
+    setAddStatus("closed");
+    onChange(previous);
   }
 
   async function add() {
@@ -66,11 +77,7 @@ export default function ScrnaSpeciesPicker({
       return;
     }
     const option = result.option;
-    setOptions((current) =>
-      current.some((o) => o.id === option.id)
-        ? current
-        : [...current, option].sort((a, b) => a.label.localeCompare(b.label))
-    );
+    onAdded(option);
     setNotice(
       result.kind === "added"
         ? `Added ${option.label}.`
@@ -94,7 +101,7 @@ export default function ScrnaSpeciesPicker({
           disabled={saving}
         >
           <option value="">Choose a species</option>
-          {options.map((s) => (
+          {species.map((s) => (
             <option key={s.id} value={s.id}>
               {s.label}
             </option>
@@ -173,7 +180,7 @@ export default function ScrnaSpeciesPicker({
             </button>
             <button
               type="button"
-              onClick={() => choose("")}
+              onClick={cancelAdd}
               disabled={saving}
               className="text-sm text-stone-500 hover:text-stone-800"
             >

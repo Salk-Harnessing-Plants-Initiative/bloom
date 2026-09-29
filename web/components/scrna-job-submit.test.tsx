@@ -8,7 +8,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
+vi.mock("@/lib/species-options", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/species-options")>()),
+  addSpecies: vi.fn(),
+}));
+
 import ScrnaJobSubmit from "./scrna-job-submit";
+import { addSpecies } from "@/lib/species-options";
 import type { RnaseqReference, RnaseqSample } from "@/lib/scrna-jobs";
 import type { SpeciesOption } from "@/lib/species-options";
 
@@ -38,7 +45,14 @@ function respond(body: unknown, status = 201) {
 }
 
 function openForm(samples = SAMPLES, references = REFERENCES) {
-  render(<ScrnaJobSubmit samples={samples} references={references} species={SPECIES} />);
+  render(
+    <ScrnaJobSubmit
+      samples={samples}
+      references={references}
+      species={SPECIES}
+      startedBy="scientist@salk.edu"
+    />
+  );
   fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
 }
 
@@ -65,7 +79,9 @@ afterEach(() => {
 
 describe("the form", () => {
   it("starts closed and opens from the button", () => {
-    render(<ScrnaJobSubmit samples={SAMPLES} references={REFERENCES} species={SPECIES} />);
+    render(
+      <ScrnaJobSubmit samples={SAMPLES} references={REFERENCES} species={SPECIES} startedBy={null} />
+    );
     expect(screen.queryByLabelText("Sample")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
     expect(screen.getByLabelText("Sample")).toBeTruthy();
@@ -149,7 +165,10 @@ describe("starting a run", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     const status = await screen.findByRole("status");
-    expect(status.textContent).toBe("Run 12 queued: tinygex against tiny_ref.");
+    expect(status.textContent).toContain("Run 12 queued");
+    expect(status.textContent).toContain(
+      "tinygex against tiny_ref · Col-0 root tip (Arabidopsis (Arabidopsis thaliana))"
+    );
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe("/api/scrna/cellranger/runs");
     expect(JSON.parse(init.body)).toEqual({
@@ -270,5 +289,75 @@ describe("starting a run", () => {
 
     finish(new Response(JSON.stringify({ run_id: 1, sample: "tinygex", reference: "tiny_ref", run_key: "k" }), { status: 201 }));
     await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
+  });
+});
+
+describe("after a run is queued", () => {
+  async function queueRun() {
+    respond({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
+    openForm();
+    choose("tinygex", "tiny_ref");
+    type(/Accession or genotype/, "Col-0");
+    fireEvent.click(screen.getByLabelText("Public dataset"));
+    type("Source link", "https://doi.org/10.1016/x");
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    await screen.findByRole("button", { name: "Start another run" });
+  }
+
+  it("replaces the form, so the run can't be started twice", async () => {
+    await queueRun();
+    expect(screen.getByText("Started by scientist@salk.edu")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start run" })).toBeNull();
+    expect(screen.queryByLabelText("Sample")).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts another run with the sample and dataset name cleared and the rest kept", async () => {
+    await queueRun();
+    fireEvent.click(screen.getByRole("button", { name: "Start another run" }));
+
+    expect((screen.getByLabelText("Sample") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Dataset name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
+    expect((screen.getByLabelText("Species") as HTMLSelectElement).value).toBe("1");
+    expect((screen.getByLabelText(/Accession or genotype/) as HTMLInputElement).value).toBe("Col-0");
+    expect((screen.getByLabelText("Public dataset") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("Source link") as HTMLInputElement).value).toBe(
+      "https://doi.org/10.1016/x"
+    );
+    expect(
+      (screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled
+    ).toBe(true);
+  });
+
+  it("opens on a fresh form after Close", async () => {
+    await queueRun();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
+    expect(screen.queryByRole("button", { name: "Start another run" })).toBeNull();
+    expect((screen.getByLabelText("Sample") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
+  });
+});
+
+describe("a species added from the form", () => {
+  it("is still listed and selected after the form is closed and reopened", async () => {
+    vi.mocked(addSpecies).mockResolvedValue({
+      kind: "added",
+      option: { id: 9, label: "Maize (Zea mays)" },
+    });
+    openForm();
+    type("Species", "add-new");
+    type("Genus", "Zea");
+    type("Species name", "mays");
+    type("Common name", "Maize");
+    fireEvent.click(screen.getByRole("button", { name: "Add species" }));
+    await screen.findByText("Added Maize (Zea mays).");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
+    const select = screen.getByLabelText("Species") as HTMLSelectElement;
+    expect(select.value).toBe("9");
+    expect(screen.getAllByRole("option", { name: "Maize (Zea mays)" })).toHaveLength(1);
   });
 });

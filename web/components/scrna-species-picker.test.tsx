@@ -24,14 +24,17 @@ const SPECIES: SpeciesOption[] = [
 ];
 
 let onChange: ReturnType<typeof vi.fn<(id: number | null) => void>>;
+let onAdded: ReturnType<typeof vi.fn<(option: SpeciesOption) => void>>;
 
 function renderPicker(value: number | null = null) {
   onChange = vi.fn<(id: number | null) => void>();
+  onAdded = vi.fn<(option: SpeciesOption) => void>();
   return render(
     <ScrnaSpeciesPicker
       species={SPECIES}
       value={value}
       onChange={onChange}
+      onAdded={onAdded}
       fieldClass=""
       labelClass=""
     />
@@ -118,7 +121,7 @@ describe("adding a species", () => {
     ).toBe(true);
   });
 
-  it("adds the species, lists it, selects it and says so", async () => {
+  it("adds the species, hands it to the form, selects it and says so", async () => {
     mockedAdd.mockResolvedValue({
       kind: "added",
       option: { id: 9, label: "Pennycress (Thlaspi arvense)" },
@@ -137,11 +140,11 @@ describe("adding a species", () => {
       common_name: "Pennycress",
     });
     expect(onChange).toHaveBeenLastCalledWith(9);
-    expect(screen.getByRole("option", { name: "Pennycress (Thlaspi arvense)" })).toBeTruthy();
+    expect(onAdded).toHaveBeenCalledWith({ id: 9, label: "Pennycress (Thlaspi arvense)" });
     expect(screen.queryByLabelText("Genus")).toBeNull();
   });
 
-  it("selects the stored species when it already exists, without listing it twice", async () => {
+  it("selects the stored species when it already exists", async () => {
     mockedAdd.mockResolvedValue({
       kind: "existing",
       option: { id: 4, label: "Rice (Oryza sativa)" },
@@ -157,7 +160,7 @@ describe("adding a species", () => {
       "Rice (Oryza sativa) is already in Bloom, so it's selected."
     );
     expect(onChange).toHaveBeenLastCalledWith(4);
-    expect(screen.getAllByRole("option", { name: "Rice (Oryza sativa)" })).toHaveLength(1);
+    expect(onAdded).toHaveBeenCalledWith({ id: 4, label: "Rice (Oryza sativa)" });
   });
 
   it("keeps the fields open with the reason when adding fails", async () => {
@@ -192,11 +195,37 @@ describe("adding a species", () => {
     expect((screen.getByLabelText("Genus") as HTMLInputElement).disabled).toBe(true);
   });
 
-  it("closes the fields on Cancel", () => {
-    renderPicker();
+  it("closes the fields on Cancel and restores the species chosen before", () => {
+    renderPicker(4);
     openAdd();
+    expect(onChange).toHaveBeenLastCalledWith(null);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByLabelText("Genus")).toBeNull();
-    expect(onChange).toHaveBeenLastCalledWith(null);
+    expect(onChange).toHaveBeenLastCalledWith(4);
+  });
+
+  it("lists the species it is given, including one the form added", () => {
+    onChange = vi.fn<(id: number | null) => void>();
+    const { rerender } = render(
+      <ScrnaSpeciesPicker
+        species={SPECIES}
+        value={null}
+        onChange={onChange}
+        onAdded={() => {}}
+        fieldClass=""
+        labelClass=""
+      />
+    );
+    rerender(
+      <ScrnaSpeciesPicker
+        species={[...SPECIES, { id: 9, label: "Pennycress (Thlaspi arvense)" }]}
+        value={9}
+        onChange={onChange}
+        onAdded={() => {}}
+        fieldClass=""
+        labelClass=""
+      />
+    );
+    expect((screen.getByLabelText("Species") as HTMLSelectElement).value).toBe("9");
   });
 });
