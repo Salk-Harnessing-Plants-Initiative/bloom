@@ -1494,7 +1494,7 @@ jobs:
             echo "|-------|----------|------|"
             for file in results/trivy-pinned-*/summary.txt; do
               if [ -f "$file" ]; then
-                IFS='|' read -r img crit high cves < "$file"
+                IFS='|' read -r img crit high _ < "$file"
                 echo "| ${img} | ${crit} | ${high} |"
               fi
             done
