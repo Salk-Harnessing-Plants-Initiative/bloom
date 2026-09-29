@@ -27,7 +27,6 @@ RUN = {
 @pytest.fixture(autouse=True)
 def _k8s_config(monkeypatch):
     monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
-    monkeypatch.setattr(k8s_client, "TTL_SECONDS", 3600)
     monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
 
 
@@ -96,7 +95,7 @@ def test_the_labels_identify_the_run_and_environment():
         "project": "busch-lab",
         "submitted-by": "bloom-pipeline",
         "workflow-type": "scrna-cellranger",
-        "scrna-run-id": "7",
+        "rnaseq-run-id": "7",
         "environment": "staging",
     }
     for value in labels.values():
@@ -117,10 +116,36 @@ def test_the_run_key_is_the_run_id_so_output_goes_to_its_folder():
     assert _params(_task(body, "sample"))["run-id"] == "{{workflow.parameters.run-id}}"
 
 
-def test_finished_workflows_are_cleaned_up_after_the_configured_ttl(monkeypatch):
-    monkeypatch.setattr(k8s_client, "TTL_SECONDS", 120)
+def test_finished_workflows_are_kept_for_24_hours_by_default():
+    assert wfs.DEFAULT_TTL_SECONDS == 24 * 60 * 60
     spec = wfs.build_cellranger_body(RUN)["spec"]
-    assert spec["ttlStrategy"] == {"secondsAfterCompletion": 120}
+    assert spec["ttlStrategy"] == {"secondsAfterCompletion": wfs.TTL_SECONDS}
+
+
+def test_the_ttl_is_not_the_sleap_roots_setting(monkeypatch):
+    monkeypatch.setattr(k8s_client, "TTL_SECONDS", 3600)
+    monkeypatch.setattr(wfs, "TTL_SECONDS", 86400)
+    spec = wfs.build_cellranger_body(RUN)["spec"]
+    assert spec["ttlStrategy"] == {"secondsAfterCompletion": 86400}
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, 86400),
+        ("7200", 7200),
+        ("", 86400),
+        ("abc", 86400),
+        ("0", 86400),
+        ("-5", 86400),
+    ],
+)
+def test_the_ttl_setting_falls_back_to_24_hours(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_RNASEQ_TTL_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_RNASEQ_TTL_SECONDS", raw)
+    assert wfs._resolve_ttl_seconds() == expected
 
 
 def test_the_sample_runs_after_the_reference_is_staged():

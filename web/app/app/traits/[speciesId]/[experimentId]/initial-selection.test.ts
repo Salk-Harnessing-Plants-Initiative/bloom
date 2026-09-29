@@ -24,6 +24,12 @@ describe("resolveSelection", () => {
     });
   });
 
+  it("honours wave 0 and day 0 like any other pair (0 is not 'missing')", () => {
+    const withZero = rows([0, 0], [0, 7], [1, 7]);
+    expect(resolveSelection(withZero, { wave: 0, age: 0 })).toEqual({ selection: { wave: 0, age: 0 }, note: null });
+    expect(resolveSelection(withZero, { wave: 0 })).toEqual({ selection: { wave: 0, age: 7 }, note: null });
+  });
+
   it("selects an available wave and age pair", () => {
     expect(resolveSelection(DATA, { wave: 1, age: 14 })).toEqual({
       selection: { wave: 1, age: 14 },
