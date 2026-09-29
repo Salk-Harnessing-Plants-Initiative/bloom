@@ -86,6 +86,8 @@ const columns: GridColDef<ScanTableRow>[] = [
   {
     field: "current",
     headerName: "Current in trait views",
+    description:
+      "Whether this row's source is the scan's latest, as of the last load. Rows whose source changed since show unknown; Refresh to recheck.",
     width: 170,
     valueFormatter: (value: boolean | null) => (value === null ? "unknown" : value ? "yes" : "no"),
   },

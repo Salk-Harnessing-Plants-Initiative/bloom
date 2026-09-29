@@ -25,7 +25,7 @@
  */
 
 import Link from "next/link";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { RunState } from "@/components/cyl-pipeline/RunState";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
@@ -73,6 +73,9 @@ interface DetailView {
   detailsError: string | null;
 }
 
+/** How long a burst of rows turning failed is collected before one lookup. */
+export const FAILED_LOOKUP_BATCH_MS = 500;
+
 export const TIMING_NOTE =
   "Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.";
 
@@ -105,20 +108,49 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
   const now = useNow();
   // Rows known to be failed; a row joining this set live gets one lookup.
   const failedSeen = useRef(new Set<number>());
+  // Scans that turned failed live and await their lookup, batched: the
+  // poller's backstop fails every still-queued row of a workflow at once.
+  const failedPending = useRef(new Set<number>());
+  const failedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const lookUpFailed = async (scanId: number) => {
+  useEffect(
+    () => () => {
+      if (failedTimer.current) clearTimeout(failedTimer.current);
+    },
+    [],
+  );
+
+  const sourceOf = (view: DetailView, scanId: number) => {
+    for (const r of view.detail.scans.values()) if (r.scan_id === scanId) return r.source_id;
+    return undefined;
+  };
+
+  const lookUpFailed = async () => {
+    failedTimer.current = null;
+    const ids = [...failedPending.current];
+    failedPending.current.clear();
+    if (ids.length === 0) return;
+    const started = live.generation();
+    const held = live.current();
+    const sources = new Map(ids.map((id) => [id, sourceOf(held, id)]));
     const client = createClientSupabaseClient();
     try {
-      const [m, l] = await Promise.all([fetchScanMeta(client, [scanId]), fetchLatestSources(client, [scanId])]);
+      const needMeta = ids.filter((id) => !held.meta.has(id));
+      const [m, l] = await Promise.all([fetchScanMeta(client, needMeta), fetchLatestSources(client, ids)]);
       live.update((v) => {
-        const latest = v.latest === null ? null : new Map(v.latest);
-        if (latest) {
-          if (l.has(scanId)) latest.set(scanId, l.get(scanId)!);
-          else latest.delete(scanId);
-        }
+        const meta = new Map([...v.meta, ...m]);
+        // A snapshot that started since read the latest sources afresh.
+        if (v.latest === null || live.generation() !== started) return { ...v, meta };
+        const latest = new Map(v.latest);
         const changed = new Set(v.changed);
-        if (latest) changed.delete(scanId);
-        return { ...v, meta: new Map([...v.meta, ...m]), latest, changed };
+        for (const id of ids) {
+          // A row whose source changed since the read would be judged on stale data.
+          if (sourceOf(v, id) !== sources.get(id)) continue;
+          if (l.has(id)) latest.set(id, l.get(id)!);
+          else latest.delete(id);
+          changed.delete(id);
+        }
+        return { ...v, meta, latest, changed };
       });
     } catch {
       // The hint is optional; the row still shows its status and error.
@@ -154,7 +186,11 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
         fetchLatestSources(client, ids),
         fetchRunExperiments(client, [runId]),
       ]);
-      const failures = [m, l].filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      const failures = [
+        ["scan details", m],
+        ["latest sources", l],
+        ["experiments", exps],
+      ].flatMap(([what, r]) => ((r as PromiseSettledResult<unknown>).status === "rejected" ? [`${what}: ${message((r as PromiseRejectedResult).reason)}`] : []));
       return {
         detail: detailFromSnapshot(run ?? held.detail.run, scans),
         loaded: true,
@@ -162,7 +198,7 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
         latest: l.status === "fulfilled" ? l.value : null,
         changed: new Set(),
         experiments: exps.status === "fulfilled" ? exps.value : held.experiments,
-        detailsError: failures.length ? failures.map((f) => message(f.reason)).join("; ") : null,
+        detailsError: failures.length ? failures.join("; ") : null,
       };
     },
     apply: (view, change) => applyChange(view, change as Change<RunRow | RunScanRow>, runId),
@@ -172,7 +208,9 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
       if (row.run_id !== runId || typeof row.id !== "number" || typeof row.scan_id !== "number") return;
       if (row.status === "failed" && !failedSeen.current.has(row.id)) {
         failedSeen.current.add(row.id);
-        void lookUpFailed(row.scan_id);
+        failedPending.current.add(row.scan_id);
+        // No reset on later events, so a steady stream can't postpone it.
+        if (!failedTimer.current) failedTimer.current = setTimeout(() => void lookUpFailed(), FAILED_LOOKUP_BATCH_MS);
       }
     },
     onSnapshot: (view) => view.detail.scans.forEach((s) => s.status === "failed" && failedSeen.current.add(s.id)),
@@ -211,13 +249,16 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
   );
 
   const links = useMemo(() => {
-    const shown = experiments === null ? null : new Map(experiments.map((e) => [e.experiment_id, e]));
+    // Unread (or unreadable) view: no traits links, rather than links built from
+    // cyl_scans_extended, whose owner rights include soft-deleted experiments.
+    if (experiments === null) return [];
+    const shown = new Map(experiments.map((e) => [e.experiment_id, e]));
     return traitsLinks(
       scanRows.map((r) => r.scan_id),
       meta,
     )
-      .filter((e) => shown === null || shown.has(e.experimentId))
-      .map((e) => ({ ...e, experimentName: shown?.get(e.experimentId)?.name ?? null }));
+      .filter((e) => shown.has(e.experimentId))
+      .map((e) => ({ ...e, experimentName: shown.get(e.experimentId)?.name ?? null }));
   }, [scanRows, meta, experiments]);
 
   const tallies = countsFromScanRows(scanRows);
@@ -236,7 +277,7 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
           <LiveIndicator state={live.connection} onRefresh={live.refresh} />
         </div>
         <div className="text-stone-600">
-          {now !== null && <span>Started {formatElapsed(detail.run.created_at, now)} ago</span>}
+          {now !== null && <span>Requested {formatElapsed(detail.run.created_at, now)} ago</span>}
           {now !== null && lastUpdate && <span> · Last scan update {formatElapsed(lastUpdate, now)} ago</span>}
         </div>
         <div className="text-stone-600">{paramsText(detail.run.params)}</div>
@@ -281,7 +322,8 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
       )}
       {loaded && detailsError && (
         <p className="mb-2 text-sm text-amber-700">
-          Scan details unavailable: {detailsError}. QR codes, days and &ldquo;current in trait views&rdquo; may be missing.
+          Scan details unavailable ({detailsError}). Plant, wave, day, Scan images and traits links, likely causes, and
+          &ldquo;current in trait views&rdquo; may be missing or shown as unknown. Refresh to try again.
         </p>
       )}
 

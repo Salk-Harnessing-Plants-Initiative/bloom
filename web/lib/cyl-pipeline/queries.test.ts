@@ -125,6 +125,8 @@ describe("fetchScanMeta", () => {
     for (const c of ["scan_id", "qr_code", "wave_id", "wave_number", "plant_age_days", "species_id", "species_name", "accession_id", "experiment_id"]) {
       expect(columns).toContain(c);
     }
+    // cyl_scans_extended runs with its owner's rights, so its names include soft-deleted experiments.
+    expect(columns).not.toMatch(/experiment_name/);
   });
 
   it("makes no request for no ids", async () => {

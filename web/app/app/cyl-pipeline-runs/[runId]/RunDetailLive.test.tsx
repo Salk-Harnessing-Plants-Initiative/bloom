@@ -147,13 +147,13 @@ describe("live rows and the header", () => {
     scans = [scanRow(1, 577, { updated_at: at(60) }), scanRow(2, 578, { updated_at: at(25 * 60) })];
     mount();
     await subscribe();
-    expect(header().textContent).toContain("Started 30 min ago");
+    expect(header().textContent).toContain("Requested 30 min ago");
     expect(header().textContent).toContain("Last scan update 5 min ago");
 
     await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, status: "written", updated_at: at(29 * 60) });
     expect(header().textContent).toContain("Last scan update 1 min ago");
     await tick(10 * 60_000);
-    expect(header().textContent).toContain("Started 40 min ago");
+    expect(header().textContent).toContain("Requested 40 min ago");
   });
 
   it("describes empty params as no overrides, and lists any others", async () => {
@@ -184,7 +184,7 @@ describe("live rows and the header", () => {
 
   it("names and links only the experiments the security-invoker view shows (a soft-deleted one stays hidden)", async () => {
     scans = [scanRow(1, 577), scanRow(2, 578)];
-    meta = [scanMeta(577), scanMeta(578, { experiment_id: 6, experiment_name: "deleted-exp", species_id: 3 })];
+    meta = [scanMeta(577), scanMeta(578, { experiment_id: 6, species_id: 3 })];
     mount();
     await subscribe();
     expect(header().textContent).not.toContain("deleted-exp");
@@ -260,6 +260,39 @@ describe("failed rows", () => {
     expect(scanEl(580).textContent).not.toContain("bloom#900");
   });
 
+  it("batches a burst of rows turning failed into one latest-source read, and reads no metadata it holds", async () => {
+    run = { ...run, scan_count: 50 };
+    scans = Array.from({ length: 50 }, (_, i) => scanRow(i + 1, 1000 + i));
+    meta = scans.map((r) => scanMeta(r.scan_id));
+    mount();
+    await subscribe();
+    const metaReads = queriesFor("cyl_scans_extended").length;
+    const latestReads = queriesFor("cyl_scan_latest_source").length;
+    // The poller's backstop fails every still-queued row of a workflow in one call.
+    for (const r of scans) await emitScan("UPDATE", { ...r, status: "failed", error_message: BACKSTOP_MESSAGE });
+    await tick(1000);
+    expect(queriesFor("cyl_scans_extended").length).toBe(metaReads);
+    const newLatest = queriesFor("cyl_scan_latest_source").slice(latestReads);
+    expect(newLatest).toHaveLength(1);
+    expect((newLatest[0].arg("in")![1] as number[]).length).toBe(50);
+  });
+
+  it("drops a failed-row lookup whose row changed source meanwhile, so unknown never turns into a false no", async () => {
+    latest = [];
+    mount();
+    await subscribe();
+    const late = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_scan_latest_source" ? late.promise : respond(q));
+    await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, status: "failed", error_message: BACKSTOP_MESSAGE, source_id: null });
+    await tick(1000); // the lookup is in flight, reading the old latest
+    // A retry's write-back stamps a source; the trigger raised the latest in the same transaction.
+    await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, source_id: 60 });
+    expect(scanEl(577).textContent).toContain("current=null");
+    await act(async () => late.resolve({ data: [], error: null }));
+    await tick();
+    expect(scanEl(577).textContent).toContain("current=null");
+  });
+
   it("looks a row that turns failed live up exactly once", async () => {
     mount();
     await subscribe();
@@ -271,8 +304,9 @@ describe("failed rows", () => {
     await tick();
     await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, attempts: 2 });
     await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, status: "failed" });
-    await tick();
-    expect(queriesFor("cyl_scans_extended").length).toBe(metaCalls + 1);
+    await tick(1000); // the batch window
+    // Its metadata came with the snapshot, so only the latest source is re-read.
+    expect(queriesFor("cyl_scans_extended").length).toBe(metaCalls);
     expect(queriesFor("cyl_scan_latest_source").length).toBe(latestCalls + 1);
     expect(queriesFor("cyl_scan_latest_source").at(-1)!.arg("in")).toEqual(["scan_id", [578]]);
     expect(scanEl(578).textContent).toContain(NO_OP_NOTE);
@@ -411,6 +445,37 @@ describe("sync", () => {
     expect(screen.getByRole("alert").textContent).toContain("timeout");
   });
 
+  it("keeps the newer snapshot's latest sources when an older snapshot resolves last", async () => {
+    scans = [scanRow(1, 577, { status: "written", source_id: 50 }), scanRow(2, 578)];
+    mount();
+    await subscribe();
+    const slow = deferred<Answer>();
+    let calls = 0;
+    supabaseMock.respond = (q) => {
+      if (q.table !== "cyl_scan_latest_source") return respond(q);
+      calls += 1;
+      return calls === 1 ? slow.promise : { data: [{ scan_id: 577, max_source_id: 50 }], error: null };
+    };
+    await act(async () => channel().status("TIMED_OUT"));
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: /refresh/i })[0])); // snapshot A (slow)
+    await tick();
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: /refresh/i })[0])); // snapshot B
+    await tick();
+    expect(scanEl(577).textContent).toContain("current=true");
+    await act(async () => slow.resolve({ data: [{ scan_id: 577, max_source_id: 40 }], error: null }));
+    await tick();
+    expect(scanEl(577).textContent).toContain("current=true");
+  });
+
+  it("shows no traits links, and says why, when the experiments view can't be read", async () => {
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_run_experiments" ? { data: null, error: { message: "view missing" } } : respond(q));
+    mount();
+    await subscribe();
+    expect(within(header()).queryAllByRole("link", { name: /traits/ })).toHaveLength(0);
+    expect(screen.getByText(/view missing/)).toBeTruthy();
+    expect(screen.getByTestId("table").dataset.count).toBe("2");
+  });
+
   it("still shows the rows when scan details or latest sources can't be read", async () => {
     supabaseMock.respond = (q) =>
       q.table === "cyl_scan_latest_source" || q.table === "cyl_scans_extended" ? { data: null, error: { message: "timeout" } } : respond(q);
@@ -418,7 +483,7 @@ describe("sync", () => {
     await subscribe();
     expect(screen.getByTestId("table").dataset.count).toBe("2");
     expect(scanEl(577).textContent).toContain("current=null");
-    expect(screen.getByText(/Scan details unavailable: timeout/)).toBeTruthy();
+    expect(screen.getByText(/Scan details unavailable \(scan details: timeout; latest sources: timeout\)/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -427,7 +492,8 @@ describe("sync", () => {
     await act(async () => channel().status("CHANNEL_ERROR"));
     expect(screen.queryByText(/Loading scan rows/)).toBeNull();
     expect(screen.getByText(/Live updates are unavailable/)).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: /refresh/i })[0]));
+    const notice = screen.getByText(/Live updates are unavailable/);
+    await act(async () => fireEvent.click(within(notice).getByRole("button", { name: "Refresh" })));
     await tick();
     expect(screen.getByTestId("table").dataset.count).toBe("2");
   });

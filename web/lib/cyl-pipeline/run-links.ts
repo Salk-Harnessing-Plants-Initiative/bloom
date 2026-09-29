@@ -24,7 +24,6 @@ export interface TraitsLink {
 
 export interface ExperimentTraitsLinks {
   experimentId: number;
-  experimentName: string | null;
   speciesId: number;
   links: TraitsLink[];
 }
@@ -42,14 +41,14 @@ const byAge = (a: number | null, b: number | null) => (a === b ? 0 : a === null 
 export function traitsLinks(scanIds: number[], meta: Map<number, ScanMeta>): ExperimentTraitsLinks[] {
   const experiments = new Map<
     number,
-    { experimentName: string | null; speciesId: number; scans: number; pairs: Map<string, { wave: number; age: number | null; count: number }> }
+    { speciesId: number; scans: number; pairs: Map<string, { wave: number; age: number | null; count: number }> }
   >();
   for (const scanId of scanIds) {
     const m = meta.get(scanId);
     if (!m || m.experiment_id == null || m.species_id == null || m.wave_number == null) continue;
     let exp = experiments.get(m.experiment_id);
     if (!exp) {
-      exp = { experimentName: m.experiment_name, speciesId: m.species_id, scans: 0, pairs: new Map() };
+      exp = { speciesId: m.species_id, scans: 0, pairs: new Map() };
       experiments.set(m.experiment_id, exp);
     }
     exp.scans += 1;
@@ -63,7 +62,6 @@ export function traitsLinks(scanIds: number[], meta: Map<number, ScanMeta>): Exp
     .sort(([idA, a], [idB, b]) => b.scans - a.scans || idA - idB)
     .map(([experimentId, exp]) => ({
       experimentId,
-      experimentName: exp.experimentName,
       speciesId: exp.speciesId,
       links: [...exp.pairs.values()]
         .sort((a, b) => b.count - a.count || a.wave - b.wave || byAge(a.age, b.age))

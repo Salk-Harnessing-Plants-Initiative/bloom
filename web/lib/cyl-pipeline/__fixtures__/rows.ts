@@ -61,7 +61,6 @@ export function scanMeta(scan_id: number, overrides: Partial<ScanMeta> = {}): Sc
     species_name: "pennycress",
     accession_id: 7,
     experiment_id: 5,
-    experiment_name: "exp-five",
     ...overrides,
   };
 }

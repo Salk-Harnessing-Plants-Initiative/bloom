@@ -19,7 +19,6 @@ function meta(scan_id: number, overrides: Partial<ScanMeta> = {}): ScanMeta {
     species_name: "pennycress",
     accession_id: 7,
     experiment_id: 5,
-    experiment_name: "exp-five",
     ...overrides,
   };
 }
@@ -44,7 +43,6 @@ describe("traitsLinks", () => {
     expect(traitsLinks([577], byId([meta(577)]))).toEqual([
       {
         experimentId: 5,
-        experimentName: "exp-five",
         speciesId: 2,
         links: [
           { wave: 1, age: 14, count: 1, href: "/app/traits/2/5?wave=1&age=14", label: `Wave 1 · day 14 ${LABEL_TAIL}` },
@@ -103,7 +101,7 @@ describe("traitsLinks", () => {
 
   it("gives each experiment the run touches its own links, the larger first", () => {
     const rows = [
-      meta(1, { experiment_id: 6, experiment_name: "six", species_id: 3 }),
+      meta(1, { experiment_id: 6, species_id: 3 }),
       meta(2),
       meta(3),
     ];
