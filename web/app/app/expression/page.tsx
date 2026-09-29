@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Illustration from "@/components/illustration";
+import ScrnaJobSubmit from "@/components/scrna-job-submit";
 import {
   createServerSupabaseClient,
   getUser,
@@ -7,6 +8,8 @@ import {
 import Mixpanel from "mixpanel";
 
 import type { SpeciesWithRNADatasets } from "@/lib/custom.types";
+import type { RnaseqReference, RnaseqSample } from "@/lib/scrna-jobs";
+import { sortedSpeciesOptions } from "@/lib/species-options";
 
 export default async function AllSpecies() {
   const user = await getUser();
@@ -20,7 +23,10 @@ export default async function AllSpecies() {
     url: "/app/expression",
   });
 
-  const speciesList = await getSpeciesList();
+  const [speciesList, { samples, references }] = await Promise.all([
+    getSpeciesList(),
+    getJobChoices(),
+  ]);
 
   return (
     <div>
@@ -30,11 +36,19 @@ export default async function AllSpecies() {
       <div className="text-3xl font-serif italic mb-2 select-none">
         All species
       </div>
-      <p className="mb-8 max-w-2xl text-sm text-stone-500">
+      <p className="mb-6 max-w-2xl text-sm text-stone-500">
         Single-cell expression atlases across every species in the Salk HPI
         pipeline. Pick a species to browse its datasets, UMAPs, and marker
         genes.
       </p>
+
+      <div className="mb-8">
+        <ScrnaJobSubmit
+          samples={samples}
+          references={references}
+          species={sortedSpeciesOptions(speciesList)}
+        />
+      </div>
 
       <ul className="divide-y divide-stone-200 border-y border-stone-200">
         {speciesList.map((species) => {
@@ -116,4 +130,25 @@ async function getSpeciesList(): Promise<SpeciesWithRNADatasets[]> {
   });
 
   return (data ?? []) as SpeciesWithRNADatasets[];
+}
+
+// The samples and references a scRNA job can be started with; empty lists if they can't be read.
+async function getJobChoices(): Promise<{
+  samples: RnaseqSample[];
+  references: RnaseqReference[];
+}> {
+  const supabase = await createServerSupabaseClient();
+
+  const [samples, references] = await Promise.all([
+    supabase
+      .from("rnaseq_samples")
+      .select("name, source, fastq_count, total_bytes")
+      .order("name"),
+    supabase.from("rnaseq_references").select("name, description").order("name"),
+  ]);
+
+  return {
+    samples: samples.data ?? [],
+    references: references.data ?? [],
+  };
 }

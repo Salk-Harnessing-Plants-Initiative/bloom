@@ -160,6 +160,61 @@ def test_a_valid_request_calls_the_request_function_once(db):
     }
 
 
+def test_metadata_is_passed_to_the_request_function(db):
+    metadata = {"species_id": 2, "dataset_name": "Root atlas", "tissue": "root"}
+    scrna_cellranger.trigger_run(
+        {"sample": "root_b", "reference": "tiny_ref", "metadata": metadata}, USER
+    )
+    assert db.rpc_calls[0][1] == {
+        "p_sample": "root_b",
+        "p_reference": "tiny_ref",
+        "p_requested_by": USER,
+        "p_metadata": metadata,
+    }
+
+
+def test_null_metadata_is_left_out_of_the_call(db):
+    scrna_cellranger.trigger_run(
+        {"sample": "root_b", "reference": "tiny_ref", "metadata": None}, USER
+    )
+    assert "p_metadata" not in db.rpc_calls[0][1]
+
+
+@pytest.mark.parametrize("metadata", [[], "root", 5, True, [{"tissue": "root"}]])
+def test_metadata_that_is_not_an_object_is_422(metadata, monkeypatch):
+    monkeypatch.setattr(
+        scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
+    )
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"sample": "root_b", "reference": "tiny_ref", "metadata": metadata}, USER
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "metadata must be a JSON object"
+
+
+def test_metadata_over_the_size_limit_is_422(monkeypatch):
+    monkeypatch.setattr(
+        scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
+    )
+    too_big = {"notes": "x" * scrna_cellranger.METADATA_MAX_BYTES}
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"sample": "root_b", "reference": "tiny_ref", "metadata": too_big}, USER
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "metadata must be at most 64 KB"
+
+
+def test_metadata_at_the_size_limit_is_accepted(db):
+    # {"notes": "..."} is 13 bytes around the value.
+    at_limit = {"notes": "x" * (scrna_cellranger.METADATA_MAX_BYTES - 13)}
+    scrna_cellranger.trigger_run(
+        {"sample": "root_b", "reference": "tiny_ref", "metadata": at_limit}, USER
+    )
+    assert db.rpc_calls[0][1]["p_metadata"] == at_limit
+
+
 # --------------------------------------------------------------------------- #
 # Run reads
 # --------------------------------------------------------------------------- #
