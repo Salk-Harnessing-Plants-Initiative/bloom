@@ -59,7 +59,13 @@ from bloom_mcp import __version__
 from bloom_mcp.supabase_client import validate_env as validate_supabase_env
 from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
-from bloom_mcp.auth import API_KEY, AUTHORIZATION_SERVER, PUBLIC_URL, auth_provider
+from bloom_mcp.auth import (
+    API_KEY,
+    AUTHORIZATION_SERVER,
+    PUBLIC_URL,
+    auth_provider,
+    validate_auth,
+)
 from bloom_mcp.identity import IdentityMiddleware
 
 from bloom_mcp.sections import SECTIONS
@@ -104,7 +110,7 @@ def _startup_banner(*, api_key: str | None, oauth_configured: bool) -> str:
         return "Bloom MCP Server starting with OAuth login (no API key configured)"
     if api_key:
         return "Bloom MCP Server starting with API key authentication"
-    return "Bloom MCP Server starting without authentication (dev mode)"
+    return "Bloom MCP Server starting WITHOUT authentication (BLOOMMCP_ALLOW_NO_AUTH)"
 
 
 def build_app() -> Starlette:
@@ -140,6 +146,9 @@ def build_app() -> Starlette:
     nothing to self-serve over HTTP for outputs (see the GitHub issue #642
     follow-up discussion linked from `update-bloommcp-local-url-defaults`).
     """
+    # Here as well as in main(), so an ASGI launch cannot skip it.
+    validate_auth()
+
     combined_app = mcp.http_app(path="/mcp")
     section_apps = {
         name: section.http_app(path="/mcp") for name, section in SECTIONS.items()
@@ -197,6 +206,9 @@ def main() -> None:
         return
     from bloom_mcp.experiment_utils import validate_experiment_local_root
     from bloom_mcp.storage_backend import is_local_backend
+
+    # First: cheapest check, and the one whose failure a Supabase error must not mask.
+    validate_auth()
 
     # Printed before validation (not after) so the active backend is visible
     # even when validate_data_env()/validate_supabase_env() fails fast below —
