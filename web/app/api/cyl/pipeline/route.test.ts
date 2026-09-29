@@ -22,6 +22,13 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 import { getSession } from "@/lib/supabase/server";
+import {
+  FALLBACK_DETAIL,
+  TIMED_OUT,
+  UNEXPECTED_RESPONSE,
+  UNREACHABLE,
+  UPSTREAM_TIMEOUT_MS,
+} from "@/lib/cyl-pipeline/trigger-proxy";
 
 const mockedGetSession = vi.mocked(getSession);
 
@@ -83,6 +90,7 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "debug").mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -122,6 +130,13 @@ describe("media type", () => {
     const res = await post(VALID, { ...SAME_ORIGIN, "content-type": "application/json; charset=utf-8" });
     expect(res.status).toBe(200);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses media types that merely start with application/json", async () => {
+    for (const contentType of ["application/json-seq", "application/jsonx", "application/json+x"]) {
+      expect((await post(VALID, { ...SAME_ORIGIN, "content-type": contentType })).status).toBe(415);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("trims and lowercases the media type", async () => {
@@ -182,6 +197,13 @@ describe("Origin", () => {
     expect(
       (await post(VALID, { ...SAME_ORIGIN, "x-forwarded-host": "evil.salk.edu, bloom.salk.edu" })).status
     ).toBe(403);
+  });
+
+  it("refuses an empty first x-forwarded-host value, and trims a padded one", async () => {
+    for (const xfh of ["", ", bloom.salk.edu"]) {
+      expect((await post(VALID, { ...SAME_ORIGIN, "x-forwarded-host": xfh })).status).toBe(403);
+    }
+    expect((await post(VALID, { ...SAME_ORIGIN, "x-forwarded-host": "  bloom.salk.edu , evil" })).status).toBe(200);
   });
 
   it("never compares with the request URL's host", async () => {
@@ -297,6 +319,16 @@ describe("local validation", () => {
   });
 });
 
+describe("encoding", () => {
+  it("refuses a body that is not UTF-8 with 422", async () => {
+    const res = await routeModule.POST(
+      new Request(URL_, { method: "POST", headers: SAME_ORIGIN, body: new Uint8Array([0x7b, 0xff, 0x7d]) })
+    );
+    expect(res.status).toBe(422);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("body cap", () => {
   const CAP = 256 * 1024;
 
@@ -329,6 +361,31 @@ describe("body cap", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("accepts a declared Content-Length of exactly the cap", async () => {
+    const { req } = streamed({ ...SAME_ORIGIN, "content-length": String(CAP) });
+    expect((await routeModule.POST(req)).status).toBe(200);
+  });
+
+  it("still counts the stream when a declared Content-Length is under the cap", async () => {
+    const chunk = new TextEncoder().encode(" ".repeat(1024));
+    let sent = 0;
+    const req = new Request(URL_, {
+      method: "POST",
+      headers: { ...SAME_ORIGIN, "content-length": "10" },
+      body: new ReadableStream({
+        pull(controller) {
+          if (sent >= 257) return controller.close();
+          controller.enqueue(chunk);
+          sent += 1;
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+
+    expect((await routeModule.POST(req)).status).toBe(413);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("counts bytes, not characters", async () => {
     // 90,000 three-byte characters: under the cap in UTF-16 units, over it in bytes.
     const body = JSON.stringify({ ...VALID, pad: "€".repeat(90_000) });
@@ -353,6 +410,11 @@ describe("upstream outcomes", () => {
     expect(await res.json()).toEqual(RESULT);
   });
 
+  it("keeps a 2xx status other than 200", async () => {
+    fetchSpy.mockResolvedValue(upstreamJson(RESULT, 201));
+    expect((await post()).status).toBe(201);
+  });
+
   it("does not trust a malformed success", async () => {
     for (const body of [{ ok: true }, { pipeline_run_id: "91", scan_count: 40 }, { pipeline_run_id: 91, scan_count: 1.5 }, null]) {
       fetchSpy.mockResolvedValueOnce(upstreamJson(body));
@@ -371,6 +433,7 @@ describe("upstream outcomes", () => {
     const res = await post();
     expect(res.status).toBe(429);
     expect(res.headers.get("retry-after")).toBe("60");
+    expect((await res.json()).detail).toBe(FALLBACK_DETAIL[429]);
   });
 
   it("drops a non-integer Retry-After", async () => {
@@ -390,7 +453,7 @@ describe("upstream outcomes", () => {
     expect(res.status).toBe(502);
     expect(text).not.toContain("kong");
     expect(text).not.toContain("auth check failed");
-    expect(JSON.parse(text).detail).toEqual(expect.any(String));
+    expect(JSON.parse(text).detail).toBe(UNEXPECTED_RESPONSE);
   });
 
   it("maps any unlisted status to 502", async () => {
@@ -408,16 +471,24 @@ describe("upstream outcomes", () => {
     const res = await post();
     expect(res.status).toBe(401);
     const detail = (await res.json()).detail;
-    expect(detail).toMatch(/session/i);
+    expect(detail).toBe(FALLBACK_DETAIL[401]);
     expect(detail).not.toContain("JWT");
   });
 
-  it("truncates a long 404 string detail to 300 characters", async () => {
-    fetchSpy.mockResolvedValue(upstreamJson({ detail: "x".repeat(20_000) }, 404));
+  it("truncates a long 404 or 422 string detail to 300 characters, visibly", async () => {
+    // Upstream's "scan_ids not found: [...]" can list thousands of ids; a cut
+    // that didn't show would read as the complete list.
+    for (const status of [404, 422]) {
+      fetchSpy.mockResolvedValueOnce(upstreamJson({ detail: "x".repeat(20_000) }, status));
+      const res = await post();
+      expect(res.status).toBe(status);
+      expect((await res.json()).detail).toBe(`${"x".repeat(299)}…`);
+    }
+  });
 
-    const res = await post();
-    expect(res.status).toBe(404);
-    expect((await res.json()).detail.length).toBeLessThanOrEqual(300);
+  it("passes a detail of exactly 300 characters uncut", async () => {
+    fetchSpy.mockResolvedValue(upstreamJson({ detail: "x".repeat(300) }, 404));
+    expect((await (await post()).json()).detail).toBe("x".repeat(300));
   });
 
   it("passes a short 404 or 422 string detail through", async () => {
@@ -446,32 +517,84 @@ describe("upstream outcomes", () => {
   });
 });
 
+// A body stream that fails after the response headers have arrived.
+function failingBody(err: unknown, status = 200) {
+  return new Response(
+    new ReadableStream({
+      pull(controller) {
+        controller.error(err);
+      },
+    }),
+    { status, headers: { "Content-Type": "application/json" } }
+  );
+}
+
 describe("transport failures", () => {
-  it("gives the upstream fetch an abort signal", async () => {
+  it("gives the upstream fetch a 120 s abort signal", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
     await post();
-    expect(forwarded().init.signal).toBeInstanceOf(AbortSignal);
+    expect(UPSTREAM_TIMEOUT_MS).toBe(120_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+    expect(forwarded().init.signal).toBe(timeoutSpy.mock.results[0].value);
   });
 
-  it("reports a timeout as 504", async () => {
+  it("does not follow redirects, and maps one to 502", async () => {
+    fetchSpy.mockResolvedValue(new Response(null, { status: 302, headers: { Location: "http://elsewhere/" } }));
+
+    const res = await post();
+    expect(forwarded().init.redirect).toBe("manual");
+    expect(res.status).toBe(502);
+    expect((await res.json()).detail).toBe(UNEXPECTED_RESPONSE);
+  });
+
+  it("reports a timeout as 504, once", async () => {
     fetchSpy.mockRejectedValue(new DOMException("t", "TimeoutError"));
-    expect((await post()).status).toBe(504);
-    expect(fetchSpy.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+
+    const res = await post();
+    expect(res.status).toBe(504);
+    expect((await res.json()).detail).toBe(TIMED_OUT);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an unreachable upstream as 502 without naming it", async () => {
+  it("reports an unreachable upstream as 502 without naming it, once", async () => {
     fetchSpy.mockRejectedValue(new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } }));
 
     const res = await post();
     const text = await res.text();
     expect(res.status).toBe(502);
+    expect(JSON.parse(text).detail).toBe(UNREACHABLE);
     expect(text).not.toContain("ECONNREFUSED");
     expect(text).not.toContain("workflows");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a timeout while reading the answer to 504", async () => {
+    // fetch resolves on headers; the timeout still covers the body.
+    fetchSpy.mockResolvedValue(failingBody(new DOMException("t", "TimeoutError")));
+
+    const res = await post();
+    expect(res.status).toBe(504);
+    expect((await res.json()).detail).toBe(TIMED_OUT);
+  });
+
+  it("maps a connection reset while reading the answer to 502", async () => {
+    fetchSpy.mockResolvedValue(failingBody(new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } })));
+
+    const res = await post();
+    expect(res.status).toBe(502);
+    expect((await res.json()).detail).toBe(UNREACHABLE);
+  });
+
+  it("calls upstream once on a 5xx", async () => {
+    fetchSpy.mockResolvedValue(upstreamJson({ detail: "boom" }, 503));
+    await post();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("logging", () => {
   function logged(): string {
-    return [console.error, console.warn, console.info, console.log]
+    return [console.error, console.warn, console.info, console.log, console.debug]
       .flatMap((fn) => vi.mocked(fn).mock.calls)
       .map((args) => args.map((a) => (typeof a === "string" ? a : JSON.stringify(a) ?? String(a))).join(" "))
       .join("\n");
@@ -483,8 +606,15 @@ describe("logging", () => {
 
     const text = logged();
     expect(text).toContain("500");
-    expect(text).toContain("y".repeat(300));
-    expect(text).not.toContain("y".repeat(301));
+    expect(text).toContain(`${"y".repeat(299)}…`);
+    expect(text).not.toContain("y".repeat(300));
+  });
+
+  it("truncates a non-JSON upstream body in the log too", async () => {
+    fetchSpy.mockResolvedValue(new Response("z".repeat(20_000), { status: 500 }));
+    await post();
+
+    expect(logged()).not.toContain("z".repeat(300));
   });
 
   it("never logs the Authorization header or the token", async () => {

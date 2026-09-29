@@ -28,8 +28,8 @@ describe("MAX_TRIGGER_SCAN_IDS", () => {
     expect(MAX_TRIGGER_SCAN_IDS).toBe(5000);
   });
 
-  // The trigger enforces its own cap; this one only refuses locally what the
-  // trigger would refuse anyway. Reading the source keeps the two from drifting.
+  // The trigger enforces its own cap; this one refuses the same lists locally.
+  // Reading the source keeps the two from drifting.
   it("equals MAX_SCAN_IDS in services/workflows/pipeline.py", () => {
     const source = readFileSync(
       fileURLToPath(new URL("../../../services/workflows/pipeline.py", import.meta.url)),
@@ -69,7 +69,9 @@ describe("rebuilt body", () => {
   it("does not alias the caller's scan_ids array", () => {
     const scanIds = [1, 2];
     const result = parseTriggerRequest({ target_level: "scan_ids", scan_ids: scanIds });
-    expect(result.ok && result.body.target_level === "scan_ids" && result.body.scan_ids).not.toBe(scanIds);
+    if (!result.ok || result.body.target_level !== "scan_ids") throw new Error("expected a scan_ids body");
+    expect(result.body.scan_ids).toEqual(scanIds);
+    expect(result.body.scan_ids).not.toBe(scanIds);
   });
 });
 
@@ -92,6 +94,19 @@ describe("target_id for scan, wave and experiment", () => {
     for (const target_id of ["42", true, 0, -1, 1.5, 9007199254740993, null, undefined, NaN, Infinity]) {
       expectRejected({ target_level: "scan", target_id });
     }
+  });
+
+  // Per the spec's Number.isSafeInteger: JSON 42.0 and 1e2 are integers once
+  // parsed, so they pass and are forwarded as integers (see the module header).
+  it("accepts integer-valued JSON numbers written as floats", () => {
+    expect(parseTriggerRequest(JSON.parse('{"target_level": "scan", "target_id": 42.0}'))).toEqual({
+      ok: true,
+      body: { target_level: "scan", target_id: 42, params: {} },
+    });
+    expect(parseTriggerRequest(JSON.parse('{"target_level": "scan_ids", "scan_ids": [1e2]}'))).toEqual({
+      ok: true,
+      body: { target_level: "scan_ids", scan_ids: [100], params: {} },
+    });
   });
 
   it("accepts the largest safe integer", () => {

@@ -1,11 +1,15 @@
 /**
  * Local validation for POST /api/cyl/pipeline, and the body it forwards.
  *
- * The rules are the spec's, and at least as strict as the trigger's own
- * `_validate_request` in services/workflows/pipeline.py, which stays
- * authoritative: refusing here only saves a round trip and gives the dialog one
- * error shape. Two are stricter than upstream: a `target_id` must be a safe
- * integer, and `scan_ids: null` is refused unless the level is `scan_ids`. What is forwarded is
+ * The rules are the spec's. They follow the trigger's own `_validate_request`
+ * in services/workflows/pipeline.py, which stays authoritative for what reaches
+ * it, but they are not identical:
+ *  - stricter: ids must be safe integers, and `scan_ids: null` is refused
+ *    unless the level is `scan_ids`;
+ *  - looser: client `params` are ignored, not validated, since they are never
+ *    forwarded; and JSON numbers such as `42.0` or `1e2` are integers once
+ *    parsed here, so they pass and are forwarded as `42` and `100`, where the
+ *    trigger would refuse the float if called directly. What is forwarded is
  * rebuilt from the validated fields, never spread from the client's object, and
  * `params` is always `{}`, the trigger's true "no overrides" value while
  * overrides are inert (#897).

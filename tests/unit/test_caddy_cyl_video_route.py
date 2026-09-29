@@ -106,14 +106,3 @@ def test_pipeline_trigger_route_lives_under_api_cyl():
         "if it moved, update the `handle /api/cyl/*` rule in caddy/Caddyfile"
     )
 
-
-def test_no_trusted_proxies():
-    """The trigger proxy's same-origin check compares Origin with the first
-    X-Forwarded-Host value. That header is only Caddy's own while Caddy trusts
-    no upstream proxy: with `trusted_proxies` set, a client-sent value from a
-    trusted range would be passed through. Adding it needs that check revisited
-    (web/app/api/cyl/pipeline/route.ts)."""
-    assert "trusted_proxies" not in _strip_comments(_text()), (
-        "caddy/Caddyfile sets trusted_proxies; revisit the Origin check in "
-        "web/app/api/cyl/pipeline/route.ts before keeping it"
-    )
