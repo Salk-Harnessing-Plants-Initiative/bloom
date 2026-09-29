@@ -88,6 +88,9 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
   with `--output csv|json` (default is the table; `--json` is an alias for
   `--output json`) — handy for grabbing an `experiment_id` for `cyl download`;
   `--limit` caps the fetch.
+- **[read]** `bloomctl plate experiments list` — list plate (GraviScan) experiments
+  (species, name, rig, id). Same filters and output options as `cyl experiments list`; the
+  rig column tells apart one experiment name run on more than one rig.
 - **[read]** `bloomctl cyl accessions list` — list the accessions used in an
   experiment. Pass `--experiment-id N` (scriptable), or omit it to **pick an
   experiment from a menu** (needs a terminal). `--output csv|json` for
@@ -369,6 +372,7 @@ The read commands help you go from "which experiment?" to an id you can feed `cy
 # browse experiments; pick a species from a menu, or list all as JSON
 bloomctl cyl experiments list --species-menu
 bloomctl cyl experiments list --output json | jq -r '.[] | "\(.experiment_id)\t\(.experiment)"'
+bloomctl plate experiments list --species Arabidopsis   # plate experiments, with their rig
 
 # what accessions / how many plants are in an experiment
 bloomctl cyl accessions list --experiment-id 42

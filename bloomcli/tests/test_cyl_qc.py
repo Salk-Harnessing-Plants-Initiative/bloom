@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 import bloomctl.cli as climod
 import bloomctl.cyl.qc as qc
+from bloomctl._postgrest import PAGE_SIZE
 from bloomctl.cli import cli
 
 # cyl_qc_sets rows as PostgREST returns them (experiment+species embedded, codes as id list).
@@ -121,14 +122,14 @@ def test_fetch_qc_sets_builds_query():
     assert "cyl_qc_codes(id)" in captured["select"]
     assert captured["is_"] == ("cyl_experiments.deleted_at", "null")  # exclude soft-deleted
     assert captured["order"] == "id"  # deterministic base fetch (required for paging)
-    assert captured["range"] == (0, qc._PAGE_SIZE - 1)  # first page
+    assert captured["range"] == (0, PAGE_SIZE - 1)  # first page
 
 
 def test_fetch_qc_sets_paginates_to_exhaustion():
     # Two full pages then a short one → every row is collected, offsets advance, no silent cap.
     pages = [
-        [{"id": i} for i in range(qc._PAGE_SIZE)],
-        [{"id": i} for i in range(qc._PAGE_SIZE)],
+        [{"id": i} for i in range(PAGE_SIZE)],
+        [{"id": i} for i in range(PAGE_SIZE)],
         [{"id": 1}, {"id": 2}],  # short page → stop
     ]
     calls = {"n": 0, "ranges": []}
@@ -157,11 +158,11 @@ def test_fetch_qc_sets_paginates_to_exhaustion():
             return _Q()
 
     out = qc.fetch_qc_sets(_Client())
-    assert len(out) == qc._PAGE_SIZE * 2 + 2  # all rows across the three pages
+    assert len(out) == PAGE_SIZE * 2 + 2  # all rows across the three pages
     assert calls["ranges"] == [
-        (0, qc._PAGE_SIZE - 1),
-        (qc._PAGE_SIZE, 2 * qc._PAGE_SIZE - 1),
-        (2 * qc._PAGE_SIZE, 3 * qc._PAGE_SIZE - 1),
+        (0, PAGE_SIZE - 1),
+        (PAGE_SIZE, 2 * PAGE_SIZE - 1),
+        (2 * PAGE_SIZE, 3 * PAGE_SIZE - 1),
     ]
 
 

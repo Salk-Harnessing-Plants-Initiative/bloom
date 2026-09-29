@@ -32,7 +32,7 @@ MAX_DUPLICATE_POINT_SHARE = 0.001
 # Values read at a time when scanning a matrix, so a large file is never read whole.
 SCAN_VALUES = 4 * 1024 * 1024
 
-INSTALL = "pip install 'bloomctl[scrna]'"
+INSTALL = "pip install 'bloomctl[scrna]', or add --with h5py --with numpy to your uv tool install"
 
 
 class FormatError(ValueError):

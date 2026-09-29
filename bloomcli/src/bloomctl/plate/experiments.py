@@ -1,4 +1,4 @@
-"""`bloomctl cyl experiments` — cylinder experiment commands (list)."""
+"""`bloomctl plate experiments` — plate (GraviScan) experiment commands (list)."""
 
 from __future__ import annotations
 
@@ -9,31 +9,45 @@ import click
 from .._output import MACHINE_FORMATS, print_table, render, resolve_output_format
 from .._postgrest import fetch_all_pages
 from ..credentials import DEFAULT_PROFILE
-from ._select import resolve_by_name, select_from_menu
+from ..cyl._select import resolve_by_name, select_from_menu
 
 # Table columns for `experiments list`, in display order.
-EXPERIMENT_COLUMNS = ["Species", "Experiment", "Experiment ID"]
+EXPERIMENT_COLUMNS = ["Species", "Experiment", "Rig", "Experiment ID"]
 # Record fields for machine formats (json/csv) — must match build_experiment_record.
-RECORD_FIELDS = ["species", "experiment", "experiment_id"]
+RECORD_FIELDS = ["species", "experiment", "rig", "experiment_id"]
+
+# Explicit cap so the query is never unbounded; also the --limit maximum.
+DEFAULT_LIMIT = 1000
 
 
 @click.group(name="experiments")
 def experiments() -> None:
-    """Cylinder experiment commands."""
+    """Plate experiment commands."""
 
 
-def experiment_sort_key(exp: dict[str, Any]) -> tuple[str, str, int]:
-    """Sort by species common name, then experiment name, then id (id breaks ties so
-    output is deterministic run-to-run)."""
-    species = (exp.get("species") or {}).get("common_name") or ""
-    return (species, exp.get("name") or "", exp.get("id") or 0)
+def _species_name(exp: dict[str, Any]) -> str:
+    return (exp.get("species") or {}).get("common_name") or ""
+
+
+def experiment_sort_key(exp: dict[str, Any]) -> tuple[str, str, str, int]:
+    """Species, then name, then rig (one name can exist on several rigs), then id."""
+    return (
+        _species_name(exp),
+        exp.get("name") or "",
+        exp.get("system_name") or "",
+        exp.get("id") or 0,
+    )
 
 
 def build_experiment_row(exp: dict[str, Any]) -> list[str]:
-    """Shape a cyl_experiments row (with joined species) into a display row."""
-    species = (exp.get("species") or {}).get("common_name") or ""
+    """Shape a gravi_experiments row (with joined species) into a display row."""
     eid = exp.get("id")
-    return [species, exp.get("name") or "", "" if eid is None else str(eid)]
+    return [
+        _species_name(exp),
+        exp.get("name") or "",
+        exp.get("system_name") or "",
+        "" if eid is None else str(eid),
+    ]
 
 
 def build_experiment_record(exp: dict[str, Any]) -> dict[str, Any]:
@@ -41,41 +55,23 @@ def build_experiment_record(exp: dict[str, Any]) -> dict[str, Any]:
     return {
         "species": (exp.get("species") or {}).get("common_name"),
         "experiment": exp.get("name"),
+        "rig": exp.get("system_name"),
         "experiment_id": exp.get("id"),
     }
-
-
-# Default ceiling on how many experiments to fetch — an explicit cap so the query is
-# never unbounded (cyl experiments number in the dozens; this is headroom, not a real cut).
-DEFAULT_LIMIT = 1000
-
-
-def select_species_interactively(species: list[tuple[int, str]]) -> int | None:
-    """Prompt with a numbered menu (0 = All species) and return the chosen species_id, or None.
-
-    Thin wrapper over the shared ``select_from_menu`` so every cyl command renders its picker the
-    same way (menu on stderr; 0 = All; re-prompts on a bad entry; aborts non-interactively).
-    """
-    return select_from_menu(
-        species, title="a species", prompt_label="Species", all_label="All species"
-    )
 
 
 # --- supabase I/O ---
 
 
 def fetch_species_with_experiments(client: Any) -> list[tuple[int, str]]:
-    """Distinct (species_id, common_name) for species with >=1 non-deleted experiment.
+    """Distinct (species_id, common_name) for species with at least one plate experiment.
 
-    Sourced from the experiments themselves (joined to species) so the selector menu only
-    offers species that actually have experiments — no dead choices. De-duplicated and
-    sorted by common name for a stable menu. Read page by page, so a species is never missed
-    however many experiments there are.
+    Reads every experiment row, page by page, so a species is never missed however many
+    experiments there are.
     """
     rows = fetch_all_pages(
-        lambda: client.table("cyl_experiments")
+        lambda: client.table("gravi_experiments")
         .select("species_id, species(common_name)")
-        .is_("deleted_at", "null")
         .order("id")
     )
     by_id: dict[int, str] = {}
@@ -84,21 +80,17 @@ def fetch_species_with_experiments(client: Any) -> list[tuple[int, str]]:
         name = (row.get("species") or {}).get("common_name")
         if sid is not None and name and sid not in by_id:
             by_id[sid] = name
-    # Sort by common name, id as tiebreak so a shared common name orders stably run-to-run.
     return sorted(by_id.items(), key=lambda kv: (kv[1], kv[0]))
 
 
 def fetch_experiments(
     client: Any, *, species_id: int | None = None, limit: int = DEFAULT_LIMIT
 ) -> list[dict[str, Any]]:
-    """Live cyl experiments (soft-deleted excluded) with their joined species relation.
+    """Plate experiments with their joined species; ``species_id`` narrows to one species.
 
-    Filters ``deleted_at IS NULL`` server-side rather than relying on RLS: only the
-    bloom_user policy hides soft-deletes, while bloom_writer/bloom_admin read with
-    ``USING (true)`` and would otherwise see tombstoned experiments. ``species_id`` (already
-    resolved from a name) narrows to one species; ``limit`` caps the fetch.
+    gravi_experiments has no soft-delete column, so every row is live.
     """
-    query = client.table("cyl_experiments").select("*, species(*)").is_("deleted_at", "null")
+    query = client.table("gravi_experiments").select("*, species(*)")
     if species_id is not None:
         query = query.eq("species_id", species_id)
     return query.order("id").limit(limit).execute().data or []
@@ -132,12 +124,7 @@ def fetch_experiments(
     show_default=True,
     help=f"Maximum number of experiments to fetch. Capped to {DEFAULT_LIMIT}.",
 )
-@click.option(
-    "--json",
-    "as_json",
-    is_flag=True,
-    help="Alias for --output json.",
-)
+@click.option("--json", "as_json", is_flag=True, help="Alias for --output json.")
 @click.option(
     "-p",
     "--profile",
@@ -153,8 +140,8 @@ def list_experiments(
     as_json: bool,
     profile: str,
 ) -> None:
-    """List cylinder experiments. Filter with --species NAME (scriptable) or --species-menu to
-    pick from a menu; use --output csv/json to grab an id for `cyl download --experiment-id`."""
+    """List plate (GraviScan) experiments. Filter with --species NAME or --species-menu; use
+    --output csv/json to grab an id for `plate download --experiment-id`."""
     from postgrest import APIError
 
     from ..cli import _authed_client
@@ -162,28 +149,29 @@ def list_experiments(
     if species_name is not None and pick_species:
         raise click.UsageError("Use either --species NAME or --species-menu, not both.")
 
-    output_fmt = resolve_output_format(output_fmt, as_json)  # --json aliases --output json
+    output_fmt = resolve_output_format(output_fmt, as_json)
 
     client = _authed_client(profile)
     try:
         species_id = None
-        if pick_species:  # interactive picker
+        if pick_species:
             choices = fetch_species_with_experiments(client)
             if not choices:
-                raise click.ClickException("No species with cylinder experiments found.")
-            species_id = select_species_interactively(choices)
-        elif species_name is not None:  # typed value → resolve the common name to an id (ci + trim)
+                raise click.ClickException("No species with plate experiments found.")
+            species_id = select_from_menu(
+                choices, title="a species", prompt_label="Species", all_label="All species"
+            )
+        elif species_name is not None:
             species_id = resolve_by_name(fetch_species_with_experiments(client), species_name)
             if species_id is None:
                 raise click.ClickException(
-                    f"No species named {species_name!r} with cylinder experiments."
+                    f"No species named {species_name!r} with plate experiments."
                 )
         raw = fetch_experiments(client, species_id=species_id, limit=limit)
     except APIError as exc:
         raise click.ClickException(getattr(exc, "message", None) or str(exc)) from exc
     if len(raw) == limit:
-        # Fetch hit the cap; since results are ordered by id, the newest experiments are the
-        # ones dropped. Warn on stderr (not stdout) so machine output stays clean.
+        # Ordered by id, so the newest experiments are the ones dropped; stderr keeps stdout clean.
         click.echo(
             f"Warning: results capped at --limit {limit}; newer experiments may be omitted. "
             "Narrow with --species or raise --limit.",
@@ -197,4 +185,4 @@ def list_experiments(
         return
 
     rows = [build_experiment_row(e) for e in rows_data]
-    print_table("Experiments", EXPERIMENT_COLUMNS, rows, empty="No experiments found.")
+    print_table("Plate experiments", EXPERIMENT_COLUMNS, rows, empty="No plate experiments found.")

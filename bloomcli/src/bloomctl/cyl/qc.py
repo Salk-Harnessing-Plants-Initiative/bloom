@@ -10,6 +10,7 @@ from typing import Any
 import click
 
 from .._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from .._postgrest import fetch_all_pages
 from ..credentials import DEFAULT_PROFILE
 
 # Table headers for `qc list-sets`, in display order. Wording is inherited from
@@ -79,28 +80,6 @@ def qc_set_sort_key(qc_set: dict[str, Any]) -> tuple[str, str, str, int]:
 # --- supabase I/O ---
 
 
-# Rows fetched per PostgREST request. The query pages with `.range()` until a short page,
-# so the full set is returned regardless of the server's row cap — never silently truncated.
-_PAGE_SIZE = 1000
-
-
-def _fetch_all_pages(build_query: Any, page_size: int = _PAGE_SIZE) -> list[dict[str, Any]]:
-    """Fetch every row by paging with ``.range()`` until a page comes back short.
-
-    ``build_query`` returns a fresh, **ordered** query each call — a stable ``ORDER BY`` is
-    required so successive pages don't overlap or skip rows. Avoids relying on PostgREST's
-    default row cap silently truncating a large result.
-    """
-    rows: list[dict[str, Any]] = []
-    start = 0
-    while True:
-        page = build_query().range(start, start + page_size - 1).execute().data or []
-        rows.extend(page)
-        if len(page) < page_size:
-            return rows
-        start += page_size
-
-
 def fetch_qc_sets(client: Any, *, include_deleted: bool = False) -> list[dict[str, Any]]:
     """QC sets with species + QC-code ids (for the count), ordered by id.
 
@@ -113,7 +92,7 @@ def fetch_qc_sets(client: Any, *, include_deleted: bool = False) -> list[dict[st
     ever drops soft-deleted-experiment sets.
 
     Ordered by id — required for correct pagination and a deterministic base fetch (the display
-    sort is applied client-side). Paged to exhaustion (``_fetch_all_pages``) so a large set list
+    sort is applied client-side). Paged to exhaustion (``fetch_all_pages``) so a large set list
     is never silently capped.
     """
 
@@ -125,7 +104,7 @@ def fetch_qc_sets(client: Any, *, include_deleted: bool = False) -> list[dict[st
             q = q.is_("cyl_experiments.deleted_at", "null")
         return q.order("id")
 
-    return _fetch_all_pages(_query)
+    return fetch_all_pages(_query)
 
 
 @qc.command(name="list-sets")

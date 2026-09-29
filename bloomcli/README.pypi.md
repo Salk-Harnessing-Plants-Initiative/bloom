@@ -55,7 +55,10 @@ Plate (GraviScan) experiments work the same way, with `plate` in place of `cyl`:
 # 1. Log in once, if you have not already
 bloomctl login
 
-# 2. Download a whole plate experiment — by id, or just by name
+# 2. Find a plate experiment — pick a species from a menu, grab its id
+bloomctl plate experiments list --species-menu
+
+# 3. Download it — by id, or just by name
 bloomctl plate download ./gravi --experiment-id 12
 bloomctl plate download ./gravi --experiment-name "gravitropism" --species Arabidopsis
 ```
@@ -76,12 +79,122 @@ about to pull. `--workers` raises the download concurrency here too, and `--limi
 most that many scans, for looking at a sample — it is not a way to export an experiment in
 parts, so give a sample and a full download separate directories.
 
-Resume works as it does for cylinder downloads, and a little better: plate images record their
-size, so a file is skipped only when its size matches the database. A download truncated by a
-dropped connection is re-fetched rather than treated as complete.
+**If a download stops part-way, run the same command again.** Finished images are kept, and any
+image cut off by a dropped connection is downloaded again.
 
-> `plate download` needs the `gravi_scans_extended` view on the server, and
-> `gravi_experiment_search` if you select by `--experiment-name`.
+## Quickstart for Finding Data
+
+Look up what is in Bloom before you download it:
+
+```bash
+# Experiments: all, one species, or pick the species from a menu
+bloomctl cyl experiments list
+bloomctl cyl experiments list --species Soybean
+bloomctl cyl experiments list --species-menu
+
+# Accessions in one experiment, and plant counts per accession
+bloomctl cyl accessions list --experiment-id 42
+bloomctl cyl accessions sample-counts --species Soybean
+
+# Trait datasets for an experiment, then one dataset's traits
+bloomctl cyl datasets list --experiment-id 42
+bloomctl cyl datasets get canola-v1
+
+# QC sets
+bloomctl cyl qc list-sets
+
+# Plate (GraviScan) experiments, with the rig each ran on
+bloomctl plate experiments list --species Arabidopsis
+```
+
+**Leave out an id and you get a menu.** `cyl accessions list` with no `--experiment-id`, or
+`cyl datasets list --experiment`, lets you pick the experiment interactively.
+
+**Every `list` command takes `--output csv|json`** (`--json` for short), for scripts and
+spreadsheets:
+
+```bash
+bloomctl cyl experiments list --species Soybean --output csv > soybean_experiments.csv
+bloomctl cyl experiments list --json | jq -r '.[] | "\(.experiment_id)\t\(.experiment)"'
+```
+
+**Search by name when downloading.** `--experiment-name` matches any part of the name, ignoring
+case. If more than one experiment matches, it lists them and downloads nothing:
+
+```bash
+bloomctl cyl download ./out --experiment-name drought --species Soybean --meta-only
+bloomctl plate download ./gravi --experiment-name gravitropism --meta-only
+```
+
+### Search and filter options
+
+| Command | Options |
+| ------- | ------- |
+| `cyl experiments list` | `--species NAME` · `--species-menu` · `--limit N` (max 1000) |
+| `plate experiments list` | `--species NAME` · `--species-menu` · `--limit N` (max 1000) |
+| `cyl accessions list` | `--experiment-id ID` (omit for a menu) |
+| `cyl accessions sample-counts` | `--species NAME` · `--species-menu` |
+| `cyl datasets list` | `--experiment-id ID` · `--experiment` (menu) |
+| `cyl datasets get NAME` | `--json` |
+| `cyl qc list-sets` | `--include-deleted` |
+| `cyl download DIR` | `--experiment-id` · `--scan-id` · `--experiment-name` · `--species` · `--plant-qr-code` · `--plant-age-min` / `--plant-age-max` (days) · `--limit` · `--meta-only` |
+| `plate download DIR` | `--experiment-id` · `--scan-id` · `--experiment-name` · `--species` · `--plate-id` · `--wave-number` · `--session-id` · `--limit` · `--meta-only` |
+
+- `--species` takes the common name (e.g. `Soybean`, `Canola`), ignoring case.
+- `--species-menu` and the menus need an interactive terminal; use the plain options in scripts.
+- `accessions sample-counts` totals plants across **all** experiments, not per experiment.
+- `--limit` on a download fetches a sample. It is not a way to split an export, so give a sample
+  its own directory.
+
+## Quickstart for scRNA-seq Dataset Files
+
+Upload a single-cell dataset's AnnData file (`.h5ad`) to Bloom, and download it again.
+Uploading checks the file first, which needs `h5py` and `numpy`:
+
+```bash
+uv tool install "bloomctl==0.1.0a5" --with h5py --with numpy
+```
+
+```bash
+# 1. Upload it (needs a writer or admin login)
+bloomctl scrna hdf5 upload myb41.h5ad
+
+# 2. Check it is stored
+bloomctl scrna hdf5 list --file myb41.h5ad
+
+# 3. Download it by its fingerprint (all 64 characters, read from `list --output json`)
+FP=$(bloomctl scrna hdf5 list --file myb41.h5ad --output json | jq -r '.[0].fingerprint')
+bloomctl scrna hdf5 download --checksum "$FP" --out copy.h5ad
+
+# Once the dataset is loaded into Bloom, download by its exact name or its id instead
+bloomctl scrna hdf5 download "MYB41 transgene"
+bloomctl scrna hdf5 download 14
+```
+
+**Download by name or id only works once the dataset is loaded into Bloom.** Straight after an
+upload there is no dataset yet, so use `--checksum`. A name must match exactly, including
+capitals. Without `--out`, the file is saved in the current folder under the dataset's name, or
+its fingerprint when you use `--checksum`.
+
+**Upload checks the file before sending anything.** Cell and gene IDs must be unique, `X` must
+hold only finite numbers, `obsm['X_umap']` must be a real two-column UMAP, and
+`uns['normalization']` must say how `X` was made, among other checks. Files over 500 MB once
+gzipped are refused. If a check fails, the upload stops and nothing is sent.
+
+**If an upload stops part-way, run the same command again.** It carries on from where it
+stopped. Uploading a file that is already stored sends nothing and says so.
+
+**A new upload shows no dataset name in `list`** until the dataset is loaded into Bloom. That
+is expected, not an error.
+
+**Download checks the file as it arrives** and writes it only if it matches the stored
+fingerprint. It never overwrites a different file already at `--out`.
+
+| Command | Options |
+| ------- | ------- |
+| `scrna hdf5 upload FILE` | No options; needs a writer or admin login |
+| `scrna hdf5 download [DATASET]` | `DATASET` is the exact dataset name or its id · `--checksum SHA256` (all 64 characters) · `--out FILE` |
+| `scrna hdf5 list [SEARCH]` | `SEARCH` matches a fingerprint or dataset name · `--file FILE` · `--limit N` · `--output csv\|json` |
 
 ## Commands
 
@@ -90,12 +203,14 @@ dropped connection is re-fetched rather than treated as complete.
 | Command                          | What it does                                                                                                               |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `cyl experiments list`         | List experiments (species · name · id); filter with `--species NAME` or `--species-menu`                                  |
+| `plate experiments list`       | List plate experiments (species · name · rig · id); same filters                                                           |
 | `cyl accessions list`          | Accessions in an experiment (`--experiment-id`, or pick from a menu)                                                     |
 | `cyl accessions sample-counts` | Plant count per accession/species (`--species NAME`, or `--species-menu`)                                                 |
 | `cyl datasets list` / `get`  | List trait datasets (`--experiment` menu) / show one dataset's traits                                                    |
 | `cyl qc list-sets`             | List cylinder QC sets                                                                                                      |
 | `cyl download <dir>`           | Download an experiment/scan:`scans.csv` + images. Select by `--experiment-id`, `--scan-id`, or `--experiment-name` |
 | `plate download <dir>`         | Download a plate (GraviScan) experiment/scan:`plates.csv` + `plate_sections.csv` + images. Same selectors, narrowed with `--plate-id` or `--wave-number` |
+| `scrna hdf5 upload` / `download` / `list` | Upload a single-cell dataset's `.h5ad` file *(upload needs write access)*, download it checked against its fingerprint, or list what is stored |
 
 **Pipeline** (stage-in / write-back):
 

@@ -6,6 +6,7 @@ from click.testing import CliRunner
 
 import bloomctl.cli as climod
 import bloomctl.cyl.experiments as ex
+from bloomctl._postgrest import PAGE_SIZE
 from bloomctl.cli import cli
 
 # Species deliberately out of order to prove the (species, name) sort.
@@ -178,8 +179,12 @@ def test_fetch_species_with_experiments_dedups_and_sorts():
             captured["is_"] = (col, val)
             return self
 
-        def limit(self, n):
-            captured["limit"] = n
+        def order(self, col, **kw):
+            captured["order"] = col
+            return self
+
+        def range(self, start, end):
+            captured["range"] = (start, end)
             return self
 
         def execute(self):
@@ -195,7 +200,40 @@ def test_fetch_species_with_experiments_dedups_and_sorts():
     assert captured["table"] == "cyl_experiments"
     assert captured["is_"] == ("deleted_at", "null")  # only species of live experiments
     assert "species(common_name)" in captured["select"]
-    assert captured["limit"] == ex.DEFAULT_LIMIT  # bounded, never an unbounded query
+    assert captured["order"] == "id"  # stable order, so pages neither skip nor repeat
+    assert captured["range"] == (0, PAGE_SIZE - 1)  # paged, never cut off at one page
+
+
+def test_fetch_species_reads_past_the_first_page():
+    # A species whose only experiment is past the first page must still be found.
+    pages = iter(
+        [
+            [{"species_id": 1, "species": {"common_name": "Canola"}}] * PAGE_SIZE,
+            [{"species_id": 2, "species": {"common_name": "Rice"}}],
+        ]
+    )
+
+    class _Q:
+        def select(self, sel):
+            return self
+
+        def is_(self, *a):
+            return self
+
+        def order(self, *a, **k):
+            return self
+
+        def range(self, *a):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": next(pages)})()
+
+    class _Client:
+        def table(self, name):
+            return _Q()
+
+    assert ex.fetch_species_with_experiments(_Client()) == [(1, "Canola"), (2, "Rice")]
 
 
 def test_fetch_species_with_experiments_id_breaks_common_name_tie():
@@ -212,7 +250,10 @@ def test_fetch_species_with_experiments_id_breaks_common_name_tie():
         def is_(self, *a):
             return self
 
-        def limit(self, n):
+        def order(self, *a, **k):
+            return self
+
+        def range(self, *a):
             return self
 
         def execute(self):
