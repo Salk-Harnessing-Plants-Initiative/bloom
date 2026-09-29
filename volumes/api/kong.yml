@@ -194,12 +194,12 @@ services:
       - name: key-auth
         config:
           hide_credentials: false
+      # Admin only: the tenant API behind this route accepts any JWT signed with JWT_SECRET.
       - name: acl
         config:
           hide_groups_header: true
           allow:
             - admin
-            - anon
   ## Storage routes: the storage server manages its own auth
   - name: storage-v1
     _comment: 'Storage: /storage/v1/* -> http://storage:5000/*'

@@ -690,7 +690,7 @@ services:
       - SETGID
     networks:
       supanet:
-        # First label is the tenant name Realtime looks up from the Host header.
+        # realtime-dev is the seeded tenant; Realtime reads it from the Host header's first label.
         aliases:
           - realtime-dev.supabase-realtime
     environment:

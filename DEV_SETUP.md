@@ -303,6 +303,7 @@ make upload-images
 
 Kong reaches Realtime by the `realtime-dev.supabase-realtime` alias because Realtime
 takes the tenant name (`realtime-dev`) from the first label of the Host header.
+Its REST API (`/realtime/v1/api/*`) takes the service-role key only; the anon key gets `403`.
 
 **LangChain Agent** (http://localhost:5002):
 
