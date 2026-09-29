@@ -12,12 +12,14 @@
   a stem copied from an earlier report, pass `<stem>.csv`, which is how the full sweep itself
   rebuilds its `AnalysisDir`.
 - Before any storage call, it SHALL reject with `ValueError` any requested value that:
+
   - is not a string;
   - is empty or whitespace-only;
   - contains `/`, `\` or a NUL character;
   - has a stem that is empty, `.` or `..`.
 
   The check applies to the raw value, not to the derived stem.
+
 - It SHALL reject an empty `experiments` sequence with `ValueError`. `None` means a full sweep.
 - It SHALL collapse values that resolve to the same stem into one entry, keeping the first-seen
   order and the first-seen value.

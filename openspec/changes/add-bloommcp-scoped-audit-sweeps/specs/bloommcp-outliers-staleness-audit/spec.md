@@ -12,12 +12,14 @@
   a stem copied from an earlier report, pass `<stem>.csv`, which is how the full sweep itself
   rebuilds its `AnalysisDir`.
 - Before any storage call, it SHALL reject with `ValueError` any requested value that:
+
   - is not a string;
   - is empty or whitespace-only;
   - contains `/`, `\` or a NUL character;
   - has a stem that is empty, `.` or `..`.
 
   The check applies to the raw value, not to the derived stem.
+
 - It SHALL reject an empty `experiments` sequence with `ValueError`. `None` means a full sweep.
 - It SHALL collapse values that resolve to the same stem into one entry, keeping the first-seen
   order and the first-seen value.
@@ -132,13 +134,13 @@ The system SHALL provide a read-only, one-time audit script,
 `bloommcp/scripts/audit_stale_outlier_trims.py`, whose core scan is an importable function that
 enumerates every `qc_<stem>` manifest in the configured storage backend (or, when an experiment filter is given, only the requested experiments' manifests; see the experiment-scoped audit sweep requirement) and reports each
 experiment where a `remove_outliers`-authored version exists in that manifest's history but the
-manifest's *current* `latest` entry was authored by a different tool — i.e., an experiment whose
+manifest's _current_ `latest` entry was authored by a different tool — i.e., an experiment whose
 trim was silently superseded by a later plain clean under the pre-#420 shared-`qc` scheme. A
 `remove_outliers`-authored entry that is not `latest` SHALL NOT be reported as a hit when the
-entry that *is* `latest` was itself also authored by `remove_outliers` (a legitimate,
+entry that _is_ `latest` was itself also authored by `remove_outliers` (a legitimate,
 still-current re-trim — see #419 — is not a silent revert); when more than one
 `remove_outliers`-authored entry could be "the superseded one," the tie SHALL resolve to the
-most recently *committed* entry even when two entries share an identical `created_at` (a real
+most recently _committed_ entry even when two entries share an identical `created_at` (a real
 possibility at that field's second granularity). Each hit SHALL be annotated with a
 `post_420_status` reflecting whether a later, post-#420 `remove_outliers` run (against the
 separate `outliers_<stem>` manifest this scan does not otherwise read) has since remediated it.
