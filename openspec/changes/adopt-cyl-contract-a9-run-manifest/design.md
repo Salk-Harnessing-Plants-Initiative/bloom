@@ -35,7 +35,7 @@ The union came from bloom#653. That change assumed the 25-scan chunks of one req
 
 Within one run, the only other writer is a `retryStrategy` re-run of `images-downloader`. There, a union would keep a key from a failed earlier attempt that has no `result.json`. That is bloom#859's latch surviving inside a single run.
 
-So the writer records exactly what this invocation found usable (`ok` ∪ `skipped`), and does not read the existing file at all (D §2.4). An already-staged scan comes back as `skipped` on a retry, so it is still recorded.
+So the writer records exactly what this invocation found usable (`ok` ∪ `skipped`), and does not read the existing file at all (D §2.4). An already-staged scan normally comes back as `skipped` on a retry, so it is still recorded. The exception is rare: if the retry cannot take that scan's per-scan lock (a concurrent workflow's skip-check holds it for milliseconds) or cannot read its sidecar, the scan is reported `failed` for this attempt and the overwrite omits it. Its row is then reconciled `'failed'` for this run even though it is staged. Accepted: the window is milliseconds, and a re-dispatch recovers it.
 
 The same rule applies with no run id, where the legacy name is written. We chose this deliberately on 2026-09-28, over keeping the union for the legacy name.
 
@@ -56,14 +56,20 @@ If an invocation finds nothing usable, it still skips the write, because `RunMan
 | run id | per-run file | legacy file | result |
 |---|---|---|---|
 | set | present | any | scope to it. If its `pipeline_run_id` differs, fail loudly (`RunManifestIdentityError`) |
-| set | absent | present | scope to legacy. **Warn** if its `pipeline_run_id` differs from the run id |
-| set | absent | absent | **fail loudly** (`RunManifestMissingError`), no longer unscoped |
+| set | absent | present, names this run | scope to legacy |
+| set | absent | present, names another run | **no manifest for this run**: fail loudly and reconcile |
+| set | absent | absent | **no manifest for this run** (`RunManifestMissingError`): fail loudly and reconcile |
 | unset | n/a | present | scope to legacy (unchanged) |
 | unset | n/a | absent | unscoped (unchanged; local/dev) |
 
 `allow_legacy=True` matches the other readers during the rollout. The fleet-wide flip to False is sleap-roots-pipeline#82.
 
-The legacy-fallback warning is the only signal a reader gets for the stale-fallback window before row 6 deletes the files. predict and traits emit the same warning.
+**A legacy file naming another run is treated as no manifest** (decided 2026-09-29 in PR #940's review). With a run identity, this command's own writer never writes the legacy name, so a legacy file naming a different run can only be stale or another run's.
+
+- **Why:** scoping to it would make write-back ingest the other run's envelopes as no-ops (non-retriable status mismatches), mark every real scan of this run `'failed'`, and exit `0`. The Workflow would then read Succeeded with `failed_count = scan_count`.
+- **When it matters:** before row 6 deletes the three stale `hpdpf` files, whenever traits fails to forward this run's manifest or the downloader stages nothing.
+- **Why only write-back:** predict and traits still fall back with a warning, per their own a9 adoption, but write-back is the stage that writes to the database.
+- **Its effect on `allow_legacy=True`:** for write-back the flag now only admits a legacy file stamped with this very run, which in practice means a rollback-era writer inside the same workflow.
 
 Every failure keeps the existing `EnvelopeError` → `ClickException` path:
 
@@ -73,15 +79,15 @@ Every failure keeps the existing `EnvelopeError` → `ClickException` path:
 
 `load_run_manifest` opens files rather than probing them, so an `EACCES` never reads as "absent".
 
-A run id the contract rejects (for example `"../wf"`) raises a bare `ValueError` from `load_run_manifest`. It is mapped to `EnvelopeError` too. Pydantic's `ValidationError` subclasses `ValueError`, so the handler catches the contract's own exceptions first, then `ValidationError`, then `ValueError`.
+A run id the contract rejects (for example `"../wf"`) raises a bare `ValueError` from `load_run_manifest`. It is mapped to `EnvelopeError` too. The handler catches the contract's base class `RunManifestError` (after `RunManifestMissingError`), plus `ValueError`, which also covers pydantic's `ValidationError`, and `OSError`. That is the set the contract documents for a consumer that must catch everything, so a new `RunManifestError` subclass in a later alpha still maps cleanly.
 
-**Whitespace stripping is scoped to finding the manifest.** Only the manifest lookup goes through `pipeline_run_id_from_env()`. `resolve_argo_workflow_name()`, which feeds `p_argo_workflow_name` to the insert and reconciliation RPCs of both `ingest-result` and `batch-ingest-result`, is left unchanged.
+**One run identity everywhere** (decided 2026-09-29 in PR #940's review, reversing an earlier scoping). `resolve_argo_workflow_name()` now returns `pipeline_run_id_from_env()`. So the same stripped value, or `None`, feeds manifest resolution, `p_argo_workflow_name` on every insert (both `ingest-result` and `batch-ingest-result`), and the reconciliation call.
 
-- **Why:** changing it would modify a `cyl-ingest-cli` requirement that the unarchived `fix-cyl-pipeline-run-scan-status` owns.
-- **Why it's safe:** Argo workflow names are DNS-1123 and never contain whitespace, so the two agree for every real value.
-- **The edge case:** `ARGO_WORKFLOW_NAME="   "` resolves no run identity, so discovery is unscoped, yet it still triggers one reconciliation call under `"   "`. That call matches no rows. The case only arises when someone sets the variable by hand.
+- **Why:** with a padded value, the earlier split scoped the batch to `run_manifest.wf-a.json` but updated status and reconciled under `" wf-a\n"`, which matches no row. It exited `0` and left the scans `'queued'`. The contract's docstring names exactly this writer/reader disagreement as the failure mode.
+- **What it cost:** this change takes over `cyl-ingest-cli` "Cyl ingest command reads an envelope from a path or stdin" from the unarchived `fix-cyl-pipeline-run-scan-status` (Decision 6).
+- **Blank value:** a blank `ARGO_WORKFLOW_NAME` is now simply no run identity. There is no status linkage and no reconciliation call, the same as unset.
 
-With a run identity set, the "no envelopes and no missing keys" branch of `batch_ingest_result` can no longer be reached: a resolved manifest always declares at least one key, and a missing one now fails. The branch keeps its reconciliation call anyway, because the blank-value edge above still reaches it with a truthy `ARGO_WORKFLOW_NAME`, and the spec requires the call there.
+With a run identity set, the "no envelopes and no missing keys" branch of `batch_ingest_result` can no longer be reached, because a resolved manifest always declares at least one key and a missing one now fails. Without one, the branch makes no reconciliation call either. It remains as the manual/local empty-batch no-op.
 
 **Why fail loudly:** with the id known, a missing manifest means something upstream went wrong. Examples are skewed pins, a downloader that staged nothing, or a failed forward by traits. Unscoped discovery over the shared `traits/` directory would silently widen scope to every run's envelopes, which is worse than the defect being fixed (D §2.2).
 
@@ -89,12 +95,13 @@ With a run identity set, the "no envelopes and no missing keys" branch of `batch
 
 `fail_cyl_pipeline_run_scans_without_result` currently runs only after discovery succeeds. A discovery error raises before it is reached. With the new missing-manifest failure, a batch whose downloader staged nothing would therefore leave its scans `'queued'` until the status poller's terminal backstop (`status_poller.py:383-386`) closes them.
 
-So on `RunManifestMissingError` (which requires `ARGO_WORKFLOW_NAME` to be set), the command does four things:
+So when there is no manifest for this run (neither file exists, or the only one is a legacy file naming another run), the command:
 
-1. authenticates;
-2. makes the one reconciliation call, isolated exactly as on the normal path;
-3. reports a failed batch entry that names the missing manifest;
-4. exits `1`. The entry is marked retriable only so that write-back, and with it the Workflow, ends `Failed`.
+1. seeds the batch with a failed `"<run-manifest>"` entry naming the files and ids;
+2. goes through the normal end-of-batch path: it authenticates, makes the one reconciliation call (isolated exactly as on the normal path), and emits the summary or `--json`;
+3. exits under the normal `needs_retry` rule. The entry is retriable only so that write-back, and with it the Workflow, ends `Failed`.
+
+The reconciliation's `p_error_message` on this path says that no run manifest reached write-back and that the run needs a re-dispatch. The normal path's "no result produced for this scan by write-back" would be false here, because the envelopes may exist. That message is the only durable record of the failure in `cyl_pipeline_run_scans`, since Argo logs are garbage-collected.
 
 Argo's `retryStrategy` (`limit: 2`) then repeats the step twice to the same result. That costs two short pod runs. The reconciliation call is idempotent (`WHERE status = 'queued'`).
 
@@ -107,34 +114,36 @@ Reconciliation is **not** added for the other manifest failures: a corrupt file,
 **Risk: a missing manifest can come from a failed forward by traits, not only from an upstream fault.**
 
 - **The mechanism:** sleap-roots `trait_extractor/extractor.py:428-430` treats forwarding the manifest into `traits/` as best-effort. An `OSError` there is only logged, and traits exits `0`/`3` with real envelopes on disk. predict's forward, by contrast, fails loudly.
-- **What write-back does then:** it fails loudly and ingests nothing, and the batch's scans end `'failed'`. That happens whether this command reconciles or the poller's backstop does. The `status != 'failed'` guard then keeps a later manual re-ingest under the same workflow name from updating their status, so recovery is a re-dispatch.
-- **Why not handle it here:** it follows from D §2.2's fail-loud rule, not from this change's reconciliation choice. The fix belongs upstream: a sleap-roots follow-up to make traits' forward fail loudly (drafted with this change, posted only with approval).
+- **What write-back does then:** with no legacy file naming this run, it fails loudly and ingests nothing, and the batch's scans end `'failed'`. Before this change's post-review revision, a stale legacy file would instead have been scoped to silently. That happens whether this command reconciles or the poller's backstop does. The `status != 'failed'` guard then keeps a later manual re-ingest under the same workflow name from updating their status, so recovery is a re-dispatch.
+- **Why not handle it here:** it follows from D §2.2's fail-loud rule, not from this change's reconciliation choice. The fix belongs upstream: talmolab/sleap-roots#271, filed 2026-09-29, makes traits' forward fail loudly.
+- **Recovery by hand:** don't point a manual `batch-ingest-result` at the shared `a4_poc` directories. With `ARGO_WORKFLOW_NAME` set it fails again. Without it, after row 6 there is no legacy file, so discovery is fully unscoped and ingests every run's envelopes. Re-dispatch instead.
 
 ## Decision 5: Consequences for run status
 
 An all-failed-at-`images-downloader` batch changes outcome.
 
 - **Before (in a directory with no manifest):** no manifest was written, the readers went unscoped, write-back found nothing, and the gate passed the downloader's `3`, so the run read `'complete'` with `done_count = 0`. In the real shared trees, the union writer instead rewrote the stale legacy keys even on an all-failed batch.
-- **After (once row 6 has removed the stale legacy files):** predict raises `RunManifestMissingError`, as traits does and as write-back now does too. Write-back has no `continueOn`, so the Workflow ends `Failed`. The run reads `'failed'` with `failed_count = scan_count` after the reconciliation.
+- **After:** predict and traits either raise `RunManifestMissingError` or fall back to a stale legacy file. Write-back treats both as no manifest for this run. Write-back has no `continueOn`, so the Workflow ends `Failed`. The run reads `'failed'` with `failed_count = scan_count` after the reconciliation.
 
-This is a truer outcome. A batch where some scans are staged and every staged scan then fails at predict or traits already read `'failed'`: those keys are in the manifest, so write-back reports them missing and exits non-zero. So, for a run with at least one scan, `'complete'` with `done_count = 0` can only come from a stale legacy fallback, and it goes away once row 6 deletes those files. The same statement lives in two specs, `cyl-pipeline-runs` ("`cyl_pipeline_runs` table") and `cyl-pipeline-status-polling` ("A `'complete'` rollup does not imply every scan produced a result"). Both are modified here.
+This is a truer outcome. A batch where some scans are staged and every staged scan then fails at predict or traits already read `'failed'`: those keys are in the manifest, so write-back reports them missing and exits non-zero. So `'complete'` with `done_count = 0` now arises only for a run that enumerates zero scans, whether or not stale legacy files still exist. The same statement lives in two specs, `cyl-pipeline-runs` ("`cyl_pipeline_runs` table") and `cyl-pipeline-status-polling` ("A `'complete'` rollup does not imply every scan produced a result"). Both are modified here.
 
 The live `cyl_pipeline_runs` requirement has four bounds, and they become three. The second ("union, never prune") is deleted, and a deterministically failing scan is now excluded from every run's manifest, not only the first one. The fourth (`'complete'` does not imply any scan succeeded) is replaced by "A batch that stages nothing reads `'failed'`".
 
 ## Decision 6: One active change per requirement
 
-The unarchived `fix-cyl-pipeline-run-scan-status` modifies two requirements this change also has to modify:
+The unarchived `fix-cyl-pipeline-run-scan-status` modifies three requirements this change also has to modify:
 
 - "Batch ingest-result command ingests every envelope in a directory"
 - "`cyl_pipeline_runs` table"
+- `cyl-ingest-cli` "Cyl ingest command reads an envelope from a path or stdin". This one was added 2026-09-29, when the run identity became a single definition (Decision 3).
 
 Its `cyl_pipeline_runs` delta was already stale. It predates the exit-gate block and still carries the clause the live spec says not to restore.
 
 Because archiving replaces a requirement wholesale, two active changes on one requirement silently revert each other, and `--strict` cannot see it.
 
-This change therefore takes over both requirements. Its MODIFIED blocks are the live text, plus the other change's intended additions (the end-of-batch reconciliation and `retriable` exit semantics, already implemented by #774), plus this change's own edits. That change's blocks for both requirements are removed.
+This change therefore takes over all three requirements. Its MODIFIED blocks are the live text, plus the other change's intended additions (the end-of-batch reconciliation and `retriable` exit semantics, already implemented by #774), plus this change's own edits. That change's blocks for them are removed. The `cyl-ingest-cli` block is that change's delta (live text plus its additions) with "`os.environ[...]`, set and non-empty" replaced by the stripped run identity.
 
-Its remaining deltas were each compared with the live spec. Only `cyl-trait-writeback` "Write-back RPC ingests a ResultEnvelope" was stale: a later archived change had grown it. It is rebuilt as the live text plus that change's one unarchived scenario, plus one explanatory sentence on `status_update_matched` that the later change had dropped without comment. The `cyl-ingest-cli` and `cyl-pipeline-status-polling` deltas were written against text that is still live, and they are left as they are.
+Its remaining deltas were each compared with the live spec. Only `cyl-trait-writeback` "Write-back RPC ingests a ResultEnvelope" was stale: a later archived change had grown it. It is rebuilt as the live text plus that change's one unarchived scenario, plus one explanatory sentence on `status_update_matched` that the later change had dropped without comment. Its `cyl-pipeline-status-polling` deltas were written against text that is still live, and they are left as they are.
 
 Both changes archive together after row 6's Bloom-dispatched E2E, which also supplies the recorded `done_count`/`failed_count` evidence for that change's tasks 8.2–8.4.
 
@@ -152,6 +161,7 @@ Row 6 relies on this guarantee: **with `ARGO_WORKFLOW_NAME` set, this bloomctl n
 
 A rollback means reverting the three template pins in sleap-roots-pipeline and running `argo template update`. Reverting this PR only moves `:staging`. Rolling back to `sha-28034f6` restores the union writer on the legacy name, and also drops #880, #882, #884 and #861.
 
-- The a9 readers accept that file through `allow_legacy=True`.
-- Per-run files that are already written are inert, because workflow names never repeat.
-- If the stale files have already been deleted, the old writer recreates a fresh legacy file, which then accumulates again. That is what #82 hardens against.
+- **Restore the legacy files.** If row 6 has already deleted them, restore the snapshotted legacy files to all three directories as part of the rollback, not afterwards. Otherwise the old write-back, which reads only `run_manifest.json` and goes unscoped when it is absent, ingests every envelope in the shared `traits/` directory. That happens on the first rolled-back batch whose downloader stages nothing, since the old union writer skips an empty write.
+- **The a9 readers:** predict and traits accept the rolled-back writer's legacy file through `allow_legacy=True`.
+- **Per-run files already written** are inert, because workflow names never repeat.
+- **The legacy file grows again:** the old writer keeps unioning into it. That is what #82 hardens against.

@@ -6,25 +6,30 @@ The `bloomctl` CLI SHALL provide a `cyl batch-ingest-result <envelopes_dir>` com
 discovers `{scan_key}.result.json` files directly under `envelopes_dir` (non-recursive — matching
 the flat layout `trait_extractor.extractor.extract_batch`'s `output_dir` produces) and ingests each
 one via the same validation + RPC path `cyl ingest-result` uses for a single envelope, including
-threading `ARGO_WORKFLOW_NAME` into `p_argo_workflow_name` on every call (per the `cyl-ingest-cli`
-capability). The command SHALL accept `--profile`/`-p` like the existing single-envelope command.
+threading the run identity into `p_argo_workflow_name` on every call (per the `cyl-ingest-cli`
+capability). The *run identity* is the single value `sleap_roots_contracts.pipeline_run_id_from_env()`
+returns: the whitespace-stripped `ARGO_WORKFLOW_NAME`, or `None` when it is unset or blank. The
+command SHALL use that one value for manifest resolution, for every insert call and for the
+reconciliation call, so they can never target different workflow names. The command SHALL accept `--profile`/`-p` like the existing single-envelope command.
 
 Every file directly under `envelopes_dir` SHALL be discovered only when no run identity is set and
 no `run_manifest.json` is present. Otherwise discovery SHALL be scoped, or SHALL fail, per the
 "Discovery is scoped to a present RunManifest" requirement.
 
 After every discovered envelope has been processed (ingested, skipped, or reported failed), and only
-when `ARGO_WORKFLOW_NAME` is set and non-empty, the command SHALL call
+when the run identity is not `None`, the command SHALL call
 `fail_cyl_pipeline_run_scans_without_result` (capability `cyl-trait-writeback`) exactly once,
-passing that environment variable and a fixed, descriptive `p_error_message`. That call closes out,
+passing the run identity and a fixed, descriptive `p_error_message`. That call closes out,
 as `'failed'`, any `cyl_pipeline_run_scans` row for this workflow name that no envelope in this
 batch resolved. That includes a scan whose prediction failed before producing any file at all,
 which this command cannot discover directly, since it can only see files that exist. The same single
-call SHALL also be made when discovery fails only because the run's manifest is missing. It SHALL NOT
-be made when discovery stops on a manifest that is malformed, unreadable, a non-file entry, or names
-a different run, or on a run identity the contract rejects: those fail before any client is created.
-When `ARGO_WORKFLOW_NAME` is unset, the command SHALL make no such call, leaving manual/local batch
-runs unaffected.
+call SHALL also be made when discovery finds no manifest for this run, per the "Discovery is scoped
+to a present RunManifest" requirement; its `p_error_message` then SHALL say that no run manifest
+reached write-back, not that no result was produced, since the scans' envelopes may exist. It SHALL
+NOT be made when discovery stops on a manifest that is malformed, unreadable, or a non-file entry, on
+a per-run file naming a different run, or on a run identity the contract rejects: those fail before
+any client is created. Without a run identity, the command SHALL make no such call, leaving
+manual/local batch runs unaffected.
 
 A single envelope's failure at any stage (read, validate, blob construction/upload, or the RPC call
 itself) SHALL be isolated into that envelope's own failed `ScanResult`. It SHALL never abort the rest
@@ -171,28 +176,25 @@ files whose filename stem is listed in that manifest's `scan_keys`. A `.result.j
 as a failure) and SHALL be logged at debug level.
 
 With a run identity, the command SHALL use `run_manifest.<id>.json`, and SHALL fall back to the
-legacy `run_manifest.json` only when the per-run file is absent. If neither exists, the command
-SHALL NOT fall back to unscoped discovery. Instead it SHALL ingest no envelope, make the single
+legacy `run_manifest.json` only when the per-run file is absent and the legacy file's
+`pipeline_run_id` equals the run identity. The command has *no manifest for this run* when neither
+file exists, or when the only file is a legacy one naming a different run: with a run identity,
+this command's own writer never writes the legacy name, so such a file is always another run's or
+stale. With no manifest for this run, the command SHALL NOT fall back to unscoped discovery or to
+the other run's scope. Instead it SHALL ingest no envelope, make the single
 reconciliation call described in the "Batch ingest-result command ingests every envelope in a
 directory" requirement (isolated as it describes), report a failed, retriable batch entry whose
 `scan_key` is the sentinel `"<run-manifest>"` and whose message names both file names it looked
-for, and exit non-zero. It exits non-zero so that the write-back step, and with it the batch's
+for (and, for a legacy file naming another run, both run ids), and exit non-zero. It exits non-zero so that the write-back step, and with it the batch's
 Workflow, ends `Failed` rather than succeeding with nothing ingested. An automated retry of the step
 repeats the same outcome; the reconciliation call it repeats is idempotent.
 
 When the per-run file names a different `pipeline_run_id` than the run identity, or when the
 contract rejects the run identity itself, the command SHALL fail before ingesting any envelope,
-without authenticating or reconciling. When a legacy fallback names a different `pipeline_run_id`
-than the run identity, the command SHALL scope to it and log a warning naming both ids.
+without authenticating or reconciling.
 
 Without a run identity, only `run_manifest.json` SHALL be consulted, and when it is absent,
 discovery SHALL be fully unscoped.
-
-The run identity is used only to resolve the manifest. `p_argo_workflow_name` on the insert and
-reconciliation calls SHALL remain the raw `ARGO_WORKFLOW_NAME` value, per the "Batch ingest-result
-command ingests every envelope in a directory" requirement. So a blank value (`"   "`) resolves no
-run identity, which gives unscoped discovery, and still triggers the single reconciliation call
-under that raw value.
 
 #### Scenario: The run's per-run manifest scopes discovery to its scan_keys
 
@@ -213,26 +215,28 @@ under that raw value.
   `run_manifest.wf-a.json`, which list different scan_keys
 - **THEN** discovery is scoped to `run_manifest.wf-a.json`'s `scan_keys` only
 
-#### Scenario: A legacy fallback naming another run is used with a warning
+#### Scenario: A legacy file naming another run is no manifest for this run
 
-- **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, no `run_manifest.wf-a.json` exists, and
-  `run_manifest.json` has `pipeline_run_id` `"wf-old"` and `scan_keys` `["scan_1"]`
-- **THEN** discovery is scoped to `["scan_1"]`, and a warning-level log line names both `"wf-a"`
-  and `"wf-old"`
+- **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, no `run_manifest.wf-a.json` exists, `run_manifest.json`
+  has `pipeline_run_id` `"wf-old"` and `scan_keys` `["scan_1"]`, and `scan_1.result.json` exists
+- **THEN** no envelope is ingested, `fail_cyl_pipeline_run_scans_without_result` is called once with
+  `"wf-a"`, the `"<run-manifest>"` entry names both `"wf-a"` and `"wf-old"`, and the command exits
+  non-zero
 
-#### Scenario: A legacy fallback naming the same run is used without a warning
+#### Scenario: A legacy fallback naming the same run is used
 
 - **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, no `run_manifest.wf-a.json` exists, and
   `run_manifest.json` has `pipeline_run_id` `"wf-a"`
-- **THEN** discovery is scoped to that file's `scan_keys`, and no warning-level log line is emitted
+- **THEN** discovery is scoped to that file's `scan_keys`
 
 #### Scenario: A run identity with no manifest fails loud and still reconciles
 
 - **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, and `envelopes_dir` contains `scan_1.result.json` but
   neither `run_manifest.wf-a.json` nor `run_manifest.json`
 - **THEN** `scan_1.result.json` is not ingested (no `insert_cyl_result_envelope` call), the command
-  calls `fail_cyl_pipeline_run_scans_without_result` once with `"wf-a"`, reports a failed batch
-  entry naming `run_manifest.wf-a.json` and `run_manifest.json`, and exits non-zero
+  calls `fail_cyl_pipeline_run_scans_without_result` once with `"wf-a"` and a `p_error_message`
+  saying no run manifest reached write-back, reports a failed batch entry naming
+  `run_manifest.wf-a.json` and `run_manifest.json`, and exits non-zero
 
 #### Scenario: A reconciliation failure on the missing-manifest path is isolated
 
@@ -268,12 +272,19 @@ under that raw value.
   ingested, even when per-run manifests such as `run_manifest.wf-a.json` are present (covers
   manual/dev CLI use with no manifest)
 
-#### Scenario: A blank ARGO_WORKFLOW_NAME is unscoped but still reconciles once
+#### Scenario: A blank ARGO_WORKFLOW_NAME is no run identity
 
 - **WHEN** `ARGO_WORKFLOW_NAME` is `"   "`, `envelopes_dir` holds `scan_1.result.json` and
   `scan_2.result.json`, and no `run_manifest.json` is present
-- **THEN** both envelopes are ingested, `fail_cyl_pipeline_run_scans_without_result` is called
-  exactly once with `"   "`, and the same single call is made when `envelopes_dir` is empty
+- **THEN** both envelopes are ingested with no `p_argo_workflow_name`, and
+  `fail_cyl_pipeline_run_scans_without_result` is never called
+
+#### Scenario: A whitespace-padded ARGO_WORKFLOW_NAME is used stripped everywhere
+
+- **WHEN** `ARGO_WORKFLOW_NAME` is `" wf-a\n"`, `run_manifest.wf-a.json` lists `["scan_1"]`, and
+  `envelopes_dir` holds `scan_1.result.json` and `scan_2.result.json`
+- **THEN** only `scan_1` is ingested, its insert call passes `p_argo_workflow_name` `"wf-a"`, and
+  the reconciliation call passes `"wf-a"`
 
 #### Scenario: No run identity scopes to a present legacy manifest
 
@@ -302,7 +313,7 @@ The command SHALL record a manifest-declared scan_key with no corresponding
 `{scan_key}.result.json` file in `envelopes_dir` as `failed` in the batch result, with an error
 message naming the missing scan_key and the manifest file that declared it, and SHALL count it
 toward the batch's non-zero exit code. It SHALL not require an authenticated client if no other
-envelope in the batch needs one and `ARGO_WORKFLOW_NAME` is unset. When that variable is set, the
+envelope in the batch needs one and there is no run identity. With a run identity, the
 client is needed only for the end-of-batch reconciliation call. If an ingested envelope's own
 content-derived scan_key (which can differ from its file's name) coincides with a manifest-declared
 scan_key that had no identically-named file, the command SHALL NOT report that scan_key as both a

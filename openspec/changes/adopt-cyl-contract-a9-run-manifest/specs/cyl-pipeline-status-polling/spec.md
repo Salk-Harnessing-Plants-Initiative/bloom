@@ -21,13 +21,12 @@ Three combinations follow. None is a defect in the rollup:
    `predictor` or `trait-extractor`, is already recorded in the manifest, so write-back finds a
    declared `scan_key` with no result and exits non-zero, the gate is omitted, and a single-batch
    run reads `'failed'` (a multi-batch run whose other batches succeeded reads `'partial'`).
-2. **`'complete'` with `done_count = 0`** — outside a run that enumerates zero scans, reachable
-   only while a legacy `run_manifest.json` remains in the pipeline's shared directories. A batch
+2. **`'complete'` with `done_count = 0`** — only for a run that enumerates zero scans. A batch
    whose `images-downloader` stages nothing writes no `RunManifest`, so each downstream reader, knowing its run identity, finds none and
    fails, and write-back closes the batch's scans out and exits non-zero: the run reads `'failed'`
-   with `failed_count = scan_count`. A reader with `allow_legacy=True` that finds a legacy file
-   instead scopes to that file's (another run's) scan_keys, and the outcome, including this
-   combination, follows from those.
+   with `failed_count = scan_count`. A stale legacy `run_manifest.json` that predict or traits
+   falls back to does not change this, because write-back treats a legacy file naming another run
+   as no manifest for this run.
 3. **`'failed'` with `done_count > 0`** — **already reachable before the exit gate**, because each
    envelope's per-scan `'written'` update commits in that envelope's own transaction, so any
    write-back that ingested some envelopes and then exited non-zero produced it. The gate does not
@@ -78,7 +77,7 @@ never had a Workflow at all alongside one that succeeded.
 #### Scenario: A batch whose downloader staged nothing rolls up to failed
 
 - **WHEN** a run's only batch has `images-downloader` stage no scan (so no `RunManifest` is
-  written), no legacy `run_manifest.json` exists in the shared directories, and write-back exits
-  non-zero on the missing manifest after closing out the batch's scans
+  written), and write-back exits non-zero on the missing manifest after closing out the batch's
+  scans
 - **THEN** the rollup returns `'failed'`
 - **AND** `done_count` is `0` and `failed_count` equals the run's scan count

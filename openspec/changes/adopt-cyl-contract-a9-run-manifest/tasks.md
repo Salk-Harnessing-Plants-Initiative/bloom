@@ -80,7 +80,7 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
     - install the patch after `_write_run_manifest`, since `write_text` goes through `self.open`;
     - parameterize over the legacy and per-run names. The no-id legacy variants are **(guard)**, because `Path.read_text` calls `self.open` on Python 3.11-3.13.
 
-    Parameterize the malformed/wrong-schema/as-directory tests too.
+    Parameterize the malformed/wrong-schema/as-directory tests too. *(Not done in commit D despite the tick; done in 11.6.)*
   - [x] **Guards.** No id with no legacy file stays unscoped even with `run_manifest.wf-a.json` present, and no id with a legacy file scopes to it. Both are **(guard)**.
   - [x] **Single load call.** `monkeypatch.setattr(ing, "load_run_manifest", spy)` (the name as imported into the ingest module, as in sleap-roots `test_batch.py:884`), then assert `calls == [((Path(tmp_path), "wf-a"), {"allow_legacy": True})]`.
   - [x] **Messages.** The debug log and the missing-scan_key message both name the manifest file that was actually read.
@@ -88,7 +88,7 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
   - [x] **Existing tests.** Every existing batch test that sets `ARGO_WORKFLOW_NAME` but writes no manifest now gets a per-run manifest via `_write_run_manifest(..., pipeline_run_id=<id>, filename=f"run_manifest.{id}.json")`. That covers ~l.1530, 1745, 1826, 1859, 1892, 1920, 1942, 1969, 2028, 2113, 2146 and 2176. Also convert ~l.1801 (`…missing_scan_key_alone_still_reconciles_when_workflow_name_set`): it sets `wf-missing-only` but writes a legacy manifest stamped `"wf-test"`, which would otherwise take the stale-legacy warning path. Each per-run manifest must list every envelope stem its test asserts on (e.g. l.1530 needs `"scan_corrupt"`), or that entry is excluded as out of scope. Re-express l.1779 (zero envelopes, exit 0) and l.2002 (`len(payload) == 1`) against the new missing-manifest path.
   - [x] **Missing manifest, id set.** No `insert_cyl_result_envelope` call even though `scan_1.result.json` exists. Exactly one reconcile call, with the id. A failed retriable entry with the `scan_key` sentinel `"<run-manifest>"` that names both files, in both the summary and `--json`. Exit `1`.
   - [x] **Missing manifest, reconcile raises.** Both failures are reported, the exit is `1`, and there is no traceback.
-  - [x] **No reconcile on other failures.** For a per-run manifest that is malformed, names another run, raises `PermissionError`, or is a directory or dangling symlink, and for an invalid id `"../wf"`: exit `1`, `_authed_client` never called, `reconcile_unresolved_scans` never called.
+  - [x] **No reconcile on other failures.** For a per-run manifest that is malformed, names another run, raises `PermissionError`, or is a directory or dangling symlink, and for an invalid id `"../wf"`. *(The dangling-symlink case was not added in commit D despite the tick; added in 11.6.)* exit `1`, `_authed_client` never called, `reconcile_unresolved_scans` never called.
   - [x] **Padded id.** `ARGO_WORKFLOW_NAME=" wf-a\n"` with `run_manifest.wf-a.json` listing `scan_1`, and `scan_1.result.json` and `scan_2.result.json` present: only `scan_1` is ingested.
   - [x] **Blank id (guard).** `"   "`, no manifest, `scan_1.result.json` and `scan_2.result.json` present: both are ingested (unscoped), exit `0`, exactly one reconcile call under `"   "`. Repeat with an empty directory: exit `0`, one reconcile call. It passes today; the spec scenario "A blank ARGO_WORKFLOW_NAME is unscoped but still reconciles once" pins it.
   - [x] **No id, only missing keys.** A legacy manifest declaring only missing keys still makes no `_authed_client` call. This keeps the existing test ~l.2330 (`…missing_scan_key_alone_makes_no_auth_call`) as a **(guard)**.
@@ -185,10 +185,53 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
      - #880's fallback path is not triggered unexpectedly
   5. Add one all-fail batch, using a scan with zero `cyl_images` so it fails at `images-downloader`. Assert `status = 'failed'` and `failed_count = scan_count`.
   6. Record `done_count`/`failed_count` for each run, which also supplies `fix-cyl-pipeline-run-scan-status` 8.2–8.4.
-  7. Rollback plan, written down before starting: revert the pins, run `argo template update`, and keep the snapshots.
+  7. Rollback plan, written down before starting: revert the pins, run `argo template update`, and **restore** the snapshotted legacy files to all three directories if step 3 has already deleted them (design, Rollout and rollback).
 - [x] 10.4 File the sleap-roots follow-up drafted with this change (traits' manifest forward is best-effort; make it fail loudly as predict's does; design Decision 4), with the user's approval. Filed 2026-09-29 as talmolab/sleap-roots#271.
 - [ ] 10.5 After 10.3 passes:
   - [ ] Close bloom#934 by hand.
   - [ ] Open one archive PR that archives `fix-cyl-pipeline-run-scan-status` first, then this change, and fills that change's placeholder Purpose sections (its 15.3).
   - [ ] Tick roadmap row 6.
   - [ ] The staging→main promotion PR must not carry a closing keyword for #934.
+
+## 11. Post-review revisions (PR #940 review, 2026-09-29)
+
+The user decided two points in the review: a legacy file naming another run is no manifest for this run, and there is one run identity everywhere. The specs and design above already reflect both. Each item below is RED then GREEN in one commit, per Section 9's rules.
+
+- [x] 11.1 Specs, design, proposal and tasks updated, and `cyl-ingest-cli` "Cyl ingest command reads an envelope from a path or stdin" taken over from `fix-cyl-pipeline-run-scan-status` (its delta file removed there). `openspec validate --strict` passes for both changes, and a header grep shows one owner per modified requirement. (commit G)
+- [ ] 11.2 **One run identity.**
+  - RED:
+    - `ARGO_WORKFLOW_NAME=" wf-x\n"` on `ingest-result` gives `p_argo_workflow_name == "wf-x"`.
+    - `"   "` omits the key.
+    - `resolve_argo_workflow_name()` returns `"wf-x"` / `None`.
+    - In the batch padded test, `_record_inserts` captures `argo_workflow_name`, and both it and the reconcile argument equal `"wf-a"`.
+    - Blank `"   "` gives no reconcile call and inserts without `argo_workflow_name`. This replaces the old blank-reconciles guard.
+  - GREEN: `resolve_argo_workflow_name()` returns `pipeline_run_id_from_env()`. `batch_ingest_result` reads the identity once and passes it to `discover_envelopes`.
+- [ ] 11.3 **A legacy file naming another run is no manifest for this run.**
+  - RED:
+    - Discover level: raises `RunManifestNotFoundError`, and the message names both ids.
+    - CLI level: no insert, one reconcile, a `"<run-manifest>"` entry naming both ids, exit `1`.
+    - Same-run legacy still scopes, with no warning.
+    - No-id legacy stamped with any id: scopes, zero WARNING records.
+  - GREEN: in `discover_envelopes`, a non-per-run read whose `pipeline_run_id` differs from the identity raises `RunManifestNotFoundError`. Build the per-run name with `run_manifest_filename`. Remove the warning path.
+- [ ] 11.4 **The missing-manifest path goes through the normal tail, with a cause-specific reconcile message.**
+  - RED: the reconcile call receives an `error_message` saying no run manifest reached write-back. The normal path still sends "no result produced for this scan by write-back". The exit follows `needs_retry`.
+  - GREEN:
+    - `reconcile_unresolved_scans(client, name, *, error_message=...)` and `_reconcile_unresolved_scans_result(..., error_message=...)`.
+    - The `except RunManifestNotFoundError` handler seeds a `"<run-manifest>"` entry and an empty discovery, and falls through to the existing auth/reconcile/emit/exit code.
+    - Delete the duplicated emit/exit block.
+- [ ] 11.5 **Code hygiene.**
+  - Catch `(RunManifestError, ValueError, OSError)` after `RunManifestMissingError`.
+  - Make `discover_envelopes(envelopes_dir, *, pipeline_run_id)` keyword-only and required, and update every call site.
+  - Hoist the `"<run-manifest>"` and `"<reconciliation>"` sentinels into module constants.
+  - Rename `resolve_pipeline_run_id` to `stamped_pipeline_run_id`.
+  - Make the writer's invalid-id message name `PIPELINE_RUN_ID_ENV_VAR` and say "whitespace-stripped".
+  - Guard: the existing suite stays green.
+- [ ] 11.6 **Tests the review found missing or weak.**
+  - Per-run variants of the malformed, wrong-schema and directory discover tests.
+  - A dangling-symlink case in the CLI "never authenticates or reconciles" test.
+  - `assert not isinstance(exc, RunManifestNotFoundError)` on the per-run unreadable, mismatch and invalid-id discover tests.
+  - Skip the 237-character test only on `sys.platform == "win32"`.
+  - The 238-character test also asserts that `_authed_client` is never called.
+  - Rename the zero-envelope reconcile test to say what it now tests, and tighten it to `== 1`.
+- [ ] 11.7 **Docs:** README (fallback, blank, run identity, manual-recovery warning), CHANGELOG (the run-identity breaking entry, the legacy-other-run rule) and the `batch-ingest-result` `--help`.
+- [ ] 11.8 Full suite with `--locked` compared with the Windows baseline, `uvx ruff@0.9.9 check bloomcli/`, and both `openspec validate --strict`. Push, then confirm the PR's `Python Security Audit for CVEs` job (bloomctl's Linux test run) passes, including the dangling-symlink tests' first real run.

@@ -56,9 +56,9 @@ Three bounds on that statement, all load-bearing:
   `images-downloader` then writes no
   `RunManifest`, so each downstream reader, knowing its run identity, finds none and fails;
   write-back closes the batch's scans out as `'failed'` and exits non-zero, so the Workflow ends
-  `Failed` with `failed_count = scan_count`. The exception is a directory that still holds a legacy
-  `run_manifest.json`: a reader with `allow_legacy=True` scopes to it instead, and the outcome
-  follows from that file's (another run's) scan_keys.
+  `Failed` with `failed_count = scan_count`. A stale legacy `run_manifest.json` does not change
+  this: predict and traits may fall back to it, but write-back treats a legacy file naming another
+  run as no manifest for this run.
 
 Pipeline-level `'partial'` consequently no longer arises from partial failure *within* a batch — the
 case it was originally introduced for — and now arises only when whole batch Workflows differ in
@@ -107,8 +107,8 @@ outcome across a multi-batch run.
 #### Scenario: A batch in which every scan failed at images-downloader reads failed
 
 - **WHEN** every scan in a single-batch run fails at `images-downloader` — a shared mount being
-  unavailable, say — so the producer exits `3`, stages no scan, and writes no `RunManifest`, and no
-  legacy `run_manifest.json` exists in the pipeline's shared directories
+  unavailable, say — so the producer exits `3`, stages no scan, and writes no `RunManifest`,
+  whether or not a stale legacy `run_manifest.json` exists in the pipeline's shared directories
 - **THEN** write-back finds no manifest for its run identity, closes out the batch's scans as
   `'failed'`, and exits non-zero, so the exit gate is omitted and the run's `status` is `'failed'`
 - **AND** `done_count` is `0` and `failed_count` equals `scan_count`
