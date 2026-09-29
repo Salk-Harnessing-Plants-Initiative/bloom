@@ -217,6 +217,18 @@ A Cell Ranger Workflow takes `sample` and `reference` from the run's `params` an
 The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none.
 
 
+### RNA-seq status poller
+
+`rnaseq_status_poller.py` runs as the always-on `rnaseq-status-poller` container and follows each `submitted` or `running` run in `rnaseq_runs` until it ends. Every `WORKFLOWS_STATUS_POLL_SECONDS` (default 15), it reads the run's Argo Workflow by the name the worker recorded (`k8s_client.get_workflow`, as `bloom-pipeline`), turns it into the run's status with the reader for its workflow type, and records it with `update_rnaseq_run_status`. That function only moves a run forward, never changes a finished run, and writes nothing for an unchanged report, so polling sends no Realtime update unless something changed. One poller runs per environment.
+
+For Cell Ranger, the reader (`rnaseq_status.py`) works from the Workflow's `status.nodes`:
+
+- **current step**: the step that is running, or the last one to start: `stage-reference`, `stage`, `qc`, `count` or `cleanup`;
+- **step pods**: each started step's pod, named `<workflow>-<template>-<numeric end of the node id>`; for a retried step, the latest attempt;
+- **outcome**: `succeeded`, or `skipped` when the stage step reports the results already exist, or `failed` with the failed step's exit code and a message: exit 3 "No reference at reference_genome/<reference>/", exit 4 "No FASTQs at raw_reads/<sample>/", exit 5 "Cell Ranger failed; its log is at runs_output/<run_key>/logs/count.log", exit 6 for a sample name Cell Ranger can't use, and "Step <step> failed (exit N)" otherwise.
+
+A Workflow that no longer exists fails its run with "The workflow was removed before its result was recorded". One run's error is logged and the sweep goes on; missing K8s settings stop the sweep until they are fixed. The reader is tested against real Workflows from `runai-busch-lab` (`tests/fixtures/argo/`).
+
 ### Pipeline dispatch worker
 
 `dispatch_worker.py` (bloom #11/#404, Phase 2 of 3 — see

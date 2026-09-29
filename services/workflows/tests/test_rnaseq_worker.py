@@ -52,6 +52,10 @@ class FakeClient:
         return [name for name, _ in self.calls]
 
 
+def _no_status(workflow, run):
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _reset_running():
     worker._running = True
@@ -68,7 +72,9 @@ def types(monkeypatch):
         built.append(run)
         return dict(BODY)
 
-    registry = {"scrna-cellranger": WorkflowType("scrna-cellranger", _build)}
+    registry = {
+        "scrna-cellranger": WorkflowType("scrna-cellranger", _build, _no_status)
+    }
     monkeypatch.setattr(worker, "WORKFLOW_TYPES", registry)
     return built
 
@@ -196,7 +202,7 @@ def test_a_config_error_leaves_the_run_for_redelivery(monkeypatch, where):
     monkeypatch.setattr(
         worker,
         "WORKFLOW_TYPES",
-        {"scrna-cellranger": WorkflowType("scrna-cellranger", build)},
+        {"scrna-cellranger": WorkflowType("scrna-cellranger", build, _no_status)},
     )
     client = FakeClient(claims=[[RUN]])
     assert worker.process_one(client) is True

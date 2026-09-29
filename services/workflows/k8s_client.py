@@ -288,13 +288,12 @@ def submit_workflow(body: dict) -> str:
         raise K8sSubmissionError("Argo Workflow submission failed") from exc
 
 
-def get_workflow_status(name: str) -> str | None:
-    """GET a single Workflow's real phase (Pending/Running/Succeeded/Failed/
-    Error) by name. Returns None on 404 — the Workflow no longer exists (most
-    often ttlStrategy already cleaned it up, an expected condition, not a
-    failure). Raises K8sStatusError for any other non-2xx response or
-    network-level failure, with a fixed, generic message — the real detail is
-    logged server-side only."""
+def get_workflow(name: str) -> dict | None:
+    """GET a single Workflow by name and return it whole (metadata, spec and status).
+    Returns None on 404: the Workflow no longer exists, most often because its
+    ttlStrategy cleaned it up. Raises K8sStatusError for any other non-2xx response,
+    a network-level failure or an unparseable body, with a fixed, generic message;
+    the real detail is logged server-side only."""
     _validate_config()
     url = f"{API_URL}/apis/argoproj.io/v1alpha1/namespaces/{NAMESPACE}/workflows/{name}"
 
@@ -318,11 +317,34 @@ def get_workflow_status(name: str) -> str | None:
         raise K8sStatusError("Argo Workflow status check failed")
 
     try:
-        return resp.json()["status"]["phase"]
-    except (KeyError, TypeError, ValueError) as exc:
+        workflow = resp.json()
+    except ValueError as exc:
         logger.warning(
             "k8s_client: status check returned %s but response body was unparseable: %s",
             resp.status_code,
             exc,
+        )
+        raise K8sStatusError("Argo Workflow status check failed") from exc
+    if not isinstance(workflow, dict):
+        logger.warning(
+            "k8s_client: status check returned %s but the body was not an object",
+            resp.status_code,
+        )
+        raise K8sStatusError("Argo Workflow status check failed")
+    return workflow
+
+
+def get_workflow_status(name: str) -> str | None:
+    """A single Workflow's real phase (Pending/Running/Succeeded/Failed/Error) by name,
+    or None on 404. Raises K8sStatusError on any other failure, including a Workflow
+    with no phase."""
+    workflow = get_workflow(name)
+    if workflow is None:
+        return None
+    try:
+        return workflow["status"]["phase"]
+    except (KeyError, TypeError) as exc:
+        logger.warning(
+            "k8s_client: status check returned a Workflow without a phase: %s", exc
         )
         raise K8sStatusError("Argo Workflow status check failed") from exc
