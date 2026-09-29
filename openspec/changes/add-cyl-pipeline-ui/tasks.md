@@ -410,7 +410,7 @@
   - Every other existing dedup and enumeration test passes unchanged.
 - [x] 9b.4 Implement it in `services/workflows/pipeline.py`: batch the three filters, merge the results, and short-circuit `_dedup_preview` when `params == {}`.
 - [x] 9b.5 Update the trigger section of `services/workflows/README.md`: id filters are batched, and the preview is skipped for `{}`.
-- [ ] 9b.6 Verify:
+- [x] 9b.6 Verify:
   - `cd services/workflows && uv run --frozen --extra test pytest`;
   - `uv run --extra test pytest tests/integration/test_cyl_pipeline_dispatch.py`;
   - `uv run ruff check` and `uv run black --check` on the changed files;
@@ -420,6 +420,19 @@
   - on the dev stack, with 8.6's setup (worker and poller stopped, K8s token empty), `curl http://localhost:5100/pipeline` an experiment-level target of at least 2,000 seeded scans. It must return 200 with the right `scan_count`, and the run and scan rows must be written;
   - purge the queue and restart the services;
   - record the result, then `/pre-merge` and `/review-pr`. The PR body says "Refs #901"; it doesn't close it, because the non-empty-params row-volume half stays open.
+
+  **Done 2026-09-29.** Unit suite 835 passed, 1 skipped; `test_cyl_pipeline_dispatch.py` 41 passed; ruff 0.9.9, black 26.3.1 and ruff-format clean; strict validate passes.
+
+  Dev stack: worker and poller stopped, `WORKFLOWS_K8S_TOKEN` empty in all three containers. The dev workflows service has no app user, so a throwaway `is_workflows` user was created (README "Provisioning") and deleted afterwards. The main checkout serves the stack, so two one-off containers ran instead of `localhost:5100`: this branch on `:5101`, and staging's `pipeline.py` on `:5102` as a control. The seeded experiment had 2,100 scans (ids 570–2669, 10,069 rendered characters).
+
+  | Request | Code | Result |
+  |---|---|---|
+  | experiment, `params: {}` | staging | 500: `APIError 414 'URI too long'`; no rows written |
+  | experiment, `params: {}` | branch | 200, `scan_count` 2100, `reused_count` 0 |
+  | `scan_ids`, all 2,100, `params: {}` | branch | 200, `scan_count` 2100 |
+  | experiment, `params: {"age": 14}` | branch | 200, `scan_count` 2100, `reused_count` 0 (batched preview) |
+
+  Each branch run wrote 2,100 `queued` scan rows in 84 batches; the queue held 252 = 3 × 84 messages. Cleanup purged the queue, deleted the runs, seeded rows and user, and restarted both services.
 
 ## PR 6: trigger UI
 
