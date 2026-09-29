@@ -92,3 +92,25 @@ def queried(what: str, call: Callable[[], Any]) -> Any:
             f"Could not reach Bloom while reading {what} ({type(exc).__name__}) — "
             f"check your connection and retry"
         ) from exc
+
+
+# Rows fetched per PostgREST request. The query pages with `.range()` until a short page,
+# so the full set is returned regardless of the server's row cap — never silently truncated.
+PAGE_SIZE = 1000
+
+
+def fetch_all_pages(build_query: Any, page_size: int = PAGE_SIZE) -> list[dict[str, Any]]:
+    """Fetch every row by paging with ``.range()`` until a page comes back short.
+
+    ``build_query`` returns a fresh, **ordered** query each call — a stable ``ORDER BY`` is
+    required so successive pages don't overlap or skip rows. Avoids relying on PostgREST's
+    default row cap silently truncating a large result.
+    """
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        page = build_query().range(start, start + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start += page_size

@@ -162,16 +162,24 @@ bloomctl scrna hdf5 upload myb41.h5ad
 # 2. Check it is stored
 bloomctl scrna hdf5 list --file myb41.h5ad
 
-# 3. Download it: by dataset name, by id, or by fingerprint
+# 3. Download it by its fingerprint (all 64 characters, from `list --output json`)
+bloomctl scrna hdf5 list --file myb41.h5ad --output json
+bloomctl scrna hdf5 download --checksum <64-character fingerprint> --out copy.h5ad
+
+# Once the dataset is loaded into Bloom, download by its exact name or its id instead
 bloomctl scrna hdf5 download "MYB41 transgene"
-bloomctl scrna hdf5 download 14 --out myb41.h5ad
-bloomctl scrna hdf5 download --checksum 82278a...
+bloomctl scrna hdf5 download 14
 ```
+
+**Download by name or id only works once the dataset is loaded into Bloom.** Straight after an
+upload there is no dataset yet, so use `--checksum`. A name must match exactly, including
+capitals. Without `--out`, the file is saved in the current folder under the dataset's name, or
+its fingerprint when you use `--checksum`.
 
 **Upload checks the file before sending anything.** Cell and gene IDs must be unique, `X` must
 hold only finite numbers, `obsm['X_umap']` must be a real two-column UMAP, and
-`uns['normalization']` must say how `X` was made. If a check fails, the upload stops and
-nothing is sent.
+`uns['normalization']` must say how `X` was made, among other checks. Files over 500 MB once
+gzipped are refused. If a check fails, the upload stops and nothing is sent.
 
 **If an upload stops part-way, run the same command again.** It carries on from where it
 stopped. Uploading a file that is already stored sends nothing and says so.
@@ -184,8 +192,8 @@ fingerprint. It never overwrites a different file already at `--out`.
 
 | Command | Options |
 | ------- | ------- |
-| `scrna hdf5 upload FILE` | `-p/--profile` |
-| `scrna hdf5 download [DATASET]` | `DATASET` is a name or id · `--checksum SHA256` · `--out FILE` |
+| `scrna hdf5 upload FILE` | No options; needs a writer or admin login |
+| `scrna hdf5 download [DATASET]` | `DATASET` is the exact dataset name or its id · `--checksum SHA256` (all 64 characters) · `--out FILE` |
 | `scrna hdf5 list [SEARCH]` | `SEARCH` matches a fingerprint or dataset name · `--file FILE` · `--limit N` · `--output csv\|json` |
 
 ## Commands

@@ -7,6 +7,7 @@ from typing import Any
 import click
 
 from .._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from .._postgrest import fetch_all_pages
 from ..credentials import DEFAULT_PROFILE
 from ._select import resolve_by_name, select_from_menu
 
@@ -68,16 +69,14 @@ def fetch_species_with_experiments(client: Any) -> list[tuple[int, str]]:
 
     Sourced from the experiments themselves (joined to species) so the selector menu only
     offers species that actually have experiments — no dead choices. De-duplicated and
-    sorted by common name for a stable menu.
+    sorted by common name for a stable menu. Read page by page, so a species is never missed
+    however many experiments there are.
     """
-    rows = (
-        client.table("cyl_experiments")
+    rows = fetch_all_pages(
+        lambda: client.table("cyl_experiments")
         .select("species_id, species(common_name)")
         .is_("deleted_at", "null")
-        .limit(DEFAULT_LIMIT)  # bound the query, like fetch_experiments — never unbounded
-        .execute()
-        .data
-        or []
+        .order("id")
     )
     by_id: dict[int, str] = {}
     for row in rows:

@@ -6,13 +6,15 @@ from click.testing import CliRunner
 
 import bloomctl.cli as climod
 import bloomctl.plate.experiments as ex
+from bloomctl._postgrest import PAGE_SIZE
 from bloomctl.cli import cli
 
-# Out of order to prove the (species, name, rig, id) sort; "Tilt" exists on two rigs.
+# Out of order to prove the (species, name, rig, id) sort; "Tilt" exists on two rigs, and
+# rig-a has the higher id so a sort that ignores the rig gets the order wrong.
 EXPS = [
     {"id": 2, "name": "Tilt", "system_name": "rig-b", "species": {"common_name": "Rice"}},
     {"id": 5, "name": "Tilt", "system_name": "rig-b", "species": {"common_name": "Arabidopsis"}},
-    {"id": 4, "name": "Tilt", "system_name": "rig-a", "species": {"common_name": "Arabidopsis"}},
+    {"id": 6, "name": "Tilt", "system_name": "rig-a", "species": {"common_name": "Arabidopsis"}},
     {"id": 1, "name": "Gravity", "system_name": None, "species": {"common_name": "Arabidopsis"}},
 ]
 
@@ -75,7 +77,16 @@ def test_build_experiment_record():
 def test_sort_orders_species_name_rig_then_id():
     ordered = sorted(EXPS, key=ex.experiment_sort_key)
     # Arabidopsis/Gravity, Arabidopsis/Tilt rig-a, Arabidopsis/Tilt rig-b, Rice/Tilt
-    assert [e["id"] for e in ordered] == [1, 4, 5, 2]
+    assert [e["id"] for e in ordered] == [1, 6, 5, 2]
+
+
+def test_sort_breaks_full_ties_by_id():
+    # A NULL rig is not unique, so species, name and rig can all match; id decides.
+    tied = [
+        {"id": 9, "name": "Tilt", "system_name": None, "species": {"common_name": "Rice"}},
+        {"id": 3, "name": "Tilt", "system_name": None, "species": {"common_name": "Rice"}},
+    ]
+    assert [e["id"] for e in sorted(tied, key=ex.experiment_sort_key)] == [3, 9]
 
 
 # --- query ------------------------------------------------------------------
@@ -112,7 +123,31 @@ def test_fetch_species_with_experiments_dedups_and_sorts():
     client = _Client(rows)
     assert ex.fetch_species_with_experiments(client) == [(1, "Arabidopsis"), (2, "Rice")]
     assert client.tables == ["gravi_experiments"]  # only species that have plate experiments
-    assert ("limit", (ex.DEFAULT_LIMIT,)) in client.calls
+    assert ("select", ("species_id, species(common_name)",)) in client.calls
+    assert ("order", ("id",)) in client.calls  # stable order, so pages neither skip nor repeat
+    assert ("range", (0, PAGE_SIZE - 1)) in client.calls
+
+
+def test_fetch_species_reads_past_the_first_page():
+    # A species whose only experiment is past the first page must still be found.
+    first = [{"species_id": 1, "species": {"common_name": "Arabidopsis"}}] * PAGE_SIZE
+    second = [{"species_id": 2, "species": {"common_name": "Rice"}}]
+    pages = iter([first, second])
+
+    class _Paged(_Client):
+        def table(self, name):
+            return _Query(next(pages), self.calls)
+
+    client = _Paged(None)
+    assert ex.fetch_species_with_experiments(client) == [(1, "Arabidopsis"), (2, "Rice")]
+    assert ("range", (PAGE_SIZE, 2 * PAGE_SIZE - 1)) in client.calls
+
+
+def test_fetch_experiments_has_no_soft_delete_filter():
+    # gravi_experiments has no deleted_at column; filtering on it fails on the server.
+    client = _Client(EXPS)
+    ex.fetch_experiments(client)
+    assert not [c for c in client.calls if c[0] == "is_"]
 
 
 # --- command ----------------------------------------------------------------
@@ -134,12 +169,12 @@ def test_list_json_sorted(monkeypatch):
     res = CliRunner().invoke(cli, ["plate", "experiments", "list", "--json"])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
-    assert [e["experiment_id"] for e in payload] == [1, 4, 5, 2]
+    assert [e["experiment_id"] for e in payload] == [1, 6, 5, 2]
     assert payload[1] == {
         "species": "Arabidopsis",
         "experiment": "Tilt",
         "rig": "rig-a",
-        "experiment_id": 4,
+        "experiment_id": 6,
     }
 
 
@@ -180,6 +215,26 @@ def test_list_warns_when_limit_is_hit(monkeypatch):
     assert res.exit_code == 0, res.output
     assert "capped at --limit 2" in res.stderr
     assert len(json.loads(res.stdout)) == 2  # warning stays off stdout
+
+
+def test_list_limit_passed_through_and_capped(monkeypatch):
+    _patch_authed(monkeypatch)
+    captured = {}
+
+    def _fetch(client, *, species_id=None, limit=ex.DEFAULT_LIMIT):
+        captured["limit"] = limit
+        return EXPS
+
+    monkeypatch.setattr(ex, "fetch_experiments", _fetch)
+    ok = CliRunner().invoke(cli, ["plate", "experiments", "list", "--limit", "5"])
+    assert ok.exit_code == 0, ok.output
+    assert captured["limit"] == 5
+
+    over = CliRunner().invoke(
+        cli, ["plate", "experiments", "list", "--limit", str(ex.DEFAULT_LIMIT + 1)]
+    )
+    assert over.exit_code != 0
+    assert "range" in over.output.lower()
 
 
 def test_list_species_value_resolves_and_filters(monkeypatch):

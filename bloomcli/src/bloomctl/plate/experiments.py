@@ -7,6 +7,7 @@ from typing import Any
 import click
 
 from .._output import MACHINE_FORMATS, print_table, render, resolve_output_format
+from .._postgrest import fetch_all_pages
 from ..credentials import DEFAULT_PROFILE
 from ..cyl._select import resolve_by_name, select_from_menu
 
@@ -63,14 +64,15 @@ def build_experiment_record(exp: dict[str, Any]) -> dict[str, Any]:
 
 
 def fetch_species_with_experiments(client: Any) -> list[tuple[int, str]]:
-    """Distinct (species_id, common_name) for species with at least one plate experiment."""
-    rows = (
-        client.table("gravi_experiments")
+    """Distinct (species_id, common_name) for species with at least one plate experiment.
+
+    Reads every experiment row, page by page, so a species is never missed however many
+    experiments there are.
+    """
+    rows = fetch_all_pages(
+        lambda: client.table("gravi_experiments")
         .select("species_id, species(common_name)")
-        .limit(DEFAULT_LIMIT)
-        .execute()
-        .data
-        or []
+        .order("id")
     )
     by_id: dict[int, str] = {}
     for row in rows:

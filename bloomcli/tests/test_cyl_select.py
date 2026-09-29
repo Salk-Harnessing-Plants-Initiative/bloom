@@ -1,5 +1,8 @@
 """bloomctl cyl _select — shared interactive menu helper (mapping, range, stderr)."""
 
+import click
+import pytest
+
 import bloomctl.cyl._select as sel
 
 
@@ -76,6 +79,17 @@ def test_resolve_by_name_no_match_returns_none():
     assert sel.resolve_by_name([(3, "Canola")], "Sorghum") is None
 
 
-def test_resolve_by_name_returns_first_on_duplicate_label():
-    # two case-variant labels resolve to the same casefold → the first item's value
-    assert sel.resolve_by_name([(3, "Rice"), (9, "rice")], "RICE") == 3
+def test_resolve_by_name_exact_case_wins_among_case_variants():
+    items = [(3, "Rice"), (9, "rice")]
+    assert sel.resolve_by_name(items, "Rice") == 3
+    assert sel.resolve_by_name(items, " rice ") == 9
+
+
+def test_resolve_by_name_refuses_an_ambiguous_case_variant():
+    # "RICE" matches both only by ignoring case; guessing one would drop the other's data.
+    with pytest.raises(click.ClickException, match="matches more than one"):
+        sel.resolve_by_name([(3, "Rice"), (9, "rice")], "RICE")
+
+
+def test_resolve_by_name_same_value_twice_is_not_ambiguous():
+    assert sel.resolve_by_name([("Rice", "Rice"), ("Rice", "Rice")], "rice") == "Rice"

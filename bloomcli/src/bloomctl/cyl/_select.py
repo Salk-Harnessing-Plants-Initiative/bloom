@@ -1,4 +1,4 @@
-"""Interactive menu selection shared by the cyl commands.
+"""Interactive menu selection shared by the cyl and plate commands.
 
 A single numbered-menu prompt so every command selects an entity the same way. The menu and
 prompt are written to stderr, so a command's machine output (`--output json/csv`) on stdout stays
@@ -16,13 +16,29 @@ def resolve_by_name(items: list[tuple[Any, str]], typed: str) -> Any:
     """Resolve a typed name to its item's value, case-insensitively and whitespace-trimmed.
 
     ``items`` are ``(value, label)`` pairs (e.g. ``(species_id, common_name)`` or ``(name, name)``).
-    Returns the first item's ``value`` whose label matches ``typed`` ignoring case and surrounding
-    whitespace, or ``None`` if none match. Shared so every ``--species``/name selector narrows the
-    same way (matching the server-side ``lower(btrim(...))`` the search RPC uses).
+    Returns the ``value`` whose label matches ``typed`` ignoring case and surrounding whitespace,
+    or ``None`` if none match. Shared so every ``--species``/name selector narrows the same way
+    (matching the server-side ``lower(btrim(...))`` the search RPC uses).
+
+    Labels that differ only by case are told apart by an exact-case match; if the typed text
+    matches more than one of them only by ignoring case, it raises rather than guess.
     """
-    wanted = typed.strip().casefold()
-    return next(
-        (value for value, label in items if (label or "").strip().casefold() == wanted), None
+    stripped = typed.strip()
+    wanted = stripped.casefold()
+    matches = [
+        (value, label) for value, label in items if (label or "").strip().casefold() == wanted
+    ]
+    values = list(dict.fromkeys(value for value, _ in matches))
+    if len(values) <= 1:
+        return values[0] if values else None
+    exact = list(
+        dict.fromkeys(value for value, label in matches if (label or "").strip() == stripped)
+    )
+    if len(exact) == 1:
+        return exact[0]
+    labels = ", ".join(sorted({(label or "").strip() for _, label in matches}))
+    raise click.ClickException(
+        f"{typed.strip()!r} matches more than one: {labels}. Type it exactly as listed."
     )
 
 
