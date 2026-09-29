@@ -425,12 +425,12 @@
 
   Dev stack: worker and poller stopped, `WORKFLOWS_K8S_TOKEN` empty in all three containers. The dev workflows service has no app user, so a throwaway `is_workflows` user was created (README "Provisioning") and deleted afterwards. The main checkout serves the stack, so two one-off containers ran instead of `localhost:5100`: this branch on `:5101`, and staging's `pipeline.py` on `:5102` as a control. The seeded experiment had 2,100 scans (ids 570–2669, 10,069 rendered characters).
 
-  | Request | Code | Result |
-  |---|---|---|
-  | experiment, `params: {}` | staging | 500: `APIError 414 'URI too long'`; no rows written |
-  | experiment, `params: {}` | branch | 200, `scan_count` 2100, `reused_count` 0 |
-  | `scan_ids`, all 2,100, `params: {}` | branch | 200, `scan_count` 2100 |
-  | experiment, `params: {"age": 14}` | branch | 200, `scan_count` 2100, `reused_count` 0 (batched preview) |
+  | Request                             | Code    | Result                                                     |
+  | ----------------------------------- | ------- | ---------------------------------------------------------- |
+  | experiment, `params: {}`            | staging | 500: `APIError 414 'URI too long'`; no rows written        |
+  | experiment, `params: {}`            | branch  | 200, `scan_count` 2100, `reused_count` 0                   |
+  | `scan_ids`, all 2,100, `params: {}` | branch  | 200, `scan_count` 2100                                     |
+  | experiment, `params: {"age": 14}`   | branch  | 200, `scan_count` 2100, `reused_count` 0 (batched preview) |
 
   Each branch run wrote 2,100 `queued` scan rows in 84 batches; the queue held 252 = 3 × 84 messages. Cleanup purged the queue, deleted the runs, seeded rows and user, and restarted both services.
 
