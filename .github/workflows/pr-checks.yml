@@ -3,6 +3,8 @@ name: PR Checks
 on:
   pull_request:
     branches: [main, staging]
+  merge_group:
+    types: [checks_requested]
 
 # Minimum required across jobs. Read-only by default; individual jobs that
 # need to post sticky PR comments (Trivy reports) rely on pull-requests: write.
@@ -21,6 +23,9 @@ env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
   # server (documented in #135). Change here + on the server together.
   SUPABASE_VERSION: "2.92.1"
+  # Base commit and branch, from the PR or from the merge queue's group.
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+  BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
 
 jobs:
   build-and-audit:
@@ -264,7 +269,7 @@ jobs:
       - name: Check for relevant path changes
         id: filter
         run: |
-          if git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+          if git diff --quiet "$BASE_SHA" "${{ github.sha }}" -- \
             services/workflows/vendored services/workflows/k8s_client.py services/workflows/pyproject.toml; then
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           else
@@ -305,7 +310,7 @@ jobs:
       - name: Check for changes to the backup job
         id: filter
         run: |
-          if git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+          if git diff --quiet "$BASE_SHA" "${{ github.sha }}" -- \
             scheduled-jobs/box-object-backup; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -618,7 +623,7 @@ jobs:
 
       # Post after the CVE gates so the comment only appears once a pass/fail exists.
       - name: Post Trivy report as PR comment
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-docker-build
@@ -635,12 +640,14 @@ jobs:
           fetch-depth: 0
 
       - name: Run migration lint
-        run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
+        run: ./scripts/lint_migrations.sh "origin/${BASE_REF#refs/heads/}"
 
   lint-migration-isolation:
     name: Lint migration changes are isolated
     # Both bases: the script counts only migrations not already on staging, so a
     # promotion has nothing to check and a hotfix straight to main still does.
+    # PRs only: a queued group can hold several PRs, so isolation is judged per PR.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -652,7 +659,7 @@ jobs:
       # Warning mode until the rollout makes it blocking.
       - name: Enforce migration PR isolation
         continue-on-error: true
-        run: python3 scripts/lint_migration_isolation.py ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/lint_migration_isolation.py "$BASE_SHA"
 
   lint-cve-isolation:
     name: Lint CVE changes are isolated
@@ -674,7 +681,7 @@ jobs:
       # Pass the base SHA directly (no fetch needed) — origin/<branch> requires
       # an extra fetch that can fail with "no merge base" in shallow checkouts.
       - name: Enforce CVE-change PR isolation
-        run: ./scripts/lint_cve_isolation.sh ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/lint_cve_isolation.sh "$BASE_SHA"
 
   # Runs the new web/ Vitest suite added by the openspec change
   # add-ghcr-image-publishing (proposal/tasks/specs already on this branch).
@@ -1501,6 +1508,7 @@ jobs:
           } > pinned-report.md
 
       - name: Post as PR comment
+        if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-pinned-images
