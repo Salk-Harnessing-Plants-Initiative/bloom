@@ -434,6 +434,16 @@
 
   Each branch run wrote 2,100 `queued` scan rows in 84 batches; the queue held 252 = 3 × 84 messages. Cleanup purged the queue, deleted the runs, seeded rows and user, and restarted both services.
 
+  The `{"age": 14}` row above proves little: those scans had no trait rows, so the preview stopped after `cyl_scan_traits`, and no stored hash is over partial params. After review, a second run (worktree commit `e8c874f0`) seeded 2,100 scans, 2 sources each (4,200, with ids 1376–5575) and 3 trait rows per source. Every third scan's older source carries the `resolve_params` hash of soybean/cylinder/age 14, so the expected `reused_count` is 700.
+
+  | `params`                                      | Result                  | Kong requests (`cyl_scan_traits` / `cyl_trait_sources`) |
+  | --------------------------------------------- | ----------------------- | ------------------------------------------------------- |
+  | `{species: soybean, mode: cylinder, age: 14}` | 200, `reused_count` 700 | 3 / 6, no 414, longest request line 5,666 bytes         |
+  | `{species: soybean, mode: cylinder, age: 99}` | 200, `reused_count` 0   | 3 / 6, no 414                                           |
+  | `{}`                                          | 200, `reused_count` 0   | 0 / 0                                                   |
+
+  During this second run `cyl-pipeline-worker` and `cyl-status-poller` were running, not stopped as 8.6 asks. Their logs show only "workflows service not configured" retries, since they have no app-user credentials, so they claimed nothing. The 252 queue messages and all rows stayed `queued` until cleanup, which removed the same kinds of rows as the first run.
+
 ## PR 6: trigger UI
 
 ## 10. Dialog logic and queries
