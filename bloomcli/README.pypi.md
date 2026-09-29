@@ -55,7 +55,10 @@ Plate (GraviScan) experiments work the same way, with `plate` in place of `cyl`:
 # 1. Log in once, if you have not already
 bloomctl login
 
-# 2. Download a whole plate experiment — by id, or just by name
+# 2. Find a plate experiment — pick a species from a menu, grab its id
+bloomctl plate experiments list --species-menu
+
+# 3. Download it — by id, or just by name
 bloomctl plate download ./gravi --experiment-id 12
 bloomctl plate download ./gravi --experiment-name "gravitropism" --species Arabidopsis
 ```
@@ -83,6 +86,70 @@ dropped connection is re-fetched rather than treated as complete.
 > `plate download` needs the `gravi_scans_extended` view on the server, and
 > `gravi_experiment_search` if you select by `--experiment-name`.
 
+## Quickstart for Finding Data
+
+Look up what is in Bloom before you download it:
+
+```bash
+# Experiments: all, one species, or pick the species from a menu
+bloomctl cyl experiments list
+bloomctl cyl experiments list --species Soybean
+bloomctl cyl experiments list --species-menu
+
+# Accessions in one experiment, and plant counts per accession
+bloomctl cyl accessions list --experiment-id 42
+bloomctl cyl accessions sample-counts --species Soybean
+
+# Trait datasets for an experiment, then one dataset's traits
+bloomctl cyl datasets list --experiment-id 42
+bloomctl cyl datasets get canola-v1
+
+# QC sets
+bloomctl cyl qc list-sets
+
+# Plate (GraviScan) experiments, with the rig each ran on
+bloomctl plate experiments list --species Arabidopsis
+```
+
+**Leave out an id and you get a menu.** `cyl accessions list` with no `--experiment-id`, or
+`cyl datasets list --experiment`, lets you pick the experiment interactively.
+
+**Every `list` command takes `--output csv|json`** (`--json` for short), for scripts and
+spreadsheets:
+
+```bash
+bloomctl cyl experiments list --species Soybean --output csv > soybean_experiments.csv
+bloomctl cyl experiments list --json | jq -r '.[] | "\(.experiment_id)\t\(.experiment)"'
+```
+
+**Search by name when downloading.** `--experiment-name` matches any part of the name, ignoring
+case. If more than one experiment matches, it lists them and downloads nothing:
+
+```bash
+bloomctl cyl download ./out --experiment-name drought --species Soybean --meta-only
+bloomctl plate download ./gravi --experiment-name gravitropism --meta-only
+```
+
+### Search and filter options
+
+| Command | Options |
+| ------- | ------- |
+| `cyl experiments list` | `--species NAME` · `--species-menu` · `--limit N` (max 1000) |
+| `plate experiments list` | `--species NAME` · `--species-menu` · `--limit N` (max 1000) |
+| `cyl accessions list` | `--experiment-id ID` (omit for a menu) |
+| `cyl accessions sample-counts` | `--species NAME` · `--species-menu` |
+| `cyl datasets list` | `--experiment-id ID` · `--experiment` (menu) |
+| `cyl datasets get NAME` | `--json` |
+| `cyl qc list-sets` | `--include-deleted` |
+| `cyl download DIR` | `--experiment-id` · `--scan-id` · `--experiment-name` · `--species` · `--plant-qr-code` · `--plant-age-min` / `--plant-age-max` (days) · `--limit` · `--meta-only` |
+| `plate download DIR` | `--experiment-id` · `--scan-id` · `--experiment-name` · `--species` · `--plate-id` · `--wave-number` · `--session-id` · `--limit` · `--meta-only` |
+
+- `--species` takes the common name (e.g. `Soybean`, `Canola`), ignoring case.
+- `--species-menu` and the menus need an interactive terminal; use the plain options in scripts.
+- `accessions sample-counts` totals plants across **all** experiments, not per experiment.
+- `--limit` on a download fetches a sample. It is not a way to split an export, so give a sample
+  its own directory.
+
 ## Commands
 
 **Find & download** (any logged-in user):
@@ -90,6 +157,7 @@ dropped connection is re-fetched rather than treated as complete.
 | Command                          | What it does                                                                                                               |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `cyl experiments list`         | List experiments (species · name · id); filter with `--species NAME` or `--species-menu`                                  |
+| `plate experiments list`       | List plate experiments (species · name · rig · id); same filters                                                           |
 | `cyl accessions list`          | Accessions in an experiment (`--experiment-id`, or pick from a menu)                                                     |
 | `cyl accessions sample-counts` | Plant count per accession/species (`--species NAME`, or `--species-menu`)                                                 |
 | `cyl datasets list` / `get`  | List trait datasets (`--experiment` menu) / show one dataset's traits                                                    |

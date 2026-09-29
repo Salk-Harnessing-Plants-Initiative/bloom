@@ -10,6 +10,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `plate experiments list`: list plate (GraviScan) experiments with their species, rig and id,
+  filtered by `--species NAME` or `--species-menu`, as a table or `--output csv|json`. Until now
+  a plate experiment's id could only be found by searching its name in `plate download`.
+- The PyPI page has a quickstart for finding data: the list commands, their search and filter
+  options, and name search on download.
 - `scrna hdf5 upload`, `scrna hdf5 download` and `scrna hdf5 list`: a single-cell dataset's whole
   AnnData file (`.h5ad`) goes into the `scrna` bucket's `h5ad/` folder gzipped as it
   is, named by the SHA-256 of the uncompressed file, and comes back out checked
