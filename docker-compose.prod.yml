@@ -723,7 +723,10 @@ services:
       - SETUID
       - SETGID
     networks:
-      - supanet
+      supanet:
+        # realtime-dev is the seeded tenant; Realtime reads it from the Host header's first label.
+        aliases:
+          - realtime-dev.supabase-realtime
     environment:
       PORT: 4000
       DB_HOST: ${POSTGRES_HOST}

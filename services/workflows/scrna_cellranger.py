@@ -12,9 +12,15 @@ from fastapi import HTTPException
 
 from supabase_client import app_client
 
-# Allowed sample and reference names ('__' separates run_key parts); the database checks the same rule.
-NAME_RULE = re.compile(r"^(?!.*__)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
-NAME_HELP = (
+# Allowed names ('__' separates run_key parts); the database checks the same rules.
+# A sample is also Cell Ranger's run id, which allows no '.' and at most 64 characters.
+SAMPLE_RULE = re.compile(r"^(?!.*__)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+SAMPLE_HELP = (
+    "letters, digits, '_' or '-', starting with a letter or digit, "
+    "with no '__' (at most 64)"
+)
+REFERENCE_RULE = re.compile(r"^(?!.*__)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+REFERENCE_HELP = (
     "letters, digits, '.', '_' or '-', starting with a letter or digit, "
     "with no '__' (at most 100)"
 )
@@ -25,8 +31,8 @@ WORKFLOW_TYPE = "scrna-cellranger"
 REQUEST_FN = "request_scrna_cellranger_run"
 
 
-def _valid_name(value) -> bool:
-    return isinstance(value, str) and bool(NAME_RULE.fullmatch(value))
+def _valid_name(value, rule: re.Pattern) -> bool:
+    return isinstance(value, str) and bool(rule.fullmatch(value))
 
 
 def _validate_request(body) -> tuple[str, str]:
@@ -35,14 +41,14 @@ def _validate_request(body) -> tuple[str, str]:
             status_code=422, detail="request body must be a JSON object"
         )
     sample = body.get("sample")
-    if not _valid_name(sample):
+    if not _valid_name(sample, SAMPLE_RULE):
         raise HTTPException(
-            status_code=422, detail=f"sample must be a name of {NAME_HELP}"
+            status_code=422, detail=f"sample must be a name of {SAMPLE_HELP}"
         )
     reference = body.get("reference")
-    if not _valid_name(reference):
+    if not _valid_name(reference, REFERENCE_RULE):
         raise HTTPException(
-            status_code=422, detail=f"reference must be a name of {NAME_HELP}"
+            status_code=422, detail=f"reference must be a name of {REFERENCE_HELP}"
         )
     return sample, reference
 

@@ -612,7 +612,10 @@ services:
   realtime:
     image: ghcr.io/salk-harnessing-plants-initiative/supabase-realtime:v2.34.47@sha256:4d2460cb6eb081b7cfec0e6b0af57f547497f60cf897621555303992d299f6e8
     networks:
-      - supanet
+      supanet:
+        # realtime-dev is the seeded tenant; Realtime reads it from the Host header's first label.
+        aliases:
+          - realtime-dev.supabase-realtime
     restart: unless-stopped
     depends_on:
       db-dev:
