@@ -146,6 +146,48 @@ bloomctl plate download ./gravi --experiment-name gravitropism --meta-only
 - `--limit` on a download fetches a sample. It is not a way to split an export, so give a sample
   its own directory.
 
+## Quickstart for scRNA-seq Dataset Files
+
+Upload a single-cell dataset's AnnData file (`.h5ad`) to Bloom, and download it again.
+Uploading checks the file first, which needs `h5py` and `numpy`:
+
+```bash
+uv tool install "bloomctl==0.1.0a5" --with h5py --with numpy
+```
+
+```bash
+# 1. Upload it (needs a writer or admin login)
+bloomctl scrna hdf5 upload myb41.h5ad
+
+# 2. Check it is stored
+bloomctl scrna hdf5 list --file myb41.h5ad
+
+# 3. Download it: by dataset name, by id, or by fingerprint
+bloomctl scrna hdf5 download "MYB41 transgene"
+bloomctl scrna hdf5 download 14 --out myb41.h5ad
+bloomctl scrna hdf5 download --checksum 82278a...
+```
+
+**Upload checks the file before sending anything.** Cell and gene IDs must be unique, `X` must
+hold only finite numbers, `obsm['X_umap']` must be a real two-column UMAP, and
+`uns['normalization']` must say how `X` was made. If a check fails, the upload stops and
+nothing is sent.
+
+**If an upload stops part-way, run the same command again.** It carries on from where it
+stopped. Uploading a file that is already stored sends nothing and says so.
+
+**A new upload shows no dataset name in `list`** until the dataset is loaded into Bloom. That
+is expected, not an error.
+
+**Download checks the file as it arrives** and writes it only if it matches the stored
+fingerprint. It never overwrites a different file already at `--out`.
+
+| Command | Options |
+| ------- | ------- |
+| `scrna hdf5 upload FILE` | `-p/--profile` |
+| `scrna hdf5 download [DATASET]` | `DATASET` is a name or id · `--checksum SHA256` · `--out FILE` |
+| `scrna hdf5 list [SEARCH]` | `SEARCH` matches a fingerprint or dataset name · `--file FILE` · `--limit N` · `--output csv\|json` |
+
 ## Commands
 
 **Find & download** (any logged-in user):
@@ -160,6 +202,7 @@ bloomctl plate download ./gravi --experiment-name gravitropism --meta-only
 | `cyl qc list-sets`             | List cylinder QC sets                                                                                                      |
 | `cyl download <dir>`           | Download an experiment/scan:`scans.csv` + images. Select by `--experiment-id`, `--scan-id`, or `--experiment-name` |
 | `plate download <dir>`         | Download a plate (GraviScan) experiment/scan:`plates.csv` + `plate_sections.csv` + images. Same selectors, narrowed with `--plate-id` or `--wave-number` |
+| `scrna hdf5 upload` / `download` / `list` | Upload a single-cell dataset's `.h5ad` file *(upload needs write access)*, download it checked against its fingerprint, or list what is stored |
 
 **Pipeline** (stage-in / write-back):
 
