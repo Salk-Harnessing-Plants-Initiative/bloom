@@ -1,0 +1,166 @@
+"use client";
+
+/**
+ * The experiment page's pipeline runs (spec: "Experiment page shows that
+ * experiment's runs"): the 10 most recent runs that include at least one of
+ * its scans, from `cyl_pipeline_run_experiments`, kept current by Realtime.
+ *
+ * Run events can't be filtered by experiment, so an event for a run the panel
+ * doesn't hold re-queries membership, debounced by 1 s. The trigger commits
+ * the run row before its scan rows, so a "no" is cached only when the event
+ * that prompted it was past `queued`: by `submitted` the scan rows exist.
+ * A cached "no" costs no further query.
+ */
+
+import Link from "next/link";
+import { useEffect, useRef } from "react";
+import { RunState } from "@/components/cyl-pipeline/RunState";
+import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
+import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
+import { fetchExperimentMembers, fetchExperimentRunIds, fetchRunsByIds } from "@/lib/cyl-pipeline/queries";
+import {
+  addPanelRun,
+  applyPanelChange,
+  mergeRun,
+  RUNS_TABLE,
+  type Change,
+  type RunRow,
+} from "@/lib/cyl-pipeline/realtime-reducer";
+import { useLiveSync, type LiveSync } from "@/lib/cyl-pipeline/use-live-sync";
+import { useNow } from "@/lib/cyl-pipeline/use-now";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
+
+export const MEMBERSHIP_DEBOUNCE_MS = 1000;
+
+interface PanelView {
+  runs: RunRow[];
+  loaded: boolean;
+}
+
+/** Realtime INSERT/UPDATE payloads carry every column but an unchanged TOASTed one. */
+const isWholeRow = (row: Partial<RunRow>): row is RunRow =>
+  typeof row.id === "number" && typeof row.created_at === "string" && typeof row.scan_count === "number" && typeof row.status === "string";
+
+export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) {
+  const now = useNow();
+  // true: touches this experiment; false: doesn't (cached only past queued).
+  const members = useRef(new Map<number, boolean>());
+  // Unheld runs awaiting a membership answer, with what their events said.
+  const pending = useRef(new Map<number, Partial<RunRow>>());
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  const flush = async (): Promise<void> => {
+    timer.current = null;
+    const asked = new Map(pending.current);
+    pending.current.clear();
+    if (asked.size === 0) return;
+    const client = createClientSupabaseClient();
+    let yes: Set<number>;
+    try {
+      yes = await fetchExperimentMembers(client, experimentId, [...asked.keys()]);
+    } catch {
+      return; // The next event for these runs asks again.
+    }
+    const toRead: number[] = [];
+    for (const [id, row] of asked) {
+      if (yes.has(id)) {
+        members.current.set(id, true);
+        if (isWholeRow(row)) live.update((v) => ({ ...v, runs: addPanelRun(v.runs, row) }));
+        else toRead.push(id);
+      } else if (row.status !== "queued") {
+        members.current.set(id, false);
+      }
+    }
+    if (toRead.length) {
+      try {
+        const rows = await fetchRunsByIds(client, toRead);
+        live.update((v) => ({ ...v, runs: rows.reduce((acc, r) => addPanelRun(acc, r), v.runs) }));
+      } catch {
+        // Shown on the next snapshot.
+      }
+    }
+  };
+
+  const live: LiveSync<PanelView> = useLiveSync<PanelView>({
+    topic: `cyl-pipeline-experiment-${experimentId}`,
+    bindings: [
+      { table: RUNS_TABLE, event: "INSERT" },
+      { table: RUNS_TABLE, event: "UPDATE" },
+    ],
+    initial: { runs: [], loaded: false },
+    snapshot: async () => {
+      const client = createClientSupabaseClient();
+      const ids = await fetchExperimentRunIds(client, experimentId);
+      ids.forEach((id) => members.current.set(id, true));
+      const rows = await fetchRunsByIds(client, ids);
+      return { runs: rows.reduce<RunRow[]>((acc, r) => addPanelRun(acc, r), []), loaded: true };
+    },
+    apply: (view, change) => {
+      const c = change as Change<RunRow>;
+      const { runs, held } = applyPanelChange(view.runs, c);
+      if (held) return { ...view, runs };
+      if (members.current.get(c.new.id ?? -1) === true && isWholeRow(c.new)) {
+        return { ...view, runs: addPanelRun(view.runs, c.new) };
+      }
+      return view;
+    },
+    onEvent: (change, view) => {
+      const row = (change as Change<RunRow>).new;
+      const id = row.id;
+      if (typeof id !== "number" || members.current.has(id) || view.runs.some((r) => r.id === id)) return;
+      pending.current.set(id, mergeRun(pending.current.get(id) as RunRow | undefined, row));
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => void flush(), MEMBERSHIP_DEBOUNCE_MS);
+    },
+  });
+
+  const { runs, loaded } = live.view;
+
+  return (
+    <section className="mt-10" aria-labelledby="experiment-runs-heading">
+      <div className="mb-3 flex items-center justify-between gap-4">
+        <h2 id="experiment-runs-heading" className="text-lg">
+          Pipeline runs
+        </h2>
+        <div className="flex items-center gap-4 text-sm">
+          <LiveIndicator state={live.connection} onRefresh={live.refresh} />
+          <Link href="/app/cyl-pipeline-runs" className="text-lime-700 hover:underline">
+            All pipeline runs
+          </Link>
+        </div>
+      </div>
+
+      {live.error && (
+        <p className="mb-2 text-sm text-stone-500" title={live.error}>
+          Runs unavailable
+        </p>
+      )}
+      {!loaded ? (
+        !live.error && <p className="text-sm text-stone-500">Loading runs…</p>
+      ) : runs.length === 0 ? (
+        <p className="text-sm text-stone-500">No pipeline runs include this experiment&apos;s scans yet.</p>
+      ) : (
+        <ul className="divide-y divide-stone-200 text-sm">
+          {runs.map((run) => (
+            <li key={run.id} data-testid={`panel-run-${run.id}`} className="flex items-start justify-between gap-4 py-2">
+              <div>
+                <Link href={`/app/cyl-pipeline-runs/${run.id}`} className="font-medium text-lime-700 hover:underline">
+                  Run {run.id}
+                </Link>
+                <div className="text-xs text-stone-500">{now === null ? "" : `started ${formatElapsed(run.created_at, now)} ago`}</div>
+              </div>
+              <RunState run={run} failedHref={`/app/cyl-pipeline-runs/${run.id}?status=failed`} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
