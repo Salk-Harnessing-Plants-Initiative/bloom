@@ -63,8 +63,8 @@ import argparse
 import json
 import sys
 import uuid
-from datetime import datetime, timezone
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from bloom_mcp.audit_scope import (
@@ -261,8 +261,8 @@ def write_report(
 
     Adds `scanned_at` (ISO-8601 UTC), `storage_backend`, `scope_note`, and
     `experiment_scope` (which experiments this run covered -- `{"mode": "all"}`
-    for a full sweep; bloom#919) to the payload itself (not only this module's docstring, and not only the
-    object's key) so the report stays interpretable -- including its own
+    for a full sweep; bloom#919) to the payload itself (not only this
+    module's docstring, and not only the object's key) so the report stays interpretable -- including its own
     detection-scope caveat -- if later moved, renamed, or copied elsewhere
     (e.g. pasted into a ticket with no memory of this script's source).
     Writes under a dedicated `_audit_reports/` prefix, distinct from any

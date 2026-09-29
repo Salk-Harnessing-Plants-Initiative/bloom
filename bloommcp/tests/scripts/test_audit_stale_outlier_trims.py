@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from manifest_fixtures import append_cleaned_version, write_cleaned_manifest
+from manifest_fixtures import is_root_listing, spy_backend_listings
 
 _SCRIPT_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "audit_stale_outlier_trims.py"
@@ -739,30 +740,6 @@ def _seed_superseded_trim(local_manifest_backend: Path, stem: str) -> None:
         )
 
 
-def _spy_backend_listings(monkeypatch) -> list[str]:
-    """Record every prefix the cached active backend is asked to list.
-
-    Wraps the backend instance itself, so it sees calls from every module (this
-    script's `list_prefix` binding, `manifest.read_manifest`, `trim_staleness`).
-    """
-    import bloom_mcp.storage_backend as sb
-
-    backend = sb.active_backend()
-    original = backend.list_prefix
-    calls: list[str] = []
-
-    def _spy(prefix):
-        calls.append(prefix)
-        return original(prefix)
-
-    monkeypatch.setattr(backend, "list_prefix", _spy)
-    return calls
-
-
-def _is_root_listing(prefix: str) -> bool:
-    return prefix.strip("/") in ("", "bloommcp_output")
-
-
 def test_scoped_scan_never_lists_the_shared_root(local_manifest_backend, monkeypatch):
     _seed_superseded_trim(local_manifest_backend, "exp_a")
     write_cleaned_manifest(
@@ -776,12 +753,12 @@ def test_scoped_scan_never_lists_the_shared_root(local_manifest_backend, monkeyp
         based_on_version="v3_cleaned",
     )
     _seed_superseded_trim(local_manifest_backend, "exp_b")
-    calls = _spy_backend_listings(monkeypatch)
+    calls = spy_backend_listings(monkeypatch)
 
     report = audit.scan_for_stale_outlier_trims(experiments=["exp_a.csv"])
 
     assert calls, "expected per-experiment listings"
-    assert not [p for p in calls if _is_root_listing(p)]
+    assert not [p for p in calls if is_root_listing(p)]
     assert all(
         p.startswith(("bloommcp_output/qc_exp_a/", "bloommcp_output/outliers_exp_a/"))
         for p in calls
@@ -941,7 +918,7 @@ def test_run_ignores_the_host_processs_argv(local_manifest_backend, monkeypatch)
 def test_run_rejects_prefix_escaping_values_before_any_storage_access(
     local_manifest_backend, monkeypatch, capsys, value
 ):
-    calls = _spy_backend_listings(monkeypatch)
+    calls = spy_backend_listings(monkeypatch)
 
     code = audit.run(["--experiment", value])
 

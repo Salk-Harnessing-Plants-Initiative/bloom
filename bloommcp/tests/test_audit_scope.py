@@ -14,8 +14,8 @@ import sys
 import pytest
 
 from bloom_mcp.audit_scope import (
-    all_requested_failed,
     ScopedExperiment,
+    all_requested_failed,
     experiment_scope_record,
     resolve_experiment_scope,
     summary_prefix,
@@ -130,5 +130,6 @@ def test_module_imports_with_no_environment():
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
