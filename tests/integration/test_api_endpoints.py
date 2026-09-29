@@ -64,6 +64,7 @@ HEADER_ROUTES = [
     "/api/oauth/consent",  # exact path -> bloom-web
     "/api/cyl/scans/1/video",  # /api/cyl/* -> bloom-web (prefix preserved)
     "/api/gravi/experiments/1/plate-video",  # /api/gravi/* -> bloom-web (prefix preserved)
+    "/api/scrna/cellranger/runs",  # /api/scrna/* -> bloom-web (prefix preserved)
     "/api/auth/v1/health",  # /api/* -> kong -> gotrue
     "/api/rest/v1/",  # /api/* -> kong -> postgrest
     "/api/storage/v1/bucket",  # /api/* -> kong -> storage-api
@@ -282,8 +283,29 @@ def test_generate_route_does_not_serve_reads(api):
     assert status == 405, f"expected 405 (no GET handler), got {status}"
 
 
+SCRNA_RUNS = "/api/scrna/cellranger/runs"
+
+
+def test_caddy_routes_scrna_runs_to_bloom_web_not_kong(api):
+    """Caddy sends /api/scrna/* to bloom-web with the /api prefix intact.
+
+    A POST with no body is the probe: the route refuses a body that isn't JSON before
+    the session lookup and the upstream call, so this needs no cookie and starts no run."""
+    status, body = api(SCRNA_RUNS, method="POST")
+    assert status == 400, (
+        f"POST {SCRNA_RUNS}: expected 400, got {status} — "
+        f"401 = Kong's catch-all answered, 404 = reached bloom-web but not the "
+        f"route (prefix stripped, or handler moved). Body: {body!r}"
+    )
+    assert isinstance(body, dict), f"expected JSON object, got {body!r}"
+    assert "must be JSON" in str(body.get("detail", "")), (
+        f"400 did not come from the route's body check: {body!r}"
+    )
+
+
 def test_other_api_traffic_still_reaches_kong(api, anon_key):
-    """The /api/cyl/* exception must not divert the rest of /api/* to bloom-web."""
+    """The /api/cyl/* and /api/scrna/* exceptions must not divert the rest of /api/* to
+    bloom-web."""
     status, _ = api("/api/auth/v1/health", api_key=anon_key)
     assert status == 200, f"/api/auth/v1/health must still reach Kong, got {status}"
 
