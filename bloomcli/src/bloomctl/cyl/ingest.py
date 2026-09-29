@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -591,10 +590,13 @@ def map_rpc_error(message: str | None, *, profile: str | None = None) -> str:
 
 
 def resolve_argo_workflow_name() -> str | None:
-    """`ARGO_WORKFLOW_NAME` when set and non-empty (Argo sets it inside the
-    write-back container — see sleap-roots-write-back-template.yaml), else
-    None for the existing manual/ad-hoc invocation shape."""
-    return os.environ.get("ARGO_WORKFLOW_NAME") or None
+    """The run identity: `sleap_roots_contracts.pipeline_run_id_from_env()`, the
+    whitespace-stripped `ARGO_WORKFLOW_NAME` (Argo sets it inside the write-back container —
+    see sleap-roots-write-back-template.yaml), or None when it is unset or blank (the manual/
+    ad-hoc invocation shape). The single definition behind manifest resolution,
+    `p_argo_workflow_name` and reconciliation, so they can never target different workflow
+    names (bloom #934)."""
+    return pipeline_run_id_from_env()
 
 
 def call_insert_envelope(
@@ -1088,7 +1090,7 @@ def batch_ingest_result(
     argo_workflow_name = resolve_argo_workflow_name()
 
     try:
-        discovered = discover_envelopes(envelopes_dir, pipeline_run_id_from_env())
+        discovered = discover_envelopes(envelopes_dir, argo_workflow_name)
     except RunManifestNotFoundError as exc:
         # The run knows its identity but has no manifest, so no scope exists. Ingesting
         # every envelope in a directory every run shares would silently widen scope

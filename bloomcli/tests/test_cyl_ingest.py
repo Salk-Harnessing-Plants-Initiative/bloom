@@ -277,6 +277,34 @@ def test_resolve_argo_workflow_name_returns_none_when_empty(monkeypatch):
     assert ing.resolve_argo_workflow_name() is None
 
 
+def test_resolve_argo_workflow_name_is_the_stripped_run_identity(monkeypatch):
+    """One run identity everywhere (bloom #934): the same stripped value the run manifest is
+    resolved with, so status updates and reconciliation target the same workflow name."""
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", " wf-x\n")
+    assert ing.resolve_argo_workflow_name() == "wf-x"
+
+
+def test_resolve_argo_workflow_name_treats_blank_as_unset(monkeypatch):
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "   ")
+    assert ing.resolve_argo_workflow_name() is None
+
+
+def test_ingest_one_envelope_threads_the_stripped_workflow_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", " wf-x\n")
+    captured = {}
+
+    def cap(client, env, **kw):
+        captured.update(kw)
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", cap)
+    envelope_path = tmp_path / "scan_1.result.json"
+    envelope_path.write_text(json.dumps(ENVELOPE), encoding="utf-8")
+
+    assert ing.ingest_one_envelope(object(), envelope_path).status == "ok"
+    assert captured == {"argo_workflow_name": "wf-x"}
+
+
 def test_ingest_one_envelope_threads_argo_workflow_name_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-batch-1")
     captured = {}
@@ -2641,11 +2669,20 @@ def _record_reconcile(monkeypatch):
     return calls
 
 
-def _record_inserts(monkeypatch):
-    inserted = []
+class _Inserts(list):
+    """scan_keys inserted, in order; `.workflow_names` holds each call's `argo_workflow_name`."""
 
-    def _insert(client, env, **_kw):
+    def __init__(self):
+        super().__init__()
+        self.workflow_names = []
+
+
+def _record_inserts(monkeypatch):
+    inserted = _Inserts()
+
+    def _insert(client, env, **kw):
         inserted.append(env["provenance"]["scan_key"])
+        inserted.workflow_names.append(kw.get("argo_workflow_name"))
         return RESULT_OK
 
     monkeypatch.setattr(ing, "call_insert_envelope", _insert)
@@ -2760,7 +2797,7 @@ def test_batch_ingest_cli_padded_run_id_scopes_to_its_per_run_manifest(monkeypat
     _patch_batch_authed(monkeypatch)
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", " wf-a\n")
     inserted = _record_inserts(monkeypatch)
-    _record_reconcile(monkeypatch)
+    reconciled = _record_reconcile(monkeypatch)
     _write_envelope(tmp_path, "scan_1")
     _write_envelope(tmp_path, "scan_2")
     _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
@@ -2769,14 +2806,15 @@ def test_batch_ingest_cli_padded_run_id_scopes_to_its_per_run_manifest(monkeypat
 
     assert result.exit_code == 0, result.output
     assert inserted == ["scan_1"]
+    # One run identity everywhere: the insert and the reconcile use the stripped value too.
+    assert inserted.workflow_names == ["wf-a"]
+    assert reconciled == ["wf-a"]
 
 
 @pytest.mark.parametrize("with_envelopes", [True, False], ids=["envelopes", "empty-dir"])
-def test_batch_ingest_cli_blank_run_id_is_unscoped_but_still_reconciles_once(
-    monkeypatch, tmp_path, with_envelopes
-):
-    """(guard: the pre-#934 reader behaved the same.) A blank value resolves no run
-    identity, but the reconciliation call still receives the raw value (design Decision 3)."""
+def test_batch_ingest_cli_blank_run_id_is_no_run_identity(monkeypatch, tmp_path, with_envelopes):
+    """A blank value is no run identity: unscoped, no status linkage, no reconciliation call,
+    the same as unset (design Decision 3)."""
     _patch_batch_authed(monkeypatch)
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", "   ")
     inserted = _record_inserts(monkeypatch)
@@ -2789,7 +2827,8 @@ def test_batch_ingest_cli_blank_run_id_is_unscoped_but_still_reconciles_once(
 
     assert result.exit_code == 0, result.output
     assert sorted(inserted) == (["scan_1", "scan_2"] if with_envelopes else [])
-    assert reconciled == ["   "]
+    assert inserted.workflow_names == ([None, None] if with_envelopes else [])
+    assert reconciled == []
 
 
 def test_batch_ingest_cli_missing_scan_key_message_names_the_manifest(monkeypatch, tmp_path):

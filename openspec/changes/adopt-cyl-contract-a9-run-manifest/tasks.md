@@ -198,7 +198,7 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
 The user decided two points in the review: a legacy file naming another run is no manifest for this run, and there is one run identity everywhere. The specs and design above already reflect both. Each item below is RED then GREEN in one commit, per Section 9's rules.
 
 - [x] 11.1 Specs, design, proposal and tasks updated, and `cyl-ingest-cli` "Cyl ingest command reads an envelope from a path or stdin" taken over from `fix-cyl-pipeline-run-scan-status` (its delta file removed there). `openspec validate --strict` passes for both changes, and a header grep shows one owner per modified requirement. (commit G)
-- [ ] 11.2 **One run identity.**
+- [x] 11.2 **One run identity.**
   - RED:
     - `ARGO_WORKFLOW_NAME=" wf-x\n"` on `ingest-result` gives `p_argo_workflow_name == "wf-x"`.
     - `"   "` omits the key.
