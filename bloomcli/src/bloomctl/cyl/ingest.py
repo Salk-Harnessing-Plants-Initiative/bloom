@@ -43,7 +43,8 @@ class EnvelopeValidationError(EnvelopeError):
 
 
 class RunManifestNotFoundError(EnvelopeError):
-    """A run identity is set but neither its per-run manifest nor the legacy one exists
+    """A run identity is set but there is no manifest for this run: neither its per-run
+    manifest nor the legacy one exists, or the only file is a legacy one naming a different run
     (bloom #934). Distinct from every other manifest failure because it alone still makes the
     end-of-batch reconciliation call before the batch fails."""
 
@@ -114,10 +115,11 @@ def discover_envelopes(
     from ``pipeline_run_id_from_env()``, or ``None``):
 
     - with a run identity: ``run_manifest.<id>.json``, else the legacy ``run_manifest.json``
-      (``allow_legacy=True`` during the rollout; sleap-roots-pipeline#82 turns it off). If
-      neither exists, raises ``RunManifestNotFoundError`` rather than discovering unscoped
-      over a directory every run shares (sleap-roots-pipeline#71 design section 2.2). A legacy
-      fallback that names another run is used, with a warning.
+      only if it names this run (``allow_legacy=True`` during the rollout;
+      sleap-roots-pipeline#82 turns it off). With no manifest for this run — neither file, or
+      only a legacy one naming a different run — raises ``RunManifestNotFoundError`` rather
+      than discovering unscoped over a directory every run shares, or scoping to another run
+      (sleap-roots-pipeline#71 design section 2.2).
     - without one: only ``run_manifest.json``; absent means fully unscoped discovery.
 
     When a manifest resolves, only files whose filename stem is in its ``scan_keys`` are
@@ -1141,37 +1143,10 @@ def batch_ingest_result(
     ]
 
     if not discovered.paths and not missing_results:
-        # Still reconcile when ARGO_WORKFLOW_NAME is set — even an empty batch
-        # (every scan's prediction failed before producing any file at all)
-        # must close out this workflow's scans as 'failed', not leave them
-        # 'queued' forever. Unset, this is the pre-existing manual/local
-        # no-envelopes-no-manifest shape: no client, no RPC call, unchanged.
-        if argo_workflow_name:
-            from ..cli import _authed_client
-
-            client = _authed_client(profile)
-            reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
-            if reconcile_failure is not None:
-                batch_result = BatchResult([reconcile_failure])
-                if as_json:
-                    click.echo(format_json(batch_result))
-                else:
-                    click.echo(
-                        format_summary(
-                            batch_result,
-                            verb="Ingested",
-                            noun="envelope",
-                            destination=str(envelopes_dir),
-                        )
-                    )
-                # needs_retry, not batch_result.ok — same reasoning as the main path's
-                # exit check below (round 5 finding): today this is always True here
-                # (a reconciliation-call failure is always constructed with the
-                # retriable=True default), but checking needs_retry keeps this branch
-                # from silently reintroducing round 5's cascade if a future change
-                # ever marks a reconciliation failure non-retriable.
-                if batch_result.needs_retry:
-                    ctx.exit(1)
+        # Reachable only without a run identity (bloom #934): with one, a resolved manifest
+        # declares at least one scan_key, and no manifest for this run is the
+        # RunManifestNotFoundError path above. So this is the manual/local
+        # no-envelopes-no-manifest shape: no client, no RPC call.
         click.echo("No envelope files found; nothing to ingest.")
         return
 

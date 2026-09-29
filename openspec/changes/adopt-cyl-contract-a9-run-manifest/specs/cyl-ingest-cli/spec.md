@@ -59,7 +59,7 @@ run's `failed_count` and is not a new one.
 
 - **WHEN** the command runs with the `ARGO_WORKFLOW_NAME` environment variable set (as Argo sets it
   inside the write-back container), ingesting a valid envelope
-- **THEN** the RPC call includes `p_argo_workflow_name` equal to that environment variable's value
+- **THEN** the RPC call includes `p_argo_workflow_name` equal to that value, whitespace-stripped
 
 #### Scenario: A whitespace-padded ARGO_WORKFLOW_NAME is sent stripped
 

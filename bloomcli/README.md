@@ -723,14 +723,14 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   and no manifest was needed (`ARGO_WORKFLOW_NAME` unset, empty directory, no
   `run_manifest.json`). A directory containing only a manifest with no
   matching files is not the empty case — it exits non-zero. A missing or
-  unreadable `envelopes_dir`, or a manifest that can't be read or names the
-  wrong run, exits `1` before anything is ingested.
+  unreadable `envelopes_dir`, or a manifest that can't be read, or a per-run
+  manifest naming the wrong run, exits `1` before anything is ingested.
 - When `ARGO_WORKFLOW_NAME` is set (and not blank), after every discovered envelope has been
   processed, marks every scan dispatched under that workflow name that never
   produced a result as `'failed'` (one call, regardless of batch size —
   including a batch of zero envelopes, since every scan under that workflow
   name having failed prediction before producing any file is exactly the
-  case this closes out). Skipped entirely when the env var is unset (manual/
+  case this closes out). Skipped entirely when the env var is unset or blank (manual/
   local runs, unaffected). A failure of this call is isolated, not a crash —
   it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
   batch's summary/`--json` output and reflected in the exit code, alongside

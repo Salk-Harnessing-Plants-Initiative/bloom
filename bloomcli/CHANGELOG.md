@@ -51,8 +51,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `ARGO_WORKFLOW_NAME` that cannot name a file exits `1` before anything is staged
   (bloom #934).
 - **Breaking:** `cyl batch-ingest-result` reads the run's manifest by name
-  (`run_manifest.<ARGO_WORKFLOW_NAME>.json`, falling back to a `run_manifest.json` only if
-  that file names this run). When `ARGO_WORKFLOW_NAME` is set and there is no manifest for
+  (`run_manifest.<ARGO_WORKFLOW_NAME>.json`, falling back, with
+  `ARGO_WORKFLOW_NAME` set, to a `run_manifest.json` only if that file names this run). When `ARGO_WORKFLOW_NAME` is set and there is no manifest for
   this run — neither file, or only a legacy file naming another run — it ingests nothing
   (instead of every envelope in the directory, or another run's scope), reports a failed
   `<run-manifest>` entry, still closes out the workflow's unresolved scans with a message

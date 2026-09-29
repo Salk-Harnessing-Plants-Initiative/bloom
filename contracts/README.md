@@ -45,8 +45,8 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
 > naming helpers shared by writers and readers (`run_manifest_filename`, `pipeline_run_id_from_env`,
 > `run_manifest_name_for_writing`) and the reader entry
 > point `load_run_manifest`. It is additive (`RunManifest`/`RUN_MANIFEST_FILENAME` are unchanged).
-> With `ARGO_WORKFLOW_NAME` set, `bloomctl` (bloom #934) writes and reads `run_manifest.<id>.json` (reads fall back to the legacy name via
-> `allow_legacy=True` until `talmolab/sleap-roots-pipeline#82`); without it, it uses
+> With `ARGO_WORKFLOW_NAME` set, `bloomctl` (bloom #934) writes and reads `run_manifest.<id>.json` (reads fall back to a legacy `run_manifest.json`
+> only when it names this run, via `allow_legacy=True`, until `talmolab/sleap-roots-pipeline#82`); without it, it uses
 > `run_manifest.json`. The write-back RPC's
 > literal moved to `a9` in the same change — see
 > `supabase/migrations/20260928130000_cyl_writeback_contract_a9.sql`.

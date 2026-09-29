@@ -21,11 +21,11 @@ The details and rationale are in `design.md`, Decisions 1–6.
   - `local-<8 hex>` is only ever stamped inside the file, never used to name it.
   - A run id the contract rejects fails with exit `1` before authenticating or staging (empty input still exits `0`).
 - **BREAKING, writer:** it overwrites its own file with this invocation's usable keys, and never reads or unions an existing manifest. That holds whether or not there is a run id. The manifest lock is kept.
-- **Reader:** it resolves the manifest with `load_run_manifest(dir, pipeline_run_id_from_env(), allow_legacy=True)`, accepting a legacy file only when it names this run.
+- **Reader:** it resolves the manifest with `load_run_manifest(dir, pipeline_run_id_from_env(), allow_legacy=True)`, and, with a run id, accepting a legacy file only when it names this run.
 - **BREAKING, reader:**
   - When a run id is set and there is no manifest for this run, it fails loudly instead of ingesting every envelope. No manifest means neither file exists, or only a legacy file naming a different run. It still makes the reconciliation call, with a message saying no run manifest reached write-back, then exits `1`.
   - A per-run file naming another run, or an invalid run id, also fails loudly.
-  - With no run id, behavior is unchanged.
+  - With `ARGO_WORKFLOW_NAME` unset, behavior is unchanged; a blank value now behaves like unset.
 - **BREAKING, run identity:** `ingest-result` and `batch-ingest-result` use the one stripped value `pipeline_run_id_from_env()` for manifest resolution, `p_argo_workflow_name` and reconciliation. A blank `ARGO_WORKFLOW_NAME` is now the same as unset.
 - **Specs:**
   - Update `cyl-batch-download-for-predict`, `cyl-batch-ingest-result`, `cyl-ingest-cli`, `cyl-pipeline-runs` and `cyl-pipeline-status-polling`.

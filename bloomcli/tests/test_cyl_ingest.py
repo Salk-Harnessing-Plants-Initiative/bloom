@@ -443,6 +443,41 @@ def test_cli_happy_path(monkeypatch):
     assert "55" in res.output
 
 
+def _capture_insert_kwargs(monkeypatch):
+    captured = []
+
+    def _insert(client, env, **kw):
+        captured.append(kw)
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _insert)
+    return captured
+
+
+def test_cli_sends_a_padded_workflow_name_stripped(monkeypatch):
+    """cyl-ingest-cli: the single-envelope command sends the same stripped run identity
+    batch-ingest-result scopes and reconciles with (bloom #934)."""
+    _patch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", " wf-a\n")
+    captured = _capture_insert_kwargs(monkeypatch)
+
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+
+    assert res.exit_code == 0, res.output
+    assert captured == [{"argo_workflow_name": "wf-a"}]
+
+
+def test_cli_blank_workflow_name_omits_it(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "   ")
+    captured = _capture_insert_kwargs(monkeypatch)
+
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+
+    assert res.exit_code == 0, res.output
+    assert captured == [{"argo_workflow_name": None}]
+
+
 def test_cli_reports_status_update_mismatch_as_a_failure(monkeypatch):
     """Same round-4 finding as ingest_one_envelope's — the single-envelope command
     must also surface a genuinely-successful write whose status linkage was
@@ -2792,6 +2827,7 @@ def test_batch_ingest_cli_legacy_manifest_naming_another_run_fails_loud_and_reco
     assert result.exit_code == 1
     assert inserted == [], "must not ingest another run's scope"
     assert reconciled == ["wf-a"]
+    assert reconciled.error_messages == [ing.NO_RUN_MANIFEST_MESSAGE]
     entry = {e["scan_key"]: e for e in json.loads(result.output)}["<run-manifest>"]
     assert "wf-a" in entry["error"] and "wf-old" in entry["error"]
 

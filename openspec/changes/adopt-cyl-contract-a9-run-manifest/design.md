@@ -13,7 +13,7 @@ The design of record is sleap-roots-pipeline `docs/superpowers/specs/2026-09-21-
 
 ## Decision 1: The file name is keyed to the run id from the environment, not to the stamped id
 
-`resolve_pipeline_run_id()` returns `ARGO_WORKFLOW_NAME` or a fresh `local-<uuid8>`. A reader cannot reproduce another process's placeholder. Naming the file after it would mean `run_manifest.local-ab12cd34.json`, which no reader without a run id looks for, so local scoping would break end to end (D §2.3).
+The old writer's `resolve_pipeline_run_id()` (now `stamped_pipeline_run_id(run_id)`) returned `ARGO_WORKFLOW_NAME` or a fresh `local-<uuid8>`. A reader cannot reproduce another process's placeholder. Naming the file after it would mean `run_manifest.local-ab12cd34.json`, which no reader without a run id looks for, so local scoping would break end to end (D §2.3).
 
 The writer therefore does this:
 
@@ -69,7 +69,7 @@ If an invocation finds nothing usable, it still skips the write, because `RunMan
 - **Why:** scoping to it would make write-back ingest the other run's envelopes as no-ops (non-retriable status mismatches), mark every real scan of this run `'failed'`, and exit `0`. The Workflow would then read Succeeded with `failed_count = scan_count`.
 - **When it matters:** before row 6 deletes the three stale `hpdpf` files, whenever traits fails to forward this run's manifest or the downloader stages nothing.
 - **Why only write-back:** predict and traits still fall back with a warning, per their own a9 adoption, but write-back is the stage that writes to the database.
-- **Its effect on `allow_legacy=True`:** for write-back the flag now only admits a legacy file stamped with this very run, which in practice means a rollback-era writer inside the same workflow.
+- **Its effect on `allow_legacy=True`:** with a run id, for write-back the flag now only admits a legacy file stamped with this very run, which in practice means a rollback-era writer inside the same workflow.
 
 Every failure keeps the existing `EnvelopeError` → `ClickException` path:
 
@@ -141,7 +141,7 @@ Its `cyl_pipeline_runs` delta was already stale. It predates the exit-gate block
 
 Because archiving replaces a requirement wholesale, two active changes on one requirement silently revert each other, and `--strict` cannot see it.
 
-This change therefore takes over all three requirements. Its MODIFIED blocks are the live text, plus the other change's intended additions (the end-of-batch reconciliation and `retriable` exit semantics, already implemented by #774), plus this change's own edits. That change's blocks for them are removed. The `cyl-ingest-cli` block is that change's delta (live text plus its additions) with "`os.environ[...]`, set and non-empty" replaced by the stripped run identity.
+This change therefore takes over all three requirements. Its MODIFIED blocks are the live text, plus the other change's intended additions (the end-of-batch reconciliation and `retriable` exit semantics, already implemented by #774), plus this change's own edits. That change's blocks for them are removed. The `cyl-ingest-cli` block is that change's delta (live text plus its additions) with "`os.environ[...]`, set and non-empty" replaced by the stripped run identity, and two scenarios added (a padded value is sent stripped; a blank one is omitted).
 
 Its remaining deltas were each compared with the live spec. Only `cyl-trait-writeback` "Write-back RPC ingests a ResultEnvelope" was stale: a later archived change had grown it. It is rebuilt as the live text plus that change's one unarchived scenario, plus one explanatory sentence on `status_update_matched` that the later change had dropped without comment. Its `cyl-pipeline-status-polling` deltas were written against text that is still live, and they are left as they are.
 
@@ -151,7 +151,11 @@ Both changes archive together after row 6's Bloom-dispatched E2E, which also sup
 
 Merging to `staging` builds `bloomctl:sha-<new>` and moves the mutable `:staging` tag. That tag only affects people running `docker run …:staging` by hand, since no template or automation references `:staging` or `:latest`.
 
-No pipeline runs the new image until row 6 re-pins `images-downloader`, `write-back` and `exit-gate` together in one step. The exit gate runs no bloomctl command; it reuses the image only for its shell. That single pin bump flips the writer and write-back's reader at the same moment.
+No pipeline runs the new image until row 6 re-pins `images-downloader`, `write-back` and `exit-gate`. The exit gate runs no bloomctl command; it reuses the image only for its shell. The pin bump flips the writer and write-back's reader together, but `argo template update` of several templates is not atomic, and a workflow in flight can straddle it.
+
+- **New writer with old write-back is unsafe.** The downloader writes only `run_manifest.<wf>.json`. The old write-back reads only `run_manifest.json`, which is either stale (another run's scope) or absent (unscoped), so it ingests the wrong envelopes.
+- **Old writer with new write-back is safe.** The old writer stamps the legacy file with its own workflow name, which the new write-back accepts as this run's.
+- **So:** drain first, and update `write-back` before `images-downloader` going forward. On rollback, revert `images-downloader` before `write-back`.
 
 The pin bump from `sha-28034f6` also ships every bloomcli change merged to staging since then: #880 (write-back redelivery fallback), #882 (an anyio CVE bump in `bloomcli/uv.lock` only), #884 (`cyl create-test-scan`) and #861 (`scrna hdf5`). #880 changes write-back behavior and gets its first live run in row 6's end-to-end test.
 
