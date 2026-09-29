@@ -26,6 +26,7 @@ from sleap_roots_contracts import (
     RunManifestMissingError,
     load_run_manifest,
     pipeline_run_id_from_env,
+    run_manifest_filename,
 )
 
 from ..credentials import DEFAULT_PROFILE
@@ -154,13 +155,13 @@ def discover_envelopes(
         and not loaded.read.is_per_run
         and manifest.pipeline_run_id != pipeline_run_id
     ):
-        logger.warning(
-            "No %s in %s; falling back to %s, which names run %r, not this run %r",
-            f"run_manifest.{pipeline_run_id}.json",
-            path.as_posix(),
-            manifest_filename,
-            manifest.pipeline_run_id,
-            pipeline_run_id,
+        # With a run identity this image's own writer never writes the legacy name, so a legacy
+        # file naming a different run is stale or another run's. Scoping to it would ingest that
+        # run's envelopes and mark every real scan of this run failed (PR #940 review).
+        raise RunManifestNotFoundError(
+            f"no {run_manifest_filename(pipeline_run_id)} in {path.as_posix()}, and "
+            f"{manifest_filename} names run {manifest.pipeline_run_id!r}, not this run "
+            f"{pipeline_run_id!r}"
         )
 
     scoped_keys = set(manifest.scan_keys)
@@ -625,19 +626,34 @@ _SIGNATURE_NOT_FOUND_CODE = "PGRST202"
 _RECONCILE_RPC_NAME = "fail_cyl_pipeline_run_scans_without_result"
 
 
-def reconcile_unresolved_scans(client: Any, argo_workflow_name: str) -> int:
+NO_RESULT_MESSAGE = "no result produced for this scan by write-back"
+NO_RUN_MANIFEST_MESSAGE = (
+    "write-back found no run manifest for this run, so nothing was ingested; the scan's "
+    "result may exist — re-dispatch the run"
+)
+# scan_key of the synthetic batch entries that report a batch-level failure rather than one
+# envelope's: no run manifest for this run, and a failed reconciliation call.
+RUN_MANIFEST_SCAN_KEY = "<run-manifest>"
+RECONCILIATION_SCAN_KEY = "<reconciliation>"
+
+
+def reconcile_unresolved_scans(
+    client: Any, argo_workflow_name: str, *, error_message: str = NO_RESULT_MESSAGE
+) -> int:
     """Close out, as `'failed'`, any scan dispatched under `argo_workflow_name`
     that write-back never resolved either way — a prediction failure before
     write-back was ever attempted, or an envelope otherwise never produced
     (including the "manifest-declared scan_key with no matching file" case).
-    Called once, at the end of a batch, only when `ARGO_WORKFLOW_NAME` is set.
-    Returns the number of scans marked failed."""
+    Called once, at the end of a batch, only when there is a run identity.
+    `error_message` is recorded on each closed-out row, the only durable record of why;
+    the no-run-manifest path passes `NO_RUN_MANIFEST_MESSAGE`, since there the envelopes may
+    well exist (bloom #934). Returns the number of scans marked failed."""
     result = (
         client.rpc(
             "fail_cyl_pipeline_run_scans_without_result",
             {
                 "p_argo_workflow_name": argo_workflow_name,
-                "p_error_message": "no result produced for this scan by write-back",
+                "p_error_message": error_message,
             },
         )
         .execute()
@@ -646,7 +662,9 @@ def reconcile_unresolved_scans(client: Any, argo_workflow_name: str) -> int:
     return result or 0
 
 
-def _reconcile_unresolved_scans_result(client: Any, argo_workflow_name: str) -> ScanResult | None:
+def _reconcile_unresolved_scans_result(
+    client: Any, argo_workflow_name: str, *, error_message: str | None = None
+) -> ScanResult | None:
     """Call `reconcile_unresolved_scans`, isolating any failure instead of raising — matching
     the per-envelope isolation the rest of this file already gives every other RPC call, so a
     transient error on this one closing call can never crash a batch whose every envelope may
@@ -660,7 +678,10 @@ def _reconcile_unresolved_scans_result(client: Any, argo_workflow_name: str) -> 
     from postgrest import APIError
 
     try:
-        count = reconcile_unresolved_scans(client, argo_workflow_name)
+        # Only pass a message when the caller chose one, so the normal path keeps the RPC
+        # helper's own default.
+        extra = {} if error_message is None else {"error_message": error_message}
+        count = reconcile_unresolved_scans(client, argo_workflow_name, **extra)
     except APIError as exc:
         # Deliberately NOT map_rpc_error: that mapper's hints (e.g. "permission
         # denied" -> "log in with a bloom_writer / bloom_admin account") are
@@ -1089,41 +1110,25 @@ def batch_ingest_result(
     batch); exits non-zero if any failure is retriable."""
     argo_workflow_name = resolve_argo_workflow_name()
 
+    manifest_results: list[ScanResult] = []
+    reconcile_message: str | None = None
     try:
         discovered = discover_envelopes(envelopes_dir, argo_workflow_name)
     except RunManifestNotFoundError as exc:
-        # The run knows its identity but has no manifest, so no scope exists. Ingesting
-        # every envelope in a directory every run shares would silently widen scope
-        # (bloom #934). Still close out this workflow's scans, as the normal path does.
-        from ..cli import _authed_client
-
-        client = _authed_client(profile)
-        scan_results = [
-            ScanResult(
-                "<run-manifest>",
-                "failed",
-                f"{exc}; nothing was ingested",
-            )
+        # The run knows its identity but has no manifest of its own, so no scope exists.
+        # Ingesting every envelope in a directory every run shares — or another run's scope —
+        # would silently widen it (bloom #934). Ingest nothing, but still close out this
+        # workflow's scans through the normal path below. The entry is retriable so write-back,
+        # and with it the Workflow, ends Failed; a retry repeats the same idempotent outcome.
+        discovered = DiscoveredEnvelopes(paths=[], missing_scan_keys=[])
+        manifest_results = [
+            ScanResult(RUN_MANIFEST_SCAN_KEY, "failed", f"{exc}; nothing was ingested")
         ]
-        reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
-        if reconcile_failure is not None:
-            scan_results.append(reconcile_failure)
-        batch_result = BatchResult(scan_results)
-        if as_json:
-            click.echo(format_json(batch_result))
-        else:
-            click.echo(
-                format_summary(
-                    batch_result, verb="Ingested", noun="envelope", destination=str(envelopes_dir)
-                )
-            )
-        # Always retriable, so write-back (and with it the Workflow) ends Failed rather than
-        # succeeding with nothing ingested; a retry repeats the same idempotent outcome.
-        ctx.exit(1)
+        reconcile_message = NO_RUN_MANIFEST_MESSAGE
     except EnvelopeError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    missing_results = [
+    missing_results = manifest_results + [
         ScanResult(
             key,
             "failed",
@@ -1206,7 +1211,9 @@ def batch_ingest_result(
         scan_results = missing_results
 
     if argo_workflow_name:
-        reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
+        reconcile_failure = _reconcile_unresolved_scans_result(
+            client, argo_workflow_name, error_message=reconcile_message
+        )
         if reconcile_failure is not None:
             scan_results = [*scan_results, reconcile_failure]
 

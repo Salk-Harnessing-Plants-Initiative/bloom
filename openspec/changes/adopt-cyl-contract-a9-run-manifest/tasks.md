@@ -206,14 +206,14 @@ The user decided two points in the review: a legacy file naming another run is n
     - In the batch padded test, `_record_inserts` captures `argo_workflow_name`, and both it and the reconcile argument equal `"wf-a"`.
     - Blank `"   "` gives no reconcile call and inserts without `argo_workflow_name`. This replaces the old blank-reconciles guard.
   - GREEN: `resolve_argo_workflow_name()` returns `pipeline_run_id_from_env()`. `batch_ingest_result` reads the identity once and passes it to `discover_envelopes`.
-- [ ] 11.3 **A legacy file naming another run is no manifest for this run.**
+- [x] 11.3 **A legacy file naming another run is no manifest for this run.**
   - RED:
     - Discover level: raises `RunManifestNotFoundError`, and the message names both ids.
     - CLI level: no insert, one reconcile, a `"<run-manifest>"` entry naming both ids, exit `1`.
     - Same-run legacy still scopes, with no warning.
     - No-id legacy stamped with any id: scopes, zero WARNING records.
   - GREEN: in `discover_envelopes`, a non-per-run read whose `pipeline_run_id` differs from the identity raises `RunManifestNotFoundError`. Build the per-run name with `run_manifest_filename`. Remove the warning path.
-- [ ] 11.4 **The missing-manifest path goes through the normal tail, with a cause-specific reconcile message.**
+- [x] 11.4 **The missing-manifest path goes through the normal tail, with a cause-specific reconcile message.**
   - RED: the reconcile call receives an `error_message` saying no run manifest reached write-back. The normal path still sends "no result produced for this scan by write-back". The exit follows `needs_retry`.
   - GREEN:
     - `reconcile_unresolved_scans(client, name, *, error_message=...)` and `_reconcile_unresolved_scans_result(..., error_message=...)`.

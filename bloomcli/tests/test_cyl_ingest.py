@@ -251,6 +251,23 @@ def test_reconcile_unresolved_scans_sends_the_real_rpc_shape():
     assert count == 3
 
 
+def test_reconcile_unresolved_scans_passes_a_caller_supplied_error_message():
+    captured = {}
+
+    class _RPC:
+        def execute(self):
+            return type("R", (), {"data": 1})()
+
+    class _Client:
+        def rpc(self, name, params):
+            captured["params"] = params
+            return _RPC()
+
+    ing.reconcile_unresolved_scans(_Client(), "wf-abc", error_message="custom cause")
+
+    assert captured["params"]["p_error_message"] == "custom cause"
+
+
 def test_reconcile_unresolved_scans_returns_zero_when_rpc_returns_none():
     class _RPC:
         def execute(self):
@@ -1453,19 +1470,30 @@ def test_discover_envelopes_another_runs_per_run_manifest_is_ignored(tmp_path):
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
 
 
-def test_discover_envelopes_legacy_fallback_naming_another_run_warns(tmp_path, caplog):
+def test_discover_envelopes_legacy_file_naming_another_run_is_no_manifest(tmp_path):
+    """With a run identity, this image's writer never writes the legacy name, so a legacy file
+    naming a different run is stale or another run's: scoping to it would ingest that run's
+    envelopes (bloom #934, PR #940 review)."""
     _write_envelope(tmp_path, "scan_1")
-    _write_envelope(tmp_path, "scan_2")
     _write_run_manifest(tmp_path, scan_keys=["scan_1"], pipeline_run_id="wf-old")
 
+    with pytest.raises(ing.RunManifestNotFoundError) as excinfo:
+        ing.discover_envelopes(tmp_path, "wf-a")
+
+    assert "'wf-a'" in str(excinfo.value) and "'wf-old'" in str(excinfo.value)
+    assert RUN_MANIFEST_FILENAME in str(excinfo.value)
+
+
+def test_discover_envelopes_no_run_id_never_warns_about_the_legacy_manifests_id(tmp_path, caplog):
+    """Without a run identity the legacy file is the right name, whatever id it carries."""
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"], pipeline_run_id="wf-anything")
+
     with caplog.at_level("WARNING", logger="bloomctl.cyl.ingest"):
-        discovered = ing.discover_envelopes(tmp_path, "wf-a")
+        discovered = ing.discover_envelopes(tmp_path)
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
-    assert discovered.manifest_filename == RUN_MANIFEST_FILENAME
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert len(warnings) == 1
-    assert "wf-a" in warnings[0].message and "wf-old" in warnings[0].message
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
 def test_discover_envelopes_legacy_fallback_naming_the_same_run_is_quiet(tmp_path, caplog):
@@ -1741,7 +1769,7 @@ def test_batch_ingest_cli_isolates_unreadable_file_among_several(monkeypatch, tm
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     calls = []
     monkeypatch.setattr(
-        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+        ing, "reconcile_unresolved_scans", lambda client, name, **_kw: calls.append(name) or 0
     )
     _write_envelope(tmp_path, "scan_1")
     (tmp_path / "scan_corrupt.result.json").write_bytes(b"\xff\xfe\x00bad-utf8")
@@ -1956,7 +1984,7 @@ def test_batch_ingest_cli_reconciles_after_all_envelopes_when_workflow_name_set(
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
     calls = []
     monkeypatch.setattr(
-        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+        ing, "reconcile_unresolved_scans", lambda client, name, **_kw: calls.append(name) or 0
     )
     for key in ("scan_1", "scan_2"):
         _write_envelope(tmp_path, key)
@@ -1971,7 +1999,7 @@ def test_batch_ingest_cli_no_reconcile_call_when_workflow_name_unset(monkeypatch
     _patch_batch_authed(monkeypatch)
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise AssertionError("must not be called when ARGO_WORKFLOW_NAME is unset")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
@@ -1995,7 +2023,7 @@ def test_batch_ingest_cli_reconciles_even_with_zero_envelopes(monkeypatch, tmp_p
     )
     calls = []
     monkeypatch.setattr(
-        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+        ing, "reconcile_unresolved_scans", lambda client, name, **_kw: calls.append(name) or 0
     )
     # no envelope files; the manifest declares scan_1
 
@@ -2020,7 +2048,7 @@ def test_batch_ingest_result_missing_scan_key_alone_still_reconciles_when_workfl
     )
     calls = []
     monkeypatch.setattr(
-        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
+        ing, "reconcile_unresolved_scans", lambda client, name, **_kw: calls.append(name) or 0
     )
     _write_per_run_manifest(tmp_path, "wf-missing-only", ["scan_1", "scan_2"])
 
@@ -2041,7 +2069,7 @@ def test_batch_ingest_cli_reconcile_failure_does_not_crash_and_is_reported(monke
     _write_per_run_manifest(tmp_path, 'wf-reconcile-boom', ['scan_1', 'scan_2'])
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error("simulated transient reconciliation failure")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
@@ -2078,7 +2106,7 @@ def test_batch_ingest_cli_reconcile_permission_error_does_not_name_the_wrong_rpc
     _write_per_run_manifest(tmp_path, 'wf-perm-denied', ['scan_1'])
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error("permission denied for function fail_cyl_pipeline_run_scans_without_result")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
@@ -2112,7 +2140,7 @@ def test_batch_ingest_cli_reconcile_permission_error_hints_at_bloom_workflows_ro
     _write_per_run_manifest(tmp_path, 'wf-perm-denied-hint', ['scan_1'])
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error(
             "permission denied for function fail_cyl_pipeline_run_scans_without_result"
         )
@@ -2137,7 +2165,7 @@ def test_batch_ingest_cli_reconcile_generic_error_has_no_role_hint(monkeypatch, 
     _write_per_run_manifest(tmp_path, 'wf-generic-error', ['scan_1'])
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error("simulated transient reconciliation failure")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
@@ -2163,7 +2191,7 @@ def test_batch_ingest_cli_reconcile_unrelated_permission_denied_gets_no_hint(mon
     _write_per_run_manifest(tmp_path, 'wf-unrelated-perm-denied', ['scan_1'])
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error("permission denied for relation some_other_unrelated_table")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
@@ -2194,7 +2222,7 @@ def test_batch_ingest_cli_reconcile_signature_not_found_is_reported_as_expected(
     _write_per_run_manifest(tmp_path, 'wf-pgrst202', ['scan_1'])
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error(
             "Could not find the function public.fail_cyl_pipeline_run_scans_without_result",
             code="PGRST202",
@@ -2224,7 +2252,7 @@ def test_batch_ingest_cli_reconcile_failure_on_a_missing_manifest_is_reported(
         climod, "_authed_client", lambda p: object()
     )
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error("simulated transient reconciliation failure")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
@@ -2252,7 +2280,7 @@ def test_batch_ingest_cli_reconcile_success_logs_the_reconciled_count(
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-logs-count")
     _write_per_run_manifest(tmp_path, 'wf-logs-count', ['scan_1'])
     monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: RESULT_OK)
-    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name: 3)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name, **_kw: 3)
     _write_envelope(tmp_path, "scan_1")
 
     with caplog.at_level("INFO", logger="bloomctl.cyl.ingest"):
@@ -2349,7 +2377,7 @@ def test_batch_ingest_cli_exits_zero_when_only_failure_is_a_status_update_mismat
         return RESULT_OK
 
     monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
-    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name: 0)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name, **_kw: 0)
     for key in ("scan_1", "scan_mismatch"):
         _write_envelope(tmp_path, key)
 
@@ -2381,7 +2409,7 @@ def test_batch_ingest_cli_exits_nonzero_when_a_genuine_failure_also_present(
         return RESULT_OK
 
     monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
-    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name: 0)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name, **_kw: 0)
     for key in ("scan_mismatch", "scan_timeout"):
         _write_envelope(tmp_path, key)
 
@@ -2410,7 +2438,7 @@ def test_batch_ingest_cli_exits_nonzero_when_mismatch_and_reconcile_failure_coex
         ing, "call_insert_envelope", lambda client, env, **_kw: {**RESULT_OK, "status_update_matched": False}
     )
 
-    def boom(client, name):
+    def boom(client, name, **_kw):
         raise _api_error("simulated transient reconciliation failure")
 
     monkeypatch.setattr(ing, "reconcile_unresolved_scans", boom)
@@ -2661,11 +2689,23 @@ def test_batch_ingest_result_mismatch_resolved_alongside_a_genuinely_missing_key
 # --- batch: run identity and the per-run manifest (bloom #934) ---------------
 
 
+class _Reconciles(list):
+    """workflow names reconciled, in order; `.error_messages` holds each call's message."""
+
+    def __init__(self):
+        super().__init__()
+        self.error_messages = []
+
+
 def _record_reconcile(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        ing, "reconcile_unresolved_scans", lambda client, name: calls.append(name) or 0
-    )
+    calls = _Reconciles()
+
+    def _reconcile(client, name, **kw):
+        calls.append(name)
+        calls.error_messages.append(kw.get("error_message"))
+        return 0
+
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", _reconcile)
     return calls
 
 
@@ -2704,12 +2744,49 @@ def test_batch_ingest_cli_run_id_with_no_manifest_fails_loud_and_still_reconcile
     assert isinstance(result.exception, SystemExit)
     assert inserted == [], "an unscoped fallback would ingest every envelope in the shared dir"
     assert reconciled == ["wf-a"]
+    # The scans' envelopes may exist, so the durable DB message must not say none was produced.
+    assert "run manifest" in reconciled.error_messages[0]
+    assert "no result produced" not in reconciled.error_messages[0]
     payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
     entry = payload["<run-manifest>"]
     assert entry["status"] == "failed"
     assert entry["retriable"] is True
     assert "run_manifest.wf-a.json" in entry["error"]
     assert RUN_MANIFEST_FILENAME in entry["error"]
+
+
+def test_batch_ingest_cli_legacy_manifest_naming_another_run_fails_loud_and_reconciles(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    inserted = _record_inserts(monkeypatch)
+    reconciled = _record_reconcile(monkeypatch)
+    _write_envelope(tmp_path, "scan_1")
+    _write_run_manifest(tmp_path, scan_keys=["scan_1"], pipeline_run_id="wf-old")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code == 1
+    assert inserted == [], "must not ingest another run's scope"
+    assert reconciled == ["wf-a"]
+    entry = {e["scan_key"]: e for e in json.loads(result.output)}["<run-manifest>"]
+    assert "wf-a" in entry["error"] and "wf-old" in entry["error"]
+
+
+def test_batch_ingest_cli_normal_reconcile_keeps_the_no_result_message(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    _record_inserts(monkeypatch)
+    reconciled = _record_reconcile(monkeypatch)
+    _write_envelope(tmp_path, "scan_1")
+    _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert reconciled == ["wf-a"]
+    assert reconciled.error_messages == [None], "the normal path uses the RPC default message"
 
 
 def test_batch_ingest_cli_run_id_with_no_manifest_default_output_names_it(monkeypatch, tmp_path):
