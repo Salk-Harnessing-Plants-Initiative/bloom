@@ -79,11 +79,14 @@ absence. A trait dead for *every* genotype collapses to one ``no_data_traits`` e
 one absent entry per genotype: at 19 genotypes a single dead trait would otherwise fill the
 20-slot cap by itself and evict every genuinely informative absence in the run.
 
-**``tight_layout`` is called on unbatched renders only.** The batched delegate already calls it;
-paying for it again on each of cylinder's 53 pages costs +21% per page (measured) and would push
-the cylinder smoke run past its client timeout. On the unbatched path the delegate deliberately
-leaves it to the caller, and skipping it both collides the lengthened rotated tick labels with
-the next row's subplot titles and leaves a large dead bottom margin.
+**The layout is re-run after annotating, on every path.** Annotating lengthens every genotype
+label, and whatever layout ran before that was sized for the short ones — the batched delegate's
+own ``tight_layout``, or nothing at all on the unbatched path, where the delegate leaves it to
+the caller. An earlier version skipped it on batched pages to save a measured "+21% per page";
+that figure was taken on an unbatched-shaped figure and did not describe the batched call, which
+re-measures at about +0.06s per page (~3s across cylinder's 53). Skipping it drew 120 tick labels
+per page into neighbouring panels at cylinder's shape, hiding the adjacent panel's whiskers and
+fliers — on the path cylinder always takes.
 
 **Still not disclosed:** a zero-variance (constant) trait renders as a degenerate box with no
 flag. That is a legitimate, if uninformative, plot, and unlike the sample-size gap it is visible
@@ -540,7 +543,10 @@ class PlotTraitBoxplotsResult(RunLinks):
     )
     max_nan_fraction: Optional[float] = Field(
         default=None,
-        description="Largest missing fraction across all cells. Reported because the flagged "
+        description="Largest missing fraction across cells THAT HAVE FINITE DATA — absent "
+        "cells sit at 1.0 by construction and are excluded, since handing this field to a "
+        "cell already fully reported in absent_genotype_groups would mask the case it "
+        "exists for. Reported because the flagged "
         "lists key on absolute count: a cell with 200 non-null rows out of 20,000 clears the "
         "floor and would otherwise be named nowhere in the response.",
     )
@@ -631,9 +637,14 @@ def plot_trait_boxplots(
         )
     n_rows_read = len(frame.df)
     rows_missing_genotype = int(frame.df[frame.genotype_col].isna().sum())
-    n_genotype_groups = (
-        int(sample_sizes["genotype"].nunique()) if not sample_sizes.empty else 0
-    )
+    # Counted on the RAW keys, not on the stringified labels (#748 review round 4): the
+    # delegate draws one box per distinct groupby key, so integer 1 and string "1" are two
+    # boxes even though they render the same tick text. Counting after astype(str) collapsed
+    # them to one, under-reporting the groups and breaking the
+    # drawn + absent + dead x groups == traits x groups identity. The tick annotator already
+    # refuses that frame as ambiguous; this scalar now agrees with it rather than papering
+    # over it.
+    n_genotype_groups = int(frame.df[frame.genotype_col].nunique(dropna=True))
 
     # Buckets, in precedence order, every one keyed on the FINITE count (design.md
     # Decision 5). A trait dead everywhere collapses to no_data_traits and emits no
@@ -879,23 +890,32 @@ def plot_trait_boxplots(
             name = f"{_PNG_STEM}.png" if not batched else f"{_PNG_STEM}_page{i}.png"
             page_cols = _page_slice(i - 1)
             # #748, in order: per-box counts onto the tick labels, then lay the figure out,
-            # then the note underneath. tight_layout is called ONLY when unbatched -- the
-            # batched delegate already calls it itself (visualization.py), and paying for it
-            # again on each of cylinder's 53 pages costs +21% per page (measured), which is
-            # what would push the cylinder smoke run past its client timeout. On the
-            # unbatched path the delegate deliberately leaves it to the caller, and skipping
-            # it both collides the lengthened rotated tick labels with the next row's titles
-            # and leaves ~2.7in of dead margin the note would then sit below.
+            # then the note underneath.
             annotated = (
                 _annotate_genotype_ticks(
                     fig, finite_counts, plotted_genotypes, no_data_traits
                 )
                 and annotated
             )
-            if not batched:
-                # rect reserves the bottom strip for the note, mirroring how the batched
-                # delegate reserves its own top strip for a suptitle.
-                fig.tight_layout(rect=[0, 0.03, 1, 1])
+            # ALWAYS re-run the layout, batched or not (#748 review round 4). Annotating
+            # makes every genotype label longer, and whatever layout ran before that -- the
+            # batched delegate's own tight_layout, or nothing at all on the unbatched path --
+            # was sized for the SHORT labels. Skipping it on batched pages drew 120 tick
+            # labels per page into neighbouring panels at cylinder's shape (60 traits x 10
+            # genotypes), hiding the left panel's whiskers and fliers under the next column's
+            # labels. That is the batched path, which is the path cylinder always takes.
+            #
+            # An earlier version of this code skipped it there, justified by a measured
+            # "+21% per page". That measurement was taken on an unbatched-shaped figure and
+            # does not describe this call: re-measured on the real batched path (16 traits x
+            # 10 genotypes, best of 3) it is 0.63s -> 0.69s, about +0.06s per page, or ~3s
+            # across cylinder's 53 pages. Drawing over the data to save that was the wrong
+            # trade.
+            #
+            # rect differs by path: the batched delegate reserves its own top strip for a
+            # suptitle (rect=[0, 0, 1, 0.96]) and that must be preserved, while the unbatched
+            # path has no suptitle but needs a bottom strip for the note.
+            fig.tight_layout(rect=[0, 0, 1, 0.96] if batched else [0, 0.03, 1, 1])
             # Indexed, not .get(...)-with-a-fallback: falling back to the run-wide note would
             # draw statistics over all 846 traits onto a 16-trait page without the
             # "(this page)" qualifier -- exactly the misreading the page scoping exists to

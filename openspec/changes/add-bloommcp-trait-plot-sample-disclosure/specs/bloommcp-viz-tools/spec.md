@@ -166,8 +166,14 @@ the manifest or its outputs already carry — so stamping them duplicates recove
 cylinder width it appends tens of pages' worth of prose to a `manifest.json` that is re-validated
 in full on every subsequent run for that tool and experiment.
 
-`plot_trait_histograms` SHALL NOT gain an equivalent note: its delegate already titles every
-panel with that trait's own `(n=…)`.
+`plot_trait_histograms` SHALL draw an equivalent note, in its own unit. Its delegate already
+titles every panel with that trait's own `(n=…)`, so it needs no per-panel labelling — but that
+number is what was *binned*, not what was *dropped*, and a panel reading `(n=12)` is identical
+whether twelve plants were measured or 108 of 120 rows were lost. Its note SHALL therefore
+report the binned counts with their denominators, flag panels below the minimum **and** panels
+built from under half their rows — flagging on count alone cannot distinguish those two cases —
+and carry its own unconditional caveat, since the delegate bins into a fixed number of bins
+regardless of `n`.
 
 #### Scenario: Every box carries its own sample size
 

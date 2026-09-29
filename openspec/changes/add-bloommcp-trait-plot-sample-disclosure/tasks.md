@@ -370,6 +370,61 @@ pattern itself is now guarded by test rather than by care.
       canvas growth); #841 binds `as exc`, this one does not, so it is not a mechanical union.
       Whoever merges second should keep both rationales in one except block.
 
+## 6d. PR #839 review round 4 (@eberrigan) — applied
+
+- [x] 6d.1 **BLOCKING: the round-3 commit silently deleted three round-2 regression tests.**
+      A slice-based edit replaced a wider block than intended, taking out
+      `test_genotypes_that_stringify_alike_are_not_mislabelled`,
+      `test_tick_labels_are_not_parsed_as_mathtext` and `test_page_count_mismatch_fails_loudly`
+      — while 6b.2/6b.4/6b.5 above still read `[x]` "enforced by test". Restored verbatim from
+      3a66d5f6 and re-confirmed by mutation: with the duplicate-label skip, `parse_math=False`
+      and the page-count guard all removed, the suite passed 94/94 without them and fails 3/97
+      with them. **Root cause**: multi-edit Python scripts that mutate a string and can abort
+      on a later assertion. The same pattern silently dropped a spec edit in round 2 (see
+      6d.5). Every edit in this round was applied and verified individually.
+- [x] 6d.2 **The batched path drew tick labels over neighbouring panels.** `tight_layout` ran
+      only when unbatched, so on batched pages the delegate's layout — sized for the SHORT
+      labels — was never redone after annotating. Measured at cylinder's shape (60 traits x 10
+      genotypes): **120 tick labels per page** intruding into another panel, hiding the
+      adjacent panel's whiskers and fliers. Now re-run on both paths (`rect` differs: the
+      batched delegate's suptitle strip is preserved). The "+21% per page" that justified
+      skipping it was measured on an unbatched-shaped figure and does not describe the batched
+      call — re-measured there it is 0.63s -> 0.69s, **+0.06s per page** (~3s over 53 pages).
+      New parametrized geometry test covers both orientations x both paths; 120 -> 0.
+- [x] 6d.3 `max_nan_fraction` descriptions and behavior reconciled on both tools: the boxplot
+      description said "across all cells" when the code had excluded absent cells since round 1,
+      and the **histogram tool still had the saturation bug the boxplot fixed then** — an
+      all-null trait sits at 1.0 and is already named in `low_sample_traits`, so it masked the
+      "200 non-null rows out of 20,000" case the field exists for. Now excluded there too.
+- [x] 6d.4 Drift guards moved to `tests/tools/test_trait_plot_disclosure_invariants.py` and
+      parametrized over **both** result models — round 3 covered boxplots only, leaving
+      `PlotTraitHistogramsResult.low_sample_traits` unguarded. The params-key test is renamed
+      to say it matches only the literal `params["x"]` form, and its docstring states that
+      limit rather than implying broader coverage.
+- [x] 6d.5 The ordering fixture had two vacuous halves: small-bucket counts ascended with
+      genotype name (so a name-sort passed) and the absent bucket used one already-sorted
+      trait. Counts now run ANTI-correlated with name order and two absent traits are inserted
+      out of order; confirmed by mutation that a name-sorted small bucket now fails.
+- [x] 6d.6 Spec self-contradiction resolved: `spec.md` still said histograms "SHALL NOT gain an
+      equivalent note" while its own scenario and 6b.3 said they do. This is the round-2 edit
+      lost to the abort-mid-script pattern in 6d.1.
+- [x] 6d.7 Suggestions: flagged names are elided at 80 chars (40 x 8,000-char names grew the
+      figure to 2,910 lines / 17.5s to save — the count cap bounds nothing if one name is
+      unbounded); `n_genotype_groups` is counted on raw keys rather than after `astype(str)`,
+      so it agrees with the annotator and keeps the totality identity true when two keys
+      stringify alike; the cardinality spy now also watches `pd.Series.groupby`; the at-limit
+      test carries a null genotype to pin `nunique(dropna=True)`; the error assertion is
+      tightened to "44 (trait, genotype) cells".
+- [x] 6d.8 Filed **#944** for the pre-existing upstream crash: the library sets panel titles
+      with `parse_math=True`, so a `$...$` trait name raises at savefig. This PR fixes the two
+      surfaces bloommcp draws; the delegate's titles and any tick the annotator declines remain
+      exposed.
+- [ ] 6d.9 **Still not done — needs a live dev stack (Docker unavailable here).** Run the
+      cylinder `live_smoke_slow` boxplot test. Now carries the extra layout pass measured in
+      6d.2 (~+3s across 53 pages) on top of the earlier estimate.
+- [ ] 6d.10 **Not fixable from this branch**: the #841 conflict over
+      `gen_plot_snapshots_golden.py`.
+
 ## 7. Follow-up issues to file (not fixed here)
 
 - [x] 7.1 Filed as **#837**: `resolved_trait_columns`/`page_traits` exceed the family's 5,000-char

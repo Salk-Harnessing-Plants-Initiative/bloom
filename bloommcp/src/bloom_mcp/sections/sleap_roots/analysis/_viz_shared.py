@@ -342,9 +342,28 @@ NOTE_PAD_INCHES = 0.2
 # summarize different units -- boxes vs panels); the capping and the drawing are common.
 
 
+# Longest a single flagged name may be before it is elided in the drawn note. Capping the
+# NUMBER of names bounds nothing if one name is arbitrarily long: 40 names of 8,000 characters
+# each grew the figure to 2,910 wrapped lines and took 17.5s to save (#748 review round 4).
+# Trait and genotype labels come from caller data, so their length is not ours to assume.
+MAX_NOTE_NAME_CHARS = 80
+
+
+def _elide(name: str) -> str:
+    """Truncate one flagged name for display, marking that it was cut."""
+    if len(name) <= MAX_NOTE_NAME_CHARS:
+        return name
+    return name[: MAX_NOTE_NAME_CHARS - 1] + "\u2026"
+
+
 def flagged_names(entries: Sequence[Any], formatter: Callable[[Any], str]) -> str:
-    """Cap a flagged list for the drawn note, summarizing the remainder as "+N more"."""
-    shown = [formatter(e) for e in entries[:MAX_NOTE_NAMES]]
+    """Cap a flagged list for the drawn note, summarizing the remainder as "+N more".
+
+    Caps both dimensions: how many names appear (``MAX_NOTE_NAMES``) and how long each may be
+    (``MAX_NOTE_NAME_CHARS``). The note is drawn on the image, so an unbounded name is an
+    unbounded figure -- the capped COUNT alone does not bound the rendered size.
+    """
+    shown = [_elide(formatter(e)) for e in entries[:MAX_NOTE_NAMES]]
     remainder = len(entries) - len(shown)
     return ", ".join(shown) + (f", +{remainder} more" if remainder else "")
 

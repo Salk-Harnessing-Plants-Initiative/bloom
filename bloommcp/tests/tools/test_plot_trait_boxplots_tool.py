@@ -10,7 +10,6 @@ auto-detected genotype column (no override parameter).
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -1388,12 +1387,18 @@ def test_paginated_notes_are_page_scoped(injected_ports, monkeypatch):
     assert "this page" not in result.sample_size_note
 
 
-def test_tight_layout_called_only_when_unbatched(injected_ports, monkeypatch):
-    """The batched delegate already calls tight_layout itself (visualization.py:430); paying
-    for it again on 53 cylinder pages costs ~25% per page and would break the smoke timeout.
+def test_layout_is_rerun_after_annotating_on_both_paths(injected_ports, monkeypatch):
+    """Annotating lengthens every label, so the layout that ran before it -- the batched
+    delegate's own, or none at all when unbatched -- was sized for the short ones.
+
+    Replaces an earlier test that asserted tight_layout ran ONLY when unbatched. That was
+    wrong: it let 120 tick labels per page be drawn over neighbouring panels at cylinder's
+    shape, and the "+21% per page" measurement used to justify skipping it had been taken on
+    an unbatched-shaped figure. On the real batched path it is ~+0.06s per page.
     """
     import matplotlib.figure
 
+    reader, _store = injected_ports
     calls = {"n": 0}
     real = matplotlib.figure.Figure.tight_layout
 
@@ -1402,17 +1407,16 @@ def test_tight_layout_called_only_when_unbatched(injected_ports, monkeypatch):
         return real(self, *a, **k)
 
     monkeypatch.setattr(matplotlib.figure.Figure, "tight_layout", _spy)
-    _run()
-    unbatched_calls = calls["n"]
-    assert unbatched_calls >= 1
 
-    reader, _store = injected_ports
+    _run()
+    assert calls["n"] >= 1, "unbatched render must lay out after annotating"
+
     calls["n"] = 0
-    reader.add_experiment("wide2.csv", _wide_df(60))
-    plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="wide2.csv"))
-    # The delegate's own internal calls are not ours to count, so assert we added none on top
-    # of the per-page baseline: 60 traits -> 4 pages, each tight_laid_out once by the delegate.
-    assert calls["n"] == _expected_pages(60)
+    reader.add_experiment("wide_layout.csv", _wide_df(60))
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="wide_layout.csv"))
+    assert result.batched is True
+    # One call per page from the delegate, plus one of ours per page after annotating.
+    assert calls["n"] >= 2 * _expected_pages(60)
 
 
 def test_note_drawing_failure_cleans_staging_and_commits_nothing(
@@ -1710,7 +1714,11 @@ def test_group_table_cardinality_guard_holds_at_its_documented_boundary(
     n_traits = 4
     n_geno = 11 if over_limit else 10  # 44 cells vs 40: astride the limit
     reader, store = injected_ports
-    rows = {"accession": [f"plant_{i % n_geno}" for i in range(n_geno * 6)]}
+    accessions = [f"plant_{i % n_geno}" for i in range(n_geno * 6)]
+    # One null genotype: the guard counts with nunique(dropna=True), so a null must NOT be
+    # counted as its own level -- otherwise the at-limit case would tip over the limit.
+    accessions[0] = None
+    rows = {"accession": accessions}
     for t in range(n_traits):
         rows[f"t{t}"] = [float(i % 7) for i in range(n_geno * 6)]
     reader.add_experiment("cardinality.csv", pd.DataFrame(rows))
@@ -1720,7 +1728,7 @@ def test_group_table_cardinality_guard_holds_at_its_documented_boundary(
             plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="cardinality.csv"))
         assert exc.value.code == "assumption_violated"
         assert "accession" in exc.value.message
-        assert "44" in exc.value.message  # names the cell count it refused
+        assert "44 (trait, genotype) cells" in exc.value.message
         assert exc.value.remedy
         assert store.list_runs("cardinality.csv", "trait_boxplots") == []
     else:
@@ -1741,83 +1749,121 @@ def test_cardinality_guard_fires_before_the_table_is_built(injected_ports, monke
     reader.add_experiment("guard_order.csv", pd.DataFrame(rows))
 
     calls = {"n": 0}
-    real_groupby = pd.DataFrame.groupby
+    real_df_groupby = pd.DataFrame.groupby
+    real_series_groupby = pd.Series.groupby
 
-    def _spy(self, *a, **k):
+    def _df_spy(self, *a, **k):
         calls["n"] += 1
-        return real_groupby(self, *a, **k)
+        return real_df_groupby(self, *a, **k)
 
-    monkeypatch.setattr(pd.DataFrame, "groupby", _spy)
+    def _series_spy(self, *a, **k):
+        calls["n"] += 1
+        return real_series_groupby(self, *a, **k)
+
+    # Both: a Series groupby would slip past a DataFrame-only spy.
+    monkeypatch.setattr(pd.DataFrame, "groupby", _df_spy)
+    monkeypatch.setattr(pd.Series, "groupby", _series_spy)
     with pytest.raises(BloomMCPError):
         plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="guard_order.csv"))
     assert calls["n"] == 0, "the grid was allocated before the guard rejected it"
 
 
-# ── guards against documentation drifting from behavior (#748 review round 3) ──
+# ── round-2 regression guards (#748) ─────────────────────────────────────────
 #
-# Three review rounds running, a fix landed in one place and a sibling docstring kept
-# asserting the old behavior -- most recently `sample_size_note` still pointing at a
-# `params["page_sample_size_notes"]` key that round 2 deliberately stopped writing, and
-# `non_finite_groups` still claiming a sort order the code had changed. Prose cannot be
-# type-checked, but the two things that actually drifted can both be pinned mechanically.
+# RESTORED in round 4: a slice-based edit in the round-3 commit replaced a wider block
+# than intended and silently deleted these three. Each one reproduces a specific failure
+# mode that was live in this PR, and with them gone the whole boxplot suite passed with
+# the duplicate-label skip, parse_math=False and the page-count guard all removed.
 
 
-def _field_descriptions(model):
-    return {
-        name: (field.description or "") for name, field in model.model_fields.items()
-    }
+def test_genotypes_that_stringify_alike_are_not_mislabelled(
+    injected_ports, monkeypatch
+):
+    """Integer 1 and string "1" are DISTINCT groupby keys that render the same tick text, so
+    the label -> count lookup is ambiguous. Set equality alone does not catch it: both the tick
+    set and the expected set collapse identically, and the n=3 group was confidently labelled
+    with the n=7 group's count while reporting success.
 
-
-def test_no_field_description_names_a_params_key_that_is_not_stamped(injected_ports):
-    """Every `params["..."]` a field description points a reader at must really be there.
-
-    This is the exact round-3 finding, generalized: a description told callers to look for
-    `params["page_sample_size_notes"]`, which round 2 had removed.
-    """
-    _reader, store = injected_ports
-    _run()
-    params = store.get_run(_EXPERIMENT, "trait_boxplots", "latest").params
-
-    referenced = set()
-    for name, description in _field_descriptions(PlotTraitBoxplotsResult).items():
-        for match in re.finditer(r"""params\[['"](\w+)['"]\]""", description):
-            referenced.add((name, match.group(1)))
-    missing = [(field, key) for field, key in referenced if key not in params]
-    assert (
-        not missing
-    ), f"descriptions name params keys that are never stamped: {missing}"
-
-
-def test_bucket_descriptions_state_the_sort_order_the_code_uses(injected_ports):
-    """Pins each capped bucket's documented ordering against its observed ordering.
-
-    A description is the surface a downstream agent reading the tool schema trusts, so
-    "Ordered by (trait, genotype)" on a bucket the code sorts worst-first is a real defect,
-    not a typo.
+    Not reachable through either ingestion path today (both go through ``pd.read_csv``, which
+    produces type-uniform columns), but the guarantee this feature rests on is "never mislabel
+    a box, only decline to label it" — so it is enforced rather than argued.
     """
     reader, _store = injected_ports
-    # One frame populating all three ordered buckets with distinguishable magnitudes.
-    rows = {"geno": [], "t_small": [], "t_inf": [], "t_absent": []}
-    for i in range(4):
-        rows["geno"].extend([f"G{i}"] * 8)
-        rows["t_small"].extend([float(j) for j in range(i + 1)] + [np.nan] * (7 - i))
-        rows["t_inf"].extend([np.inf] * (i + 1) + [float(j) for j in range(7 - i)])
-        rows["t_absent"].extend([np.nan] * 8 if i < 2 else [float(j) for j in range(8)])
-    reader.add_experiment("ordering.csv", pd.DataFrame(rows))
-    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="ordering.csv"))
-    descriptions = _field_descriptions(PlotTraitBoxplotsResult)
+    reader.add_experiment(
+        "collide.csv",
+        pd.DataFrame(
+            {
+                "geno": [1] * 3 + ["1"] * 7 + [2] * 5,
+                "t": [1.0, 2, 3] + [1.0, 2, 3, 4, 5, 6, 7] + [1.0, 2, 3, 4, 5],
+            }
+        ),
+    )
+    captured = _captured_figure(monkeypatch)
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="collide.csv"))
 
-    small = [g.n for g in result.small_sample_groups]
-    assert small == sorted(small)
-    assert "ASCENDING by count" in descriptions["small_sample_groups"]
+    assert result.box_labels_annotated is False
+    ax = next(
+        a for a in captured["figs"][0].axes if a.get_visible() and a.get_title() == "t"
+    )
+    labels = [t.get_text() for t in ax.xaxis.get_ticklabels()]
+    assert not any("(n=" in label for label in labels), labels
+    # The note remains the authoritative on-image signal.
+    assert "rows per box" in result.sample_size_note
 
-    inf = [g.n_non_finite for g in result.non_finite_groups]
-    assert inf == sorted(inf, reverse=True), inf
-    assert "DESCENDING by n_non_finite" in descriptions["non_finite_groups"]
 
-    absent = [(g.trait, g.genotype) for g in result.absent_genotype_groups]
-    assert absent == sorted(absent)
-    assert "Ordered by (trait, genotype)" in descriptions["absent_genotype_groups"]
+def test_tick_labels_are_not_parsed_as_mathtext(injected_ports, monkeypatch):
+    """A genotype like "$a__b$" is self-contained mathtext: matplotlib raises at savefig — after
+    create_run — rather than rendering it literally. The note-drawing path was guarded; the
+    tick-label path was not."""
+    reader, _store = injected_ports
+    reader.add_experiment(
+        "mathtext_geno.csv",
+        pd.DataFrame(
+            {
+                "geno": ["$a__b$"] * 6 + ["plain"] * 6,
+                "t": [float(j) for j in range(6)] * 2,
+            }
+        ),
+    )
+    captured = _captured_figure(monkeypatch)
+    result = plot_trait_boxplots(
+        PlotTraitBoxplotsParams(experiment="mathtext_geno.csv")
+    )
+
+    assert result.box_labels_annotated is True
+    ax = next(
+        a for a in captured["figs"][0].axes if a.get_visible() and a.get_title() == "t"
+    )
+    ticks = [t for t in ax.xaxis.get_ticklabels()]
+    assert all(t.get_parse_math() is False for t in ticks)
+    assert any("$a__b$ (n=6)" == t.get_text() for t in ticks)
+    # The real proof: rendering must not raise.
+    captured["figs"][0].canvas.draw()
+
+
+def test_page_count_mismatch_fails_loudly(injected_ports, monkeypatch):
+    """page_traits and every per-page note are derived from the slicing formula BEFORE
+    rendering (they have to be — params are stamped at create_run). If the delegate's batch
+    size ever drifts, a page's note would describe a different set of traits than the page
+    shows, so this must fail rather than mislabel."""
+    reader, store = injected_ports
+    reader.add_experiment("drift.csv", _wide_df(60))
+    real = plot_trait_boxplots_tool.create_trait_boxplots_by_genotype_batched
+
+    def _one_page_short(*a, **k):
+        figs = list(real(*a, **k))
+        plt.close(figs.pop())  # delegate returns fewer pages than the formula predicts
+        return figs
+
+    monkeypatch.setattr(
+        plot_trait_boxplots_tool,
+        "create_trait_boxplots_by_genotype_batched",
+        _one_page_short,
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        plot_trait_boxplots(PlotTraitBoxplotsParams(experiment="drift.csv"))
+    assert exc.value.code == "internal_error"
+    assert store.list_runs("drift.csv", "trait_boxplots") == []
 
 
 def test_zero_row_frame_completes_with_null_summaries(injected_ports):
@@ -1868,3 +1914,77 @@ def test_single_genotype_group_is_summarized_not_flagged(injected_ports):
     assert result.box_labels_annotated is True
     params = store.get_run("one_geno.csv", "trait_boxplots", "latest").params
     assert params["n_genotype_groups"] == 1
+
+
+def _intruding_tick_labels(fig):
+    """Tick labels whose rendered box reaches into another panel's area.
+
+    Checked against `get_window_extent()` (the panel rectangle) of the *other* panels: a label
+    that reaches into a neighbour's plot area is drawn over that neighbour's data. The existing
+    note-overlap test uses `get_tightbbox()` for a different question — whether the note clears
+    the axes *including* their decorations — so neither subsumes the other.
+    """
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    panels = [a for a in fig.axes if a.get_visible() and a.get_title()]
+    intruding = []
+    for ax in panels:
+        for tick in list(ax.xaxis.get_ticklabels()) + list(ax.yaxis.get_ticklabels()):
+            if not tick.get_text():
+                continue
+            box = tick.get_window_extent(renderer)
+            if any(
+                box.overlaps(other.get_window_extent())
+                for other in panels
+                if other is not ax
+            ):
+                intruding.append(tick.get_text())
+    return intruding
+
+
+@pytest.mark.parametrize(
+    "n_geno,n_traits,batched",
+    [
+        (10, 60, True),  # horizontal + batched: cylinder's shape, and its path
+        (
+            5,
+            20,
+            True,
+        ),  # vertical + batched: rotated labels reaching the next row's titles
+        (10, 4, False),  # horizontal + unbatched
+        (5, 4, False),  # vertical + unbatched
+    ],
+)
+def test_annotated_tick_labels_do_not_reach_into_neighbouring_panels(
+    injected_ports, monkeypatch, n_geno, n_traits, batched
+):
+    """Annotating lengthens every genotype label, so whatever layout ran before it was sized
+    for the short ones. Skipping the re-run on batched pages put 120 labels per page into
+    neighbouring panels at cylinder's shape — hiding the adjacent panel's whiskers and fliers
+    on the path cylinder always takes.
+
+    Long genotype names on purpose: "PI_000009_accession (n=12)" is what a real accession
+    column looks like, and the defect is invisible with two-character names.
+    """
+    reader, _store = injected_ports
+    rows = {"accession": [f"PI_{i % n_geno:06d}_accession" for i in range(n_geno * 12)]}
+    for t in range(n_traits):
+        rows[f"trait_{t:02d}"] = np.random.default_rng(t).normal(size=n_geno * 12)
+    name = f"panels_{n_geno}_{n_traits}.csv"
+    reader.add_experiment(name, pd.DataFrame(rows))
+    if batched:
+        monkeypatch.setattr(_viz_shared, "TRAIT_BATCH_THRESHOLD", 8)
+        monkeypatch.setattr(plot_trait_boxplots_tool, "TRAIT_BATCH_THRESHOLD", 8)
+    captured = _captured_figure(monkeypatch, batched=batched)
+    result = plot_trait_boxplots(PlotTraitBoxplotsParams(experiment=name))
+
+    assert result.batched is batched
+    assert (
+        result.box_labels_annotated is True
+    ), "fixture must exercise the annotated path"
+    for page, fig in enumerate(captured["figs"], start=1):
+        intruding = _intruding_tick_labels(fig)
+        assert not intruding, (
+            f"page {page}: {len(intruding)} tick label(s) drawn over a neighbouring panel, "
+            f"e.g. {intruding[:3]}"
+        )

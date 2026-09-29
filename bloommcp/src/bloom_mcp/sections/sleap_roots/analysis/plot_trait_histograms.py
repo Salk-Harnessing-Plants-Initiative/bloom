@@ -284,7 +284,10 @@ class PlotTraitHistogramsResult(RunLinks):
     )
     max_nan_fraction: Optional[float] = Field(
         default=None,
-        description="Largest missing fraction across every resolved trait. Reported because "
+        description="Largest missing fraction across traits THAT BIN SOMETHING — an all-null "
+        "trait sits at 1.0 by construction and is already named in low_sample_traits with a "
+        "binned count of zero, so letting it win this field would mask the case it exists "
+        "for. Reported because "
         "the flagged list keys on absolute count: a trait with 200 non-null rows out of "
         "20,000 clears the floor and would otherwise be named nowhere in the response.",
     )
@@ -387,9 +390,20 @@ def plot_trait_histograms(
     # describes something the reader can see. plot_trait_boxplots deliberately differs --
     # an absent cell there is drawn as nothing at all.
     counts = sample_sizes["n_plotted"]
-    worst_nan = sample_sizes.sort_values(
-        ["nan_fraction", "trait"], ascending=[False, True], kind="stable"
-    ).iloc[0]
+    # Computed over traits that actually bin something, the same exclusion plot_trait_boxplots
+    # applies to its own max_nan_fraction (#748 review rounds 1 and 4). An all-null trait sits
+    # at nan_fraction 1.0 by construction and is ALREADY named in low_sample_traits with
+    # n_plotted == 0, so letting it win this field masks exactly the case the field exists for:
+    # the trait with 200 non-null rows out of 20,000, which clears the count floor and would
+    # otherwise be named nowhere in the response.
+    with_data = sample_sizes[sample_sizes["n_plotted"] > 0]
+    worst_nan = (
+        with_data.sort_values(
+            ["nan_fraction", "trait"], ascending=[False, True], kind="stable"
+        ).iloc[0]
+        if len(with_data)
+        else None
+    )
 
     def _page_slice(index):
         start = index * _DELEGATE_BATCH_SIZE
@@ -420,8 +434,14 @@ def plot_trait_histograms(
         "trait_n_median": native(counts.median()),
         "trait_n_max": native(counts.max()),
         "low_sample_trait_count": int(len(flagged)),
-        "max_nan_fraction": round(float(worst_nan["nan_fraction"]), 4),
-        "max_nan_fraction_trait": str(worst_nan["trait"]),
+        "max_nan_fraction": (
+            round(float(worst_nan["nan_fraction"]), 4)
+            if worst_nan is not None
+            else None
+        ),
+        "max_nan_fraction_trait": (
+            str(worst_nan["trait"]) if worst_nan is not None else None
+        ),
     }
 
     prov = provenance.model_copy(

@@ -704,8 +704,11 @@ def test_per_trait_plotted_n_and_missingness_reported(injected_ports):
     assert result.trait_n_min == 0
     assert result.trait_n_max == 5
     assert result.trait_n_median == pytest.approx(2.0)
-    assert result.max_nan_fraction == pytest.approx(1.0)
-    assert result.max_nan_fraction_trait == "t_empty"
+    # Excludes the all-null trait: it sits at 1.0 by construction and is already named in
+    # low_sample_traits, so letting it win would mask the case this field exists for
+    # (#748 review round 4). t_gappy keeps 2 of 5 rows -> 0.6.
+    assert result.max_nan_fraction == pytest.approx(0.6)
+    assert result.max_nan_fraction_trait == "t_gappy"
     assert _expected_trait_counts(df, result.resolved_trait_columns) == {
         "t_full": 5,
         "t_gappy": 2,
@@ -831,7 +834,9 @@ def test_zero_row_frame_completes_with_null_summaries(injected_ports):
     assert result.trait_n_min == 0
     assert result.trait_n_median == 0.0
     assert result.trait_n_max == 0
-    assert result.max_nan_fraction == 0.0  # no rows means no missingness to report
+    # No trait bins anything, so the population this field is computed over is empty.
+    assert result.max_nan_fraction is None
+    assert result.max_nan_fraction_trait is None
     json.loads(result.model_dump_json(), parse_constant=_reject)
 
 
