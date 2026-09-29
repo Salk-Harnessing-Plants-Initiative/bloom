@@ -421,7 +421,7 @@
   - purge the queue and restart the services;
   - record the result, then `/pre-merge` and `/review-pr`. The PR body says "Refs #901"; it doesn't close it, because the non-empty-params row-volume half stays open.
 
-  **Done 2026-09-29.** Unit suite 835 passed, 1 skipped; `test_cyl_pipeline_dispatch.py` 41 passed; ruff 0.9.9, black 26.3.1 and ruff-format clean; strict validate passes.
+  **Done 2026-09-29.** Unit suite 842 passed, 1 skipped (after rebasing onto `438c2d73`); `test_cyl_pipeline_dispatch.py` 41 passed; ruff 0.9.9, black 26.3.1 and ruff-format clean; strict validate passes.
 
   Dev stack: worker and poller stopped, `WORKFLOWS_K8S_TOKEN` empty in all three containers. The dev workflows service has no app user, so a throwaway `is_workflows` user was created (README "Provisioning") and deleted afterwards. The main checkout serves the stack, so two one-off containers ran instead of `localhost:5100`: this branch on `:5101`, and staging's `pipeline.py` on `:5102` as a control. The seeded experiment had 2,100 scans (ids 570–2669, 10,069 rendered characters).
 
