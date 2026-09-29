@@ -11,7 +11,12 @@ import re
 
 from fastapi import HTTPException
 
-from k8s_client import K8sConfigError, K8sStatusError, get_pod_log
+from k8s_client import (
+    K8sConfigError,
+    K8sPodNotRunningError,
+    K8sStatusError,
+    get_pod_log,
+)
 from rnaseq_status import CELLRANGER_STEPS
 from supabase_client import app_client
 
@@ -24,9 +29,22 @@ STEP_CONTAINER = "main"
 # How much of a log one request returns: its last lines, capped in size.
 TAIL_LINES = 2000
 LIMIT_BYTES = 1024 * 1024
+# Asked of the cluster; it cuts at this size from the start of the window, so it is
+# larger than LIMIT_BYTES and the end is trimmed here instead.
+FETCH_LIMIT_BYTES = 4 * LIMIT_BYTES
 
 # A Kubernetes pod name: lowercase letters, digits and '-', at most 253 characters.
 _POD_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$")
+
+
+def _keep_end(log: str) -> tuple[str, bool]:
+    """The log's last LIMIT_BYTES, starting at a line, and whether anything was cut."""
+    data = log.encode()
+    if len(data) <= LIMIT_BYTES:
+        return log, False
+    end = data[-LIMIT_BYTES:].decode(errors="ignore")
+    newline = end.find("\n")
+    return (end[newline + 1 :] if newline != -1 else end), True
 
 
 def read_step_log(run_id: int, step) -> dict:
@@ -63,7 +81,15 @@ def read_step_log(run_id: int, step) -> dict:
         )
 
     try:
-        log = get_pod_log(pod, STEP_CONTAINER, TAIL_LINES, LIMIT_BYTES)
+        log = get_pod_log(pod, STEP_CONTAINER, TAIL_LINES, FETCH_LIMIT_BYTES)
+    except K8sPodNotRunningError:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Step {step} of run {run_id} hasn't started running yet; "
+                "its log appears once it does"
+            ),
+        ) from None
     except K8sConfigError:
         raise HTTPException(
             status_code=503, detail="Cluster access is not configured"
@@ -82,7 +108,8 @@ def read_step_log(run_id: int, step) -> dict:
             ),
         )
 
-    truncated = log.count("\n") >= TAIL_LINES or len(log.encode()) >= LIMIT_BYTES
+    log, cut = _keep_end(log)
+    truncated = cut or log.count("\n") >= TAIL_LINES
     return {
         "run_id": run_id,
         "step": step,

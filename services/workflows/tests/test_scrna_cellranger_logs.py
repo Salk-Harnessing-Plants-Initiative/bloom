@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import scrna_cellranger_logs as logs
-from k8s_client import K8sConfigError, K8sStatusError
+from k8s_client import K8sConfigError, K8sPodNotRunningError, K8sStatusError
 
 USER = "00000000-0000-0000-0000-000000000001"
 POD = "scrna-cellranger-dev-7-abcd1234-count-3938252481"
@@ -30,6 +30,7 @@ class FakeSupabase:
     def __init__(self, rows=()):
         self.rows = list(rows)
         self.filters = []
+        self.selected = []
 
     def table(self, name):
         client = self
@@ -39,6 +40,7 @@ class FakeSupabase:
                 self.eqs = []
 
             def select(self, cols):
+                client.selected.append(cols)
                 return self
 
             def eq(self, col, value):
@@ -105,11 +107,12 @@ def test_a_started_steps_log_is_returned(db, pod_log):
         "log": "line 1\nline 2\n",
         "truncated": False,
     }
-    assert pod_log["calls"] == [(POD, "main", 2000, 1024 * 1024)]
+    assert pod_log["calls"] == [(POD, "main", 2000, 4 * 1024 * 1024)]
 
 
 def test_only_cellranger_runs_are_looked_up(db, pod_log):
     logs.read_step_log(7, "count")
+    assert "step_pods" in db.selected[0]
     assert ("workflow_type", "scrna-cellranger") in db.filters[0]
     assert ("id", 7) in db.filters[0]
 
@@ -178,9 +181,38 @@ def test_a_log_at_the_line_limit_is_marked_cut(db, pod_log):
     assert logs.read_step_log(7, "count")["truncated"] is True
 
 
-def test_a_log_at_the_size_limit_is_marked_cut(db, pod_log):
+def test_a_log_at_the_size_limit_is_kept_whole(db, pod_log):
     pod_log["result"] = "y" * logs.LIMIT_BYTES
-    assert logs.read_step_log(7, "count")["truncated"] is True
+    out = logs.read_step_log(7, "count")
+    assert out["truncated"] is False
+    assert len(out["log"]) == logs.LIMIT_BYTES
+
+
+def test_a_log_over_the_size_limit_keeps_its_end(db, pod_log):
+    # The kubelet's byte cap would keep the start; the route keeps the end, where the error is.
+    line = "progress " * 100 + "\n"
+    pod_log["result"] = line * 3000 + "ERROR: cellranger count failed\n"
+    out = logs.read_step_log(7, "count")
+    assert out["truncated"] is True
+    assert out["log"].endswith("ERROR: cellranger count failed\n")
+    assert len(out["log"].encode()) <= logs.LIMIT_BYTES
+    assert out["log"].startswith("progress ")
+
+
+def test_the_end_is_cut_at_a_whole_character(db, pod_log):
+    pod_log["result"] = "é" * logs.LIMIT_BYTES
+    out = logs.read_step_log(7, "count")
+    assert "\ufffd" not in out["log"]
+    assert out["truncated"] is True
+
+
+def test_a_step_waiting_to_run_is_409(db, pod_log):
+    pod_log["result"] = K8sPodNotRunningError("waiting")
+    status, detail = _status(7, "count")
+    assert status == 409
+    assert detail == (
+        "Step count of run 7 hasn't started running yet; its log appears once it does"
+    )
 
 
 # --------------------------------------------------------------------------- #

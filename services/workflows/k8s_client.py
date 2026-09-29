@@ -117,6 +117,11 @@ class K8sStatusError(Exception):
     K8sSubmissionError — never the raw response body or exception text."""
 
 
+class K8sPodNotRunningError(K8sStatusError):
+    """The pod exists but its container is not running yet (the log API answers 400:
+    waiting to start, or not yet placed on a node), so it has no log to read."""
+
+
 def _validate_config() -> None:
     missing = [
         name
@@ -361,6 +366,9 @@ def get_pod_log(
 
     if resp.status_code == 404:
         return None
+    if resp.status_code == 400:
+        logger.info("k8s_client: pod log not available yet: %s", resp.text[:500])
+        raise K8sPodNotRunningError("Pod is not running yet")
     if resp.status_code // 100 != 2:
         logger.warning(
             "k8s_client: pod log request rejected (%s): %s",
