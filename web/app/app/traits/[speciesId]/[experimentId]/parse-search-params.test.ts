@@ -1,6 +1,7 @@
 /**
- * The traits page reads an optional `?wave=&age=` from its URL. Only a single, plain positive
- * integer counts; anything else is ignored, never coerced.
+ * The traits page reads an optional `?wave=&age=` from its URL. Only a single, plain non-negative
+ * integer counts; anything else is ignored, never coerced. Zero is real data: Bloom Desktop accepts
+ * any non-negative integer for wave number and plant age.
  */
 
 import { describe, expect, it } from "vitest";
@@ -20,7 +21,11 @@ describe("parseWaveAge", () => {
     expect(parseWaveAge({ wave: "abc", age: "21" })).toEqual({ age: 21 });
   });
 
-  it.each(["0", "-1", "1.5", "07", "0x1", "1e2", "", " 7", "7 ", "+7", "9007199254740993"])(
+  it("reads wave 0 and day 0", () => {
+    expect(parseWaveAge({ wave: "0", age: "0" })).toEqual({ wave: 0, age: 0 });
+  });
+
+  it.each(["00", "-0", "-1", "1.5", "07", "0x1", "1e2", "", " 7", "7 ", "+7", "9007199254740993"])(
     "ignores %j",
     (raw) => {
       expect(parseWaveAge({ wave: raw, age: raw })).toEqual({});
