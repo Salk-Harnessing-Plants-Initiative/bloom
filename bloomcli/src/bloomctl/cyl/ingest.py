@@ -22,7 +22,12 @@ from typing import Any, TextIO
 
 import click
 from pydantic import ValidationError
-from sleap_roots_contracts import RUN_MANIFEST_FILENAME, RunManifest
+from sleap_roots_contracts import (
+    RunManifestIdentityError,
+    RunManifestMissingError,
+    load_run_manifest,
+    pipeline_run_id_from_env,
+)
 
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
@@ -36,6 +41,12 @@ class EnvelopeError(Exception):
 
 class EnvelopeValidationError(EnvelopeError):
     """Envelope did not conform to the sleap-roots-contracts ResultEnvelope."""
+
+
+class RunManifestNotFoundError(EnvelopeError):
+    """A run identity is set but neither its per-run manifest nor the legacy one exists
+    (bloom #934). Distinct from every other manifest failure because it alone still makes the
+    end-of-batch reconciliation call before the batch fails."""
 
 
 class BlobConstructionError(Exception):
@@ -79,30 +90,43 @@ def load_envelope(source: str, *, stdin: TextIO | None = None) -> dict[str, Any]
 
 @dataclass
 class DiscoveredEnvelopes:
-    """Result of scoping envelope discovery to an optional ``run_manifest.json`` (bloom #678).
+    """Result of scoping envelope discovery to the run's manifest, if one resolves (bloom #678,
+    #934).
 
     ``paths``: in-scope ``*.result.json`` files to ingest, sorted. ``missing_scan_keys``:
-    manifest-declared scan_keys with no matching file, sorted.
+    manifest-declared scan_keys with no matching file, sorted. ``manifest_filename``: the
+    manifest file that scoped discovery, or ``None`` when discovery was unscoped.
     """
 
     paths: list[Path]
     missing_scan_keys: list[str]
+    manifest_filename: str | None = None
 
 
-def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
+def discover_envelopes(
+    envelopes_dir: str | Path, pipeline_run_id: str | None = None
+) -> DiscoveredEnvelopes:
     """Non-recursive glob for ``*.result.json`` directly under ``envelopes_dir``, sorted,
-    scoped to a ``run_manifest.json`` when one is present.
+    scoped to the run's manifest when one resolves.
 
     Matches the flat layout ``trait_extractor.extractor.extract_batch``'s ``output_dir``
-    produces (one ``{scan_key}.result.json`` per scan, no nesting). If
-    ``envelopes_dir / RUN_MANIFEST_FILENAME`` exists, only files whose filename stem is in
-    the manifest's ``scan_keys`` are returned, and any declared scan_key with no matching
-    file is reported via ``DiscoveredEnvelopes.missing_scan_keys``. With no manifest,
-    discovery is fully unscoped (identical to the pre-manifest behavior). Raises
-    ``EnvelopeError`` if ``envelopes_dir`` doesn't exist or isn't a directory, or if a
-    present manifest is unreadable or fails to parse; an empty-but-present directory with no
-    manifest returns ``DiscoveredEnvelopes([], [])`` (the empty-batch no-op case, not an
-    error).
+    produces (one ``{scan_key}.result.json`` per scan, no nesting). The manifest is resolved
+    by ``sleap_roots_contracts.load_run_manifest`` for ``pipeline_run_id`` (the run identity
+    from ``pipeline_run_id_from_env()``, or ``None``):
+
+    - with a run identity: ``run_manifest.<id>.json``, else the legacy ``run_manifest.json``
+      (``allow_legacy=True`` during the rollout; sleap-roots-pipeline#82 turns it off). If
+      neither exists, raises ``RunManifestNotFoundError`` rather than discovering unscoped
+      over a directory every run shares (sleap-roots-pipeline#71 design section 2.2). A legacy
+      fallback that names another run is used, with a warning.
+    - without one: only ``run_manifest.json``; absent means fully unscoped discovery.
+
+    When a manifest resolves, only files whose filename stem is in its ``scan_keys`` are
+    returned, and any declared scan_key with no matching file is reported via
+    ``DiscoveredEnvelopes.missing_scan_keys``. Raises ``EnvelopeError`` if ``envelopes_dir``
+    doesn't exist or isn't a directory, if the resolved manifest is unreadable, not a regular
+    file, fails to parse, or names a different run than its per-run file name says, or if the
+    contract rejects ``pipeline_run_id`` itself.
     """
     path = Path(envelopes_dir)
     if not path.is_dir():
@@ -110,28 +134,35 @@ def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
 
     all_paths = sorted(path.glob("*.result.json"))
 
-    manifest_path = path / RUN_MANIFEST_FILENAME
     try:
-        manifest_text = manifest_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
-    except OSError as exc:
-        # Covers a directory (or other non-file entry) at manifest_path
-        # (IsADirectoryError), a permission-denied stat/read (PermissionError), and any
-        # other read failure — all "can't read this as a manifest," same as a parse
-        # failure below. Deliberately not a pre-check via .exists()/.is_file(): those
-        # only swallow ENOENT-class errors, not EACCES, so a permission-denied stat
-        # would otherwise escape uncaught instead of failing loud with a readable error.
-        raise EnvelopeError(
-            f"{manifest_path} exists but is not a valid RunManifest: {exc}"
-        ) from exc
+        loaded = load_run_manifest(path, pipeline_run_id, allow_legacy=True)
+    except RunManifestMissingError as exc:
+        raise RunManifestNotFoundError(str(exc)) from exc
+    except (RunManifestIdentityError, ValidationError, ValueError, OSError) as exc:
+        # load_run_manifest opens rather than probes, so a permission-denied, dangling-symlink
+        # or non-file candidate raises here instead of reading as "absent" and falling through
+        # to the next name. ValidationError is a malformed manifest; a bare ValueError is a run
+        # identity the contract rejects as a file-name component.
+        raise EnvelopeError(f"could not read the run manifest in {path}: {exc}") from exc
 
-    try:
-        manifest = RunManifest.model_validate_json(manifest_text)
-    except ValidationError as exc:
-        raise EnvelopeError(
-            f"{manifest_path} exists but is not a valid RunManifest: {exc}"
-        ) from exc
+    if loaded is None:
+        return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
+
+    manifest = loaded.manifest
+    manifest_filename = loaded.read.filename
+    if (
+        pipeline_run_id is not None
+        and not loaded.read.is_per_run
+        and manifest.pipeline_run_id != pipeline_run_id
+    ):
+        logger.warning(
+            "No %s in %s; falling back to %s, which names run %r, not this run %r",
+            f"run_manifest.{pipeline_run_id}.json",
+            path.as_posix(),
+            manifest_filename,
+            manifest.pipeline_run_id,
+            pipeline_run_id,
+        )
 
     scoped_keys = set(manifest.scan_keys)
     in_scope: list[Path] = []
@@ -147,13 +178,16 @@ def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
 
     if excluded:
         logger.debug(
-            "Excluded %d envelope(s) outside run_manifest.json scope: %s",
+            "Excluded %d envelope(s) outside %s scope: %s",
             len(excluded),
+            manifest_filename,
             sorted(excluded),
         )
 
     missing_scan_keys = sorted(scoped_keys - seen_keys)
-    return DiscoveredEnvelopes(paths=in_scope, missing_scan_keys=missing_scan_keys)
+    return DiscoveredEnvelopes(
+        paths=in_scope, missing_scan_keys=missing_scan_keys, manifest_filename=manifest_filename
+    )
 
 
 def validate_envelope(data: dict[str, Any]) -> None:
@@ -1042,15 +1076,48 @@ def batch_ingest_result(
     predictions_dir: Path | None,
 ) -> None:
     """Ingest every {scan_key}.result.json file directly under ENVELOPES_DIR — the batch
-    sibling of `ingest-result`. If ENVELOPES_DIR contains a run_manifest.json, only the files
-    it lists are ingested and a declared scan_key with no matching file is reported as a
-    failure — unless a differently-named file's own content actually reports that scan_key
-    (a filename/body mismatch), in which case the real outcome wins and the failure is
-    dropped; with no manifest, every file is ingested (unchanged). Isolates per-envelope
-    failures (one bad envelope doesn't abort the batch); exits non-zero if any envelope
-    failed."""
+    sibling of `ingest-result`. With ARGO_WORKFLOW_NAME set, only the files listed in the
+    run's manifest (run_manifest.<ARGO_WORKFLOW_NAME>.json, else run_manifest.json) are
+    ingested, and if neither exists nothing is ingested: the batch fails after closing out
+    the workflow's unresolved scans. Without it, run_manifest.json scopes the batch when
+    present, and every file is ingested when it is not. A declared scan_key with no matching
+    file is reported as a failure — unless a differently-named file's own content actually
+    reports that scan_key (a filename/body mismatch), in which case the real outcome wins and
+    the failure is dropped. Isolates per-envelope failures (one bad envelope doesn't abort the
+    batch); exits non-zero if any failure is retriable."""
+    argo_workflow_name = resolve_argo_workflow_name()
+
     try:
-        discovered = discover_envelopes(envelopes_dir)
+        discovered = discover_envelopes(envelopes_dir, pipeline_run_id_from_env())
+    except RunManifestNotFoundError as exc:
+        # The run knows its identity but has no manifest, so no scope exists. Ingesting
+        # every envelope in a directory every run shares would silently widen scope
+        # (bloom #934). Still close out this workflow's scans, as the normal path does.
+        from ..cli import _authed_client
+
+        client = _authed_client(profile)
+        scan_results = [
+            ScanResult(
+                "<run-manifest>",
+                "failed",
+                f"{exc}; nothing was ingested",
+            )
+        ]
+        reconcile_failure = _reconcile_unresolved_scans_result(client, argo_workflow_name)
+        if reconcile_failure is not None:
+            scan_results.append(reconcile_failure)
+        batch_result = BatchResult(scan_results)
+        if as_json:
+            click.echo(format_json(batch_result))
+        else:
+            click.echo(
+                format_summary(
+                    batch_result, verb="Ingested", noun="envelope", destination=str(envelopes_dir)
+                )
+            )
+        # Always retriable, so write-back (and with it the Workflow) ends Failed rather than
+        # succeeding with nothing ingested; a retry repeats the same idempotent outcome.
+        ctx.exit(1)
     except EnvelopeError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -1058,13 +1125,11 @@ def batch_ingest_result(
         ScanResult(
             key,
             "failed",
-            f"run_manifest.json lists scan_key {key!r} but no {key}.result.json was found "
-            f"in {envelopes_dir}",
+            f"{discovered.manifest_filename} lists scan_key {key!r} but no {key}.result.json "
+            f"was found in {envelopes_dir}",
         )
         for key in discovered.missing_scan_keys
     ]
-
-    argo_workflow_name = resolve_argo_workflow_name()
 
     if not discovered.paths and not missing_results:
         # Still reconcile when ARGO_WORKFLOW_NAME is set — even an empty batch
