@@ -67,7 +67,13 @@ def _to_cellranger_schema(c):
     if _queue_exists(c, QUEUE):
         c.execute("SELECT pgmq.drop_queue(%s)", (QUEUE,))
     c.execute(f"DROP TABLE IF EXISTS public.{TABLE} CASCADE")
-    for sig in (*FUNCTIONS.values(), "public._check_rnaseq_message(bigint, bigint)"):
+    for sig in (
+        *FUNCTIONS.values(),
+        # The request function once rnaseq_runs.metadata exists; dropped too, or the
+        # three-argument calls below would be ambiguous.
+        "public.request_scrna_cellranger_run(text, text, uuid, jsonb)",
+        "public._check_rnaseq_message(bigint, bigint)",
+    ):
         c.execute(f"DROP FUNCTION IF EXISTS {sig}")
     c.execute(_sql_body(RUNS_MIGRATION))
     c.execute(_sql_body(FUNCTIONS_MIGRATION))

@@ -2973,6 +2973,117 @@ export type Database = {
         }
         Relationships: []
       }
+      rnaseq_references: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: number
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: number
+          name: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: number
+          name?: string
+        }
+        Relationships: []
+      }
+      rnaseq_runs: {
+        Row: {
+          argo_workflow_name: string | null
+          completed_at: string | null
+          created_at: string
+          current_step: string | null
+          exit_code: number | null
+          id: number
+          message: string | null
+          metadata: Json | null
+          params: Json
+          requested_by: string
+          run_key: string
+          status: string
+          step_pods: Json | null
+          submitted_at: string | null
+          updated_at: string
+          workflow_type: string
+        }
+        Insert: {
+          argo_workflow_name?: string | null
+          completed_at?: string | null
+          created_at?: string
+          current_step?: string | null
+          exit_code?: number | null
+          id?: number
+          message?: string | null
+          metadata?: Json | null
+          params: Json
+          requested_by: string
+          run_key: string
+          status?: string
+          step_pods?: Json | null
+          submitted_at?: string | null
+          updated_at?: string
+          workflow_type: string
+        }
+        Update: {
+          argo_workflow_name?: string | null
+          completed_at?: string | null
+          created_at?: string
+          current_step?: string | null
+          exit_code?: number | null
+          id?: number
+          message?: string | null
+          metadata?: Json | null
+          params?: Json
+          requested_by?: string
+          run_key?: string
+          status?: string
+          step_pods?: Json | null
+          submitted_at?: string | null
+          updated_at?: string
+          workflow_type?: string
+        }
+        Relationships: []
+      }
+      rnaseq_samples: {
+        Row: {
+          created_at: string
+          fastq_count: number | null
+          id: number
+          name: string
+          registered_by: string | null
+          source: string
+          source_ref: string | null
+          total_bytes: number | null
+        }
+        Insert: {
+          created_at?: string
+          fastq_count?: number | null
+          id?: number
+          name: string
+          registered_by?: string | null
+          source?: string
+          source_ref?: string | null
+          total_bytes?: number | null
+        }
+        Update: {
+          created_at?: string
+          fastq_count?: number | null
+          id?: number
+          name?: string
+          registered_by?: string | null
+          source?: string
+          source_ref?: string | null
+          total_bytes?: number | null
+        }
+        Relationships: []
+      }
       scrna_cells: {
         Row: {
           barcode: string | null
@@ -4417,6 +4528,16 @@ export type Database = {
       _settle_cyl_pipeline_run: {
         Args: { p_run_id: number }
         Returns: undefined
+      }
+      add_species: {
+        Args: { p_common_name: string; p_genus: string; p_species: string }
+        Returns: {
+          common_name: string
+          genus: string
+          id: number
+          result: string
+          species: string
+        }[]
       }
       append_experiment_log: {
         Args: { gene_id: string; new_log: Json }
