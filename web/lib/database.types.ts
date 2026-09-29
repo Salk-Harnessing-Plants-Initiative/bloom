@@ -4529,6 +4529,16 @@ export type Database = {
         Args: { p_run_id: number }
         Returns: undefined
       }
+      add_species: {
+        Args: { p_common_name: string; p_genus: string; p_species: string }
+        Returns: {
+          common_name: string
+          genus: string
+          id: number
+          result: string
+          species: string
+        }[]
+      }
       append_experiment_log: {
         Args: { gene_id: string; new_log: Json }
         Returns: undefined
