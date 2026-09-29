@@ -40,11 +40,11 @@ const STAGES: Record<string, { label: string; tooltip: string }> = {
   queued: {
     label: "Queued",
     tooltip:
-      "Waiting for the dispatcher to send this run to the cluster. A long wait may mean the dispatcher is down.",
+      "Waiting for the dispatcher to send this run to the cluster. A long wait may mean the dispatcher is down, or that the trigger stopped before queueing the run's scans.",
   },
   submitted: {
     label: "Submitted",
-    tooltip: "Sent to the cluster; waiting for its first batch to start.",
+    tooltip: "Sent to the cluster. Batches may already be running; progress shows after the status poller's next sweep.",
   },
   running: {
     label: "Running",
@@ -97,7 +97,7 @@ export function runDisplay(run: RunCounts): RunDisplay {
       ...base,
       label: `Partial · ${D} / ${N} succeeded · ${F} failed`,
       tone: "partial",
-      tooltip: "A batch failed at dispatch; the rest of the run may still be processing.",
+      tooltip: "Some batches failed, at dispatch or on the cluster; the rest of the run may still be processing.",
     };
   }
   const progress = `${D} / ${N} succeeded${F > 0 ? ` · ${F} failed` : ""}`;

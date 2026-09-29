@@ -274,9 +274,12 @@
 
   **Notes on §3–8 as built (2026-09-28):**
   - **One channel per view.** The drill-down puts its three bindings (run UPDATE `id=eq.`, scan INSERT and UPDATE `run_id=eq.`) on one channel, so one status stream drives one resync. 7.2's "both channels" sync cases are covered as both tables' events on that channel.
-  - **Client-loaded snapshots wait for `SUBSCRIBED`.** The drill-down's scan rows and the experiment panel's runs load on the first `SUBSCRIBED`, not at mount. A mount fetch would be redundant, since the first `SUBSCRIBED` must refetch anyway, and it would double a 5000-row read. If the channel never subscribes, the view shows offline with its refresh control. The list and the drill-down header are server-rendered.
+  - **Client-loaded snapshots wait for `SUBSCRIBED`.** The drill-down's scan rows and the experiment panel's runs load on the first `SUBSCRIBED`, not at mount. A mount fetch would be redundant, since the first `SUBSCRIBED` must refetch anyway, and it would double a 5000-row read. If the channel fails before its first `SUBSCRIBED`, the view says live updates are unavailable (not "Loading…") and offers Refresh, which loads it. The list and the drill-down header are server-rendered.
   - **The drill-down header** uses the run row's own counts until the scan rows first load, then the held-row tallies.
-  - **"Current in trait views"** stays live without queries: a row turning `written`/`reused` with a `source_id` raises the held latest source to max(held, `source_id`). The trigger keeps `max_source_id` as the max source id, and write-back inserts the traits in the transaction that marks the row written. A resync corrects a concurrent writer.
+  - **Synced side state.** Everything a snapshot reads lives in the synced view: the drill-down's scan metadata, latest sources and experiments; the list's pages. So a superseded fetch can't leave stale pieces behind, and buffered events replay onto all of it. `update()` calls made during a fetch are buffered like events. A "Load older" page is dropped if a snapshot started after it, because appending it to a newer window would move the cursor past rows neither holds (found in PR 3's review).
+  - **"Current in trait views"** is "unknown" when the latest-source read failed, and for a row whose `source_id` changed since that read, until the next snapshot. It isn't inferred: an empty envelope marks a row written with a `source_id` and inserts no traits, so the scan's latest source doesn't move.
+  - **Degraded reads.** A failed metadata or latest-source read keeps the rows and says scan details are unavailable. Only a failed run-scan read fails the snapshot.
+  - **Experiment names** in the drill-down come only from `cyl_pipeline_run_experiments`. `cyl_scans_extended` runs with its owner's rights, so its names would include soft-deleted experiments. Traits links are limited to the experiments that view lists.
   - **Panel membership.** A confirmed member is added from its Realtime payload when that payload is a whole row; otherwise it is read by id (`fetchRunsByIds`, added to `queries.ts`).
   - **Shared pieces:** `use-live-sync.ts` (the per-view sync loop), `components/cyl-pipeline/RunState.tsx` (the label, with the failed count linked), `elapsed.ts`, `run-text.ts`, `scan-meta.ts` and `use-now.ts`.
 
@@ -333,7 +336,10 @@
     - the experiment panel lists the run, and adds a second run once its scan rows land;
     - with 57 runs, the list shows 50, and "Load older" gives all 57 in exact `(created_at, id)` order with no duplicates;
     - 60 quiet seconds made no REST requests, and no `/workflows/runs` request was ever made.
-  - **Cold-start drop.** The one-event losses in 0.3 recur only on a tenant's first subscription after Realtime starts (twice on a fresh tenant, 0 of 10 on warm runs). A later full-row UPDATE for the run repairs the view, since the list admits unknown runs and merges held ones.
+  - **Cold-start drop.** The one-event losses in 0.3 came only on a tenant's first subscription after Realtime started: twice, each time on a cold tenant. None were lost in the warm sessions (three capture runs, a 50-insert probe, and the 8.6 browser runs).
+    - A later event for the same row repairs the view: UPDATE payloads carry every column but an unchanged TOASTed `error_message`, the list admits unknown runs, and every view merges held ones.
+    - A dropped *final* event has no later event: a scan row's last transition, or the run's last rollup. It stays missing until a reconnect, a reload or Refresh.
+    - Staging restarts Realtime on every deploy, so cold starts recur.
   - **Cleanup.** Queue purged (it was empty), services restarted, no run rows left.)**
 - [ ] 8.7 Verify:
   - `openspec validate add-cyl-pipeline-ui --strict`;

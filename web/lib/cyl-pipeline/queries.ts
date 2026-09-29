@@ -9,7 +9,7 @@
  * here reads trait sources by run.
  */
 
-import type { Cursor, RunRow, RunScanRow } from "./realtime-reducer";
+import { PANEL_SIZE, RUN_PAGE_SIZE, type Cursor, type RunRow, type RunScanRow } from "./realtime-reducer";
 import { SCAN_META_COLUMNS, type ScanMeta } from "./scan-meta";
 
 export class QueryError extends Error {
@@ -23,10 +23,11 @@ export class QueryError extends Error {
   }
 }
 
-export const RUNS_PAGE = 50;
+// One definition each: the list decides "has older" from the same page size.
+export const RUNS_PAGE = RUN_PAGE_SIZE;
 export const RUN_SCANS_PAGE = 1000;
 export const ID_CHUNK = 200;
-export const PANEL_RUNS = 10;
+export const PANEL_RUNS = PANEL_SIZE;
 
 /** Every run column the views show; `reused_count` is left out (design D3). */
 export const RUN_COLUMNS =
@@ -132,8 +133,9 @@ export async function fetchScanMeta(client: ReadClient, ids: number[]): Promise<
 }
 
 /**
- * Each scan's latest trait source, keyed by scan id. A scan with no traits
- * has no entry; one with only source-less traits maps to null.
+ * Each scan's latest trait source, keyed by scan id. A scan that never had
+ * traits has no entry; one whose traits have no source, or whose traits were
+ * all deleted, maps to null.
  */
 export async function fetchLatestSources(client: ReadClient, ids: number[]): Promise<Map<number, number | null>> {
   const rows = await readChunked(ids, async (chunk) =>
