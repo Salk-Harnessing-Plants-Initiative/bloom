@@ -117,6 +117,11 @@ class K8sStatusError(Exception):
     K8sSubmissionError — never the raw response body or exception text."""
 
 
+class K8sPodNotRunningError(K8sStatusError):
+    """The pod exists but its container is not running yet (the log API answers 400:
+    waiting to start, or not yet placed on a node), so it has no log to read."""
+
+
 def _validate_config() -> None:
     missing = [
         name
@@ -288,13 +293,12 @@ def submit_workflow(body: dict) -> str:
         raise K8sSubmissionError("Argo Workflow submission failed") from exc
 
 
-def get_workflow_status(name: str) -> str | None:
-    """GET a single Workflow's real phase (Pending/Running/Succeeded/Failed/
-    Error) by name. Returns None on 404 — the Workflow no longer exists (most
-    often ttlStrategy already cleaned it up, an expected condition, not a
-    failure). Raises K8sStatusError for any other non-2xx response or
-    network-level failure, with a fixed, generic message — the real detail is
-    logged server-side only."""
+def get_workflow(name: str) -> dict | None:
+    """GET a single Workflow by name and return it whole (metadata, spec and status).
+    Returns None on 404: the Workflow no longer exists, most often because its
+    ttlStrategy cleaned it up. Raises K8sStatusError for any other non-2xx response,
+    a network-level failure or an unparseable body, with a fixed, generic message;
+    the real detail is logged server-side only."""
     _validate_config()
     url = f"{API_URL}/apis/argoproj.io/v1alpha1/namespaces/{NAMESPACE}/workflows/{name}"
 
@@ -318,11 +322,74 @@ def get_workflow_status(name: str) -> str | None:
         raise K8sStatusError("Argo Workflow status check failed")
 
     try:
-        return resp.json()["status"]["phase"]
-    except (KeyError, TypeError, ValueError) as exc:
+        workflow = resp.json()
+    except ValueError as exc:
         logger.warning(
             "k8s_client: status check returned %s but response body was unparseable: %s",
             resp.status_code,
             exc,
+        )
+        raise K8sStatusError("Argo Workflow status check failed") from exc
+    if not isinstance(workflow, dict):
+        logger.warning(
+            "k8s_client: status check returned %s but the body was not an object",
+            resp.status_code,
+        )
+        raise K8sStatusError("Argo Workflow status check failed")
+    return workflow
+
+
+def get_pod_log(
+    pod: str, container: str, tail_lines: int, limit_bytes: int
+) -> str | None:
+    """The last `tail_lines` lines (at most `limit_bytes`) of one container's log in a
+    pod. Returns None on 404: the pod no longer exists. Raises K8sStatusError for any
+    other non-2xx response or a network-level failure, with a fixed, generic message."""
+    _validate_config()
+    url = f"{API_URL}/api/v1/namespaces/{NAMESPACE}/pods/{pod}/log"
+    params = {
+        "container": container,
+        "tailLines": str(tail_lines),
+        "limitBytes": str(limit_bytes),
+    }
+
+    try:
+        with httpx.Client(verify=_ssl_context(), timeout=15.0) as client:
+            resp = client.get(
+                url,
+                headers={"Authorization": f"Bearer {TOKEN}"},
+                params=params,
+            )
+    except Exception as exc:
+        logger.warning("k8s_client: pod log request failed: %s", exc)
+        raise K8sStatusError("Pod log read failed") from exc
+
+    if resp.status_code == 404:
+        return None
+    if resp.status_code == 400:
+        logger.info("k8s_client: pod log not available yet: %s", resp.text[:500])
+        raise K8sPodNotRunningError("Pod is not running yet")
+    if resp.status_code // 100 != 2:
+        logger.warning(
+            "k8s_client: pod log request rejected (%s): %s",
+            resp.status_code,
+            resp.text[:500],
+        )
+        raise K8sStatusError("Pod log read failed")
+    return resp.text
+
+
+def get_workflow_status(name: str) -> str | None:
+    """A single Workflow's real phase (Pending/Running/Succeeded/Failed/Error) by name,
+    or None on 404. Raises K8sStatusError on any other failure, including a Workflow
+    with no phase."""
+    workflow = get_workflow(name)
+    if workflow is None:
+        return None
+    try:
+        return workflow["status"]["phase"]
+    except (KeyError, TypeError) as exc:
+        logger.warning(
+            "k8s_client: status check returned a Workflow without a phase: %s", exc
         )
         raise K8sStatusError("Argo Workflow status check failed") from exc
