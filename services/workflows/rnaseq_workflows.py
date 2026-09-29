@@ -8,6 +8,7 @@ type only says how to build the Argo Workflow for one claimed run, which carries
 """
 
 import hashlib
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -38,6 +39,21 @@ IMAGE_PULL_SECRET = "dockerregistry-bloom-ghcr-pull"
 
 _DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
+# How long Argo keeps a finished RNA-seq Workflow and its step pods (and so their logs).
+DEFAULT_TTL_SECONDS = 86400
+
+
+def _resolve_ttl_seconds() -> int:
+    """WORKFLOWS_RNASEQ_TTL_SECONDS, or 24 hours if unset or not a positive integer."""
+    try:
+        value = int(os.environ.get("WORKFLOWS_RNASEQ_TTL_SECONDS", DEFAULT_TTL_SECONDS))
+    except ValueError:
+        return DEFAULT_TTL_SECONDS
+    return value if value > 0 else DEFAULT_TTL_SECONDS
+
+
+TTL_SECONDS = _resolve_ttl_seconds()
+
 
 def cellranger_workflow_name(run: dict) -> str:
     """A fixed name per run, so resubmitting the same run is refused by Argo.
@@ -66,7 +82,7 @@ def build_cellranger_body(run: dict) -> dict:
                 "project": "busch-lab",
                 "submitted-by": "bloom-pipeline",
                 "workflow-type": "scrna-cellranger",
-                "scrna-run-id": str(run["run_id"]),
+                "rnaseq-run-id": str(run["run_id"]),
                 "environment": k8s_client.ENV_LABEL,
             },
             # run_key can exceed the 63-character label limit.
@@ -76,7 +92,7 @@ def build_cellranger_body(run: dict) -> dict:
             "entrypoint": "main",
             "serviceAccountName": STEP_SERVICE_ACCOUNT,
             "imagePullSecrets": [{"name": IMAGE_PULL_SECRET}],
-            "ttlStrategy": {"secondsAfterCompletion": k8s_client.TTL_SECONDS},
+            "ttlStrategy": {"secondsAfterCompletion": TTL_SECONDS},
             "arguments": {
                 "parameters": [
                     {"name": "sample", "value": run["params"]["sample"]},
