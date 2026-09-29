@@ -50,7 +50,10 @@ export interface LiveSync<V> {
   /** The last snapshot's error message, cleared by the next successful one. */
   error: string | null;
   fetching: boolean;
+  /** Refetch now (a user action); it opens a resync window like any refetch. */
   refresh: () => void;
+  /** Whether a snapshot fetch is in flight, read from the store rather than the last render. */
+  isFetching: () => boolean;
   /**
    * Change the held view outside a snapshot. During a fetch the change is
    * buffered and replayed on top of the snapshot, like an event.
@@ -76,6 +79,7 @@ export function useLiveSync<V>(options: LiveSyncOptions<V>): LiveSync<V> {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  const scheduler = useRef<ReturnType<typeof createResyncScheduler> | null>(null);
   const mounted = useRef(true);
 
   const apply = (view: V, entry: Entry<V>) => ("fn" in entry ? entry.fn(view) : opts.current.apply(view, entry.change));
@@ -103,7 +107,8 @@ export function useLiveSync<V>(options: LiveSyncOptions<V>): LiveSync<V> {
   useEffect(() => {
     mounted.current = true;
     const client = createClientSupabaseClient();
-    const scheduler = createResyncScheduler(() => void refetch());
+    const resync = createResyncScheduler(() => void refetch());
+    scheduler.current = resync;
     let channel = client.channel(`${opts.current.topic}:${++topicSeq}`);
     for (const b of JSON.parse(bindingsKey) as LiveBinding[]) {
       channel = channel.on(
@@ -123,9 +128,12 @@ export function useLiveSync<V>(options: LiveSyncOptions<V>): LiveSync<V> {
     // not put the session token on its socket yet, so a join sent now would
     // carry only the anon key: RLS would run as anon and every run event would
     // be dropped without an error (found in add-cyl-pipeline-ui task 8.6).
-    // setAuth() with no argument reads the token through supabase-js's
-    // accessToken callback (the anon key when signed out) and leaves the
-    // socket's own token refresh on; an explicit token would be pinned.
+    // setAuth() with no argument reads the current token through
+    // supabase-js's accessToken callback, which awaits auth initialisation
+    // (the anon key when signed out). Later tokens arrive the way they do for
+    // every channel: supabase-js calls realtime.setAuth on TOKEN_REFRESHED.
+    // If the session can't be read, the join is anon and RLS drops events
+    // without an error; the next token refresh repairs it.
     let cancelled = false;
     void (async () => {
       try {
@@ -138,13 +146,14 @@ export function useLiveSync<V>(options: LiveSyncOptions<V>): LiveSync<V> {
       channel.subscribe((status: string) => {
         if (!mounted.current) return;
         setConnection((prev) => nextConnectionState(prev, status));
-        scheduler.onStatus(status);
+        resync.onStatus(status);
       });
     })();
     return () => {
       cancelled = true;
       mounted.current = false;
-      scheduler.dispose();
+      resync.dispose();
+      if (scheduler.current === resync) scheduler.current = null;
       void client.removeChannel(channel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -161,7 +170,8 @@ export function useLiveSync<V>(options: LiveSyncOptions<V>): LiveSync<V> {
     connection,
     error,
     fetching: store.current.fetching,
-    refresh: () => void refetch(),
+    refresh: () => (scheduler.current ? scheduler.current.refetchNow() : void refetch()),
+    isFetching: () => store.current.fetching,
     update,
     generation: () => generation.current,
     current: () => store.current.view,

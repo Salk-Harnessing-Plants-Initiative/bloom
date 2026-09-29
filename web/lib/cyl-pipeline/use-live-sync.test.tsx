@@ -89,6 +89,35 @@ describe("useLiveSync updates outside a snapshot", () => {
     expect(handle!.view).toBe(15);
   });
 
+  it("reports a fetch in flight at once, before any re-render", async () => {
+    render(<Probe />);
+    await flush();
+    const pending = deferred<number>();
+    snapshot = () => pending.promise;
+    expect(handle!.isFetching()).toBe(false);
+    handle!.refresh(); // no act(): the flag must not wait for React
+    expect(handle!.isFetching()).toBe(true);
+    await act(async () => pending.resolve(1));
+    expect(handle!.isFetching()).toBe(false);
+  });
+
+  it("collapses a SUBSCRIBED right after a user refresh, as after any refetch", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    snapshot = async () => ++reads;
+    render(<Probe />);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    await act(async () => supabaseMock.channels[0].status("SUBSCRIBED"));
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(reads).toBe(1);
+    await act(async () => handle!.refresh());
+    await act(async () => supabaseMock.channels[0].status("SUBSCRIBED"));
+    expect(reads).toBe(2);
+    await act(() => vi.advanceTimersByTimeAsync(2000));
+    expect(reads).toBe(3);
+    vi.useRealTimers();
+  });
+
   it("counts snapshots started, so a caller can tell one began after it", async () => {
     render(<Probe />);
     await flush();

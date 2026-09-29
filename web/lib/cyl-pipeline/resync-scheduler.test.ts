@@ -85,6 +85,28 @@ describe("createResyncScheduler", () => {
     expect(times).toEqual([0, 2000, 4000]);
   });
 
+  it("refetches at once on a user refresh, and that refetch opens a window too", async () => {
+    const s = createResyncScheduler(refetch);
+    s.onStatus("SUBSCRIBED");
+    await vi.advanceTimersByTimeAsync(3000);
+    s.refetchNow(); // t = 3000
+    await vi.advanceTimersByTimeAsync(500);
+    s.onStatus("SUBSCRIBED"); // inside the refresh's window
+    expect(times).toEqual([0, 3000]);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(times).toEqual([0, 3000, 5000]);
+  });
+
+  it("runs a user refresh at once even inside a window, and restarts the window from it", async () => {
+    const s = createResyncScheduler(refetch);
+    s.onStatus("SUBSCRIBED");
+    await vi.advanceTimersByTimeAsync(500);
+    s.onStatus("SUBSCRIBED"); // pending trailing refetch
+    s.refetchNow(); // t = 500: the refresh covers it
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(times).toEqual([0, 500]);
+  });
+
   it("does nothing after dispose", async () => {
     const s = createResyncScheduler(refetch);
     s.onStatus("SUBSCRIBED");

@@ -6,7 +6,7 @@
  * ones cover a reconnect. It is leading plus trailing: a refetch opens a
  * window, and any further `SUBSCRIBED` inside it produces exactly one more
  * refetch when the window ends. A leading-only throttle could drop a real
- * reconnect. Nothing here runs on a timer except that trailing refetch, so a
+ * reconnect. A user refresh (refetchNow) runs at once and opens a window too. Nothing here runs on a timer except that trailing refetch, so a
  * quiet view never fetches.
  */
 
@@ -25,6 +25,7 @@ export function nextConnectionState(prev: ConnectionState, status: string): Conn
 
 export interface ResyncScheduler {
   onStatus(status: string): void;
+  refetchNow(): void;
   dispose(): void;
 }
 
@@ -47,6 +48,14 @@ export function createResyncScheduler(refetch: () => void, windowMs = RESYNC_WIN
       if (disposed || status !== "SUBSCRIBED") return;
       if (timer === null) run();
       else pending = true;
+    },
+    // A user action refetches at once and opens its own window, so a
+    // SUBSCRIBED right after it is collapsed like one after any refetch.
+    refetchNow() {
+      if (disposed) return;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      run();
     },
     dispose() {
       disposed = true;
