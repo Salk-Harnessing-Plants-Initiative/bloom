@@ -6,6 +6,8 @@ import {
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import ExperimentDescription from "@/components/experiment-description";
+import { ExperimentRunsPanel } from "@/components/cyl-pipeline/ExperimentRunsPanel";
+import { parseId } from "@/lib/route-params";
 
 type Plant = {
   created_at: string;
@@ -63,6 +65,7 @@ export default async function Experiment({
   params: Promise<{ experimentId: string; speciesId: string }>;
 }) {
   const { experimentId, speciesId } = await params;
+  const runsPanelId = parseId(experimentId);
   const experiment : any = await getExperimentWithPlants(Number(experimentId));
   console.log("Experiment data:", experiment);
   const experimentName = capitalizeFirstLetter(
@@ -156,6 +159,8 @@ export default async function Experiment({
             })}
         </div>
       </div>
+
+      {runsPanelId !== null && <ExperimentRunsPanel experimentId={runsPanelId} />}
     </div>
   );
 }
