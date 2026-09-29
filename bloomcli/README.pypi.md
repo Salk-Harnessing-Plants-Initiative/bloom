@@ -162,9 +162,9 @@ bloomctl scrna hdf5 upload myb41.h5ad
 # 2. Check it is stored
 bloomctl scrna hdf5 list --file myb41.h5ad
 
-# 3. Download it by its fingerprint (all 64 characters, from `list --output json`)
-bloomctl scrna hdf5 list --file myb41.h5ad --output json
-bloomctl scrna hdf5 download --checksum <64-character fingerprint> --out copy.h5ad
+# 3. Download it by its fingerprint (all 64 characters, read from `list --output json`)
+FP=$(bloomctl scrna hdf5 list --file myb41.h5ad --output json | jq -r '.[0].fingerprint')
+bloomctl scrna hdf5 download --checksum "$FP" --out copy.h5ad
 
 # Once the dataset is loaded into Bloom, download by its exact name or its id instead
 bloomctl scrna hdf5 download "MYB41 transgene"
