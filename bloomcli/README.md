@@ -456,17 +456,24 @@ bloomctl cyl batch-download-for-predict <out_dir>
 - **Skips an already-staged scan** — if `<out_dir>/scan_<scan_id>/` already has
   a valid sidecar (parses, `scan_key` matches), that scan is reported
   `skipped` and not re-downloaded.
-- **Writes a `RunManifest`** — after every scan is processed, writes/merges a
-  `sleap_roots_contracts.RunManifest` into `<out_dir>/run_manifest.json`,
-  recording every usable (`ok` or `skipped`) `scan_key` this and any prior
-  invocation staged into this directory (`pipeline_run_id` from
-  `ARGO_WORKFLOW_NAME`, or a generated `local-<8 hex chars>` placeholder
-  outside Argo). A downstream consumer reads this to know which scans in
-  `<out_dir>` are safe to process.
+- **Writes a `RunManifest`** — after every scan is processed, writes a
+  `sleap_roots_contracts.RunManifest` recording every usable (`ok` or
+  `skipped`) `scan_key` *this invocation* found. The file is named per run:
+  `<out_dir>/run_manifest.<ARGO_WORKFLOW_NAME>.json` inside Argo (whitespace
+  stripped), and `<out_dir>/run_manifest.json` when `ARGO_WORKFLOW_NAME` is
+  unset or blank. Its `pipeline_run_id` is that same run id, or a generated
+  `local-<8 hex chars>` placeholder outside Argo (stamped inside the file,
+  never used to name it). The write **replaces** any existing file of that
+  name — it never merges with an earlier manifest, so running twice into the
+  same `out_dir` without `ARGO_WORKFLOW_NAME` keeps only the second run's keys,
+  and a legacy `run_manifest.json` next to a per-run file is never touched. A
+  downstream consumer reads this to know which scans in `<out_dir>` are this
+  run's to process (bloom #934).
 - **Locks against concurrent invocations** — a per-scan lock
   (`<out_dir>/.locks/{scan_key}.lock`) guards each scan's skip-check through
   its sidecar write, and a separate lock (`<out_dir>/.locks/manifest.lock`)
-  guards the manifest read-merge-write, so two invocations targeting the same
+  guards the manifest write (one lock per `out_dir`, whatever the manifest's
+  name), so two invocations targeting the same
   `out_dir` can't corrupt each other. `--lock-staleness-seconds` (default
   `900`) controls how old an abandoned lock must be before it's reclaimed
   rather than treated as still held.
@@ -476,10 +483,11 @@ bloomctl cyl batch-download-for-predict <out_dir>
   empty; `3` if at least one scan failed — whether that's one scan out of many
   or every scan in the batch, since `3` only means "not every scan succeeded,"
   never "some scan did" (mirrors `sleap_roots_predict`/`trait_extractor`'s own
-  `0`/`3` convention, bloom #772). Check `run_manifest.json` or `--json`
-  output to see which scans, if any, actually staged. A usage error or
-  manifest-lock/write failure still exits `2`/`1` respectively, independent
-  of any scan's outcome.
+  `0`/`3` convention, bloom #772). Check the written manifest or `--json`
+  output to see which scans, if any, actually staged. A usage error exits
+  `2`; a manifest-lock/write failure, or an `ARGO_WORKFLOW_NAME` that cannot
+  name a manifest file (checked before any scan is staged), exits `1` —
+  independent of any scan's outcome. Empty input still exits `0`.
 
 Auth: same saved login profile as other `cyl` commands.
 
@@ -657,13 +665,26 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - Ingests every `{scan_key}.result.json` file directly under `envelopes_dir`
   (non-recursive — the flat layout `trait_extractor.extract_batch`'s
   output produces), via the same validation + RPC path as `ingest-result`.
-  If `envelopes_dir` contains a `run_manifest.json`, discovery is scoped to
-  its `scan_keys`: out-of-scope files are excluded (and logged at debug
-  level), and a declared `scan_key` with no matching file is reported as a
-  batch failure — unless a differently-named file's own content actually
-  reports that scan_key (a filename/body mismatch), in which case the real
-  outcome wins and the failure is dropped. With no manifest present,
-  discovery is fully unscoped, as above.
+  Discovery is scoped to the run's manifest, resolved with
+  `sleap_roots_contracts.load_run_manifest` (bloom #934):
+  - **With `ARGO_WORKFLOW_NAME` set**: `run_manifest.<ARGO_WORKFLOW_NAME>.json`,
+    else the legacy `run_manifest.json` (accepted during the rollout;
+    sleap-roots-pipeline#82 removes the fallback). A legacy fallback that names
+    a different run is used, with a warning. If **neither** file exists,
+    nothing is ingested: the batch reports a failed `scan_key="<run-manifest>"`
+    entry naming both files, still makes the reconciliation call below, and
+    exits `1` — it never falls back to ingesting every envelope in a directory
+    that other runs share. A per-run file naming a different run, or an
+    `ARGO_WORKFLOW_NAME` the contract rejects, fails before anything is
+    ingested.
+  - **Without it**: `run_manifest.json` scopes discovery when present; with no
+    manifest, discovery is fully unscoped, as above.
+
+  When a manifest scopes discovery, out-of-scope files are excluded (and
+  logged at debug level), and a declared `scan_key` with no matching file is
+  reported as a batch failure — unless a differently-named file's own content
+  actually reports that scan_key (a filename/body mismatch), in which case the
+  real outcome wins and the failure is dropped.
 - **Isolates per-envelope failures** — an unreadable/malformed file, a
   contract-validation failure, or a mapped RPC error is recorded and reported,
   but does not abort the rest of the batch.
@@ -683,10 +704,15 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   plus one line per failure and one `WARNING` line per degraded item. `warning`
   is non-empty when the idempotency-gate check could not run and the command
   fell back to uploading — most likely a missing column grant.
-- **Exit code:** non-zero if any envelope in the batch failed; zero if every
-  envelope succeeded, was a no-op re-delivery, or the directory was empty
-  (a directory containing only a manifest with no matching files is not the
-  empty case — it exits non-zero).
+- **Exit code:** non-zero if any failed entry in the batch is retriable (an
+  envelope, a missing `scan_key`, a missing run manifest, or the
+  reconciliation call); zero if every envelope succeeded, was a no-op
+  re-delivery, or failed only non-retriably, or if there was nothing to ingest
+  and no manifest was needed (`ARGO_WORKFLOW_NAME` unset, empty directory, no
+  `run_manifest.json`). A directory containing only a manifest with no
+  matching files is not the empty case — it exits non-zero. A missing or
+  unreadable `envelopes_dir`, or a manifest that can't be read or names the
+  wrong run, exits `1` before anything is ingested.
 - When `ARGO_WORKFLOW_NAME` is set, after every discovered envelope has been
   processed, marks every scan dispatched under that workflow name that never
   produced a result as `'failed'` (one call, regardless of batch size —
