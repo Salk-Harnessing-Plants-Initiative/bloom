@@ -399,8 +399,8 @@
   - order is preserved and ids are neither lost nor duplicated;
   - a single id longer than the budget gets its own batch;
   - 19-digit ids batch correctly;
-  - `ID_FILTER_BUDGET_CHARS` equals the value in `bloomcli/src/bloomctl/_postgrest.py`. The test reads that file, so the two can't drift.
-- [x] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing the 414 measurement. (That measurement is in PR #650's description, not bloom#674 as this line first said.)
+  - `ID_FILTER_BUDGET_CHARS` equals the value in `bloomcli/src/bloomctl/_postgrest.py`. The test reads that file, so the two can't drift. (characterization)
+- [x] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing the 414 measurement. (That measurement is in a review comment on PR #650, https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/650#issuecomment-5269400672, not bloom#674 as this line first said.)
 - [x] 9b.3 **Test first.** Extend `services/workflows/tests/test_pipeline.py`. Its `_FakeClient` must record each `.in_()` id list, so it may need extending.
   - A 3000-id `scan_ids` request issues more than one `cyl_scans_extended` filter call, each within budget, and proceeds as if all were found.
   - A missing id in the last batch still gives 404 naming it, with no rows written.

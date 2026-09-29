@@ -176,11 +176,16 @@ Large targets (bloom #901):
   preview's `cyl_scan_traits` and `cyl_trait_sources` lookups) is split by rendered length under
   a 4000-character budget (`postgrest_batches.py`, copied from bloomctl's
   `bloomcli/src/bloomctl/_postgrest.py`), and the results are merged. An unsplit list of about
-  1,340 small ids gets `414 URI Too Long` from the gateway (measured for PR #650).
-- **The preview is skipped for `params: {}`.** Stored hashes are over resolved species/mode/age,
-  so the hash of `{}` never matches one; the route returns `reused_count: 0` without querying.
-  For non-empty `params` the preview still reads every trait row of the requested scans, which
-  is left open on #901.
+  1,340 small ids, or about 1,080 four-digit scan ids, gets `414 URI Too Long` from the gateway
+  (measured for PR #650).
+- **The preview is skipped for `params: {}`.** Every pipeline producer hashes the full resolved
+  species/mode/age, so the hash of `{}` matches none of the sources it writes; the route returns
+  `reused_count: 0` without querying.
+- **Non-empty `params` still pay for the preview** (left open on #901). It reads every trait row
+  of the requested scans, about 1,035 per scan, reducing each batch to distinct
+  `(scan_id, source_id)` pairs as it arrives. Each batch is its own statement under the 8 s
+  timeout, so a large experiment can take many seconds, or fail with 500 before anything is
+  written if one batch times out.
 
 ```bash
 # Request: trigger every scan in experiment 123 — requires the caller's Supabase user JWT

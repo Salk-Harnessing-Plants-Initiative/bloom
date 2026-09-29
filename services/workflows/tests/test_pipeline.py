@@ -6,14 +6,18 @@ main.py's `/pipeline` endpoint using FastAPI's `TestClient` + `dependency_overri
 correctly without duplicating auth.py's own already-covered test_auth.py logic.
 """
 
+import random
+
 import pipeline
+import postgrest_batches
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 # --------------------------------------------------------------------------- #
 # Fake supabase client — routes by table name; tracks every table() call so
-# tests can assert call counts (e.g. "one batched query, not a per-scan loop").
+# tests can assert call counts (e.g. "batched by id-list length, not a per-scan
+# loop"), and records every .in_() id list.
 # --------------------------------------------------------------------------- #
 
 
@@ -480,7 +484,7 @@ def test_enumerate_experiment_orders_by_scan_id(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Dedup preview — informational only, checks ALL sources, one batched query
+# Dedup preview — informational only, checks ALL sources, batched by id-list length
 # --------------------------------------------------------------------------- #
 
 
@@ -657,7 +661,7 @@ def test_dedup_preview_issues_one_batched_query_not_a_per_scan_loop(monkeypatch)
 # Id-list filters are batched under the gateway's URL limit (bloom#901)
 # --------------------------------------------------------------------------- #
 
-_BUDGET = 4000
+_BUDGET = postgrest_batches.ID_FILTER_BUDGET_CHARS
 
 
 def _in_lists(client, table):
@@ -683,11 +687,35 @@ def test_large_scan_ids_request_is_existence_checked_in_batches(monkeypatch):
     result = pipeline.trigger_pipeline(body, "user-1")
 
     checks = _in_lists(client, "cyl_scans_extended")
-    assert len(checks) > 1
+    # 3000 ids x 5 characters (4 digits + comma) = 15,000, so 4 requests: batched by
+    # length, not one per id.
+    assert len(checks) == 4
     _assert_within_budget(checks)
     assert [v for vals in checks for v in vals] == ids
     assert result["scan_count"] == 3000
     assert [r["scan_id"] for r in client.inserted_run_scans] == ids
+
+
+def test_scan_ids_are_batched_by_rendered_length_not_by_count(monkeypatch):
+    # bigint ids can have 19 digits: 500 of them render 9,999 characters, which a
+    # fixed-count batch would send in one request. By length it is 200 per request.
+    base = 9_000_000_000_000_000_000
+    ids = [base + i for i in range(600)]
+    client = _FakeClient(cyl_scans_extended=[{"scan_id": i} for i in ids])
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": ids,
+        "params": {},
+    }
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    checks = _in_lists(client, "cyl_scans_extended")
+    assert [len(vals) for vals in checks] == [200, 200, 200]
+    _assert_within_budget(checks)
+    assert result["scan_count"] == 600
 
 
 def test_missing_scan_id_in_the_last_batch_is_still_a_404_with_no_rows(monkeypatch):
@@ -718,11 +746,14 @@ def test_large_experiment_dedup_preview_is_batched_and_counts_the_same(monkeypat
     params = {"age": 14}
     match, other = _hash_of(params), _hash_of({"age": 21})
     scan_ids = list(range(1000, 3500))  # 2500 scans
+    # Two sources per scan (six-digit ids), so the source list is ~2x the scan list
+    # and is batched too. Source ids are shuffled against scan order, so a scan's
+    # sources land in unrelated source batches. Every third scan has one match.
+    source_ids = list(range(100_000, 105_000))
+    random.Random(901).shuffle(source_ids)
     traits, sources, expected_reused = [], [], set()
     for n, sid in enumerate(scan_ids):
-        # Two sources per scan (six-digit ids), so the source list is ~2x the scan list
-        # and is batched too. Every third scan has one matching source.
-        older, newer = 100_000 + 2 * n, 100_001 + 2 * n
+        older, newer = source_ids[2 * n], source_ids[2 * n + 1]
         traits += [
             {"scan_id": sid, "source_id": older},
             {"scan_id": sid, "source_id": newer},
@@ -755,8 +786,9 @@ def test_large_experiment_dedup_preview_is_batched_and_counts_the_same(monkeypat
 
 
 def test_empty_params_skips_the_dedup_preview_entirely(monkeypatch):
-    # Even a stored hash of `{}` is not consulted: real sources are hashed over resolved
-    # {species, mode, age}, so `{}` can never match one and the preview is skipped.
+    # Even a stored hash of `{}` is not consulted. Every pipeline producer hashes the
+    # full resolved {species, mode, age}, so `{}` matches no source it writes, and the
+    # preview is skipped outright.
     h = _hash_of({})
     scans = [{"scan_id": i} for i in range(1, 4)]
     client = _FakeClient(
@@ -796,7 +828,10 @@ def test_omitted_params_also_skips_the_dedup_preview(monkeypatch):
     )
 
     assert "cyl_scan_traits" not in client.calls
+    assert "cyl_trait_sources" not in client.calls
     assert result["reused_count"] == 0
+    assert client.inserted_run_scans[0]["status"] == "queued"
+    assert len(client.rpc_calls) == 1
 
 
 # --------------------------------------------------------------------------- #
