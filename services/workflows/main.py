@@ -47,6 +47,8 @@ Endpoints:
                                                        (requires a Supabase user JWT)
     GET  /scrna/cellranger/runs/{run_id}            - a Cell Ranger run as stored
                                                        (requires a Supabase user JWT)
+    GET  /scrna/cellranger/runs/{run_id}/logs       - the end of one step's log
+         ?step=<step>                                  (requires a Supabase user JWT)
 """
 
 import logging
@@ -59,6 +61,7 @@ import pipeline
 import plate_progress
 import plate_request
 import scrna_cellranger
+import scrna_cellranger_logs
 from auth import enforce_rate_limit, require_supabase_user
 from video import generate_experiment_scan_video
 
@@ -261,3 +264,17 @@ def get_scrna_cellranger_run_route(
     """
     enforce_rate_limit(user_id)
     return scrna_cellranger.get_run(run_id)
+
+
+@app.get("/scrna/cellranger/runs/{run_id}/logs")
+def get_scrna_cellranger_step_log_route(
+    run_id: int,
+    step: str,
+    user_id: str = Depends(require_supabase_user),
+):
+    """The end of one step's log for a Cell Ranger run.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
+    """
+    enforce_rate_limit(user_id)
+    return scrna_cellranger_logs.read_step_log(run_id, step)

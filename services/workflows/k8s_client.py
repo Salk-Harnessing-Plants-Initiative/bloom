@@ -334,6 +334,43 @@ def get_workflow(name: str) -> dict | None:
     return workflow
 
 
+def get_pod_log(
+    pod: str, container: str, tail_lines: int, limit_bytes: int
+) -> str | None:
+    """The last `tail_lines` lines (at most `limit_bytes`) of one container's log in a
+    pod. Returns None on 404: the pod no longer exists. Raises K8sStatusError for any
+    other non-2xx response or a network-level failure, with a fixed, generic message."""
+    _validate_config()
+    url = f"{API_URL}/api/v1/namespaces/{NAMESPACE}/pods/{pod}/log"
+    params = {
+        "container": container,
+        "tailLines": str(tail_lines),
+        "limitBytes": str(limit_bytes),
+    }
+
+    try:
+        with httpx.Client(verify=_ssl_context(), timeout=15.0) as client:
+            resp = client.get(
+                url,
+                headers={"Authorization": f"Bearer {TOKEN}"},
+                params=params,
+            )
+    except Exception as exc:
+        logger.warning("k8s_client: pod log request failed: %s", exc)
+        raise K8sStatusError("Pod log read failed") from exc
+
+    if resp.status_code == 404:
+        return None
+    if resp.status_code // 100 != 2:
+        logger.warning(
+            "k8s_client: pod log request rejected (%s): %s",
+            resp.status_code,
+            resp.text[:500],
+        )
+        raise K8sStatusError("Pod log read failed")
+    return resp.text
+
+
 def get_workflow_status(name: str) -> str | None:
     """A single Workflow's real phase (Pending/Running/Succeeded/Failed/Error) by name,
     or None on 404. Raises K8sStatusError on any other failure, including a Workflow

@@ -1040,7 +1040,6 @@ def test_get_workflow_status_requests_the_exact_resource_path(monkeypatch):
     assert capture["headers"]["Authorization"] == "Bearer test-token"
 
 
-
 # --------------------------------------------------------------------------- #
 # get_workflow
 # --------------------------------------------------------------------------- #
@@ -1103,3 +1102,56 @@ def test_get_workflow_status_refuses_a_workflow_without_a_phase(monkeypatch):
     monkeypatch.setattr(k8s_client, "get_workflow", lambda name: {"metadata": {}})
     with pytest.raises(K8sStatusError):
         k8s_client.get_workflow_status("wf-1")
+
+
+# --------------------------------------------------------------------------- #
+# get_pod_log
+# --------------------------------------------------------------------------- #
+
+
+def test_get_pod_log_asks_for_the_containers_last_lines(monkeypatch):
+    capture = {}
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(
+            resp=_FakeResp(200, text="step output\n"), capture=capture
+        ),
+    )
+    assert k8s_client.get_pod_log("pod-1", "main", 2000, 1048576) == "step output\n"
+    assert capture["url"].endswith("/api/v1/namespaces/runai-busch-lab/pods/pod-1/log")
+    assert capture["kwargs"]["params"] == {
+        "container": "main",
+        "tailLines": "2000",
+        "limitBytes": "1048576",
+    }
+
+
+def test_get_pod_log_returns_none_when_the_pod_is_gone(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(404, text="not found")),
+    )
+    assert k8s_client.get_pod_log("pod-1", "main", 10, 100) is None
+
+
+def test_get_pod_log_raises_a_generic_error_otherwise(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(403, text="forbidden at https://x")),
+    )
+    with pytest.raises(K8sStatusError) as exc:
+        k8s_client.get_pod_log("pod-1", "main", 10, 100)
+    assert str(exc.value) == "Pod log read failed"
+
+
+def test_get_pod_log_raises_a_generic_error_on_a_network_failure(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(raise_exc=RuntimeError("connection refused")),
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_pod_log("pod-1", "main", 10, 100)
