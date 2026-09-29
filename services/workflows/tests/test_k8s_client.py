@@ -1038,3 +1038,68 @@ def test_get_workflow_status_requests_the_exact_resource_path(monkeypatch):
         "runai-busch-lab/workflows/sleap-roots-pipeline-abc12"
     )
     assert capture["headers"]["Authorization"] == "Bearer test-token"
+
+
+
+# --------------------------------------------------------------------------- #
+# get_workflow
+# --------------------------------------------------------------------------- #
+
+
+def test_get_workflow_returns_the_whole_workflow(monkeypatch):
+    body = {"metadata": {"name": "wf-1"}, "status": {"phase": "Running", "nodes": {}}}
+    capture = {}
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(200, body), capture=capture),
+    )
+    assert k8s_client.get_workflow("wf-1") == body
+    assert capture["url"].endswith("/namespaces/runai-busch-lab/workflows/wf-1")
+
+
+def test_get_workflow_returns_none_when_the_workflow_is_gone(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(404, {}, text="not found")),
+    )
+    assert k8s_client.get_workflow("wf-1") is None
+
+
+@pytest.mark.parametrize("payload", [["a", "list"], "text"])
+def test_get_workflow_refuses_a_body_that_is_not_an_object(monkeypatch, payload):
+    class _Resp(_FakeResp):
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=_Resp(200))
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow("wf-1")
+
+
+def test_get_workflow_refuses_an_unparseable_body(monkeypatch):
+    class _Resp(_FakeResp):
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=_Resp(200))
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow("wf-1")
+
+
+def test_get_workflow_status_is_the_workflows_phase(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client, "get_workflow", lambda name: {"status": {"phase": "Succeeded"}}
+    )
+    assert k8s_client.get_workflow_status("wf-1") == "Succeeded"
+
+
+def test_get_workflow_status_refuses_a_workflow_without_a_phase(monkeypatch):
+    monkeypatch.setattr(k8s_client, "get_workflow", lambda name: {"metadata": {}})
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow_status("wf-1")
