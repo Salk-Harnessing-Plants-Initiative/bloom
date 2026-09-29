@@ -186,7 +186,7 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
   5. Add one all-fail batch, using a scan with zero `cyl_images` so it fails at `images-downloader`. Assert `status = 'failed'` and `failed_count = scan_count`.
   6. Record `done_count`/`failed_count` for each run, which also supplies `fix-cyl-pipeline-run-scan-status` 8.2–8.4.
   7. Rollback plan, written down before starting: revert the pins, run `argo template update`, and keep the snapshots.
-- [ ] 10.4 File the sleap-roots follow-up drafted with this change (traits' manifest forward is best-effort; make it fail loudly as predict's does; design Decision 4), with the user's approval.
+- [x] 10.4 File the sleap-roots follow-up drafted with this change (traits' manifest forward is best-effort; make it fail loudly as predict's does; design Decision 4), with the user's approval. Filed 2026-09-29 as talmolab/sleap-roots#271.
 - [ ] 10.5 After 10.3 passes:
   - [ ] Close bloom#934 by hand.
   - [ ] Open one archive PR that archives `fix-cyl-pipeline-run-scan-status` first, then this change, and fills that change's placeholder Purpose sections (its 15.3).
