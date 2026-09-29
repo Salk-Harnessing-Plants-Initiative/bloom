@@ -173,16 +173,21 @@ function mapUpstreamResponse(upstream: Response, text: string): NextResponse {
   }
 }
 
-/** A failed upstream exchange: 504 for our own timeout, 502 for the rest. */
-function mapUpstreamFailure(err: unknown): NextResponse {
+/**
+ * A failed upstream exchange: 504 for our own timeout, 502 for the rest.
+ * `answeredStatus` is set when the failure came while reading an answer whose
+ * headers had arrived, so the log keeps what upstream had said.
+ */
+function mapUpstreamFailure(err: unknown, answeredStatus?: number): NextResponse {
   const name = (err as { name?: unknown } | null)?.name;
+  const when = answeredStatus === undefined ? "" : ` after it answered ${answeredStatus}`;
   if (name === "TimeoutError") {
-    console.error(`${LOG_PREFIX} upstream timed out`);
+    console.error(`${LOG_PREFIX} upstream timed out${when}`);
     return detailResponse(504, TIMED_OUT);
   }
   const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
   console.error(
-    `${LOG_PREFIX} upstream unreachable: ${String(name ?? "error")}${typeof code === "string" ? ` (${code})` : ""}`
+    `${LOG_PREFIX} upstream failed${when}: ${String(name ?? "error")}${typeof code === "string" ? ` (${code})` : ""}`
   );
   return detailResponse(502, UNREACHABLE);
 }
@@ -198,6 +203,7 @@ export async function forwardToTrigger(
   body: unknown
 ): Promise<NextResponse> {
   let upstream: Response;
+  let answeredStatus: number | undefined;
   let text: string;
   try {
     upstream = await fetch(`${workflowsUrl}/pipeline`, {
@@ -211,9 +217,10 @@ export async function forwardToTrigger(
       redirect: "manual",
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
+    answeredStatus = upstream.status;
     text = await upstream.text();
   } catch (err) {
-    return mapUpstreamFailure(err);
+    return mapUpstreamFailure(err, answeredStatus);
   }
   return mapUpstreamResponse(upstream, text);
 }

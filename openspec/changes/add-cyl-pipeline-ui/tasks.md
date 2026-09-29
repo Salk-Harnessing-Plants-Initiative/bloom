@@ -389,6 +389,8 @@
 - [x] 9.4 Implement `route.ts`, with a comment that the Origin check depends on Caddy having no `trusted_proxies`. Update the `caddy/Caddyfile:123` comment, and confirm `tests/unit/test_caddy_cyl_video_route.py` passes. **(characterization: its new route-exists test.)**
 - [x] 9.5 Verify as in 8.7. The PR body notes that the route is reachable by same-origin signed-in POSTs once deployed, which adds nothing beyond `/workflows/pipeline`. Then `/pre-merge` and `/review-pr`.
 
+  **(PR 4, #952, 2026-09-29: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` all green, with 72 route and validation tests after two `/review-pr` rounds (5 reviewers, then 2); `npm run build` passes with CI's placeholder env; `test_caddy_cyl_video_route.py` 5 passed; migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `/pre-merge`: `npm audit --audit-level=critical` clean, no dependency changes; Docker image builds and compose integration tests left to CI.)**
+
 ## PR 5: trigger batching (bloom#901)
 
 ## 9b. Batch the trigger's id filters; skip the preview for `{}`

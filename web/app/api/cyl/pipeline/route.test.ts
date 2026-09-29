@@ -83,7 +83,8 @@ function forwarded() {
 
 beforeEach(() => {
   mockedGetSession.mockResolvedValue({ access_token: TOKEN } as never);
-  fetchSpy = vi.fn().mockResolvedValue(upstreamJson(RESULT));
+  // A fresh Response per call: a body can only be read once.
+  fetchSpy = vi.fn().mockImplementation(async () => upstreamJson(RESULT));
   vi.stubGlobal("fetch", fetchSpy);
   delete process.env.WORKFLOWS_URL;
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -100,10 +101,13 @@ afterEach(() => {
 });
 
 describe("module contract", () => {
-  it("is a dynamic node route that only accepts POST", () => {
+  it("is a dynamic node route that exports POST and no other method", () => {
     expect(routeModule.dynamic).toBe("force-dynamic");
     expect(routeModule.runtime).toBe("nodejs");
-    expect("GET" in routeModule).toBe(false);
+    expect(typeof routeModule.POST).toBe("function");
+    for (const method of ["GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]) {
+      expect(method in routeModule).toBe(false);
+    }
   });
 });
 
@@ -321,9 +325,16 @@ describe("local validation", () => {
 
 describe("encoding", () => {
   it("refuses a body that is not UTF-8 with 422", async () => {
-    const res = await routeModule.POST(
-      new Request(URL_, { method: "POST", headers: SAME_ORIGIN, body: new Uint8Array([0x7b, 0xff, 0x7d]) })
-    );
+    // Valid JSON if 0xff were decoded leniently to U+FFFD, and the extra key
+    // would then be dropped and the request forwarded; only strict decoding
+    // refuses it.
+    const encoder = new TextEncoder();
+    const body = new Uint8Array([
+      ...encoder.encode('{"target_level": "scan", "target_id": 42, "x": "'),
+      0xff,
+      ...encoder.encode('"}'),
+    ]);
+    const res = await routeModule.POST(new Request(URL_, { method: "POST", headers: SAME_ORIGIN, body }));
     expect(res.status).toBe(422);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -568,21 +579,23 @@ describe("transport failures", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("maps a timeout while reading the answer to 504", async () => {
+  it("maps a timeout while reading the answer to 504, once", async () => {
     // fetch resolves on headers; the timeout still covers the body.
     fetchSpy.mockResolvedValue(failingBody(new DOMException("t", "TimeoutError")));
 
     const res = await post();
     expect(res.status).toBe(504);
     expect((await res.json()).detail).toBe(TIMED_OUT);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("maps a connection reset while reading the answer to 502", async () => {
+  it("maps a connection reset while reading the answer to 502, once", async () => {
     fetchSpy.mockResolvedValue(failingBody(new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } })));
 
     const res = await post();
     expect(res.status).toBe(502);
     expect((await res.json()).detail).toBe(UNREACHABLE);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("calls upstream once on a 5xx", async () => {
@@ -614,7 +627,25 @@ describe("logging", () => {
     fetchSpy.mockResolvedValue(new Response("z".repeat(20_000), { status: 500 }));
     await post();
 
-    expect(logged()).not.toContain("z".repeat(300));
+    const text = logged();
+    expect(text).toContain(`${"z".repeat(299)}…`);
+    expect(text).not.toContain("z".repeat(300));
+  });
+
+  it("escapes newlines in a logged detail, so it cannot forge a log line", async () => {
+    fetchSpy.mockResolvedValue(upstreamJson({ detail: "boom\n[api/cyl/pipeline] forged" }, 500));
+    await post();
+
+    const line = vi.mocked(console.error).mock.calls.map((args) => String(args[0])).join("");
+    expect(line).toContain("boom\\n[api/cyl/pipeline] forged");
+    expect(line).not.toContain("\n");
+  });
+
+  it("logs upstream's status when the failure came while reading its answer", async () => {
+    fetchSpy.mockResolvedValue(failingBody(new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } }), 200));
+    await post();
+
+    expect(logged()).toContain("after it answered 200");
   });
 
   it("never logs the Authorization header or the token", async () => {

@@ -123,8 +123,9 @@
 		# Cyl scan actions and the pipeline trigger proxy (/api/cyl/pipeline) on
 		# bloom-web. `handle`, not `handle_path` — the /api prefix is part of the
 		# Next.js route. The trigger's same-origin check reads X-Forwarded-Host,
-		# which Caddy sets itself while no `trusted_proxies` is configured here;
-		# revisit that check (web/app/api/cyl/pipeline/route.ts) if one is added.
+		# which Caddy overwrites with the request's Host while no `trusted_proxies`
+		# is configured here; revisit that check (web/app/api/cyl/pipeline/route.ts)
+		# if one is added.
 		handle /api/cyl/* {
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}

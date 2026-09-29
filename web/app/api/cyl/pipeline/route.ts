@@ -20,8 +20,9 @@
  *     through Caddy. A cross-site page cannot set that header without the
  *     preflight above, so adding `trusted_proxies` (e.g. for cloudflared,
  *     bloom#616) does not open a CSRF hole by itself, but revisit this check
- *     when it happens: in trusted mode Caddy keeps the *last* incoming value,
- *     while this reads the first.
+ *     when it happens: in trusted mode Caddy forwards the last incoming
+ *     `X-Forwarded-Host` header line unchanged (itself possibly a comma
+ *     list), while this reads the first comma-separated value.
  *  3. A session with an access token (401).
  *
  * The forwarded body is rebuilt with `params: {}` (see trigger-request.ts).
@@ -60,12 +61,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const read = await readBodyCapped(request, TRIGGER_BODY_MAX_BYTES);
-  if (!read.ok && read.reason === "too-large") {
-    return detailResponse(413, `The request body is larger than ${TRIGGER_BODY_MAX_BYTES / 1024} KB.`);
+  if (!read.ok) {
+    return read.reason === "too-large"
+      ? detailResponse(413, `The request body is larger than ${TRIGGER_BODY_MAX_BYTES / 1024} KB.`)
+      : detailResponse(422, "The request body is not valid UTF-8.");
   }
   let raw: unknown;
   try {
-    if (!read.ok) throw new SyntaxError(read.reason);
     raw = JSON.parse(read.text);
   } catch {
     return detailResponse(422, "The request body is not valid JSON.");

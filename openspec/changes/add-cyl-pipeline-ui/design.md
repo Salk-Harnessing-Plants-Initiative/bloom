@@ -98,7 +98,7 @@ Claims are checked against `origin/staging` @ `7f3ff94a` (2026-09-24). Paths are
 
 - **CSRF.** A lax cookie rides same-site cross-origin posts, so any `*.salk.edu` page could otherwise start GPU work. Two checks close this:
   - **Media type.** A no-cors form post can't send `application/json`, so it gets 415. A CORS fetch triggers a preflight. Next's automatic OPTIONS reply carries only `Allow`, and Caddy adds no `Access-Control-Allow-*`, so the browser blocks it.
-  - **Origin vs host.** `Origin` is compared with the first `x-forwarded-host` value, or `host`, matching Next's own server-action check. It is never compared with `request.url`, because bloom-web runs `next start -H 0.0.0.0`.
+  - **Origin vs host.** `Origin` is compared with the first `x-forwarded-host` value, or `host`, like Next's own server-action check but stricter: an empty value is refused, and `host` is not consulted when `x-forwarded-host` is present. It is never compared with `request.url`, because bloom-web runs `next start -H 0.0.0.0`.
     - The Caddyfile sets no `trusted_proxies`, so Caddy 2.11 overwrites client `X-Forwarded-Host`, and in production browsers reach bloom-web only through Caddy.
     - The route comment records that this depends on there being no `trusted_proxies`. That matters if cloudflared (bloom#616) ever fronts bloom-web.
 - **Rebuilt body.** `params` is always `{}`: it is the true "no overrides" value while #897 stands. Nothing from the client is spread into the forwarded body.
