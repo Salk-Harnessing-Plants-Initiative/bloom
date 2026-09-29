@@ -633,8 +633,10 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   automatically inside the write-back container — see
   `sleap-roots-write-back-template.yaml`), also links the matching
   `cyl_pipeline_run_scans` row to this write-back (`'written'`), so the
-  pipeline run's `done_count`/`failed_count` can reflect it. Omit or unset it
-  for the existing manual/ad-hoc invocation shape, which is unaffected.
+  pipeline run's `done_count`/`failed_count` can reflect it. The value is sent
+  whitespace-stripped (`pipeline_run_id_from_env()`, the same run id
+  `batch-ingest-result` scopes and reconciles with). Omit, unset or blank it for
+  the existing manual/ad-hoc invocation shape, which is unaffected.
 
 The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
@@ -667,18 +669,28 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   output produces), via the same validation + RPC path as `ingest-result`.
   Discovery is scoped to the run's manifest, resolved with
   `sleap_roots_contracts.load_run_manifest` (bloom #934):
-  - **With `ARGO_WORKFLOW_NAME` set**: `run_manifest.<ARGO_WORKFLOW_NAME>.json`,
-    else the legacy `run_manifest.json` (accepted during the rollout;
-    sleap-roots-pipeline#82 removes the fallback). A legacy fallback that names
-    a different run is used, with a warning. If **neither** file exists,
-    nothing is ingested: the batch reports a failed `scan_key="<run-manifest>"`
-    entry naming both files, still makes the reconciliation call below, and
-    exits `1` — it never falls back to ingesting every envelope in a directory
-    that other runs share. A per-run file naming a different run, or an
+  - **With `ARGO_WORKFLOW_NAME` set** (whitespace stripped — the same run id
+    is sent as `p_argo_workflow_name` and used for the reconciliation below):
+    `run_manifest.<ARGO_WORKFLOW_NAME>.json`, else a legacy `run_manifest.json`
+    **only if it names this run** (accepted during the rollout;
+    sleap-roots-pipeline#82 removes the fallback). If there is **no manifest
+    for this run** — neither file, or only a legacy file naming a different
+    run (stale, or another run's) — nothing is ingested: the batch reports a
+    failed `scan_key="<run-manifest>"` entry naming the files (and both run
+    ids), still makes the reconciliation call below, recording that no run
+    manifest reached write-back, and exits `1`. It never falls back to
+    ingesting every envelope in a directory that other runs share, or to
+    another run's scope. A per-run file naming a different run, or an
     `ARGO_WORKFLOW_NAME` the contract rejects, fails before anything is
     ingested.
-  - **Without it**: `run_manifest.json` scopes discovery when present; with no
-    manifest, discovery is fully unscoped, as above.
+  - **Without it** (unset or blank): `run_manifest.json` scopes discovery when
+    present; with no manifest, discovery is fully unscoped, as above.
+
+  Don't recover a failed pipeline batch by running `batch-ingest-result` by
+  hand over the pipeline's shared `a4_poc` directories: with
+  `ARGO_WORKFLOW_NAME` set it fails the same way, and without it, once the
+  stale legacy manifests are gone, discovery is unscoped and ingests every
+  run's envelopes. Re-dispatch the run instead.
 
   When a manifest scopes discovery, out-of-scope files are excluded (and
   logged at debug level), and a declared `scan_key` with no matching file is
@@ -713,7 +725,7 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   matching files is not the empty case — it exits non-zero. A missing or
   unreadable `envelopes_dir`, or a manifest that can't be read or names the
   wrong run, exits `1` before anything is ingested.
-- When `ARGO_WORKFLOW_NAME` is set, after every discovered envelope has been
+- When `ARGO_WORKFLOW_NAME` is set (and not blank), after every discovered envelope has been
   processed, marks every scan dispatched under that workflow name that never
   produced a result as `'failed'` (one call, regardless of batch size —
   including a batch of zero envelopes, since every scan under that workflow

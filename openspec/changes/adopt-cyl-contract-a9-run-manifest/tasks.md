@@ -233,5 +233,5 @@ The user decided two points in the review: a legacy file naming another run is n
   - Skip the 237-character test only on `sys.platform == "win32"`.
   - The 238-character test also asserts that `_authed_client` is never called.
   - Rename the zero-envelope reconcile test to say what it now tests, and tighten it to `== 1`.
-- [ ] 11.7 **Docs:** README (fallback, blank, run identity, manual-recovery warning), CHANGELOG (the run-identity breaking entry, the legacy-other-run rule) and the `batch-ingest-result` `--help`.
+- [x] 11.7 **Docs:** README (fallback, blank, run identity, manual-recovery warning), CHANGELOG (the run-identity breaking entry, the legacy-other-run rule) and the `batch-ingest-result` `--help`.
 - [ ] 11.8 Full suite with `--locked` compared with the Windows baseline, `uvx ruff@0.9.9 check bloomcli/`, and both `openspec validate --strict`. Push, then confirm the PR's `Python Security Audit for CVEs` job (bloomctl's Linux test run) passes, including the dangling-symlink tests' first real run.

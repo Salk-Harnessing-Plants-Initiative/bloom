@@ -1100,11 +1100,12 @@ def batch_ingest_result(
     predictions_dir: Path | None,
 ) -> None:
     """Ingest every {scan_key}.result.json file directly under ENVELOPES_DIR — the batch
-    sibling of `ingest-result`. With ARGO_WORKFLOW_NAME set, only the files listed in the
-    run's manifest (run_manifest.<ARGO_WORKFLOW_NAME>.json, else run_manifest.json) are
-    ingested, and if neither exists nothing is ingested: the batch fails after closing out
-    the workflow's unresolved scans. Without it, run_manifest.json scopes the batch when
-    present, and every file is ingested when it is not. A declared scan_key with no matching
+    sibling of `ingest-result`. With ARGO_WORKFLOW_NAME set (whitespace stripped), only the
+    files listed in the run's manifest (run_manifest.<ARGO_WORKFLOW_NAME>.json, else a
+    run_manifest.json that names this run) are ingested; with no manifest for this run nothing
+    is ingested, and the batch fails after closing out the workflow's unresolved scans.
+    Without it (unset or blank), run_manifest.json scopes the batch when present, and every
+    file is ingested when it is not. A declared scan_key with no matching
     file is reported as a failure — unless a differently-named file's own content actually
     reports that scan_key (a filename/body mismatch), in which case the real outcome wins and
     the failure is dropped. Isolates per-envelope failures (one bad envelope doesn't abort the
