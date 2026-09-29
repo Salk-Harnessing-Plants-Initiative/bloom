@@ -10,6 +10,8 @@
  *   `emit()` deliberately ignores the binding's `filter`: the server applies
  *   filters, so a view must still drop events that aren't its own.
  * - `removeChannel` is a spy.
+ * - `auth.getSession()` answers `supabaseMock.session`, and `realtime.setAuth`
+ *   is a spy; `supabaseMock.log` records setAuth and subscribe calls in order.
  *
  * Use it with
  *   vi.mock("@/lib/supabase/client", async () =>
@@ -79,6 +81,11 @@ interface MockState {
   channels: MockChannel[];
   respond: Responder;
   removeChannel: Mock<(channel: MockChannel) => Promise<string>>;
+  /** The session auth.getSession() answers; null for signed out. */
+  session: { access_token: string } | null;
+  setAuth: Mock<(token?: string | null) => Promise<void>>;
+  /** Ordered record of setAuth and subscribe calls, to check which came first. */
+  log: string[];
 }
 
 const EMPTY: Answer = { data: [], error: null };
@@ -88,6 +95,9 @@ export const supabaseMock: MockState = {
   channels: [],
   respond: () => EMPTY,
   removeChannel: vi.fn(async (_channel: MockChannel) => "ok"),
+  session: { access_token: "user-token" },
+  setAuth: vi.fn(async () => {}),
+  log: [],
 };
 
 /** Clear every recorded query and channel, and answer `[]` until told otherwise. */
@@ -98,6 +108,11 @@ export function resetSupabaseMock(respond: Responder = () => EMPTY): void {
   supabaseMock.removeChannel = vi.fn(async (channel: MockChannel) => {
     channel.subscribed = false;
     return "ok";
+  });
+  supabaseMock.session = { access_token: "user-token" };
+  supabaseMock.log = [];
+  supabaseMock.setAuth = vi.fn(async (token?: string | null) => {
+    supabaseMock.log.push(`setAuth:${token}`);
   });
 }
 
@@ -149,6 +164,7 @@ function queryBuilder(table: string) {
 }
 
 function mockChannel(topic: string): MockChannel {
+  const early: string[] = [];
   const channel: MockChannel = {
     topic,
     bindings: [],
@@ -159,12 +175,20 @@ function mockChannel(topic: string): MockChannel {
       return channel;
     },
     subscribe(callback) {
+      supabaseMock.log.push(`subscribe:${topic}`);
       channel.subscribed = true;
       channel.statusCallback = callback ?? null;
+      for (const status of early.splice(0)) channel.status(status);
       return channel;
     },
     status(status) {
-      channel.statusCallback?.(status, status === "SUBSCRIBED" ? undefined : new Error(status));
+      // A view subscribes only after reading the session, so a test can report
+      // a status first; hold it until subscribe, as the socket would.
+      if (!channel.statusCallback) {
+        early.push(status);
+        return;
+      }
+      channel.statusCallback(status, status === "SUBSCRIBED" ? undefined : new Error(status));
     },
     emit(payload) {
       for (const b of channel.bindings) {
@@ -185,6 +209,12 @@ export const mockClient = {
     return channel;
   },
   removeChannel: (channel: MockChannel) => supabaseMock.removeChannel(channel),
+  auth: {
+    getSession: async () => ({ data: { session: supabaseMock.session }, error: null }),
+  },
+  realtime: {
+    setAuth: (token?: string | null) => supabaseMock.setAuth(token),
+  },
 };
 
 /** The module shape of `@/lib/supabase/client`, for `vi.mock`. */

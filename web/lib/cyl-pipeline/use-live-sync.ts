@@ -4,6 +4,7 @@
  * The live views' shared sync loop (spec: "Live views synchronise from
  * Realtime without polling").
  *
+ * - It joins only after handing Realtime the session token (see the effect).
  * - One channel per mounted instance, on a unique topic: StrictMode
  *   double-mounts on the singleton browser client, and a reused topic would
  *   hand the second mount the first mount's channel.
@@ -108,12 +109,27 @@ export function useLiveSync<V>(options: LiveSyncOptions<V>): LiveSync<V> {
         }) as never,
       );
     }
-    channel.subscribe((status: string) => {
-      if (!mounted.current) return;
-      setConnection((prev) => nextConnectionState(prev, status));
-      scheduler.onStatus(status);
-    });
+    // Join as the signed-in user. On a full page load the browser client has
+    // not put the session token on its socket yet, so a join sent now would
+    // carry only the anon key: RLS would run as anon and every run event would
+    // be dropped without an error (found in add-cyl-pipeline-ui task 8.6).
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data } = await client.auth.getSession();
+        if (data.session?.access_token) await client.realtime.setAuth(data.session.access_token);
+      } catch {
+        // Join anyway; the view then shows whatever the channel reports.
+      }
+      if (cancelled) return;
+      channel.subscribe((status: string) => {
+        if (!mounted.current) return;
+        setConnection((prev) => nextConnectionState(prev, status));
+        scheduler.onStatus(status);
+      });
+    })();
     return () => {
+      cancelled = true;
       mounted.current = false;
       scheduler.dispose();
       void client.removeChannel(channel);
