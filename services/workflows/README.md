@@ -170,6 +170,18 @@ resolves species/mode/age from each scan's own metadata (bloom #897). Send `{}` 
 testing the preview itself. The planned web UI (OpenSpec change `add-cyl-pipeline-ui`)
 will call this route through a `POST /api/cyl/pipeline` proxy.
 
+Large targets (bloom #901):
+
+- **Id filters are batched.** Every `in.(…)` id filter (the `scan_ids` existence check, and the
+  preview's `cyl_scan_traits` and `cyl_trait_sources` lookups) is split by rendered length under
+  a 4000-character budget (`postgrest_batches.py`, copied from bloomctl's
+  `bloomcli/src/bloomctl/_postgrest.py`), and the results are merged. An unsplit list of about
+  1,340 small ids gets `414 URI Too Long` from the gateway (measured for PR #650).
+- **The preview is skipped for `params: {}`.** Stored hashes are over resolved species/mode/age,
+  so the hash of `{}` never matches one; the route returns `reused_count: 0` without querying.
+  For non-empty `params` the preview still reads every trait row of the requested scans, which
+  is left open on #901.
+
 ```bash
 # Request: trigger every scan in experiment 123 — requires the caller's Supabase user JWT
 curl -X POST http://localhost:5100/pipeline \
@@ -178,7 +190,7 @@ curl -X POST http://localhost:5100/pipeline \
   -H "Content-Type: application/json" \
   -d '{"target_level": "experiment", "target_id": 123, "params": {}}'
 
-# Response (reused_count is 0 in practice for params: {}; see bloom #584/#897/#901):
+# Response (reused_count is always 0 for params: {}; see bloom #584/#897/#901):
 # {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 0}
 ```
 

@@ -19,6 +19,7 @@ the predict loop's own skip-if-done check, which does know current models.
 import json
 
 from fastapi import HTTPException
+from postgrest_batches import id_batches
 from sleap_roots_contracts import compute_param_hash
 from sleap_roots_contracts.hashing import NonCanonicalizableError
 from supabase_client import app_client
@@ -122,6 +123,18 @@ def _validate_request(body: dict):
     return target_level, target_id, None, params, param_hash
 
 
+def _select_in(client, table: str, columns: str, column: str, ids: list) -> list[dict]:
+    """`SELECT columns FROM table WHERE column IN ids`, split by id_batches so no
+    request's id list is long enough for the gateway to refuse with 414 (bloom#901),
+    with the rows of every batch concatenated in batch order."""
+    rows: list[dict] = []
+    for batch in id_batches(ids):
+        rows += (
+            client.table(table).select(columns).in_(column, batch).execute().data or []
+        )
+    return rows
+
+
 def _enumerate(
     client, target_level: str, target_id: int, scan_ids: list[int] | None
 ) -> list[int]:
@@ -188,14 +201,7 @@ def _enumerate(
         return [r["scan_id"] for r in rows]
 
     # scan_ids
-    found = (
-        client.table("cyl_scans_extended")
-        .select("scan_id")
-        .in_("scan_id", scan_ids)
-        .execute()
-        .data
-        or []
-    )
+    found = _select_in(client, "cyl_scans_extended", "scan_id", "scan_id", scan_ids)
     found_ids = {r["scan_id"] for r in found}
     missing = [s for s in scan_ids if s not in found_ids]
     if missing:
@@ -206,16 +212,11 @@ def _enumerate(
 def _dedup_preview(client, scan_ids: list[int], request_hash: str) -> set[int]:
     """Which of `scan_ids` have at least one cyl_trait_sources row whose stored
     param_hash matches the request's params — informational only, see module
-    docstring. One batched query per table, not a per-scan loop. `request_hash` is
-    computed once in `_validate_request` and threaded through here rather than
-    recomputed."""
-    trait_rows = (
-        client.table("cyl_scan_traits")
-        .select("scan_id, source_id")
-        .in_("scan_id", scan_ids)
-        .execute()
-        .data
-        or []
+    docstring. Filtered by id list per table, split only by id-list length
+    (`_select_in`), never a per-scan loop. `request_hash` is computed once in
+    `_validate_request` and threaded through here rather than recomputed."""
+    trait_rows = _select_in(
+        client, "cyl_scan_traits", "scan_id, source_id", "scan_id", scan_ids
     )
     source_ids = sorted(
         {r["source_id"] for r in trait_rows if r.get("source_id") is not None}
@@ -223,13 +224,8 @@ def _dedup_preview(client, scan_ids: list[int], request_hash: str) -> set[int]:
     if not source_ids:
         return set()
 
-    source_rows = (
-        client.table("cyl_trait_sources")
-        .select("id, metadata")
-        .in_("id", source_ids)
-        .execute()
-        .data
-        or []
+    source_rows = _select_in(
+        client, "cyl_trait_sources", "id, metadata", "id", source_ids
     )
     matching_source_ids = {
         row["id"]
@@ -294,8 +290,14 @@ def trigger_pipeline(body: dict, user_id: str) -> dict:
         )
         return {"pipeline_run_id": run_id, "scan_count": 0, "reused_count": 0}
 
-    reused_scan_ids = _dedup_preview(client, scan_ids, param_hash)
-    reused_count = len(reused_scan_ids)
+    # Stored param_hash values are computed over resolved params (species, mode,
+    # age; sleap_roots_contracts.resolve_params), so the hash of `{}` can never
+    # match one: skipping the preview gives the same 0 without fetching every trait
+    # row of every scan (bloom#901). The UI always sends `{}` until #897.
+    if params == {}:
+        reused_count = 0
+    else:
+        reused_count = len(_dedup_preview(client, scan_ids, param_hash))
 
     run_id = _insert_run(
         client,

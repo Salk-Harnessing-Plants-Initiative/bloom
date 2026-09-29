@@ -393,23 +393,23 @@
 
 ## 9b. Batch the trigger's id filters; skip the preview for `{}`
 
-- [ ] 9b.1 **Test first.** Write `services/workflows/tests/test_postgrest_batches.py` for `id_batches(ids, budget=4000)`:
+- [x] 9b.1 **Test first.** Write `services/workflows/tests/test_postgrest_batches.py` for `id_batches(ids, budget=4000)`:
   - an empty list gives no batches;
   - the rendered length of each batch, counting separators, is ≤ budget;
   - order is preserved and ids are neither lost nor duplicated;
   - a single id longer than the budget gets its own batch;
   - 19-digit ids batch correctly;
   - `ID_FILTER_BUDGET_CHARS` equals the value in `bloomcli/src/bloomctl/_postgrest.py`. The test reads that file, so the two can't drift.
-- [ ] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing bloom#674's measurement.
-- [ ] 9b.3 **Test first.** Extend `services/workflows/tests/test_pipeline.py`. Its `_FakeClient` must record each `.in_()` id list, so it may need extending.
+- [x] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing the 414 measurement. (That measurement is in PR #650's description, not bloom#674 as this line first said.)
+- [x] 9b.3 **Test first.** Extend `services/workflows/tests/test_pipeline.py`. Its `_FakeClient` must record each `.in_()` id list, so it may need extending.
   - A 3000-id `scan_ids` request issues more than one `cyl_scans_extended` filter call, each within budget, and proceeds as if all were found.
   - A missing id in the last batch still gives 404 naming it, with no rows written.
   - With non-empty params and 2500 enumerated scans, every `cyl_scan_traits`/`cyl_trait_sources` call is within budget, and `reused_count` matches the unbatched expectation.
   - A request with `params: {}` issues **no** `cyl_scan_traits` or `cyl_trait_sources` call, and `reused_count = 0`, even when the scans have sources.
   - **Regression:** update `test_dedup_preview_issues_one_batched_query_not_a_per_scan_loop` to non-empty params (`{"age": 14}`, a matching `_hash_of`). Its "3 and 30 scans give the same query count" assertion still holds, since both fit in one batch.
   - Every other existing dedup and enumeration test passes unchanged.
-- [ ] 9b.4 Implement it in `services/workflows/pipeline.py`: batch the three filters, merge the results, and short-circuit `_dedup_preview` when `params == {}`.
-- [ ] 9b.5 Update the trigger section of `services/workflows/README.md`: id filters are batched, and the preview is skipped for `{}`.
+- [x] 9b.4 Implement it in `services/workflows/pipeline.py`: batch the three filters, merge the results, and short-circuit `_dedup_preview` when `params == {}`.
+- [x] 9b.5 Update the trigger section of `services/workflows/README.md`: id filters are batched, and the preview is skipped for `{}`.
 - [ ] 9b.6 Verify:
   - `cd services/workflows && uv run --frozen --extra test pytest`;
   - `uv run --extra test pytest tests/integration/test_cyl_pipeline_dispatch.py`;

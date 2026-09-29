@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Id-list filters stay within the gateway's URL limit
-Every PostgREST `in.(…)` filter the route issues SHALL be split into batches so that no batch's rendered id list exceeds a character budget of 4000. The budget matches bloomctl's `ID_FILTER_BUDGET_CHARS`, which sits below the ~5.4 KB `414 URI Too Long` ceiling measured in bloom#674. Results from all batches SHALL be merged before use.
+Every PostgREST `in.(…)` filter the route issues SHALL be split into batches so that no batch's rendered id list exceeds a character budget of 4000. The budget matches bloomctl's `ID_FILTER_BUDGET_CHARS`, which sits below the ~5.4 KB `414 URI Too Long` ceiling measured for PR #650. Results from all batches SHALL be merged before use.
 
 This covers:
 - the `scan_ids` existence check against `cyl_scans_extended`;
