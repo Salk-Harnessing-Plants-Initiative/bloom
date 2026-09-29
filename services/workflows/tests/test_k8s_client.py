@@ -245,6 +245,18 @@ def test_submit_workflow_raises_k8ssubmissionerror_on_4xx_5xx(monkeypatch):
         k8s_client.submit_workflow({"some": "body"})
 
 
+def test_submit_workflow_raises_already_exists_on_409(monkeypatch):
+    resp = _FakeResp(409, text='workflows.argoproj.io "wf-1" already exists')
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
+    )
+    with pytest.raises(k8s_client.K8sAlreadyExistsError) as exc:
+        k8s_client.submit_workflow({"some": "body"})
+    # A caller that only handles K8sSubmissionError still catches it.
+    assert isinstance(exc.value, K8sSubmissionError)
+    assert str(exc.value) == "Argo Workflow already exists"
+
+
 def test_submit_workflow_raises_k8ssubmissionerror_on_2xx_with_unparseable_body(
     monkeypatch,
 ):
