@@ -349,7 +349,7 @@
 
   Then run `/pre-merge` and `/review-pr`. PR body: "Refs #15".
 
-  **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1313/1313; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
+  **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1332/1332 after the PR review fixes; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
 - [ ] 8.8 **After the staging deploy of PR 3:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
 
 ## PR 4: trigger proxy
