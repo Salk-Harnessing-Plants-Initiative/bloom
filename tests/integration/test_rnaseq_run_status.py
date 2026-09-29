@@ -139,6 +139,27 @@ def test_a_submitted_run_can_finish_without_being_seen_running(cur):
     assert _run(cur, run_id)[0] == "failed"
 
 
+def test_the_reference_step_is_a_step_a_run_can_report(cur):
+    run_id = _submitted_run(cur)
+    assert _update(cur, run_id, "running", "stage-reference", PODS) is True
+    assert _run(cur, run_id)[:2] == ("running", "stage-reference")
+
+
+def test_a_new_pod_for_the_same_step_is_recorded(cur):
+    # Argo retrying a step starts a new pod while the step stays the same.
+    run_id = _submitted_run(cur)
+    _update(cur, run_id, "running", "qc", PODS)
+    retried = {**PODS, "qc": "wf-qc-retry-9"}
+    assert _update(cur, run_id, "running", "qc", retried) is True
+    assert _run(cur, run_id)[2] == retried
+
+
+def test_the_same_pods_in_another_key_order_write_nothing(cur):
+    run_id = _submitted_run(cur)
+    _update(cur, run_id, "running", "qc", {"stage": "a", "qc": "b"})
+    assert _update(cur, run_id, "running", "qc", {"qc": "b", "stage": "a"}) is False
+
+
 def test_a_null_step_or_pods_keeps_the_stored_values(cur):
     run_id = _submitted_run(cur)
     _update(cur, run_id, "running", "qc", PODS)
@@ -268,6 +289,17 @@ def test_reapplying_the_migration_keeps_runs_and_grants(cur):
     assert _run(cur, run_id)[0] == "running"
     cur.execute("SELECT has_function_privilege('anon', %s, 'EXECUTE')", (SIG,))
     assert cur.fetchone()[0] is False
+
+
+def test_the_rollback_stops_while_a_run_reports_the_reference_step(cur):
+    run_id = _submitted_run(cur)
+    _update(cur, run_id, "running", "stage-reference", PODS)
+    cur.execute("SAVEPOINT rollback_blocked")
+    with pytest.raises(psycopg.errors.RaiseException):
+        cur.execute(_sql_body(ROLLBACK))
+    cur.execute("ROLLBACK TO SAVEPOINT rollback_blocked")
+    cur.execute("SELECT to_regprocedure(%s)", (SIG,))
+    assert cur.fetchone()[0] is not None
 
 
 def test_the_rollback_drops_the_function_and_keeps_the_runs(cur):

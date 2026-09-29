@@ -3,9 +3,18 @@
 -- The status poller's one call: record what Argo reports for a submitted or running
 -- RNA-seq run (its current step, the step pods for logs, and at the end the outcome,
 -- exit code and message). Runs only move forward, and a finished run never changes.
+-- Also adds Cell Ranger's stage-reference step to the steps a run can report.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
+
+-- Cell Ranger's steps, in order; stage-reference prepares the reference before the sample's steps.
+ALTER TABLE public.rnaseq_runs DROP CONSTRAINT IF EXISTS rnaseq_runs_current_step_check;
+ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_current_step_check CHECK (
+    current_step IS NULL
+    OR (workflow_type = 'scrna-cellranger'
+        AND current_step IN ('stage-reference', 'stage', 'qc', 'count', 'cleanup'))
+);
 
 -- Sets a submitted or running run's status, step and step pods, and on finishing its exit
 -- code, message and completed_at. A NULL step or pods keeps the stored value. Returns
