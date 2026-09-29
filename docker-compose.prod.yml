@@ -689,7 +689,10 @@ services:
       - SETUID
       - SETGID
     networks:
-      - supanet
+      supanet:
+        # First label is the tenant name Realtime looks up from the Host header.
+        aliases:
+          - realtime-dev.supabase-realtime
     environment:
       PORT: 4000
       DB_HOST: ${POSTGRES_HOST}

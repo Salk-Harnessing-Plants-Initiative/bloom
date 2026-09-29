@@ -294,12 +294,15 @@ make upload-images
 
 **Kong Gateway** (http://localhost:8000) routes to:
 
-| Path            | Routes To     | Description    |
-| --------------- | ------------- | -------------- |
-| /auth/v1/\*     | auth:9999     | Authentication |
-| /rest/v1/\*     | rest:3000     | Database API   |
-| /realtime/v1/\* | realtime:4000 | Subscriptions  |
-| /storage/v1/\*  | storage:5000  | File storage   |
+| Path            | Routes To                           | Description    |
+| --------------- | ----------------------------------- | -------------- |
+| /auth/v1/\*     | auth:9999                           | Authentication |
+| /rest/v1/\*     | rest:3000                           | Database API   |
+| /realtime/v1/\* | realtime-dev.supabase-realtime:4000 | Subscriptions  |
+| /storage/v1/\*  | storage:5000                        | File storage   |
+
+Kong reaches Realtime by the `realtime-dev.supabase-realtime` alias because Realtime
+takes the tenant name (`realtime-dev`) from the first label of the Host header.
 
 **LangChain Agent** (http://localhost:5002):
 
