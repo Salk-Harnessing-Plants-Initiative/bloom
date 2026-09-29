@@ -136,12 +136,12 @@ export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) 
     <section className="mt-10" aria-labelledby="experiment-runs-heading">
       <div className="mb-3 flex items-center justify-between gap-4">
         <h2 id="experiment-runs-heading" className="text-lg">
-          Pipeline runs
+          Cylinder pipeline runs
         </h2>
         <div className="flex items-center gap-4 text-sm">
           <LiveIndicator state={live.connection} onRefresh={live.refresh} />
           <Link href="/app/cyl-pipeline-runs" className="text-lime-700 hover:underline">
-            All pipeline runs
+            All cylinder pipeline runs
           </Link>
         </div>
       </div>

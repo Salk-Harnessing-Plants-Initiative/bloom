@@ -30,7 +30,8 @@ export const navSections: NavSection[] = [
       // { name: "Bloom Assistant", href: "/chat" },
       { name: "OrthoBrowser", href: "/app/orthofinder" },
       { name: "OrthoVec", href: "/app/embedtree" },
-      { name: "Pipeline runs", href: "/app/cyl-pipeline-runs" },
+      // Named for its pipeline: other pipelines (RNA-seq) have runs of their own.
+      { name: "Cylinder\nPipeline Runs", href: "/app/cyl-pipeline-runs" },
     ],
   },
   {

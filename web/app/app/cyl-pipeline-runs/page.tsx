@@ -8,7 +8,7 @@ export default async function PipelineRunsPage() {
 
   return (
     <div>
-      <h1 className="text-xl mb-2">Pipeline runs</h1>
+      <h1 className="text-xl mb-2">Cylinder pipeline runs</h1>
       <p className="mb-6 max-w-prose text-sm text-stone-500">
         Every member&apos;s cylinder pipeline runs, updated live. A run&apos;s state comes from its per-scan
         counts: results arrive when each batch of up to 25 scans finishes.

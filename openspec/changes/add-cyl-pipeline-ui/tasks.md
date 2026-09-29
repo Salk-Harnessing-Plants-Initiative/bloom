@@ -219,7 +219,7 @@
   - `offline` renders `onRefresh`.
 - [x] 5.2 Implement the optional props.
 - [x] 5.3 **Test first.** Write `web/components/nav-sections.test.ts`:
-  - a "Pipeline runs" entry at `/app/cyl-pipeline-runs`;
+  - a "Cylinder Pipeline Runs" entry at `/app/cyl-pipeline-runs` (first built as "Pipeline runs"; renamed 2026-09-29 so it says which pipeline, since RNA-seq runs are coming too);
   - every other entry equals today's list, with the array inlined as the expected value.
 
   `/app/pipelines` has no nav entry and stays absent.
@@ -315,7 +315,7 @@
     - resolve `@/` and relative paths (`.ts`, `.tsx`, `/index.*`), following `web/lib/` transitively;
     - exclude exactly the two generated type files and the guard itself;
     - assert that none of the files contains any spec-forbidden pattern.
-- [x] 8.5 Add a "Pipeline runs" section to `web/README.md`.
+- [x] 8.5 Add a "Cylinder pipeline runs" section to `web/README.md`.
 - [x] 8.6 Live check on the dev stack.
   - **Setup:**
     1. Confirm `WORKFLOWS_K8S_TOKEN` is empty in `.env.dev`.
@@ -358,7 +358,7 @@
 
   Then run `/pre-merge` and `/review-pr`. PR body: "Refs #15".
 
-  **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1347/1347 after both PR review rounds; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
+  **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1348/1348 after both PR review rounds and the nav rename; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
 - [ ] 8.8 **After the staging deploy of PR 3, and after bloom#939 (Realtime tenant through Kong) is fixed there:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
 
 ## PR 4: trigger proxy

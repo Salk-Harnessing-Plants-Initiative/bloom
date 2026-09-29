@@ -288,7 +288,7 @@ A live view MUST NOT call the workflows `GET /runs/{run_id}` route.
 - **THEN** it issues no further queries and no requests to `/workflows/runs`
 
 ### Requirement: Shared runs list at `/app/cyl-pipeline-runs`
-The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigation as "Pipeline runs", listing `cyl_pipeline_runs` for every signed-in member.
+The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigation as "Cylinder Pipeline Runs" and headed "Cylinder pipeline runs", listing `cyl_pipeline_runs` for every signed-in member. The name says which pipeline: other pipelines (such as RNA-seq) have runs of their own.
 
 **Ordering and paging.** The list SHALL:
 - order by `created_at` then `id`, both descending, and show the most recent 50;
@@ -308,6 +308,10 @@ The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigati
 - the counts-first display state, with the failed count linking to the drill-down.
 
 **Empty and error states.** With no runs, the list SHALL show "No pipeline runs yet". When the snapshot fails, it SHALL show an error rather than an empty list.
+
+#### Scenario: The navigation names the cylinder pipeline
+- **WHEN** a signed-in member opens the app navigation
+- **THEN** it has a "Cylinder Pipeline Runs" entry linking to `/app/cyl-pipeline-runs`, and no entry named "Pipeline runs"
 
 #### Scenario: A run update arrives live
 - **WHEN** run 91 shows "12 / 40 succeeded" and an `UPDATE` arrives with `done_count = 13`
@@ -434,7 +438,7 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 ### Requirement: Experiment page shows that experiment's runs
 The experiment page SHALL show the 10 most recent runs that include at least one of its scans. It SHALL read them from `cyl_pipeline_run_experiments`, ordered by `created_at` then `run_id`, both descending, and show each run's counts-first display state.
 
-**Links.** Each run SHALL link to its drill-down. The panel SHALL link to "All pipeline runs".
+**Links.** Each run SHALL link to its drill-down. The panel SHALL link to "All cylinder pipeline runs".
 
 **Live events.**
 - The panel SHALL apply live events for runs it holds.

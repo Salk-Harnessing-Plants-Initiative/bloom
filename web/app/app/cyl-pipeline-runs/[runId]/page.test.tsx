@@ -61,7 +61,7 @@ describe("the run drill-down page", () => {
     supabaseMock.respond = () => ({ data: run, error: null });
     render(await page("91"));
     expect(screen.getByRole("heading", { name: "Run 91" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "All pipeline runs" }).getAttribute("href")).toBe("/app/cyl-pipeline-runs");
+    expect(screen.getByRole("link", { name: "All cylinder pipeline runs" }).getAttribute("href")).toBe("/app/cyl-pipeline-runs");
     expect(detail.props).toMatchObject({ initialRun: run, initialFilter: "all" });
   });
 

@@ -4,15 +4,20 @@ import { describe, expect, it } from "vitest";
 import { navSections } from "./nav-sections";
 
 describe("navSections", () => {
-  it("links Pipeline runs at /app/cyl-pipeline-runs", () => {
+  it("links Cylinder Pipeline Runs at /app/cyl-pipeline-runs, on two lines like the other cylinder entry", () => {
     const items = navSections.flatMap((s) => s.items);
-    expect(items.filter((i) => i.name === "Pipeline runs")).toEqual([
-      { name: "Pipeline runs", href: "/app/cyl-pipeline-runs" },
+    expect(items.filter((i) => i.href === "/app/cyl-pipeline-runs")).toEqual([
+      { name: "Cylinder\nPipeline Runs", href: "/app/cyl-pipeline-runs" },
     ]);
   });
 
+  it("has no bare Pipeline runs entry, which wouldn't say which pipeline", () => {
+    const names = navSections.flatMap((s) => s.items).map((i) => i.name.replace(/\n/g, " ").toLowerCase());
+    expect(names).not.toContain("pipeline runs");
+  });
+
   it("keeps every other entry as it was", () => {
-    const withoutRuns = navSections.map((s) => ({ ...s, items: s.items.filter((i) => i.name !== "Pipeline runs") }));
+    const withoutRuns = navSections.map((s) => ({ ...s, items: s.items.filter((i) => i.href !== "/app/cyl-pipeline-runs") }));
     expect(withoutRuns).toEqual([
       { heading: null, items: [{ name: "Home", href: "/app" }] },
       {

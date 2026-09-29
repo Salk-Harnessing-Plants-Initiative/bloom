@@ -24,7 +24,7 @@ describe("the runs list page", () => {
         ? { data: [runRow(92, at(2)), runRow(91, at(1), { requested_by: null })], error: null }
         : { data: [{ run_id: 92, experiment_id: 5, created_at: at(2), cyl_experiments: { name: "exp-five", species_id: 2 } }], error: null };
     render(await PipelineRunsPage());
-    expect(screen.getByRole("heading", { name: "Pipeline runs" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Cylinder pipeline runs" })).toBeTruthy();
     expect(screen.getByTestId("run-92").textContent).toContain("you");
     expect(screen.getByTestId("run-92").textContent).toContain("exp-five");
     expect(screen.getByTestId("run-91")).toBeTruthy();

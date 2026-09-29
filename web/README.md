@@ -6,7 +6,7 @@ An HTTP API and web front-end for Bloom, written in Next.js.
 
 Currently uses Mixpanel for logging user behavior. Note that this currently happens on the server side - this only works with Next.js >=13.
 
-## Pipeline runs
+## Cylinder pipeline runs
 
 `/app/cyl-pipeline-runs` lists every member's cylinder pipeline runs, `/app/cyl-pipeline-runs/[runId]` shows one run's scans, and each experiment page shows its 10 most recent runs (OpenSpec change `add-cyl-pipeline-ui`). They read `cyl_pipeline_runs`, `cyl_pipeline_run_scans` and the `cyl_pipeline_run_experiments` view through Supabase as the signed-in user.
 

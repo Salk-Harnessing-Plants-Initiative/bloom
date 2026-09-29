@@ -88,13 +88,14 @@ describe("the runs it lists", () => {
     expect(screen.getByTestId("panel-run-12").textContent).toContain("Finished · 37 succeeded · 3 failed");
   });
 
-  it("links each run to its drill-down, and to all pipeline runs", async () => {
+  it("links each run to its drill-down, and to all cylinder pipeline runs, under a cylinder heading", async () => {
     mount();
     await subscribe();
     expect(within(screen.getByTestId("panel-run-12")).getByRole("link", { name: /Run 12/ }).getAttribute("href")).toBe(
       "/app/cyl-pipeline-runs/12",
     );
-    expect(screen.getByRole("link", { name: "All pipeline runs" }).getAttribute("href")).toBe("/app/cyl-pipeline-runs");
+    expect(screen.getByRole("link", { name: "All cylinder pipeline runs" }).getAttribute("href")).toBe("/app/cyl-pipeline-runs");
+    expect(screen.getByRole("heading", { name: "Cylinder pipeline runs" })).toBeTruthy();
   });
 
   it("says when no run touches the experiment yet", async () => {
