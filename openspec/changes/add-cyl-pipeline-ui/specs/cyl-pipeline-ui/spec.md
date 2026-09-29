@@ -398,10 +398,10 @@ It SHALL show:
   - `source_id`;
   - "current in trait views" (yes when `source_id` equals the scan's `cyl_scan_latest_source.max_source_id` as last read; unknown when that read failed, or when the row's `source_id` changed since it);
   - `updated_at`;
-  - a "Scan images" link.
+  - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 - **Failed rows:**
   - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
-  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*If this scan already had results before this run, this may be an unrecognised no-op re-delivery, which re-running won't change (bloom#900), or its result may have arrived after the run closed. Check the scan's traits before re-running.*"
+  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
@@ -475,7 +475,7 @@ Result links SHALL be derived only from a run's `cyl_pipeline_run_scans` rows an
 - Whenever a preferred pair is unavailable, it SHALL show a note naming what was preferred and what is shown, in a status region that stays mounted. A manual pick SHALL clear the note.
 - The wave and age pickers SHALL be disabled while a trait's data loads.
 
-**Guard.** Source files under `web/lib/cyl-pipeline`, `web/components/cyl-pipeline` and `web/app/app/cyl-pipeline-runs`, and the `@/lib` modules they import transitively, SHALL be checked, excluding the generated `database.types.ts` files. They MUST NOT contain any of these run-id matching surfaces:
+**Guard.** Source files under `web/lib/cyl-pipeline`, `web/components/cyl-pipeline` and `web/app/app/cyl-pipeline-runs`, and the `@/lib` modules they import transitively, SHALL be checked, excluding the generated `database.types.ts` files and the guard's own test file. They MUST NOT contain any of these run-id matching surfaces:
 - `get_scan_traits`;
 - `cyl_scan_traits_source`;
 - `cyl_scan_traits_latest`;

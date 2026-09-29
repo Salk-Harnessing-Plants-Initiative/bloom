@@ -64,6 +64,18 @@ describe("runDisplay", () => {
     expect(tips[0]).toMatch(/dispatcher/i);
   });
 
+  it("words the tooltips so they hold in every state they are shown in", () => {
+    // Queued lasts until every batch is dispatched, so batches can already be done.
+    expect(runDisplay(run({ status: "queued" })).tooltip).toMatch(/until every batch has been sent/);
+    // The drill-down header counts live scan rows, not the poller's sweep.
+    expect(runDisplay(run({ status: "submitted" })).tooltip).not.toMatch(/sweep/);
+    // A written row can come from an envelope with no traits; scans can still gain traits later.
+    const finished = runDisplay(run({ status: "complete", done_count: 38, failed_count: 2 })).tooltip;
+    expect(finished).toMatch(/outcome/);
+    expect(finished).not.toMatch(/don't change/);
+    expect(runDisplay(run({ status: "complete", done_count: 40 })).tooltip).toMatch(/outcome/);
+  });
+
   it("gives every rule a tooltip", () => {
     for (const status of [...RUN_STATUSES, "paused"]) {
       for (const counts of [{}, { done_count: 40 }, { scan_count: 0 }]) {

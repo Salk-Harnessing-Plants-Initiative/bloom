@@ -6,8 +6,9 @@ export type SearchParams = Record<string, string | string[] | undefined>;
  * The optional `?wave=&age=` a pipeline run's traits link carries. Each value counts only as a
  * single, plain non-negative integer: no sign, no leading zero (other than 0 itself), no
  * whitespace, no exponent or hex, and within safe-integer range. Zero counts because it is real
- * data: Bloom Desktop allows wave 0, and nothing forbids a day-0 age. A repeated parameter is
- * ignored rather than guessed at.
+ * data: Bloom Desktop accepts any non-negative integer for both wave number and plant age
+ * (bloom-desktop src/utils/metadata-validation.ts), and the schema has no CHECK on either. A
+ * repeated parameter is ignored rather than guessed at.
  */
 export function parseWaveAge(searchParams: SearchParams): Partial<Selection> {
   const out: Partial<Selection> = {};

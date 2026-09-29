@@ -46,7 +46,7 @@
   - **TOAST.** `error_message` set to 6400 bytes was stored out of line (`pg_column_size` 6400, uncompressed; both toast relations non-empty). A later UPDATE of only `done_count` (runs), or only `attempts` (run scans), **omits the `error_message` key**, rather than sending `null`. Merging is required.
   - **Shape.** `eventType`, `new`, `old`, `commit_timestamp`, `errors: null`. UPDATE and DELETE `old` carry only `{id}` (replica identity DEFAULT). DELETE's `new` is `{}`.
   - **Timestamp format.** Realtime and PostgREST both render `timestamptz` as `YYYY-MM-DDTHH:MM:SS[.f{1,6}]+00:00`, with trailing zeros trimmed: `.123400` arrives as `.1234`, `.5` as `.5`, and a whole second has no fraction.
-  - **Delivery.** A timed probe (50 inserts, 150 ms apart) delivered all 50, including ones committed before the `Subscribed to PostgreSQL` system message, so `SUBSCRIBED` is a sound resync trigger. In the first capture, one run INSERT (about 1 s after `SUBSCRIBED`) was never delivered; it didn't reproduce in two later sessions, about 1 miss in 61 events overall. A drop during a steady `SUBSCRIBED` is not recovered by resync; only a reload or reconnect corrects it.)**
+  - **Delivery.** A timed probe (50 inserts, 150 ms apart) delivered all 50, including ones committed before the `Subscribed to PostgreSQL` system message, so `SUBSCRIBED` is a sound resync trigger. In the first capture, one run INSERT (about 1 s after `SUBSCRIBED`) was never delivered, and it didn't reproduce in two later sessions. A capture through Kong on the freshly created temporary tenant (8.6 setup) lost one more the same way, which traced both to a cold start: each was a tenant's first subscription after Realtime started (see 8.6). A drop is not recovered by a resync, which only follows a reconnect; a reload or Refresh corrects it.)**
 
 ## 1. `cyl_pipeline_run_experiments` view + index
 
@@ -278,6 +278,14 @@
   - **The drill-down header** uses the run row's own counts until the scan rows first load, then the held-row tallies.
   - **Synced side state.** Everything a snapshot reads lives in the synced view: the drill-down's scan metadata, latest sources and experiments; the list's pages. So a superseded fetch can't leave stale pieces behind, and buffered events replay onto all of it. `update()` calls made during a fetch are buffered like events. A "Load older" page is dropped if a snapshot started after it, because appending it to a newer window would move the cursor past rows neither holds (found in PR 3's review).
   - **"Current in trait views"** is "unknown" when the latest-source read failed, and for a row whose `source_id` changed since that read, until the next snapshot. It isn't inferred: an empty envelope marks a row written with a `source_id` and inserts no traits, so the scan's latest source doesn't move.
+  - **Round 2 of the review** (after bloom#939 was filed):
+    - rows turning failed live are looked up in one batch per 500 ms burst, reading only metadata the view lacks, and a batch is dropped if a newer snapshot started or the row's source changed meanwhile;
+    - an unreadable experiments view means no traits links, and says so;
+    - the panel never re-adds a run it already holds from an older membership answer;
+    - "Load older" checks the store, not the last render, for a fetch in flight;
+    - "Only mine" hides other members' rows at once;
+    - Refresh, Retry and "Only mine" open the 2 s resync window like any refetch;
+    - a failed names lookup isn't retried (at most one per run).
   - **Degraded reads.** A failed metadata or latest-source read keeps the rows and says scan details are unavailable. Only a failed run-scan read fails the snapshot.
   - **Experiment names** in the drill-down come only from `cyl_pipeline_run_experiments`. `cyl_scans_extended` runs with its owner's rights, so its names would include soft-deleted experiments. Traits links are limited to the experiments that view lists.
   - **Panel membership.** A confirmed member is added from its Realtime payload when that payload is a whole row; otherwise it is read by id (`fetchRunsByIds`, added to `queries.ts`).
@@ -328,7 +336,8 @@
   - **Where it ran.** `next dev -p 3001` from PR 3's worktree against the running dev Supabase, with env on the command line only, because the Docker stack serves the main checkout. Edge was driven by a throwaway Playwright script as the dev `bloom_user`.
   - **Realtime through Kong** needed a temporary `realtime` tenant: a copy of `realtime-dev` in `_realtime.tenants` and `_realtime.extensions`, deleted afterwards, with Realtime restarted. Without it every socket fails `TenantNotFound: realtime` (see 0.3); that defect needs its own fix.
   - **The trigger curl returns 500** on the dev stack ("missing WORKFLOWS_SUPABASE_EMAIL, WORKFLOWS_SUPABASE_PASSWORD"), before any write. The run was created by SQL instead, in the trigger's order: run row `queued`, then its scan row, then `submitted`. `WORKFLOWS_K8S_TOKEN` was empty, and the worker and poller were stopped throughout.
-  - **Bug found and fixed.** The first pass showed channels reaching `SUBSCRIBED` with no events delivered. On a full page load the views' `phx_join` carried no user token (anon), so RLS dropped every run event. `useLiveSync` now calls `realtime.setAuth(session.access_token)` before subscribing (commit "join Realtime as the signed-in user", tested red first).
+  - **Bug found and fixed.** The first pass showed channels reaching `SUBSCRIBED` with no events delivered. On a full page load the views' `phx_join` carried no user token (anon), so RLS dropped every run event. `useLiveSync` now awaits `realtime.setAuth()` before subscribing, tested red first. The first fix (commit "join Realtime as the signed-in user") passed `session.access_token` explicitly; PR #938's review replaced that with the no-argument call, which reads the token through supabase-js's `accessToken` callback instead of pinning one (commit "buffer live-view updates, and let Realtime keep the token fresh").
+  - **Re-run after the review fixes.** The same script passed 23/23 again on 2026-09-29, on the code of commits 165fceb9–f6dd1da7, with the same temporary tenant (removed afterwards). The join probe showed `phx_join` carrying `bloom_user`.
   - **Verified live, with no reload:**
     - a new run appears on top of the list, attributed to "you";
     - its experiment name appears after `submitted`;
@@ -350,7 +359,7 @@
   Then run `/pre-merge` and `/review-pr`. PR body: "Refs #15".
 
   **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1332/1332 after the PR review fixes; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
-- [ ] 8.8 **After the staging deploy of PR 3:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
+- [ ] 8.8 **After the staging deploy of PR 3, and after bloom#939 (Realtime tenant through Kong) is fixed there:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
 
 ## PR 4: trigger proxy
 

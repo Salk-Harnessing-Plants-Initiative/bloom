@@ -14,7 +14,7 @@ import { stageInProblems, type StageInProblem } from "./stage-in";
 export const BACKSTOP_MESSAGE = "workflow reached a terminal status before write-back produced a result for this scan";
 
 export const NO_OP_NOTE =
-  "If this scan already had results before this run, this may be an unrecognised no-op re-delivery, which re-running won't change (bloom#900), or its result may have arrived after the run closed. Check the scan's traits before re-running.";
+  "This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.";
 
 const CAUSES: Record<StageInProblem, string> = {
   "species-missing": "species missing",

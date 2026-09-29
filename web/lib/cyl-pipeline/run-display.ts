@@ -40,11 +40,11 @@ const STAGES: Record<string, { label: string; tooltip: string }> = {
   queued: {
     label: "Queued",
     tooltip:
-      "Waiting for the dispatcher to send this run to the cluster. A long wait may mean the dispatcher is down, or that the trigger stopped before queueing the run's scans.",
+      "Not every batch has been sent to the cluster yet; a run stays queued until every batch has been sent or has failed to send, so some may already be done. A long wait may mean the dispatcher is down, or that the trigger stopped before queueing the run's scans.",
   },
   submitted: {
     label: "Submitted",
-    tooltip: "Sent to the cluster. Batches may already be running; progress shows after the status poller's next sweep.",
+    tooltip: "Every batch has been sent to the cluster. Results appear as each batch of up to 25 scans finishes.",
   },
   running: {
     label: "Running",
@@ -68,12 +68,12 @@ export function runDisplay(run: RunCounts): RunDisplay {
   }
   if (D + F === N) {
     return F === 0
-      ? { ...base, label: `Finished · ${D} succeeded`, tone: "succeeded", tooltip: "Every scan has a recorded result." }
+      ? { ...base, label: `Finished · ${D} succeeded`, tone: "succeeded", tooltip: "Every scan has a recorded outcome." }
       : {
           ...base,
           label: `Finished · ${D} succeeded · ${F} failed`,
           tone: "finished-with-failures",
-          tooltip: "Every scan has an outcome; some failed. Failed and recorded scans don't change after this.",
+          tooltip: "Every scan has a recorded outcome; some failed.",
         };
   }
   if (status === "failed") {

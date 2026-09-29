@@ -1,7 +1,7 @@
 /**
  * The traits page reads an optional `?wave=&age=` from its URL. Only a single, plain non-negative
- * integer counts; anything else is ignored, never coerced. Zero is real data: Bloom Desktop allows
- * wave 0, and nothing in the schema forbids a day-0 age.
+ * integer counts; anything else is ignored, never coerced. Zero is real data: Bloom Desktop accepts
+ * any non-negative integer for wave number and plant age.
  */
 
 import { describe, expect, it } from "vitest";
