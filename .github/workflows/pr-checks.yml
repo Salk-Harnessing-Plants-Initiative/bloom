@@ -546,8 +546,7 @@ jobs:
             for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
-                # grep -c already emits 0 and exits 1 on no match; `|| true`
-                # keeps the count clean (`|| echo 0` would append a second 0).
+                # grep -c prints its own 0 on no match; `|| true` only absorbs the exit code.
                 crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || true)
                 high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || true)
                 echo "| ${img} | ${crit} | ${high} |"
@@ -562,8 +561,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-built-images-report
-          # Include the raw per-image scans so the full CVE detail stays
-          # downloadable after it was dropped from the PR-comment table.
+          # The raw per-image scans carry the full CVE lists.
           path: |
             trivy-report.md
             trivy-*.txt
@@ -1448,8 +1446,7 @@ jobs:
       - name: Generate summary
         if: always()
         run: |
-          # grep -c already emits 0 and exits 1 on no match; `|| true` keeps
-          # the count clean (`|| echo 0` would append a second 0).
+          # grep -c prints its own 0 on no match; `|| true` only absorbs the exit code.
           crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || true)
           high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || true)
           cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
