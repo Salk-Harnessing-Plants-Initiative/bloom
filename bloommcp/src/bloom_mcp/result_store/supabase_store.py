@@ -22,7 +22,11 @@ from bloom_mcp.manifest import (
     AnalysisDir,
     ExperimentBlock,
     Manifest,
+    ManifestBackendMismatchError,
     ManifestSchemaError,
+    foreign_catalog_message,
+    foreign_read_served,
+    foreign_sentinel,
     next_version_id,
     version_dir_name,
     write_manifest,
@@ -44,6 +48,7 @@ from ._artifacts import (
 )
 from ._locks import KeyedLock
 from .ports import (
+    CatalogBackendMismatchError,
     CommitFailedError,
     CorruptRunLinksError,
     ManifestIncompatibleError,
@@ -136,6 +141,17 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
     """
     try:
         return read()
+    except ManifestBackendMismatchError as exc:
+        # #573: the catalog was written by a different backend than the active
+        # one. The manifest-layer message carries only logical identities (both
+        # backend names + the storage prefix) by construction, so passing it
+        # through leaks nothing — unlike the generic branch below, which must
+        # redact an arbitrary exception. Warning without a traceback: this is a
+        # configuration condition the structured type fully describes, and
+        # discovery paths sweep many tool classes per call — a full ERROR
+        # traceback per class would spam the log for one poisoned experiment.
+        logger.warning("foreign catalog for %s/%s: %s", adir.tool_class, adir.stem, exc)
+        raise CatalogBackendMismatchError(str(exc)) from exc
     except ManifestSchemaError as exc:
         # `validate_schema` raises this both for "too new" and for "missing
         # the manifest_schema_version field" — the message says "unsupported",
@@ -154,6 +170,51 @@ def _guarded_manifest_read(adir: AnalysisDir, read: Callable[[], T]) -> T:
         raise ManifestReadError(
             f"manifest read failed for {adir.tool_class}/{adir.stem}"
         ) from exc
+
+
+def _reject_foreign_manifest(adir: AnalysisDir, manifest: Optional[Manifest]) -> None:
+    """Hatch-independent write-path sentinel check (#573).
+
+    The read guard fails closed by default, but under the escape hatch it
+    downgrades to a warning and returns the manifest — acceptable for reads,
+    never for writes: extending the catalog would re-stamp its sentinel and
+    silently take it over. So `create_run`/`commit` re-check unconditionally,
+    through the same `foreign_sentinel` predicate and message template the
+    read guard uses (one definition each — the layers cannot drift).
+    """
+    if manifest is None:
+        return
+    recorded = foreign_sentinel(manifest.storage_backend)
+    if recorded is None:
+        return
+    raise CatalogBackendMismatchError(
+        foreign_catalog_message(
+            f"{adir.tool_class}/{adir.stem}",
+            recorded,
+            active_backend_name(),
+            "extend or re-stamp a foreign catalog (permanent until untangled)",
+        )
+    )
+
+
+def _refuse_commits_after_foreign_read(adir: AnalysisDir) -> None:
+    """Refuse every write in a process that has served foreign data (#573).
+
+    The hatch is an inspection mode: provenance has no field recording an
+    input's storage backend, so a commit after a foreign read could persist
+    foreign-derived output with clean provenance (and, for `remove_outliers`,
+    a `based_on_version` existing only in the foreign catalog). Blunt by
+    design — see design.md, which also records the operational trade-off.
+    """
+    if not foreign_read_served():
+        return
+    raise CatalogBackendMismatchError(
+        f"commit refused for {adir.tool_class}/{adir.stem}: a foreign catalog "
+        f"was served under BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST in this "
+        f"process, so writes are disabled to keep foreign-derived data out of "
+        f"native catalogs. Restart the process without the variable to write "
+        f"again."
+    )
 
 
 @dataclass
@@ -191,6 +252,9 @@ class SupabaseResultStore:
                 }
             )
         adir = AnalysisDir(self._output_root, experiment, tool_class)
+        # #573: an inspection process (foreign data served under the hatch)
+        # is read-only from that point on — refuse before any manifest read.
+        _refuse_commits_after_foreign_read(adir)
         # Single-writer assumption (see _WIKI/BLOOMMCP/storage-workflow.md):
         # version_id is allocated from the current manifest now and the manifest
         # is re-read at commit without a compare-and-set, so two interleaved runs
@@ -198,6 +262,10 @@ class SupabaseResultStore:
         # topology; a compare-and-set (or re-allocate-at-commit) is on the
         # roadmap (#324).
         manifest = _guarded_manifest_read(adir, adir.read_manifest)
+        # #573: hatch-independent — under BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1
+        # the read above succeeds with a warning, but the write path must never
+        # extend a foreign catalog, so re-check before any staging dir exists.
+        _reject_foreign_manifest(adir, manifest)
         version_id = next_version_id(manifest)
         version_dir = version_dir_name(version_id, user_label)
         # No orphan cleanup if commit() is never reached (crash, or the tool errors
@@ -224,6 +292,14 @@ class SupabaseResultStore:
             raise RunStateError("commit() on an unknown or already-committed run")
         validate_outputs(outputs)
         adir = state.adir
+        # #573: see create_run — the flag may have been set between the two
+        # calls (a foreign read served mid-tool-run), so commit checks again.
+        # A permanent refusal tears staging down first (mirroring the mismatch
+        # branch of the commit handler below): a retry can never succeed, and
+        # the handle has no __del__ to reclaim the directory later.
+        if foreign_read_served():
+            shutil.rmtree(run.staging_dir, ignore_errors=True)
+        _refuse_commits_after_foreign_read(adir)
 
         # Serializes every commit for this (output_root, experiment, tool_class)
         # within this process — see the lock's module-level docstring for why
@@ -247,6 +323,7 @@ class SupabaseResultStore:
                 attempts = 0
                 while True:
                     existing = adir.read_manifest()
+                    _reject_foreign_manifest(adir, existing)
                     if existing is None or not any(
                         v.id == version_id for v in existing.versions
                     ):
@@ -329,6 +406,7 @@ class SupabaseResultStore:
                 # bypasses the lock (e.g. a future direct manifest writer) and
                 # against the still-open multi-instance case documented below.
                 fresh = adir.read_manifest()
+                _reject_foreign_manifest(adir, fresh)
                 if fresh is not None and any(
                     v.id == version_id for v in fresh.versions
                 ):
@@ -369,6 +447,26 @@ class SupabaseResultStore:
                         latest=entry.id,
                     )
                 else:
+                    if not (
+                        isinstance(fresh.storage_backend, str)
+                        and fresh.storage_backend.strip()
+                    ):
+                        # #573 review: stamping a previously unstamped
+                        # (pre-#572) catalog. The absent-sentinel pass-through
+                        # means no mismatch check was possible for it, and
+                        # this write adopts the catalog for the active backend
+                        # — the fresh-catalog log above never fires here (the
+                        # manifest exists), so log the adoption or it is
+                        # forensically invisible.
+                        logger.info(
+                            "Stamping previously unstamped (pre-#572) catalog "
+                            "for %s/%s with storage backend %r; any prior "
+                            "backend identity was unrecorded and cannot be "
+                            "recovered from local information.",
+                            adir.tool_class,
+                            adir.stem,
+                            active_backend_name(),
+                        )
                     fresh.versions.append(entry)
                     fresh.latest = entry.id
                     if not fresh.experiment.input_sha256 and sha:
@@ -381,6 +479,29 @@ class SupabaseResultStore:
                 write_manifest(adir.path, manifest)
             except Exception as exc:
                 self._cleanup_uploaded(uploaded_keys, adir)
+                if isinstance(
+                    exc, (CatalogBackendMismatchError, ManifestBackendMismatchError)
+                ):
+                    # #573: a foreign catalog (from _reject_foreign_manifest,
+                    # or the manifest-layer guard firing inside commit's own
+                    # read with the hatch off). A permanent configuration
+                    # condition the structured type fully describes — one
+                    # warning, no traceback (unlike the malfunction branches
+                    # below), and the staging dir is torn down: "leave it for
+                    # retry" is wrong for the one condition a retry can never
+                    # fix, and the handle has no __del__ to reclaim it later.
+                    # A retry on the same handle re-raises at the first
+                    # manifest read, before staging is ever touched.
+                    logger.warning(
+                        "ResultStore.commit refused for %s/%s: %s",
+                        adir.tool_class,
+                        adir.stem,
+                        exc,
+                    )
+                    shutil.rmtree(run.staging_dir, ignore_errors=True)
+                    if isinstance(exc, CatalogBackendMismatchError):
+                        raise
+                    raise CatalogBackendMismatchError(str(exc)) from exc
                 # Leave the handle open and the staging dir intact so the
                 # caller can retry — a retry re-enters commit() and
                 # re-allocates a fresh id against a then-current manifest. The

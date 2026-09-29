@@ -29,6 +29,7 @@ help:
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
 	@echo "  make bloommcp-smoke   - Live persistence smoke: drive granular tools through real Supabase storage"
+	@echo "  make bloommcp-audit-sentinels - Classify every catalog's storage_backend sentinel (read-only; SUPABASE_URL/BLOOM_AGENT_KEY from env)"
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
@@ -373,6 +374,25 @@ bloommcp-smoke: check-uv
 	cd bloommcp && SUPABASE_URL="http://localhost:$${KONG_PORT}" BLOOM_AGENT_KEY="$$BLOOM_AGENT_KEY" \
 		BLOOM_SMOKE_EXPERIMENT_ID="$$SMOKE_EXPERIMENT_ID" \
 		uv run python tests/smoke/live_persistence_smoke.py
+
+## Read-only audit for the #573 foreign-catalog read guard (task 5.6): classifies
+## every bloommcp_output/**/manifest.json sentinel as matching / foreign /
+## unstamped / unrecognized. Writes nothing. Point it at whichever environment
+## you mean by exporting that environment's SUPABASE_URL + BLOOM_AGENT_KEY —
+## unlike the smoke above, this deliberately does NOT read .env.dev, so auditing
+## staging or prod can never silently run against your local stack instead.
+## Exit codes: 0 verified clean, 2 a catalog the guard would refuse (blocker),
+## 3 unstamped catalogs present (blind spot — re-run with ALLOW_UNSTAMPED=1 to
+## accept), 1 the sweep could not run.
+.PHONY: bloommcp-audit-sentinels
+bloommcp-audit-sentinels: check-uv
+	@if [ -z "$$SUPABASE_URL" ] || [ -z "$$BLOOM_AGENT_KEY" ]; then \
+		echo "Error: export SUPABASE_URL and BLOOM_AGENT_KEY for the environment you want to audit."; \
+		echo "  staging/prod: use that environment's values (read-only audit; nothing is written)."; \
+		echo "  local dev:    SUPABASE_URL=http://localhost:\$${KONG_HTTP_PORT:-8000} BLOOM_AGENT_KEY=<from .env.dev>"; \
+		exit 1; \
+	fi
+	@cd bloommcp && uv run python scripts/audit_backend_sentinels.py $${ALLOW_UNSTAMPED:+--allow-unstamped}
 
 ## One-shot: clean reset -> up -> migrate -> health check. Destructive (wipes the
 ## local DB). Use to reproduce a fresh-clone init and prove it end to end.

@@ -7,6 +7,7 @@ function here, then register it in this package's ``__init__``.
 from pydantic import BaseModel, Field
 
 from bloom_mcp.contract import BloomMCPError, Provenance, as_mcp_tool
+from bloom_mcp.data_access import ForeignCatalogError
 from bloom_mcp.tools import _ports
 
 
@@ -35,7 +36,15 @@ class SummarizeTraitResult(BaseModel):
     by_accession: list[AccessionTraitStats]
 
 
-@as_mcp_tool(input_model=SummarizeTraitParams, output_model=SummarizeTraitResult)
+@as_mcp_tool(
+    input_model=SummarizeTraitParams,
+    output_model=SummarizeTraitResult,
+    # #573: load_frame lets ForeignCatalogError propagate rather than
+    # flattening it into the (None, …, error-string) channel — declared here
+    # so the envelope passes its message + do-not-retry agent_remedy through
+    # instead of the wrong invalid_input/"pick another experiment" pairing.
+    errors=(ForeignCatalogError,),
+)
 def summarize_trait(
     params: SummarizeTraitParams, *, provenance: Provenance
 ) -> SummarizeTraitResult:

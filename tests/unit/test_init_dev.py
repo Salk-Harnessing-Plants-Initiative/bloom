@@ -101,6 +101,8 @@ def test_render_leaves_opt_in_storage_backend_vars_empty():
     """BLOOM_STORAGE_BACKEND/_LOCAL_ROOT/_EXPERIMENT_LOCAL_ROOT are opt-in (off by
     default) — they must survive render() as empty values, not CHANGEME'd, not
     dropped, so a fresh .env.dev requires no un-commenting to discover or use them.
+    BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST (#573) is the same opt-in family — this
+    tuple also gates the .env.dev.example entry itself (PR #782 review, 2c).
     """
     template = (REPO_ROOT / ".env.dev.example").read_text(encoding="utf-8")
     out = init_dev.render(template, init_dev.generate_secrets())
@@ -109,6 +111,7 @@ def test_render_leaves_opt_in_storage_backend_vars_empty():
         "BLOOM_STORAGE_BACKEND",
         "BLOOM_STORAGE_LOCAL_ROOT",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
+        "BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST",
     ):
         assert key in values, f"{key} missing from rendered .env.dev"
         assert values[key] == "", f"{key} should stay empty but got {values[key]!r}"

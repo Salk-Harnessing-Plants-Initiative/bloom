@@ -47,6 +47,14 @@ mirroring `tests/smoke/live_persistence_smoke.py`'s documented env-override
 convention for host-vs-container invocation.
 
 Usage: `cd bloommcp && uv run python scripts/audit_untrustworthy_outlier_fits.py`
+
+#573 note: a sweep over a catalog written by a *different* storage backend
+(e.g. a downloaded prod bucket inspected under BLOOM_STORAGE_BACKEND=local —
+the read guard's own sanctioned offline flow) will land every experiment in
+the errors list unless BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST=1 is set: each
+manifest read fails closed with ManifestBackendMismatchError otherwise. Set
+the hatch for offline sweeps; leave it unset when auditing the backend's own
+live catalogs.
 """
 
 from __future__ import annotations

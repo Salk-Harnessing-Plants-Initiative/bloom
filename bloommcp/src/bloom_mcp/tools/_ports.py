@@ -15,6 +15,7 @@ from bloom_mcp.contract import Provenance
 from bloom_mcp.data_access import (
     ExperimentReader,
     ExperimentReadError,
+    ForeignCatalogError,
     RawSourced,
     SupabaseReader,
 )
@@ -91,6 +92,14 @@ def load_frame(
         frame = _reader.load_experiment(
             filename, version=version, source_id=source_id, run_id=run_id
         )
+    except ForeignCatalogError:
+        # #573: never flattened into the (None, …, error-string) channel — a
+        # caller that only sees the 4-tuple misreports it (summarize_trait
+        # used to answer invalid_input with a pick-another-experiment remedy).
+        # Propagates to the tool envelope; callers declare the type (or, for
+        # plain string tools, catch it and return the message, which is
+        # leak-safe by construction).
+        raise
     except ExperimentReadError as exc:
         return None, None, None, str(exc)
     config = {

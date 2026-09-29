@@ -714,3 +714,72 @@ def test_fake_reader_is_not_source_selectable():
     """FakeReader has no source-versioned substrate; it must not satisfy
     SourceSelectable (unlike SupabaseReader)."""
     assert not isinstance(FakeReader(), SourceSelectable)
+
+
+# ── #573: foreign catalog surfaces as ForeignCatalogError ────────────────────
+
+
+def _seed_cleaned_via_store(experiment: str, tool_class: str = "qc") -> None:
+    store = SupabaseResultStore()
+    run = store.create_run(
+        experiment=experiment,
+        tool_class=tool_class,
+        provenance=Provenance.stamp(tool="run_qc_workflow", params={}),
+    )
+    (run.staging_dir / "_cleaned.csv").write_text(
+        pd.DataFrame({"Genotype": ["g"], "trait": [1.0]}).to_csv(index=False)
+    )
+    store.commit(run, {"_cleaned.csv": "_cleaned.csv"})
+
+
+def _foreignize_stored_manifest(fake_storage, stem: str, tool_class: str = "qc"):
+    import json as _json
+
+    key = f"bloommcp_output/{tool_class}_{stem}/manifest.json"
+    raw = _json.loads(fake_storage.objects[key])
+    assert raw["storage_backend"] == "supabase"
+    raw["storage_backend"] = "local"
+    fake_storage.objects[key] = _json.dumps(raw).encode()
+
+
+def test_foreign_catalog_raises_foreign_catalog_error_not_not_found(
+    fake_supabase_storage, fake_supabase_db, monkeypatch
+):
+    """Spec: "require_clean surfaces the mismatch as ForeignCatalogError in
+    both readers" — NOT ExperimentNotFoundError, which would misreport a
+    present-but-foreign catalog as absent (this adapter's demotion for
+    discarded resolution errors before #573)."""
+    from bloom_mcp.data_access import ForeignCatalogError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    _seed_cleaned_via_store(str(experiment_id))
+    _foreignize_stored_manifest(fake_supabase_storage, str(experiment_id))
+
+    with pytest.raises(ForeignCatalogError) as exc:
+        SupabaseReader().load_experiment(str(experiment_id), require_clean=True)
+
+    assert not isinstance(exc.value, ExperimentNotFoundError)
+    msg = str(exc.value)
+    assert "'local'" in msg and "'supabase'" in msg
+
+
+def test_foreign_higher_priority_class_never_falls_through(
+    fake_supabase_storage, fake_supabase_db, monkeypatch
+):
+    """Spec: "A foreign catalog is a hard resolution error, never a
+    fall-through" — a foreign `outliers` catalog with a healthy `qc` catalog
+    and a reachable raw tier still raises rather than silently substituting
+    the lower-priority dataset."""
+    from bloom_mcp.data_access import ForeignCatalogError
+
+    monkeypatch.delenv("BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST", raising=False)
+    experiment_id = _seed_two_plant_experiment(fake_supabase_db)
+    _seed_cleaned_via_store(str(experiment_id), tool_class="qc")
+    _seed_cleaned_via_store(str(experiment_id), tool_class="outliers")
+    _foreignize_stored_manifest(
+        fake_supabase_storage, str(experiment_id), tool_class="outliers"
+    )
+
+    with pytest.raises(ForeignCatalogError):
+        SupabaseReader().load_experiment(str(experiment_id))

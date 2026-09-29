@@ -102,6 +102,33 @@ class ManifestIncompatibleError(ManifestReadError):
     """
 
 
+class CatalogBackendMismatchError(ManifestReadError):
+    """The resolved catalog was written by a different storage backend than the
+    active one — #573's *foreign catalog* (a copied/synced bucket, a restored
+    backup, or a shared root; an accident-detection signal, not tamper-proof —
+    whoever can edit the manifest controls the compared value).
+
+    A subclass of :class:`ManifestReadError`, mirroring
+    :class:`ManifestIncompatibleError`'s pattern exactly: every existing
+    ``except ManifestReadError``/``except ResultStoreError`` handler (and every
+    consumer tool's ``errors=(…, ManifestReadError)`` declaration) still
+    catches it, while an ``isinstance()`` check distinguishes "storage flaked"
+    from "this catalog belongs to another backend". A permanent condition — a
+    retry cannot fix it, so messages must not invite one, and ``agent_remedy``
+    overrides the contract envelope's default "…and retry." advice (see
+    ``contract/errors.py``). On the write path (``create_run``/``commit``) it
+    is raised regardless of the ``BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST``
+    escape hatch, which sanctions reads only.
+    """
+
+    agent_remedy = (
+        "Stop and determine which storage backend owns this experiment's "
+        "history (see bloommcp/docs/storage-backends.md, 'Do not mix "
+        "backends'); the condition is permanent until an operator untangles "
+        "the catalogs."
+    )
+
+
 @dataclass
 class RunHandle:
     """An in-progress run: write outputs into ``staging_dir``, then ``commit``.

@@ -41,12 +41,16 @@ def test_bloommcp_storage_backend_vars_use_env_interpolation_not_literals():
     """#478: BLOOM_STORAGE_BACKEND/BLOOM_STORAGE_LOCAL_ROOT/BLOOM_EXPERIMENT_LOCAL_ROOT
     must be sourced via ${VAR:-} interpolation from the active env file, not baked
     in as commented-out or literal YAML values, so toggling fully-local mode never
-    requires editing this tracked file."""
+    requires editing this tracked file. BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST
+    (#573's reads-only escape hatch) joins the family: without this entry the
+    compose line could be deleted and the root suite would stay green — this
+    tuple is the gate (PR #782 review, finding 2c)."""
     env = _compose()["services"]["bloommcp"]["environment"]
     for var in (
         "BLOOM_STORAGE_BACKEND",
         "BLOOM_STORAGE_LOCAL_ROOT",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
+        "BLOOM_STORAGE_ALLOW_FOREIGN_MANIFEST",
     ):
         assert var in env, f"{var} must be present in bloommcp's environment block"
         value = str(env[var])
