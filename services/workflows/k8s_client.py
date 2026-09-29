@@ -104,6 +104,12 @@ class K8sSubmissionError(Exception):
     server URL or other internal detail."""
 
 
+class K8sAlreadyExistsError(K8sSubmissionError):
+    """The API refused the submission because a Workflow with the body's
+    `metadata.name` already exists (409). Only a caller that sets a fixed name
+    sees this; a `generateName` body never collides."""
+
+
 class K8sStatusError(Exception):
     """A genuine status-check attempt (get_workflow_status) failed for a
     reason other than the Workflow simply not existing (non-404 non-2xx, or
@@ -256,6 +262,9 @@ def submit_workflow(body: dict) -> str:
         logger.warning("k8s_client: submission request failed: %s", exc)
         raise K8sSubmissionError("Argo Workflow submission failed") from exc
 
+    if resp.status_code == 409:
+        logger.info("k8s_client: submission refused, the Workflow already exists")
+        raise K8sAlreadyExistsError("Argo Workflow already exists")
     if resp.status_code // 100 != 2:
         logger.warning(
             "k8s_client: submission rejected (%s): %s", resp.status_code, resp.text
