@@ -365,11 +365,11 @@
 
 ## 9. Proxy
 
-- [ ] 9.1 **Test first.** Write `trigger-request.test.ts`:
+- [x] 9.1 **Test first.** Write `trigger-request.test.ts`:
   - every validation rule in the spec, including `target_id: null` with `scan_ids`, and both `MAX_TRIGGER_SCAN_IDS` bounds (5000 and 5001);
   - the rebuilt body carries `params: {}`.
-- [ ] 9.2 Implement `trigger-request.ts`, exporting `MAX_TRIGGER_SCAN_IDS = 5000`, with a comment tying it to `services/workflows/pipeline.py`'s `MAX_SCAN_IDS`. Add a test that reads `pipeline.py` and asserts the two values are equal.
-- [ ] 9.3 **Test first.** Write `web/app/api/cyl/pipeline/route.test.ts`, modelled on the video route test. One test per scenario in the three proxy requirements, plus:
+- [x] 9.2 Implement `trigger-request.ts`, exporting `MAX_TRIGGER_SCAN_IDS = 5000`, with a comment tying it to `services/workflows/pipeline.py`'s `MAX_SCAN_IDS`. Add a test that reads `pipeline.py` and asserts the two values are equal. **(characterization: that test and the `= 5000` test pass against the stub, which already carries the constant.)**
+- [x] 9.3 **Test first.** Write `web/app/api/cyl/pipeline/route.test.ts`, modelled on the video route test. One test per scenario in the three proxy requirements, plus:
   - **Ordering:** check each of 415, 403 and 401 with `new Request(url, {method: 'POST', headers, body: new ReadableStream({pull: pullSpy}, {highWaterMark: 0}), duplex: 'half'} as RequestInit)`. Assert `pullSpy` was not called, `req.bodyUsed === false`, and `fetch` was not called.
   - **Origin:**
     - `localhost:3000` against `Host: localhost:3001` gives 403;
@@ -386,8 +386,10 @@
     - a non-integer `Retry-After` is dropped;
     - a malformed 2xx gives 502.
   - **Logging:** logs contain no `Authorization`.
-- [ ] 9.4 Implement `route.ts`, with a comment that the Origin check depends on Caddy having no `trusted_proxies`. Update the `caddy/Caddyfile:123` comment, and confirm `tests/unit/test_caddy_cyl_video_route.py` passes.
-- [ ] 9.5 Verify as in 8.7. The PR body notes that the route is reachable by same-origin signed-in POSTs once deployed, which adds nothing beyond `/workflows/pipeline`. Then `/pre-merge` and `/review-pr`.
+- [x] 9.4 Implement `route.ts`, with a comment that the Origin check depends on Caddy having no `trusted_proxies`. Update the `caddy/Caddyfile:123` comment, and confirm `tests/unit/test_caddy_cyl_video_route.py` passes. **(characterization: its new route-exists test.)**
+- [x] 9.5 Verify as in 8.7. The PR body notes that the route is reachable by same-origin signed-in POSTs once deployed, which adds nothing beyond `/workflows/pipeline`. Then `/pre-merge` and `/review-pr`.
+
+  **(PR 4, #952, 2026-09-29: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` all green, with 72 route and validation tests after two `/review-pr` rounds (5 reviewers, then 2); `npm run build` passes with CI's placeholder env; `test_caddy_cyl_video_route.py` 5 passed; migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `/pre-merge`: `npm audit --audit-level=critical` clean, no dependency changes; Docker image builds and compose integration tests left to CI.)**
 
 ## PR 5: trigger batching (bloom#901)
 
