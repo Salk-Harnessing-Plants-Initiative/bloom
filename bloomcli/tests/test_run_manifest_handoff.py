@@ -38,7 +38,7 @@ def test_the_reader_resolves_exactly_the_manifest_the_writer_wrote(tmp_path, mon
     (stage / RUN_MANIFEST_FILENAME).write_text(stale.model_dump_json(), encoding="utf-8")
     (traits / RUN_MANIFEST_FILENAME).write_text(stale.model_dump_json(), encoding="utf-8")
 
-    discovered = ing.discover_envelopes(traits, pipeline_run_id_from_env())
+    discovered = ing.discover_envelopes(traits, pipeline_run_id=pipeline_run_id_from_env())
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
     assert discovered.missing_scan_keys == []

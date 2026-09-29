@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -1545,7 +1546,7 @@ def test_batch_cli_run_id_at_the_contract_length_limit_is_written(tmp_path, monk
 
     result = _run_batch(out, "--scan-ids", "1")
 
-    if isinstance(result.exception, OSError) or "too long" in result.output.lower():
+    if sys.platform == "win32" and "too long" in result.output.lower():
         pytest.skip("filesystem path limit (Windows without LongPathsEnabled)")
     assert result.exit_code == 0, result.output
     assert _read_manifest(out, f"run_manifest.{run_id}.json")["pipeline_run_id"] == run_id
@@ -1554,13 +1555,18 @@ def test_batch_cli_run_id_at_the_contract_length_limit_is_written(tmp_path, monk
 def test_batch_cli_run_id_over_the_contract_length_limit_fails_before_staging(
     tmp_path, monkeypatch
 ):
+    import bloomctl.cli as climod
+
     _patch_batch(monkeypatch)
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", "w" * 238)
+    calls = []
+    monkeypatch.setattr(climod, "_authed_client", lambda profile: calls.append("auth"))
     out = tmp_path / "out"
 
     result = _run_batch(out, "--scan-ids", "1")
 
     assert result.exit_code == 1
+    assert calls == []
     assert not (out / "scan_1").exists()
 
 

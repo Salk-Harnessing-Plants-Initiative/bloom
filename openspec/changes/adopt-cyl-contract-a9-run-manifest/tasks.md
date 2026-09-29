@@ -219,14 +219,14 @@ The user decided two points in the review: a legacy file naming another run is n
     - `reconcile_unresolved_scans(client, name, *, error_message=...)` and `_reconcile_unresolved_scans_result(..., error_message=...)`.
     - The `except RunManifestNotFoundError` handler seeds a `"<run-manifest>"` entry and an empty discovery, and falls through to the existing auth/reconcile/emit/exit code.
     - Delete the duplicated emit/exit block.
-- [ ] 11.5 **Code hygiene.**
+- [x] 11.5 **Code hygiene.**
   - Catch `(RunManifestError, ValueError, OSError)` after `RunManifestMissingError`.
   - Make `discover_envelopes(envelopes_dir, *, pipeline_run_id)` keyword-only and required, and update every call site.
   - Hoist the `"<run-manifest>"` and `"<reconciliation>"` sentinels into module constants.
   - Rename `resolve_pipeline_run_id` to `stamped_pipeline_run_id`.
   - Make the writer's invalid-id message name `PIPELINE_RUN_ID_ENV_VAR` and say "whitespace-stripped".
   - Guard: the existing suite stays green.
-- [ ] 11.6 **Tests the review found missing or weak.**
+- [x] 11.6 **Tests the review found missing or weak.**
   - Per-run variants of the malformed, wrong-schema and directory discover tests.
   - A dangling-symlink case in the CLI "never authenticates or reconciles" test.
   - `assert not isinstance(exc, RunManifestNotFoundError)` on the per-run unreadable, mismatch and invalid-id discover tests.

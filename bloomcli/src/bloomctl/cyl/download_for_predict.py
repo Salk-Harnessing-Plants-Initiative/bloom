@@ -22,6 +22,7 @@ from uuid import uuid4
 import click
 from pydantic import ValidationError
 from sleap_roots_contracts import (
+    PIPELINE_RUN_ID_ENV_VAR,
     RunManifest,
     pipeline_run_id_from_env,
     run_manifest_name_for_writing,
@@ -449,7 +450,7 @@ def stage_one_scan(
 # --- batch: RunManifest write (bloom #653; per-run name + overwrite, bloom #934) ----
 
 
-def resolve_pipeline_run_id(run_id: str | None) -> str:
+def stamped_pipeline_run_id(run_id: str | None) -> str:
     """The `pipeline_run_id` to stamp inside the manifest: `run_id` (the run identity from
     `pipeline_run_id_from_env()`) when there is one, else a freshly generated local placeholder.
 
@@ -470,7 +471,8 @@ def resolve_manifest_name(run_id: str | None) -> str:
         return run_manifest_name_for_writing(run_id)
     except ValueError as exc:
         raise click.ClickException(
-            f"ARGO_WORKFLOW_NAME={run_id!r} cannot name a run manifest: {exc}"
+            f"{PIPELINE_RUN_ID_ENV_VAR}={run_id!r} (whitespace-stripped) cannot name a run "
+            f"manifest: {exc}"
         ) from exc
 
 
@@ -505,7 +507,7 @@ def write_run_manifest(
     try:
         with acquire_lock(lock_path, staleness_seconds=staleness_seconds):
             manifest = RunManifest(
-                pipeline_run_id=resolve_pipeline_run_id(pipeline_run_id), scan_keys=scan_keys
+                pipeline_run_id=stamped_pipeline_run_id(pipeline_run_id), scan_keys=scan_keys
             )
             atomic_write_bytes(manifest_path, manifest.model_dump_json().encode("utf-8"))
     except (LockContendedError, OSError, ValidationError) as exc:

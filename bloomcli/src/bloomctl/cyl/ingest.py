@@ -20,9 +20,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import click
-from pydantic import ValidationError
 from sleap_roots_contracts import (
-    RunManifestIdentityError,
+    RunManifestError,
     RunManifestMissingError,
     load_run_manifest,
     pipeline_run_id_from_env,
@@ -104,7 +103,7 @@ class DiscoveredEnvelopes:
 
 
 def discover_envelopes(
-    envelopes_dir: str | Path, pipeline_run_id: str | None = None
+    envelopes_dir: str | Path, *, pipeline_run_id: str | None
 ) -> DiscoveredEnvelopes:
     """Non-recursive glob for ``*.result.json`` directly under ``envelopes_dir``, sorted,
     scoped to the run's manifest when one resolves.
@@ -138,11 +137,13 @@ def discover_envelopes(
         loaded = load_run_manifest(path, pipeline_run_id, allow_legacy=True)
     except RunManifestMissingError as exc:
         raise RunManifestNotFoundError(str(exc)) from exc
-    except (RunManifestIdentityError, ValidationError, ValueError, OSError) as exc:
-        # load_run_manifest opens rather than probes, so a permission-denied, dangling-symlink
-        # or non-file candidate raises here instead of reading as "absent" and falling through
-        # to the next name. ValidationError is a malformed manifest; a bare ValueError is a run
-        # identity the contract rejects as a file-name component.
+    except (RunManifestError, ValueError, OSError) as exc:
+        # The set the contract documents for a consumer that must catch everything, so a new
+        # RunManifestError subclass in a later alpha still maps cleanly. load_run_manifest opens
+        # rather than probes, so a permission-denied, dangling-symlink or non-file candidate
+        # raises here instead of reading as "absent" and falling through to the next name.
+        # ValueError covers a malformed manifest (pydantic's ValidationError subclasses it) and a
+        # run identity the contract rejects as a file-name component.
         raise EnvelopeError(f"could not read the run manifest in {path}: {exc}") from exc
 
     if loaded is None:
@@ -703,7 +704,7 @@ def _reconcile_unresolved_scans_result(
             # retriable stays True (the default) — Argo's own retryStrategy
             # is the correct recovery for this transient window.
             return ScanResult(
-                "<reconciliation>",
+                RECONCILIATION_SCAN_KEY,
                 "failed",
                 f"reconciliation for workflow {argo_workflow_name!r} deferred — RPC "
                 "signature not yet migrated (expected, transient deploy-ordering "
@@ -720,14 +721,14 @@ def _reconcile_unresolved_scans_result(
             else ""
         )
         return ScanResult(
-            "<reconciliation>",
+            RECONCILIATION_SCAN_KEY,
             "failed",
             f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: "
             f"{message}{hint}",
         )
     except Exception as exc:
         return ScanResult(
-            "<reconciliation>",
+            RECONCILIATION_SCAN_KEY,
             "failed",
             f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: {exc}",
         )
@@ -1113,7 +1114,7 @@ def batch_ingest_result(
     manifest_results: list[ScanResult] = []
     reconcile_message: str | None = None
     try:
-        discovered = discover_envelopes(envelopes_dir, argo_workflow_name)
+        discovered = discover_envelopes(envelopes_dir, pipeline_run_id=argo_workflow_name)
     except RunManifestNotFoundError as exc:
         # The run knows its identity but has no manifest of its own, so no scope exists.
         # Ingesting every envelope in a directory every run shares — or another run's scope —

@@ -1251,27 +1251,27 @@ def _write_per_run_manifest(directory, run_id, scan_keys):
 def test_discover_envelopes_returns_sorted_paths(tmp_path):
     _write_envelope(tmp_path, "scan_b")
     _write_envelope(tmp_path, "scan_a")
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
     assert [p.name for p in discovered.paths] == ["scan_a.result.json", "scan_b.result.json"]
     assert discovered.missing_scan_keys == []
 
 
 def test_discover_envelopes_empty_dir_returns_empty_list(tmp_path):
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
     assert discovered.paths == []
     assert discovered.missing_scan_keys == []
 
 
 def test_discover_envelopes_missing_dir_raises(tmp_path):
     with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path / "nope")
+        ing.discover_envelopes(tmp_path / "nope", pipeline_run_id=None)
 
 
 def test_discover_envelopes_file_instead_of_dir_raises(tmp_path):
     f = tmp_path / "not_a_dir.txt"
     f.write_text("x", encoding="utf-8")
     with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(f)
+        ing.discover_envelopes(f, pipeline_run_id=None)
 
 
 def test_discover_envelopes_is_non_recursive(tmp_path):
@@ -1279,7 +1279,7 @@ def test_discover_envelopes_is_non_recursive(tmp_path):
     nested = tmp_path / "subdir"
     nested.mkdir()
     _write_envelope(nested, "scan_nested")
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
     assert [p.name for p in discovered.paths] == ["scan_top.result.json"]
 
 
@@ -1291,7 +1291,7 @@ def test_discover_envelopes_scopes_to_run_manifest(tmp_path):
     _write_envelope(tmp_path, "scan_2")
     _write_run_manifest(tmp_path, scan_keys=["scan_1"])
 
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
 
@@ -1300,7 +1300,7 @@ def test_discover_envelopes_no_run_manifest_is_fully_unscoped(tmp_path):
     _write_envelope(tmp_path, "scan_1")
     _write_envelope(tmp_path, "scan_2")
 
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json", "scan_2.result.json"]
     assert discovered.missing_scan_keys == []
@@ -1310,7 +1310,7 @@ def test_discover_envelopes_missing_run_manifest_scan_key_is_reported(tmp_path):
     _write_envelope(tmp_path, "scan_1")
     _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"])
 
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
     assert discovered.missing_scan_keys == ["scan_2"]
@@ -1322,7 +1322,7 @@ def test_discover_envelopes_excluded_file_logs_debug(tmp_path, caplog):
     _write_run_manifest(tmp_path, scan_keys=["scan_1"])
 
     with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
-        ing.discover_envelopes(tmp_path)
+        ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
     assert len(debug_records) == 1
@@ -1334,7 +1334,7 @@ def test_discover_envelopes_no_exclusion_logs_no_debug_line(tmp_path, caplog):
     _write_run_manifest(tmp_path, scan_keys=["scan_1"])
 
     with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
-        ing.discover_envelopes(tmp_path)
+        ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     assert [r for r in caplog.records if r.levelname == "DEBUG"] == []
 
@@ -1346,7 +1346,7 @@ def test_discover_envelopes_multiple_excluded_files_log_one_aggregated_line(tmp_
     _write_run_manifest(tmp_path, scan_keys=["scan_1"])
 
     with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
-        ing.discover_envelopes(tmp_path)
+        ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
     assert len(debug_records) == 1
@@ -1354,22 +1354,32 @@ def test_discover_envelopes_multiple_excluded_files_log_one_aggregated_line(tmp_
     assert "scan_3" in debug_records[0].message
 
 
-def test_discover_envelopes_malformed_run_manifest_json_raises(tmp_path):
+@pytest.mark.parametrize(("run_id", "name"), [
+    pytest.param(None, "run_manifest.json", id="legacy-no-id"),
+    pytest.param("wf-a", "run_manifest.wf-a.json", id="per-run"),
+])
+def test_discover_envelopes_malformed_run_manifest_json_raises(tmp_path, run_id, name):
     _write_envelope(tmp_path, "scan_1")
-    (tmp_path / RUN_MANIFEST_FILENAME).write_text("{ not json", encoding="utf-8")
+    (tmp_path / name).write_text("{ not json", encoding="utf-8")
 
-    with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path)
+    with pytest.raises(ing.EnvelopeError) as excinfo:
+        ing.discover_envelopes(tmp_path, pipeline_run_id=run_id)
+
+    assert not isinstance(excinfo.value, ing.RunManifestNotFoundError)
 
 
-def test_discover_envelopes_run_manifest_wrong_schema_raises(tmp_path):
+@pytest.mark.parametrize(("run_id", "name"), [
+    pytest.param(None, "run_manifest.json", id="legacy-no-id"),
+    pytest.param("wf-a", "run_manifest.wf-a.json", id="per-run"),
+])
+def test_discover_envelopes_run_manifest_wrong_schema_raises(tmp_path, run_id, name):
     _write_envelope(tmp_path, "scan_1")
-    (tmp_path / RUN_MANIFEST_FILENAME).write_text(
-        json.dumps({"pipeline_run_id": "wf-test"}), encoding="utf-8"
-    )
+    (tmp_path / name).write_text(json.dumps({"pipeline_run_id": "wf-a"}), encoding="utf-8")
 
-    with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path)
+    with pytest.raises(ing.EnvelopeError) as excinfo:
+        ing.discover_envelopes(tmp_path, pipeline_run_id=run_id)
+
+    assert not isinstance(excinfo.value, ing.RunManifestNotFoundError)
 
 
 # Each manifest-failure test runs against the legacy name (no run identity) and the per-run
@@ -1401,16 +1411,24 @@ def test_discover_envelopes_unreadable_run_manifest_raises(tmp_path, monkeypatch
     _write_run_manifest(tmp_path, scan_keys=["scan_1"], pipeline_run_id=run_id or "wf-test", filename=name)
     _fail_opening(monkeypatch, name, OSError("simulated read error"))
 
-    with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path, run_id)
+    with pytest.raises(ing.EnvelopeError) as excinfo:
+        ing.discover_envelopes(tmp_path, pipeline_run_id=run_id)
+
+    assert not isinstance(excinfo.value, ing.RunManifestNotFoundError)
 
 
-def test_discover_envelopes_run_manifest_as_directory_raises(tmp_path):
+@pytest.mark.parametrize(("run_id", "name"), [
+    pytest.param(None, "run_manifest.json", id="legacy-no-id"),
+    pytest.param("wf-a", "run_manifest.wf-a.json", id="per-run"),
+])
+def test_discover_envelopes_run_manifest_as_directory_raises(tmp_path, run_id, name):
     _write_envelope(tmp_path, "scan_1")
-    (tmp_path / RUN_MANIFEST_FILENAME).mkdir()
+    (tmp_path / name).mkdir()
 
-    with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path)
+    with pytest.raises(ing.EnvelopeError) as excinfo:
+        ing.discover_envelopes(tmp_path, pipeline_run_id=run_id)
+
+    assert not isinstance(excinfo.value, ing.RunManifestNotFoundError)
 
 
 def test_discover_envelopes_permission_error_reading_run_manifest_raises(tmp_path, monkeypatch):
@@ -1430,7 +1448,7 @@ def test_discover_envelopes_permission_error_reading_run_manifest_raises(tmp_pat
         with monkeypatch.context() as m:
             _fail_opening(m, name, PermissionError("simulated permission error"))
             with pytest.raises(ing.EnvelopeError):
-                ing.discover_envelopes(directory, run_id)
+                ing.discover_envelopes(directory, pipeline_run_id=run_id)
 
 
 # --- batch: per-run manifest resolution (bloom #934) ------------------------
@@ -1441,7 +1459,7 @@ def test_discover_envelopes_per_run_manifest_scopes_discovery(tmp_path):
     _write_envelope(tmp_path, "scan_2")
     _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
 
-    discovered = ing.discover_envelopes(tmp_path, "wf-a")
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
     assert discovered.manifest_filename == "run_manifest.wf-a.json"
@@ -1453,7 +1471,7 @@ def test_discover_envelopes_per_run_manifest_wins_over_a_stale_legacy_one(tmp_pa
     _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
     _write_run_manifest(tmp_path, scan_keys=["scan_1", "scan_2"], pipeline_run_id="wf-old")
 
-    discovered = ing.discover_envelopes(tmp_path, "wf-a")
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
     assert discovered.missing_scan_keys == []
@@ -1465,7 +1483,7 @@ def test_discover_envelopes_another_runs_per_run_manifest_is_ignored(tmp_path):
     _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
     _write_per_run_manifest(tmp_path, "wf-b", ["scan_2"])
 
-    discovered = ing.discover_envelopes(tmp_path, "wf-a")
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
 
@@ -1478,7 +1496,7 @@ def test_discover_envelopes_legacy_file_naming_another_run_is_no_manifest(tmp_pa
     _write_run_manifest(tmp_path, scan_keys=["scan_1"], pipeline_run_id="wf-old")
 
     with pytest.raises(ing.RunManifestNotFoundError) as excinfo:
-        ing.discover_envelopes(tmp_path, "wf-a")
+        ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     assert "'wf-a'" in str(excinfo.value) and "'wf-old'" in str(excinfo.value)
     assert RUN_MANIFEST_FILENAME in str(excinfo.value)
@@ -1490,7 +1508,7 @@ def test_discover_envelopes_no_run_id_never_warns_about_the_legacy_manifests_id(
     _write_run_manifest(tmp_path, scan_keys=["scan_1"], pipeline_run_id="wf-anything")
 
     with caplog.at_level("WARNING", logger="bloomctl.cyl.ingest"):
-        discovered = ing.discover_envelopes(tmp_path)
+        discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
@@ -1501,7 +1519,7 @@ def test_discover_envelopes_legacy_fallback_naming_the_same_run_is_quiet(tmp_pat
     _write_run_manifest(tmp_path, scan_keys=["scan_1"], pipeline_run_id="wf-a")
 
     with caplog.at_level("WARNING", logger="bloomctl.cyl.ingest"):
-        discovered = ing.discover_envelopes(tmp_path, "wf-a")
+        discovered = ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json"]
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
@@ -1513,15 +1531,17 @@ def test_discover_envelopes_per_run_manifest_naming_another_run_raises(tmp_path)
         tmp_path, scan_keys=["scan_1"], pipeline_run_id="wf-b", filename="run_manifest.wf-a.json"
     )
 
-    with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path, "wf-a")
+    with pytest.raises(ing.EnvelopeError) as excinfo:
+        ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
+
+    assert not isinstance(excinfo.value, ing.RunManifestNotFoundError)
 
 
 def test_discover_envelopes_run_id_with_no_manifest_is_a_distinct_failure(tmp_path):
     _write_envelope(tmp_path, "scan_1")
 
     with pytest.raises(ing.RunManifestNotFoundError) as excinfo:
-        ing.discover_envelopes(tmp_path, "wf-a")
+        ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     assert isinstance(excinfo.value, ing.EnvelopeError)
     assert "run_manifest.wf-a.json" in str(excinfo.value)
@@ -1531,8 +1551,10 @@ def test_discover_envelopes_run_id_with_no_manifest_is_a_distinct_failure(tmp_pa
 def test_discover_envelopes_invalid_run_id_is_an_envelope_error(tmp_path):
     _write_envelope(tmp_path, "scan_1")
 
-    with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path, "../wf")
+    with pytest.raises(ing.EnvelopeError) as excinfo:
+        ing.discover_envelopes(tmp_path, pipeline_run_id="../wf")
+
+    assert not isinstance(excinfo.value, ing.RunManifestNotFoundError)
 
 
 def test_discover_envelopes_dangling_per_run_symlink_does_not_fall_through(tmp_path):
@@ -1545,7 +1567,7 @@ def test_discover_envelopes_dangling_per_run_symlink_does_not_fall_through(tmp_p
         pytest.skip("symlinks unavailable (Windows without Developer Mode)")
 
     with pytest.raises(ing.EnvelopeError):
-        ing.discover_envelopes(tmp_path, "wf-a")
+        ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
 
 def test_discover_envelopes_no_run_id_ignores_per_run_manifests(tmp_path):
@@ -1554,7 +1576,7 @@ def test_discover_envelopes_no_run_id_ignores_per_run_manifests(tmp_path):
     _write_envelope(tmp_path, "scan_2")
     _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
 
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
 
     assert [p.name for p in discovered.paths] == ["scan_1.result.json", "scan_2.result.json"]
 
@@ -1571,7 +1593,7 @@ def test_discover_envelopes_loads_the_manifest_once_with_legacy_allowed(tmp_path
     _write_envelope(tmp_path, "scan_1")
     _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
 
-    ing.discover_envelopes(tmp_path, "wf-a")
+    ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     assert calls == [((Path(tmp_path), "wf-a"), {"allow_legacy": True})]
 
@@ -1582,7 +1604,7 @@ def test_discover_envelopes_excluded_file_log_names_the_manifest_read(tmp_path, 
     _write_per_run_manifest(tmp_path, "wf-a", ["scan_1"])
 
     with caplog.at_level("DEBUG", logger="bloomctl.cyl.ingest"):
-        ing.discover_envelopes(tmp_path, "wf-a")
+        ing.discover_envelopes(tmp_path, pipeline_run_id="wf-a")
 
     debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
     assert len(debug_records) == 1
@@ -2010,7 +2032,7 @@ def test_batch_ingest_cli_no_reconcile_call_when_workflow_name_unset(monkeypatch
     assert result.exit_code == 0, result.output
 
 
-def test_batch_ingest_cli_reconciles_even_with_zero_envelopes(monkeypatch, tmp_path):
+def test_batch_ingest_cli_reconciles_when_no_declared_envelope_was_produced(monkeypatch, tmp_path):
     """The reconciliation call must fire even when there is nothing to ingest —
     every scan under this workflow name failed prediction before producing any
     file at all. Must not be gated on `if discovered.paths: ...`. The run's manifest
@@ -2029,7 +2051,7 @@ def test_batch_ingest_cli_reconciles_even_with_zero_envelopes(monkeypatch, tmp_p
 
     result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
 
-    assert result.exit_code != 0  # scan_1 is reported missing
+    assert result.exit_code == 1  # scan_1 is reported missing
     assert called["auth"] is True
     assert calls == ["wf-empty"]
 
@@ -2486,7 +2508,7 @@ def test_batch_ingest_oracle_matches_extract_batch_output_shape(tmp_path, monkey
     # extract_batch's own output_dir is flat: {scan_key}.result.json directly, no nesting —
     # discover_envelopes' non-recursive glob must match that, not a nested layout.
     _write_envelope(tmp_path, "scan_1")
-    discovered = ing.discover_envelopes(tmp_path)
+    discovered = ing.discover_envelopes(tmp_path, pipeline_run_id=None)
     assert len(discovered.paths) == 1
     assert discovered.paths[0].parent == tmp_path
 
@@ -2800,6 +2822,13 @@ def test_batch_ingest_cli_run_id_with_no_manifest_default_output_names_it(monkey
     assert "run_manifest.wf-a.json" in result.output
 
 
+def _dangling_symlink(link, target):
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks unavailable (Windows without Developer Mode)")
+
+
 @pytest.mark.parametrize(
     "setup",
     [
@@ -2814,6 +2843,10 @@ def test_batch_ingest_cli_run_id_with_no_manifest_default_output_names_it(monkey
             id="names-another-run",
         ),
         pytest.param(lambda d: (d / "run_manifest.wf-a.json").mkdir(), id="directory"),
+        pytest.param(
+            lambda d: _dangling_symlink(d / "run_manifest.wf-a.json", d / "nowhere.json"),
+            id="dangling-symlink",
+        ),
     ],
 )
 def test_batch_ingest_cli_other_manifest_failures_never_authenticate_or_reconcile(
