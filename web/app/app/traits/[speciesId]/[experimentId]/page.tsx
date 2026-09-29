@@ -6,13 +6,18 @@ import {
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import TraitExplorer from "./TraitExplorer";
+import { parseWaveAge, type SearchParams } from "./parse-search-params";
 
 export default async function Experiment({
   params,
+  searchParams,
 }: {
   params: Promise<{ speciesId: string; experimentId: string }>;
+  searchParams: Promise<SearchParams>;
 }) {
   const { speciesId, experimentId } = await params;
+  // A pipeline run's traits link opens the page on that run's wave and plant age.
+  const { wave, age } = parseWaveAge(await searchParams);
   const experimentIdNum = Number(experimentId);
 
   const [user, experiment, traitNames] = await Promise.all([
@@ -63,8 +68,12 @@ export default async function Experiment({
         </div>
       ) : (
         <TraitExplorer
+          // Re-seed when a different run link opens the same page.
+          key={`${wave ?? ""}-${age ?? ""}`}
           experimentId={experimentIdNum}
           traitNames={traitNames}
+          initialWave={wave}
+          initialAge={age}
         />
       )}
     </div>

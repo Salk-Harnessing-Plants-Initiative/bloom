@@ -86,7 +86,7 @@ spec:
         # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
         command: [bash, -c]
         args:
           - |
@@ -167,7 +167,7 @@ spec:
         # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
         command: [bash, -c]
         args:
           - |
@@ -226,7 +226,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
         command: [run-qc]
         env:
           - name: SAMPLE
@@ -288,10 +288,10 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
+        # exit 3 (no reference), 4 (no FASTQs) and 6 (unusable sample name) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
         command: [run-count]
         env:
           - name: SAMPLE
@@ -344,7 +344,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
         command: [bash, -c]
         args:
           - |
@@ -375,7 +375,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
         command: [bash, -c]
         args:
           - |
