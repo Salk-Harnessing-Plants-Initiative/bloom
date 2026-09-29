@@ -1,6 +1,8 @@
 """Unit tests for the Cell Ranger trigger: request validation, the database call,
 run reads and the routes."""
 
+import re
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -87,6 +89,9 @@ def db(monkeypatch):
         {"sample": "x" * 101, "reference": "tiny_ref"},
         {"sample": "a__b", "reference": "tiny_ref"},
         {"sample": "tinygex\n", "reference": "tiny_ref"},
+        {"sample": "S1.rep1", "reference": "tiny_ref"},
+        {"sample": "x" * 65, "reference": "tiny_ref"},
+        {"sample": "-rep1", "reference": "tiny_ref"},
         {"sample": "root_a", "reference": "../etc"},
         {"sample": "root_a", "reference": "a/b"},
         {"sample": "root_a", "reference": 5},
@@ -101,6 +106,35 @@ def test_invalid_requests_are_rejected_before_the_database(body, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(body, USER)
     assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "sample, reference",
+    [
+        ("x" * 64, "tiny_ref"),
+        ("Col0_root_rep1", "tair10_araport11"),
+        ("rep1-", "tiny_ref"),
+        ("rep1_", "tiny_ref"),
+        ("tinygex", "tair10.araport11"),
+        ("tinygex", "r" * 100),
+    ],
+)
+def test_names_cellranger_can_use_are_accepted(db, sample, reference):
+    scrna_cellranger.trigger_run({"sample": sample, "reference": reference}, USER)
+    assert db.rpc_calls[0][1]["p_sample"] == sample
+    assert db.rpc_calls[0][1]["p_reference"] == reference
+
+
+def test_a_dotted_sample_is_refused_with_the_sample_rule(monkeypatch):
+    monkeypatch.setattr(
+        scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
+    )
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run({"sample": "S1.rep1", "reference": "r"}, USER)
+    assert (
+        exc.value.detail == f"sample must be a name of {scrna_cellranger.SAMPLE_HELP}"
+    )
+    assert "at most 64" in exc.value.detail
 
 
 # --------------------------------------------------------------------------- #
@@ -228,3 +262,34 @@ def test_start_run_is_rate_limited_before_any_work(app_as_user, db, monkeypatch)
     resp = app_as_user.post("/scrna/cellranger/runs", json=body)
     assert resp.status_code == 429
     assert len(db.rpc_calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Matches the database's rules
+# --------------------------------------------------------------------------- #
+
+
+def _latest_db_rule(name: str) -> str:
+    """The last `v_<name>_rule` defined across the migrations, in timestamp order."""
+    from pathlib import Path
+
+    migrations = Path(__file__).resolve().parents[3] / "supabase" / "migrations"
+    found = []
+    for path in sorted(migrations.glob("*.sql")):
+        found += re.findall(
+            rf"v_{name}_rule CONSTANT TEXT := '([^']+)'", path.read_text()
+        )
+    assert found, f"no v_{name}_rule in the migrations"
+    return found[-1]
+
+
+@pytest.mark.parametrize(
+    "name, rule",
+    [
+        ("sample", scrna_cellranger.SAMPLE_RULE),
+        ("reference", scrna_cellranger.REFERENCE_RULE),
+    ],
+)
+def test_the_api_rule_is_the_databases_rule(name, rule):
+    # The database checks '__' separately, so the API's look-ahead is not part of it.
+    assert rule.pattern.replace("(?!.*__)", "") == _latest_db_rule(name)

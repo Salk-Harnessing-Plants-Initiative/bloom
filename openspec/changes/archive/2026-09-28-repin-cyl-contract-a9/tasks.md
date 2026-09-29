@@ -43,8 +43,9 @@
 - [x] 0.3 `openspec validate --specs --strict` passes. `openspec validate repin-cyl-contract-a9
       --strict` passes against the new base. A dry `openspec archive repin-cyl-contract-a9` on a
       scratch copy yields `0.1.0a9` in both specs.
-- [ ] 0.4 **After the user explicitly says yes in the moment**, close PR #779 as superseded, with a
+- [x] 0.4 **After the user explicitly says yes in the moment**, close PR #779 as superseded, with a
       one-line comment linking this PR.
+      Done 2026-09-28 with the user's yes: #779 closed as superseded, comment links #903.
 
 ## 1. Re-pin the vendored contract, `v0.1.0a7` → `v0.1.0a9` (C3)
 
@@ -190,7 +191,7 @@
       `length(idempotency_key)` / `> 0` line break into a blockquote, and mangled two lines of an
       unrelated `contracts/README.md` note). Those files are not prettier-clean on `staging`
       either, and no CI job runs prettier on them.
-- [ ] 4.4 Run the cyl integration suites and `tests/unit/` locally against a live Postgres. Then
+- [x] 4.4 Run the cyl integration suites and `tests/unit/` locally against a live Postgres. Then
       observe CI's *Docker Compose Health Check* green on the final head before merge.
       Local: RED 75 failed for the expected reasons; GREEN, after both review rounds and the grant
       fix, 176 passed, 2 skipped (dev DB migrated through `20260924120000`, a9 and the revoke
@@ -198,8 +199,10 @@
       `fca98ab2` (before the grant fix): Docker Compose Health Check 1310 passed, 7 skipped, with
       every new test named PASSED; the unit tests ran in the Python audit job. Re-check on the
       final head.
-- [ ] 4.5 The PR body says "Part of #895", includes `No schema changes.` under Schema changes and
+      CI half done: all checks green on the merged head `315ab63b` (Docker Compose Health Check, migration lint, Python audit incl. unit tests).
+- [x] 4.5 The PR body says "Part of #895", includes `No schema changes.` under Schema changes and
       the §3.5 list, and notes the #902 timestamp ordering and the stuck staging deploy.
+      Done: #903's body met this (checked with `lint_migration_pr_body.py` before each edit).
 
 ## 4A. Restrict the write-back RPC's EXECUTE grants (TDD, pre-merge)
 
@@ -225,11 +228,12 @@ A bug fix restoring what `cyl-trait-writeback` already requires; no spec delta (
 
 ## 5. After merge: the gate is APPLIED, not merged (not part of this PR's diff)
 
-- [ ] 5.0 Before merging: the sleap-roots-pipeline bump PR is open and passes
+- [x] 5.0 Before merging: the sleap-roots-pipeline bump PR is open and passes
       `scripts/check_manifests.py` (that repo has no CI), with the template comments that become
       false fixed ("a7-emitting envelopes will be accepted", "`ARGO_WORKFLOW_NAME` inert"). Record
       `SELECT max(id) FROM cyl_trait_sources` on staging.
-- [ ] 5.1 The user approves the `staging` environment deployment for the merge commit. Verify the
+      Done after merge rather than before: the pipeline bump PR (talmolab/sleap-roots-pipeline#92) was prepared once #903 applied; baseline `max(cyl_trait_sources.id)` = 203, recorded read-only after the apply and before any a9 write-back.
+- [x] 5.1 The user approves the `staging` environment deployment for the merge commit. Verify the
       apply over SSH to the deploy host with a read-only query
       (`docker compose -p bloom_v2_staging … exec -T db-prod psql -U postgres`):
       ```sql
@@ -244,14 +248,16 @@ A bug fix restoring what `cyl-trait-writeback` already requires; no spec delta (
       `scripts/deploy_run_supabase.sh staging 'migration list'` shows `20260928130000` and
       `20260928130100` applied. The "Apply database migrations" step's colour alone is not
       evidence (a zero-pending run shows as skipped).
-- [ ] 5.2 Bump the traits template in `talmolab/sleap-roots-pipeline`, merged only after 5.1:
+      Done 2026-09-28: the user approved run 36467127189; its log shows both migrations applied. Read-only query on staging: `insert_cyl_result_envelope(jsonb,text) | 0.1.0a9 | f` (authenticated also `f`); `schema_migrations` lists 20260928130000 and 20260928130100.
+- [x] 5.2 Bump the traits template in `talmolab/sleap-roots-pipeline`, merged only after 5.1:
       - `image:` becomes `sha-e373b0f@sha256:<re-verified index digest>`, changed together with
         `SRT_TRAITS_CONTAINER_DIGEST`; the image bakes `SRT_TRAITS_CODE_SHA` (sleap-roots
         `docker-trait-extractor.yml` passes `github.sha`), so recomputes get new keys;
       - wait until no sleap-roots workflow is running; from a clean checkout at the merged commit,
         run `scripts/check_cluster_drift.sh` (pre-image), `argo template update`, then
         `check_cluster_drift.sh` again and bloom's `scripts/check_template_contract.py`.
-- [ ] 5.3 Acceptance (bloom#895): rows with `id >` the 5.0 maximum carry
+      Done 2026-09-28 in talmolab/sleap-roots-pipeline#92 (merged), recorded in the roadmap (#93): drain checked (`argo list` showed no sleap-roots workflow), `check_cluster_drift.sh` pre-image, `argo template update`, drift re-check and bloom's `check_template_contract.py`. Pin verified on the pipeline's `main`: `image:` and `SRT_TRAITS_CONTAINER_DIGEST` both `sha256:2cbbe602…c9a4`.
+- [x] 5.3 Acceptance (bloom#895): rows with `id >` the 5.0 maximum carry
       `metadata->>'contract_version' = '0.1.0a9'`, alongside `write-back succeeded (source_id=…)`
       lines. Compare one recomputed scan's a9 trait values with its a7 source (expected identical;
       design: *Values from two extractor builds*). Find the scans rejected during the window
@@ -259,4 +265,6 @@ A bug fix restoring what `cyl-trait-writeback` already requires; no spec delta (
       re-trigger them with a **new** Bloom trigger: `POST /workflows/pipeline` with a Supabase user
       JWT and `apikey`, body `{"target_level":"scan_ids","target_id":null,"scan_ids":[…],"params":{}}`.
       Never `argo retry`/`resubmit` a window workflow. Then #895 is shut by hand.
-- [ ] 5.4 Archive `repin-cyl-contract-a9` in a follow-up PR once 5.1–5.3 hold.
+      Done 2026-09-28, verified read-only: run `sleap-roots-pipeline-cdbnp` (scans 289,577,1009) wrote 15 sources, ids 219–233, all `contract_version 0.1.0a9` / `traits_code_sha e373b0f`; the 65 a7 rows are untouched. Value check: with identical predict inputs (predictor `9a6f20c0`), 0 of 15,525 a7/a9 trait pairs differ. (All 3,792 differences seen against older a7 sources come from a different predict recipe, predictor `4a70e599` with a different model set; see the consistent-exports follow-up.) No Bloom-dispatched run-scan rows changed during the window, so there was nothing to re-trigger. bloom#895 closed by hand with this evidence.
+- [x] 5.4 Archive `repin-cyl-contract-a9` in a follow-up PR once 5.1–5.3 hold.
+      This PR.

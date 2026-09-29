@@ -27,15 +27,26 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Run `npm ci`, then read `node_modules/next/dist/docs/` (route handlers, async `params`/`searchParams`, `notFound`, client components). Record any divergence from the video route's patterns here.
+- [x] 0.1 Run `npm ci`, then read `node_modules/next/dist/docs/` (route handlers, async `params`/`searchParams`, `notFound`, client components). Record any divergence from the video route's patterns here. **(done 2026-09-28 in PR 3's worktree: `npm ci` now installs Next 16.3.4, so the stale-16.2.0 note in design.md no longer applies. No divergence from the video route:**
+  - **`params`/`searchParams` are promises, typed inline as `Promise<{…}>`, as the video route and every existing page already do. The docs' global `PageProps`/`RouteContext` helpers need `next typegen`, and nothing in `web/` uses them, so PR 3 doesn't either;**
+  - **`notFound()` throws `NEXT_HTTP_ERROR_FALLBACK;404` and only renders the 404 when thrown in the render path (a component or an awaited function), never from an un-awaited promise. The drill-down page therefore calls it directly after its awaited lookup;**
+  - **client-component props must be serializable, so pages pass snapshot rows, never the Supabase client or callbacks.)**
 - [x] 0.2 On the dev stack (`make dev-up && make migrate-local`), record in the PR: **(done 2026-09-25 on a rebuilt dev DB: both run tables published; bloom_user reads all four relations.)**
   - `pg_publication_tables` for `supabase_realtime` includes both run tables;
   - under `SET ROLE bloom_user`, rows are readable from `cyl_pipeline_runs`, `cyl_pipeline_run_scans`, `cyl_scan_latest_source` and `cyl_scans_extended`.
-- [ ] 0.3 Capture real Realtime payloads with a throwaway Node 22 script in the scratchpad, using the repo-root `@supabase/supabase-js`:
+- [x] 0.3 Capture real Realtime payloads with a throwaway Node 22 script in the scratchpad, using the repo-root `@supabase/supabase-js`:
   1. `createClient(<dev supabase url>, <anon key>)`, then `auth.signInWithPassword` as a dev `bloom_user`.
   2. `channel(...).on('postgres_changes', {event: '*', schema: 'public', table}, p => console.log(JSON.stringify(p)))` for each run table.
   3. Drive the rows by SQL. For the TOAST case, set `error_message` to more than 4 KB of incompressible text (`SELECT string_agg(md5(random()::text), '') FROM generate_series(1,200)`) and confirm it is stored out of line (`pg_column_size`). Then UPDATE only `done_count`, and capture that event. Do this for both tables.
   4. Commit the captures in PR 3 as `web/lib/cyl-pipeline/__fixtures__/realtime-*.json`, and record the timestamp format.
+
+  **(done 2026-09-28: `realtime-runs.json` and `realtime-run-scans.json`, plus `postgrest-timestamps.json`. Findings:**
+  - **Kong can't reach the dev tenant.** Every socket through `localhost:8000/realtime/v1/` fails with `TenantNotFound: realtime`. Realtime takes the tenant from the first label of the upstream Host, and Kong's upstream has been `realtime:4000` since 86decda6 (2026-06-11), while the only seeded tenant is `realtime-dev`. Staging runs the same `kong.yml`, image and compose settings, and its `_realtime.tenants` also holds only `realtime-dev`. This is outside PR 3's scope; the captures were therefore taken by connecting to `realtime:4000` from inside `bloom-web` with `Host: realtime-dev.supabase-realtime`. The payload shapes are Realtime's own, so bypassing Kong doesn't change them. That container runs Node 20, not 22, with the same `@supabase/realtime-js` 2.106.2 as the repo root.
+  - **The token role is `bloom_user`** (decoded), and events arrive for it on both tables.
+  - **TOAST.** `error_message` set to 6400 bytes was stored out of line (`pg_column_size` 6400, uncompressed; both toast relations non-empty). A later UPDATE of only `done_count` (runs), or only `attempts` (run scans), **omits the `error_message` key**, rather than sending `null`. Merging is required.
+  - **Shape.** `eventType`, `new`, `old`, `commit_timestamp`, `errors: null`. UPDATE and DELETE `old` carry only `{id}` (replica identity DEFAULT). DELETE's `new` is `{}`.
+  - **Timestamp format.** Realtime and PostgREST both render `timestamptz` as `YYYY-MM-DDTHH:MM:SS[.f{1,6}]+00:00`, with trailing zeros trimmed: `.123400` arrives as `.1234`, `.5` as `.5`, and a whole second has no fraction.
+  - **Delivery.** A timed probe (50 inserts, 150 ms apart) delivered all 50, including ones committed before the `Subscribed to PostgreSQL` system message, so `SUBSCRIBED` is a sound resync trigger. In the first capture, one run INSERT (about 1 s after `SUBSCRIBED`) was never delivered, and it didn't reproduce in two later sessions. A capture through Kong on the freshly created temporary tenant (8.6 setup) lost one more the same way, which traced both to a cold start: each was a tenant's first subscription after Realtime started (see 8.6). A drop is not recovered by a resync, which only follows a reconnect; a reload or Refresh corrects it.)**
 
 ## 1. `cyl_pipeline_run_experiments` view + index
 
@@ -133,7 +144,7 @@
 
 ## 3. Pure logic in `web/lib/cyl-pipeline/`
 
-- [ ] 3.0 Create `__fixtures__/supabase-mock.ts`, modelled on `components/expression-differential-analysis.test.tsx:253-295`. It provides:
+- [x] 3.0 Create `__fixtures__/supabase-mock.ts`, modelled on `components/expression-differential-analysis.test.tsx:253-295`. It provides:
   - a thenable query builder that records the table, `select`, `eq`, `in`, `or`, `not`, `is`, `lt`, `gte`, `order`, `limit`, `range` and `maybeSingle` calls, and answers via a per-test function;
   - a channel mock whose `.on()` returns itself and whose `.subscribe(cb)` captures `cb`;
   - a `removeChannel` spy;
@@ -141,21 +152,21 @@
   - an exported `clientModule` for `vi.mock("@/lib/supabase/client", async () => (await import(".../supabase-mock")).clientModule)`.
 
   Add 0.3's captures.
-- [ ] 3.1 **Test first.** Write `run-display.test.ts`:
+- [x] 3.1 **Test first.** Write `run-display.test.ts`:
   - every scenario in the display requirement, including the clamp and a `failed` run keeping its `error_message`;
   - each stage's tooltip;
   - the raw status is always present;
   - no output mentions `reused_count`;
   - the scan status label map over all five CHECK values plus an unknown value.
-- [ ] 3.2 Implement `run-display.ts`, the status unions and the scan label map.
-- [ ] 3.3 **Test first.** Write `timestamps.test.ts`:
+- [x] 3.2 Implement `run-display.ts`, the status unions and the scan label map.
+- [x] 3.3 **Test first.** Write `timestamps.test.ts`:
   - `…10.123456` is after `…10.123400`;
   - no fraction is before `.5`;
   - `+00:00` equals `Z`;
   - an unparsable value sorts as newest;
   - use the captured formats.
-- [ ] 3.4 Implement `timestamps.ts`.
-- [ ] 3.5 **Test first.** Write `realtime-reducer.test.ts`, using the captures:
+- [x] 3.4 Implement `timestamps.ts`.
+- [x] 3.5 **Test first.** Write `realtime-reducer.test.ts`, using the captures:
   - buffered replay;
   - merge keeps absent fields;
   - counts never decrease;
@@ -165,13 +176,13 @@
   - ties are broken by `id`;
   - other-run events are ignored;
   - `countsFromScanRows`.
-- [ ] 3.6 Implement `realtime-reducer.ts`.
-- [ ] 3.7 **Test first.** Write `resync-scheduler.test.ts` (fake timers):
+- [x] 3.6 Implement `realtime-reducer.ts`.
+- [x] 3.7 **Test first.** Write `resync-scheduler.test.ts` (fake timers):
   - the first `SUBSCRIBED` refetches at t = 0;
   - `CLOSED` then `SUBSCRIBED` at t = 500 ms gives exactly one more refetch, at t = 2000 ms;
   - a burst of four transitions in the window still gives exactly one.
-- [ ] 3.8 Implement `resync-scheduler.ts`.
-- [ ] 3.9 **Test first.** Write `run-links.test.ts`:
+- [x] 3.8 Implement `resync-scheduler.ts`.
+- [x] 3.9 **Test first.** Write `run-links.test.ts`:
   - one scan gives one "Scan images" link and one traits link;
   - the joint `(wave, age)` pair example from the spec;
   - the tie-break;
@@ -179,17 +190,17 @@
   - at most 3 pairs per experiment;
   - two experiments;
   - missing metadata.
-- [ ] 3.10 Implement `run-links.ts`.
-- [ ] 3.11 **Test first.** Write `failure-hints.test.ts`:
+- [x] 3.10 Implement `run-links.ts`.
+- [x] 3.11 **Test first.** Write `failure-hints.test.ts`:
   - `likelyCause` rules via a shared `stageInProblems()`;
   - `isNoOpCandidate(row, hasResults)` is true only when `error_message === BACKSTOP_MESSAGE` and results exist.
 
   Export `BACKSTOP_MESSAGE` from a module that has a test pinning it to the poller's text. Read `services/workflows/status_poller.py` in the test and assert the string is present.
-- [ ] 3.12 Implement `stage-in.ts` and `failure-hints.ts`.
+- [x] 3.12 Implement `stage-in.ts` and `failure-hints.ts`.
 
 ## 4. Read queries
 
-- [ ] 4.1 **Test first.** Write `queries.test.ts`, asserting calls **per table**:
+- [x] 4.1 **Test first.** Write `queries.test.ts`, asserting calls **per table**:
   - `fetchRuns({cursor?, mineOnly?})`: `created_at`/`id` desc; the keyset `.or()` built from the raw string with values double-quoted; `eq('requested_by')` when `mineOnly`; limit 50.
   - `fetchRun(id)` uses `maybeSingle`.
   - `fetchRunScans(runId)`: pages of 1000 ordered by `scan_id` until an empty page.
@@ -198,25 +209,25 @@
   - `fetchRunExperiments(runIds)` and `fetchExperimentRunIds(expId)`: the view, `created_at` desc, limit 10.
   - `isRunInExperiment`.
   - Every error surfaces typed.
-- [ ] 4.2 Implement `queries.ts`.
+- [x] 4.2 Implement `queries.ts`.
 
 ## 5. `LiveIndicator` and nav
 
-- [ ] 5.1 **Test first.** Write `web/components/recent-phenotypes-by-cyl-scanner/LiveIndicator.test.tsx`:
+- [x] 5.1 **Test first.** Write `web/components/recent-phenotypes-by-cyl-scanner/LiveIndicator.test.tsx`:
   - **(characterization)** with no prop it renders as today, and the plate-scanner consumer is unchanged;
   - `connecting` and `offline` render distinct `aria-live` text;
   - `offline` renders `onRefresh`.
-- [ ] 5.2 Implement the optional props.
-- [ ] 5.3 **Test first.** Write `web/components/nav-sections.test.ts`:
-  - a "Pipeline runs" entry at `/app/cyl-pipeline-runs`;
+- [x] 5.2 Implement the optional props.
+- [x] 5.3 **Test first.** Write `web/components/nav-sections.test.ts`:
+  - a "Cylinder Pipeline Runs" entry at `/app/cyl-pipeline-runs` (first built as "Pipeline runs"; renamed 2026-09-29 so it says which pipeline, since RNA-seq runs are coming too);
   - every other entry equals today's list, with the array inlined as the expected value.
 
   `/app/pipelines` has no nav entry and stays absent.
-- [ ] 5.4 Move `navSections` into `web/components/nav-sections.ts`, import it in `layout.tsx`, and add the entry.
+- [x] 5.4 Move `navSections` into `web/components/nav-sections.ts`, import it in `layout.tsx`, and add the entry.
 
 ## 6. Runs list `/app/cyl-pipeline-runs`
 
-- [ ] 6.1 **Test first.** Write `RunsListLive.test.tsx`:
+- [x] 6.1 **Test first.** Write `RunsListLive.test.tsx`:
   - INSERT and UPDATE subscriptions on a per-instance topic;
   - the resync scheduler wired to channel status (first `SUBSCRIBED`, the trailing case);
   - a deferred snapshot plus an UPDATE during the fetch shows the newer value;
@@ -231,17 +242,17 @@
   - requester, target and experiment links render, and a run whose only experiment is soft-deleted renders with no experiment link;
   - the failed-count link;
   - the empty and error states.
-- [ ] 6.2 **Test first.** Write `page.test.tsx` (expression style): the snapshot renders, and a failure shows the error.
-- [ ] 6.3 Implement `page.tsx`, `RunsListLive.tsx` and `RunRow.tsx`.
+- [x] 6.2 **Test first.** Write `page.test.tsx` (expression style): the snapshot renders, and a failure shows the error.
+- [x] 6.3 Implement `page.tsx`, `RunsListLive.tsx` and `RunRow.tsx`.
 
 ## 7. Drill-down `/app/cyl-pipeline-runs/[runId]`
 
-- [ ] 7.1 **Test first.** Write `[runId]/page.test.tsx`:
+- [x] 7.1 **Test first.** Write `[runId]/page.test.tsx`:
   - each invalid id in the spec scenario calls `notFound()` (mocked to throw) via `parseId`;
   - an unknown id (`maybeSingle` → null) calls `notFound()`;
   - a lookup error renders an error;
   - a valid id renders.
-- [ ] 7.2 **Test first.** Write `RunDetailLive.test.tsx`, mocking `./RunScansTable` with a stub that shows the row count and the links:
+- [x] 7.2 **Test first.** Write `RunDetailLive.test.tsx`, mocking `./RunScansTable` with a stub that shows the row count and the links:
   - channel filters;
   - a scan UPDATE to `written` changes the label and the header count;
   - other-run events are ignored;
@@ -254,16 +265,35 @@
   - the timing note;
   - the experiment links;
   - the sync cases from 6.1 for both channels.
-- [ ] 7.3 **Test first.** Write `RunScansTable.test.tsx` (real timers, `disableVirtualization`):
+- [x] 7.3 **Test first.** Write `RunScansTable.test.tsx` (real timers, `disableVirtualization`):
   - 5000 rows show `/1–100 of 5000/`, with page size 100;
   - the status filter;
   - every column in the spec's list;
   - the status labels.
-- [ ] 7.4 Implement `[runId]/page.tsx`, `RunDetailLive.tsx` and `RunScansTable.tsx`.
+- [x] 7.4 Implement `[runId]/page.tsx`, `RunDetailLive.tsx` and `RunScansTable.tsx`.
+
+  **Notes on §3–8 as built (2026-09-28):**
+  - **One channel per view.** The drill-down puts its three bindings (run UPDATE `id=eq.`, scan INSERT and UPDATE `run_id=eq.`) on one channel, so one status stream drives one resync. 7.2's "both channels" sync cases are covered as both tables' events on that channel.
+  - **Client-loaded snapshots wait for `SUBSCRIBED`.** The drill-down's scan rows and the experiment panel's runs load on the first `SUBSCRIBED`, not at mount. A mount fetch would be redundant, since the first `SUBSCRIBED` must refetch anyway, and it would double a 5000-row read. If the channel fails before its first `SUBSCRIBED`, the view says live updates are unavailable (not "Loading…") and offers Refresh, which loads it. The list and the drill-down header are server-rendered.
+  - **The drill-down header** uses the run row's own counts until the scan rows first load, then the held-row tallies.
+  - **Synced side state.** Everything a snapshot reads lives in the synced view: the drill-down's scan metadata, latest sources and experiments; the list's pages. So a superseded fetch can't leave stale pieces behind, and buffered events replay onto all of it. `update()` calls made during a fetch are buffered like events. A "Load older" page is dropped if a snapshot started after it, because appending it to a newer window would move the cursor past rows neither holds (found in PR 3's review).
+  - **"Current in trait views"** is "unknown" when the latest-source read failed, and for a row whose `source_id` changed since that read, until the next snapshot. It isn't inferred: an empty envelope marks a row written with a `source_id` and inserts no traits, so the scan's latest source doesn't move.
+  - **Round 2 of the review** (after bloom#939 was filed):
+    - rows turning failed live are looked up in one batch per 500 ms burst, reading only metadata the view lacks, and a batch is dropped if a newer snapshot started or the row's source changed meanwhile;
+    - an unreadable experiments view means no traits links, and says so;
+    - the panel never re-adds a run it already holds from an older membership answer;
+    - "Load older" checks the store, not the last render, for a fetch in flight;
+    - "Only mine" hides other members' rows at once;
+    - Refresh, Retry and "Only mine" open the 2 s resync window like any refetch;
+    - a failed names lookup isn't retried (at most one per run).
+  - **Degraded reads.** A failed metadata or latest-source read keeps the rows and says scan details are unavailable. Only a failed run-scan read fails the snapshot.
+  - **Experiment names** in the drill-down come only from `cyl_pipeline_run_experiments`. `cyl_scans_extended` runs with its owner's rights, so its names would include soft-deleted experiments. Traits links are limited to the experiments that view lists.
+  - **Panel membership.** A confirmed member is added from its Realtime payload when that payload is a whole row; otherwise it is read by id (`fetchRunsByIds`, added to `queries.ts`).
+  - **Shared pieces:** `use-live-sync.ts` (the per-view sync loop), `components/cyl-pipeline/RunState.tsx` (the label, with the failed count linked), `elapsed.ts`, `run-text.ts`, `scan-meta.ts` and `use-now.ts`.
 
 ## 8. Experiment panel, guard, wrap-up
 
-- [ ] 8.1 **Test first.** Write `web/components/cyl-pipeline/ExperimentRunsPanel.test.tsx`:
+- [x] 8.1 **Test first.** Write `web/components/cyl-pipeline/ExperimentRunsPanel.test.tsx`:
   - the 10 most recent, with display states;
   - held-only events;
   - it stays at 10 on insert;
@@ -272,9 +302,9 @@
   - "Runs unavailable";
   - the links;
   - the 6.1 sync cases.
-- [ ] 8.2 **Test first.** Write an experiment page render test asserting the panel receives `experimentId`.
-- [ ] 8.3 Implement `ExperimentRunsPanel.tsx` and mount it.
-- [ ] 8.4 Write `web/lib/cyl-pipeline/no-provenance-joins.test.ts`, using plain `node:fs`. The resolver takes an injected `{webRoot, readFile, exists}`.
+- [x] 8.2 **Test first.** Write an experiment page render test asserting the panel receives `experimentId`.
+- [x] 8.3 Implement `ExperimentRunsPanel.tsx` and mount it.
+- [x] 8.4 Write `web/lib/cyl-pipeline/no-provenance-joins.test.ts`, using plain `node:fs`. The resolver takes an injected `{webRoot, readFile, exists}`.
   - **Self-checks (red first)**, run in memory:
     - a fixture graph `a → @/lib/b → ./c`, with `c` containing `get_scan_traits`, is detected;
     - each forbidden pattern matches its fixture;
@@ -285,8 +315,8 @@
     - resolve `@/` and relative paths (`.ts`, `.tsx`, `/index.*`), following `web/lib/` transitively;
     - exclude exactly the two generated type files and the guard itself;
     - assert that none of the files contains any spec-forbidden pattern.
-- [ ] 8.5 Add a "Pipeline runs" section to `web/README.md`.
-- [ ] 8.6 Live check on the dev stack.
+- [x] 8.5 Add a "Cylinder pipeline runs" section to `web/README.md`.
+- [x] 8.6 Live check on the dev stack.
   - **Setup:**
     1. Confirm `WORKFLOWS_K8S_TOKEN` is empty in `.env.dev`.
     2. Run `docker compose -f docker-compose.dev.yml stop cyl-pipeline-worker cyl-status-poller`.
@@ -301,6 +331,25 @@
   - **Cleanup:**
     1. `SELECT pgmq.purge_queue('cyl_pipeline_dispatch')`.
     2. Restart both services.
+
+  **(done 2026-09-29, 23/23 checks, with these deviations:**
+  - **Where it ran.** `next dev -p 3001` from PR 3's worktree against the running dev Supabase, with env on the command line only, because the Docker stack serves the main checkout. Edge was driven by a throwaway Playwright script as the dev `bloom_user`.
+  - **Realtime through Kong** needed a temporary `realtime` tenant: a copy of `realtime-dev` in `_realtime.tenants` and `_realtime.extensions`, deleted afterwards, with Realtime restarted. Without it every socket fails `TenantNotFound: realtime` (see 0.3); that defect needs its own fix.
+  - **The trigger curl returns 500** on the dev stack ("missing WORKFLOWS_SUPABASE_EMAIL, WORKFLOWS_SUPABASE_PASSWORD"), before any write. The run was created by SQL instead, in the trigger's order: run row `queued`, then its scan row, then `submitted`. `WORKFLOWS_K8S_TOKEN` was empty, and the worker and poller were stopped throughout.
+  - **Bug found and fixed.** The first pass showed channels reaching `SUBSCRIBED` with no events delivered. On a full page load the views' `phx_join` carried no user token (anon), so RLS dropped every run event. `useLiveSync` now awaits `realtime.setAuth()` before subscribing, tested red first. The first fix (commit "join Realtime as the signed-in user") passed `session.access_token` explicitly; PR #938's review replaced that with the no-argument call, which reads the token through supabase-js's `accessToken` callback instead of pinning one (commit "buffer live-view updates, and let Realtime keep the token fresh").
+  - **Re-run after the review fixes.** The same script passed 23/23 again on 2026-09-29, on the code of commits 165fceb9–f6dd1da7, with the same temporary tenant (removed afterwards). The join probe showed `phx_join` carrying `bloom_user`.
+  - **Verified live, with no reload:**
+    - a new run appears on top of the list, attributed to "you";
+    - its experiment name appears after `submitted`;
+    - the drill-down's scan row turns "Result recorded" and its header "Finished · 1 succeeded" when the scan row is updated, while the list's row waits for the run row's rollup and then follows;
+    - the experiment panel lists the run, and adds a second run once its scan rows land;
+    - with 57 runs, the list shows 50, and "Load older" gives all 57 in exact `(created_at, id)` order with no duplicates;
+    - 60 quiet seconds made no REST requests, and no `/workflows/runs` request was ever made.
+  - **Cold-start drop.** The one-event losses in 0.3 came only on a tenant's first subscription after Realtime started: twice, each time on a cold tenant. None were lost in the warm sessions (three capture runs, a 50-insert probe, and the 8.6 browser runs).
+    - A later event for the same row repairs the view: UPDATE payloads carry every column but an unchanged TOASTed `error_message`, the list admits unknown runs, and every view merges held ones.
+    - A dropped *final* event has no later event: a scan row's last transition, or the run's last rollup. It stays missing until a reconnect, a reload or Refresh.
+    - Staging restarts Realtime on every deploy, so cold starts recur.
+  - **Cleanup.** Queue purged (it was empty), services restarted, no run rows left.)**
 - [ ] 8.7 Verify:
   - `openspec validate add-cyl-pipeline-ui --strict`;
   - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`;
@@ -308,7 +357,9 @@
   - `python3 scripts/lint_migration_isolation.py origin/staging` reports no migration change.
 
   Then run `/pre-merge` and `/review-pr`. PR body: "Refs #15".
-- [ ] 8.8 **After the staging deploy of PR 3:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
+
+  **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1348/1348 after both PR review rounds and the nav rename; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
+- [ ] 8.8 **After the staging deploy of PR 3, and after bloom#939 (Realtime tenant through Kong) is fixed there:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
 
 ## PR 4: trigger proxy
 
