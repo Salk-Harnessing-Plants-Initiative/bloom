@@ -117,6 +117,11 @@ class K8sStatusError(Exception):
     K8sSubmissionError — never the raw response body or exception text."""
 
 
+class K8sPodNotRunningError(K8sStatusError):
+    """The pod exists but its container is not running yet (the log API answers 400:
+    waiting to start, or not yet placed on a node), so it has no log to read."""
+
+
 def _validate_config() -> None:
     missing = [
         name
@@ -332,6 +337,46 @@ def get_workflow(name: str) -> dict | None:
         )
         raise K8sStatusError("Argo Workflow status check failed")
     return workflow
+
+
+def get_pod_log(
+    pod: str, container: str, tail_lines: int, limit_bytes: int
+) -> str | None:
+    """The last `tail_lines` lines (at most `limit_bytes`) of one container's log in a
+    pod. Returns None on 404: the pod no longer exists. Raises K8sStatusError for any
+    other non-2xx response or a network-level failure, with a fixed, generic message."""
+    _validate_config()
+    url = f"{API_URL}/api/v1/namespaces/{NAMESPACE}/pods/{pod}/log"
+    params = {
+        "container": container,
+        "tailLines": str(tail_lines),
+        "limitBytes": str(limit_bytes),
+    }
+
+    try:
+        with httpx.Client(verify=_ssl_context(), timeout=15.0) as client:
+            resp = client.get(
+                url,
+                headers={"Authorization": f"Bearer {TOKEN}"},
+                params=params,
+            )
+    except Exception as exc:
+        logger.warning("k8s_client: pod log request failed: %s", exc)
+        raise K8sStatusError("Pod log read failed") from exc
+
+    if resp.status_code == 404:
+        return None
+    if resp.status_code == 400:
+        logger.info("k8s_client: pod log not available yet: %s", resp.text[:500])
+        raise K8sPodNotRunningError("Pod is not running yet")
+    if resp.status_code // 100 != 2:
+        logger.warning(
+            "k8s_client: pod log request rejected (%s): %s",
+            resp.status_code,
+            resp.text[:500],
+        )
+        raise K8sStatusError("Pod log read failed")
+    return resp.text
 
 
 def get_workflow_status(name: str) -> str | None:
