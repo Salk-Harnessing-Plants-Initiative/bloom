@@ -38,3 +38,29 @@ def test_plot_trait_boxplots_smoke(call_tool, db_experiment_id: str) -> None:
     assert result["outputs"]
     assert result["run_ref"]
     assert result["manifest_path"]
+
+    # #748 sample-size disclosure, through the real server. Cylinder is exactly the scale the
+    # caps exist for: ~846 traits x ~19 genotypes = ~16,000 cells, of which ~5% sit below the
+    # floor -- so this asserts the shape and internal consistency of the disclosure rather
+    # than specific counts, which are data-dependent.
+    assert "group_sample_sizes.csv" in result["outputs"]
+    # The table is an output, not a page.
+    assert "group_sample_sizes.csv" not in result["page_traits"]
+    assert len(result["outputs"]) == result["n_pages"] + 1
+    assert result["n_genotype_groups"] > 0
+    assert result["n_boxes_summarized"] <= result["n_boxes_drawn"]
+    assert (
+        result["n_boxes_drawn"]
+        + result["absent_genotype_group_count"]
+        + result["no_data_trait_count"] * result["n_genotype_groups"]
+        == result["n_traits_plotted"] * result["n_genotype_groups"]
+    )
+    # Guarded rather than chained bare: on an empty population these are null by design, and
+    # a bare comparison would raise TypeError instead of failing with a readable message.
+    assert (
+        result["n_boxes_summarized"] > 0
+    ), "cylinder/turface always draw at least one box"
+    assert result["box_n_min"] <= result["box_n_median"] <= result["box_n_max"]
+    assert len(result["small_sample_groups"]) <= result["small_sample_group_count"]
+    # The note is the only signal a caller who opens just the PNG gets.
+    assert "rows per box" in result["sample_size_note"]
