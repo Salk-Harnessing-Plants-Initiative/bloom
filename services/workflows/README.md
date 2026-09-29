@@ -182,6 +182,41 @@ curl -X POST http://localhost:5100/pipeline \
 # {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 0}
 ```
 
+### Cell Ranger trigger
+
+Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per run**. A sample is one 10x library: a first-level folder under `raw_reads/` in the scRNA workflows bucket (`bloomv2-workflows`), holding all its lanes and re-sequencing runs. Separate captures are separate runs. A reference is a first-level folder under `reference_genome/` that contains `reference.json`.
+
+- `POST /scrna/cellranger/runs` takes `{"sample": ..., "reference": ...}`. Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` and may not contain `__` (422 otherwise). It calls `request_scrna_cellranger_run`, which writes the run to `rnaseq_runs` (`workflow_type` `scrna-cellranger`, the names in `params`) and one `rnaseq_dispatch` message in a single transaction, and returns 201.
+- `GET /scrna/cellranger/runs/{run_id}` returns the run's `rnaseq_runs` row; a run of another workflow type is a 404.
+
+This service does not read the bucket. The pipeline checks that the reference and the FASTQs exist, and fails the run with exit 3 (no reference) or exit 4 (no FASTQs) if not. The results go to `runs_output/<sample>__<reference>__<user id>/`, so one sample can be counted against several references, and two users running the same pair get separate folders. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
+
+```bash
+curl -X POST http://localhost:5100/scrna/cellranger/runs \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"sample": "tinygex", "reference": "tiny_ref"}'
+
+# 201 {"run_id": 1, "sample": "tinygex", "reference": "tiny_ref", "run_key": "tinygex__tiny_ref__<user id>"}
+```
+
+### RNA-seq dispatch worker
+
+`rnaseq_worker.py` runs as the always-on `rnaseq-worker` container and sends queued RNA-seq runs to Argo. Every type's runs are rows of `rnaseq_runs` with messages on the shared `rnaseq_dispatch` queue, so the worker uses the same three database functions for all of them (`claim_rnaseq_run`, `complete_rnaseq_run`, `fail_rnaseq_run`). Each type it handles is one entry in `rnaseq_workflows.py` saying how to build its Workflow body; Cell Ranger (`scrna-cellranger`) is the first.
+
+Each pass, the worker claims the next queued run of any type, builds its Workflow with the entry for the run's `workflow_type`, submits it to the Kubernetes API as the `bloom-pipeline` account (the same credentials as `cyl-pipeline-worker`), and records the outcome:
+
+- accepted: the run becomes `submitted` with the Workflow's name;
+- refused because a Workflow with that name exists: an earlier attempt submitted it without recording it, so the run is recorded as `submitted` with that name;
+- rejected for any other reason: the run becomes `failed` with "Argo Workflow submission failed" (the detail is only in this service's log);
+- the K8s settings are missing: the run is left queued and comes back once they are fixed;
+- the run's type has no entry in `rnaseq_workflows.py`: the run becomes `failed` with a message naming the type.
+
+A Cell Ranger Workflow takes `sample` and `reference` from the run's `params` and runs the registered `cellranger-count-template`: `stage-reference`, then `sample-pipeline` with the run's `run_key` as its run id, so results go to `runs_output/<run_key>/`. Its name is fixed per run (`scrna-cellranger-<environment>-<run id>-<hash of run_key>`), so the same run is never submitted twice. It runs as `bloom-workflow` with the GHCR pull secret, and is deleted `WORKFLOWS_K8S_TTL_SECONDS` after it finishes. Tests compare the body with `argo/scrna/cellranger/cellranger-count-workflow.yaml` and the template's inputs, so a change to either shows up as a failing test.
+
+The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none.
+
+
 ### Pipeline dispatch worker
 
 `dispatch_worker.py` (bloom #11/#404, Phase 2 of 3 — see
