@@ -393,24 +393,24 @@
 
 ## 9b. Batch the trigger's id filters; skip the preview for `{}`
 
-- [ ] 9b.1 **Test first.** Write `services/workflows/tests/test_postgrest_batches.py` for `id_batches(ids, budget=4000)`:
+- [x] 9b.1 **Test first.** Write `services/workflows/tests/test_postgrest_batches.py` for `id_batches(ids, budget=4000)`:
   - an empty list gives no batches;
   - the rendered length of each batch, counting separators, is ≤ budget;
   - order is preserved and ids are neither lost nor duplicated;
   - a single id longer than the budget gets its own batch;
   - 19-digit ids batch correctly;
-  - `ID_FILTER_BUDGET_CHARS` equals the value in `bloomcli/src/bloomctl/_postgrest.py`. The test reads that file, so the two can't drift.
-- [ ] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing bloom#674's measurement.
-- [ ] 9b.3 **Test first.** Extend `services/workflows/tests/test_pipeline.py`. Its `_FakeClient` must record each `.in_()` id list, so it may need extending.
+  - `ID_FILTER_BUDGET_CHARS` equals the value in `bloomcli/src/bloomctl/_postgrest.py`. The test reads that file, so the two can't drift. (characterization)
+- [x] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing the 414 measurement. (That measurement is in the PR author's self-review comment on PR #650, https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/650#issuecomment-5269400672, not bloom#674 as this line first said.)
+- [x] 9b.3 **Test first.** Extend `services/workflows/tests/test_pipeline.py`. Its `_FakeClient` must record each `.in_()` id list, so it may need extending.
   - A 3000-id `scan_ids` request issues more than one `cyl_scans_extended` filter call, each within budget, and proceeds as if all were found.
   - A missing id in the last batch still gives 404 naming it, with no rows written.
   - With non-empty params and 2500 enumerated scans, every `cyl_scan_traits`/`cyl_trait_sources` call is within budget, and `reused_count` matches the unbatched expectation.
   - A request with `params: {}` issues **no** `cyl_scan_traits` or `cyl_trait_sources` call, and `reused_count = 0`, even when the scans have sources.
   - **Regression:** update `test_dedup_preview_issues_one_batched_query_not_a_per_scan_loop` to non-empty params (`{"age": 14}`, a matching `_hash_of`). Its "3 and 30 scans give the same query count" assertion still holds, since both fit in one batch.
   - Every other existing dedup and enumeration test passes unchanged.
-- [ ] 9b.4 Implement it in `services/workflows/pipeline.py`: batch the three filters, merge the results, and short-circuit `_dedup_preview` when `params == {}`.
-- [ ] 9b.5 Update the trigger section of `services/workflows/README.md`: id filters are batched, and the preview is skipped for `{}`.
-- [ ] 9b.6 Verify:
+- [x] 9b.4 Implement it in `services/workflows/pipeline.py`: batch the three filters, merge the results, and short-circuit `_dedup_preview` when `params == {}`.
+- [x] 9b.5 Update the trigger section of `services/workflows/README.md`: id filters are batched, and the preview is skipped for `{}`.
+- [x] 9b.6 Verify:
   - `cd services/workflows && uv run --frozen --extra test pytest`;
   - `uv run --extra test pytest tests/integration/test_cyl_pipeline_dispatch.py`;
   - `uv run ruff check` and `uv run black --check` on the changed files;
@@ -420,6 +420,29 @@
   - on the dev stack, with 8.6's setup (worker and poller stopped, K8s token empty), `curl http://localhost:5100/pipeline` an experiment-level target of at least 2,000 seeded scans. It must return 200 with the right `scan_count`, and the run and scan rows must be written;
   - purge the queue and restart the services;
   - record the result, then `/pre-merge` and `/review-pr`. The PR body says "Refs #901"; it doesn't close it, because the non-empty-params row-volume half stays open.
+
+  **Done 2026-09-29.** Unit suite 842 passed, 1 skipped (after rebasing onto `438c2d73`; 847 after the review tests); `test_cyl_pipeline_dispatch.py` 41 passed; ruff 0.9.9, black 26.3.1 and ruff-format clean; strict validate passes.
+
+  Dev stack: worker and poller stopped, `WORKFLOWS_K8S_TOKEN` empty in all three containers. The dev workflows service has no app user, so a throwaway `is_workflows` user was created (README "Provisioning") and deleted afterwards. The main checkout serves the stack, so two one-off containers ran instead of `localhost:5100`: this branch on `:5101`, and staging's `pipeline.py` on `:5102` as a control. The seeded experiment had 2,100 scans (ids 570–2669, 10,069 rendered characters).
+
+  | Request                             | Code    | Result                                                     |
+  | ----------------------------------- | ------- | ---------------------------------------------------------- |
+  | experiment, `params: {}`            | staging | 500: `APIError 414 'URI too long'`; no rows written        |
+  | experiment, `params: {}`            | branch  | 200, `scan_count` 2100, `reused_count` 0                   |
+  | `scan_ids`, all 2,100, `params: {}` | branch  | 200, `scan_count` 2100                                     |
+  | experiment, `params: {"age": 14}`   | branch  | 200, `scan_count` 2100, `reused_count` 0 (batched preview) |
+
+  Each branch run wrote 2,100 `queued` scan rows in 84 batches; the queue held 252 = 3 × 84 messages. Cleanup purged the queue, deleted the runs, seeded rows and user, and restarted both services.
+
+  The `{"age": 14}` row above proves little: those scans had no trait rows, so the preview stopped after `cyl_scan_traits`, and no stored hash is over partial params. After review, a second run (worktree commit `e8c874f0`) seeded 2,100 scans (four-digit ids; the exact range wasn't recorded), 2 sources each (4,200, with ids 1376–5575) and 3 trait rows per source. Every third scan's older source carries the `resolve_params` hash of soybean/cylinder/age 14, so the expected `reused_count` is 700.
+
+  | `params`                                      | Result                  | Kong requests (`cyl_scan_traits` / `cyl_trait_sources`) |
+  | --------------------------------------------- | ----------------------- | ------------------------------------------------------- |
+  | `{species: soybean, mode: cylinder, age: 14}` | 200, `reused_count` 700 | 3 / 6, no 414, longest request URI 5,666 bytes          |
+  | `{species: soybean, mode: cylinder, age: 99}` | 200, `reused_count` 0   | 3 / 6, no 414                                           |
+  | `{}`                                          | 200, `reused_count` 0   | 0 / 0                                                   |
+
+  During this second run `cyl-pipeline-worker` and `cyl-status-poller` were running, not stopped as 8.6 asks. Their logs show only "workflows service not configured" retries, since they have no app-user credentials, so they claimed nothing. The 252 queue messages and all rows stayed `queued` until cleanup, which removed the same kinds of rows as the first run.
 
 ## PR 6: trigger UI
 
