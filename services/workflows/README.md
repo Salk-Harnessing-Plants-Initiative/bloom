@@ -207,6 +207,7 @@ Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per
 
 - `POST /scrna/cellranger/runs` takes `{"sample": ..., "reference": ...}`. The sample is also Cell Ranger's run id, so it must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; the reference must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`; neither may contain `__` (422 otherwise). It calls `request_scrna_cellranger_run`, which writes the run to `rnaseq_runs` (`workflow_type` `scrna-cellranger`, the names in `params`) and one `rnaseq_dispatch` message in a single transaction, and returns 201.
 - `GET /scrna/cellranger/runs/{run_id}` returns the run's `rnaseq_runs` row; a run of another workflow type is a 404.
+- `GET /scrna/cellranger/runs/{run_id}/logs?step=<step>` returns the end of one step's log (`stage-reference`, `stage`, `qc`, `count` or `cleanup`): the last 2,000 lines, trimmed to their last 1 MiB, of the `main` container of the pod the status poller recorded in `step_pods`, read from the Kubernetes API as `bloom-pipeline`. It answers `{run_id, step, pod, log, truncated}`; 422 for an unknown step, 404 for an unknown run or a step that hasn't started, 409 while the step's pod is waiting to run (queued, pulling its image, starting), and 410 once the pod is gone (its Workflow is removed 24 hours after the run finishes).
 
 This service does not read the bucket. The pipeline checks that the reference and the FASTQs exist, and fails the run with exit 3 (no reference) or exit 4 (no FASTQs) if not. The results go to `runs_output/<sample>__<reference>__<user id>/`, so one sample can be counted against several references, and two users running the same pair get separate folders. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
 
@@ -235,6 +236,18 @@ A Cell Ranger Workflow takes `sample` and `reference` from the run's `params` an
 
 The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none.
 
+
+### RNA-seq status poller
+
+`rnaseq_status_poller.py` runs as the always-on `rnaseq-status-poller` container and follows each `submitted` or `running` run in `rnaseq_runs` until it ends. Every `WORKFLOWS_STATUS_POLL_SECONDS` (default 15), it reads the run's Argo Workflow by the name the worker recorded (`k8s_client.get_workflow`, as `bloom-pipeline`), turns it into the run's status with the reader for its workflow type, and records it with `update_rnaseq_run_status`. That function only moves a run forward, never changes a finished run, and writes nothing for an unchanged report, so polling sends no Realtime update unless something changed. One poller runs per environment.
+
+For Cell Ranger, the reader (`rnaseq_status.py`) works from the Workflow's `status.nodes`:
+
+- **current step**: the step that is running, or the last one to start: `stage-reference`, `stage`, `qc`, `count` or `cleanup`;
+- **step pods**: each started step's pod, named `<workflow>-<template>-<numeric end of the node id>`; for a retried step, the latest attempt;
+- **outcome**: `succeeded`, or `skipped` when the stage step reports the results already exist, or `failed` with the failed step's exit code and a message: exit 3 "No reference at reference_genome/<reference>/", exit 4 "No FASTQs at raw_reads/<sample>/", exit 5 "Cell Ranger failed; its log is at runs_output/<run_key>/logs/count.log", exit 6 for a sample name Cell Ranger can't use, and "Step <step> failed (exit N)" otherwise.
+
+A Workflow that no longer exists fails its run with "The workflow was removed before its result was recorded". One run's error is logged and the sweep goes on; missing K8s settings stop the sweep until they are fixed. The reader is tested against real Workflows from `runai-busch-lab` (`tests/fixtures/argo/`).
 
 ### Pipeline dispatch worker
 
@@ -474,6 +487,12 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
    certificate's embedded newlines would break every one of those tools if
    stored raw. `k8s_client.py` un-escapes before constructing the TLS
    verification context.
+5. `bloom-pipeline` needs, in the Workflows' namespace: `create`, `get` and `list` on
+   Argo `workflows` (the dispatch workers and status pollers), and `get` on
+   `pods/log` (the Cell Ranger step logs route in the `workflows` service). Check the
+   last with `kubectl auth can-i get pods --subresource=log -n runai-busch-lab
+   --as=system:serviceaccount:runai-busch-lab:bloom-pipeline`, which must print `yes`;
+   without it every log request answers 502.
 
 ## Configuration
 
