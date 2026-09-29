@@ -106,6 +106,22 @@ def summary_prefix(scope: Optional[ExperimentScope]) -> str:
     return f"scoped to {len(scope)} experiment(s): "
 
 
+def all_requested_failed(
+    report: dict[str, Any], scope: Optional[ExperimentScope]
+) -> bool:
+    """True when a scoped scan could not read a single requested experiment.
+
+    A scoped run never lists the shared root, so an unreachable backend shows up
+    as a per-experiment error on every requested stem instead of as an
+    enumeration failure. The scripts treat this like the full sweep's
+    enumeration failure: nothing to report, exit non-zero.
+    """
+    if scope is None:
+        return False
+    failed = {e["stem"] for e in report["errors"]}
+    return all(e.stem in failed for e in scope)
+
+
 def add_experiment_argument(parser: argparse.ArgumentParser) -> None:
     """Register the shared, repeatable `--experiment IDENTIFIER` flag."""
     parser.add_argument(

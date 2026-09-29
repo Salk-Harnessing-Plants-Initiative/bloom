@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from manifest_fixtures import append_cleaned_version, write_cleaned_manifest
 
 _SCRIPT_PATH = (
@@ -714,3 +716,292 @@ def test_scan_never_writes_or_uploads_even_with_hits_and_errors(local_manifest_b
     finally:
         for mod, name, orig in originals:
             setattr(mod, name, orig)
+
+
+# --- experiment-scoped sweeps (bloom#919) --------------------------------------
+def _seed_superseded_trim(local_manifest_backend: Path, stem: str) -> None:
+    """qc_clean -> remove_outliers -> qc_clean under `qc_<stem>`: a hit."""
+    for version_id, created_at, content, tool, based_on in (
+        ("v1", "2026-01-01T00:00:00Z", b"a\n1\n", "qc_clean", "raw"),
+        ("v2", "2026-01-01T00:00:01Z", b"trim\n1\n", "remove_outliers", "v1_cleaned"),
+        ("v3", "2026-01-01T00:00:02Z", b"a\n1\n2\n", "qc_clean", "raw"),
+    ):
+        seed = write_cleaned_manifest if version_id == "v1" else append_cleaned_version
+        seed(
+            local_manifest_backend,
+            stem,
+            "qc",
+            version_id,
+            created_at,
+            content,
+            tool=tool,
+            based_on_version=based_on,
+        )
+
+
+def _spy_backend_listings(monkeypatch) -> list[str]:
+    """Record every prefix the cached active backend is asked to list.
+
+    Wraps the backend instance itself, so it sees calls from every module (this
+    script's `list_prefix` binding, `manifest.read_manifest`, `trim_staleness`).
+    """
+    import bloom_mcp.storage_backend as sb
+
+    backend = sb.active_backend()
+    original = backend.list_prefix
+    calls: list[str] = []
+
+    def _spy(prefix):
+        calls.append(prefix)
+        return original(prefix)
+
+    monkeypatch.setattr(backend, "list_prefix", _spy)
+    return calls
+
+
+def _is_root_listing(prefix: str) -> bool:
+    return prefix.strip("/") in ("", "bloommcp_output")
+
+
+def test_scoped_scan_never_lists_the_shared_root(local_manifest_backend, monkeypatch):
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+    write_cleaned_manifest(
+        local_manifest_backend,
+        "exp_a",
+        "outliers",
+        "v1",
+        "2026-01-01T00:00:03Z",
+        b"trim\n2\n",
+        tool="remove_outliers",
+        based_on_version="v3_cleaned",
+    )
+    _seed_superseded_trim(local_manifest_backend, "exp_b")
+    calls = _spy_backend_listings(monkeypatch)
+
+    report = audit.scan_for_stale_outlier_trims(experiments=["exp_a.csv"])
+
+    assert calls, "expected per-experiment listings"
+    assert not [p for p in calls if _is_root_listing(p)]
+    assert all(
+        p.startswith(("bloommcp_output/qc_exp_a/", "bloommcp_output/outliers_exp_a/"))
+        for p in calls
+    ), calls
+    assert report["experiments_scanned"] == 1
+    assert [h["stem"] for h in report["hits"]] == ["exp_a"]
+    assert _hit_for(report, "exp_a")["post_420_status"] == "remediated_and_current"
+
+
+def test_scoped_scan_does_not_use_the_scripts_root_enumeration(
+    local_manifest_backend, monkeypatch
+):
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+
+    def _boom(_prefix):
+        raise RuntimeError("root enumeration must not run in a scoped scan")
+
+    monkeypatch.setattr(audit, "list_prefix", _boom)
+
+    report = audit.scan_for_stale_outlier_trims(experiments=["exp_a"])
+
+    _hit_for(report, "exp_a")
+
+
+def test_scoped_scan_matches_the_full_sweep_for_hits_and_errors(
+    local_manifest_backend,
+):
+    from bloom_mcp.supabase_client import upload_file
+
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+    _seed_superseded_trim(local_manifest_backend, "exp_b")
+    bad = local_manifest_backend / "bad.json"
+    bad.write_bytes(b"{not valid json")
+    upload_file("bloommcp_output/qc_exp_bad/manifest.json", bad)
+
+    full = audit.scan_for_stale_outlier_trims()
+    scoped = audit.scan_for_stale_outlier_trims(experiments=["exp_a.csv", "exp_bad"])
+
+    assert _hit_for(scoped, "exp_a") == _hit_for(full, "exp_a")
+    assert [h["stem"] for h in scoped["hits"]] == ["exp_a"]
+    assert scoped["errors"] == [e for e in full["errors"] if e["stem"] == "exp_bad"]
+    assert len(scoped["errors"]) == 1
+
+
+def test_scoped_duplicates_collapse_to_one_experiment(local_manifest_backend):
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+
+    report = audit.scan_for_stale_outlier_trims(experiments=["exp_a.csv", "exp_a"])
+
+    assert report["experiments_scanned"] == 1
+    assert len(report["hits"]) == 1
+
+
+def test_dotted_report_stem_round_trips_via_dot_csv(local_manifest_backend):
+    _seed_superseded_trim(local_manifest_backend, "exp.v2")
+
+    full_hit = _hit_for(audit.scan_for_stale_outlier_trims(), "exp.v2")
+    scoped = audit.scan_for_stale_outlier_trims(experiments=["exp.v2.csv"])
+
+    assert _hit_for(scoped, "exp.v2") == full_hit
+
+
+def test_scoped_scan_discloses_unevaluated_experiments(local_manifest_backend):
+    from bloom_mcp.manifest import (
+        ExperimentBlock,
+        Manifest,
+        VersionEntry,
+        get_code_versions,
+        write_manifest,
+    )
+
+    entry = VersionEntry(
+        id="v1",
+        created_at="2026-01-01T00:00:00Z",
+        tool="qc_clean",
+        params={},
+        based_on_version="raw",
+        code_versions=get_code_versions(),
+        outputs={"_cleaned.csv": "_cleaned.csv"},
+        version_dir="v1_2026-01-01",
+    )
+    write_manifest(
+        "bloommcp_output/qc_exp_nolatest/",
+        Manifest(
+            experiment=ExperimentBlock(
+                filename="exp_nolatest.csv", source_path="", input_sha256=""
+            ),
+            versions=[entry],
+            latest=None,
+        ),
+    )
+
+    report = audit.scan_for_stale_outlier_trims(
+        experiments=["exp_missing.csv", "exp_nolatest.csv"]
+    )
+
+    assert report["unevaluated"] == [
+        {"stem": "exp_missing", "reason": "no_manifest"},
+        {"stem": "exp_nolatest", "reason": "no_latest"},
+    ]
+    assert report["hits"] == []
+    assert report["errors"] == []
+    assert report["experiments_scanned"] == 2
+
+
+def test_full_sweep_result_has_no_unevaluated_key(local_manifest_backend):
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+
+    assert "unevaluated" not in audit.scan_for_stale_outlier_trims()
+
+
+def test_scoped_run_persists_its_experiment_scope(local_manifest_backend, capsys):
+    from bloom_mcp.supabase_client import read_json
+
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+
+    code = audit.run(["--experiment", "exp_a.csv"])
+
+    assert code == 0
+    assert "scoped to 1 experiment(s): " in capsys.readouterr().out
+    (key,) = _list_all_keys_under_report_prefix(local_manifest_backend)
+    written = read_json(key)
+    assert written["experiment_scope"] == {
+        "mode": "experiments",
+        "experiments": [{"requested": "exp_a.csv", "stem": "exp_a"}],
+    }
+    assert written["unevaluated"] == []
+    assert written["experiments_scanned"] == 1
+
+
+def test_full_sweep_run_persists_mode_all_and_is_not_labelled_scoped(
+    local_manifest_backend, capsys
+):
+    from bloom_mcp.supabase_client import read_json
+
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+
+    assert audit.run() == 0
+
+    assert "scoped to" not in capsys.readouterr().out
+    (key,) = _list_all_keys_under_report_prefix(local_manifest_backend)
+    written = read_json(key)
+    assert written["experiment_scope"] == {"mode": "all"}
+    assert "unevaluated" not in written
+
+
+def test_run_ignores_the_host_processs_argv(local_manifest_backend, monkeypatch):
+    import sys
+
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+    monkeypatch.setattr(sys, "argv", ["pytest", "-q", "tests/scripts/"])
+
+    assert audit.run() == 0
+
+
+@pytest.mark.parametrize("value", ["../x.csv", "a/b.csv", "a\\b.csv", ""])
+def test_run_rejects_prefix_escaping_values_before_any_storage_access(
+    local_manifest_backend, monkeypatch, capsys, value
+):
+    calls = _spy_backend_listings(monkeypatch)
+
+    code = audit.run(["--experiment", value])
+
+    assert code == 2
+    assert "experiment identifier" in capsys.readouterr().err
+    assert calls == []
+    assert _list_all_keys_under_report_prefix(local_manifest_backend) == []
+
+
+def test_run_rejects_unknown_flags(local_manifest_backend):
+    with pytest.raises(SystemExit) as exc:
+        audit.run(["--bogus"])
+
+    assert exc.value.code == 2
+    assert _list_all_keys_under_report_prefix(local_manifest_backend) == []
+
+
+def test_scoped_run_where_every_experiment_errors_is_a_loud_failure(
+    local_manifest_backend, monkeypatch, capsys
+):
+    import bloom_mcp.storage_backend as sb
+
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+    backend = sb.active_backend()
+    original = backend.list_prefix
+
+    def _unreachable(prefix):
+        if prefix.startswith("bloommcp_output/qc_"):
+            raise RuntimeError("storage backend unreachable")
+        return original(prefix)
+
+    monkeypatch.setattr(backend, "list_prefix", _unreachable)
+
+    code = audit.run(["--experiment", "exp_a.csv", "--experiment", "exp_b.csv"])
+
+    assert code == 1
+    assert "unreachable" in capsys.readouterr().err
+    assert _list_all_keys_under_report_prefix(local_manifest_backend) == []
+
+
+def test_scoped_scan_never_writes_or_uploads(local_manifest_backend, monkeypatch):
+    import bloom_mcp.manifest as manifest_pkg
+    import bloom_mcp.manifest.manifest as manifest_mod
+    import bloom_mcp.supabase_client as sc
+
+    _seed_superseded_trim(local_manifest_backend, "exp_a")
+
+    def _forbidden(*_a, **_k):
+        raise AssertionError("scan_for_stale_outlier_trims must never write/upload")
+
+    for mod, name in [
+        (manifest_mod, "write_manifest"),
+        (manifest_pkg, "write_manifest"),
+        (manifest_mod, "write_json"),
+        (sc, "write_json"),
+        (sc, "upload_file"),
+        (sc, "delete_files"),
+    ]:
+        monkeypatch.setattr(mod, name, _forbidden)
+
+    report = audit.scan_for_stale_outlier_trims(experiments=["exp_a.csv", "nope"])
+
+    assert len(report["hits"]) == 1

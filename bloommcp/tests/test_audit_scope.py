@@ -14,6 +14,7 @@ import sys
 import pytest
 
 from bloom_mcp.audit_scope import (
+    all_requested_failed,
     ScopedExperiment,
     experiment_scope_record,
     resolve_experiment_scope,
@@ -109,6 +110,15 @@ def test_summary_prefix():
     assert summary_prefix(None) == ""
     scope = resolve_experiment_scope(["exp_a.csv", "exp_b"])
     assert summary_prefix(scope) == "scoped to 2 experiment(s): "
+
+
+def test_all_requested_failed():
+    scope = resolve_experiment_scope(["exp_a", "exp_b"])
+    both = {"errors": [{"stem": "exp_a"}, {"stem": "exp_b"}]}
+    one = {"errors": [{"stem": "exp_a"}]}
+    assert all_requested_failed(both, scope) is True
+    assert all_requested_failed(one, scope) is False
+    assert all_requested_failed({"errors": [{"stem": "x"}]}, None) is False
 
 
 def test_module_imports_with_no_environment():

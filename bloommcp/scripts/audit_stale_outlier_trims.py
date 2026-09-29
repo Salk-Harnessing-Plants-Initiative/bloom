@@ -8,6 +8,7 @@ may have a silently-reverted trim sitting in that environment's bucket right now
 plain clean, with no error or warning that a trim was ever made.
 
 This script scans every `qc_<stem>/manifest.json` in the configured storage backend
+(or, with `--experiment`, only the named experiments' -- see `bloom_mcp.audit_scope`)
 and reports each experiment where a `remove_outliers`-authored version exists in
 that manifest's history but the manifest's *current* `latest` entry was authored by
 a different tool -- exactly that pattern. A `remove_outliers`-authored entry that is
@@ -50,17 +51,30 @@ finds nothing meaningful otherwise. It uses the same storage configuration
 mirroring `tests/smoke/live_persistence_smoke.py`'s documented env-override
 convention for host-vs-container invocation.
 
-Usage: `cd bloommcp && uv run python scripts/audit_stale_outlier_trims.py`
+Usage: `cd bloommcp && uv run python scripts/audit_stale_outlier_trims.py
+[--experiment IDENTIFIER ...]`. Without `--experiment` it sweeps the whole shared
+`bloommcp_output/` root; with it, only the named experiments' prefixes are read
+(bloom#919; identifier rules in `bloom_mcp.audit_scope`).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, Optional
 
+from bloom_mcp.audit_scope import (
+    ExperimentScope,
+    add_experiment_argument,
+    all_requested_failed,
+    experiment_scope_record,
+    resolve_experiment_scope,
+    summary_prefix,
+)
 from bloom_mcp.experiment_utils import (
     QC_TOOL_CLASS,
     REMOVE_OUTLIERS_TOOL_NAME,
@@ -91,12 +105,22 @@ SCOPE_NOTE = (
 )
 
 
-def scan_for_stale_outlier_trims() -> dict[str, Any]:
-    """Scan every `qc_<stem>` manifest and report silently-superseded trims.
+def scan_for_stale_outlier_trims(
+    experiments: Optional[Sequence[str]] = None,
+) -> dict[str, Any]:
+    """Scan every `qc_<stem>` manifest (or only the requested experiments') and
+    report silently-superseded trims.
 
     Returns `{"hits": [...], "errors": [...], "experiments_scanned": N}`.
     `experiments_scanned` counts every `qc_<stem>` prefix examined, regardless
     of whether it had a readable manifest.
+
+    `experiments` (bloom#919) scopes the scan to those experiment identifiers:
+    each `qc_<stem>/` prefix is resolved directly and the shared root is never
+    listed. A scoped result also carries `unevaluated` -- requested experiments
+    with no manifest (`"no_manifest"`) or no `latest` pointer (`"no_latest"`),
+    which a full sweep skips silently but a scoped run must disclose. Invalid
+    identifiers raise `ValueError` before any storage call.
 
     Enumeration (`list_prefix`) is unguarded: if the environment is unreachable
     or misconfigured, there is nothing to report at all, so this propagates
@@ -108,12 +132,19 @@ def scan_for_stale_outlier_trims() -> dict[str, Any]:
     other experiment's result in a one-shot forensic sweep over a
     potentially large bucket.
     """
+    scope = resolve_experiment_scope(experiments)
     hits: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    unevaluated: list[dict[str, str]] = []
     experiments_scanned = 0
 
-    names = list_prefix(f"{_OUTPUT_ROOT}/")
-    stems = [name[len(_QC_PREFIX) :] for name in names if name.startswith(_QC_PREFIX)]
+    if scope is None:
+        names = list_prefix(f"{_OUTPUT_ROOT}/")
+        stems = [
+            name[len(_QC_PREFIX) :] for name in names if name.startswith(_QC_PREFIX)
+        ]
+    else:
+        stems = [e.stem for e in scope]
 
     for stem in stems:
         experiments_scanned += 1
@@ -131,10 +162,14 @@ def scan_for_stale_outlier_trims() -> dict[str, Any]:
             # A qc_<stem> prefix with no manifest.json at all is a normal,
             # unremarkable state (a legacy un-versioned clean, or a commit
             # that uploaded outputs but never reached the manifest write) --
-            # not a failure.
+            # not a failure. A scoped run named this experiment, so it says so.
+            if scope is not None:
+                unevaluated.append({"stem": stem, "reason": "no_manifest"})
             continue
         if manifest.latest is None:
             # No current "latest" to compare a trim against.
+            if scope is not None:
+                unevaluated.append({"stem": stem, "reason": "no_latest"})
             continue
 
         latest_entry = next(
@@ -186,11 +221,14 @@ def scan_for_stale_outlier_trims() -> dict[str, Any]:
             }
         )
 
-    return {
+    result: dict[str, Any] = {
         "hits": hits,
         "errors": errors,
         "experiments_scanned": experiments_scanned,
     }
+    if scope is not None:
+        result["unevaluated"] = unevaluated
+    return result
 
 
 def _post_420_status(stem: str) -> str:
@@ -216,11 +254,14 @@ def _post_420_status(stem: str) -> str:
     return "remediated_but_stale_again" if result.is_stale else "remediated_and_current"
 
 
-def write_report(report: dict[str, Any]) -> str:
+def write_report(
+    report: dict[str, Any], scope: Optional[ExperimentScope] = None
+) -> str:
     """Persist `report` as a self-describing, timestamped JSON object.
 
-    Adds `scanned_at` (ISO-8601 UTC), `storage_backend`, and `scope_note` to
-    the payload itself (not only this module's docstring, and not only the
+    Adds `scanned_at` (ISO-8601 UTC), `storage_backend`, `scope_note`, and
+    `experiment_scope` (which experiments this run covered -- `{"mode": "all"}`
+    for a full sweep; bloom#919) to the payload itself (not only this module's docstring, and not only the
     object's key) so the report stays interpretable -- including its own
     detection-scope caveat -- if later moved, renamed, or copied elsewhere
     (e.g. pasted into a ticket with no memory of this script's source).
@@ -236,6 +277,7 @@ def write_report(report: dict[str, Any]) -> str:
         "scanned_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "storage_backend": active_backend_name(),
         "scope_note": SCOPE_NOTE,
+        "experiment_scope": experiment_scope_record(scope),
         **report,
     }
     suffix = uuid.uuid4().hex[:8]
@@ -247,16 +289,31 @@ def write_report(report: dict[str, Any]) -> str:
     return key
 
 
-def run() -> int:
-    """Scan, persist the report, print it, and return an exit code.
+def run(argv: Sequence[str] = ()) -> int:
+    """Parse `argv`, scan, persist the report, print it, and return an exit code.
 
-    Returns `1` only when the scan couldn't run at all (enumeration failed --
-    nothing to report). Returns `0` whenever the scan completes, including
-    when it reports hits and/or per-stem errors: those are the script's
-    normal, successful output, not a script failure.
+    Parses only `argv` (never `sys.argv`; `main()` passes that). Returns `2` for
+    an invalid `--experiment` value, before any storage access. Returns `1` when
+    the scan couldn't run at all (enumeration failed, or a scoped run couldn't
+    read a single requested experiment -- nothing to report, nothing persisted).
+    Returns `0` whenever the scan completes, including when it reports hits
+    and/or per-stem errors: those are the script's normal, successful output,
+    not a script failure.
     """
+    parser = argparse.ArgumentParser(
+        prog="audit_stale_outlier_trims.py",
+        description="Read-only audit of pre-#420 silent remove_outliers reverts.",
+    )
+    add_experiment_argument(parser)
+    args = parser.parse_args(list(argv))
     try:
-        report = scan_for_stale_outlier_trims()
+        scope = resolve_experiment_scope(args.experiments)
+    except (TypeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        report = scan_for_stale_outlier_trims(args.experiments)
     except (
         Exception
     ) as exc:  # noqa: BLE001 - top-level failure, reported then exits non-zero
@@ -266,10 +323,21 @@ def run() -> int:
         )
         return 1
 
-    key = write_report(report)
+    if all_requested_failed(report, scope):
+        print(json.dumps(report, indent=2))
+        print(
+            "error: no requested experiment could be read; no report persisted",
+            file=sys.stderr,
+        )
+        for error in report["errors"]:
+            print(f"  {error['stem']}: {error['error']}", file=sys.stderr)
+        return 1
+
+    key = write_report(report, scope)
     print(json.dumps(report, indent=2))
     print(f"scope: {SCOPE_NOTE}")
     print(
+        f"{summary_prefix(scope)}"
         f"{report['experiments_scanned']} experiments scanned, "
         f"{len(report['hits'])} hits, {len(report['errors'])} errors, "
         f"report written to {key}"
@@ -278,7 +346,7 @@ def run() -> int:
 
 
 def main() -> None:
-    raise SystemExit(run())
+    raise SystemExit(run(sys.argv[1:]))
 
 
 if __name__ == "__main__":
