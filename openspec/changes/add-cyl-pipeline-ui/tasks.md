@@ -450,26 +450,26 @@
 
 ## 10. Dialog logic and queries
 
-- [ ] 10.1 **Test first.** Write `params-summary.test.ts`:
+- [x] 10.1 **Test first.** Write `params-summary.test.ts`:
   - the spec scenario, exactly;
   - flagged scans are excluded from the groups;
   - it uses `stageInProblems()`;
   - the output's key set equals exactly `['groups', 'stageInCount']`.
-- [ ] 10.2 Implement `params-summary.ts`.
-- [ ] 10.3 **Test first.** Extend `queries.test.ts`:
+- [x] 10.2 Implement `params-summary.ts`.
+- [x] 10.3 **Test first.** Extend `queries.test.ts`:
   - `fetchTargetScans(target)` uses the trigger's filters, pages of 1000 ordered by `scan_id`, and `scan_ids` chunks of ≤ 200; 2,500 scans give N = 2500.
   - `fetchConcurrentRuns(experimentIds)`:
     1. read runs with `status=not.in.(complete,failed)` and `created_at` within 7 days, limit 20;
     2. filter to incomplete counts in the client;
     3. check the view for `run_id=in.(…)` (chunked) and `experiment_id=in.(…)`;
     4. return at most 10, plus a count of the rest.
-- [ ] 10.4 Implement them.
-- [ ] 10.5 **Test first.** Write `accession-scan-ids.test.ts`: it returns every `plant.cyl_scans[].id`, de-duplicated and without mutating its input. Two same-day scans plus one with `cyl_images: []` give 3 ids.
-- [ ] 10.6 Implement `web/components/cyl-pipeline/accession-scan-ids.ts`.
+- [x] 10.4 Implement them.
+- [x] 10.5 **Test first.** Write `accession-scan-ids.test.ts`: it returns every `plant.cyl_scans[].id`, de-duplicated and without mutating its input. Two same-day scans plus one with `cyl_images: []` give 3 ids.
+- [x] 10.6 Implement `web/components/cyl-pipeline/accession-scan-ids.ts`.
 
 ## 11. Dialog, selection, entry points
 
-- [ ] 11.1a **Test first.** Write `RunPipelineDialog.test.tsx`, part 1 (content):
+- [x] 11.1a **Test first.** Write `RunPipelineDialog.test.tsx`, part 1 (content):
   - confirm is disabled until the queries settle;
   - headline;
   - blockers: N = 0, a missing selection id, N > `MAX_TRIGGER_SCAN_IDS` for a `scan_ids` target. An 8,000-scan experiment has no size blocker;
@@ -480,33 +480,33 @@
   - params groups collapsed beyond 3, with the caption;
   - the ≥ 500 acknowledgement;
   - banned phrases are absent.
-- [ ] 11.1b **Test first.** Part 2 (submit):
+- [x] 11.1b **Test first.** Part 2 (submit):
   - two synchronous clicks give one `POST`, to exactly `/api/cyl/pipeline`;
   - the success state, with the timing and reload note and the mismatch note;
   - 429, 502/504, 401, and 404/422 behaviour;
   - a query failure.
-- [ ] 11.2 Implement `RunPipelineDialog.tsx` and `RunPipelineButton.tsx`.
-- [ ] 11.3 **Test first.** Write `ScanSelection.test.tsx`:
+- [x] 11.2 Implement `RunPipelineDialog.tsx` and `RunPipelineButton.tsx`.
+- [x] 11.3 **Test first.** Write `ScanSelection.test.tsx`:
   - counts by scan id;
   - `closest('a') === null`, and clicking doesn't navigate;
   - "Select all shown";
   - the bar is hidden at 0 and carries the per-page note;
   - "Run selected (3)" submits exactly those ids through the mocked `fetch`;
   - it is disabled over the limit.
-- [ ] 11.4 Implement the selection components.
-- [ ] 11.5 **Test first.** Page render tests:
+- [x] 11.4 Implement the selection components.
+- [x] 11.5 **Test first.** Page render tests:
   - the scan page shows the button only when the scan exists;
   - the experiment page shows "Run experiment", plus "Run wave" only when there is more than one wave;
   - the accession page shows "Run this accession" with exactly `accessionScanIds(plants)` (computed before the in-place sort), disabled over the limit, plus the checkboxes.
-- [ ] 11.6 Wire the three pages.
-- [ ] 11.7 **Test first.** Extend `RunDetailLive.test.tsx`:
+- [x] 11.6 Wire the three pages.
+- [x] 11.7 **Test first.** Extend `RunDetailLive.test.tsx`:
   - "Re-run failed" is gated, submits exactly the failed ids, and warns when a row has the #900 note;
   - "Re-run scans without a result (M)" appears only when U > 0 on `complete`/`failed` runs;
   - the settled case offers only "Re-run failed";
   - both are disabled over the limit.
 
   Extend `ExperimentRunsPanel.test.tsx` with the optimistic insert.
-- [ ] 11.8 Implement.
+- [x] 11.8 Implement.
 
 ## 12. Live verification on staging (before PR 6 merges)
 
