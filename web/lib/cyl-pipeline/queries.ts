@@ -10,7 +10,9 @@
  */
 
 import { PANEL_SIZE, RUN_PAGE_SIZE, type Cursor, type RunRow, type RunScanRow } from "./realtime-reducer";
+import { runDisplay } from "./run-display";
 import { SCAN_META_COLUMNS, type ScanMeta } from "./scan-meta";
+import type { TriggerTarget } from "./trigger-target";
 
 export class QueryError extends Error {
   constructor(
@@ -206,4 +208,91 @@ export async function fetchExperimentMembers(client: ReadClient, experimentId: n
 
 export async function isRunInExperiment(client: ReadClient, runId: number, experimentId: number): Promise<boolean> {
   return (await fetchExperimentMembers(client, experimentId, [runId])).has(runId);
+}
+
+const TARGET_FILTER = { scan: "scan_id", wave: "wave_id", experiment: "experiment_id" } as const;
+
+/**
+ * The scans a run action would send, from `cyl_scans_extended` with the
+ * trigger's own filters (`_enumerate` in services/workflows/pipeline.py), so
+ * the dialog's N matches the trigger's count (design D4). A single target is
+ * read in pages of 1000 ordered by `scan_id` until a page is empty; a
+ * `scan_ids` selection is sent in chunks of at most 200 ids.
+ */
+export async function fetchTargetScans(client: ReadClient, target: TriggerTarget): Promise<ScanMeta[]> {
+  if (target.target_level === "scan_ids") {
+    return readChunked(target.scan_ids, async (chunk) =>
+      (await read<ScanMeta[]>(
+        "cyl_scans_extended",
+        client.from("cyl_scans_extended").select(SCAN_META_COLUMNS).in("scan_id", chunk).order("scan_id", { ascending: true }),
+      )) ?? [],
+    );
+  }
+  const column = TARGET_FILTER[target.target_level];
+  const rows: ScanMeta[] = [];
+  for (let from = 0; ; from += TARGET_SCANS_PAGE) {
+    const page =
+      (await read<ScanMeta[]>(
+        "cyl_scans_extended",
+        client
+          .from("cyl_scans_extended")
+          .select(SCAN_META_COLUMNS)
+          .eq(column, target.target_id)
+          .order("scan_id", { ascending: true })
+          .range(from, from + TARGET_SCANS_PAGE - 1),
+      )) ?? [];
+    if (page.length === 0) return rows;
+    rows.push(...page);
+  }
+}
+
+export const TARGET_SCANS_PAGE = 1000;
+export const CONCURRENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const CONCURRENT_CANDIDATES = 20;
+export const CONCURRENT_RUNS_SHOWN = 10;
+
+export interface ConcurrentRuns {
+  /** At most CONCURRENT_RUNS_SHOWN, newest first. */
+  runs: RunRow[];
+  /** How many more matched beyond those. */
+  more: number;
+}
+
+/**
+ * Runs that may still be working on the same experiments (design D4): created
+ * within 7 days, `status` not `complete` or `failed`, counts incomplete (a
+ * client-side filter, since PostgREST can't compare two columns), and
+ * touching one of `experimentIds` per `cyl_pipeline_run_experiments`. Runs
+ * frozen by #706/#710 never settle, which is why each shows its counts-first
+ * state and age rather than "in progress".
+ */
+export async function fetchConcurrentRuns(client: ReadClient, experimentIds: number[], now = Date.now()): Promise<ConcurrentRuns> {
+  if (experimentIds.length === 0) return { runs: [], more: 0 };
+  const recent =
+    (await read<RunRow[]>(
+      "cyl_pipeline_runs",
+      client
+        .from("cyl_pipeline_runs")
+        .select(RUN_COLUMNS)
+        .not("status", "in", "(complete,failed)")
+        .gte("created_at", new Date(now - CONCURRENT_WINDOW_MS).toISOString())
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(CONCURRENT_CANDIDATES),
+    )) ?? [];
+  const incomplete = recent.filter((r) => runDisplay(r).counts.U > 0);
+  if (incomplete.length === 0) return { runs: [], more: 0 };
+
+  const members = new Set<number>();
+  for (const experiments of chunks(experimentIds)) {
+    const rows = await readChunked(incomplete.map((r) => r.id), async (chunk) =>
+      (await read<{ run_id: number }[]>(
+        "cyl_pipeline_run_experiments",
+        client.from("cyl_pipeline_run_experiments").select("run_id").in("run_id", chunk).in("experiment_id", experiments),
+      )) ?? [],
+    );
+    rows.forEach((r) => members.add(r.run_id));
+  }
+  const touching = incomplete.filter((r) => members.has(r.id));
+  return { runs: touching.slice(0, CONCURRENT_RUNS_SHOWN), more: Math.max(0, touching.length - CONCURRENT_RUNS_SHOWN) };
 }
