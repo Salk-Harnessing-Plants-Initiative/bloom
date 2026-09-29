@@ -30,7 +30,7 @@ Bucket `bloomv2-workflows` (us-west-2):
 | `reference_genome/<reference>/` | read. A `cellranger mkref` output folder |
 | `runs_output/<run-id>/` | write. `qc/` from the QC workflow; `outs/` and a `_SUCCESS` marker (written last) from the count workflow |
 
-`run-count` exits straight away if `runs_output/<run-id>/_SUCCESS` already exists.
+`run-count` exits straight away if `runs_output/<run-id>/_SUCCESS` already exists. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
 
 ## The image
 
@@ -39,8 +39,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-3
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
