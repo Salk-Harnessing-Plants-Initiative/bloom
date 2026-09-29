@@ -25,8 +25,8 @@ import type { ScanTableRow } from "./RunScansTable";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 vi.mock("./RunScansTable", () => ({
-  RunScansTable: ({ rows }: { rows: ScanTableRow[] }) => (
-    <div data-testid="table" data-count={rows.length}>
+  RunScansTable: ({ rows, initialFilter }: { rows: ScanTableRow[]; initialFilter?: string }) => (
+    <div data-testid="table" data-count={rows.length} data-filter={initialFilter}>
       {rows.slice(0, 20).map((r) => (
         <div key={r.id} data-testid={`scan-${r.scan_id}`}>
           {r.statusLabel} | current={String(r.current)} | {r.likelyCause ?? ""} | {r.noOpNote ?? ""} | {r.qr_code ?? ""}
@@ -65,8 +65,8 @@ function respond(q: RecordedQuery): Answer {
   return { data: [], error: null };
 }
 
-const mount = (strict = false) => {
-  const el = <RunDetailLive initialRun={run} initialFilter="all" />;
+const mount = (strict = false, initialFilter: "all" | "failed" = "all") => {
+  const el = <RunDetailLive initialRun={run} initialFilter={initialFilter} />;
   return render(strict ? <StrictMode>{el}</StrictMode> : el);
 };
 const channel = () => liveChannels()[0];
@@ -147,13 +147,13 @@ describe("live rows and the header", () => {
     scans = [scanRow(1, 577, { updated_at: at(60) }), scanRow(2, 578, { updated_at: at(25 * 60) })];
     mount();
     await subscribe();
-    expect(header().textContent).toContain("Elapsed 30 min");
+    expect(header().textContent).toContain("Started 30 min ago");
     expect(header().textContent).toContain("Last scan update 5 min ago");
 
     await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, status: "written", updated_at: at(29 * 60) });
     expect(header().textContent).toContain("Last scan update 1 min ago");
     await tick(10 * 60_000);
-    expect(header().textContent).toContain("Elapsed 40 min");
+    expect(header().textContent).toContain("Started 40 min ago");
   });
 
   it("describes empty params as no overrides, and lists any others", async () => {
@@ -162,7 +162,8 @@ describe("live rows and the header", () => {
     cleanup();
     run = { ...run, params: { age: 7, mode: "cylinder" } };
     mount();
-    expect(header().textContent).toContain("Parameters: age=7, mode=cylinder");
+    // Params are inert (bloom#897): shown as requested, never as applied.
+    expect(header().textContent).toContain("Requested overrides (not applied yet, bloom#897): age=7, mode=cylinder");
   });
 
   it("merges a run UPDATE and shows a failed run's error message", async () => {
@@ -179,6 +180,17 @@ describe("live rows and the header", () => {
     const traits = within(header()).getByRole("link", { name: /Wave 1 · day 14 traits/ });
     expect(traits.getAttribute("href")).toBe("/app/traits/2/5?wave=1&age=14");
     expect(traits.textContent).toBe("Wave 1 · day 14 traits (all scans in the experiment, latest result per scan)");
+  });
+
+  it("names and links only the experiments the security-invoker view shows (a soft-deleted one stays hidden)", async () => {
+    scans = [scanRow(1, 577), scanRow(2, 578)];
+    meta = [scanMeta(577), scanMeta(578, { experiment_id: 6, experiment_name: "deleted-exp", species_id: 3 })];
+    mount();
+    await subscribe();
+    expect(header().textContent).not.toContain("deleted-exp");
+    expect(within(header()).getAllByRole("link", { name: /traits/ }).map((a) => a.getAttribute("href"))).toEqual([
+      "/app/traits/2/5?wave=1&age=14",
+    ]);
   });
 
   it("gives a one-scan run one Scan images link and one traits link", async () => {
@@ -297,14 +309,40 @@ describe("current in trait views", () => {
     expect(scanEl(579).textContent).toContain("current=false");
   });
 
-  it("follows a row that turns written live with a newer source, without a query", async () => {
+  it("says unknown for a row whose source changed live, without a query", async () => {
+    // Can't be inferred: an empty envelope marks a row written without raising the scan's latest source.
+    scans = [scanRow(1, 577, { status: "written", source_id: 12 }), scanRow(2, 578)];
     latest = [{ scan_id: 577, max_source_id: 12 }];
     mount();
     await subscribe();
+    expect(scanEl(577).textContent).toContain("current=true");
     const before = supabaseMock.queries.length;
     await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, status: "written", source_id: 50 });
-    expect(scanEl(577).textContent).toContain("current=true");
+    expect(scanEl(577).textContent).toContain("current=null");
+    await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, attempts: 1 });
+    expect(scanEl(578).textContent).toContain("current=false");
     expect(supabaseMock.queries.length).toBe(before);
+  });
+
+  it("says unknown for a row written while the snapshot was being read, and knows again after the next one", async () => {
+    mount();
+    const pending = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_scan_latest_source" ? pending.promise : respond(q));
+    await act(async () => channel().status("SUBSCRIBED"));
+    await tick();
+    await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, status: "written", source_id: 50 });
+    await act(async () => pending.resolve({ data: [], error: null }));
+    await tick();
+    expect(scanEl(577).textContent).toContain("Result recorded");
+    expect(scanEl(577).textContent).toContain("current=null");
+
+    supabaseMock.respond = respond;
+    latest = [{ scan_id: 577, max_source_id: 50 }];
+    scans = [scanRow(1, 577, { status: "written", source_id: 50 }), scanRow(2, 578)];
+    await act(async () => channel().status("TIMED_OUT"));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /refresh/i })));
+    await tick();
+    expect(scanEl(577).textContent).toContain("current=true");
   });
 
   it("shows no rows before the snapshot has loaded", () => {
@@ -325,7 +363,9 @@ describe("sync", () => {
       channel().status("CLOSED");
       channel().status("SUBSCRIBED");
     });
-    await tick(1500);
+    await tick(1499);
+    expect(queriesFor("cyl_pipeline_run_scans")).toHaveLength(first);
+    await tick(1);
     expect(queriesFor("cyl_pipeline_run_scans")).toHaveLength(first * 2);
   });
 
@@ -364,11 +404,38 @@ describe("sync", () => {
     expect(queriesFor("cyl_pipeline_run_scans").length).toBe(before + 2);
   });
 
-  it("shows a failed snapshot's error", async () => {
-    supabaseMock.respond = (q) => (q.table === "cyl_scans_extended" ? { data: null, error: { message: "timeout" } } : respond(q));
+  it("shows a failed snapshot's error when the scan rows can't be read", async () => {
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_run_scans" ? { data: null, error: { message: "timeout" } } : respond(q));
     mount();
     await subscribe();
     expect(screen.getByRole("alert").textContent).toContain("timeout");
+  });
+
+  it("still shows the rows when scan details or latest sources can't be read", async () => {
+    supabaseMock.respond = (q) =>
+      q.table === "cyl_scan_latest_source" || q.table === "cyl_scans_extended" ? { data: null, error: { message: "timeout" } } : respond(q);
+    mount();
+    await subscribe();
+    expect(screen.getByTestId("table").dataset.count).toBe("2");
+    expect(scanEl(577).textContent).toContain("current=null");
+    expect(screen.getByText(/Scan details unavailable: timeout/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says live updates are unavailable, not loading, when the channel fails before the rows load, and Refresh loads them", async () => {
+    mount();
+    await act(async () => channel().status("CHANNEL_ERROR"));
+    expect(screen.queryByText(/Loading scan rows/)).toBeNull();
+    expect(screen.getByText(/Live updates are unavailable/)).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: /refresh/i })[0]));
+    await tick();
+    expect(screen.getByTestId("table").dataset.count).toBe("2");
+  });
+
+  it("hands the ?status filter to the table", async () => {
+    mount(false, "failed");
+    await subscribe();
+    expect(screen.getByTestId("table").dataset.filter).toBe("failed");
   });
 
   it("under StrictMode keeps one channel, and removes it on unmount", () => {

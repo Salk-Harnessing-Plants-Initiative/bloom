@@ -40,6 +40,10 @@ const MATCH: Record<Exclude<StatusFilter, "all">, (status: string) => boolean> =
   failed: (s) => s === "failed",
 };
 
+// Stable across renders, so the grid doesn't re-measure every row when the parent re-renders.
+const autoRowHeight = () => "auto" as const;
+const PAGINATION = { pagination: { paginationModel: { pageSize: 100, page: 0 } } };
+
 const FILTER_LABELS: [StatusFilter, string][] = [
   ["all", "All"],
   ["waiting", "Waiting"],
@@ -147,9 +151,9 @@ export function RunScansTable({
       <DataGrid
         rows={shown}
         columns={columns}
-        initialState={{ pagination: { paginationModel: { pageSize: 100, page: 0 } } }}
+        initialState={PAGINATION}
         pageSizeOptions={[100]}
-        getRowHeight={() => "auto"}
+        getRowHeight={autoRowHeight}
         disableRowSelectionOnClick
         disableVirtualization={disableVirtualization}
         autoHeight

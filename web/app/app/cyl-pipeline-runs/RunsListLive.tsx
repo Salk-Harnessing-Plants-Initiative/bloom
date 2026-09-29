@@ -97,11 +97,14 @@ export function RunsListLive({ initialRuns, initialExperiments, currentUserId, i
   const loadOlder = async () => {
     const cursor = live.current().cursor;
     if (!cursor) return;
+    // A page read against one snapshot must not be appended to another: its
+    // cursor would jump past rows neither holds, or mix Only-mine filters.
+    const started = live.generation();
     setOlder({ loading: true, error: null });
     try {
       const rows = await fetchRuns(createClientSupabaseClient(), { cursor, requestedBy: mine.current ? currentUserId : null });
       await loadNames(rows.map((r) => r.id));
-      live.update((list) => appendOlder(list, rows));
+      if (live.generation() === started) live.update((list) => appendOlder(list, rows));
       setOlder({ loading: false, error: null });
     } catch (e) {
       setOlder({ loading: false, error: e instanceof Error ? e.message : String(e) });
@@ -155,7 +158,7 @@ export function RunsListLive({ initialRuns, initialExperiments, currentUserId, i
           <button
             type="button"
             onClick={() => void loadOlder()}
-            disabled={older.loading}
+            disabled={older.loading || live.fetching}
             className="rounded-md border border-stone-300 px-3 py-1 text-sm hover:bg-stone-50 disabled:opacity-50"
           >
             {older.loading ? "Loading…" : "Load older runs"}

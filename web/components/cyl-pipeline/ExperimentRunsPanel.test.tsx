@@ -104,11 +104,26 @@ describe("the runs it lists", () => {
     expect(screen.getByText(/No pipeline runs include this experiment's scans yet/)).toBeTruthy();
   });
 
-  it("shows Runs unavailable when the view query fails, without throwing", async () => {
+  it("shows Runs unavailable when the view query fails, without throwing, and Retry reloads", async () => {
     viewError = { message: 'relation "public.cyl_pipeline_run_experiments" does not exist', code: "42P01" };
     mount();
     await subscribe();
     expect(screen.getByText("Runs unavailable")).toBeTruthy();
+    viewError = null;
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Retry" })));
+    await tick();
+    expect(screen.queryByText("Runs unavailable")).toBeNull();
+    expect(shown()).toHaveLength(10);
+  });
+
+  it("says live updates are unavailable, not loading, when the channel fails first, and Refresh loads the runs", async () => {
+    mount();
+    await act(async () => channel().status("CHANNEL_ERROR"));
+    expect(screen.queryByText(/Loading runs/)).toBeNull();
+    expect(screen.getByText(/Live updates are unavailable/)).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: /refresh/i })[0]));
+    await tick();
+    expect(shown()).toHaveLength(10);
   });
 });
 
@@ -123,15 +138,30 @@ describe("live events", () => {
     expect(supabaseMock.queries.length).toBe(before);
   });
 
-  it("stays at 10 when a newly listed run arrives", async () => {
+  it("stays at 10 when a newly listed run arrives, adding it from its payload with no extra read", async () => {
     mount();
     await subscribe();
+    const reads = queriesFor("cyl_pipeline_runs").length;
     const fresh = runRow(13, at(13), { status: "submitted" });
     runs.push(fresh);
     members.add(13);
     await emit("UPDATE", fresh);
     await tick(1000);
     expect(shown()).toEqual([13, 12, 11, 10, 9, 8, 7, 6, 5, 4]);
+    expect(queriesFor("cyl_pipeline_runs").length).toBe(reads);
+  });
+
+  it("reads a confirmed member by id when its payload was only partial", async () => {
+    mount();
+    await subscribe();
+    runs.push(runRow(13, at(13), { status: "running", done_count: 4 }));
+    members.add(13);
+    await emit("UPDATE", { id: 13, done_count: 4, status: "running" });
+    await tick(1000);
+    const last = queriesFor("cyl_pipeline_runs").at(-1)!;
+    expect(last.arg("in")).toEqual(["id", [13]]);
+    expect(shown()[0]).toBe(13);
+    expect(screen.getByTestId("panel-run-13").textContent).toContain("4 / 40 succeeded");
   });
 
   it("lists a run once its scan rows land: an empty answer to a queued INSERT isn't cached", async () => {
@@ -186,7 +216,9 @@ describe("sync", () => {
       channel().status("CLOSED");
       channel().status("SUBSCRIBED");
     });
-    await tick(1500);
+    await tick(1499);
+    expect(queriesFor("cyl_pipeline_run_experiments")).toHaveLength(1);
+    await tick(1);
     expect(queriesFor("cyl_pipeline_run_experiments")).toHaveLength(2);
   });
 

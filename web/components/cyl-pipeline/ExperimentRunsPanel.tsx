@@ -139,11 +139,24 @@ export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) 
 
       {live.error && (
         <p className="mb-2 text-sm text-stone-500" title={live.error}>
-          Runs unavailable
+          <span>Runs unavailable</span>{" "}
+          <button type="button" onClick={live.refresh} className="text-lime-700 underline hover:no-underline">
+            Retry
+          </button>
         </p>
       )}
       {!loaded ? (
-        !live.error && <p className="text-sm text-stone-500">Loading runs…</p>
+        !live.error &&
+        (live.connection === "offline" ? (
+          <p className="text-sm text-stone-600">
+            Live updates are unavailable, so this experiment&apos;s runs haven&apos;t loaded.{" "}
+            <button type="button" onClick={live.refresh} className="text-lime-700 underline hover:no-underline">
+              Refresh
+            </button>
+          </p>
+        ) : (
+          <p className="text-sm text-stone-500">Loading runs…</p>
+        ))
       ) : runs.length === 0 ? (
         <p className="text-sm text-stone-500">No pipeline runs include this experiment&apos;s scans yet.</p>
       ) : (

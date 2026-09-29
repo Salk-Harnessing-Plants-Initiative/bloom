@@ -195,6 +195,77 @@ describe("subscriptions and resync", () => {
   });
 });
 
+describe("races between load older and a resync", () => {
+  it("drops a load-older page when a resync lands first, so no run is skipped", async () => {
+    // Snapshot: runs 60..11. Runs 61..63 arrive live. A reconnect resync then
+    // replaces the window with 63..14 while the older page (10..1) is in flight.
+    db = Array.from({ length: 50 }, (_, i) => runRow(60 - i, at(600 - i * 5)));
+    mount();
+    await subscribe();
+    const older = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_runs" && q.arg("or") ? older.promise : respond(q));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /load older/i })));
+
+    db = [...[63, 62, 61].map((id) => runRow(id, at(700 + id))), ...db];
+    await tick(2000);
+    await act(async () => {
+      channel().status("CLOSED");
+      channel().status("SUBSCRIBED");
+    });
+    await tick();
+    expect(rowIds().slice(0, 3)).toEqual([63, 62, 61]);
+    expect(rowIds()).toHaveLength(50);
+
+    await act(async () =>
+      older.resolve({ data: Array.from({ length: 10 }, (_, i) => runRow(10 - i, at(300 - i * 5))), error: null }),
+    );
+    await tick();
+    // The stale page is dropped: 13, 12 and 11 are still reachable by loading older again.
+    expect(rowIds()).toHaveLength(50);
+    expect(rowIds().at(-1)).toBe(14);
+    expect(screen.getByRole("button", { name: /load older/i })).toBeTruthy();
+  });
+
+  it("disables load older while a snapshot is in flight", async () => {
+    db = Array.from({ length: 50 }, (_, i) => runRow(60 - i, at(600 - i * 5)));
+    mount();
+    await subscribe();
+    const pending = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_runs" ? pending.promise : respond(q));
+    // A reconnect starts a snapshot that stays in flight.
+    await tick(2000);
+    await act(async () => {
+      channel().status("CLOSED");
+      channel().status("SUBSCRIBED");
+    });
+    expect((screen.getByRole("button", { name: /load older/i }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => pending.resolve({ data: db, error: null }));
+    await tick();
+    expect((screen.getByRole("button", { name: /load older/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps only the newest snapshot when an older one resolves last (Only mine stays mine)", async () => {
+    db = [runRow(92, at(2), { requested_by: OTHER }), runRow(91, at(1), { requested_by: ME })];
+    mount();
+    await subscribe();
+    const unfiltered = deferred<Answer>();
+    supabaseMock.respond = (q) =>
+      q.table === "cyl_pipeline_runs" && !q.all("eq").some(([c]) => c === "requested_by") ? unfiltered.promise : respond(q);
+    // A reconnect starts an unfiltered snapshot, then the user ticks Only mine.
+    await tick(2000);
+    await act(async () => {
+      channel().status("CLOSED");
+      channel().status("SUBSCRIBED");
+    });
+    await act(async () => fireEvent.click(screen.getByRole("checkbox", { name: "Only mine" })));
+    await tick();
+    expect(rowIds()).toEqual([91]);
+    await act(async () => unfiltered.resolve({ data: db, error: null }));
+    await tick();
+    expect(rowIds()).toEqual([91]);
+  });
+});
+
 describe("Only mine", () => {
   it("filters by requester on the server and ignores other members' live runs", async () => {
     db = [runRow(92, at(2), { requested_by: OTHER }), runRow(91, at(1), { requested_by: ME })];
