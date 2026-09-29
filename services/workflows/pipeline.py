@@ -301,13 +301,13 @@ def trigger_pipeline(body: dict, user_id: str) -> dict:
         )
         return {"pipeline_run_id": run_id, "scan_count": 0, "reused_count": 0}
 
-    # Every producer of a stored param_hash hashes the full resolved {species, mode,
-    # age}: bloomctl builds sidecars with sleap_roots_contracts.resolve_params, and
-    # predict and traits reject params missing any of the three. So the hash of `{}`
-    # matches no source written by the pipeline, and skipping the preview gives the
-    # same 0 without reading every trait row of every scan (bloom#901). This rests on
-    # the producers: neither the contract nor the write-back RPC rejects empty
-    # params. The UI will send `{}` until #897.
+    # The stored param_hash is written by traits, whose to_resolved_params requires
+    # all of species, mode and age. Its input sidecars come from bloomctl's
+    # sleap_roots_contracts.resolve_params, and predict checks them for the same
+    # keys. So the hash of `{}` matches no source written by the pipeline, and
+    # skipping the preview gives the same 0 without reading every trait row of every
+    # scan (bloom#901). This rests on the producers: neither the contract nor the
+    # write-back RPC rejects empty params. The UI will send `{}` until #897.
     if params == {}:
         reused_count = 0
     else:

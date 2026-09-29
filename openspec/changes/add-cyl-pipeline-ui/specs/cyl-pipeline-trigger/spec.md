@@ -53,9 +53,9 @@ The check across all enumerated scans MUST NOT be a per-scan query loop: it SHAL
 required by the "Id-list filters stay within the gateway's URL limit" requirement, so the number of
 queries grows with the rendered length of the id lists and never with one query per scan.
 **When the request's `params` is the empty object `{}`, the route SHALL skip both preview queries and
-use `reused_count = 0`:** every producer of a stored `param_hash` hashes the full resolved
-`species`/`mode`/`age` (bloomctl via `resolve_params`; predict and traits reject params missing any
-of the three), so `compute_param_hash({})` matches no source the pipeline writes, and skipping the
+use `reused_count = 0`:** the stored `param_hash` is written by traits, which requires the full
+resolved `species`/`mode`/`age` (its sidecars come from bloomctl's `resolve_params`, and predict
+checks the same keys), so `compute_param_hash({})` matches no source the pipeline writes, and skipping the
 queries yields the same result for that data. Neither the contract nor the write-back RPC rejects
 empty params, so this rests on the producers.
 **This check is informational only: it MUST NOT change the scan's initial `status` (always written as

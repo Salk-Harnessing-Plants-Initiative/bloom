@@ -596,6 +596,48 @@ def test_dedup_preview_works_for_wave_level_trigger_with_mixed_matches(monkeypat
     assert len(client.inserted_run_scans) == 3  # all still written/enqueued
 
 
+def test_dedup_preview_ignores_trait_rows_with_a_null_source(monkeypatch):
+    # (characterization) cyl_scan_traits.source_id is nullable (older rows). A NULL
+    # must be dropped, not sorted against ints or sent as `id=in.(None)`.
+    h = _hash_of({"age": 14})
+    client = _FakeClient(
+        cyl_scans_extended=[{"scan_id": 1}, {"scan_id": 2}],
+        cyl_scan_traits=[
+            {"scan_id": 1, "source_id": None},
+            {"scan_id": 1, "source_id": 5},
+            {"scan_id": 2, "source_id": None},
+        ],
+        cyl_trait_sources=[_source(5, h)],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": [1, 2],
+        "params": {"age": 14},
+    }
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    assert result["reused_count"] == 1
+    assert _in_lists(client, "cyl_trait_sources") == [[5]]
+
+
+def test_dedup_preview_skips_the_source_query_when_every_source_is_null(monkeypatch):
+    # (characterization)
+    client = _FakeClient(
+        cyl_scans_extended=[{"scan_id": 1}],
+        cyl_scan_traits=[{"scan_id": 1, "source_id": None}],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {"target_level": "scan", "target_id": 1, "params": {"age": 14}}
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    assert result["reused_count"] == 0
+    assert "cyl_trait_sources" not in client.calls
+
+
 def test_all_scans_matching_prior_source_still_all_enqueued_not_short_circuited(
     monkeypatch,
 ):

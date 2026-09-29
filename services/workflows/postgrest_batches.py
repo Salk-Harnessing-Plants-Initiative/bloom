@@ -3,11 +3,13 @@ Split PostgREST `in.(…)` id filters so each request stays under the gateway's 
 limit (bloom#901).
 
 An `in.(…)` filter travels in the URL, so a long id list makes a long address, and
-the gateway refuses one past a few kilobytes with 414 URI Too Long. Binary-searched
-against the dev gateway in a review comment on PR #650: 200 at 1,312 small ids, 414
-at 1,343 (about 5.4 KB of id list). httpx percent-encodes the separators (`%2C`), so
-on the wire those lists are about 8.1 KB and 8.3 KB, consistent with an 8 KB request
-line. Under this budget the longest encoded list is about 6 KB.
+the gateway refuses one past a few kilobytes with 414 URI Too Long. PR #650's
+author binary-searched the dev gateway in a self-review comment: 200 at 1,312 small
+ids, 414 at 1,343 (about 5.4 KB of id list). httpx percent-encodes the separators
+(`%2C`), so, assuming the probe's ids ran 1..N, those requests were about 8.1 KB and
+8.3 KB on the wire, either side of Kong's default 8 KB request-line buffer
+(`large_client_header_buffers 4 8k`). Under this budget the longest encoded id list
+is about 6 KB.
 
 Copied from bloomctl's `bloomcli/src/bloomctl/_postgrest.py` rather than imported:
 this service doesn't depend on bloomctl (design D9 of add-cyl-pipeline-ui).

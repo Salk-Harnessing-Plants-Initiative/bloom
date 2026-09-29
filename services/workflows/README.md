@@ -176,16 +176,18 @@ Large targets (bloom #901):
   preview's `cyl_scan_traits` and `cyl_trait_sources` lookups) is split by rendered length under
   a 4000-character budget (`postgrest_batches.py`, copied from bloomctl's
   `bloomcli/src/bloomctl/_postgrest.py`), and the results are merged. An unsplit list of about
-  1,340 small ids, or about 1,080 four-digit scan ids, gets `414 URI Too Long` from the gateway
-  (measured for PR #650).
-- **The preview is skipped for `params: {}`.** Every pipeline producer hashes the full resolved
-  species/mode/age, so the hash of `{}` matches none of the sources it writes; the route returns
-  `reused_count: 0` without querying.
+  1,340 small ids gets `414 URI Too Long` from the gateway (measured for PR #650). By the same
+  8 KB request-line limit that is about 1,160 four-digit scan ids (an estimate: each costs 7 bytes
+  once its comma is encoded as `%2C`).
+- **The preview is skipped for `params: {}`.** The stored hash is written by traits, which
+  requires the full resolved species/mode/age, so the hash of `{}` matches none of the sources the
+  pipeline writes; the route returns `reused_count: 0` without querying.
 - **Non-empty `params` still pay for the preview** (left open on #901). It reads every trait row
-  of the requested scans, about 1,035 per scan, reducing each batch to distinct
-  `(scan_id, source_id)` pairs as it arrives. Each batch is its own statement under the 8 s
-  timeout, so a large experiment can take many seconds, or fail with 500 before anything is
-  written if one batch times out.
+  of the requested scans' sources, about 1,035 per source, reducing each batch to distinct
+  `(scan_id, source_id)` pairs as it arrives. Each batch is its own statement under the
+  `statement_timeout` (8 s, set on `authenticator`; `bloom_workflows` sets none), so a large
+  experiment can take many seconds, or fail with 500 before anything is written if one batch
+  times out.
 
 ```bash
 # Request: trigger every scan in experiment 123 — requires the caller's Supabase user JWT

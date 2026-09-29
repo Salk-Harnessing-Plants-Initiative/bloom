@@ -400,7 +400,7 @@
   - a single id longer than the budget gets its own batch;
   - 19-digit ids batch correctly;
   - `ID_FILTER_BUDGET_CHARS` equals the value in `bloomcli/src/bloomctl/_postgrest.py`. The test reads that file, so the two can't drift. (characterization)
-- [x] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing the 414 measurement. (That measurement is in a review comment on PR #650, https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/650#issuecomment-5269400672, not bloom#674 as this line first said.)
+- [x] 9b.2 Implement `services/workflows/postgrest_batches.py`, ported from bloomctl's `id_batches`, with a header citing the 414 measurement. (That measurement is in the PR author's self-review comment on PR #650, https://github.com/Salk-Harnessing-Plants-Initiative/bloom/pull/650#issuecomment-5269400672, not bloom#674 as this line first said.)
 - [x] 9b.3 **Test first.** Extend `services/workflows/tests/test_pipeline.py`. Its `_FakeClient` must record each `.in_()` id list, so it may need extending.
   - A 3000-id `scan_ids` request issues more than one `cyl_scans_extended` filter call, each within budget, and proceeds as if all were found.
   - A missing id in the last batch still gives 404 naming it, with no rows written.
@@ -421,7 +421,7 @@
   - purge the queue and restart the services;
   - record the result, then `/pre-merge` and `/review-pr`. The PR body says "Refs #901"; it doesn't close it, because the non-empty-params row-volume half stays open.
 
-  **Done 2026-09-29.** Unit suite 842 passed, 1 skipped (after rebasing onto `438c2d73`); `test_cyl_pipeline_dispatch.py` 41 passed; ruff 0.9.9, black 26.3.1 and ruff-format clean; strict validate passes.
+  **Done 2026-09-29.** Unit suite 842 passed, 1 skipped (after rebasing onto `438c2d73`; 847 after the review tests); `test_cyl_pipeline_dispatch.py` 41 passed; ruff 0.9.9, black 26.3.1 and ruff-format clean; strict validate passes.
 
   Dev stack: worker and poller stopped, `WORKFLOWS_K8S_TOKEN` empty in all three containers. The dev workflows service has no app user, so a throwaway `is_workflows` user was created (README "Provisioning") and deleted afterwards. The main checkout serves the stack, so two one-off containers ran instead of `localhost:5100`: this branch on `:5101`, and staging's `pipeline.py` on `:5102` as a control. The seeded experiment had 2,100 scans (ids 570–2669, 10,069 rendered characters).
 
@@ -434,11 +434,11 @@
 
   Each branch run wrote 2,100 `queued` scan rows in 84 batches; the queue held 252 = 3 × 84 messages. Cleanup purged the queue, deleted the runs, seeded rows and user, and restarted both services.
 
-  The `{"age": 14}` row above proves little: those scans had no trait rows, so the preview stopped after `cyl_scan_traits`, and no stored hash is over partial params. After review, a second run (worktree commit `e8c874f0`) seeded 2,100 scans, 2 sources each (4,200, with ids 1376–5575) and 3 trait rows per source. Every third scan's older source carries the `resolve_params` hash of soybean/cylinder/age 14, so the expected `reused_count` is 700.
+  The `{"age": 14}` row above proves little: those scans had no trait rows, so the preview stopped after `cyl_scan_traits`, and no stored hash is over partial params. After review, a second run (worktree commit `e8c874f0`) seeded 2,100 scans (four-digit ids; the exact range wasn't recorded), 2 sources each (4,200, with ids 1376–5575) and 3 trait rows per source. Every third scan's older source carries the `resolve_params` hash of soybean/cylinder/age 14, so the expected `reused_count` is 700.
 
   | `params`                                      | Result                  | Kong requests (`cyl_scan_traits` / `cyl_trait_sources`) |
   | --------------------------------------------- | ----------------------- | ------------------------------------------------------- |
-  | `{species: soybean, mode: cylinder, age: 14}` | 200, `reused_count` 700 | 3 / 6, no 414, longest request line 5,666 bytes         |
+  | `{species: soybean, mode: cylinder, age: 14}` | 200, `reused_count` 700 | 3 / 6, no 414, longest request URI 5,666 bytes          |
   | `{species: soybean, mode: cylinder, age: 99}` | 200, `reused_count` 0   | 3 / 6, no 414                                           |
   | `{}`                                          | 200, `reused_count` 0   | 0 / 0                                                   |
 

@@ -9,8 +9,9 @@ from postgrest_batches import ID_FILTER_BUDGET_CHARS, id_batches
 
 
 def _bloomctl_postgrest():
-    """bloomctl's module, parsed. Resolved here rather than at import so a checkout
-    without bloomcli/ fails these tests alone, clearly, instead of the whole file."""
+    """bloomctl's module, parsed. Resolved here rather than at import, so a layout
+    where the path can't resolve (e.g. /app/tests, where parents[3] raises IndexError)
+    or a checkout without bloomcli/ fails these tests alone, not the whole file."""
     path = (
         Path(__file__).resolve().parents[3]
         / "bloomcli"
@@ -22,7 +23,11 @@ def _bloomctl_postgrest():
 
 
 def _function_body_without_docstring(tree, name):
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    fn = next(
+        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name),
+        None,
+    )
+    assert fn is not None, f"no top-level function {name!r}"
     body = fn.body
     if (
         body
