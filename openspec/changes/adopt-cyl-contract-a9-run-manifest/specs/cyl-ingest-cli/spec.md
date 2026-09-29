@@ -7,9 +7,13 @@ The `bloomctl` CLI SHALL provide a `cyl ingest-result` command that reads a sing
 argument is `-`, and writes it to Bloom by calling the `insert_cyl_result_envelope(jsonb, text)` RPC
 (capability `cyl-trait-writeback`) as `client.rpc("insert_cyl_result_envelope", {"envelope":
 <envelope>, "p_argo_workflow_name": <value or omitted>})`. The `p_argo_workflow_name` key SHALL be
-included, set to `os.environ["ARGO_WORKFLOW_NAME"]`, only when that environment variable is set and
-non-empty; when unset, the command SHALL omit the key entirely (relying on the RPC's `DEFAULT NULL`)
-rather than sending an empty string, preserving the existing manual/ad-hoc invocation shape exactly.
+included, set to the run identity `sleap_roots_contracts.pipeline_run_id_from_env()` returns (the
+whitespace-stripped `ARGO_WORKFLOW_NAME`), only when that identity is not `None`; when the variable is
+unset or blank, the command SHALL omit the key entirely (relying on the RPC's `DEFAULT NULL`) rather
+than sending an empty or whitespace string, preserving the existing manual/ad-hoc invocation shape
+exactly. This is the same single definition of the run identity `cyl batch-ingest-result` uses to
+resolve its run manifest and to reconcile, so a batch's manifest scope, per-scan status updates and
+reconciliation can never target different workflow names.
 The command SHALL accept a `--profile` option (defaulting like the other commands) and authenticate
 through the existing credentials profile. When `p_argo_workflow_name` was supplied and the RPC's
 returned `status_update_matched` is `false` — a delivery that wrote its trait/blob data correctly
@@ -55,7 +59,17 @@ run's `failed_count` and is not a new one.
 
 - **WHEN** the command runs with the `ARGO_WORKFLOW_NAME` environment variable set (as Argo sets it
   inside the write-back container), ingesting a valid envelope
-- **THEN** the RPC call includes `p_argo_workflow_name` equal to that environment variable's value
+- **THEN** the RPC call includes `p_argo_workflow_name` equal to that value, whitespace-stripped
+
+#### Scenario: A whitespace-padded ARGO_WORKFLOW_NAME is sent stripped
+
+- **WHEN** the command runs with `ARGO_WORKFLOW_NAME` set to `" wf-a\n"`
+- **THEN** the RPC call includes `p_argo_workflow_name` equal to `"wf-a"`
+
+#### Scenario: A blank ARGO_WORKFLOW_NAME omits the parameter
+
+- **WHEN** the command runs with `ARGO_WORKFLOW_NAME` set to `"   "`
+- **THEN** the RPC call omits `p_argo_workflow_name` entirely, as when the variable is unset
 
 #### Scenario: ARGO_WORKFLOW_NAME unset omits the parameter, unchanged from prior behavior
 

@@ -40,6 +40,31 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   `cyl_pipeline_runs.done_count`/`failed_count` (bloom #716/#696). Manual/
   ad-hoc invocation with the variable unset is unaffected.
 
+### Changed
+
+- **Breaking:** `cyl batch-download-for-predict` names its `RunManifest` per run and
+  replaces it instead of merging. Inside Argo the file is
+  `run_manifest.<ARGO_WORKFLOW_NAME>.json`; without `ARGO_WORKFLOW_NAME` it stays
+  `run_manifest.json`. Either way it now holds only the `scan_key`s *this* invocation
+  staged or skipped, so running twice into one `out_dir` keeps only the second run's keys,
+  and an older `run_manifest.json` beside a per-run file is left alone. An
+  `ARGO_WORKFLOW_NAME` that cannot name a file exits `1` before anything is staged
+  (bloom #934).
+- **Breaking:** `cyl batch-ingest-result` reads the run's manifest by name
+  (`run_manifest.<ARGO_WORKFLOW_NAME>.json`, falling back, with
+  `ARGO_WORKFLOW_NAME` set, to a `run_manifest.json` only if that file names this run). When `ARGO_WORKFLOW_NAME` is set and there is no manifest for
+  this run — neither file, or only a legacy file naming another run — it ingests nothing
+  (instead of every envelope in the directory, or another run's scope), reports a failed
+  `<run-manifest>` entry, still closes out the workflow's unresolved scans with a message
+  saying no run manifest reached write-back, and exits `1`. Without `ARGO_WORKFLOW_NAME`,
+  behavior is unchanged (bloom #934).
+- **Breaking:** `cyl ingest-result` and `cyl batch-ingest-result` use one whitespace-stripped
+  run id (`pipeline_run_id_from_env()`) for the run manifest, `p_argo_workflow_name` and the
+  reconciliation call, so they can never target different workflow names. A blank
+  `ARGO_WORKFLOW_NAME` is now the same as unset (bloom #934).
+- Bumped the `sleap-roots-contracts` floor to `>=0.1.0a9` for per-run run-manifest naming
+  and `load_run_manifest` (#934).
+
 ### Fixed
 
 - `cyl ingest-result`/`cyl batch-ingest-result` with `--predictions-dir`:
