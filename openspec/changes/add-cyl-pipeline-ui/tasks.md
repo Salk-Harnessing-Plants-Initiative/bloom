@@ -549,7 +549,7 @@
   - the counts resync.
 - [x] 12.5 If an empty wave exists, confirm the dialog shows "No scans to run". Note that any zero-scan run triggered via `curl` leaves a permanent "No scans matched" row.
 - [ ] 12.6 Observe whether a large reconciliation burst disconnects other Realtime widgets, and record it.
-- [ ] 12.7 Leave a drill-down open past the JWT lifetime. Confirm it recovers or shows offline with refresh.
+- [x] 12.7 Leave a drill-down open past the JWT lifetime. Confirm it recovers or shows offline with refresh.
 - [ ] 12.8 For the runs in 12.1–12.3, confirm `done_count`/`failed_count` equal the per-status tallies. Record this as evidence for `fix-cyl-pipeline-run-scan-status` 8.1–8.4, and tick those only in that change, only if they match.
 - [x] 12.9 Open a run's traits link and confirm it lands on the run's wave and day, with the run's scans visible.
 - [x] 12.10 Trigger one experiment-level run of the largest practical staging experiment (at least 1,500 scans if one exists). Use the manual cancel procedure afterwards if it isn't wanted to finish. Confirm:
@@ -574,7 +574,8 @@
   - **12.5:** not applicable. Staging has no wave with zero scans.
   - **12.9:** run 11's link opened wave 9999 · day 2 with no fallback note.
   - **12.10:** run 17, Missouri_Soy_Repetition, 1,515 scans: one run, `scan_count` 1515, all rows loaded, about 3 s trigger latency. It was cancelled because staging's image bytes are missing (every frame 404s). About 165 failed downloader pods from retries fed into srp#98.
-  - **Still open:** 12.6 (no large burst is possible on staging), 12.7 (run 16's tab left open past the JWT lifetime), and 12.8 (to be ticked in `fix-cyl-pipeline-run-scan-status`: runs 15, 16 and 18 counts equal their tallies).
+  - **12.7:** run 18's drill-down, opened at about 19:17Z, still showed Live about 80 minutes later (20:38Z), past the one-hour JWT lifetime. Staging's Kong log shows the client's token refreshes (20:03–20:30Z) and Realtime rejoins (20:31, 20:36Z). Accepted by the author on the indicator. Caveat: no event was received on that tab after expiry, and the log can't separate that tab from other browser activity.
+  - **Still open:** 12.6 (no large burst is possible on staging), and 12.8 (to be ticked in `fix-cyl-pipeline-run-scan-status`: runs 15, 16 and 18 counts equal their tallies).
 
 ## 13. After merge
 
