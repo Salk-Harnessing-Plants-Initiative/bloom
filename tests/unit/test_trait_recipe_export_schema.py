@@ -19,6 +19,7 @@ SCHEMA = WIKI / "trait-recipes.export.schema.json"
 EXAMPLE = WIKI / "trait-recipes.export.example.json"
 PAGE = WIKI / "trait-recipes.md"
 MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
+GOLDEN = REPO_ROOT / "web" / "lib" / "cyl-trait-export" / "__fixtures__" / "golden"
 READ_FUNCTIONS = (
     "get_experiment_traits",
     "list_trait_recipes",
@@ -55,6 +56,21 @@ def _missing_required(schema, value, path="$"):
         for i, item in enumerate(value):
             missing += _missing_required(schema["items"], item, f"{path}[{i}]")
     return missing
+
+
+def _undeclared(schema, value, path="$"):
+    """Properties the schema doesn't declare (it sets additionalProperties: false)."""
+    extra = []
+    if isinstance(value, dict) and "properties" in schema:
+        for name, sub in value.items():
+            if name not in schema["properties"]:
+                extra.append(f"{path}.{name}")
+            else:
+                extra += _undeclared(schema["properties"][name], sub, f"{path}.{name}")
+    elif isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for i, item in enumerate(value):
+            extra += _undeclared(schema["items"], item, f"{path}[{i}]")
+    return extra
 
 
 def _field_table():
@@ -115,3 +131,18 @@ def test_every_source_is_real():
         if fn not in columns or col not in columns[fn]:
             bad.append((field, source))
     assert bad == []
+
+
+def test_web_export_golden_sidecars_follow_the_schema():
+    """add-cyl-trait-csv-export task 1.5: every golden sidecar the web export tests
+    compare against has the required keys and nothing the schema doesn't declare."""
+    goldens = sorted(GOLDEN.glob("*.export.json"))
+    assert [g.name for g in goldens] == [
+        "K.export.json",
+        "legacy-9.export.json",
+        "unattributed.export.json",
+    ]
+    for g in goldens:
+        sidecar = json.loads(g.read_text(encoding="utf-8"))
+        assert _missing_required(_schema(), sidecar) == [], g.name
+        assert _undeclared(_schema(), sidecar) == [], g.name
