@@ -9,8 +9,10 @@ Workflow name, the step's template and the numeric end of its node id, joined by
 
 from dataclasses import dataclass, field
 
-# Output folder for a run's results; the pipeline uploads there.
+# Output folder for a run's results; the pipeline uploads the final .h5ad to <run_key>/h5ad/.
 RESULTS_PREFIX = "s3://bloomv2-workflows/runs_output"
+# The cluster's shared folder, where a run's files stay after a failure.
+SHARED_RUNS = "/hpi/hpi_dev/users/bfernando/scrna/runs"
 
 # Cell Ranger's pipeline steps by template name, in the order they run.
 CELLRANGER_STEPS = {
@@ -86,7 +88,7 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     if exit_code == EXIT_CELLRANGER_FAILED:
         return (
             "Cell Ranger failed; its log is at "
-            f"runs_output/{run.get('run_key')}/logs/count.log"
+            f"{SHARED_RUNS}/{run.get('run_key')}/logs/count.log"
         )
     if exit_code == EXIT_BAD_SAMPLE_NAME:
         return (
@@ -114,7 +116,7 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
     running = [s for s, n in pods.items() if n.get("phase") in _RUNNING_PHASES]
     started = sorted(pods, key=_STEP_ORDER.__getitem__)
     current = (running or started or [None])[-1]
-    results = f"{RESULTS_PREFIX}/{run.get('run_key')}/"
+    results = f"{RESULTS_PREFIX}/{run.get('run_key')}/h5ad/"
 
     if phase in _FAILED_PHASES:
         failed = [s for s, n in pods.items() if n.get("phase") in _FAILED_PHASES]

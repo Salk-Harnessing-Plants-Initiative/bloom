@@ -9,6 +9,9 @@ import numpy as np
 import scipy.sparse as sp
 
 MATRIX = "outs/filtered_feature_bc_matrix.h5"
+# Kept by the count step next to the matrix, and copied into the file when present.
+METRICS = "outs/metrics_summary.csv"
+CHEMISTRY_QC = "outs/qc_summary.json"
 BASE_DIR = "analysis/preprocess"
 BASE = f"{BASE_DIR}/base.h5ad"
 ANALYSIS_DIR = "analysis"

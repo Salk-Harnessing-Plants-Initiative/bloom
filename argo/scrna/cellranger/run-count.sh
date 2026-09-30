@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run `cellranger count` on one sample from S3 and upload the outputs; safe to re-run.
+# Run `cellranger count` on one sample and keep what the analysis steps need in RESULTS_DIR (the run's
+# shared folder); nothing is uploaded. Safe to re-run.
 set -euo pipefail
 
 # Exit codes: 0 done or already done, 3 no reference, 4 no FASTQs, 5 cellranger count failed,
@@ -19,41 +20,43 @@ RUN_ID="${RUN_ID:-$SAMPLE}"
 FASTQ_SAMPLE="${FASTQ_SAMPLE:-}"
 CORES="${CORES:?set CORES to the CPU request of the job}"
 MEM_GB="${MEM_GB:?set MEM_GB a little below the memory limit of the job}"
-CREATE_BAM="${CREATE_BAM:-true}"
+CREATE_BAM="${CREATE_BAM:-false}"
 WORK_DIR="${WORK_DIR:-/work}"
 REF_DIR="${REF_DIR:-${WORK_DIR}/ref/${REFERENCE}}"
 FASTQ_DIR="${FASTQ_DIR:-${WORK_DIR}/fastq/${SAMPLE}}"
 
-OUT_URI="s3://${BUCKET}/runs_output/${RUN_ID}"
+RESULTS_DIR="${RESULTS_DIR:?set RESULTS_DIR (the run's shared folder)}"
+# Kept for the analysis steps: the matrix, Cell Ranger's metrics and the chemistry check.
+KEEP=(filtered_feature_bc_matrix.h5 metrics_summary.csv qc/qc_summary.json)
 
 # Cell Ranger's run id is the sample, so its report is titled with it; RUN_ID (which can be
-# longer) names the S3 and NFS folders and goes in the report's description.
+# longer) names the run's folders and goes in the report's description.
 CR_ID="${SAMPLE}"
 if [[ ! "${CR_ID}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
   echo "ERROR: sample '${SAMPLE}' cannot be a Cell Ranger run id (letters, digits, '_' or '-', at most 64)"
   exit "${EXIT_BAD_SAMPLE_NAME}"
 fi
 
-if aws s3 ls "${OUT_URI}/_SUCCESS" >/dev/null 2>&1; then
-  echo "Already done: ${OUT_URI}/_SUCCESS exists, nothing to do."
+if [ -f "${RESULTS_DIR}/outs/_SUCCESS" ]; then
+  echo "Already done: ${RESULTS_DIR}/outs/_SUCCESS exists, nothing to do."
   exit 0
 fi
 
 mkdir -p "${WORK_DIR}" "${FASTQ_DIR}" "${REF_DIR}"
 cd "${WORK_DIR}"
 
-# Keep a log; on failure upload it with Cell Ranger's _errors so the reason is in S3.
+# Keep a log; on failure copy it with Cell Ranger's _errors to the run's folder, which is kept.
 LOG="${WORK_DIR}/count.log"
 exec > >(tee -a "${LOG}") 2>&1
-upload_log_on_failure() {
+keep_log_on_failure() {
   local status=$?
   if [ "${status}" -ne 0 ]; then
     find "${WORK_DIR}/${CR_ID}" -name _errors -exec cat {} + >> "${LOG}" 2>/dev/null || true
-    aws s3 cp "${LOG}" "${OUT_URI}/logs/count.log" || true
-    echo "count failed (exit ${status}); log at ${OUT_URI}/logs/count.log"
+    mkdir -p "${RESULTS_DIR}/logs" && cp -- "${LOG}" "${RESULTS_DIR}/logs/count.log" || true
+    echo "count failed (exit ${status}); log at ${RESULTS_DIR}/logs/count.log"
   fi
 }
-trap upload_log_on_failure EXIT
+trap keep_log_on_failure EXIT
 
 echo "Downloading reads and reference (skips files already present)..."
 aws s3 sync "s3://${BUCKET}/raw_reads/${SAMPLE}/" "${FASTQ_DIR}/"
@@ -95,10 +98,16 @@ fastq-qc --fastq-dir "${FASTQ_DIR}" --quick \
   --out-dir "${CR_ID}/outs/qc" \
   || echo "WARNING: chemistry check reported problems; see outs/qc/qc_summary.json"
 
-echo "Uploading outputs..."
-aws s3 sync "${CR_ID}/outs/" "${OUT_URI}/outs/"
+echo "Keeping the matrix and metrics in ${RESULTS_DIR}/outs/..."
+mkdir -p "${RESULTS_DIR}/outs"
+for name in "${KEEP[@]}"; do
+  if [ -f "${CR_ID}/outs/${name}" ]; then
+    cp -- "${CR_ID}/outs/${name}" "${RESULTS_DIR}/outs/${name##*/}"
+  fi
+done
+# Written last: its presence means the files above are in place.
 printf 'run_id=%s\ncellranger=%s\nfinished=%s\n' \
   "${RUN_ID}" "$(cellranger --version | tail -1)" "$(date -u +%FT%TZ)" \
-  | aws s3 cp - "${OUT_URI}/_SUCCESS"
+  > "${RESULTS_DIR}/outs/_SUCCESS"
 
-echo "DONE -> ${OUT_URI}"
+echo "DONE -> ${RESULTS_DIR}/outs/"

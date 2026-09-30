@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from pathlib import Path
 
@@ -11,10 +13,12 @@ import scipy.sparse as sp
 from .steps import (
     BASE,
     BASE_DIR,
+    CHEMISTRY_QC,
     EXIT_NO_MATRIX,
     EXIT_TOO_FEW_CELLS,
     MARKER,
     MATRIX,
+    METRICS,
     StepError,
 )
 from .store import Store
@@ -84,6 +88,22 @@ def build_base(adata, *, n_top_genes: int = DEFAULT_N_TOP_GENES):
     return adata
 
 
+def cellranger_metrics(text: str) -> dict[str, str]:
+    """metrics_summary.csv's one row, by column name, values as Cell Ranger wrote them."""
+    rows = list(csv.reader(io.StringIO(text)))
+    if len(rows) < 2:
+        return {}
+    return {name.replace("/", "_"): value for name, value in zip(rows[0], rows[1])}
+
+
+def add_run_records(adata, store: Store) -> None:
+    """Cell Ranger's metrics and the chemistry check, when the count step kept them."""
+    if store.exists(METRICS):
+        adata.uns["cellranger_metrics"] = cellranger_metrics(store.read_text(METRICS))
+    if store.exists(CHEMISTRY_QC):
+        adata.uns["qc_summary"] = store.read_text(CHEMISTRY_QC)
+
+
 def run(store: Store, workdir: Path, *, n_top_genes: int = DEFAULT_N_TOP_GENES) -> None:
     import scanpy as sc
 
@@ -95,6 +115,7 @@ def run(store: Store, workdir: Path, *, n_top_genes: int = DEFAULT_N_TOP_GENES) 
     adata = sc.read_10x_h5(store.get(MATRIX, workdir / "matrix.h5"), gex_only=True)
     print(f"Read {adata.n_obs} cells x {adata.n_vars} genes")
     build_base(adata, n_top_genes=n_top_genes)
+    add_run_records(adata, store)
     local = workdir / "base.h5ad"
     adata.write_h5ad(local, compression="gzip")
     store.put(local, BASE)

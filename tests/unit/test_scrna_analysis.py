@@ -483,3 +483,40 @@ def test_two_runs_on_the_share_keep_their_own_files(tmp_path):
         CELLS_PER_GROUP + 20
     )
     assert not (shared / "41/h5ad/s42.h5ad").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Cell Ranger's records
+# --------------------------------------------------------------------------- #
+
+METRICS_CSV = (
+    '"Estimated Number of Cells","Mean Reads per Cell","Reads Mapped Confidently to Genome"\n'
+    '"240","12,345","91.2%"\n'
+)
+
+
+def test_cellranger_metrics_and_the_chemistry_check_go_into_the_file(run_dir):
+    (run_dir / "outs/metrics_summary.csv").write_text(METRICS_CSV)
+    (run_dir / "outs/qc_summary.json").write_text('{"chemistry": "SC3Pv3"}\n')
+    pipeline(run_dir)
+    adata = final(run_dir)
+    assert adata.uns["cellranger_metrics"]["Estimated Number of Cells"] == "240"
+    assert adata.uns["cellranger_metrics"]["Mean Reads per Cell"] == "12,345"
+    assert json.loads(adata.uns["qc_summary"]) == {"chemistry": "SC3Pv3"}
+    assert (
+        bloomctl_format().check_structure(run_dir / "h5ad/root_tip.h5ad").n_cells
+        == adata.n_obs
+    )
+
+
+def test_the_file_is_built_without_them_when_the_count_kept_none(run_dir):
+    pipeline(run_dir)
+    assert "cellranger_metrics" not in final(run_dir).uns
+    assert "qc_summary" not in final(run_dir).uns
+
+
+def test_metrics_names_with_a_slash_are_kept_readable():
+    metrics = preprocess.cellranger_metrics(
+        '"Q30 Bases in RNA/UMI","Cells"\n"95%","10"\n'
+    )
+    assert metrics == {"Q30 Bases in RNA_UMI": "95%", "Cells": "10"}
