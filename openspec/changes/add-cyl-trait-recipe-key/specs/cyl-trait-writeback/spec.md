@@ -228,15 +228,18 @@ Bloom SHALL provide `cyl_backfill_trait_source_recipe_identity()`, which sets `r
   `metadata->'inputs'->'image_ids'` meets all of these conditions:
 
   - it is a non-empty array;
-  - every `jsonb_array_elements_text` value matches `^[0-9]+$`;
+  - every `jsonb_array_elements_text` value is non-NULL and matches `^[0-9]{1,18}$`;
   - every element matches a `cyl_images` row with a non-NULL `scan_id`;
   - those rows name exactly one distinct scan.
 
-  This is the write-back RPC's own resolution rule.
+  These are the write-back RPC's resolution conditions, except that a failure leaves NULL where
+  the RPC raises, and the RPC's `^[0-9]+$` is capped at 18 digits so the `::bigint` cast cannot
+  raise. The RPC also rejects a JSON `null` element: it counts as a requested id that matches no
+  image.
 
 **Failures leave NULL.** A source that fails the `scan_id` rule SHALL keep a NULL `scan_id`. The
-function SHALL report, with `RAISE NOTICE 'cyl recipe backfill: % source(s) with unresolved
-image_ids'`, the number of object-`metadata` sources left with a NULL `scan_id` after it runs. It
+function SHALL report, with `RAISE NOTICE 'cyl recipe backfill: % object-metadata source(s) left
+without a scan_id'`, the number of object-`metadata` sources left with a NULL `scan_id` after it runs. It
 SHALL NOT raise.
 
 **What it leaves alone.** It SHALL NOT set `argo_workflow_name` or `cyl_pipeline_run_id`, SHALL

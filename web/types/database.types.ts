@@ -1646,7 +1646,7 @@ export interface Database {
         Args: {
           name: string
           experiment_id: number
-          trait_source_id: number
+          trait_source_id: number | null
           qc_set_name: Json
           timepoints: Json
           recipe_key?: string

@@ -100,8 +100,15 @@ raise an error.
 #### Scenario: A legacy recipe matches source mode
 
 - **WHEN** one dataset is created with `recipe_key = 'legacy:S'` and another with
-  `trait_source_id = S`, with the same filters
+  `trait_source_id = S`, with the same filters, and every candidate scan's plant has an accession
 - **THEN** both freeze the same `cyl_scan_traits` row ids
+
+#### Scenario: Recipe mode leaves out plants without an accession
+
+- **WHEN** source `S` has rows on a scan whose plant has no accession, and one dataset is created
+  with `recipe_key = 'legacy:S'` and another with `trait_source_id = S`
+- **THEN** the source-mode dataset freezes that scan's rows and the recipe-mode dataset does not,
+  and the two agree on every other scan
 
 #### Scenario: A mistyped recipe is rejected
 

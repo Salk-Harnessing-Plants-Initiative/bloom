@@ -220,6 +220,40 @@ def test_definition_hashes_to_key(pg_conn, vector):
         assert cur.fetchone()[0] is True
 
 
+EXPECTED_KEYS = Path(__file__).parent / "fixtures" / "recipe_key_v1_expected_keys.json"
+
+
+def test_vectors_hash_to_their_frozen_v1_keys(pg_conn):
+    # v1 keys are stored and never rewritten (design D1), so the helper's output is a
+    # contract. The expected values were captured once from the migration-1 helper and
+    # are frozen; a changed helper (a dropped COLLATE "C", a renamed payload key) must
+    # fail here and become recipe_key_version 2 instead.
+    expected = json.loads(EXPECTED_KEYS.read_text(encoding="utf-8"))
+    names = [v["name"] for v in VECTORS["vectors"]]
+    assert sorted(expected) == sorted(names)
+    with pg_conn.cursor() as cur:
+        got = {v["name"]: _key(cur, v["raw_provenance"]) for v in VECTORS["vectors"]}
+    assert got == expected
+
+
+def test_model_order_is_collation_independent(pg_conn):
+    # The mixed-case vector sorts differently under "C" and en_US; pin that the
+    # helper's order is the C order whatever the database default is.
+    vector = next(
+        v for v in VECTORS["vectors"] if v["name"] == "registry_ids_mixed_case"
+    )
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT array_agg(t->>0 ORDER BY ord) FROM jsonb_array_elements("
+            " public.cyl_trait_recipe_payload_v1(%s::jsonb)->'models')"
+            " WITH ORDINALITY AS m(t, ord)",
+            (vector["raw_provenance"],),
+        )
+        ids = cur.fetchone()[0]
+    assert ids == sorted(ids, key=lambda s: s.encode("utf-8"))
+    assert ids != sorted(ids, key=str.lower)
+
+
 def test_partitions_match_contracts_identity(pg_conn):
     vectors = VECTORS["vectors"]
     with pg_conn.cursor() as cur:
@@ -435,6 +469,8 @@ def test_backfill_unresolvable_image_ids(pg_conn):
             ["999999999999"],
             [str(imgs1[0]), str(imgs2[0])],
             ["1" * 30],
+            # The RPC counts a JSON null as a requested id it cannot match, and raises.
+            [str(imgs1[0]), None],
         ):
             base = _base()
             if image_ids == "MISSING":
@@ -456,7 +492,9 @@ def test_backfill_unresolvable_image_ids(pg_conn):
         for n in notices
         if (
             m := re.match(
-                r"cyl recipe backfill: (\d+) source\(s\) with unresolved image_ids", n
+                r"cyl recipe backfill: (\d+) object-metadata source\(s\) left without "
+                r"a scan_id",
+                n,
             )
         )
     ]

@@ -291,6 +291,24 @@ def test_r3_restores_the_three_argument_function():
     ).read_text(encoding="utf-8")
 
 
+def test_r3_restores_the_20260728000000_function_verbatim():
+    def region(path):
+        text = path.read_text(encoding="utf-8")
+        start = text.index("CREATE OR REPLACE FUNCTION public.get_experiment_traits(")
+        return text[start : text.index("$$;", start) + 3]
+
+    old = MIGRATIONS / "20260728000000_get_experiment_traits.sql"
+    assert region(_one(ROLLBACKS, R3)) == region(old)
+
+
+def test_r3_guard_runs_before_any_drop():
+    code = _code(_one(ROLLBACKS, R3))
+    guard = re.search(r"RAISE\s+EXCEPTION", code, re.I)
+    first_drop = re.search(r"\bDROP\b", code, re.I)
+    assert guard and first_drop and guard.start() < first_drop.start()
+    assert "_cyl_trait_recipe_presence" in code[: first_drop.start()]
+
+
 # --------------------------------------------------------------------------- #
 # Migration 4: dataset recipe mode
 # --------------------------------------------------------------------------- #

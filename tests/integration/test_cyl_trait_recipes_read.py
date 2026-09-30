@@ -246,7 +246,7 @@ def test_list_intersection_and_scan_selection(fx):
     got = _list(fx.cur, [fx.E1], [fx.s["a"], fx.s["e2"]])
     assert {k: v["n_scans"] for k, v in got.items()} == {fx.K["K1"]: 1}
     got = _list(fx.cur, None, [fx.s["e"]])
-    assert set(got) == {fx.K["K1"], fx.K["K2"]}
+    assert {k: v["n_scans"] for k, v in got.items()} == {fx.K["K1"]: 1, fx.K["K2"]: 1}
     assert _list(fx.cur, None, [fx.s["i"]]) == {}
 
 
@@ -256,8 +256,19 @@ def test_list_empty_arrays_select_nothing(fx, args):
 
 
 def test_list_requires_a_selection(fx):
-    with pytest.raises(psycopg.errors.RaiseException):
+    with pytest.raises(psycopg.errors.RaiseException, match="give experiment_ids_"):
         _list(fx.cur)
+
+
+def test_presence_helper_selects_nothing_without_a_selection(fx):
+    # The helper is reachable over PostgREST; with no selection it must not walk every
+    # scan in the database (cyl-trait-read "Recipe presence is defined by trait rows").
+    fx.cur.execute("SELECT count(*) FROM public._cyl_trait_recipe_presence(NULL, NULL)")
+    assert fx.cur.fetchone()[0] == 0
+    fx.cur.execute(
+        "SELECT count(*) FROM public._cyl_trait_recipe_presence(%s, NULL)", ([fx.E1],)
+    )
+    assert fx.cur.fetchone()[0] > 0
 
 
 def test_list_legacy_and_unattributed_defaults(fx):
@@ -325,7 +336,7 @@ def test_coverage_no_trait_data(fx):
 
 def test_coverage_unknown_key_raises_stored_key_accepted(fx):
     fx.cur.execute("SAVEPOINT unknown")
-    with pytest.raises(psycopg.errors.RaiseException):
+    with pytest.raises(psycopg.errors.RaiseException, match="unknown recipe_key"):
         _coverage(fx.cur, [fx.E1], recipe_key="f" * 64)
     fx.cur.execute("ROLLBACK TO SAVEPOINT unknown")
     got = _coverage(fx.cur, [fx.E1], recipe_key=fx.K["K3"])
@@ -387,7 +398,7 @@ def test_recipe_read_stored_elsewhere_returns_nothing(fx):
 
 @pytest.mark.parametrize("bad", ["f" * 64, "legacy:999999999999", "A" * 64, "foo"])
 def test_recipe_read_mistyped_key_raises(fx, bad):
-    with pytest.raises(psycopg.errors.RaiseException):
+    with pytest.raises(psycopg.errors.RaiseException, match="unknown recipe_key"):
         _traits(fx.cur, fx.E1, recipe_key=bad)
 
 
@@ -400,7 +411,7 @@ def test_recipe_read_mistyped_key_raises(fx, bad):
     ],
 )
 def test_two_selectors_raise(fx, kw):
-    with pytest.raises(psycopg.errors.RaiseException):
+    with pytest.raises(psycopg.errors.RaiseException, match="at most one of"):
         _traits(fx.cur, fx.E1, **kw)
 
 
@@ -566,6 +577,38 @@ def test_migration_3_body_is_idempotent(pg_conn):
         cur.execute(sql_body(migration(3)))
         cur.execute(sql_body(migration(3)))
         assert _arg_counts(cur, "get_experiment_traits") == [5]
+
+
+@pytest.mark.parametrize(
+    "sig",
+    [
+        "public._cyl_trait_recipe_presence(bigint[],bigint[])",
+        "public.list_trait_recipes(bigint[],bigint[])",
+        "public.get_trait_recipe_coverage(bigint[],bigint[],text)",
+        "public.get_experiment_traits(bigint,bigint,text,text,bigint[])",
+    ],
+)
+def test_recipe_read_functions_pin_search_path(pg_conn, sig):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (sig,)
+        )
+        assert cur.fetchone()[0] == ["search_path=pg_catalog, public"]
+
+
+def test_rollback_3_refuses_while_dataset_recipe_mode_is_live(pg_conn):
+    # R3 drops _cyl_trait_recipe_presence; M4's create_cyl_dataset calls it, and plpgsql
+    # does not track that dependency, so R3 must refuse until R4 has run.
+    from tests.integration.cyl_recipe_helpers import rollback
+
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT r3")
+        with pytest.raises(psycopg.errors.RaiseException, match="create_cyl_dataset"):
+            cur.execute(sql_body(rollback(3)))
+        cur.execute("ROLLBACK TO SAVEPOINT r3")
+        cur.execute(sql_body(rollback(4)))
+        cur.execute(sql_body(rollback(3)))
+        assert _arg_counts(cur, "get_experiment_traits") == [3]
 
 
 def _attrs(cur, sig):

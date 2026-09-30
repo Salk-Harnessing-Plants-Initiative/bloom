@@ -150,8 +150,11 @@ BEGIN
            recipe_key_version = 1
      WHERE s.recipe_key IS NULL;
 
-    -- Scan: the write-back RPC's own rule. Every image id numeric, every one an
-    -- image with a scan, exactly one distinct scan. Anything else stays NULL.
+    -- Scan: the write-back RPC's resolution, with NULL where the RPC would raise.
+    -- Every image id numeric (a JSON null is not), every one an image with a scan,
+    -- exactly one distinct scan. The RPC's ^[0-9]+$ is capped at 18 digits here so
+    -- the ::bigint cast can never raise; a longer id stays NULL. Anything else
+    -- stays NULL.
     WITH candidates AS (
         SELECT s.id, s.metadata -> 'inputs' -> 'image_ids' AS image_ids
           FROM public.cyl_trait_sources s
@@ -163,7 +166,7 @@ BEGIN
           FROM candidates c, jsonb_array_elements_text(c.image_ids) AS e
     ), resolved AS (
         SELECT el.id,
-               bool_and(el.image_id ~ '^[0-9]{1,18}$') AS all_numeric,
+               bool_and(coalesce(el.image_id ~ '^[0-9]{1,18}$', false)) AS all_numeric,
                count(DISTINCT el.image_id) AS n_requested,
                count(DISTINCT i.id) AS n_matched,
                count(DISTINCT i.scan_id) AS n_scans,
@@ -185,7 +188,8 @@ BEGIN
     SELECT count(*) INTO v_unresolved
       FROM public.cyl_trait_sources
      WHERE jsonb_typeof(metadata) = 'object' AND scan_id IS NULL;
-    RAISE NOTICE 'cyl recipe backfill: % source(s) with unresolved image_ids', v_unresolved;
+    RAISE NOTICE 'cyl recipe backfill: % object-metadata source(s) left without a scan_id',
+        v_unresolved;
     RETURN v_unresolved;
 END;
 $fn$;

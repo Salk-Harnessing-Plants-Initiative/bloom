@@ -59,7 +59,7 @@ WITH keyed AS (
           FROM candidates c, jsonb_array_elements_text(c.image_ids) AS e
     ), resolved AS (
         SELECT el.id,
-               bool_and(el.image_id ~ '^[0-9]{1,18}$') AS all_numeric,
+               bool_and(coalesce(el.image_id ~ '^[0-9]{1,18}$', false)) AS all_numeric,
                count(DISTINCT el.image_id) AS n_requested,
                count(DISTINCT i.id) AS n_matched,
                count(DISTINCT i.scan_id) AS n_scans,

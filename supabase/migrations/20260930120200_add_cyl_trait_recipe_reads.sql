@@ -14,6 +14,8 @@
 --      candidates are the sources whose scan_id is that scan or NULL, each confirmed
 --      by a LATERAL ... LIMIT 1 probe on the (scan_id, source_id, trait_id) index.
 --      An EXISTS form was planned as a hash aggregate over all of cyl_scan_traits.
+--      It is reachable over PostgREST, so with both selectors NULL it selects no
+--      scans (the public wrappers raise on that call instead).
 --   2. list_trait_recipes(experiment_ids_, scan_ids_).
 --   3. get_trait_recipe_coverage(experiment_ids_, scan_ids_, recipe_key_).
 --   4. get_experiment_traits gains recipe_key_ and scan_ids_ and a trailing
@@ -55,7 +57,8 @@ AS $fn$
           JOIN public.cyl_plants p  ON p.wave_id = w.id
           JOIN public.accessions a  ON p.accession_id = a.id
           JOIN public.cyl_scans  sc ON sc.plant_id = p.id
-         WHERE (experiment_ids_ IS NULL OR e.id = ANY (experiment_ids_))
+         WHERE (experiment_ids_ IS NOT NULL OR scan_ids_ IS NOT NULL)
+           AND (experiment_ids_ IS NULL OR e.id = ANY (experiment_ids_))
            AND (scan_ids_ IS NULL OR sc.id = ANY (scan_ids_))
     ), unplaced AS MATERIALIZED (
         -- Legacy sources and any pipeline source whose scan could not be resolved.
@@ -254,6 +257,7 @@ CREATE OR REPLACE FUNCTION public.get_experiment_traits(
 LANGUAGE plpgsql
 STABLE
 SECURITY INVOKER
+SET search_path = pg_catalog, public
 AS $$
 BEGIN
     IF (source_id_ IS NOT NULL)::int + (run_id_ IS NOT NULL)::int

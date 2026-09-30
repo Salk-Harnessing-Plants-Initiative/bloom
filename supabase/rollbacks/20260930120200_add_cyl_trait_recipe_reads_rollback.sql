@@ -8,13 +8,34 @@
 --   supabase migration repair --status reverted 20260930120200
 --
 -- ORDER: apply the dataset recipe-mode rollback (20260930120300) first; its
--- create_cyl_dataset calls _cyl_trait_recipe_presence, which this drops.
+-- create_cyl_dataset calls _cyl_trait_recipe_presence, which this drops. plpgsql
+-- does not track that dependency, so the drop would succeed and every later
+-- recipe-mode call would fail. The guard below refuses instead.
 --
 -- Drops the recipe read functions and restores 20260728000000's three-argument
 -- get_experiment_traits verbatim, with its grants. anon regains EXECUTE through
 -- Supabase default privileges, as before.
 
 BEGIN;
+
+DO $$
+DECLARE
+    v_users text;
+BEGIN
+    SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY p.oid::regprocedure::text)
+      INTO v_users
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND p.prokind IN ('f', 'p')
+       AND p.proname NOT IN ('list_trait_recipes', 'get_trait_recipe_coverage',
+                             'get_experiment_traits', '_cyl_trait_recipe_presence')
+       AND p.prosrc ~ '_cyl_trait_recipe_presence';
+    IF v_users IS NOT NULL THEN
+        RAISE EXCEPTION 'rollback refused: % still call(s) _cyl_trait_recipe_presence; '
+                        'apply the dataset recipe-mode rollback first', v_users;
+    END IF;
+END $$;
 
 DROP FUNCTION IF EXISTS public.get_trait_recipe_coverage(bigint[], bigint[], text);
 DROP FUNCTION IF EXISTS public.list_trait_recipes(bigint[], bigint[]);

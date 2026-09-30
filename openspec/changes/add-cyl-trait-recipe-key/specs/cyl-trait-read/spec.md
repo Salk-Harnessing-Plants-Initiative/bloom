@@ -206,7 +206,9 @@ all use it.
 - A source with no trait rows SHALL contribute no recipe to any scan.
 - Rows of a source whose `recipe_key` is NULL SHALL contribute no recipe.
 - Rows of a source whose `scan_id` names a different scan SHALL contribute no recipe to the scan
-  they sit on. The write-back RPC never writes such rows; only a direct `bloom_admin` edit can.
+  they sit on. The write-back RPC never writes such rows. A direct `bloom_admin` edit can, and so
+  can the backfill, for a source whose image was moved to another scan after its rows were written
+  (`authenticated` and `bloom_writer` may UPDATE `cyl_images`).
 
 **Stored recipes.** A _stored recipe_ is a `recipe_key` value present on at least one
 `cyl_trait_sources` row, in any experiment.

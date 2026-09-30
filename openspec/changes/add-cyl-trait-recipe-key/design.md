@@ -103,6 +103,12 @@ keys (contracts#47 asks whether contracts should own one).
 - The one documented divergence is `1` versus `1.0` in `predict_output_params`. Contracts'
   `hashing._normalize` collapses integer-valued floats; jsonb keeps them distinct. Predict emits
   `{"peak_threshold": 0.2}` as of 2026-09-29.
+- jsonb also keeps a trailing zero (`0.20` and `0.2` hash differently). Pydantic never writes
+  `0.20`, so only a hand-built envelope can hit this.
+- **A key value is frozen.** `recipe_key_v1_expected_keys.json` holds each golden vector's key, and
+  a test compares the helper's output to it. One vector's registry ids sort differently under
+  `COLLATE "C"` and `en_US`, so a dropped collation fails it (checked 2026-09-30 by removing it in
+  a rolled-back transaction).
 
 **Versioning.** A redefinition is `recipe_key_version = 2`, with new helpers. v1 values are never
 rewritten.
@@ -154,8 +160,9 @@ backfill cannot see its uncommitted row. The remedy is to re-run the function as
 is safe to repeat. Task 8.1 therefore checks `count(*) WHERE recipe_key IS NULL = 0`, not a fixed
 total.
 
-**Scan resolution is guarded.** A `~ '^[0-9]+$'` test comes before any `::bigint` cast, and a
-non-array `image_ids` counts as unresolvable.
+**Scan resolution is guarded.** A `~ '^[0-9]{1,18}$'` test comes before any `::bigint` cast, so
+the cast cannot raise. A non-array `image_ids`, or a JSON `null` element, counts as unresolvable;
+the RPC raises on both.
 
 **No read of the traits table.** It never reads `cyl_scan_traits` (28.9M rows, and no index leads
 with `source_id`). Agreement with the trait rows is checked in tests and in the pre-merge staging
@@ -187,6 +194,11 @@ sources.
 | `EXISTS` (planned as a hash aggregate over all 28.9M rows) | 7.0 s, against PostgREST's 8 s limit |
 
 A unit test pins the `LATERAL … LIMIT 1` text, because `EXPLAIN` cannot see inside plpgsql.
+
+**No selection, no scans.** `_cyl_trait_recipe_presence` must be executable by the read roles,
+because the `SECURITY INVOKER` wrappers call it, and that makes it reachable over PostgREST. With
+both selectors NULL it would probe every scan in the database, bounded only by
+`statement_timeout`, so it selects no scans then. The public wrappers raise on that call instead.
 
 **Why "default recipe" means the most recent recipe.** It is the most recently written recipe,
 not the one covering the most scans. `n_scans` lets a caller choose by coverage instead.

@@ -16,11 +16,11 @@ The rules live in the specs; this page explains them and defines the export side
 
 ## Recipe, idempotency key and source
 
-|                                                           | Identifies                                                                                                 | Per scan?                                      |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| **Idempotency key** (`cyl_trait_sources.idempotency_key`) | One job: this computation on this scan's images and params. Write-back uses it to make re-delivery a no-op | Yes                                            |
-| **Recipe key** (`cyl_trait_sources.recipe_key`)           | The computation alone: the idempotency payload without `scan_key`, `images_checksum` and `param_hash`      | No: shared by every scan computed the same way |
-| **Source** (`cyl_trait_sources.id`)                       | One delivery's rows. A pipeline source covers one scan; a legacy source covers many                        | Pipeline: yes                                  |
+|                                                           | Identifies                                                                                                         | Per scan?                                      |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| **Idempotency key** (`cyl_trait_sources.idempotency_key`) | One job: this computation on this scan's images and params. Write-back uses it to make re-delivery a no-op         | Yes                                            |
+| **Recipe key** (`cyl_trait_sources.recipe_key`)           | The models, code and output params: the idempotency payload without `scan_key`, `images_checksum` and `param_hash` | No: shared by every scan computed the same way |
+| **Source** (`cyl_trait_sources.id`)                       | One delivery's rows. A pipeline source covers one scan; a legacy source covers many                                | Pipeline: yes                                  |
 
 `list_experiment_trait_sources` lists sources. For pipeline data that is one per scan, so pinning
 one source reads one scan. Use `list_trait_recipes` and `recipe_key_` to read a coherent set.

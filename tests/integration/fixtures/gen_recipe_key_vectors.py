@@ -190,6 +190,21 @@ def _cases() -> list[tuple[str, Provenance, str | None]]:
         ),
         ("no_models", _prov(predict_models=[]), None),
         (
+            # Sorts differently under COLLATE "C" and en_US: pins the helper's order.
+            "registry_ids_mixed_case",
+            _prov(
+                predict_models=[
+                    PRIMARY.model_copy(
+                        update={"registry_id": "Org/registry/b-primary"}
+                    ),
+                    LATERAL.model_copy(
+                        update={"registry_id": "org/registry/a-lateral"}
+                    ),
+                ]
+            ),
+            None,
+        ),
+        (
             "output_params_int",
             _prov(predict_output_params={"peak_threshold": 1}),
             "int-vs-float",

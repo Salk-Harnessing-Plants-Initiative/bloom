@@ -88,15 +88,15 @@ invisible to PostgREST.
     - `weights_checksum` `None` versus `""`;
     - `predict_output_params` as `None`, `{}` and non-empty;
     - code-sha changes.
-  - Each vector stores `raw_provenance`, a **JSON text string** of `model_dump(mode="json")`,
-    plus a `partition_id`. The `partition_id` is the class of `compute_idempotency_key(...)` with
-    `scan_key`, `images_checksum` and `param_hash` fixed to `"X"`.
-  - One pair is written by hand as raw text: `{"peak_threshold": 1}` versus
-    `{"peak_threshold": 1.0}`. Contracts puts them in the same partition, and the pair is marked
-    `expected_divergence`.
+  - Each vector stores `raw_provenance`, the **JSON text string** of `model_dump_json()`, plus a
+    `partition`. The `partition` is `compute_idempotency_key(...)` with `scan_key`,
+    `images_checksum` and `param_hash` fixed to `"X"`.
+  - One pair is `{"peak_threshold": 1}` versus `{"peak_threshold": 1.0}`, built through pydantic
+    like the rest (its JSON keeps `1` and `1.0` apart). Contracts puts them in the same partition,
+    and the pair shares the `divergence_group` `"int-vs-float"`.
   - The script writes `json.dumps(…, indent=2) + "\n"` to
     `tests/integration/fixtures/recipe_key_v1_vectors.json`, and it has a `--check` mode that
-    verifies a byte-identical regeneration.
+    compares a regeneration with the file as parsed JSON, so a prettier reflow does not matter.
   - Commit both files.
 
 - [x] 2.2 New file `tests/integration/test_cyl_trait_recipe_key.py`: the helpers.
@@ -148,7 +148,8 @@ invisible to PostgREST.
       matching no image, or resolving to two scans.
     - The call completes and `scan_id` stays NULL.
     - The NOTICE, captured with `conn.add_notice_handler`, matches
-      `cyl recipe backfill: (\d+) source\(s\) with unresolved image_ids`. Its count equals the
+      `cyl recipe backfill: (\d+) object-metadata source\(s\) left without a scan_id` (reworded in
+      9.4). Its count equals the
       baseline plus the number seeded, where the baseline is the count of object-metadata sources
       with NULL `scan_id` taken before seeding.
     - A resolvable duplicate id `[i, i]` does resolve.
@@ -668,10 +669,88 @@ down_to=2)`:
   - It notes the `erd.md` and timestamp overlap with Benfica's video-queue branch.
   - It notes the pre-deploy lock check (design § Risks).
   - Check it with `make pr-body-check BODY=<file>`.
-- [ ] 7.6 **Open the PR to `staging` only after eberrigan says yes.**
+- [x] 7.6 **Open the PR to `staging` only after eberrigan says yes.** Opened 2026-09-30 as #976;
+      `compose-health-check` is green, and the gateway tests passed there.
   - It is squash-merged, and eberrigan merges it.
   - If the push of a new branch returns 500, create the ref through the REST API first.
   - Confirm `compose-health-check` is green; the gateway tests run only in CI.
+
+## 9. Review round 1 (`/review-pr`, 2026-09-30)
+
+Five reviewers (code quality, testing, data integrity, security, behaviour) found nothing
+blocking. Each finding was re-checked against the source or the dev DB before it was fixed. Design
+questions (the empty provenance payload's key, a stale single Workflow-name match, dataset
+immutability, 8.0 as a gate) go to eberrigan one at a time and are not in this section.
+
+### Tests (red)
+
+- [x] 9.1 **Frozen v1 keys.** The generator gains `registry_ids_mixed_case`, whose registry ids
+      sort differently under `COLLATE "C"` and `en_US`. New fixture
+      `tests/integration/fixtures/recipe_key_v1_expected_keys.json`: each vector's key, captured
+      once from the migration-1 helper (after checking the dev DB's helper text is migration 1's).
+  - `test_vectors_hash_to_their_frozen_v1_keys` compares every vector's key with the fixture.
+  - `test_model_order_is_collation_independent` checks that the payload's model order is the
+    byte order, not the case-folded one.
+  - Mutation check: with `COLLATE "C"` removed in a rolled-back transaction, the mixed-case
+    vector's key changes and no other does.
+  - The vector `--check` still cannot run in CI: a migration PR may not touch `.github/`
+    (`lint_migration_isolation.py`). It stays a follow-up for a separate PR.
+- [x] 9.2 **Presence with no selection.**
+      `test_presence_helper_selects_nothing_without_a_selection`: `_cyl_trait_recipe_presence(NULL,
+NULL)` returns no rows, and a call with an experiment still returns rows. The helper is
+      reachable over PostgREST (design D5).
+- [x] 9.3 **Rollback 3's guard and `search_path`.**
+  - `test_rollback_3_refuses_while_dataset_recipe_mode_is_live`: with migration 4 live, R3 raises
+    naming `create_cyl_dataset`; after R4, R3 applies.
+  - Unit: `test_r3_guard_runs_before_any_drop` and
+    `test_r3_restores_the_20260728000000_function_verbatim`.
+  - `test_recipe_read_functions_pin_search_path`: all four migration-3 functions have
+    `search_path=pg_catalog, public`.
+- [x] 9.4 **Backfill.** `test_backfill_unresolvable_image_ids` gains `[image, null]`: the RPC
+      raises on it, so the backfill must leave `scan_id` NULL. The NOTICE is reworded to
+      `cyl recipe backfill: % object-metadata source(s) left without a scan_id`: it counts every
+      object-metadata source without a scan, including those with no `image_ids` at all.
+- [x] 9.5 **Coverage gaps and exact errors.**
+  - `test_batch_workflow_stamps_its_one_run`: one run with three run-scan rows under one Workflow
+    name. A requested and an unrequested delivery both get that run.
+  - `test_recipe_mode_timepoints_and_qc` now also freezes an age-7 scan of the recipe, instead of
+    only testing a filter that matches nothing.
+  - `test_legacy_recipe_mode_skips_plants_without_an_accession` pins the documented difference
+    between recipe and source mode (new cyl-datasets scenario).
+  - `match=` on every error test in the read and dataset files, and `n_scans` asserted in
+    `test_list_intersection_and_scan_selection`.
+- [x] 9.6 **Record the red check.** Observed (2026-09-30): 5 failed, 312 passed, 5 skipped (the
+      gateway tests) across the read, dataset, key, write-back and unit files. Failing: 9.1's
+      frozen keys (no fixture yet), 9.2, 9.3's integration guard test, the `get_experiment_traits`
+      case of the `search_path` test, and the unit guard test. Then 9.4: 1 failed (the null case
+      resolved to a scan). Green by design, because they pin existing behaviour: 9.5, the
+      collation-order test, and R3's verbatim body.
+
+### Implementation (green)
+
+- [x] 9.7 **Migration 3.** The helper's `selected` CTE requires a selector.
+      `get_experiment_traits` gets `SET search_path = pg_catalog, public`, like its siblings.
+- [x] 9.8 **Rollback 3.** A `pg_proc.prosrc` guard, like R1's, refuses while any other function
+      calls `_cyl_trait_recipe_presence`.
+- [x] 9.9 **Migration 1** (and the drift-pinned dry run SQL). `bool_and(coalesce(… ~
+      '^[0-9]{1,18}$', false))`, so a JSON null is unresolvable, and the reworded NOTICE. The 7.2
+      staging counts stand: contracts types `image_ids` as `list[str]`, and the RPC rejects a
+      null element, so no RPC-written source holds one.
+- [x] 9.10 **Normative text made true.**
+  - cyl-trait-read: the backfill can also leave a source's `scan_id` on another scan (an image
+    moved after write-back; `authenticated` and `bloom_writer` may UPDATE `cyl_images`).
+  - cyl-trait-writeback: the backfill's conditions now say `{1,18}` and non-NULL, and how they
+    differ from the RPC's; the NOTICE text.
+  - cyl-datasets: "A legacy recipe matches source mode" holds when every plant has an accession;
+    a new scenario covers the case where one does not.
+  - design D1 (the `0.20` divergence, frozen keys), D4 (the regex), D5 (no selection, no scans);
+    2.1 above (the vectors' real field names); `trait-recipes.md` ("the models, code and output
+    params", not "the computation alone").
+- [x] 9.11 **Types.** The hand-kept `web/types/database.types.ts` types `create_cyl_dataset`'s
+      `trait_source_id` as `number | null`, which recipe mode needs. The generated copies are
+      unchanged (the generator never marks arguments nullable).
+- [x] 9.12 **Go green.** The edited migrations 1 and 3 were re-applied to the dev DB as
+      `postgres`.
 
 ## 8. After merge
 

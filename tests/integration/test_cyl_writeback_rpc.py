@@ -1964,6 +1964,27 @@ def test_unrequested_scan_still_stamps_run(pg_conn):
         assert res["status_update_matched"] is False
 
 
+def test_batch_workflow_stamps_its_one_run(pg_conn):
+    # One Argo Workflow per batch: several run-scan rows of ONE run share the name, so
+    # the lookup must count distinct runs, not rows.
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        scans = [_seed_scan(cur) for _ in range(3)]
+        run_id = _seed_run_scan_for_writeback(cur, scans[0][0], wf)
+        for scan_id, _ in scans[1:]:
+            cur.execute(
+                "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status)"
+                " VALUES (%s, %s, %s, 'queued')",
+                (run_id, scan_id, wf),
+            )
+        _, _, _, res = _deliver(cur, workflow=wf, scan=scans[1])
+        assert recipe_columns(cur, res["source_id"])["cyl_pipeline_run_id"] == run_id
+        _, _, _, unrequested = _deliver(cur, workflow=wf)
+        assert (
+            recipe_columns(cur, unrequested["source_id"])["cyl_pipeline_run_id"] == run_id
+        )
+
+
 def test_hand_submitted_delivery_stamps_workflow_only(pg_conn):
     with pg_conn.cursor() as cur:
         wf = _wf()

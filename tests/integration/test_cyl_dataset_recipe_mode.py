@@ -238,6 +238,32 @@ def test_recipe_mode_unattributed_and_legacy(pg_conn):
         assert _frozen(cur, by_key) == _frozen(cur, by_src)
 
 
+def _wave_of(cur, scan_id):
+    cur.execute(
+        "SELECT wave_id FROM cyl_plants WHERE id = %s", (_plant_of(cur, scan_id),)
+    )
+    return cur.fetchone()[0]
+
+
+def test_legacy_recipe_mode_skips_plants_without_an_accession(pg_conn):
+    # cyl-datasets "Which scans recipe mode can see": source mode keeps the full
+    # cyl_scans_extended set; recipe mode goes through accessions (inner).
+    with pg_conn.cursor() as cur:
+        fx = Fixture(cur)
+        orphan = _seed_scan_in(cur, _wave_of(cur, fx.s["a"]), n_images=0)[0]
+        cur.execute(
+            "UPDATE cyl_plants SET accession_id = NULL WHERE id = %s",
+            (_plant_of(cur, orphan),),
+        )
+        fx._rows(fx.L, orphan, {"A": 9.0})
+        by_key = _by_scan(
+            _frozen(cur, _create(cur, fx.E1, recipe_key=fx.K["legacy:L"]))
+        )
+        by_src = _by_scan(_frozen(cur, _create(cur, fx.E1, trait_source_id=fx.L)))
+        assert orphan in by_src and orphan not in by_key
+        assert {k: v for k, v in by_src.items() if k != orphan} == by_key
+
+
 def test_recipe_mode_timepoints_and_qc(pg_conn):
     with pg_conn.cursor() as cur:
         fx = Fixture(cur)
@@ -245,27 +271,35 @@ def test_recipe_mode_timepoints_and_qc(pg_conn):
             _frozen(cur, _create(cur, fx.E1, recipe_key=fx.K["K1"], timepoints=[7]))
             == []
         )
+        fx.s["t7"] = _seed_scan_in(
+            cur, _wave_of(cur, fx.s["a"]), n_images=0, plant_age_days=7
+        )[0]
+        t7 = fx._source(80, "k1", scan="t7", rows={"A": 80.0})
+        got = _by_scan(
+            _frozen(cur, _create(cur, fx.E1, recipe_key=fx.K["K1"], timepoints=[7]))
+        )
+        assert got == {fx.s["t7"]: {t7}}
         qc = _qc_set(cur, _plant_of(cur, fx.s["a"]))
         got = _by_scan(_frozen(cur, _create(cur, fx.E1, recipe_key=fx.K["K1"], qc=qc)))
         assert fx.s["a"] not in got and fx.s["b"] in got
 
 
 @pytest.mark.parametrize(
-    "kw",
+    "kw, message",
     [
-        {},
-        {"trait_source_id": "SRC", "recipe_key": "unattributed"},
-        {"recipe_key": "f" * 64},
+        ({}, "exactly one of"),
+        ({"trait_source_id": "SRC", "recipe_key": "unattributed"}, "exactly one of"),
+        ({"recipe_key": "f" * 64}, "unknown recipe_key"),
     ],
 )
-def test_selector_errors(pg_conn, kw):
+def test_selector_errors(pg_conn, kw, message):
     with pg_conn.cursor() as cur:
         fx = Fixture(cur)
         kw = {k: (fx.src[45] if v == "SRC" else v) for k, v in kw.items()}
         cur.execute("SELECT count(*) FROM cyl_datasets")
         before = cur.fetchone()[0]
         cur.execute("SAVEPOINT sel")
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match=message):
             _create(cur, fx.E1, **kw)
         cur.execute("ROLLBACK TO SAVEPOINT sel")
         cur.execute("SELECT count(*) FROM cyl_datasets")
