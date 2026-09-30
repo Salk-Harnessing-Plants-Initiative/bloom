@@ -124,6 +124,8 @@ export type ExportState = {
   jobs: Map<string, unknown>
   /** The in-flight recipe listing per user, so a newer one can abort the older. */
   listings: Map<string, AbortController>
+  /** The unref'd timer that frees expired jobs; started with the first job. */
+  sweeper: ReturnType<typeof setInterval> | null
 }
 
 const KEY = Symbol.for('bloom.cylTraitExport')
@@ -134,6 +136,7 @@ function freshState(): ExportState {
     semaphore: new Semaphore(PG_CONCURRENCY, ABORTED_CALL_HOLD_MS),
     jobs: new Map(),
     listings: new Map(),
+    sweeper: null,
   }
 }
 
@@ -145,5 +148,7 @@ export function getExportState(): ExportState {
 
 /** Test-only: drop the process state so each test starts clean. */
 export function resetExportStateForTests(): void {
+  const state = (globalThis as Holder)[KEY]
+  if (state?.sweeper) clearInterval(state.sweeper)
   delete (globalThis as Holder)[KEY]
 }

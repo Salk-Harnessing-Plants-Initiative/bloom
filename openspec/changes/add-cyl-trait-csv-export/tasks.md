@@ -244,7 +244,7 @@
   - A mid-stream error rejects.
 - [x] 5.4 Implement `zip.ts`.
   **(done 2026-09-30: red 4 failed / 0 passed; green 4 passed. Synchronous ZipDeflate with a setImmediate yield per slice; an abort terminates the zip and throws cancelled)**
-- [ ] 5.5 **Test first.** `jobs.test.ts`, with fake timers, an injected clock and an injected build function:
+- [x] 5.5 **Test first.** `jobs.test.ts`, with fake timers, an injected clock and an injected build function:
   - **Lifecycle:**
     - start → `running` with progress → `ready`, with a UUID id;
     - another user → not found.
@@ -264,7 +264,8 @@
   - **Exposure:**
     - the status JSON's keys are exactly the whitelist;
     - the token and client are dropped at the terminal state.
-- [ ] 5.6 Implement `jobs.ts`.
+- [x] 5.6 Implement `jobs.ts`.
+  **(done 2026-09-30: red 16 failed / 0 passed; green 16 passed. A reservation counts as running until started or released, so the pre-202 selection can't race the limits; the sweep timer lives on the shared state and is cleared by the test reset)**
 
 ## 6. Routes
 
