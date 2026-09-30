@@ -702,16 +702,33 @@ describe("one submission per target, whatever happens to the dialog", () => {
     view.rerender(<RunPipelineDialog target={{ target_level: "scan_ids", scan_ids: [1, 2] }} title="2 scans" onClose={onClose} />);
     await settle();
     expect(queriesFor("cyl_scans_extended")).toHaveLength(reads);
-    expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("3 scans");
+    const heading = screen.getByRole("heading", { level: 2 }).textContent;
+    expect(heading).toContain("Run the pipeline on 3 scans");
+    expect(heading).not.toContain("on 2 scans");
     fireEvent.click(confirmButton()!);
     await settle();
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ target_level: "scan_ids", scan_ids: [1, 2, 3] });
   });
 
-  it("takes focus when it opens, and closes on Escape", async () => {
+  // The drill-down's failed ids change live while its dialog is open.
+  it("keeps the may-have-started lock on the target it sent, after its caller's target changes", async () => {
+    scans = [scanMeta(1, { experiment_id: 5 }), scanMeta(2, { experiment_id: 5 }), scanMeta(3, { experiment_id: 5 })];
+    fetchSpy.mockResolvedValue(reply(504, { detail: "timeout" }));
+    const view = render(<RunPipelineDialog target={{ target_level: "scan_ids", scan_ids: [1, 2, 3] }} title="3 scans" onClose={onClose} />);
+    await settle();
+    fireEvent.click(confirmButton()!);
+    await settle();
+    view.rerender(<RunPipelineDialog target={{ target_level: "scan_ids", scan_ids: [1, 2] }} title="2 scans" onClose={onClose} />);
+    await settle();
+    expect(dialogText()).toContain("The run may have started");
+    expect(confirmButton()?.disabled ?? true).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts focus on Cancel when it opens, and closes on Escape", async () => {
     mount();
     await settle();
-    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });

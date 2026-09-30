@@ -165,11 +165,12 @@ function content(target: TriggerTarget, { scans, latest, withImages }: Checked):
   return { N, blockers, stageInCount, noImagesCount, K, L, groups };
 }
 
-export function RunPipelineDialog({ target: requested, title, onClose, onStarted }: RunPipelineDialogProps) {
+export function RunPipelineDialog({ target: requested, title: requestedTitle, onClose, onStarted }: RunPipelineDialogProps) {
   const headingId = useId();
   const now = useNow();
   // Fixed at open: later changes to the caller's target don't reach what is checked or sent.
   const [target] = useState(requested);
+  const [title] = useState(requestedTitle);
   const [key] = useState(() => submissionKey(requested));
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [acknowledged, setAcknowledged] = useState(false);

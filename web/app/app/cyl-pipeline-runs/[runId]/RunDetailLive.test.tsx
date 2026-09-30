@@ -689,16 +689,31 @@ describe("re-run actions", () => {
     expect(dialog.props!.target).toEqual({ target_level: "scan_ids", scan_ids: [577, 578] });
   });
 
-  it("offers no re-run action when starting runs is switched off", async () => {
+  // One case per action: settled counts offer Re-run failed, queued rows on an ended run offer the other.
+  it.each([
+    ["failed", "written"],
+    ["failed", "queued"],
+  ] as const)("offers no re-run action when starting runs is switched off (a %s and a %s row)", async (a, b) => {
     run = { ...run, scan_count: 2, status: "complete" };
     scans = rows([
-      [577, "written"],
-      [578, "failed"],
+      [577, a],
+      [578, b],
     ]);
     mount(false, "all", false);
     await subscribe();
-    expect(header().textContent).toContain("Finished · 1 succeeded · 1 failed");
+    expect(header().textContent).toMatch(/^(Finished|Ended) · /);
     expect(rerunFailed()).toBeNull();
     expect(rerunUnresulted()).toBeNull();
+  });
+
+  it("offers Re-run scans without a result for the same rows when starting runs is switched on", async () => {
+    run = { ...run, scan_count: 2, status: "complete" };
+    scans = rows([
+      [577, "failed"],
+      [578, "queued"],
+    ]);
+    mount();
+    await subscribe();
+    expect(rerunUnresulted()!.textContent).toBe("Re-run scans without a result (2)");
   });
 });
