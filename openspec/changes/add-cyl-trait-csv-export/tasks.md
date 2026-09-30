@@ -127,12 +127,13 @@
 
 ## 2. Metadata
 
-- [ ] 2.1 **Test first.** `web/lib/cyl-trait-export/metadata.test.ts`:
+- [x] 2.1 **Test first.** `web/lib/cyl-trait-export/metadata.test.ts`:
   - `METADATA_COLUMNS` equals the fixture's 22 names in order;
   - `metadataCells(row, genotype)` equals every parity row's cells;
   - `safeComponent` covers `""`, `"."`, `".."`, `"..."`, `\`, `/`, `:` and `\0`;
   - `plant_age_days: 0` gives `Day0`.
-- [ ] 2.2 Implement `metadata.ts`.
+- [x] 2.2 Implement `metadata.ts`.
+  **(done 2026-09-30: red 29 failed / 0 passed against the throwing stub; green 29 passed. tsc clean.)**
 
 ## 3. Selection, merge, limits and state
 
