@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# FASTQ QC for one sample in S3: counts, lengths, chemistry guess, FastQC and a README, written to runs_output/<run-id>/qc/.
+# FASTQ QC for one sample in S3: counts, lengths, chemistry guess, FastQC and a README, in WORK_DIR/qc/<run-id>/.
+# UPLOAD_REPORT=true (the QC-only workflow) also uploads it to runs_output/<run-id>/qc/; inside a run it stays on the share.
 set -euo pipefail
 
 : "${SAMPLE:?set SAMPLE (folder under raw_reads/)}"
@@ -8,6 +9,9 @@ RUN_ID="${RUN_ID:-$SAMPLE}"
 SAMPLE_READS="${SAMPLE_READS:-200000}"
 CORES="${CORES:?set CORES to the CPU request of the job}"
 WORK_DIR="${WORK_DIR:-/work}"
+UPLOAD_REPORT="${UPLOAD_REPORT:-true}"
+# false inside a run, where the stage step has already copied the reads to FASTQ_DIR.
+DOWNLOAD_READS="${DOWNLOAD_READS:-true}"
 
 FASTQ_DIR="${WORK_DIR}/fastq/${SAMPLE}"
 OUT_DIR="${WORK_DIR}/qc/${RUN_ID}"
@@ -15,8 +19,10 @@ QC_URI="s3://${BUCKET}/runs_output/${RUN_ID}/qc"
 mkdir -p "${FASTQ_DIR}" "${OUT_DIR}/fastqc"
 exec > >(tee -a "${OUT_DIR}/run.log") 2>&1
 
-echo "Downloading reads (skips files already present)..."
-aws s3 sync "s3://${BUCKET}/raw_reads/${SAMPLE}/" "${FASTQ_DIR}/"
+if [ "${DOWNLOAD_READS}" = true ]; then
+  echo "Downloading reads (skips files already present)..."
+  aws s3 sync "s3://${BUCKET}/raw_reads/${SAMPLE}/" "${FASTQ_DIR}/"
+fi
 
 status=0
 fastq-qc --fastq-dir "${FASTQ_DIR}" --out-dir "${OUT_DIR}" --sample-reads "${SAMPLE_READS}" \
@@ -26,7 +32,11 @@ fastq-qc --fastq-dir "${FASTQ_DIR}" --out-dir "${OUT_DIR}" --sample-reads "${SAM
 fastqc --threads "${CORES}" --outdir "${OUT_DIR}/fastqc" "${FASTQ_DIR}"/*_R[12]_001.fastq.gz || status=$?
 qc-report "${OUT_DIR}" || status=$?
 
-# Upload the report even when QC fails, so the reason is in S3.
-echo "QC finished with exit ${status}; uploading report to ${QC_URI}/"
-aws s3 sync "${OUT_DIR}/" "${QC_URI}/"
+if [ "${UPLOAD_REPORT}" = true ]; then
+  # Upload the report even when QC fails, so the reason is in S3.
+  echo "QC finished with exit ${status}; uploading report to ${QC_URI}/"
+  aws s3 sync "${OUT_DIR}/" "${QC_URI}/"
+else
+  echo "QC finished with exit ${status}; report in ${OUT_DIR}/"
+fi
 exit "${status}"
