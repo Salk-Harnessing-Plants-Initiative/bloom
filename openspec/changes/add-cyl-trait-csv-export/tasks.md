@@ -156,14 +156,15 @@
   - a duplicate id, and an exact count of `|S|+1`, each give the typed "selection changed" error.
 - [x] 3.4 Implement `selection.ts` and `limits.ts`: `BATCH_SCANS`, `PG_CONCURRENCY`, `MAX_RUNNING_JOBS`, `MAX_JOBS_PER_USER`, `MAX_HELD_BYTES`, `RUNNING_JOB_RESERVE_BYTES`, `MIN_SESSION_SECONDS`, `EXPORT_MAX_SECONDS` and `RETAIN_SECONDS`.
   **(done 2026-09-30: red 20 failed / 0 passed; green 20 passed. limits.ts also names ABORTED_CALL_HOLD_MS = 9000 and SELECTION_PAGE_SIZE = 1000; errors.ts holds the ExportError type and the SELECTION_CHANGED message)**
-- [ ] 3.5 **Test first.** `state.test.ts`:
+- [x] 3.5 **Test first.** `state.test.ts`:
   - the FIFO semaphore of 3 is honoured across concurrent owners;
   - each owner has at most 3 outstanding, and owners interleave;
   - an acquire can be aborted (the waiter leaves the queue);
   - a slot is released on resolve and reject;
   - an aborted in-flight call holds its slot until 9 s after it was issued (fake timers);
   - the registry and the semaphore live on `globalThis[Symbol.for("bloom.cylTraitExport")]`: after `vi.resetModules()` and a second import, a job started through instance 1 is read through instance 2, with one semaphore count.
-- [ ] 3.6 Implement `state.ts`.
+- [x] 3.6 Implement `state.ts`.
+  **(done 2026-09-30: red 8 failed / 0 passed; green 8 passed. The per-owner limit is a pool() helper: an owner's next call only queues when one of its own finishes, so owners interleave under the FIFO semaphore. state also holds the per-user in-flight listing map)**
 
 ## 4. CSV, excluded CSV, sidecar and stem
 
