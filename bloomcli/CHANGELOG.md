@@ -8,6 +8,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a7] - 2026-09-30 — single-cell dataset files + per-run manifests
+
 ### Added
 
 - `scrna hdf5 upload`, `scrna hdf5 download` and `scrna hdf5 list`: a single-cell dataset's whole
@@ -39,6 +41,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   produced a result as `'failed'` once the batch is done. Feeds
   `cyl_pipeline_runs.done_count`/`failed_count` (bloom #716/#696). Manual/
   ad-hoc invocation with the variable unset is unaffected.
+
+- `cyl create-test-scan --poison | --good --frames-dir <dir>`: a developer tool that creates one
+  synthetic cylinder scan in the staging test experiment `A4-PIPELINE-E2E-TEST` only, either one
+  that fails to download (`--poison`) or a real one from frame images you supply (`--good`).
+
+- The PyPI project page documents `scrna hdf5 upload`, `download` and `list`, and the
+  `bloomctl[scrna]` extra that upload needs.
 
 ### Changed
 
