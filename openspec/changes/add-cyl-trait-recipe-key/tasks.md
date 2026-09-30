@@ -597,13 +597,19 @@ invisible to PostgREST.
   - `scripts/lint_migrations.sh origin/staging` and `scripts/lint_migration_isolation.py`.
   - Both `openspec validate` runs.
   - A manual check that no other active change MODIFIES this change's requirements.
-- [ ] 7.2 **Staging dry run, read-only.**
+- [x] 7.2 **Staging dry run, read-only.** Done 2026-09-29 with
+  `tests/integration/fixtures/recipe_backfill_dry_run.sql` (drift-pinned to M1 by unit tests):
+  85 sources, 85 keyed, 10 distinct pipeline keys, 80 of 80 resolved, 79 of 79 agreeing, no
+  errors, 4.6 s. The same query on the dev DB matched what migration 1 actually wrote there.
   - Extract the backfill function's body from M1, and run its SELECTs as CTEs with the helper
     inlined. Diff the extracted SQL against M1 first, so it cannot drift.
   - Commit the query as `tests/integration/fixtures/recipe_backfill_dry_run.sql`, which 8.0 reuses.
   - Record: 85 of 85 keys, 80 of 80 `scan_id`s, 10 distinct pipeline keys, 79 of 79 agreeing with
     trait rows, and no errors.
-- [ ] 7.3 **Coverage timing, read-only on staging (manual, not CI).** Run the M3 probe SQL for
+- [x] 7.3 **Coverage timing, read-only on staging (manual, not CI).** Done 2026-09-29: the
+  presence probes for experiment 1 (18,471 scans x 5 legacy sources, plus the NULL-source and
+  has-traits probes) ran in 711 ms, every probe an index-only scan and no sequential scan of
+  `cyl_scan_traits`. Run the M3 probe SQL for
   experiment 1 under `EXPLAIN ANALYZE`. It must be well under 8 s; it took 450 ms on 2026-09-29.
 - [x] 7.4 **Timestamps.** Done 2026-09-29: staging gained `20260930001749`, so the branch was
   rebased onto `6733eca1` and the eight files restamped `20260929230x00` → `20260930050x00`. The dev

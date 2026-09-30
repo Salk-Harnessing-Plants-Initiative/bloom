@@ -360,3 +360,61 @@ def test_r4_restores_the_base_function_region():
         return text[start:end]
 
     assert region(_one(ROLLBACKS, R4)) == region(DATASET_BASE)
+
+
+# --------------------------------------------------------------------------- #
+# The read-only backfill dry run (tasks.md 7.2 / 8.0) must not drift from M1
+# --------------------------------------------------------------------------- #
+
+DRY_RUN = (
+    REPO_ROOT / "tests" / "integration" / "fixtures" / "recipe_backfill_dry_run.sql"
+)
+
+
+def _norm(text: str) -> list[str]:
+    return _normalized(text.splitlines())
+
+
+def _between(text: str, start: str, end: str) -> str:
+    i = text.index(start) + len(start)
+    return text[i : text.index(end, i)]
+
+
+def test_dry_run_payload_matches_m1():
+    m1 = _one(MIGRATIONS, M1).read_text(encoding="utf-8")
+    fn = m1[m1.index("FUNCTION public.cyl_trait_recipe_payload_v1(") :]
+    body = _between(fn, "AS $fn$", "$fn$;")
+    dry = _between(
+        DRY_RUN.read_text(encoding="utf-8"), "-- BEGIN payload", "-- END payload"
+    )
+    assert _norm(dry)[1:] == _norm(
+        body
+    )  # [1:] drops the "(copied from ...)" comment line
+
+
+def test_dry_run_resolution_matches_m1_but_for_the_scan_id_filter():
+    m1 = _one(MIGRATIONS, M1).read_text(encoding="utf-8")
+    cte = "    WITH candidates AS (" + _between(
+        m1,
+        "    WITH candidates AS (",
+        "    UPDATE public.cyl_trait_sources s\n       SET scan_id",
+    )
+    dry = _between(
+        DRY_RUN.read_text(encoding="utf-8"), "-- BEGIN resolution", "-- END resolution"
+    )
+    expected = [
+        line.replace("WHERE s.scan_id IS NULL AND ", "WHERE ")
+        for line in _norm(cte)
+        if line != "WHERE s.scan_id IS NULL"
+    ]
+    expected = [
+        line.replace(
+            "AND jsonb_typeof(s.metadata) = 'object'",
+            "WHERE jsonb_typeof(s.metadata) = 'object'",
+            1,
+        )
+        if i == 3
+        else line
+        for i, line in enumerate(expected)
+    ]
+    assert _norm(dry)[1:] == expected
