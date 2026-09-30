@@ -4,43 +4,46 @@
 
 Bloom SHALL provide `get_experiment_traits(experiment_id_ BIGINT, source_id_ BIGINT DEFAULT NULL, run_id_ TEXT DEFAULT NULL, recipe_key_ TEXT DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL)` returning every trait row for the given experiment in a single call.
 
-**Columns and basis.** It returns `scan_id, date_scanned, plant_age_days, wave_number, plant_id,
-germ_day, plant_qr_code, accession_name, trait_name, source_id, trait_value, recipe_key`. It is
-built on `cyl_scan_traits_source` and reuses that view's `is_latest` selection rule rather than
-re-deriving it.
+**Columns.** It returns `scan_id, date_scanned, plant_age_days, wave_number, plant_id, germ_day,
+plant_qr_code, accession_name, trait_name, source_id, trait_value, recipe_key`, in that order.
+
+**Built on the view.** It is built on `cyl_scan_traits_source` and reuses that view's `is_latest`
+selection rule rather than re-deriving it.
 
 **Source selection.**
-- With `source_id_`, `run_id_` and `recipe_key_` all `NULL`, the function SHALL return the
-  latest source per scan for every trait.
-- With `source_id_` set it SHALL return only that source's rows.
-- With `run_id_` set it SHALL return each scan's values from the pipeline run whose
+- With `source_id_`, `run_id_` and `recipe_key_` all `NULL`, the function SHALL return the latest
+  source per scan for every trait.
+- With `source_id_` set, it SHALL return only that source's rows.
+- With `run_id_` set, it SHALL return each scan's values from the pipeline run whose
   `pipeline_run_id` equals `run_id_`.
-- With `recipe_key_` set it SHALL return, for each scan, the rows of that scan's highest
-  `source_id` whose `cyl_trait_sources.recipe_key` equals `recipe_key_`. For
-  `recipe_key_ = 'unattributed'`, it SHALL return that scan's `NULL`-source rows instead. Scans
-  with no such rows are omitted.
+- With `recipe_key_` set, it SHALL return, for each scan, only the rows of that scan's source of
+  that recipe, as defined in "Recipe presence is defined by trait rows". Scans without the recipe
+  are omitted.
 - Supplying more than one of `source_id_`, `run_id_` and `recipe_key_` SHALL raise an error.
+- A `recipe_key_` that names no stored recipe and is not `'unattributed'` SHALL raise an error.
 
-**Narrowing.** `scan_ids_`, when non-null, SHALL restrict every mode to those scans. An empty
-array returns zero rows.
+**Narrowing by scan.** `scan_ids_`, when non-null, SHALL restrict every mode to those scans. An
+empty array returns zero rows, and ids that are not scans of `experiment_id_` are ignored.
 
-**The `recipe_key` column** SHALL carry the row's source's `recipe_key`, or `'unattributed'` for
-a `NULL` `source_id`.
+**The `recipe_key` column** carries the row's source's `recipe_key`, or `'unattributed'` when
+`source_id` is NULL.
 
-**Parity.** With `recipe_key_` and `scan_ids_` both `NULL`, results SHALL be identical to the
-previous three-argument function's. The latest, `source_id` and `run_id` semantics SHALL match
+**Parity with the previous function.** With `recipe_key_` and `scan_ids_` both `NULL`, the first
+eleven columns and the row order (`accessions.name, cyl_plants.id, cyl_scans.id, trait_name`)
+SHALL be identical to those of the previous three-argument function.
+
+**Parity with `get_scan_traits`.** The latest, `source_id` and `run_id` semantics SHALL match
 `get_scan_traits`'s existing behavior byte-for-byte on any `(scan, trait)` combination both
 functions can return.
 
-**No mixing, and no dropped values.**
-- A scan whose latest source did not measure a trait an older source measured SHALL NOT have
-  that trait backfilled from the older source (no cross-source mixing).
-- A trait whose selected value is non-finite (stored `NULL`) SHALL be returned as a
-  `NULL`-valued row, not omitted.
+**No cross-source mixing, no dropped values.**
+- A scan whose selected source did not measure a trait that another source measured SHALL NOT have
+  that trait filled in from the other source.
+- A trait whose selected value is non-finite (stored `NULL`) SHALL be returned as a `NULL`-valued
+  row, not omitted.
 
-**Scope.** Results SHALL be scoped to `experiment_id_` only. No row from another experiment
-SHALL be returned under any argument combination, including a `scan_ids_` that names another
-experiment's scans.
+**Experiment scope.** Results SHALL be scoped to `experiment_id_` only. No row from another
+experiment SHALL be returned under any argument combination.
 
 #### Scenario: One call returns all traits for an experiment
 
@@ -70,25 +73,32 @@ experiment's scans.
 
 #### Scenario: Supplying more than one selector is rejected
 
-- **WHEN** `get_experiment_traits` is called with any two of `source_id_`, `run_id_` and
-  `recipe_key_` non-null
-- **THEN** the call raises an error and returns no rows
+- **WHEN** `get_experiment_traits` is called with `source_id_` and `run_id_`, with `source_id_` and
+  `recipe_key_`, or with `run_id_` and `recipe_key_` non-null
+- **THEN** each call raises an error and returns no rows
 
 #### Scenario: No cross-source mixing
 
 - **WHEN** an older source measured traits A and B for a scan and the latest source measured only A
 - **THEN** `get_experiment_traits`'s default path returns A from the latest source and does not return B
 
+#### Scenario: No cross-source mixing within a recipe
+
+- **WHEN** a scan has recipe `K1` sources 10 (traits A and B) and 20 (trait A only)
+- **THEN** `get_experiment_traits(experiment_id_, recipe_key_ => K1)` returns A from source 20 and
+  does not return B
+
 #### Scenario: Non-finite values are surfaced as NULL
 
-- **WHEN** the latest source for a scan stored a `NULL` value for a trait
+- **WHEN** the selected source for a scan stored a `NULL` value for a trait, on the default path or
+  in recipe mode
 - **THEN** `get_experiment_traits` returns that trait as a row with `trait_value = NULL`, not omitted
 
 #### Scenario: Results never cross experiment boundaries
 
-- **WHEN** `get_experiment_traits` is called for experiment A, with or without `source_id_`,
-  `run_id_`, `recipe_key_` or `scan_ids_` set, including a `scan_ids_` that lists experiment B's
-  scans
+- **WHEN** `get_experiment_traits` is called for experiment A, with any combination of `source_id_`,
+  `run_id_` or `recipe_key_`, including a recipe present only in experiment B, and with `scan_ids_`
+  listing experiment B's scans
 - **THEN** no row from any other experiment's scans is returned
 
 #### Scenario: An experiment with no trait rows returns cleanly
@@ -98,99 +108,179 @@ experiment's scans.
 
 #### Scenario: A recipe read returns one recipe only
 
-- **WHEN** an experiment's scans carry sources of recipes K1 and K2, and
-  `get_experiment_traits(experiment_id_, recipe_key_ = K1)` is called
-- **THEN** every returned row has `recipe_key = K1`, and a scan whose only sources are K2 returns
+- **WHEN** an experiment's scans carry sources of recipes `K1` and `K2`, and
+  `get_experiment_traits(experiment_id_, recipe_key_ => K1)` is called
+- **THEN** every returned row has `recipe_key = K1`, and a scan whose only sources are `K2` returns
   no rows
 
-#### Scenario: A recipe read takes each scan's newest source of that recipe
+#### Scenario: A recipe read takes each scan's highest source of that recipe
 
-- **WHEN** a scan has two sources of recipe K1 (ids 10 and 20) and a newer source (id 30) of
-  recipe K2
-- **THEN** `get_experiment_traits(experiment_id_, recipe_key_ = K1)` returns that scan's rows
-  from source 20 only
+- **WHEN** a scan has two sources of recipe `K1` (ids 10 and 20) and a newer source (id 30) of
+  recipe `K2`
+- **THEN** `get_experiment_traits(experiment_id_, recipe_key_ => K1)` returns that scan's rows from
+  source 20 only
 
 #### Scenario: The unattributed pseudo-recipe reads NULL-source rows
 
-- **WHEN** `get_experiment_traits(experiment_id_, recipe_key_ = 'unattributed')` is called for an
+- **WHEN** `get_experiment_traits(experiment_id_, recipe_key_ => 'unattributed')` is called for an
   experiment with `NULL`-source trait rows
-- **THEN** exactly those rows are returned, each with `recipe_key = 'unattributed'` and
-  `source_id` NULL
+- **THEN** exactly those rows are returned, each with `recipe_key = 'unattributed'` and a NULL
+  `source_id`
+
+#### Scenario: A legacy pseudo-recipe reads that source's rows
+
+- **WHEN** `get_experiment_traits(experiment_id_, recipe_key_ => 'legacy:L')` is called
+- **THEN** it returns the same first eleven columns as `get_experiment_traits(experiment_id_,
+  source_id_ => L)`
+
+#### Scenario: A mistyped recipe key is rejected
+
+- **WHEN** `recipe_key_` is 64 hex characters that match no stored `recipe_key`
+- **THEN** the call raises an error
 
 #### Scenario: scan_ids_ narrows the default path
 
 - **WHEN** `get_experiment_traits(experiment_id_, scan_ids_ => ARRAY[s1])` is called
-- **THEN** only scan `s1`'s latest-source rows are returned
+- **THEN** only scan `s1`'s latest-source rows are returned, and an empty `scan_ids_` returns zero
+  rows
 
 #### Scenario: The default path is unchanged by the new arguments
 
-- **WHEN** `get_experiment_traits(experiment_id_)` is called after this change, on the same data
-  as before it
-- **THEN** the first eleven columns of every row are identical to the previous function's
-  output, in the same order
+- **WHEN** the previous three-argument function and the new function are each called on the same
+  data with the same `experiment_id_`, `source_id_` and `run_id_`
+- **THEN** the first eleven columns of every row, and the row order, are identical
+
+### Requirement: Additive, non-destructive bulk-read migration
+
+The migration adding `get_experiment_traits` and `list_experiment_trait_sources` SHALL be additive only — it MUST NOT drop, replace, or alter any existing table, view, or function (including `get_scan_traits`, `cyl_scan_traits_source`, and `cyl_scan_traits_latest`, which it reads but does not modify).
+
+**Its rollback.** A companion manual rollback script SHALL be provided under `supabase/rollbacks/`
+that drops both new functions by full argument signature. That script targets the three-argument
+`get_experiment_traits`. So on a database where the recipe-read migration has replaced that
+function, the recipe-read rollback SHALL be applied first.
+
+**Types.** All five tracked Supabase `database.types.ts` copies SHALL be regenerated to include
+both new functions.
+
+#### Scenario: Forward migration adds the bulk-read surface without touching existing objects
+
+- **WHEN** the migration is applied to a database that already has the source-aware read surface
+  (`cyl_scan_traits_source`, `cyl_scan_traits_latest`, `get_scan_traits`)
+- **THEN** `get_experiment_traits` and `list_experiment_trait_sources` are created and every pre-existing
+  view, function, table, and grant is unchanged
+
+#### Scenario: Rollback removes exactly the two new functions
+
+- **WHEN** the companion rollback script is applied to a database where the migration had been
+  applied, after the recipe-read rollback if the recipe-read migration had also been applied
+- **THEN** `get_experiment_traits` and `list_experiment_trait_sources` no longer exist and every
+  pre-existing read object (`get_scan_traits`, `cyl_scan_traits_source`, `cyl_scan_traits_latest`,
+  `cyl_scan_trait_names`) is unchanged
 
 ## ADDED Requirements
 
+### Requirement: Recipe presence is defined by trait rows
+
+A scan SHALL have recipe `K` exactly when at least one of its `cyl_scan_traits` rows has a `source_id` whose `cyl_trait_sources.recipe_key` is `K`, or has a `NULL` `source_id` when `K` is `'unattributed'`.
+
+**The scan's source of `K`** is the highest such `source_id`, or `NULL` for `'unattributed'`.
+
+**Who uses this definition.** `list_trait_recipes`, `get_trait_recipe_coverage`,
+`get_experiment_traits` (with `recipe_key_`) and `create_cyl_dataset` (with `recipe_key`) SHALL
+all use it.
+
+**Consequence.** A source with no trait rows SHALL contribute no recipe to any scan.
+
+**Recipe kinds.** A recipe is `'legacy'` when its key starts with `legacy:`, `'unattributed'` for
+the key `'unattributed'`, and `'pipeline'` otherwise.
+
+#### Scenario: A source with no trait rows adds no recipe
+
+- **WHEN** a pipeline source of recipe `K3` has `scan_id = s` but no `cyl_scan_traits` rows
+- **THEN** scan `s` does not have `K3` in `list_trait_recipes`, in coverage `available_recipes`, or
+  in any recipe read
+
+#### Scenario: The four functions agree on a scan's source of a recipe
+
+- **WHEN** coverage reports scan `s` as `included` with `source_id = X` for recipe `K`
+- **THEN** `get_experiment_traits(recipe_key_ => K)` returns scan `s`'s rows from source `X`, and a
+  recipe-mode dataset for `K` freezes source `X`'s rows for `s`
+
 ### Requirement: Recipe listing for a scan selection
 
-Bloom SHALL provide `list_trait_recipes(experiment_ids_ BIGINT[] DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL)` returning one row per recipe present among the selected scans' trait data.
+Bloom SHALL provide `list_trait_recipes(experiment_ids_ BIGINT[] DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL)` returning one row per recipe that at least one selected scan has.
 
 **The selection.**
-- It is the scans of `experiment_ids_`, intersected with `scan_ids_` when both are given, or
-  `scan_ids_` alone.
-- It is reached through the same experiments → waves → plants → accessions (inner) → scans chain
-  that `get_experiment_traits` uses.
-- Calling with both arguments `NULL` SHALL raise an error.
+- It is the scans reachable from `experiment_ids_` through `get_experiment_traits`' join chain
+  (experiments → waves → plants → accessions (inner) → scans).
+- When `scan_ids_` is also given, it is intersected with it. When only `scan_ids_` is given, it is
+  those ids that are reachable scans.
+- Both arguments `NULL` SHALL raise an error.
+- An empty array for either argument selects no scans.
+- Ids that are not reachable scans are ignored.
 
-**Columns:**
+**Columns.**
 
 | Column | Content |
 |---|---|
-| `recipe_key` | The key |
-| `recipe_key_version` | The key version |
+| `recipe_key` | The recipe |
+| `recipe_key_version` | Its key version |
 | `recipe_kind` | `pipeline`, `legacy` or `unattributed` |
-| `definition` | Pipeline recipes: the recipe-key payload (models, `predict_code_sha`, `traits_code_sha`, `predict_output_params`), taken from the newest source's `metadata`. Legacy: `{source_id, source_name}`. `unattributed`: `NULL` |
-| `n_scans` | Selected scans having that recipe |
-| `newest_source_id` | The recipe's highest `source_id` among the selected scans (`NULL` for `unattributed`) |
-| `is_default` | Whether this recipe is the default |
+| `definition jsonb` | Pipeline: `cyl_trait_recipe_payload_v1` of the recipe's highest source's `metadata`. Legacy: `{source_id, source_name}`. `unattributed`: `NULL` |
+| `n_scans` | The number of selected scans that have the recipe |
+| `newest_source_id` | The highest selected scan's source of the recipe. `NULL` for `unattributed` |
+| `is_default` | Whether this is the default recipe |
 
-**The default.** Exactly one row SHALL have `is_default` true when any row is returned: the
-recipe with the highest `newest_source_id`. `unattributed` ranks below every recipe that has a
-source.
-
-**Legacy data.**
-- A scan has a legacy recipe when it has at least one `cyl_scan_traits` row of that legacy
-  source.
-- It has `unattributed` when it has at least one `NULL`-source row.
-
-**Implementation constraint.** Both checks SHALL be per-scan index probes (`LATERAL … LIMIT 1`),
-not a scan of `cyl_scan_traits`.
+**The default recipe.** Exactly one row SHALL have `is_default = true` whenever any row is
+returned: the one with the highest `newest_source_id`, with `unattributed` ranking last.
 
 #### Scenario: Recipes in a mixed experiment are listed with counts
 
-- **WHEN** an experiment has 3 scans under recipe K1, 1 scan under K2, and 2 scans with only
-  legacy source L
-- **THEN** `list_trait_recipes(ARRAY[exp])` returns K1 (`n_scans` 3), K2 (1) and `legacy:L` (2)
+- **WHEN** an experiment has 3 scans with only `K1`, 1 scan with only `K2`, 1 scan with both, and
+  2 scans with only legacy source `L`
+- **THEN** `list_trait_recipes(ARRAY[exp])` returns `K1` with `n_scans` 4, `K2` with 2 and
+  `legacy:L` with 2
 
-#### Scenario: Newest is the recipe written most recently
+#### Scenario: The default recipe is the one written most recently
 
-- **WHEN** K1's highest source in the selection is id 50, K2's is id 60, and K1 covers more scans
-- **THEN** K2 has `is_default` true and K1 false
+- **WHEN** `K1`'s highest source in the selection is id 50, `K2`'s is id 60, and `K1` covers more
+  scans
+- **THEN** `K2` has `is_default = true` and `K1` has `false`
+
+#### Scenario: A pipeline definition hashes to its key
+
+- **WHEN** any `pipeline` row is returned
+- **THEN** `encode(sha256(convert_to(definition::text, 'UTF8')), 'hex')` equals its `recipe_key`
+
+#### Scenario: A multi-experiment selection counts across experiments
+
+- **WHEN** `list_trait_recipes(ARRAY[e1, e2])` is called and both experiments have scans with `K1`
+- **THEN** `K1`'s `n_scans` is the sum over both, and the default is chosen across both
+
+#### Scenario: Both arguments narrow the selection
+
+- **WHEN** `list_trait_recipes(ARRAY[e1], ARRAY[s1, s2])` is called and `s2` belongs to `e2`
+- **THEN** only `s1` is counted
 
 #### Scenario: A scan-level selection lists only that scan's recipes
 
-- **WHEN** `list_trait_recipes(scan_ids_ => ARRAY[s])` is called for a scan with sources of K1
-  and K2
-- **THEN** exactly K1 and K2 are returned, each with `n_scans` 1
+- **WHEN** `list_trait_recipes(scan_ids_ => ARRAY[s])` is called for a scan with `K1` and `K2`
+- **THEN** exactly `K1` and `K2` are returned, each with `n_scans` 1
 
 #### Scenario: Legacy-only experiments list their legacy and unattributed recipes
 
-- **WHEN** an experiment's scans have only legacy source L rows and `NULL`-source rows
+- **WHEN** an experiment's scans have only legacy source `L` rows and `NULL`-source rows
 - **THEN** `legacy:L` and `unattributed` are returned, and `legacy:L` is the default
 
-#### Scenario: An empty selection returns no rows
+#### Scenario: An unattributed-only selection defaults to unattributed
 
-- **WHEN** the selected scans have no trait rows
+- **WHEN** every selected scan has only `NULL`-source trait rows
+- **THEN** the single row returned is `unattributed`, with `is_default = true`
+
+#### Scenario: Empty selections return no rows
+
+- **WHEN** `list_trait_recipes` is called with an empty array for either argument, or for scans
+  with no trait rows
 - **THEN** zero rows are returned without error
 
 #### Scenario: A selection argument is required
@@ -200,42 +290,46 @@ not a scan of `cyl_scan_traits`.
 
 ### Requirement: Per-scan recipe coverage
 
-Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL, recipe_key_ TEXT DEFAULT NULL)` returning one row per selected scan, for one evaluated recipe.
+Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL, recipe_key_ TEXT DEFAULT NULL)` returning one row per selected scan, evaluated against one recipe.
 
-**The selection and the evaluated recipe.**
+**Inputs.**
 - The selection is defined as for `list_trait_recipes`.
-- The evaluated recipe is `recipe_key_`, or, when that is `NULL`, the `list_trait_recipes`
-  default for the same selection.
+- The evaluated recipe is `recipe_key_`, or, when that is `NULL`, the default recipe of the same
+  selection. That can itself be `NULL` when no selected scan has trait rows.
 
 **Columns:** `scan_id`, `experiment_id`, `plant_qr_code`, `recipe_key` (the evaluated recipe),
 `status`, `source_id` and `available_recipes text[]`.
 
-**Status.** Each row's `status` SHALL be the first that applies:
+**Status.** `status` SHALL be the first of these that applies:
 
 | Status | When |
 |---|---|
-| `included` | The scan has trait rows of the evaluated recipe. `source_id` is the source `get_experiment_traits(recipe_key_ => …)` would read for it |
+| `included` | The scan has the evaluated recipe. `source_id` is its source of that recipe |
 | `no_traits` | The scan has no trait rows |
-| `legacy_only` | All of the scan's recipes are `legacy:*` or `unattributed` |
+| `legacy_only` | Every recipe the scan has is `legacy:*` or `unattributed` |
 | `other_recipe` | Any other case |
 
-**`source_id`** SHALL be `NULL` for every status except `included`.
-
-**Unknown recipes.** A `recipe_key_` that matches no `cyl_trait_sources.recipe_key` and is not
-`'unattributed'` SHALL raise an error.
+**Other rules.**
+- `source_id` SHALL be `NULL` for every status other than `included`.
+- `available_recipes` SHALL list exactly the recipes the scan has, sorted.
+- A `recipe_key_` that names no stored recipe and is not `'unattributed'` SHALL raise an error.
 
 #### Scenario: Coverage reports each scan's status against the default
 
-- **WHEN** coverage is requested for an experiment with scans under K1 (default), under K2 only,
-  under legacy L only, and with no traits
+- **WHEN** coverage is requested for an experiment with scans that have the default `K1`, only
+  `K2`, only legacy `L`, and no traits
 - **THEN** those scans report `included`, `other_recipe`, `legacy_only` and `no_traits`
-  respectively
 
-#### Scenario: Included scans name the source a recipe read would use
+#### Scenario: Unattributed-only scans report legacy_only
 
-- **WHEN** a scan is `included` for K1
-- **THEN** its `source_id` equals the `source_id` that `get_experiment_traits(recipe_key_ => K1)`
-  returns for that scan
+- **WHEN** the evaluated recipe is `K1` and a scan has only `NULL`-source rows
+- **THEN** that scan reports `legacy_only`
+
+#### Scenario: Included scans name the source a recipe read uses
+
+- **WHEN** a scan is `included` for `K1`
+- **THEN** its `source_id` equals the `source_id` of every row
+  `get_experiment_traits(recipe_key_ => K1)` returns for that scan
 
 #### Scenario: An explicit legacy pick marks pipeline-only scans as other_recipe
 
@@ -245,31 +339,37 @@ Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT 
 
 #### Scenario: available_recipes lists everything a scan has
 
-- **WHEN** a scan has sources of K1 and K2 and `NULL`-source rows
-- **THEN** its `available_recipes` contains exactly K1, K2 and `unattributed`
+- **WHEN** a scan has sources of `K1` and `K2` and `NULL`-source rows
+- **THEN** its `available_recipes` is exactly `K1`, `K2` and `unattributed`
+
+#### Scenario: A selection with no trait data reports no_traits
+
+- **WHEN** coverage is requested with `recipe_key_` `NULL` for scans that have no trait rows
+- **THEN** every row reports `no_traits` with `recipe_key` `NULL`
 
 #### Scenario: A mistyped recipe key is rejected
 
-- **WHEN** `recipe_key_` names no stored recipe and is not `'unattributed'`
+- **WHEN** `recipe_key_` is 64 hex characters that match no stored `recipe_key`
 - **THEN** the call raises an error
 
 #### Scenario: A per-scan coverage call works for one scan
 
-- **WHEN** coverage is requested with `scan_ids_ => ARRAY[s]` only
-- **THEN** exactly one row is returned for scan `s`
+- **WHEN** coverage is requested with `scan_ids_ => ARRAY[s]` only, for a reachable scan `s`
+- **THEN** exactly one row is returned, for scan `s`
 
-### Requirement: Recipe read functions grant EXECUTE to the read roles only
+### Requirement: Recipe read functions are not executable by anon
 
-`get_experiment_traits`, `list_trait_recipes` and `get_trait_recipe_coverage` SHALL be `SECURITY INVOKER` with `EXECUTE` revoked from `PUBLIC` and `anon` and granted to exactly `bloom_agent`, `bloom_user`, `bloom_admin` and `authenticated`.
+`get_experiment_traits`, `list_trait_recipes` and `get_trait_recipe_coverage` SHALL be `SECURITY INVOKER`, with `EXECUTE` revoked from `PUBLIC` and `anon` and granted to `bloom_agent`, `bloom_user`, `bloom_admin` and `authenticated`.
 
-**Nothing else changes.** This change SHALL NOT add, drop or alter any row-level-security policy
-or write grant on any table these functions read.
+**No other access changes.** This change SHALL NOT add, drop or alter any row-level-security
+policy or write grant on any table these functions read.
 
-#### Scenario: Read roles can call all three functions
+#### Scenario: Read roles can call every mode
 
-- **WHEN** a session assumes each of `bloom_agent`, `bloom_user`, `bloom_admin` and
-  `authenticated` and calls each function
-- **THEN** every call is permitted
+- **WHEN** a session assumes each of `bloom_agent`, `bloom_user` and `bloom_admin`, and calls all
+  three functions in the default mode, with a pipeline `recipe_key_`, with `'legacy:L'`, with
+  `'unattributed'` and with `scan_ids_`
+- **THEN** every call succeeds and returns rows for the fixture
 
 #### Scenario: anon cannot call them
 
@@ -278,45 +378,53 @@ or write grant on any table these functions read.
 
 ### Requirement: Recipe read RPCs supply every export sidecar field
 
-Every field of the export sidecar v1 defined in `_WIKI/SUPABASE/trait-recipes.md` that describes the recipe, the included scans or the excluded scans SHALL be derivable from columns returned by `list_trait_recipes`, `get_trait_recipe_coverage` and `get_experiment_traits` alone.
+Every field of export sidecar v1 (`_WIKI/SUPABASE/trait-recipes.export.schema.json`) SHALL either come from a column of `list_trait_recipes`, `get_trait_recipe_coverage` or `get_experiment_traits`, or from `cyl_trait_sources.metadata` read by an included `source_id`, or be marked producer-supplied.
 
-**Fields that describe a recipe.** These SHALL come from:
-- `definition` for the keyed fields;
-- the `metadata` of the included sources, reached by `source_id`, for the observed-but-unkeyed
-  fields.
+**The field table.** `_WIKI/SUPABASE/trait-recipes.md` SHALL name that source for each field.
 
-**The docs page** SHALL name, for each sidecar field, the RPC column it comes from.
+**What producers must do.** A producer SHALL build the sidecar's excluded list from exactly the
+coverage rows whose `status` is not `included`, with `reason` equal to `status`.
 
-#### Scenario: The excluded list is the non-included coverage rows
+#### Scenario: Every schema property is mapped
 
-- **WHEN** a producer builds a sidecar for recipe K over a selection
-- **THEN** its `excluded` entries are exactly the `get_trait_recipe_coverage` rows for K whose
-  `status` is not `included`, with `reason = status` and the same `available_recipes`
+- **WHEN** the schema's properties are compared with the field table in
+  `_WIKI/SUPABASE/trait-recipes.md`
+- **THEN** every property has a row, and every column named in the table exists in the named RPC's
+  result or in `cyl_trait_sources`
 
-#### Scenario: The docs page maps every field
+#### Scenario: The example sidecar is complete
 
-- **WHEN** the sidecar field table in `_WIKI/SUPABASE/trait-recipes.md` is read
-- **THEN** each field lists a source column of one of the three RPCs, or is a producer-supplied
-  field (`generated_at`, `generated_by`, `selection`)
+- **WHEN** `_WIKI/SUPABASE/trait-recipes.export.example.json` is checked against the schema's
+  `required` lists at every level
+- **THEN** every required property is present
 
 ### Requirement: Recipe read migration replaces get_experiment_traits without leaving an overload
 
-The migration SHALL `DROP FUNCTION get_experiment_traits(bigint, bigint, text)` before creating the five-argument function, so exactly one `get_experiment_traits` overload exists afterwards.
+The recipe-read migration SHALL `DROP FUNCTION IF EXISTS get_experiment_traits(bigint, bigint, text)` and then `CREATE OR REPLACE` the five-argument function, so that exactly one `get_experiment_traits` overload exists and the migration is re-runnable.
 
-**Rollback.** A companion rollback script SHALL drop `list_trait_recipes`,
-`get_trait_recipe_coverage` and the five-argument function, and restore the three-argument
-function exactly as defined in `20260728000000`, grants included.
+**Schema reload.** It SHALL end with `NOTIFY pgrst, 'reload schema'`.
+
+**Its rollback.** A companion rollback script SHALL drop `list_trait_recipes`,
+`get_trait_recipe_coverage` and the five-argument function, and SHALL restore the three-argument
+function and grants of `20260728000000`.
 
 **Types.** The generated `database.types.ts` copies SHALL reflect the new signatures.
 
-#### Scenario: A three-key named call still resolves
+#### Scenario: bloommcp's three-key named call still resolves
 
 - **WHEN** PostgREST receives `POST /rpc/get_experiment_traits` with body
   `{"experiment_id_": E, "source_id_": null, "run_id_": null}`
-- **THEN** it resolves to the single five-argument function without an ambiguity error
+- **THEN** it resolves to the single five-argument function with no PGRST203 error, and each row
+  carries the twelve columns
+
+#### Scenario: Re-applying the migration body is idempotent
+
+- **WHEN** the migration's SQL body is executed a second time
+- **THEN** no error is raised and exactly one `get_experiment_traits` overload exists, with five
+  arguments
 
 #### Scenario: Rollback restores the three-argument function
 
 - **WHEN** the rollback is applied after the forward migration
-- **THEN** only `get_experiment_traits(bigint, bigint, text)` exists, with its original body and
-  grants, and the two new functions do not exist
+- **THEN** only `get_experiment_traits(bigint, bigint, text)` exists, with the attributes and
+  grants of `20260728000000`, and neither new function exists

@@ -2,17 +2,20 @@
 
 ### Requirement: Datasets freeze trait rows at creation
 
-Bloom SHALL provide `create_cyl_dataset(name text, experiment_id bigint, trait_source_id bigint, qc_set_name json, timepoints json, recipe_key text DEFAULT NULL)`, which inserts one `cyl_datasets` row and freezes the selected `cyl_scan_traits` row ids into `cyl_dataset_traits`, so a dataset's contents never change after creation.
+Bloom SHALL provide `create_cyl_dataset(name text, experiment_id bigint, trait_source_id bigint, qc_set_name json, timepoints json, recipe_key text DEFAULT NULL)`, which inserts one `cyl_datasets` row and freezes the ids of the selected `cyl_scan_traits` rows into `cyl_dataset_traits`, so that a dataset's contents do not change after creation.
 
-**Which rows are frozen.** The rows are those of scans in `experiment_id`, filtered two ways:
-- to plants whose `plant_age_days` is in `timepoints`, when `timepoints` is non-null;
-- excluding plants flagged by the QC set named in `qc_set_name->>'name'`, when that is non-null.
+**Candidate scans.** Candidates are the scans of `experiment_id` in `cyl_scans_extended`, with two
+filters:
+- when `timepoints` is non-null, only scans whose `plant_age_days` is in it;
+- when `qc_set_name->>'name'` names an existing QC set, plants flagged by that set are excluded. A
+  name that matches no set applies no QC filter, as before this change.
 
-**Selectors.** Exactly one of `trait_source_id` and `recipe_key` SHALL be non-null; otherwise the
+**Selectors.** Exactly one of `trait_source_id` and `recipe_key` SHALL be non-null. Otherwise the
 call SHALL raise an error and write nothing.
 
-**Unchanged posture.** The function SHALL remain `SECURITY INVOKER` with a function-level
-`statement_timeout` of `0`, and SHALL be the only `create_cyl_dataset` overload.
+**Function properties.** It SHALL remain `SECURITY INVOKER` with a function-level
+`statement_timeout` of `0`, and SHALL be the only `create_cyl_dataset` overload. Its `EXECUTE` ACL
+SHALL equal the pre-change ACL: `PUBLIC`, `anon`, `authenticated` and `service_role`.
 
 #### Scenario: Frozen rows do not change when new sources arrive
 
@@ -22,7 +25,12 @@ call SHALL raise an error and write nothing.
 #### Scenario: Timepoints and QC filters apply
 
 - **WHEN** a dataset is created with `timepoints = [7]` and a QC set that flags plant P
-- **THEN** no frozen row belongs to a scan with `plant_age_days` other than 7, or to plant P
+- **THEN** no frozen row belongs to a scan whose `plant_age_days` is not 7, or to plant P
+
+#### Scenario: An unknown QC set name applies no filter
+
+- **WHEN** a dataset is created with a `qc_set_name` that matches no `cyl_qc_sets` row
+- **THEN** it freezes the same rows as with `qc_set_name` NULL
 
 #### Scenario: Zero or two selectors are rejected
 
@@ -30,78 +38,99 @@ call SHALL raise an error and write nothing.
   both non-null
 - **THEN** the call raises an error and no `cyl_datasets` row is created
 
-#### Scenario: The existing named-argument call still works
+#### Scenario: bloomctl's five-key named call still resolves
 
-- **WHEN** a PostgREST `POST /rpc/create_cyl_dataset` names exactly `name`, `experiment_id`,
-  `trait_source_id`, `qc_set_name` and `timepoints`, as bloomctl does
-- **THEN** it resolves to the single function and creates a source-mode dataset
+- **WHEN** PostgREST receives `POST /rpc/create_cyl_dataset` naming exactly `name`,
+  `experiment_id`, `trait_source_id`, `qc_set_name` and `timepoints`, with `trait_source_id` null
+- **THEN** it resolves to the single function with no PGRST202 or PGRST203 error, and returns the
+  function's own "exactly one selector" error
+
+#### Scenario: The ACL is unchanged
+
+- **WHEN** the function's `proacl` is compared before and after the migration
+- **THEN** the two are equal
 
 ### Requirement: Source-mode datasets hold one source's rows
 
-When `trait_source_id` is given, `create_cyl_dataset` SHALL freeze only `cyl_scan_traits` rows whose `source_id` equals it, and SHALL store `trait_source_id` and that source's `recipe_key` on the `cyl_datasets` row.
+When `trait_source_id` is given, `create_cyl_dataset` SHALL freeze only the `cyl_scan_traits` rows whose `source_id` equals it, and SHALL store `trait_source_id` and that source's `recipe_key` on the `cyl_datasets` row.
 
 #### Scenario: A source-mode dataset records its source and recipe
 
 - **WHEN** a dataset is created with `trait_source_id = S`
 - **THEN** every frozen row has `source_id = S`, and the dataset row has `trait_source_id = S` and
-  `recipe_key` equal to source S's `recipe_key`
+  a `recipe_key` equal to source `S`'s
 
 ### Requirement: Recipe-mode datasets hold one recipe's rows
 
-When `recipe_key` is given, `create_cyl_dataset` SHALL freeze, for each matching scan, the `cyl_scan_traits` rows of that scan's highest `source_id` whose `cyl_trait_sources.recipe_key` equals it.
+When `recipe_key` is given, `create_cyl_dataset` SHALL freeze, for each candidate scan that has that recipe, the `cyl_scan_traits` rows of the scan's source of that recipe as defined in the `cyl-trait-read` requirement "Recipe presence is defined by trait rows".
 
-**The pseudo-recipe.** For `'unattributed'`, it SHALL freeze the scan's `NULL`-source rows
-instead.
+**The dataset row.** It SHALL store `recipe_key` and leave `trait_source_id` NULL.
 
-**What the dataset row records.** It SHALL store `recipe_key` and leave `trait_source_id` NULL.
+**Scans without the recipe** contribute no rows.
 
-**Scans without the recipe.** A scan with no rows of that recipe contributes no rows.
-
-**Unknown recipes.** A `recipe_key` that matches no stored recipe and is not `'unattributed'`
-SHALL raise an error.
+**Unknown recipes.** A `recipe_key` that names no stored recipe and is not `'unattributed'` SHALL
+raise an error.
 
 #### Scenario: A recipe-mode dataset spans many per-scan sources
 
-- **WHEN** an experiment's 12 scans each have their own source of recipe K, and a dataset is
+- **WHEN** an experiment's 12 scans each have their own source of recipe `K`, and a dataset is
   created with `recipe_key = K`
 - **THEN** the dataset freezes rows from all 12 sources, and every frozen row's source has
   `recipe_key = K`
 
 #### Scenario: A recipe-mode dataset matches the recipe read
 
-- **WHEN** a recipe-mode dataset for K is created with no timepoint or QC filter
-- **THEN** for every scan whose plant has an accession, its frozen rows are exactly the
-  `cyl_scan_traits` rows behind `get_experiment_traits(experiment_id, recipe_key_ => K)` for that
-  scan (`get_experiment_traits` omits plants with no accession; the dataset's scan set is
-  unchanged from today's `cyl_scans_extended` filter)
+- **WHEN** a recipe-mode dataset for `K` is created with no timepoint or QC filter
+- **THEN** for every scan whose plant has an accession and whose experiment has a species, the
+  frozen rows are exactly the `cyl_scan_traits` rows behind
+  `get_experiment_traits(experiment_id, recipe_key_ => K)` for that scan
 
 #### Scenario: Other recipes are left out
 
-- **WHEN** a scan's newest source is recipe K2 and it also has an older source of recipe K
-- **THEN** a recipe-mode dataset for K freezes that scan's older K rows, and none of its K2 rows
+- **WHEN** a scan's newest source is recipe `K2`, and it also has an older source of recipe `K`
+- **THEN** a recipe-mode dataset for `K` freezes that scan's `K` rows and none of its `K2` rows
+
+#### Scenario: A legacy recipe matches source mode
+
+- **WHEN** one dataset is created with `recipe_key = 'legacy:S'` and another with
+  `trait_source_id = S`, with the same filters
+- **THEN** both freeze the same `cyl_scan_traits` row ids
 
 #### Scenario: A mistyped recipe is rejected
 
-- **WHEN** `create_cyl_dataset` is called with a `recipe_key` that matches no stored recipe
+- **WHEN** `create_cyl_dataset` is called with a `recipe_key` that names no stored recipe
 - **THEN** the call raises an error and no dataset is created
 
 ### Requirement: Datasets record their recipe
 
-`cyl_datasets` SHALL carry a nullable `recipe_key text` column.
+`cyl_datasets` SHALL carry a nullable `recipe_key text` column, constrained by `cyl_datasets_recipe_key_format_check` to NULL, 64 lowercase hex characters, `legacy:<integer>` or `'unattributed'`.
 
-**Backfill.** The migration adding it SHALL backfill it from `cyl_trait_sources.recipe_key` for
-every existing dataset whose `trait_source_id` is set.
+**The dataset migration.** The migration that adds this column and recipe mode SHALL:
+- backfill `recipe_key` from `cyl_trait_sources.recipe_key` for every existing dataset whose
+  `trait_source_id` is set;
+- use `DROP FUNCTION IF EXISTS` followed by `CREATE OR REPLACE`;
+- set `lock_timeout`;
+- end with `NOTIFY pgrst, 'reload schema'`.
 
-**Rollback.** A companion rollback SHALL drop the column and restore the previous five-argument
-`create_cyl_dataset`.
+**Its rollback** SHALL restore the `20240904033106` function with its pre-change ACL, and drop the
+column. It SHALL report with `RAISE NOTICE` the number of recipe-mode datasets whose only identity
+it drops.
 
 #### Scenario: Existing datasets gain their source's recipe
 
-- **WHEN** the migration runs over an existing dataset built from source S
-- **THEN** the dataset's `recipe_key` equals source S's `recipe_key`
+- **WHEN** the migration runs over datasets built from pipeline source `S`, from legacy source `L`,
+  and with a NULL `trait_source_id`
+- **THEN** their `recipe_key` becomes `S`'s key, `legacy:L` and NULL respectively, and running the
+  backfill again changes nothing
+
+#### Scenario: Re-applying the migration body is idempotent
+
+- **WHEN** the migration's SQL body is executed a second time
+- **THEN** no error is raised and exactly one `create_cyl_dataset` overload exists, with six
+  arguments
 
 #### Scenario: Rollback restores the five-argument function
 
 - **WHEN** the rollback is applied after the forward migration
 - **THEN** only `create_cyl_dataset(text, bigint, bigint, json, json)` exists, with its previous
-  body, and `cyl_datasets` has no `recipe_key` column
+  body and ACL, and `cyl_datasets` has no `recipe_key` column
