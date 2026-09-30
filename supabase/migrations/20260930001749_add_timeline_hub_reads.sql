@@ -1,9 +1,11 @@
 -- 20260930001749_add_timeline_hub_reads.sql
 --
 -- Two reads for the Timeline page's panels:
---   gravi_scan_timeline: plate scan batches per day, species, experiment and wave, the
---     plate counterpart of cyl_wave_timeline. security_invoker, so each reader sees only
---     the plate scans their own policies allow.
+--   gravi_scan_timeline: how many plates were scanned per day, species, experiment and
+--     wave, the plate counterpart of cyl_wave_timeline. A plate is photographed once per
+--     capture cycle, so plates are counted once each; the day is the Pacific capture day,
+--     as the scanners run at Salk. security_invoker, so each reader sees only the plate
+--     scans their own policies allow.
 --   rnaseq_run_requesters(p_run_ids): the email of whoever started each given RNA-seq
 --     run. Scientists can read rnaseq_runs but not auth.users, so the run view shows
 --     "Started by" through this; it reveals only the starters of runs it is asked about.
@@ -16,21 +18,20 @@ BEGIN;
 CREATE OR REPLACE VIEW public.gravi_scan_timeline
 WITH (security_invoker = true) AS
 SELECT
-    (s.capture_date AT TIME ZONE 'UTC')::date AS date_scanned,
+    (s.capture_date AT TIME ZONE 'America/Los_Angeles')::date AS date_scanned,
     sp.common_name AS species_name,
     e.name AS experiment_name,
     s.wave_number,
-    count(*) AS count
+    count(DISTINCT s.plate_id) AS count
 FROM public.gravi_scans s
 JOIN public.gravi_experiments e ON e.id = s.experiment_id
 LEFT JOIN public.species sp ON sp.id = e.species_id
 GROUP BY 1, 2, 3, 4
 ORDER BY 1 DESC;
 
--- The roles that read gravi_scans today.
+-- The roles that can read every table the view joins (security_invoker checks each).
 REVOKE ALL ON public.gravi_scan_timeline FROM PUBLIC, anon, authenticated;
-GRANT SELECT ON public.gravi_scan_timeline
-    TO bloom_user, bloom_writer, bloom_admin, bloom_agent, bloom_workflows;
+GRANT SELECT ON public.gravi_scan_timeline TO bloom_user, bloom_writer, bloom_admin, bloom_agent;
 
 -- 2. Who started a run ------------------------------------------------------------------
 

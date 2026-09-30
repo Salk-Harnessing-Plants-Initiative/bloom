@@ -1,6 +1,6 @@
 """
-Integration tests for the Timeline page's two reads: gravi_scan_timeline (plate scan
-batches per day, experiment and wave, under the reader's own row-level security) and
+Integration tests for the Timeline page's two reads: gravi_scan_timeline (plates scanned
+per Pacific day, experiment and wave, under the reader's own row-level security) and
 rnaseq_run_requesters (the email of whoever started each given RNA-seq run).
 
 Each test applies the migration inside its own transaction and rolls it back, so the
@@ -19,13 +19,15 @@ MIGRATION = _find_one("migrations", "*_add_timeline_hub_reads.sql")
 ROLLBACK = _find_one("rollbacks", "*_add_timeline_hub_reads_rollback.sql")
 VIEW = "public.gravi_scan_timeline"
 FN = "public.rnaseq_run_requesters(bigint[])"
-VIEW_READERS = ("bloom_user", "bloom_writer", "bloom_admin", "bloom_agent", "bloom_workflows")
+VIEW_READERS = ("bloom_user", "bloom_writer", "bloom_admin", "bloom_agent")
 FN_CALLERS = ("bloom_user", "bloom_writer", "bloom_admin")
 
 
 @pytest.fixture
 def cur(pg_conn):
     with pg_conn.cursor() as c:
+        # Dropped first, so the migration's own grants are what the tests see.
+        c.execute(_sql_body(ROLLBACK))
         c.execute(_sql_body(MIGRATION))
         yield c
     pg_conn.rollback()
@@ -97,29 +99,33 @@ def _requesters(cur, role, run_ids):
 # --------------------------------------------------------------------------- #
 
 
-def test_plate_scans_are_counted_per_day_experiment_and_wave(cur):
+def test_plates_are_counted_once_per_day_experiment_and_wave(cur):
     species_id, species_name = _species(cur)
     exp = _experiment(cur, "timeline-probe plates", species_id)
+    # Plate A photographed three times on the 16th, plate B once; plate C in wave 9.
     for hour in (1, 5, 9):
-        _scan(cur, exp, f"2026-06-16 {hour:02}:00+00", wave=8)
-    _scan(cur, exp, "2026-06-16 10:00+00", wave=9)
-    _scan(cur, exp, "2026-06-17 02:00+00", wave=8)
+        _scan(cur, exp, f"2026-06-16 {hour:02}:00-07:00", wave=8, plate="A")
+    _scan(cur, exp, "2026-06-16 02:00-07:00", wave=8, plate="B")
+    _scan(cur, exp, "2026-06-16 10:00-07:00", wave=9, plate="C")
+    _scan(cur, exp, "2026-06-17 02:00-07:00", wave=8, plate="A")
     assert _rows(cur, "timeline-probe plates") == [
         ("2026-06-17", species_name, 8, 1),
-        ("2026-06-16", species_name, 8, 3),
+        ("2026-06-16", species_name, 8, 2),
         ("2026-06-16", species_name, 9, 1),
     ]
 
 
-def test_the_day_is_the_utc_capture_date(cur):
-    exp = _experiment(cur, "timeline-probe utc")
-    _scan(cur, exp, "2026-06-16 23:30-08:00")  # 07:30 UTC on the 17th
-    assert _rows(cur, "timeline-probe utc")[0][0] == "2026-06-17"
+def test_the_day_is_the_pacific_capture_day(cur):
+    exp = _experiment(cur, "timeline-probe pacific")
+    # 21:07 Pacific on the 16th is 04:07 UTC on the 17th; it stays on the 16th.
+    _scan(cur, exp, "2026-06-17 04:07+00", plate="A")
+    _scan(cur, exp, "2026-06-16 11:12-07:00", plate="B")
+    assert _rows(cur, "timeline-probe pacific") == [("2026-06-16", None, None, 2)]
 
 
 def test_an_experiment_without_a_species_is_still_listed(cur):
     exp = _experiment(cur, "timeline-probe no species")
-    _scan(cur, exp, "2026-06-16 01:00+00")
+    _scan(cur, exp, "2026-06-16 09:00-07:00")
     assert _rows(cur, "timeline-probe no species") == [("2026-06-16", None, None, 1)]
 
 
@@ -132,7 +138,7 @@ def test_the_view_uses_the_readers_own_row_level_security(cur):
 
 def test_a_scientist_sees_plate_batches(cur):
     exp = _experiment(cur, "timeline-probe as user")
-    _scan(cur, exp, "2026-06-16 01:00+00")
+    _scan(cur, exp, "2026-06-16 09:00-07:00")
     cur.execute("SET LOCAL ROLE bloom_user")
     rows = _rows(cur, "timeline-probe as user")
     cur.execute("RESET ROLE")
@@ -145,8 +151,8 @@ def test_the_view_is_readable_by_the_roles_that_read_plate_scans(cur, role):
     assert cur.fetchone()[0] is True
 
 
-@pytest.mark.parametrize("role", ["anon", "authenticated"])
-def test_the_view_is_not_readable_by_anon_or_authenticated(cur, role):
+@pytest.mark.parametrize("role", ["anon", "authenticated", "bloom_workflows"])
+def test_the_view_is_not_granted_to_roles_that_cant_read_its_tables(cur, role):
     cur.execute("SELECT has_table_privilege(%s, %s, 'SELECT')", (role, VIEW))
     assert cur.fetchone()[0] is False
 
