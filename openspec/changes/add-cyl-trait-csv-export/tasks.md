@@ -269,7 +269,7 @@
 
 ## 6. Routes
 
-- [ ] 6.1 **Test first.** `web/app/api/cyl/trait-export/jobs/route.test.ts`. Mock the auth helper so that `getUser(token)` runs on the captured token.
+- [x] 6.1 **Test first.** `web/app/api/cyl/trait-export/jobs/route.test.ts`. Mock the auth helper so that `getUser(token)` runs on the captured token.
   - `dynamic`/`runtime` are set, and `HEAD` → `405`.
   - **The D7 order:**
     1. `403` for `Sec-Fetch-Site: cross-site`;
@@ -286,7 +286,8 @@
   - `age=0` and `wave=0` are accepted and reach the query as `.eq("plant_age_days", 0)`.
   - Every refusal before step 7 makes zero `from`/`rpc` calls.
   - Success returns `202 {job_id}`.
-- [ ] 6.2 Implement `jobs/route.ts` and `web/lib/cyl-trait-export/request.ts` (identity, guard and parameters).
+- [x] 6.2 Implement `jobs/route.ts` and `web/lib/cyl-trait-export/request.ts` (identity, guard and parameters).
+  **(done 2026-09-30: red 35 failed / 1 passed (the module-contract test passes against the stub's exports); green 36 passed after one fix: the session floor compared a whole-second JWT exp with fractional now, so exactly 1,800 s left read as 1,799.x; it now compares whole seconds. 499 is returned if the client aborts during the pre-202 selection)**
 - [ ] 6.3 **Test first.** Status, download and `DELETE` route tests.
   - **Each route:**
     - `403` cross-site;
