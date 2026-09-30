@@ -34,6 +34,14 @@ Bucket `bloomv2-workflows` (us-west-2):
 
 The FASTQs' prefix is read from their names by `fastq-sample-prefix` and passed to Cell Ranger as `--sample`, so files keep the names the sequencer or core gave them (e.g. `L007-259_S1_L002_R1_001.fastq.gz` under `raw_reads/root_rep1/`). Several prefixes in one folder are counted together as one sample. A `.fastq.gz` or `.fastq` not named that way, or a lane without both R1 and R2, fails the stage step with exit 7 and a message listing the files, before QC and count run. Setting `FASTQ_SAMPLE` overrides the detected prefix.
 
+A run can also import its sample from SRA. The template's `fetch-sra` step (`fetch-sra` in the image):
+- downloads each run accession with `prefetch` and `fasterq-dump --split-files --include-technical`, so 10x's barcode read, which SRA stores as a technical read, is kept;
+- tells the reads apart by length: 26–28 bp is R1, 6–12 bp is I1 then I2, 50 bp or more is R2;
+- writes them to `raw_reads/<sample>/` as `<sample>_S1_L00<n>_<read>_001.fastq.gz`, one lane per run in the order given, and writes a `.sra-runs` marker last;
+- outputs the folder's FASTQ count and total bytes.
+
+A folder whose marker lists the same runs is left as it is, so a retry doesn't download again. A folder holding other FASTQs is refused (exit 12). A run without a barcode read or a cDNA read, e.g. one submitted only as a BAM, fails with exit 11. A run that can't be downloaded fails with exit 10, and is retried once. A 10x sample is often 20–60 GB, and the conversion needs about twice that in scratch space under `/shared/runs/<run-id>/sra/`.
+
 ## The image
 
 The 10x licence does not allow redistributing Cell Ranger, so the image is built by hand and pushed to a **private** GHCR package. CI never builds it. The tarball stays outside the repo and reaches the build through a named build context:
@@ -41,8 +49,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 

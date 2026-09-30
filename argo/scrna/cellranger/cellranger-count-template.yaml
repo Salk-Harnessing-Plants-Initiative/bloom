@@ -86,7 +86,7 @@ spec:
         # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
         command: [bash, -c]
         args:
           - |
@@ -148,6 +148,68 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
+    # For a run that imports its sample from SRA: download the runs into raw_reads/<sample>/ as
+    # Illumina-named FASTQs, next to stage-reference. Outputs the folder's FASTQ count and size.
+    - name: fetch-sra
+      inputs:
+        parameters:
+          - name: sample
+          - name: sra-runs
+          - name: run-id
+      outputs:
+        parameters:
+          - name: fastq-count
+            valueFrom:
+              path: /tmp/outputs/fastq_count
+          - name: total-bytes
+            valueFrom:
+              path: /tmp/outputs/total_bytes
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # only a failed download (10) may be a blip; bad input (6), misnamed files (7),
+        # unusable reads (11) and a taken folder (12) will not fix themselves
+        expression: "asInt(lastRetry.exitCode) == 10"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
+        command: [fetch-sra]
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: SRA_RUNS
+            value: "{{inputs.parameters.sra-runs}}"
+          - name: WORK_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}/sra"
+          - name: THREADS
+            value: "8"
+          - name: OUTPUT_DIR
+            value: /tmp/outputs
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "8", memory: 16Gi}
+          limits: {cpu: "8", memory: 16Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
     # Create /shared/runs/<run-id>/ and download the reads; outputs done=true if the run already finished.
     - name: stage-sample
       inputs:
@@ -167,7 +229,7 @@ spec:
         # exit 4 (no FASTQs) and 7 (misnamed FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
         command: [bash, -c]
         args:
           - |
@@ -229,7 +291,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
         command: [run-qc]
         env:
           - name: SAMPLE
@@ -295,7 +357,7 @@ spec:
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
         command: [run-count]
         env:
           - name: SAMPLE
@@ -348,7 +410,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
         command: [bash, -c]
         args:
           - |
@@ -379,7 +441,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-6
         command: [bash, -c]
         args:
           - |
