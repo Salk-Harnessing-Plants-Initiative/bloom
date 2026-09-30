@@ -1,6 +1,6 @@
 -- 20260930060512_add_sra_import_to_rnaseq_runs.sql
 --
--- A Cell Ranger run can import its sample from SRA: params may carry the run accessions
+-- A Cell Ranger run can import its sample from SRA: params may carry its SRA run IDs
 -- ("sra_runs"), the workflow's first step downloads them, and the sample is registered in
 -- rnaseq_samples once that download succeeds. Also allows the steps the run now reports:
 -- fetch-sra first, and preprocess, cluster and build-h5ad after count.
@@ -21,13 +21,13 @@ ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_scrna_cellranger_check
         AND params ->> 'sample' !~ '__'
         AND params ->> 'reference' ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
         AND params ->> 'reference' !~ '__'
-        -- 1 to 9 run accessions (one lane each); the request function also refuses repeats.
+        -- 1 to 9 SRA run IDs (one lane each); the request function also refuses repeats.
         AND (NOT params ? 'sra_runs' OR CASE
             WHEN jsonb_typeof(params -> 'sra_runs') = 'array' THEN
                 jsonb_array_length(params -> 'sra_runs') BETWEEN 1 AND 9
                 AND NOT jsonb_path_exists(
                     params -> 'sra_runs',
-                    '$[*] ? (@.type() != "string" || !(@ like_regex "^[SED]RR[0-9]{6,10}$"))'
+                    'strict $[*] ? (@.type() != "string" || !(@ like_regex "^[SED]RR[0-9]{6,10}$"))'
                 )
             ELSE false
         END)
@@ -53,8 +53,8 @@ ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_current_step_check CHE
 DROP FUNCTION IF EXISTS public.request_scrna_cellranger_run(TEXT, TEXT, UUID, JSONB);
 
 -- Creates a queued Cell Ranger run and its dispatch message in one transaction; returns the run id.
--- With p_sra_runs, the sample is imported from SRA under a name nobody has registered or is
--- importing.
+-- With p_sra_runs, the sample is imported from SRA under a name nobody has registered. No run
+-- starts on a name while an import of it is still downloading.
 CREATE OR REPLACE FUNCTION public.request_scrna_cellranger_run(
     p_sample TEXT,
     p_reference TEXT,
@@ -70,7 +70,7 @@ DECLARE
     -- A sample is also Cell Ranger's run id: letters, digits, '_' or '-', at most 64.
     v_sample_rule CONSTANT TEXT := '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
     v_reference_rule CONSTANT TEXT := '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$';
-    v_accession_rule CONSTANT TEXT := '^[SED]RR[0-9]{6,10}$';
+    v_run_id_rule CONSTANT TEXT := '^[SED]RR[0-9]{6,10}$';
     v_max_runs CONSTANT INTEGER := 9;
     v_params JSONB;
     v_run_id BIGINT;
@@ -87,28 +87,36 @@ BEGIN
 
     v_params := jsonb_build_object('sample', p_sample, 'reference', p_reference);
 
-    IF p_sra_runs IS NOT NULL THEN
-        IF coalesce(array_ndims(p_sra_runs), 0) <> 1
-           OR cardinality(p_sra_runs) NOT BETWEEN 1 AND v_max_runs
-           OR EXISTS (SELECT 1 FROM unnest(p_sra_runs) r WHERE r IS NULL OR r !~ v_accession_rule)
-           OR (SELECT count(DISTINCT r) FROM unnest(p_sra_runs) r) <> cardinality(p_sra_runs) THEN
-            RAISE EXCEPTION 'give 1 to 9 distinct run accessions like SRR12046049, not %', p_sra_runs
-                USING ERRCODE = '22023';
+    IF p_sra_runs IS NOT NULL AND (
+        coalesce(array_ndims(p_sra_runs), 0) <> 1
+        OR cardinality(p_sra_runs) NOT BETWEEN 1 AND v_max_runs
+        OR EXISTS (SELECT 1 FROM unnest(p_sra_runs) r WHERE r IS NULL OR r !~ v_run_id_rule)
+        OR (SELECT count(DISTINCT r) FROM unnest(p_sra_runs) r) <> cardinality(p_sra_runs)
+    ) THEN
+        RAISE EXCEPTION 'give 1 to % distinct SRA run IDs like SRR12046049', v_max_runs
+            USING ERRCODE = '22023';
+    END IF;
+
+    -- Serialises requests for one name, so two can't both pass the checks below.
+    PERFORM pg_advisory_xact_lock(hashtextextended('rnaseq_sra_import:' || p_sample, 0));
+    IF EXISTS (
+        SELECT 1 FROM public.rnaseq_runs
+        WHERE workflow_type = 'scrna-cellranger'
+          AND params ->> 'sample' = p_sample
+          AND params ? 'sra_runs'
+          AND status IN ('queued', 'submitted', 'running')
+    ) THEN
+        IF p_sra_runs IS NULL THEN
+            RAISE EXCEPTION 'sample % is still being imported from SRA; start the run once it is registered', p_sample
+                USING ERRCODE = '55000';
         END IF;
-        -- Serialises imports under one name, so two requests can't both pass the checks below.
-        PERFORM pg_advisory_xact_lock(hashtextextended('rnaseq_sra_import:' || p_sample, 0));
+        RAISE EXCEPTION 'sample % is already being imported; choose another name', p_sample
+            USING ERRCODE = '23505';
+    END IF;
+
+    IF p_sra_runs IS NOT NULL THEN
         IF EXISTS (SELECT 1 FROM public.rnaseq_samples WHERE name = p_sample) THEN
             RAISE EXCEPTION 'sample % is already registered; choose another name', p_sample
-                USING ERRCODE = '23505';
-        END IF;
-        IF EXISTS (
-            SELECT 1 FROM public.rnaseq_runs
-            WHERE workflow_type = 'scrna-cellranger'
-              AND params ->> 'sample' = p_sample
-              AND params ? 'sra_runs'
-              AND status IN ('queued', 'submitted', 'running')
-        ) THEN
-            RAISE EXCEPTION 'sample % is already being imported; choose another name', p_sample
                 USING ERRCODE = '23505';
         END IF;
         v_params := v_params || jsonb_build_object('sra_runs', to_jsonb(p_sra_runs));
@@ -138,9 +146,10 @@ GRANT EXECUTE ON FUNCTION public.request_scrna_cellranger_run(TEXT, TEXT, UUID, 
 
 -- 4. Registering an imported sample ----------------------------------------------------------
 
--- Registers the sample an SRA run imported, once its download step has succeeded. The name,
--- accessions and scientist come from the run itself; only the counts come from the caller.
--- Registering the same run again returns the same sample. Returns the sample id.
+-- Registers the sample an SRA run imported, once its download step has succeeded (the run is
+-- then running or succeeded). The name, run IDs and scientist come from the run itself; only
+-- the counts come from the caller. Registering again returns the same sample, with its first
+-- counts. Returns the sample id.
 CREATE OR REPLACE FUNCTION public.register_rnaseq_sample(
     p_run_id BIGINT,
     p_fastq_count INTEGER,
@@ -156,6 +165,9 @@ DECLARE
     v_source_ref TEXT;
     v_sample public.rnaseq_samples%ROWTYPE;
 BEGIN
+    IF p_run_id IS NULL THEN
+        RAISE EXCEPTION 'run id is required' USING ERRCODE = '22023';
+    END IF;
     IF p_fastq_count IS NULL OR p_fastq_count < 1 THEN
         RAISE EXCEPTION 'fastq count must be at least 1, not %', p_fastq_count USING ERRCODE = '22023';
     END IF;
@@ -170,6 +182,10 @@ BEGIN
     IF v_run.workflow_type <> 'scrna-cellranger' OR NOT v_run.params ? 'sra_runs' THEN
         RAISE EXCEPTION 'run % does not import its sample from SRA', p_run_id USING ERRCODE = '22023';
     END IF;
+    IF v_run.status NOT IN ('running', 'succeeded') THEN
+        RAISE EXCEPTION 'run % is %, so its download has not succeeded', p_run_id, v_run.status
+            USING ERRCODE = '55000';
+    END IF;
 
     v_name := v_run.params ->> 'sample';
     v_source_ref := array_to_string(
@@ -182,7 +198,7 @@ BEGIN
 
     SELECT * INTO v_sample FROM public.rnaseq_samples WHERE name = v_name;
     IF v_sample.source <> 'sra' OR v_sample.source_ref IS DISTINCT FROM v_source_ref THEN
-        RAISE EXCEPTION 'sample % is already registered from another source', v_name
+        RAISE EXCEPTION 'sample % is already registered with other SRA run IDs or another source', v_name
             USING ERRCODE = '23505';
     END IF;
     RETURN v_sample.id;

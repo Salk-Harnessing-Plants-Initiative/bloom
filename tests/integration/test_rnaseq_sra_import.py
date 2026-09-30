@@ -113,6 +113,17 @@ def _refused(cur, fn, *args, error, match=None, **kwargs):
         cur.execute("ROLLBACK TO SAVEPOINT refused")
 
 
+def _mark(cur, run_id, status):
+    cur.execute(f"UPDATE {TABLE} SET status = %s WHERE id = %s", (status, run_id))
+
+
+def _downloaded(cur, **kwargs):
+    """An import whose fetch-sra step has succeeded: the run is running."""
+    run_id = _request(cur, **kwargs)
+    _mark(cur, run_id, "running")
+    return run_id
+
+
 def _params(cur, run_id):
     cur.execute(f"SELECT params FROM {TABLE} WHERE id = %s", (run_id,))
     return cur.fetchone()[0]
@@ -180,10 +191,11 @@ def test_a_run_without_accessions_is_unchanged(cur):
     assert _params(cur, run_id) == {"sample": "tinygex", "reference": "tiny_ref"}
 
 
-def test_err_and_drr_accessions_and_nine_runs_are_accepted(cur):
+def test_err_and_drr_ids_and_nine_runs_are_accepted(cur):
     nine = [f"SRR100000{i}" for i in range(1, 10)]
     assert _params(cur, _request(cur, runs=nine))["sra_runs"] == nine
-    assert _request(cur, sample="ena_1", runs=["ERR1000001", "DRR1000002"])
+    ena = ["ERR1000001", "DRR1000002"]
+    assert _params(cur, _request(cur, sample="ena_1", runs=ena))["sra_runs"] == ena
 
 
 @pytest.mark.parametrize(
@@ -202,7 +214,13 @@ def test_err_and_drr_accessions_and_nine_runs_are_accepted(cur):
     ids=["empty", "ten", "twice", "study", "too-short", "lowercase", "padded", "null", "nested"],
 )
 def test_bad_accessions_are_refused_and_nothing_is_queued(cur, runs):
-    _refused(cur, _request, runs=runs, error=psycopg.errors.Error)
+    _refused(
+        cur,
+        _request,
+        runs=runs,
+        error=psycopg.errors.InvalidParameterValue,
+        match="give 1 to 9 distinct SRA run IDs like SRR12046049",
+    )
     assert _count(cur, TABLE) == 0
     assert _count(cur, QUEUE_TABLE) == 0
 
@@ -215,8 +233,9 @@ def test_a_registered_name_is_refused(cur):
     assert _count(cur, TABLE) == 0
 
 
-def test_a_name_already_being_imported_is_refused_even_for_another_user(cur):
-    _request(cur)
+@pytest.mark.parametrize("status", ["queued", "submitted", "running"])
+def test_a_name_already_being_imported_is_refused_even_for_another_user(cur, status):
+    _mark(cur, _request(cur), status)
     _refused(
         cur,
         _request,
@@ -232,6 +251,41 @@ def test_a_finished_import_no_longer_holds_the_name(cur, status):
     run_id = _request(cur)
     cur.execute(f"UPDATE {TABLE} SET status = %s WHERE id = %s", (status, run_id))
     assert _request(cur, user=OTHER_USER, runs=["SRR2000001"])
+
+
+@pytest.mark.parametrize("status", ["queued", "submitted", "running"])
+def test_a_run_without_ids_cant_start_on_a_name_still_being_imported(cur, status):
+    _mark(cur, _request(cur), status)
+    _refused(
+        cur,
+        _as_workflows,
+        "SELECT request_scrna_cellranger_run(p_sample => 'shahan_sc_1', "
+        "p_reference => 'tiny_ref', p_requested_by => %s)",
+        (OTHER_USER,),
+        error=psycopg.errors.ObjectNotInPrerequisiteState,
+        match="still being imported from SRA",
+    )
+
+
+def test_a_run_without_ids_leaves_the_name_free_to_import(cur):
+    _as_workflows(
+        cur,
+        "SELECT request_scrna_cellranger_run(p_sample => 'shahan_sc_1', "
+        "p_reference => 'tiny_ref', p_requested_by => %s)",
+        (USER,),
+    )
+    assert _request(cur, user=OTHER_USER)
+
+
+def test_a_request_holds_the_names_lock_until_it_commits(cur, pg_conninfo):
+    _request(cur)
+    key = "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))"
+    with psycopg.connect(pg_conninfo) as other, other.cursor() as c:
+        c.execute(key, ("rnaseq_sra_import:shahan_sc_1",))
+        assert c.fetchone()[0] is False
+        c.execute(key, ("rnaseq_sra_import:another_name",))
+        assert c.fetchone()[0] is True
+        other.rollback()
 
 
 def test_a_registered_sample_can_still_be_counted_without_importing(cur):
@@ -257,8 +311,17 @@ def test_the_table_accepts_valid_accessions_written_directly(cur):
 
 @pytest.mark.parametrize(
     "sra_runs",
-    ["SRR1000001", [], [f"SRR100000{i}" for i in range(10)], ["GSE1"], [1], {"a": "SRR1000001"}],
-    ids=["string", "empty", "ten", "study", "number", "object"],
+    [
+        "SRR1000001",
+        [],
+        [f"SRR100000{i}" for i in range(10)],
+        ["GSE1"],
+        [1],
+        {"a": "SRR1000001"},
+        [["SRR1234567"]],
+        ["SRR1234567", ["SRR7654321"]],
+    ],
+    ids=["string", "empty", "ten", "study", "number", "object", "nested", "partly-nested"],
 )
 def test_the_table_refuses_bad_accessions_written_directly(cur, sra_runs):
     cur.execute("SAVEPOINT bad")
@@ -306,28 +369,29 @@ def test_an_unknown_step_is_still_refused(cur):
 
 
 def test_the_sample_is_registered_from_the_runs_own_details(cur):
-    run_id = _request(cur, user=OTHER_USER)
+    run_id = _downloaded(cur, sample="col0_root_rep1", user=OTHER_USER)
     sample_id = _register(cur, run_id)
     cur.execute(
         f"SELECT id, name, source, source_ref, fastq_count, total_bytes, registered_by::text "
-        f"FROM {SAMPLES} WHERE name = 'shahan_sc_1'"
+        f"FROM {SAMPLES}"
     )
-    assert cur.fetchone() == (
+    assert cur.fetchall() == [(
         sample_id,
-        "shahan_sc_1",
+        "col0_root_rep1",
         "sra",
         "SRR28503597,SRR28503598",
         6,
         11_902_105_823,
         OTHER_USER,
-    )
+    )]
 
 
-def test_registering_twice_registers_once(cur):
-    run_id = _request(cur)
+def test_registering_twice_registers_once_with_its_first_counts(cur):
+    run_id = _downloaded(cur)
     first = _register(cur, run_id)
     assert _register(cur, run_id, fastq_count=7) == first
-    assert _count(cur, SAMPLES) == 1
+    cur.execute(f"SELECT fastq_count FROM {SAMPLES}")
+    assert cur.fetchall() == [(6,)]
 
 
 def test_a_run_that_doesnt_import_cant_register(cur):
@@ -349,7 +413,7 @@ def test_an_unknown_run_cant_register(cur):
     "fastq_count, total_bytes", [(0, 100), (3, 0), (None, 100), (3, None), (-1, 100)]
 )
 def test_counts_must_be_positive(cur, fastq_count, total_bytes):
-    run_id = _request(cur)
+    run_id = _downloaded(cur)
     _refused(
         cur,
         _register,
@@ -361,11 +425,57 @@ def test_counts_must_be_positive(cur, fastq_count, total_bytes):
 
 
 def test_a_name_registered_meanwhile_from_elsewhere_is_not_taken_over(cur):
-    run_id = _request(cur)
+    run_id = _downloaded(cur)
     cur.execute(f"INSERT INTO {SAMPLES} (name, source) VALUES ('shahan_sc_1', 's3')")
-    _refused(cur, _register, run_id, error=psycopg.errors.UniqueViolation)
+    _refused(
+        cur,
+        _register,
+        run_id,
+        error=psycopg.errors.UniqueViolation,
+        match="already registered with other SRA run IDs or another source",
+    )
     cur.execute(f"SELECT source FROM {SAMPLES} WHERE name = 'shahan_sc_1'")
     assert cur.fetchone()[0] == "s3"
+
+
+@pytest.mark.parametrize("status", ["running", "succeeded"])
+def test_a_run_past_its_download_can_register(cur, status):
+    run_id = _request(cur)
+    _mark(cur, run_id, status)
+    assert _register(cur, run_id)
+
+
+@pytest.mark.parametrize("status", ["queued", "submitted", "failed", "skipped"])
+def test_a_run_whose_download_hasnt_succeeded_cant_register(cur, status):
+    run_id = _request(cur)
+    _mark(cur, run_id, status)
+    _refused(
+        cur,
+        _register,
+        run_id,
+        error=psycopg.errors.ObjectNotInPrerequisiteState,
+        match="download has not succeeded",
+    )
+
+
+def test_a_run_id_is_required(cur):
+    _refused(cur, _register, None, error=psycopg.errors.InvalidParameterValue, match="required")
+
+
+def test_the_same_name_imported_again_with_other_runs_isnt_merged(cur):
+    first = _downloaded(cur)
+    _register(cur, first)
+    _mark(cur, first, "succeeded")
+    cur.execute(f"DELETE FROM {SAMPLES}")
+    second = _downloaded(cur, user=OTHER_USER, runs=["SRR2000001"])
+    _register(cur, second)
+    _refused(
+        cur,
+        _register,
+        first,
+        error=psycopg.errors.UniqueViolation,
+        match="already registered with other SRA run IDs",
+    )
 
 
 # --------------------------------------------------------------------------- #
