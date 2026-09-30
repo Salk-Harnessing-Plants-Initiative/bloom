@@ -653,7 +653,8 @@ down_to=2)`:
     order.
   - Repair the dev database with `supabase migration repair --status reverted <old>`, then re-run
     the suite.
-- [ ] 7.5 **PR body.**
+- [x] 7.5 **PR body.** Drafted 2026-09-29; `make pr-body-check` passes and it has no closing
+  keywords.
   - Write it with `/pr-description`.
   - Its **Schema changes** section comes from `make erd-snapshot CHANGED=origin/staging`. It lists
     every named constraint and index from both migrations.
