@@ -83,6 +83,23 @@ dropped connection is re-fetched rather than treated as complete.
 > `plate download` needs the `gravi_scans_extended` view on the server, and
 > `gravi_experiment_search` if you select by `--experiment-name`.
 
+## Quickstart for Single-cell Dataset Files
+
+A single-cell dataset's whole AnnData file (`.h5ad`) is stored gzipped and named by the SHA-256
+of the uncompressed file, so the same file uploaded twice is one object.
+
+```bash
+pip install 'bloomctl[scrna]'                  # upload's structure check needs h5py
+
+bloomctl scrna hdf5 upload my_dataset.h5ad     # needs write access
+bloomctl scrna hdf5 download "My dataset"      # by name, id, or --checksum
+bloomctl scrna hdf5 list                       # what storage holds
+bloomctl scrna hdf5 list --file my_dataset.h5ad  # is this file already stored?
+```
+
+`upload` checks the file's structure before sending anything, and an interrupted upload resumes
+when you run the same command again. `download` writes the file only once its fingerprint matches.
+
 ## Commands
 
 **Find & download** (any logged-in user):
@@ -104,6 +121,14 @@ dropped connection is re-fetched rather than treated as complete.
 | `cyl download-for-predict` / `batch-download-for-predict` | Stage scan(s) into the predict-ready layout                         |
 | `cyl ingest-result` / `batch-ingest-result`               | Write per-scan pipeline results back to Bloom*(needs write access)* |
 | `cyl datasets create`                                       | Create a trait dataset*(needs write access)*                        |
+
+**Single-cell** (`pip install 'bloomctl[scrna]'` for upload):
+
+| Command                     | What it does                                                                      |
+| --------------------------- | --------------------------------------------------------------------------------- |
+| `scrna hdf5 upload <file>`  | Store a dataset's `.h5ad`, after checking its structure*(needs write access)*      |
+| `scrna hdf5 download <ds>`  | Fetch a dataset's `.h5ad` by name, id or `--checksum`, checked against its fingerprint |
+| `scrna hdf5 list [search]`  | The dataset files storage holds; `--file` says whether a local file is stored      |
 
 Run `bloomctl <command> --help` for the full options of any command.
 
