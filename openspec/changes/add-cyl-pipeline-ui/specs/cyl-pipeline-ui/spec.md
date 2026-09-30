@@ -409,7 +409,7 @@ It SHALL show:
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 - **Failed rows:**
   - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
-  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
+  - when the row's `error_message` equals write-back's no-result message or the status poller's backstop message, *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
@@ -436,7 +436,7 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 - **THEN** the row shows "Likely cause: plant age missing"
 
 #### Scenario: The no-op note is narrow
-- **WHEN** a failed row has an `error_message` other than the backstop message
+- **WHEN** a failed row has an `error_message` other than write-back's no-result message or the backstop message
 - **THEN** no bloom#900 note is shown, even if the scan has pipeline results
 
 ### Requirement: Experiment page shows that experiment's runs

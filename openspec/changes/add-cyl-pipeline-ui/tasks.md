@@ -262,7 +262,7 @@
   - the header params line for `{}` and for non-empty params;
   - 5000 rows take 6 `cyl_pipeline_run_scans` calls;
   - the empty state;
-  - a failed row gets its likely cause, and the #900 note only for backstop text with results. A row that turns failed live triggers exactly one metadata/latest-source lookup;
+  - a failed row gets its likely cause, and the #900 note only for a no-result text with results (write-back's or the poller's backstop; PR 6 added write-back's). A row that turns failed live triggers exactly one metadata/latest-source lookup;
   - "current in trait views";
   - the timing note;
   - the experiment links;
@@ -536,7 +536,7 @@
   - "Re-run failed" submits exactly the failed ids.
 
   Also confirm a staging run with `status='complete' and failed_count>0` renders by rule 3 or rule 5, according to its counts.
-- [ ] 12.3b Run a scan whose only source came from `bloomctl cyl ingest-result`. Record its status. If it is `failed` with the backstop text, confirm the #900 note, and add the evidence to bloom#900 (confirm with the user before posting).
+- [ ] 12.3b Run a scan whose only source came from `bloomctl cyl ingest-result`. Record its status. If it is `failed` with a no-result text (write-back's, or the poller's backstop), confirm the #900 note, and add the evidence to bloom#900 (confirm with the user before posting).
 - [ ] 12.4 Turn the network adapter off for 30 s during an active run, then back on. Confirm:
   - `CHANNEL_ERROR`/`CLOSED` then `SUBSCRIBED` in the console;
   - the indicator shows offline, then live;

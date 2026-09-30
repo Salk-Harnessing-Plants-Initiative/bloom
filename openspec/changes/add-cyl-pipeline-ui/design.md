@@ -208,7 +208,7 @@ Rejected alternatives:
   - "Re-run failed" waits for settled header counts.
   - "Re-run scans without a result" is shown only when U > 0 on a `complete`/`failed` run, so it never duplicates "Re-run failed".
 - **No-op false failure (bloom#900).** A re-run over a scan whose only source was ingested outside any run is reported `failed`, because the #875 fallback matches only sources that a run-scan row already carries (`20260917140000:163-191`).
-  - The note is shown only when the row's `error_message` equals the poller's backstop text (`status_poller.py:238-241`, shared as a constant) **and** the scan currently has pipeline results.
+  - The note is shown only when the row's `error_message` equals one of the two no-result texts, **and** the scan currently has pipeline results. The texts are write-back's `NO_RESULT_MESSAGE` (bloomctl `cyl/ingest.py`, recorded by `fail_cyl_pipeline_run_scans_without_result`) and the poller's backstop text (`status_poller.py`), each shared as a constant and pinned by a test. Write-back's is the one a #900 no-op actually gets: every failed row on staging runs 9–11 carries it (PR 6 found this; the first version matched only the backstop text, which no staging run shows). A real stage-in failure gets the same text, which is why results are also required.
   - It says re-running won't change this.
 - **Requester names** are out of scope: `phenotypers` is invisible to `bloom_user` and holds scanner operators.
 

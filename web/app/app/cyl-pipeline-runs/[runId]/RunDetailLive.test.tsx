@@ -18,7 +18,7 @@ import {
   type RecordedQuery,
 } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 import { at, runRow, scanMeta, scanRow } from "@/lib/cyl-pipeline/__fixtures__/rows";
-import { BACKSTOP_MESSAGE, NO_OP_NOTE } from "@/lib/cyl-pipeline/failure-hints";
+import { BACKSTOP_MESSAGE, NO_OP_NOTE, WRITEBACK_NO_RESULT_MESSAGE } from "@/lib/cyl-pipeline/failure-hints";
 import type { RunRow, RunScanRow } from "@/lib/cyl-pipeline/realtime-reducer";
 import type { ScanMeta } from "@/lib/cyl-pipeline/scan-meta";
 import type { ScanTableRow } from "./RunScansTable";
@@ -579,6 +579,20 @@ describe("re-run actions", () => {
     expect(screen.getByTestId("rerun-actions").textContent).toContain(
       "Some of these scans already have pipeline results this run didn't record (bloom#900); re-running won't change them. Check their traits before re-running.",
     );
+  });
+
+  it("warns about #900 for write-back's no-result text too, and only where the scan has results", async () => {
+    run = { ...run, scan_count: 2, status: "complete" };
+    scans = [
+      scanRow(1, 577, { status: "failed", error_message: WRITEBACK_NO_RESULT_MESSAGE }),
+      scanRow(2, 578, { status: "failed", error_message: WRITEBACK_NO_RESULT_MESSAGE }),
+    ];
+    latest = [{ scan_id: 577, max_source_id: 228 }];
+    mount();
+    await subscribe();
+    expect(scanEl(577).textContent).toContain(NO_OP_NOTE);
+    expect(scanEl(578).textContent).not.toContain(NO_OP_NOTE);
+    expect(screen.getByTestId("rerun-actions").textContent).toContain("(bloom#900)");
   });
 
   it.each(["complete", "failed"])("offers Re-run scans without a result on a %s run with unresulted scans", async (status) => {
