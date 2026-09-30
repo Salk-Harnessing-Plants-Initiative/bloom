@@ -10,6 +10,8 @@ SAMPLE_READS="${SAMPLE_READS:-200000}"
 CORES="${CORES:?set CORES to the CPU request of the job}"
 WORK_DIR="${WORK_DIR:-/work}"
 UPLOAD_REPORT="${UPLOAD_REPORT:-true}"
+# false inside a run, where the stage step has already copied the reads to FASTQ_DIR.
+DOWNLOAD_READS="${DOWNLOAD_READS:-true}"
 
 FASTQ_DIR="${WORK_DIR}/fastq/${SAMPLE}"
 OUT_DIR="${WORK_DIR}/qc/${RUN_ID}"
@@ -17,8 +19,10 @@ QC_URI="s3://${BUCKET}/runs_output/${RUN_ID}/qc"
 mkdir -p "${FASTQ_DIR}" "${OUT_DIR}/fastqc"
 exec > >(tee -a "${OUT_DIR}/run.log") 2>&1
 
-echo "Downloading reads (skips files already present)..."
-aws s3 sync "s3://${BUCKET}/raw_reads/${SAMPLE}/" "${FASTQ_DIR}/"
+if [ "${DOWNLOAD_READS}" = true ]; then
+  echo "Downloading reads (skips files already present)..."
+  aws s3 sync "s3://${BUCKET}/raw_reads/${SAMPLE}/" "${FASTQ_DIR}/"
+fi
 
 status=0
 fastq-qc --fastq-dir "${FASTQ_DIR}" --out-dir "${OUT_DIR}" --sample-reads "${SAMPLE_READS}" \

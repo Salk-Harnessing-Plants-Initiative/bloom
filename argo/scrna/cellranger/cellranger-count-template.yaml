@@ -339,6 +339,9 @@ spec:
           # The report stays in the run's folder; only the final .h5ad goes to S3.
           - name: UPLOAD_REPORT
             value: "false"
+          # The stage step has already copied the reads here.
+          - name: DOWNLOAD_READS
+            value: "false"
           - name: AWS_DEFAULT_REGION
             value: us-west-2
           - name: AWS_ACCESS_KEY_ID
@@ -415,18 +418,6 @@ spec:
             value: "/shared/runs/{{inputs.parameters.run-id}}/fastq/{{inputs.parameters.sample}}"
           - name: REF_DIR
             value: "/shared/ref/{{inputs.parameters.reference}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         volumeMounts:
           - name: shared
             mountPath: /shared

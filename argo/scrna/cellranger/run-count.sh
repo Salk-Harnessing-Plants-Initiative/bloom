@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run `cellranger count` on one sample and keep what the analysis steps need in RESULTS_DIR (the run's
-# shared folder); nothing is uploaded. Safe to re-run.
+# Run `cellranger count` on one sample staged in the run's shared folder (the stage steps copy the
+# reads and reference there) and keep what the analysis steps need in RESULTS_DIR. Touches no S3.
+# Safe to re-run.
 set -euo pipefail
 
 # Exit codes: 0 done or already done, 3 no reference, 4 no FASTQs, 5 cellranger count failed,
@@ -14,7 +15,6 @@ readonly EXIT_BAD_FASTQ_NAMES=7
 
 : "${SAMPLE:?set SAMPLE (folder under raw_reads/)}"
 : "${REFERENCE:?set REFERENCE (folder under reference_genome/)}"
-BUCKET="${BUCKET:-bloomv2-workflows}"
 RUN_ID="${RUN_ID:-$SAMPLE}"
 # The FASTQs' name prefix for --sample; read from the file names unless set.
 FASTQ_SAMPLE="${FASTQ_SAMPLE:-}"
@@ -25,7 +25,7 @@ WORK_DIR="${WORK_DIR:-/work}"
 REF_DIR="${REF_DIR:-${WORK_DIR}/ref/${REFERENCE}}"
 FASTQ_DIR="${FASTQ_DIR:-${WORK_DIR}/fastq/${SAMPLE}}"
 
-RESULTS_DIR="${RESULTS_DIR:?set RESULTS_DIR (the run's shared folder)}"
+RESULTS_DIR="${RESULTS_DIR:?set RESULTS_DIR (the run folder on the share)}"
 # Kept for the analysis steps: the matrix, Cell Ranger's metrics and the chemistry check.
 KEEP=(filtered_feature_bc_matrix.h5 metrics_summary.csv qc/qc_summary.json)
 
@@ -58,17 +58,12 @@ keep_log_on_failure() {
 }
 trap keep_log_on_failure EXIT
 
-echo "Downloading reads and reference (skips files already present)..."
-aws s3 sync "s3://${BUCKET}/raw_reads/${SAMPLE}/" "${FASTQ_DIR}/"
-aws s3 sync "s3://${BUCKET}/reference_genome/${REFERENCE}/" "${REF_DIR}/"
-
-# sync from a missing prefix copies nothing and still exits 0
 if [ ! -f "${REF_DIR}/reference.json" ]; then
-  echo "ERROR: no Cell Ranger reference at s3://${BUCKET}/reference_genome/${REFERENCE}/ (expected reference.json)"
+  echo "ERROR: no staged Cell Ranger reference at ${REF_DIR} (expected reference.json)"
   exit "${EXIT_NO_REFERENCE}"
 fi
 if ! compgen -G "${FASTQ_DIR}/*.fastq*" >/dev/null; then
-  echo "ERROR: no FASTQs at s3://${BUCKET}/raw_reads/${SAMPLE}/"
+  echo "ERROR: no staged FASTQs at ${FASTQ_DIR}"
   exit "${EXIT_NO_FASTQS}"
 fi
 if [ -z "${FASTQ_SAMPLE}" ]; then
