@@ -164,7 +164,7 @@ It SHALL display, in this order:
 
    Each entry shows its id, requester, counts-first display state and age, and links to its drill-down.
 5. **Pre-check line.**
-   - When K = N > 0, the all-results notice replaces it: "*All N scans already have pipeline results. Unless images, parameters, models or code changed, this will likely re-confirm existing results and the trait views won't change.*"
+   - When K = N > 0, the all-results notice replaces it: "*All N scans already have pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.*"
    - Otherwise: "*K of N already have pipeline results.*"
 
    A details disclosure holds the full text: "*L more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All N will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code.*" Its first sentence is omitted when L = 0.

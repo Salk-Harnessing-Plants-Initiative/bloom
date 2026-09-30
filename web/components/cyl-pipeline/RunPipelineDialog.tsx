@@ -268,8 +268,8 @@ export function RunPipelineDialog({ target: requested, title, onClose, onStarted
             {c.N > 0 &&
               (c.K === c.N ? (
                 <p>
-                  All {c.N} scans already have pipeline results. Unless images, parameters, models or code changed, this will
-                  likely re-confirm existing results and the trait views won&apos;t change.
+                  All {c.N} scans already have pipeline results. The run will still be created and sent to the cluster, which
+                  skips scans it has already processed with the same models and code.
                 </p>
               ) : (
                 <div>

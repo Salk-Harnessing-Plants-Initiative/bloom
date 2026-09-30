@@ -301,7 +301,7 @@ describe("the pre-check", () => {
     mount();
     await settle();
     expect(dialogText()).toContain(
-      "All 12 scans already have pipeline results. Unless images, parameters, models or code changed, this will likely re-confirm existing results and the trait views won't change.",
+      "All 12 scans already have pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.",
     );
     expect(dialogText()).not.toContain("of 12 already have pipeline results");
   });
