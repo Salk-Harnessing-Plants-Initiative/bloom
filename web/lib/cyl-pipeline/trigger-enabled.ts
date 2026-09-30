@@ -7,7 +7,9 @@
  * It is off in prod until bloom#863 is fixed: every dispatched Workflow mounts
  * the staging Supabase credential, so a prod run's write-back would land in
  * staging and its own rows would end up failed. Off hides every run action and
- * makes POST /api/cyl/pipeline answer 503. The live views stay.
+ * makes POST /api/cyl/pipeline answer 503. The live views stay. It doesn't
+ * reach the Workflows service, whose own POST /pipeline stays public
+ * (bloom#983).
  */
 
 export const TRIGGER_ENABLED_ENV = "CYL_PIPELINE_TRIGGER_ENABLED";
