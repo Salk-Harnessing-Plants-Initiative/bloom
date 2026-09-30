@@ -134,6 +134,7 @@ export function startRunErrorMessage(status: number, detail: unknown): string {
   if (typeof detail === "string" && detail.trim()) return detail;
   if (status === 401) return "Sign in to start a job.";
   if (status === 429) return "Too many requests. Wait a minute and try again.";
+  if (status === 409) return "That sample name is taken or still being imported. Choose another name.";
   if (status === 422) return "The sample or reference name isn't valid.";
   if (status === 503) return "The job service isn't available right now.";
   return "Couldn't start the job. Try again shortly.";

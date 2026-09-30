@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   failureSentence,
+  runSraRuns,
+  runSteps,
   fetchRequesters,
   isFinished,
   runAttributes,
@@ -86,20 +88,40 @@ describe("stepStates", () => {
       stage: "done",
       qc: "running",
       count: "waiting",
+      preprocess: "waiting",
+      cluster: "waiting",
+      "build-h5ad": "waiting",
       cleanup: "waiting",
     });
   });
 
   it("marks every step waiting before the first report", () => {
     expect(Object.values(stepStates(run({ status: "queued", current_step: null })))).toEqual(
-      Array(5).fill("waiting")
+      Array(8).fill("waiting")
     );
   });
 
+  const ALL_PODS = Object.fromEntries(
+    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "build-h5ad", "cleanup"].map(
+      (step, i) => [step, `p${i}`]
+    )
+  );
+
   it("marks every step done when the run succeeded", () => {
-    expect(Object.values(stepStates(run({ status: "succeeded", current_step: "cleanup" })))).toEqual(
-      Array(5).fill("done")
-    );
+    expect(
+      Object.values(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: ALL_PODS })))
+    ).toEqual(Array(8).fill("done"));
+  });
+
+  it("marks steps a finished run never had as not run", () => {
+    const { preprocess: _p, cluster: _c, "build-h5ad": _b, ...before } = ALL_PODS;
+    expect(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: before }))).toMatchObject({
+      count: "done",
+      preprocess: "not-run",
+      cluster: "not-run",
+      "build-h5ad": "not-run",
+      cleanup: "done",
+    });
   });
 
   it("marks the step a run failed at, and the ones after it as not run", () => {
@@ -108,13 +130,16 @@ describe("stepStates", () => {
       stage: "done",
       qc: "done",
       count: "failed",
+      preprocess: "not-run",
+      cluster: "not-run",
+      "build-h5ad": "not-run",
       cleanup: "not-run",
     });
   });
 
   it("marks nothing failed when a run failed before starting", () => {
     expect(Object.values(stepStates(run({ status: "failed", current_step: null })))).toEqual(
-      Array(5).fill("not-run")
+      Array(8).fill("not-run")
     );
   });
 
@@ -127,8 +152,59 @@ describe("stepStates", () => {
       stage: "done",
       qc: "skipped",
       count: "skipped",
+      preprocess: "skipped",
+      cluster: "skipped",
+      "build-h5ad": "skipped",
       cleanup: "skipped",
     });
+  });
+
+  it("starts an SRA import with the download, which runs before staging", () => {
+    const imported = run({
+      params: { sample: "root_tip", reference: "tiny_ref", sra_runs: ["SRR28503597"] },
+      current_step: "fetch-sra",
+    });
+    expect(runSteps(imported)[0].id).toBe("fetch-sra");
+    expect(stepStates(imported)).toMatchObject({
+      "fetch-sra": "running",
+      "stage-reference": "waiting",
+      "build-h5ad": "waiting",
+    });
+  });
+
+  it("marks the download done once the run has moved on", () => {
+    const imported = run({
+      params: { sample: "root_tip", reference: "tiny_ref", sra_runs: ["SRR28503597"] },
+      current_step: "cluster",
+    });
+    expect(stepStates(imported)).toMatchObject({
+      "fetch-sra": "done",
+      count: "done",
+      preprocess: "done",
+      cluster: "running",
+      "build-h5ad": "waiting",
+    });
+  });
+});
+
+describe("runSteps and runSraRuns", () => {
+  it("leaves the download out of a run without SRA run IDs", () => {
+    expect(runSteps(run()).map((s) => s.id)).toEqual([
+      "stage-reference",
+      "stage",
+      "qc",
+      "count",
+      "preprocess",
+      "cluster",
+      "build-h5ad",
+      "cleanup",
+    ]);
+    expect(runSraRuns(run())).toEqual([]);
+  });
+
+  it("reads the run IDs in lane order", () => {
+    const ids = ["SRR28503598", "SRR28503597"];
+    expect(runSraRuns(run({ params: { sample: "s", reference: "r", sra_runs: ids } }))).toEqual(ids);
   });
 });
 
@@ -138,8 +214,23 @@ describe("failureSentence", () => {
     [4, /No FASTQ files/],
     [5, /Cell Ranger count failed/],
     [6, /run id/],
+    [7, /Illumina's naming/],
+    [13, /Fewer than 50 cells/],
+    [14, /count matrix wasn't found/],
+    [15, /didn't fit/],
   ])("explains exit %i", (code, sentence) => {
     expect(failureSentence(run({ status: "failed", exit_code: code }))).toMatch(sentence);
+  });
+
+  it.each([
+    [6, /SRA run IDs can't be used/],
+    [7, /couldn't be named the Illumina way/],
+    [10, /couldn't be downloaded from SRA/],
+    [11, /don't look like 10x gene-expression reads/],
+    [12, /already holds other FASTQs/],
+  ])("explains exit %i from the SRA download", (code, sentence) => {
+    const failed = run({ status: "failed", exit_code: code, current_step: "fetch-sra" });
+    expect(failureSentence(failed)).toMatch(sentence);
   });
 
   it("falls back to the run's message for another exit code", () => {

@@ -156,6 +156,30 @@ describe("forwarding", () => {
     });
   });
 
+  it("forwards the SRA run IDs in the order given", async () => {
+    const sra_runs = ["SRR28503598", "SRR28503597"];
+    await callRoute({ sample: "sc71", reference: "tiny_ref", sra_runs });
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
+      sample: "sc71",
+      reference: "tiny_ref",
+      sra_runs,
+    });
+  });
+
+  it("sends no SRA run IDs for a registered sample", async () => {
+    await callRoute({ sample: "tinygex", reference: "tiny_ref" });
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).not.toHaveProperty("sra_runs");
+  });
+
+  it.each([[null], ["SRR28503597"], [[1]], [{ 0: "SRR28503597" }]])(
+    "refuses SRA run IDs %j without calling upstream",
+    async (sra_runs) => {
+      const res = await callRoute({ sample: "sc71", reference: "tiny_ref", sra_runs });
+      expect(res.status).toBe(400);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
+  );
+
   it.each([[null], [[1]], ["root"], [5]])(
     "refuses metadata %j without calling upstream",
     async (metadata) => {
@@ -179,6 +203,14 @@ describe("upstream answers", () => {
     const res = await callRoute({ sample: "tinygex", reference: "tiny_ref" });
     expect(res.status).toBe(502);
     expect(JSON.stringify(await res.json())).not.toContain("workflows.test");
+  });
+
+  it("passes a 409 detail through, so a taken name says so", async () => {
+    const detail = "sample sc71 is already being imported; choose another name";
+    fetchSpy.mockResolvedValue(upstream({ detail }, 409));
+    const res = await callRoute({ sample: "sc71", reference: "tiny_ref", sra_runs: ["SRR28503597"] });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ detail });
   });
 
   it.each([422, 429])("passes the %i detail through", async (status) => {

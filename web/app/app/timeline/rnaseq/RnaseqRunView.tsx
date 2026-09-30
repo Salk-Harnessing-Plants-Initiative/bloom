@@ -6,7 +6,6 @@ import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Change } from "@/lib/cyl-pipeline/realtime-reducer";
 import { useLiveSync } from "@/lib/cyl-pipeline/use-live-sync";
 import {
-  CELLRANGER_STEPS,
   failureSentence,
   fetchRun,
   runAttributes,
@@ -15,10 +14,13 @@ import {
   runSample,
   runSpeciesId,
   stepStarted,
+  runSraRuns,
+  runSteps,
   stepStates,
   type RnaseqRun,
   type StepState,
 } from "@/lib/rnaseq-runs";
+import { sraRunUrl } from "@/lib/sra-runs";
 import { StatusBadge, when } from "./run-labels";
 import StepLog from "./StepLog";
 
@@ -67,6 +69,7 @@ export default function RnaseqRunView({
   });
   const run = live.view;
   const states = stepStates(run);
+  const sraRuns = runSraRuns(run);
   const failure = failureSentence(run);
   const origin = metadataText(run, "origin");
   const sourceUrl = metadataText(run, "source_url");
@@ -89,6 +92,19 @@ export default function RnaseqRunView({
           {runSample(run) ?? "—"} against {runReference(run) ?? "—"}
         </span>
       </div>
+      {sraRuns.length ? (
+        <p className="-mt-4 mb-6 text-sm text-stone-600">
+          Imported from SRA:{" "}
+          {sraRuns.map((id, i) => (
+            <span key={id}>
+              {i ? ", " : null}
+              <a href={sraRunUrl(id)} target="_blank" rel="noreferrer" className="font-mono text-lime-800 underline">
+                {id}
+              </a>
+            </span>
+          ))}
+        </p>
+      ) : null}
 
       {failure ? (
         <div role="alert" className="mb-6 max-w-2xl rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
@@ -106,8 +122,8 @@ export default function RnaseqRunView({
 
       <h3 className="mb-2 text-xs uppercase tracking-widest text-stone-500">Steps</h3>
       <ol className="mb-8 max-w-3xl divide-y divide-stone-200 border-y border-stone-200">
-        {CELLRANGER_STEPS.map((step) => {
-          const state = STEP_STATE[states[step.id]];
+        {runSteps(run).map((step) => {
+          const state = STEP_STATE[states[step.id] ?? "waiting"];
           return (
             <li key={step.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2">
               <span aria-hidden className={`w-4 text-center ${state.className}`}>
