@@ -26,16 +26,31 @@
       "contract_versions": ["0.1.0a9"],
       "traits_sleap_roots_versions": ["0.1.4"],
       "sleap_nn_versions": ["0.3.0"],
-      "predict_container_digests": ["sha256:afc8da823838bff85d93013e85b8d0c18c2d4f01117a0914944df1a845c73adc"],
-      "traits_container_digests": ["sha256:2cbbe602b7d397b89c4eab326d00f410f367f8c1b7fba46a927a369fcf6fc9a4"],
+      "predict_container_digests": [
+        "sha256:afc8da823838bff85d93013e85b8d0c18c2d4f01117a0914944df1a845c73adc"
+      ],
+      "traits_container_digests": [
+        "sha256:2cbbe602b7d397b89c4eab326d00f410f367f8c1b7fba46a927a369fcf6fc9a4"
+      ],
       "inference_configs": [{ "device": "cpu", "batch_size": 4, "peak_threshold": 0.2 }]
     }
   },
-  "included": { "n_scans": 12, "source_ids": [219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230] },
+  "included": {
+    "n_scans": 12,
+    "source_ids": [219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230]
+  },
   "excluded": [
-    { "scan_id": 12894751, "plant_qr_code": "qr-example-1", "reason": "no_traits", "available_recipes": [] }
+    {
+      "scan_id": 12894751,
+      "plant_qr_code": "qr-example-1",
+      "reason": "no_traits",
+      "available_recipes": []
+    }
   ],
   "other_recipes_in_selection": [
-    { "recipe_key": "a73f403c578f02e4648398b5c6fe78570f1e2d3c4b5a69788796a5b4c3d2e1f0", "n_scans": 12 }
+    {
+      "recipe_key": "a73f403c578f02e4648398b5c6fe78570f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "n_scans": 12
+    }
   ]
 }

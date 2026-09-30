@@ -11,6 +11,7 @@ plant_qr_code, accession_name, trait_name, source_id, trait_value, recipe_key`, 
 selection rule rather than re-deriving it.
 
 **Source selection.**
+
 - With `source_id_`, `run_id_` and `recipe_key_` all `NULL`, the function SHALL return the latest
   source per scan for every trait.
 - With `source_id_` set, it SHALL return only that source's rows.
@@ -42,6 +43,7 @@ three-argument definition.
 functions can return.
 
 **No cross-source mixing, no dropped values.**
+
 - A scan whose selected source did not measure a trait that another source measured SHALL NOT have
   that trait filled in from the other source.
 - A trait whose selected value is non-finite (stored `NULL`) SHALL be returned as a `NULL`-valued
@@ -148,13 +150,13 @@ experiment SHALL be returned under any argument combination.
 - **WHEN** `recipe_key_` is a stored recipe that no scan of `experiment_id_` has
 - **THEN** the call returns zero rows without error
 
-#### Scenario: scan_ids_ narrows the default path
+#### Scenario: scan*ids* narrows the default path
 
 - **WHEN** `get_experiment_traits(experiment_id_, scan_ids_ => ARRAY[s1])` is called
 - **THEN** only scan `s1`'s latest-source rows are returned, and an empty `scan_ids_` returns zero
   rows
 
-#### Scenario: The default path is unaffected by recipe_key_ and scan_ids_
+#### Scenario: The default path is unaffected by recipe*key* and scan*ids*
 
 - **WHEN** the `20260728000000` three-argument definition and this definition are each called on
   the same data with the same `experiment_id_`, `source_id_` and `run_id_`
@@ -200,12 +202,13 @@ A scan `s` SHALL have recipe `K` exactly when at least one of its `cyl_scan_trai
 all use it.
 
 **Consequences.**
+
 - A source with no trait rows SHALL contribute no recipe to any scan.
 - Rows of a source whose `recipe_key` is NULL SHALL contribute no recipe.
 - Rows of a source whose `scan_id` names a different scan SHALL contribute no recipe to the scan
   they sit on. The write-back RPC never writes such rows; only a direct `bloom_admin` edit can.
 
-**Stored recipes.** A *stored recipe* is a `recipe_key` value present on at least one
+**Stored recipes.** A _stored recipe_ is a `recipe_key` value present on at least one
 `cyl_trait_sources` row, in any experiment.
 
 **Recipe kinds.** A recipe is `'legacy'` when its key starts with `legacy:`, `'unattributed'` for
@@ -238,6 +241,7 @@ the key `'unattributed'`, and `'pipeline'` otherwise.
 Bloom SHALL provide `list_trait_recipes(experiment_ids_ BIGINT[] DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL)` returning one row per recipe that at least one selected scan has.
 
 **The selection.**
+
 - It is the scans reachable from `experiment_ids_` through `get_experiment_traits`' join chain
   (experiments → waves → plants → accessions (inner) → scans).
 - When `scan_ids_` is also given, it is intersected with it. When only `scan_ids_` is given, it is
@@ -248,15 +252,15 @@ Bloom SHALL provide `list_trait_recipes(experiment_ids_ BIGINT[] DEFAULT NULL, s
 
 **Columns.**
 
-| Column | Content |
-|---|---|
-| `recipe_key` | The recipe |
-| `recipe_key_version` | `1` for pipeline and legacy recipes, `NULL` for `unattributed` |
-| `recipe_kind` | `pipeline`, `legacy` or `unattributed` |
+| Column               | Content                                                                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recipe_key`         | The recipe                                                                                                                                      |
+| `recipe_key_version` | `1` for pipeline and legacy recipes, `NULL` for `unattributed`                                                                                  |
+| `recipe_kind`        | `pipeline`, `legacy` or `unattributed`                                                                                                          |
 | `definition` (jsonb) | Pipeline: `cyl_trait_recipe_payload_v1` of the recipe's highest source's `metadata`. Legacy: `{source_id, source_name}`. `unattributed`: `NULL` |
-| `n_scans` | The number of selected scans that have the recipe |
-| `newest_source_id` | The highest `source_id` among the selected scans' sources of the recipe. `NULL` for `unattributed` |
-| `is_default` | Whether this is the default recipe |
+| `n_scans`            | The number of selected scans that have the recipe                                                                                               |
+| `newest_source_id`   | The highest `source_id` among the selected scans' sources of the recipe. `NULL` for `unattributed`                                              |
+| `is_default`         | Whether this is the default recipe                                                                                                              |
 
 **The default recipe.** Exactly one row SHALL have `is_default = true` whenever any row is
 returned: the one with the highest `newest_source_id`, with `unattributed` ranking last.
@@ -320,6 +324,7 @@ returned: the one with the highest `newest_source_id`, with `unattributed` ranki
 Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL, recipe_key_ TEXT DEFAULT NULL)` returning one row per selected scan, evaluated against one recipe.
 
 **Inputs.**
+
 - The selection is defined as for `list_trait_recipes`.
 - The evaluated recipe is `recipe_key_`, or, when that is `NULL`, the default recipe of the same
   selection. That can itself be `NULL` when no selected scan has trait rows.
@@ -329,14 +334,15 @@ Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT 
 
 **Status.** `status` SHALL be the first of these that applies:
 
-| Status | When |
-|---|---|
-| `included` | The scan has the evaluated recipe. `source_id` is its source of that recipe |
-| `no_traits` | The scan has no trait rows |
-| `legacy_only` | The scan has at least one recipe, and every recipe it has is `legacy:*` or `unattributed` |
-| `other_recipe` | Any other case |
+| Status         | When                                                                                      |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| `included`     | The scan has the evaluated recipe. `source_id` is its source of that recipe               |
+| `no_traits`    | The scan has no trait rows                                                                |
+| `legacy_only`  | The scan has at least one recipe, and every recipe it has is `legacy:*` or `unattributed` |
+| `other_recipe` | Any other case                                                                            |
 
 **Other rules.**
+
 - `source_id` SHALL be `NULL` for every status other than `included`.
 - `available_recipes` SHALL list exactly the recipes the scan has, sorted under `COLLATE "C"`.
 - A `recipe_key_` that is not a stored recipe and is not `'unattributed'` SHALL raise an error.
@@ -415,7 +421,7 @@ Every field of export sidecar v1 (`_WIKI/SUPABASE/trait-recipes.export.schema.js
 
 **The field table.** `_WIKI/SUPABASE/trait-recipes.md` SHALL name that source for each field.
 
-**What exporters must do.** An *exporter* (the web download, bloomctl or bloommcp) SHALL build the
+**What exporters must do.** An _exporter_ (the web download, bloomctl or bloommcp) SHALL build the
 sidecar's excluded list from exactly the
 coverage rows whose `status` is not `included`, with `reason` equal to `status`.
 

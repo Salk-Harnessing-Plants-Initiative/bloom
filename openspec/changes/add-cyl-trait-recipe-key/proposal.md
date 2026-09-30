@@ -22,17 +22,20 @@ distinct recipes, and no pipeline source records the Bloom run or Argo Workflow 
   - Both are set by `insert_cyl_result_envelope` when a delivery creates a source.
   - They are not backfilled, because the history was never recorded.
 - **Recipe-aware reads.** Two new functions:
+
   - `list_trait_recipes(experiment_ids_, scan_ids_)` returns the recipes in a selection, with scan
     counts and a default recipe;
   - `get_trait_recipe_coverage(experiment_ids_, scan_ids_, recipe_key_)` gives a status for each
     scan.
 
   `get_experiment_traits` gains `recipe_key_` and `scan_ids_`. The breaking parts:
+
   - **BREAKING (return type):** `get_experiment_traits` gains a trailing `recipe_key` column, so its
     3-argument form is dropped and replaced. Named callers that read columns by name, including
     bloommcp's reader, are unaffected.
   - **BREAKING (access):** `anon` loses `EXECUTE` on `get_experiment_traits`, which it held on
     staging on 2026-09-29 through Supabase default privileges (design D6).
+
 - **Datasets.**
   - `cyl_datasets` gains `recipe_key`.
   - `create_cyl_dataset` gains a recipe mode (new `cyl-datasets` spec).
@@ -68,6 +71,7 @@ distinct recipes, and no pipeline source records the Bloom run or Argo Workflow 
   only). There are no application code changes, so the PR stays inside `lint_migration_isolation`'s
   surface.
 - **Existing tests that change:**
+
   - `tests/integration/test_cyl_experiment_traits.py`
   - `tests/integration/test_cyl_experiment_summary_counts.py`
   - `tests/integration/test_cyl_pipeline_dispatch.py`
@@ -76,4 +80,5 @@ distinct recipes, and no pipeline source records the Bloom run or Argo Workflow 
   The reasons are in tasks 2.6 and 4.10. `test_cyl_experiment_trait_counts.py`, which deletes a scan after
   write-back, must keep passing unchanged. The new foreign keys use `ON DELETE SET NULL` for that
   reason.
+
 - **Services affected at runtime:** Supabase only. bloommcp (egao28) keeps working unchanged.

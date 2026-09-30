@@ -5,23 +5,24 @@ specs do not state.
 
 ## Terms
 
-| Term | Meaning |
-|---|---|
-| a7 / a9 | sleap-roots-contracts `v0.1.0a7` / `v0.1.0a9` |
-| srp#N | talmolab/sleap-roots-pipeline#N |
-| Hand-submitted run | An `argo submit` outside Bloom's dispatcher. It has no `cyl_pipeline_run_scans` rows |
-| Idempotency gate | The write-back RPC's step 5: `INSERT … ON CONFLICT (idempotency_key) DO NOTHING` into `cyl_trait_sources` |
-| Latest | `get_experiment_traits`' unpinned per-scan `max(source_id)`. This change does not alter it, and it can mix recipes |
-| Default recipe | The one recipe `list_trait_recipes` proposes for a whole selection (D5) |
-| Newest / highest source | Highest `source_id`. Sources have no timestamp, and identity ids increase |
-| Stored recipe | A `recipe_key` present on some `cyl_trait_sources` row. `unattributed` is never stored there; a recipe-mode dataset may store it on `cyl_datasets` |
-| Sidecar | The `<stem>.export.json` file that describes an export (D8) |
-| Exporter | Whatever writes an export: the web download, bloomctl or bloommcp. The pipeline is called the *producer* |
-| PGRST202 / PGRST203 | PostgREST errors: no matching function / ambiguous overload |
+| Term                    | Meaning                                                                                                                                            |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a7 / a9                 | sleap-roots-contracts `v0.1.0a7` / `v0.1.0a9`                                                                                                      |
+| srp#N                   | talmolab/sleap-roots-pipeline#N                                                                                                                    |
+| Hand-submitted run      | An `argo submit` outside Bloom's dispatcher. It has no `cyl_pipeline_run_scans` rows                                                               |
+| Idempotency gate        | The write-back RPC's step 5: `INSERT … ON CONFLICT (idempotency_key) DO NOTHING` into `cyl_trait_sources`                                          |
+| Latest                  | `get_experiment_traits`' unpinned per-scan `max(source_id)`. This change does not alter it, and it can mix recipes                                 |
+| Default recipe          | The one recipe `list_trait_recipes` proposes for a whole selection (D5)                                                                            |
+| Newest / highest source | Highest `source_id`. Sources have no timestamp, and identity ids increase                                                                          |
+| Stored recipe           | A `recipe_key` present on some `cyl_trait_sources` row. `unattributed` is never stored there; a recipe-mode dataset may store it on `cyl_datasets` |
+| Sidecar                 | The `<stem>.export.json` file that describes an export (D8)                                                                                        |
+| Exporter                | Whatever writes an export: the web download, bloomctl or bloommcp. The pipeline is called the _producer_                                           |
+| PGRST202 / PGRST203     | PostgREST errors: no matching function / ambiguous overload                                                                                        |
 
 ## Context
 
 **What this was checked against, on 2026-09-29:**
+
 - Bloom `origin/staging` at `21487acc`, which includes PR #940.
 - The staging database, read-only.
 - sleap-roots-contracts `v0.1.0a9-2-gbaead42`. Its `identity.py`, `hashing.py` and `models.py`
@@ -29,18 +30,19 @@ specs do not state.
 
 **Staging, as of 2026-09-29.**
 
-| Item | State |
-|---|---|
-| `cyl_trait_sources` | 85 rows: 5 legacy (ids 1–5, `metadata` NULL), 65 a7 pipeline (6–203), 15 a9 pipeline (219–233) |
-| Scan resolution | Every pipeline source's `inputs.image_ids` resolves to exactly one scan. For 79 of them, that is the scan their trait rows carry. Id 70 is a `deadbeef` verification fixture with no trait rows |
-| Recipes | 10 distinct v1 keys over the 80 pipeline sources: 9 real recipes plus the fixture. The 15 a9 sources share one |
-| Run stamps | `metadata->>'pipeline_run_id'`, `argo_workflow_uid` and `produced_at` are null on all 80 |
-| Plants and experiments | 0 of 40,203 plants lack an accession; 0 experiments lack a species |
-| Postgres | 15.14 |
-| `get_experiment_traits` EXECUTE | The four read roles, plus `anon` and `service_role` |
-| `create_cyl_dataset` EXECUTE | `PUBLIC`, `anon`, `authenticated` and `service_role`; owned by `postgres` |
+| Item                            | State                                                                                                                                                                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cyl_trait_sources`             | 85 rows: 5 legacy (ids 1–5, `metadata` NULL), 65 a7 pipeline (6–203), 15 a9 pipeline (219–233)                                                                                                  |
+| Scan resolution                 | Every pipeline source's `inputs.image_ids` resolves to exactly one scan. For 79 of them, that is the scan their trait rows carry. Id 70 is a `deadbeef` verification fixture with no trait rows |
+| Recipes                         | 10 distinct v1 keys over the 80 pipeline sources: 9 real recipes plus the fixture. The 15 a9 sources share one                                                                                  |
+| Run stamps                      | `metadata->>'pipeline_run_id'`, `argo_workflow_uid` and `produced_at` are null on all 80                                                                                                        |
+| Plants and experiments          | 0 of 40,203 plants lack an accession; 0 experiments lack a species                                                                                                                              |
+| Postgres                        | 15.14                                                                                                                                                                                           |
+| `get_experiment_traits` EXECUTE | The four read roles, plus `anon` and `service_role`                                                                                                                                             |
+| `create_cyl_dataset` EXECUTE    | `PUBLIC`, `anon`, `authenticated` and `service_role`; owned by `postgres`                                                                                                                       |
 
 **The code this change builds on.**
+
 - **`insert_cyl_result_envelope(jsonb, text)`:**
   - Its body is at `20260928130000_cyl_writeback_contract_a9.sql:44`, and its ACL is set by
     `20260928130100`.
@@ -67,19 +69,20 @@ key exactly when they would have shared an idempotency key on the same scan with
 
 **Recorded but not keyed:**
 
-| Field | Why it is not in the key |
-|---|---|
-| `contract_version` | The a7→a9 step was a schema-`$id` restamp, and identity ignores it |
-| `sleap_nn_version`, `traits_sleap_roots_version` | Implied by `predict_code_sha` and `traits_code_sha` respectively |
-| Container digests | Empty on some a7 rows. A same-code rebuild must not split a recipe |
-| `predict_inference_config` | `device` and `batch_size` are excluded from identity by design |
-| Run and orchestration fields | They vary per delivery |
+| Field                                            | Why it is not in the key                                           |
+| ------------------------------------------------ | ------------------------------------------------------------------ |
+| `contract_version`                               | The a7→a9 step was a schema-`$id` restamp, and identity ignores it |
+| `sleap_nn_version`, `traits_sleap_roots_version` | Implied by `predict_code_sha` and `traits_code_sha` respectively   |
+| Container digests                                | Empty on some a7 rows. A same-code rebuild must not split a recipe |
+| `predict_inference_config`                       | `device` and `batch_size` are excluded from identity by design     |
+| Run and orchestration fields                     | They vary per delivery                                             |
 
 **Age-window model switches** make a different recipe (eberrigan, 2026-09-28). Models come from
 a moving W&B `production` alias, so only the resolved models prove "same models".
 
 **Two helpers.** The payload helper is what `list_trait_recipes` returns as `definition`, so a
 definition always hashes to its key.
+
 - **They never raise.** The RPC does not validate these fields, so a raise would reject envelopes
   that the `20260928130000` body accepts. In the backfill, a raise would stall the deploy, as the
   a7→a9 cutover guard did (bloom#685).
@@ -95,6 +98,7 @@ definition always hashes to its key.
 **Not byte-equal to Python.** `jsonb::text` orders keys by length first, and it keeps numeric
 scale, so the key is not byte-equal to contracts' `canonical_json`. Only Bloom compares recipe
 keys (contracts#47 asks whether contracts should own one).
+
 - A golden-vector partition test checks the property that matters instead: same payload, same key.
 - The one documented divergence is `1` versus `1.0` in `predict_output_params`. Contracts'
   `hashing._normalize` collapses integer-valued floats; jsonb keeps them distinct. Predict emits
@@ -126,6 +130,7 @@ run matches, NULL is safer than a guess.
 
 **The column name.** `cyl_pipeline_run_id` was eberrigan's choice (2026-09-29).
 `pipeline_run_id` already names two other things:
+
 - the producer's text id, in `metadata`, in the `cyl_scan_traits_source` column, and in the
   `run_id_` pin;
 - the workflows API response field (`services/workflows/README.md:182`). That field's integer is
@@ -162,22 +167,23 @@ The rule is in the read spec, "Recipe presence is defined by trait rows". This s
 how the functions implement it.
 
 **The implementation constraint.** For each selected scan `s`:
+
 - **The candidates** are the sources with `scan_id = s` (via the new index), plus every source
   with `scan_id IS NULL`: the legacy sources, and any pipeline source the backfill could not
   resolve.
 - **Each candidate `c` is confirmed** by `LATERAL (SELECT 1 FROM cyl_scan_traits WHERE scan_id = s
-  AND source_id = c LIMIT 1)`.
+AND source_id = c LIMIT 1)`.
 - **The NULL source is confirmed** by a separate `… AND source_id IS NULL LIMIT 1` probe. The
   probe cannot use `IS NOT DISTINCT FROM`, which a btree index cannot serve.
 - **The index.** Both probes use the `scan_source_trait_uniqueness` `(scan_id, source_id,
-  trait_id)` index.
+trait_id)` index.
 
 **Measured on staging (2026-09-29, read-only)** for experiment 1: 18,471 scans and 5 legacy
 sources.
 
-| Form | Time |
-|---|---|
-| `LATERAL … LIMIT 1` | 450 ms |
+| Form                                                       | Time                                 |
+| ---------------------------------------------------------- | ------------------------------------ |
+| `LATERAL … LIMIT 1`                                        | 450 ms                               |
 | `EXISTS` (planned as a hash aggregate over all 28.9M rows) | 7.0 s, against PostgREST's 8 s limit |
 
 A unit test pins the `LATERAL … LIMIT 1` text, because `EXPLAIN` cannot see inside plpgsql.
@@ -186,6 +192,7 @@ A unit test pins the `LATERAL … LIMIT 1` text, because `EXPLAIN` cannot see in
 not the one covering the most scans. `n_scans` lets a caller choose by coverage instead.
 
 **Why the functions take the arguments they do.**
+
 - The scan universe is `get_experiment_traits`' join chain, so coverage and reads agree on which
   scans exist.
 - `list_trait_recipes` and coverage take arrays, so that one selection can span experiments.
@@ -238,17 +245,20 @@ test or a hand-applied rollback runs it as `supabase_admin`. The resulting ACLs 
 ### D8. Export sidecar v1
 
 **What ships in this PR,** under `_WIKI/SUPABASE/`, which `lint_migration_isolation` allows:
+
 - `trait-recipes.md`, the reader-facing page;
 - `trait-recipes.export.schema.json`, a JSON Schema (draft 2020-12);
 - `trait-recipes.export.example.json`.
 
 **The export's files.** An export writes three files:
+
 - `<stem>.csv`: one header row and no `#` lines, with `recipe_key` and `source_id` columns;
 - `<stem>.export.json`: the sidecar, which holds the authoritative excluded list;
 - `<stem>.excluded.csv`: an optional flat copy of that list.
 
 **How it is checked here.** The root test environment has no `jsonschema` package, and adding it
 needs a root `pyproject.toml` change, which is outside the migration surface. A unit test checks:
+
 - that the schema parses;
 - that the example carries every `required` property;
 - that every property is mapped in the page's field table.
@@ -258,6 +268,7 @@ Full validation against the schema lands with the first exporter, #865 or #481.
 ### D9. No unrequested run-scan rows
 
 #937 step 3, a `requested = false` row per unrequested scan, was dropped (eberrigan, 2026-09-29).
+
 - **Its cause is going away.** The cause is srp#71's `run_manifest.json` union. PR #940
   (`1bc3056c`, merged 2026-09-29) removes it once the cluster templates pin a bloomctl image that
   includes it. On that date, Bloom's live-template fixtures still pinned `bloomctl:sha-28034f6`.
@@ -292,7 +303,7 @@ table and a change to the default rule. The workaround is an explicit `recipe_ke
     new grant" still holds, because this change re-grants the same four roles and adds only the
     `anon` revoke.
   - `fix-cyl-scan-traits-latest-rollup` names `get_experiment_traits(experiment_id_, source_id_,
-    run_id_)`, which is still a valid named call.
+run_id_)`, which is still a valid named call.
   - No active change touches the requirements this change modifies.
 - **bloommcp.** The unarchived `refactor-supabase-reader-db-tier2` spec describes pinned
   `get_experiment_traits` calls ("One source per frame"). It stays valid, and the #936 note (task
@@ -302,6 +313,7 @@ table and a change to the default rule. The workaround is an explicit `recipe_ke
 ## Risks / Trade-offs
 
 **Locks.** Migration 1 takes three locks:
+
 - ACCESS EXCLUSIVE on `cyl_trait_sources`, which every trait read joins;
 - SHARE ROW EXCLUSIVE on `cyl_scans` and `cyl_pipeline_runs`, for the foreign keys;
 - SHARE on `cyl_pipeline_run_scans`, for the index, which blocks the poller's writes.
@@ -330,14 +342,15 @@ Four files, each with a `supabase/rollbacks/` partner. `<T>` must be greater tha
 migration at push time (`20260929204846` on 2026-09-29). It is re-checked with
 `scripts/lint_migrations.sh` right before the merge. Tests locate files by glob.
 
-| # | File | Contents |
-|---|---|---|
-| 1 | `<T>0000_add_cyl_trait_recipe_key.sql` | Helpers, backfill function, the recipe and run columns, named FKs and CHECKs, three indexes, backfill call, `NOTIFY pgrst` |
-| 2 | `<T>0100_stamp_cyl_trait_source_recipe_and_run.sql` | The a9 body with the D2 and D3 edits, the `20260928130100` ACL, backfill call |
-| 3 | `<T>0200_add_cyl_trait_recipe_reads.sql` | `_cyl_trait_recipe_presence` (the internal D5 presence helper, same grants as the read functions); `get_experiment_traits` replaced; `list_trait_recipes`; `get_trait_recipe_coverage`; `NOTIFY pgrst` |
-| 4 | `<T>0300_add_cyl_dataset_recipe_mode.sql` | `cyl_datasets.recipe_key` with `cyl_datasets_recipe_key_format_check` and backfill; `create_cyl_dataset` replaced; `NOTIFY pgrst` |
+| #   | File                                                | Contents                                                                                                                                                                                               |
+| --- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `<T>0000_add_cyl_trait_recipe_key.sql`              | Helpers, backfill function, the recipe and run columns, named FKs and CHECKs, three indexes, backfill call, `NOTIFY pgrst`                                                                             |
+| 2   | `<T>0100_stamp_cyl_trait_source_recipe_and_run.sql` | The a9 body with the D2 and D3 edits, the `20260928130100` ACL, backfill call                                                                                                                          |
+| 3   | `<T>0200_add_cyl_trait_recipe_reads.sql`            | `_cyl_trait_recipe_presence` (the internal D5 presence helper, same grants as the read functions); `get_experiment_traits` replaced; `list_trait_recipes`; `get_trait_recipe_coverage`; `NOTIFY pgrst` |
+| 4   | `<T>0300_add_cyl_dataset_recipe_mode.sql`           | `cyl_datasets.recipe_key` with `cyl_datasets_recipe_key_format_check` and backfill; `create_cyl_dataset` replaced; `NOTIFY pgrst`                                                                      |
 
 **Constraint and index names.**
+
 - In migration 1:
   - `cyl_trait_sources_scan_id_fkey` and `cyl_trait_sources_cyl_pipeline_run_id_fkey`, both
     `ON DELETE SET NULL`;

@@ -2,11 +2,12 @@
 
 ### Requirement: Trait source recipe and run columns
 
-`cyl_trait_sources` SHALL carry nullable `recipe_key text`, `recipe_key_version smallint`, `scan_id bigint`, `argo_workflow_name text` and `cyl_pipeline_run_id bigint` columns (together, the *recipe and run columns*), with `scan_id` referencing `cyl_scans(id)` and `cyl_pipeline_run_id` referencing `cyl_pipeline_runs(id)`, both `ON DELETE SET NULL`.
+`cyl_trait_sources` SHALL carry nullable `recipe_key text`, `recipe_key_version smallint`, `scan_id bigint`, `argo_workflow_name text` and `cyl_pipeline_run_id bigint` columns (together, the _recipe and run columns_), with `scan_id` referencing `cyl_scans(id)` and `cyl_pipeline_run_id` referencing `cyl_pipeline_runs(id)`, both `ON DELETE SET NULL`.
 
 **Named constraints.** The foreign keys SHALL be named `cyl_trait_sources_scan_id_fkey` and
 `cyl_trait_sources_cyl_pipeline_run_id_fkey`. Two CHECK constraints SHALL restrict the new
 columns:
+
 - `cyl_trait_sources_recipe_key_format_check`: `recipe_key` is NULL, matches `^[0-9a-f]{64}$`, or
   matches `^legacy:[0-9]+$`;
 - `cyl_trait_sources_recipe_key_version_check`: `recipe_key_version` is NULL or `1`.
@@ -55,6 +56,7 @@ Bloom SHALL compute `recipe_key` v1 with `cyl_trait_recipe_key_v1(jsonb)`, defin
 
 **The payload.** For an object argument, `cyl_trait_recipe_payload_v1` SHALL return a jsonb object
 with these keys:
+
 - `models`: one `[registry_id, version, weights_checksum]` array per element of
   `predict_models`, taken with `->>` so that a missing field is JSON `null`.
   - The arrays are ordered by their `jsonb::text` under `COLLATE "C"`, with duplicates kept.
@@ -69,6 +71,7 @@ includes `scan_key`, `inputs`, `params` (and so `param_hash`), `idempotency_key`
 and each model's `root_type` and `sleap_nn_version`.
 
 **How the helpers behave.**
+
 - Both helpers SHALL be `IMMUTABLE` and owned by `postgres`.
 - Both SHALL return NULL for NULL or non-object input.
 - Neither SHALL raise for any jsonb input.
@@ -130,6 +133,7 @@ and each model's `root_type` and `sleap_nn_version`.
 When a delivery creates a source, `insert_cyl_result_envelope(jsonb, text)` SHALL set that source's recipe and run columns in the same transaction.
 
 **The values:**
+
 - `recipe_key` is `cyl_trait_recipe_key_v1(provenance)`, and `recipe_key_version` is `1`.
 - `scan_id` is the scan resolved from `provenance.inputs.image_ids`.
 - `argo_workflow_name` is `p_argo_workflow_name`.
@@ -144,6 +148,7 @@ the source or by the backfill. The provenance-immutability rule continues to cov
 `name` and `idempotency_key`.
 
 **Everything else is unchanged.** The RPC SHALL keep:
+
 - the `(jsonb, text)` signature, as its only overload;
 - its validation;
 - its return value, including `status_update_matched`;
@@ -215,11 +220,13 @@ It SHALL NOT insert `cyl_pipeline_run_scans` rows.
 Bloom SHALL provide `cyl_backfill_trait_source_recipe_identity()`, which sets `recipe_key`, `recipe_key_version` and `scan_id` wherever they are NULL on `cyl_trait_sources`, and the recipe-identity and write-back migrations SHALL each call it.
 
 **What the backfill sets:**
+
 - `recipe_key` is `cyl_trait_recipe_key_v1(metadata)` when `metadata` is a jsonb object, and
   `'legacy:' || id` otherwise (NULL or any non-object `metadata`).
 - `recipe_key_version` is `1` wherever `recipe_key` is set.
 - `scan_id` is set only for sources whose `metadata` is an object, and only when
   `metadata->'inputs'->'image_ids'` meets all of these conditions:
+
   - it is a non-empty array;
   - every `jsonb_array_elements_text` value matches `^[0-9]+$`;
   - every element matches a `cyl_images` row with a non-NULL `scan_id`;
@@ -290,6 +297,7 @@ The recipe-identity migration (`*_add_cyl_trait_recipe_key.sql`) and the write-b
 `20260928130000` body with the `20260928130100` grants.
 
 **The recipe-identity rollback:**
+
 - SHALL raise without changing anything if the body of any live function other than the three it
   drops still references `recipe_key`, `cyl_pipeline_run_id`, `cyl_trait_recipe_key_v1` or
   `cyl_trait_recipe_payload_v1`;

@@ -60,7 +60,7 @@ def _missing_required(schema, value, path="$"):
 def _field_table():
     """{field: source} from the page's `| Field | Source |` table."""
     text = PAGE.read_text(encoding="utf-8")
-    start = text.index("| Field | Source |")
+    start = re.search(r"^\|\s*Field\s*\|\s*Source\s*\|", text, re.M).start()
     rows = {}
     for line in text[start:].splitlines()[2:]:
         if not line.startswith("|"):

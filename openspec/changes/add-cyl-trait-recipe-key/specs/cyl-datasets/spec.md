@@ -6,6 +6,7 @@ Bloom SHALL provide `create_cyl_dataset(name text, experiment_id bigint, trait_s
 
 **Candidate scans.** Candidates are the scans of `experiment_id` in `cyl_scans_extended`, with two
 filters:
+
 - when `timepoints` is non-null, only scans whose `plant_age_days` is in it;
 - when `qc_set_name->>'name'` names an existing QC set, plants flagged by that set are excluded. A
   name that matches no set applies no QC filter.
@@ -112,6 +113,7 @@ raise an error.
 `cyl_datasets` SHALL carry a nullable `recipe_key text` column, constrained by the named CHECK `cyl_datasets_recipe_key_format_check` to NULL, 64 lowercase hex characters, `legacy:<integer>` or `'unattributed'`.
 
 **The dataset migration.** The dataset migration (`*_add_cyl_dataset_recipe_mode.sql`) SHALL:
+
 - backfill `recipe_key` from `cyl_trait_sources.recipe_key` for every existing dataset whose
   `trait_source_id` is set;
 - add the CHECK in its named, guarded `ADD CONSTRAINT` form;
