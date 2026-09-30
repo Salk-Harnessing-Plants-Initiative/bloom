@@ -57,8 +57,14 @@
 
 - [ ] 8.1 Before triggering anything, check for concurrent sessions competing for the shared `busch-lab` 2-GPU RunAI quota or the 3 synthetic test scans (`12894745`/`46`/`47`); coordinate timing or create a 4th synthetic scan (via `insert_image_v2_0` under the `staging-writer` profile, uploading a real sample image, mirroring how the existing 3 were made) if a fresh, uncontended scan is needed. Also confirm this PR's migrations have actually applied to the target environment before triggering — per `design.md`'s deploy-ordering risk, `bloomctl`'s GHCR image can publish and reach a write-back pod on a timeline decoupled from the migration-apply step, and running E2E before the migration lands would produce a flaky, non-representative result rather than a real signal.
 - [ ] 8.2 Trigger a full-success batch against `A4-PIPELINE-E2E-TEST` (`experiment_id 12880747`); poll `GET /workflows/runs/{run_id}` to a terminal status; confirm `done_count` equals the number of scans that actually wrote back and `failed_count` is `0` — not just "some positive number." While this deploy is rolling out, watch the `workflows` container's logs for the transient RPC-signature-mismatch window `design.md`'s deploy-ordering risk describes (now distinguished from other errors per Task 4.5), and confirm it is brief and self-heals rather than persisting.
-- [ ] 8.3 Trigger a poison-scan scenario expecting a `'partial'` outcome; confirm `done_count` and `failed_count` both match the real success/failure split for that run, are not double-counted across poller cycles, and are not stuck at a dispatch-level attempt count.
-- [ ] 8.4 Record the actual observed counts from 8.2/8.3 (not just pass/fail) as the verification evidence for this change.
+
+  **(Evidence from add-cyl-pipeline-ui 12.8, PR #965, staging 2026-09-30; left unticked by the author's decision.)** Runs 15 and 18, one scan each on experiment 12880747, ended `complete` with `done_count` 1 and `failed_count` 0, equal to their row tallies (1 `written`, 0 `failed`). Not done: watching the `workflows` logs during a rollout, and 8.1's pre-trigger checks aren't in that session's record.
+- [x] 8.3 Trigger a poison-scan scenario expecting a `'partial'` outcome; confirm `done_count` and `failed_count` both match the real success/failure split for that run, are not double-counted across poller cycles, and are not stuck at a dispatch-level attempt count.
+
+  **(add-cyl-pipeline-ui 12.3/12.8, PR #965, staging 2026-09-30.)** Run 16: 11 scans on experiment 12880747, including poison scan 014 and null-age scan 020. It ended `complete`, not `'partial'`: the poller's rollup can't report `partial` until bloom#857. `done_count` 5 and `failed_count` 6 equal the row tallies (5 `written`, 6 `failed`, none in another status), so the final counts carry no double count and match the real split.
+- [x] 8.4 Record the actual observed counts from 8.2/8.3 (not just pass/fail) as the verification evidence for this change.
+
+  **(PR #965.)** Run 15: 1/0. Run 16: 5/6 of 11. Run 18: 1/0. Each was rechecked read-only against `cyl_pipeline_run_scans` on 2026-09-30.
 
 ## 9. Review round 1 fixes (`/review-pr` against PR #774, post-implementation)
 

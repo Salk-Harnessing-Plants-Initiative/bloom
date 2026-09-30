@@ -550,7 +550,7 @@
 - [x] 12.5 If an empty wave exists, confirm the dialog shows "No scans to run". Note that any zero-scan run triggered via `curl` leaves a permanent "No scans matched" row.
 - [ ] 12.6 Observe whether a large reconciliation burst disconnects other Realtime widgets, and record it.
 - [x] 12.7 Leave a drill-down open past the JWT lifetime. Confirm it recovers or shows offline with refresh.
-- [ ] 12.8 For the runs in 12.1–12.3, confirm `done_count`/`failed_count` equal the per-status tallies. Record this as evidence for `fix-cyl-pipeline-run-scan-status` 8.1–8.4, and tick those only in that change, only if they match.
+- [x] 12.8 For the runs in 12.1–12.3, confirm `done_count`/`failed_count` equal the per-status tallies. Record this as evidence for `fix-cyl-pipeline-run-scan-status` 8.1–8.4, and tick those only in that change, only if they match.
 - [x] 12.9 Open a run's traits link and confirm it lands on the run's wave and day, with the run's scans visible.
 - [x] 12.10 Trigger one experiment-level run of the largest practical staging experiment (at least 1,500 scans if one exists). Use the manual cancel procedure afterwards if it isn't wanted to finish. Confirm:
   - it is accepted as **one** run;
@@ -575,7 +575,8 @@
   - **12.9:** run 11's link opened wave 9999 · day 2 with no fallback note.
   - **12.10:** run 17, Missouri_Soy_Repetition, 1,515 scans: one run, `scan_count` 1515, all rows loaded, about 3 s trigger latency. It was cancelled because staging's image bytes are missing (every frame 404s). About 165 failed downloader pods from retries fed into srp#98.
   - **12.7:** run 18's drill-down, opened at about 19:17Z, still showed Live about 80 minutes later (20:38Z), past the one-hour JWT lifetime. Staging's Kong log shows the client's token refreshes (20:03–20:30Z) and Realtime rejoins (20:31, 20:36Z). Accepted by the author on the indicator. Caveat: no event was received on that tab after expiry, and the log can't separate that tab from other browser activity.
-  - **Still open:** 12.6, left open by the author. It wasn't observed: a large burst needs a run over many scans, real experiments' image bytes are missing on staging, and the 20 test scans give at most a 20-row burst. Also 12.8 (to be ticked in `fix-cyl-pipeline-run-scan-status`: runs 15, 16 and 18 counts equal their tallies).
+  - **Still open:** 12.6, left open by the author. It wasn't observed: a large burst needs a run over many scans, real experiments' image bytes are missing on staging, and the 20 test scans give at most a 20-row burst.
+  - **12.8:** runs 15 (1/0), 16 (5/6) and 18 (1/0): `done_count`/`failed_count` equal the row tallies, rechecked read-only on 2026-09-30. Recorded in `fix-cyl-pipeline-run-scan-status`: 8.3 and 8.4 ticked there; 8.2's evidence noted but left unticked (no rollout log watch); 8.1 unticked.
 
 ## 13. After merge
 
