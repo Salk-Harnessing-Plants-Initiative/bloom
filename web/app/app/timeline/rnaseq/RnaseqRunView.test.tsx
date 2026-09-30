@@ -80,7 +80,13 @@ describe("RnaseqRunView", () => {
     expect(step("FastQC").getByText("Done")).toBeTruthy();
     expect(step("Cell Ranger count").getByText("Running")).toBeTruthy();
     expect(step("Cell Ranger count").getByRole("button", { name: "View log" })).toBeTruthy();
-    emit({ id: 1, status: "succeeded", current_step: "cleanup", completed_at: "2026-09-30T00:20:00Z" });
+    emit({
+      id: 1,
+      status: "succeeded",
+      current_step: "cleanup",
+      step_pods: { ...RUN.step_pods as object, count: "p4", cleanup: "p8" },
+      completed_at: "2026-09-30T00:20:00Z",
+    });
     expect(screen.getByText("Succeeded")).toBeTruthy();
     expect(step("Clean up").getByText("Done")).toBeTruthy();
   });

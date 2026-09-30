@@ -72,6 +72,9 @@ def _to_cellranger_schema(c):
         # The request function once rnaseq_runs.metadata exists; dropped too, or the
         # three-argument calls below would be ambiguous.
         "public.request_scrna_cellranger_run(text, text, uuid, jsonb)",
+        # And once runs can import from SRA.
+        "public.request_scrna_cellranger_run(text, text, uuid, jsonb, text[])",
+        "public.register_rnaseq_sample(bigint, integer, bigint)",
         "public._check_rnaseq_message(bigint, bigint)",
     ):
         c.execute(f"DROP FUNCTION IF EXISTS {sig}")
