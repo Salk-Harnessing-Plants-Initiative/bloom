@@ -41,7 +41,15 @@ describe("navSections", () => {
       {
         heading: "Resources",
         items: [
-          { name: "Timeline", href: "/app/timeline" },
+          {
+            name: "Timeline",
+            href: "/app/timeline",
+            children: [
+              { name: "Cylinder scanner usage", href: "/app/timeline?panel=cylinder" },
+              { name: "Plate scanner usage", href: "/app/timeline?panel=plate" },
+              { name: "RNA-seq runs", href: "/app/timeline?panel=rnaseq" },
+            ],
+          },
           { name: "Translation", href: "/app/translation" },
           { name: "Software", href: "/app/software" },
         ],
