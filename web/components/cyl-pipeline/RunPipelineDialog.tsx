@@ -281,7 +281,7 @@ export function RunPipelineDialog({ target: requested, title, onClose, onStarted
                     <p className="mt-1">
                       {c.L > 0 &&
                         `${c.L} more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. `}
-                      {`All ${c.N} will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code.`}
+                      {`All ${c.N} will be sent; the cluster skips scans it has already processed with the same models and code.`}
                     </p>
                   </details>
                 </div>

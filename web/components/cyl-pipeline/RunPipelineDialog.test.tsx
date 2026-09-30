@@ -282,7 +282,7 @@ describe("the pre-check", () => {
     const details = screen.getByTestId("precheck-details");
     expect(details.tagName).toBe("DETAILS");
     expect(details.textContent).toContain(
-      "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code.",
+      "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code.",
     );
   });
 
@@ -292,7 +292,7 @@ describe("the pre-check", () => {
     await settle();
     const details = screen.getByTestId("precheck-details").textContent ?? "";
     expect(details).not.toContain("more scans have only traits");
-    expect(details).toContain("All 40 will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code.");
+    expect(details).toContain("All 40 will be sent; the cluster skips scans it has already processed with the same models and code.");
   });
 
   it("shows the all-results notice in place of the line when K = N", async () => {

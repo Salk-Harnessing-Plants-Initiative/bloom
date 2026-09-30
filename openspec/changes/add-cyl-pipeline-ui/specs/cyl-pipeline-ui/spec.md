@@ -167,7 +167,7 @@ It SHALL display, in this order:
    - When K = N > 0, the all-results notice replaces it: "*All N scans already have pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.*"
    - Otherwise: "*K of N already have pipeline results.*"
 
-   A details disclosure holds the full text: "*L more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All N will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code.*" Its first sentence is omitted when L = 0.
+   A details disclosure holds the full text: "*L more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All N will be sent; the cluster skips scans it has already processed with the same models and code.*" Its first sentence is omitted when L = 0.
    - N is the number of enumerated scans.
    - K is the number with `max_source_id IS NOT NULL`.
    - L is the number with a `cyl_scan_latest_source` row whose `max_source_id IS NULL`.
@@ -179,7 +179,7 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 #### Scenario: Pre-check separates pipeline results from legacy traits
 - **WHEN** 40 scans are enumerated: 38 have `max_source_id` not null, 1 has a row with `max_source_id` null, and 1 has no row
 - **THEN** the pre-check line reads "38 of 40 already have pipeline results."
-- **AND** its details read "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code."
+- **AND** its details read "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code."
 
 #### Scenario: Everything already has results
 - **WHEN** K = N = 12
