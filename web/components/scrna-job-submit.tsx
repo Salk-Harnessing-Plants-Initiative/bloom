@@ -4,7 +4,6 @@ import { useState } from "react";
 import {
   buildRunMetadata,
   datasetDetailsProblem,
-  formatBytes,
   isStartedRun,
   startRunErrorMessage,
   type AttributeRow,
@@ -14,9 +13,11 @@ import {
   type StartedRun,
 } from "@/lib/scrna-jobs";
 import type { SpeciesOption } from "@/lib/species-options";
+import { newSampleNameProblem, parseSraRuns, sraRunUrl } from "@/lib/sra-runs";
 import ScrnaDataOrigin from "./scrna-data-origin";
 import ScrnaJobQueued from "./scrna-job-queued";
 import ScrnaOtherDetails from "./scrna-other-details";
+import ScrnaSampleSource, { type SampleSource } from "./scrna-sample-source";
 import ScrnaSpeciesPicker from "./scrna-species-picker";
 
 type Status = "idle" | "submitting" | "done" | "error";
@@ -26,16 +27,6 @@ const fieldClass =
 const labelClass = "block text-sm font-medium text-stone-700";
 const groupHeadingClass =
   "mb-3 text-xs uppercase tracking-widest text-stone-500";
-
-function sampleLabel(sample: RnaseqSample): string {
-  const details = [
-    sample.fastq_count != null
-      ? `${sample.fastq_count} FASTQ${sample.fastq_count === 1 ? "" : "s"}`
-      : null,
-    formatBytes(sample.total_bytes),
-  ].filter(Boolean);
-  return details.length ? `${sample.name} (${details.join(", ")})` : sample.name;
-}
 
 function referenceLabel(reference: RnaseqReference): string {
   return reference.description
@@ -58,7 +49,12 @@ export default function ScrnaJobSubmit({
   const [open, setOpen] = useState(false);
   // Species added from the form stay listed after it is closed and reopened.
   const [speciesOptions, setSpeciesOptions] = useState(species);
+  const [source, setSource] = useState<SampleSource>("registered");
   const [sample, setSample] = useState("");
+  const [sraText, setSraText] = useState("");
+  // The new sample's name follows the first run ID until it's edited.
+  const [newName, setNewName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
   const [reference, setReference] = useState("");
   const [speciesId, setSpeciesId] = useState<number | null>(null);
   const [datasetName, setDatasetName] = useState("");
@@ -66,6 +62,8 @@ export default function ScrnaJobSubmit({
   const [experimentName, setExperimentName] = useState("");
   const [origin, setOrigin] = useState<DataOrigin>("hpi");
   const [sourceUrl, setSourceUrl] = useState("");
+  // For an SRA import the source link follows the first run until it's edited.
+  const [sourceEdited, setSourceEdited] = useState(false);
   const [citation, setCitation] = useState("");
   const [attributes, setAttributes] = useState<AttributeRow[]>([
     { key: "", value: "" },
@@ -86,7 +84,39 @@ export default function ScrnaJobSubmit({
     attributes,
   };
   const detailsProblem = datasetDetailsProblem(details);
-  const canSubmit = Boolean(sample && reference) && !detailsProblem && !submitting;
+  const sra = parseSraRuns(sraText);
+  const sampleReady =
+    source === "registered"
+      ? Boolean(sample)
+      : !sra.problem &&
+        !newSampleNameProblem(
+          newName.trim(),
+          samples.map((s) => s.name)
+        );
+  const canSubmit = sampleReady && Boolean(reference) && !detailsProblem && !submitting;
+
+  function changeSource(next: SampleSource) {
+    setSource(next);
+    // Data imported from SRA is public.
+    if (next === "sra") setOrigin("public");
+  }
+
+  function changeSraText(text: string) {
+    setSraText(text);
+    const first = parseSraRuns(text).runs[0] ?? "";
+    if (!nameEdited) setNewName(first);
+    if (!sourceEdited) setSourceUrl(first ? sraRunUrl(first) : "");
+  }
+
+  function changeNewName(name: string) {
+    setNewName(name);
+    setNameEdited(true);
+  }
+
+  function changeSourceUrl(url: string) {
+    setSourceUrl(url);
+    setSourceEdited(true);
+  }
 
   function addSpeciesOption(option: SpeciesOption) {
     setSpeciesOptions((current) =>
@@ -99,6 +129,9 @@ export default function ScrnaJobSubmit({
   // Ready for the next sample: the per-sample fields are cleared, the rest kept.
   function startAnother() {
     setSample("");
+    setSraText("");
+    setNewName("");
+    setNameEdited(false);
     setDatasetName("");
     setStarted(null);
     setMessage("");
@@ -122,11 +155,16 @@ export default function ScrnaJobSubmit({
       response = await fetch("/api/scrna/cellranger/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sample,
-          reference,
-          metadata: buildRunMetadata(details),
-        }),
+        body: JSON.stringify(
+          source === "registered"
+            ? { sample, reference, metadata: buildRunMetadata(details) }
+            : {
+                sample: newName.trim(),
+                reference,
+                metadata: buildRunMetadata(details),
+                sra_runs: sra.runs,
+              }
+        ),
       });
     } catch {
       setMessage("Could not reach the job service.");
@@ -191,10 +229,11 @@ export default function ScrnaJobSubmit({
           <p className="mb-5 text-sm text-stone-500">
             Runs the Cell Ranger protocol (cellranger count) on one sample&apos;s
             FASTQs: it aligns the reads to the chosen reference genome, calls cells
-            from their barcodes, and counts UMIs per gene in each cell. The output
-            is a filtered feature-barcode matrix (matrix, features and barcodes),
-            ready to load into Seurat or Scanpy. The results are saved to Bloom
-            when the run finishes.
+            from their barcodes, and counts UMIs per gene in each cell, then
+            clusters the cells and computes a UMAP. The result is one AnnData file
+            (.h5ad) with the counts, clusters and UMAP. A sample can also be
+            imported from SRA: the run downloads it first and registers it for
+            later runs.
           </p>
 
           <form onSubmit={submit} className="space-y-6">
@@ -208,24 +247,19 @@ export default function ScrnaJobSubmit({
                 </select>
               </label>
 
-              <label className={labelClass}>
-                Sample
-                <select
-                  className={fieldClass}
-                  value={sample}
-                  onChange={(e) => setSample(e.target.value)}
-                  disabled={samples.length === 0}
-                >
-                  <option value="">
-                    {samples.length ? "Choose a sample" : "No samples registered yet"}
-                  </option>
-                  {samples.map((s) => (
-                    <option key={s.name} value={s.name}>
-                      {sampleLabel(s)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ScrnaSampleSource
+                source={source}
+                onSource={changeSource}
+                samples={samples}
+                sample={sample}
+                onSample={setSample}
+                sraText={sraText}
+                onSraText={changeSraText}
+                newName={newName}
+                onNewName={changeNewName}
+                fieldClass={fieldClass}
+                labelClass={labelClass}
+              />
 
               <label className={labelClass}>
                 Reference genome
@@ -248,7 +282,8 @@ export default function ScrnaJobSubmit({
                 </select>
               </label>
 
-              {samples.length === 0 || references.length === 0 ? (
+              {(source === "registered" && samples.length === 0) ||
+              references.length === 0 ? (
                 <p className="text-sm text-stone-500">
                   Samples and references are added by a Bloom admin once their
                   files are in storage.
@@ -310,7 +345,7 @@ export default function ScrnaJobSubmit({
                 sourceUrl={sourceUrl}
                 citation={citation}
                 onOrigin={setOrigin}
-                onSourceUrl={setSourceUrl}
+                onSourceUrl={changeSourceUrl}
                 onCitation={setCitation}
                 fieldClass={fieldClass}
                 labelClass={labelClass}
@@ -336,7 +371,7 @@ export default function ScrnaJobSubmit({
                 <p role="alert" className="text-sm text-red-700">
                   {message}
                 </p>
-              ) : sample && reference && detailsProblem ? (
+              ) : sampleReady && reference && detailsProblem ? (
                 <p className="text-sm text-stone-500">{detailsProblem}</p>
               ) : null}
             </div>

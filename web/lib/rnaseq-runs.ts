@@ -38,10 +38,14 @@ export const RUNS_PAGE_SIZE = 50;
 
 /** Cell Ranger's steps in the order they run, as the poller reports them. */
 export const CELLRANGER_STEPS = [
+  { id: "fetch-sra", label: "Download from SRA" },
   { id: "stage-reference", label: "Stage reference" },
   { id: "stage", label: "Stage FASTQs" },
   { id: "qc", label: "FastQC" },
   { id: "count", label: "Cell Ranger count" },
+  { id: "preprocess", label: "Filter and normalise" },
+  { id: "cluster", label: "Cluster and UMAP" },
+  { id: "build-h5ad", label: "Build the .h5ad" },
   { id: "cleanup", label: "Clean up" },
 ] as const;
 
@@ -57,12 +61,25 @@ export const STATUS_LABELS: Record<RunStatus, string> = {
   failed: "Failed",
 };
 
-// The pipeline's own exit codes (argo/scrna/cellranger/run-count.sh).
+// The pipeline's own exit codes: argo/scrna/cellranger/ (run-count, fetch-sra) and
+// argo/scrna/analysis/ (preprocess, cluster, build-h5ad).
 const EXIT_SENTENCES: Record<number, string> = {
   3: "The reference genome folder, or its reference.json, wasn't found.",
   4: "No FASTQ files were found in the sample's folder.",
   5: "Cell Ranger count failed; its log has the details.",
   6: "The sample name can't be used as a Cell Ranger run id.",
+  7: "The FASTQ file names don't follow Illumina's naming (<name>_S1_L001_R1_001.fastq.gz), or a lane lacks R1 or R2.",
+  13: "Fewer than 50 cells passed the filters, too few to cluster.",
+  14: "Cell Ranger's count matrix wasn't found for the analysis steps.",
+  15: "An analysis step's results didn't fit with the others; its log has the details.",
+};
+// fetch-sra reuses some codes with its own meaning.
+const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
+  6: "The sample name or the SRA run IDs can't be used.",
+  7: "The downloaded FASTQs couldn't be named the Illumina way.",
+  10: "A run couldn't be downloaded from SRA, or storage couldn't be checked. Start the run again; if it fails again, check the run IDs are public.",
+  11: "An SRA run lacks the 10x barcode or cDNA read; it may have been submitted as a BAM.",
+  12: "The sample's folder already holds other FASTQs; choose another sample name.",
 };
 
 function field(value: Json | null, key: string): unknown {
@@ -103,16 +120,29 @@ export function isFinished(status: string): boolean {
   return status === "succeeded" || status === "skipped" || status === "failed";
 }
 
+/** Whether the run imports its sample from SRA. */
+export function runSraRuns(run: RnaseqRun): string[] {
+  const runs = field(run.params, "sra_runs");
+  return Array.isArray(runs) ? runs.filter((r): r is string => typeof r === "string") : [];
+}
+
+/** The steps this run goes through: fetch-sra only when it imports from SRA. */
+export function runSteps(run: RnaseqRun): (typeof CELLRANGER_STEPS)[number][] {
+  const imports = runSraRuns(run).length > 0;
+  return CELLRANGER_STEPS.filter((step) => step.id !== "fetch-sra" || imports);
+}
+
 /** Whether a step has a pod, and so a log that can be asked for. */
 export function stepStarted(run: RnaseqRun, step: StepId): boolean {
   return Boolean(field(run.step_pods, step));
 }
 
-/** Each Cell Ranger step's state, from the run's status and current step. */
-export function stepStates(run: RnaseqRun): Record<StepId, StepState> {
-  const current = CELLRANGER_STEPS.findIndex((s) => s.id === run.current_step);
-  const states = {} as Record<StepId, StepState>;
-  CELLRANGER_STEPS.forEach((step, index) => {
+/** Each of the run's steps' state, from the run's status and current step. */
+export function stepStates(run: RnaseqRun): Partial<Record<StepId, StepState>> {
+  const steps = runSteps(run);
+  const current = steps.findIndex((s) => s.id === run.current_step);
+  const states: Partial<Record<StepId, StepState>> = {};
+  steps.forEach((step, index) => {
     let state: StepState;
     if (run.status === "succeeded") state = "done";
     else if (run.status === "skipped") state = stepStarted(run, step.id) ? "done" : "skipped";
@@ -129,7 +159,8 @@ export function stepStates(run: RnaseqRun): Record<StepId, StepState> {
 /** A sentence for how a failed run ended, or null. */
 export function failureSentence(run: RnaseqRun): string | null {
   if (run.status !== "failed") return null;
-  if (run.exit_code != null && EXIT_SENTENCES[run.exit_code]) return EXIT_SENTENCES[run.exit_code];
+  const sentences = run.current_step === "fetch-sra" ? FETCH_SRA_EXIT_SENTENCES : EXIT_SENTENCES;
+  if (run.exit_code != null && sentences[run.exit_code]) return sentences[run.exit_code];
   return run.message;
 }
 
