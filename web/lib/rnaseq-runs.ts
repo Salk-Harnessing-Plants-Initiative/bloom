@@ -78,7 +78,7 @@ const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
   6: "The sample name or the SRA run IDs can't be used.",
   7: "The downloaded FASTQs couldn't be named the Illumina way.",
   10: "A run couldn't be downloaded from SRA, or storage couldn't be checked. Start the run again; if it fails again, check the run IDs are public.",
-  11: "An SRA run lacks the 10x barcode or cDNA read; it may have been submitted as a BAM.",
+  11: "An SRA run's reads don't look like 10x gene-expression reads; the Download from SRA step's log says which run and why.",
   12: "The sample's folder already holds other FASTQs; choose another sample name.",
 };
 
@@ -120,7 +120,7 @@ export function isFinished(status: string): boolean {
   return status === "succeeded" || status === "skipped" || status === "failed";
 }
 
-/** Whether the run imports its sample from SRA. */
+/** The run's SRA run IDs in lane order; empty unless it imports its sample from SRA. */
 export function runSraRuns(run: RnaseqRun): string[] {
   const runs = field(run.params, "sra_runs");
   return Array.isArray(runs) ? runs.filter((r): r is string => typeof r === "string") : [];
@@ -144,7 +144,8 @@ export function stepStates(run: RnaseqRun): Partial<Record<StepId, StepState>> {
   const states: Partial<Record<StepId, StepState>> = {};
   steps.forEach((step, index) => {
     let state: StepState;
-    if (run.status === "succeeded") state = "done";
+    // A step with no pod never ran, e.g. one added after the run finished.
+    if (run.status === "succeeded") state = stepStarted(run, step.id) ? "done" : "not-run";
     else if (run.status === "skipped") state = stepStarted(run, step.id) ? "done" : "skipped";
     else if (run.status === "failed") {
       if (current < 0) state = "not-run";

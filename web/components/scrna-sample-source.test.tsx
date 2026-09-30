@@ -45,7 +45,8 @@ function startButton() {
 }
 
 beforeEach(() => {
-  fetchSpy = vi.fn().mockResolvedValue(
+  // A fresh response per call; a body can only be read once.
+  fetchSpy = vi.fn().mockImplementation(async () =>
     new Response(
       JSON.stringify({
         run_id: 7,
@@ -162,7 +163,6 @@ describe("importing from SRA", () => {
     openForm();
     type("SRA run IDs", "SRR28503597");
     fireEvent.click(screen.getByLabelText("A registered sample"));
-    fireEvent.click(screen.getByLabelText(/HPI/));
     type("Registered sample", "tinygex");
     fillTheRest();
     fireEvent.click(startButton());
@@ -170,5 +170,43 @@ describe("importing from SRA", () => {
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(body.sample).toBe("tinygex");
     expect(body).not.toHaveProperty("sra_runs");
+    // Switching back undoes the import's origin and source link.
+    expect(body.metadata.origin).toBe("hpi");
+    expect(body.metadata).not.toHaveProperty("source_url");
+  });
+
+  it("keeps a source link typed by hand when switching back", async () => {
+    openForm();
+    type("SRA run IDs", "SRR28503597");
+    type("Source link", "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE123");
+    fireEvent.click(screen.getByLabelText("A registered sample"));
+    fireEvent.click(screen.getByLabelText(/Public/));
+    type("Registered sample", "tinygex");
+    fillTheRest();
+    fireEvent.click(startButton());
+    await screen.findByRole("status");
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.metadata.source_url).toBe(
+      "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE123"
+    );
+  });
+
+  it("starts the next import with a fresh name and source link", async () => {
+    openForm();
+    type("SRA run IDs", "SRR28503597");
+    type("Source link", "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM1");
+    fillTheRest();
+    fireEvent.click(startButton());
+    await screen.findByRole("status");
+    fireEvent.click(screen.getByRole("button", { name: "Start another run" }));
+    type("SRA run IDs", "SRR28503598");
+    type("Dataset name", "Root tip lane 2");
+    fireEvent.click(startButton());
+    await screen.findByRole("status");
+    const body = JSON.parse(fetchSpy.mock.calls[1][1].body);
+    expect(body.sample).toBe("SRR28503598");
+    expect(body.sra_runs).toEqual(["SRR28503598"]);
+    expect(body.metadata.origin).toBe("public");
+    expect(body.metadata.source_url).toBe("https://www.ncbi.nlm.nih.gov/sra/SRR28503598");
   });
 });

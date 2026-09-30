@@ -33,7 +33,12 @@ describe("parseSraRuns", () => {
     );
   });
 
-  it.each(["SRR12", "SRR12345678901", "srr1234567", "SRR12345a7", "Col-0"])(
+  // The same rule as the service and the database: SRR, ERR or DRR and 6 to 10 digits.
+  it.each(["SRR123456", "SRR1234567890", "ERR123456", "DRR1234567890"])("accepts %s", (id) => {
+    expect(parseSraRuns(id)).toEqual({ runs: [id], problem: null });
+  });
+
+  it.each(["SRR12", "SRR12345", "SRR12345678901", "XRR1234567", "srr1234567", "SRR12345a7", "Col-0"])(
     "refuses %s",
     (id) => {
       expect(parseSraRuns(id).problem).toBe(

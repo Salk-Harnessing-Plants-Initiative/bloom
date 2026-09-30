@@ -261,7 +261,7 @@ def test_the_analysis_steps_are_reported(step):
         (6, "or SRA run IDs SRR28503597, SRR28503598 can't be used"),
         (7, "couldn't be named the Illumina way"),
         (10, "Couldn't download SRR28503597, SRR28503598 from SRA"),
-        (11, "lacks the 10x barcode or cDNA read"),
+        (11, "don't look like 10x gene-expression reads"),
         (12, "raw_reads/root_tip/ already holds other FASTQs"),
     ],
 )

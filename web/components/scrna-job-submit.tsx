@@ -61,6 +61,8 @@ export default function ScrnaJobSubmit({
   const [accession, setAccession] = useState("");
   const [experimentName, setExperimentName] = useState("");
   const [origin, setOrigin] = useState<DataOrigin>("hpi");
+  // The origin chosen before switching to SRA, restored when switching back.
+  const [originBeforeSra, setOriginBeforeSra] = useState<DataOrigin | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   // For an SRA import the source link follows the first run until it's edited.
   const [sourceEdited, setSourceEdited] = useState(false);
@@ -96,9 +98,18 @@ export default function ScrnaJobSubmit({
   const canSubmit = sampleReady && Boolean(reference) && !detailsProblem && !submitting;
 
   function changeSource(next: SampleSource) {
+    if (next === source) return;
     setSource(next);
-    // Data imported from SRA is public.
-    if (next === "sra") setOrigin("public");
+    if (next === "sra") {
+      // Data imported from SRA is public.
+      setOriginBeforeSra(origin);
+      setOrigin("public");
+      return;
+    }
+    // Undo what the import filled in, so it isn't saved with a registered sample.
+    if (originBeforeSra !== null) setOrigin(originBeforeSra);
+    setOriginBeforeSra(null);
+    if (!sourceEdited) setSourceUrl("");
   }
 
   function changeSraText(text: string) {
@@ -132,6 +143,11 @@ export default function ScrnaJobSubmit({
     setSraText("");
     setNewName("");
     setNameEdited(false);
+    // An import's source link belongs to that sample's runs.
+    if (source === "sra") {
+      setSourceUrl("");
+      setSourceEdited(false);
+    }
     setDatasetName("");
     setStarted(null);
     setMessage("");

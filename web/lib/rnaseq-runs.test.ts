@@ -101,10 +101,27 @@ describe("stepStates", () => {
     );
   });
 
+  const ALL_PODS = Object.fromEntries(
+    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "build-h5ad", "cleanup"].map(
+      (step, i) => [step, `p${i}`]
+    )
+  );
+
   it("marks every step done when the run succeeded", () => {
-    expect(Object.values(stepStates(run({ status: "succeeded", current_step: "cleanup" })))).toEqual(
-      Array(8).fill("done")
-    );
+    expect(
+      Object.values(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: ALL_PODS })))
+    ).toEqual(Array(8).fill("done"));
+  });
+
+  it("marks steps a finished run never had as not run", () => {
+    const { preprocess: _p, cluster: _c, "build-h5ad": _b, ...before } = ALL_PODS;
+    expect(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: before }))).toMatchObject({
+      count: "done",
+      preprocess: "not-run",
+      cluster: "not-run",
+      "build-h5ad": "not-run",
+      cleanup: "done",
+    });
   });
 
   it("marks the step a run failed at, and the ones after it as not run", () => {
@@ -209,7 +226,7 @@ describe("failureSentence", () => {
     [6, /SRA run IDs can't be used/],
     [7, /couldn't be named the Illumina way/],
     [10, /couldn't be downloaded from SRA/],
-    [11, /lacks the 10x barcode or cDNA read/],
+    [11, /don't look like 10x gene-expression reads/],
     [12, /already holds other FASTQs/],
   ])("explains exit %i from the SRA download", (code, sentence) => {
     const failed = run({ status: "failed", exit_code: code, current_step: "fetch-sra" });

@@ -109,8 +109,8 @@ def _fetch_sra_message(exit_code: int | None, params: dict) -> str | None:
             "storage; start the run again, and check the run IDs are public if it fails again"
         ),
         EXIT_SRA_READS_UNUSABLE: (
-            f"An SRA run in {runs} lacks the 10x barcode or cDNA read; it may have been "
-            "submitted as a BAM"
+            f"The reads of an SRA run in {runs} don't look like 10x gene-expression reads; "
+            "the fetch-sra log says which run and why"
         ),
         EXIT_SRA_FOLDER_TAKEN: (
             f"raw_reads/{sample}/ already holds other FASTQs; choose another sample name"
