@@ -86,7 +86,7 @@ spec:
         # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
         command: [bash, -c]
         args:
           - |
@@ -164,10 +164,10 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
+        # exit 4 (no FASTQs) and 7 (misnamed FASTQs) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
         command: [bash, -c]
         args:
           - |
@@ -180,10 +180,13 @@ spec:
             mkdir -p "/shared/runs/${RUN_ID}/fastq/${SAMPLE}"
             aws s3 sync "s3://bloomv2-workflows/raw_reads/${SAMPLE}/" "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"
             # sync from a missing prefix copies nothing and still exits 0
-            if ! ls "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"*.fastq.gz >/dev/null 2>&1; then
+            if ! compgen -G "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/*.fastq*" >/dev/null; then
               echo "ERROR: no FASTQs at s3://bloomv2-workflows/raw_reads/${SAMPLE}/"
               exit 4
             fi
+            # Fails here, before QC, if a file isn't Illumina-named or a lane lacks R1 or R2.
+            prefix="$(fastq-sample-prefix "/shared/runs/${RUN_ID}/fastq/${SAMPLE}")" || exit 7
+            echo "FASTQ prefix: ${prefix}"
             echo false > /tmp/done
         env:
           - name: SAMPLE
@@ -226,7 +229,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
         command: [run-qc]
         env:
           - name: SAMPLE
@@ -288,10 +291,11 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference), 4 (no FASTQs) and 6 (unusable sample name) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6"
+        # exit 3 (no reference), 4 (no FASTQs), 6 (unusable sample name) and 7 (misnamed FASTQs)
+        # will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
         command: [run-count]
         env:
           - name: SAMPLE
@@ -344,7 +348,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
         command: [bash, -c]
         args:
           - |
@@ -375,7 +379,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
         command: [bash, -c]
         args:
           - |

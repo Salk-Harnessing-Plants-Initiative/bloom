@@ -34,9 +34,10 @@ RUN --mount=type=bind,from=cellranger,source=cellranger-${CELLRANGER_VERSION}.ta
  && cellranger --version
 
 COPY cellranger/run-count.sh /usr/local/bin/run-count
+COPY cellranger/fastq-sample-prefix.sh /usr/local/bin/fastq-sample-prefix
 COPY fastq_qc/run-qc.sh /usr/local/bin/run-qc
 COPY fastq_qc/fastq_qc.py /usr/local/bin/fastq-qc
 COPY fastq_qc/qc_report.py /usr/local/bin/qc-report
-RUN chmod +x /usr/local/bin/run-count /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
+RUN chmod +x /usr/local/bin/run-count /usr/local/bin/fastq-sample-prefix /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
 
 WORKDIR /work

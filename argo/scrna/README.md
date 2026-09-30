@@ -26,11 +26,13 @@ Bucket `bloomv2-workflows` (us-west-2):
 
 | Prefix | Job access |
 |---|---|
-| `raw_reads/<sample>/` | read. FASTQs in Illumina naming (`<sample>_S1_L001_R1_001.fastq.gz`) |
+| `raw_reads/<sample>/` | read. FASTQs in Illumina naming, `<prefix>_S<n>_L<lane>_R1_001.fastq.gz` (barcode and UMI) and `…_R2_001.fastq.gz` (cDNA) for every lane, compressed or plain `.fastq`; `I1`/`I2` optional. The prefix is everything before `_S<n>_L<lane>_…` and can differ from the folder name |
 | `reference_genome/<reference>/` | read. A `cellranger mkref` output folder |
 | `runs_output/<run-id>/` | write. `qc/` from the QC workflow; `outs/` and a `_SUCCESS` marker (written last) from the count workflow |
 
 `run-count` exits straight away if `runs_output/<run-id>/_SUCCESS` already exists. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
+
+The FASTQs' prefix is read from their names by `fastq-sample-prefix` and passed to Cell Ranger as `--sample`, so files keep the names the sequencer or core gave them (e.g. `L007-259_S1_L002_R1_001.fastq.gz` under `raw_reads/root_rep1/`). Several prefixes in one folder are counted together as one sample. A `.fastq.gz` or `.fastq` not named that way, or a lane without both R1 and R2, fails the stage step with exit 7 and a message listing the files, before QC and count run. Setting `FASTQ_SAMPLE` overrides the detected prefix.
 
 ## The image
 
@@ -39,8 +41,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-5
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
