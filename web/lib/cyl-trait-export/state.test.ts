@@ -107,7 +107,7 @@ describe('pool', () => {
   it('keeps each owner to its limit, so owners interleave', async () => {
     const sem = new Semaphore(3, 9000)
     const started: string[] = []
-    const gates = new Map<string, ReturnType<typeof deferred>>()
+    const gates = new Map<string, { resolve: () => void }>()
     const work = (owner: string) => (i: number) =>
       sem.run(async () => {
         const id = `${owner}${i}`
