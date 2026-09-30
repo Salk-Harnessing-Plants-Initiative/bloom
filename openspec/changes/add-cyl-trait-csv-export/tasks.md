@@ -288,7 +288,7 @@
   - Success returns `202 {job_id}`.
 - [x] 6.2 Implement `jobs/route.ts` and `web/lib/cyl-trait-export/request.ts` (identity, guard and parameters).
   **(done 2026-09-30: red 35 failed / 1 passed (the module-contract test passes against the stub's exports); green 36 passed after one fix: the session floor compared a whole-second JWT exp with fractional now, so exactly 1,800 s left read as 1,799.x; it now compares whole seconds. 499 is returned if the client aborts during the pre-202 selection)**
-- [ ] 6.3 **Test first.** Status, download and `DELETE` route tests.
+- [x] 6.3 **Test first.** Status, download and `DELETE` route tests.
   - **Each route:**
     - `403` cross-site;
     - `401`/`503` identity;
@@ -301,7 +301,8 @@
     - `404` after retention.
   - **`DELETE`** returns `204`.
   - **One chained test:** POST → status `running` → `ready` → download → unzip → golden.
-- [ ] 6.4 Implement both routes.
+- [x] 6.4 Implement both routes.
+  **(done 2026-09-30: red 15 failed / 0 passed; green 15 passed. The chained test runs POST, status polling and download through the real build and zip over the golden fake: the CSV and excluded CSV are byte-identical to the goldens and the sidecar equal apart from generated_at)**
 - [ ] 6.5 **Test first.** `recipes/route.test.ts`:
   - the guard runs without the session floor and job limits, and without `recipe`/`chosen`;
   - every `list_trait_recipes` call has `experiment_ids_ = [e]` and a non-empty `scan_ids_` of at most `BATCH_SCANS` ids;

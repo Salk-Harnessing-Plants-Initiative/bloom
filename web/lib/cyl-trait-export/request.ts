@@ -123,3 +123,21 @@ export function parseJobRequest(
   if (chosen !== 'default' && chosen !== 'user') return 'chosen must be default or user'
   return { selection, recipe, chosen }
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * The checks every per-job route shares: same origin, verified identity, and a job id
+ * shaped like a UUID (anything else is 404 before the registry is consulted).
+ */
+export async function guardJobRoute(
+  request: Request,
+  params: Promise<{ jobId: string }>
+): Promise<{ identity: Identity; jobId: string } | Response> {
+  if (!sameOrigin(request)) return detail(403, 'cross-site request refused')
+  const identity = await verifyIdentity()
+  if (identity instanceof Response) return identity
+  const { jobId } = await params
+  if (!UUID.test(jobId)) return detail(404, 'export not found')
+  return { identity, jobId }
+}
