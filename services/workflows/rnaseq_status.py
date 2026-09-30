@@ -27,6 +27,7 @@ EXIT_NO_REFERENCE = 3
 EXIT_NO_FASTQS = 4
 EXIT_CELLRANGER_FAILED = 5
 EXIT_BAD_SAMPLE_NAME = 6
+EXIT_BAD_FASTQ_NAMES = 7
 
 _RUNNING_PHASES = {"Pending", "Running"}
 _FAILED_PHASES = {"Failed", "Error"}
@@ -91,6 +92,12 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
         return (
             f"Sample {params.get('sample')} can't be used as a Cell Ranger run id "
             "(letters, digits, '_' or '-', at most 64)"
+        )
+    if exit_code == EXIT_BAD_FASTQ_NAMES:
+        return (
+            f"The FASTQs in raw_reads/{params.get('sample')}/ must be named like "
+            "<name>_S1_L001_R1_001.fastq.gz, with an R1 and an R2 for every lane; "
+            f"the {step} step's log lists the files"
         )
     if exit_code is None:
         return f"Step {step} failed"

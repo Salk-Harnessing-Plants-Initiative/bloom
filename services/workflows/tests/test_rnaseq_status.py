@@ -159,6 +159,14 @@ def _failed_at(template: str, exit_code: str | None) -> dict:
             "Sample tinygex can't be used as a Cell Ranger run id "
             "(letters, digits, '_' or '-', at most 64)",
         ),
+        (
+            "stage-sample",
+            "stage",
+            "7",
+            "The FASTQs in raw_reads/tinygex/ must be named like "
+            "<name>_S1_L001_R1_001.fastq.gz, with an R1 and an R2 for every lane; "
+            "the stage step's log lists the files",
+        ),
         ("qc", "qc", "137", "Step qc failed (exit 137)"),
         ("qc", "qc", None, "Step qc failed"),
     ],

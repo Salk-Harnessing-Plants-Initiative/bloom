@@ -4,7 +4,8 @@
  * needs to import the list.
  */
 
-export type NavItem = { name: string; href: string };
+// `children` are smaller links shown indented under their item, e.g. a page's panels.
+export type NavItem = { name: string; href: string; children?: NavItem[] };
 export type NavSection = { heading: string | null; items: NavItem[] };
 
 export const navSections: NavSection[] = [
@@ -37,7 +38,15 @@ export const navSections: NavSection[] = [
   {
     heading: "Resources",
     items: [
-      { name: "Timeline", href: "/app/timeline" },
+      {
+        name: "Timeline",
+        href: "/app/timeline",
+        children: [
+          { name: "Cylinder scanner usage", href: "/app/timeline?panel=cylinder" },
+          { name: "Plate scanner usage", href: "/app/timeline?panel=plate" },
+          { name: "RNA-seq runs", href: "/app/timeline?panel=rnaseq" },
+        ],
+      },
       { name: "Translation", href: "/app/translation" },
       { name: "Software", href: "/app/software" },
     ],
