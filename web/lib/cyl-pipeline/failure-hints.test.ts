@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { BACKSTOP_MESSAGE, isNoOpCandidate, likelyCause, NO_OP_NOTE } from "./failure-hints";
+import { BACKSTOP_MESSAGE, isNoOpCandidate, likelyCause, NO_OP_NOTE, WRITEBACK_NO_RESULT_MESSAGE } from "./failure-hints";
 import { stageInProblems } from "./stage-in";
 
 const meta = (species_name: string | null, plant_age_days: number | null) => ({ species_name, plant_age_days });
@@ -56,12 +56,20 @@ describe("likelyCause", () => {
 describe("isNoOpCandidate", () => {
   const failed = (error_message: string | null) => ({ status: "failed", error_message });
 
-  it("is true only for the backstop text on a scan with results", () => {
+  it("is true for the backstop text only on a scan with results, and only for that exact text", () => {
     expect(isNoOpCandidate(failed(BACKSTOP_MESSAGE), true)).toBe(true);
     expect(isNoOpCandidate(failed(BACKSTOP_MESSAGE), false)).toBe(false);
     expect(isNoOpCandidate(failed("stage-in: species missing"), true)).toBe(false);
     expect(isNoOpCandidate(failed(null), true)).toBe(false);
     expect(isNoOpCandidate(failed(`${BACKSTOP_MESSAGE}.`), true)).toBe(false);
+  });
+
+  it("is true for write-back's no-result text on a scan with results: the #900 no-op re-delivery", () => {
+    // Staging run 11 (2026-09-30): a re-run of a scan whose only source no run-scan row carries.
+    expect(isNoOpCandidate(failed(WRITEBACK_NO_RESULT_MESSAGE), true)).toBe(true);
+    // Staging run 10's poison scan got the same text with no results: a real failure, no note.
+    expect(isNoOpCandidate(failed(WRITEBACK_NO_RESULT_MESSAGE), false)).toBe(false);
+    expect(isNoOpCandidate(failed(`${WRITEBACK_NO_RESULT_MESSAGE}.`), true)).toBe(false);
   });
 
   it("is false for a row that is not failed", () => {
@@ -87,5 +95,18 @@ describe("BACKSTOP_MESSAGE", () => {
     const text = [...block![1].matchAll(/"([^"\n]*)"/g)].map((m) => m[1]).join("");
     expect(text.length).toBeGreaterThan(20);
     expect(BACKSTOP_MESSAGE).toBe(text);
+  });
+});
+
+describe("WRITEBACK_NO_RESULT_MESSAGE", () => {
+  it("is write-back's reconcile text, read from bloomctl's ingest.py", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("../../../bloomcli/src/bloomctl/cyl/ingest.py", import.meta.url)),
+      "utf8",
+    );
+    const match = /^NO_RESULT_MESSAGE = "([^"\n]+)"$/m.exec(source);
+    expect(match, "NO_RESULT_MESSAGE literal not found in ingest.py").not.toBeNull();
+    expect(WRITEBACK_NO_RESULT_MESSAGE).toBe(match![1]);
+    expect(WRITEBACK_NO_RESULT_MESSAGE).not.toBe(BACKSTOP_MESSAGE);
   });
 });

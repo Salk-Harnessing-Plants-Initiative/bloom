@@ -11,6 +11,8 @@ import { completenessWarning } from "@/components/plant-scan.helpers";
 import { getStoredScanVideoUrl } from "@/lib/supabase/scan-video";
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
+import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
+import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 
 export default async function Image({
   params,
@@ -84,6 +86,15 @@ export default async function Image({
       </div>
       <div className="table-auto pr-8 pb-8">
         {/* Above the frame: the box is a fixed height, so below it can land off-screen. */}
+        {scan && isPipelineTriggerEnabled() && (
+          <div className="mb-4">
+            <RunPipelineButton
+              target={{ target_level: "scan", target_id: scan.id }}
+              label="Run this scan"
+              title={`scan ${scan.id}`}
+            />
+          </div>
+        )}
         {scan && (
           <div className="mb-4">
             <ScanVideoButton

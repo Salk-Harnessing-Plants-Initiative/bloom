@@ -5,6 +5,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { isTriggerResult } from "./trigger-request";
 
 // Bounds validation, not memory: Next has already buffered up to 10 MB of the
 // body by the time the handler runs (design D1).
@@ -102,15 +103,6 @@ function truncate(text: string): string {
   return text.length <= DETAIL_MAX_CHARS ? text : `${text.slice(0, DETAIL_MAX_CHARS - 1)}…`;
 }
 
-function isSafeInteger(value: unknown): boolean {
-  return typeof value === "number" && Number.isSafeInteger(value);
-}
-
-function isTriggerResult(parsed: unknown): boolean {
-  if (typeof parsed !== "object" || parsed === null) return false;
-  const { pipeline_run_id, scan_count } = parsed as Record<string, unknown>;
-  return isSafeInteger(pipeline_run_id) && isSafeInteger(scan_count);
-}
 
 // Neither a 502 nor a 504 proves nothing was written: the trigger has no
 // idempotency key, and it inserts the run before it enqueues (design D1).

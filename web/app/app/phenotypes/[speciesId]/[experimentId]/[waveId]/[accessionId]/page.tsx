@@ -10,6 +10,15 @@ import ScientistBadge from "@/components/scientist-badge";
 import PlantScan from "@/components/plant-scan";
 import { CylScanWithImages } from "@/lib/custom.types";
 import { Key } from "react";
+import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
+import {
+  ScanCheckbox,
+  ScanSelectionProvider,
+  SelectAllShown,
+  SelectionBar,
+} from "@/components/cyl-pipeline/ScanSelection";
+import { accessionScanIds } from "@/components/cyl-pipeline/accession-scan-ids";
+import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 
 export default async function Accession({
   params,
@@ -30,6 +39,12 @@ export default async function Accession({
   const speciesName = species?.common_name ?? "";
 
   const plants : any = await getPlants(Number(accessionId), Number(waveId));
+  // Every scan of every plant, including the ones the grid doesn't render (a
+  // later scan on the same day, or one without a frame-1 image). Read before
+  // the in-place sort below, so the ids keep the plants' own order.
+  const allScanIds = accessionScanIds(plants);
+  // Off in prod until bloom#863: no run action, no selection.
+  const canRun = isPipelineTriggerEnabled();
   const accessionName = plants?.[0]?.accessions?.name ?? "";
   const wave = plants?.[0]?.cyl_waves;
   const days = (
@@ -41,6 +56,25 @@ export default async function Accession({
     ) ?? []
   ).flat();
   const uniqueDays = [...new Set(days as number[])].sort((a, b) => a - b);
+  // The scans each plant's row renders, one per day.
+  const plantScans: (CylScanWithImages | { plant_age_days: number })[][] =
+    plants?.map((plant: { cyl_scans: CylScanWithImages[] }) =>
+      padMissingScans(
+        plant.cyl_scans.sort(
+          (a, b) => (a.plant_age_days ?? 0) - (b.plant_age_days ?? 0)
+        ),
+        uniqueDays
+      )
+    ) ?? [];
+  const shownScanIds = [
+    ...new Set(
+      plantScans
+        .flat()
+        .flatMap((scan) =>
+          "cyl_images" in scan && scan.cyl_images.length > 0 ? [scan.id] : []
+        )
+    ),
+  ];
 
   const user = await getUser();
 
@@ -97,6 +131,17 @@ export default async function Accession({
         </svg>
         Click a scan image to page through every frame and generate a rotation video.
       </div>
+      <ScanSelectionProvider shownIds={shownScanIds}>
+      <div className="mb-4 flex flex-wrap items-start gap-4">
+        {canRun && allScanIds.length > 0 && (
+          <RunPipelineButton
+            target={{ target_level: "scan_ids", scan_ids: allScanIds }}
+            label="Run this accession"
+            title={`${accessionName} (wave ${wave?.number})`}
+          />
+        )}
+        {canRun && shownScanIds.length > 0 && <SelectAllShown />}
+      </div>
       <div className="table-auto select-none">
         {plants?.map((plant: { id: Key | null | undefined; qr_code: any; cyl_qc_codes: any[]; cyl_scans: CylScanWithImages[]; }, index: number) => (
           <div className="table-row" key={plant.id}>
@@ -135,12 +180,7 @@ export default async function Accession({
             </div>
             <div className="table-cell text-lg align-middle">
               <div className="text-sm mt-2 text-neutral-400 flex flex-row">
-                {padMissingScans(
-                  plant.cyl_scans.sort(
-                    (a, b) => (a.plant_age_days ?? 0) - (b.plant_age_days ?? 0)
-                  ),
-                  uniqueDays
-                ).map((scan, i) =>
+                {plantScans[index].map((scan, i) =>
                   "cyl_images" in scan ? (
                     <div key={i} className="mr-4">
                       {scan.cyl_images.map((image) => (
@@ -149,7 +189,16 @@ export default async function Accession({
                           className="text-center w-56 p-2"
                           id={"scan-" + scan.id}
                         >
-                          <div className="pb-1">Day {scan.plant_age_days}</div>
+                          <div className="pb-1 flex items-center justify-center gap-2">
+                            {/* Beside the thumbnail's link, not inside it, so selecting never navigates. */}
+                            {canRun && (
+                              <ScanCheckbox
+                                scanId={scan.id}
+                                label={`Select the day ${scan.plant_age_days} scan of replicate ${index + 1}`}
+                              />
+                            )}
+                            Day {scan.plant_age_days}
+                          </div>
                           <PlantScan
                             scan={scan}
                             height={105}
@@ -177,6 +226,8 @@ export default async function Accession({
           </div>
         ))}
       </div>
+      {canRun && <SelectionBar />}
+      </ScanSelectionProvider>
     </div>
   );
 }
