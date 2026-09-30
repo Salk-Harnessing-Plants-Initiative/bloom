@@ -289,17 +289,18 @@ SCRNA_RUNS = "/api/scrna/cellranger/runs"
 def test_caddy_routes_scrna_runs_to_bloom_web_not_kong(api):
     """Caddy sends /api/scrna/* to bloom-web with the /api prefix intact.
 
-    A POST with no body is the probe: the route refuses a body that isn't JSON before
-    the session lookup and the upstream call, so this needs no cookie and starts no run."""
+    A POST with no body or content type is the probe: the route refuses a request that
+    isn't JSON (415) before the origin check, the session lookup and the upstream call,
+    so this needs no cookie and starts no run. Kong answers 401 instead."""
     status, body = api(SCRNA_RUNS, method="POST")
-    assert status == 400, (
-        f"POST {SCRNA_RUNS}: expected 400, got {status} — "
+    assert status == 415, (
+        f"POST {SCRNA_RUNS}: expected 415, got {status} — "
         f"401 = Kong's catch-all answered, 404 = reached bloom-web but not the "
         f"route (prefix stripped, or handler moved). Body: {body!r}"
     )
     assert isinstance(body, dict), f"expected JSON object, got {body!r}"
-    assert "must be JSON" in str(body.get("detail", "")), (
-        f"400 did not come from the route's body check: {body!r}"
+    assert "application/json" in str(body.get("detail", "")), (
+        f"415 did not come from the route's content-type check: {body!r}"
     )
 
 
