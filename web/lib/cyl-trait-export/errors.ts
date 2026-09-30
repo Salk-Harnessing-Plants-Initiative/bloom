@@ -10,6 +10,7 @@ export type ExportErrorKind =
   | 'not_in_selection'
   | 'deadline'
   | 'cancelled'
+  | 'not_found'
 
 export class ExportError extends Error {
   readonly kind: ExportErrorKind

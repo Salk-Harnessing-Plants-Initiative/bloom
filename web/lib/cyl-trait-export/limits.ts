@@ -36,3 +36,6 @@ export const ABORTED_CALL_HOLD_MS = 9000
 
 /** Rows per `cyl_scans_extended` keyset page. */
 export const SELECTION_PAGE_SIZE = 1000
+
+/** Cells per CSV slice handed to the zip deflater. */
+export const CSV_SLICE_CELLS = 50_000

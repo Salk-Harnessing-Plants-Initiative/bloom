@@ -217,7 +217,7 @@
 
 ## 5. Build, zip and jobs
 
-- [ ] 5.1 **Test first.** `build-export.test.ts`, against the D10 fake (listings served only for recorded `scan_ids`):
+- [x] 5.1 **Test first.** `build-export.test.ts`, against the D10 fake (listings served only for recorded `scan_ids`):
   - (a) outputs equal the golden files for `K`, `legacy:9` and `unattributed`:
     - at `BATCH_SCANS` 1, 2 and 100;
     - with calls resolved in issue, reverse and seeded-random order;
@@ -236,7 +236,8 @@
   - (h) aborting stops new batches and aborts in-flight calls.
   - (i) the superseded `K` source's id, extra trait and observed-only value appear nowhere, and `observed` reads only included source ids, in chunks.
   - (j) `K`'s header has none of the crown trait names.
-- [ ] 5.2 Implement `build-export.ts`.
+- [x] 5.2 Implement `build-export.ts`.
+  **(done 2026-09-30: red build-export 50 failed / 0 passed; green 50 passed. First green run had 6 failures in the random-order variants: the fake was shuffling keyset pages, which come from an ORDER BY scan_id query and are never unordered, so pageSelection correctly rejected them. The fake now shuffles only unordered results, and trait rows, which it had not been shuffling. Added the supabase-js adapter createExportDb in db.ts with db.test.ts: red 12 failed / 0 passed, green 12 passed (query shapes, captured token, abort signal, semaphore peak 3, {code,message} errors, empty scan ids refused))**
 - [ ] 5.3 **Test first.** `zip.test.ts` (node env): `zip.ts` takes an `AsyncIterable<Uint8Array>` per entry and uses synchronous `ZipDeflate`, yielding with `setImmediate` between slices.
   - Unzipped with `fflate.unzipSync`, the output holds exactly the three names with the golden bytes.
   - No input chunk exceeds the slice size.
