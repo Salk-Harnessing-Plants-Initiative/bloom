@@ -201,6 +201,10 @@ curl -X POST http://localhost:5100/pipeline \
 # {"pipeline_run_id": 42, "scan_count": 30, "reused_count": 0}
 ```
 
+`pipeline_run_id` here is Bloom's integer `cyl_pipeline_runs.id`, the value the write-back
+RPC stamps as `cyl_trait_sources.cyl_pipeline_run_id`. It is not the producer's text
+`provenance.pipeline_run_id`.
+
 ### Cell Ranger trigger
 
 Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per run**. A sample is one 10x library: a first-level folder under `raw_reads/` in the scRNA workflows bucket (`bloomv2-workflows`), holding all its lanes and re-sequencing runs. Separate captures are separate runs. A reference is a first-level folder under `reference_genome/` that contains `reference.json`.

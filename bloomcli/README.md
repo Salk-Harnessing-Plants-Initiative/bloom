@@ -81,7 +81,10 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
-  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
+  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`). For pipeline
+  data a source name selects **one scan's** rows (write-back stores one source per scan);
+  a dataset built from a recipe across many scans needs `create_cyl_dataset`'s recipe mode,
+  which bloomctl does not expose yet (#481).
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name. Filter with `--species NAME` (scriptable) or
   `--species-menu` to **pick a species from a menu** (needs a terminal). Choose the output

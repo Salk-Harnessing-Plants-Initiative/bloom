@@ -101,7 +101,7 @@ source identity to pin for them). Results SHALL be scoped to `experiment_id_` on
 - **WHEN** `list_experiment_trait_sources` is called for experiment A
 - **THEN** no source belonging only to another experiment's scans is returned
 
-### Requirement: Bulk read grants match the existing per-trait read surface
+### Requirement: Bulk trait read functions are callable by the read roles
 
 `get_experiment_traits` and `list_experiment_trait_sources` SHALL be `SECURITY INVOKER`, matching
 `get_scan_traits`'s posture, and SHALL be callable by the existing read roles (`bloom_agent`,
