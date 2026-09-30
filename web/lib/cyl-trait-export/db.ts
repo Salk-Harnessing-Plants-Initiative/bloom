@@ -104,7 +104,7 @@ export function createExportDb(accessToken: string): ExportDb {
 
   async function send(make: () => Builder, signal?: AbortSignal): Promise<Result> {
     const { semaphore } = getExportState()
-    const res = await semaphore.run((sig) => make().abortSignal(sig), signal)
+    const res = await semaphore.run((sig) => Promise.resolve(make().abortSignal(sig)), signal)
     if (res.error) throw { code: res.error.code, message: res.error.message } satisfies DbError
     return res
   }

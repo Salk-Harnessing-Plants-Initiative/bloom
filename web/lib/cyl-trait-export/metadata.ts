@@ -6,7 +6,7 @@
  */
 
 /** A `cyl_scans_extended` row as PostgREST returns it. */
-export type ScanExtendedRow = Record<string, string | number | null>
+export type ScanExtendedRow = Record<string, string | number | null> & { scan_id: number }
 
 /** (output column, source key in a cyl_scans_extended row); null = derived. */
 const COLUMNS: ReadonlyArray<readonly [string, string | null]> = [
