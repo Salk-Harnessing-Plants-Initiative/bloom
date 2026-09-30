@@ -65,13 +65,16 @@ def _blob(*, kind="predictions_slp", root_type="primary", scan_key="SK1",
 
 def _envelope(image_ids, *, contract_version=PINNED_VERSION, scan_key="SK1",
               idempotency_key="key-1", pipeline_run_id=None, traits=None, blobs=None,
-              drop_provenance=False, drop_inputs=False, drop_contract_version=False):
+              drop_provenance=False, drop_inputs=False, drop_contract_version=False,
+              provenance_extra=None):
     prov = {
         "contract_version": contract_version,
         "scan_key": scan_key,
         "idempotency_key": idempotency_key,
         "inputs": {"image_ids": [str(i) for i in image_ids]},
     }
+    if provenance_extra:
+        prov.update(provenance_extra)
     if pipeline_run_id is not None:
         prov["pipeline_run_id"] = pipeline_run_id
     if drop_inputs:
@@ -1876,3 +1879,266 @@ def test_a9_migration_applies_over_existing_a7_rows(pg_conn):
         ]
         assert _source_snapshot(cur, "a9-over-a7") == before
     pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# add-cyl-trait-recipe-key: write-back stamps the recipe, scan, Workflow and run
+# (cyl-trait-writeback "Write-back stamps each new source with its recipe, scan,
+# Workflow and run"; migration 2)
+# --------------------------------------------------------------------------- #
+
+import uuid  # noqa: E402
+
+from tests.integration.cyl_recipe_helpers import (  # noqa: E402
+    acl_set,
+    apply_recipe_rollbacks,
+    migration,
+    recipe_columns,
+    rollback,
+    sql_body,
+)
+
+_REALISTIC = {
+    "predict_models": [
+        {"registry_id": "org/reg/canola-primary", "version": "v0", "sleap_nn_version": "0.3.0",
+         "root_type": "primary", "weights_checksum": "a6b2"},
+        {"registry_id": "org/reg/canola-lateral", "version": "v0", "sleap_nn_version": "0.3.0",
+         "root_type": "lateral", "weights_checksum": "75e1"},
+    ],
+    "predict_code_sha": "9a6f20c0",
+    "traits_code_sha": "e373b0f9",
+    "predict_output_params": {"peak_threshold": 0.2},
+}
+
+
+def _wf():
+    return f"wf-{uuid.uuid4().hex[:10]}"
+
+
+def _deliver(cur, *, workflow=None, extra=_REALISTIC, idem=None, scan=None):
+    scan_id, imgs = scan or _seed_scan(cur)
+    idem = idem or f"recipe-{uuid.uuid4().hex}"
+    res = _call(cur, _envelope(imgs, idempotency_key=idem, provenance_extra=extra),
+                argo_workflow_name=workflow)
+    return scan_id, imgs, idem, res
+
+
+def _helper_key(cur, source_id):
+    cur.execute("SELECT public.cyl_trait_recipe_key_v1(metadata) FROM cyl_trait_sources "
+                "WHERE id = %s", (source_id,))
+    return cur.fetchone()[0]
+
+
+@pytest.mark.parametrize("extra", [_REALISTIC, None], ids=["realistic", "no-model-fields"])
+def test_fresh_delivery_stamps_recipe_key_and_scan_id(pg_conn, extra):
+    with pg_conn.cursor() as cur:
+        scan_id, _, _, res = _deliver(cur, extra=extra)
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["recipe_key"] == _helper_key(cur, res["source_id"])
+        assert cols["recipe_key_version"] == 1
+        assert cols["scan_id"] == res["scan_id"] == scan_id
+
+
+def test_dispatched_delivery_stamps_workflow_and_run(pg_conn):
+    with pg_conn.cursor() as cur:
+        scan = _seed_scan(cur)
+        wf = _wf()
+        run_id = _seed_run_scan_for_writeback(cur, scan[0], wf)
+        _, _, _, res = _deliver(cur, workflow=wf, scan=scan)
+        cols = recipe_columns(cur, res["source_id"])
+        assert (cols["argo_workflow_name"], cols["cyl_pipeline_run_id"]) == (wf, run_id)
+        assert res["status_update_matched"] is True
+
+
+def test_unrequested_scan_still_stamps_run(pg_conn):
+    with pg_conn.cursor() as cur:
+        other_scan, _ = _seed_scan(cur)
+        wf = _wf()
+        run_id = _seed_run_scan_for_writeback(cur, other_scan, wf)
+        cur.execute("SELECT count(*) FROM cyl_pipeline_run_scans")
+        before = cur.fetchone()[0]
+        _, _, _, res = _deliver(cur, workflow=wf)
+        cur.execute("SELECT count(*) FROM cyl_pipeline_run_scans")
+        assert cur.fetchone()[0] == before
+        assert recipe_columns(cur, res["source_id"])["cyl_pipeline_run_id"] == run_id
+        assert res["status_update_matched"] is False
+
+
+def test_batch_workflow_stamps_its_one_run(pg_conn):
+    # One Argo Workflow per batch: several run-scan rows of ONE run share the name, so
+    # the lookup must count distinct runs, not rows.
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        scans = [_seed_scan(cur) for _ in range(3)]
+        run_id = _seed_run_scan_for_writeback(cur, scans[0][0], wf)
+        for scan_id, _ in scans[1:]:
+            cur.execute(
+                "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status)"
+                " VALUES (%s, %s, %s, 'queued')",
+                (run_id, scan_id, wf),
+            )
+        _, _, _, res = _deliver(cur, workflow=wf, scan=scans[1])
+        assert recipe_columns(cur, res["source_id"])["cyl_pipeline_run_id"] == run_id
+        _, _, _, unrequested = _deliver(cur, workflow=wf)
+        assert (
+            recipe_columns(cur, unrequested["source_id"])["cyl_pipeline_run_id"] == run_id
+        )
+
+
+def test_hand_submitted_delivery_stamps_workflow_only(pg_conn):
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        _, _, _, res = _deliver(cur, workflow=wf)
+        cols = recipe_columns(cur, res["source_id"])
+        assert (cols["argo_workflow_name"], cols["cyl_pipeline_run_id"]) == (wf, None)
+
+
+def test_ambiguous_workflow_name_stamps_no_run(pg_conn):
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        a, _ = _seed_scan(cur)
+        b, _ = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, a, wf)
+        _seed_run_scan_for_writeback(cur, b, wf)
+        _, _, _, res = _deliver(cur, workflow=wf)
+        cols = recipe_columns(cur, res["source_id"])
+        assert (cols["argo_workflow_name"], cols["cyl_pipeline_run_id"]) == (wf, None)
+
+
+def test_no_workflow_name_stamps_neither(pg_conn):
+    with pg_conn.cursor() as cur:
+        _, _, _, res = _deliver(cur)
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["argo_workflow_name"] is None and cols["cyl_pipeline_run_id"] is None
+        assert cols["recipe_key"] is not None and cols["scan_id"] is not None
+
+
+def _stamps_across_redelivery(cur):
+    """Deliver under W1 (dispatched), then re-deliver the same envelope under W2
+    (another run's row for the same scan). Returns the stamps before and after."""
+    scan = _seed_scan(cur)
+    w1, w2 = _wf(), _wf()
+    _seed_run_scan_for_writeback(cur, scan[0], w1)
+    _seed_run_scan_for_writeback(cur, scan[0], w2)
+    _, _, idem, res = _deliver(cur, workflow=w1, scan=scan)
+    before = recipe_columns(cur, res["source_id"])
+    again = _call(cur, _envelope(scan[1], idempotency_key=idem, provenance_extra=_REALISTIC),
+                  argo_workflow_name=w2)
+    assert again["was_noop"] is True
+    return before, recipe_columns(cur, res["source_id"])
+
+
+def test_noop_redelivery_leaves_stamps_unchanged(pg_conn):
+    with pg_conn.cursor() as cur:
+        before, after = _stamps_across_redelivery(cur)
+        assert after == before
+
+
+def test_noop_stamp_guard_detects_mutation(pg_conn):
+    # Proves the test above can fail: a no-op branch that rewrote the stamps is caught.
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT pg_get_functiondef("
+                    "'public.insert_cyl_result_envelope(jsonb,text)'::regprocedure)")
+        body = cur.fetchone()[0]
+        marker = "v_was_noop := true;"
+        assert body.count(marker) == 1
+        cur.execute(body.replace(marker, marker + " UPDATE public.cyl_trait_sources SET "
+                                 "argo_workflow_name = p_argo_workflow_name WHERE id = v_source_id;"))
+        before, after = _stamps_across_redelivery(cur)
+        assert after["argo_workflow_name"] != before["argo_workflow_name"]
+
+
+@pytest.mark.parametrize("breakage", ["image_ids", "grain", "file_size"])
+def test_failed_delivery_leaves_no_source(pg_conn, breakage):
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        idem = f"recipe-fail-{uuid.uuid4().hex}"
+        env = _envelope(imgs, idempotency_key=idem, provenance_extra=_REALISTIC)
+        if breakage == "image_ids":
+            env["provenance"]["inputs"]["image_ids"] = ["999999999999"]
+        elif breakage == "grain":
+            env["traits"] = [_trait("t", 1.0, grain="plant")]
+        else:
+            env["blobs"] = [_blob(file_size="12.5")]
+        cur.execute("SAVEPOINT f")
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, env)
+        cur.execute("ROLLBACK TO SAVEPOINT f")
+        assert _source_id(cur, idem) is None
+
+
+def test_redelivery_fallback_with_stamped_source(pg_conn):
+    with pg_conn.cursor() as cur:
+        scan = _seed_scan(cur)
+        wa, wb = _wf(), _wf()
+        _seed_run_scan_for_writeback(cur, scan[0], wa)
+        _, _, idem, res = _deliver(cur, workflow=wa, scan=scan)
+        stamped = recipe_columns(cur, res["source_id"])
+        _seed_run_scan_for_writeback(cur, scan[0], wb)
+        again = _call(cur, _envelope(scan[1], idempotency_key=idem, provenance_extra=_REALISTIC),
+                      argo_workflow_name=wb)
+        assert again["was_noop"] is True and again["status_update_matched"] is True
+        assert _run_scan_status(cur, wb, scan[0]) == ("written", res["source_id"])
+        assert recipe_columns(cur, res["source_id"]) == stamped
+
+
+def test_source_written_between_migrations_is_backfilled(pg_conn):
+    with pg_conn.cursor() as cur:
+        apply_recipe_rollbacks(cur, down_to=2)
+        _, _, _, res = _deliver(cur)
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["recipe_key"] is None and cols["scan_id"] is None
+        cur.execute(sql_body(migration(2)))
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["recipe_key"] is not None and cols["scan_id"] == res["scan_id"]
+
+
+def _arg_counts(cur):
+    cur.execute("SELECT array_agg(pronargs) FROM pg_proc "
+                "WHERE proname = 'insert_cyl_result_envelope'")
+    return cur.fetchone()[0]
+
+
+def test_migration_2_body_is_idempotent(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(sql_body(migration(2)))
+        cur.execute(sql_body(migration(2)))
+        assert _arg_counts(cur) == [2]
+        _, _, _, res = _deliver(cur)
+        assert recipe_columns(cur, res["source_id"])["recipe_key"] is not None
+
+
+_RPC_ACL = {(r, "EXECUTE") for r in
+            ("postgres", "service_role", "bloom_writer", "bloom_admin", "bloom_workflows")}
+
+
+def test_rollback_2_restores_a9_body_and_grants(pg_conn):
+    with pg_conn.cursor() as cur:
+        apply_recipe_rollbacks(cur, down_to=2)
+        _, _, _, res = _deliver(cur, workflow=_wf())
+        cols = recipe_columns(cur, res["source_id"])
+        assert all(v is None for v in cols.values()), cols
+        scan = _seed_scan(cur)
+        wa, wb = _wf(), _wf()
+        _seed_run_scan_for_writeback(cur, scan[0], wa)
+        _, _, idem, _ = _deliver(cur, workflow=wa, scan=scan)
+        _seed_run_scan_for_writeback(cur, scan[0], wb)
+        again = _call(cur, _envelope(scan[1], idempotency_key=idem), argo_workflow_name=wb)
+        assert again["status_update_matched"] is True
+        assert acl_set(cur, "public.insert_cyl_result_envelope(jsonb,text)") == _RPC_ACL
+        assert _arg_counts(cur) == [2]
+
+
+def test_rpc_acl_is_the_sanctioned_set(pg_conn):
+    with pg_conn.cursor() as cur:
+        assert acl_set(cur, "public.insert_cyl_result_envelope(jsonb,text)") == _RPC_ACL
+
+
+def test_rollback_1_refuses_while_stamping_body_is_live(pg_conn):
+    if migration(2) is None:
+        pytest.skip("migration 2 not written yet")
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT r1")
+        with pytest.raises(psycopg.errors.RaiseException, match="insert_cyl_result_envelope"):
+            cur.execute(sql_body(rollback(1)))
+        cur.execute("ROLLBACK TO SAVEPOINT r1")

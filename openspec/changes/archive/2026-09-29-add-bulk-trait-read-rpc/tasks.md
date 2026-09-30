@@ -207,8 +207,10 @@ rather than deferred.
       from bare substring checks to a regex (`grant\s+[^;]*\b(insert|update|delete|all)\b`) that also
       catches a combined grant like `GRANT SELECT, INSERT`.
 - [x] 7.9 **Float4→float8 precision note (Suggestion).** Added to design.md's Risks for Tier 2's benefit.
-- [ ] 7.10 **PR description stale "Not ready to merge / draft" section (Suggestion).** Update PR #548's
-      description on GitHub to reflect that Benfica approved and it's no longer a draft.
+- 7.10 **PR description stale "Not ready to merge / draft" section (Suggestion).** Not applied:
+      PR #548 merged 2026-07-29 before this was done, and editing a merged PR's description changes
+      nothing a reader relies on. Recorded when archiving this change inside add-cyl-trait-recipe-key
+      (2026-09-29).
 - Not applied (explicitly out of scope, see design.md for reasoning): a distinct `SQLSTATE` on the
   mutual-exclusion `RAISE EXCEPTION` (mirrors an existing gap in `get_scan_traits`, applying it only to
   the new function would make the two siblings inconsistent) and a schema-level `CHECK` against NaN on

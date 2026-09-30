@@ -529,8 +529,9 @@ def test_migration_body_is_idempotent(pg_conn):
         )
         assert cur.fetchone()[0] == 1
         # pre-existing read objects are untouched by the re-apply
+        # add-cyl-trait-recipe-key replaced it with the 5-argument form.
         cur.execute(
-            "SELECT count(*) FROM pg_proc WHERE proname='get_experiment_traits' AND pronargs=3"
+            "SELECT count(*) FROM pg_proc WHERE proname='get_experiment_traits' AND pronargs=5"
         )
         assert cur.fetchone()[0] == 1
     pg_conn.rollback()
@@ -544,8 +545,9 @@ def test_rollback_restores_prior_state(pg_conn):
         )
         assert cur.fetchone()[0] == 0
         # pre-existing read objects are untouched by the rollback
+        # add-cyl-trait-recipe-key replaced it with the 5-argument form.
         cur.execute(
-            "SELECT count(*) FROM pg_proc WHERE proname='get_experiment_traits' AND pronargs=3"
+            "SELECT count(*) FROM pg_proc WHERE proname='get_experiment_traits' AND pronargs=5"
         )
         assert cur.fetchone()[0] == 1
         # round-trip: re-apply the forward migration and confirm the function is back
