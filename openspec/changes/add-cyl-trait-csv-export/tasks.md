@@ -99,11 +99,12 @@
     - (d) the concatenated per-chunk coverage, and the union of the per-chunk trait rows (each call passing that chunk's included scans), equal the single calls.
   - `(characterization)`. It runs in CI's required compose job (`pytest tests/integration/`). Run `uvx ruff check` and `black --check` on it by hand, because the hooks don't cover `tests/`.
   **(done 2026-09-30, characterization: 10 passed against the dev DB. Proven able to fail: changing one recorded `K2` trait value fails 4 tests, and restoring it passes. Clean under the repo-pinned ruff 0.9.9 and black 26.3.1.)**
-- [ ] 1.3 **Hand-write** `golden/{K,legacy-9,unattributed}.{csv,export.json,excluded.csv}` from design D4–D6 and the now-verified `input.json`, before any implementation.
+- [x] 1.3 **Hand-write** `golden/{K,legacy-9,unattributed}.{csv,export.json,excluded.csv}` from design D4–D6 and the now-verified `input.json`, before any implementation.
   - Fix `generated_at` and `version`.
   - Check that `git ls-files --eol` shows `i/crlf` for the CSVs.
   - Note in the PR that they are hand-authored.
-- [ ] 1.4 Verification, not a committed test. Write a scratchpad script in `bloommcp`'s environment, recording the sleap-roots-analyze, bloommcp and jsonschema versions.
+  **(done 2026-09-30: each cell and field was typed by hand in a scratchpad authoring script. Only `scan_ids_sha256` is computed (`ccc7cc77…` for `9,10,100,101,102,103,200,201`). `generated_at` is fixed at `2026-10-02T12:00:00.000Z` and the version at `1.0.0`. `chosen_by` is `user`, because `K2` is the default. `git ls-files --eol` shows `i/crlf attr/-text` for the CSVs. A separate cross-check against `input.json`'s recorded coverage and values (as float4) found no mismatch.)**
+- [x] 1.4 Verification, not a committed test. Write a scratchpad script in `bloommcp`'s environment, recording the sleap-roots-analyze, bloommcp and jsonschema versions.
   - **State the expected results before running:**
     - the row count per file;
     - NaN and empty cells both load as NaN;
@@ -114,7 +115,15 @@
     - `load_trait_data(path, barcode_col="plant_qr_code", genotype_col="genotype", replicate_col="scan_id")`, recording `get_trait_columns` (is `curve_index` dropped?);
     - `qc_clean` with `csv_content`, recording `genotype_column`, `sample_id_column`, `replicate_column`, `kept_trait_columns` and `validation_warnings` (`bloommcp/src/bloom_mcp/sections/sleap_roots/analysis/qc_clean.py:233`).
   - Record the results here. Any golden-file change needs a recorded reason, and is committed before any implementation.
-- [ ] 1.5 **Test first.** Extend `tests/unit/test_trait_recipe_export_schema.py`: every `golden/*.export.json` has the schema's required keys at every level, and no property the schema doesn't declare.
+  **(done 2026-09-30: sleap-roots-analyze 0.1.0a5, bloommcp 0.1.0a1, jsonschema 4.26.0, pandas 3.0.2.**
+  - **E1: all three sidecars validate, and `generated_at` is UTC.**
+  - **E2: 3, 1 and 1 rows.**
+  - **E3: an empty cell and `NaN` both load as NaN, `Infinity`/`-Infinity` as ±inf, `recipe_key` as str and `source_id` as int64.**
+  - **E4: no metadata column, `recipe_key` or `source_id` counts as a trait.**
+  - **E5: `curve_index_median` is dropped by `get_trait_columns` (the substring `index`), as predicted; this goes in the 8.2 docs and the 12.3 upstream issue.**
+  - **E6: `qc_clean` raises on these 1–3-sample goldens, before reporting roles ("only 1 sample(s) remain", even with relaxed thresholds). Its resolver `resolve_columns` gives `genotype` / `plant_qr_code` / `wave_number` on K. The full `qc_clean` run moves to 10.1's real export. No golden change was needed.)**
+- [x] 1.5 **Test first.** Extend `tests/unit/test_trait_recipe_export_schema.py`: every `golden/*.export.json` has the schema's required keys at every level, and no property the schema doesn't declare.
+  **(done 2026-09-30, characterization: the goldens predate the test, so it passed at once (5 passed). Proven able to fail: adding a `rogue` key to `K.export.json` fails it, and restoring the file passes.)**
 
 ## 2. Metadata
 
