@@ -361,7 +361,9 @@
   Then run `/pre-merge` and `/review-pr`. PR body: "Refs #15".
 
   **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1348/1348 after both PR review rounds and the nav rename; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
-- [ ] 8.8 **After the staging deploy of PR 3, and after bloom#939 (Realtime tenant through Kong) is fixed there:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
+- [x] 8.8 **After the staging deploy of PR 3, and after bloom#939 (Realtime tenant through Kong) is fixed there:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
+
+  **(PR 6, 2026-09-30, staging deploy `b0d455bf`: run 18 was started by `bloom-staging-ops` (a `bloom_writer`) while the author watched the runs list as a plain member. It appeared at the top live, as "another member · cb4de37b", and changed to "Finished · 1 succeeded" without a reload. The author's account has no role flags, and the live `custom_access_token_hook` gives such accounts `bloom_user`. The #939 anon-join-after-hard-reload remainder didn't affect the views in this session: the indicator stayed Live across page loads and across a 90 s cable disconnect.)**
 
 ## PR 4: trigger proxy
 
@@ -526,37 +528,53 @@
 - For a null-age scan, have a `bloom_admin` set one test scan's `plant_age_days` to NULL, and revert it afterwards.
 - Write down a manual cancel procedure (delete the Argo workflows, purge pgmq) before any multi-scan run.
 
-- [ ] 12.1 Run one scan from the scan page, and record the run id. Confirm:
+- [x] 12.1 Run one scan from the scan page, and record the run id. Confirm:
   - the list and drill-down update without a reload and reach a finished state (intermediate states may be skipped within one sweep);
   - there is exactly 1 scan row, with counts 1/1;
   - there are no timer-driven reads and no `/workflows/runs` calls.
-- [ ] 12.2 Trigger a `scan_ids` run of at least 3 scans via "Run this accession" or the grid. Confirm:
+- [x] 12.2 Trigger a `scan_ids` run of at least 3 scans via "Run this accession" or the grid. Confirm:
   - it appears on the experiment panel;
   - it appears live for a second member, whose decoded `role` is `bloom_user`;
   - the same for `bloom_writer`/`bloom_admin` accounts, if they exist.
-- [ ] 12.3 Trigger a run including the `--poison` scan and the null-age scan (via the scan page or "Run this accession"; null-age scans don't render in the grid). Confirm:
+- [x] 12.3 Trigger a run including the `--poison` scan and the null-age scan (via the scan page or "Run this accession"; null-age scans don't render in the grid). Confirm:
   - the dialog warned about the null-age scan;
   - the actual per-scan `error_message` values, recorded;
   - "Re-run failed" submits exactly the failed ids.
 
   Also confirm a staging run with `status='complete' and failed_count>0` renders by rule 3 or rule 5, according to its counts.
-- [ ] 12.3b Run a scan whose only source came from `bloomctl cyl ingest-result`. Record its status. If it is `failed` with a no-result text (write-back's, or the poller's backstop), confirm the #900 note, and add the evidence to bloom#900 (confirm with the user before posting).
-- [ ] 12.4 Turn the network adapter off for 30 s during an active run, then back on. Confirm:
+- [x] 12.3b Run a scan whose only source came from `bloomctl cyl ingest-result`. Record its status. If it is `failed` with a no-result text (write-back's, or the poller's backstop), confirm the #900 note, and add the evidence to bloom#900 (confirm with the user before posting).
+- [x] 12.4 Turn the network adapter off for 30 s during an active run, then back on. Confirm:
   - `CHANNEL_ERROR`/`CLOSED` then `SUBSCRIBED` in the console;
   - the indicator shows offline, then live;
   - the counts resync.
-- [ ] 12.5 If an empty wave exists, confirm the dialog shows "No scans to run". Note that any zero-scan run triggered via `curl` leaves a permanent "No scans matched" row.
+- [x] 12.5 If an empty wave exists, confirm the dialog shows "No scans to run". Note that any zero-scan run triggered via `curl` leaves a permanent "No scans matched" row.
 - [ ] 12.6 Observe whether a large reconciliation burst disconnects other Realtime widgets, and record it.
 - [ ] 12.7 Leave a drill-down open past the JWT lifetime. Confirm it recovers or shows offline with refresh.
 - [ ] 12.8 For the runs in 12.1–12.3, confirm `done_count`/`failed_count` equal the per-status tallies. Record this as evidence for `fix-cyl-pipeline-run-scan-status` 8.1–8.4, and tick those only in that change, only if they match.
-- [ ] 12.9 Open a run's traits link and confirm it lands on the run's wave and day, with the run's scans visible.
-- [ ] 12.10 Trigger one experiment-level run of the largest practical staging experiment (at least 1,500 scans if one exists). Use the manual cancel procedure afterwards if it isn't wanted to finish. Confirm:
+- [x] 12.9 Open a run's traits link and confirm it lands on the run's wave and day, with the run's scans visible.
+- [x] 12.10 Trigger one experiment-level run of the largest practical staging experiment (at least 1,500 scans if one exists). Use the manual cancel procedure afterwards if it isn't wanted to finish. Confirm:
   - it is accepted as **one** run;
   - `scan_count` is right;
   - the drill-down loads every row.
 
   Record the trigger latency, since it makes 25-scan enqueue RPCs sequentially.
 - [ ] 12.11 Record run ids, screenshots and mismatches in the PR. Mismatches are fixed or filed, not waived. Then verify as in 8.7, and run `/pre-merge` and `/review-pr`.
+
+  **(PR 6, 2026-09-30, local web app against staging `b0d455bf`; details and screenshots are in PR #965's body.)**
+  - **Preconditions:**
+    - contract pin a9 on the RPC and on the live trait-extractor template;
+    - test scans TEST-E2E-019 and 020, created with `create-test-scan --good`; 014 and 007 are the poison scans;
+    - 020's age was set to NULL by a `bloom_writer` before staging, then reverted (no staging account is a `bloom_admin`);
+    - the cancel procedure was written before the multi-scan runs.
+  - **12.1:** run 15, one row, updated live to "Finished · 1 succeeded". No polling: no browser data requests in 6½ idle minutes, and no `GET /runs/…` at the workflows service.
+  - **12.2:** run 16 was listed live on the experiment panel. Run 18, started by another member, appeared live for a `bloom_user` (see 8.8).
+  - **12.3:** run 16 (11 scans) showed the stage-in warning for the null-age scan. 015–019 were written; 010–013, 014 and 020 failed, all with write-back's "no result produced for this scan by write-back". The #900 note shows only where the scan has results, and "Re-run failed scans (6)" lists exactly those. Complete runs with failures render by rule 3.
+  - **12.3b:** covered by the hand-submitted-source variant (runs 11 and 16; the other session's comment on #900). This found that the note had to match write-back's text as well (`05abc061`).
+  - **12.4:** during run 17, a 90 s cable disconnect took the indicator Live → offline → Live, followed by a full snapshot refetch.
+  - **12.5:** not applicable. Staging has no wave with zero scans.
+  - **12.9:** run 11's link opened wave 9999 · day 2 with no fallback note.
+  - **12.10:** run 17, Missouri_Soy_Repetition, 1,515 scans: one run, `scan_count` 1515, all rows loaded, about 3 s trigger latency. It was cancelled because staging's image bytes are missing (every frame 404s). About 165 failed downloader pods from retries fed into srp#98.
+  - **Still open:** 12.6 (no large burst is possible on staging), 12.7 (run 16's tab left open past the JWT lifetime), and 12.8 (to be ticked in `fix-cyl-pipeline-run-scan-status`: runs 15, 16 and 18 counts equal their tallies).
 
 ## 13. After merge
 
