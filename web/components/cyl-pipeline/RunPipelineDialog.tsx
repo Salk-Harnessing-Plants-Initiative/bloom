@@ -6,32 +6,38 @@
  * "Confirm dialog submits once and reports outcomes without inviting
  * duplicate runs"; design D4).
  *
- * - It enumerates the target with the trigger's own filters, so N is the
+ * - The target is fixed when the dialog opens: what it checked is what it
+ *   sends, even if the caller's target changes meanwhile (a drill-down's
+ *   failed rows change live).
+ * - It enumerates that target with the trigger's own filters, so N is the
  *   trigger's count, then reads the pre-check (K, L) and the concurrent runs.
  *   Confirm stays disabled until all of them have settled.
  * - It predicts no skips: the trigger enqueues every scan, and skipping is
- *   decided per stage on the cluster (#898). The resolved params are display
- *   only, and no parameter hash is computed.
- * - It submits once. The trigger has no idempotency key and isn't
- *   transactional (design D1), so a 502, a 504 or a lost connection may still
- *   have started a run: those say so, point at the runs list, and never
- *   re-enable confirm. Only answers that prove nothing started (429, 401,
- *   404, 422 and the proxy's own refusals) allow another try.
+ *   decided per stage on the cluster; a server-side preview is #898. The
+ *   resolved params are display only, and no parameter hash is computed.
+ * - It submits once per target (submissions.ts). The trigger has no
+ *   idempotency key and isn't transactional (design D1), so a 502, a 504,
+ *   any other 5xx or a lost connection may still have started a run: those
+ *   say so, point at the runs list, and never offer confirm again, even after
+ *   the dialog is closed and reopened. Only answers that prove nothing started
+ *   (429, 401, 404, 422 and the proxy's own refusals) allow another try.
  */
 
+import Dialog from "@mui/material/Dialog";
 import Link from "next/link";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
 import { paramsSummary } from "@/lib/cyl-pipeline/params-summary";
 import { fetchConcurrentRuns, fetchLatestSources, fetchTargetScans, type ConcurrentRuns } from "@/lib/cyl-pipeline/queries";
 import { runDisplay } from "@/lib/cyl-pipeline/run-display";
 import { requesterText } from "@/lib/cyl-pipeline/run-text";
 import type { ScanMeta } from "@/lib/cyl-pipeline/scan-meta";
-import { MAX_TRIGGER_SCAN_IDS } from "@/lib/cyl-pipeline/trigger-request";
+import { isTriggerResult, MAX_TRIGGER_SCAN_IDS, scanIdsOverLimitText } from "@/lib/cyl-pipeline/trigger-request";
 import type { TriggerTarget } from "@/lib/cyl-pipeline/trigger-target";
 import { useNow } from "@/lib/cyl-pipeline/use-now";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { StartedRun } from "./started-runs";
+import { beginSubmission, settleSubmission, submissionKey, useSubmission, type Submission } from "./submissions";
 
 export const TRIGGER_URL = "/api/cyl/pipeline";
 /** At or above this many scans, confirm waits for an acknowledgement: runs can't be cancelled from Bloom. */
@@ -42,7 +48,8 @@ const OVERRIDES_ISSUE = "https://github.com/Salk-Harnessing-Plants-Initiative/bl
 
 const SUCCESS_TIMING_NOTE =
   "Results arrive when each batch of up to 25 scans finishes; counts often stay at 0 for most of the run. Reload the traits page to see new results.";
-const RATE_LIMITED = "Too many requests — this limit is shared with video generation. Try again in about a minute.";
+const RATE_LIMITED =
+  "Too many requests — this limit is shared with other workflow actions, such as video generation and Cell Ranger runs. Try again in about a minute.";
 const SESSION_EXPIRED = "Your session expired — sign in again.";
 const REFUSED = "The pipeline service refused this request.";
 
@@ -63,14 +70,8 @@ interface Checked {
 
 type Load = { state: "loading" } | { state: "failed"; message: string } | ({ state: "ready" } & Checked);
 
-type Outcome =
-  | { kind: "idle" }
-  | { kind: "sending" }
-  | { kind: "started"; runId: number; scanCount: number }
-  /** The run may or may not exist; never retried from here. */
-  | { kind: "uncertain" }
-  /** Nothing started; confirm is offered again. */
-  | { kind: "refused"; message: string };
+/** What one POST settled as; a refusal is shown here, and every other outcome is kept in submissions.ts. */
+type Settled = Submission | { kind: "refused"; message: string };
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -82,12 +83,7 @@ function requestBody(target: TriggerTarget) {
     : { target_level: target.target_level, target_id: target.target_id };
 }
 
-function isTriggerResult(body: unknown): body is { pipeline_run_id: number; scan_count: number } {
-  const b = body as { pipeline_run_id?: unknown; scan_count?: unknown } | null;
-  return typeof b === "object" && b !== null && Number.isSafeInteger(b.pipeline_run_id) && Number.isSafeInteger(b.scan_count);
-}
-
-async function send(target: TriggerTarget): Promise<Outcome> {
+async function send(target: TriggerTarget): Promise<Settled> {
   let res: Response;
   try {
     res = await fetch(TRIGGER_URL, {
@@ -133,15 +129,15 @@ function content(target: TriggerTarget, { scans, latest }: Checked): Content {
   if (N === 0) blockers.push("No scans to run");
   if (target.target_level === "scan_ids") {
     const found = new Set(scans.map((s) => s.scan_id));
-    const missing = target.scan_ids.filter((id) => !found.has(id));
+    const missing = [...new Set(target.scan_ids)].filter((id) => !found.has(id));
     if (missing.length > 0) {
       const listed = missing.slice(0, MISSING_IDS_SHOWN).join(", ");
       const rest = missing.length > MISSING_IDS_SHOWN ? ` and ${missing.length - MISSING_IDS_SHOWN} more` : "";
-      blockers.push(`Selected but not found: ${missing.length === 1 ? "scan" : "scans"} ${listed}${rest}. Reload the page to see the current scans.`);
+      blockers.push(
+        `Selected but not found: ${missing.length === 1 ? "scan" : "scans"} ${listed}${rest}. The pipeline refuses a run that includes scans it can't find.`,
+      );
     }
-    if (N > MAX_TRIGGER_SCAN_IDS) {
-      blockers.push(`This selection has ${N} scans; one run of selected scans takes at most ${MAX_TRIGGER_SCAN_IDS}.`);
-    }
+    if (N > MAX_TRIGGER_SCAN_IDS) blockers.push(scanIdsOverLimitText(N));
   }
   let K = 0;
   let L = 0;
@@ -154,27 +150,22 @@ function content(target: TriggerTarget, { scans, latest }: Checked): Content {
   return { N, blockers, stageInCount, K, L, groups };
 }
 
-export function RunPipelineDialog({ target, title, onClose, onStarted }: RunPipelineDialogProps) {
+export function RunPipelineDialog({ target: requested, title, onClose, onStarted }: RunPipelineDialogProps) {
   const headingId = useId();
   const now = useNow();
+  // Fixed at open: later changes to the caller's target don't reach what is checked or sent.
+  const [target] = useState(requested);
+  const [key] = useState(() => submissionKey(requested));
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [acknowledged, setAcknowledged] = useState(false);
-  const [outcome, setOutcome] = useState<Outcome>({ kind: "idle" });
-  // Set synchronously on the first click, so a second click before the
-  // re-render can't send a second request.
-  const inFlight = useRef(false);
-  const targetRef = useRef(target);
-  const targetKey = JSON.stringify(requestBody(target));
-
-  useEffect(() => {
-    targetRef.current = target;
-  });
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const submission = useSubmission(key);
 
   useEffect(() => {
     let active = true;
     const client = createClientSupabaseClient();
     (async () => {
-      const scans = await fetchTargetScans(client, targetRef.current);
+      const scans = await fetchTargetScans(client, target);
       const experimentIds = [...new Set(scans.flatMap((s) => (s.experiment_id == null ? [] : [s.experiment_id])))];
       const [latest, concurrent, userId] = await Promise.all([
         fetchLatestSources(client, scans.map((s) => s.scan_id)),
@@ -191,24 +182,25 @@ export function RunPipelineDialog({ target, title, onClose, onStarted }: RunPipe
     return () => {
       active = false;
     };
-  }, [targetKey]);
+  }, [target]);
 
   const ready = load.state === "ready" ? load : null;
   const c = ready ? content(target, ready) : null;
   const needsAck = c !== null && c.N >= LARGE_RUN_SCANS;
-  const canConfirm =
-    c !== null &&
-    c.blockers.length === 0 &&
-    (!needsAck || acknowledged) &&
-    (outcome.kind === "idle" || outcome.kind === "refused");
+  const canConfirm = c !== null && c.blockers.length === 0 && (!needsAck || acknowledged) && submission === undefined;
 
   const submit = async () => {
-    if (inFlight.current || !canConfirm || !ready) return;
-    inFlight.current = true;
-    setOutcome({ kind: "sending" });
+    if (!canConfirm || !ready) return;
+    // Synchronous, and shared by every dialog for this target: the double-click guard.
+    if (!beginSubmission(key)) return;
+    setRefusal(null);
     const result = await send(target);
-    setOutcome(result);
-    if (result.kind === "refused") inFlight.current = false;
+    if (result.kind === "refused") {
+      settleSubmission(key, null);
+      setRefusal(result.message);
+      return;
+    }
+    settleSubmission(key, result);
     if (result.kind === "started") {
       onStarted?.({
         pipeline_run_id: result.runId,
@@ -220,17 +212,12 @@ export function RunPipelineDialog({ target, title, onClose, onStarted }: RunPipe
     }
   };
 
+  const sent = submission !== undefined;
+  const item = (g: Content["groups"][number]) => <li key={`${g.species}|${g.age}`}>{`${g.species} · ${g.mode} · ${g.age} — ${g.count}`}</li>;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
-        className="mt-16 w-full max-w-xl space-y-4 rounded-lg bg-white p-6 text-sm text-stone-700 shadow-xl"
-        onKeyDown={(e) => {
-          if (e.key === "Escape") onClose();
-        }}
-      >
+    <Dialog open onClose={onClose} aria-labelledby={headingId} maxWidth="sm" fullWidth>
+      <div className="space-y-4 p-6 text-sm text-stone-700">
         <h2 id={headingId} className="text-lg text-stone-900">
           Run the pipeline on {title}
           <span className="text-stone-500"> · {c ? plural(c.N, "scan") : "counting scans…"}</span>
@@ -303,21 +290,13 @@ export function RunPipelineDialog({ target, title, onClose, onStarted }: RunPipe
             {c.N > 0 && (
               <section data-testid="params">
                 <h3 className="font-medium text-stone-900">Parameters</h3>
-                <ul className="mt-1">
-                  {c.groups.slice(0, PARAM_GROUPS_SHOWN).map((g) => (
-                    <li key={`${g.species}|${g.age}`}>{`${g.species} · ${g.mode} · ${g.age} — ${g.count}`}</li>
-                  ))}
-                </ul>
+                <ul className="mt-1">{c.groups.slice(0, PARAM_GROUPS_SHOWN).map(item)}</ul>
                 {c.groups.length > PARAM_GROUPS_SHOWN && (
                   <details>
                     <summary className="cursor-pointer text-stone-500">
                       {plural(c.groups.length - PARAM_GROUPS_SHOWN, "more parameter set")}
                     </summary>
-                    <ul>
-                      {c.groups.slice(PARAM_GROUPS_SHOWN).map((g) => (
-                        <li key={`${g.species}|${g.age}`}>{`${g.species} · ${g.mode} · ${g.age} — ${g.count}`}</li>
-                      ))}
-                    </ul>
+                    <ul>{c.groups.slice(PARAM_GROUPS_SHOWN).map(item)}</ul>
                   </details>
                 )}
                 <p className="mt-1 text-xs text-stone-500">
@@ -337,7 +316,7 @@ export function RunPipelineDialog({ target, title, onClose, onStarted }: RunPipe
                   className="mt-0.5"
                   checked={acknowledged}
                   onChange={(e) => setAcknowledged(e.target.checked)}
-                  disabled={outcome.kind !== "idle" && outcome.kind !== "refused"}
+                  disabled={sent}
                 />
                 <span>I understand this queues {c.N} scans on the shared GPU cluster; runs can&apos;t be cancelled from Bloom.</span>
               </label>
@@ -345,24 +324,30 @@ export function RunPipelineDialog({ target, title, onClose, onStarted }: RunPipe
           </>
         )}
 
-        {outcome.kind === "started" && (
+        {submission?.kind === "sending" && (
+          <p role="status" className="text-stone-600">
+            Starting the run. Large runs can take up to two minutes. You can close this; the run keeps starting, and reopening
+            this dialog shows the result.
+          </p>
+        )}
+        {submission?.kind === "started" && (
           <div role="status" className="space-y-1 rounded-md border border-lime-200 bg-lime-50 p-3 text-lime-900">
             <p>
-              Run {outcome.runId} started with {plural(outcome.scanCount, "scan")}.
+              Run {submission.runId} started with {plural(submission.scanCount, "scan")}.
             </p>
-            {c && outcome.scanCount !== c.N && (
+            {c && submission.scanCount !== c.N && (
               <p>
-                The pipeline service counted {outcome.scanCount} scans; this dialog counted {c.N}. The target&apos;s scans changed in
-                between.
+                The pipeline service counted {submission.scanCount} scans; this dialog counted {c.N}. The target&apos;s scans may
+                have changed in between.
               </p>
             )}
             <p>{SUCCESS_TIMING_NOTE}</p>
-            <Link href={`/app/cyl-pipeline-runs/${outcome.runId}`} className="text-lime-700 underline hover:no-underline">
-              Open run {outcome.runId}
+            <Link href={`/app/cyl-pipeline-runs/${submission.runId}`} className="text-lime-700 underline hover:no-underline">
+              Open run {submission.runId}
             </Link>
           </div>
         )}
-        {outcome.kind === "uncertain" && (
+        {submission?.kind === "uncertain" && (
           <div role="alert" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900">
             The run may have started, but Bloom couldn&apos;t confirm it. Check{" "}
             <Link href="/app/cyl-pipeline-runs" className="underline hover:no-underline">
@@ -371,28 +356,29 @@ export function RunPipelineDialog({ target, title, onClose, onStarted }: RunPipe
             before trying again.
           </div>
         )}
-        {outcome.kind === "refused" && (
+        {refusal !== null && !sent && (
           <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-red-800">
-            {outcome.message}
+            {refusal}
           </div>
         )}
 
         <div className="flex justify-end gap-3 pt-2">
-          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-stone-600 hover:bg-stone-100">
-            {outcome.kind === "started" || outcome.kind === "uncertain" ? "Close" : "Cancel"}
+          {/* Focused on open, so Escape and Tab start inside the dialog. */}
+          <button type="button" autoFocus onClick={onClose} className="rounded-md px-3 py-1.5 text-stone-600 hover:bg-stone-100">
+            {sent ? "Close" : "Cancel"}
           </button>
-          {outcome.kind !== "started" && (
+          {submission?.kind !== "started" && (
             <button
               type="button"
               onClick={() => void submit()}
               disabled={!canConfirm}
               className="rounded-md bg-lime-700 px-3 py-1.5 text-white hover:bg-lime-800 disabled:cursor-not-allowed disabled:bg-stone-300"
             >
-              {outcome.kind === "sending" ? "Starting…" : "Start run"}
+              {submission?.kind === "sending" ? "Starting…" : "Start run"}
             </button>
           )}
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

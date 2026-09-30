@@ -656,4 +656,22 @@ describe("re-run actions", () => {
     expect(rerunFailed()!.textContent).toBe("Re-run failed scans (5001)");
     expect(rerunFailed()!.disabled).toBe(true);
   });
+
+  it("keeps an open re-run dialog when a live event withdraws its action", async () => {
+    run = { ...run, scan_count: 2, status: "complete" };
+    scans = rows([
+      [577, "queued"],
+      [578, "failed"],
+    ]);
+    mount();
+    await subscribe();
+    fireEvent.click(rerunUnresulted()!);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    await emitScan("UPDATE", { id: 1, run_id: 91, scan_id: 577, status: "written" });
+    // The counts settled: the action is withdrawn and Re-run failed offered instead, but the open dialog stays.
+    expect(rerunUnresulted()).toBeNull();
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (1)");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(dialog.props!.target).toEqual({ target_level: "scan_ids", scan_ids: [577, 578] });
+  });
 });

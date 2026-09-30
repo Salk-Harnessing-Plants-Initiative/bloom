@@ -459,10 +459,12 @@
 - [x] 10.3 **Test first.** Extend `queries.test.ts`:
   - `fetchTargetScans(target)` uses the trigger's filters, pages of 1000 ordered by `scan_id`, and `scan_ids` chunks of ≤ 200; 2,500 scans give N = 2500.
   - `fetchConcurrentRuns(experimentIds)`:
-    1. read runs with `status=not.in.(complete,failed)` and `created_at` within 7 days, limit 20;
-    2. filter to incomplete counts in the client;
-    3. check the view for `run_id=in.(…)` (chunked) and `experiment_id=in.(…)`;
-    4. return at most 10, plus a count of the rest.
+    1. ask the view for `experiment_id=in.(…)` (chunked) with `created_at` within 7 days;
+    2. read those runs (`id=in.(…)`, chunked) with `status=not.in.(complete,failed)`;
+    3. filter to incomplete counts in the client;
+    4. return at most 10, plus the true count of the rest.
+
+    (PR 6 review: the first draft read the 20 newest unfinished runs lab-wide before checking membership, so frozen runs elsewhere could hide this experiment's. It now matches the spec, with no candidate cap.)
 - [x] 10.4 Implement them.
 - [x] 10.5 **Test first.** Write `accession-scan-ids.test.ts`: it returns every `plant.cyl_scans[].id`, de-duplicated and without mutating its input. Two same-day scans plus one with `cyl_images: []` give 3 ids.
 - [x] 10.6 Implement `web/components/cyl-pipeline/accession-scan-ids.ts`.

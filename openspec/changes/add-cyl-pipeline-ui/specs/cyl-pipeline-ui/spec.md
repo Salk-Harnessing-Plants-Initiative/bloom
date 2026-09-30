@@ -221,7 +221,7 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 ### Requirement: Confirm dialog submits once and reports outcomes without inviting duplicate runs
 The dialog SHALL guard submission with a synchronous in-flight flag, so that repeated clicks before the request settles produce exactly one request. It SHALL report outcomes as follows:
 - **Success:** replace the confirm action with a success state. It shows the returned `pipeline_run_id` and `scan_count`, notes any difference between `scan_count` and N, and links to `/app/cyl-pipeline-runs/<id>`. It says: "*Results arrive when each batch of up to 25 scans finishes; counts often stay at 0 for most of the run. Reload the traits page to see new results.*"
-- **`429`:** "*Too many requests — this limit is shared with video generation. Try again in about a minute.*" Confirm is re-enabled.
+- **`429`:** "*Too many requests — this limit is shared with other workflow actions, such as video generation and Cell Ranger runs. Try again in about a minute.*" Confirm is re-enabled.
 - **`502` or `504`:** a message that the run may have started, with a link to `/app/cyl-pipeline-runs`. Confirm is not re-enabled.
 - **`401`:** "session expired — sign in again".
 - **`404` or `422`:** the returned detail, with correction allowed.

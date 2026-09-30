@@ -39,7 +39,7 @@ Claims are checked against `origin/staging` @ `7f3ff94a` (2026-09-24). Paths are
 - The trigger is synchronous and **not idempotent**. It inserts the run, then the scan rows (a separate request), then one enqueue RPC per 25-scan batch (`:300-328`), with no transaction. A run can therefore exist even though the caller saw an error.
 - **URL-length hazard, at every target level (bloom#901).** The `scan_ids` existence check (`:191-198`) and the dedup preview each put all ids into one unpaged `.in_()`: the preview's scan-id query (`:212-219`) and its source-id query (`:226-233`, possibly many times N). The gateway returns `414` above roughly 1,300 small ids (measured for PR #650; bloomctl batches since, `bloomcli/src/bloomctl/_postgrest.py`). By the same 8 KB request-line limit that is about 1,160 four-digit scan ids (an estimate: each is 7 bytes once its comma is encoded as `%2C`), so a plain experiment run over roughly 1,150 scans fails today. The preview also fetches every trait row of the requested scans (about 1,035 per scan), which is a volume problem under the 8 s timeout. D9 fixes the URL half, and removes the preview's cost entirely for `params: {}`.
 
-**Rate limit.** 5 requests per 60 s per user, per process; prod runs one worker (`docker-compose.prod.yml:256`). The limit is charged after auth and before `pipeline.py`'s body validation (`main.py:195`). It is shared across `/pipeline`, `GET /runs/{id}`, scan-video and plate-video (`main.py:93,154,195,219`).
+**Rate limit.** 5 requests per 60 s per user, per process; prod runs one worker (`docker-compose.prod.yml:256`). The limit is charged after auth and before `pipeline.py`'s body validation (`main.py:207`). It is shared across `/pipeline`, `GET /runs/{id}`, scan-video, plate-video and the three Cell Ranger routes (`enforce_rate_limit` at `main.py:105,166,207,231,244,265,279`, as of PR 6).
 
 **Tables** (`20260730120000`; never altered since).
 
@@ -141,13 +141,13 @@ Polling `GET /runs/{id}` would share the 5/60 s limiter with the trigger and wit
 
 ### D4. Dialog content
 
-- **Enumeration.** It uses `_enumerate`'s filters (`pipeline.py:125-203`), so N matches the trigger's count. `cyl_scans_extended` is owner-rights, and `bloom_user` has `USING (true)` on the base tables. Paging and chunking follow from `.in_()` URL length and the 8 s timeout. K and L come from one `select scan_id, max_source_id` per 200-id chunk.
+- **Enumeration.** It uses `_enumerate`'s filters (`pipeline.py:138-213` as of PR 6), so N matches the trigger's count. `cyl_scans_extended` is owner-rights, and `bloom_user` has `USING (true)` on the base tables. Paging and chunking follow from `.in_()` URL length and the 8 s timeout. K and L come from one `select scan_id, max_source_id` per 200-id chunk.
 - **Resolved params.** They are for display only. They mirror `resolve_params` today (whose alias map is empty) and are **throwaway**: once a server-side preview exists (#898), it replaces them. #897 must not extend them client-side.
 - **K and L.**
   - K counts `max_source_id IS NOT NULL`. That includes manually ingested sources, the #900 case.
   - L counts NULL rows: legacy source-less traits, or (rarely, admin-only) traits all deleted. Hence "typically" in the copy. A successful run replaces L's traits in trait views.
 - **"May skip".** Skipping is decided per stage on the cluster, against its own outputs.
-- **Concurrent runs.** The query reads recent runs whose status is not `complete`/`failed` (created within 7 days, limit 20). It filters for incomplete counts in the client, because PostgREST can't compare two columns, then checks membership through the view. Each entry shows its counts-first label and age, never "in progress", because #706/#710 runs never settle.
+- **Concurrent runs.** The query first asks the view which runs touched the enumerated scans' experiments within 7 days (the view carries each run's `created_at`), then reads those runs whose status is not `complete`/`failed`, and filters for incomplete counts in the client, because PostgREST can't compare two columns. Membership comes first so that unfinished runs on other experiments can't crowd these out, and "and M more" is the true count. (PR 6's review replaced a first draft that read the 20 newest unfinished runs lab-wide before checking membership: frozen #706/#710 runs could fill those 20.) Each entry shows its counts-first label and age, never "in progress", because #706/#710 runs never settle.
 - **Large runs** (N ≥ 500) need an acknowledgement, because runs can't be cancelled from Bloom.
 - **Layout.** The dialog shows, in this order:
   1. headline;
@@ -202,7 +202,7 @@ Rejected alternatives:
 
 ### D7. Selection, re-run, and failure hints
 
-- **"Run this accession".** It uses every `plant.cyl_scans` id, via a pure helper called before the page's in-place sort. The grid renders only the first frame-1 scan per day.
+- **"Run this accession".** It uses every `plant.cyl_scans` id, via a pure helper called before the page's in-place sort. The grid renders only the first scan per day, and nothing for a scan without a frame-1 image or without an age.
 - **Checkboxes** sit outside the `PlantScan` link, so selecting never navigates. The selection is per page.
 - **Re-run gating.**
   - "Re-run failed" waits for settled header counts.

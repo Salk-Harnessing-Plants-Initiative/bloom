@@ -9,7 +9,7 @@
  * here reads trait sources by run.
  */
 
-import { PANEL_SIZE, RUN_PAGE_SIZE, type Cursor, type RunRow, type RunScanRow } from "./realtime-reducer";
+import { compareRunsDesc, PANEL_SIZE, RUN_PAGE_SIZE, type Cursor, type RunRow, type RunScanRow } from "./realtime-reducer";
 import { runDisplay } from "./run-display";
 import { SCAN_META_COLUMNS, type ScanMeta } from "./scan-meta";
 import type { TriggerTarget } from "./trigger-target";
@@ -217,11 +217,12 @@ const TARGET_FILTER = { scan: "scan_id", wave: "wave_id", experiment: "experimen
  * trigger's own filters (`_enumerate` in services/workflows/pipeline.py), so
  * the dialog's N matches the trigger's count (design D4). A single target is
  * read in pages of 1000 ordered by `scan_id` until a page is empty; a
- * `scan_ids` selection is sent in chunks of at most 200 ids.
+ * `scan_ids` selection is de-duplicated, as the trigger's own existence check
+ * is, and sent in chunks of at most 200 ids.
  */
 export async function fetchTargetScans(client: ReadClient, target: TriggerTarget): Promise<ScanMeta[]> {
   if (target.target_level === "scan_ids") {
-    return readChunked(target.scan_ids, async (chunk) =>
+    return readChunked([...new Set(target.scan_ids)], async (chunk) =>
       (await read<ScanMeta[]>(
         "cyl_scans_extended",
         client.from("cyl_scans_extended").select(SCAN_META_COLUMNS).in("scan_id", chunk).order("scan_id", { ascending: true }),
@@ -248,7 +249,6 @@ export async function fetchTargetScans(client: ReadClient, target: TriggerTarget
 
 export const TARGET_SCANS_PAGE = 1000;
 export const CONCURRENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-export const CONCURRENT_CANDIDATES = 20;
 export const CONCURRENT_RUNS_SHOWN = 10;
 
 export interface ConcurrentRuns {
@@ -259,40 +259,32 @@ export interface ConcurrentRuns {
 }
 
 /**
- * Runs that may still be working on the same experiments (design D4): created
- * within 7 days, `status` not `complete` or `failed`, counts incomplete (a
- * client-side filter, since PostgREST can't compare two columns), and
- * touching one of `experimentIds` per `cyl_pipeline_run_experiments`. Runs
- * frozen by #706/#710 never settle, which is why each shows its counts-first
- * state and age rather than "in progress".
+ * Runs that may still be working on the same experiments (spec: the confirm
+ * dialog's concurrent runs; design D4): touching one of `experimentIds` per
+ * `cyl_pipeline_run_experiments`, created within 7 days (the view carries each
+ * run's `created_at`), `status` not `complete` or `failed`, and counts
+ * incomplete (a client-side filter, since PostgREST can't compare two
+ * columns). Membership is read first, so unfinished runs on other experiments
+ * can't crowd these out, and `more` is the true count. Runs frozen by
+ * #706/#710 never settle, which is why each shows its counts-first state and
+ * age rather than "in progress".
  */
 export async function fetchConcurrentRuns(client: ReadClient, experimentIds: number[], now = Date.now()): Promise<ConcurrentRuns> {
   if (experimentIds.length === 0) return { runs: [], more: 0 };
-  const recent =
+  const since = new Date(now - CONCURRENT_WINDOW_MS).toISOString();
+  const touching = await readChunked(experimentIds, async (chunk) =>
+    (await read<{ run_id: number }[]>(
+      "cyl_pipeline_run_experiments",
+      client.from("cyl_pipeline_run_experiments").select("run_id").in("experiment_id", chunk).gte("created_at", since),
+    )) ?? [],
+  );
+  const runIds = [...new Set(touching.map((r) => r.run_id))];
+  const unfinished = await readChunked(runIds, async (chunk) =>
     (await read<RunRow[]>(
       "cyl_pipeline_runs",
-      client
-        .from("cyl_pipeline_runs")
-        .select(RUN_COLUMNS)
-        .not("status", "in", "(complete,failed)")
-        .gte("created_at", new Date(now - CONCURRENT_WINDOW_MS).toISOString())
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .limit(CONCURRENT_CANDIDATES),
-    )) ?? [];
-  const incomplete = recent.filter((r) => runDisplay(r).counts.U > 0);
-  if (incomplete.length === 0) return { runs: [], more: 0 };
-
-  const members = new Set<number>();
-  for (const experiments of chunks(experimentIds)) {
-    const rows = await readChunked(incomplete.map((r) => r.id), async (chunk) =>
-      (await read<{ run_id: number }[]>(
-        "cyl_pipeline_run_experiments",
-        client.from("cyl_pipeline_run_experiments").select("run_id").in("run_id", chunk).in("experiment_id", experiments),
-      )) ?? [],
-    );
-    rows.forEach((r) => members.add(r.run_id));
-  }
-  const touching = incomplete.filter((r) => members.has(r.id));
-  return { runs: touching.slice(0, CONCURRENT_RUNS_SHOWN), more: Math.max(0, touching.length - CONCURRENT_RUNS_SHOWN) };
+      client.from("cyl_pipeline_runs").select(RUN_COLUMNS).in("id", chunk).not("status", "in", "(complete,failed)"),
+    )) ?? [],
+  );
+  const incomplete = unfinished.filter((r) => runDisplay(r).counts.U > 0).sort(compareRunsDesc);
+  return { runs: incomplete.slice(0, CONCURRENT_RUNS_SHOWN), more: Math.max(0, incomplete.length - CONCURRENT_RUNS_SHOWN) };
 }

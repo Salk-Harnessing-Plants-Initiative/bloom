@@ -351,4 +351,25 @@ describe("runs started from this page", () => {
     act(() => announce(started({ scan_count: 0 })));
     expect(screen.queryByTestId("panel-run-95")).toBeNull();
   });
+
+  it("treats an announced run as a member, so its later events cost no membership query even outside the window", async () => {
+    mountWithPage();
+    await subscribe();
+    // Older than every held run, so the 10-run window drops it at once.
+    act(() => announce(started({ started_at: at(0) })));
+    expect(screen.queryByTestId("panel-run-95")).toBeNull();
+    await emit("UPDATE", runRow(95, at(0), { status: "running" }));
+    await tick(2000);
+    expect(membershipQueries()).toHaveLength(0);
+  });
+
+  it("drops a pending membership question for a run it is then told about", async () => {
+    mountWithPage();
+    await subscribe();
+    await emit("INSERT", runRow(95, at(29 * 60 + 59), { status: "queued" }));
+    act(() => announce(started()));
+    await tick(2000);
+    expect(membershipQueries()).toHaveLength(0);
+    expect(shown()[0]).toBe(95);
+  });
 });

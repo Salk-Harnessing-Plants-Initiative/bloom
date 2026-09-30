@@ -23,13 +23,18 @@ import type { TriggerTarget } from "@/lib/cyl-pipeline/trigger-target";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 
+import { RunPipelineButton } from "./RunPipelineButton";
 import { RunPipelineDialog } from "./RunPipelineDialog";
+import { resetSubmissions } from "./submissions";
 
 // The database the dialog reads.
 let scans: ScanMeta[];
 let latest: { scan_id: number; max_source_id: number | null }[];
 let runs: RunRow[];
+/** Runs touching experiment 5. */
 let members: Set<number>;
+/** Runs touching other experiments, by run id. */
+let elsewhere: Map<number, number[]>;
 let failing: Record<string, Answer["error"]>;
 let held: Record<string, Deferred<void>>;
 const fetchSpy = vi.fn();
@@ -50,11 +55,25 @@ function answer(q: RecordedQuery): Answer {
       const ids = inArgs[0][1] as number[];
       return { data: latest.filter((l) => ids.includes(l.scan_id)), error: null };
     }
-    case "cyl_pipeline_runs":
-      return { data: runs, error: null };
+    case "cyl_pipeline_runs": {
+      const ids = inArgs.find(([c]) => c === "id")?.[1] as number[] | undefined;
+      const excluded = q.arg("not") ? ["complete", "failed"] : [];
+      const limit = q.arg("limit")?.[0] as number | undefined;
+      const rows = runs.filter((r) => (!ids || ids.includes(r.id)) && !excluded.includes(r.status));
+      return { data: limit === undefined ? rows : rows.slice(0, limit), error: null };
+    }
     case "cyl_pipeline_run_experiments": {
-      const ids = inArgs.find(([c]) => c === "run_id")![1] as number[];
-      return { data: ids.filter((id) => members.has(id)).map((run_id) => ({ run_id })), error: null };
+      const experiments = inArgs.find(([c]) => c === "experiment_id")![1] as number[];
+      const since = q.arg("gte")?.[1] as string | undefined;
+      const touching = [
+        ...[...members].map((run_id) => ({ run_id, experiment_id: 5 })),
+        ...[...elsewhere].flatMap(([run_id, exps]) => exps.map((experiment_id) => ({ run_id, experiment_id }))),
+      ];
+      const createdAt = (id: number) => runs.find((r) => r.id === id)?.created_at ?? "";
+      return {
+        data: touching.filter((t) => experiments.includes(t.experiment_id) && (!since || Date.parse(createdAt(t.run_id)) >= Date.parse(since))),
+        error: null,
+      };
     }
     default:
       return { data: [], error: null };
@@ -102,9 +121,11 @@ beforeEach(() => {
   latest = [...someScans(38).map((s) => ({ scan_id: s.scan_id, max_source_id: s.scan_id * 10 })), { scan_id: 39, max_source_id: null }];
   runs = [];
   members = new Set();
+  elsewhere = new Map();
   failing = {};
   held = {};
   resetSupabaseMock(respond);
+  resetSubmissions();
   supabaseMock.session = { access_token: "user-token", user: { id: ME } };
   fetchSpy.mockReset();
   vi.stubGlobal("fetch", fetchSpy);
@@ -204,6 +225,7 @@ describe("the stage-in warning", () => {
   it("is absent when every scan has its metadata", async () => {
     mount();
     await settle();
+    expect(confirmButton()!.disabled).toBe(false);
     expect(dialogText()).not.toContain("will fail at stage-in");
   });
 });
@@ -219,8 +241,10 @@ describe("concurrent runs", () => {
     expect(entry.textContent).toContain("started 12 min ago");
     expect(entry.textContent).toContain("another member · 0b7e2c91");
     expect(within(entry).getByRole("link", { name: /Run 88/ }).getAttribute("href")).toBe("/app/cyl-pipeline-runs/88");
-    // Only after the view confirmed the run touches experiment 5.
-    expect(queriesFor("cyl_pipeline_run_experiments")[0].all("in")).toContainEqual(["experiment_id", [5]]);
+    // Membership comes from the view, for the enumerated scans' experiments, within 7 days.
+    const [view] = queriesFor("cyl_pipeline_run_experiments");
+    expect(view.all("in")).toEqual([["experiment_id", [5]]]);
+    expect(view.arg("gte")).toEqual(["created_at", "2026-09-22T12:00:00.000Z"]);
   });
 
   it("calls your own run yours", async () => {
@@ -242,8 +266,10 @@ describe("concurrent runs", () => {
 
   it("lists nothing for a run that doesn't touch the experiment", async () => {
     runs = [runRow(88, "2026-09-29T11:48:00+00:00")];
+    elsewhere = new Map([[88, [6]]]);
     mount();
     await settle();
+    expect(confirmButton()!.disabled).toBe(false);
     expect(screen.queryByTestId("concurrent-run-88")).toBeNull();
   });
 });
@@ -424,7 +450,7 @@ describe("submitting", () => {
     await settle();
     fireEvent.click(confirmButton()!);
     await settle();
-    expect(dialogText()).toContain("Too many requests — this limit is shared with video generation. Try again in about a minute.");
+    expect(dialogText()).toContain("Too many requests — this limit is shared with other workflow actions, such as video generation and Cell Ranger runs. Try again in about a minute.");
     expect(confirmButton()!.disabled).toBe(false);
     fireEvent.click(confirmButton()!);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -433,6 +459,8 @@ describe("submitting", () => {
   it.each([
     ["a 502", () => fetchSpy.mockResolvedValue(reply(502, { detail: "upstream text" }))],
     ["a 504", () => fetchSpy.mockResolvedValue(reply(504, { detail: "upstream text" }))],
+    ["a 500", () => fetchSpy.mockResolvedValue(reply(500, { detail: "upstream text" }))],
+    ["a 503", () => fetchSpy.mockResolvedValue(reply(503, { detail: "upstream text" }))],
     ["a network failure", () => fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"))],
     ["a malformed success", () => fetchSpy.mockResolvedValue(reply(200, { ok: true }))],
   ])("after %s, says the run may have started, links the runs list, and keeps confirm disabled", async (_what, arrange) => {
@@ -457,7 +485,7 @@ describe("submitting", () => {
     expect(dialogText()).toContain("session expired — sign in again");
   });
 
-  it.each([404, 422])("shows a %s's detail and allows another try", async (status) => {
+  it.each([403, 413, 415, 404, 422])("shows a %s's detail and allows another try", async (status) => {
     fetchSpy.mockResolvedValue(reply(status, { detail: "scan_ids not found: [3]" }));
     mount();
     await settle();
@@ -469,10 +497,11 @@ describe("submitting", () => {
 });
 
 describe("query failures", () => {
-  it.each(["cyl_scans_extended", "cyl_scan_latest_source", "cyl_pipeline_runs"])(
+  it.each(["cyl_scans_extended", "cyl_scan_latest_source", "cyl_pipeline_run_experiments", "cyl_pipeline_runs"])(
     "shows an error and keeps confirm disabled when %s fails",
     async (table) => {
       runs = [runRow(88, "2026-09-29T11:48:00+00:00")];
+      members = new Set([88]);
       failing[table] = { message: "statement timeout", code: "57014" };
       mount();
       await settle();
@@ -480,4 +509,179 @@ describe("query failures", () => {
       expect(confirmButton()!.disabled).toBe(true);
     },
   );
+});
+
+describe("concurrent runs, per spec", () => {
+  it("looks them up for the enumerated scans' experiments, not the target's id", async () => {
+    scans = [...someScans(3, 1, { wave_id: 11, experiment_id: 5 }), ...someScans(2, 4, { wave_id: 11, experiment_id: 6 })];
+    runs = [runRow(90, "2026-09-29T11:50:00+00:00", { status: "running" })];
+    elsewhere = new Map([[90, [6]]]);
+    mount({ target_level: "wave", target_id: 11 }, "wave 1");
+    await settle();
+    expect(screen.getByTestId("concurrent-run-90")).toBeTruthy();
+    expect(queriesFor("cyl_pipeline_run_experiments")[0].all("in")).toEqual([["experiment_id", [5, 6]]]);
+  });
+
+  it("isn't crowded out by unfinished runs elsewhere", async () => {
+    const others = Array.from({ length: 25 }, (_, i) => runRow(200 + i, `2026-09-29T11:${String(30 + i).padStart(2, "0")}:00+00:00`));
+    runs = [...others, runRow(88, "2026-09-29T11:00:00+00:00", { status: "running" })];
+    elsewhere = new Map(others.map((r) => [r.id, [6]]));
+    members = new Set([88]);
+    mount();
+    await settle();
+    expect(screen.getByTestId("concurrent-run-88")).toBeTruthy();
+    expect(screen.queryAllByTestId(/^concurrent-run-/)).toHaveLength(1);
+  });
+
+  it("says how many more there really are", async () => {
+    runs = Array.from({ length: 25 }, (_, i) => runRow(100 - i, `2026-09-29T11:${String(40 - i).padStart(2, "0")}:00+00:00`));
+    members = new Set(runs.map((r) => r.id));
+    mount();
+    await settle();
+    expect(screen.queryAllByTestId(/^concurrent-run-/)).toHaveLength(10);
+    expect(dialogText()).toContain("and 15 more");
+  });
+
+  it("leaves out runs that are complete, failed, or settled by their counts", async () => {
+    runs = [
+      runRow(88, "2026-09-29T11:48:00+00:00", { status: "complete", scan_count: 40, done_count: 30 }),
+      runRow(87, "2026-09-29T11:47:00+00:00", { status: "failed" }),
+      runRow(86, "2026-09-29T11:46:00+00:00", { status: "partial", scan_count: 2, done_count: 1, failed_count: 1 }),
+      runRow(85, "2026-09-29T11:45:00+00:00", { status: "queued" }),
+    ];
+    members = new Set([88, 87, 86, 85]);
+    mount();
+    await settle();
+    expect(screen.queryAllByTestId(/^concurrent-run-/).map((e) => e.dataset.testid)).toEqual(["concurrent-run-85"]);
+  });
+});
+
+describe("boundaries", () => {
+  it("asks for the acknowledgement at exactly 500 scans", async () => {
+    scans = someScans(500);
+    latest = [];
+    mount();
+    await settle();
+    expect(ack()).not.toBeNull();
+    expect(confirmButton()!.disabled).toBe(true);
+  });
+
+  it("allows exactly MAX_TRIGGER_SCAN_IDS selected scans", async () => {
+    scans = someScans(5000);
+    latest = [];
+    mount({ target_level: "scan_ids", scan_ids: scans.map((s) => s.scan_id) }, "5000 selected scans");
+    await settle();
+    expect(screen.queryByTestId("blockers")).toBeNull();
+    fireEvent.click(ack()!);
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("shows no pre-check and no params for an empty target", async () => {
+    scans = [];
+    latest = [];
+    mount({ target_level: "wave", target_id: 11 }, "wave 1");
+    await settle();
+    expect(dialogText()).toContain("No scans to run");
+    expect(dialogText()).not.toContain("already have pipeline results");
+    expect(screen.queryByTestId("params")).toBeNull();
+  });
+
+  it("lists at most 20 missing ids, then how many more", async () => {
+    scans = [];
+    mount({ target_level: "scan_ids", scan_ids: Array.from({ length: 25 }, (_, i) => 101 + i) }, "25 selected scans");
+    await settle();
+    const blocker = screen.getByTestId("blockers").textContent ?? "";
+    expect(blocker).toContain("120");
+    expect(blocker).not.toContain("121");
+    expect(blocker).toContain("and 5 more");
+  });
+
+  it("shows exactly 3 parameter sets without a disclosure", async () => {
+    scans = [...someScans(3, 1, { plant_age_days: 7 }), ...someScans(2, 4, { plant_age_days: 3 }), ...someScans(1, 6, { plant_age_days: 1 })];
+    mount();
+    await settle();
+    expect(screen.getByTestId("params").querySelector("details")).toBeNull();
+  });
+});
+
+describe("one submission per target, whatever happens to the dialog", () => {
+  const openButton = () => fireEvent.click(screen.getByRole("button", { name: "Run experiment" }));
+  const mountButton = () => render(<RunPipelineButton target={EXPERIMENT} label="Run experiment" title="experiment Exp five" />);
+
+  it("keeps a send going when the dialog is closed, and shows it again on reopening instead of a fresh confirm", async () => {
+    const pending = deferred<ReturnType<typeof reply>>();
+    fetchSpy.mockReturnValue(pending.promise);
+    mountButton();
+    openButton();
+    await settle();
+    fireEvent.click(confirmButton()!);
+    expect(dialogText()).toContain("You can close this");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await settle();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    openButton();
+    await settle();
+    expect(confirmButton()?.disabled ?? true).toBe(true);
+    expect(dialogText()).toContain("Starting the run");
+    fireEvent.click(screen.getByRole("button", { name: "Starting…" }));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => pending.resolve(reply(200, { pipeline_run_id: 91, scan_count: 40, reused_count: 0 })));
+    await settle();
+    expect(dialogText()).toContain("Run 91 started with 40 scans");
+  });
+
+  it("still shows the may-have-started warning after a 504, closing and reopening", async () => {
+    fetchSpy.mockResolvedValue(reply(504, { detail: "timeout" }));
+    mountButton();
+    openButton();
+    await settle();
+    fireEvent.click(confirmButton()!);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await settle();
+    openButton();
+    await settle();
+    expect(dialogText()).toContain("The run may have started");
+    expect(confirmButton()?.disabled ?? true).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows another try after a refusal, on reopening", async () => {
+    fetchSpy.mockResolvedValue(reply(429, { detail: "slow down" }));
+    mountButton();
+    openButton();
+    await settle();
+    fireEvent.click(confirmButton()!);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await settle();
+    openButton();
+    await settle();
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("sends the target it checked, even if its caller's target changes while it is open", async () => {
+    scans = [scanMeta(1, { experiment_id: 5 }), scanMeta(2, { experiment_id: 5 }), scanMeta(3, { experiment_id: 5 })];
+    fetchSpy.mockResolvedValue(reply(200, { pipeline_run_id: 91, scan_count: 3, reused_count: 0 }));
+    const view = render(<RunPipelineDialog target={{ target_level: "scan_ids", scan_ids: [1, 2, 3] }} title="3 scans" onClose={onClose} />);
+    await settle();
+    const reads = queriesFor("cyl_scans_extended").length;
+    view.rerender(<RunPipelineDialog target={{ target_level: "scan_ids", scan_ids: [1, 2] }} title="2 scans" onClose={onClose} />);
+    await settle();
+    expect(queriesFor("cyl_scans_extended")).toHaveLength(reads);
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("3 scans");
+    fireEvent.click(confirmButton()!);
+    await settle();
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ target_level: "scan_ids", scan_ids: [1, 2, 3] });
+  });
+
+  it("takes focus when it opens, and closes on Escape", async () => {
+    mount();
+    await settle();
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
 });

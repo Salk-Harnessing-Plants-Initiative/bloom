@@ -13,6 +13,7 @@ import { scanMeta } from "@/lib/cyl-pipeline/__fixtures__/rows";
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 
 import { ScanCheckbox, ScanSelectionProvider, SelectAllShown, SelectionBar } from "./ScanSelection";
+import { resetSubmissions } from "./submissions";
 
 const fetchSpy = vi.fn();
 
@@ -51,6 +52,7 @@ const bar = () => screen.queryByTestId("selection-bar");
 beforeEach(() => {
   vi.useFakeTimers();
   resetSupabaseMock(respond);
+  resetSubmissions();
   fetchSpy.mockReset();
   vi.stubGlobal("fetch", fetchSpy);
 });

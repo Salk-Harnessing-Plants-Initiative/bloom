@@ -38,8 +38,9 @@ export default async function Accession({
   const speciesName = species?.common_name ?? "";
 
   const plants : any = await getPlants(Number(accessionId), Number(waveId));
-  // Before the in-place sort below: every scan of every plant, including the
-  // ones the grid doesn't render (a second scan on one day, no frame-1 image).
+  // Every scan of every plant, including the ones the grid doesn't render (a
+  // later scan on the same day, or one without a frame-1 image). Read before
+  // the in-place sort below, so the ids keep the plants' own order.
   const allScanIds = accessionScanIds(plants);
   const accessionName = plants?.[0]?.accessions?.name ?? "";
   const wave = plants?.[0]?.cyl_waves;

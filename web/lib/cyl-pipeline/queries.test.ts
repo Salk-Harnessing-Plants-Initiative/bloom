@@ -217,7 +217,7 @@ describe("errors", () => {
     ["fetchExperimentRunIds", () => fetchExperimentRunIds(client, 1), "cyl_pipeline_run_experiments"],
     ["fetchExperimentMembers", () => fetchExperimentMembers(client, 1, [1]), "cyl_pipeline_run_experiments"],
     ["fetchTargetScans", () => fetchTargetScans(client, { target_level: "wave", target_id: 1 }), "cyl_scans_extended"],
-    ["fetchConcurrentRuns", () => fetchConcurrentRuns(client, [1]), "cyl_pipeline_runs"],
+    ["fetchConcurrentRuns", () => fetchConcurrentRuns(client, [1]), "cyl_pipeline_run_experiments"],
   ] as const;
 
   it.each(failing)("%s surfaces a typed error naming its relation", async (_name, call, relation) => {
@@ -309,66 +309,76 @@ describe("fetchTargetScans", () => {
 describe("fetchConcurrentRuns", () => {
   const NOW = Date.parse("2026-09-29T12:00:00Z");
 
-  it("reads recent runs that are not complete or failed: created within 7 days, newest first, limit 20", async () => {
-    supabaseMock.respond = () => ({ data: [], error: null });
-    await fetchConcurrentRuns(client, [5], NOW);
+  /** The view answers `touching` for the asked experiments; runs answer `runs`, honouring in, not and limit. */
+  function serve(touching: { run_id: number; experiment_id: number }[], runs: ReturnType<typeof runRow>[]) {
+    supabaseMock.respond = (q) => {
+      if (q.table === "cyl_pipeline_run_experiments") {
+        const exps = q.all("in").find(([c]) => c === "experiment_id")![1] as number[];
+        return { data: touching.filter((t) => exps.includes(t.experiment_id)), error: null };
+      }
+      const ids = q.all("in").find(([c]) => c === "id")![1] as number[];
+      const rows = runs.filter((r) => ids.includes(r.id) && !(q.arg("not") && ["complete", "failed"].includes(r.status)));
+      return { data: rows, error: null };
+    };
+  }
+
+  it("asks the view which runs touched the experiments within 7 days, then reads those that are not complete or failed", async () => {
+    serve([{ run_id: 88, experiment_id: 5 }], [runRow(88, "2026-09-29T11:48:00+00:00", { status: "running" })]);
+    await fetchConcurrentRuns(client, [5, 6], NOW);
+    const [view] = queriesFor("cyl_pipeline_run_experiments");
+    expect(view.all("in")).toEqual([["experiment_id", [5, 6]]]);
+    expect(view.arg("gte")).toEqual(["created_at", "2026-09-22T12:00:00.000Z"]);
     const [q] = queriesFor("cyl_pipeline_runs");
+    expect(q.arg("in")).toEqual(["id", [88]]);
     expect(q.arg("not")).toEqual(["status", "in", "(complete,failed)"]);
-    expect(q.arg("gte")).toEqual(["created_at", "2026-09-22T12:00:00.000Z"]);
-    expect(q.all("order")).toEqual([
-      ["created_at", { ascending: false }],
-      ["id", { ascending: false }],
-    ]);
-    expect(q.arg("limit")).toEqual([20]);
+    expect(q.arg("limit")).toBeUndefined();
     expect(String(q.arg("select")![0])).not.toMatch(/reused_count/);
   });
 
-  it("keeps runs whose counts are incomplete, then checks their membership in the view", async () => {
+  it("keeps runs whose counts are incomplete, newest first, de-duplicated across experiments", async () => {
     const runs = [
+      runRow(85, "2026-09-29T11:20:00+00:00", { status: "submitted", scan_count: 3 }),
       runRow(88, "2026-09-29T11:48:00+00:00", { status: "running", scan_count: 40, done_count: 10 }),
       // Counts settled: finished whatever its status says, so not concurrent.
       runRow(87, "2026-09-29T11:40:00+00:00", { status: "partial", scan_count: 50, done_count: 25, failed_count: 25 }),
-      runRow(86, "2026-09-29T11:30:00+00:00", { status: "queued", scan_count: 12 }),
-      runRow(85, "2026-09-29T11:20:00+00:00", { status: "submitted", scan_count: 3 }),
+      runRow(86, "2026-09-29T11:30:00+00:00", { status: "complete", scan_count: 12 }),
     ];
-    supabaseMock.respond = (q) =>
-      q.table === "cyl_pipeline_runs" ? { data: runs, error: null } : { data: [{ run_id: 88 }, { run_id: 85 }], error: null };
+    serve(
+      [
+        { run_id: 88, experiment_id: 5 },
+        { run_id: 88, experiment_id: 6 },
+        { run_id: 87, experiment_id: 5 },
+        { run_id: 86, experiment_id: 5 },
+        { run_id: 85, experiment_id: 6 },
+      ],
+      runs,
+    );
     const result = await fetchConcurrentRuns(client, [5, 6], NOW);
-    expect(result.runs.map((r) => r.id)).toEqual([88, 85]);
-    expect(result.more).toBe(0);
-    const [view] = queriesFor("cyl_pipeline_run_experiments");
-    expect(view.all("in")).toEqual([
-      ["run_id", [88, 86, 85]],
-      ["experiment_id", [5, 6]],
-    ]);
+    expect(result).toEqual({ runs: [runs[1], runs[0]], more: 0 });
+    expect(queriesFor("cyl_pipeline_runs")[0].arg("in")![1]).toEqual([88, 87, 86, 85]);
   });
 
-  it("returns at most 10, plus a count of the rest", async () => {
-    const runs = range(14).map((i) =>
-      runRow(100 - i, `2026-09-29T11:${String(40 - i).padStart(2, "0")}:00+00:00`, { status: "running" }),
+  it("returns at most 10, and the true count of the rest", async () => {
+    const runs = range(25).map((i) => runRow(100 - i, `2026-09-29T11:${String(40 - i).padStart(2, "0")}:00+00:00`, { status: "running" }));
+    serve(
+      runs.map((r) => ({ run_id: r.id, experiment_id: 5 })),
+      runs,
     );
-    supabaseMock.respond = (q) =>
-      q.table === "cyl_pipeline_runs" ? { data: runs, error: null } : { data: runs.map((r) => ({ run_id: r.id })), error: null };
     const result = await fetchConcurrentRuns(client, [5], NOW);
     expect(result.runs.map((r) => r.id)).toEqual(range(10).map((i) => 100 - i));
-    expect(result.more).toBe(4);
+    expect(result.more).toBe(15);
   });
 
-  it("asks the view nothing when no candidate run is left, or no experiment is given", async () => {
-    supabaseMock.respond = () => ({
-      data: [runRow(87, "2026-09-29T11:40:00+00:00", { status: "partial", scan_count: 2, done_count: 2 })],
-      error: null,
-    });
+  it("reads no runs when the view names none, and asks nothing for no experiments", async () => {
+    serve([], []);
     expect(await fetchConcurrentRuns(client, [5], NOW)).toEqual({ runs: [], more: 0 });
+    expect(queriesFor("cyl_pipeline_runs")).toHaveLength(0);
     expect(await fetchConcurrentRuns(client, [], NOW)).toEqual({ runs: [], more: 0 });
-    expect(queriesFor("cyl_pipeline_run_experiments")).toHaveLength(0);
+    expect(queriesFor("cyl_pipeline_run_experiments")).toHaveLength(1);
   });
 
   it("surfaces a view failure as a typed error", async () => {
-    supabaseMock.respond = (q) =>
-      q.table === "cyl_pipeline_runs"
-        ? { data: [runRow(88, "2026-09-29T11:48:00+00:00", { status: "running" })], error: null }
-        : { data: null, error: { message: "boom", code: "XX000" } };
+    supabaseMock.respond = () => ({ data: null, error: { message: "boom", code: "XX000" } });
     await expect(fetchConcurrentRuns(client, [5], NOW)).rejects.toMatchObject({ relation: "cyl_pipeline_run_experiments" });
   });
 });

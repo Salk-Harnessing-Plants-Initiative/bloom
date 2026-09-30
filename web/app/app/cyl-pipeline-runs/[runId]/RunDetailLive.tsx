@@ -301,26 +301,23 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
           {now !== null && lastUpdate && <span> · Last scan update {formatElapsed(lastUpdate, now)} ago</span>}
         </div>
         <div className="text-stone-600">{paramsText(detail.run.params)}</div>
-        {(offerFailed || offerUnresulted) && (
-          <div data-testid="rerun-actions" className="flex flex-wrap gap-4">
-            {offerFailed && (
-              <RunPipelineButton
-                target={{ target_level: "scan_ids", scan_ids: failedIds }}
-                label={`Re-run failed scans (${failedIds.length})`}
-                title={`the failed scans of run ${runId}`}
-                note={noOpAmongFailed ? NO_OP_RERUN_WARNING : undefined}
-              />
-            )}
-            {offerUnresulted && (
-              <RunPipelineButton
-                target={{ target_level: "scan_ids", scan_ids: unresultedIds }}
-                label={`Re-run scans without a result (${unresultedIds.length})`}
-                title={`the scans of run ${runId} without a result`}
-                note={DOUBLE_PROCESSING_WARNING}
-              />
-            )}
-          </div>
-        )}
+        {/* Always rendered, hidden when not offered: a live event that withdraws an action keeps its open dialog. */}
+        <div data-testid={offerFailed || offerUnresulted ? "rerun-actions" : undefined} className="flex flex-wrap gap-4">
+          <RunPipelineButton
+            target={{ target_level: "scan_ids", scan_ids: failedIds }}
+            label={`Re-run failed scans (${failedIds.length})`}
+            title={`the failed scans of run ${runId}`}
+            note={noOpAmongFailed ? NO_OP_RERUN_WARNING : undefined}
+            hidden={!offerFailed}
+          />
+          <RunPipelineButton
+            target={{ target_level: "scan_ids", scan_ids: unresultedIds }}
+            label={`Re-run scans without a result (${unresultedIds.length})`}
+            title={`the scans of run ${runId} without a result`}
+            note={DOUBLE_PROCESSING_WARNING}
+            hidden={!offerUnresulted}
+          />
+        </div>
         {experiments && experiments.length > 0 && (
           <div className="flex flex-wrap gap-x-3">
             <span className="text-stone-500">Experiments:</span>

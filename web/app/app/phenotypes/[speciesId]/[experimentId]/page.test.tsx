@@ -41,6 +41,9 @@ vi.mock("@/components/cyl-pipeline/ExperimentRunsPanel", () => ({
     return <div data-testid="runs-panel" />;
   },
 }));
+vi.mock("@/components/cyl-pipeline/started-runs", () => ({
+  StartedRunsProvider: ({ children }: { children: React.ReactNode }) => <div data-testid="started-runs">{children}</div>,
+}));
 vi.mock("@/components/cyl-pipeline/RunPipelineButton", () => ({
   RunPipelineButton: (props: { label: string; target: unknown }) => {
     buttons.props.push(props);
@@ -103,5 +106,15 @@ describe("the experiment page", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     render(await page("abc"));
     expect(screen.queryByRole("button", { name: /^Run / })).toBeNull();
+  });
+
+  it("puts the run actions and the runs panel under one started-runs provider", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    db.waves = [wave(12, 2), wave(11, 1)];
+    render(await page("5"));
+    const provider = screen.getByTestId("started-runs");
+    expect(provider.contains(screen.getByTestId("runs-panel"))).toBe(true);
+    expect(provider.contains(screen.getByRole("button", { name: "Run experiment" }))).toBe(true);
+    for (const b of screen.getAllByRole("button", { name: "Run wave" })) expect(provider.contains(b)).toBe(true);
   });
 });
