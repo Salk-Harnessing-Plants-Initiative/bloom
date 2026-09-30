@@ -145,7 +145,7 @@ A `scan_ids` action whose id count exceeds `MAX_TRIGGER_SCAN_IDS` SHALL be disab
 - **THEN** it is disabled and explains the limit
 
 ### Requirement: Confirm dialog shows read-only resolved params and a pre-check, without predicting skips
-The dialog SHALL enumerate the target's scans from `cyl_scans_extended` using the trigger's filters: `scan_id`, `wave_id`, `experiment_id`, or `scan_id IN (...)`. It SHALL read in pages of 1000 ordered by `scan_id` until a page is empty, and send `scan_ids` filters in chunks of at most 200. It SHALL read K and L with one `cyl_scan_latest_source` query per chunk of at most 200 scan ids.
+The dialog SHALL enumerate the target's scans from `cyl_scans_extended` using the trigger's filters: `scan_id`, `wave_id`, `experiment_id`, or `scan_id IN (...)`. It SHALL read in pages of 1000 ordered by `scan_id` until a page is empty, and send `scan_ids` filters in chunks of at most 200. It SHALL read K and L with one `cyl_scan_latest_source` query per chunk of at most 200 scan ids, and which scans have at least one image with one `cyl_scans` query per chunk of at most 200 ids, embedding at most one `cyl_images` row per scan.
 
 The dialog SHALL keep confirm disabled until enumeration, the pre-check and the concurrent-run query have all settled.
 
@@ -155,7 +155,7 @@ It SHALL display, in this order:
    - N = 0: "No scans to run".
    - A `scan_ids` selection enumerates fewer scans than selected: list the missing ids.
    - N > `MAX_TRIGGER_SCAN_IDS` for a `scan_ids` target.
-3. **Stage-in warning:** a count of scans whose species is blank, or whose age is null or not a whole number: "*will fail at stage-in — ask a Bloom admin to fix the plant metadata*". These scans are not included in the params groups.
+3. **Stage-in warning:** a count of scans whose species is blank, or whose age is null or not a whole number: "*will fail at stage-in — ask a Bloom admin to fix the plant metadata*". These scans are not included in the params groups. Separately, a count of scans with no images: "*have no images and will fail at stage-in*" (bloomctl's stage-in fails a scan with no frames).
 4. **Concurrent runs.** Runs that meet all of the following, up to 10, then "and M more":
    - created within the last 7 days;
    - `status` not `complete` or `failed`;
@@ -189,6 +189,10 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 - **WHEN** 30 scans have species `" Pennycress "` and age 14, 8 have `"Pennycress"` and age 21, and 2 have a null age
 - **THEN** the dialog shows `pennycress · cylinder · 14 — 30` and `pennycress · cylinder · 21 — 8`
 - **AND** it warns that 2 scans will fail at stage-in
+
+#### Scenario: Scans without images are flagged
+- **WHEN** 40 scans are enumerated and 2 of them have no `cyl_images` rows
+- **THEN** the dialog says "2 scans have no images and will fail at stage-in"
 
 #### Scenario: Totals span multiple pages
 - **WHEN** an experiment has 2,500 scans

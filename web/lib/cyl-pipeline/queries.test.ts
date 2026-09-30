@@ -14,6 +14,7 @@ import {
   fetchRunsByIds,
   fetchRunScans,
   fetchScanMeta,
+  fetchScansWithImages,
   fetchTargetScans,
   isRunInExperiment,
   QueryError,
@@ -218,6 +219,7 @@ describe("errors", () => {
     ["fetchExperimentMembers", () => fetchExperimentMembers(client, 1, [1]), "cyl_pipeline_run_experiments"],
     ["fetchTargetScans", () => fetchTargetScans(client, { target_level: "wave", target_id: 1 }), "cyl_scans_extended"],
     ["fetchConcurrentRuns", () => fetchConcurrentRuns(client, [1]), "cyl_pipeline_run_experiments"],
+    ["fetchScansWithImages", () => fetchScansWithImages(client, [1]), "cyl_scans"],
   ] as const;
 
   it.each(failing)("%s surfaces a typed error naming its relation", async (_name, call, relation) => {
@@ -380,5 +382,30 @@ describe("fetchConcurrentRuns", () => {
   it("surfaces a view failure as a typed error", async () => {
     supabaseMock.respond = () => ({ data: null, error: { message: "boom", code: "XX000" } });
     await expect(fetchConcurrentRuns(client, [5], NOW)).rejects.toMatchObject({ relation: "cyl_pipeline_run_experiments" });
+  });
+});
+
+describe("fetchScansWithImages", () => {
+  it("asks for at most one image per scan, in chunks of at most 200, and answers the scans that have one", async () => {
+    supabaseMock.respond = (q) => ({
+      data: (q.arg("in")![1] as number[]).map((id) => ({ id, cyl_images: id % 2 ? [{ id: id * 10 }] : [] })),
+      error: null,
+    });
+    const withImages = await fetchScansWithImages(client, range(450));
+    expect(withImages.size).toBe(225);
+    expect(withImages.has(1)).toBe(true);
+    expect(withImages.has(2)).toBe(false);
+    const qs = queriesFor("cyl_scans");
+    expect(qs.map((q) => (q.arg("in")![1] as number[]).length)).toEqual([200, 200, 50]);
+    for (const q of qs) {
+      expect(q.arg("select")).toEqual(["id, cyl_images(id)"]);
+      expect(q.arg("in")![0]).toBe("id");
+      expect(q.arg("limit")).toEqual([1, { referencedTable: "cyl_images" }]);
+    }
+  });
+
+  it("makes no request for no ids", async () => {
+    expect((await fetchScansWithImages(client, [])).size).toBe(0);
+    expect(supabaseMock.queries).toHaveLength(0);
   });
 });

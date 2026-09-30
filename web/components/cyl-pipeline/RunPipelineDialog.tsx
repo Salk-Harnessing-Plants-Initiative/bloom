@@ -10,8 +10,9 @@
  *   sends, even if the caller's target changes meanwhile (a drill-down's
  *   failed rows change live).
  * - It enumerates that target with the trigger's own filters, so N is the
- *   trigger's count, then reads the pre-check (K, L) and the concurrent runs.
- *   Confirm stays disabled until all of them have settled.
+ *   trigger's count, then reads the pre-check (K, L, and which scans have
+ *   images) and the concurrent runs. Confirm stays disabled until all of them
+ *   have settled.
  * - It predicts no skips: the trigger enqueues every scan, and skipping is
  *   decided per stage on the cluster; a server-side preview is #898. The
  *   resolved params are display only, and no parameter hash is computed.
@@ -28,7 +29,13 @@ import Link from "next/link";
 import { useEffect, useId, useState } from "react";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
 import { paramsSummary } from "@/lib/cyl-pipeline/params-summary";
-import { fetchConcurrentRuns, fetchLatestSources, fetchTargetScans, type ConcurrentRuns } from "@/lib/cyl-pipeline/queries";
+import {
+  fetchConcurrentRuns,
+  fetchLatestSources,
+  fetchScansWithImages,
+  fetchTargetScans,
+  type ConcurrentRuns,
+} from "@/lib/cyl-pipeline/queries";
 import { runDisplay } from "@/lib/cyl-pipeline/run-display";
 import { requesterText } from "@/lib/cyl-pipeline/run-text";
 import type { ScanMeta } from "@/lib/cyl-pipeline/scan-meta";
@@ -64,6 +71,8 @@ export interface RunPipelineDialogProps {
 interface Checked {
   scans: ScanMeta[];
   latest: Map<number, number | null>;
+  /** Scans with at least one image; stage-in fails the rest. */
+  withImages: Set<number>;
   concurrent: ConcurrentRuns;
   userId: string | null;
 }
@@ -118,12 +127,13 @@ interface Content {
   N: number;
   blockers: string[];
   stageInCount: number;
+  noImagesCount: number;
   K: number;
   L: number;
   groups: ReturnType<typeof paramsSummary>["groups"];
 }
 
-function content(target: TriggerTarget, { scans, latest }: Checked): Content {
+function content(target: TriggerTarget, { scans, latest, withImages }: Checked): Content {
   const N = scans.length;
   const blockers: string[] = [];
   if (N === 0) blockers.push("No scans to run");
@@ -147,7 +157,8 @@ function content(target: TriggerTarget, { scans, latest }: Checked): Content {
     else L += 1;
   }
   const { groups, stageInCount } = paramsSummary(scans);
-  return { N, blockers, stageInCount, K, L, groups };
+  const noImagesCount = scans.filter((s) => !withImages.has(s.scan_id)).length;
+  return { N, blockers, stageInCount, noImagesCount, K, L, groups };
 }
 
 export function RunPipelineDialog({ target: requested, title, onClose, onStarted }: RunPipelineDialogProps) {
@@ -167,15 +178,17 @@ export function RunPipelineDialog({ target: requested, title, onClose, onStarted
     (async () => {
       const scans = await fetchTargetScans(client, target);
       const experimentIds = [...new Set(scans.flatMap((s) => (s.experiment_id == null ? [] : [s.experiment_id])))];
-      const [latest, concurrent, userId] = await Promise.all([
-        fetchLatestSources(client, scans.map((s) => s.scan_id)),
+      const ids = scans.map((s) => s.scan_id);
+      const [latest, withImages, concurrent, userId] = await Promise.all([
+        fetchLatestSources(client, ids),
+        fetchScansWithImages(client, ids),
         fetchConcurrentRuns(client, experimentIds),
         client.auth
           .getSession()
           .then(({ data }) => data.session?.user?.id ?? null)
           .catch(() => null),
       ]);
-      if (active) setLoad({ state: "ready", scans, latest, concurrent, userId });
+      if (active) setLoad({ state: "ready", scans, latest, withImages, concurrent, userId });
     })().catch((e: unknown) => {
       if (active) setLoad({ state: "failed", message: message(e) });
     });
@@ -243,6 +256,11 @@ export function RunPipelineDialog({ target: requested, title, onClose, onStarted
             {c.stageInCount > 0 && (
               <p className="text-amber-800">
                 {plural(c.stageInCount, "scan")} will fail at stage-in — ask a Bloom admin to fix the plant metadata
+              </p>
+            )}
+            {c.noImagesCount > 0 && (
+              <p className="text-amber-800">
+                {c.noImagesCount === 1 ? "1 scan has" : `${c.noImagesCount} scans have`} no images and will fail at stage-in
               </p>
             )}
 

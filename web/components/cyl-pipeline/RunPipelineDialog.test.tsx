@@ -35,6 +35,8 @@ let runs: RunRow[];
 let members: Set<number>;
 /** Runs touching other experiments, by run id. */
 let elsewhere: Map<number, number[]>;
+/** Scans with no images at all; every other scan has one. */
+let noImages: Set<number>;
 let failing: Record<string, Answer["error"]>;
 let held: Record<string, Deferred<void>>;
 const fetchSpy = vi.fn();
@@ -54,6 +56,10 @@ function answer(q: RecordedQuery): Answer {
     case "cyl_scan_latest_source": {
       const ids = inArgs[0][1] as number[];
       return { data: latest.filter((l) => ids.includes(l.scan_id)), error: null };
+    }
+    case "cyl_scans": {
+      const ids = inArgs[0][1] as number[];
+      return { data: ids.map((id) => ({ id, cyl_images: noImages.has(id) ? [] : [{ id: id * 100 }] })), error: null };
     }
     case "cyl_pipeline_runs": {
       const ids = inArgs.find(([c]) => c === "id")?.[1] as number[] | undefined;
@@ -122,6 +128,7 @@ beforeEach(() => {
   runs = [];
   members = new Set();
   elsewhere = new Map();
+  noImages = new Set();
   failing = {};
   held = {};
   resetSupabaseMock(respond);
@@ -222,11 +229,21 @@ describe("the stage-in warning", () => {
     expect(dialogText()).toContain("2 scans will fail at stage-in — ask a Bloom admin to fix the plant metadata");
   });
 
-  it("is absent when every scan has its metadata", async () => {
+  it("counts scans with no images apart, since stage-in fails them too", async () => {
+    noImages = new Set([3, 7]);
+    mount();
+    await settle();
+    expect(dialogText()).toContain("2 scans have no images and will fail at stage-in");
+    expect(dialogText()).not.toContain("fix the plant metadata");
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("is absent when every scan has its metadata and images", async () => {
     mount();
     await settle();
     expect(confirmButton()!.disabled).toBe(false);
     expect(dialogText()).not.toContain("will fail at stage-in");
+    expect(queriesFor("cyl_scans")).toHaveLength(1);
   });
 });
 
@@ -497,7 +514,7 @@ describe("submitting", () => {
 });
 
 describe("query failures", () => {
-  it.each(["cyl_scans_extended", "cyl_scan_latest_source", "cyl_pipeline_run_experiments", "cyl_pipeline_runs"])(
+  it.each(["cyl_scans_extended", "cyl_scan_latest_source", "cyl_scans", "cyl_pipeline_run_experiments", "cyl_pipeline_runs"])(
     "shows an error and keeps confirm disabled when %s fails",
     async (table) => {
       runs = [runRow(88, "2026-09-29T11:48:00+00:00")];

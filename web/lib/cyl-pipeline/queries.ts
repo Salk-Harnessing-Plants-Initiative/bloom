@@ -288,3 +288,20 @@ export async function fetchConcurrentRuns(client: ReadClient, experimentIds: num
   const incomplete = unfinished.filter((r) => runDisplay(r).counts.U > 0).sort(compareRunsDesc);
   return { runs: incomplete.slice(0, CONCURRENT_RUNS_SHOWN), more: Math.max(0, incomplete.length - CONCURRENT_RUNS_SHOWN) };
 }
+
+/**
+ * Which of `ids` have at least one image. Stage-in fails a scan with none
+ * ("No frames found" in bloomctl's download_for_predict), and "Run this
+ * accession" sends scans the grid doesn't show. Each scan embeds at most one
+ * image id, so a chunk of 200 reads at most 200 image rows, not a rotation's
+ * ~72 frames per scan.
+ */
+export async function fetchScansWithImages(client: ReadClient, ids: number[]): Promise<Set<number>> {
+  const rows = await readChunked(ids, async (chunk) =>
+    (await read<{ id: number; cyl_images: { id: number }[] | null }[]>(
+      "cyl_scans",
+      client.from("cyl_scans").select("id, cyl_images(id)").in("id", chunk).limit(1, { referencedTable: "cyl_images" }),
+    )) ?? [],
+  );
+  return new Set(rows.filter((r) => (r.cyl_images?.length ?? 0) > 0).map((r) => r.id));
+}
