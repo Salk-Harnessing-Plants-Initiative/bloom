@@ -104,3 +104,104 @@ def test_r1_guard_runs_before_any_drop():
     guard = re.search(r"RAISE\s+EXCEPTION", code, re.I)
     first_drop = re.search(r"\b(DROP|ALTER\s+TABLE)\b", code, re.I)
     assert guard and first_drop and guard.start() < first_drop.start()
+
+
+# --------------------------------------------------------------------------- #
+# Migration 2: write-back stamping
+# --------------------------------------------------------------------------- #
+
+M2 = "*_stamp_cyl_trait_source_recipe_and_run.sql"
+R2 = "*_stamp_cyl_trait_source_recipe_and_run_rollback.sql"
+A9 = MIGRATIONS / "20260928130000_cyl_writeback_contract_a9.sql"
+RPC_REGION_START = "CREATE OR REPLACE FUNCTION public.insert_cyl_result_envelope("
+RPC_REGION_END = "    TO bloom_writer, service_role, bloom_admin, bloom_workflows;"
+
+
+def _rpc_region(path: Path) -> list[str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(RPC_REGION_START)]
+    ends = [i for i, line in enumerate(lines) if line == RPC_REGION_END]
+    assert len(starts) == 1 and len(ends) == 1, (path.name, starts, ends)
+    return lines[starts[0] : ends[0] + 1]
+
+
+def _normalized(lines: list[str]) -> list[str]:
+    """Comments stripped, whitespace collapsed, blank lines dropped."""
+    out = []
+    for line in lines:
+        code = " ".join(line.split("--", 1)[0].split())
+        if code:
+            out.append(code)
+    return out
+
+
+# The only lines migration 2 may remove from, or add to, the a9 function region.
+M2_REMOVED = [
+    "INSERT INTO public.cyl_trait_sources (name, metadata, idempotency_key)",
+    "VALUES (v_name, prov, v_idem)",
+    "REVOKE EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text) FROM PUBLIC;",
+]
+M2_ADDED = [
+    "v_run_id bigint;",
+    "IF p_argo_workflow_name IS NOT NULL THEN",
+    "SELECT CASE WHEN count(DISTINCT rs.run_id) = 1 THEN min(rs.run_id) END",
+    "INTO v_run_id",
+    "FROM public.cyl_pipeline_run_scans rs",
+    "WHERE rs.argo_workflow_name = p_argo_workflow_name;",
+    "END IF;",
+    "INSERT INTO public.cyl_trait_sources",
+    "(name, metadata, idempotency_key, recipe_key, recipe_key_version,",
+    "argo_workflow_name, cyl_pipeline_run_id)",
+    "VALUES (v_name, prov, v_idem, public.cyl_trait_recipe_key_v1(prov), 1,",
+    "p_argo_workflow_name, v_run_id)",
+    "UPDATE public.cyl_trait_sources SET scan_id = v_scan_id WHERE id = v_source_id;",
+    "REVOKE EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text)",
+    "FROM PUBLIC, anon, authenticated;",
+]
+
+
+def test_m2_differs_from_a9_only_in_stamping():
+    import difflib
+
+    a9 = _normalized(_rpc_region(A9))
+    m2 = _normalized(_rpc_region(_one(MIGRATIONS, M2)))
+    diff = list(difflib.ndiff(a9, m2))
+    removed = [line[2:] for line in diff if line.startswith("- ")]
+    added = [line[2:] for line in diff if line.startswith("+ ")]
+    assert removed == M2_REMOVED
+    assert added == M2_ADDED
+
+
+def test_a9_is_the_newest_definition_before_m2():
+    m2 = _one(MIGRATIONS, M2)
+    definers = sorted(
+        p.name
+        for p in MIGRATIONS.glob("*.sql")
+        if RPC_REGION_START in p.read_text(encoding="utf-8")
+    )
+    assert definers[definers.index(m2.name) - 1] == A9.name, definers
+
+
+def test_m2_calls_the_backfill_and_sets_owner():
+    code = _code(_one(MIGRATIONS, M2))
+    assert re.search(
+        r"ALTER\s+FUNCTION\s+public\.insert_cyl_result_envelope\(jsonb,\s*text\)\s+OWNER\s+TO\s+postgres",
+        code,
+        re.I,
+    )
+    assert re.search(
+        r"SELECT\s+public\.cyl_backfill_trait_source_recipe_identity\(\)", code, re.I
+    )
+    assert not re.search(r"DROP\s+FUNCTION", code, re.I)
+
+
+def test_r2_restores_a9_region_verbatim():
+    assert _rpc_region(_one(ROLLBACKS, R2)) == _rpc_region(A9)
+    code = _code(_one(ROLLBACKS, R2))
+    # 20260928130100's ACL, re-asserted outside the copied region.
+    assert re.search(
+        r"REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+public\.insert_cyl_result_envelope\(jsonb,\s*text\)"
+        r"\s+FROM\s+PUBLIC,\s*anon,\s*authenticated",
+        code,
+        re.I,
+    )

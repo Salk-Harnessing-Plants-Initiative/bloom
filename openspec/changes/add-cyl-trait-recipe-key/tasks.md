@@ -216,8 +216,8 @@ invisible to PostgREST.
 
 ### Tests first (red)
 
-- [ ] 3.1 **Unit tests,** in the §2 unit file, written before 3.5.
-  - [ ] 3.1.1 `test_m2_differs_from_a9_only_in_stamping`.
+- [x] 3.1 **Unit tests,** in the §2 unit file, written before 3.5.
+  - [x] 3.1.1 `test_m2_differs_from_a9_only_in_stamping`.
     - The region is defined as in `test_cyl_writeback_a9_migration_files.py:30-31`: from
       `CREATE OR REPLACE FUNCTION public.insert_cyl_result_envelope(` through the
       `bloom_workflows;` GRANT line.
@@ -225,64 +225,74 @@ invisible to PostgREST.
     - The removed lines and the added lines each equal an exact literal list: the INSERT columns
       and VALUES, the declared variables, the run lookup, the `UPDATE … SET scan_id`, and the
       REVOKE line.
-  - [ ] 3.1.2 `test_a9_is_the_newest_definition_before_m2`, following
+  - [x] 3.1.2 `test_a9_is_the_newest_definition_before_m2`, following
     `test_cyl_writeback_a9_migration_files.py:100`.
-  - [ ] 3.1.3 `test_m2_calls_the_backfill_and_sets_owner`, and
+  - [x] 3.1.3 `test_m2_calls_the_backfill_and_sets_owner`, and
     `test_r2_restores_a9_region_verbatim`. The ACL is checked in 3.3.2.
-- [ ] 3.2 **Integration tests,** in `tests/integration/test_cyl_writeback_rpc.py`.
+- [x] 3.2 **Integration tests,** in `tests/integration/test_cyl_writeback_rpc.py`.
   - Extend `_envelope` with a `provenance_extra=` keyword for realistic `predict_models`. One test
     sends none.
-  - [ ] 3.2.1 `test_fresh_delivery_stamps_recipe_key_and_scan_id`.
-  - [ ] 3.2.2 `test_dispatched_delivery_stamps_workflow_and_run`.
-  - [ ] 3.2.3 `test_unrequested_scan_still_stamps_run`. The run-scan row count is unchanged, and
+  - [x] 3.2.1 `test_fresh_delivery_stamps_recipe_key_and_scan_id`.
+  - [x] 3.2.2 `test_dispatched_delivery_stamps_workflow_and_run`.
+  - [x] 3.2.3 `test_unrequested_scan_still_stamps_run`. The run-scan row count is unchanged, and
     `status_update_matched is False`.
-  - [ ] 3.2.4 `test_hand_submitted_delivery_stamps_workflow_only`.
-  - [ ] 3.2.5 `test_ambiguous_workflow_name_stamps_no_run`: `cyl_pipeline_run_id` is NULL and
+  - [x] 3.2.4 `test_hand_submitted_delivery_stamps_workflow_only`.
+  - [x] 3.2.5 `test_ambiguous_workflow_name_stamps_no_run`: `cyl_pipeline_run_id` is NULL and
     `argo_workflow_name = W`.
-  - [ ] 3.2.6 `test_no_workflow_name_stamps_neither`.
-  - [ ] 3.2.7 `test_noop_redelivery_leaves_stamps_unchanged`. This is a negative control.
-  - [ ] 3.2.8 `test_failed_delivery_leaves_no_source`.
+  - [x] 3.2.6 `test_no_workflow_name_stamps_neither`.
+  - [x] 3.2.7 `test_noop_redelivery_leaves_stamps_unchanged`. This is a negative control.
+  - [x] 3.2.8 `test_failed_delivery_leaves_no_source`.
     - Parametrized over an unresolvable `image_ids`, a non-scan-grain trait, and a non-integer
       blob `file_size`.
     - Use `pytest.raises` in a savepoint, then assert that no source exists for the key.
-  - [ ] 3.2.9 The existing bloom#875 tests stay green. Add `test_redelivery_fallback_with_stamped_source`,
+  - [x] 3.2.9 The existing bloom#875 tests stay green. Add `test_redelivery_fallback_with_stamped_source`,
     which asserts that the stamps are unchanged by the fallback.
-  - [ ] 3.2.10 `test_noop_stamp_guard_detects_mutation`, in one transaction:
+  - [x] 3.2.10 `test_noop_stamp_guard_detects_mutation`, in one transaction:
     1. read `pg_get_functiondef('insert_cyl_result_envelope(jsonb,text)'::regprocedure)`;
     2. inject `UPDATE cyl_trait_sources SET argo_workflow_name = p_argo_workflow_name WHERE id =
        v_source_id;` after `v_was_noop := true;` (`20260928130000:135`) and `EXECUTE` it;
     3. assert that 3.2.7's check now fails.
-  - [ ] 3.2.11 `test_source_written_between_migrations_is_backfilled`.
+  - [x] 3.2.11 `test_source_written_between_migrations_is_backfilled`.
     - Run `_apply_recipe_rollbacks(cur, down_to=2)`, which puts the a9 body back with M1 still
       live.
     - Deliver an envelope; its columns are NULL.
     - Apply `_sql_body(M2)`; its `recipe_key` and `scan_id` are now set.
-- [ ] 3.3 **Migration and rollback.**
-  - [ ] 3.3.1 `test_migration_2_body_is_idempotent`: overload arg counts are `[2]`, and a fresh
+- [x] 3.3 **Migration and rollback.**
+  - [x] 3.3.1 `test_migration_2_body_is_idempotent`: overload arg counts are `[2]`, and a fresh
     delivery is stamped.
-  - [ ] 3.3.2 `test_rollback_2_restores_a9_body_and_grants`. After `_apply_recipe_rollbacks(cur,
+  - [x] 3.3.2 `test_rollback_2_restores_a9_body_and_grants`. After `_apply_recipe_rollbacks(cur,
     down_to=2)`:
     - a fresh delivery leaves the recipe and run columns NULL;
     - the cross-Workflow fallback returns `True`;
     - `_acl_set` equals the set derived from `20260928130100`;
     - the overload arg counts are `[2]`.
-  - [ ] 3.3.3 `test_rollback_1_refuses_while_stamping_body_is_live`.
+  - [x] 3.3.3 `test_rollback_1_refuses_while_stamping_body_is_live`.
     - In a savepoint, with M2 live, applying only R1 raises and names `insert_cyl_result_envelope`.
     - `pytest.skip` if M2 isn't found.
-- [ ] 3.4 **Record the red check.** Run 3.1–3.3 against the §2 schema. Expected green by design:
+- [x] 3.4 **Record the red check.** Run 3.1–3.3 against the §2 schema. Expected green by design:
   - 3.2.7, 3.2.8 and 3.2.10;
   - the existing bloom#875 tests.
-- [ ] 3.5 `test_contract_migration_match.py` still reads `pinned_version = '0.1.0a9'`, and
+
+  **Observed (2026-09-29):** 9 failed (the stamping tests, the between-migrations test and the
+  migration-2 idempotency test). Green by design, as expected: 3.2.7, 3.2.8 (3 cases), 3.2.10 and the
+  existing bloom#875 tests. Also green, vacuously, before R2 existed: 3.2.9's stamped variant (both
+  sides NULL), 3.3.2 and the ACL check. Skipped until their files existed: the M2 unit checks and
+  3.3.3. After 3.6: all of `test_cyl_writeback_rpc.py` passes, as do the §2 tests, the grants,
+  contract-match and dispatch tests. The full `tests/unit/` run (excluding the Windows-only
+  `test_weekly_backup.py`) has 63 failures, all in Windows-path/shell tests this change does not
+  touch (`test_doctor.py`, `test_env_defaults.py`, the deploy-workflow tests); they are
+  platform-specific to this Windows checkout.
+- [x] 3.5 `test_contract_migration_match.py` still reads `pinned_version = '0.1.0a9'`, and
   `test_security_definer_grants.py` passes.
 
 ### Implementation (green)
 
-- [ ] 3.6 Write `supabase/migrations/<T>0100_stamp_cyl_trait_source_recipe_and_run.sql`.
+- [x] 3.6 Write `supabase/migrations/<T>0100_stamp_cyl_trait_source_recipe_and_run.sql`.
   - It is the `20260928130000` region verbatim, plus the edits 3.1.1 allows.
   - Then `OWNER TO postgres`, `REVOKE … FROM PUBLIC, anon, authenticated`, and the four `GRANT`s.
   - Then `SELECT cyl_backfill_trait_source_recipe_identity();`.
   - Write its rollback R2.
-- [ ] 3.7 **Go green.** Run section 3, then all of these:
+- [x] 3.7 **Go green.** Run section 3, then all of these:
   - `test_cyl_writeback_rpc.py`;
   - `test_security_definer_grants.py`;
   - `test_contract_migration_match.py`;
