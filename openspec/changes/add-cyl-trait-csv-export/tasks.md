@@ -191,7 +191,7 @@
   - a scan export's header holds only that scan's traits.
 - [x] 4.2 Implement `csv.ts`, a pivot over per-scan `Uint32Array`/`Float64Array`/`Uint8Array` buffers.
   **(done 2026-09-30: red 38 failed / 0 passed; green 38 passed. The writer reproduces the three hand-written golden CSVs byte for byte at slice sizes 1 and 50,000. The formatter turns the recorded 15-digit widened values back into the float4 shortest forms (0.1, 3.4028235e+38, 1e-7))**
-- [ ] 4.3 **Test first.** `sidecar.test.ts`:
+- [x] 4.3 **Test first.** `sidecar.test.ts`:
   - each golden sidecar is byte-identical;
   - `source_ids` is distinct and ascending (`[]` for unattributed, `[9]` for legacy);
   - `excluded` is in `scan_id` order, with `available_recipes` passed through;
@@ -203,7 +203,8 @@
   - a filtered selection has the full ascending `scan_ids`, the matching hash, and `buildFilters`' `filters`;
   - given coverage missing a scan of `S`, or holding an extra one, the builder throws the typed (i) error;
   - `excludedCsv` equals its golden files, header-only included.
-- [ ] 4.4 Implement `sidecar.ts` and `excluded.ts`.
+- [x] 4.4 Implement `sidecar.ts` and `excluded.ts`.
+  **(done 2026-09-30: red 16 failed / 0 passed; green 16 passed, byte-identical to the three hand-written golden sidecars and excluded CSVs)**
 - [ ] 4.5 **Test first.** `stem.test.ts`:
   - `diversity-screen_wave3_day0_legacy-12345_20261002`;
   - a 64-hex key, `unattributed`, and a scan stem;
