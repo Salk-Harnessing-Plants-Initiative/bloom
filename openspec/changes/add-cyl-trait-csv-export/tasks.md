@@ -168,7 +168,7 @@
 
 ## 4. CSV, excluded CSV, sidecar and stem
 
-- [ ] 4.1 **Test first.** `csv.test.ts`. The float4 formatter:
+- [x] 4.1 **Test first.** `csv.test.ts`. The float4 formatter:
   - `0.100000001490116` and `0.10000000149011612` → `0.1`;
   - `3.4028234663852886e+38` → `3.4028235e+38`;
   - `12.7` → `12.7`;
@@ -189,7 +189,8 @@
   - a leading `=`, `+`, `-` or `@` left unchanged;
   - fresh `TextEncoder` slices of 50,000 cells whose concatenation equals the golden CSV;
   - a scan export's header holds only that scan's traits.
-- [ ] 4.2 Implement `csv.ts`, a pivot over per-scan `Uint32Array`/`Float64Array`/`Uint8Array` buffers.
+- [x] 4.2 Implement `csv.ts`, a pivot over per-scan `Uint32Array`/`Float64Array`/`Uint8Array` buffers.
+  **(done 2026-09-30: red 38 failed / 0 passed; green 38 passed. The writer reproduces the three hand-written golden CSVs byte for byte at slice sizes 1 and 50,000. The formatter turns the recorded 15-digit widened values back into the float4 shortest forms (0.1, 3.4028235e+38, 1e-7))**
 - [ ] 4.3 **Test first.** `sidecar.test.ts`:
   - each golden sidecar is byte-identical;
   - `source_ids` is distinct and ascending (`[]` for unattributed, `[9]` for legacy);
