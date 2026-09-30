@@ -1,15 +1,26 @@
--- Rollback for 20260929230100_stamp_cyl_trait_source_recipe_and_run.sql.
+-- Stamp each new trait source with its recipe key, scan, Argo Workflow and Bloom run.
 -- Change: add-cyl-trait-recipe-key (bloom#935, bloom#937).
 --
--- This is the STAGING HOT-APPLY only. Applying it by hand leaves 20260929230100
--- recorded as applied, so CI, fresh stacks and the next promotion would still
--- apply it. A durable rollback is a new forward migration whose body is this
--- file. After a hand-apply, run
---   supabase migration repair --status reverted 20260929230100
+-- WHY: the recipe and run columns added by 20260930050000 are only useful if the
+--   sole writer fills them in. The RPC is already handed p_argo_workflow_name
+--   (bloomctl passes ARGO_WORKFLOW_NAME) but used it only for run-scan status.
 --
--- Restores 20260928130000's function region verbatim, then re-asserts
--- 20260928130100's ACL. New deliveries stop stamping the recipe and run columns;
--- existing stamps are kept. Apply the recipe-read and dataset rollbacks first.
+-- WHAT: CREATE OR REPLACE the live 2-arg insert_cyl_result_envelope(jsonb, text).
+--   Everything from CREATE through the final GRANT is copied verbatim from
+--   20260928130000_cyl_writeback_contract_a9.sql (the newest definition; it keeps
+--   the bloom#875 no-op fallback) with three edits:
+--     1. the source INSERT also writes recipe_key (cyl_trait_recipe_key_v1),
+--        recipe_key_version = 1, argo_workflow_name, and cyl_pipeline_run_id
+--        (the single run whose run-scan rows carry the Workflow name);
+--     2. after step 6 resolves the scan, UPDATE the new source's scan_id;
+--     3. the REVOKE carries anon and authenticated, as 20260928130100 set.
+--   A no-op re-delivery writes none of these. Same signature, no DROP FUNCTION.
+--   tests/unit/test_cyl_trait_recipe_migration_files.py enforces the diff.
+--   Ends by re-running cyl_backfill_trait_source_recipe_identity(), for sources
+--   written by the old body after 20260930050000 committed.
+--
+-- Forward-only. Manual rollback (staging hot-apply only -- see its header):
+--   supabase/rollbacks/20260930050100_stamp_cyl_trait_source_recipe_and_run_rollback.sql
 
 BEGIN;
 
@@ -42,6 +53,7 @@ DECLARE
     v_blob_count   int := 0;
     v_was_noop     boolean;
     v_status_rows  int;
+    v_run_id       bigint;
 BEGIN
     -- 1. Structural validation -------------------------------------------------
     IF envelope IS NULL OR jsonb_typeof(envelope) <> 'object' THEN
@@ -96,8 +108,21 @@ BEGIN
 
     -- 5. Source gate: first-writer-wins, BEFORE scan resolution.
     v_name := coalesce(prov ->> 'pipeline_run_id', 'sleap-roots:' || v_idem);
-    INSERT INTO public.cyl_trait_sources (name, metadata, idempotency_key)
-    VALUES (v_name, prov, v_idem)
+    -- add-cyl-trait-recipe-key: the Bloom run is the one run whose run-scan rows
+    -- carry this Workflow name (none, or more than one, leaves it NULL). The
+    -- recipe key and both run stamps are written only on a fresh insert; a no-op
+    -- re-delivery leaves the existing row untouched.
+    IF p_argo_workflow_name IS NOT NULL THEN
+        SELECT CASE WHEN count(DISTINCT rs.run_id) = 1 THEN min(rs.run_id) END
+          INTO v_run_id
+          FROM public.cyl_pipeline_run_scans rs
+         WHERE rs.argo_workflow_name = p_argo_workflow_name;
+    END IF;
+    INSERT INTO public.cyl_trait_sources
+        (name, metadata, idempotency_key, recipe_key, recipe_key_version,
+         argo_workflow_name, cyl_pipeline_run_id)
+    VALUES (v_name, prov, v_idem, public.cyl_trait_recipe_key_v1(prov), 1,
+            p_argo_workflow_name, v_run_id)
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING id INTO v_source_id;
 
@@ -199,6 +224,9 @@ BEGIN
         RAISE EXCEPTION 'image_ids resolve to % scans, expected exactly 1', v_n_scans;
     END IF;
 
+    -- add-cyl-trait-recipe-key: the scan is known only now, after the source gate.
+    UPDATE public.cyl_trait_sources SET scan_id = v_scan_id WHERE id = v_source_id;
+
     -- 7. Trait rows via the cyl_traits registry (auto-register) -----------------
     FOR v_trait IN
         SELECT * FROM jsonb_array_elements(coalesce(envelope -> 'traits', '[]'::jsonb))
@@ -287,13 +315,11 @@ $fn$;
 
 ALTER FUNCTION public.insert_cyl_result_envelope(jsonb, text) OWNER TO postgres;
 
-REVOKE EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text)
+    FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text)
     TO bloom_writer, service_role, bloom_admin, bloom_workflows;
 
--- 20260928130100's ACL (the a9 region above revokes only FROM PUBLIC).
-REVOKE EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text)
-    FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.insert_cyl_result_envelope(jsonb, text) TO bloom_writer, service_role, bloom_admin, bloom_workflows;
+SELECT public.cyl_backfill_trait_source_recipe_identity();
 
 COMMIT;

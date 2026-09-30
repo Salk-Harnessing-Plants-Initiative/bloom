@@ -3,7 +3,7 @@
 -- Change: add-cyl-trait-recipe-key (bloom#935).
 --
 -- WHY: pipeline write-back stores one source per scan, so "latest" per scan can mix
---   computations. With the recipe key stored (20260929230000), a caller can choose
+--   computations. With the recipe key stored (20260930050000), a caller can choose
 --   one recipe for a whole selection and see which scans it leaves out.
 --
 -- WHAT:
@@ -26,7 +26,7 @@
 -- read roles. anon loses EXECUTE on get_experiment_traits (it held it through
 -- Supabase default privileges). No policy or write grant changes.
 -- Manual rollback (staging hot-apply only -- see its header):
---   supabase/rollbacks/20260929230200_add_cyl_trait_recipe_reads_rollback.sql
+--   supabase/rollbacks/20260930050200_add_cyl_trait_recipe_reads_rollback.sql
 
 BEGIN;
 

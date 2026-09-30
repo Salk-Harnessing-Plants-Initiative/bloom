@@ -1,11 +1,11 @@
--- Rollback for 20260929230300_add_cyl_dataset_recipe_mode.sql.
+-- Rollback for 20260930050300_add_cyl_dataset_recipe_mode.sql.
 -- Change: add-cyl-trait-recipe-key (bloom#935).
 --
--- This is the STAGING HOT-APPLY only. Applying it by hand leaves 20260929230300
+-- This is the STAGING HOT-APPLY only. Applying it by hand leaves 20260930050300
 -- recorded as applied, so CI, fresh stacks and the next promotion would still apply
 -- it. A durable rollback is a new forward migration whose body is this file. After a
 -- hand-apply, run
---   supabase migration repair --status reverted 20260929230300
+--   supabase migration repair --status reverted 20260930050300
 --
 -- Restores 20240904033106's five-argument create_cyl_dataset verbatim (its
 -- database/role settings are not re-run) with the same EXECUTE ACL, and drops

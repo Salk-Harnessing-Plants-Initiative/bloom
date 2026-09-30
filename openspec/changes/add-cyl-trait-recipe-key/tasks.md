@@ -605,7 +605,10 @@ invisible to PostgREST.
     trait rows, and no errors.
 - [ ] 7.3 **Coverage timing, read-only on staging (manual, not CI).** Run the M3 probe SQL for
   experiment 1 under `EXPLAIN ANALYZE`. It must be well under 8 s; it took 450 ms on 2026-09-29.
-- [ ] 7.4 **Timestamps.**
+- [x] 7.4 **Timestamps.** Done 2026-09-29: staging gained `20260930001749`, so the branch was
+  rebased onto `6733eca1` and the eight files restamped `20260929230x00` → `20260930050x00`. The dev
+  DB's four old history rows were removed (what `migration repair --status reverted` does; the CLI
+  refused TLS), and `make migrate-local` re-applied all four on top of their existing objects.
   - Fetch `origin/staging`.
   - If a newer migration has landed, `git mv` the four files and their rollbacks, keeping their
     order.
