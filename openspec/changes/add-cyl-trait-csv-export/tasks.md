@@ -59,7 +59,7 @@
 
 ## 1. Fixtures and their DB tie
 
-- [ ] 1.1 Write `__fixtures__/scan-metadata-parity.json`.
+- [x] 1.1 Write `__fixtures__/scan-metadata-parity.json`.
   - **Rows:** shaped like a real staging `cyl_scans_extended` select (anonymised), plus a genotype.
   - **Cases:**
     - `plant_age_days` NULL and 0;
@@ -69,8 +69,8 @@
     - NULL `wave_name`, `phenotyper_id` and `uploaded_at`;
     - QR codes with `/`, `:`, `\`, a trailing space, and only dots;
     - a QR code with `\0`, marked synthetic.
-  - **Expected cells** come from bloomctl's `write_scans_csv`, run once by a scratchpad script and parsed back to strings. Record the script, the bloomctl version and the date.
-- [ ] 1.2 Write `__fixtures__/golden/input.json` in a fixture id space, with scan ids like 9, 10 and 100 so numeric sorting is exercised.
+  **(done 2026-09-30: 13 cases. Rows use the PostgREST JSON shape of a dev-DB `cyl_scans_extended` row (`row_to_json`); the dev data is mock, not staging, which changes nothing about the shape. Cells come from the worktree's bloomctl 0.1.0a6 (`uv run` in `bloomcli/`), identical to the installed 0.1.0a5 tool. bloomctl renders a NULL age `DayNone`, a NULL date `Day6_None`, a NULL wave `Wave0`, and an all-dots QR `_`.)**
+- [x] 1.2 Write `__fixtures__/golden/input.json` in a fixture id space, with scan ids like 9, 10 and 100 so numeric sorting is exercised.
   - **Scans:** at least 2 waves, with ages including 0.
     - 3 scans with pipeline recipe `K`, all in wave 1:
       - one has NULL, `"NaN"`, `"Infinity"`, `"-Infinity"`, `-0`, the float4 nearest `0.1`, and float4 max values;
@@ -88,7 +88,8 @@
     - for each of `K`, `K2`, `legacy:9` and `unattributed`, the single-call coverage and trait rows;
     - `chunk_listings[size]` for sizes 1, 2 and `|S|`, each a list of `{scan_ids, rows}` in chunk order;
     - `selection_listings` for `wave=2` and `age=0`.
-- [ ] 1.2a Write `tests/integration/test_cyl_trait_export_batching.py` **before** 1.3. It follows `tests/integration/test_cyl_trait_recipes_read.py`: self-cleaning, a random id base, and `encoding="utf-8"`.
+  **(done 2026-09-30: recorded, not hand-written, by `tests/integration/cyl_trait_export_fixture.py`, which seeds the scenario with ids `base + fixture id`, calls the RPCs as `bloom_user` and maps back. Scans 9, 10, 100–103, 200 and 201. `K2` (source 41) is the overall default, `K` wins the `age=0` selection, and wave 2 has no `K`. The superseded source 20 is excluded by M2. PostgreSQL renders the widened float4 values with 15 digits (`0.100000001490116`, `3.40282346638529e+38`, `1.0000000116861e-07`), and `-0` as `0`. `species` has a UNIQUE `(genus, species)`, so the fixture species is `Fixturia exportii`.)**
+- [x] 1.2a Write `tests/integration/test_cyl_trait_export_batching.py` **before** 1.3. It follows `tests/integration/test_cyl_trait_recipes_read.py`: self-cleaning, a random id base, and `encoding="utf-8"`.
   - **Seeding.** It seeds `input.json` verbatim (QR codes, waves, ages, dates, plants, and one plant with two scans), not through `_seed_scan_in`'s random values. It maps accession names if a collision occurs.
   - **Role.** It calls the RPCs as `bloom_user` (`SET LOCAL ROLE`, as in `test_cyl_trait_recipes_read.py:496-510`).
   - **Assertions,** under a strictly increasing map from fixture ids to seeded ids (covering scan and source ids, `legacy:<id>` strings, `definition` ids and `available_recipes`):
@@ -97,6 +98,7 @@
     - (c) each recorded `scan_ids` is the consecutive slice of ascending `S`, every `chunk_listings` and `selection_listings` entry equals the real call, and the Python merge of per-chunk listings equals the single call, including order and `is_default`;
     - (d) the concatenated per-chunk coverage, and the union of the per-chunk trait rows (each call passing that chunk's included scans), equal the single calls.
   - `(characterization)`. It runs in CI's required compose job (`pytest tests/integration/`). Run `uvx ruff check` and `black --check` on it by hand, because the hooks don't cover `tests/`.
+  **(done 2026-09-30, characterization: 10 passed against the dev DB. Proven able to fail: changing one recorded `K2` trait value fails 4 tests, and restoring it passes. Clean under the repo-pinned ruff 0.9.9 and black 26.3.1.)**
 - [ ] 1.3 **Hand-write** `golden/{K,legacy-9,unattributed}.{csv,export.json,excluded.csv}` from design D4–D6 and the now-verified `input.json`, before any implementation.
   - Fix `generated_at` and `version`.
   - Check that `git ls-files --eol` shows `i/crlf` for the CSVs.
