@@ -24,8 +24,8 @@ uv run --extra test pytest tests/integration/<file> -v
 
 **Unit tests** are in `tests/unit/`.
 
-**Shared test helpers,** added in §2 to `tests/integration/test_cyl_trait_recipe_key.py`, then
-imported:
+**Shared test helpers** live in `tests/integration/cyl_recipe_helpers.py` (not collected; imported
+by the test files):
 - `_sql_body(path)` (as at `test_cyl_experiment_traits.py:43`) re-applies a migration or
   rollback inside a test transaction.
 - `_find_one("migrations"|"rollbacks", glob)` (as at `test_cyl_pipeline_dispatch.py:48`) locates
@@ -60,13 +60,13 @@ invisible to PostgREST.
 - [x] 1.6 First `/review-openspec` round: fixes folded in (`150640b9`).
 - [x] 1.7 Second round: fixes folded in, validated, and committed as
   `docs(openspec): address second review-openspec round`.
-- [ ] 1.8 The proposal is approved by eberrigan.
+- [x] 1.8 The proposal is approved by eberrigan (2026-09-29).
 
 ## 2. Recipe identity: helpers, columns and backfill (migration 1)
 
 ### Tests first (red)
 
-- [ ] 2.1 **Golden vectors.**
+- [x] 2.1 **Golden vectors.**
   - Write `tests/integration/fixtures/gen_recipe_key_vectors.py`. It is not collected, because
     pytest collects only `test_*.py`.
   - Run it as:
@@ -94,51 +94,51 @@ invisible to PostgREST.
     `tests/integration/fixtures/recipe_key_v1_vectors.json`, and it has a `--check` mode that
     verifies a byte-identical regeneration.
   - Commit both files.
-- [ ] 2.2 New file `tests/integration/test_cyl_trait_recipe_key.py`: the helpers.
+- [x] 2.2 New file `tests/integration/test_cyl_trait_recipe_key.py`: the helpers.
   - **Passing vectors in.** Every vector is passed to Postgres as `%s::jsonb` from
     `raw_provenance` text, never through `json.loads` or `Jsonb`.
-  - [ ] 2.2.1 `test_key_ignores_fields_outside_payload`, parametrized over a literal
+  - [x] 2.2.1 `test_key_ignores_fields_outside_payload`, parametrized over a literal
     `EXCLUDED_FIELDS` constant that mirrors the writeback spec's list: the top-level fields, plus
     `predict_models[].root_type` and `predict_models[].sleap_nn_version`. The test also asserts
     that the vectors file's field list minus the four payload fields equals the top-level part of
     `EXCLUDED_FIELDS`.
-  - [ ] 2.2.2 `test_key_changes_with_payload_inputs`. Covers each triple field, `null` versus
+  - [x] 2.2.2 `test_key_changes_with_payload_inputs`. Covers each triple field, `null` versus
     `""`, both code shas, and a non-empty `predict_output_params`.
-  - [ ] 2.2.3 `test_model_order_and_empty_output_params`. `predict_output_params` as `null`,
+  - [x] 2.2.3 `test_model_order_and_empty_output_params`. `predict_output_params` as `null`,
     `{}` and absent gives one key.
-  - [ ] 2.2.4 `test_duplicate_triples_counted_twice`.
-  - [ ] 2.2.5 `test_odd_shapes_never_raise`, over every input in the spec scenario. It covers the
+  - [x] 2.2.4 `test_duplicate_triples_counted_twice`.
+  - [x] 2.2.5 `test_odd_shapes_never_raise`, over every input in the spec scenario. It covers the
     NULL results for `NULL`, `'[]'` and `'"x"'`.
-  - [ ] 2.2.6 `test_definition_hashes_to_key`, over every vector.
-  - [ ] 2.2.7 `test_partitions_match_contracts_identity`.
+  - [x] 2.2.6 `test_definition_hashes_to_key`, over every vector.
+  - [x] 2.2.7 `test_partitions_match_contracts_identity`.
     - For each pair of vectors, the keys are equal exactly when the `partition_id`s are, except
       for the `expected_divergence` pair, whose keys differ.
     - Also assert that `'{"peak_threshold": 1.0}'::jsonb::text` contains `1.0`, so the pair really
       reaches Postgres distinct.
-  - [ ] 2.2.8 `test_helpers_immutable_owned_and_granted`.
+  - [x] 2.2.8 `test_helpers_immutable_owned_and_granted`.
     - Both helpers have `provolatile = 'i'` and owner `postgres`.
     - `has_function_privilege` is false for `anon`, and true for `bloom_agent`, `bloom_user`,
       `bloom_admin` and `authenticated`.
     - A `SET LOCAL ROLE bloom_agent` call succeeds.
-- [ ] 2.3 Same file: schema tests.
-  - [ ] 2.3.1 `test_columns_types_and_fks`: column types, nullability, FK names, targets, and
+- [x] 2.3 Same file: schema tests.
+  - [x] 2.3.1 `test_columns_types_and_fks`: column types, nullability, FK names, targets, and
     `confdeltype = 'n'`.
-  - [ ] 2.3.2 `test_recipe_key_checks`: every value in the spec's three CHECK scenarios.
-  - [ ] 2.3.3 `test_indexes_exist`, by name.
-  - [ ] 2.3.4 `test_bloom_workflows_cannot_select_new_columns`.
+  - [x] 2.3.2 `test_recipe_key_checks`: every value in the spec's three CHECK scenarios.
+  - [x] 2.3.3 `test_indexes_exist`, by name.
+  - [x] 2.3.4 `test_bloom_workflows_cannot_select_new_columns`.
     - `SET LOCAL ROLE bloom_workflows`, then `SELECT` each of the five columns, each in its own
       savepoint. Each fails with `InsufficientPrivilege`.
     - The pin at `test_cyl_trait_source_idem_read.py:108-122` still passes unchanged.
-  - [ ] 2.3.5 `test_deleting_scan_or_run_nulls_the_source_link`.
+  - [x] 2.3.5 `test_deleting_scan_or_run_nulls_the_source_link`.
     - Seed a scan with no trait rows, and a run with no run-scan rows.
     - Link a source to both.
     - Delete the scan and the run; the source remains, with both columns NULL.
-- [ ] 2.4 Same file: the backfill function. Seed every case with `_seed_source`, and assert its
+- [x] 2.4 Same file: the backfill function. Seed every case with `_seed_source`, and assert its
   columns are NULL before the call.
-  - [ ] 2.4.1 `test_backfill_pipeline_source`.
-  - [ ] 2.4.2 `test_backfill_legacy_and_non_object_metadata`: metadata `NULL`, `'[]'` and
+  - [x] 2.4.1 `test_backfill_pipeline_source`.
+  - [x] 2.4.2 `test_backfill_legacy_and_non_object_metadata`: metadata `NULL`, `'[]'` and
     JSON `null` each give `legacy:<id>`, version 1 and a NULL `scan_id`.
-  - [ ] 2.4.3 `test_backfill_unresolvable_image_ids`.
+  - [x] 2.4.3 `test_backfill_unresolvable_image_ids`.
     - Parametrized over `image_ids` that are missing, not an array, `[]`, containing `"abc"`,
       matching no image, or resolving to two scans.
     - The call completes and `scan_id` stays NULL.
@@ -147,32 +147,32 @@ invisible to PostgREST.
       baseline plus the number seeded, where the baseline is the count of object-metadata sources
       with NULL `scan_id` taken before seeding.
     - A resolvable duplicate id `[i, i]` does resolve.
-  - [ ] 2.4.4 `test_backfill_never_sets_run_stamps`.
-  - [ ] 2.4.5 `test_backfill_agrees_with_rpc_written_trait_rows`.
+  - [x] 2.4.4 `test_backfill_never_sets_run_stamps`.
+  - [x] 2.4.5 `test_backfill_agrees_with_rpc_written_trait_rows`.
     - Deliver an envelope through the RPC, NULL that source's columns, and backfill.
     - The `scan_id` equals the scan of its trait rows.
-  - [ ] 2.4.6 `test_backfill_is_rerunnable`: `to_jsonb` snapshots before and after a second call
+  - [x] 2.4.6 `test_backfill_is_rerunnable`: `to_jsonb` snapshots before and after a second call
     are equal.
-  - [ ] 2.4.7 `test_backfill_owner_and_grants`.
+  - [x] 2.4.7 `test_backfill_owner_and_grants`.
     - The owner is `postgres`.
     - `has_function_privilege` is false for `anon`, `authenticated`, `service_role`,
       `bloom_agent`, `bloom_user`, `bloom_admin`, `bloom_writer` and `bloom_workflows`.
     - Superusers are excluded from the check.
-- [ ] 2.5 **Migration and rollback.**
-  - [ ] 2.5.1 `test_migration_1_body_is_idempotent`. Execute `_sql_body(M1)` twice over `_seed_source`
+- [x] 2.5 **Migration and rollback.**
+  - [x] 2.5.1 `test_migration_1_body_is_idempotent`. Execute `_sql_body(M1)` twice over `_seed_source`
     rows (one pipeline, one legacy). There are no errors, the snapshots are unchanged, and the
     `insert_cyl_result_envelope` overload arg counts are `[2]`.
-  - [ ] 2.5.2 `test_rollback_1_drops_exactly_its_objects`.
+  - [x] 2.5.2 `test_rollback_1_drops_exactly_its_objects`.
     - Run `_apply_recipe_rollbacks(cur, down_to=1)`.
     - Assert all of these are gone: the recipe and run columns, the two CHECKs, the two FKs, the
       three indexes, the two helpers and the backfill function.
     - Assert that an a9 envelope ingests.
-  - [ ] 2.5.3 `test_rollback_1_guard_detects_a_referencing_function`.
+  - [x] 2.5.3 `test_rollback_1_guard_detects_a_referencing_function`.
     - Create `public._r1_probe()`, a plpgsql function that selects `recipe_key` from
       `cyl_trait_sources`.
     - Apply only R1. It raises, naming `_r1_probe`, and nothing has been dropped (checked in a
       savepoint).
-  - [ ] 2.5.4 In a new unit file, `tests/unit/test_cyl_trait_recipe_migration_files.py`, check M1:
+  - [x] 2.5.4 In a new unit file, `tests/unit/test_cyl_trait_recipe_migration_files.py`, check M1:
     - it has `SET LOCAL lock_timeout` and ends with `NOTIFY pgrst`;
     - every constraint and index is added in its named, guarded form;
     - no `ADD COLUMN` has an inline `REFERENCES` or `CHECK`;
@@ -180,26 +180,31 @@ invisible to PostgREST.
     - every created function is followed by `OWNER TO postgres`;
     - every `UPDATE` has a `WHERE`;
     - R1's guard `DO` block comes before every `DROP` and `ALTER`.
-- [ ] 2.6 **Dispatch rollback test.** Edit `test_cyl_pipeline_dispatch.py:1000`
+- [x] 2.6 **Dispatch rollback test.** Edit `test_cyl_pipeline_dispatch.py:1000`
   (`test_rollback_removes_everything`) to run `_apply_recipe_rollbacks(cur, down_to=1)` before
   `RUN_EXPERIMENTS_ROLLBACK` (:1004). Otherwise the new FK blocks the `DROP TABLE` at
   `20260730120000_create_cyl_pipeline_runs_rollback.sql:57-58`.
-- [ ] 2.7 **Record the red check.** Run 2.2–2.6 against the pre-change schema. Expected green by
+- [x] 2.7 **Record the red check.** Run 2.2–2.6 against the pre-change schema. Expected green by
   design:
   - the unchanged idem-read pin;
   - 2.6, where the helper finds no recipe rollbacks.
 
+  **Observed (2026-09-29):** 89 failed, 18 passed, 7 skipped. The passes were the contracts
+  field-list check (no database), `test_rollback_1_drops_exactly_its_objects` (vacuous: nothing to
+  drop yet), 2.6, and the idem-read pin. The 7 unit checks skipped because their files did not
+  exist yet. Green after 2.8: 98 passed; the regression set: 363 passed, 5 skipped.
+
 ### Implementation (green)
 
-- [ ] 2.8 Write `supabase/migrations/<T>0000_add_cyl_trait_recipe_key.sql` and its rollback R1.
+- [x] 2.8 Write `supabase/migrations/<T>0000_add_cyl_trait_recipe_key.sql` and its rollback R1.
   - Follow design § Migration Plan.
   - R1 includes the guard (writeback spec) and the hot-apply and `migration repair` wording.
-- [ ] 2.9 **Types.**
+- [x] 2.9 **Types.**
   - Hand-edit the five `database.types.ts` copies: add the recipe and run columns to
     `cyl_trait_sources`.
   - Run `make gen-types` into a scratch copy, and confirm its diff for those entries matches the
     hand edits.
-- [ ] 2.10 **Go green.** Run `make migrate-local`, then section 2. These must still pass:
+- [x] 2.10 **Go green.** Run `make migrate-local`, then section 2. These must still pass:
   - `test_cyl_writeback_rpc.py`: the re-applied older bodies still insert, because the new columns
     are nullable;
   - `test_cyl_trait_source_idem_read.py`;

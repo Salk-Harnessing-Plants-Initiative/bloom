@@ -1,0 +1,146 @@
+{
+  "contracts_version": "0.1.0a9",
+  "provenance_fields": [
+    "argo_node_id",
+    "argo_workflow_uid",
+    "contract_version",
+    "idempotency_key",
+    "inputs",
+    "params",
+    "pipeline_run_id",
+    "predict_code_sha",
+    "predict_container_digest",
+    "predict_inference_config",
+    "predict_models",
+    "predict_output_params",
+    "produced_at",
+    "scan_key",
+    "traits_code_sha",
+    "traits_container_digest",
+    "traits_sleap_roots_version",
+    "worker_request_id"
+  ],
+  "model_ref_fields": [
+    "registry_id",
+    "root_type",
+    "sleap_nn_version",
+    "version",
+    "weights_checksum"
+  ],
+  "vectors": [
+    {
+      "name": "base",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"52c29adb45f88e4c6fff705dc4cd83c30e60d4967a01ff9f12159d1d4d2b3faa\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "b06e170af73b5b3d480955f03c579492824189e95d98641127995b096ff76732",
+      "divergence_group": null
+    },
+    {
+      "name": "other_scan_same_recipe",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_2\",\"inputs\":{\"image_ids\":[\"3\"],\"images_checksum\":\"sha256:bb\"},\"idempotency_key\":\"3203bbc0f17eb3ac51a609188feb0f6c9e63abbcbfb82b8ce7926fd71f649f4f\",\"pipeline_run_id\":\"wf-abc\",\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":\"req-1\",\"predict_inference_config\":{\"device\":\"cuda\",\"batch_size\":16},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.5\",\"traits_container_digest\":\"\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":\"uid-1\",\"argo_node_id\":\"node-1\",\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":9},\"param_hash\":\"4e9a055fe8d76c42ea7123443eab630423aedaf2ea811781769a003d6824dc9e\"},\"produced_at\":null}",
+      "partition": "b06e170af73b5b3d480955f03c579492824189e95d98641127995b096ff76732",
+      "divergence_group": null
+    },
+    {
+      "name": "models_reordered",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"52c29adb45f88e4c6fff705dc4cd83c30e60d4967a01ff9f12159d1d4d2b3faa\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"},{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "b06e170af73b5b3d480955f03c579492824189e95d98641127995b096ff76732",
+      "divergence_group": null
+    },
+    {
+      "name": "root_type_changed",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"52c29adb45f88e4c6fff705dc4cd83c30e60d4967a01ff9f12159d1d4d2b3faa\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"crown\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "b06e170af73b5b3d480955f03c579492824189e95d98641127995b096ff76732",
+      "divergence_group": null
+    },
+    {
+      "name": "sleap_nn_version_changed",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"52c29adb45f88e4c6fff705dc4cd83c30e60d4967a01ff9f12159d1d4d2b3faa\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.4.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "b06e170af73b5b3d480955f03c579492824189e95d98641127995b096ff76732",
+      "divergence_group": null
+    },
+    {
+      "name": "duplicate_triple",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"924d06852a7716cccde1843e75851f7821f9f678c3f8eb9353cfac5f606d9e91\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "00e4b624a837c8592f6f048d52644f52d4f6a7e6991cb209bfdb368b0bb3fcd8",
+      "divergence_group": null
+    },
+    {
+      "name": "single_primary",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"0e9f43235310e68e62c8a7a238009177cdb04850419ce268036307674590d31f\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "ff97dcef8b544058c0c228c683a8fb7522aae4707975d180ca987adffa3b137b",
+      "divergence_group": null
+    },
+    {
+      "name": "registry_id_changed",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"b03ea4b05f9abad845d554ded7f045ffa3d5c15feb9f24aed058c0bf7a6d36c1\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/rice-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "3400db8db06341bcf420defd05b365d58f8d85358688a98a4df804b0c22eb621",
+      "divergence_group": null
+    },
+    {
+      "name": "version_changed",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"5f2462728f11e360df75d3adc149e81950640b2cb39a22bf01524e028cc6ef14\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v1\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "9c8e58a94eeea8a03188e46bcd5e337eb11c77582d5d53fe5b43f751280fa931",
+      "divergence_group": null
+    },
+    {
+      "name": "checksum_none",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"73e7e3e7f842b6e9001ac9c9bef18e922db077ca17dc2d11c50105c4d4e091ed\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":null},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "08cc4b4579a82f02fb496fce1daf2f3693337734860efc8f0e17b91b9f2c729e",
+      "divergence_group": null
+    },
+    {
+      "name": "checksum_empty",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"d25b9c925eb9ed70332c8555a90c34bb355d17444d5e24f7ff49a35165810b1c\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "d6ea647adc19f55ef21fc3d2eae9df701182accf3675b9cce5e6b766557af9a6",
+      "divergence_group": null
+    },
+    {
+      "name": "predict_sha_changed",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"83f26a5c8978d3e72deafe97e16d6e5d12c0c162e6615e51d602b0eccd66d2a5\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"4a70e599\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "5a9064e0010d356638cb3bf54f546a7146adf9ebd6ba1c85420a1edf28686536",
+      "divergence_group": null
+    },
+    {
+      "name": "traits_sha_changed",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"de26ecee217671ca428b7b5e752666d91a68a6b4f2e361e4aeacee00f18c3c03\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"689cffb8\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "96b67e6f8a0ce77a2514c946d474b18d40a7d6d4260a224065cc25ef89be51b1",
+      "divergence_group": null
+    },
+    {
+      "name": "output_params_none",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"f94a180d2e4d70b68027722133abf114a3d5fcfda49720cd9e3eacae192525b2\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":null,\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "eb750404ce12446820cfcbefc9bb0a961f8fce2473436589e42f37ae7feb0b99",
+      "divergence_group": null
+    },
+    {
+      "name": "output_params_empty",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"f94a180d2e4d70b68027722133abf114a3d5fcfda49720cd9e3eacae192525b2\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "eb750404ce12446820cfcbefc9bb0a961f8fce2473436589e42f37ae7feb0b99",
+      "divergence_group": null
+    },
+    {
+      "name": "output_params_changed",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"e6a13f8bc7004d03977e0b530aaddded356c9d897fc6a92e6825f21f560471ed\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.3},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "896f1617d1a06d418bcc836967f02aefee29b53ffcc422a6611b5a9b28f09311",
+      "divergence_group": null
+    },
+    {
+      "name": "no_models",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"d656a32b8796005a0e898598a3c4acbd94693d1aa568374508ea48ca739e8047\",\"pipeline_run_id\":null,\"predict_models\":[],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":0.2},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "269987186d22bf65512621ee4e4505f21b91e55009a37ce15f18e0660d578102",
+      "divergence_group": null
+    },
+    {
+      "name": "output_params_int",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"7616804a51a7837fc6ab8a01aa1ead08ba9bfb4f743088980284b5be6d18bf63\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":1},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "17f9de04507aab0a7b4cf4b5f77fee7aa30bd17856f28f39569b560f987bbf6e",
+      "divergence_group": "int-vs-float"
+    },
+    {
+      "name": "output_params_float",
+      "raw_provenance": "{\"contract_version\":\"0.1.0a9\",\"scan_key\":\"scan_1\",\"inputs\":{\"image_ids\":[\"1\",\"2\"],\"images_checksum\":\"sha256:aa\"},\"idempotency_key\":\"7616804a51a7837fc6ab8a01aa1ead08ba9bfb4f743088980284b5be6d18bf63\",\"pipeline_run_id\":null,\"predict_models\":[{\"registry_id\":\"org/registry/canola-primary\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"primary\",\"weights_checksum\":\"a6b27968b01c7640335359d2539a8ae3\"},{\"registry_id\":\"org/registry/canola-lateral\",\"version\":\"v0\",\"sleap_nn_version\":\"0.3.0\",\"root_type\":\"lateral\",\"weights_checksum\":\"75e1b1e7671e0b0c01176165ed6f4076\"}],\"predict_container_digest\":\"sha256:predict\",\"predict_code_sha\":\"9a6f20c00762e327b9aea39c8e06a81443252d01\",\"worker_request_id\":null,\"predict_inference_config\":{\"device\":\"cpu\",\"batch_size\":4},\"predict_output_params\":{\"peak_threshold\":1.0},\"traits_sleap_roots_version\":\"0.1.4\",\"traits_container_digest\":\"sha256:traits\",\"traits_code_sha\":\"e373b0f92639ce13feb90d619b9fd14172ce296d\",\"argo_workflow_uid\":null,\"argo_node_id\":null,\"params\":{\"values\":{\"species\":\"canola\",\"mode\":\"cylinder\",\"age\":7},\"param_hash\":\"2dae2ad6c061cb22ea4dc2bcbcbd707ef4a81d4251b65d40aae4c7a2084abca6\"},\"produced_at\":null}",
+      "partition": "17f9de04507aab0a7b4cf4b5f77fee7aa30bd17856f28f39569b560f987bbf6e",
+      "divergence_group": "int-vs-float"
+    }
+  ]
+}

@@ -1375,24 +1375,61 @@ export type Database = {
       }
       cyl_trait_sources: {
         Row: {
+          argo_workflow_name: string | null
+          cyl_pipeline_run_id: number | null
           id: number
           idempotency_key: string | null
           metadata: Json | null
           name: string
+          recipe_key: string | null
+          recipe_key_version: number | null
+          scan_id: number | null
         }
         Insert: {
+          argo_workflow_name?: string | null
+          cyl_pipeline_run_id?: number | null
           id?: number
           idempotency_key?: string | null
           metadata?: Json | null
           name: string
+          recipe_key?: string | null
+          recipe_key_version?: number | null
+          scan_id?: number | null
         }
         Update: {
+          argo_workflow_name?: string | null
+          cyl_pipeline_run_id?: number | null
           id?: number
           idempotency_key?: string | null
           metadata?: Json | null
           name?: string
+          recipe_key?: string | null
+          recipe_key_version?: number | null
+          scan_id?: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "cyl_trait_sources_cyl_pipeline_run_id_fkey"
+            columns: ["cyl_pipeline_run_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_pipeline_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_trait_sources_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_trait_sources_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["scan_id"]
+          },
+        ]
       }
       cyl_traits: {
         Row: {

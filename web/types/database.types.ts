@@ -805,22 +805,37 @@ export interface Database {
       }
       cyl_trait_sources: {
         Row: {
+          argo_workflow_name: string | null
+          cyl_pipeline_run_id: number | null
           id: number
           idempotency_key: string | null
           metadata: Json | null
           name: string
+          recipe_key: string | null
+          recipe_key_version: number | null
+          scan_id: number | null
         }
         Insert: {
+          argo_workflow_name?: string | null
+          cyl_pipeline_run_id?: number | null
           id?: number
           idempotency_key?: string | null
           metadata?: Json | null
           name: string
+          recipe_key?: string | null
+          recipe_key_version?: number | null
+          scan_id?: number | null
         }
         Update: {
+          argo_workflow_name?: string | null
+          cyl_pipeline_run_id?: number | null
           id?: number
           idempotency_key?: string | null
           metadata?: Json | null
           name?: string
+          recipe_key?: string | null
+          recipe_key_version?: number | null
+          scan_id?: number | null
         }
         Relationships: []
       }
