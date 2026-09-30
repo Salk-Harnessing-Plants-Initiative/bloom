@@ -342,18 +342,6 @@ spec:
           # The stage step has already copied the reads here.
           - name: DOWNLOAD_READS
             value: "false"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
@@ -482,19 +470,6 @@ spec:
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
         args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
-        env:
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests: {cpu: "4", memory: 16Gi}
           limits: {cpu: "4", memory: 16Gi}
@@ -522,19 +497,6 @@ spec:
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
         args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
-        env:
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
@@ -600,22 +562,7 @@ spec:
             set -euo pipefail
             cd /work
             cellranger testrun --id=check_install --localcores=4 --localmem=14
-            OUT="s3://bloomv2-workflows/runs_output/argo_testrun_{{workflow.name}}"
-            aws s3 sync check_install/outs "$OUT/outs/"
-            echo "DONE -> $OUT"
-        env:
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
+            echo "Cell Ranger testrun passed"
         resources:
           requests:
             cpu: "4"

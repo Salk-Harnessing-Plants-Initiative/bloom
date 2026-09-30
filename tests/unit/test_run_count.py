@@ -98,7 +98,9 @@ def test_a_staged_run_is_counted_without_touching_s3(env):
 def test_the_bam_is_off_and_the_prefix_comes_from_the_file_names(env, tmp_path):
     log = tmp_path / "cr_args"
     stub = Path(env["PATH"].split(":", 1)[0]) / "cellranger"
-    stub.write_text(stub.read_text().replace("for a in", f'echo "$*" >> {log}\nfor a in', 1))
+    stub.write_text(
+        stub.read_text().replace("for a in", f'echo "$*" >> {log}\nfor a in', 1)
+    )
     assert count(env).returncode == 0
     args = log.read_text()
     assert "--create-bam=false" in args
@@ -111,7 +113,9 @@ def test_a_run_already_counted_is_left_as_it_is(env):
     result = count(env)
     assert result.returncode == 0
     assert "Already done" in result.stdout
-    assert (Path(env["RESULTS_DIR"]) / "outs/filtered_feature_bc_matrix.h5").read_text() == "kept"
+    assert (
+        Path(env["RESULTS_DIR"]) / "outs/filtered_feature_bc_matrix.h5"
+    ).read_text() == "kept"
 
 
 def test_a_reference_that_wasnt_staged_fails_with_3(env):
@@ -146,6 +150,31 @@ def test_a_cellranger_failure_fails_with_5_and_keeps_the_log_in_the_run_folder(e
 )
 def test_every_pipeline_script_parses(script):
     result = subprocess.run(
-        [shutil.which("bash"), "-n", str(script)], capture_output=True, text=True, check=False
+        [shutil.which("bash"), "-n", str(script)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+# Only these steps touch S3: the first reference download, the SRA import, staging a registered
+# sample's reads, and the final .h5ad upload. Every other step works on the shared folder.
+S3_STEPS = {"stage-reference", "fetch-sra", "stage-sample", "build-h5ad"}
+
+
+def test_only_the_steps_that_touch_s3_hold_s3_keys():
+    import yaml
+
+    template = yaml.safe_load(
+        (CELLRANGER / "cellranger-count-template.yaml").read_text()
+    )
+    with_keys = {
+        t["name"]
+        for t in template["spec"]["templates"]
+        if "container" in t
+        and any(
+            e["name"] == "AWS_ACCESS_KEY_ID" for e in t["container"].get("env") or []
+        )
+    }
+    assert with_keys == S3_STEPS
