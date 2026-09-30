@@ -486,6 +486,9 @@ describe("submitting", () => {
     fireEvent.click(confirmButton()!);
     await settle();
     expect(dialogText()).toContain("The run may have started");
+    // The target stays locked, so nothing invites another try.
+    expect(dialogText()).toContain("Check Cylinder pipeline runs to see whether it did.");
+    expect(dialogText()).not.toMatch(/try(ing)? again/);
     expect(screen.getByRole("link", { name: /Cylinder pipeline runs/ }).getAttribute("href")).toBe("/app/cyl-pipeline-runs");
     expect(confirmButton()?.disabled ?? true).toBe(true);
     expect(dialogText()).not.toContain("upstream text");
@@ -646,7 +649,8 @@ describe("one submission per target, whatever happens to the dialog", () => {
     openButton();
     await settle();
     fireEvent.click(confirmButton()!);
-    expect(dialogText()).toContain("You can close this");
+    // A refusal isn't kept once the dialog is closed, so this promises only whether it started.
+    expect(dialogText()).toContain("You can close this; the run keeps starting, and reopening this dialog shows whether it started.");
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await settle();
     expect(screen.queryByRole("dialog")).toBeNull();

@@ -350,7 +350,7 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
         {submission?.kind === "sending" && (
           <p role="status" className="text-stone-600">
             Starting the run. Large runs can take up to two minutes. You can close this; the run keeps starting, and reopening
-            this dialog shows the result.
+            this dialog shows whether it started.
           </p>
         )}
         {submission?.kind === "started" && (
@@ -376,7 +376,7 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
             <Link href="/app/cyl-pipeline-runs" className="underline hover:no-underline">
               Cylinder pipeline runs
             </Link>{" "}
-            before trying again.
+            to see whether it did.
           </div>
         )}
         {refusal !== null && !sent && (

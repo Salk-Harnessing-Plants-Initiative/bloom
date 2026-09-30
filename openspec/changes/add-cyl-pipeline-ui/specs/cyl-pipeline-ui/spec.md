@@ -241,13 +241,18 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 - **THEN** confirm stays disabled until the acknowledgement is ticked
 
 ### Requirement: Confirm dialog submits once and reports outcomes without inviting duplicate runs
-The dialog SHALL guard submission with a synchronous in-flight flag, so that repeated clicks before the request settles produce exactly one request. It SHALL report outcomes as follows:
+The dialog SHALL guard submission with a synchronous record kept per browser tab and keyed by the target's level and id (scan ids deduplicated and sorted), so that repeated clicks before the request settles produce exactly one request.
+- The dialog's target and title are fixed when it opens; later changes to its caller's target don't reach what is checked or sent.
+- Once a target is sending, has started, or may have started, it stays so for that tab until the page is reloaded, including after its dialog is closed, reopened or unmounted and across in-app navigation. Reopening shows that state instead of a confirm. Only a refusal, which proves nothing started, clears it.
+- The dialog never invites another start of a target in that state.
+
+It SHALL report outcomes as follows:
 - **Success:** replace the confirm action with a success state. It shows the returned `pipeline_run_id` and `scan_count`, notes any difference between `scan_count` and N, and links to `/app/cyl-pipeline-runs/<id>`. It says: "*Results arrive when each batch of up to 25 scans finishes; counts often stay at 0 for most of the run. Reload the traits page to see new results.*"
 - **`429`:** "*Too many requests — this limit is shared with other workflow actions, such as video generation and Cell Ranger runs. Try again in about a minute.*" Confirm is re-enabled.
-- **`502` or `504`:** a message that the run may have started, with a link to `/app/cyl-pipeline-runs`. Confirm is not re-enabled.
+- **`502`, `504`, any other `5xx` except `503`, a lost connection, or a success body without a run id and scan count:** a message that the run may have started, with a link to `/app/cyl-pipeline-runs`. Confirm is not re-enabled.
 - **`401`:** "session expired — sign in again".
 - **`503`:** the proxy's switched-off refusal (upstream 5xx reach the dialog as `502`). The returned detail, and confirm is re-enabled.
-- **`404` or `422`:** the returned detail, with correction allowed.
+- **`404` or `422` from the trigger, or the proxy's own `403`, `413`, `415` or `422`:** the returned detail, with correction allowed.
 - **Enumeration or pre-check query failure:** an error, and confirm is disabled.
 
 #### Scenario: Double click creates one request
@@ -269,6 +274,23 @@ The dialog SHALL guard submission with a synchronous in-flight flag, so that rep
 #### Scenario: Switched off after the page loaded
 - **WHEN** the proxy responds `503` with "Starting pipeline runs from Bloom is not enabled in this environment."
 - **THEN** the dialog shows that detail, doesn't say the run may have started, and confirm is re-enabled
+
+#### Scenario: Closing mid-request doesn't reopen to a fresh confirm
+- **WHEN** confirm is clicked, the dialog is closed before the request settles, and the same target's dialog is reopened
+- **THEN** the dialog shows that the run is starting, offers no enabled confirm, and no second request is made
+- **AND** once the request succeeds, the reopened dialog shows the started run
+
+#### Scenario: May-have-started survives closing and reopening
+- **WHEN** the proxy responds `504`, and the dialog is closed and the same target's dialog reopened
+- **THEN** the dialog still says the run may have started, and confirm stays disabled
+
+#### Scenario: A refusal allows another try
+- **WHEN** the proxy responds `429`, and the dialog is closed and the same target's dialog reopened
+- **THEN** confirm is enabled
+
+#### Scenario: The target is fixed when the dialog opens
+- **WHEN** the dialog opens on scans 1, 2 and 3, and its caller's target changes to scans 1 and 2 while it is open
+- **THEN** its heading still names the 3-scan title, confirm sends scans 1, 2 and 3, and after a `504` confirm stays disabled
 
 ### Requirement: Live views synchronise from Realtime without polling
 Every live view (the runs list, the drill-down and the experiment panel) SHALL subscribe to Supabase Realtime `postgres_changes`, on a channel topic unique per mounted instance. Each view SHALL:

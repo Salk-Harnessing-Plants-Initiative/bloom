@@ -10,8 +10,9 @@
  * page (a drill-down's re-run action is withdrawn by a live event). With the
  * state inside the dialog, reopening would offer a fresh confirm while the
  * first request might still start a run. Here, a target that is sending,
- * started or uncertain stays so until the page is reloaded; only a refusal
- * (nothing started) clears it.
+ * started or uncertain stays so until the page is reloaded, including across
+ * in-app navigation, which keeps this module; only a refusal (nothing started)
+ * clears it. Starting a target twice from one tab is what it's there to stop.
  */
 
 import { useSyncExternalStore } from "react";
