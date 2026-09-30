@@ -1,0 +1,56 @@
+{
+  "export_schema_version": 1,
+  "generated_at": "2026-09-29T21:00:00Z",
+  "generated_by": { "tool": "bloomctl", "version": "0.1.0a7" },
+  "selection": {
+    "experiment_ids": [12880747],
+    "scan_ids": null,
+    "filters": { "plant_age_days": [7] },
+    "scan_ids_sha256": "3f1d5c0a9e0b2d4c6a8e1f3b5d7c9e0a2b4d6f8a0c2e4b6d8f0a1c3e5b7d9f01"
+  },
+  "recipe": {
+    "recipe_key": "a0700eca4b3eeb01201008328818815d0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "recipe_key_version": 1,
+    "recipe_kind": "pipeline",
+    "chosen_by": "default",
+    "definition": {
+      "models": [
+        ["org/registry/canola-lateral", "v0", "75e1b1e7671e0b0c01176165ed6f4076"],
+        ["org/registry/canola-primary", "v0", "a6b27968b01c7640335359d2539a8ae3"]
+      ],
+      "predict_code_sha": "9a6f20c00762e327b9aea39c8e06a81443252d01",
+      "traits_code_sha": "e373b0f92639ce13feb90d619b9fd14172ce296d",
+      "predict_output_params": { "peak_threshold": 0.2 }
+    },
+    "observed": {
+      "contract_versions": ["0.1.0a9"],
+      "traits_sleap_roots_versions": ["0.1.4"],
+      "sleap_nn_versions": ["0.3.0"],
+      "predict_container_digests": [
+        "sha256:afc8da823838bff85d93013e85b8d0c18c2d4f01117a0914944df1a845c73adc"
+      ],
+      "traits_container_digests": [
+        "sha256:2cbbe602b7d397b89c4eab326d00f410f367f8c1b7fba46a927a369fcf6fc9a4"
+      ],
+      "inference_configs": [{ "device": "cpu", "batch_size": 4, "peak_threshold": 0.2 }]
+    }
+  },
+  "included": {
+    "n_scans": 12,
+    "source_ids": [219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230]
+  },
+  "excluded": [
+    {
+      "scan_id": 12894751,
+      "plant_qr_code": "qr-example-1",
+      "reason": "no_traits",
+      "available_recipes": []
+    }
+  ],
+  "other_recipes_in_selection": [
+    {
+      "recipe_key": "a73f403c578f02e4648398b5c6fe78570f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "n_scans": 12
+    }
+  ]
+}

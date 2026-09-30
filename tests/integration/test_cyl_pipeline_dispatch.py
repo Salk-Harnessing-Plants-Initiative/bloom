@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.integration.cyl_recipe_helpers import apply_recipe_rollbacks
+
 # Skip the whole module if psycopg isn't available (matches the sibling tests).
 psycopg = pytest.importorskip("psycopg")
 
@@ -1001,6 +1003,9 @@ def test_rollback_removes_everything(pg_conn):
     if MIGRATION is None or ROLLBACK is None:
         pytest.skip("migration/rollback not written yet")
     with pg_conn.cursor() as cur:
+        # add-cyl-trait-recipe-key's cyl_trait_sources.cyl_pipeline_run_id FK references
+        # cyl_pipeline_runs, so its rollbacks (newest first) run before these.
+        apply_recipe_rollbacks(cur, down_to=1)
         if RUN_EXPERIMENTS_ROLLBACK is not None:
             cur.execute(_sql_body(RUN_EXPERIMENTS_ROLLBACK))
         cur.execute(_sql_body(ROLLBACK))

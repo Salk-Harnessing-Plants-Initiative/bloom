@@ -145,7 +145,8 @@ Every request through this client carries a deliberately chosen, bounded timeout
 you expect to legitimately take longer than the default bound).
 
 **Source-aware cyl trait reads.** A scan can carry multiple `cyl_trait_sources`
-(one per pipeline run — reprocessing mints a new `source_id`), so reading
+(pipeline write-back stores one source per scan per delivery — reprocessing mints a new
+`source_id`; a legacy source covers many scans), so reading
 `cyl_scan_traits` **directly returns duplicate/cross-source rows**. Read the
 source-disambiguated views instead:
 
@@ -173,11 +174,17 @@ computation (bloom#637) — the rule itself is unchanged, only where it's comput
 
 **Loading a whole experiment.** `get_scan_traits` is per-trait — one call per
 trait name. For a wide-pivot read (all of an experiment's traits at once),
-call `get_experiment_traits(experiment_id_, source_id_, run_id_)` instead: same
-latest/`source_id`/`run_id` selection as `get_scan_traits`, but returns every
-trait for the experiment in a single round trip. Use
-`list_experiment_trait_sources(experiment_id_)` to see which sources/runs are
-available before pinning one.
+call `get_experiment_traits(experiment_id_, source_id_, run_id_, recipe_key_, scan_ids_)`
+instead: same latest/`source_id`/`run_id` selection as `get_scan_traits`, but returns every
+trait for the experiment in a single round trip, with a trailing `recipe_key` column.
+`scan_ids_` narrows any mode.
+
+Pinning one `source_id_` reads **one scan** for pipeline data, because each pipeline source
+covers one scan. To read a coherent set, pick a recipe: `list_trait_recipes(ARRAY[42])` lists
+the recipes an experiment has (with a default), `get_trait_recipe_coverage` says which scans a
+recipe leaves out and why, and `get_experiment_traits(42, recipe_key_ => …)` reads it. See
+[trait recipes and exports](../SUPABASE/trait-recipes.md).
+`list_experiment_trait_sources(experiment_id_)` still lists the individual sources.
 
 ```python
 traits = client.rpc("get_experiment_traits", {"experiment_id_": 42}).execute()
