@@ -477,7 +477,6 @@ describe("submitting", () => {
     ["a 502", () => fetchSpy.mockResolvedValue(reply(502, { detail: "upstream text" }))],
     ["a 504", () => fetchSpy.mockResolvedValue(reply(504, { detail: "upstream text" }))],
     ["a 500", () => fetchSpy.mockResolvedValue(reply(500, { detail: "upstream text" }))],
-    ["a 503", () => fetchSpy.mockResolvedValue(reply(503, { detail: "upstream text" }))],
     ["a network failure", () => fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"))],
     ["a malformed success", () => fetchSpy.mockResolvedValue(reply(200, { ok: true }))],
   ])("after %s, says the run may have started, links the runs list, and keeps confirm disabled", async (_what, arrange) => {
@@ -509,6 +508,21 @@ describe("submitting", () => {
     fireEvent.click(confirmButton()!);
     await settle();
     expect(dialogText()).toContain("scan_ids not found: [3]");
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  // The proxy maps every upstream 5xx to 502, so its only 503 is the switch's
+  // refusal, sent before the session or body is read.
+  it("shows the switched-off 503's detail, doesn't say the run may have started, and allows another try", async () => {
+    fetchSpy.mockResolvedValue(
+      reply(503, { detail: "Starting pipeline runs from Bloom is not enabled in this environment." })
+    );
+    mount();
+    await settle();
+    fireEvent.click(confirmButton()!);
+    await settle();
+    expect(dialogText()).toContain("Starting pipeline runs from Bloom is not enabled in this environment.");
+    expect(dialogText()).not.toContain("The run may have started");
     expect(confirmButton()!.disabled).toBe(false);
   });
 });

@@ -515,7 +515,7 @@
 - [x] 11.8 Implement.
 - [x] 11.9 **Test first** (added in PR 6's review, bloom#863). A server-side switch, `CYL_PIPELINE_TRIGGER_ENABLED`, which is on only for exactly `true`:
   - off hides every run action and selection on the scan, experiment, accession and drill-down pages;
-  - off makes the proxy answer 503 before reading the session or body;
+  - off makes the proxy answer 503 before reading the session or body, and the dialog shows that 503's detail as a refusal, not "may have started" (review round 2);
   - staging defaults set it `true` and prod `false`, and prod compose passes it to bloom-web (`tests/unit/test_env_defaults.py`).
 
 ## 12. Live verification on staging (before PR 6 merges)

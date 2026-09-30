@@ -246,6 +246,7 @@ The dialog SHALL guard submission with a synchronous in-flight flag, so that rep
 - **`429`:** "*Too many requests — this limit is shared with other workflow actions, such as video generation and Cell Ranger runs. Try again in about a minute.*" Confirm is re-enabled.
 - **`502` or `504`:** a message that the run may have started, with a link to `/app/cyl-pipeline-runs`. Confirm is not re-enabled.
 - **`401`:** "session expired — sign in again".
+- **`503`:** the proxy's switched-off refusal (upstream 5xx reach the dialog as `502`). The returned detail, and confirm is re-enabled.
 - **`404` or `422`:** the returned detail, with correction allowed.
 - **Enumeration or pre-check query failure:** an error, and confirm is disabled.
 
@@ -264,6 +265,10 @@ The dialog SHALL guard submission with a synchronous in-flight flag, so that rep
 #### Scenario: Expired session
 - **WHEN** the proxy responds `401`
 - **THEN** the dialog says the session expired
+
+#### Scenario: Switched off after the page loaded
+- **WHEN** the proxy responds `503` with "Starting pipeline runs from Bloom is not enabled in this environment."
+- **THEN** the dialog shows that detail, doesn't say the run may have started, and confirm is re-enabled
 
 ### Requirement: Live views synchronise from Realtime without polling
 Every live view (the runs list, the drill-down and the experiment panel) SHALL subscribe to Supabase Realtime `postgres_changes`, on a channel topic unique per mounted instance. Each view SHALL:

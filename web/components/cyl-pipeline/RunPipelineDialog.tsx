@@ -21,7 +21,8 @@
  *   any other 5xx or a lost connection may still have started a run: those
  *   say so, point at the runs list, and never offer confirm again, even after
  *   the dialog is closed and reopened. Only answers that prove nothing started
- *   (429, 401, 404, 422 and the proxy's own refusals) allow another try.
+ *   (429, 401, 404, 422 and the proxy's own refusals, its switched-off 503
+ *   included) allow another try.
  */
 
 import Dialog from "@mui/material/Dialog";
@@ -117,7 +118,10 @@ async function send(target: TriggerTarget): Promise<Settled> {
   const text = typeof detail === "string" && detail ? detail : null;
   if (res.status === 429) return { kind: "refused", message: RATE_LIMITED };
   if (res.status === 401) return { kind: "refused", message: SESSION_EXPIRED };
-  // Any 5xx, including the proxy's 502 and 504, may follow a partial trigger.
+  // The proxy maps every upstream 5xx to 502, so a 503 is its own switched-off
+  // refusal (trigger-enabled.ts), sent before the session or body is read.
+  if (res.status === 503) return { kind: "refused", message: text ?? REFUSED };
+  // Any other 5xx, including the proxy's 502 and 504, may follow a partial trigger.
   if (res.status >= 500) return { kind: "uncertain" };
   // 404 and 422 from the trigger, and the proxy's own 403/413/415/422, all come before any insert.
   return { kind: "refused", message: text ?? REFUSED };
