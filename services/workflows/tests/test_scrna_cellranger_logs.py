@@ -122,11 +122,24 @@ def test_an_unknown_step_is_refused_before_any_lookup(monkeypatch, step):
     monkeypatch.setattr(logs, "app_client", lambda: pytest.fail("DB was called"))
     status, detail = _status(7, step)
     assert status == 422
-    assert "stage-reference, stage, qc, count, cleanup" in detail
+    assert (
+        "fetch-sra, stage-reference, stage, qc, count, preprocess, cluster, build-h5ad, cleanup"
+        in detail
+    )
 
 
 def test_every_cellranger_step_can_be_asked_for():
-    assert logs.STEPS == ("stage-reference", "stage", "qc", "count", "cleanup")
+    assert logs.STEPS == (
+        "fetch-sra",
+        "stage-reference",
+        "stage",
+        "qc",
+        "count",
+        "preprocess",
+        "cluster",
+        "build-h5ad",
+        "cleanup",
+    )
 
 
 def test_an_unknown_run_is_404(db, pod_log):
