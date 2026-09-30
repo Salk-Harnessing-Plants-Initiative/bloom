@@ -387,10 +387,14 @@ describe('resolveSelection', () => {
   it.each([
     ['an invisible experiment', { experiment: 1 }, { experimentVisible: false }],
     ['an unknown scan', { scan: 12345 }, {}],
-    ['an empty selection', { experiment: 1, wave: 9 }, {}],
   ] as [string, Selection, FakeOptions][])('is not found for %s', async (_n, sel, fake) => {
     const err = await resolveSelection(fakeDb(fake).db, sel).catch((e) => e)
     expect((err as ExportError).kind).toBe('not_found')
+  })
+
+  it('tells an empty selection apart from a missing experiment', async () => {
+    const err = await resolveSelection(fakeDb().db, { experiment: 1, wave: 9 }).catch((e) => e)
+    expect((err as ExportError).kind).toBe('empty_selection')
   })
 
   it('reports a count mismatch as a changed selection', async () => {

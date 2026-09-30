@@ -37,23 +37,28 @@ describe('buildZip', () => {
 
   it('pulls the CSV lazily and yields to the event loop between slices', async () => {
     let pulled = 0
-    let ticks = 0
-    const tick = setInterval(() => (ticks += 1), 0)
     function* lazy() {
       for (let i = 0; i < 20; i++) {
         pulled += 1
-        yield new TextEncoder().encode(`row ${i}\r\n`)
+        yield new TextEncoder().encode(`row ${i}
+`)
       }
     }
-    try {
-      const p = buildZip([{ name: 'a.csv', data: lazy() }])
-      expect(pulled).toBeLessThan(20)
-      await p
-    } finally {
-      clearInterval(tick)
+    // A competing task that only runs if the build yields between slices.
+    let turns = 0
+    let running = true
+    const competitor = () => {
+      if (!running) return
+      turns += 1
+      setImmediate(competitor)
     }
+    setImmediate(competitor)
+    const p = buildZip([{ name: 'a.csv', data: lazy() }])
+    expect(pulled).toBeLessThan(20)
+    await p
+    running = false
     expect(pulled).toBe(20)
-    expect(ticks).toBeGreaterThan(0)
+    expect(turns).toBeGreaterThanOrEqual(10)
   })
 
   it('rejects when an entry fails mid-stream', async () => {

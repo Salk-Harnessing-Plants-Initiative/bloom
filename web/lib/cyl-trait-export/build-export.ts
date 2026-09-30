@@ -16,7 +16,7 @@ import { ExportError, SELECTION_CHANGED } from './errors'
 import { excludedCsv } from './excluded'
 import { BATCH_SCANS, CSV_SLICE_CELLS, PG_CONCURRENCY, SELECTION_PAGE_SIZE } from './limits'
 import { metadataCells, type ScanExtendedRow } from './metadata'
-import { mergeRecipeListings, resolveChosenBy } from './recipes'
+import { mergeRecipeListings, resolveChosenBy, type RecipeRow } from './recipes'
 import { buildSidecar, serializeSidecar, type CoverageRow, type SourceMeta } from './sidecar'
 import { pool } from './state'
 import { buildStem } from './stem'
@@ -104,9 +104,36 @@ export async function resolveSelection(
       () => db.countScans(q, signal),
       SELECTION_PAGE_SIZE
     )
-    if (scans.length === 0) throw new ExportError('not_found', 'no scans match this selection')
+    if (scans.length === 0) {
+      throw new ExportError('empty_selection', 'no scans match this selection')
+    }
     return { experiment, scans }
   })
+}
+
+/** `list_trait_recipes` per batch, merged as one call over `ids` would return it. */
+export async function listMergedRecipes(
+  db: ExportDb,
+  experimentId: number,
+  ids: number[],
+  opts: Pick<BuildOptions, 'batchSize' | 'concurrency' | 'signal' | 'onProgress'> = {}
+): Promise<RecipeRow[]> {
+  const { signal } = opts
+  const chunks = chunkIds(ids, opts.batchSize ?? BATCH_SCANS)
+  const n = chunks.length
+  let listed = 0
+  const listings = await pool(
+    chunks.map((scanIds, i) => ({ scanIds, batch: i + 1 })),
+    opts.concurrency ?? PG_CONCURRENCY,
+    async ({ scanIds, batch }) => {
+      const rows = await guarded(signal, 'recipe listing', batch, n, () =>
+        db.listRecipes(experimentId, scanIds, signal)
+      )
+      opts.onProgress?.({ phase: 'recipes', done: ++listed, total: n })
+      return rows
+    }
+  )
+  return mergeRecipeListings(chunks.map((scanIds, i) => ({ scanIds, rows: listings[i] })))
 }
 
 export async function buildExport(
@@ -125,15 +152,12 @@ export async function buildExport(
   const numbered = chunks.map((scanIds, i) => ({ scanIds, batch: i + 1 }))
 
   // Recipes, merged across batches (D2 step 3).
-  let listed = 0
-  const listings = await pool(numbered, limit, async ({ scanIds, batch }) => {
-    const rows = await guarded(signal, 'recipe listing', batch, n, () =>
-      db.listRecipes(expId, scanIds, signal)
-    )
-    opts.onProgress?.({ phase: 'recipes', done: ++listed, total: n })
-    return rows
+  const merged = await listMergedRecipes(db, expId, ids, {
+    batchSize: size,
+    concurrency: limit,
+    signal,
+    onProgress: opts.onProgress,
   })
-  const merged = mergeRecipeListings(chunks.map((scanIds, i) => ({ scanIds, rows: listings[i] })))
   const recipe = merged.find((r) => r.recipe_key === key)
   if (!recipe) throw new ExportError('not_in_selection', 'this recipe is not in the selection')
   const chosenBy = resolveChosenBy(opts.chosen, key, merged)

@@ -11,6 +11,7 @@ export type ExportErrorKind =
   | 'deadline'
   | 'cancelled'
   | 'not_found'
+  | 'empty_selection'
 
 export class ExportError extends Error {
   readonly kind: ExportErrorKind
