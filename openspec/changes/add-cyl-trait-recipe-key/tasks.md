@@ -763,6 +763,10 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       one stale run through a recycled name, and that a Workflow never recorded by
       `complete_cyl_pipeline_batch` gets no run. A repair function was rejected: that case leaves
       nothing to derive the run from.
+- [x] 9.15 **Design question C: dataset selectors** (eberrigan chose "document", 2026-09-30). No
+      behaviour change, so no test. Design D7 and `trait-recipes.md` say how to tell the modes
+      apart, and that "exactly one selector" is enforced only by `create_cyl_dataset`, not
+      against direct writes (the same as `trait_source_id` before this change).
 
 ## 8. After merge
 

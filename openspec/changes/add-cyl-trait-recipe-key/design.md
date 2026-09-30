@@ -273,6 +273,14 @@ test or a hand-applied rollback runs it as `supabase_admin`. The resulting ACLs 
   - it inner-joins `species` and not `accessions`;
   - so it can differ from `get_experiment_traits`' set in both directions;
   - neither case occurs on staging (2026-09-29).
+- **Telling the modes apart.** A source-mode dataset stores its source's `recipe_key` too, so
+  `trait_source_id IS NULL` marks recipe mode.
+- **Recorded, not enforced** (eberrigan, 2026-09-30). "Exactly one selector" is checked only
+  inside `create_cyl_dataset`, the one writer in Bloom's code. The table's policies still let
+  `authenticated` INSERT, `bloom_writer` INSERT and UPDATE, and `bloom_admin` do anything, so a
+  direct write can set a `recipe_key` that does not match the frozen rows. `trait_source_id` has
+  had the same looseness since before this change. No trigger or CHECK was added: a trigger would
+  also block `bloom_admin` corrections and change `trait_source_id`'s existing updatability.
 
 ### D8. Export sidecar v1
 

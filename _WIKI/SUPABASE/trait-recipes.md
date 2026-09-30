@@ -80,8 +80,12 @@ SELECT * FROM get_experiment_traits(12880747, recipe_key_ => '<recipe_key>');
 - **Performance boundary:** a recipe read of a large legacy source (experiment 1's `legacy:5` is
   about 13.9M rows) still exceeds PostgREST's 8 s limit; that is bloom#936.
 
-**Datasets.** `create_cyl_dataset` takes exactly one of `trait_source_id` and `recipe_key`. A
-PostgREST recipe-mode call still sends every argument:
+**Datasets.** `create_cyl_dataset` takes exactly one of `trait_source_id` and `recipe_key`.
+`cyl_datasets.recipe_key` records the recipe the function froze. A source-mode dataset stores its
+source's recipe too, so `trait_source_id IS NULL` marks recipe mode. The function is the only check:
+a direct write to `cyl_datasets` (which some roles' policies allow) can set a `recipe_key` that
+does not match the frozen rows, just as it can for `trait_source_id`. A PostgREST recipe-mode call
+still sends every argument:
 
 ```json
 {
