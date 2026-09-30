@@ -238,11 +238,12 @@
   - (j) `K`'s header has none of the crown trait names.
 - [x] 5.2 Implement `build-export.ts`.
   **(done 2026-09-30: red build-export 50 failed / 0 passed; green 50 passed. First green run had 6 failures in the random-order variants: the fake was shuffling keyset pages, which come from an ORDER BY scan_id query and are never unordered, so pageSelection correctly rejected them. The fake now shuffles only unordered results, and trait rows, which it had not been shuffling. Added the supabase-js adapter createExportDb in db.ts with db.test.ts: red 12 failed / 0 passed, green 12 passed (query shapes, captured token, abort signal, semaphore peak 3, {code,message} errors, empty scan ids refused))**
-- [ ] 5.3 **Test first.** `zip.test.ts` (node env): `zip.ts` takes an `AsyncIterable<Uint8Array>` per entry and uses synchronous `ZipDeflate`, yielding with `setImmediate` between slices.
+- [x] 5.3 **Test first.** `zip.test.ts` (node env): `zip.ts` takes an `AsyncIterable<Uint8Array>` per entry and uses synchronous `ZipDeflate`, yielding with `setImmediate` between slices.
   - Unzipped with `fflate.unzipSync`, the output holds exactly the three names with the golden bytes.
   - No input chunk exceeds the slice size.
   - A mid-stream error rejects.
-- [ ] 5.4 Implement `zip.ts`.
+- [x] 5.4 Implement `zip.ts`.
+  **(done 2026-09-30: red 4 failed / 0 passed; green 4 passed. Synchronous ZipDeflate with a setImmediate yield per slice; an abort terminates the zip and throws cancelled)**
 - [ ] 5.5 **Test first.** `jobs.test.ts`, with fake timers, an injected clock and an injected build function:
   - **Lifecycle:**
     - start → `running` with progress → `ready`, with a UUID id;
