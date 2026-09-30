@@ -4345,6 +4345,16 @@ export type Database = {
         }
         Relationships: []
       }
+      gravi_scan_timeline: {
+        Row: {
+          count: number | null
+          date_scanned: string | null
+          experiment_name: string | null
+          species_name: string | null
+          wave_number: number | null
+        }
+        Relationships: []
+      }
       gravi_scans_extended: {
         Row: {
           accession_id: number | null
@@ -4929,6 +4939,13 @@ export type Database = {
         Returns: undefined
       }
       refresh_cyl_experiment_trait_counts: { Args: never; Returns: undefined }
+      rnaseq_run_requesters: {
+        Args: { p_run_ids: number[] }
+        Returns: {
+          email: string
+          run_id: number
+        }[]
+      }
       scrna_cell_arrays: {
         Args: { ds_id: number }
         Returns: {
