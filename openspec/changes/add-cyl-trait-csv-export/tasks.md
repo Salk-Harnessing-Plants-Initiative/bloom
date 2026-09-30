@@ -137,15 +137,16 @@
 
 ## 3. Selection, merge, limits and state
 
-- [ ] 3.1 **Test first.** `recipes.test.ts`:
+- [x] 3.1 **Test first.** `recipes.test.ts`:
   - `mergeRecipeListings` over each `chunk_listings[size]`'s rows equals `chunk_listings[|S|]`;
   - `n_scans` is summed, the other fields come from the batch with the max, and `unattributed` comes from any batch;
   - rows are in `newest_source_id DESC NULLS LAST` order;
   - there is exactly one default, and none for an empty input;
   - a chunk whose `n_scans` exceeds its size is an error;
   - `resolveChosenBy` covers all four combinations.
-- [ ] 3.2 Implement `recipes.ts`.
-- [ ] 3.3 **Test first.** `selection.test.ts`:
+- [x] 3.2 Implement `recipes.ts`.
+  **(done 2026-09-30: red 12 failed / 0 passed (a first run was a collection error from calling the stub inside describe, which doesn't count; moved into the tests); green 12 passed)**
+- [x] 3.3 **Test first.** `selection.test.ts`:
   - `chunk` at sizes 1, an exact multiple, and larger than the input, numbered from 1;
   - `scanIdsSha256([12,3,7])` equals `createHash("sha256").update("3,7,12")`;
   - `buildFilters` for none, wave, age, both, and scan, and with `wave=0`/`age=0` it gives `{wave_number: 0, plant_age_days: 0}`;
@@ -153,7 +154,8 @@
   - keyset paging, with page size 2 over 6 ids (and an exact multiple), yields each id once and ends only on an empty page;
   - a fake returning half-pages still yields every id;
   - a duplicate id, and an exact count of `|S|+1`, each give the typed "selection changed" error.
-- [ ] 3.4 Implement `selection.ts` and `limits.ts`: `BATCH_SCANS`, `PG_CONCURRENCY`, `MAX_RUNNING_JOBS`, `MAX_JOBS_PER_USER`, `MAX_HELD_BYTES`, `RUNNING_JOB_RESERVE_BYTES`, `MIN_SESSION_SECONDS`, `EXPORT_MAX_SECONDS` and `RETAIN_SECONDS`.
+- [x] 3.4 Implement `selection.ts` and `limits.ts`: `BATCH_SCANS`, `PG_CONCURRENCY`, `MAX_RUNNING_JOBS`, `MAX_JOBS_PER_USER`, `MAX_HELD_BYTES`, `RUNNING_JOB_RESERVE_BYTES`, `MIN_SESSION_SECONDS`, `EXPORT_MAX_SECONDS` and `RETAIN_SECONDS`.
+  **(done 2026-09-30: red 20 failed / 0 passed; green 20 passed. limits.ts also names ABORTED_CALL_HOLD_MS = 9000 and SELECTION_PAGE_SIZE = 1000; errors.ts holds the ExportError type and the SELECTION_CHANGED message)**
 - [ ] 3.5 **Test first.** `state.test.ts`:
   - the FIFO semaphore of 3 is honoured across concurrent owners;
   - each owner has at most 3 outstanding, and owners interleave;
