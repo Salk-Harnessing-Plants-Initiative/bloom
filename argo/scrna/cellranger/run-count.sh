@@ -3,17 +3,20 @@
 set -euo pipefail
 
 # Exit codes: 0 done or already done, 3 no reference, 4 no FASTQs, 5 cellranger count failed,
-# 6 the sample name cannot be a Cell Ranger run id.
+# 6 the sample name cannot be a Cell Ranger run id, 7 the FASTQs aren't named the Illumina way
+# or a lane lacks R1 or R2.
 readonly EXIT_NO_REFERENCE=3
 readonly EXIT_NO_FASTQS=4
 readonly EXIT_CELLRANGER_FAILED=5
 readonly EXIT_BAD_SAMPLE_NAME=6
+readonly EXIT_BAD_FASTQ_NAMES=7
 
 : "${SAMPLE:?set SAMPLE (folder under raw_reads/)}"
 : "${REFERENCE:?set REFERENCE (folder under reference_genome/)}"
 BUCKET="${BUCKET:-bloomv2-workflows}"
 RUN_ID="${RUN_ID:-$SAMPLE}"
-FASTQ_SAMPLE="${FASTQ_SAMPLE:-$SAMPLE}"
+# The FASTQs' name prefix for --sample; read from the file names unless set.
+FASTQ_SAMPLE="${FASTQ_SAMPLE:-}"
 CORES="${CORES:?set CORES to the CPU request of the job}"
 MEM_GB="${MEM_GB:?set MEM_GB a little below the memory limit of the job}"
 CREATE_BAM="${CREATE_BAM:-true}"
@@ -61,10 +64,14 @@ if [ ! -f "${REF_DIR}/reference.json" ]; then
   echo "ERROR: no Cell Ranger reference at s3://${BUCKET}/reference_genome/${REFERENCE}/ (expected reference.json)"
   exit "${EXIT_NO_REFERENCE}"
 fi
-if ! ls "${FASTQ_DIR}"/*.fastq.gz >/dev/null 2>&1; then
+if ! compgen -G "${FASTQ_DIR}/*.fastq*" >/dev/null; then
   echo "ERROR: no FASTQs at s3://${BUCKET}/raw_reads/${SAMPLE}/"
   exit "${EXIT_NO_FASTQS}"
 fi
+if [ -z "${FASTQ_SAMPLE}" ]; then
+  FASTQ_SAMPLE="$(fastq-sample-prefix "${FASTQ_DIR}")" || exit "${EXIT_BAD_FASTQ_NAMES}"
+fi
+echo "FASTQ prefix: ${FASTQ_SAMPLE}"
 
 # A killed pod leaves Martian's lock behind; only this job uses this folder.
 rm -f "${CR_ID}/_lock"
