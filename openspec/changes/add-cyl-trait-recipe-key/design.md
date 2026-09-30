@@ -153,6 +153,19 @@ run matches, NULL is safer than a guess.
 also stamps `source_id` onto a re-delivering Workflow's run-scan row, so those rows do not prove
 authorship.
 
+**The run stamp is best-effort** (eberrigan, 2026-09-30). `cyl_pipeline_run_id` records the run
+the dispatcher associated with the Workflow name the writer supplied. It is not proof that the run
+produced the values.
+
+- **A recycled name can match a stale run.** The lookup reads all run-scan history, so a Workflow
+  that reuses the name of exactly one earlier run is stamped with that run. That needs a
+  `generateName` suffix collision after Argo's TTL has deleted the first Workflow. The a9 body's
+  run-scan status update already matches the name the same way (`20260928130000:159,188`).
+- **A Workflow whose name was never recorded gets no run.** Only `complete_cyl_pipeline_batch`
+  writes a name to run-scan rows (`20260817120000:195`). If the worker dies after submitting W1
+  and the retried message submits W2, W1's deliveries keep `argo_workflow_name = W1` and a NULL
+  run, and no later repair can derive one.
+
 ### D4. Backfill
 
 **One function, called twice.** `cyl_backfill_trait_source_recipe_identity()` is created and

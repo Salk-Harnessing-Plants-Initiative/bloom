@@ -757,6 +757,12 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       for a seeded source without models or shas (red: `KeyError: 'empty_payload'`). Then the
       dry-run SQL gains the column, design D1 and `trait-recipes.md` record the decision, and 8.0
       requires 0. The dev DB's dry run reports 94, all test residue.
+- [x] 9.14 **Design question B: the run stamp** (eberrigan chose "document", 2026-09-30). No
+      behaviour change, so no test. Design D3 ("The run stamp is best-effort") and the
+      `_WIKI/SUPABASE/README.md` write-back paragraph now say that `cyl_pipeline_run_id` can match
+      one stale run through a recycled name, and that a Workflow never recorded by
+      `complete_cyl_pipeline_batch` gets no run. A repair function was rejected: that case leaves
+      nothing to derive the run from.
 
 ## 8. After merge
 
