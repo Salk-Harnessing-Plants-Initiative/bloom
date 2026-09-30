@@ -37,21 +37,25 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Run `npm ci`. Read `node_modules/next/dist/docs/` on:
+- [x] 0.1 Run `npm ci`. Read `node_modules/next/dist/docs/` on:
   - route handlers and dynamic `params`;
   - `HEAD` auto-implementation;
   - `request.signal`;
   - module instances across route handlers.
 
   Confirm the installed `@supabase/supabase-js` version and the `rpc` options `count`, `head` and `.abortSignal()`, plus the `accessToken` client option and `auth.getUser(jwt)`. Record any divergence from `web/app/api/cyl/scans/[scanId]/video/route.ts`.
-- [ ] 0.2 From the root, run `npm install --save-exact fflate@<current> -w web`. Confirm that the lock diff contains only `fflate`, because a Windows install can drop Linux optional binaries. Then run `npm ci`, `npm audit --audit-level=critical` and `cd web && npm run build`. Record the version.
+  **(done 2026-09-30: next 16.3.6 (not 16.3.4 as reviewed); supabase-js, postgrest-js and auth-js 2.106.2. Confirmed in the installed typings: `abortSignal(signal: AbortSignal)`, `accessToken?: () => Promise<string | null>`, `count?: 'exact' | 'planned' | 'estimated'`, `getUser(jwt?: string)`. Route handlers take `params` as a promise and may export `HEAD`, as the video route does. Local Node is v22; production runs node:20-alpine, so only Node 20 APIs are used.)**
+- [x] 0.2 From the root, run `npm install --save-exact fflate@<current> -w web`. Confirm that the lock diff contains only `fflate`, because a Windows install can drop Linux optional binaries. Then run `npm ci`, `npm audit --audit-level=critical` and `cd web && npm run build`. Record the version.
+  **(done 2026-09-30: fflate 0.8.3 pinned exactly; the lock diff is the one `node_modules/fflate` entry. `npm audit --audit-level=critical` exits 0 (0 critical; 2 low, 7 moderate, 7 high, all pre-existing, none in fflate). A scratchpad `Zip` + synchronous `ZipDeflate` two-entry zip passes `python -m zipfile -t`. `npm run build` passes with CI's placeholder `NEXT_PUBLIC_*` env; without it, prerendering `/test` fails on the missing Supabase URL, which predates this change.)**
 - [ ] 0.3 Confirm that #976's staging Deploy has completed, and that staging PostgREST serves `list_trait_recipes` (read-only, as a staging `bloom_user`). §7 and §10 wait on this; the draft PR doesn't.
-- [ ] 0.4 Append `web/lib/cyl-trait-export/__fixtures__/** -text` to `.gitattributes`, after the `*.csv`/`*.json text eol=lf` lines.
+- [x] 0.4 Append `web/lib/cyl-trait-export/__fixtures__/** -text` to `.gitattributes`, after the `*.csv`/`*.json text eol=lf` lines.
   - Extend the whitespace-hook excludes to `^(services/workflows/vendored/|web/lib/cyl-trait-export/__fixtures__/)`.
   - Add `web/lib/cyl-trait-export/__fixtures__/.*` to the prettier exclude regex and to `.prettierignore`.
   - Check with `git check-attr text -- web/lib/cyl-trait-export/__fixtures__/golden/K.csv`, expecting `unset`.
   - **Commit this before staging any `__fixtures__` file.**
-- [ ] 0.5 Check that the dev DB carries the merged `20260930120000`–`0300` migrations (`make migrate-local`).
+  **(done 2026-09-30: committed alone, before any fixture. The rule is `-text -eol`; `git check-attr text eol` on `golden/K.csv` reports both `unset`.)**
+- [x] 0.5 Check that the dev DB carries the merged `20260930120000`–`0300` migrations (`make migrate-local`).
+  **(done 2026-09-30: `supabase_migrations.schema_migrations` on bloom_v2_dev lists 20260930120000–0300; `list_trait_recipes`, `get_trait_recipe_coverage`, `_cyl_trait_recipe_presence` and `cyl_trait_recipe_key_v1` exist, and there is one `get_experiment_traits` with the 5-argument signature.)**
 
 ## 1. Fixtures and their DB tie
 
