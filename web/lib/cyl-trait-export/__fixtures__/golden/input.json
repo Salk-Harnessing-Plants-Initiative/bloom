@@ -1072,6 +1072,12 @@
         },
         {
           "scan_id": 9,
+          "trait_name": "～tilde_score",
+          "source_id": 21,
+          "trait_value": 2.5
+        },
+        {
+          "scan_id": 9,
           "trait_name": "𝛼_angle",
           "source_id": 21,
           "trait_value": 0.100000001490116
@@ -1111,6 +1117,12 @@
           "trait_name": "Ångström_width",
           "source_id": 22,
           "trait_value": 1.5
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "～tilde_score",
+          "source_id": 22,
+          "trait_value": 3.25
         },
         {
           "scan_id": 10,

@@ -186,7 +186,7 @@ They may differ only in the sidecar's JSON formatting (whitespace and key order)
 
 **Cells:**
 - **Finite values.** Every value is a stored float4 (Context). A finite value is written as **the shortest decimal that parses back to the same float4** (user decision, 2026-09-30): `0.1`, never `0.10000000149011612`.
-  - The web takes `Math.fround` of the parsed JSON number, then the first of `toPrecision(1…9)` whose `Math.fround` equals it. `-0` is written `0`.
+  - The web takes `f = Math.fround(v)` of the parsed JSON number, finds the smallest `p` in 1…9 with `Math.fround(Number(f.toPrecision(p))) === f`, and writes `String(Number(f.toPrecision(p)))`. The `String(Number(…))` step turns `9e+1` into `90`. `-0` is written `0`.
   - Fifteen digits from PostgREST is well above float4's 9, so this is exact however many digits are sent.
   - Python's `numpy.float32` repr gives the same value.
 - **Non-finite values** are written `NaN`, `Infinity` and `-Infinity`.
