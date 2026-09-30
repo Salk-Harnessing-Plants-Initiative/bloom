@@ -117,6 +117,13 @@ rewritten.
 window, is not in provenance. Neither key sees it except through `traits_code_sha` and age.
 contracts#45 (`traits_pipeline_class`) would let a v2 key include it.
 
+**Provenance without the keyed fields** (eberrigan, 2026-09-30). Object provenance with no models
+and no code shas hashes to the empty payload's key, so all such sources share one `pipeline`
+recipe. It is documented, not special-cased: contracts requires the fields, so no bloomctl
+delivery can produce it, and keying these as `legacy:<id>` would add a fourth edit to the a9 RPC
+body. The 8.0 dry run counts them as `empty_payload`, expected 0. The dev DB's 94 test-residue
+sources are all of this kind.
+
 ### D2. scan_id is set after scan resolution, in the same transaction
 
 The source is inserted at the idempotency gate, before step 6 resolves the scan. The gate cannot

@@ -9,13 +9,15 @@
 --
 -- Output: one row of counts. Expected on staging (2026-09-29): 85 sources, 85 keyed,
 -- 10 distinct pipeline keys, 80 of 80 object-metadata sources resolved, 79 of 79 agreeing
--- with their trait rows.
+-- with their trait rows. empty_payload counts object-metadata sources with no models and no
+-- code shas, which all share one recipe key (design D1); it is expected to be 0.
 
 WITH keyed AS (
     SELECT src.id,
            CASE WHEN jsonb_typeof(src.metadata) = 'object'
                 THEN encode(sha256(convert_to(p.payload::text, 'UTF8')), 'hex')
-                ELSE 'legacy:' || src.id END AS recipe_key
+                ELSE 'legacy:' || src.id END AS recipe_key,
+           p.payload
       FROM (SELECT id, metadata FROM public.cyl_trait_sources) AS src
       CROSS JOIN LATERAL (
 -- BEGIN payload (copied from cyl_trait_recipe_payload_v1)
@@ -84,6 +86,9 @@ WITH keyed AS (
 SELECT (SELECT count(*) FROM public.cyl_trait_sources) AS sources,
        (SELECT count(*) FROM keyed WHERE recipe_key IS NOT NULL) AS keyed,
        (SELECT count(DISTINCT recipe_key) FROM keyed WHERE recipe_key NOT LIKE 'legacy:%') AS pipeline_keys,
+       (SELECT count(*) FROM keyed
+         WHERE payload = '{"models": [], "traits_code_sha": null, "predict_code_sha": null}'::jsonb)
+           AS empty_payload,
        (SELECT count(*) FROM public.cyl_trait_sources WHERE jsonb_typeof(metadata) = 'object') AS object_metadata,
        (SELECT count(*) FROM resolution) AS resolved,
        (SELECT count(*) FROM agreement) AS with_trait_rows,

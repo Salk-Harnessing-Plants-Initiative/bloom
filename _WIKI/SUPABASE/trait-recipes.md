@@ -41,8 +41,16 @@ one source reads one scan. Use `list_trait_recipes` and `recipe_key_` to read a 
 An age-window model switch inside one experiment is a different recipe.
 
 **Known blind spot.** The traits step picks a sleap-roots Pipeline class by species, mode and
-age window, and provenance does not record which. The key sees that choice only through
-`traits_code_sha` and age (talmolab/sleap-roots-contracts#45).
+age window, and provenance does not record which. The recipe key does not include age, so it
+sees that choice only through `traits_code_sha`, and through the models when an age window also
+switches them (talmolab/sleap-roots-contracts#45).
+
+**Provenance without the keyed fields.** A source whose provenance is a JSON object with no
+`predict_models` and no code shas gets the key of the empty payload, and every such source shares
+it, labelled `pipeline`. Deliveries through bloomctl cannot produce one: contracts requires those
+fields. A hand-built envelope can, because the write-back RPC does not check them. The
+pre-promotion dry run (`tests/integration/fixtures/recipe_backfill_dry_run.sql`) reports these as
+`empty_payload`, expected 0.
 
 ## Latest versus default recipe
 

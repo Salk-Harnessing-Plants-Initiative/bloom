@@ -751,12 +751,20 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       unchanged (the generator never marks arguments nullable).
 - [x] 9.12 **Go green.** The edited migrations 1 and 3 were re-applied to the dev DB as
       `postgres`.
+- [x] 9.13 **Design question A: provenance without the keyed fields** (eberrigan chose "document
+      and count", 2026-09-30). Test first: `test_dry_run_counts_sources_without_recipe_fields` runs
+      the dry-run SQL in the test transaction and expects a new `empty_payload` count to rise by one
+      for a seeded source without models or shas (red: `KeyError: 'empty_payload'`). Then the
+      dry-run SQL gains the column, design D1 and `trait-recipes.md` record the decision, and 8.0
+      requires 0. The dev DB's dry run reports 94, all test residue.
 
 ## 8. After merge
 
 - [ ] 8.0 **Before promoting staging to main: eberrigan runs a read-only dry run on prod.** Use
       the 7.2 query, which is committed at `tests/integration/fixtures/recipe_backfill_dry_run.sql`.
-      Record the counts here. Run `scripts/lint_migrations.sh origin/main` on the promotion PR.
+      Record the counts here. `empty_payload` must be 0 (design D1, "Provenance without the keyed
+      fields"); if it is not, bring the rows to eberrigan before promoting. Run
+      `scripts/lint_migrations.sh origin/main` on the promotion PR.
 - [ ] 8.1 **Read-only checks on staging after deploy:**
 
   - `count(*) WHERE recipe_key IS NULL` is 0;

@@ -501,6 +501,33 @@ def test_backfill_unresolvable_image_ids(pg_conn):
     assert counts == [baseline + len(bad)]
 
 
+DRY_RUN = Path(__file__).parent / "fixtures" / "recipe_backfill_dry_run.sql"
+EMPTY_PAYLOAD = '{"models": [], "traits_code_sha": null, "predict_code_sha": null}'
+
+
+def _dry_run(cur):
+    cur.execute(DRY_RUN.read_text(encoding="utf-8"))
+    cols = [d.name for d in cur.description]
+    return dict(zip(cols, cur.fetchone()))
+
+
+def test_dry_run_counts_sources_without_recipe_fields(pg_conn):
+    # Design D1: object provenance with no models and no code shas shares one v1 key.
+    # Real envelopes cannot produce it; the 8.0 dry run counts it so prod is checked.
+    with pg_conn.cursor() as cur:
+        before = _dry_run(cur)
+        seed_source(cur, '{"inputs": {"image_ids": []}}')
+        seed_source(cur, json.dumps(_base()))
+        after = _dry_run(cur)
+        assert after["empty_payload"] == before["empty_payload"] + 1
+        assert after["sources"] == before["sources"] + 2
+        cur.execute(
+            "SELECT public.cyl_trait_recipe_payload_v1('{}'::jsonb)::text = %s",
+            (EMPTY_PAYLOAD,),
+        )
+        assert cur.fetchone()[0] is True
+
+
 def test_backfill_never_sets_run_stamps(pg_conn):
     with pg_conn.cursor() as cur:
         _, imgs = seed_scan(cur)
