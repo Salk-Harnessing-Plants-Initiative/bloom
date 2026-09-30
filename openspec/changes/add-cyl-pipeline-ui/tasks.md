@@ -138,7 +138,9 @@
   - `page.tsx` awaits `searchParams` (typed `Promise<Record<string, string | string[] | undefined>>`) and passes the parsed values;
   - `TraitExplorer` calls `resolveSelection` **inside** its data effect, after the options are computed. A ref marks the URL params as consumed after the first load;
   - key `TraitExplorer` on `${wave}-${age}`.
-- [ ] 2.5 Verify with `cd web && npx tsc --noEmit && npm run test:unit && npm run build` and `npx prettier --check`. Then `/pre-merge` and `/review-pr`.
+- [x] 2.5 Verify with `cd web && npx tsc --noEmit && npm run test:unit && npm run build` and `npx prettier --check`. Then `/pre-merge` and `/review-pr`.
+
+  **(PR 2, #912, merged 2026-09-28 as `3d67e468`; ticked in PR 6. Its description records `tsc --noEmit` and `npm run build` passing, `npm run test:unit` 1071 tests in 85 files, Prettier not applied to `web/` (as in 8.7's note), and the review-fix commit `e03105b8`.)**
 
 ## PR 3: live read-only views
 
@@ -350,7 +352,7 @@
     - A dropped *final* event has no later event: a scan row's last transition, or the run's last rollup. It stays missing until a reconnect, a reload or Refresh.
     - Staging restarts Realtime on every deploy, so cold starts recur.
   - **Cleanup.** Queue purged (it was empty), services restarted, no run rows left.)**
-- [ ] 8.7 Verify:
+- [x] 8.7 Verify:
   - `openspec validate add-cyl-pipeline-ui --strict`;
   - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`;
   - `npx prettier --check <changed files>`;
