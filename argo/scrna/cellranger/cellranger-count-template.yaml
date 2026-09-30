@@ -120,7 +120,7 @@ spec:
         # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
         command: [bash, -c]
         args:
           - |
@@ -207,7 +207,7 @@ spec:
         # unusable reads (11) and a taken folder (12) will not fix themselves
         expression: "asInt(lastRetry.exitCode) == 10"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
         command: [fetch-sra]
         env:
           - name: SAMPLE
@@ -263,7 +263,7 @@ spec:
         # exit 4 (no FASTQs) and 7 (misnamed FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
         command: [bash, -c]
         args:
           - |
@@ -325,7 +325,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
         command: [run-qc]
         env:
           - name: SAMPLE
@@ -397,7 +397,7 @@ spec:
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
         command: [run-count]
         env:
           - name: SAMPLE
@@ -440,7 +440,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
         command: [bash, -c]
         args:
           - |
@@ -593,7 +593,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
         command: [bash, -c]
         args:
           - |

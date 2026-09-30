@@ -52,8 +52,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-8
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
