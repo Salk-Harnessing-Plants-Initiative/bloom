@@ -178,3 +178,16 @@ def test_only_the_steps_that_touch_s3_hold_s3_keys():
         )
     }
     assert with_keys == S3_STEPS
+
+
+def test_every_step_names_its_command():
+    """Argo can't look up a private image's entrypoint (it would need the pull secret)."""
+    import yaml
+
+    template = yaml.safe_load((CELLRANGER / "cellranger-count-template.yaml").read_text())
+    missing = [
+        t["name"]
+        for t in template["spec"]["templates"]
+        if "container" in t and not t["container"].get("command")
+    ]
+    assert missing == []

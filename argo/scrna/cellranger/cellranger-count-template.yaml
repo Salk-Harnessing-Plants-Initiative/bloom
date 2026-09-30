@@ -469,6 +469,8 @@ spec:
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [scrna-analysis]
         args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
         resources:
           requests: {cpu: "4", memory: 16Gi}
@@ -496,6 +498,8 @@ spec:
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [scrna-analysis]
         args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
         resources:
           requests: {cpu: "4", memory: 8Gi}
@@ -524,6 +528,8 @@ spec:
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [scrna-analysis]
         args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}", "--publish", "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"]
         env:
           - name: AWS_DEFAULT_REGION
