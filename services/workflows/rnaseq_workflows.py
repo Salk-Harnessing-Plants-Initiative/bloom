@@ -73,8 +73,54 @@ def cellranger_workflow_name(run: dict) -> str:
     return f"scrna-cellranger-{env}-{run['run_id']}-{digest}"
 
 
+def _task(
+    name: str, template: str, parameters: dict[str, str], depends: str | None = None
+):
+    task = {
+        "name": name,
+        "templateRef": {"name": CELLRANGER_TEMPLATE, "template": template},
+        "arguments": {
+            "parameters": [
+                {"name": key, "value": f"{{{{workflow.parameters.{value}}}}}"}
+                for key, value in parameters.items()
+            ]
+        },
+    }
+    if depends:
+        task["depends"] = depends
+    return task
+
+
 def build_cellranger_body(run: dict) -> dict:
-    """One sample through the template: stage-reference, then sample-pipeline."""
+    """One sample through the template: stage-reference, then sample-pipeline.
+
+    A run with SRA run IDs also downloads them with fetch-sra, alongside stage-reference,
+    and the sample's steps wait for both."""
+    sra_runs = run["params"].get("sra_runs")
+    parameters = [
+        {"name": "sample", "value": run["params"]["sample"]},
+        {"name": "reference", "value": run["params"]["reference"]},
+        {"name": "run-id", "value": run["run_key"]},
+    ]
+    tasks = [_task("stage-reference", "stage-reference", {"reference": "reference"})]
+    if sra_runs:
+        # fetch-sra reads the run IDs comma-separated, in lane order.
+        parameters.append({"name": "sra-runs", "value": ",".join(sra_runs)})
+        tasks.append(
+            _task(
+                "fetch-sra",
+                "fetch-sra",
+                {"sample": "sample", "sra-runs": "sra-runs", "run-id": "run-id"},
+            )
+        )
+    tasks.append(
+        _task(
+            "sample",
+            "sample-pipeline",
+            {"sample": "sample", "reference": "reference", "run-id": "run-id"},
+            depends="stage-reference && fetch-sra" if sra_runs else "stage-reference",
+        )
+    )
     return {
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",
@@ -96,61 +142,8 @@ def build_cellranger_body(run: dict) -> dict:
             "serviceAccountName": STEP_SERVICE_ACCOUNT,
             "imagePullSecrets": [{"name": IMAGE_PULL_SECRET}],
             "ttlStrategy": {"secondsAfterCompletion": TTL_SECONDS},
-            "arguments": {
-                "parameters": [
-                    {"name": "sample", "value": run["params"]["sample"]},
-                    {"name": "reference", "value": run["params"]["reference"]},
-                    {"name": "run-id", "value": run["run_key"]},
-                ]
-            },
-            "templates": [
-                {
-                    "name": "main",
-                    "dag": {
-                        "tasks": [
-                            {
-                                "name": "stage-reference",
-                                "templateRef": {
-                                    "name": CELLRANGER_TEMPLATE,
-                                    "template": "stage-reference",
-                                },
-                                "arguments": {
-                                    "parameters": [
-                                        {
-                                            "name": "reference",
-                                            "value": "{{workflow.parameters.reference}}",
-                                        }
-                                    ]
-                                },
-                            },
-                            {
-                                "name": "sample",
-                                "depends": "stage-reference",
-                                "templateRef": {
-                                    "name": CELLRANGER_TEMPLATE,
-                                    "template": "sample-pipeline",
-                                },
-                                "arguments": {
-                                    "parameters": [
-                                        {
-                                            "name": "sample",
-                                            "value": "{{workflow.parameters.sample}}",
-                                        },
-                                        {
-                                            "name": "reference",
-                                            "value": "{{workflow.parameters.reference}}",
-                                        },
-                                        {
-                                            "name": "run-id",
-                                            "value": "{{workflow.parameters.run-id}}",
-                                        },
-                                    ]
-                                },
-                            },
-                        ]
-                    },
-                }
-            ],
+            "arguments": {"parameters": parameters},
+            "templates": [{"name": "main", "dag": {"tasks": tasks}}],
         },
     }
 
