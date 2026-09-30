@@ -88,10 +88,14 @@ function applySelection<B extends { eq(col: string, v: unknown): B }>(b: B, q: S
 /**
  * ExportDb over supabase-js, as the verified user: the client sends the captured
  * access token on every request and has no auth session to refresh (design D2
- * "Robustness"). Every request passes through the process-wide semaphore and carries
- * an abort signal.
+ * "Robustness"). Every request carries an abort signal and, through `limitedDb`,
+ * passes through the process-wide semaphore.
  */
 export function createExportDb(accessToken: string): ExportDb {
+  return limitedDb(supabaseExportDb(accessToken))
+}
+
+function supabaseExportDb(accessToken: string): ExportDb {
   const client = createClient(
     process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -103,8 +107,7 @@ export function createExportDb(accessToken: string): ExportDb {
   const sb = client as any
 
   async function send(make: () => Builder, signal?: AbortSignal): Promise<Result> {
-    const { semaphore } = getExportState()
-    const res = await semaphore.run((sig) => Promise.resolve(make().abortSignal(sig)), signal)
+    const res = await make().abortSignal(signal ?? new AbortController().signal)
     if (res.error) throw { code: res.error.code, message: res.error.message } satisfies DbError
     return res
   }
@@ -192,5 +195,35 @@ export function createExportDb(accessToken: string): ExportDb {
       )
       return (r.data as { id: number; metadata: SourceMeta | null }[]) ?? []
     },
+  }
+}
+
+/**
+ * Wraps every method of an ExportDb in the process-wide PostgREST semaphore (design
+ * D2 "How the semaphore behaves"), so all jobs and listings together stay within
+ * PG_CONCURRENCY. The call's own abort signal both leaves the queue and, once
+ * issued, holds the slot for the statement timeout.
+ */
+export function limitedDb(db: ExportDb): ExportDb {
+  const wrap =
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>, signalAt: number) =>
+    (...args: A): Promise<R> => {
+      const signal = args[signalAt] as AbortSignal | undefined
+      return getExportState().semaphore.run((sig) => {
+        const next = [...args] as unknown[]
+        next[signalAt] = sig
+        return fn(...(next as A))
+      }, signal)
+    }
+  return {
+    experiment: wrap(db.experiment.bind(db), 1),
+    scanExperiment: wrap(db.scanExperiment.bind(db), 1),
+    pageScans: wrap(db.pageScans.bind(db), 3),
+    countScans: wrap(db.countScans.bind(db), 1),
+    accessions: wrap(db.accessions.bind(db), 1),
+    listRecipes: wrap(db.listRecipes.bind(db), 2),
+    coverage: wrap(db.coverage.bind(db), 3),
+    traits: wrap(db.traits.bind(db), 3),
+    sourceMetadata: wrap(db.sourceMetadata.bind(db), 1),
   }
 }
