@@ -303,7 +303,7 @@
   - **One chained test:** POST → status `running` → `ready` → download → unzip → golden.
 - [x] 6.4 Implement both routes.
   **(done 2026-09-30: red 15 failed / 0 passed; green 15 passed. The chained test runs POST, status polling and download through the real build and zip over the golden fake: the CSV and excluded CSV are byte-identical to the goldens and the sidecar equal apart from generated_at)**
-- [ ] 6.5 **Test first.** `recipes/route.test.ts`:
+- [x] 6.5 **Test first.** `recipes/route.test.ts`:
   - the guard runs without the session floor and job limits, and without `recipe`/`chosen`;
   - every `list_trait_recipes` call has `experiment_ids_ = [e]` and a non-empty `scan_ids_` of at most `BATCH_SCANS` ids;
   - `n_selected` and the merged rows are correct at batch sizes 1 and `|S|`;
@@ -315,8 +315,10 @@
   - a user's newer listing aborts the older one;
   - `request.signal` aborts the calls;
   - `HEAD` → `405`.
-- [ ] 6.6 Implement `recipes/route.ts`.
-- [ ] 6.7 **Test first.** The "two jobs and one listing" test: the real `jobs.ts` and recipes handler against one blocking fake. In-flight calls never exceed 3, and the listing's calls interleave with the jobs'.
+- [x] 6.6 Implement `recipes/route.ts`.
+  **(done 2026-09-30: red 17 failed / 0 passed (with 6.7 in the same file, 18 failed); green 18 passed. The file mocks BATCH_SCANS to 1, so listings run 8 batches and the limit is exercised; the batch-size-1 listings the tests need are all recorded)**
+- [x] 6.7 **Test first.** The "two jobs and one listing" test: the real `jobs.ts` and recipes handler against one blocking fake. In-flight calls never exceed 3, and the listing's calls interleave with the jobs'.
+  **(done 2026-09-30: passes with limitedDb (peak exactly 3). Proven meaningful: a throwaway copy without limitedDb fails at peak 9. Needed the process-wide semaphore moved out of the supabase adapter into limitedDb (refactor b0ea669a) so the fake could be wrapped by the real limiter)**
 
 ## 7. Measurement gate (staging, before PR A is ready)
 
