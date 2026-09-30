@@ -22,6 +22,7 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
+from tests.integration.cyl_recipe_helpers import apply_recipe_rollbacks  # noqa: E402
 from tests.integration.test_cyl_read_path import (  # noqa: E402
     _deliver,
     _get_scan_traits,
@@ -379,7 +380,8 @@ def test_authenticated_has_execute_grant(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT has_function_privilege("
-            "'authenticated', 'get_experiment_traits(bigint,bigint,text)', 'EXECUTE')"
+            "'authenticated', 'get_experiment_traits(bigint,bigint,text,text,bigint[])', "
+            "'EXECUTE')"
         )
         assert cur.fetchone()[0] is True
         cur.execute(
@@ -452,7 +454,12 @@ def test_migration_adds_no_write_capability():
 
 def test_migration_body_is_idempotent(pg_conn):
     with pg_conn.cursor() as cur:
+        # add-cyl-trait-recipe-key replaced this function; restore the state this
+        # migration was written against before re-applying it.
+        apply_recipe_rollbacks(cur, down_to=3)
         cur.execute(_sql_body(MIGRATION))  # re-apply on already-applied state
+        cur.execute("SELECT count(*) FROM pg_proc WHERE proname='get_experiment_traits'")
+        assert cur.fetchone()[0] == 1  # re-applying never leaves a second overload
         for fn, nargs in (
             ("get_experiment_traits", 3),
             ("list_experiment_trait_sources", 1),
@@ -475,6 +482,8 @@ def test_migration_body_is_idempotent(pg_conn):
 
 def test_rollback_restores_prior_state(pg_conn):
     with pg_conn.cursor() as cur:
+        # add-cyl-trait-recipe-key's rollbacks come first (newest first).
+        apply_recipe_rollbacks(cur, down_to=3)
         cur.execute(_sql_body(ROLLBACK))
         for fn in ("get_experiment_traits", "list_experiment_trait_sources"):
             cur.execute("SELECT count(*) FROM pg_proc WHERE proname=%s", (fn,))

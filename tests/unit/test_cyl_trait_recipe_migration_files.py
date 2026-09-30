@@ -205,3 +205,87 @@ def test_r2_restores_a9_region_verbatim():
         code,
         re.I,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Migration 3: recipe-aware reads
+# --------------------------------------------------------------------------- #
+
+M3 = "*_add_cyl_trait_recipe_reads.sql"
+R3 = "*_add_cyl_trait_recipe_reads_rollback.sql"
+GET_TRAITS_BASE = MIGRATIONS / "20260728000000_get_experiment_traits.sql"
+GET_TRAITS_DEF = "FUNCTION public.get_experiment_traits("
+
+
+def test_20260728000000_is_the_newest_get_experiment_traits_before_m3():
+    m3 = _one(MIGRATIONS, M3)
+    definers = sorted(
+        p.name
+        for p in MIGRATIONS.glob("*.sql")
+        if re.search(
+            r"CREATE\s+OR\s+REPLACE\s+" + re.escape(GET_TRAITS_DEF), _code(p), re.I
+        )
+    )
+    assert definers[definers.index(m3.name) - 1] == GET_TRAITS_BASE.name, definers
+
+
+def test_m3_replaces_rerunnably_and_reloads():
+    code = _code(_one(MIGRATIONS, M3))
+    assert re.search(
+        r"DROP\s+FUNCTION\s+IF\s+EXISTS\s+public\.get_experiment_traits\(bigint,\s*bigint,\s*text\)",
+        code,
+        re.I,
+    )
+    created = re.findall(
+        r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.(\w+)", code, re.I
+    )
+    assert set(created) == {
+        "get_experiment_traits",
+        "list_trait_recipes",
+        "get_trait_recipe_coverage",
+        "_cyl_trait_recipe_presence",
+    }
+    for fn in created:
+        assert re.search(
+            rf"ALTER\s+FUNCTION\s+public\.{fn}\([^)]*\)\s+OWNER\s+TO\s+postgres",
+            code,
+            re.I,
+        ), fn
+        assert re.search(
+            rf"REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+public\.{fn}\([^)]*\)\s+FROM\s+PUBLIC,\s*anon",
+            code,
+            re.I,
+        ), fn
+    assert re.search(r"NOTIFY\s+pgrst", code, re.I)
+
+
+def test_m3_adds_no_write_capability():
+    code = _code(_one(MIGRATIONS, M3)).lower()
+    assert "create policy" not in code
+    assert not re.search(r"grant\s+[^;]*\b(insert|update|delete|all)\b", code)
+
+
+def test_m3_presence_uses_index_probes():
+    code = _code(_one(MIGRATIONS, M3))
+    probes = re.findall(
+        r"LATERAL\s*\(\s*SELECT\s+1\s+FROM\s+public\.cyl_scan_traits\s+\w+\s+WHERE\s+(.*?)LIMIT\s+1\s*\)",
+        code,
+        re.I | re.S,
+    )
+    assert any(re.search(r"source_id\s*=", p, re.I) for p in probes), probes
+    assert any(re.search(r"source_id\s+IS\s+NULL", p, re.I) for p in probes), probes
+    assert not re.search(
+        r"EXISTS\s*\(\s*SELECT[^)]*FROM\s+public\.cyl_scan_traits", code, re.I
+    )
+
+
+def test_r3_restores_the_three_argument_function():
+    code = _code(_one(ROLLBACKS, R3))
+    assert re.search(
+        r"DROP\s+FUNCTION\s+IF\s+EXISTS\s+public\.get_experiment_traits\(bigint,\s*bigint,\s*text,\s*text,\s*bigint\[\]\)",
+        code,
+        re.I,
+    )
+    assert "run_id_        text   DEFAULT NULL\n) RETURNS TABLE (" in _one(
+        ROLLBACKS, R3
+    ).read_text(encoding="utf-8")

@@ -334,7 +334,7 @@ migration at push time (`20260929204846` on 2026-09-29). It is re-checked with
 |---|---|---|
 | 1 | `<T>0000_add_cyl_trait_recipe_key.sql` | Helpers, backfill function, the recipe and run columns, named FKs and CHECKs, three indexes, backfill call, `NOTIFY pgrst` |
 | 2 | `<T>0100_stamp_cyl_trait_source_recipe_and_run.sql` | The a9 body with the D2 and D3 edits, the `20260928130100` ACL, backfill call |
-| 3 | `<T>0200_add_cyl_trait_recipe_reads.sql` | `get_experiment_traits` replaced; `list_trait_recipes`; `get_trait_recipe_coverage`; `NOTIFY pgrst` |
+| 3 | `<T>0200_add_cyl_trait_recipe_reads.sql` | `_cyl_trait_recipe_presence` (the internal D5 presence helper, same grants as the read functions); `get_experiment_traits` replaced; `list_trait_recipes`; `get_trait_recipe_coverage`; `NOTIFY pgrst` |
 | 4 | `<T>0300_add_cyl_dataset_recipe_mode.sql` | `cyl_datasets.recipe_key` with `cyl_datasets_recipe_key_format_check` and backfill; `create_cyl_dataset` replaced; `NOTIFY pgrst` |
 
 **Constraint and index names.**

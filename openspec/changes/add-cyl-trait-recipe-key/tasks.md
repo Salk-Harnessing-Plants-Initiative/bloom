@@ -303,7 +303,7 @@ invisible to PostgREST.
 
 ### Tests first (red)
 
-- [ ] 4.1 **Fixture and expected results,** in a new file
+- [x] 4.1 **Fixture and expected results,** in a new file
   `tests/integration/test_cyl_trait_recipes_read.py`.
   - Every source is seeded with a `recipe_key` and a `scan_id` consistent with its rows, except
     sources 16, 17 and 22, which are deliberately inconsistent.
@@ -353,20 +353,20 @@ invisible to PostgREST.
   | `no_traits` | `i`, `j` |
 
   `f`'s `available_recipes` is `[K1, K2, unattributed]` under `COLLATE "C"`.
-- [ ] 4.2 **`list_trait_recipes` tests.** Cover the table rows above, plus:
+- [x] 4.2 **`list_trait_recipes` tests.** Cover the table rows above, plus:
   - intersection (`list(E1, [a, <E2 scan>])`);
   - empty arrays for each argument;
   - both arguments NULL raises;
   - the legacy `definition` is `{source_id, source_name}`;
   - `unattributed` has a NULL `definition`, `newest_source_id` and `recipe_key_version`;
   - `definition` hashes to `recipe_key` on every pipeline row.
-- [ ] 4.3 **`get_trait_recipe_coverage` tests.** Cover the coverage table, plus:
+- [x] 4.3 **`get_trait_recipe_coverage` tests.** Cover the coverage table, plus:
   - an explicit `legacy:L` pick (the pipeline-only scans become `other_recipe`);
   - an all-`no_traits` selection returns a NULL `recipe_key`;
   - a random 64-hex key raises;
   - `K3`, which is stored, is accepted;
   - a one-scan call.
-- [ ] 4.4 **`get_experiment_traits` recipe-mode tests.** Cover:
+- [x] 4.4 **`get_experiment_traits` recipe-mode tests.** Cover:
   - one recipe only;
   - `e` reads from source 45;
   - `a` returns A from 50, and not B;
@@ -379,42 +379,42 @@ invisible to PostgREST.
   - each of the three selector pairs raises;
   - `scan_ids_` narrowing in all four modes, including an empty array and E2's scan ids;
   - the `recipe_key` column value in every mode.
-- [ ] 4.5 `test_result_columns_and_order`: `cursor.description` names equal the twelve spec
+- [x] 4.5 `test_result_columns_and_order`: `cursor.description` names equal the twelve spec
   columns in order, in every mode.
-- [ ] 4.6 `test_functions_agree_on_source_of_recipe`. For every `included` coverage row, every
+- [x] 4.6 `test_functions_agree_on_source_of_recipe`. For every `included` coverage row, every
   recipe-read row for that scan has the same `source_id`. §5 adds the dataset leg.
-- [ ] 4.7 **Default-path parity,** in one transaction:
+- [x] 4.7 **Default-path parity,** in one transaction:
   1. `_apply_recipe_rollbacks(cur, down_to=3)`, then capture `(E1)`, `(E1, source_id_)` and
      `(E1, run_id_)`;
   2. apply `_sql_body(M3)`, then capture the first eleven columns;
   3. assert both captures are equal, in the same order.
-- [ ] 4.8 **Grants.**
+- [x] 4.8 **Grants.**
   - For each of `bloom_agent`, `bloom_user` and `bloom_admin`: `SET LOCAL ROLE`, then call all
     three functions in all five modes; each call returns rows.
   - `authenticated`: the grant is present.
   - `anon`: `has_function_privilege` is false.
   - `prosecdef = false`.
-- [ ] 4.9 **Gateway tests.**
+- [x] 4.9 **Gateway tests.**
   - bloommcp's exact three-key body returns HTTP 200, a JSON array, and no PGRST203.
   - `list_trait_recipes` with `{"experiment_ids_": [1]}` returns 200.
   - With the anon key, `get_experiment_traits` returns 401 or 403.
-- [ ] 4.10 **Migration and rollback.**
-  - [ ] 4.10.1 `test_migration_3_body_is_idempotent`: after re-application there is one
+- [x] 4.10 **Migration and rollback.**
+  - [x] 4.10.1 `test_migration_3_body_is_idempotent`: after re-application there is one
     five-argument overload.
-  - [ ] 4.10.2 `test_rollback_3_restores_three_arg_function`.
+  - [x] 4.10.2 `test_rollback_3_restores_three_arg_function`.
     1. After `_apply_recipe_rollbacks(cur, down_to=3)`, capture `prosecdef`, `provolatile`,
        `proconfig` and `_acl_set`.
     2. `DROP` the function, apply `_sql_body(20260728000000)`, and capture again.
     3. The two captures are equal, and neither new function exists.
     4. Re-applying M3 restores the five-argument function.
-  - [ ] 4.10.3 **Unit tests, written before 4.13:**
+  - [x] 4.10.3 **Unit tests, written before 4.13:**
     - `test_20260728000000_is_the_newest_get_experiment_traits_before_m3`;
     - M3 has `DROP FUNCTION IF EXISTS`, `CREATE OR REPLACE`, `OWNER TO postgres` and
       `NOTIFY pgrst`, and adds no write grant or policy;
     - its presence SQL has `LATERAL … LIMIT 1` probes against `cyl_scan_traits`, including an
       `IS NULL` arm, and has no `EXISTS (SELECT … FROM cyl_scan_traits`.
-  - [ ] 4.10.4 `test_rollback_1_still_refuses_with_m3_live`: after R2 only, R1 raises.
-- [ ] 4.11 **Update the existing tests that pin the old signature.** Each keeps its original
+  - [x] 4.10.4 `test_rollback_1_still_refuses_with_m3_live`: after R2 only, R1 raises.
+- [x] 4.11 **Update the existing tests that pin the old signature.** Each keeps its original
   assertion.
   - `test_cyl_experiment_traits.py:453` and `:476`: start each with
     `_apply_recipe_rollbacks(cur, down_to=3)`. Each also asserts exactly one
@@ -423,18 +423,25 @@ invisible to PostgREST.
     `get_experiment_traits(bigint,bigint,text,text,bigint[])`.
   - `test_cyl_experiment_summary_counts.py:533` and `:548`: `pronargs` becomes 5, for
     `get_experiment_traits` only. The three-positional-argument oracle resolves unchanged.
-- [ ] 4.12 **Record the red check.** Run 4.2–4.11 against the §3 schema. Expected green by design:
+- [x] 4.12 **Record the red check.** Run 4.2–4.11 against the §3 schema. Expected green by design:
   - 4.10.4;
   - the oracle usage in the summary-counts tests.
 
+  **Observed (2026-09-29):** 44 failed: every new recipe-read test, plus the edited existing tests
+  that now expect the five-argument form. The unedited existing read tests (default path, source
+  and run pins, cross-experiment isolation, summary-count oracles) stayed green, as expected. After
+  4.13: 407 passed, 7 skipped (gateway tests, which run only in CI). Two test bugs were fixed on the
+  way: a missing savepoint after an expected raise, and re-creating the old body as
+  `supabase_admin` instead of `postgres` (owner and default grants differ).
+
 ### Implementation (green)
 
-- [ ] 4.13 Write `supabase/migrations/<T>0200_add_cyl_trait_recipe_reads.sql` (design D5, D6).
+- [x] 4.13 Write `supabase/migrations/<T>0200_add_cyl_trait_recipe_reads.sql` (design D5, D6).
   - Write its rollback R3, whose header says R4 must run first.
   - Add a header note to `supabase/rollbacks/20260728000000_get_experiment_traits_rollback.sql`
     saying R3 must be applied first.
   - Edit the three function entries in the types files, with the scoped `gen-types` diff check.
-- [ ] 4.14 **Go green.** Run section 4, then:
+- [x] 4.14 **Go green.** Run section 4, then:
   - `test_cyl_experiment_traits.py`;
   - `test_cyl_experiment_summary_counts.py`;
   - `test_cyl_read_path.py`;

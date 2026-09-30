@@ -1680,6 +1680,8 @@ export interface Database {
           experiment_id_: number
           run_id_?: string
           source_id_?: number
+          recipe_key_?: string
+          scan_ids_?: number[]
         }
         Returns: {
           scan_id: number
@@ -1693,6 +1695,7 @@ export interface Database {
           trait_name: string
           source_id: number | null
           trait_value: number | null
+          recipe_key: string | null
         }[]
       }
       list_experiment_trait_sources: {
@@ -1703,6 +1706,37 @@ export interface Database {
           source_id: number
           source_name: string
           pipeline_run_id: string | null
+        }[]
+      }
+      list_trait_recipes: {
+        Args: {
+          experiment_ids_?: number[]
+          scan_ids_?: number[]
+        }
+        Returns: {
+          recipe_key: string
+          recipe_key_version: number | null
+          recipe_kind: string
+          definition: Json | null
+          n_scans: number
+          newest_source_id: number | null
+          is_default: boolean
+        }[]
+      }
+      get_trait_recipe_coverage: {
+        Args: {
+          experiment_ids_?: number[]
+          scan_ids_?: number[]
+          recipe_key_?: string
+        }
+        Returns: {
+          scan_id: number
+          experiment_id: number
+          plant_qr_code: string
+          recipe_key: string | null
+          status: string
+          source_id: number | null
+          available_recipes: string[]
         }[]
       }
       get_experiment_summary_counts: {

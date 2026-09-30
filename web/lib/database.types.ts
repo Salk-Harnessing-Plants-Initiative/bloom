@@ -4572,6 +4572,17 @@ export type Database = {
       }
     }
     Functions: {
+      _cyl_trait_recipe_presence: {
+        Args: { experiment_ids_: number[]; scan_ids_: number[] }
+        Returns: {
+          experiment_id: number
+          has_traits: boolean
+          plant_qr_code: string
+          recipe_key: string
+          scan_id: number
+          source_id: number
+        }[]
+      }
       _settle_cyl_pipeline_run: {
         Args: { p_run_id: number }
         Returns: undefined
@@ -4659,6 +4670,10 @@ export type Database = {
         Returns: undefined
       }
       custom_access_token_hook: { Args: { event: Json }; Returns: Json }
+      cyl_backfill_trait_source_recipe_identity: {
+        Args: never
+        Returns: number
+      }
       cyl_experiment_search: {
         Args: { p_limit?: number; p_query: string; p_species?: string }
         Returns: {
@@ -4680,6 +4695,8 @@ export type Database = {
         }
         Returns: Json
       }
+      cyl_trait_recipe_key_v1: { Args: { metadata: Json }; Returns: string }
+      cyl_trait_recipe_payload_v1: { Args: { metadata: Json }; Returns: Json }
       dblink: { Args: { "": string }; Returns: Record<string, unknown>[] }
       dblink_cancel_query: { Args: { "": string }; Returns: string }
       dblink_close: { Args: { "": string }; Returns: string }
@@ -4738,7 +4755,13 @@ export type Database = {
         }[]
       }
       get_experiment_traits: {
-        Args: { experiment_id_: number; run_id_?: string; source_id_?: number }
+        Args: {
+          experiment_id_: number
+          recipe_key_?: string
+          run_id_?: string
+          scan_ids_?: number[]
+          source_id_?: number
+        }
         Returns: {
           accession_name: string
           date_scanned: string
@@ -4746,6 +4769,7 @@ export type Database = {
           plant_age_days: number
           plant_id: number
           plant_qr_code: string
+          recipe_key: string
           scan_id: number
           source_id: number
           trait_name: string
@@ -4785,6 +4809,22 @@ export type Database = {
         Args: never
         Returns: {
           id: number
+        }[]
+      }
+      get_trait_recipe_coverage: {
+        Args: {
+          experiment_ids_?: number[]
+          recipe_key_?: string
+          scan_ids_?: number[]
+        }
+        Returns: {
+          available_recipes: string[]
+          experiment_id: number
+          plant_qr_code: string
+          recipe_key: string
+          scan_id: number
+          source_id: number
+          status: string
         }[]
       }
       get_unique_categories: {
@@ -4951,6 +4991,18 @@ export type Database = {
           pipeline_run_id: string
           source_id: number
           source_name: string
+        }[]
+      }
+      list_trait_recipes: {
+        Args: { experiment_ids_?: number[]; scan_ids_?: number[] }
+        Returns: {
+          definition: Json
+          is_default: boolean
+          n_scans: number
+          newest_source_id: number
+          recipe_key: string
+          recipe_key_version: number
+          recipe_kind: string
         }[]
       }
       record_bloommcp_usage: {
