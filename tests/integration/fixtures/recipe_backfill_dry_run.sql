@@ -10,7 +10,9 @@
 -- Output: one row of counts. Expected on staging (2026-09-29): 85 sources, 85 keyed,
 -- 10 distinct pipeline keys, 80 of 80 object-metadata sources resolved, 79 of 79 agreeing
 -- with their trait rows. empty_payload counts object-metadata sources with no models and no
--- code shas, which all share one recipe key (design D1); it is expected to be 0.
+-- code shas, which all share one recipe key (design D1); it is expected to be 0. unplaced
+-- counts the sources that would keep a NULL scan_id (5 on staging); every recipe read probes
+-- each selected scan against each of them.
 
 WITH keyed AS (
     SELECT src.id,
@@ -91,5 +93,7 @@ SELECT (SELECT count(*) FROM public.cyl_trait_sources) AS sources,
            AS empty_payload,
        (SELECT count(*) FROM public.cyl_trait_sources WHERE jsonb_typeof(metadata) = 'object') AS object_metadata,
        (SELECT count(*) FROM resolution) AS resolved,
+       (SELECT count(*) FROM public.cyl_trait_sources)
+           - (SELECT count(*) FROM resolution) AS unplaced,
        (SELECT count(*) FROM agreement) AS with_trait_rows,
        (SELECT count(*) FROM agreement WHERE agrees) AS agreeing;

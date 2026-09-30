@@ -528,6 +528,20 @@ def test_dry_run_counts_sources_without_recipe_fields(pg_conn):
         assert cur.fetchone()[0] is True
 
 
+def test_dry_run_counts_unplaced_sources(pg_conn):
+    # Every recipe read probes each selected scan against every source with no scan_id,
+    # so 8.0 records how many prod sources would stay unplaced.
+    with pg_conn.cursor() as cur:
+        before = _dry_run(cur)
+        scan_id, imgs = seed_scan(cur)
+        seed_source(cur, _meta([str(i) for i in imgs]))
+        seed_source(cur, None)
+        after = _dry_run(cur)
+        assert after["sources"] == before["sources"] + 2
+        assert after["unplaced"] == before["unplaced"] + 1
+        assert after["unplaced"] == after["sources"] - after["resolved"]
+
+
 def test_backfill_never_sets_run_stamps(pg_conn):
     with pg_conn.cursor() as cur:
         _, imgs = seed_scan(cur)

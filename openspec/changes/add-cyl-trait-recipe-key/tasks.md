@@ -767,13 +767,20 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       behaviour change, so no test. Design D7 and `trait-recipes.md` say how to tell the modes
       apart, and that "exactly one selector" is enforced only by `create_cyl_dataset`, not
       against direct writes (the same as `trait_source_id` before this change).
+- [x] 9.16 **Design question D: task 8.0** (eberrigan, 2026-09-30). No agreement gate: images
+      are not moved to other scans, so the backfill cannot put a source on the wrong scan;
+      `agreeing` stays a recorded count. The dry run gains a record-only `unplaced` column, the
+      sources that would keep a NULL `scan_id`. Test first:
+      `test_dry_run_counts_unplaced_sources` (red: `KeyError: 'unplaced'`).
 
 ## 8. After merge
 
 - [ ] 8.0 **Before promoting staging to main: eberrigan runs a read-only dry run on prod.** Use
       the 7.2 query, which is committed at `tests/integration/fixtures/recipe_backfill_dry_run.sql`.
       Record the counts here. `empty_payload` must be 0 (design D1, "Provenance without the keyed
-      fields"); if it is not, bring the rows to eberrigan before promoting. Run
+      fields"); if it is not, bring the rows to eberrigan before promoting. Record `unplaced`
+      next to staging's 5: every recipe read costs about (selected scans) x `unplaced` index
+      probes, and staging's 18,471 x 5 took 711 ms (7.3). Run
       `scripts/lint_migrations.sh origin/main` on the promotion PR.
 - [ ] 8.1 **Read-only checks on staging after deploy:**
 
