@@ -205,14 +205,15 @@
   - `excludedCsv` equals its golden files, header-only included.
 - [x] 4.4 Implement `sidecar.ts` and `excluded.ts`.
   **(done 2026-09-30: red 16 failed / 0 passed; green 16 passed, byte-identical to the three hand-written golden sidecars and excluded CSVs)**
-- [ ] 4.5 **Test first.** `stem.test.ts`:
+- [x] 4.5 **Test first.** `stem.test.ts`:
   - `diversity-screen_wave3_day0_legacy-12345_20261002`;
   - a 64-hex key, `unattributed`, and a scan stem;
   - an all-symbol name → `experiment-<id>`;
   - a 200-character name cut to 60 with no trailing `-`;
   - an injected `Date` at 23:30 in UTC−8, which gives the next UTC day;
   - every output matches `^[a-z0-9_-]+$`.
-- [ ] 4.6 Implement `stem.ts`.
+- [x] 4.6 Implement `stem.ts`.
+  **(done 2026-09-30: red 14 failed / 0 passed; green 14 passed)**
 
 ## 5. Build, zip and jobs
 
