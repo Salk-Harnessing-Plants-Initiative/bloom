@@ -2,7 +2,7 @@
 
 ### Requirement: Trait source recipe and run columns
 
-`cyl_trait_sources` SHALL carry nullable `recipe_key text`, `recipe_key_version smallint`, `scan_id bigint`, `argo_workflow_name text` and `cyl_pipeline_run_id bigint` columns, with `scan_id` referencing `cyl_scans(id)` and `cyl_pipeline_run_id` referencing `cyl_pipeline_runs(id)`, both `ON DELETE SET NULL`.
+`cyl_trait_sources` SHALL carry nullable `recipe_key text`, `recipe_key_version smallint`, `scan_id bigint`, `argo_workflow_name text` and `cyl_pipeline_run_id bigint` columns (together, the *recipe and run columns*), with `scan_id` referencing `cyl_scans(id)` and `cyl_pipeline_run_id` referencing `cyl_pipeline_runs(id)`, both `ON DELETE SET NULL`.
 
 **Named constraints.** The foreign keys SHALL be named `cyl_trait_sources_scan_id_fkey` and
 `cyl_trait_sources_cyl_pipeline_run_id_fkey`. Two CHECK constraints SHALL restrict the new
@@ -14,8 +14,8 @@ columns:
 **Indexes.** `cyl_trait_sources(recipe_key)`, `cyl_trait_sources(scan_id)` and
 `cyl_pipeline_run_scans(argo_workflow_name)` SHALL be indexed.
 
-**Access.** None of the five columns SHALL be readable by `bloom_workflows`. Its column-scoped
-`SELECT` on this table SHALL stay exactly `(id, metadata, idempotency_key)`.
+**Access.** None of the recipe and run columns SHALL be readable by `bloom_workflows`. Its
+column-scoped `SELECT` on this table SHALL be exactly `(id, metadata, idempotency_key)`.
 
 #### Scenario: A malformed recipe_key is rejected
 
@@ -38,7 +38,7 @@ columns:
 #### Scenario: Deleting a scan or run keeps the source
 
 - **WHEN** a scan whose trait rows have been deleted is itself deleted, or a `cyl_pipeline_runs`
-  row referenced by a source is deleted
+  row with no remaining `cyl_pipeline_run_scans` rows, referenced by a source, is deleted
 - **THEN** the delete succeeds, and the source row remains with `scan_id` (respectively
   `cyl_pipeline_run_id`) set to NULL
 
@@ -69,12 +69,13 @@ includes `scan_key`, `inputs`, `params` (and so `param_hash`), `idempotency_key`
 and each model's `root_type` and `sleap_nn_version`.
 
 **How the helpers behave.**
-- Both helpers SHALL be `IMMUTABLE`.
+- Both helpers SHALL be `IMMUTABLE` and owned by `postgres`.
 - Both SHALL return NULL for NULL or non-object input.
 - Neither SHALL raise for any jsonb input.
 
 **Access.** `EXECUTE` on both helpers SHALL be revoked from `PUBLIC` and `anon`, and granted to
-`bloom_agent`, `bloom_user`, `bloom_admin` and `authenticated`.
+`bloom_agent`, `bloom_user`, `bloom_admin` and `authenticated`. `service_role` keeps the
+`EXECUTE` it holds through Supabase default privileges.
 
 #### Scenario: The key ignores fields outside the payload
 
@@ -121,11 +122,12 @@ and each model's `root_type` and `sleap_nn_version`.
   hashed by `cyl_trait_recipe_key_v1`
 - **THEN** two vectors share a key exactly when their contracts idempotency payloads, with
   `scan_key`, `images_checksum` and `param_hash` held equal, are equal. The only exceptions are
-  vectors marked as the documented numeric-scale divergence.
+  vector pairs marked as the documented divergence: an integer versus an integer-valued float
+  (`1` versus `1.0`), which contracts' `canonical_json` collapses and jsonb keeps distinct.
 
 ### Requirement: Write-back stamps each new source with its recipe, scan, Workflow and run
 
-When a delivery creates a source, `insert_cyl_result_envelope(jsonb, text)` SHALL set that source's five new columns in the same transaction.
+When a delivery creates a source, `insert_cyl_result_envelope(jsonb, text)` SHALL set that source's recipe and run columns in the same transaction.
 
 **The values:**
 - `recipe_key` is `cyl_trait_recipe_key_v1(provenance)`, and `recipe_key_version` is `1`.
@@ -136,7 +138,7 @@ When a delivery creates a source, `insert_cyl_result_envelope(jsonb, text)` SHAL
   NULL, when no such row exists, or when more than one distinct `run_id` matches. The lookup SHALL
   NOT require a row for the resolved scan.
 
-**On a no-op re-delivery,** the RPC SHALL NOT change any of the five columns, whatever
+**On a no-op re-delivery,** the RPC SHALL NOT change any of the recipe and run columns, whatever
 `p_argo_workflow_name` it receives. These columns are written once, by the delivery that creates
 the source or by the backfill. The provenance-immutability rule continues to cover `metadata`,
 `name` and `idempotency_key`.
@@ -193,7 +195,7 @@ It SHALL NOT insert `cyl_pipeline_run_scans` rows.
 
 - **WHEN** an already-ingested envelope is delivered again under a different
   `p_argo_workflow_name`
-- **THEN** the existing source's five new columns are unchanged
+- **THEN** the existing source's recipe and run columns are unchanged
 
 #### Scenario: A failed delivery leaves no source
 
@@ -213,25 +215,28 @@ It SHALL NOT insert `cyl_pipeline_run_scans` rows.
 Bloom SHALL provide `cyl_backfill_trait_source_recipe_identity()`, which sets `recipe_key`, `recipe_key_version` and `scan_id` wherever they are NULL on `cyl_trait_sources`, and the recipe-identity and write-back migrations SHALL each call it.
 
 **What the backfill sets:**
-- `recipe_key` is `cyl_trait_recipe_key_v1(metadata)`, or `'legacy:' || id` when `metadata` is
-  NULL.
+- `recipe_key` is `cyl_trait_recipe_key_v1(metadata)` when `metadata` is a jsonb object, and
+  `'legacy:' || id` otherwise (NULL or any non-object `metadata`).
 - `recipe_key_version` is `1` wherever `recipe_key` is set.
-- `scan_id` is set only for sources with non-NULL `metadata`, and only when
+- `scan_id` is set only for sources whose `metadata` is an object, and only when
   `metadata->'inputs'->'image_ids'` meets all of these conditions:
   - it is a non-empty array;
-  - every element is numeric text;
+  - every `jsonb_array_elements_text` value matches `^[0-9]+$`;
   - every element matches a `cyl_images` row with a non-NULL `scan_id`;
   - those rows name exactly one distinct scan.
 
   This is the write-back RPC's own resolution rule.
 
-**Failures leave NULL.** A source that fails the `scan_id` rule SHALL keep a NULL `scan_id`, and
-the function SHALL report the count with `RAISE NOTICE`. It SHALL NOT raise.
+**Failures leave NULL.** A source that fails the `scan_id` rule SHALL keep a NULL `scan_id`. The
+function SHALL report, with `RAISE NOTICE 'cyl recipe backfill: % source(s) with unresolved
+image_ids'`, the number of object-`metadata` sources left with a NULL `scan_id` after it runs. It
+SHALL NOT raise.
 
 **What it leaves alone.** It SHALL NOT set `argo_workflow_name` or `cyl_pipeline_run_id`, SHALL
 NOT modify `metadata`, `name` or `idempotency_key`, and SHALL NOT read `cyl_scan_traits`.
 
-**Access.** Its `EXECUTE` SHALL be revoked from every role except its owner.
+**Access.** It SHALL be owned by `postgres`, with `EXECUTE` revoked from `PUBLIC`, `anon`,
+`authenticated` and `service_role`.
 
 #### Scenario: Pipeline sources get a recipe and a scan
 
@@ -241,12 +246,14 @@ NOT modify `metadata`, `name` or `idempotency_key`, and SHALL NOT read `cyl_scan
 
 #### Scenario: Backfilled scan_id agrees with trait rows
 
-- **WHEN** a backfilled pipeline source has `cyl_scan_traits` rows
+- **WHEN** a backfilled pipeline source's `cyl_scan_traits` rows were written by the write-back
+  RPC
 - **THEN** each of those rows has `scan_id` equal to the source's `scan_id`
 
 #### Scenario: Legacy sources get a pseudo-recipe
 
-- **WHEN** the backfill runs over a source whose `metadata` is NULL
+- **WHEN** the backfill runs over a source whose `metadata` is NULL, or is a non-object such as
+  `'[]'` or JSON `null`
 - **THEN** its `recipe_key` is `legacy:<its id>`, its `recipe_key_version` is 1, and its `scan_id`
   is NULL
 
@@ -263,18 +270,18 @@ NOT modify `metadata`, `name` or `idempotency_key`, and SHALL NOT read `cyl_scan
 
 #### Scenario: A source written between the two migrations is backfilled
 
-- **WHEN** a source is created by the pre-change RPC body after the recipe-identity migration
+- **WHEN** a source is created by the `20260928130000` RPC body after the recipe-identity migration
   commits and before the write-back migration runs
 - **THEN** after the write-back migration, that source has its `recipe_key` and `scan_id` set
 
 #### Scenario: Re-running the backfill changes nothing
 
 - **WHEN** the backfill runs a second time
-- **THEN** no row's five new columns change
+- **THEN** no row's recipe and run columns change
 
 ### Requirement: Recipe-identity migrations are re-runnable and have exact rollbacks
 
-The recipe-identity migration and the write-back migration SHALL be additive and forward-only, re-runnable as the newest migration, and paired with rollback scripts under `supabase/rollbacks/`.
+The recipe-identity migration (`*_add_cyl_trait_recipe_key.sql`) and the write-back migration (`*_stamp_cyl_trait_source_recipe_and_run.sql`) SHALL be additive and forward-only, re-runnable as the newest migration, and paired with rollback scripts under `supabase/rollbacks/`.
 
 **The recipe-identity migration** SHALL set `lock_timeout` for its transaction, and SHALL end with
 `NOTIFY pgrst, 'reload schema'`.
@@ -284,11 +291,13 @@ The recipe-identity migration and the write-back migration SHALL be additive and
 
 **The recipe-identity rollback:**
 - SHALL raise without changing anything if the body of any live function other than the three it
-  drops still references `recipe_key`, `cyl_pipeline_run_id` or `cyl_trait_recipe_key_v1`;
-- otherwise SHALL drop the five columns with their constraints and indexes, the two helpers, and
-  the backfill function.
+  drops still references `recipe_key`, `cyl_pipeline_run_id`, `cyl_trait_recipe_key_v1` or
+  `cyl_trait_recipe_payload_v1`;
+- otherwise SHALL drop the recipe and run columns with their constraints and indexes, the
+  `cyl_pipeline_run_scans_argo_workflow_name_idx` index, the two helpers, and the backfill
+  function.
 
-**Types.** The generated `database.types.ts` copies SHALL gain the five columns.
+**Types.** The generated `database.types.ts` copies SHALL gain the recipe and run columns.
 
 #### Scenario: Re-applying the migration bodies is idempotent
 
@@ -299,7 +308,7 @@ The recipe-identity migration and the write-back migration SHALL be additive and
 #### Scenario: The write-back rollback restores a9 behavior and grants
 
 - **WHEN** the write-back rollback is applied after the forward migration
-- **THEN** a fresh delivery leaves all five new columns NULL, the cross-Workflow re-delivery
+- **THEN** a fresh delivery leaves all the recipe and run columns NULL, the cross-Workflow re-delivery
   fallback still reports `status_update_matched = true`, and `EXECUTE` is held exactly as in
   `20260928130100`
 

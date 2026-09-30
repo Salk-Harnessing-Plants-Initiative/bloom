@@ -8,14 +8,15 @@ Bloom SHALL provide `create_cyl_dataset(name text, experiment_id bigint, trait_s
 filters:
 - when `timepoints` is non-null, only scans whose `plant_age_days` is in it;
 - when `qc_set_name->>'name'` names an existing QC set, plants flagged by that set are excluded. A
-  name that matches no set applies no QC filter, as before this change.
+  name that matches no set applies no QC filter.
 
 **Selectors.** Exactly one of `trait_source_id` and `recipe_key` SHALL be non-null. Otherwise the
 call SHALL raise an error and write nothing.
 
-**Function properties.** It SHALL remain `SECURITY INVOKER` with a function-level
-`statement_timeout` of `0`, and SHALL be the only `create_cyl_dataset` overload. Its `EXECUTE` ACL
-SHALL equal the pre-change ACL: `PUBLIC`, `anon`, `authenticated` and `service_role`.
+**Function properties.** It SHALL be `SECURITY INVOKER`, owned by `postgres`, with a
+function-level `statement_timeout` of `0`, and SHALL be the only `create_cyl_dataset` overload.
+Its `EXECUTE` SHALL be held by exactly `PUBLIC`, `anon`, `authenticated`, `service_role` and its
+owner.
 
 #### Scenario: Frozen rows do not change when new sources arrive
 
@@ -45,10 +46,10 @@ SHALL equal the pre-change ACL: `PUBLIC`, `anon`, `authenticated` and `service_r
 - **THEN** it resolves to the single function with no PGRST202 or PGRST203 error, and returns the
   function's own "exactly one selector" error
 
-#### Scenario: The ACL is unchanged
+#### Scenario: The ACL is exactly the stated grantees
 
-- **WHEN** the function's `proacl` is compared before and after the migration
-- **THEN** the two are equal
+- **WHEN** the function's `aclexplode(proacl)` grantees with `EXECUTE` are listed
+- **THEN** they are exactly `PUBLIC`, `anon`, `authenticated`, `service_role` and `postgres`
 
 ### Requirement: Source-mode datasets hold one source's rows
 
@@ -103,17 +104,19 @@ raise an error.
 
 ### Requirement: Datasets record their recipe
 
-`cyl_datasets` SHALL carry a nullable `recipe_key text` column, constrained by `cyl_datasets_recipe_key_format_check` to NULL, 64 lowercase hex characters, `legacy:<integer>` or `'unattributed'`.
+`cyl_datasets` SHALL carry a nullable `recipe_key text` column, constrained by the named CHECK `cyl_datasets_recipe_key_format_check` to NULL, 64 lowercase hex characters, `legacy:<integer>` or `'unattributed'`.
 
-**The dataset migration.** The migration that adds this column and recipe mode SHALL:
+**The dataset migration.** The dataset migration (`*_add_cyl_dataset_recipe_mode.sql`) SHALL:
 - backfill `recipe_key` from `cyl_trait_sources.recipe_key` for every existing dataset whose
   `trait_source_id` is set;
+- add the CHECK in its named, guarded `ADD CONSTRAINT` form;
 - use `DROP FUNCTION IF EXISTS` followed by `CREATE OR REPLACE`;
+- change no database-level or role-level setting;
 - set `lock_timeout`;
 - end with `NOTIFY pgrst, 'reload schema'`.
 
-**Its rollback** SHALL restore the `20240904033106` function with its pre-change ACL, and drop the
-column. It SHALL report with `RAISE NOTICE` the number of recipe-mode datasets whose only identity
+**Its rollback** SHALL restore the `20240904033106` function body with the ACL above, change no
+database-level or role-level setting, and drop the column. It SHALL report with `RAISE NOTICE` the number of recipe-mode datasets whose only identity
 it drops.
 
 #### Scenario: Existing datasets gain their source's recipe
@@ -132,5 +135,5 @@ it drops.
 #### Scenario: Rollback restores the five-argument function
 
 - **WHEN** the rollback is applied after the forward migration
-- **THEN** only `create_cyl_dataset(text, bigint, bigint, json, json)` exists, with its previous
-  body and ACL, and `cyl_datasets` has no `recipe_key` column
+- **THEN** only `create_cyl_dataset(text, bigint, bigint, json, json)` exists, with the
+  `20240904033106` body and the ACL above, and `cyl_datasets` has no `recipe_key` column

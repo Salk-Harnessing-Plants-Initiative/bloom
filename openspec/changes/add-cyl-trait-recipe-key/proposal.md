@@ -4,8 +4,8 @@
 
 Pipeline write-back stores **one `cyl_trait_sources` row per scan**, so an experiment's latest
 values are a per-scan patchwork. That patchwork can mix models and code, and no export can say
-how its values were computed. On staging (2026-09-29), 80 per-scan pipeline sources hold 9
-distinct computations, and none of them records the Bloom run or Argo Workflow that wrote it
+how its values were computed. On staging (2026-09-29), 79 real per-scan pipeline sources hold 9
+distinct recipes, and no pipeline source records the Bloom run or Argo Workflow that wrote it
 (design § Context).
 
 ## What Changes
@@ -31,11 +31,14 @@ distinct computations, and none of them records the Bloom run or Argo Workflow t
   - **BREAKING (return type):** `get_experiment_traits` gains a trailing `recipe_key` column, so its
     3-argument form is dropped and replaced. Named callers that read columns by name, including
     bloommcp's reader, are unaffected.
-  - **BREAKING (access):** `anon` loses `EXECUTE` on `get_experiment_traits`. It has it on staging
-    today through Supabase default privileges.
+  - **BREAKING (access):** `anon` loses `EXECUTE` on `get_experiment_traits`, which it held on
+    staging on 2026-09-29 through Supabase default privileges (design D6).
 - **Datasets.**
   - `cyl_datasets` gains `recipe_key`.
   - `create_cyl_dataset` gains a recipe mode (new `cyl-datasets` spec).
+  - **BREAKING (behavior):** `create_cyl_dataset` with a NULL `trait_source_id` and no
+    `recipe_key` now raises. Before, it created an empty dataset. bloomctl never sends NULL
+    (`bloomcli/src/bloomctl/cyl/datasets.py:303-317`).
 - **Export sidecar v1.** A reader-facing page, a JSON Schema and an example, under
   `_WIKI/SUPABASE/`.
 - **OpenSpec housekeeping.** `add-bulk-trait-read-rpc`, which shipped on 2026-07-28, is archived
@@ -49,7 +52,8 @@ distinct computations, and none of them records the Bloom run or Argo Workflow t
   reader, owned by egao28 (#936).
 - **The experiment 1 bulk-read timeout.** That is #936's own fix.
 - **`get_scan_traits` recipe arguments.**
-- **The legacy source 4 (`test`) data fix** on experiment 7206207, which is pending a decision.
+- **The legacy source 4 (`test`) data fix** on experiment 7206207. That is a separate decision for
+  eberrigan and Benfica (@blm3886).
 
 ## Impact
 
@@ -67,8 +71,9 @@ distinct computations, and none of them records the Bloom run or Argo Workflow t
   - `tests/integration/test_cyl_experiment_traits.py`
   - `tests/integration/test_cyl_experiment_summary_counts.py`
   - `tests/integration/test_cyl_pipeline_dispatch.py`
+  - `tests/integration/test_cyl_writeback_rpc.py`, which gains tests
 
-  The reasons are in tasks.md. `test_cyl_experiment_trait_counts.py`, which deletes a scan after
+  The reasons are in tasks 2.6 and 4.10. `test_cyl_experiment_trait_counts.py`, which deletes a scan after
   write-back, must keep passing unchanged. The new foreign keys use `ON DELETE SET NULL` for that
   reason.
 - **Services affected at runtime:** Supabase only. bloommcp (egao28) keeps working unchanged.

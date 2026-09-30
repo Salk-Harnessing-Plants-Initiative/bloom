@@ -2,499 +2,630 @@
 
 ## How these tasks work
 
-**Red, then green.** Each section is red, then green. The section's tests are written and run
-against the schema as the previous section left it, and the observed split is recorded before
-the migration is written. "Red" includes errors such as `UndefinedFunction` and
-`UndefinedColumn`. Tests that are green by design are named in each section's red-check task.
+**Red, then green.**
+- Each section's tests are written first and run against the schema as the previous section left
+  it.
+- The observed split is recorded before the section's migration is written. "Red" includes
+  errors such as `UndefinedFunction` or `UndefinedColumn`.
+- Each red-check task names the tests that are green by design.
 
-**Commits.** One commit per section, containing its tests, migration, rollback and types. Every
-commit is green. Only green commits are pushed, and the PR stays a draft until §7.
+**Commits and PR.**
+- One commit per section: its tests, migration, rollback, types and checkbox ticks. Every commit
+  is green locally.
+- No PR exists until 7.6. After review starts, fixes are added as new commits; history is not
+  rewritten.
 
-**DB tests** live in `tests/integration/`. They use psycopg, connect as `supabase_admin`, and
-roll back after each test. Run them with the dev stack up and `make migrate-local` applied:
+**DB tests** are in `tests/integration/`. They use psycopg, connect as `supabase_admin`, and roll
+back after each test. Run them with the dev stack up and `make migrate-local` applied:
 
 ```text
 uv run --extra test pytest tests/integration/<file> -v
 ```
 
-**Unit tests** live in `tests/unit/` and run with `uv run --extra test pytest tests/unit/<file>`.
+**Unit tests** are in `tests/unit/`.
 
-**Two helpers from the existing tests are used throughout:**
-- `_sql_body(path)` is the existing BEGIN/COMMIT-stripping helper (for example
-  `tests/integration/test_cyl_experiment_traits.py:43`). It is used to re-apply a migration or
+**Shared test helpers,** added in §2 to `tests/integration/test_cyl_trait_recipe_key.py`, then
+imported:
+- `_sql_body(path)` (as at `test_cyl_experiment_traits.py:43`) re-applies a migration or
   rollback inside a test transaction.
-- `_find_one("migrations", "*_<name>.sql")`, from
-  `tests/integration/test_cyl_pipeline_dispatch.py:48`, locates this change's files by glob, so a
-  restamp renames files only.
+- `_find_one("migrations"|"rollbacks", glob)` (as at `test_cyl_pipeline_dispatch.py:48`) locates
+  this change's files by glob, so a restamp only renames files.
+- `_apply_recipe_rollbacks(cur, down_to=1)` applies whichever of R4, R3, R2 and R1 exist, newest
+  first, stopping at `down_to`. This follows `test_scrna_de_contrast.py:742`. Every test that needs
+  a pre-change state uses it, so each commit stays green as later rollbacks appear.
+- `_acl_set(cur, signature)` returns the set of `(grantee, privilege_type)` from
+  `aclexplode(proacl)`. `grantee = 0` is `PUBLIC`. ACLs are compared as sets, never as raw
+  `aclitem[]`.
+- `_seed_source(cur, metadata, …)` inserts directly into `cyl_trait_sources (name, metadata,
+  idempotency_key)` as `supabase_admin`, leaving the recipe and run columns NULL. Backfill tests
+  seed this way, because once M2 is live an RPC delivery arrives already stamped.
 
-**Gateway tests** call through the PostgREST gateway. Each one calls `pytest.fail` instead of
-skipping when the `CI` environment variable is set.
+**Test data.** Workflow names and dataset names are `uuid4`-based, because the dev database holds
+committed rows from other runs.
+
+**Gateway tests** go through PostgREST. They use `pytest.fail` instead of skipping when `CI` is
+set, and they assert only status codes and error codes, because test-transaction data is
+invisible to PostgREST.
 
 ## 1. Scaffolding and review
 
-- [x] 1.1 Created branch `eberrigan/add-cyl-trait-recipe-key` in worktree
-  `.worktrees/add-cyl-trait-recipe-key` from `origin/staging`, then fast-forwarded it to
-  `21487acc`, which includes PR #940.
-- [x] 1.2 Read bloom#935, #937 and #936. Mapped the write-back RPC, the read RPCs and their
-  consumers, the OpenSpec overlap, and contracts `identity.py`. Re-measured the staging facts
-  read-only (design § Context).
-- [x] 1.3 Archived `add-bulk-trait-read-rpc` (`86f791bf`). `openspec validate --specs --strict`
-  passes 40/40.
+- [x] 1.1 Created the worktree `.worktrees/add-cyl-trait-recipe-key` on branch
+  `eberrigan/add-cyl-trait-recipe-key`, from `origin/staging` fast-forwarded to `21487acc`, which
+  includes PR #940.
+- [x] 1.2 Read bloom#935, #937 and #936. Mapped the code and the OpenSpec overlap, and re-measured
+  staging read-only (design § Context).
+- [x] 1.3 Archived `add-bulk-trait-read-rpc` (`86f791bf`).
 - [x] 1.4 Scaffolded the proposal (`0126bf7a`).
 - [x] 1.5 `openspec validate add-cyl-trait-recipe-key --strict` passes.
-- [x] 1.6 First `/review-openspec` round. Fold in all blocking and important findings, then
-  re-validate.
-- [ ] 1.7 Second `/review-openspec` round. Fix its findings, re-validate, and commit as
-  `docs(openspec): address review-openspec findings`.
+- [x] 1.6 First `/review-openspec` round: fixes folded in (`150640b9`).
+- [x] 1.7 Second round: fixes folded in, validated, and committed as
+  `docs(openspec): address second review-openspec round`.
 - [ ] 1.8 The proposal is approved by eberrigan.
 
-## 2. Recipe identity: helpers, columns, backfill (migration 1)
+## 2. Recipe identity: helpers, columns and backfill (migration 1)
 
 ### Tests first (red)
 
 - [ ] 2.1 **Golden vectors.**
-  - Write `tests/integration/fixtures/gen_recipe_key_vectors.py`. It is not collected by pytest.
-    Run it with:
+  - Write `tests/integration/fixtures/gen_recipe_key_vectors.py`. It is not collected, because
+    pytest collects only `test_*.py`.
+  - Run it as:
 
     ```text
-    cd bloomcli && uv run python ../tests/integration/fixtures/gen_recipe_key_vectors.py
+    cd bloomcli && uv run --frozen python ../tests/integration/fixtures/gen_recipe_key_vectors.py
     ```
 
-    That uses bloomcli's `sleap-roots-contracts>=0.1.0a9` pin.
-  - It builds about 20 contracts-valid `Provenance` objects covering:
+  - The script asserts `importlib.metadata.version("sleap-roots-contracts") == "0.1.0a9"`, and
+    records that version in the output.
+  - It builds about 20 contracts-valid `Provenance` objects:
     - model order;
     - duplicate triples under two `root_type` values;
     - a `root_type` change;
-    - `weights_checksum` as `None` versus `""`;
+    - `weights_checksum` `None` versus `""`;
     - `predict_output_params` as `None`, `{}` and non-empty;
-    - code-sha changes;
-    - one numeric-scale pair.
-  - It writes `tests/integration/fixtures/recipe_key_v1_vectors.json`. Each entry holds
-    `model_dump(mode="json")`, plus a `partition_id`: the class of `compute_idempotency_key(...)`
-    with `scan_key`, `images_checksum` and `param_hash` fixed to `"X"`.
-  - It also writes the Provenance field list at v0.1.0a9.
-  - Commit both the script and the JSON.
-- [ ] 2.2 New file `tests/integration/test_cyl_trait_recipe_key.py`, covering the helpers
-  `cyl_trait_recipe_payload_v1` and `cyl_trait_recipe_key_v1`.
-  - [ ] 2.2.1 `test_key_ignores_fields_outside_payload`, parametrized over every Provenance field
-    outside the payload. Take the list from the vectors file, and assert it equals the list in the
-    writeback spec. Mutating each field alone leaves the key unchanged. This includes each model's
-    `root_type` and `sleap_nn_version`.
-  - [ ] 2.2.2 `test_key_changes_with_payload_inputs`. Changing a model's `registry_id`, `version`
-    or `weights_checksum` changes the key, and so does `null` versus `""`. So does changing
-    either code sha, or a non-empty `predict_output_params`.
-  - [ ] 2.2.3 `test_model_order_and_empty_output_params`.
+    - code-sha changes.
+  - Each vector stores `raw_provenance`, a **JSON text string** of `model_dump(mode="json")`,
+    plus a `partition_id`. The `partition_id` is the class of `compute_idempotency_key(...)` with
+    `scan_key`, `images_checksum` and `param_hash` fixed to `"X"`.
+  - One pair is written by hand as raw text: `{"peak_threshold": 1}` versus
+    `{"peak_threshold": 1.0}`. Contracts puts them in the same partition, and the pair is marked
+    `expected_divergence`.
+  - The script writes `json.dumps(…, indent=2) + "\n"` to
+    `tests/integration/fixtures/recipe_key_v1_vectors.json`, and it has a `--check` mode that
+    verifies a byte-identical regeneration.
+  - Commit both files.
+- [ ] 2.2 New file `tests/integration/test_cyl_trait_recipe_key.py`: the helpers.
+  - **Passing vectors in.** Every vector is passed to Postgres as `%s::jsonb` from
+    `raw_provenance` text, never through `json.loads` or `Jsonb`.
+  - [ ] 2.2.1 `test_key_ignores_fields_outside_payload`, parametrized over a literal
+    `EXCLUDED_FIELDS` constant that mirrors the writeback spec's list: the top-level fields, plus
+    `predict_models[].root_type` and `predict_models[].sleap_nn_version`. The test also asserts
+    that the vectors file's field list minus the four payload fields equals the top-level part of
+    `EXCLUDED_FIELDS`.
+  - [ ] 2.2.2 `test_key_changes_with_payload_inputs`. Covers each triple field, `null` versus
+    `""`, both code shas, and a non-empty `predict_output_params`.
+  - [ ] 2.2.3 `test_model_order_and_empty_output_params`. `predict_output_params` as `null`,
+    `{}` and absent gives one key.
   - [ ] 2.2.4 `test_duplicate_triples_counted_twice`.
-  - [ ] 2.2.5 `test_odd_shapes_never_raise`. Parametrize over every input in the spec's "Odd shapes
-    never raise" scenario, and assert the stated NULL and 64-hex results.
+  - [ ] 2.2.5 `test_odd_shapes_never_raise`, over every input in the spec scenario. It covers the
+    NULL results for `NULL`, `'[]'` and `'"x"'`.
   - [ ] 2.2.6 `test_definition_hashes_to_key`, over every vector.
-  - [ ] 2.2.7 `test_partitions_match_contracts_identity`. For every pair of vectors, the keys are
-    equal exactly when the `partition_id`s are equal. The only exception is the marked
-    numeric-scale pair, which is expected to differ.
-  - [ ] 2.2.8 `test_helpers_immutable_and_granted`:
-    - `provolatile = 'i'` for both helpers;
+  - [ ] 2.2.7 `test_partitions_match_contracts_identity`.
+    - For each pair of vectors, the keys are equal exactly when the `partition_id`s are, except
+      for the `expected_divergence` pair, whose keys differ.
+    - Also assert that `'{"peak_threshold": 1.0}'::jsonb::text` contains `1.0`, so the pair really
+      reaches Postgres distinct.
+  - [ ] 2.2.8 `test_helpers_immutable_owned_and_granted`.
+    - Both helpers have `provolatile = 'i'` and owner `postgres`.
     - `has_function_privilege` is false for `anon`, and true for `bloom_agent`, `bloom_user`,
-      `bloom_admin` and `authenticated`;
-    - a `SET LOCAL ROLE bloom_agent` call succeeds.
-- [ ] 2.3 In the same file, the schema.
-  - [ ] 2.3.1 `test_columns_types_and_fks`. The five columns have the stated types and are
-    nullable. Assert the FK names, targets and `confdeltype = 'n'` (`ON DELETE SET NULL`).
-  - [ ] 2.3.2 `test_recipe_key_check`: every rejected and accepted value in the spec's two CHECK
-    scenarios, plus `recipe_key_version = 2` rejected.
+      `bloom_admin` and `authenticated`.
+    - A `SET LOCAL ROLE bloom_agent` call succeeds.
+- [ ] 2.3 Same file: schema tests.
+  - [ ] 2.3.1 `test_columns_types_and_fks`: column types, nullability, FK names, targets, and
+    `confdeltype = 'n'`.
+  - [ ] 2.3.2 `test_recipe_key_checks`: every value in the spec's three CHECK scenarios.
   - [ ] 2.3.3 `test_indexes_exist`, by name.
-  - [ ] 2.3.4 `test_bloom_workflows_cannot_select_new_columns`. `SET LOCAL ROLE bloom_workflows`,
-    then `SELECT <col>` for each of the five columns, in its own savepoint, and expect
-    `InsufficientPrivilege`. The existing pin at `test_cyl_trait_source_idem_read.py:108-122`
-    must still pass unchanged.
-  - [ ] 2.3.5 `test_deleting_scan_or_run_nulls_the_source_link`. Seed a source with `scan_id` and
-    `cyl_pipeline_run_id` set, delete the scan and the run, and assert the source remains with
-    both NULL.
-- [ ] 2.4 In the same file, the backfill function `cyl_backfill_trait_source_recipe_identity()`.
-  - [ ] 2.4.1 `test_backfill_pipeline_source`: sets the key, version 1, and the resolved scan.
-  - [ ] 2.4.2 `test_backfill_legacy_source`: sets `legacy:<id>`, version 1, and a NULL `scan_id`.
-  - [ ] 2.4.3 `test_backfill_unresolvable_image_ids`, parametrized over `image_ids` that are
-    missing, not an array, contain `"abc"`, match no image, or resolve to two scans.
-    - The call completes, and `scan_id` stays NULL.
-    - The notice count, captured with `conn.add_notice_handler`, equals the number of unresolved
-      rows.
+  - [ ] 2.3.4 `test_bloom_workflows_cannot_select_new_columns`.
+    - `SET LOCAL ROLE bloom_workflows`, then `SELECT` each of the five columns, each in its own
+      savepoint. Each fails with `InsufficientPrivilege`.
+    - The pin at `test_cyl_trait_source_idem_read.py:108-122` still passes unchanged.
+  - [ ] 2.3.5 `test_deleting_scan_or_run_nulls_the_source_link`.
+    - Seed a scan with no trait rows, and a run with no run-scan rows.
+    - Link a source to both.
+    - Delete the scan and the run; the source remains, with both columns NULL.
+- [ ] 2.4 Same file: the backfill function. Seed every case with `_seed_source`, and assert its
+  columns are NULL before the call.
+  - [ ] 2.4.1 `test_backfill_pipeline_source`.
+  - [ ] 2.4.2 `test_backfill_legacy_and_non_object_metadata`: metadata `NULL`, `'[]'` and
+    JSON `null` each give `legacy:<id>`, version 1 and a NULL `scan_id`.
+  - [ ] 2.4.3 `test_backfill_unresolvable_image_ids`.
+    - Parametrized over `image_ids` that are missing, not an array, `[]`, containing `"abc"`,
+      matching no image, or resolving to two scans.
+    - The call completes and `scan_id` stays NULL.
+    - The NOTICE, captured with `conn.add_notice_handler`, matches
+      `cyl recipe backfill: (\d+) source\(s\) with unresolved image_ids`. Its count equals the
+      baseline plus the number seeded, where the baseline is the count of object-metadata sources
+      with NULL `scan_id` taken before seeding.
+    - A resolvable duplicate id `[i, i]` does resolve.
   - [ ] 2.4.4 `test_backfill_never_sets_run_stamps`.
-  - [ ] 2.4.5 `test_backfill_agrees_with_trait_rows`.
-  - [ ] 2.4.6 `test_backfill_is_rerunnable`: snapshot `to_jsonb` of every row, run it again, and
-    compare.
-  - [ ] 2.4.7 `test_backfill_not_executable_by_other_roles`.
+  - [ ] 2.4.5 `test_backfill_agrees_with_rpc_written_trait_rows`.
+    - Deliver an envelope through the RPC, NULL that source's columns, and backfill.
+    - The `scan_id` equals the scan of its trait rows.
+  - [ ] 2.4.6 `test_backfill_is_rerunnable`: `to_jsonb` snapshots before and after a second call
+    are equal.
+  - [ ] 2.4.7 `test_backfill_owner_and_grants`.
+    - The owner is `postgres`.
+    - `has_function_privilege` is false for `anon`, `authenticated`, `service_role`,
+      `bloom_agent`, `bloom_user`, `bloom_admin`, `bloom_writer` and `bloom_workflows`.
+    - Superusers are excluded from the check.
 - [ ] 2.5 **Migration and rollback.**
-  - [ ] 2.5.1 `test_migration_1_body_is_idempotent`. Over seeded rows (one pipeline source, one
-    legacy source), execute `_sql_body(M1)` twice in one transaction. Assert no error and
-    unchanged snapshots.
-  - [ ] 2.5.2 `test_rollback_1_drops_exactly_its_objects`. Apply `_sql_body(R1)`. Assert the five
-    columns, two CHECKs, two FKs, three indexes, two helpers and the backfill function are gone,
-    and that the a9 RPC still ingests an envelope.
-  - [ ] 2.5.3 `test_rollback_1_refuses_while_stamping_body_is_live`. Apply M2 and M3, then R1.
-    Assert it raises and nothing is dropped. This task becomes green only after §3 and §4, and is
-    marked `xfail(strict=True)` until then.
-  - [ ] 2.5.4 In the unit file `tests/unit/test_cyl_trait_recipe_migration_files.py`:
-    - M1 contains `SET LOCAL lock_timeout`, ends with `NOTIFY pgrst`, and every constraint and
-      index is added in its named, guarded form;
-    - there is no `REFERENCES` inline in an `ADD COLUMN`;
-    - no statement selects from `cyl_scan_traits`.
-- [ ] 2.6 **Update the dispatch rollback test.** `test_cyl_pipeline_dispatch.py:1000`
-  (`test_rollback_removes_everything`) must apply R1 before the runs-table rollback, the same way
-  it already applies `RUN_EXPERIMENTS_ROLLBACK` at :1004. The new FK otherwise blocks its
-  `DROP TABLE`.
+  - [ ] 2.5.1 `test_migration_1_body_is_idempotent`. Execute `_sql_body(M1)` twice over `_seed_source`
+    rows (one pipeline, one legacy). There are no errors, the snapshots are unchanged, and the
+    `insert_cyl_result_envelope` overload arg counts are `[2]`.
+  - [ ] 2.5.2 `test_rollback_1_drops_exactly_its_objects`.
+    - Run `_apply_recipe_rollbacks(cur, down_to=1)`.
+    - Assert all of these are gone: the recipe and run columns, the two CHECKs, the two FKs, the
+      three indexes, the two helpers and the backfill function.
+    - Assert that an a9 envelope ingests.
+  - [ ] 2.5.3 `test_rollback_1_guard_detects_a_referencing_function`.
+    - Create `public._r1_probe()`, a plpgsql function that selects `recipe_key` from
+      `cyl_trait_sources`.
+    - Apply only R1. It raises, naming `_r1_probe`, and nothing has been dropped (checked in a
+      savepoint).
+  - [ ] 2.5.4 In a new unit file, `tests/unit/test_cyl_trait_recipe_migration_files.py`, check M1:
+    - it has `SET LOCAL lock_timeout` and ends with `NOTIFY pgrst`;
+    - every constraint and index is added in its named, guarded form;
+    - no `ADD COLUMN` has an inline `REFERENCES` or `CHECK`;
+    - it has no `SELECT` from `cyl_scan_traits`;
+    - every created function is followed by `OWNER TO postgres`;
+    - every `UPDATE` has a `WHERE`;
+    - R1's guard `DO` block comes before every `DROP` and `ALTER`.
+- [ ] 2.6 **Dispatch rollback test.** Edit `test_cyl_pipeline_dispatch.py:1000`
+  (`test_rollback_removes_everything`) to run `_apply_recipe_rollbacks(cur, down_to=1)` before
+  `RUN_EXPERIMENTS_ROLLBACK` (:1004). Otherwise the new FK blocks the `DROP TABLE` at
+  `20260730120000_create_cyl_pipeline_runs_rollback.sql:57-58`.
 - [ ] 2.7 **Record the red check.** Run 2.2–2.6 against the pre-change schema. Expected green by
-  design: the unchanged idem-read pin. Everything else is expected red.
+  design:
+  - the unchanged idem-read pin;
+  - 2.6, where the helper finds no recipe rollbacks.
 
 ### Implementation (green)
 
-- [ ] 2.8 Write `supabase/migrations/<T>0000_add_cyl_trait_recipe_key.sql` (design § Migration
-  Plan) and `supabase/rollbacks/<T>0000_add_cyl_trait_recipe_key_rollback.sql`.
-  - The rollback's header copies the hot-apply wording of the a9 rollback.
-  - It includes the D4 guard, and the `migration repair` note.
-- [ ] 2.9 Edit the types by hand: add the five columns to the `cyl_trait_sources`
-  Row/Insert/Update in all five `database.types.ts` copies.
-- [ ] 2.10 **Go green.** Run `make migrate-local`, then section 2's tests. These must still pass:
-  - `test_cyl_writeback_rpc.py`, whose re-applied older bodies still insert, because every new
-    column is nullable;
+- [ ] 2.8 Write `supabase/migrations/<T>0000_add_cyl_trait_recipe_key.sql` and its rollback R1.
+  - Follow design § Migration Plan.
+  - R1 includes the guard (writeback spec) and the hot-apply and `migration repair` wording.
+- [ ] 2.9 **Types.**
+  - Hand-edit the five `database.types.ts` copies: add the recipe and run columns to
+    `cyl_trait_sources`.
+  - Run `make gen-types` into a scratch copy, and confirm its diff for those entries matches the
+    hand edits.
+- [ ] 2.10 **Go green.** Run `make migrate-local`, then section 2. These must still pass:
+  - `test_cyl_writeback_rpc.py`: the re-applied older bodies still insert, because the new columns
+    are nullable;
   - `test_cyl_trait_source_idem_read.py`;
   - `test_cyl_pipeline_dispatch.py`;
-  - `test_cyl_experiment_trait_counts.py`, in particular `:973`, which deletes a scan;
+  - `test_cyl_experiment_trait_counts.py`, whose test at :973 deletes a scan;
   - `tests/unit/test_cyl_trait_sources_grants.py`.
 
 ## 3. Write-back stamping (migration 2)
 
 ### Tests first (red)
 
-- [ ] 3.1 **Unit, in `tests/unit/test_cyl_trait_recipe_migration_files.py`.** Written before 3.5.
-  - [ ] 3.1.1 `test_m2_differs_from_a9_only_in_stamping`. Run `difflib.ndiff` over the
-    whitespace-normalized function regions of `20260928130000` and M2. Assert that the removed
-    lines and the added lines are each an exact literal list:
-    - the INSERT column and VALUES lines;
-    - the declared variables;
-    - the run lookup `SELECT`;
-    - the `UPDATE … SET scan_id` statement;
-    - the REVOKE line.
+- [ ] 3.1 **Unit tests,** in the §2 unit file, written before 3.5.
+  - [ ] 3.1.1 `test_m2_differs_from_a9_only_in_stamping`.
+    - The region is defined as in `test_cyl_writeback_a9_migration_files.py:30-31`: from
+      `CREATE OR REPLACE FUNCTION public.insert_cyl_result_envelope(` through the
+      `bloom_workflows;` GRANT line.
+    - Strip `--` comments and whitespace, then `difflib.ndiff`.
+    - The removed lines and the added lines each equal an exact literal list: the INSERT columns
+      and VALUES, the declared variables, the run lookup, the `UPDATE … SET scan_id`, and the
+      REVOKE line.
   - [ ] 3.1.2 `test_a9_is_the_newest_definition_before_m2`, following
-    `test_cyl_writeback_a9_migration_files.py:100`, so a concurrent redefinition fails the test.
-  - [ ] 3.1.3 `test_m2_calls_the_backfill` and `test_r2_restores_a9_region_verbatim`. For the
-    ACL, see 3.3.
-- [ ] 3.2 **Integration, in `tests/integration/test_cyl_writeback_rpc.py`.** These reuse
-  `_envelope`, `_call` and `_seed_run_scan_for_writeback`. The envelopes carry realistic
-  `predict_models`, and one carries none, so that the RPC path exercises the helper's odd shapes.
+    `test_cyl_writeback_a9_migration_files.py:100`.
+  - [ ] 3.1.3 `test_m2_calls_the_backfill_and_sets_owner`, and
+    `test_r2_restores_a9_region_verbatim`. The ACL is checked in 3.3.2.
+- [ ] 3.2 **Integration tests,** in `tests/integration/test_cyl_writeback_rpc.py`.
+  - Extend `_envelope` with a `provenance_extra=` keyword for realistic `predict_models`. One test
+    sends none.
   - [ ] 3.2.1 `test_fresh_delivery_stamps_recipe_key_and_scan_id`.
   - [ ] 3.2.2 `test_dispatched_delivery_stamps_workflow_and_run`.
   - [ ] 3.2.3 `test_unrequested_scan_still_stamps_run`. The run-scan row count is unchanged, and
     `status_update_matched is False`.
   - [ ] 3.2.4 `test_hand_submitted_delivery_stamps_workflow_only`.
-  - [ ] 3.2.5 `test_ambiguous_workflow_name_stamps_no_run`.
+  - [ ] 3.2.5 `test_ambiguous_workflow_name_stamps_no_run`: `cyl_pipeline_run_id` is NULL and
+    `argo_workflow_name = W`.
   - [ ] 3.2.6 `test_no_workflow_name_stamps_neither`.
-  - [ ] 3.2.7 `test_noop_redelivery_leaves_stamps_unchanged`. This is a negative control, green
-    before and after the change.
-  - [ ] 3.2.8 `test_failed_delivery_leaves_no_source`, parametrized over an unresolvable
-    `image_ids`, a non-scan-grain trait, and a non-integer blob `file_size`. Use `pytest.raises`
-    inside a savepoint, then assert that no source exists for the key.
-  - [ ] 3.2.9 `test_redelivery_fallback_still_works`. Keep the existing bloom#875 tests green, and
-    add a stamped-source variant.
-  - [ ] 3.2.10 `test_noop_stamp_guard_detects_mutation`, which proves 3.2.7 can fail. In one
-    transaction:
-    - read `pg_get_functiondef('insert_cyl_result_envelope(jsonb,text)'::regprocedure)`;
-    - inject `UPDATE cyl_trait_sources SET argo_workflow_name = p_argo_workflow_name WHERE id =
-      v_source_id;` after `v_was_noop := true;`, and `EXECUTE` it;
-    - run 3.2.7's body and assert that it detects the change;
-    - roll back.
-  - [ ] 3.2.11 `test_source_written_between_migrations_is_backfilled`. In one transaction:
-    - apply `_sql_body(R2)`, which puts the a9 body back;
-    - deliver an envelope, and assert NULL columns;
-    - apply `_sql_body(M2)`, and assert its `recipe_key` and `scan_id` are set.
+  - [ ] 3.2.7 `test_noop_redelivery_leaves_stamps_unchanged`. This is a negative control.
+  - [ ] 3.2.8 `test_failed_delivery_leaves_no_source`.
+    - Parametrized over an unresolvable `image_ids`, a non-scan-grain trait, and a non-integer
+      blob `file_size`.
+    - Use `pytest.raises` in a savepoint, then assert that no source exists for the key.
+  - [ ] 3.2.9 The existing bloom#875 tests stay green. Add `test_redelivery_fallback_with_stamped_source`,
+    which asserts that the stamps are unchanged by the fallback.
+  - [ ] 3.2.10 `test_noop_stamp_guard_detects_mutation`, in one transaction:
+    1. read `pg_get_functiondef('insert_cyl_result_envelope(jsonb,text)'::regprocedure)`;
+    2. inject `UPDATE cyl_trait_sources SET argo_workflow_name = p_argo_workflow_name WHERE id =
+       v_source_id;` after `v_was_noop := true;` (`20260928130000:135`) and `EXECUTE` it;
+    3. assert that 3.2.7's check now fails.
+  - [ ] 3.2.11 `test_source_written_between_migrations_is_backfilled`.
+    - Run `_apply_recipe_rollbacks(cur, down_to=2)`, which puts the a9 body back with M1 still
+      live.
+    - Deliver an envelope; its columns are NULL.
+    - Apply `_sql_body(M2)`; its `recipe_key` and `scan_id` are now set.
 - [ ] 3.3 **Migration and rollback.**
-  - [ ] 3.3.1 `test_migration_2_body_is_idempotent`. Execute `_sql_body(M2)` twice. The overload
-    arg counts are `[2]`, and a fresh delivery is stamped.
-  - [ ] 3.3.2 `test_rollback_2_restores_a9_body_and_grants`. Apply `_sql_body(R2)`, then:
-    - a fresh delivery leaves all five columns NULL;
-    - the cross-Workflow fallback returns `status_update_matched is True`;
-    - `has_function_privilege` is false for `anon` and `authenticated` and true for the four
-      grantees;
+  - [ ] 3.3.1 `test_migration_2_body_is_idempotent`: overload arg counts are `[2]`, and a fresh
+    delivery is stamped.
+  - [ ] 3.3.2 `test_rollback_2_restores_a9_body_and_grants`. After `_apply_recipe_rollbacks(cur,
+    down_to=2)`:
+    - a fresh delivery leaves the recipe and run columns NULL;
+    - the cross-Workflow fallback returns `True`;
+    - `_acl_set` equals the set derived from `20260928130100`;
     - the overload arg counts are `[2]`.
-  - [ ] 3.3.3 Confirm `test_contract_migration_match.py` still reads `pinned_version = '0.1.0a9'`,
-    and that `test_security_definer_grants.py` passes.
+  - [ ] 3.3.3 `test_rollback_1_refuses_while_stamping_body_is_live`.
+    - In a savepoint, with M2 live, applying only R1 raises and names `insert_cyl_result_envelope`.
+    - `pytest.skip` if M2 isn't found.
 - [ ] 3.4 **Record the red check.** Run 3.1–3.3 against the §2 schema. Expected green by design:
-  3.2.7, 3.2.8 and 3.2.9.
+  - 3.2.7, 3.2.8 and 3.2.10;
+  - the existing bloom#875 tests.
+- [ ] 3.5 `test_contract_migration_match.py` still reads `pinned_version = '0.1.0a9'`, and
+  `test_security_definer_grants.py` passes.
 
 ### Implementation (green)
 
-- [ ] 3.5 Write `supabase/migrations/<T>0100_stamp_cyl_trait_source_recipe_and_run.sql`.
-  - It is the `20260928130000` function region verbatim, plus the edits 3.1.1 allows.
-  - It re-asserts `OWNER TO postgres`, then `REVOKE … FROM PUBLIC, anon, authenticated`, then the
-    four `GRANT`s.
-  - It ends with `SELECT cyl_backfill_trait_source_recipe_identity();`.
+- [ ] 3.6 Write `supabase/migrations/<T>0100_stamp_cyl_trait_source_recipe_and_run.sql`.
+  - It is the `20260928130000` region verbatim, plus the edits 3.1.1 allows.
+  - Then `OWNER TO postgres`, `REVOKE … FROM PUBLIC, anon, authenticated`, and the four `GRANT`s.
+  - Then `SELECT cyl_backfill_trait_source_recipe_identity();`.
   - Write its rollback R2.
-- [ ] 3.6 **Go green.** Section 3's tests, all of `test_cyl_writeback_rpc.py`,
-  `test_security_definer_grants.py`, `test_contract_migration_match.py`, and 2.5.3 (still xfail
-  until §4).
+- [ ] 3.7 **Go green.** Run section 3, then all of these:
+  - `test_cyl_writeback_rpc.py`;
+  - `test_security_definer_grants.py`;
+  - `test_contract_migration_match.py`;
+  - `test_cyl_pipeline_dispatch.py`;
+  - `test_cyl_trait_recipe_key.py`.
 
 ## 4. Recipe-aware reads (migration 3)
 
 ### Tests first (red)
 
-- [ ] 4.1 **The fixture**, in a new file `tests/integration/test_cyl_trait_recipes_read.py`.
-  - Experiment `E1` has these scans:
+- [ ] 4.1 **Fixture and expected results,** in a new file
+  `tests/integration/test_cyl_trait_recipes_read.py`.
+  - Every source is seeded with a `recipe_key` and a `scan_id` consistent with its rows, except
+    sources 16, 17 and 22, which are deliberately inconsistent.
+  - Source ids are fixed so that `K1` is E1's default.
 
-    | Scan | Trait data |
-    |---|---|
-    | `a`, `b`, `c` | `K1` only. Scan `a` has `K1` sources 10 (traits A, B) and 20 (A only, plus one NULL value) |
-    | `d` | `K2` only |
-    | `e` | `K1` source 20-equivalent, plus a newer `K2` source 30 |
-    | `f` | `K1`, `K2` and NULL-source rows |
-    | `g` | Legacy `L` only |
-    | `h` | NULL-source rows only |
-    | `i` | No traits |
-    | `j` | A `K3` pipeline source with `scan_id` = `j` and no trait rows |
+  **Experiment E1.**
 
-    Plus a superseded run for the `run_id_` path.
-  - Experiment `E2` shares `K1` and has its own `K4`.
-  - Experiment `E3` has only `L` and NULL-source rows.
-  - Experiment `E4` has only NULL-source rows.
-- [ ] 4.2 **`list_trait_recipes` tests.** One test per scenario in "Recipe listing for a scan
-  selection", with exact `n_scans`, `recipe_kind` and the default:
-  - the multi-experiment and intersection cases;
+  | Scan | Sources and rows |
+  |---|---|
+  | `a` | `K1` sources 10 (traits A, B) and 50 (A only, plus one NULL-valued trait) |
+  | `b`, `c` | One `K1` source each (ids 11, 12) |
+  | `d` | `K2` source 30 |
+  | `e` | `K1` sources 13 and 45, and `K2` source 31 |
+  | `f` | `K1` source 14, `K2` source 32, and NULL-source rows |
+  | `g` | Legacy source `L` (id 5) only |
+  | `h` | NULL-source rows only |
+  | `i` | No traits |
+  | `j` | A `K3` source (id 40) with `scan_id = j` and no rows |
+  | `j2` | `K1` source 15, plus a `K3` source (id 41) with no rows |
+  | `k` | A `K1` source (id 16) with `scan_id` NULL, with rows on `k` |
+  | `m` | Rows only from a source (id 17) whose `recipe_key` is NULL |
+  | `n` | A `K1` source (id 22) with `scan_id = b`, whose rows sit on `n` |
+
+  **Other experiments.**
+  - E2 shares `K1` (source 60) and has `K4` (source 70).
+  - E3 has only `L` rows and NULL-source rows.
+  - E4 has only NULL-source rows.
+
+  **Expected results.**
+
+  | Call | Expected |
+  |---|---|
+  | `list(E1)` | `K1` is the default (`newest_source_id` 50). `n_scans`: `K1` = 7 (`a b c e f j2 k`), `K2` = 3 (`d e f`), `legacy:L` = 1, `unattributed` = 2 (`f h`). `K3` is absent |
+  | `list(E1, E2)` | `K4` is the default (70) |
+  | `list(scan_ids_ => [e])` | Exactly `K1` and `K2` |
+  | `list(scan_ids_ => [i])` | Zero rows |
+  | `list(E3)` | `legacy:L` is the default |
+  | `list(E4)` | `unattributed` is the default |
+
+  **`coverage(E1)` against `K1`:**
+
+  | Status | Scans |
+  |---|---|
+  | `included` | `a` (source 50), `b` (11), `c`, `e` (45), `f`, `j2`, `k` (16) |
+  | `other_recipe` | `d`, `m` (empty `available_recipes`), `n` (empty) |
+  | `legacy_only` | `g`, `h` |
+  | `no_traits` | `i`, `j` |
+
+  `f`'s `available_recipes` is `[K1, K2, unattributed]` under `COLLATE "C"`.
+- [ ] 4.2 **`list_trait_recipes` tests.** Cover the table rows above, plus:
+  - intersection (`list(E1, [a, <E2 scan>])`);
   - empty arrays for each argument;
   - both arguments NULL raises;
-  - `E3`'s legacy default;
-  - `E4`'s `unattributed` default;
-  - `definition` hashes to its key on every pipeline row.
-- [ ] 4.3 **`get_trait_recipe_coverage` tests.** One test per scenario:
-  - the four statuses on `E1`;
-  - `h` is `legacy_only`;
-  - `j` is `other_recipe`, because `K3` contributes nothing;
-  - an explicit `legacy:L` pick;
-  - exact sorted `available_recipes` for `f`;
-  - an all-`no_traits` selection;
+  - the legacy `definition` is `{source_id, source_name}`;
+  - `unattributed` has a NULL `definition`, `newest_source_id` and `recipe_key_version`;
+  - `definition` hashes to `recipe_key` on every pipeline row.
+- [ ] 4.3 **`get_trait_recipe_coverage` tests.** Cover the coverage table, plus:
+  - an explicit `legacy:L` pick (the pipeline-only scans become `other_recipe`);
+  - an all-`no_traits` selection returns a NULL `recipe_key`;
   - a random 64-hex key raises;
-  - the one-scan call.
-- [ ] 4.4 **`get_experiment_traits` recipe-mode tests.** One test per new scenario:
+  - `K3`, which is stored, is accepted;
+  - a one-scan call.
+- [ ] 4.4 **`get_experiment_traits` recipe-mode tests.** Cover:
   - one recipe only;
-  - the highest source within a recipe (`e`);
-  - no mixing within a recipe (`a`: A from 20, no B);
-  - a NULL value comes back as a row;
+  - `e` reads from source 45;
+  - `a` returns A from 50, and not B;
+  - the NULL-valued trait comes back as a row;
   - `unattributed`;
-  - `legacy:L` equals `source_id_ => L`;
-  - a mistyped key raises;
-  - all three selector pairs raise;
-  - `scan_ids_` narrowing, including an empty array and another experiment's ids;
-  - a recipe only in `E2` returns nothing for `E1`;
-  - the `recipe_key` column in every mode.
-- [ ] 4.5 **Agreement across the functions.** `test_functions_agree_on_source_of_recipe`: for
-  every `included` coverage row, its `source_id` equals every row's `source_id` in the recipe
-  read. §5 adds the dataset leg.
-- [ ] 4.6 **Default-path parity**, in one transaction:
-  1. `_sql_body(R3)`, then capture `(E1)`, `(E1, source_id_)` and `(E1, run_id_)` in function
-     order;
-  2. `_sql_body(M3)`, then capture the first eleven columns again;
-  3. assert the two captures are equal and in the same order.
-- [ ] 4.7 **Grants.**
-  - `SET LOCAL ROLE` to each of `bloom_agent`, `bloom_user` and `bloom_admin`, then call all
-    three functions in every mode from the spec scenario. Every call returns rows.
-  - `authenticated`: check the grant.
+  - `legacy:L` equals `source_id_ => 5` in the same order;
+  - `K3` returns zero rows without raising;
+  - `K4` against E1 returns zero rows;
+  - these mistyped keys raise: random 64-hex, `legacy:999999999`, uppercase hex, `'foo'`;
+  - each of the three selector pairs raises;
+  - `scan_ids_` narrowing in all four modes, including an empty array and E2's scan ids;
+  - the `recipe_key` column value in every mode.
+- [ ] 4.5 `test_result_columns_and_order`: `cursor.description` names equal the twelve spec
+  columns in order, in every mode.
+- [ ] 4.6 `test_functions_agree_on_source_of_recipe`. For every `included` coverage row, every
+  recipe-read row for that scan has the same `source_id`. §5 adds the dataset leg.
+- [ ] 4.7 **Default-path parity,** in one transaction:
+  1. `_apply_recipe_rollbacks(cur, down_to=3)`, then capture `(E1)`, `(E1, source_id_)` and
+     `(E1, run_id_)`;
+  2. apply `_sql_body(M3)`, then capture the first eleven columns;
+  3. assert both captures are equal, in the same order.
+- [ ] 4.8 **Grants.**
+  - For each of `bloom_agent`, `bloom_user` and `bloom_admin`: `SET LOCAL ROLE`, then call all
+    three functions in all five modes; each call returns rows.
+  - `authenticated`: the grant is present.
   - `anon`: `has_function_privilege` is false.
-  - `prosecdef = false` for all three.
-- [ ] 4.8 **Gateway.** bloommcp's exact three-key body resolves with no PGRST203, and the rows
-  carry the twelve keys. `list_trait_recipes` is reachable.
-- [ ] 4.9 **Migration and rollback.**
-  - [ ] 4.9.1 `test_migration_3_body_is_idempotent`: one five-argument overload after two runs.
-  - [ ] 4.9.2 `test_rollback_3_restores_three_arg_function`:
-    - only `(bigint, bigint, text)` exists;
-    - `prosecdef`, `provolatile`, `proconfig` and `proacl` match a function freshly created from
-      the `20260728000000` body in the same transaction;
-    - neither new function exists;
-    - re-applying M3 restores the five-argument function.
-  - [ ] 4.9.3 Unit, written before 4.12:
+  - `prosecdef = false`.
+- [ ] 4.9 **Gateway tests.**
+  - bloommcp's exact three-key body returns HTTP 200, a JSON array, and no PGRST203.
+  - `list_trait_recipes` with `{"experiment_ids_": [1]}` returns 200.
+  - With the anon key, `get_experiment_traits` returns 401 or 403.
+- [ ] 4.10 **Migration and rollback.**
+  - [ ] 4.10.1 `test_migration_3_body_is_idempotent`: after re-application there is one
+    five-argument overload.
+  - [ ] 4.10.2 `test_rollback_3_restores_three_arg_function`.
+    1. After `_apply_recipe_rollbacks(cur, down_to=3)`, capture `prosecdef`, `provolatile`,
+       `proconfig` and `_acl_set`.
+    2. `DROP` the function, apply `_sql_body(20260728000000)`, and capture again.
+    3. The two captures are equal, and neither new function exists.
+    4. Re-applying M3 restores the five-argument function.
+  - [ ] 4.10.3 **Unit tests, written before 4.13:**
     - `test_20260728000000_is_the_newest_get_experiment_traits_before_m3`;
-    - M3 uses `DROP FUNCTION IF EXISTS`, `CREATE OR REPLACE` and `NOTIFY pgrst`;
-    - the coverage and recipe SQL contain `LATERAL` with `LIMIT 1` against `cyl_scan_traits`, and
-      no `EXISTS (SELECT … FROM cyl_scan_traits`.
-- [ ] 4.10 **Update the existing tests that pin the old signature.** Each keeps asserting what it
-  asserted before:
-  - `test_cyl_experiment_traits.py:453` (`test_migration_body_is_idempotent`) and `:476`
-    (`test_rollback_restores_prior_state`) start with `_sql_body(R3)` in the same transaction, so
-    they still test the `20260728000000` files. Each also asserts exactly one
+    - M3 has `DROP FUNCTION IF EXISTS`, `CREATE OR REPLACE`, `OWNER TO postgres` and
+      `NOTIFY pgrst`, and adds no write grant or policy;
+    - its presence SQL has `LATERAL … LIMIT 1` probes against `cyl_scan_traits`, including an
+      `IS NULL` arm, and has no `EXISTS (SELECT … FROM cyl_scan_traits`.
+  - [ ] 4.10.4 `test_rollback_1_still_refuses_with_m3_live`: after R2 only, R1 raises.
+- [ ] 4.11 **Update the existing tests that pin the old signature.** Each keeps its original
+  assertion.
+  - `test_cyl_experiment_traits.py:453` and `:476`: start each with
+    `_apply_recipe_rollbacks(cur, down_to=3)`. Each also asserts exactly one
     `get_experiment_traits` overload.
-  - `:381`: the signature string becomes `get_experiment_traits(bigint,bigint,text,text,bigint[])`.
-  - `test_cyl_experiment_summary_counts.py:533` and `:548`: `pronargs` becomes 5 for
-    `get_experiment_traits` only.
-  - The oracle `_get_experiment_traits`, which takes three positional arguments, is unchanged
-    because the defaults resolve it.
-
-  Record each edit here.
-- [ ] 4.11 **Record the red check.** Run 4.2–4.10 against the §3 schema. Expected green by design:
-  4.10's oracle usage.
+  - `test_cyl_experiment_traits.py:382`: change the signature string to
+    `get_experiment_traits(bigint,bigint,text,text,bigint[])`.
+  - `test_cyl_experiment_summary_counts.py:533` and `:548`: `pronargs` becomes 5, for
+    `get_experiment_traits` only. The three-positional-argument oracle resolves unchanged.
+- [ ] 4.12 **Record the red check.** Run 4.2–4.11 against the §3 schema. Expected green by design:
+  - 4.10.4;
+  - the oracle usage in the summary-counts tests.
 
 ### Implementation (green)
 
-- [ ] 4.12 Write `supabase/migrations/<T>0200_add_cyl_trait_recipe_reads.sql` (design D5, D6) and
-  its rollback R3. Edit the three function entries in the types copies.
-- [ ] 4.13 **Go green.** Section 4, plus `test_cyl_experiment_traits.py`,
-  `test_cyl_experiment_summary_counts.py`, `test_cyl_read_path.py`, and 2.5.3, which now passes
-  (remove its xfail).
+- [ ] 4.13 Write `supabase/migrations/<T>0200_add_cyl_trait_recipe_reads.sql` (design D5, D6).
+  - Write its rollback R3, whose header says R4 must run first.
+  - Add a header note to `supabase/rollbacks/20260728000000_get_experiment_traits_rollback.sql`
+    saying R3 must be applied first.
+  - Edit the three function entries in the types files, with the scoped `gen-types` diff check.
+- [ ] 4.14 **Go green.** Run section 4, then:
+  - `test_cyl_experiment_traits.py`;
+  - `test_cyl_experiment_summary_counts.py`;
+  - `test_cyl_read_path.py`;
+  - `test_cyl_pipeline_dispatch.py`;
+  - `test_cyl_trait_recipe_key.py`.
 
 ## 5. Datasets (migration 4)
 
-- [ ] 5.1 **Characterize today's behavior first.** New file `tests/integration/test_cyl_datasets.py`
-  with `test_source_mode_characterization`, run against the §4 schema, where it must be **green**.
-  It pins:
-  - the timepoints filter on scans;
+- [ ] 5.1 **Characterization, first and green.** New file
+  `tests/integration/test_cyl_dataset_recipe_mode.py`, with `test_source_mode_characterization`.
+  Run it against the §4 schema. It pins:
+  - timepoints filter scans;
   - QC exclusion;
   - an unknown QC name applies no filter;
   - one source's rows only;
-  - the pre-change `proacl`.
+  - `_acl_set` equals `{PUBLIC, anon, authenticated, service_role, postgres}` with `EXECUTE`.
 
   Commit it on its own.
 
 ### Tests first (red)
 
-- [ ] 5.2 In the same file:
+- [ ] 5.2 **Tests in the same file.**
   - [ ] 5.2.1 `test_frozen_rows_do_not_change`.
   - [ ] 5.2.2 `test_source_mode_records_recipe`.
-  - [ ] 5.2.3 Recipe mode, one test per scenario:
-    - it spans per-scan sources;
-    - it uses the highest source within the recipe;
-    - it leaves out other recipes;
+  - [ ] 5.2.3 **Recipe mode:**
+    - spans per-scan sources;
+    - reads the highest source within the recipe;
+    - leaves out other recipes;
     - `unattributed`;
     - `legacy:S` equals source mode;
-    - it matches the recipe read for scans whose plant has an accession and whose experiment has a
-      species.
-  - [ ] 5.2.4 Add the dataset leg to 4.5's agreement test.
-  - [ ] 5.2.5 `test_selector_errors`: zero selectors, two selectors or an unknown recipe each
-    raise, and no row is written.
+    - timepoints and QC apply;
+    - matches the recipe read for scans with an accession and a species.
+  - [ ] 5.2.4 Add the dataset leg to 4.6.
+  - [ ] 5.2.5 `test_selector_errors`: zero selectors, two selectors, or an unknown recipe each
+    raise, and nothing is written. Also cover the behavior change: a NULL `trait_source_id` alone
+    now raises.
   - [ ] 5.2.6 `test_dataset_function_properties`:
-    - one overload;
+    - one overload, **with six arguments**;
     - `prosecdef = false`;
+    - owner `postgres`;
     - `proconfig` contains `statement_timeout=0`;
-    - `proacl` equals the characterization's.
-  - [ ] 5.2.7 **Gateway.** bloomctl's five-key body with `trait_source_id: null` returns HTTP 400
-    with the "exactly one selector" P0001 message, not PGRST202 or PGRST203. Nothing is written.
-  - [ ] 5.2.8 `test_datasets_recipe_key_backfill_and_check`. The pipeline, legacy and NULL cases
-    backfill as the spec says, a re-run changes nothing, and the CHECK accepts and rejects
-    correctly.
-  - [ ] 5.2.9 `test_migration_4_body_is_idempotent` and `test_rollback_4_restores_five_arg`. The
-    rollback test also asserts the ACL, that the column is dropped, and the recipe-mode notice
-    count.
-  - [ ] 5.2.10 Unit:
+    - `_acl_set` equals 5.1's set.
+  - [ ] 5.2.7 **Gateway tests.**
+    - bloomctl's five-key body with `trait_source_id: null` returns HTTP 400 with the "exactly one
+      selector" P0001 message, not PGRST202 or PGRST203.
+    - A six-key body with an unknown `recipe_key` returns 400 with the unknown-recipe message.
+    - Names are `uuid4`. In `finally`, an autocommit connection deletes any `cyl_dataset_traits`
+      and `cyl_datasets` rows with that name.
+  - [ ] 5.2.8 `test_datasets_recipe_key_backfill_and_check`, in one transaction:
+    1. `_apply_recipe_rollbacks(cur, down_to=4)`;
+    2. insert three datasets directly (pipeline `S`, legacy `L`, and NULL);
+    3. apply `_sql_body(M4)` and assert the three keys;
+    4. apply it again: nothing changes;
+    5. the CHECK accepts and rejects correctly.
+  - [ ] 5.2.9 `test_migration_4_body_is_idempotent` and `test_rollback_4_restores_five_arg`.
+    - The rollback test asserts the ACL set, the `20240904033106` body, that the column is
+      dropped, and the recipe-mode NOTICE count.
+  - [ ] 5.2.10 **Unit tests:**
     - `test_20240904033106_is_the_newest_create_cyl_dataset_before_m4`;
-    - M4 has `lock_timeout`, `DROP … IF EXISTS`, `CREATE OR REPLACE`, `NOTIFY pgrst`, and
+    - M4 has `lock_timeout`, a named and guarded `cyl_datasets_recipe_key_format_check`,
+      `DROP … IF EXISTS`, `CREATE OR REPLACE`, `OWNER TO postgres`, `NOTIFY pgrst` and
       `SET statement_timeout TO '0'`;
-    - M4 does not contain `alter database` or `alter role`.
+    - neither M4 nor R4 contains `alter database` or `alter role`;
+    - R4's function region equals `20240904033106`'s.
 - [ ] 5.3 **Record the red check** against the §4 schema. Expected green by design: 5.1 and 5.2.1.
 
 ### Implementation (green)
 
-- [ ] 5.4 Write `supabase/migrations/<T>0300_add_cyl_dataset_recipe_mode.sql` and R4. Edit the
-  `cyl_datasets` and `create_cyl_dataset` entries in the types copies.
-- [ ] 5.5 **Go green.** Section 5, plus `bloomcli/tests/test_cyl_datasets.py`, which is mocked and
-  unchanged.
-- [ ] 5.6 **The full reverse chain**, `test_full_rollback_chain_round_trip`, in one transaction:
-  1. apply R4, R3, R2 and R1;
-  2. assert an a9 delivery works, as do the three-argument read and the five-argument dataset
-     function, and that no new column, index or function remains;
-  3. re-apply M1–M4 and assert the new state.
+- [ ] 5.4 Write `supabase/migrations/<T>0300_add_cyl_dataset_recipe_mode.sql` and its rollback R4.
+  Edit the `cyl_datasets` and `create_cyl_dataset` entries in the types files, with the scoped
+  `gen-types` check.
+- [ ] 5.5 **Go green.** Run section 5, `test_cyl_pipeline_dispatch.py`, and
+  `bloomcli/tests/test_cyl_datasets.py`, which is mocked and unchanged.
+- [ ] 5.6 **`test_full_rollback_chain_round_trip`,** in one transaction:
+  1. `_apply_recipe_rollbacks(cur, down_to=1)`;
+  2. an a9 delivery works, and so do the three-argument read and the five-argument dataset
+     function;
+  3. none of this change's objects remain;
+  4. re-apply M1–M4 and assert the new state.
 
-## 6. Types and docs
+## 6. Docs and sidecar
 
-- [ ] 6.1 **Types.**
-  - Confirm the four generated `database.types.ts` copies are byte-identical: run `sha256sum` on
-    `web/lib/database.types.ts` and the three `packages/*/…/database.types.ts` copies.
-  - Confirm that a `make gen-types` diff, restricted to the entries this change touched, matches
-    the hand edits.
-  - Confirm `web/types/database.types.ts` (hand-maintained) has the same entries.
-- [ ] 6.2 **Sidecar files.**
-  - Write `_WIKI/SUPABASE/trait-recipes.export.schema.json` (draft 2020-12) and
-    `_WIKI/SUPABASE/trait-recipes.export.example.json`.
-  - Tests first, in unit file `tests/unit/test_trait_recipe_export_schema.py`:
-    - the schema parses;
-    - the example has every `required` property at every level;
-    - every schema property appears in the page's field table (6.3);
-    - every table source column exists in M3's `RETURNS TABLE` lists or in `cyl_trait_sources`,
-      or is marked producer-supplied.
-- [ ] 6.3 **`_WIKI/SUPABASE/trait-recipes.md`**, the reader-facing page. It links to the spec
-  requirements for the rules rather than restating them, and covers:
-  - latest vs default recipe;
-  - recipe vs idempotency key vs source, with a pointer to `list_experiment_trait_sources`;
-  - the pseudo-recipes;
-  - `legacy_only` also covering unattributed-only scans;
-  - one `get_experiment_traits` call per experiment for a multi-experiment export;
-  - the dataset recipe-mode call shape (`trait_source_id: null`);
-  - the blind spot tracked by contracts#45;
-  - the sidecar field table.
-- [ ] 6.4 **Update the existing docs:**
-  - `_WIKI/BLOOMMCP/README.md:147-184`:
+- [ ] 6.1 **Types.** The four generated `database.types.ts` copies are byte-identical (compare
+  with `sha256sum`), and the hand-maintained `web/types/database.types.ts` carries the same
+  entries.
+- [ ] 6.2 **Tests first,** in unit file `tests/unit/test_trait_recipe_export_schema.py`:
+  - the schema parses;
+  - the example has every `required` property at every level;
+  - every schema property has a row in the field table in `trait-recipes.md`;
+  - every source that row names is one of:
+    - a column in M3's `RETURNS TABLE` lists;
+    - a key path under `cyl_trait_sources.metadata`;
+    - `exporter-supplied`.
+
+  Record it red.
+- [ ] 6.3 **Write the sidecar files and the page,** under `_WIKI/SUPABASE/`:
+  `trait-recipes.export.schema.json`, `trait-recipes.export.example.json` and `trait-recipes.md`.
+  - The page links to the spec requirements instead of restating them.
+  - It covers:
+    - latest versus default recipe;
+    - recipe versus idempotency key versus source, with a pointer to
+      `list_experiment_trait_sources`;
+    - the pseudo-recipes;
+    - that `legacy_only` includes unattributed-only scans;
+    - one `get_experiment_traits` call per experiment in a multi-experiment export;
+    - the blind spot (contracts#45);
+    - the field table.
+  - The recipe-mode dataset call shape (`trait_source_id: null`) goes in the §5 commit, so that
+    datasets can be split off cleanly if review stalls.
+  - 6.2 goes green.
+- [ ] 6.4 **Update the existing docs.** Keep the phrases that `tests/unit/test_refresh_workflow_staleness_docs.py`,
+  `test_bloommcp_local_mode_docs.py` and `test_bloommcp_data_mount_rename.py` require.
+  - `_WIKI/BLOOMMCP/README.md:147-185`:
     - the five-argument signature;
     - one source per scan for pipeline data;
-    - recommend `list_trait_recipes` and `recipe_key_` over pinning one source;
-    - a link to the page.
+    - prefer `list_trait_recipes` and `recipe_key_` over a single-source pin;
+    - link the page.
   - `_WIKI/SUPABASE/README.md`:
-    - under § Write-back RPC, the five stamps and "a no-op never rewrites them";
-    - under § Pipeline-trigger tables, the new index and the `cyl_pipeline_run_id` FK;
-    - a link to the page.
-  - `_WIKI/README.md`: add the new files to the layout tree.
-  - `contracts/README.md` § Re-pin procedure: add a step. If a keyed Provenance field changes,
-    decide on `recipe_key_version = 2` (link the page). Also update the a3 note at :92.
-  - `services/workflows/README.md:182`: note that this response's `pipeline_run_id` is the value
+    - § Write-back RPC: the recipe and run columns; a no-op never rewrites them; the run stamps are
+      never backfilled;
+    - § Pipeline-trigger tables: the new index, the `cyl_pipeline_run_id` FK, and that
+      `bloom_workflows`' column grant excludes the new columns;
+    - link the page.
+  - `_WIKI/README.md` layout tree (:16-23): add the three new files.
+  - `contracts/README.md`:
+    - the a3 note at :86-92: `predict_output_params` is now keyed by `recipe_key` v1 (link the
+      page);
+    - § Re-pin procedure: add a step 7. If a keyed Provenance field changes, decide whether
+      `recipe_key_version = 2` is needed.
+  - `services/workflows/README.md:182`: this `pipeline_run_id` is the value
     `cyl_trait_sources.cyl_pipeline_run_id` stores.
-  - `bloomcli/README.md:83-84`: note that a pipeline source name selects one scan's rows, and that
-    per-recipe datasets come with #481.
-- [ ] 6.5 Run `make erd` and commit `_WIKI/SUPABASE/erd.md`. Regenerate it on any rebase; don't
+  - `bloomcli/README.md:83-84`: a pipeline source name selects one scan's rows; per-recipe
+    datasets come with #481. This goes in the §5 commit.
+- [ ] 6.5 Run `make erd` and commit `_WIKI/SUPABASE/erd.md`. On a rebase, regenerate it; never
   hand-merge it.
 
 ## 7. Pre-merge
 
-- [ ] 7.1 **`/pre-merge`, plus the gaps it does not cover:**
-  - `uvx ruff@0.9.9 check tests/` and `uvx ruff@0.9.9 format --check` on the new test files;
-  - `uv run pre-commit run --files <every changed file>`;
-  - the full `tests/unit/`;
-  - the full `tests/integration/` with the stack up;
-  - `bloomcli`'s `tests/test_cyl_datasets.py`;
-  - `scripts/lint_migrations.sh origin/staging`;
-  - `scripts/lint_migration_isolation.py`;
-  - `openspec validate add-cyl-trait-recipe-key --strict` and `openspec validate --specs --strict`;
-  - a manual check that no other active change MODIFIES a requirement this change modifies.
-- [ ] 7.2 **Pre-merge dry run on staging, read-only.** Run the backfill function's SELECT logic as
-  CTEs, with the helper inlined. Record:
-  - 85/85 keys;
-  - 80/80 `scan_id`s;
-  - 10 distinct pipeline keys;
-  - backfilled `scan_id` agreeing with the trait rows for 79 of 79;
-  - no errors.
-- [ ] 7.3 **Coverage timing on staging, read-only (manual, not CI).** Run the coverage probe SQL
-  for experiment 1 as a CTE under `EXPLAIN ANALYZE`. It must be well under 8 s; 450 ms was
-  measured on 2026-09-29.
-- [ ] 7.4 **Timestamps.** Fetch `origin/staging`. If a newer migration has landed, restamp all
-  four files and their rollbacks with `git mv`, keeping their order. Repair the dev DB with
-  `supabase migration repair --status reverted <old>`, and re-run the suite.
+- [ ] 7.1 **Run `/pre-merge`, plus:**
+  - `uvx ruff@0.9.9 check` and `format --check` on the new Python files only. Existing test files
+    carry unrelated violations, so check only the lines this change edits there.
+  - `uv run pre-commit run --files <changed files>`, then confirm `--check` in 2.1 still passes.
+    Prettier may reformat the vectors JSON; tests compare parsed values.
+  - The full `tests/unit/` and `tests/integration/` suites, with the stack up.
+  - `bloomcli/tests/test_cyl_datasets.py`.
+  - `scripts/lint_migrations.sh origin/staging` and `scripts/lint_migration_isolation.py`.
+  - Both `openspec validate` runs.
+  - A manual check that no other active change MODIFIES this change's requirements.
+- [ ] 7.2 **Staging dry run, read-only.**
+  - Extract the backfill function's body from M1, and run its SELECTs as CTEs with the helper
+    inlined. Diff the extracted SQL against M1 first, so it cannot drift.
+  - Commit the query as `tests/integration/fixtures/recipe_backfill_dry_run.sql`, which 8.0 reuses.
+  - Record: 85 of 85 keys, 80 of 80 `scan_id`s, 10 distinct pipeline keys, 79 of 79 agreeing with
+    trait rows, and no errors.
+- [ ] 7.3 **Coverage timing, read-only on staging (manual, not CI).** Run the M3 probe SQL for
+  experiment 1 under `EXPLAIN ANALYZE`. It must be well under 8 s; it took 450 ms on 2026-09-29.
+- [ ] 7.4 **Timestamps.**
+  - Fetch `origin/staging`.
+  - If a newer migration has landed, `git mv` the four files and their rollbacks, keeping their
+    order.
+  - Repair the dev database with `supabase migration repair --status reverted <old>`, then re-run
+    the suite.
 - [ ] 7.5 **PR body.**
   - Write it with `/pr-description`.
-  - Its **Schema changes** section is generated with `make erd-snapshot CHANGED=origin/staging`.
-    It lists `cyl_trait_sources`, `cyl_datasets` and `cyl_pipeline_run_scans`, and every named
-    constraint and index.
-  - It says "Part of #935, #937", not "Closes".
-  - It gives a per-commit review order: §2–§3 for Benfica (@blm3886), §4 for egao28.
+  - Its **Schema changes** section comes from `make erd-snapshot CHANGED=origin/staging`. It lists
+    every named constraint and index from both migrations.
+  - It says "Part of #935, #937", with no closing keywords anywhere, including commit messages.
+  - It gives the per-commit review order:
+    - §2–§3 for Benfica (@blm3886);
+    - §4 for egao28;
+    - §5 for Benfica, as the bloomctl datasets path;
+    - §6 for eberrigan.
   - It notes the `erd.md` and timestamp overlap with Benfica's video-queue branch.
+  - It notes the pre-deploy lock check (design § Risks).
   - Check it with `make pr-body-check BODY=<file>`.
-- [ ] 7.6 Open the PR to `staging` **only after eberrigan says yes**, to be squash-merged. Do not
-  merge it; eberrigan merges.
+- [ ] 7.6 **Open the PR to `staging` only after eberrigan says yes.**
+  - It is squash-merged, and eberrigan merges it.
+  - If the push of a new branch returns 500, create the ref through the REST API first.
+  - Confirm `compose-health-check` is green; the gateway tests run only in CI.
 
 ## 8. After merge
 
-- [ ] 8.0 **Before promoting staging to main:** repeat 7.2's dry run read-only on prod.
-- [ ] 8.1 **Read-only staging checks after deploy:**
-  - 85/85 keys, 80/80 `scan_id`s, 10 distinct pipeline keys;
-  - `list_trait_recipes(ARRAY[12880747])` (the A4 pipeline E2E experiment) defaults to the a9
+- [ ] 8.0 **Before promoting staging to main: eberrigan runs a read-only dry run on prod.** Use
+  the 7.2 query, which is committed at `tests/integration/fixtures/recipe_backfill_dry_run.sql`.
+  Record the counts here. Run `scripts/lint_migrations.sh origin/main` on the promotion PR.
+- [ ] 8.1 **Read-only checks on staging after deploy:**
+  - `count(*) WHERE recipe_key IS NULL` is 0;
+  - the NULL `scan_id`s are only the known unresolvable sources;
+  - 10 distinct pipeline keys;
+  - `list_trait_recipes(ARRAY[12880747])`, the A4 pipeline E2E experiment, defaults to the a9
     recipe;
-  - coverage for experiment 1 completes under 8 s through PostgREST.
+  - experiment 1's coverage completes in under 8 s through PostgREST.
+
+  If any `recipe_key` is NULL, run `SELECT cyl_backfill_trait_source_recipe_identity();` as
+  `postgres`, with eberrigan's yes.
 - [ ] 8.2 On the first Bloom-dispatched run after deploy, confirm the new source's stamps. If no
   such run has happened, record this as blocked.
-- [ ] 8.3 **Drafts for eberrigan to approve before anything is posted:**
-  - a note on #936 for egao28, naming the new arguments, "one recipe per frame", and the bloommcp
-    docs that still describe one source per frame (`bloommcp/docs/data-access-roadmap.md:276`,
-    `bloommcp/docs/storage-backends.md:62-70`);
+- [ ] 8.3 **Drafts for eberrigan to approve before posting:**
+  - a note on #936 for egao28, covering:
+    - the new arguments;
+    - "one recipe per frame";
+    - `refactor-supabase-reader-db-tier2`'s "One source per frame";
+    - `bloommcp/docs/data-access-roadmap.md:276` and `bloommcp/docs/storage-backends.md:62-70`;
   - notes on #865, #481 and #482;
   - the recipe-retirement follow-up issue (design D10).
-- [ ] 8.4 After 8.1, close #935 and #937 **with eberrigan's yes**.
-- [ ] 8.5 After the staging-to-main promotion is verified, `/openspec:archive add-cyl-trait-recipe-key`.
+- [ ] 8.4 After 8.1, close #935 and #937, with eberrigan's yes.
+- [ ] 8.5 After the staging→main promotion is verified, run
+  `/openspec:archive add-cyl-trait-recipe-key`. Archive `fix-cyl-redelivery-blob-collision` before
+  or with it (design D11).

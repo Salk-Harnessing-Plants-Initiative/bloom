@@ -2,7 +2,7 @@
 
 ### Requirement: Bulk experiment-scoped trait reads
 
-Bloom SHALL provide `get_experiment_traits(experiment_id_ BIGINT, source_id_ BIGINT DEFAULT NULL, run_id_ TEXT DEFAULT NULL, recipe_key_ TEXT DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL)` returning every trait row for the given experiment in a single call.
+Bloom SHALL provide `get_experiment_traits(experiment_id_ BIGINT, source_id_ BIGINT DEFAULT NULL, run_id_ TEXT DEFAULT NULL, recipe_key_ TEXT DEFAULT NULL, scan_ids_ BIGINT[] DEFAULT NULL)` returning every trait row for the given experiment, optionally narrowed by `scan_ids_`, in a single call.
 
 **Columns.** It returns `scan_id, date_scanned, plant_age_days, wave_number, plant_id, germ_day,
 plant_qr_code, accession_name, trait_name, source_id, trait_value, recipe_key`, in that order.
@@ -20,7 +20,9 @@ selection rule rather than re-deriving it.
   that recipe, as defined in "Recipe presence is defined by trait rows". Scans without the recipe
   are omitted.
 - Supplying more than one of `source_id_`, `run_id_` and `recipe_key_` SHALL raise an error.
-- A `recipe_key_` that names no stored recipe and is not `'unattributed'` SHALL raise an error.
+- A `recipe_key_` that is not a stored recipe (see "Recipe presence is defined by trait rows")
+  and is not `'unattributed'` SHALL raise an error. A stored recipe absent from this experiment
+  returns zero rows.
 
 **Narrowing by scan.** `scan_ids_`, when non-null, SHALL restrict every mode to those scans. An
 empty array returns zero rows, and ids that are not scans of `experiment_id_` are ignored.
@@ -28,9 +30,12 @@ empty array returns zero rows, and ids that are not scans of `experiment_id_` ar
 **The `recipe_key` column** carries the row's source's `recipe_key`, or `'unattributed'` when
 `source_id` is NULL.
 
-**Parity with the previous function.** With `recipe_key_` and `scan_ids_` both `NULL`, the first
-eleven columns and the row order (`accessions.name, cyl_plants.id, cyl_scans.id, trait_name`)
-SHALL be identical to those of the previous three-argument function.
+**Row order.** Every mode SHALL order rows by `accessions.name, cyl_plants.id, cyl_scans.id,
+trait_name`.
+
+**Parity with the three-argument definition.** With `recipe_key_` and `scan_ids_` both `NULL`, the
+first eleven columns and the row order SHALL be identical to those of the `20260728000000`
+three-argument definition.
 
 **Parity with `get_scan_traits`.** The latest, `source_id` and `run_id` semantics SHALL match
 `get_scan_traits`'s existing behavior byte-for-byte on any `(scan, trait)` combination both
@@ -130,13 +135,18 @@ experiment SHALL be returned under any argument combination.
 #### Scenario: A legacy pseudo-recipe reads that source's rows
 
 - **WHEN** `get_experiment_traits(experiment_id_, recipe_key_ => 'legacy:L')` is called
-- **THEN** it returns the same first eleven columns as `get_experiment_traits(experiment_id_,
-  source_id_ => L)`
+- **THEN** it returns the same first eleven columns, in the same order, as
+  `get_experiment_traits(experiment_id_, source_id_ => L)`
 
 #### Scenario: A mistyped recipe key is rejected
 
 - **WHEN** `recipe_key_` is 64 hex characters that match no stored `recipe_key`
 - **THEN** the call raises an error
+
+#### Scenario: A recipe stored only elsewhere returns nothing
+
+- **WHEN** `recipe_key_` is a stored recipe that no scan of `experiment_id_` has
+- **THEN** the call returns zero rows without error
 
 #### Scenario: scan_ids_ narrows the default path
 
@@ -144,10 +154,10 @@ experiment SHALL be returned under any argument combination.
 - **THEN** only scan `s1`'s latest-source rows are returned, and an empty `scan_ids_` returns zero
   rows
 
-#### Scenario: The default path is unchanged by the new arguments
+#### Scenario: The default path is unaffected by recipe_key_ and scan_ids_
 
-- **WHEN** the previous three-argument function and the new function are each called on the same
-  data with the same `experiment_id_`, `source_id_` and `run_id_`
+- **WHEN** the `20260728000000` three-argument definition and this definition are each called on
+  the same data with the same `experiment_id_`, `source_id_` and `run_id_`
 - **THEN** the first eleven columns of every row, and the row order, are identical
 
 ### Requirement: Additive, non-destructive bulk-read migration
@@ -181,7 +191,7 @@ both new functions.
 
 ### Requirement: Recipe presence is defined by trait rows
 
-A scan SHALL have recipe `K` exactly when at least one of its `cyl_scan_traits` rows has a `source_id` whose `cyl_trait_sources.recipe_key` is `K`, or has a `NULL` `source_id` when `K` is `'unattributed'`.
+A scan `s` SHALL have recipe `K` exactly when at least one of its `cyl_scan_traits` rows has a `source_id` `c` whose `cyl_trait_sources.recipe_key` is `K` and whose `cyl_trait_sources.scan_id` is `s` or NULL, or has a `NULL` `source_id` when `K` is `'unattributed'`.
 
 **The scan's source of `K`** is the highest such `source_id`, or `NULL` for `'unattributed'`.
 
@@ -189,7 +199,14 @@ A scan SHALL have recipe `K` exactly when at least one of its `cyl_scan_traits` 
 `get_experiment_traits` (with `recipe_key_`) and `create_cyl_dataset` (with `recipe_key`) SHALL
 all use it.
 
-**Consequence.** A source with no trait rows SHALL contribute no recipe to any scan.
+**Consequences.**
+- A source with no trait rows SHALL contribute no recipe to any scan.
+- Rows of a source whose `recipe_key` is NULL SHALL contribute no recipe.
+- Rows of a source whose `scan_id` names a different scan SHALL contribute no recipe to the scan
+  they sit on. The write-back RPC never writes such rows; only a direct `bloom_admin` edit can.
+
+**Stored recipes.** A *stored recipe* is a `recipe_key` value present on at least one
+`cyl_trait_sources` row, in any experiment.
 
 **Recipe kinds.** A recipe is `'legacy'` when its key starts with `legacy:`, `'unattributed'` for
 the key `'unattributed'`, and `'pipeline'` otherwise.
@@ -199,6 +216,16 @@ the key `'unattributed'`, and `'pipeline'` otherwise.
 - **WHEN** a pipeline source of recipe `K3` has `scan_id = s` but no `cyl_scan_traits` rows
 - **THEN** scan `s` does not have `K3` in `list_trait_recipes`, in coverage `available_recipes`, or
   in any recipe read
+
+#### Scenario: Rows filed under another scan's source add no recipe
+
+- **WHEN** source `c` has recipe `K` and `scan_id = s1`, and has `cyl_scan_traits` rows on scan `s2`
+- **THEN** scan `s2` does not have `K`
+
+#### Scenario: A pipeline source with no scan_id still counts
+
+- **WHEN** source `c` has recipe `K`, `scan_id` NULL, and `cyl_scan_traits` rows on scan `s`
+- **THEN** scan `s` has `K`, with `c` as a candidate for its source of `K`
 
 #### Scenario: The four functions agree on a scan's source of a recipe
 
@@ -224,11 +251,11 @@ Bloom SHALL provide `list_trait_recipes(experiment_ids_ BIGINT[] DEFAULT NULL, s
 | Column | Content |
 |---|---|
 | `recipe_key` | The recipe |
-| `recipe_key_version` | Its key version |
+| `recipe_key_version` | `1` for pipeline and legacy recipes, `NULL` for `unattributed` |
 | `recipe_kind` | `pipeline`, `legacy` or `unattributed` |
-| `definition jsonb` | Pipeline: `cyl_trait_recipe_payload_v1` of the recipe's highest source's `metadata`. Legacy: `{source_id, source_name}`. `unattributed`: `NULL` |
+| `definition` (jsonb) | Pipeline: `cyl_trait_recipe_payload_v1` of the recipe's highest source's `metadata`. Legacy: `{source_id, source_name}`. `unattributed`: `NULL` |
 | `n_scans` | The number of selected scans that have the recipe |
-| `newest_source_id` | The highest selected scan's source of the recipe. `NULL` for `unattributed` |
+| `newest_source_id` | The highest `source_id` among the selected scans' sources of the recipe. `NULL` for `unattributed` |
 | `is_default` | Whether this is the default recipe |
 
 **The default recipe.** Exactly one row SHALL have `is_default = true` whenever any row is
@@ -306,13 +333,13 @@ Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT 
 |---|---|
 | `included` | The scan has the evaluated recipe. `source_id` is its source of that recipe |
 | `no_traits` | The scan has no trait rows |
-| `legacy_only` | Every recipe the scan has is `legacy:*` or `unattributed` |
+| `legacy_only` | The scan has at least one recipe, and every recipe it has is `legacy:*` or `unattributed` |
 | `other_recipe` | Any other case |
 
 **Other rules.**
 - `source_id` SHALL be `NULL` for every status other than `included`.
-- `available_recipes` SHALL list exactly the recipes the scan has, sorted.
-- A `recipe_key_` that names no stored recipe and is not `'unattributed'` SHALL raise an error.
+- `available_recipes` SHALL list exactly the recipes the scan has, sorted under `COLLATE "C"`.
+- A `recipe_key_` that is not a stored recipe and is not `'unattributed'` SHALL raise an error.
 
 #### Scenario: Coverage reports each scan's status against the default
 
@@ -342,6 +369,11 @@ Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT 
 - **WHEN** a scan has sources of `K1` and `K2` and `NULL`-source rows
 - **THEN** its `available_recipes` is exactly `K1`, `K2` and `unattributed`
 
+#### Scenario: Rows with no recipe report other_recipe
+
+- **WHEN** a scan's only trait rows belong to a source whose `recipe_key` is NULL
+- **THEN** that scan reports `other_recipe` with an empty `available_recipes`
+
 #### Scenario: A selection with no trait data reports no_traits
 
 - **WHEN** coverage is requested with `recipe_key_` `NULL` for scans that have no trait rows
@@ -361,15 +393,16 @@ Bloom SHALL provide `get_trait_recipe_coverage(experiment_ids_ BIGINT[] DEFAULT 
 
 `get_experiment_traits`, `list_trait_recipes` and `get_trait_recipe_coverage` SHALL be `SECURITY INVOKER`, with `EXECUTE` revoked from `PUBLIC` and `anon` and granted to `bloom_agent`, `bloom_user`, `bloom_admin` and `authenticated`.
 
-**No other access changes.** This change SHALL NOT add, drop or alter any row-level-security
-policy or write grant on any table these functions read.
+**Other roles.** `service_role` keeps the `EXECUTE` it holds through Supabase default privileges.
+No row-level-security policy or write grant on any table these functions read SHALL be added,
+dropped or altered.
 
 #### Scenario: Read roles can call every mode
 
 - **WHEN** a session assumes each of `bloom_agent`, `bloom_user` and `bloom_admin`, and calls all
   three functions in the default mode, with a pipeline `recipe_key_`, with `'legacy:L'`, with
   `'unattributed'` and with `scan_ids_`
-- **THEN** every call succeeds and returns rows for the fixture
+- **THEN** every call succeeds, and returns rows whenever the data has rows for that mode
 
 #### Scenario: anon cannot call them
 
@@ -378,19 +411,20 @@ policy or write grant on any table these functions read.
 
 ### Requirement: Recipe read RPCs supply every export sidecar field
 
-Every field of export sidecar v1 (`_WIKI/SUPABASE/trait-recipes.export.schema.json`) SHALL either come from a column of `list_trait_recipes`, `get_trait_recipe_coverage` or `get_experiment_traits`, or from `cyl_trait_sources.metadata` read by an included `source_id`, or be marked producer-supplied.
+Every field of export sidecar v1 (`_WIKI/SUPABASE/trait-recipes.export.schema.json`) SHALL either come from a column of `list_trait_recipes`, `get_trait_recipe_coverage` or `get_experiment_traits`, or from a key path under `cyl_trait_sources.metadata` read by an included `source_id`, or be marked exporter-supplied.
 
 **The field table.** `_WIKI/SUPABASE/trait-recipes.md` SHALL name that source for each field.
 
-**What producers must do.** A producer SHALL build the sidecar's excluded list from exactly the
+**What exporters must do.** An *exporter* (the web download, bloomctl or bloommcp) SHALL build the
+sidecar's excluded list from exactly the
 coverage rows whose `status` is not `included`, with `reason` equal to `status`.
 
 #### Scenario: Every schema property is mapped
 
 - **WHEN** the schema's properties are compared with the field table in
   `_WIKI/SUPABASE/trait-recipes.md`
-- **THEN** every property has a row, and every column named in the table exists in the named RPC's
-  result or in `cyl_trait_sources`
+- **THEN** every property has a row, and every source named in the table is a column of the named
+  RPC's result, a key path under `cyl_trait_sources.metadata`, or "exporter-supplied"
 
 #### Scenario: The example sidecar is complete
 
@@ -400,7 +434,7 @@ coverage rows whose `status` is not `included`, with `reason` equal to `status`.
 
 ### Requirement: Recipe read migration replaces get_experiment_traits without leaving an overload
 
-The recipe-read migration SHALL `DROP FUNCTION IF EXISTS get_experiment_traits(bigint, bigint, text)` and then `CREATE OR REPLACE` the five-argument function, so that exactly one `get_experiment_traits` overload exists and the migration is re-runnable.
+The recipe-read migration (`*_add_cyl_trait_recipe_reads.sql`) SHALL `DROP FUNCTION IF EXISTS get_experiment_traits(bigint, bigint, text)` and then `CREATE OR REPLACE` the five-argument function, so that exactly one `get_experiment_traits` overload exists and the migration is re-runnable.
 
 **Schema reload.** It SHALL end with `NOTIFY pgrst, 'reload schema'`.
 
@@ -414,8 +448,13 @@ function and grants of `20260728000000`.
 
 - **WHEN** PostgREST receives `POST /rpc/get_experiment_traits` with body
   `{"experiment_id_": E, "source_id_": null, "run_id_": null}`
-- **THEN** it resolves to the single five-argument function with no PGRST203 error, and each row
-  carries the twelve columns
+- **THEN** it returns HTTP 200 with a JSON array and no PGRST203 (ambiguous overload) error
+
+#### Scenario: The result columns are exactly the twelve, in order
+
+- **WHEN** `get_experiment_traits` is called in any mode
+- **THEN** the result's column names are the twelve listed in "Bulk experiment-scoped trait
+  reads", in that order
 
 #### Scenario: Re-applying the migration body is idempotent
 
@@ -427,4 +466,5 @@ function and grants of `20260728000000`.
 
 - **WHEN** the rollback is applied after the forward migration
 - **THEN** only `get_experiment_traits(bigint, bigint, text)` exists, with the attributes and
-  grants of `20260728000000`, and neither new function exists
+  grants of `20260728000000`, and neither `list_trait_recipes` nor `get_trait_recipe_coverage`
+  exists
