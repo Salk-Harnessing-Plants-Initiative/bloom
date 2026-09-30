@@ -6,6 +6,8 @@ The route handler SHALL apply these checks in order, before reading the body and
 2. **Origin:** an `Origin` header SHALL be present and not `null`. Its host, including any port, SHALL equal case-insensitively the first comma-separated value of `x-forwarded-host` if present, otherwise `host`. Otherwise the handler responds `403`.
 3. **Session:** `getSession()` SHALL return an `access_token`. Otherwise the handler responds `401`.
 
+When starting runs is switched off (requirement "Starting pipeline runs can be switched off per environment"), the handler responds `503` before these checks.
+
 #### Scenario: Non-JSON post is refused
 - **WHEN** a request arrives with `Content-Type: text/plain`, or `text/plain; application/json`, and a valid session cookie
 - **THEN** the handler responds `415`, never reads the body, and makes no upstream request
@@ -25,6 +27,22 @@ The route handler SHALL apply these checks in order, before reading the body and
 #### Scenario: Unauthenticated same-origin call is refused
 - **WHEN** a same-origin JSON request arrives with no session
 - **THEN** the handler responds `401` and makes no upstream request
+
+### Requirement: Starting pipeline runs can be switched off per environment
+The web app SHALL offer run actions, and the trigger proxy SHALL accept a request, only when the server-side setting `CYL_PIPELINE_TRIGGER_ENABLED` is exactly `true`, read at request time. Otherwise:
+- no run action, scan checkbox, "Select all shown" or selection bar is rendered, on any surface;
+- `POST /api/cyl/pipeline` responds `503` before reading the session or body, and makes no upstream request;
+- the live views (runs list, drill-down, experiment panel) are unchanged.
+
+It is `true` in staging and `false` in prod until bloom#863 is fixed, because every dispatched Workflow mounts the staging Supabase credential.
+
+#### Scenario: Switched off hides the run actions
+- **WHEN** `CYL_PIPELINE_TRIGGER_ENABLED` is unset, `false` or `TRUE`, and a member opens a scan, experiment, accession or drill-down page
+- **THEN** no run action is rendered, and the experiment page's runs panel still renders
+
+#### Scenario: Switched off refuses the proxy
+- **WHEN** `CYL_PIPELINE_TRIGGER_ENABLED` is not `true` and a same-origin signed-in member posts a valid body
+- **THEN** the handler responds `503`, and neither the session nor the body is read and no upstream request is made
 
 ### Requirement: Trigger proxy validates the body locally and forwards a rebuilt body
 The route handler SHALL respond `413` when the body exceeds 256 KB, measured in bytes, whether or not a `Content-Length` header is present. It SHALL respond `422` for malformed JSON, for a non-object body, and for any violation of these rules:

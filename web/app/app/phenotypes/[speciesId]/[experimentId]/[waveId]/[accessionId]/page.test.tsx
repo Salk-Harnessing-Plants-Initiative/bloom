@@ -64,8 +64,12 @@ beforeEach(() => {
     plant(2, "B", [{ id: 21, plant_age_days: 3, cyl_images: [{ id: 210 }] }]),
   ];
   dialog.props = null;
+  vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "true");
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
 
 const page = () => Accession({ params: Promise.resolve({ speciesId: "2", experimentId: "5", waveId: "11", accessionId: "7" }) });
 
@@ -97,5 +101,14 @@ describe("the wave × accession page", () => {
     render(await page());
     expect((screen.getByRole("button", { name: "Run this accession" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/at most 5000/)).toBeTruthy();
+  });
+
+  it("offers no run action and no selection when starting runs is switched off", async () => {
+    vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "false");
+    render(await page());
+    expect(screen.getAllByRole("link", { name: /thumbnail/ })).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: "Run this accession" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Select all shown" })).toBeNull();
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** The scan page offers "Run this scan" only when the scan exists (add-cyl-pipeline-ui task 11.5). */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 const db = vi.hoisted(() => ({ scan: null as Record<string, unknown> | null }));
@@ -34,9 +34,11 @@ vi.mock("@/components/cyl-pipeline/RunPipelineButton", () => ({
 
 import ScanPage from "./page";
 
+beforeEach(() => vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "true"));
 afterEach(() => {
   cleanup();
   db.scan = null;
+  vi.unstubAllEnvs();
 });
 
 const page = () =>
@@ -52,6 +54,14 @@ describe("the scan page", () => {
 
   it("offers nothing when the scan doesn't exist", async () => {
     render(await page());
+    expect(screen.queryByRole("button", { name: "Run this scan" })).toBeNull();
+  });
+
+  it("offers nothing when starting runs is switched off", async () => {
+    vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "false");
+    db.scan = { id: 577, plant_age_days: 14, cyl_images: [], cyl_plants: { qr_code: "Q", cyl_waves: { number: 1 } } };
+    render(await page());
+    expect(screen.getByText(/Replicate/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Run this scan" })).toBeNull();
   });
 });

@@ -26,6 +26,8 @@ services:
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      # Starting cylinder pipeline runs from Bloom (web/lib/cyl-pipeline/trigger-enabled.ts).
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
     volumes:
       - ./web:/app/web
       - ./packages:/app/packages

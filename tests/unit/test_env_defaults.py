@@ -528,3 +528,20 @@ def test_the_destination_is_not_the_v1_archive():
     # Nothing distinguishes it from an empty folder at runtime.
     root = _parse(PROD_DEFAULTS)["OBJECT_BACKUP_BOX_ROOT"].strip().lower()
     assert "old_bloom_final_state" not in root, "points at the V1 archive"
+
+
+def test_pipeline_trigger_is_on_in_staging_and_off_in_prod():
+    """Starting cylinder pipeline runs from Bloom is switched on in staging and off in
+    prod until bloom#863 is fixed: prod-dispatched Workflows mount the *staging*
+    Supabase credential, so a prod run would write its results into staging and fail
+    its own rows. bloom-web reads the switch at request time
+    (web/lib/cyl-pipeline/trigger-enabled.ts), so compose must pass it through."""
+    prod = _parse(PROD_DEFAULTS)
+    staging = _parse(STAGING_DEFAULTS)
+    assert staging.get("CYL_PIPELINE_TRIGGER_ENABLED") == "true"
+    assert prod.get("CYL_PIPELINE_TRIGGER_ENABLED") == "false"
+    compose = COMPOSE_FILE.read_text()
+    start = compose.index("  bloom-web:")
+    web = compose[start : compose.index("\n  # ---", start)]
+    assert "CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}" in web
+

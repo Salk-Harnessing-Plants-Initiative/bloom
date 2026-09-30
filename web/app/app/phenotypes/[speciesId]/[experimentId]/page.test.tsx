@@ -5,7 +5,7 @@
  * is more than one (task 11.5).
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 const panel = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
@@ -53,8 +53,10 @@ vi.mock("@/components/cyl-pipeline/RunPipelineButton", () => ({
 
 import Experiment from "./page";
 
+beforeEach(() => vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "true"));
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
   panel.props = null;
   buttons.props = [];
   db.waves = [wave(11, 1)];
@@ -116,5 +118,14 @@ describe("the experiment page", () => {
     expect(provider.contains(screen.getByTestId("runs-panel"))).toBe(true);
     expect(provider.contains(screen.getByRole("button", { name: "Run experiment" }))).toBe(true);
     for (const b of screen.getAllByRole("button", { name: "Run wave" })) expect(provider.contains(b)).toBe(true);
+  });
+
+  it("offers no run action when starting runs is switched off, and still shows the runs panel", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "false");
+    db.waves = [wave(12, 2), wave(11, 1)];
+    render(await page("5"));
+    expect(screen.getByTestId("runs-panel")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Run / })).toBeNull();
   });
 });

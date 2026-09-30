@@ -74,8 +74,8 @@ function respond(q: RecordedQuery): Answer {
   return { data: [], error: null };
 }
 
-const mount = (strict = false, initialFilter: "all" | "failed" = "all") => {
-  const el = <RunDetailLive initialRun={run} initialFilter={initialFilter} />;
+const mount = (strict = false, initialFilter: "all" | "failed" = "all", triggerEnabled = true) => {
+  const el = <RunDetailLive initialRun={run} initialFilter={initialFilter} triggerEnabled={triggerEnabled} />;
   return render(strict ? <StrictMode>{el}</StrictMode> : el);
 };
 const channel = () => liveChannels()[0];
@@ -687,5 +687,18 @@ describe("re-run actions", () => {
     expect(rerunFailed()!.textContent).toBe("Re-run failed scans (1)");
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(dialog.props!.target).toEqual({ target_level: "scan_ids", scan_ids: [577, 578] });
+  });
+
+  it("offers no re-run action when starting runs is switched off", async () => {
+    run = { ...run, scan_count: 2, status: "complete" };
+    scans = rows([
+      [577, "written"],
+      [578, "failed"],
+    ]);
+    mount(false, "all", false);
+    await subscribe();
+    expect(header().textContent).toContain("Finished · 1 succeeded · 1 failed");
+    expect(rerunFailed()).toBeNull();
+    expect(rerunUnresulted()).toBeNull();
   });
 });

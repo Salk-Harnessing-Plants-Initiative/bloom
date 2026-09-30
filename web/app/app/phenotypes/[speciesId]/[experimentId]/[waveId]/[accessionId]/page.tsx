@@ -18,6 +18,7 @@ import {
   SelectionBar,
 } from "@/components/cyl-pipeline/ScanSelection";
 import { accessionScanIds } from "@/components/cyl-pipeline/accession-scan-ids";
+import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 
 export default async function Accession({
   params,
@@ -42,6 +43,8 @@ export default async function Accession({
   // later scan on the same day, or one without a frame-1 image). Read before
   // the in-place sort below, so the ids keep the plants' own order.
   const allScanIds = accessionScanIds(plants);
+  // Off in prod until bloom#863: no run action, no selection.
+  const canRun = isPipelineTriggerEnabled();
   const accessionName = plants?.[0]?.accessions?.name ?? "";
   const wave = plants?.[0]?.cyl_waves;
   const days = (
@@ -130,14 +133,14 @@ export default async function Accession({
       </div>
       <ScanSelectionProvider shownIds={shownScanIds}>
       <div className="mb-4 flex flex-wrap items-start gap-4">
-        {allScanIds.length > 0 && (
+        {canRun && allScanIds.length > 0 && (
           <RunPipelineButton
             target={{ target_level: "scan_ids", scan_ids: allScanIds }}
             label="Run this accession"
             title={`${accessionName} (wave ${wave?.number})`}
           />
         )}
-        {shownScanIds.length > 0 && <SelectAllShown />}
+        {canRun && shownScanIds.length > 0 && <SelectAllShown />}
       </div>
       <div className="table-auto select-none">
         {plants?.map((plant: { id: Key | null | undefined; qr_code: any; cyl_qc_codes: any[]; cyl_scans: CylScanWithImages[]; }, index: number) => (
@@ -188,10 +191,12 @@ export default async function Accession({
                         >
                           <div className="pb-1 flex items-center justify-center gap-2">
                             {/* Beside the thumbnail's link, not inside it, so selecting never navigates. */}
-                            <ScanCheckbox
-                              scanId={scan.id}
-                              label={`Select the day ${scan.plant_age_days} scan of replicate ${index + 1}`}
-                            />
+                            {canRun && (
+                              <ScanCheckbox
+                                scanId={scan.id}
+                                label={`Select the day ${scan.plant_age_days} scan of replicate ${index + 1}`}
+                              />
+                            )}
                             Day {scan.plant_age_days}
                           </div>
                           <PlantScan
@@ -221,7 +226,7 @@ export default async function Accession({
           </div>
         ))}
       </div>
-      <SelectionBar />
+      {canRun && <SelectionBar />}
       </ScanSelectionProvider>
     </div>
   );

@@ -114,7 +114,16 @@ function applyChange(view: DetailView, change: Change<RunRow | RunScanRow>, runI
   return { ...view, detail };
 }
 
-export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRun: RunRow; initialFilter?: StatusFilter }) {
+export function RunDetailLive({
+  initialRun,
+  initialFilter = "all",
+  triggerEnabled,
+}: {
+  initialRun: RunRow;
+  initialFilter?: StatusFilter;
+  /** Whether starting runs is switched on here (trigger-enabled.ts); off hides the re-run actions. */
+  triggerEnabled: boolean;
+}) {
   const runId = initialRun.id;
   const now = useNow();
   // Rows known to be failed; a row joining this set live gets one lookup.
@@ -280,8 +289,8 @@ export function RunDetailLive({ initialRun, initialFilter = "all" }: { initialRu
   const unresultedIds = scanRows.filter((r) => r.status !== "written" && r.status !== "reused").map((r) => r.scan_id);
   const settled = loaded && tallies.done + tallies.failed >= detail.run.scan_count;
   const ended = detail.run.status === "complete" || detail.run.status === "failed";
-  const offerFailed = settled && failedIds.length > 0;
-  const offerUnresulted = loaded && ended && runDisplay(headerRun).counts.U > 0 && unresultedIds.length > 0;
+  const offerFailed = triggerEnabled && settled && failedIds.length > 0;
+  const offerUnresulted = triggerEnabled && loaded && ended && runDisplay(headerRun).counts.U > 0 && unresultedIds.length > 0;
   const noOpAmongFailed = tableRows.some((r) => r.noOpNote !== null);
 
   const lastUpdate = scanRows.reduce<string | null>(

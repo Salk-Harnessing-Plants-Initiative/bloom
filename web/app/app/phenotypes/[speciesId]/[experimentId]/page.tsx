@@ -9,6 +9,7 @@ import ExperimentDescription from "@/components/experiment-description";
 import { ExperimentRunsPanel } from "@/components/cyl-pipeline/ExperimentRunsPanel";
 import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
 import { StartedRunsProvider } from "@/components/cyl-pipeline/started-runs";
+import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 import { parseId } from "@/lib/route-params";
 
 type Plant = {
@@ -68,6 +69,8 @@ export default async function Experiment({
 }) {
   const { experimentId, speciesId } = await params;
   const runsPanelId = parseId(experimentId);
+  // Off in prod until bloom#863; the runs panel shows either way.
+  const canRun = runsPanelId !== null && isPipelineTriggerEnabled();
   const experiment : any = await getExperimentWithPlants(Number(experimentId));
   console.log("Experiment data:", experiment);
   const experimentName = capitalizeFirstLetter(
@@ -111,7 +114,7 @@ export default async function Experiment({
       <div className="mb-4">
         {experiment?.people && <ScientistBadge person={experiment.people} />}
       </div>
-      {runsPanelId !== null && experiment && (
+      {canRun && experiment && (
         <div className="mb-4">
           <RunPipelineButton
             target={{ target_level: "experiment", target_id: runsPanelId }}
@@ -147,7 +150,7 @@ export default async function Experiment({
                         Wave {wave.number}
                       </div>
                       <div className="table-cell pt-4 pb-2 pl-8">
-                        {runsPanelId !== null && (
+                        {canRun && (
                           <RunPipelineButton
                             target={{ target_level: "wave", target_id: wave.id }}
                             label="Run wave"
