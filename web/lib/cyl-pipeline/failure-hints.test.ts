@@ -56,7 +56,7 @@ describe("likelyCause", () => {
 describe("isNoOpCandidate", () => {
   const failed = (error_message: string | null) => ({ status: "failed", error_message });
 
-  it("is true only for the backstop text on a scan with results", () => {
+  it("is true for the backstop text only on a scan with results, and only for that exact text", () => {
     expect(isNoOpCandidate(failed(BACKSTOP_MESSAGE), true)).toBe(true);
     expect(isNoOpCandidate(failed(BACKSTOP_MESSAGE), false)).toBe(false);
     expect(isNoOpCandidate(failed("stage-in: species missing"), true)).toBe(false);
