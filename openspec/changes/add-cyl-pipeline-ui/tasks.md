@@ -558,9 +558,9 @@
   - the drill-down loads every row.
 
   Record the trigger latency, since it makes 25-scan enqueue RPCs sequentially.
-- [ ] 12.11 Record run ids, screenshots and mismatches in the PR. Mismatches are fixed or filed, not waived. Then verify as in 8.7, and run `/pre-merge` and `/review-pr`.
+- [x] 12.11 Record run ids, screenshots and mismatches in the PR. Mismatches are fixed or filed, not waived. Then verify as in 8.7, and run `/pre-merge` and `/review-pr`.
 
-  **(PR 6, 2026-09-30, local web app against staging `b0d455bf`; details and screenshots are in PR #965's body.)**
+  **(PR 6, 2026-09-30, local web app against staging `b0d455bf`; details are in PR #965's body. There are no screenshots: the body has a written screens summary instead, by the author's decision.)**
   - **Preconditions:**
     - contract pin a9 on the RPC and on the live trait-extractor template;
     - test scans TEST-E2E-019 and 020, created with `create-test-scan --good`; 014 and 007 are the poison scans;
@@ -575,6 +575,11 @@
   - **12.9:** run 11's link opened wave 9999 · day 2 with no fallback note.
   - **12.10:** run 17, Missouri_Soy_Repetition, 1,515 scans: one run, `scan_count` 1515, all rows loaded, about 3 s trigger latency. It was cancelled because staging's image bytes are missing (every frame 404s). About 165 failed downloader pods from retries fed into srp#98.
   - **12.7:** run 18's drill-down, opened at about 19:17Z, still showed Live about 80 minutes later (20:38Z), past the one-hour JWT lifetime. Staging's Kong log shows the client's token refreshes (20:03–20:30Z) and Realtime rejoins (20:31, 20:36Z). Accepted by the author on the indicator. Caveat: no event was received on that tab after expiry, and the log can't separate that tab from other browser activity.
+  - **12.11:** PR #965's body records runs 15–18, a screens summary, and the mismatches, each fixed or filed: #955, #900 (plus a comment), #706, #983, #985, #857, srp#98 and #971. Verified as in 8.7 on `6ab77bec`:
+    - web unit tests 1868/1868 (133 files); `tsc` clean; `npm run build` passes; `npm audit` 0 critical; `openspec validate --strict` valid; migration isolation passes;
+    - PR Checks run 36787853084 passed.
+
+    `/review-pr` round 2 was posted and every item was resolved (dispositions comment on #965), and `/pre-merge` was done.
   - **Still open:** 12.6, left open by the author. It wasn't observed: a large burst needs a run over many scans, real experiments' image bytes are missing on staging, and the 20 test scans give at most a 20-row burst.
   - **12.8:** runs 15 (1/0), 16 (5/6) and 18 (1/0): `done_count`/`failed_count` equal the row tallies, rechecked read-only on 2026-09-30. Recorded in `fix-cyl-pipeline-run-scan-status`: 8.3 and 8.4 ticked there; 8.2's evidence noted but left unticked (no rollout log watch); 8.1 unticked.
 
