@@ -13,9 +13,12 @@ argo/scrna/
 │   ├── run-qc.sh               installed as run-qc: downloads one sample, runs fastq-qc and FastQC, uploads the report
 │   ├── fastq-qc-template.yaml  WorkflowTemplate with the fastq-qc step
 │   └── fastq-qc-workflow.yaml  QC only, for a list of samples: a quick look before counting
+├── analysis/                   after count: scanpy steps, in their own image
+│   ├── Dockerfile              scrna-analysis image: Python, scanpy, leidenalg
+│   └── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, build-h5ad
 └── cellranger/                 then: cellranger count
     ├── run-count.sh            installed as run-count: one sample from S3 through cellranger count and back
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (stage → qc → count → cleanup), stage-reference, testrun
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (stage → qc → count → cleanup, then preprocess → cluster → build-h5ad), stage-reference, testrun
     ├── cellranger-count-workflow.yaml   stage the reference once, then the sample pipeline for a list of samples in parallel
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 ```
@@ -28,7 +31,7 @@ Bucket `bloomv2-workflows` (us-west-2):
 |---|---|
 | `raw_reads/<sample>/` | read. FASTQs in Illumina naming, `<prefix>_S<n>_L<lane>_R1_001.fastq.gz` (barcode and UMI) and `…_R2_001.fastq.gz` (cDNA) for every lane, compressed or plain `.fastq`; `I1`/`I2` optional. The prefix is everything before `_S<n>_L<lane>_…` and can differ from the folder name |
 | `reference_genome/<reference>/` | read. A `cellranger mkref` output folder |
-| `runs_output/<run-id>/` | write. `qc/` from the QC workflow; `outs/` and a `_SUCCESS` marker (written last) from the count workflow |
+| `runs_output/<run-id>/` | write. `qc/` from the QC workflow; `outs/` and a `_SUCCESS` marker (written last) from the count workflow; `h5ad/<sample>.h5ad` and `summary.json` from build-h5ad |
 
 `run-count` exits straight away if `runs_output/<run-id>/_SUCCESS` already exists. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
 
@@ -78,7 +81,7 @@ Steps run under `priorityClassName: high` (non-preemptible) and retry up to twic
 
 ## QC and chemistry
 
-The count workflow runs each sample as four pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once `_SUCCESS` is written. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. A sample that already has `_SUCCESS` skips all four. The QC workflow runs QC alone, for a look at the reads before committing to a count. Either way, `runs_output/<sample>/qc/` holds:
+The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once the analysis steps have finished. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. A sample that already has `_SUCCESS` skips them all. The QC workflow runs QC alone, for a look at the reads before committing to a count. Either way, `runs_output/<sample>/qc/` holds:
 
 - `fastq_stats.tsv`: reads and min/mean/max length for every FASTQ.
 - `qc_summary.json`: total read pairs, R1/R2 lengths, the FASTQ prefix to pass as `--sample`, the chemistry guess and each barcode list's score.
@@ -90,6 +93,34 @@ The guess checks the first 16 bases of R1 against each 10x barcode whitelist bun
 
 Cell Ranger itself runs with `--chemistry auto`. After each count, `run-count` compares the chemistry Cell Ranger picked with the same guess and writes the result to `outs/qc/qc_summary.json` (`cellranger_chemistry.matches_guess`); a mismatch is logged as a warning and does not fail the run.
 
+## Analysis after the count
+
+Three steps follow `count`, each its own pod, from the `scrna-analysis` image. They pass their files through the run's own shared folder, `/shared/runs/<run-id>/`, so runs going at the same time never touch each other's files, and nothing between steps is downloaded from S3. The count step leaves its matrix there too. Only the final file is uploaded:
+
+| Step | Reads | Writes (in `/shared/runs/<run-id>/`) |
+|---|---|---|
+| **preprocess** | `outs/filtered_feature_bc_matrix.h5` | `analysis/preprocess/base.h5ad`: cells with ≥ 200 genes, genes in ≥ 3 cells; raw counts in `layers['counts']`, `normalize_total` (10,000) + `log1p` in `X`; the variable genes (`n-top-genes`, default 2000) and the PCA |
+| **cluster** | the base's PCA | `analysis/cluster/part.h5ad`: Leiden clusters (`obs['leiden']`, resolution 1.0) and the UMAP (`obsm['X_umap']`) |
+| **build-h5ad** | the base and every finished part | `h5ad/<sample>.h5ad` and `summary.json`, then the same two files and `_SUCCESS` to `runs_output/<run-id>/h5ad/` in S3 |
+
+The final file has the barcodes as `obs_names`, gene IDs as `var_names` (Cell Ranger's names in `var['gene_symbols']`), and the steps, settings and package versions in `uns['bloom_pipeline']`. It passes `bloomctl scrna hdf5 upload`'s structure check.
+
+**Adding an analysis.** Write a module that reads the base and returns `steps.part_of(base, "<name>", obs=…, obsm=…, params=…)`: a file with no matrix, holding only its own `obs` columns, `obsm` arrays and `uns['<name>']`. Then add a template and a DAG task after `preprocess`, and add the task to `build-h5ad`'s `depends`. `build-h5ad` merges parts in name order. It fails with exit 15, writing nothing, if a part's cells aren't the base's or it reuses a key that's already taken.
+
+Each step writes its `_SUCCESS` last and does nothing if it's already there, so a retry redoes only what's missing. `build-h5ad` rebuilds when the set of finished parts has changed. `cleanup` runs after `build-h5ad`, so the folder is kept after a failure. Exit 13 means fewer than 50 cells passed the filters, and exit 14 means the count matrix is missing; neither is retried.
+
+The image holds nothing licensed, but it's pushed private like the Cell Ranger one:
+
+```bash
+docker buildx build --platform linux/amd64 \
+  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0 argo/scrna/analysis
+docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+# tests (need scanpy), from the repo root:
+docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
+  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0 \
+  -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
+```
+
 ## Scratch storage
 
-The count workflow's pods mount `/hpi/hpi_dev/users/bfernando/scrna` (NFS, mounted on every GPU node, `hostPath` with `type: Directory`). Staged reads and references survive retries, so a retried step never downloads them again; the run folder is deleted after success and kept after a failure. Cell Ranger's own working folder needs symlinks, which the share does not support, so it lives on the count pod's `emptyDir` and a retried count restarts Cell Ranger from the staged files. If count fails, its log and Cell Ranger's errors are uploaded to `runs_output/<run-id>/logs/count.log`. The share is readable by every pod on the cluster, so reads sit there only while a run is in progress. The QC-only workflow and `testrun` use an `emptyDir` deleted with the pod.
+The count workflow's pods mount `/hpi/hpi_dev/users/bfernando/scrna` (NFS, mounted on every GPU node, `hostPath` with `type: Directory`). Staged reads and references survive retries, so a retried step never downloads them again; the run folder is deleted after success and kept after a failure. Cell Ranger's own working folder needs symlinks, which the share does not support, so it lives on the count pod's `emptyDir` and a retried count restarts Cell Ranger from the staged files. If count fails, its log and Cell Ranger's errors are uploaded to `runs_output/<run-id>/logs/count.log`. The share is readable by every pod on the cluster, so reads and intermediate files sit there only while a run is in progress. Each run has its own folder, so several runs can go at once. The QC-only workflow and `testrun` use an `emptyDir` deleted with the pod.

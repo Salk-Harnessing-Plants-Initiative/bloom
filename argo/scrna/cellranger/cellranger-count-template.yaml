@@ -13,7 +13,8 @@ metadata:
     project: busch-lab
 spec:
   templates:
-    # One sample: stage -> qc -> count -> cleanup. Skips everything if the run already finished.
+    # One sample: stage -> qc -> count -> preprocess -> analyses -> build-h5ad -> cleanup, all in
+    # /shared/runs/<run-id>/ so runs never share files. Skips everything if the run already finished.
     - name: sample-pipeline
       inputs:
         parameters:
@@ -26,6 +27,8 @@ spec:
             value: "64Gi"
           - name: mem-gb
             value: "60"
+          - name: n-top-genes
+            value: "2000"
       dag:
         tasks:
           - name: stage
@@ -66,10 +69,40 @@ spec:
                   value: "{{inputs.parameters.mem-gb}}"
           - name: cleanup
             template: cleanup
+            depends: build-h5ad
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: preprocess
+            template: preprocess
             depends: count
             when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: n-top-genes
+                  value: "{{inputs.parameters.n-top-genes}}"
+          # Analyses: each reads the base and writes its own part. A new one is one more task
+          # here, and one more name in build-h5ad's depends.
+          - name: cluster
+            template: cluster
+            depends: preprocess
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: build-h5ad
+            template: build-h5ad
+            depends: cluster
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
 
@@ -402,7 +435,7 @@ spec:
           emptyDir:
             sizeLimit: 500Gi
 
-    # Delete /shared/runs/<run-id>/ after a successful count; results and raw reads stay in S3.
+    # Delete /shared/runs/<run-id>/ once the run has finished; results and raw reads stay in S3.
     - name: cleanup
       inputs:
         parameters:
@@ -427,6 +460,128 @@ spec:
         resources:
           requests: {cpu: "0.5", memory: 512Mi}
           limits: {cpu: "0.5", memory: 512Mi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # /shared/runs/<run-id>/: count matrix -> analysis/preprocess/base.h5ad (filter, normalise, variable genes, PCA).
+    - name: preprocess
+      inputs:
+        parameters:
+          - name: run-id
+          - name: n-top-genes
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base -> analysis/cluster/part.h5ad: neighbour graph, Leiden clusters, UMAP.
+    - name: cluster
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "4", memory: 8Gi}
+          limits: {cpu: "4", memory: 8Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base + every finished part -> h5ad/<sample>.h5ad and summary.json, copied to runs_output/<run-id>/h5ad/ in S3.
+    - name: build-h5ad
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}", "--publish", "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"]
+        env:
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
         volumeMounts:
           - name: shared
             mountPath: /shared
