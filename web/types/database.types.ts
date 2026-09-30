@@ -146,6 +146,7 @@ export interface Database {
           name: string
           timepoints: Json | null
           trait_source_id: number | null
+          recipe_key: string | null
         }
         Insert: {
           created_at?: string
@@ -155,6 +156,7 @@ export interface Database {
           name: string
           timepoints?: Json | null
           trait_source_id?: number | null
+          recipe_key?: string | null
         }
         Update: {
           created_at?: string
@@ -164,6 +166,7 @@ export interface Database {
           name?: string
           timepoints?: Json | null
           trait_source_id?: number | null
+          recipe_key?: string | null
         }
         Relationships: [
           {
@@ -1646,6 +1649,7 @@ export interface Database {
           trait_source_id: number
           qc_set_name: Json
           timepoints: Json
+          recipe_key?: string
         }
         Returns: undefined
       }

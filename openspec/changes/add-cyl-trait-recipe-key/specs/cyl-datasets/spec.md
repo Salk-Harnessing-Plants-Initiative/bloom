@@ -69,6 +69,11 @@ When `recipe_key` is given, `create_cyl_dataset` SHALL freeze, for each candidat
 
 **Scans without the recipe** contribute no rows.
 
+**Which scans recipe mode can see.** Recipe mode finds each scan's source of the recipe through
+the recipe-read scan set (experiments → waves → plants → accessions (inner) → scans), so a
+candidate scan whose plant has no accession contributes no rows in recipe mode. Source mode keeps
+the full `cyl_scans_extended` candidate set.
+
 **Unknown recipes.** A `recipe_key` that names no stored recipe and is not `'unattributed'` SHALL
 raise an error.
 

@@ -450,7 +450,7 @@ invisible to PostgREST.
 
 ## 5. Datasets (migration 4)
 
-- [ ] 5.1 **Characterization, first and green.** New file
+- [x] 5.1 **Characterization, first and green.** New file
   `tests/integration/test_cyl_dataset_recipe_mode.py`, with `test_source_mode_characterization`.
   Run it against the §4 schema. It pins:
   - timepoints filter scans;
@@ -463,10 +463,10 @@ invisible to PostgREST.
 
 ### Tests first (red)
 
-- [ ] 5.2 **Tests in the same file.**
-  - [ ] 5.2.1 `test_frozen_rows_do_not_change`.
-  - [ ] 5.2.2 `test_source_mode_records_recipe`.
-  - [ ] 5.2.3 **Recipe mode:**
+- [x] 5.2 **Tests in the same file.**
+  - [x] 5.2.1 `test_frozen_rows_do_not_change`.
+  - [x] 5.2.2 `test_source_mode_records_recipe`.
+  - [x] 5.2.3 **Recipe mode:**
     - spans per-scan sources;
     - reads the highest source within the recipe;
     - leaves out other recipes;
@@ -474,48 +474,55 @@ invisible to PostgREST.
     - `legacy:S` equals source mode;
     - timepoints and QC apply;
     - matches the recipe read for scans with an accession and a species.
-  - [ ] 5.2.4 Add the dataset leg to 4.6.
-  - [ ] 5.2.5 `test_selector_errors`: zero selectors, two selectors, or an unknown recipe each
+  - [x] 5.2.4 Add the dataset leg to 4.6.
+  - [x] 5.2.5 `test_selector_errors`: zero selectors, two selectors, or an unknown recipe each
     raise, and nothing is written. Also cover the behavior change: a NULL `trait_source_id` alone
     now raises.
-  - [ ] 5.2.6 `test_dataset_function_properties`:
+  - [x] 5.2.6 `test_dataset_function_properties`:
     - one overload, **with six arguments**;
     - `prosecdef = false`;
     - owner `postgres`;
     - `proconfig` contains `statement_timeout=0`;
     - `_acl_set` equals 5.1's set.
-  - [ ] 5.2.7 **Gateway tests.**
+  - [x] 5.2.7 **Gateway tests.**
     - bloomctl's five-key body with `trait_source_id: null` returns HTTP 400 with the "exactly one
       selector" P0001 message, not PGRST202 or PGRST203.
     - A six-key body with an unknown `recipe_key` returns 400 with the unknown-recipe message.
     - Names are `uuid4`. In `finally`, an autocommit connection deletes any `cyl_dataset_traits`
       and `cyl_datasets` rows with that name.
-  - [ ] 5.2.8 `test_datasets_recipe_key_backfill_and_check`, in one transaction:
+  - [x] 5.2.8 `test_datasets_recipe_key_backfill_and_check`, in one transaction:
     1. `_apply_recipe_rollbacks(cur, down_to=4)`;
     2. insert three datasets directly (pipeline `S`, legacy `L`, and NULL);
     3. apply `_sql_body(M4)` and assert the three keys;
     4. apply it again: nothing changes;
     5. the CHECK accepts and rejects correctly.
-  - [ ] 5.2.9 `test_migration_4_body_is_idempotent` and `test_rollback_4_restores_five_arg`.
+  - [x] 5.2.9 `test_migration_4_body_is_idempotent` and `test_rollback_4_restores_five_arg`.
     - The rollback test asserts the ACL set, the `20240904033106` body, that the column is
       dropped, and the recipe-mode NOTICE count.
-  - [ ] 5.2.10 **Unit tests:**
+  - [x] 5.2.10 **Unit tests:**
     - `test_20240904033106_is_the_newest_create_cyl_dataset_before_m4`;
     - M4 has `lock_timeout`, a named and guarded `cyl_datasets_recipe_key_format_check`,
       `DROP … IF EXISTS`, `CREATE OR REPLACE`, `OWNER TO postgres`, `NOTIFY pgrst` and
       `SET statement_timeout TO '0'`;
     - neither M4 nor R4 contains `alter database` or `alter role`;
     - R4's function region equals `20240904033106`'s.
-- [ ] 5.3 **Record the red check** against the §4 schema. Expected green by design: 5.1 and 5.2.1.
+- [x] 5.3 **Record the red check** against the §4 schema. Expected green by design: 5.1 and 5.2.1.
+
+  **Observed (2026-09-29):** 13 failed; 5.1 and 5.2.1 green as expected; the two gateway tests
+  skipped. After 5.4: 15 passed, 2 skipped (gateway, CI only); one test bug fixed (the assertion
+  called `_frozen` before fetching the recipe read on the same cursor). `bloomcli`'s mocked
+  `tests/test_cyl_datasets.py`: 36 passed, 2 failed in rich-table width rendering on this Windows
+  terminal; the branch has no `bloomcli/` change. The spec now states that recipe mode sees only
+  scans in the recipe-read scan set (plants with an accession).
 
 ### Implementation (green)
 
-- [ ] 5.4 Write `supabase/migrations/<T>0300_add_cyl_dataset_recipe_mode.sql` and its rollback R4.
+- [x] 5.4 Write `supabase/migrations/<T>0300_add_cyl_dataset_recipe_mode.sql` and its rollback R4.
   Edit the `cyl_datasets` and `create_cyl_dataset` entries in the types files, with the scoped
   `gen-types` check.
-- [ ] 5.5 **Go green.** Run section 5, `test_cyl_pipeline_dispatch.py`, and
+- [x] 5.5 **Go green.** Run section 5, `test_cyl_pipeline_dispatch.py`, and
   `bloomcli/tests/test_cyl_datasets.py`, which is mocked and unchanged.
-- [ ] 5.6 **`test_full_rollback_chain_round_trip`,** in one transaction:
+- [x] 5.6 **`test_full_rollback_chain_round_trip`,** in one transaction:
   1. `_apply_recipe_rollbacks(cur, down_to=1)`;
   2. an a9 delivery works, and so do the three-argument read and the five-argument dataset
      function;

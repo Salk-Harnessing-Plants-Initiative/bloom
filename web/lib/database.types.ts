@@ -298,6 +298,7 @@ export type Database = {
           experiment_id: number | null
           id: number
           name: string
+          recipe_key: string | null
           timepoints: Json | null
           trait_source_id: number | null
         }
@@ -307,6 +308,7 @@ export type Database = {
           experiment_id?: number | null
           id?: number
           name: string
+          recipe_key?: string | null
           timepoints?: Json | null
           trait_source_id?: number | null
         }
@@ -316,6 +318,7 @@ export type Database = {
           experiment_id?: number | null
           id?: number
           name?: string
+          recipe_key?: string | null
           timepoints?: Json | null
           trait_source_id?: number | null
         }
@@ -4664,6 +4667,7 @@ export type Database = {
           experiment_id: number
           name: string
           qc_set_name: Json
+          recipe_key?: string
           timepoints: Json
           trait_source_id: number
         }

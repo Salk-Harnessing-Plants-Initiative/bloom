@@ -289,3 +289,74 @@ def test_r3_restores_the_three_argument_function():
     assert "run_id_        text   DEFAULT NULL\n) RETURNS TABLE (" in _one(
         ROLLBACKS, R3
     ).read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Migration 4: dataset recipe mode
+# --------------------------------------------------------------------------- #
+
+M4 = "*_add_cyl_dataset_recipe_mode.sql"
+R4 = "*_add_cyl_dataset_recipe_mode_rollback.sql"
+DATASET_BASE = (
+    MIGRATIONS / "20240904033106_create_fix_create_cyl_dataset_function_again.sql"
+)
+
+
+def test_20240904033106_is_the_newest_create_cyl_dataset_before_m4():
+    m4 = _one(MIGRATIONS, M4)
+    definers = sorted(
+        p.name
+        for p in MIGRATIONS.glob("*.sql")
+        if re.search(
+            r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+(public\.)?create_cyl_dataset\(",
+            _code(p),
+            re.I,
+        )
+    )
+    assert definers[definers.index(m4.name) - 1] == DATASET_BASE.name, definers
+
+
+def test_m4_shape():
+    code = _code(_one(MIGRATIONS, M4))
+    assert re.search(r"SET\s+LOCAL\s+lock_timeout", code, re.I)
+    assert re.search(
+        r"DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+cyl_datasets_recipe_key_format_check",
+        code,
+        re.I,
+    )
+    assert re.search(
+        r"ADD\s+CONSTRAINT\s+cyl_datasets_recipe_key_format_check\s+CHECK", code, re.I
+    )
+    assert re.search(
+        r"DROP\s+FUNCTION\s+IF\s+EXISTS\s+public\.create_cyl_dataset\(text,\s*bigint,\s*bigint,\s*json,\s*json\)",
+        code,
+        re.I,
+    )
+    assert re.search(
+        r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.create_cyl_dataset\(", code, re.I
+    )
+    assert re.search(
+        r"ALTER\s+FUNCTION\s+public\.create_cyl_dataset\([^)]*\)\s+OWNER\s+TO\s+postgres",
+        code,
+        re.I,
+    )
+    assert re.search(r"SET\s+statement_timeout\s+TO\s+'0'", code, re.I)
+    assert re.search(r"NOTIFY\s+pgrst", code, re.I)
+    for stmt in re.findall(r"\bUPDATE\s+public\.\w+.*?;", code, re.I | re.S):
+        assert re.search(r"\bWHERE\b", stmt, re.I), stmt
+
+
+@pytest.mark.parametrize("glob, directory", [(M4, MIGRATIONS), (R4, ROLLBACKS)])
+def test_no_database_or_role_settings(glob, directory):
+    code = _code(_one(directory, glob))
+    assert not re.search(r"\balter\s+(database|role)\b", code, re.I)
+
+
+def test_r4_restores_the_base_function_region():
+    def region(path):
+        text = path.read_text(encoding="utf-8")
+        start = text.index("CREATE OR REPLACE FUNCTION create_cyl_dataset(")
+        end = text.index("set statement_timeout TO '0';", start)
+        return text[start:end]
+
+    assert region(_one(ROLLBACKS, R4)) == region(DATASET_BASE)
