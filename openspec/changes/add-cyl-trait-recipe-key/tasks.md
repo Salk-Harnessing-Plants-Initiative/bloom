@@ -647,7 +647,8 @@ down_to=2)`:
 - [x] 7.4 **Timestamps.** Done 2026-09-29: staging gained `20260930001749`, so the branch was
       rebased onto `6733eca1` and the eight files restamped `20260929230x00` → `20260930050x00`. The dev
       DB's four old history rows were removed (what `migration repair --status reverted` does; the CLI
-      refused TLS), and `make migrate-local` re-applied all four on top of their existing objects.
+      refused TLS), and `make migrate-local` re-applied all four on top of their existing objects. Restamped again on 2026-09-30 to
+  `20260930120x00` after staging gained `20260930060512` (rebased onto `4ee7dc11`).
   - Fetch `origin/staging`.
   - If a newer migration has landed, `git mv` the four files and their rollbacks, keeping their
     order.

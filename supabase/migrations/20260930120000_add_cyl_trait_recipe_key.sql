@@ -22,7 +22,7 @@
 --
 -- Additive and re-runnable. Never reads cyl_scan_traits.
 -- Manual rollback (staging hot-apply only -- see its header):
---   supabase/rollbacks/20260930050000_add_cyl_trait_recipe_key_rollback.sql
+--   supabase/rollbacks/20260930120000_add_cyl_trait_recipe_key_rollback.sql
 
 BEGIN;
 

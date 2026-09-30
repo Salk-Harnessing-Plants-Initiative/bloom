@@ -11,7 +11,7 @@
 --   2. create_cyl_dataset gains recipe_key text DEFAULT NULL; exactly one of
 --      trait_source_id and recipe_key must be given. Recipe mode freezes, per scan,
 --      the rows of that scan's source of the recipe (_cyl_trait_recipe_presence,
---      20260930050200). Source mode is unchanged and now records its source's
+--      20260930120200). Source mode is unchanged and now records its source's
 --      recipe_key. Adding an argument changes the signature, so the 5-argument form
 --      is dropped first; the new argument has a default, so bloomctl's named 5-key
 --      call still resolves. SECURITY INVOKER and statement_timeout = 0 are kept, and
@@ -20,7 +20,7 @@
 --
 -- No database- or role-level settings (20240904033106 also altered those; not copied).
 -- Manual rollback (staging hot-apply only -- see its header):
---   supabase/rollbacks/20260930050300_add_cyl_dataset_recipe_mode_rollback.sql
+--   supabase/rollbacks/20260930120300_add_cyl_dataset_recipe_mode_rollback.sql
 
 BEGIN;
 

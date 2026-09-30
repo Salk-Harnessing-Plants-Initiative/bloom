@@ -1,11 +1,11 @@
--- Rollback for 20260930050000_add_cyl_trait_recipe_key.sql.
+-- Rollback for 20260930120000_add_cyl_trait_recipe_key.sql.
 -- Change: add-cyl-trait-recipe-key (bloom#935, bloom#937).
 --
--- This is the STAGING HOT-APPLY only. Applying it by hand leaves 20260930050000
+-- This is the STAGING HOT-APPLY only. Applying it by hand leaves 20260930120000
 -- recorded as applied in supabase_migrations.schema_migrations, so CI, fresh
 -- stacks and the next promotion would still apply it. A durable rollback is a new
 -- forward migration whose body is this file. After a hand-apply, run
---   supabase migration repair --status reverted 20260930050000
+--   supabase migration repair --status reverted 20260930120000
 -- or `db push` refuses the checkout.
 --
 -- ORDER: apply the later rollbacks of this change first (dataset recipe mode,

@@ -5,7 +5,7 @@
 -- untouched by the forward migration and remain untouched here.
 --
 -- ORDER (add-cyl-trait-recipe-key): on a database where
--- 20260930050200_add_cyl_trait_recipe_reads.sql replaced get_experiment_traits with its
+-- 20260930120200_add_cyl_trait_recipe_reads.sql replaced get_experiment_traits with its
 -- five-argument form, apply that migration's rollback first. This file drops only the
 -- three-argument signature, so on its own it would leave the five-argument function.
 
