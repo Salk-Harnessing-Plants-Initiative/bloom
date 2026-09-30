@@ -424,7 +424,8 @@ coverage rows whose `status` is not `included`, with `reason` equal to `status`.
 - **WHEN** the schema's properties are compared with the field table in
   `_WIKI/SUPABASE/trait-recipes.md`
 - **THEN** every property has a row, and every source named in the table is a column of the named
-  RPC's result, a key path under `cyl_trait_sources.metadata`, or "exporter-supplied"
+  RPC's result, a key path under `cyl_trait_sources.metadata`, "exporter-supplied", or, for a
+  container, "object" or "array"
 
 #### Scenario: The example sidecar is complete
 

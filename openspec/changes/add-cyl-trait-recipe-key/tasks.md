@@ -531,10 +531,10 @@ invisible to PostgREST.
 
 ## 6. Docs and sidecar
 
-- [ ] 6.1 **Types.** The four generated `database.types.ts` copies are byte-identical (compare
+- [x] 6.1 **Types.** The four generated `database.types.ts` copies are byte-identical (compare
   with `sha256sum`), and the hand-maintained `web/types/database.types.ts` carries the same
   entries.
-- [ ] 6.2 **Tests first,** in unit file `tests/unit/test_trait_recipe_export_schema.py`:
+- [x] 6.2 **Tests first,** in unit file `tests/unit/test_trait_recipe_export_schema.py`:
   - the schema parses;
   - the example has every `required` property at every level;
   - every schema property has a row in the field table in `trait-recipes.md`;
@@ -544,7 +544,7 @@ invisible to PostgREST.
     - `exporter-supplied`.
 
   Record it red.
-- [ ] 6.3 **Write the sidecar files and the page,** under `_WIKI/SUPABASE/`:
+- [x] 6.3 **Write the sidecar files and the page,** under `_WIKI/SUPABASE/`:
   `trait-recipes.export.schema.json`, `trait-recipes.export.example.json` and `trait-recipes.md`.
   - The page links to the spec requirements instead of restating them.
   - It covers:
@@ -559,7 +559,7 @@ invisible to PostgREST.
   - The recipe-mode dataset call shape (`trait_source_id: null`) goes in the §5 commit, so that
     datasets can be split off cleanly if review stalls.
   - 6.2 goes green.
-- [ ] 6.4 **Update the existing docs.** Keep the phrases that `tests/unit/test_refresh_workflow_staleness_docs.py`,
+- [x] 6.4 **Update the existing docs.** Keep the phrases that `tests/unit/test_refresh_workflow_staleness_docs.py`,
   `test_bloommcp_local_mode_docs.py` and `test_bloommcp_data_mount_rename.py` require.
   - `_WIKI/BLOOMMCP/README.md:147-185`:
     - the five-argument signature;
@@ -582,7 +582,7 @@ invisible to PostgREST.
     `cyl_trait_sources.cyl_pipeline_run_id` stores.
   - `bloomcli/README.md:83-84`: a pipeline source name selects one scan's rows; per-recipe
     datasets come with #481. This goes in the §5 commit.
-- [ ] 6.5 Run `make erd` and commit `_WIKI/SUPABASE/erd.md`. On a rebase, regenerate it; never
+- [x] 6.5 Run `make erd` and commit `_WIKI/SUPABASE/erd.md`. On a rebase, regenerate it; never
   hand-merge it.
 
 ## 7. Pre-merge
