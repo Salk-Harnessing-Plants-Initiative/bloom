@@ -4,12 +4,15 @@
  * Forwards `{sample, reference, metadata?}` with the signed-in user's Supabase token to the
  * workflows service (`POST /scrna/cellranger/runs`, in-cluster at `workflows:5100`),
  * which checks the names, records the run and queues it. Proxying keeps the token out
- * of client JS. Only 422 and 429 details are passed through: those name the rule a name
- * broke or say to wait; other upstream details are written for operators.
+ * of client JS. A request must be JSON (415 otherwise) and come from a Bloom page (403
+ * otherwise), as for the cylinder pipeline trigger. Only 422 and 429 details are passed
+ * through: those name the rule a name broke or say to wait; other upstream details are
+ * written for operators.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
+import { isJsonMediaType, isSameOrigin } from "@/lib/cyl-pipeline/trigger-proxy";
 import { isStartedRun } from "@/lib/scrna-jobs";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +30,20 @@ function callerSafeDetail(status: number, parsed: unknown): string | null {
 }
 
 export async function POST(request: Request) {
+  // The same checks, in the same order, as the cylinder pipeline trigger proxy.
+  if (!isJsonMediaType(request.headers)) {
+    return NextResponse.json(
+      { detail: "Content-Type must be application/json." },
+      { status: 415 }
+    );
+  }
+  if (!isSameOrigin(request.headers)) {
+    return NextResponse.json(
+      { detail: "This request did not come from a Bloom page. Reload Bloom and try again." },
+      { status: 403 }
+    );
+  }
+
   let body: unknown;
   try {
     body = await request.json();

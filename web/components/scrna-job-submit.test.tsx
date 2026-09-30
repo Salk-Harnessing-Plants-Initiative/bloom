@@ -307,6 +307,10 @@ describe("after a run is queued", () => {
   it("replaces the form, so the run can't be started twice", async () => {
     await queueRun();
     expect(screen.getByText("Started by scientist@salk.edu")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View run" }).getAttribute("href")).toBe(
+      "/app/timeline/rnaseq/12"
+    );
+    expect(screen.getByText(/saved with the run/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start run" })).toBeNull();
     expect(screen.queryByLabelText("Sample")).toBeNull();
     expect(fetchSpy).toHaveBeenCalledTimes(1);

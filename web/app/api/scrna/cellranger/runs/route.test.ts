@@ -25,10 +25,18 @@ const STARTED = {
 
 let fetchSpy: ReturnType<typeof vi.fn>;
 
-function callRoute(body: unknown) {
+// bloom-web listens on 0.0.0.0, so the request URL's host is never the public one.
+const SAME_ORIGIN = {
+  "content-type": "application/json",
+  host: "bloom.salk.edu",
+  origin: "https://bloom.salk.edu",
+};
+
+function callRoute(body: unknown, headers: Record<string, string> = SAME_ORIGIN) {
   return routeModule.POST(
-    new Request("http://localhost/api/scrna/cellranger/runs", {
+    new Request("http://0.0.0.0:3000/api/scrna/cellranger/runs", {
       method: "POST",
+      headers,
       body: typeof body === "string" ? body : JSON.stringify(body),
     })
   );
@@ -62,6 +70,36 @@ describe("module contract", () => {
 });
 
 describe("request checks", () => {
+  it("refuses a body that isn't declared as JSON with 415, before anything else", async () => {
+    const { "content-type": _omit, ...headers } = SAME_ORIGIN;
+    for (const h of [headers, { ...SAME_ORIGIN, "content-type": "text/plain" }]) {
+      const res = await callRoute({ sample: "tinygex", reference: "tiny_ref" }, h);
+      expect(res.status).toBe(415);
+    }
+    expect(mockedGetSession).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no Origin", (({ origin: _o, ...h }) => h)(SAME_ORIGIN)],
+    ["a null Origin", { ...SAME_ORIGIN, origin: "null" }],
+    ["another site", { ...SAME_ORIGIN, origin: "https://evil.example" }],
+    ["another port", { ...SAME_ORIGIN, origin: "https://bloom.salk.edu:8443" }],
+  ])("refuses %s with 403 before any work", async (_label, headers) => {
+    const res = await callRoute({ sample: "tinygex", reference: "tiny_ref" }, headers);
+    expect(res.status).toBe(403);
+    expect(mockedGetSession).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts the forwarded host Caddy sets", async () => {
+    const res = await callRoute(
+      { sample: "tinygex", reference: "tiny_ref" },
+      { ...SAME_ORIGIN, host: "bloom-web:3000", "x-forwarded-host": "bloom.salk.edu" }
+    );
+    expect(res.status).toBe(201);
+  });
+
   it("refuses a body that isn't JSON without calling upstream", async () => {
     const res = await callRoute("not json");
     expect(res.status).toBe(400);
@@ -103,6 +141,7 @@ describe("forwarding", () => {
     expect(url).toBe("http://workflows.test:5100/scrna/cellranger/runs");
     expect(init.method).toBe("POST");
     expect(init.headers.Authorization).toBe("Bearer tok");
+    expect(init.headers["Content-Type"]).toBe("application/json");
     expect(JSON.parse(init.body)).toEqual({ sample: "tinygex", reference: "tiny_ref" });
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
