@@ -450,6 +450,10 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 - [x] 10a.8 Pre-merge as in §9 (web suite, tsc, build, integration, pre-commit, `openspec validate --strict`), then show the user the push and the PR-body change.
   **(done 2026-10-01: web 2,174/2,174 (148 files), tsc clean, `next build` passes (tsconfig restored), integration batching + root unit 15 passed, root `npm audit --audit-level=critical` clean, pre-commit clean on the 18 changed files outside `openspec/`, `openspec validate --strict` passes. Push and PR-body change shown to the user before sending.)**
 
+## 10b. Review decisions (PR #996 review; each decided with the user, test first)
+
+- [ ] 10b.1 **Held-slot starvation** (user decision 2026-10-01: options A + B). A: an issued PostgREST call is never aborted; a cancelled caller stops scheduling calls, an issued call runs to completion, its slot frees when it returns, and its result is discarded (the caller gets `cancelled`). This removes the 9 s hold (`ABORTED_CALL_HOLD_MS`). B: a user has at most one listing in flight; a newer listing cancels the older and waits for it to settle before issuing anything. Spec: the "Concurrency" bullet's hold line, and the listing requirement. Design: "How the semaphore behaves".
+
 ## PR B
 
 ## 11. Dialog and entry points
