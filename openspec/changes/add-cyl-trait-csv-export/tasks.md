@@ -365,7 +365,7 @@
 
 ## 9. Pre-merge (PR A)
 
-- [ ] 9.1 Run the following and record the outputs in the PR:
+- [x] 9.1 Run the following and record the outputs in the PR:
   - from the root, `npm ci`, then `npm audit --audit-level=critical`;
   - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`;
   - under a local `next build && next start`, POST a job and read its status and download through the other routes, which proves the shared state works in the production bundle;
@@ -379,7 +379,7 @@
   - **Root `tests/unit`: the export schema test passes. 63 other tests fail and `test_weekly_backup.py` cannot be collected, all in deploy, doctor, env and shell-script tests that need Unix (`os.geteuid`, bash). These are the known Windows-only failures, in no file this branch touches; CI runs them on Linux.**
   - **pre-commit on the changed files outside `openspec/`: all hooks pass, after one prettier reformat committed as `95d87b67`.**
   - **`openspec validate --strict`: valid.**
-  - **Open: the `next build && next start` smoke. The production build against the dev stack succeeds, but the dev stack's Kong refuses port 8000 even inside its container while Docker reports it healthy, so neither sign-in nor the routes can be reached. Scratchpad `smoke_trait_export.mjs` is ready to rerun.)**
+  - **The `next build && next start` smoke passes. Run against the local dev stack after restarting its Kong, which had stopped serving port 8000 (with the user's OK), and with `SUPABASE_URL_HOSTS_ALLOWED` set as the app's startup check requires. A real sign-in, then the recipe listing, job start, status polling to ready, and the download of `soybean-mock-demo_unattributed_20261001.zip`: three files, 240 rows × 51 columns, `chosen_by: default`. `DELETE` gave 204 and the status then 404. One route module started the job and others read, downloaded and deleted it, so the shared state holds in the production bundle.)**
 
 ## 10. Verification on staging (PR A; user go-ahead for each run)
 
