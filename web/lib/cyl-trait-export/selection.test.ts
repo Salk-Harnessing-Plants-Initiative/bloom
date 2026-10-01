@@ -1,5 +1,6 @@
 /** Selection, batching and paging helpers (design D2 steps 1-2, D5 selection). */
 
+import { SELECTION_PAGE_SIZE } from './limits'
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 
@@ -122,5 +123,26 @@ describe('pageSelection', () => {
     const p = pageSelection(fetchPage, async () => 7, 2)
     await expect(p).rejects.toBeInstanceOf(ExportError)
     await expect(p).rejects.toMatchObject({ kind: 'selection_changed', detail: SELECTION_CHANGED })
+  })
+})
+
+describe('selection page size (tasks.md 10a.4)', () => {
+  // Each page read waits its turn in the 3-slot semaphore, so with two jobs running
+  // experiment 1's 19 pages of 1,000 made a listing take about 50 s (review of #996).
+  it('reads experiment 1 (18,471 scans) in at most five pages by default', async () => {
+    const ids = Array.from({ length: 18_471 }, (_, i) => ({ scan_id: i + 1 }))
+    const limits: number[] = []
+    const got = await pageSelection(
+      async (after, limit) => {
+        limits.push(limit)
+        const from = after === null ? 0 : ids.findIndex((r) => r.scan_id > after)
+        return from < 0 ? [] : ids.slice(from, from + limit)
+      },
+      async () => ids.length
+    )
+    expect(got).toHaveLength(18_471)
+    expect(SELECTION_PAGE_SIZE).toBeGreaterThanOrEqual(5_000)
+    expect(new Set(limits)).toEqual(new Set([SELECTION_PAGE_SIZE]))
+    expect(limits.length).toBeLessThanOrEqual(5)
   })
 })
