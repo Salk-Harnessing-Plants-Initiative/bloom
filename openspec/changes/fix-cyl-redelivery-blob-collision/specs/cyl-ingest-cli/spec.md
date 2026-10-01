@@ -254,10 +254,14 @@ error, exiting zero. Re-ingesting the same envelope therefore MUST NOT be report
 This SHALL hold end to end, not only for the RPC's response: a re-delivery whose producer
 regenerated its artifacts MUST NOT fail at the blob-upload step before the RPC's gate is reached,
 and it MUST NOT be reported as a failure on account of the RPC's `status_update_matched` field
-regardless of which `ARGO_WORKFLOW_NAME` re-delivers it — a fresh pipeline run re-dispatching an
-already-ingested scan under a **new** workflow name is exactly as benign a no-op as one
-re-dispatched under the same workflow name, and the `cyl-trait-writeback` capability's fallback
-update is what makes that true at the RPC layer.
+whenever the RPC matched this workflow's run-scan row, whichever `ARGO_WORKFLOW_NAME` re-delivers
+it and however the source was first written (a Bloom-dispatched run, a hand-submitted Workflow, or
+a manual `cyl ingest-result`) — a fresh pipeline run re-dispatching an already-ingested scan under
+a **new** workflow name is exactly as benign a no-op as one re-dispatched under the same workflow
+name, and the `cyl-trait-writeback` capability's fallback update, which resolves the scan from the
+source's own recorded scan, is what makes that true at the RPC layer. A no-op for which the RPC
+still returns `status_update_matched: false` is reported as described in "Cyl ingest command
+reads an envelope from a path or stdin".
 
 #### Scenario: First ingest of an envelope
 
@@ -289,3 +293,12 @@ update is what makes that true at the RPC layer.
   command (and the shared per-envelope batch helper `ingest_one_envelope`, used by `cyl
   batch-ingest-result`) reports the delivery as a benign, distinctly-reported no-op and exits
   zero — not a failure, and not counted against the pipeline run's `failed_count`
+
+#### Scenario: Re-delivery of a source first written outside any Bloom run is a benign no-op
+
+- **WHEN** an envelope was first ingested by a manual `cyl ingest-result` (no `ARGO_WORKFLOW_NAME`)
+  or by a hand-submitted Workflow with no `cyl_pipeline_run_scans` rows, and a Bloom-dispatched run
+  later re-delivers it with its own `ARGO_WORKFLOW_NAME`, whose `'queued'` row is for that scan
+- **THEN** the RPC's fallback marks that row `'written'` and returns `status_update_matched: true`,
+  and the command (and `ingest_one_envelope`) reports the delivery as a benign, distinctly-reported
+  no-op and exits zero
