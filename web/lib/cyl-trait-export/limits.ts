@@ -43,8 +43,12 @@ export const RETAIN_SECONDS = 600
 /** An aborted PostgREST call keeps its semaphore slot until this long after issue. */
 export const ABORTED_CALL_HOLD_MS = 9000
 
-/** Rows per `cyl_scans_extended` keyset page. */
-export const SELECTION_PAGE_SIZE = 1000
+/**
+ * Rows per `cyl_scans_extended` keyset page (tasks.md 10a.4). Every page waits its
+ * turn in the semaphore, so fewer pages keep a listing well under Kong's 60 s while
+ * jobs run: experiment 1 is 4 pages and the empty one. No PostgREST `max-rows` is set.
+ */
+export const SELECTION_PAGE_SIZE = 5000
 
 /** Cells per CSV slice handed to the zip deflater. */
 export const CSV_SLICE_CELLS = 50_000

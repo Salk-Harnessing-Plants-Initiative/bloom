@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto'
 
 import { ExportError, SELECTION_CHANGED } from './errors'
+import { SELECTION_PAGE_SIZE } from './limits'
 
 /** An experiment (optionally one wave and/or one plant age), or one scan. */
 export type Selection = { experiment: number; wave?: number; age?: number } | { scan: number }
@@ -47,7 +48,7 @@ export function selectionScanIds(sel: Selection, ids: number[]): number[] | null
 export async function pageSelection<R extends { scan_id: number }>(
   fetchPage: (after: number | null, limit: number) => Promise<R[]>,
   exactCount: () => Promise<number>,
-  pageSize = 1000
+  pageSize = SELECTION_PAGE_SIZE
 ): Promise<R[]> {
   const out: R[] = []
   let after: number | null = null

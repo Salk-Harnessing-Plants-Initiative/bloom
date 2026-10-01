@@ -100,7 +100,7 @@ The CSV header needs every trait name, so nothing can be sent until every read f
 
 1. **Selection.**
    - For a scan, resolve its `experiment_id` from `cyl_scans_extended`, then check that the experiment is visible (D7).
-   - Read `cyl_scans_extended` for the experiment (with `wave_number = W` and/or `plant_age_days = A` when given, or for the one scan). Page by keyset: `scan_id > last`, ordered, 1,000 rows per page. Paging stops only on an empty page, so a server row cap can't end it early.
+   - Read `cyl_scans_extended` for the experiment (with `wave_number = W` and/or `plant_age_days = A` when given, or for the one scan). Page by keyset: `scan_id > last`, ordered, `SELECTION_PAGE_SIZE` (5,000) rows per page (10a.4: every page waits its turn in the semaphore). Paging stops only on an empty page, so a server row cap can't end it early.
    - One `count: "exact", head: true` read of the same query must then equal `|S|`, and `S` must be strictly ascending with no repeats. Otherwise the result is "the selection changed during the export; retry".
    - The view inner-joins `species`, so "a whole experiment" means the experiment's scans that have a species.
    - `genotype` comes from `accessions` (`id, name`), read in chunks of accession ids.
