@@ -210,11 +210,11 @@ def test_normalization_problems_are_named_without_a_file():
         {"transform": "log1p", "scaling": "library_size"}, layers=set())
 
 
-def test_the_check_says_how_to_install_its_extra(tmp_path, monkeypatch):
+def test_a_missing_h5py_says_to_reinstall(tmp_path, monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "h5py", None)
-    with pytest.raises(fmt.MissingExtra, match=r"bloomctl\[scrna\]"):
+    with pytest.raises(fmt.MissingExtra, match="reinstall bloomctl"):
         fmt.check_structure(tmp_path / "any.h5ad")
 
 

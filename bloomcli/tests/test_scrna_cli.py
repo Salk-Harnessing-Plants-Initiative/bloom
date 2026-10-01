@@ -128,14 +128,14 @@ def test_a_file_that_does_not_meet_the_format_is_refused_before_sending(tmp_path
     assert storage.requests == []
 
 
-def test_a_missing_extra_says_how_to_install_it(tmp_path, env, monkeypatch):
+def test_a_missing_h5py_says_to_reinstall(tmp_path, env, monkeypatch):
     def missing(_path):
-        raise _format.MissingExtra("the structure check needs h5py: pip install 'bloomctl[scrna]'")
+        raise _format.MissingExtra(f"the structure check needs h5py and numpy: {_format.INSTALL}")
 
     monkeypatch.setattr(_format, "check_structure", missing)
     result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
-    assert "bloomctl[scrna]" in result.output
+    assert "reinstall bloomctl" in result.output
 
 
 def test_the_same_file_twice_is_one_object(tmp_path, env, storage):

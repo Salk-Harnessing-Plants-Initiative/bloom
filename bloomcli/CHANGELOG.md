@@ -10,9 +10,11 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Changed
 
-- The PyPI page's Install section lists every install command, pinned to the release,
-  including `bloomctl[scrna]` for single-cell uploads. The intro covers cylinder, plate and
-  expression data.
+- `h5py` and `numpy` are regular dependencies, so a plain install can run `scrna hdf5 upload`.
+  The `scrna` extra is gone; an old `bloomctl[scrna]` install command still works and installs
+  the same thing.
+- The PyPI page's Install section lists every install command, pinned to the release, and the
+  intro covers cylinder, plate and expression data.
 
 ## [0.1.0a7] - 2026-09-30 — single-cell dataset files + per-run manifests
 

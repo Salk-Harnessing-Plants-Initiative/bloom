@@ -4,7 +4,7 @@ Which column holds the cell type or the genotype is declared when the dataset is
 those checks stay with the load. Everything else is checked here, before a file is stored:
 a stored object cannot be replaced, so a broken one would stay until an admin removed it.
 
-h5py and numpy come from the optional `scrna` extra and are imported only when a check runs.
+h5py and numpy are imported only when a check runs.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ MAX_DUPLICATE_POINT_SHARE = 0.001
 # Values read at a time when scanning a matrix, so a large file is never read whole.
 SCAN_VALUES = 4 * 1024 * 1024
 
-INSTALL = "pip install 'bloomctl[scrna]'"
+INSTALL = "reinstall bloomctl"
 
 
 class FormatError(ValueError):

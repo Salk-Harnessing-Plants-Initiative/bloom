@@ -510,8 +510,6 @@ finds its file with no lookup table, and the same file uploaded twice is one
 object.
 
 ```bash
-pip install 'bloomctl[scrna]'                   # upload's structure check needs h5py
-
 bloomctl scrna hdf5 upload myb41_transgene_load.h5ad -p staging
 bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
 bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id

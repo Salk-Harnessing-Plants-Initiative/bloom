@@ -12,12 +12,6 @@ uvx bloomctl@0.1.0a5 --help            # one-off, no install
 pip install "bloomctl==0.1.0a5"        # into the active environment
 ```
 
-For single-cell uploads, install the `scrna` extra instead (upload's structure check needs h5py):
-
-```bash
-uv tool install "bloomctl[scrna]==0.1.0a5"
-```
-
 ```bash
 bloomctl --version
 ```
@@ -123,7 +117,7 @@ when you run the same command again. `download` writes the file only once its fi
 | `cyl ingest-result` / `batch-ingest-result`               | Write per-scan pipeline results back to Bloom*(needs write access)* |
 | `cyl datasets create`                                       | Create a trait dataset*(needs write access)*                        |
 
-**Single-cell** (upload needs the `scrna` extra, see [Install](#install)):
+**Single-cell**:
 
 | Command                     | What it does                                                                      |
 | --------------------------- | --------------------------------------------------------------------------------- |
