@@ -138,7 +138,7 @@ describe('(d) integrity and RPC failures produce no output', () => {
     [
       'a missing coverage row',
       { tamper: { coverage: (r: unknown) => (r as unknown[]).slice(1) } },
-      /no coverage row|coverage/,
+      /^scan 9 has no coverage row$/,
     ],
     [
       'a coverage row outside the batch',
@@ -147,7 +147,7 @@ describe('(d) integrity and RPC failures produce no output', () => {
           coverage: (r: unknown) => [...(r as object[]), { ...(r as object[])[0], scan_id: 999 }],
         },
       },
-      /coverage/,
+      /^a coverage row fell outside batch 1 of 4$/,
     ],
     [
       'a truncated trait response',
@@ -156,7 +156,7 @@ describe('(d) integrity and RPC failures produce no output', () => {
           traits: (r: unknown) => ({ ...(r as object), count: (r as { count: number }).count + 1 }),
         },
       },
-      /batch/,
+      /^a trait read was truncated in batch 1 of 4$/,
     ],
     [
       'an included scan with no trait rows',
@@ -243,12 +243,12 @@ describe('(d) integrity and RPC failures produce no output', () => {
     [
       'a missing accession row',
       { tamper: { accessions: (r: unknown) => (r as unknown[]).slice(1) } },
-      /accession/,
+      /^accession 1 returned no row$/,
     ],
     [
       'a missing source row',
       { tamper: { sourceMetadata: (r: unknown) => (r as unknown[]).slice(1) } },
-      /source/,
+      /^source 21 returned no row$/,
     ],
   ] as [string, FakeOptions, RegExp][])('%s', async (_name, fake, detail) => {
     const { err } = await failure(WHOLE, { recipeKey: K }, fake)
