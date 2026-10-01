@@ -300,3 +300,99 @@ def test_signal_while_waiting_to_connect_exits_cleanly(monkeypatch):
 
     assert attempts["n"] == 1  # tried once, then stopped retrying after the signal
     assert claimed["called"] is False
+
+
+# --- Refusal: an environment that is switched off or unconfigured (bloom#863) -
+
+_REFUSAL_MESSAGES = {
+    "off": "Pipeline dispatch is turned off in this environment",
+    "unconfigured": "Pipeline dispatch is not configured in this environment",
+}
+
+
+def _refusing(monkeypatch, reason, detail=""):
+    """Wire a claimed batch whose body builder refuses; returns the call log."""
+    import k8s_client
+
+    calls = {}
+    monkeypatch.setattr(worker, "claim_batch", lambda c: dict(_BATCH))
+
+    def refuse(*a):
+        raise k8s_client.K8sDispatchRefusedError(reason, detail)
+
+    monkeypatch.setattr(worker, "build_workflow_body", refuse)
+    monkeypatch.setattr(
+        worker,
+        "submit_workflow",
+        lambda body: (_ for _ in ()).throw(
+            AssertionError("a refused batch must never be submitted")
+        ),
+    )
+    monkeypatch.setattr(worker, "complete_batch", lambda *a: calls.update(complete=a))
+    monkeypatch.setattr(
+        worker,
+        "fail_batch",
+        lambda c, r, b, m, s, err: calls.update(fail=(r, b, m, s, err)),
+    )
+    return calls
+
+
+@pytest.mark.parametrize("reason", ["off", "unconfigured"])
+def test_process_one_fails_a_refused_batch_at_once_with_a_fixed_message(
+    monkeypatch, reason
+):
+    """Unlike a K8sConfigError, a refusal is settled on this same claim: left
+    unsettled it would only be dead-lettered ~5 minutes later as a "poison
+    message"."""
+    calls = _refusing(monkeypatch, reason)
+
+    assert worker.process_one(object()) is True
+    assert calls["fail"] == (1, 0, 9, [5, 6], _REFUSAL_MESSAGES[reason])
+    assert "complete" not in calls
+
+
+@pytest.mark.parametrize("reason", ["off", "unconfigured"])
+def test_a_refusals_recorded_message_omits_the_detail_its_log_keeps(
+    monkeypatch, caplog, reason
+):
+    """error_message is user-facing: the variable names, paths and secret
+    names go to the server log only."""
+    detail = (
+        "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT has a '.' or '..' segment; "
+        "CYL_PIPELINE_TRIGGER_ENABLED; /hpi/../a4_poc bloom_cyl_pipeline "
+        "genericsecret-x"
+    )
+    calls = _refusing(monkeypatch, reason, detail)
+
+    with caplog.at_level("WARNING", logger="dispatch_worker"):
+        assert worker.process_one(object()) is True
+
+    recorded = calls["fail"][4]
+    for leak in (
+        "WORKFLOWS_K8S_",
+        "CYL_PIPELINE_",
+        "/hpi",
+        "a4_poc",
+        "bloom_cyl_pipeline",
+        "genericsecret",
+    ):
+        assert leak not in recorded
+    warnings = [r.getMessage() for r in caplog.records if r.levelname != "DEBUG"]
+    assert any("run 1 batch 0" in m and detail in m for m in warnings), warnings
+
+
+def test_a_refused_batch_whose_fail_rpc_errors_is_left_for_redelivery(
+    monkeypatch, caplog
+):
+    _refusing(monkeypatch, "off")
+
+    def fail_boom(*a):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(worker, "fail_batch", fail_boom)
+
+    with caplog.at_level("ERROR", logger="dispatch_worker"):
+        assert worker.process_one(object()) is True
+
+    messages = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("run 1 batch 0" in m and "fail RPC" in m for m in messages), messages

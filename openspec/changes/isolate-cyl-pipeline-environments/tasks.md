@@ -36,7 +36,8 @@ file.
   - **The exception's place in the hierarchy.** `K8sDispatchRefusedError("off").reason == "off"`.
     `issubclass(K8sDispatchRefusedError, K8sConfigError)` and
     `issubclass(K8sDispatchRefusedError, K8sSubmissionError)` are both `False`.
-- [x] 1.2 Implement the three resolvers, using `PurePosixPath`, string splitting and `re.fullmatch`.
+- [x] 1.2 Implement the three resolvers, using string checks on `/`-split segments (no `Path`,
+  `PurePosixPath` or `os.path`) and `re.fullmatch`.
   Bind them to module globals `PIPELINE_HOSTPATH_ROOT`, `PIPELINE_SECRET_NAME` and
   `PIPELINE_DISPATCH_ENABLED`, plus the invalid-reason globals, following `_resolve_ttl_seconds`'
   never-raise shape. Define `K8sDispatchRefusedError(reason)`. Nothing raises it yet.
@@ -45,7 +46,7 @@ file.
 
 ## 2. The worker settles a refusal at once (`dispatch_worker.py`)
 
-- [ ] 2.1 **Test first** (`services/workflows/tests/test_dispatch_worker.py`). Mock
+- [x] 2.1 **Test first** (`services/workflows/tests/test_dispatch_worker.py`). Mock
   `build_workflow_body` as the existing tests do.
   - **(a) Off.** Raising `k8s_client.K8sDispatchRefusedError("off")` leads to:
     - `fail_batch` called exactly once, with that batch's run id, index, msg id, scan ids and
@@ -66,13 +67,12 @@ file.
   - **(f) No Kubernetes call, end to end.** Use the real `build_workflow_body`, with
     `k8s_client.PIPELINE_DISPATCH_ENABLED=False` set by monkeypatch, and `k8s_client.httpx.Client`
     patched to record calls. Assert `fail_batch` gets the "off" message and no client is created.
-    This test passes only after §4. Mark it `xfail(strict=True)` here and remove the marker in §4,
-    or add it in §4.
-- [ ] 2.2 Implement an `except K8sDispatchRefusedError` branch in `process_one`, ahead of
+    This test passes only after §4, so it is written in §4 (4.1(m)), not here.
+- [x] 2.2 Implement an `except K8sDispatchRefusedError` branch in `process_one`, ahead of
   `K8sConfigError`. It maps `reason` to the two constants, logs the detail, and calls `fail_batch`,
   tolerating a failing RPC. Update the module docstring's Env section and `process_one`'s docstring
   (`:63-65`).
-- [ ] 2.3 Run the whole `services/workflows` suite and confirm it passes.
+- [x] 2.3 Run the whole `services/workflows` suite and confirm it passes.
 
 ## 3. Per-environment config
 
@@ -164,7 +164,9 @@ This group is one commit: the fixture update and the gate must land together.
     than on the built body, and update the comment at `:570-573`.
   - **(l) The volumes test.** `volumes_match_the_vendored_file_exactly` (`:727`) asserts names, order
     and types against the vendored file, plus exact equality under staging's values.
-  - **2.1(f).** Remove its `xfail` marker.
+  - **(m) End to end (2.1(f)).** In `test_dispatch_worker.py`, with the real `build_workflow_body`,
+    `k8s_client.PIPELINE_DISPATCH_ENABLED=False` and `k8s_client.httpx.Client` patched to record:
+    `fail_batch` gets the "off" message and no client is created.
 - [ ] 4.2 Implement:
   - the gate at the top of `build_workflow_body`;
   - the closed-set check;
