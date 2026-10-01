@@ -12,6 +12,7 @@ import {
   type RnaseqSample,
   type StartedRun,
 } from "@/lib/scrna-jobs";
+import { normaliseFolderUrl, type FolderCheck } from "@/lib/s3-folder";
 import type { SpeciesOption } from "@/lib/species-options";
 import { newSampleNameProblem, parseSraRuns, sraRunUrl } from "@/lib/sra-runs";
 import ScrnaDataOrigin from "./scrna-data-origin";
@@ -49,8 +50,10 @@ export default function ScrnaJobSubmit({
   const [open, setOpen] = useState(false);
   // Species added from the form stay listed after it is closed and reopened.
   const [speciesOptions, setSpeciesOptions] = useState(species);
-  const [source, setSource] = useState<SampleSource>("registered");
-  const [sample, setSample] = useState("");
+  const [source, setSource] = useState<SampleSource>("folder");
+  const [folderUrl, setFolderUrl] = useState("");
+  // The passed check for the folder now entered; Start run waits for it.
+  const [folderCheck, setFolderCheck] = useState<FolderCheck | null>(null);
   const [sraText, setSraText] = useState("");
   // The new sample's name follows the first run ID until it's edited.
   const [newName, setNewName] = useState("");
@@ -88,8 +91,8 @@ export default function ScrnaJobSubmit({
   const detailsProblem = datasetDetailsProblem(details);
   const sra = parseSraRuns(sraText);
   const sampleReady =
-    source === "registered"
-      ? Boolean(sample)
+    source === "folder"
+      ? folderCheck !== null && folderCheck.fastq_url === normaliseFolderUrl(folderUrl)
       : !sra.problem &&
         !newSampleNameProblem(
           newName.trim(),
@@ -106,7 +109,7 @@ export default function ScrnaJobSubmit({
       setOrigin("public");
       return;
     }
-    // Undo what the import filled in, so it isn't saved with a registered sample.
+    // Undo what the import filled in, so it isn't saved with a folder's run.
     if (originBeforeSra !== null) setOrigin(originBeforeSra);
     setOriginBeforeSra(null);
     if (!sourceEdited) setSourceUrl("");
@@ -139,7 +142,8 @@ export default function ScrnaJobSubmit({
 
   // Ready for the next sample: the per-sample fields are cleared, the rest kept.
   function startAnother() {
-    setSample("");
+    setFolderUrl("");
+    setFolderCheck(null);
     setSraText("");
     setNewName("");
     setNameEdited(false);
@@ -172,8 +176,12 @@ export default function ScrnaJobSubmit({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          source === "registered"
-            ? { sample, reference, metadata: buildRunMetadata(details) }
+          source === "folder"
+            ? {
+                fastq_url: folderCheck?.fastq_url,
+                reference,
+                metadata: buildRunMetadata(details),
+              }
             : {
                 sample: newName.trim(),
                 reference,
@@ -247,9 +255,9 @@ export default function ScrnaJobSubmit({
             FASTQs: it aligns the reads to the chosen reference genome, calls cells
             from their barcodes, and counts UMIs per gene in each cell, then
             clusters the cells and computes a UMAP. The result is one AnnData file
-            (.h5ad) with the counts, clusters and UMAP. A sample can also be
-            imported from SRA: the run downloads it first and registers it for
-            later runs.
+            (.h5ad) with the counts, clusters and UMAP. The reads come from an S3
+            folder, which is checked as soon as you enter it, or are imported from
+            SRA. Nothing is copied into Bloom&apos;s storage but the results.
           </p>
 
           <form onSubmit={submit} className="space-y-6">
@@ -267,8 +275,9 @@ export default function ScrnaJobSubmit({
                 source={source}
                 onSource={changeSource}
                 samples={samples}
-                sample={sample}
-                onSample={setSample}
+                folderUrl={folderUrl}
+                onFolderUrl={setFolderUrl}
+                onFolderChecked={setFolderCheck}
                 sraText={sraText}
                 onSraText={changeSraText}
                 newName={newName}
@@ -298,11 +307,10 @@ export default function ScrnaJobSubmit({
                 </select>
               </label>
 
-              {(source === "registered" && samples.length === 0) ||
-              references.length === 0 ? (
+              {references.length === 0 ? (
                 <p className="text-sm text-stone-500">
-                  Samples and references are added by a Bloom admin once their
-                  files are in storage.
+                  References are added by a Bloom admin once their files are in
+                  storage.
                 </p>
               ) : null}
             </fieldset>

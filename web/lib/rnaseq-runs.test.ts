@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   failureSentence,
+  runFastqUrl,
   runSraRuns,
   runSteps,
   fetchRequesters,
@@ -233,6 +234,34 @@ describe("failureSentence", () => {
     expect(failureSentence(failed)).toMatch(sentence);
   });
 
+  it.each([
+    [4, /even after waiting 10 minutes/],
+    [7, /in the S3 folder don't follow/],
+    [8, /changed after the run was started/],
+    [10, /couldn't be listed or copied/],
+  ])("explains exit %i from staging an S3 folder", (code, sentence) => {
+    const failed = run({
+      status: "failed",
+      exit_code: code,
+      current_step: "stage",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toMatch(sentence);
+  });
+
+  it("keeps the folder sentences to the stage step of a folder run", () => {
+    expect(failureSentence(run({ status: "failed", exit_code: 4, current_step: "stage" }))).toMatch(
+      /in the sample's folder/
+    );
+    const folderCount = run({
+      status: "failed",
+      exit_code: 5,
+      current_step: "count",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(folderCount)).toMatch(/Cell Ranger count failed/);
+  });
+
   it("falls back to the run's message for another exit code", () => {
     expect(failureSentence(run({ status: "failed", exit_code: 137, message: "OOMKilled" }))).toBe(
       "OOMKilled"
@@ -282,5 +311,14 @@ describe("fetchRequesters", () => {
     expect(await fetchRequesters(client as never, [])).toEqual(new Map());
     const failing = { rpc: async () => ({ data: null, error: { message: "denied" } }) };
     expect(await fetchRequesters(failing as never, [1])).toEqual(new Map());
+  });
+});
+
+describe("runFastqUrl", () => {
+  it("reads the run's S3 folder, or null", () => {
+    const url = "s3://lab-data/run42/";
+    expect(runFastqUrl(run({ params: { sample: "s", reference: "r", fastq_url: url } }))).toBe(url);
+    expect(runFastqUrl(run())).toBeNull();
+    expect(runFastqUrl(run({ params: null }))).toBeNull();
   });
 });

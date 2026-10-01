@@ -62,6 +62,20 @@ describe("RnaseqRunView", () => {
     );
   });
 
+  it("shows the S3 folder a run reads from", () => {
+    renderView({
+      ...RUN,
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(screen.getByText("s3://lab-data/run42/")).toBeTruthy();
+    expect(screen.getByText(/Reads from/)).toBeTruthy();
+  });
+
+  it("doesn't mention a folder for a run without one", () => {
+    renderView();
+    expect(screen.queryByText(/Reads from/)).toBeNull();
+  });
+
   it("shows the dataset details and who started it", () => {
     renderView();
     expect(screen.getByText("TEST tinygex pipeline check")).toBeTruthy();
