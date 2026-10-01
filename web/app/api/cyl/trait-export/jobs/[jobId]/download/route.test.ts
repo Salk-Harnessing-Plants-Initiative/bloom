@@ -91,6 +91,9 @@ describe('guards', () => {
     const jobId = startJob(async () => ({ stem: 's', chunks: [new Uint8Array(1)] }))
     await new Promise((r) => setImmediate(r))
     expect((await download(jobId, { 'sec-fetch-site': 'cross-site' })).status).toBe(403)
+    // Spec: any Sec-Fetch-Site other than same-origin is 403 (10a.6c).
+    expect((await download(jobId, { 'sec-fetch-site': 'same-site' })).status).toBe(403)
+    expect((await download(jobId, { 'sec-fetch-site': 'none' })).status).toBe(403)
     expect((await download('nope')).status).toBe(404)
     expect((await download(crypto.randomUUID())).status).toBe(404)
     signIn('user-2')

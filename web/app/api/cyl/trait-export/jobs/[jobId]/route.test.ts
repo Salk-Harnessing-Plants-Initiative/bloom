@@ -62,6 +62,16 @@ describe('guards', () => {
     )
   })
 
+  // Spec: any Sec-Fetch-Site other than same-origin is 403; a sibling subdomain is same-site (10a.6c).
+  it.each([
+    ['GET', 'same-site'],
+    ['GET', 'none'],
+    ['DELETE', 'same-site'],
+    ['DELETE', 'none'],
+  ] as const)('%s: 403 for Sec-Fetch-Site %s', async (m, site) => {
+    expect((await call(m, crypto.randomUUID(), { 'sec-fetch-site': site })).status).toBe(403)
+  })
+
   it.each(['GET', 'DELETE'] as const)('%s: 401 unverified, 503 when GoTrue fails', async (m) => {
     getUser.mockResolvedValue({ data: { user: null }, error: { status: 401, message: 'x' } })
     expect((await call(m, crypto.randomUUID())).status).toBe(401)

@@ -85,6 +85,10 @@ describe('module contract and guards', () => {
     expect(
       (await list('experiment=1', { headers: { 'sec-fetch-site': 'cross-site' } })).status
     ).toBe(403)
+    // Spec: any Sec-Fetch-Site other than same-origin is 403 (10a.6c).
+    for (const site of ['same-site', 'none']) {
+      expect((await list('experiment=1', { headers: { 'sec-fetch-site': site } })).status).toBe(403)
+    }
     getUser.mockResolvedValue({ data: { user: null }, error: { status: 401, message: 'x' } })
     expect((await list('experiment=1')).status).toBe(401)
     getUser.mockResolvedValue({ data: { user: null }, error: { status: 500, message: 'x' } })

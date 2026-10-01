@@ -89,6 +89,12 @@ describe('check order', () => {
     expect(fake.calls).toEqual([])
   })
 
+  // Spec: any Sec-Fetch-Site other than same-origin is 403; a sibling subdomain is same-site (10a.6c).
+  it.each(['same-site', 'none'])('403 for Sec-Fetch-Site %s', async (site) => {
+    expect((await post(ok, { 'sec-fetch-site': site })).status).toBe(403)
+    expect(fake.calls).toEqual([])
+  })
+
   it('401 with no session', async () => {
     vi.mocked(getSession).mockResolvedValue(null as never)
     const res = await post(ok)
