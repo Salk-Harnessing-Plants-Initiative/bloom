@@ -580,11 +580,32 @@
     - PR Checks run 36787853084 passed.
 
     `/review-pr` round 2 was posted and every item was resolved (dispositions comment on #965), and `/pre-merge` was done.
-  - **Still open:** 12.6, left open by the author. It wasn't observed: a large burst needs a run over many scans, real experiments' image bytes are missing on staging, and the 20 test scans give at most a 20-row burst.
+  - **Still open:** 12.6, left open by the author. It wasn't observed: a large burst needs a run over many scans, real experiments' image bytes are missing on staging (bloom#985), and the 20 test scans give at most a 20-row burst. The change was archived with 12.6 open, by the author's decision.
   - **12.8:** runs 15 (1/0), 16 (5/6) and 18 (1/0): `done_count`/`failed_count` equal the row tallies, rechecked read-only on 2026-09-30. Recorded in `fix-cyl-pipeline-run-scan-status`: 8.3 and 8.4 ticked there; 8.2's evidence noted but left unticked (no rollout log watch); 8.1 unticked.
 
 ## 13. After merge
 
-- [ ] 13.1 Draft a bloom#15 comment: §10 v1 has shipped; phases 3–4, #865, #897, #898, #899 and #900 remain. Post only with explicit user go-ahead.
-- [ ] 13.2 Draft updates to sleap-roots-pipeline's roadmap row (line 308) and to design §10's text (overrides, "N will run", blob links, requester names), coordinated with PR #88.
-- [ ] 13.3 Once §12 has been repeated on the deployed staging build, run `/openspec:archive add-cyl-pipeline-ui`.
+- [x] 13.1 Draft a bloom#15 comment: §10 v1 has shipped; phases 3–4, #865, #897, #898, #899 and #900 remain. Post only with explicit user go-ahead.
+
+  **(Posted with the author's go-ahead, 2026-09-30:** [bloom#15 comment 5923908414](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/15#issuecomment-5923908414). It also names #955, #983 and #985.)
+- [x] 13.2 Draft updates to sleap-roots-pipeline's roadmap row (line 308) and to design §10's text (overrides, "N will run", blob links, requester names), coordinated with PR #88.
+
+  **(Opened with the author's go-ahead as [talmolab/sleap-roots-pipeline#103](https://github.com/talmolab/sleap-roots-pipeline/pull/103), for the author to merge.** It sets the roadmap row's status to "v1 shipped" and adds one "v1 as shipped" annotation to design §10. srp#88 was already merged on 2026-09-25.)
+- [x] 13.3 Once §12 has been repeated on the deployed staging build, run `/openspec:archive add-cyl-pipeline-ui`.
+
+  **(Repeated on the deployed staging build `ac5c63d5` (#987, which includes #965), 2026-10-01, in the author's browser.** The scope was the author's choice: browsing plus one 1-scan run.)
+  - **Setup:** the deployed `bloom-web` has `CYL_PIPELINE_TRIGGER_ENABLED=true` (read over SSH).
+  - **Browse checks:**
+    - the runs list showed runs 12–18, Live;
+    - run 16's drill-down showed "Finished · 5 succeeded · 6 failed";
+    - run 11's traits link opened wave 9999 · day 2;
+    - the accession page's grid showed the selection checkboxes;
+    - on the experiment page, "Run experiment"'s pre-check read "18 of 20 already have pipeline results", then Cancel.
+  - **Run 19:** a one-scan selection of TEST-E2E-020, already processed by run 18, started from the deployed UI and shown as "Run 19 started with 1 scan".
+    - Workflow `sleap-roots-pipeline-hh6kx` Succeeded in 2m53s, with all five steps Completed.
+    - The run ended `complete`, 1/0, and its row was `written` with source 264 (run 18's source).
+    - The drill-down went from "Running · 0 / 1 succeeded" to "Finished · 1 succeeded" while Live. "Current in trait views" read "unknown" after the live change, as specified.
+    - Colleagues' running sessions were unaffected.
+  - **Findings, both posted with the author's go-ahead:**
+    - run 16's TEST-E2E-020 row now shows the #900 note, because run 18 later gave the scan results: a third mislabel case, [bloom#900 comment 5936512625](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/900#issuecomment-5936512625);
+    - the plural slips "1 selected scans" and "All 1 scans", [bloom#955 comment 5936641180](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/955#issuecomment-5936641180).
