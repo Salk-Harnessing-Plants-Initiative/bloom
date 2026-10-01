@@ -393,11 +393,15 @@
 
 ## 10. Verification on staging (PR A; user go-ahead for each run)
 
-- [ ] 10.1 Under a local `next start` pointed at staging, with a real session, export experiment 3313 at its default recipe through a scratchpad script. Then:
+- [x] 10.1 Under a local `next start` pointed at staging, with a real session, export experiment 3313 at its default recipe through a scratchpad script. Then:
   - unzip it;
   - run 1.4's checks, with `qc_clean` on a filtered export under 5 MiB;
   - as an independent value oracle, fetch the `cyl_scan_traits_source` rows for (scan, coverage `source_id`) for 20 random included scans through bloomctl's client, and compare every cell as float4 (NaN = NaN, NULL = empty). Zero mismatches are required;
   - compare against #865's reference file on the shared scans and trait names, after rounding both sides to float32, and record the exact and float32 mismatch counts.
+  **(done 2026-10-01, bloom-web built and started locally against staging (`next start`, `127.0.0.1:3107`), driven by `scratchpad/r101/drive_export.py` as `staging-user` (`bloom_user`). The selection matches the reference file: experiment 3313 (FN2023_Round3, rice) at `age=3`. Listing: 647 selected, one recipe (`unattributed`, 647 scans, the default), 1.45 s. Job: ready in 7.0 s; zip 1.93 MB (CSV 5,242,948 bytes, 68 over the 5 MiB `qc_clean` cap). Wave 1 (`age=3&wave=1`): 165 scans, 2.9 s, CSV 1,331,046 bytes. Delete 204, then 404.**
+  - **1.4's checks (bloommcp env; sleap-roots-analyze 0.1.0a5, bloommcp 0.1.0a1, jsonschema 4.26.0, pandas 3.0.2): both sidecars validate and `generated_at` is UTC; rows 647 and 165; included + excluded = `n_selected` (0 excluded); 918 trait columns, `get_trait_columns` keeps 909 (the 9 `curve_index_*` dropped, as 1.4 predicted) and none of the metadata, `recipe_key` or `source_id`. `qc_clean` on the wave-1 export: genotype `genotype`, sample id `plant_qr_code`, replicate `wave_number`, 841 traits kept, no warnings.**
+  - **Value oracle: 20 random included scans, 18,360 cells, 0 mismatches as float4 (NULL = empty, NaN = NaN). The oracle must read `value::float8`: PostgREST renders a bare `REAL` with 6 significant digits (`extra_float_digits` 0), which gave 15,646 false mismatches on a first read. The export is unaffected because `get_experiment_traits` returns `value::float`.**
+  - **Reference (`Z:/users/eberrigan/20260910_Sanghwa_Lee_FN2023_Round3/3_day_old/sleap_roots_traits_output/traits_summary.csv`, 647 rows, 943 columns): all 647 scans shared; 342 of 918 trait names shared. The other 576 are `main_*` in Bloom and `crown_*` in the reference (the same root family under the older and newer sleap-roots naming). On the shared cells (221,274): 162,681 exact and 153,360 float32 mismatches; median relative difference 0.003%, p90 1.3%, p99 61%; 27.8% equal in float32. Staging's unattributed rows for 3313 are an earlier pipeline run than this 2026-09-13 local run, so the reference is not an oracle for them; the value oracle above is.)**
 - [ ] 10.2 Export staging experiment 1 with a wave filter and without one. Record the job time, the zip size and the peak RSS under `next start` (`ps -o rss` every 1 s). Confirm `included + excluded = n_selected`.
 - [ ] 10.3 Export one scan, and check that it matches the experiment export by column.
 - [ ] 10.4 Run `/pr-description` for PR A.
