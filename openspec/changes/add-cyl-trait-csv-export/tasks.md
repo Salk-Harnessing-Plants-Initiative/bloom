@@ -431,13 +431,20 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
   **(done 2026-10-01. Red: 1 failed, 20 passed; the page size was 1,000 and `pageSelection` defaulted to its own literal 1000. Green: `SELECTION_PAGE_SIZE` = 5,000 and the default reads it; experiment 1 resolves in 4 pages plus the empty one. A 5,000-row page has not been timed on staging; the 2026-10-01 whole-experiment listing (about 20 pages of 1,000 plus the count) took 3.92 s, so a page should stay well under 8 s. 12.1 re-measures after deploy. 299/299, tsc clean.)**
 - [x] 10a.5 **`listMergedRecipes` takes `listingBatchSize`, not `batchSize`.** Test first: `listMergedRecipes(db, e, ids, { listingBatchSize: 1 })` makes one call per scan. Rename the option and fix the stale "per batch" comments in `recipes.ts` and `build-export.ts`.
   **(done 2026-10-01. Red: 1 failed, 54 passed; `listingBatchSize` was ignored. Green: `listMergedRecipes` takes `Pick<BuildOptions, 'listingBatchSize' | …>`, `buildExport` passes `listingBatchSize` through, and the headers of `build-export.ts` and `recipes.ts` describe LISTING_BATCH_SCANS listings. 300/300, tsc clean.)**
-- [ ] 10a.6 **Tests the review showed to be weak** (test-only; each strengthened test is shown to fail against a mutation in a throwaway copy, recorded here):
+- [x] 10a.6 **Tests the review showed to be weak** (test-only; each strengthened test is shown to fail against a mutation in a throwaway copy, recorded here):
   - (a) the process-wide-limit test makes the listing contend with two jobs and asserts its call waits in the semaphore queue; correct 6.7's note;
   - (b) error details are asserted exactly ("scan N has no coverage row", "… in batch i of n");
   - (c) `Sec-Fetch-Site: same-site` and `none` get `403` on every route;
   - (d) the download `409` covers a cancelled job and asserts its `detail`;
   - (e) the (a) golden variants also run with `listingBatchSize` 1 and 2, so the multi-chunk listing merge is exercised end to end;
   - (f) the session-floor boundary test uses fake timers.
+  **(done 2026-10-01; each mutation was applied to the worktree file, run, and restored byte for byte (`git diff --quiet`):**
+  - **(a) `recipes/route.test.ts`: both jobs' builds hold all 3 slots, then the listing issues no request until a slot frees. Mutation, `limitedDb` not wrapping `experiment`: fails (14 calls issued, 13 expected). 6.7's note and the file's header comment corrected.**
+  - **(b) `build-export.test.ts`: the five loose details are now exact (`scan 9 has no coverage row`, `a coverage row fell outside batch 1 of 4`, `a trait read was truncated in batch 1 of 4`, `accession 1 returned no row`, `source 21 returned no row`). The review's mutation (details without scan, batch or accession): 3 failed.**
+  - **(c) `same-site` and `none` get 403 on POST jobs, GET/DELETE job, download and the listing. Mutation `site !== 'cross-site'`: 8 failed.**
+  - **(d) the download 409 covers running, failed and cancelled, each with its `detail`. Mutation, cancelled not refused: 1 failed.**
+  - **(e) the golden variants at batch 1 and 2 also pass `listingBatchSize` 1 and 2. Mutation, the merge keeping the larger `n_scans` instead of the sum: 15 failed; the previous test file passes 55/55 under it. (A mutation of `newest_source_id` to the minimum survives: with `chosen=user` it only orders recipes, which these files don't show.)**
+  - **(f) the session-floor test fakes only `Date`, pinned at 12:00:00.999; moving it 1 ms across the second between signing and posting turns the 1,800 s case into a 401, which is the flake the real clock allowed. Three runs pass.)**
 - [ ] 10a.7 **Researcher guide** (`_WIKI/SUPABASE/trait-recipes.md`, "Using a trait export"): the 5 MiB `qc_clean` inline cap; pandas `dtype={'plant_qr_code': str, 'genotype': str}` in place of the bare `keep_default_na=False` advice; whole-experiment exports mix plant ages (and the age-window Pipeline-class blind spot); `unattributed` and an empty pipeline payload mean provenance unknown. README: the listing's empty selection is `200`, and the full `limits.ts` list.
 - [ ] 10a.8 Pre-merge as in §9 (web suite, tsc, build, integration, pre-commit, `openspec validate --strict`), then show the user the push and the PR-body change.
 
