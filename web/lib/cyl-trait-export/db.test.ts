@@ -22,7 +22,17 @@ function builder(root: string) {
   const ops: Op[] = []
   recorded.push({ root, ops })
   const b: Record<string, unknown> = {}
-  for (const m of ['select', 'eq', 'gt', 'in', 'order', 'limit', 'maybeSingle', 'abortSignal']) {
+  for (const m of [
+    'select',
+    'eq',
+    'gt',
+    'in',
+    'order',
+    'limit',
+    'maybeSingle',
+    'abortSignal',
+    'retry',
+  ]) {
     b[m] = (...args: unknown[]) => {
       ops.push([m, ...args])
       return b
@@ -193,6 +203,26 @@ describe('createExportDb', () => {
     for (const r of recorded) {
       const sig = r.ops.find((o) => o[0] === 'abortSignal')
       expect(sig?.[1]).toBeInstanceOf(AbortSignal)
+    }
+  })
+
+  it("turns off the client library's own retries on every request (tasks.md 10a.3)", async () => {
+    // postgrest-js 2.106.2 retries GET/HEAD up to 3 times on network errors and
+    // 503/520; spec "No retries" covers those too.
+    const db = createExportDb('t')
+    const q = { experimentId: 1 }
+    await db.experiment(1)
+    await db.scanExperiment(9)
+    await db.pageScans(q, null, 10)
+    await db.countScans(q)
+    await db.accessions([1])
+    await db.listRecipes(1, [9])
+    await db.coverage(1, [9], 'k')
+    await db.traits(1, 'k', [9])
+    await db.sourceMetadata([5])
+    expect(recorded).toHaveLength(9)
+    for (const r of recorded) {
+      expect(r.ops, r.root).toContainEqual(['retry', false])
     }
   })
 
