@@ -174,8 +174,8 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
 - [x] 6.2 Schema changes: keep the heading; put the literal line `No schema changes.` on its own
   line outside the template's HTML comment (`scripts/lint_migration_pr_body.py` accepts it only
   there); drop the empty constraints table; `make pr-body-check BODY=<file>`.
-- [ ] 6.3 `git push -u origin fix/cyl-noop-redelivery-900` (create the ref via the REST API first
-  if the push 500s); open against `staging`. Never rebase once review comments exist; merge
+- [x] 6.3 `git push -u origin fix/cyl-noop-redelivery-900` (create the ref via the REST API first
+  if the push 500s); open against `staging` (**PR #1001**, 2026-10-01). Never rebase once review comments exist; merge
   `origin/staging` in.
 
 ## 7. PR B — bloomctl and web (new branch from `staging` after PR A is deployed)
