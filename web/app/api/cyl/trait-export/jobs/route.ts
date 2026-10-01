@@ -83,6 +83,7 @@ export async function POST(request: Request): Promise<Response> {
     )
     return { stem: built.stem, chunks }
   })
+  if (jobId === null) return detail(409, 'the export was cancelled before it started')
   return Response.json({ job_id: jobId }, { status: 202 })
 }
 

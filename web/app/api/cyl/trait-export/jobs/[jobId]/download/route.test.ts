@@ -64,7 +64,7 @@ const download = (jobId: string, headers: Record<string, string> = same) =>
 function startJob(run: () => Promise<{ stem: string; chunks: Uint8Array[] }>) {
   const r = reserveJob('user-1')
   if (!r.ok) throw new Error('setup')
-  return r.start(Date.now() / 1000 + 3600, run)
+  return r.start(Date.now() / 1000 + 3600, run)!
 }
 
 const bytesOf = async (res: Response) => new Uint8Array(await res.arrayBuffer())

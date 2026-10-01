@@ -34,7 +34,7 @@ const call = (method: 'GET' | 'DELETE', jobId: string, headers: Record<string, s
 function startJob(userId: string, run: () => Promise<{ stem: string; chunks: Uint8Array[] }>) {
   const r = reserveJob(userId)
   if (!r.ok) throw new Error('setup')
-  return r.start(Date.now() / 1000 + 3600, run)
+  return r.start(Date.now() / 1000 + 3600, run)!
 }
 
 beforeEach(() => {

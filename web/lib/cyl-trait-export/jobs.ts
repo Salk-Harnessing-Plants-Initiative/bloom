@@ -42,8 +42,11 @@ export type Reservation =
       jobId: string
       /** Give the slot back (the job never started, e.g. its selection was refused). */
       release: () => void
-      /** Start the build in the background; `tokenExp` is the verified token's exp (s). */
-      start: (tokenExp: number, run: Run) => string
+      /**
+       * Start the build in the background; `tokenExp` is the verified token's exp (s).
+       * Null if the job was cancelled while its selection was being resolved.
+       */
+      start: (tokenExp: number, run: Run) => string | null
     }
   | { ok: false; reason: 'user_limit'; runningJobId: string }
   | { ok: false; reason: 'global_limit' | 'memory' }
@@ -144,6 +147,8 @@ export function reserveJob(userId: string): Reservation {
       if (!rec.started) jobs().delete(rec.id)
     },
     start: (tokenExp, run) => {
+      // Cancelled (DELETE) between reserve and start: never build.
+      if (rec.status !== 'running') return null
       // One finished job per user: accepting a new one drops the previous.
       for (const [id, other] of jobs()) {
         if (id !== rec.id && other.userId === userId && other.status !== 'running') {

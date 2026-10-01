@@ -50,7 +50,7 @@ function startControlled(userId: string, tokenExp = Date.now() / 1000 + HOUR) {
   const jobId = r.start(tokenExp, (c) => {
     ctx = c
     return gate.promise
-  })
+  })!
   return { jobId, gate, ctx: () => ctx }
 }
 

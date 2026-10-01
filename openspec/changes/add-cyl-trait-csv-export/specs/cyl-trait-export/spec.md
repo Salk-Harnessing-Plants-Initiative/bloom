@@ -37,6 +37,11 @@ The web app SHALL export traits through a job: `POST /api/cyl/trait-export/jobs`
 - **WHEN** the owner sends `DELETE` while the job is running
 - **THEN** no further batch starts, in-flight calls are aborted, the status becomes `cancelled`, and the slot is released
 
+#### Scenario: Cancelled before it starts
+
+- **WHEN** the owner sends `DELETE` for a job whose `POST` is still resolving its selection (its id came from a `429`)
+- **THEN** no build runs, the `POST` answers `409` "the export was cancelled before it started", and the user may start another job
+
 #### Scenario: Retention
 
 - **WHEN** a job finished 599 seconds ago
