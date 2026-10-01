@@ -12,8 +12,9 @@ vi.mock('@/lib/supabase/server', () => ({
   getSession: vi.fn(),
   createServerSupabaseClient: vi.fn(),
 }))
-// One scan per batch, so every job and listing has several batches in flight and the
-// process-wide limit is actually exercised (the fixture has 8 scans).
+// One scan per coverage/trait batch, so every job has several batches in flight and
+// the process-wide limit is actually exercised (the fixture has 8 scans). Listings use
+// LISTING_BATCH_SCANS, which is not mocked, so a listing is one listRecipes call.
 vi.mock('@/lib/cyl-trait-export/limits', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/cyl-trait-export/limits')>()),
   BATCH_SCANS: 1,
@@ -234,8 +235,16 @@ describe('aborts', () => {
   })
 })
 
-describe('process-wide limit (tasks 6.7)', () => {
-  it('two jobs and one listing never have more than 3 requests in flight', async () => {
+describe('process-wide limit (tasks 6.7, 10a.6a)', () => {
+  // Since 7.4 a listing is a few serial calls, so the listing has to arrive while the
+  // two jobs hold every slot: its first call must then wait in the semaphore queue.
+  const tick = () => new Promise((r) => setImmediate(r))
+  const releaseHeld = async () => {
+    for (const release of fake.pending.splice(0)) release()
+    await tick()
+  }
+
+  it('two jobs and one listing never have more than 3 requests in flight, and the listing waits its turn', async () => {
     useFake({ hold: true })
     const post = (sub: string) => {
       signIn(sub)
@@ -248,14 +257,28 @@ describe('process-wide limit (tasks 6.7)', () => {
     }
     const a = post('user-a')
     const b = post('user-b')
-    signIn('user-c')
-    const l = list('experiment=1')
-    void fake.drain()
+    let started = 0
+    void a.then(() => started++)
+    void b.then(() => started++)
+    // Release parked calls until both jobs are accepted and their builds hold all 3 slots.
+    for (let i = 0; i < 500; i++) {
+      await tick()
+      if (started === 2 && fake.inFlight === 3 && fake.pending.length === 3) break
+      await releaseHeld()
+    }
     expect((await a).status).toBe(202)
     expect((await b).status).toBe(202)
+    expect(fake.inFlight).toBe(3)
+
+    signIn('user-c')
+    const issuedBefore = fake.calls.length
+    const l = list('experiment=1')
+    for (let i = 0; i < 20; i++) await tick()
+    expect(fake.calls.length).toBe(issuedBefore)
+
+    void fake.drain()
     expect((await l).status).toBe(200)
-    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r))
-    expect(fake.peak).toBeLessThanOrEqual(3)
+    for (let i = 0; i < 50; i++) await tick()
     expect(fake.peak).toBe(3)
   })
 })
