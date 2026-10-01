@@ -55,16 +55,30 @@
 
 *Note (2026-09-29):* 8.2–8.4's recorded `done_count`/`failed_count` evidence will come from sleap-roots-pipeline roadmap row 6's Bloom-dispatched N=1/N=3 live test, which runs after `adopt-cyl-contract-a9-run-manifest` merges (that change's tasks.md 10.3).
 
-- [ ] 8.1 Before triggering anything, check for concurrent sessions competing for the shared `busch-lab` 2-GPU RunAI quota or the 3 synthetic test scans (`12894745`/`46`/`47`); coordinate timing or create a 4th synthetic scan (via `insert_image_v2_0` under the `staging-writer` profile, uploading a real sample image, mirroring how the existing 3 were made) if a fresh, uncontended scan is needed. Also confirm this PR's migrations have actually applied to the target environment before triggering — per `design.md`'s deploy-ordering risk, `bloomctl`'s GHCR image can publish and reach a write-back pod on a timeline decoupled from the migration-apply step, and running E2E before the migration lands would produce a flaky, non-representative result rather than a real signal.
+- [x] 8.1 Before triggering anything, check for concurrent sessions competing for the shared `busch-lab` 2-GPU RunAI quota or the 3 synthetic test scans (`12894745`/`46`/`47`); coordinate timing or create a 4th synthetic scan (via `insert_image_v2_0` under the `staging-writer` profile, uploading a real sample image, mirroring how the existing 3 were made) if a fresh, uncontended scan is needed. Also confirm this PR's migrations have actually applied to the target environment before triggering — per `design.md`'s deploy-ordering risk, `bloomctl`'s GHCR image can publish and reach a write-back pod on a timeline decoupled from the migration-apply step, and running E2E before the migration lands would produce a flaky, non-representative result rather than a real signal. **Done 2026-09-30** (sleap-roots-pipeline roadmap row 6):
+  - `argo list -n runai-busch-lab --running` showed no `sleap-roots-pipeline-*` before each dispatch.
+  - This change's migrations were long since applied to staging; the live RPC is #903's a9 re-pin.
+  - The pre-existing synthetic scans were not usable. All of them are in hand-submitted run `cdbnp`'s 15 keys, so a Bloom-dispatched re-run hits bloom#900. Four fresh scans were created with `bloomctl cyl create-test-scan --good -p staging-writer`: 12894761–64 (TEST-E2E-015…018), frames copied from TEST-E2E-001.
 - [ ] 8.2 Trigger a full-success batch against `A4-PIPELINE-E2E-TEST` (`experiment_id 12880747`); poll `GET /workflows/runs/{run_id}` to a terminal status; confirm `done_count` equals the number of scans that actually wrote back and `failed_count` is `0` — not just "some positive number." While this deploy is rolling out, watch the `workflows` container's logs for the transient RPC-signature-mismatch window `design.md`'s deploy-ordering risk describes (now distinguished from other errors per Task 4.5), and confirm it is brief and self-heals rather than persisting.
 
   **(Evidence from add-cyl-pipeline-ui 12.8, PR #965, staging 2026-09-30; left unticked by the author's decision.)** Runs 15 and 18, one scan each on experiment 12880747, ended `complete` with `done_count` 1 and `failed_count` 0, equal to their row tallies (1 `written`, 0 `failed`). Not done: watching the `workflows` logs during a rollout, and 8.1's pre-trigger checks aren't in that session's record.
+
+  **(Also: sleap-roots-pipeline roadmap row 6, staging 2026-09-30; unticked, per the decision above.)**
+  - Bloom run 12 (`sleap-roots-pipeline-7skvz`, N=1): `status complete`, `done_count 1`, `failed_count 0`. The scan is `written`, source 250.
+  - Bloom run 13 (`pjs8t`, N=3): `done_count 3`, `failed_count 0`. Sources 251–253, all new.
+  - Both counts equal the scans that actually wrote back.
+  - Observed on every run: `submitted_at` stays `null`.
 - [x] 8.3 Trigger a poison-scan scenario expecting a `'partial'` outcome; confirm `done_count` and `failed_count` both match the real success/failure split for that run, are not double-counted across poller cycles, and are not stuck at a dispatch-level attempt count.
 
   **(add-cyl-pipeline-ui 12.3/12.8, PR #965, staging 2026-09-30.)** Run 16: 11 scans on experiment 12880747, including poison scan 014 and null-age scan 020. It ended `complete`, not `'partial'`: the poller's rollup can't report `partial` until bloom#857. `done_count` 5 and `failed_count` 6 equal the row tallies (5 `written`, 6 `failed`, none in another status), so the final counts carry no double count and match the real split.
+
 - [x] 8.4 Record the actual observed counts from 8.2/8.3 (not just pass/fail) as the verification evidence for this change.
 
   **(PR #965.)** Run 15: 1/0. Run 16: 5/6 of 11. Run 18: 1/0. Each was rechecked read-only against `cyl_pipeline_run_scans` on 2026-09-30.
+
+  **(Also: sleap-roots-pipeline roadmap row 6, 2026-09-30.)**
+  - Bloom run 14 (all-fail, poison scan 12894760, `zs4hj`): `status failed`, `done 0 / failed 1`.
+  - Bloom run 11 (a re-run of old scan 12894756, `mlq9k`): `status complete` with `done 0 / failed 1`. The failure is bloom#900, but a run with every scan failed still rolled up `complete`.
 
 ## 9. Review round 1 fixes (`/review-pr` against PR #774, post-implementation)
 
@@ -407,4 +421,4 @@ fixes) found a real regression in Section 13's own fix, plus several smaller iss
 
 - [ ] 15.1 Update `docs/bloom-integration/roadmap.md` (in `sleap-roots-pipeline`) marking bloom #716 and #696 resolved, and note whether bloom #15's UI progress panel is now actually unblocked.
 - [ ] 15.2 Close bloom #716 and #696 referencing the merged PR, once merged and verified per Task 8.
-- [ ] 15.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival.
+- [x] 15.3 Fill in the `Purpose` sections of `openspec/specs/cyl-pipeline-runs/spec.md` and `openspec/specs/cyl-pipeline-status-polling/spec.md` — both currently read the literal placeholder text `TBD - created by archiving change ... Update Purpose after archive.` (their own inline comment, not an `openspec/AGENTS.md` rule) — as part of this change's own archival. **Done 2026-09-30** in the archive PR.

@@ -34,7 +34,7 @@ The web app SHALL offer run actions, and the trigger proxy SHALL accept a reques
 - `POST /api/cyl/pipeline` responds `503` before reading the session or body, and makes no upstream request;
 - the live views (runs list, drill-down, experiment panel) are unchanged.
 
-It is `true` in staging and `false` in prod until prod's own pipeline credential and stage directories are provisioned (bloom#863). The dispatch worker reads the same switch (see `cyl-pipeline-dispatch`).
+It is `true` in staging and `false` in prod until bloom#863 is fixed, because every dispatched Workflow mounts the staging Supabase credential.
 
 #### Scenario: Switched off hides the run actions
 - **WHEN** `CYL_PIPELINE_TRIGGER_ENABLED` is unset, `false` or `TRUE`, and a member opens a scan, experiment, accession or drill-down page

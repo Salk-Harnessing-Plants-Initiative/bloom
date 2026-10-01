@@ -187,8 +187,16 @@ be missed whenever a newer source with *different* params also exists for the sa
 computed at `age=14` then later at `age=21`; a new request for `age=14` again must still be recognized
 as a match even though `age=21` is now the latest source). A scan with at least one matching-params
 source contributes to `reused_count` **exactly once**, regardless of how many of its sources match.
-The check across all enumerated scans MUST be a single batched query (e.g. filtering
-`cyl_scan_traits` by `scan_id IN (...)` for every enumerated scan at once), not a per-scan query loop.
+The check across all enumerated scans MUST NOT be a per-scan query loop: it SHALL filter
+`cyl_scan_traits` by `scan_id IN (...)` and `cyl_trait_sources` by `id IN (...)`, each split only as
+required by the "Id-list filters stay within the gateway's URL limit" requirement, so the number of
+queries grows with the rendered length of the id lists and never with one query per scan.
+**When the request's `params` is the empty object `{}`, the route SHALL skip both preview queries and
+use `reused_count = 0`:** the stored `param_hash` is written by traits, which requires the full
+resolved `species`/`mode`/`age` (its sidecars come from bloomctl's `resolve_params`, and predict
+checks the same keys), so `compute_param_hash({})` matches no source the pipeline writes, and skipping the
+queries yields the same result for that data. Neither the contract nor the write-back RPC rejects
+empty params, so this rests on the producers.
 **This check is informational only: it MUST NOT change the scan's initial `status` (always written as
 `'queued'`) and MUST NOT exclude the scan from batching or enqueue.** Every enumerated scan is always
 written and enqueued regardless of dedup-preview outcome — the real GPU-avoidance decision is made
@@ -216,12 +224,18 @@ preview) knows the actual current model versions and code shas.
   the current request (e.g. the same params were legitimately computed twice historically)
 - **THEN** `reused_count` includes that scan exactly once, not twice
 
-#### Scenario: The check is a single batched query, not a per-scan loop
+#### Scenario: The check is batched by id-list length, not a per-scan loop
 
-- **WHEN** the dedup preview runs against two requests enumerating different scan counts (e.g. 3
-  scans, then 30 scans)
+- **WHEN** the dedup preview runs, with non-empty `params`, against two requests enumerating
+  different scan counts that both fit within one 4000-character id list (e.g. 3 scans, then 30 scans)
 - **THEN** the number of queries issued against `cyl_scan_traits`/`cyl_trait_sources` is the same in
   both cases — it does not scale with the number of enumerated scans
+
+#### Scenario: Empty params skips the preview
+
+- **WHEN** a request with `params: {}` enumerates any number of scans, including scans with sources
+- **THEN** no query is issued against `cyl_scan_traits` or `cyl_trait_sources` for the preview
+- **AND** `reused_count = 0`, and every scan is written `'queued'` and enqueued
 
 #### Scenario: A scan with no prior source does not contribute to reused_count
 
@@ -294,4 +308,27 @@ On success, the route SHALL return `{pipeline_run_id, scan_count, reused_count}`
 - **WHEN** a valid request is processed
 - **THEN** the response body includes the new run's integer `pipeline_run_id`, the total
   `scan_count`, and `reused_count`
+
+### Requirement: Id-list filters stay within the gateway's URL limit
+Every PostgREST `in.(…)` filter the route issues SHALL be split into batches so that no batch's rendered id list exceeds a character budget of 4000. The budget matches bloomctl's `ID_FILTER_BUDGET_CHARS`, which sits below the ~5.4 KB `414 URI Too Long` ceiling measured for PR #650. Results from all batches SHALL be merged before use.
+
+This covers:
+- the `scan_ids` existence check against `cyl_scans_extended`;
+- when the dedup preview runs, both of its filters: scan ids against `cyl_scan_traits`, and source ids against `cyl_trait_sources`.
+
+The number of filter requests SHALL depend only on the rendered length of the id lists, never on issuing one query per scan.
+
+#### Scenario: A large scan_ids request is existence-checked in batches
+- **WHEN** `target_level = "scan_ids"` with 3000 existing four-digit scan ids
+- **THEN** the existence check is issued as more than one `cyl_scans_extended` filter request, none of whose id lists exceeds 4000 characters
+- **AND** the route proceeds as if all 3000 were found in one query
+
+#### Scenario: A missing id is still detected across batches
+- **WHEN** a 3000-id `scan_ids` request contains one id that doesn't exist, and that id falls in the last batch
+- **THEN** the route responds `404` naming that id, and writes no rows
+
+#### Scenario: A large experiment's dedup preview is batched
+- **WHEN** an experiment-level request with non-empty `params` enumerates 2500 scans
+- **THEN** every `cyl_scan_traits` and `cyl_trait_sources` filter request stays within the 4000-character budget
+- **AND** `reused_count` equals what a single unbatched query would have produced
 
