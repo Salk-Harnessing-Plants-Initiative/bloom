@@ -76,8 +76,11 @@ describe('(a) outputs equal the golden files', () => {
     [2, { order: 'random', shuffleRows: true }],
   ]
   for (const [key, stem] of cases) {
+    // Batches of 1 and 2 also split the recipe listing (10a.6e), so the multi-chunk
+    // listing merge runs under every completion order; the fake has those listings.
     it.each(variants)(`${stem} at batch %i with %j`, async (batchSize, fake) => {
-      const { result } = await run(WHOLE, { recipeKey: key, batchSize }, fake)
+      const listingBatchSize = batchSize <= 2 ? batchSize : undefined
+      const { result } = await run(WHOLE, { recipeKey: key, batchSize, listingBatchSize }, fake)
       expect(joinBytes(result.csv()).equals(golden(`${stem}.csv`))).toBe(true)
       expect(result.sidecarJson).toBe(golden(`${stem}.export.json`).toString('utf8'))
       expect(result.excludedCsv).toBe(golden(`${stem}.excluded.csv`).toString('utf8'))
