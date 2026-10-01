@@ -1580,6 +1580,46 @@ def _hostpath_without_path(volumes):
     del next(v for v in volumes if v["name"] == "images-input-dir")["hostPath"]["path"]
 
 
+def _stage(volumes, name="predictions-output-dir"):
+    return next(v for v in volumes if v["name"] == name)
+
+
+def _stage_as_pvc(volumes):
+    v = _stage(volumes)
+    del v["hostPath"]
+    v["persistentVolumeClaim"] = {"claimName": "pipeline"}
+
+
+def _stage_with_a_second_source(volumes):
+    _stage(volumes)["nfs"] = {"server": "nfs", "path": "/x"}
+
+
+def _stage_directory_or_create(volumes):
+    _stage(volumes)["hostPath"]["type"] = "DirectoryOrCreate"
+
+
+def _stage_without_type(volumes):
+    del _stage(volumes)["hostPath"]["type"]
+
+
+def _stage_hostpath_extra_key(volumes):
+    _stage(volumes)["hostPath"]["readOnly"] = True
+
+
+def _credentials_optional(volumes):
+    _stage(volumes, "bloom-credentials")["secret"]["optional"] = True
+
+
+def _credentials_with_items(volumes):
+    _stage(volumes, "bloom-credentials")["secret"]["items"] = [
+        {"key": "credentials.txt", "path": "credentials.txt"}
+    ]
+
+
+def _credentials_with_a_second_source(volumes):
+    _stage(volumes, "bloom-credentials")["emptyDir"] = {}
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -1602,6 +1642,14 @@ def _hostpath_without_path(volumes):
         _duplicate,
         _credentials_as_hostpath,
         _hostpath_without_path,
+        _stage_as_pvc,
+        _stage_with_a_second_source,
+        _stage_directory_or_create,
+        _stage_without_type,
+        _stage_hostpath_extra_key,
+        _credentials_optional,
+        _credentials_with_items,
+        _credentials_with_a_second_source,
     ],
     ids=[
         "extra-hostPath",
@@ -1617,6 +1665,19 @@ def _hostpath_without_path(volumes):
         "duplicated",
         "credentials-as-hostPath",
         "hostPath-without-path",
+        # type: Directory is what makes a missing directory leave the pod
+        # Pending; DirectoryOrCreate would silently create it on the node's
+        # local disk, and the run's output would vanish.
+        "stage-as-pvc",
+        "stage-with-a-second-source",
+        "stage-DirectoryOrCreate",
+        "stage-without-type",
+        "stage-hostPath-extra-key",
+        # optional: true would let pods start with an empty mount when this
+        # environment's Secret doesn't exist, instead of sitting Pending.
+        "credentials-optional",
+        "credentials-with-items",
+        "credentials-with-a-second-source",
     ],
 )
 def test_the_vendored_volume_set_is_closed(

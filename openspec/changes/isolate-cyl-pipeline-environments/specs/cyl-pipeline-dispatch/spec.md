@@ -324,7 +324,7 @@ for the refusal's server-side log.
 
 ### Requirement: The vendored Workflow's volume set is a closed contract
 
-`build_workflow_body` SHALL require the vendored file's `spec.volumes` to be a list of exactly four mappings with unique names: `images-input-dir`, `predictions-output-dir` and `traits-output-dir`, each with a `hostPath` that has a `path`, and `bloom-credentials`, with a `secret`. Any other volume of any type, a missing, renamed, duplicated or differently typed one, or a `spec.volumes` that is not a list of mappings, SHALL be a configuration error raised before any network call.
+`build_workflow_body` SHALL require the vendored file's `spec.volumes` to be a list of exactly four mappings with unique names: `images-input-dir`, `predictions-output-dir` and `traits-output-dir`, each with a `hostPath` that is exactly a `path` and `type: Directory`, and `bloom-credentials`, with a `secret` that is exactly a `secretName`. Any other volume of any type, a missing, renamed, duplicated or differently typed one, or a `spec.volumes` that is not a list of mappings, SHALL be a configuration error raised before any network call.
 
 This way, no volume added upstream can reach submission still pointing at shared, un-isolated
 storage.
@@ -340,6 +340,16 @@ storage.
 - **WHEN** the vendored file lacks one of the four volumes, renames one, repeats a name, declares
   `bloom-credentials` as a `hostPath`, or declares a stage volume whose `hostPath` has no `path`
 - **THEN** `build_workflow_body` raises a configuration error, not a raw `KeyError` or `TypeError`
+
+#### Scenario: A stage volume that could create its directory, or an optional Secret, is a configuration error
+
+- **WHEN** a stage volume's `hostPath.type` is anything but `Directory` (for example
+  `DirectoryOrCreate`, or absent), a stage volume is a `persistentVolumeClaim` or carries a second
+  volume source, or `bloom-credentials`' `secret` carries anything besides `secretName` (for
+  example `optional: true` or `items`)
+- **THEN** `build_workflow_body` raises a configuration error before any network call, since each
+  would let a pod start against storage or a credential that wasn't provisioned for it rather
+  than sitting `Pending`
 
 #### Scenario: A wrongly shaped volume list is a configuration error
 

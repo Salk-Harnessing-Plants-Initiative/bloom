@@ -386,8 +386,8 @@ def _refuse_unless_dispatch_allowed() -> None:
 
 def _stage_and_credential_volumes(body: dict) -> list[dict]:
     """The vendored `spec.volumes`, checked against a closed contract: exactly
-    the three stage hostPaths and the one credential Secret, nothing else of
-    any type. A volume added upstream would otherwise be submitted as-is, still
+    the three stage hostPaths (each just a path and `type: Directory`) and the
+    one credential Secret (just its name), nothing else of any type. A volume added upstream would otherwise be submitted as-is, still
     pointing at storage every environment shares. Raises K8sConfigError, never
     a raw KeyError/TypeError, for anything else."""
     volumes = body["spec"].get("volumes")
@@ -402,13 +402,25 @@ def _stage_and_credential_volumes(body: dict) -> list[dict]:
         raise drift
     for volume in volumes:
         if volume["name"] in _STAGE_SUBDIRS:
+            # Exactly a path and `type: Directory`: Directory is what makes a
+            # missing directory leave the pod Pending. DirectoryOrCreate would
+            # silently create it on the node's local disk, and the output
+            # would vanish behind a successful-looking run.
             host_path = volume.get("hostPath")
-            if set(volume) != {"name", "hostPath"} or not isinstance(host_path, dict):
+            if (
+                set(volume) != {"name", "hostPath"}
+                or not isinstance(host_path, dict)
+                or set(host_path) != {"path", "type"}
+                or not isinstance(host_path["path"], str)
+                or host_path["type"] != "Directory"
+            ):
                 raise drift
-            if not isinstance(host_path.get("path"), str):
-                raise drift
-        elif set(volume) != {"name", "secret"} or not isinstance(
-            volume.get("secret"), dict
+        elif (
+            set(volume) != {"name", "secret"}
+            or not isinstance(volume.get("secret"), dict)
+            # Exactly a name: `optional: true` would start pods with an empty
+            # mount when this environment's Secret doesn't exist.
+            or set(volume["secret"]) != {"secretName"}
         ):
             raise drift
     return volumes
