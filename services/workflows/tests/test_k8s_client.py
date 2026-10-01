@@ -1719,3 +1719,10 @@ def test_reordered_volumes_are_overridden_by_name(
     volumes = {v["name"]: v for v in body["spec"]["volumes"]}
     assert volumes["traits-output-dir"]["hostPath"]["path"] == f"{_PROD_ROOT}/traits"
     assert volumes["images-input-dir"]["hostPath"]["path"] == f"{_PROD_ROOT}/input"
+
+
+def test_a_refusal_can_only_carry_one_of_the_two_known_causes():
+    """The worker maps the cause to a fixed user-facing message; an unknown
+    cause would have nothing to map to."""
+    with pytest.raises(ValueError):
+        k8s_client.K8sDispatchRefusedError("paused")

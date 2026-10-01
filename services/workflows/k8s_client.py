@@ -189,7 +189,11 @@ class K8sDispatchRefusedError(Exception):
     the dispatch worker fails the batch at once with a fixed message chosen
     from `reason`, never from this exception's text."""
 
+    REASONS = ("off", "unconfigured")
+
     def __init__(self, reason: str, detail: str = ""):
+        if reason not in self.REASONS:
+            raise ValueError(f"unknown dispatch refusal reason {reason!r}")
         super().__init__(detail or reason)
         self.reason = reason
         self.detail = detail

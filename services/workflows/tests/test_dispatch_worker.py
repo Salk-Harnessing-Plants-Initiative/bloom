@@ -329,10 +329,13 @@ def _refusing(monkeypatch, reason, detail=""):
         ),
     )
     monkeypatch.setattr(worker, "complete_batch", lambda *a: calls.update(complete=a))
+    # A list, so a second fail_batch call can't overwrite the first.
     monkeypatch.setattr(
         worker,
         "fail_batch",
-        lambda c, r, b, m, s, err: calls.update(fail=(r, b, m, s, err)),
+        lambda c, r, b, m, s, err: calls.setdefault("fail", []).append(
+            (r, b, m, s, err)
+        ),
     )
     return calls
 
@@ -347,7 +350,7 @@ def test_process_one_fails_a_refused_batch_at_once_with_a_fixed_message(
     calls = _refusing(monkeypatch, reason)
 
     assert worker.process_one(object()) is True
-    assert calls["fail"] == (1, 0, 9, [5, 6], _REFUSAL_MESSAGES[reason])
+    assert calls["fail"] == [(1, 0, 9, [5, 6], _REFUSAL_MESSAGES[reason])]
     assert "complete" not in calls
 
 
@@ -367,7 +370,7 @@ def test_a_refusals_recorded_message_omits_the_detail_its_log_keeps(
     with caplog.at_level("WARNING", logger="dispatch_worker"):
         assert worker.process_one(object()) is True
 
-    recorded = calls["fail"][4]
+    [(*_, recorded)] = calls["fail"]
     for leak in (
         "WORKFLOWS_K8S_",
         "CYL_PIPELINE_",
@@ -378,15 +381,20 @@ def test_a_refusals_recorded_message_omits_the_detail_its_log_keeps(
     ):
         assert leak not in recorded
     warnings = [r.getMessage() for r in caplog.records if r.levelname != "DEBUG"]
-    assert any("run 1 batch 0" in m and detail in m for m in warnings), warnings
+    # Run, batch, the cause and the detail all reach the log.
+    assert any(
+        "run 1 batch 0" in m and f"({reason})" in m and detail in m for m in warnings
+    ), warnings
 
 
 def test_a_refused_batch_whose_fail_rpc_errors_is_left_for_redelivery(
     monkeypatch, caplog
 ):
-    _refusing(monkeypatch, "off")
+    calls = _refusing(monkeypatch, "off")
 
     def fail_boom(*a):
+        calls.setdefault("fail_attempts", 0)
+        calls["fail_attempts"] += 1
         raise RuntimeError("connection reset")
 
     monkeypatch.setattr(worker, "fail_batch", fail_boom)
@@ -394,19 +402,28 @@ def test_a_refused_batch_whose_fail_rpc_errors_is_left_for_redelivery(
     with caplog.at_level("ERROR", logger="dispatch_worker"):
         assert worker.process_one(object()) is True
 
+    # Tried once, not retried, and the claim is not settled any other way.
+    assert calls["fail_attempts"] == 1
+    assert "complete" not in calls
     messages = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert any("run 1 batch 0" in m and "fail RPC" in m for m in messages), messages
 
 
 def test_a_switched_off_environment_reaches_neither_argo_nor_the_vendored_file(
-    monkeypatch,
+    monkeypatch, tmp_path
 ):
-    """End to end with the real body builder: switched off, the batch is
-    failed with the fixed message and no Kubernetes client is ever created."""
+    """With the real body builder (the claim/settle RPCs and the HTTP client
+    are stubbed): switched off, the batch is failed with the fixed message, the
+    vendored file is never read (it points at a missing file, which would be a
+    K8sConfigError and leave the batch unsettled), and no Kubernetes client is
+    ever created."""
     import k8s_client
 
     calls = {}
     monkeypatch.setattr(k8s_client, "PIPELINE_DISPATCH_ENABLED", False)
+    monkeypatch.setattr(
+        k8s_client, "_VENDORED_WORKFLOW_PATH", tmp_path / "missing.yaml"
+    )
     monkeypatch.setattr(
         k8s_client.httpx,
         "Client",
@@ -424,3 +441,10 @@ def test_a_switched_off_environment_reaches_neither_argo_nor_the_vendored_file(
     assert calls["fail"] == (1, 0, 9, [5, 6], _REFUSAL_MESSAGES["off"])
     assert "client" not in calls
     assert "complete" not in calls
+
+
+def test_every_refusal_cause_has_a_message():
+    import k8s_client
+
+    assert set(_REFUSAL_MESSAGES) == set(k8s_client.K8sDispatchRefusedError.REASONS)
+    assert worker._REFUSAL_MESSAGES == _REFUSAL_MESSAGES

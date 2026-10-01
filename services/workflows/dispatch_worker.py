@@ -114,15 +114,11 @@ def process_one(client) -> bool:
             exc.reason,
             exc.detail,
         )
+        # Looked up outside the try, so a lookup error could never be logged
+        # as a failed fail RPC. K8sDispatchRefusedError only takes these keys.
+        message = _REFUSAL_MESSAGES[exc.reason]
         try:
-            fail_batch(
-                client,
-                run_id,
-                batch_index,
-                msg_id,
-                scan_ids,
-                _REFUSAL_MESSAGES[exc.reason],
-            )
+            fail_batch(client, run_id, batch_index, msg_id, scan_ids, message)
         except Exception as fail_exc:
             logger.error(
                 "dispatch_worker: run %s batch %s was refused and the fail RPC "
