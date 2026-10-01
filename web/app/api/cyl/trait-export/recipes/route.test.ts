@@ -88,6 +88,9 @@ describe('module contract and guards', () => {
     expect((await list('experiment=1')).status).toBe(401)
     getUser.mockResolvedValue({ data: { user: null }, error: { status: 500, message: 'x' } })
     expect((await list('experiment=1')).status).toBe(503)
+    // auth-js reports a network failure as AuthRetryableFetchError with status 0 (tasks.md 10a.2).
+    getUser.mockResolvedValue({ data: { user: null }, error: { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' } })
+    expect((await list('experiment=1')).status).toBe(503)
     expect(fake.calls).toEqual([])
   })
 

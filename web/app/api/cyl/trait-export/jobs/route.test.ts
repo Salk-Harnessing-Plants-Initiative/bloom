@@ -115,6 +115,16 @@ describe('check order', () => {
     expect(res.status).toBe(503)
   })
 
+  it.each([
+    ['a network failure (auth-js AuthRetryableFetchError, status 0)', { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' }],
+    ['an error with no status', { message: 'unknown' }],
+  ])('503 when GoTrue is unreachable: %s (tasks.md 10a.2)', async (_label, error) => {
+    getUser.mockResolvedValue({ data: { user: null }, error })
+    const res = await post(ok)
+    expect(res.status).toBe(503)
+    expect(fake.calls).toEqual([])
+  })
+
   it('401 with fewer than 1,800 seconds left, and accepted at 1,800', async () => {
     signIn('user-1', 1799)
     const soon = await post(ok)
