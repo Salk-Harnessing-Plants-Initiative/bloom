@@ -135,12 +135,21 @@ describe('check order', () => {
   })
 
   it('401 with fewer than 1,800 seconds left, and accepted at 1,800', async () => {
-    signIn('user-1', 1799)
-    const soon = await post(ok)
-    expect(soon.status).toBe(401)
-    expect(await soon.json()).toEqual({ detail: 'session expires too soon' })
-    signIn('user-1', 1800)
-    expect((await post(ok)).status).toBe(202)
+    // The token's exp and the route's floor each read the clock; on the real clock a
+    // second boundary between them failed the 1,800 case (10a.6f). Only Date is faked,
+    // pinned just before a boundary, so the route's async work still runs.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-02T12:00:00.999Z'))
+    try {
+      signIn('user-1', 1799)
+      const soon = await post(ok)
+      expect(soon.status).toBe(401)
+      expect(await soon.json()).toEqual({ detail: 'session expires too soon' })
+      signIn('user-1', 1800)
+      expect((await post(ok)).status).toBe(202)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each([
