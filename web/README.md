@@ -20,13 +20,13 @@ A trait export is one recipe's traits for an experiment (optionally one wave and
 
 Routes, all under `/api/cyl/trait-export/`:
 
-| Route                                            | What it does                                                          |
-| ------------------------------------------------ | --------------------------------------------------------------------- |
-| `GET recipes?experiment=&wave=&age=` or `?scan=` | The selection's recipes, the default and `n_selected`, for the dialog |
-| `POST jobs?…&recipe=&chosen=default\|user`       | Starts an export job; `202 {job_id}`                                  |
-| `GET jobs/{id}`                                  | `{status, phase, done, total, detail?, filename?}`                    |
-| `GET jobs/{id}/download`                         | The zip once `ready`; `409` before                                    |
-| `DELETE jobs/{id}`                               | Cancels a running job or drops a finished one; `204`                  |
+| Route                                            | What it does                                                                                 |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `GET recipes?experiment=&wave=&age=` or `?scan=` | The selection's recipes with their definitions, the default and `n_selected`, for the dialog |
+| `POST jobs?…&recipe=&chosen=default\|user`       | Starts an export job; `202 {job_id}`                                                         |
+| `GET jobs/{id}`                                  | `{status, phase, done, total, detail?, filename?}`                                           |
+| `GET jobs/{id}/download`                         | The zip once `ready`; `409` before                                                           |
+| `DELETE jobs/{id}`                               | Cancels a running job or drops a finished one; `204`                                         |
 
 - **Checks, in order.** `403` for a cross-site `Sec-Fetch-Site`; `401` unless the cookie session's token verifies with GoTrue (`503` if GoTrue fails); for a job start, `401` "session expires too soon" with under `MIN_SESSION_SECONDS` left; `422` for bad parameters; `429` for the job limits (a user's own running job id is returned); `404` for an experiment the user cannot see or an empty selection; `409` if the selection changes while it is read; `502` for a database error. Errors are `{ detail }` with fixed wording, never PostgREST's text. `HEAD` is refused.
 - **Reads.** Every read uses the signed-in user's token. `cyl_scans_extended` does not apply RLS, so access is decided by the RLS-filtered `cyl_experiments` check that runs first. `lib/cyl-trait-export/db.ts` wraps every PostgREST request in one process-wide semaphore (`PG_CONCURRENCY`), and reads in batches of `BATCH_SCANS` scans (recipe listings in batches of `LISTING_BATCH_SCANS`, one call for every current experiment), always with an explicit recipe key. Any read error or integrity failure fails the job; nothing partial is served.

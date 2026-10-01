@@ -336,7 +336,12 @@ The other routes:
 - **THEN** the listing route returns `502` with a fixed `detail` naming the code and batch
 
 ### Requirement: Trait export recipe listing
-`GET /api/cyl/trait-export/recipes` SHALL return `n_selected` and the merged recipe rows (`recipe_key`, `recipe_kind`, `recipe_key_version`, `n_scans`, `newest_source_id`, `is_default`) for the same selection parameters as a job. A user's newer listing SHALL abort their older one.
+`GET /api/cyl/trait-export/recipes` SHALL return `n_selected` and the merged recipe rows (`recipe_key`, `recipe_kind`, `recipe_key_version`, `definition`, `n_scans`, `newest_source_id`, `is_default`) for the same selection parameters as a job. A user's newer listing SHALL abort their older one.
+
+#### Scenario: Each row says what its recipe is
+
+- **WHEN** a selection holds a pipeline, a legacy and an unattributed recipe
+- **THEN** the pipeline row's `definition` carries its `models` and code SHAs, the legacy row's its `source_id` and `source_name`, and the unattributed row's is `null`, each as `list_trait_recipes` returned it
 
 #### Scenario: Filtered listing
 
@@ -358,7 +363,7 @@ The other routes:
 The traits page SHALL offer an experiment-grain "Download traits" dialog, enabled once the page's waves and ages have loaded. The scan page SHALL offer a scan-grain one.
 
 The dialog:
-- lists the selection's recipes, with the default preselected and labelled, and each recipe's included count out of `n_selected`;
+- lists the selection's recipes, with the default preselected and labelled, each recipe's included count out of `n_selected`, and what the recipe is, from its `definition`: a pipeline recipe's models (name and version) and code SHAs, a legacy recipe's source name, or "no source recorded" for unattributed;
 - on the traits page, offers wave and age filters, prefilled from the page's current wave and age when the loaded lists contain them, each allowing "All". It re-lists on change, ignores stale responses, and says so when no scans match;
 - disables Download when there are no scans or no recipes;
 - refreshes the browser session before listing and before starting a job, and retries once after a "session expires too soon" `401`;

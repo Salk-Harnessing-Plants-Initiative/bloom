@@ -153,7 +153,7 @@ The CSV header needs every trait name, so nothing can be sent until every read f
 
 ### D3. Choosing the recipe
 
-- **The listing route.** `GET /api/cyl/trait-export/recipes` runs D2 steps 1–3 and returns `n_selected` plus the merged rows.
+- **The listing route.** `GET /api/cyl/trait-export/recipes` runs D2 steps 1–3 and returns `n_selected` plus the merged rows, each with the recipe's `definition` as `list_trait_recipes` returned it, so the dialog can say what each recipe is (added 2026-10-01: without it a user chose between key prefixes and counts).
   - An empty selection of a visible experiment returns `200` with `n_selected: 0` and no rows.
   - Each user has at most one listing in flight; a newer listing aborts the older one. A listing also aborts on `request.signal`.
 - **Choosing.** The job request carries an explicit `recipe` and `chosen` (`default` or `user`). The job re-lists, and records `recipe.chosen_by = "default"` only when `chosen` is `default` **and** `K` is still the merged default; otherwise it records `user`.

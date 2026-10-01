@@ -37,6 +37,7 @@ export async function GET(request: Request): Promise<Response> {
       recipe_key: r.recipe_key,
       recipe_kind: r.recipe_kind,
       recipe_key_version: r.recipe_key_version,
+      definition: r.definition,
       n_scans: r.n_scans,
       newest_source_id: r.newest_source_id,
       is_default: r.is_default,
