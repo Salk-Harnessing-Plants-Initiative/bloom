@@ -1,4 +1,4 @@
--- Rollback for 20261001200000_add_s3_folder_reads_to_rnaseq_runs.sql (run by hand).
+-- Rollback for 20261001230000_add_s3_folder_reads_to_rnaseq_runs.sql (run by hand).
 -- Restores the five-argument request function and the earlier params check.
 
 BEGIN;
