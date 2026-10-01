@@ -5,27 +5,33 @@
 Prod and staging share one Argo namespace (`runai-busch-lab`) and one deploy file
 (`docker-compose.prod.yml`, differentiated by `.env.*.defaults`). They also share three things that
 must be per-environment: the Supabase credential mounted into the pipeline, the three stage
-directories, and, through those directories, the `scan_<id>` keyspace. `WORKFLOWS_K8S_ENV_LABEL`
-already differs per environment, but it is only a label (`k8s_client.py:224-229`). The scoping
-decisions below were made with the author on 2026-09-30.
+directories, and, through those directories, the `scan_<id>` keyspace.
+
+`WORKFLOWS_K8S_ENV_LABEL` already differs per environment, but it is only a label
+(`k8s_client.py:224-229`). The decisions below were made with the author on 2026-09-30, and revised
+after `/review-openspec`.
 
 ## Goals / Non-Goals
 
 **Goals**
 
-- A prod-dispatched Workflow mounts prod's credential and writes only under prod's stage root. The
-  same holds for staging.
-- Within one environment the stage directories stay shared across runs, because skip-if-done dedup
+- A Bloom-dispatched prod Workflow mounts prod's credential and writes only under prod's stage root.
+  The same holds for staging.
+- Within one environment, every run shares that environment's stage directories. Skip-if-done dedup
   depends on that (srp#37, srp#71).
-- Nothing reaches Argo from an environment that isn't switched on and fully configured, whichever way
-  the run was created.
+- No batch claimed from the `cyl_pipeline_dispatch` queue reaches Argo from an environment that isn't
+  switched on and fully configured.
 
 **Non-Goals**
 
 - Changing `scan_key`, bloomctl, predict, the trait extractor, contracts, SQL, or the upstream
   Workflow.
-- A runtime marker that detects a misconfigured root (decision D5 below).
-- Argo concurrency limits (srp#98) and run-id provenance (bloom#864).
+- A runtime marker that detects a misconfigured root (D5).
+- Preventing submissions made outside Bloom. Any holder of the shared `bloom-pipeline` or `argo-user`
+  identity can `argo submit` a Workflow that mounts any secret or path in the namespace (srp
+  `docs/cluster-identities.md:39-41`).
+- Argo concurrency limits (srp#98), run-id provenance (bloom#864), and RNA-seq dispatch
+  (`rnaseq_worker.py` builds its own body and is not gated).
 
 ## Decisions
 
@@ -36,26 +42,30 @@ in the parsed body, the same pattern `metadata.namespace` already uses.
 
 Alternatives considered:
 
-- **Parameterise the paths upstream and re-vendor.** This needs an upstream PR. Upstream's
-  `scripts/check_manifests.py` would also fail it: it rejects any hostPath whose `path` lacks the
-  literal `/pipeline_orchestration_tests/a4_poc/`. And it's unverified whether Argo substitutes
-  `{{workflow.parameters.*}}` inside `spec.volumes`.
-- **Put the environment in `scan_key`.** `scan_key` is part of
-  `compute_idempotency_key`'s payload (sleap-roots-contracts `identity.py`), and of predict's own
-  identity key. Every existing key would change, giving a one-time GPU recompute, duplicate
-  `cyl_trait_sources` rows, and new storage object paths. It would also need changes across
-  bloomctl, predict and traits (`_SCAN_KEY_FORBIDDEN` bans `.` and `:`), and it still wouldn't
-  isolate the credential.
+- **Parameterise the paths upstream and re-vendor.**
+  - This needs an upstream PR, plus an edit to upstream `scripts/check_manifests.py`
+    (`origin/main:219-226`). That check rejects any hostPath whose `path` lacks the literal
+    `/pipeline_orchestration_tests/a4_poc/`.
+  - It's also unverified whether Argo substitutes `{{workflow.parameters.*}}` inside `spec.volumes`.
+- **Put the environment in `scan_key`.**
+  - `scan_key` is part of `compute_idempotency_key`'s payload (sleap-roots-contracts `identity.py`)
+    and of predict's own identity key. Every existing key would change. That means a one-time GPU
+    recompute, duplicate `cyl_trait_sources` rows, and new storage object paths.
+  - It would also need changes in bloomctl, predict and the trait extractor. Both of the latter define
+    `_SCAN_KEY_FORBIDDEN = frozenset('./\\:*?"<>|')`: `sleap_roots_predict/output_contract.py:50`
+    and `trait_extractor/manifest.py:27`.
+  - It still wouldn't isolate the credential.
 
 Overriding at dispatch leaves the vendored file byte-identical to upstream at the pin, so
-`check_vendored_workflow_drift.py` stays green, and so does upstream's own checker. The cost is that
-the vendored file's literal paths and secret no longer describe what Bloom submits. Its header
-already says the dispatcher layers overrides on top, and `services/workflows/README.md` and the spec
-carry the authoritative list.
+`check_vendored_workflow_drift.py` stays green. The cost is that, for Bloom runs, the vendored file's
+literal paths and secret no longer describe what is submitted. The spec and
+`services/workflows/README.md` carry the authoritative list. Upstream's header comment is handled as
+a follow-up (tasks 5.4).
 
-### D2. One root per environment; the dispatcher appends fixed sub-directories
+### D2. One root per environment; a closed volume set
 
-`WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` holds one absolute path. The dispatcher maps:
+`WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` holds one path. A module constant maps each stage volume to its
+sub-directory:
 
 | Volume | Path |
 |---|---|
@@ -63,149 +73,187 @@ carry the authoritative list.
 | `predictions-output-dir` | `<root>/predictions` |
 | `traits-output-dir` | `<root>/traits` |
 
-These names match today's `a4_poc` layout, so staging's root is
-`/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc` and its submitted paths are
-unchanged.
+These names match today's `a4_poc` layout, so staging's root is the `a4_poc` directory and its paths
+are unchanged. One root, rather than three variables, means an environment can't end up with its
+directories split across trees. That split would break the predictions→traits hand-off silently.
 
-One root, rather than three variables, means an environment can't end up with its three directories
-split across trees. That split would break the predictions→traits hand-off silently.
+`spec.volumes` is treated as a **closed set over every volume type**. It must hold exactly four
+entries with unique names:
 
-The volume→sub-directory map lives in `k8s_client.py` as a constant. A vendored file whose
-`hostPath` volume set isn't exactly those three names raises `K8sConfigError`, the existing
-structural-drift class. That covers a renamed volume, an added volume, and one moved to a different
-volume type. An upstream addition therefore can't pass through pointing at the shared `a4_poc` tree.
-The same holds for `secret` volumes: exactly one, named `bloom-credentials`.
+- the three above, each a mapping with a `hostPath` key whose value has a `path`;
+- `bloom-credentials`, a mapping with a `secret` key.
 
-Prod's root is `/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod`. The author chose it: under
-their user directory, but not under `pipeline_orchestration_tests`, which would be misleading. It
-leaves room for a later `bloom_cyl_pipeline/staging`. It sits on the same `/hpi/hpi_dev` NFS mount
-every GPU node already has (vendored file `:51-52`).
+Any other volume, of any type (`nfs`, `persistentVolumeClaim`, `projected`, `emptyDir`…), raises
+`K8sConfigError` before any network call. So does a missing, renamed, duplicated or mistyped one, and
+so does a `spec.volumes` that isn't a list of mappings. This is the existing structural-drift class.
+An upstream addition therefore can't pass through pointing at shared storage, and the check can't
+crash with a raw `KeyError`/`TypeError`. Overrides are applied in place, by volume name, not by
+index.
 
-### D3. Validation
+### D3. Validation is platform-independent
 
-The root and secret are read once at import, like the other `WORKFLOWS_K8S_*` values.
+The root, the secret and the switch are resolved once at import by
+`_resolve_pipeline_hostpath_root`, `_resolve_pipeline_secret_name` and
+`_resolve_pipeline_dispatch_enabled`. Like `_resolve_ttl_seconds`, they never raise at import: an
+invalid value resolves to `None` (or `False` for the switch). A sibling records **why** it is
+invalid, so the refusal can log the reason.
 
-- **Root.** It must be a non-empty absolute POSIX path. It must not be `/`, end in `/`, contain
-  whitespace, or contain a `.` or `..` segment.
-- **Secret name.** It must be a valid Kubernetes object name: an RFC 1123 subdomain, at most 253
-  characters.
+`build_workflow_body` reads the module globals at call time, so tests monkeypatch them as they do
+`NAMESPACE` today. Tests never `importlib.reload(k8s_client)`, because a reload would rebind the
+exception classes that `dispatch_worker` and the pollers import by name.
 
-A value that fails either check is treated like a missing one (D4). A pod whose `hostPath` or
-`Secret` doesn't exist sits `Pending`, not `Failed` (srp `docs/cluster-identities.md`). A bad value
-that reached Argo would therefore hang the run, not fail it. Rejecting the obvious malformations
-before submission is cheap; existence on the cluster is still the operator's precondition (§6).
+**Root rules:**
+
+- Use `PurePosixPath` and string operations only, never `Path` or `os.path`. On Windows,
+  `Path('/hpi/x').is_absolute()` is `False` (checked 2026-09-30), so the developer's machine and CI
+  would disagree.
+- Non-empty, absolute, not `/`, with no trailing `/` and no empty segment (`//`).
+- No whitespace or control characters.
+- No `.` or `..` segment, including a trailing one, checked on the string's `/`-split segments.
+
+**Secret rule:** `re.fullmatch` of an RFC 1123 subdomain, at most 253 characters. `fullmatch`, not
+`match` with `$`, because `$` accepts a trailing newline.
+
+**Switch rule:** `True` only for exactly `"true"`, matching bloom-web's `isPipelineTriggerEnabled`.
+
+There is no path-prefix allowlist (e.g. `/hpi/hpi_dev/`). Only the env-file author controls the
+value, and the existence and identity of the directories is an operator precondition anyway (§6). A
+pod whose `hostPath` or `Secret` is missing sits `Pending`, not `Failed` (srp
+`docs/cluster-identities.md:155-156, 244-250`). Validation catches only the obvious malformations
+before they become a hang.
 
 ### D4. Refusal fails the batch at once, with a curated message
 
-A new exception, `K8sDispatchRefusedError`, is raised by `build_workflow_body` before it touches the
-body. It is raised when:
+`build_workflow_body` raises `K8sDispatchRefusedError(reason)` **first**, before reading the
+vendored file:
 
-- `CYL_PIPELINE_TRIGGER_ENABLED` is not exactly `true`;
-- the root is missing or invalid; or
-- the secret name is missing or invalid.
+- with `reason="off"` when the switch is off;
+- with `reason="unconfigured"` when the root or the secret is unresolved.
 
-Raising it in `build_workflow_body`, not in the worker loop, means every caller of the body builder
-gets the gate.
+The switch is checked first. The exception is a sibling of `K8sConfigError`, not a subclass of it or
+of `K8sSubmissionError`.
 
-`dispatch_worker.process_one` catches it in its own branch and calls `fail_batch` with a fixed
-message per cause:
+`dispatch_worker.process_one` catches it in its own branch, ahead of `K8sConfigError`, and does the
+following:
 
-- `"Pipeline dispatch is turned off in this environment"`
-- `"Pipeline dispatch is not configured in this environment"`
+- **Logs at WARNING**, with the run and batch id, the variable name(s), and why each is invalid.
+  This is logged at refusal time, not at import, because import-time logging runs before
+  `basicConfig` and is lost.
+- **Calls `fail_batch` with a fixed message mapped from `reason`.** It never uses `str(exc)`:
+  - `"Pipeline dispatch is turned off in this environment"`
+  - `"Pipeline dispatch is not configured in this environment"`
+- **If the `fail_batch` RPC itself errors**, it logs and leaves the claim for redelivery, the same as
+  the submission-failure path (`dispatch_worker.py:110-124`).
 
-The variable names, and the cause in detail, are logged server-side only. This follows the existing
-curated-message rule ("A failure's error_message is a curated message"). The batch's scans become
-`failed`, the message is archived, and the run settles through `fail_cyl_pipeline_batch`'s existing
-rollup.
+**Why fail at once, including for "unconfigured".** The existing rule leaves a `K8sConfigError`
+unsettled "rather than permanently failing real scans over a deploy/ops mistake"
+(`dispatch_worker.py:92-95`). That rule doesn't buy much recovery:
 
-This deliberately departs from the `K8sConfigError` treatment, which leaves the claim unsettled.
-Unsettled redelivers every `WORKFLOWS_DISPATCH_VT_SECONDS` (60) and is dead-lettered once
-`read_ct > p_max_reads` (5) with "dead-lettered after N deliveries (poison message)". For a switch
-that is off by design, that is about six minutes of churn and then a misleading reason.
+- An unsettled claim redelivers every `WORKFLOWS_DISPATCH_VT_SECONDS` (60).
+- It is dead-lettered on the claim that finds `read_ct > p_max_reads` (5), the 6th, about five
+  minutes in.
+- The scans are then failed anyway, with "dead-lettered after 6 deliveries (poison message)".
 
-It is not a subclass of `K8sSubmissionError`, whose handler records the generic
-"Argo Workflow submission failed". A refusal is not a submission attempt, and the distinction should
-survive in `error_message`.
+So "unsettled" means the scans fail about five minutes later, with a misleading reason, unless the
+env file is fixed and the worker recreated within that window. The author chose failing at once,
+with an accurate reason, for both causes. The cost is that a broken env-file edit in a switched-on
+environment permanently fails whatever it claims until the edit is fixed. Members re-trigger the run
+after the fix.
 
-Order of checks:
+**Unchanged:** missing cluster API credentials (`WORKFLOWS_K8S_TOKEN`/`_CA_CERT`/`_API_URL`, raised
+later by `submit_workflow`) and vendored structural drift both keep the unsettled `K8sConfigError`
+behaviour. The "Submission outcome is recorded" requirement is MODIFIED to name refusal as a third
+outcome and to scope its unsettled rule to those cases.
 
-1. The switch.
-2. The config.
-3. The existing structural checks (`K8sConfigError`).
+**This replaces bloom#983.**
 
-So an environment that is off reports "turned off" even if it is also unconfigured. Missing cluster
-credentials (`WORKFLOWS_K8S_TOKEN` etc.) keep their current unsettled `K8sConfigError` behaviour,
-raised later by `submit_workflow`. This change doesn't alter that requirement.
-
-**This closes bloom#983.** Every run reaches Argo only through this worker. That covers runs made
-through the web, through `POST /workflows/pipeline` directly, and by a `bloom_admin` insert. The
-cost #983 named holds: a prod run is still *created* and then fails within one poll, rather than
-being refused at the HTTP layer. The author accepted this.
+- Every batch on the queue is dispatched only by this worker. That covers batches enqueued through
+  the web proxy and through a direct `POST /workflows/pipeline`.
+- A `bloom_admin` insert into the run tables enqueues nothing, because `enqueue_cyl_pipeline_batch`
+  is `bloom_workflows`-only and there's no trigger. So it was never a dispatch path.
+- Unlike #983's option 1 as written ("runs would stay `queued`"), a refused run is created and then
+  fails within one poll. The author accepted being refused after creation rather than at the HTTP
+  layer.
 
 ### D5. The stage-in skip is isolated by construction, not by a new comparison
 
-bloom#863's comment asks that `scan_is_already_staged` "compare something that distinguishes
-environments". With per-environment roots, stage-in only ever reads its own environment's
-`<root>/input/scan_<id>/`. Prod's `scan_42` and staging's `scan_42` are then different files, so no
-comparison could match across environments.
+bloom#863's acceptance checklist asks that `scan_is_already_staged` "compares something that
+distinguishes environments, not `scan_key` alone". With per-environment roots, stage-in only ever
+reads its own environment's `<root>/input/scan_<id>/`. Prod's `scan_42` and staging's `scan_42` are
+then different files, so no comparison could match across environments.
 
-The remaining exposure is misconfiguration: prod's root pointed at staging's tree. That's covered
-by tests:
+The remaining exposure is misconfiguration, for example prod's root pointed at staging's tree. It is
+covered by tests:
 
 - `test_env_disambiguating_values_differ` gains both keys;
-- a new test asserts the prod and staging roots are not nested in each other.
+- a new test asserts neither root contains the other, compared on path segments;
+- the committed values are pinned.
 
-It is not covered at runtime. A hand-edit of `.env.prod` on the deploy host would bypass both. The
-author chose to accept that, and to skip a bloomctl-side marker file. That marker would need a
-bloomctl release, an upstream image re-pin and an `argo template update` affecting both
-environments.
+A hand-edit of `.env.prod` on the deploy host, or an NFS symlink, bypasses those tests.
 
-### D6. Reusing `CYL_PIPELINE_TRIGGER_ENABLED` for the worker
+Two runtime alternatives were rejected:
 
-The worker reads the same switch bloom-web reads (PR #965), with the same semantics (exactly `true`).
-"Go live" for an environment is then one value, flipped after provisioning.
+- **A root marker file in bloomctl.** It needs a bloomctl release, an upstream image re-pin and an
+  `argo template update` that affects both environments.
+- **Comparing the sidecar's `image_ids` against the current environment's freshly fetched ids.** It
+  needs a bloomctl change, and so the same release chain.
 
-The variable isn't on `staging` yet. This change adds it to both defaults files and to the worker
-compose blocks, and #965 adds it to bloom-web's block. The defaults-file lines will conflict
-trivially.
+The author chose not to add either.
 
-The compose parity test (`tests/unit/test_rnaseq_worker_container.py:43-52`) requires
-`rnaseq-worker`'s environment to equal `cyl-pipeline-worker`'s. So `rnaseq-worker` also receives the
-three variables. It doesn't read them, and the RNA-seq dispatcher builds its own body
-(`rnaseq_workflows.py`).
+### D6. The worker reuses #965's switch
 
-Dev compose defaults:
+#965 (merged to `staging` as `618cbeb8`) added `CYL_PIPELINE_TRIGGER_ENABLED` to both defaults files
+and to bloom-web. This change:
 
-- the switch defaults to `true`, matching #965's dev default;
-- the root and secret default to blank, so a dev stack refuses with "not configured" unless a
-  developer sets both deliberately.
+- passes the same key to `cyl-pipeline-worker`;
+- rewrites its comment in the defaults files to name both readers, keeping one definition per file;
+- extends #965's `test_pipeline_trigger_is_on_in_staging_and_off_in_prod`.
 
-Dev's database numbers scans independently too. Defaulting dev to staging's tree would recreate
+The semantics match bloom-web's (exactly `true`), but the timing doesn't. bloom-web reads per request;
+the worker reads at start-up. Either way the container must be recreated, which
+`docker compose up -d` does when its environment changes (`deploy.yml:319-320`, `:1253-1254`).
+
+The compose parity test (`tests/unit/test_rnaseq_worker_container.py:43-52`) requires `rnaseq-worker`'s
+environment to equal `cyl-pipeline-worker`'s. So `rnaseq-worker` also receives the three keys, which
+it ignores. Its comment and `services/workflows/README.md:241` say so, so nobody assumes RNA-seq
+dispatch is gated.
+
+**Dev compose defaults:**
+
+- the switch defaults to `true`, as #965's bloom-web default does;
+- the root and secret default to blank, so a dev stack refuses with "not configured" unless both are
+  set deliberately.
+
+Dev's database also numbers scans independently, so defaulting dev to staging's tree would recreate
 this bug.
 
 ## Risks / Trade-offs
 
-- **The vendored file no longer describes what is submitted.** Mitigated by the spec, the README,
-  and a test that asserts the submitted paths and secret per environment.
-- **Pending, not Failed, if an operator flips prod on before provisioning.** Validation (D3) can't
-  prove existence. The §6 order (provision → verify → flip) is the mitigation. The flip is its own
-  PR, so it can't ride in with code.
-- **A host-side hand-edit of the env file bypasses the tests (D5).** Accepted.
-- **#965 ordering.** Covered above. Neither PR's tests depend on the other's being merged.
-- **`argo template update` is shared.** It still affects both environments' templates. This change
-  doesn't touch templates.
+- **The vendored file no longer describes what Bloom submits.** Mitigated by the spec, the README, and
+  tests that pin the submitted paths and secret per environment.
+- **Pending, not Failed, if prod is switched on before it is provisioned.** Validation can't prove
+  existence. The mitigation is the §6 order: provision, verify existence, promote with the switch off,
+  then flip. The flip is its own PR, so it can't ride in with code.
+- **Host-side hand-edits and NFS symlinks bypass the tests (D5).** Accepted. §6 checks the real paths
+  with `readlink -f`.
+- **A prod write credential lands in a shared namespace.** Any `argo-user` or `bloom-pipeline` holder
+  can mount any Secret there, as is already true of the staging credential. §6 gives the prod account
+  only the grants the recipe lists, and records the exposure.
+- **Prod is exposed until promotion.** Prod can dispatch with the staging secret today. This change
+  protects it only once promoted. §6.0 asks the author whether to stop prod's `cyl-pipeline-worker`
+  until then.
+- **`argo template update` is shared across environments,** and so are the templates' image pins.
+  §6.3 checks that prod's DB accepts what those templates emit before the flip.
+- **Rollback after the flip.** Reverting this PR alone, once prod's switch is `true`, restores the
+  original bug and re-enables bloom-web's run actions in prod. Set prod's switch back to `false` first,
+  or in the same promotion.
 
 ## Migration Plan
 
-1. Merge to `staging`. The staging deploy picks up root, secret and switch values equal to today's
-   behaviour, so no staging-visible change.
-2. A staging run on a TEST-E2E scan (experiment 12880747; real experiments lack image bytes,
-   bloom#985) confirms the submitted body carries staging's root and secret and still completes.
-3. The author provisions prod (§6).
-4. On staging→main promotion, prod deploys with its switch `false`. A prod run fails at once with
-   "turned off", which is verified.
-5. A one-line PR flips prod's switch. A prod run over a scan id staging has also processed confirms
-   both outcomes stay in their own trees and databases.
-
-Rollback: revert the PR. Staging is unaffected either way. Prod returns to the pre-change state:
-dispatch possible, staging secret.
+1. Merge to `staging`. Staging's values equal today's, so no visible change. Verify with a run on a
+   TEST-E2E scan (experiment 12880747; real experiments lack image bytes, bloom#985).
+2. The author provisions prod and verifies it (§6.3).
+3. **Promotion 1** (staging→main) takes prod live with the switch `false`. A prod run fails at once
+   with "turned off" (§6.4).
+4. The one-line flip PR merges to `staging`, where it is inert.
+5. **Promotion 2** lands the flip. The acceptance pair of runs follows (§6.6).
