@@ -269,8 +269,8 @@ The job route checks, in order:
 | Check | Response |
 |---|---|
 | `Sec-Fetch-Site` is present and not `same-origin` | `403` |
-| No session, or GoTrue rejects the token | `401` |
-| GoTrue is unreachable or errors | `503` |
+| No session, or GoTrue rejects the token (a `4xx`) | `401` |
+| GoTrue is unreachable or errors (a network failure, which auth-js reports with status `0`, a missing status, or a `5xx`) | `503` |
 | Fewer than 1,800 seconds left on the verified token | `401` with `detail` "session expires too soon" |
 | Malformed parameters | `422` |
 | The user has a running job (the body carries its `job_id`), 2 jobs are running, or the memory budget is full | `429` |

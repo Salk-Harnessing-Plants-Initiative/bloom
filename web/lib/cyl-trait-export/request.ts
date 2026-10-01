@@ -49,11 +49,14 @@ export async function verifyIdentity(): Promise<Identity | Response> {
   try {
     const { data, error } = await supabase.auth.getUser(token)
     if (error) {
+      // Only GoTrue rejecting the token (4xx) means "sign in". auth-js reports a network
+      // failure as AuthRetryableFetchError with status 0; that, a missing status and
+      // 5xx are GoTrue being unavailable.
       const status = (error as { status?: number }).status
-      if (status !== undefined && status >= 500) {
-        return detail(503, 'sign-in service unavailable; try again shortly')
+      if (status !== undefined && status >= 400 && status < 500) {
+        return detail(401, 'Sign in to download traits.')
       }
-      return detail(401, 'Sign in to download traits.')
+      return detail(503, 'sign-in service unavailable; try again shortly')
     }
     user = data.user
   } catch {
