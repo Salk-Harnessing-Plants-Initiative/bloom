@@ -323,6 +323,8 @@
 
 ## 7. Measurement gate (staging, before PR A is ready)
 
+- [ ] 7.0 Land the `get_experiment_traits` plan fix (PR #992, migration `20261001180000`) and its staging deploy before running 7.1.
+  **(found 2026-10-01: the first 7.1 run, as the `staging-user` `bloom_user`, hit `57014` on the first `get_experiment_traits(recipe_key_)` call, at 50 scans and again at 10. A read-only staging `EXPLAIN (ANALYZE, BUFFERS)` showed a seq scan of all 28.9M `cyl_scan_traits` rows (14.1 s): the function joins 9–10 relations, above the default `from_collapse_limit` of 8, so the view is planned on its own and the scan ids never reach it. With both collapse limits at 12: 50 ms, same 2,070 rows. The no-key path (3.3 s per 50 scans, against 0.34 s for the bare view) has the same plan. Migration PRs must be isolated (`scripts/lint_migration_isolation.py`), so the fix ships in #992 ahead of PR A. 7.2 passed in the same run: `expires_in` = 3600.)**
 - [ ] 7.1 Write a read-only scratchpad script using bloomctl's `make_authed_client` (as for the 2026-09-30 production measurement). For staging experiments 1, 269327, 7206207 and 3313, time the per-batch `list_trait_recipes`, `get_trait_recipe_coverage` and `get_experiment_traits(recipe_key_, 4-column select, count=exact)` at 50, 100 and 200 scans. Record rows, bytes and p50/p95/max. Run it with the user's go-ahead.
 - [ ] 7.2 Confirm that the hosts don't override `JWT_EXPIRY` (committed as 3600): check a fresh session's `expires_in`, never printing a token. `MIN_SESSION_SECONDS` = 1,800 and `EXPORT_MAX_SECONDS` = 1,500 must fit within it.
 - [ ] 7.3 Set `BATCH_SCANS` to the largest size whose p95 is under 4 s for every RPC.
