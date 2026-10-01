@@ -593,11 +593,17 @@ def test_recipe_read_functions_pin_search_path(pg_conn, sig):
         cur.execute(
             "SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (sig,)
         )
-        expected = ["search_path=pg_catalog, public"]
+        config = cur.fetchone()[0]
+        assert "search_path=pg_catalog, public" in config
+        planner = {c for c in config if not c.startswith("search_path=")}
         if sig.startswith("public.get_experiment_traits("):
             # 20261001180000; see test_get_experiment_traits_plan.py.
-            expected += ["join_collapse_limit=12", "from_collapse_limit=12"]
-        assert cur.fetchone()[0] == expected
+            assert planner == {
+                "join_collapse_limit=11",
+                "plan_cache_mode=force_custom_plan",
+            }
+        else:
+            assert planner == set()
 
 
 def test_rollback_3_refuses_while_dataset_recipe_mode_is_live(pg_conn):

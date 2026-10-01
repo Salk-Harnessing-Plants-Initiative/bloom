@@ -6,14 +6,19 @@
 -- hand-apply, run
 --   supabase migration repair --status reverted 20261001180000
 --
--- Restores the default collapse limits on get_experiment_traits. Its batched reads
--- then time out again at production scale (see the migration's header).
+-- ORDER: apply this before the recipe-read rollback (20260930120200), which drops the
+-- five-argument get_experiment_traits this ALTERs; run after it, this fails with
+-- "function does not exist" and changes nothing.
+--
+-- Restores the default join_collapse_limit and plan_cache_mode on get_experiment_traits.
+-- Its batched reads then time out again at production scale (see the migration's
+-- header).
 
 BEGIN;
 
 ALTER FUNCTION public.get_experiment_traits(bigint, bigint, text, text, bigint[])
     RESET join_collapse_limit;
 ALTER FUNCTION public.get_experiment_traits(bigint, bigint, text, text, bigint[])
-    RESET from_collapse_limit;
+    RESET plan_cache_mode;
 
 COMMIT;
