@@ -78,7 +78,7 @@ file.
 
 This group is one atomic commit; every partial state is red. Write the files as LF bytes.
 
-- [ ] 3.1 **Test first.**
+- [x] 3.1 **Test first.**
   - **(a) `tests/unit/test_env_defaults.py`.** `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` and
     `WORKFLOWS_K8S_PIPELINE_SECRET_NAME` join `test_env_disambiguating_values_differ`'s list, with a
     comment citing bloom#863.
@@ -100,7 +100,7 @@ This group is one atomic commit; every partial state is red. Write the files as 
   - **(f)** Add to `services/workflows/tests/test_k8s_client.py`: for each of `.env.staging.defaults`
     and `.env.prod.defaults`, read from the repo root, the committed root and secret pass the §1
     resolvers. A typo in prod's value then fails CI, not the §6.5 flip.
-- [ ] 3.2 Implement:
+- [x] 3.2 Implement:
   - **Defaults files.** Add **two** keys to each of `.env.staging.defaults` and `.env.prod.defaults`,
     directly after `WORKFLOWS_K8S_ENV_LABEL=` in the `cyl-pipeline-worker` block, not at the end of
     the file. Rewrite #965's existing `CYL_PIPELINE_TRIGGER_ENABLED` comment in place so it names
@@ -115,7 +115,7 @@ This group is one atomic commit; every partial state is red. Write the files as 
     code default. Update bloom-web's switch comment (`docker-compose.prod.yml:122-123`).
   - **`.env.dev.example:68-76`.** Add a comment saying both new keys must be set, to a dev-only tree
     and never to staging's, before a dev stack can dispatch.
-- [ ] 3.3 Run `uv run --extra test pytest tests/unit/` (the whole directory, as CI does) and the
+- [x] 3.3 Run `uv run --extra test pytest tests/unit/` (the whole directory, as CI does) and the
   `services/workflows` suite, and confirm both pass.
   - The 10 `test_validator_*` cases fail only on this Windows machine, because bash gets a backslash
     path.

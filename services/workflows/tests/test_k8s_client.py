@@ -1353,3 +1353,26 @@ def test_dispatch_refused_error_carries_its_cause_and_is_its_own_class():
     # submission attempt recorded as "Argo Workflow submission failed".
     assert not issubclass(k8s_client.K8sDispatchRefusedError, K8sConfigError)
     assert not issubclass(k8s_client.K8sDispatchRefusedError, K8sSubmissionError)
+
+
+@pytest.mark.parametrize("defaults", [".env.staging.defaults", ".env.prod.defaults"])
+def test_each_environments_committed_root_and_secret_pass_validation(
+    monkeypatch, defaults
+):
+    """A typo in prod's committed value would otherwise surface only after
+    prod is switched on, as every batch failing "not configured"."""
+    from pathlib import Path
+
+    path = Path(k8s_client.__file__).resolve().parents[2] / defaults
+    values = dict(
+        line.split("=", 1)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+    for key in (
+        "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT",
+        "WORKFLOWS_K8S_PIPELINE_SECRET_NAME",
+    ):
+        monkeypatch.setenv(key, values[key])
+    assert k8s_client._resolve_pipeline_hostpath_root()[1] is None
+    assert k8s_client._resolve_pipeline_secret_name()[1] is None

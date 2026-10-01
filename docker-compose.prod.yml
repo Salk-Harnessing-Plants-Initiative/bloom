@@ -120,7 +120,8 @@ services:
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
       # Starting cylinder pipeline runs from Bloom; "true" in staging, "false" in
-      # prod until bloom#863 (web/lib/cyl-pipeline/trigger-enabled.ts).
+      # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
+      # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).
       CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
       # Read by web/lib/config/validate-on-boot.ts in production via the
       # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
@@ -291,7 +292,8 @@ services:
       # Real credentials for the bloom-pipeline ServiceAccount. TOKEN/CA_CERT/
       # API_URL are true secrets (SENSITIVE_INVENTORY); NAMESPACE/TTL_SECONDS
       # are plain config values with safe code defaults, sourced from the
-      # committed .env.*.defaults files instead.
+      # committed .env.*.defaults files instead, as are the PIPELINE_* pair
+      # below, which have no code default.
       WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
       WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
       WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
@@ -301,6 +303,12 @@ services:
       # prod and staging share the runai-busch-lab namespace above and both
       # run_id sequences start at 1 (see k8s_client.py's ENV_LABEL).
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+      # This environment's stage root and credential Secret, put in place of
+      # the vendored Workflow's at dispatch, and the switch that lets it
+      # dispatch at all (bloom#863). No code defaults.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
     networks:
       - supanet
     depends_on:
@@ -321,9 +329,9 @@ services:
   # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
   # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
   # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
-  # use of the K8s API (get, not create), so only four of the five
-  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
-  # submission-only (build_workflow_body), never read by this poller.
+  # use of the K8s API (get, not create), so only TOKEN/CA_CERT/API_URL/
+  # NAMESPACE are needed — TTL_SECONDS, ENV_LABEL and the PIPELINE_* pair
+  # are submission-only (build_workflow_body), never read by this poller.
   # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
   # Python-side default (15s) governs it; adding it here without a real
   # default-file entry would make compose inject an empty string and
@@ -397,6 +405,12 @@ services:
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
       WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+      # The three keys below are cyl-pipeline-worker's; this worker ignores
+      # them (RNA-seq dispatch is not gated by them). They're here because
+      # this environment must equal cyl-pipeline-worker's.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
     networks:
       - supanet
     depends_on:
