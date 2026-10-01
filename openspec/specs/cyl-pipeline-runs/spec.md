@@ -1,7 +1,15 @@
 # cyl-pipeline-runs Specification
 
 ## Purpose
-TBD - created by archiving change add-cyl-pipeline-trigger. Update Purpose after archive.
+Defines the Bloom database schema that records cylinder pipeline runs requested through Bloom:
+`cyl_pipeline_runs` (one row per trigger request, with its target, params, rollup status and
+scan/done/reused/failed counts) and `cyl_pipeline_run_scans` (one row per requested scan, with its
+Argo workflow name, per-scan status and the `source_id` of the result it wrote). It also covers
+their role-based access, Realtime publication, the dedup-preview read grant, the pgmq dispatch
+queue and its least-privilege functions, and the forward-only migration convention. The trigger
+route writes these rows (`cyl-pipeline-trigger`), write-back stamps per-scan outcomes
+(`cyl-trait-writeback`), and the poller keeps run status and counts current
+(`cyl-pipeline-status-polling`).
 ## Requirements
 ### Requirement: `cyl_pipeline_runs` table
 
@@ -40,29 +48,28 @@ Workflow phase is `Succeeded` — so a run all of whose batches do that reads `'
 a result; `status = 'complete'` means only "every batch's Workflow reached a terminal success
 phase". A run enumerating zero scans is also `'complete'`.
 
-Four bounds on that statement, all load-bearing:
+Three bounds on that statement, all load-bearing:
 
 - **It holds for an `images-downloader`-stage isolation, not for every stage.** A scan that
-  `images-downloader` fails is left out of the scan_keys *that invocation contributes* to the
-  `RunManifest` (only `ok`/`skipped` are recorded). A scan isolated later, by `predictor` or
-  `trait-extractor`, is already in that manifest, so write-back finds a declared `scan_key` with no
-  result, reports a batch failure, and exits non-zero — and because `write-back` carries no
-  `continueOn`, the gate is omitted and the Workflow ends `Failed`.
-- **And only when the manifest does not already carry that scan_key.** `write_run_manifest` writes
-  the **union** of its own usable keys with whatever manifest is already on disk, and never prunes,
-  over a directory shared by every run. So a deterministically-failing scan is excluded only on its
-  *first* occurrence; on every later run over those paths its key is still present from before,
-  write-back again finds a declared key with no result, and the run reads `'failed'`.
+  `images-downloader` fails is left out of the `RunManifest` that invocation writes (only
+  `ok`/`skipped` are recorded, and each attempt writes only its own usable keys, so the manifest
+  reflects the last downloader attempt that staged at least one scan). A scan isolated later, by
+  `predictor` or `trait-extractor`, is already in that manifest, so write-back finds a declared
+  `scan_key` with no result — unless a prior run's envelope for that scan still sits in the shared
+  directory, which write-back ingests as a no-op re-delivery — reports a batch failure, and exits
+  non-zero — and because `write-back` carries no `continueOn`, the gate is omitted and the Workflow ends `Failed`.
 - **`'failed'` does not imply nothing was written.** Each envelope's per-scan `'written'` update is
   committed in that envelope's own transaction, so a write-back that ingests some envelopes and
   then exits non-zero leaves `done_count > 0` on a `'failed'` run. This is not new — it was already
   reachable whenever write-back ran and partially failed — but the exit gate adds a second route to
   it, by rejecting a producer exit code outside `{0,3}` after write-back has already committed.
-- **`'complete'` does not imply that *any* scan succeeded.** The producers' partial-success exit
-  code carries no floor: a batch in which one scan failed and a batch in which *every* scan failed
-  both exit `3`, the gate accepts both, and both read `'complete'`. A totally-failed batch therefore
-  reports `'complete'` with `done_count = 0`. This matters most for common-mode failures — an
-  unavailable NFS mount, a revoked credential — which fail every scan identically.
+- **A batch that stages nothing reads `'failed'`** (for a run with at least one scan).
+  `images-downloader` then writes no
+  `RunManifest`, so each downstream reader, knowing its run identity, finds none and fails;
+  write-back closes the batch's scans out as `'failed'` and exits non-zero, so the Workflow ends
+  `Failed` with `failed_count = scan_count`. A stale legacy `run_manifest.json` does not change
+  this: predict and traits may fall back to it, but write-back treats a legacy file naming another
+  run as no manifest for this run.
 
 Pipeline-level `'partial'` consequently no longer arises from partial failure *within* a batch — the
 case it was originally introduced for — and now arises only when whole batch Workflows differ in
@@ -108,14 +115,14 @@ outcome across a multi-batch run.
 - **AND** in a *multi-batch* run whose other batches succeeded, the same isolation yields
   `'partial'` rather than `'failed'`, since the rollup sees a mix of terminal phases
 
-#### Scenario: A batch in which every scan failed still reads complete
+#### Scenario: A batch in which every scan failed at images-downloader reads failed
 
 - **WHEN** every scan in a single-batch run fails at `images-downloader` — a shared mount being
-  unavailable, say — so the producer exits `3` with no scan staged
-- **THEN** the exit gate accepts `3`, the Workflow phase is `Succeeded`, and the run's `status` is
-  `'complete'`
-- **AND** `done_count` is `0` and `failed_count` equals `scan_count`, which is the only signal that
-  the run produced nothing
+  unavailable, say — so the producer exits `3`, stages no scan, and writes no `RunManifest`,
+  whether or not a stale legacy `run_manifest.json` exists in the pipeline's shared directories
+- **THEN** write-back finds no manifest for its run identity, closes out the batch's scans as
+  `'failed'`, and exits non-zero, so the exit gate is omitted and the run's `status` is `'failed'`
+- **AND** `done_count` is `0` and `failed_count` equals `scan_count`
 
 ### Requirement: `cyl_pipeline_run_scans` table
 
