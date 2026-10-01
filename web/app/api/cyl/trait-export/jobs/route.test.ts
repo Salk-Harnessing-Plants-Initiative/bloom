@@ -19,7 +19,7 @@ vi.mock('@/lib/cyl-trait-export/db', async (importOriginal) => ({
 
 import * as routeModule from '@/app/api/cyl/trait-export/jobs/route'
 import { createExportDb } from '@/lib/cyl-trait-export/db'
-import { reserveJob } from '@/lib/cyl-trait-export/jobs'
+import { deleteJob, reserveJob } from '@/lib/cyl-trait-export/jobs'
 import { MAX_HELD_BYTES } from '@/lib/cyl-trait-export/limits'
 import { getExportState, resetExportStateForTests } from '@/lib/cyl-trait-export/state'
 import { createServerSupabaseClient, getSession } from '@/lib/supabase/server'
@@ -158,6 +158,22 @@ describe('check order', () => {
     expect(res.status).toBe(429)
     expect(await res.json()).toMatchObject({ job_id: mine.ok ? mine.jobId : null })
     expect(fake.calls).toEqual([])
+  })
+
+  it('409 when its job was cancelled before the build started (tasks.md 10a.1)', async () => {
+    useFake({ hold: true })
+    const first = post(ok)
+    while (fake.pending.length === 0) await new Promise((r) => setImmediate(r))
+    const second = await post(ok)
+    expect(second.status).toBe(429)
+    const { job_id } = await second.json()
+    expect(deleteJob('user-1', job_id)).toBe(true)
+    const drained = fake.drain()
+    const res = await first
+    await drained
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ detail: 'the export was cancelled before it started' })
+    expect(fake.calls.filter((c) => ['listRecipes', 'coverage', 'traits'].includes(c.method))).toEqual([])
   })
 
   it('429 when two jobs are running', async () => {

@@ -123,6 +123,24 @@ describe('lifecycle', () => {
   })
 })
 
+describe('cancelled before it starts (tasks.md 10a.1)', () => {
+  // A second POST's 429 returns the running job id while the first POST is still
+  // resolving its selection, and the dialog may cancel that job (design D1).
+  it('never runs the build, and frees the user to start again', async () => {
+    const r = reserveJob('u1')
+    if (!r.ok) throw new Error('refused')
+    expect(deleteJob('u1', r.jobId)).toBe(true)
+    const run = vi.fn(async () => result())
+    expect(r.start(Date.now() / 1000 + HOUR, run)).toBeNull()
+    await settle()
+    expect(run).not.toHaveBeenCalled()
+    expect(getJob('u1', r.jobId)?.status).toBe('cancelled')
+    const again = reserveJob('u1')
+    expect(again.ok).toBe(true)
+    if (again.ok) again.release()
+  })
+})
+
 describe('retention', () => {
   it('keeps a finished job for exactly RETAIN_SECONDS', async () => {
     const { jobId, gate } = startControlled('u1')
