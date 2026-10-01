@@ -196,10 +196,14 @@ This group is one commit: the fixture update and the gate must land together.
   #965:
   - `web/lib/cyl-pipeline/trigger-enabled.ts:7-12`;
   - `openspec/changes/add-cyl-pipeline-ui/design.md:109`;
-  - `openspec/changes/add-cyl-pipeline-ui/specs/cyl-pipeline-ui/spec.md:37`. Correct it in place to
-    "`false` in prod until prod's pipeline credential and stage directories are provisioned
-    (bloom#863); the dispatch worker reads the same switch". That change is unarchived, so editing
-    its delta adds no archive collision.
+  - `openspec/changes/add-cyl-pipeline-ui/specs/cyl-pipeline-ui/spec.md:37`.
+
+  **Superseded 2026-10-01.** #989 archived `add-cyl-pipeline-ui` while this PR was open. The
+  in-place edits to its `design.md` and delta were dropped in the merge (`b80e04b1`), because an
+  archive is a record. The live sentence (`openspec/specs/cyl-pipeline-ui/spec.md`, "Starting
+  pipeline runs can be switched off per environment") is corrected by this change's own
+  `specs/cyl-pipeline-ui/spec.md` MODIFIED delta instead. No other unarchived change touches that
+  requirement.
 - [x] 5.3 Draft, for the author's approval, the `talmolab/sleap-roots-pipeline` doc updates. Don't
   push without a go-ahead. **Drafted** against upstream `origin/main` `367c771` (2026-10-01); kept
   outside the repo until approved:
@@ -303,5 +307,5 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
 - [ ] 6.7 With the author's approval, post #863's and #983's evidence and close both by hand. Push
   5.3's upstream docs. Update memory.
 - [ ] 6.8 Archive (`/openspec:archive isolate-cyl-pipeline-environments`). First grep unarchived
-  changes for MODIFIED deltas on the three `cyl-pipeline-dispatch` headings this change modifies,
-  and raise any to the live text.
+  changes for MODIFIED deltas on the three `cyl-pipeline-dispatch` headings and the one
+  `cyl-pipeline-ui` heading this change modifies, and raise any to the live text.

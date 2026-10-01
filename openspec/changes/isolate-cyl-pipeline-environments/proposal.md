@@ -99,8 +99,11 @@ Every queued batch reaches Argo through the dispatch worker. No member or admin 
     (its opening sentence and volumes scenario), the vendored-source override list, and "Submission
     outcome is recorded", which gains refusal as a third outcome. Four ADDED requirements: isolation,
     validation, the closed volume set, and refusal.
-  - `cyl-pipeline-ui`, from unarchived `add-cyl-pipeline-ui`: one sentence corrected in place, with no
-    new delta.
+  - `cyl-pipeline-ui`: one MODIFIED requirement, "Starting pipeline runs can be switched off per
+    environment". Its sentence saying prod is off "until bloom#863 is fixed, because every
+    dispatched Workflow mounts the staging Supabase credential" becomes false, and now says prod is
+    off until its own credential and directories are provisioned, and that the worker reads the
+    switch too. (`add-cyl-pipeline-ui` was archived by #989 after this change was first written.)
 - **Affected code, all in `services/` and the repo root.**
   - `services/workflows/k8s_client.py` and `services/workflows/dispatch_worker.py`, with their tests.
   - `.env.prod.defaults`, `.env.staging.defaults`, `docker-compose.prod.yml` and
