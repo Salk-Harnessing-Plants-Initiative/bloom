@@ -50,9 +50,10 @@ RUN apt-get update \
 COPY cellranger/run-count.sh /usr/local/bin/run-count
 COPY cellranger/fastq-sample-prefix.sh /usr/local/bin/fastq-sample-prefix
 COPY cellranger/fetch-sra.sh /usr/local/bin/fetch-sra
+COPY cellranger/stage-fastqs.sh /usr/local/bin/stage-fastqs
 COPY fastq_qc/run-qc.sh /usr/local/bin/run-qc
 COPY fastq_qc/fastq_qc.py /usr/local/bin/fastq-qc
 COPY fastq_qc/qc_report.py /usr/local/bin/qc-report
-RUN chmod +x /usr/local/bin/run-count /usr/local/bin/fastq-sample-prefix /usr/local/bin/fetch-sra /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
+RUN chmod +x /usr/local/bin/run-count /usr/local/bin/fastq-sample-prefix /usr/local/bin/fetch-sra /usr/local/bin/stage-fastqs /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
 
 WORKDIR /work
