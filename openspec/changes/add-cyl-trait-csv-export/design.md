@@ -84,7 +84,8 @@ The CSV header needs every trait name, so nothing can be sent until every read f
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `BATCH_SCANS` | 100 initially; task 7.3 sets it | Scans per call |
+| `BATCH_SCANS` | 100 (task 7.3) | Scans per coverage or trait call |
+| `LISTING_BATCH_SCANS` | 20,000 (task 7.4) | Scans per `list_trait_recipes` call. A listing is one HTTP request under Kong's 60 s, so it is listed in as few calls as possible; 20,000 covers the largest experiment (experiment 1, 18,471 scans) |
 | `PG_CONCURRENCY` | 3 | Size of one FIFO semaphore that every PostgREST call from the feature passes through (`rpc` and `from`, across jobs and listings) |
 | `MAX_RUNNING_JOBS` | 2 | Running jobs, all users |
 | `MAX_JOBS_PER_USER` | 1 | Running jobs per user |
@@ -104,10 +105,10 @@ The CSV header needs every trait name, so nothing can be sent until every read f
    - The view inner-joins `species`, so "a whole experiment" means the experiment's scans that have a species.
    - `genotype` comes from `accessions` (`id, name`), read in chunks of accession ids.
 2. **Batches.**
-   - `S` is cut into `ceil(|S| / BATCH_SCANS)` consecutive chunks numbered from 1. That numbering is "batch i of n" in every `detail`.
+   - `S` is cut into `ceil(|S| / BATCH_SCANS)` consecutive chunks numbered from 1 for coverage and traits, and into `ceil(|S| / LISTING_BATCH_SCANS)` chunks for the recipe listing. That numbering is "batch i of n" in every `detail`.
    - Every RPC call passes `experiment_ids_ = [e]` (or `experiment_id_ = e`) and a non-empty `scan_ids_` array, because a NULL `scan_ids_` would read the whole experiment.
    - Nothing is retried.
-3. **Recipes.** Call `list_trait_recipes` per chunk and merge per key:
+3. **Recipes.** Call `list_trait_recipes` per listing chunk (one chunk for every current selection) and merge per key:
    - `n_scans` is summed;
    - `newest_source_id` is the max;
    - `recipe_key_version`, `recipe_kind` and `definition` come from the chunk holding the max (for `unattributed`, whose id is NULL, from any chunk);
@@ -374,9 +375,9 @@ This is not built here.
 
 ## Risks / Trade-offs
 
-- **Unmeasured costs.** The RPC costs, including `count=exact`, and experiment 1's listing (about 185 calls) are unmeasured. Task 7.3 sets `BATCH_SCANS` so that each call's p95 stays under 4 s, and it estimates the listing time with 2 jobs running.
-  - If experiment 1's job would exceed `EXPORT_MAX_SECONDS`, work stops and the durable job goes back to the user.
-  - If the listing would exceed 60 s, the listing moves into the job.
+- **Measured costs (staging, 2026-10-01, after #992).** `get_experiment_traits` p95 is 1.51 s at 50 scans, 2.28 s at 100 and 4.30 s at 200, so `BATCH_SCANS` is 100 (task 7.3). Experiment 1's job is about 121 s at p50 (163 s at p95), within `EXPORT_MAX_SECONDS`.
+  - **The listing.** At `BATCH_SCANS`, experiment 1's listing is 185 calls: about 65 s with one job running and 123 s with two, over Kong's 60 s. One `list_trait_recipes` call over all 18,471 scans took 1.26 s (largest age, 3,819 scans: 0.45 s), so listings use `LISTING_BATCH_SCANS` (task 7.4) and stay in the route rather than moving into the job.
+  - If a later experiment's job would exceed `EXPORT_MAX_SECONDS`, work stops and the durable job goes back to the user.
 - **A restart loses jobs.** `bloom-web` has no `restart:` policy, so an out-of-memory crash leaves the site down. Task 12.3 drafts an infra issue: `restart: unless-stopped`, a `mem_limit`, and a single-replica comment.
 - **Memory** is bounded by `MAX_HELD_BYTES` (running reserves plus held zips) and at most 2 running jobs. Peak RSS under `next start` is recorded in task 10.2.
 - **sleap-roots-analyze's `get_trait_columns`** drops any column whose name contains `index`, `date`, `time`, `day_`, `scan_` and similar (`data_cleanup.py:115-141`), so `curve_index` is dropped. Task 1.4 records this, the wiki (task 8.2) tells users to pass their trait columns explicitly, and task 12.3 drafts an upstream issue.

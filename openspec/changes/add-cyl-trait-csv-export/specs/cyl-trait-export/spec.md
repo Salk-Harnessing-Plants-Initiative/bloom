@@ -56,7 +56,7 @@ The web app SHALL export traits through a job: `POST /api/cyl/trait-export/jobs`
 ### Requirement: Trait export reads one recipe in bounded batches
 An export SHALL read trait data, recipes and coverage only through `list_trait_recipes`, `get_trait_recipe_coverage` and `get_experiment_traits`.
 
-- **RPC arguments.** Each call carries `experiment_ids_ = [e]` (or `experiment_id_ = e`) and a non-empty `scan_ids_` of at most `BATCH_SCANS` ids. Every coverage and trait call carries the explicit `recipe_key_`.
+- **RPC arguments.** Each call carries `experiment_ids_ = [e]` (or `experiment_id_ = e`) and a non-empty `scan_ids_`: at most `BATCH_SCANS` ids for a coverage or trait call, and at most `LISTING_BATCH_SCANS` ids for a `list_trait_recipes` call. Every coverage and trait call carries the explicit `recipe_key_`.
 - **Other reads.** Its other reads (`cyl_experiments`, `cyl_scans_extended`, `accessions`, `cyl_trait_sources`) use the verified user's token, and are keyset-paged or chunked.
 - **Concurrency.** At most 3 PostgREST requests from this feature are in flight in the server process, across all jobs and listings.
   - Each job and each listing has at most 3 requests outstanding.
@@ -82,6 +82,12 @@ An export SHALL read trait data, recipes and coverage only through `list_trait_r
 - **THEN** the merged rows, their order and the default equal one call over the whole selection
 - **AND** concatenated per-batch coverage equals one coverage call
 - **AND** the union of per-batch trait rows equals one trait call
+
+#### Scenario: A listing is one call for every current selection
+
+- **WHEN** a selection of at most `LISTING_BATCH_SCANS` scans is listed, by the listing route or by a job, whatever `BATCH_SCANS` is
+- **THEN** exactly one `list_trait_recipes` call is made, over the whole selection
+- **AND** a selection of `LISTING_BATCH_SCANS + 1` scans is listed in two calls
 
 #### Scenario: No call reads a whole experiment
 

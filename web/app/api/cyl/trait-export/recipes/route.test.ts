@@ -170,7 +170,8 @@ describe('listing', () => {
     const res = await list('experiment=1')
     expect(res.status).toBe(502)
     const body = await res.json()
-    expect(body.detail).toMatch(/57014\) in batch 1 of 8/)
+    // The whole selection is one listing call (LISTING_BATCH_SCANS, tasks.md 7.4).
+    expect(body.detail).toMatch(/57014\) in batch 1 of 1/)
     expect(JSON.stringify(body)).not.toContain('RAW')
   })
 })

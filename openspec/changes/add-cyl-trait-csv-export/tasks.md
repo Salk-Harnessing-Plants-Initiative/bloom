@@ -323,14 +323,20 @@
 
 ## 7. Measurement gate (staging, before PR A is ready)
 
-- [ ] 7.0 Land the `get_experiment_traits` plan fix (PR #992, migration `20261001180000`) and its staging deploy before running 7.1.
+- [x] 7.0 Land the `get_experiment_traits` plan fix (PR #992, migration `20261001180000`) and its staging deploy before running 7.1.
+  **(done 2026-10-01: #992 merged and deployed, Deploy run 36913017384; staging `proconfig` is `join_collapse_limit=11, plan_cache_mode=force_custom_plan`. Through PostgREST as `bloom_user`, 7 calls on one connection: recipe reads 0.07–0.15 s at 10, 50 and 100 scans (were `57014`), the no-key path 0.53–0.59 s at 50 scans (was 3.34 s). bloommcp's shape (source 5, whole experiment 1) still hits `57014` at 8.11 s, as before.)**
   **(found 2026-10-01: the first 7.1 run, as the `staging-user` `bloom_user`, hit `57014` on the first `get_experiment_traits(recipe_key_)` call, at 50 scans and again at 10. A read-only staging `EXPLAIN (ANALYZE, BUFFERS)` showed a seq scan of all 28.9M `cyl_scan_traits` rows (14.1 s): the function joins 9–10 relations, above the default `from_collapse_limit` of 8, so the view is planned on its own and the scan ids never reach it. With both collapse limits at 12: 50 ms, same 2,070 rows. The no-key path (3.3 s per 50 scans, against 0.34 s for the bare view) has the same plan. Migration PRs must be isolated (`scripts/lint_migration_isolation.py`), so the fix ships in #992 ahead of PR A. 7.2 passed in the same run: `expires_in` = 3600.)**
-- [ ] 7.1 Write a read-only scratchpad script using bloomctl's `make_authed_client` (as for the 2026-09-30 production measurement). For staging experiments 1, 269327, 7206207 and 3313, time the per-batch `list_trait_recipes`, `get_trait_recipe_coverage` and `get_experiment_traits(recipe_key_, 4-column select, count=exact)` at 50, 100 and 200 scans. Record rows, bytes and p50/p95/max. Run it with the user's go-ahead.
+- [x] 7.1 Write a read-only scratchpad script using bloomctl's `make_authed_client` (as for the 2026-09-30 production measurement). For staging experiments 1, 269327, 7206207 and 3313, time the per-batch `list_trait_recipes`, `get_trait_recipe_coverage` and `get_experiment_traits(recipe_key_, 4-column select, count=exact)` at 50, 100 and 200 scans. Record rows, bytes and p50/p95/max. Run it with the user's go-ahead.
+  **(done 2026-10-01, `scratchpad/measure_7.py` as `staging-user`: experiments 1 (18,471 scans), 269327 (9,291), 7206207 (2,680) and 3313 (5,547); no errors, no truncation. p50/p95/max in s: `get_experiment_traits` 0.98/1.51/1.58 at 50, 1.77/2.28/2.53 at 100, 3.52/4.30/5.06 at 200 (max 207,000 rows, 22.6 MB); `get_trait_recipe_coverage` ≤ 0.11 at every size; `list_trait_recipes` ≤ 0.40 at every size.)**
 - [x] 7.2 Confirm that the hosts don't override `JWT_EXPIRY` (committed as 3600): check a fresh session's `expires_in`, never printing a token. `MIN_SESSION_SECONDS` = 1,800 and `EXPORT_MAX_SECONDS` = 1,500 must fit within it.
   **(done 2026-10-01: a fresh `staging-user` session on staging reported `expires_in` = 3600, so the hosts don't override `JWT_EXPIRY`; `MIN_SESSION_SECONDS` 1,800 and `EXPORT_MAX_SECONDS` 1,500 fit. No token was printed.)**
-- [ ] 7.3 Set `BATCH_SCANS` to the largest size whose p95 is under 4 s for every RPC.
+- [x] 7.3 Set `BATCH_SCANS` to the largest size whose p95 is under 4 s for every RPC.
+  **(done 2026-10-01: `BATCH_SCANS` stays 100 (200 fails on `get_experiment_traits` p95 4.30 s). Job time: (0.12 + 0.08 + 1.77) s × 185 ÷ 3 ≈ 121 s at p50, 163 s at p95, within `EXPORT_MAX_SECONDS`. Listing time FAILED: 185 calls through the shared FIFO semaphore, with each job keeping 3 calls queued, is about 65 s with one job and 123 s with two. Resolved by 7.4, not by moving the listing into the job.)**
   - **Job time.** Estimate experiment 1's production job time as the per-batch time × `ceil(18471 / BATCH_SCANS)` ÷ `PG_CONCURRENCY`. If that exceeds `EXPORT_MAX_SECONDS`, stop and bring the durable-job follow-up to the user.
   - **Listing time.** Estimate the listing time with 2 jobs running. If it would exceed 60 s, stop and propose moving the listing into the job.
+
+- [x] 7.4 List recipes in batches of `LISTING_BATCH_SCANS` (20,000) instead of `BATCH_SCANS`.
+  **(done 2026-10-01. Measured first on staging: one `list_trait_recipes` call took 0.84 s experiment-wide, 0.45 s for the largest age (3,819 scans) and 1.26 s for all 18,471 scans, with the same 8 recipes and default as the batched listing. Red (`64f077de`): 5 failed, 49 passed; the constant was undefined, 250 scans listed as [100, 100, 50], and `buildExport` listed per `batchSize`. Green: `listMergedRecipes` and `buildExport` default to `LISTING_BATCH_SCANS`; `BuildOptions.listingBatchSize` overrides it. Two tests written for per-batch listings now read the new behaviour (the drift tamper subtracts 1 from K's count; the route's 502 names "batch 1 of 1"). Web 2,160/2,160, tsc clean, integration batching test 10 passed.)**
 
 ## 8. Docs
 
@@ -456,6 +462,7 @@
 | Deadline | 5.5 |
 | Batch size and completion order | 5.1(a) |
 | Merged listing equals a single call | 3.1, 1.2a |
+| A listing is one call for every current selection | 7.4 (build-export.test.ts "listMergedRecipes batching", 5.1(b)) |
 | No call reads a whole experiment | 5.1(b), 6.5 |
 | Process-wide limit | 3.5, 5.1(c), 6.7 |
 | Truncated trait response | 5.1(d) |

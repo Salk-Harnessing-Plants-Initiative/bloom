@@ -1,11 +1,20 @@
 /**
- * Trait-export limits (design D1, D2, D7). BATCH_SCANS starts at 100; tasks.md 7.3
- * sets it from staging measurements so each RPC call's p95 stays under 4 s against
- * the 8 s statement timeout.
+ * Trait-export limits (design D1, D2, D7). BATCH_SCANS is 100: on staging
+ * (tasks.md 7.3, 2026-10-01) it is the largest batch whose p95 stays under 4 s for
+ * every RPC against the 8 s statement timeout (get_experiment_traits p95 2.28 s at
+ * 100 scans, 4.30 s at 200).
  */
 
 /** Scan ids per RPC call. */
 export const BATCH_SCANS = 100
+
+/**
+ * Scan ids per `list_trait_recipes` call (tasks.md 7.4). A listing is one HTTP
+ * request, and Kong allows 60 s; at BATCH_SCANS, experiment 1's 185 listing calls
+ * would take about 123 s with two jobs running. On staging one call over its 18,471
+ * scans took 1.26 s, so every current selection lists in one call.
+ */
+export const LISTING_BATCH_SCANS = 20_000
 
 /** PostgREST requests the feature may have in flight in this process (pool is 10). */
 export const PG_CONCURRENCY = 3

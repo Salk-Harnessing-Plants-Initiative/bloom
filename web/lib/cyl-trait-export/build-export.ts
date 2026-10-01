@@ -14,7 +14,13 @@ import { csvRows, csvSlices, TraitPivot, type CsvScan, type TraitRow } from './c
 import { isDbError, type DbError, type ExportDb, type SelectionQuery } from './db'
 import { ExportError, SELECTION_CHANGED } from './errors'
 import { excludedCsv } from './excluded'
-import { BATCH_SCANS, CSV_SLICE_CELLS, PG_CONCURRENCY, SELECTION_PAGE_SIZE } from './limits'
+import {
+  BATCH_SCANS,
+  CSV_SLICE_CELLS,
+  LISTING_BATCH_SCANS,
+  PG_CONCURRENCY,
+  SELECTION_PAGE_SIZE,
+} from './limits'
 import { metadataCells, type ScanExtendedRow } from './metadata'
 import { mergeRecipeListings, resolveChosenBy, type RecipeRow } from './recipes'
 import { buildSidecar, serializeSidecar, type CoverageRow, type SourceMeta } from './sidecar'
@@ -34,6 +40,8 @@ export type BuildOptions = {
   generatedAt: Date
   version: string
   batchSize?: number
+  /** Scans per `list_trait_recipes` call; defaults to LISTING_BATCH_SCANS. */
+  listingBatchSize?: number
   concurrency?: number
   signal?: AbortSignal
   onProgress?: (p: Progress) => void
@@ -111,7 +119,10 @@ export async function resolveSelection(
   })
 }
 
-/** `list_trait_recipes` per batch, merged as one call over `ids` would return it. */
+/**
+ * `list_trait_recipes` per batch of `batchSize` (default LISTING_BATCH_SCANS), merged as
+ * one call over `ids` would return it.
+ */
 export async function listMergedRecipes(
   db: ExportDb,
   experimentId: number,
@@ -119,7 +130,7 @@ export async function listMergedRecipes(
   opts: Pick<BuildOptions, 'batchSize' | 'concurrency' | 'signal' | 'onProgress'> = {}
 ): Promise<RecipeRow[]> {
   const { signal } = opts
-  const chunks = chunkIds(ids, opts.batchSize ?? BATCH_SCANS)
+  const chunks = chunkIds(ids, opts.batchSize ?? LISTING_BATCH_SCANS)
   const n = chunks.length
   let listed = 0
   const listings = await pool(
@@ -153,7 +164,7 @@ export async function buildExport(
 
   // Recipes, merged across batches (D2 step 3).
   const merged = await listMergedRecipes(db, expId, ids, {
-    batchSize: size,
+    batchSize: opts.listingBatchSize ?? LISTING_BATCH_SCANS,
     concurrency: limit,
     signal,
     onProgress: opts.onProgress,

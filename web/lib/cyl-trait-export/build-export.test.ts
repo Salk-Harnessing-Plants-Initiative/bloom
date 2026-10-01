@@ -264,7 +264,7 @@ describe('(d) integrity and RPC failures produce no output', () => {
         tamper: {
           listRecipes: (r: unknown) =>
             (r as { recipe_key: string; n_scans: number }[]).map((x) =>
-              x.recipe_key === K ? { ...x, n_scans: x.n_scans === 2 ? 1 : x.n_scans } : x
+              x.recipe_key === K ? { ...x, n_scans: x.n_scans - 1 } : x
             ),
         },
       }

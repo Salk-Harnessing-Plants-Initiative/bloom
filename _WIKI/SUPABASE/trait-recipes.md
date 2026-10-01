@@ -221,9 +221,11 @@ limit:
 
 - pass an explicit `recipe_key_` to every coverage and trait call (NULL means "latest", which mixes
   recipes) and never a NULL `scan_ids_` (which means the whole experiment);
-- merge per-batch `list_trait_recipes` rows: sum `n_scans`, take the max `newest_source_id` and the
-  other fields from the batch holding it, order by `newest_source_id` descending with NULLs last,
-  and take the first as the default;
+- list recipes in as few `list_trait_recipes` calls as possible: one call over all of experiment 1's
+  18,471 scans took 1.26 s on staging (2026-10-01), and the web exporter lists up to 20,000 scans
+  per call. If a selection is split, merge the per-batch rows: sum `n_scans`, take the max
+  `newest_source_id` and the other fields from the batch holding it, order by `newest_source_id`
+  descending with NULLs last, and take the first as the default;
 - check each trait read's row count against PostgREST's exact count, and page scan selections by
   keyset until an empty page;
 - fail rather than write a partial or mixed file if any call errors, any selected scan lacks a
