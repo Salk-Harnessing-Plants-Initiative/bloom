@@ -101,7 +101,7 @@ erDiagram
 "public.cyl_scan_latest_source" |o--|| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_counts" |o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
 "public.scrna_genotypes" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
-"public.scrna_genotypes" }o--o| "public.arabidopsis_accessions" : "FOREIGN KEY (accession_id) REFERENCES arabidopsis_accessions(id)"
+"public.scrna_genotypes" }o--o| "public.accessions" : "FOREIGN KEY (accession_id) REFERENCES accessions(id)"
 "public.scrna_de_runs" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_de_genes" }o--|| "public.scrna_de" : "FOREIGN KEY (dataset_id, de_id) REFERENCES scrna_de(dataset_id, id) ON DELETE CASCADE"
 "public.scrna_de_genes" }o--|| "public.scrna_genes" : "FOREIGN KEY (dataset_id, gene_id) REFERENCES scrna_genes(dataset_id, id)"

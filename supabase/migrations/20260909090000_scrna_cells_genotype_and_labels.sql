@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS public.scrna_genotypes (
   dataset_id   BIGINT  NOT NULL REFERENCES public.scrna_datasets (id),
   name         TEXT    NOT NULL,
   -- The accession this genotype is, when it is one.
-  accession_id BIGINT  REFERENCES public.arabidopsis_accessions (id),
+  accession_id BIGINT  REFERENCES public.accessions (id),
   -- The dataset's wild type. Set by the ingest, never guessed from the name.
   is_control   BOOLEAN NOT NULL DEFAULT false,
   -- The construct a transgenic line carries.

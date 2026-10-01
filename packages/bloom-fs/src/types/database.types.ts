@@ -3884,7 +3884,7 @@ export type Database = {
             foreignKeyName: "scrna_genotypes_accession_id_fkey"
             columns: ["accession_id"]
             isOneToOne: false
-            referencedRelation: "arabidopsis_accessions"
+            referencedRelation: "accessions"
             referencedColumns: ["id"]
           },
           {
