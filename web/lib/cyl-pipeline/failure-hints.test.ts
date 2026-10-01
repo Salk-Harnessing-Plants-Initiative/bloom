@@ -6,7 +6,15 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { BACKSTOP_MESSAGE, isNoOpCandidate, likelyCause, NO_OP_NOTE, WRITEBACK_NO_RESULT_MESSAGE } from "./failure-hints";
+import {
+  BACKSTOP_MESSAGE,
+  DISPATCH_REFUSED_MESSAGES,
+  failedScanCause,
+  isNoOpCandidate,
+  likelyCause,
+  NO_OP_NOTE,
+  WRITEBACK_NO_RESULT_MESSAGE,
+} from "./failure-hints";
 import { stageInProblems } from "./stage-in";
 
 const meta = (species_name: string | null, plant_age_days: number | null) => ({ species_name, plant_age_days });
@@ -108,5 +116,34 @@ describe("WRITEBACK_NO_RESULT_MESSAGE", () => {
     expect(match, "NO_RESULT_MESSAGE literal not found in ingest.py").not.toBeNull();
     expect(WRITEBACK_NO_RESULT_MESSAGE).toBe(match![1]);
     expect(WRITEBACK_NO_RESULT_MESSAGE).not.toBe(BACKSTOP_MESSAGE);
+  });
+});
+
+describe("failedScanCause", () => {
+  it("gives the metadata hint for an ordinary failure", () => {
+    expect(failedScanCause("stage-in: species missing", meta(null, 14))).toBe("Likely cause: species missing");
+    expect(failedScanCause(WRITEBACK_NO_RESULT_MESSAGE, meta("pennycress", null))).toBe("Likely cause: plant age missing");
+  });
+
+  it("gives nothing for a scan the dispatch worker refused, whatever its metadata", () => {
+    // bloom#863: a refused scan never reached stage-in, so a missing species or
+    // age didn't cause it, and saying so would misattribute the failure.
+    for (const message of DISPATCH_REFUSED_MESSAGES) {
+      expect(failedScanCause(message, meta(null, null))).toBeNull();
+    }
+  });
+});
+
+describe("DISPATCH_REFUSED_MESSAGES", () => {
+  it("are the dispatch worker's refusal texts, read from dispatch_worker.py", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("../../../services/workflows/dispatch_worker.py", import.meta.url)),
+      "utf8",
+    );
+    const block = /_REFUSAL_MESSAGES = \{([^}]*)\}/.exec(source);
+    expect(block, "_REFUSAL_MESSAGES not found in dispatch_worker.py").not.toBeNull();
+    const texts = [...block![1].matchAll(/"[a-z]+":\s*"([^"\n]+)"/g)].map((m) => m[1]);
+    expect(texts).toHaveLength(2);
+    expect([...DISPATCH_REFUSED_MESSAGES].sort()).toEqual([...texts].sort());
   });
 });

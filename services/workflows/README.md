@@ -238,7 +238,7 @@ Each pass, the worker claims the next queued run of any type, builds its Workflo
 
 A Cell Ranger Workflow takes `sample` and `reference` from the run's `params` and runs the registered `cellranger-count-template`: `stage-reference`, then `sample-pipeline` with the run's `run_key` as its run id. A run with `sra_runs` also runs `fetch-sra` alongside `stage-reference`, given the run IDs comma-separated, and `sample-pipeline` waits for both, so its final `.h5ad` goes to `runs_output/<run_key>/h5ad/`. Its name is fixed per run (`scrna-cellranger-<environment>-<run id>-<hash of run_key>`), so the same run is never submitted twice. It carries the labels `workflow-type`, `rnaseq-run-id` (the `rnaseq_runs` id, the same label for every workflow type) and `environment`. It runs as `bloom-workflow` with the GHCR pull secret, and is deleted 24 hours after it finishes, so its step logs can still be read the next day (`WORKFLOWS_RNASEQ_TTL_SECONDS` overrides it; the sleap-roots `WORKFLOWS_K8S_TTL_SECONDS` doesn't apply). Tests compare the body with `argo/scrna/cellranger/cellranger-count-workflow.yaml` and the template's inputs, so a change to either shows up as a failing test.
 
-The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none.
+The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none. Its compose environment equals `cyl-pipeline-worker`'s (a test enforces it), so it also receives `CYL_PIPELINE_TRIGGER_ENABLED` and `WORKFLOWS_K8S_PIPELINE_*`, but it ignores them: RNA-seq dispatch is not gated by that switch.
 
 
 ### RNA-seq status poller
@@ -269,25 +269,54 @@ and for each claimed batch:
    recorded in the sibling `SLEAP_ROOTS_PIPELINE_REF` — a CI job checks the copy
    against the _pinned commit_, which catches "the copy and the pin disagree",
    not "upstream has moved on"; see bloom #737) and applying exactly
-   four overrides on top of it: the batch's own `scan-ids`; attribution
+   six overrides on top of it: the batch's own `scan-ids`; attribution
    labels — `submitted-by: bloom-pipeline`/`pipeline-run-id`/`batch-index`/
    `environment`, **merged** into the vendored file's own labels rather than
    replacing them (mandatory — raw K8s API submission gets none of Argo's
    automatic `creator` label); a `ttlStrategy` (the submitting identity has no
    `delete` RBAC, so Argo's own controller must clean up completed Workflows
    instead — this override is dispatch-only, deliberately never added to the
-   shared file); and `metadata.namespace`, forced to the configured
-   `WORKFLOWS_K8S_NAMESPACE` (see below). Everything else — the DAG (which
+   shared file); `metadata.namespace`, forced to the configured
+   `WORKFLOWS_K8S_NAMESPACE` (see below); and this environment's stage
+   directories and credential (see "Each environment's own directories and
+   credential" below). Everything else — the DAG (which
    references the five already-registered `WorkflowTemplate`s:
    `sleap-roots-images-downloader-template` → `sleap-roots-predictor-template`
    → `sleap-roots-trait-extractor-template` → `sleap-roots-write-back-template`
-   → `sleap-roots-exit-gate-template`), `spec.volumes`, `spec.entrypoint`,
+   → `sleap-roots-exit-gate-template`), the volume set, `spec.entrypoint`,
    `spec.serviceAccountName` — passes through from the vendored file unmodified.
 2. POSTs it directly to the K8s API server
    (`{WORKFLOWS_K8S_API_URL}/apis/argoproj.io/v1alpha1/namespaces/{WORKFLOWS_K8S_NAMESPACE}/workflows`)
    with a Bearer token + CA cert — not the `argo` CLI, not the Argo Server.
 3. Records the outcome via `complete_cyl_pipeline_batch` (success) or
-   `fail_cyl_pipeline_batch` (failure — terminal for now, no automatic retry).
+   `fail_cyl_pipeline_batch` (failure — terminal for now, no automatic retry),
+   or, for a refused batch, `fail_cyl_pipeline_batch` before any submission (see
+   below).
+
+**Each environment's own directories and credential (bloom#863).** Prod and
+staging submit into the same namespace, so each sets its own stage root and
+Supabase credential Secret in its `.env.*.defaults`
+(`WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT`, `WORKFLOWS_K8S_PIPELINE_SECRET_NAME`;
+the committed values live there, not here). The three stage volumes become
+`<root>/input`, `<root>/predictions` and `<root>/traits`, and
+`bloom-credentials` mounts that Secret. Staging's values equal the vendored
+file's own, so its Workflows are unchanged. Every run in one environment
+shares that environment's directories, which skip-if-done depends on. The
+vendored volume set is checked as a closed contract: anything but those three
+hostPaths and that one Secret is a configuration error, so a volume added
+upstream can't reach the cluster pointing at shared storage.
+
+**Refusal.** Unless `CYL_PIPELINE_TRIGGER_ENABLED` is exactly `true` (the
+same switch bloom-web reads, read here at start-up) and both values above are
+present and valid, the worker fails every batch it claims at once, with "Pipeline
+dispatch is turned off in this environment" or "Pipeline dispatch is not
+configured in this environment", and submits nothing. Which variable, and why,
+is logged at WARNING. Turning the switch off is not a pause: batches already
+queued fail too, and the worker reads it only at start-up, so it must be
+recreated (`docker compose up -d`) for a change to take effect. This covers
+every batch on the queue, whether its run
+came from the web trigger or a direct `POST /workflows/pipeline`; a manual
+`argo submit` is outside it.
 
 **Namespace is a single hardcoded value for v1** (`WORKFLOWS_K8S_NAMESPACE`,
 default `runai-busch-lab`) — no `lab`/`project` column exists on any
@@ -499,6 +528,17 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
    last with `kubectl auth can-i get pods --subresource=log -n runai-busch-lab
    --as=system:serviceaccount:runai-busch-lab:bloom-pipeline`, which must print `yes`;
    without it every log request answers 502.
+6. For the pipeline itself (bloom#863), before switching the environment on with
+   `CYL_PIPELINE_TRIGGER_ENABLED=true`: a **separate** Supabase account for the
+   cluster's stage-in and write-back (also `is_workflows`, but not the service's
+   own user from steps 1–2), stored as a RunAI Generic secret (Credentials → Generic
+   secret, Project-scoped to busch-lab; RunAI prefixes the name `genericsecret-`)
+   holding `credentials.txt`, whose name is the environment's
+   `WORKFLOWS_K8S_PIPELINE_SECRET_NAME`; and the three directories under its
+   `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` on the `/hpi/hpi_dev` NFS. Nothing creates
+   either, and a missing one leaves the pods `Pending`, not `Failed`. Neither
+   `bloom-pipeline` nor `argo-user` can read Secrets, so check the secret in the
+   RunAI console.
 
 ## Configuration
 
@@ -521,6 +561,9 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_K8S_NAMESPACE`       | `runai-busch-lab`       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Single hardcoded namespace for v1 (not a credential — never eagerly required)                                                                                                                                                                             |
 | `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `cyl-pipeline-worker` only. `ttlStrategy.secondsAfterCompletion` on every submitted Workflow, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required)                                                                                                                 |
 | `WORKFLOWS_K8S_ENV_LABEL`       | `dev`                   | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required)                |
+| `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). This environment's stage root: the three stage volumes become `<root>/input`, `/predictions`, `/traits` (bloom#863). An absolute POSIX path; no default. Missing or invalid, every claimed batch fails "not configured" |
+| `WORKFLOWS_K8S_PIPELINE_SECRET_NAME` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). The Kubernetes Secret `bloom-credentials` mounts — this environment's own Supabase pipeline credential (bloom#863). No default. Missing or invalid, every claimed batch fails "not configured" |
+| `CYL_PIPELINE_TRIGGER_ENABLED` | – | `cyl-pipeline-worker` (and bloom-web; `rnaseq-worker` receives it and ignores it). On only for exactly `true`; otherwise every claimed batch fails "turned off" and nothing is submitted. Read at start-up |
 | `WORKFLOWS_WORKER_POLL_SECONDS` | `5`                     | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check                                                                                                                                                                           |
 | `WORKFLOWS_STATUS_POLL_SECONDS` | `15`                    | `cyl-status-poller` only. Sleep between sweep cycles, and the retry interval for the startup Supabase connection check. Not wired into either compose file's `environment:` block, matching `WORKFLOWS_WORKER_POLL_SECONDS`'s own treatment — the code-side default governs every deployed environment today |
 | `WORKFLOWS_DISPATCH_VT_SECONDS` | `60`                    | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery                                                                                                                                      |
