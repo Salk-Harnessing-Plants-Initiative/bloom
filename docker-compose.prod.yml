@@ -119,6 +119,9 @@ services:
       SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
+      # Starting cylinder pipeline runs from Bloom; "true" in staging, "false" in
+      # prod until bloom#863 (web/lib/cyl-pipeline/trigger-enabled.ts).
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
       # Read by web/lib/config/validate-on-boot.ts in production via the
       # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
       # boot fails if unset. Format:

@@ -6,6 +6,8 @@ The route handler SHALL apply these checks in order, before reading the body and
 2. **Origin:** an `Origin` header SHALL be present and not `null`. Its host, including any port, SHALL equal case-insensitively the first comma-separated value of `x-forwarded-host` if present, otherwise `host`. Otherwise the handler responds `403`.
 3. **Session:** `getSession()` SHALL return an `access_token`. Otherwise the handler responds `401`.
 
+When starting runs is switched off (requirement "Starting pipeline runs can be switched off per environment"), the handler responds `503` before these checks.
+
 #### Scenario: Non-JSON post is refused
 - **WHEN** a request arrives with `Content-Type: text/plain`, or `text/plain; application/json`, and a valid session cookie
 - **THEN** the handler responds `415`, never reads the body, and makes no upstream request
@@ -25,6 +27,22 @@ The route handler SHALL apply these checks in order, before reading the body and
 #### Scenario: Unauthenticated same-origin call is refused
 - **WHEN** a same-origin JSON request arrives with no session
 - **THEN** the handler responds `401` and makes no upstream request
+
+### Requirement: Starting pipeline runs can be switched off per environment
+The web app SHALL offer run actions, and the trigger proxy SHALL accept a request, only when the server-side setting `CYL_PIPELINE_TRIGGER_ENABLED` is exactly `true`, read at request time. Otherwise:
+- no run action, scan checkbox, "Select all shown" or selection bar is rendered, on any surface;
+- `POST /api/cyl/pipeline` responds `503` before reading the session or body, and makes no upstream request;
+- the live views (runs list, drill-down, experiment panel) are unchanged.
+
+It is `true` in staging and `false` in prod until bloom#863 is fixed, because every dispatched Workflow mounts the staging Supabase credential.
+
+#### Scenario: Switched off hides the run actions
+- **WHEN** `CYL_PIPELINE_TRIGGER_ENABLED` is unset, `false` or `TRUE`, and a member opens a scan, experiment, accession or drill-down page
+- **THEN** no run action is rendered, and the experiment page's runs panel still renders
+
+#### Scenario: Switched off refuses the proxy
+- **WHEN** `CYL_PIPELINE_TRIGGER_ENABLED` is not `true` and a same-origin signed-in member posts a valid body
+- **THEN** the handler responds `503`, and neither the session nor the body is read and no upstream request is made
 
 ### Requirement: Trigger proxy validates the body locally and forwards a rebuilt body
 The route handler SHALL respond `413` when the body exceeds 256 KB, measured in bytes, whether or not a `Content-Length` header is present. It SHALL respond `422` for malformed JSON, for a non-object body, and for any violation of these rules:
@@ -145,7 +163,7 @@ A `scan_ids` action whose id count exceeds `MAX_TRIGGER_SCAN_IDS` SHALL be disab
 - **THEN** it is disabled and explains the limit
 
 ### Requirement: Confirm dialog shows read-only resolved params and a pre-check, without predicting skips
-The dialog SHALL enumerate the target's scans from `cyl_scans_extended` using the trigger's filters: `scan_id`, `wave_id`, `experiment_id`, or `scan_id IN (...)`. It SHALL read in pages of 1000 ordered by `scan_id` until a page is empty, and send `scan_ids` filters in chunks of at most 200. It SHALL read K and L with one `cyl_scan_latest_source` query per chunk of at most 200 scan ids.
+The dialog SHALL enumerate the target's scans from `cyl_scans_extended` using the trigger's filters: `scan_id`, `wave_id`, `experiment_id`, or `scan_id IN (...)`. It SHALL read in pages of 1000 ordered by `scan_id` until a page is empty, and send `scan_ids` filters in chunks of at most 200. It SHALL read K and L with one `cyl_scan_latest_source` query per chunk of at most 200 scan ids, and which scans have at least one image with one `cyl_scans` query per chunk of at most 200 ids, embedding at most one `cyl_images` row per scan.
 
 The dialog SHALL keep confirm disabled until enumeration, the pre-check and the concurrent-run query have all settled.
 
@@ -155,7 +173,7 @@ It SHALL display, in this order:
    - N = 0: "No scans to run".
    - A `scan_ids` selection enumerates fewer scans than selected: list the missing ids.
    - N > `MAX_TRIGGER_SCAN_IDS` for a `scan_ids` target.
-3. **Stage-in warning:** a count of scans whose species is blank, or whose age is null or not a whole number: "*will fail at stage-in — ask a Bloom admin to fix the plant metadata*". These scans are not included in the params groups.
+3. **Stage-in warning:** a count of scans whose species is blank, or whose age is null or not a whole number: "*will fail at stage-in — ask a Bloom admin to fix the plant metadata*". These scans are not included in the params groups. Separately, a count of scans with no images: "*have no images and will fail at stage-in*" (bloomctl's stage-in fails a scan with no frames).
 4. **Concurrent runs.** Runs that meet all of the following, up to 10, then "and M more":
    - created within the last 7 days;
    - `status` not `complete` or `failed`;
@@ -164,10 +182,10 @@ It SHALL display, in this order:
 
    Each entry shows its id, requester, counts-first display state and age, and links to its drill-down.
 5. **Pre-check line.**
-   - When K = N > 0, the all-results notice replaces it: "*All N scans already have pipeline results. Unless images, parameters, models or code changed, this will likely re-confirm existing results and the trait views won't change.*"
+   - When K = N > 0, the all-results notice replaces it: "*All N scans already have pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.*"
    - Otherwise: "*K of N already have pipeline results.*"
 
-   A details disclosure holds the full text: "*L more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All N will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code.*" Its first sentence is omitted when L = 0.
+   A details disclosure holds the full text: "*L more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All N will be sent; the cluster skips scans it has already processed with the same models and code.*" Its first sentence is omitted when L = 0.
    - N is the number of enumerated scans.
    - K is the number with `max_source_id IS NOT NULL`.
    - L is the number with a `cyl_scan_latest_source` row whose `max_source_id IS NULL`.
@@ -179,7 +197,7 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 #### Scenario: Pre-check separates pipeline results from legacy traits
 - **WHEN** 40 scans are enumerated: 38 have `max_source_id` not null, 1 has a row with `max_source_id` null, and 1 has no row
 - **THEN** the pre-check line reads "38 of 40 already have pipeline results."
-- **AND** its details read "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster may skip work for scans it has already processed with the same images, parameters, models and code."
+- **AND** its details read "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code."
 
 #### Scenario: Everything already has results
 - **WHEN** K = N = 12
@@ -189,6 +207,10 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 - **WHEN** 30 scans have species `" Pennycress "` and age 14, 8 have `"Pennycress"` and age 21, and 2 have a null age
 - **THEN** the dialog shows `pennycress · cylinder · 14 — 30` and `pennycress · cylinder · 21 — 8`
 - **AND** it warns that 2 scans will fail at stage-in
+
+#### Scenario: Scans without images are flagged
+- **WHEN** 40 scans are enumerated and 2 of them have no `cyl_images` rows
+- **THEN** the dialog says "2 scans have no images and will fail at stage-in"
 
 #### Scenario: Totals span multiple pages
 - **WHEN** an experiment has 2,500 scans
@@ -219,12 +241,18 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 - **THEN** confirm stays disabled until the acknowledgement is ticked
 
 ### Requirement: Confirm dialog submits once and reports outcomes without inviting duplicate runs
-The dialog SHALL guard submission with a synchronous in-flight flag, so that repeated clicks before the request settles produce exactly one request. It SHALL report outcomes as follows:
+The dialog SHALL guard submission with a synchronous record kept per browser tab and keyed by the target's level and id (scan ids deduplicated and sorted), so that repeated clicks before the request settles produce exactly one request.
+- The dialog's target and title are fixed when it opens; later changes to its caller's target don't reach what is checked or sent.
+- Once a target is sending, has started, or may have started, it stays so for that tab until the page is reloaded, including after its dialog is closed, reopened or unmounted and across in-app navigation. Reopening shows that state instead of a confirm. Only a refusal, which proves nothing started, clears it.
+- The dialog never invites another start of a target in that state.
+
+It SHALL report outcomes as follows:
 - **Success:** replace the confirm action with a success state. It shows the returned `pipeline_run_id` and `scan_count`, notes any difference between `scan_count` and N, and links to `/app/cyl-pipeline-runs/<id>`. It says: "*Results arrive when each batch of up to 25 scans finishes; counts often stay at 0 for most of the run. Reload the traits page to see new results.*"
-- **`429`:** "*Too many requests — this limit is shared with video generation. Try again in about a minute.*" Confirm is re-enabled.
-- **`502` or `504`:** a message that the run may have started, with a link to `/app/cyl-pipeline-runs`. Confirm is not re-enabled.
+- **`429`:** "*Too many requests — this limit is shared with other workflow actions, such as video generation and Cell Ranger runs. Try again in about a minute.*" Confirm is re-enabled.
+- **`502`, `504`, any other `5xx` except `503`, a lost connection, or a success body without a run id and scan count:** a message that the run may have started, with a link to `/app/cyl-pipeline-runs`. Confirm is not re-enabled.
 - **`401`:** "session expired — sign in again".
-- **`404` or `422`:** the returned detail, with correction allowed.
+- **`503`:** the proxy's switched-off refusal (upstream 5xx reach the dialog as `502`). The returned detail, and confirm is re-enabled.
+- **`404` or `422` from the trigger, or the proxy's own `403`, `413`, `415` or `422`:** the returned detail, with correction allowed.
 - **Enumeration or pre-check query failure:** an error, and confirm is disabled.
 
 #### Scenario: Double click creates one request
@@ -242,6 +270,27 @@ The dialog SHALL guard submission with a synchronous in-flight flag, so that rep
 #### Scenario: Expired session
 - **WHEN** the proxy responds `401`
 - **THEN** the dialog says the session expired
+
+#### Scenario: Switched off after the page loaded
+- **WHEN** the proxy responds `503` with "Starting pipeline runs from Bloom is not enabled in this environment."
+- **THEN** the dialog shows that detail, doesn't say the run may have started, and confirm is re-enabled
+
+#### Scenario: Closing mid-request doesn't reopen to a fresh confirm
+- **WHEN** confirm is clicked, the dialog is closed before the request settles, and the same target's dialog is reopened
+- **THEN** the dialog shows that the run is starting, offers no enabled confirm, and no second request is made
+- **AND** once the request succeeds, the reopened dialog shows the started run
+
+#### Scenario: May-have-started survives closing and reopening
+- **WHEN** the proxy responds `504`, and the dialog is closed and the same target's dialog reopened
+- **THEN** the dialog still says the run may have started, and confirm stays disabled
+
+#### Scenario: A refusal allows another try
+- **WHEN** the proxy responds `429`, and the dialog is closed and the same target's dialog reopened
+- **THEN** confirm is enabled
+
+#### Scenario: The target is fixed when the dialog opens
+- **WHEN** the dialog opens on scans 1, 2 and 3, and its caller's target changes to scans 1 and 2 while it is open
+- **THEN** its heading still names the 3-scan title, confirm sends scans 1, 2 and 3, and after a `504` confirm stays disabled
 
 ### Requirement: Live views synchronise from Realtime without polling
 Every live view (the runs list, the drill-down and the experiment panel) SHALL subscribe to Supabase Realtime `postgres_changes`, on a channel topic unique per mounted instance. Each view SHALL:
@@ -405,7 +454,7 @@ It SHALL show:
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 - **Failed rows:**
   - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
-  - when the row's `error_message` equals the status poller's backstop message *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
+  - when the row's `error_message` equals write-back's no-result message or the status poller's backstop message, *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
@@ -432,7 +481,7 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 - **THEN** the row shows "Likely cause: plant age missing"
 
 #### Scenario: The no-op note is narrow
-- **WHEN** a failed row has an `error_message` other than the backstop message
+- **WHEN** a failed row has an `error_message` other than write-back's no-result message or the backstop message
 - **THEN** no bloom#900 note is shown, even if the scan has pipeline results
 
 ### Requirement: Experiment page shows that experiment's runs

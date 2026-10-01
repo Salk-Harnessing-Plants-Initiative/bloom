@@ -48,8 +48,9 @@ Three §10 items can't be delivered honestly against today's backend: params (#8
   - **PR 5 (trigger batching):** `services/workflows/pipeline.py`, a new `services/workflows/postgrest_batches.py`, their tests, and `services/workflows/README.md`.
   - **PR 3, 4, 6 (web):**
     - new: `web/lib/cyl-pipeline/**`, `web/components/cyl-pipeline/**`, `web/components/nav-sections.ts`, `web/app/app/cyl-pipeline-runs/**`, `web/app/api/cyl/pipeline/route.ts`;
-    - edited: `LiveIndicator.tsx` (optional `state` prop), `web/app/app/layout.tsx` (imports `nav-sections`), the experiment, accession and scan pages, `caddy/Caddyfile` (comment only), `web/README.md`.
-- **Users:** any signed-in member can trigger runs, as the backend already allows. The rate limit (5 requests per 60 s per user) is shared with video generation.
+    - edited: `LiveIndicator.tsx` (optional `state` prop), `web/app/app/layout.tsx` (imports `nav-sections`), the experiment, accession and scan pages, `caddy/Caddyfile` (comment only), `web/README.md`;
+    - PR 6's switch (bloom#863): `.env.prod.defaults`, `.env.staging.defaults`, `docker-compose.dev.yml`, `docker-compose.prod.yml` and `tests/unit/test_env_defaults.py`.
+- **Users:** any signed-in member can trigger runs, as the backend already allows. The rate limit (5 requests per 60 s per user) is shared with the other workflow actions: video generation, run status and Cell Ranger.
 - **Issues:**
   - Refs bloom#15. Its §10 v1 ships; the issue stays open for phases 3–4.
   - Follow-ups: #897, #898, #899. Fixed here: #901 (batching and the `{}` skip; its non-empty-params row-volume half stays open).

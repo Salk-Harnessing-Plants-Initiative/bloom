@@ -10,6 +10,8 @@
  *
  * Checks run in this order, before the handler reads the body or contacts
  * upstream (Next has already buffered the body; see trigger-proxy.ts):
+ *  0. Starting runs is switched on (503 otherwise; trigger-enabled.ts). Off in
+ *     prod until bloom#863 is fixed.
  *  1. Media type `application/json` (415). A no-cors form post cannot send it,
  *     and a cross-site fetch that does is preflighted, which nothing here
  *     answers with `Access-Control-Allow-*`.
@@ -30,6 +32,7 @@
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
+import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 import { parseTriggerRequest } from "@/lib/cyl-pipeline/trigger-request";
 import {
   TRIGGER_BODY_MAX_BYTES,
@@ -44,6 +47,9 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(request: Request): Promise<NextResponse> {
+  if (!isPipelineTriggerEnabled()) {
+    return detailResponse(503, "Starting pipeline runs from Bloom is not enabled in this environment.");
+  }
   if (!isJsonMediaType(request.headers)) {
     return detailResponse(415, "Content-Type must be application/json.");
   }

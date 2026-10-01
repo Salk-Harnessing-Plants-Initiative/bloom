@@ -87,6 +87,7 @@ beforeEach(() => {
   fetchSpy = vi.fn().mockImplementation(async () => upstreamJson(RESULT));
   vi.stubGlobal("fetch", fetchSpy);
   delete process.env.WORKFLOWS_URL;
+  vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "true");
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
@@ -96,8 +97,26 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.clearAllMocks();
+});
+
+describe("when starting runs is switched off (bloom#863)", () => {
+  it.each([["unset", undefined], ["false", "false"], ["TRUE", "TRUE"]])(
+    "answers 503 with CYL_PIPELINE_TRIGGER_ENABLED %s, before reading the session or body, and never calls upstream",
+    async (_label, value) => {
+      if (value === undefined) vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", undefined as unknown as string);
+      else vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", value);
+      const { req, pullSpy } = streamed(SAME_ORIGIN);
+      const res = await routeModule.POST(req);
+      expect(res.status).toBe(503);
+      expect((await res.json()).detail).toMatch(/not enabled/i);
+      expect(mockedGetSession).not.toHaveBeenCalled();
+      expect(pullSpy).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("module contract", () => {

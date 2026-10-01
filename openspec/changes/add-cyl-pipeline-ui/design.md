@@ -39,7 +39,7 @@ Claims are checked against `origin/staging` @ `7f3ff94a` (2026-09-24). Paths are
 - The trigger is synchronous and **not idempotent**. It inserts the run, then the scan rows (a separate request), then one enqueue RPC per 25-scan batch (`:300-328`), with no transaction. A run can therefore exist even though the caller saw an error.
 - **URL-length hazard, at every target level (bloom#901).** The `scan_ids` existence check (`:191-198`) and the dedup preview each put all ids into one unpaged `.in_()`: the preview's scan-id query (`:212-219`) and its source-id query (`:226-233`, possibly many times N). The gateway returns `414` above roughly 1,300 small ids (measured for PR #650; bloomctl batches since, `bloomcli/src/bloomctl/_postgrest.py`). By the same 8 KB request-line limit that is about 1,160 four-digit scan ids (an estimate: each is 7 bytes once its comma is encoded as `%2C`), so a plain experiment run over roughly 1,150 scans fails today. The preview also fetches every trait row of the requested scans (about 1,035 per scan), which is a volume problem under the 8 s timeout. D9 fixes the URL half, and removes the preview's cost entirely for `params: {}`.
 
-**Rate limit.** 5 requests per 60 s per user, per process; prod runs one worker (`docker-compose.prod.yml:256`). The limit is charged after auth and before `pipeline.py`'s body validation (`main.py:195`). It is shared across `/pipeline`, `GET /runs/{id}`, scan-video and plate-video (`main.py:93,154,195,219`).
+**Rate limit.** 5 requests per 60 s per user, per process; prod runs one worker (`docker-compose.prod.yml:256`). The limit is charged after auth and before `pipeline.py`'s body validation (`main.py:207`). It is shared across `/pipeline`, `GET /runs/{id}`, scan-video, plate-video and the three Cell Ranger routes (`enforce_rate_limit` at `main.py:105,166,207,231,244,265,279`, as of PR 6).
 
 **Tables** (`20260730120000`; never altered since).
 
@@ -106,6 +106,7 @@ Claims are checked against `origin/staging` @ `7f3ff94a` (2026-09-24). Paths are
 - **Body cap.** Next buffers up to 10 MB first, so the handler's 256 KB cap bounds validation, not memory. That is acceptable.
 - **Why a proxy.** The browser client already holds the token for its reads, so the proxy isn't needed to hide it. It gives one place for CSRF, error normalisation and the timeout. It lives under `/api/cyl/*` because Caddy routes `/api/cyl/*`, `/api/gravi/*` and two exact paths to bloom-web, and every other `/api/*` to Kong (`Caddyfile:111-138`).
 - **Duplicates.** There is no upstream idempotency key, and the dialog's in-flight guard stops double clicks only. So 502/504 copy says "may have started" (spec: "Confirm dialog submits once…"). This is conservative: an enumeration 414 fails before any insert, yet still shows that copy.
+- **Per-environment switch.** `CYL_PIPELINE_TRIGGER_ENABLED` (server-side, read per request) must be exactly `true` for any run action to render or for the proxy to accept a request. Staging sets `true`; prod sets `false` until bloom#863 is fixed. PR 6's review found prod fully able to dispatch: prod's trigger has its app-user credentials, and its dispatch worker has the cluster token and API URL. But every Workflow mounts `genericsecret-bloom-staging-pipeline-credentials`, so a prod run's write-back would land in staging. The switch covers bloom-web only: it hides the run actions and refuses the web proxy. The Workflows service's own `POST /workflows/pipeline` is still public and dispatches for any signed-in member, so the switch alone doesn't keep prod from starting runs; bloom#983 tracks a service-side gate, which promoting staging to main needs unless #863 is fixed first. It's pinned by `tests/unit/test_env_defaults.py`.
 - **`MAX_TRIGGER_SCAN_IDS`** equals the trigger's `MAX_SCAN_IDS` (5000) and applies only to `scan_ids` targets. Wave and experiment runs have no size cap once D9 lands; only the ≥ 500 acknowledgement applies.
 
 ### D2. Reads via Supabase + Realtime; no polling
@@ -141,13 +142,13 @@ Polling `GET /runs/{id}` would share the 5/60 s limiter with the trigger and wit
 
 ### D4. Dialog content
 
-- **Enumeration.** It uses `_enumerate`'s filters (`pipeline.py:125-203`), so N matches the trigger's count. `cyl_scans_extended` is owner-rights, and `bloom_user` has `USING (true)` on the base tables. Paging and chunking follow from `.in_()` URL length and the 8 s timeout. K and L come from one `select scan_id, max_source_id` per 200-id chunk.
+- **Enumeration.** It uses `_enumerate`'s filters (`pipeline.py:138-213` as of PR 6), so N matches the trigger's count. `cyl_scans_extended` is owner-rights, and `bloom_user` has `USING (true)` on the base tables. Paging and chunking follow from `.in_()` URL length and the 8 s timeout. K and L come from one `select scan_id, max_source_id` per 200-id chunk.
 - **Resolved params.** They are for display only. They mirror `resolve_params` today (whose alias map is empty) and are **throwaway**: once a server-side preview exists (#898), it replaces them. #897 must not extend them client-side.
 - **K and L.**
   - K counts `max_source_id IS NOT NULL`. That includes manually ingested sources, the #900 case.
   - L counts NULL rows: legacy source-less traits, or (rarely, admin-only) traits all deleted. Hence "typically" in the copy. A successful run replaces L's traits in trait views.
 - **"May skip".** Skipping is decided per stage on the cluster, against its own outputs.
-- **Concurrent runs.** The query reads recent runs whose status is not `complete`/`failed` (created within 7 days, limit 20). It filters for incomplete counts in the client, because PostgREST can't compare two columns, then checks membership through the view. Each entry shows its counts-first label and age, never "in progress", because #706/#710 runs never settle.
+- **Concurrent runs.** The query first asks the view which runs touched the enumerated scans' experiments within 7 days (the view carries each run's `created_at`), then reads those runs whose status is not `complete`/`failed`, and filters for incomplete counts in the client, because PostgREST can't compare two columns. Membership comes first so that unfinished runs on other experiments can't crowd these out, and "and M more" is the true count. (PR 6's review replaced a first draft that read the 20 newest unfinished runs lab-wide before checking membership: frozen #706/#710 runs could fill those 20.) Each entry shows its counts-first label and age, never "in progress", because #706/#710 runs never settle.
 - **Large runs** (N ≥ 500) need an acknowledgement, because runs can't be cancelled from Bloom.
 - **Layout.** The dialog shows, in this order:
   1. headline;
@@ -202,13 +203,13 @@ Rejected alternatives:
 
 ### D7. Selection, re-run, and failure hints
 
-- **"Run this accession".** It uses every `plant.cyl_scans` id, via a pure helper called before the page's in-place sort. The grid renders only the first frame-1 scan per day.
+- **"Run this accession".** It uses every `plant.cyl_scans` id, via a pure helper called before the page's in-place sort. The grid renders only the first scan per day, and nothing for a scan without a frame-1 image or without an age.
 - **Checkboxes** sit outside the `PlantScan` link, so selecting never navigates. The selection is per page.
 - **Re-run gating.**
   - "Re-run failed" waits for settled header counts.
   - "Re-run scans without a result" is shown only when U > 0 on a `complete`/`failed` run, so it never duplicates "Re-run failed".
 - **No-op false failure (bloom#900).** A re-run over a scan whose only source was ingested outside any run is reported `failed`, because the #875 fallback matches only sources that a run-scan row already carries (`20260917140000:163-191`).
-  - The note is shown only when the row's `error_message` equals the poller's backstop text (`status_poller.py:238-241`, shared as a constant) **and** the scan currently has pipeline results.
+  - The note is shown only when the row's `error_message` equals one of the two no-result texts, **and** the scan currently has pipeline results. The texts are write-back's `NO_RESULT_MESSAGE` (bloomctl `cyl/ingest.py`, recorded by `fail_cyl_pipeline_run_scans_without_result`) and the poller's backstop text (`status_poller.py`), each shared as a constant and pinned by a test. Write-back's is the one a #900 no-op actually gets: every failed row on staging runs 9–11 carries it (PR 6 found this; the first version matched only the backstop text, which no staging run shows). A real stage-in failure gets the same text, which is why results are also required.
   - It says re-running won't change this.
 - **Requester names** are out of scope: `phenotypers` is invisible to `bloom_user` and holds scanner operators.
 

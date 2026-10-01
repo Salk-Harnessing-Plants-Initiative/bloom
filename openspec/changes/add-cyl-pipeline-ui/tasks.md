@@ -138,7 +138,9 @@
   - `page.tsx` awaits `searchParams` (typed `Promise<Record<string, string | string[] | undefined>>`) and passes the parsed values;
   - `TraitExplorer` calls `resolveSelection` **inside** its data effect, after the options are computed. A ref marks the URL params as consumed after the first load;
   - key `TraitExplorer` on `${wave}-${age}`.
-- [ ] 2.5 Verify with `cd web && npx tsc --noEmit && npm run test:unit && npm run build` and `npx prettier --check`. Then `/pre-merge` and `/review-pr`.
+- [x] 2.5 Verify with `cd web && npx tsc --noEmit && npm run test:unit && npm run build` and `npx prettier --check`. Then `/pre-merge` and `/review-pr`.
+
+  **(PR 2, #912, merged 2026-09-28 as `3d67e468`; ticked in PR 6. Its description records `tsc --noEmit` and `npm run build` passing, `npm run test:unit` 1071 tests in 85 files, Prettier not applied to `web/` (as in 8.7's note), and the review-fix commit `e03105b8`.)**
 
 ## PR 3: live read-only views
 
@@ -260,7 +262,7 @@
   - the header params line for `{}` and for non-empty params;
   - 5000 rows take 6 `cyl_pipeline_run_scans` calls;
   - the empty state;
-  - a failed row gets its likely cause, and the #900 note only for backstop text with results. A row that turns failed live triggers exactly one metadata/latest-source lookup;
+  - a failed row gets its likely cause, and the #900 note only for a no-result text with results (write-back's or the poller's backstop; PR 6 added write-back's). A row that turns failed live triggers exactly one metadata/latest-source lookup;
   - "current in trait views";
   - the timing note;
   - the experiment links;
@@ -350,7 +352,7 @@
     - A dropped *final* event has no later event: a scan row's last transition, or the run's last rollup. It stays missing until a reconnect, a reload or Refresh.
     - Staging restarts Realtime on every deploy, so cold starts recur.
   - **Cleanup.** Queue purged (it was empty), services restarted, no run rows left.)**
-- [ ] 8.7 Verify:
+- [x] 8.7 Verify:
   - `openspec validate add-cyl-pipeline-ui --strict`;
   - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`;
   - `npx prettier --check <changed files>`;
@@ -359,7 +361,9 @@
   Then run `/pre-merge` and `/review-pr`. PR body: "Refs #15".
 
   **(PR 3, 2026-09-28: `openspec validate --strict` valid; `tsc --noEmit` clean; `npm run test:unit` 1348/1348 after both PR review rounds and the nav rename; `npm run build` passes with CI's env (`NEXT_PUBLIC_SUPABASE_*` placeholders, as in `pr-checks.yml`; without them the existing `/test` page fails to prerender); migration-isolation "no migration change"; no `supabase/` or `database.types.ts` in the diff. `prettier --check` flags every changed file, and equally untouched merged ones such as `TraitExplorer.tsx` and `navigation.tsx`: Prettier isn't applied to `web/` and CI doesn't run it, so the files follow the surrounding code instead.)**
-- [ ] 8.8 **After the staging deploy of PR 3, and after bloom#939 (Realtime tenant through Kong) is fixed there:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
+- [x] 8.8 **After the staging deploy of PR 3, and after bloom#939 (Realtime tenant through Kong) is fixed there:** as a second signed-in member, decode the token (`role: bloom_user`) and confirm live updates arrive when a run row changes. That proves Realtime-as-`bloom_user` before any UI trigger ships. Record the result on the PR.
+
+  **(PR 6, 2026-09-30, staging deploy `b0d455bf`: run 18 was started by `bloom-staging-ops` (a `bloom_writer`) while the author watched the runs list as a plain member. It appeared at the top live, as "another member · cb4de37b", and changed to "Finished · 1 succeeded" without a reload. The author's account has no role flags, and the live `custom_access_token_hook` gives such accounts `bloom_user`. That role was inferred from the hook; the token itself wasn't decoded. The #939 anon-join-after-hard-reload remainder didn't affect the views in this session: the indicator stayed Live across page loads and across a 90 s cable disconnect.)**
 
 ## PR 4: trigger proxy
 
@@ -450,26 +454,28 @@
 
 ## 10. Dialog logic and queries
 
-- [ ] 10.1 **Test first.** Write `params-summary.test.ts`:
+- [x] 10.1 **Test first.** Write `params-summary.test.ts`:
   - the spec scenario, exactly;
   - flagged scans are excluded from the groups;
   - it uses `stageInProblems()`;
   - the output's key set equals exactly `['groups', 'stageInCount']`.
-- [ ] 10.2 Implement `params-summary.ts`.
-- [ ] 10.3 **Test first.** Extend `queries.test.ts`:
+- [x] 10.2 Implement `params-summary.ts`.
+- [x] 10.3 **Test first.** Extend `queries.test.ts`:
   - `fetchTargetScans(target)` uses the trigger's filters, pages of 1000 ordered by `scan_id`, and `scan_ids` chunks of ≤ 200; 2,500 scans give N = 2500.
   - `fetchConcurrentRuns(experimentIds)`:
-    1. read runs with `status=not.in.(complete,failed)` and `created_at` within 7 days, limit 20;
-    2. filter to incomplete counts in the client;
-    3. check the view for `run_id=in.(…)` (chunked) and `experiment_id=in.(…)`;
-    4. return at most 10, plus a count of the rest.
-- [ ] 10.4 Implement them.
-- [ ] 10.5 **Test first.** Write `accession-scan-ids.test.ts`: it returns every `plant.cyl_scans[].id`, de-duplicated and without mutating its input. Two same-day scans plus one with `cyl_images: []` give 3 ids.
-- [ ] 10.6 Implement `web/components/cyl-pipeline/accession-scan-ids.ts`.
+    1. ask the view for `experiment_id=in.(…)` (chunked) with `created_at` within 7 days;
+    2. read those runs (`id=in.(…)`, chunked) with `status=not.in.(complete,failed)`;
+    3. filter to incomplete counts in the client;
+    4. return at most 10, plus the true count of the rest.
+
+    (PR 6 review: the first draft read the 20 newest unfinished runs lab-wide before checking membership, so frozen runs elsewhere could hide this experiment's. It now matches the spec, with no candidate cap.)
+- [x] 10.4 Implement them.
+- [x] 10.5 **Test first.** Write `accession-scan-ids.test.ts`: it returns every `plant.cyl_scans[].id`, de-duplicated and without mutating its input. Two same-day scans plus one with `cyl_images: []` give 3 ids.
+- [x] 10.6 Implement `web/components/cyl-pipeline/accession-scan-ids.ts`.
 
 ## 11. Dialog, selection, entry points
 
-- [ ] 11.1a **Test first.** Write `RunPipelineDialog.test.tsx`, part 1 (content):
+- [x] 11.1a **Test first.** Write `RunPipelineDialog.test.tsx`, part 1 (content):
   - confirm is disabled until the queries settle;
   - headline;
   - blockers: N = 0, a missing selection id, N > `MAX_TRIGGER_SCAN_IDS` for a `scan_ids` target. An 8,000-scan experiment has no size blocker;
@@ -480,33 +486,37 @@
   - params groups collapsed beyond 3, with the caption;
   - the ≥ 500 acknowledgement;
   - banned phrases are absent.
-- [ ] 11.1b **Test first.** Part 2 (submit):
+- [x] 11.1b **Test first.** Part 2 (submit):
   - two synchronous clicks give one `POST`, to exactly `/api/cyl/pipeline`;
   - the success state, with the timing and reload note and the mismatch note;
   - 429, 502/504, 401, and 404/422 behaviour;
   - a query failure.
-- [ ] 11.2 Implement `RunPipelineDialog.tsx` and `RunPipelineButton.tsx`.
-- [ ] 11.3 **Test first.** Write `ScanSelection.test.tsx`:
+- [x] 11.2 Implement `RunPipelineDialog.tsx` and `RunPipelineButton.tsx`.
+- [x] 11.3 **Test first.** Write `ScanSelection.test.tsx`:
   - counts by scan id;
   - `closest('a') === null`, and clicking doesn't navigate;
   - "Select all shown";
   - the bar is hidden at 0 and carries the per-page note;
   - "Run selected (3)" submits exactly those ids through the mocked `fetch`;
   - it is disabled over the limit.
-- [ ] 11.4 Implement the selection components.
-- [ ] 11.5 **Test first.** Page render tests:
+- [x] 11.4 Implement the selection components.
+- [x] 11.5 **Test first.** Page render tests:
   - the scan page shows the button only when the scan exists;
   - the experiment page shows "Run experiment", plus "Run wave" only when there is more than one wave;
   - the accession page shows "Run this accession" with exactly `accessionScanIds(plants)` (computed before the in-place sort), disabled over the limit, plus the checkboxes.
-- [ ] 11.6 Wire the three pages.
-- [ ] 11.7 **Test first.** Extend `RunDetailLive.test.tsx`:
+- [x] 11.6 Wire the three pages.
+- [x] 11.7 **Test first.** Extend `RunDetailLive.test.tsx`:
   - "Re-run failed" is gated, submits exactly the failed ids, and warns when a row has the #900 note;
   - "Re-run scans without a result (M)" appears only when U > 0 on `complete`/`failed` runs;
   - the settled case offers only "Re-run failed";
   - both are disabled over the limit.
 
   Extend `ExperimentRunsPanel.test.tsx` with the optimistic insert.
-- [ ] 11.8 Implement.
+- [x] 11.8 Implement.
+- [x] 11.9 **Test first** (added in PR 6's review, bloom#863). A server-side switch, `CYL_PIPELINE_TRIGGER_ENABLED`, which is on only for exactly `true`:
+  - off hides every run action and selection on the scan, experiment, accession and drill-down pages;
+  - off makes the proxy answer 503 before reading the session or body, and the dialog shows that 503's detail as a refusal, not "may have started" (review round 2);
+  - staging defaults set it `true` and prod `false`, and prod compose passes it to bloom-web (`tests/unit/test_env_defaults.py`).
 
 ## 12. Live verification on staging (before PR 6 merges)
 
@@ -518,37 +528,60 @@
 - For a null-age scan, have a `bloom_admin` set one test scan's `plant_age_days` to NULL, and revert it afterwards.
 - Write down a manual cancel procedure (delete the Argo workflows, purge pgmq) before any multi-scan run.
 
-- [ ] 12.1 Run one scan from the scan page, and record the run id. Confirm:
+- [x] 12.1 Run one scan from the scan page, and record the run id. Confirm:
   - the list and drill-down update without a reload and reach a finished state (intermediate states may be skipped within one sweep);
   - there is exactly 1 scan row, with counts 1/1;
   - there are no timer-driven reads and no `/workflows/runs` calls.
-- [ ] 12.2 Trigger a `scan_ids` run of at least 3 scans via "Run this accession" or the grid. Confirm:
+- [x] 12.2 Trigger a `scan_ids` run of at least 3 scans via "Run this accession" or the grid. Confirm:
   - it appears on the experiment panel;
   - it appears live for a second member, whose decoded `role` is `bloom_user`;
   - the same for `bloom_writer`/`bloom_admin` accounts, if they exist.
-- [ ] 12.3 Trigger a run including the `--poison` scan and the null-age scan (via the scan page or "Run this accession"; null-age scans don't render in the grid). Confirm:
+- [x] 12.3 Trigger a run including the `--poison` scan and the null-age scan (via the scan page or "Run this accession"; null-age scans don't render in the grid). Confirm:
   - the dialog warned about the null-age scan;
   - the actual per-scan `error_message` values, recorded;
   - "Re-run failed" submits exactly the failed ids.
 
   Also confirm a staging run with `status='complete' and failed_count>0` renders by rule 3 or rule 5, according to its counts.
-- [ ] 12.3b Run a scan whose only source came from `bloomctl cyl ingest-result`. Record its status. If it is `failed` with the backstop text, confirm the #900 note, and add the evidence to bloom#900 (confirm with the user before posting).
-- [ ] 12.4 Turn the network adapter off for 30 s during an active run, then back on. Confirm:
+- [x] 12.3b Run a scan whose only source came from `bloomctl cyl ingest-result`. Record its status. If it is `failed` with a no-result text (write-back's, or the poller's backstop), confirm the #900 note, and add the evidence to bloom#900 (confirm with the user before posting).
+- [x] 12.4 Turn the network adapter off for 30 s during an active run, then back on. Confirm:
   - `CHANNEL_ERROR`/`CLOSED` then `SUBSCRIBED` in the console;
   - the indicator shows offline, then live;
   - the counts resync.
-- [ ] 12.5 If an empty wave exists, confirm the dialog shows "No scans to run". Note that any zero-scan run triggered via `curl` leaves a permanent "No scans matched" row.
+- [x] 12.5 If an empty wave exists, confirm the dialog shows "No scans to run". Note that any zero-scan run triggered via `curl` leaves a permanent "No scans matched" row.
 - [ ] 12.6 Observe whether a large reconciliation burst disconnects other Realtime widgets, and record it.
-- [ ] 12.7 Leave a drill-down open past the JWT lifetime. Confirm it recovers or shows offline with refresh.
-- [ ] 12.8 For the runs in 12.1–12.3, confirm `done_count`/`failed_count` equal the per-status tallies. Record this as evidence for `fix-cyl-pipeline-run-scan-status` 8.1–8.4, and tick those only in that change, only if they match.
-- [ ] 12.9 Open a run's traits link and confirm it lands on the run's wave and day, with the run's scans visible.
-- [ ] 12.10 Trigger one experiment-level run of the largest practical staging experiment (at least 1,500 scans if one exists). Use the manual cancel procedure afterwards if it isn't wanted to finish. Confirm:
+- [x] 12.7 Leave a drill-down open past the JWT lifetime. Confirm it recovers or shows offline with refresh.
+- [x] 12.8 For the runs in 12.1–12.3, confirm `done_count`/`failed_count` equal the per-status tallies. Record this as evidence for `fix-cyl-pipeline-run-scan-status` 8.1–8.4, and tick those only in that change, only if they match.
+- [x] 12.9 Open a run's traits link and confirm it lands on the run's wave and day, with the run's scans visible.
+- [x] 12.10 Trigger one experiment-level run of the largest practical staging experiment (at least 1,500 scans if one exists). Use the manual cancel procedure afterwards if it isn't wanted to finish. Confirm:
   - it is accepted as **one** run;
   - `scan_count` is right;
   - the drill-down loads every row.
 
   Record the trigger latency, since it makes 25-scan enqueue RPCs sequentially.
-- [ ] 12.11 Record run ids, screenshots and mismatches in the PR. Mismatches are fixed or filed, not waived. Then verify as in 8.7, and run `/pre-merge` and `/review-pr`.
+- [x] 12.11 Record run ids, screenshots and mismatches in the PR. Mismatches are fixed or filed, not waived. Then verify as in 8.7, and run `/pre-merge` and `/review-pr`.
+
+  **(PR 6, 2026-09-30, local web app against staging `b0d455bf`; details are in PR #965's body. There are no screenshots: the body has a written screens summary instead, by the author's decision.)**
+  - **Preconditions:**
+    - contract pin a9 on the RPC and on the live trait-extractor template;
+    - test scans TEST-E2E-019 and 020, created with `create-test-scan --good`; 014 and 007 are the poison scans;
+    - 020's age was set to NULL by a `bloom_writer` before staging, then reverted (no staging account is a `bloom_admin`);
+    - the cancel procedure was written before the multi-scan runs.
+  - **12.1:** run 15, one row, updated live to "Finished · 1 succeeded". No polling: no browser data requests in 6½ idle minutes, and no `GET /runs/…` at the workflows service.
+  - **12.2:** run 16 was listed live on the experiment panel. Run 18, started by another member, appeared live for a `bloom_user` (see 8.8). The third bullet is unchecked: the only `bloom_writer`, bloom-staging-ops, started run 18 but didn't watch it.
+  - **12.3:** run 16 (11 scans) showed the stage-in warning for the null-age scan. 015–019 were written; 010–013, 014 and 020 failed, all with write-back's "no result produced for this scan by write-back". The #900 note shows only where the scan has results, and "Re-run failed scans (6)" lists exactly those. It wasn't submitted on staging. That it submits exactly those ids is covered by unit tests: `RunDetailLive.test.tsx` for the dialog's target, and `RunPipelineDialog.test.tsx` for what the dialog sends. Complete runs with failures render by rule 3.
+  - **12.3b:** covered by the hand-submitted-source variant (runs 11 and 16; the other session's comment on #900). This found that the note had to match write-back's text as well (`05abc061`).
+  - **12.4:** during run 17, a 90 s cable disconnect took the indicator Live → offline → Live, followed by a full snapshot refetch.
+  - **12.5:** not applicable. Staging has no wave with zero scans.
+  - **12.9:** run 11's link opened wave 9999 · day 2 with no fallback note.
+  - **12.10:** run 17, Missouri_Soy_Repetition, 1,515 scans: one run, `scan_count` 1515, all rows loaded, about 3 s trigger latency. It was cancelled because staging's image bytes are missing (every frame 404s). About 165 failed downloader pods from retries fed into srp#98.
+  - **12.7:** run 18's drill-down, opened at about 19:17Z, still showed Live about 80 minutes later (20:38Z), past the one-hour JWT lifetime. Staging's Kong log shows the client's token refreshes (20:03–20:30Z) and Realtime rejoins (20:31, 20:36Z). Accepted by the author on the indicator. Caveat: no event was received on that tab after expiry, and the log can't separate that tab from other browser activity.
+  - **12.11:** PR #965's body records runs 15–18, a screens summary, and the mismatches, each fixed or filed: #955, #900 (plus a comment), #706, #983, #985, #857, srp#98 and #971. Verified as in 8.7 on `6ab77bec`:
+    - web unit tests 1868/1868 (133 files); `tsc` clean; `npm run build` passes; `npm audit` 0 critical; `openspec validate --strict` valid; migration isolation passes;
+    - PR Checks run 36787853084 passed.
+
+    `/review-pr` round 2 was posted and every item was resolved (dispositions comment on #965), and `/pre-merge` was done.
+  - **Still open:** 12.6, left open by the author. It wasn't observed: a large burst needs a run over many scans, real experiments' image bytes are missing on staging, and the 20 test scans give at most a 20-row burst.
+  - **12.8:** runs 15 (1/0), 16 (5/6) and 18 (1/0): `done_count`/`failed_count` equal the row tallies, rechecked read-only on 2026-09-30. Recorded in `fix-cyl-pipeline-run-scan-status`: 8.3 and 8.4 ticked there; 8.2's evidence noted but left unticked (no rollout log watch); 8.1 unticked.
 
 ## 13. After merge
 

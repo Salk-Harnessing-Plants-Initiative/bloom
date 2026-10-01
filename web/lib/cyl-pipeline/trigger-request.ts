@@ -19,6 +19,11 @@
 // reads that file and fails if the two drift. Applies to `scan_ids` targets only.
 export const MAX_TRIGGER_SCAN_IDS = 5000;
 
+/** Why a `scan_ids` action over the limit can't be sent, as its button and the confirm dialog say it. */
+export function scanIdsOverLimitText(count: number): string {
+  return `This covers ${count} scans; one run of listed scans takes at most ${MAX_TRIGGER_SCAN_IDS}.`;
+}
+
 type EmptyParams = Record<string, never>;
 
 export type TriggerRequest =
@@ -78,4 +83,20 @@ export function parseTriggerRequest(raw: unknown): ParsedTriggerRequest {
       params: {},
     },
   };
+}
+
+export interface TriggerResult {
+  pipeline_run_id: number;
+  scan_count: number;
+}
+
+/**
+ * A well-formed trigger answer: `pipeline_run_id` and `scan_count` are safe
+ * integers. The proxy passes only these through as a success, and the confirm
+ * dialog treats anything else as "may have started".
+ */
+export function isTriggerResult(parsed: unknown): parsed is TriggerResult {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const { pipeline_run_id, scan_count } = parsed as Record<string, unknown>;
+  return Number.isSafeInteger(pipeline_run_id) && Number.isSafeInteger(scan_count);
 }
