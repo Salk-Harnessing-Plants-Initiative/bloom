@@ -44,9 +44,9 @@ Fixture contract (design D6): an autouse fixture finds the migration by glob
 (`*_resolve_cyl_noop_redelivery_scan_from_source.sql`, exactly one match, else fail), applies its
 body (`sql_body`, BEGIN/COMMIT stripped) on `pg_conn` with `SET LOCAL lock_timeout = '5s'`, asserts
 the connection is in a transaction, and calls `pg_conn.rollback()` in teardown. Tests use
-`SAVEPOINT` / `ROLLBACK TO SAVEPOINT` only and never `commit()`/`rollback()` mid-test; each ends by
-asserting the new fallback is still the live body (`pg_get_functiondef` contains
-`FROM public.cyl_trait_sources`). No test here uses a second connection (it would see the
+`SAVEPOINT` / `ROLLBACK TO SAVEPOINT` only and never `commit()`/`rollback()` mid-test; the
+fixture's teardown asserts the live body (`pg_get_functiondef`) still equals the one it applied.
+No test here uses a second connection (it would see the
 committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc.py`
 (`_seed_scan`, `_envelope`, `_call`, `_seed_run_scan_for_writeback`, `_run_scan_status`,
 `_source_id`, `_source_snapshot`). "Unchanged" means equal `_source_snapshot` before and after;
@@ -73,9 +73,10 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
   for S1; `wf-b` has a queued row for S2 only → matched false, S2 row untouched.
 - [x] 3.8 `test_noop_does_not_resurrect_a_failed_row`: `wf-b`'s row `'failed'` → matched false,
   row untouched.
-- [x] 3.9 `test_noop_does_not_replace_another_source_link` (D8): fresh delivery of source X under
-  `wf-b` for scan S (row `('written', X)`); then a manual-origin source Y for S (different key) is
-  re-delivered under `wf-b` → matched false, row untouched.
+- [x] 3.9 `test_noop_does_not_replace_another_source_link` (D8): source Y for scan S is first
+  delivered under `wf-a` with a seeded row (so #880's carrying-row lookup would find it too, which
+  makes the test red on the old body); a fresh source X for S is then delivered under `wf-b` (row
+  `('written', X)`); re-delivering Y under `wf-b` → matched false, row untouched.
 - [x] 3.10 `test_same_key_different_scan_noop_marks_only_the_recorded_scan`: manual origin for S1;
   re-deliver the same key with S2's `image_ids` under `wf-b`, which has queued rows for S1 and S2 →
   S1 `('written', <source>)`, S2 untouched, no `cyl_scan_traits` rows for S2.
@@ -102,8 +103,9 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
 
 - [x] 3.18 `test_differs_from_previous_only_in_the_fallback_block`: ordered removed/added line lists
   (as `M2_REMOVED`/`M2_ADDED` in `test_cyl_trait_recipe_migration_files.py`) for the function
-  section; the trailing backfill `SELECT` is absent. Comments are compared too, so the two
-  rewritten comments of design D5 are pinned.
+  section; the trailing backfill `SELECT` is absent. Comments are stripped before comparing;
+  `test_the_two_false_fallback_comments_are_rewritten` checks only that the two retired phrases are
+  gone, and outside the block the region is compared line for line.
 - [x] 3.19 `test_previous_is_the_newest_definition_before_this_one` (`index - 1`, as the
   precedents; no "newest overall" tripwire).
 - [x] 3.20 `test_noop_branch_reads_the_source_row_first`: on comment-stripped text, from
@@ -114,8 +116,9 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
   v_source_id`.
 - [x] 3.21 `test_body_keeps_single_markers`: exactly one `v_was_noop := true;` and one
   `pinned_version constant text :=`.
-- [x] 3.22 `test_full_revoke_is_restated` (migration and rollback) and
-  `test_rollback_restores_previous_body_verbatim`.
+- [x] 3.22 `test_migration_restates_owner_and_full_revoke_without_backfill` and
+  `test_rollback_restores_previous_body_verbatim` (which also checks the rollback's owner, REVOKE
+  and GRANT).
 
 ### 3c. Red run (record output here)
 
@@ -129,6 +132,26 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
   3.14's own guard was never red in that run (it failed earlier, on the match), so it was
   mutation-tested: a `PERFORM 1 FROM public.cyl_scan_traits WHERE source_id = v_source_id`
   injected into the no-op path made it fail (`cyl_scan_traits` scans 1 → 2); file restored.
+
+### 3d. Review of PR #1001 (`/review-pr`, 2026-10-01; posted with the author's go-ahead)
+
+- [x] 3.24 Red first: `test_the_relink_guard_says_why_it_matches_this_source` (unit) failed — the
+  fallback comment did not explain `OR source_id = v_source_id`; green after the comment rewrite
+  (design D8). Same edit gives the real reason the intermediates table is not read.
+- [x] 3.25 `test_nothing_outside_the_function_but_the_transaction` (unit, migration and rollback):
+  only `BEGIN;`/`COMMIT;` outside the CREATE…GRANT region (a9 precedent). Passes as a pin.
+- [x] 3.26 `test_noop_reads_no_trait_or_blob_table` now asserts both tables are present in
+  `pg_stat_xact_user_tables` (was vacuous on `{}`), and `test_trait_read_guard_detects_mutation`
+  commits the mutation proof: a `PERFORM … FROM public.cyl_scan_traits` injected into the live body
+  makes the count rise; the body is restored in `finally`.
+- [x] 3.27 `test_fresh_delivery_after_a_noop_link_wins`: the guard is one-directional — a fresh
+  delivery after a no-op link takes the row.
+- [x] 3.28 `test_rollback_restores_the_previous_behaviour` re-applies the migration in `finally`;
+  its assert that tested nothing is gone.
+- [x] 3.29 Docstrings of `…never_dispatched_workflow_reports_no_match` and
+  `test_fallback_finds_nothing_for_a_never_dispatched_workflow` say they now share a branch.
+- [x] 3.30 Not added, with reasons: a two-connection race test (D6: a second connection sees the
+  old body); two rows for one scan under one Workflow name (pre-existing, bloom#881).
 
 ## 4. PR A implementation (green)
 
@@ -234,6 +257,12 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
   integration" -v && uv run ruff check`; `cd web && npx vitest run lib/cyl-pipeline
   "app/app/cyl-pipeline-runs/[runId]" && npx tsc --noEmit`; `/pre-merge`; `/pr-description` with
   "Part of #900, part of #875", no closing keywords.
+- [ ] 7.16 Run page: say that "Result recorded" includes a result this run matched rather than
+  produced (design Risks), or mark such rows — e.g. when the row's `argo_workflow_name` differs
+  from its source's (incomplete for sources older than #976). Test first in
+  `RunDetailLive.test.tsx`; add or modify the `cyl-pipeline-ui` scenario.
+- [ ] 7.17 The unmatched-no-op message (7.1/7.10) must not say the row may still be queued when it
+  is already `'written'` with another source (design D3/D8); test first in 7.1.
 
 ## 8. After deploy (each step needs the author's go-ahead)
 

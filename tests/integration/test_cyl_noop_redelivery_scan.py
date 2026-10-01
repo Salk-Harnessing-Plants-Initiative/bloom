@@ -32,7 +32,6 @@ from tests.integration.test_cyl_writeback_rpc import (  # noqa: E402
     _envelope,
     _seed_run_scan_for_writeback,
     _seed_scan,
-    _source_id,
     _source_snapshot,
     _trait,
 )
@@ -282,6 +281,20 @@ def test_noop_does_not_replace_another_source_link(pg_conn):
         assert _row(cur, wb, scan_id) == before
 
 
+def test_fresh_delivery_after_a_noop_link_wins(pg_conn):
+    # The relink guard is one-directional: a no-op never replaces a link, but a fresh
+    # delivery (step 9) always does, so the row ends on the source this run produced.
+    with pg_conn.cursor() as cur:
+        scan_id, imgs, key_y, y = _manual_origin(cur)
+        wb = _wf()
+        _seed_run_scan_for_writeback(cur, scan_id, wb)
+        _assert_noop_return(_deliver(cur, imgs, key_y, workflow=wb), matched=True)
+        assert _row(cur, wb, scan_id)[1:] == ("written", y)
+        x = _deliver(cur, imgs, _key(), workflow=wb)
+        assert x["was_noop"] is False and x["status_update_matched"] is True
+        assert _row(cur, wb, scan_id)[1:] == ("written", x["source_id"])
+
+
 def test_same_key_different_scan_noop_marks_only_the_recorded_scan(pg_conn):
     with pg_conn.cursor() as cur:
         s1, _, idem, src = _manual_origin(cur)
@@ -341,24 +354,52 @@ def test_manual_origin_redelivery_survives_reconciliation(pg_conn):
         assert _row(cur, wb, s1)[1:] == ("written", src)
 
 
+def _scan_counts(cur) -> dict:
+    """Sequential + index scans this transaction has made of the trait and blob tables."""
+    cur.execute(
+        "SELECT relname, coalesce(seq_scan, 0) + coalesce(idx_scan, 0) "
+        "  FROM pg_stat_xact_user_tables "
+        " WHERE relname IN ('cyl_scan_traits', 'cyl_scan_intermediates')"
+    )
+    counts = dict(cur.fetchall())
+    # Both rows must be there; a renamed table would otherwise make {} == {} pass.
+    assert set(counts) == {"cyl_scan_traits", "cyl_scan_intermediates"}, counts
+    return counts
+
+
+def _noop_scan_delta(cur) -> dict:
+    """Scans of the two tables made by one no-op re-delivery that takes the fallback."""
+    scan_id, imgs, idem, _ = _manual_origin(cur)
+    wb = _wf()
+    _seed_run_scan_for_writeback(cur, scan_id, wb)
+    before = _scan_counts(cur)
+    _assert_noop_return(_deliver(cur, imgs, idem, workflow=wb), matched=True)
+    after = _scan_counts(cur)
+    return {name: after[name] - before[name] for name in before}
+
+
 def test_noop_reads_no_trait_or_blob_table(pg_conn):
     # Behavioural half of the timeout guard (design D1): the no-op path never scans
     # cyl_scan_traits (~28.8M rows on staging, no index leading on source_id).
-    def scans(cur):
-        cur.execute(
-            "SELECT relname, coalesce(seq_scan, 0) + coalesce(idx_scan, 0) "
-            "  FROM pg_stat_xact_user_tables "
-            " WHERE relname IN ('cyl_scan_traits', 'cyl_scan_intermediates')"
-        )
-        return dict(cur.fetchall())
-
     with pg_conn.cursor() as cur:
-        scan_id, imgs, idem, _ = _manual_origin(cur)
-        wb = _wf()
-        _seed_run_scan_for_writeback(cur, scan_id, wb)
-        before = scans(cur)
-        _assert_noop_return(_deliver(cur, imgs, idem, workflow=wb), matched=True)
-        assert scans(cur) == before
+        assert _noop_scan_delta(cur) == {
+            "cyl_scan_traits": 0,
+            "cyl_scan_intermediates": 0,
+        }
+
+
+def test_trait_read_guard_detects_mutation(pg_conn):
+    # Proves the test above can fail: a no-op path that reads cyl_scan_traits is caught.
+    marker = "                 WHERE id = v_source_id;\n"
+    injected = "                PERFORM 1 FROM public.cyl_scan_traits WHERE source_id = v_source_id LIMIT 1;\n"
+    with pg_conn.cursor() as cur:
+        original = _live_body(cur)
+        assert original.count(marker) == 1
+        cur.execute(original.replace(marker, marker + injected))
+        try:
+            assert _noop_scan_delta(cur)["cyl_scan_traits"] > 0
+        finally:
+            cur.execute(original)
 
 
 # --------------------------------------------------------------------------- #
@@ -400,11 +441,13 @@ def test_rollback_restores_the_previous_behaviour(pg_conn):
         scan_id, imgs, idem, _ = _manual_origin(cur)
         wb = _wf()
         _seed_run_scan_for_writeback(cur, scan_id, wb)
+        migration = sql_body(_exactly_one("migrations", MIGRATION_GLOB))
         cur.execute(sql_body(_exactly_one("rollbacks", ROLLBACK_GLOB)))
-        assert NEW_BODY_MARKER not in _live_body(cur)
-        _assert_hardened(cur)
-        _assert_noop_return(_deliver(cur, imgs, idem, workflow=wb), matched=False)
-        assert _row(cur, wb, scan_id)[1:] == ("queued", None)
-        # Re-apply so the fixture's end-of-test check sees the body this module tests.
-        cur.execute(sql_body(_exactly_one("migrations", MIGRATION_GLOB)))
-        assert _source_id(cur, idem) is not None
+        try:
+            assert NEW_BODY_MARKER not in _live_body(cur)
+            _assert_hardened(cur)
+            _assert_noop_return(_deliver(cur, imgs, idem, workflow=wb), matched=False)
+            assert _row(cur, wb, scan_id)[1:] == ("queued", None)
+        finally:
+            # Re-apply, so the fixture's end-of-test check compares the body under test.
+            cur.execute(migration)

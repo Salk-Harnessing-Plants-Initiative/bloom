@@ -205,3 +205,31 @@ def test_rollback_restores_previous_body_verbatim():
     path = _exactly_one(ROLLBACKS, ROLLBACK_GLOB)
     assert _rpc_region(path) == _rpc_region(PREV)
     _assert_owner_and_full_revoke(path)
+
+
+def _outside_region(path: Path) -> list[str]:
+    """Non-blank, non-comment lines outside the CREATE…GRANT region."""
+    lines = _lines(path)
+    start = next(i for i, line in enumerate(lines) if line.startswith(RPC_REGION_START))
+    end = next(i for i, line in enumerate(lines) if line == RPC_REGION_END)
+    outside = lines[:start] + lines[end + 1 :]
+    return [s for line in outside if (s := line.split("--", 1)[0].strip())]
+
+
+def test_nothing_outside_the_function_but_the_transaction():
+    # Precedent: test_cyl_writeback_a9_migration_files. No guard, DROP, backfill or data
+    # statement may ride along with the redefinition, in the migration or the rollback.
+    for path in (
+        _exactly_one(MIGRATIONS, NEW_GLOB),
+        _exactly_one(ROLLBACKS, ROLLBACK_GLOB),
+    ):
+        assert _outside_region(path) == ["BEGIN;", "COMMIT;"], path.name
+
+
+def test_the_relink_guard_says_why_it_matches_this_source():
+    # `OR source_id = v_source_id` never decides anything in a single statement (the
+    # primary UPDATE already matched such a row); it exists for a concurrent retry of the
+    # same source. The comment must say so, or it reads as dead code (review of PR #1001).
+    _, new_block, _ = _split(_rpc_region(_exactly_one(MIGRATIONS, NEW_GLOB)))
+    comment = _comment_text(new_block)
+    assert "source_id = v_source_id" in comment and "concurrent" in comment, comment

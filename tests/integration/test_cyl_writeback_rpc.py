@@ -886,7 +886,10 @@ def test_noop_redelivery_under_never_dispatched_workflow_reports_no_match(pg_con
     argo_workflow_name, and "wf-orphan" has no cyl_pipeline_run_scans row at all.
     Since bloom#900 the fallback resolves the scan from the source's own
     cyl_trait_sources.scan_id, but its targeted UPDATE (scoped to "wf-orphan")
-    finds no row and must not invent a match — status_update_matched is False."""
+    finds no row and must not invent a match — status_update_matched is False.
+    It now exercises the same branch as
+    test_fallback_finds_nothing_for_a_never_dispatched_workflow; they differ only in
+    how the source was first written (no workflow name here, a Bloom run there)."""
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
         env = _envelope(imgs, idempotency_key="redeliver-orphan")
@@ -981,12 +984,13 @@ def test_fallback_chains_across_a_third_workflow_redelivery(pg_conn):
 
 
 def test_fallback_finds_nothing_for_a_never_dispatched_workflow(pg_conn):
-    """/review-pr behavioral-correctness finding: distinct from
-    test_noop_redelivery_under_never_dispatched_workflow_reports_no_match (where
-    the ORIGINAL delivery never had a workflow name at all). Here the original
-    delivery DID have a workflow name (so even #880's carrying-row lookup would
-    succeed; since bloom#900 the source's own scan_id is read first), but the
-    NEW workflow's own cyl_pipeline_run_scans row was never seeded at all -- not
+    """/review-pr behavioral-correctness finding. Under #880 this was distinct from
+    test_noop_redelivery_under_never_dispatched_workflow_reports_no_match, whose
+    original delivery had no workflow name, so #880's lookup found no scan at all.
+    Since bloom#900 both resolve the scan from the source's own scan_id and differ only
+    in how the source was first written. Here the original delivery DID have a
+    workflow name, but the NEW workflow's own cyl_pipeline_run_scans row was never
+    seeded at all -- not
     just source_id NULL, but no row for (new workflow, scan) exists at all. The
     fallback UPDATE must still degrade cleanly: it matches zero rows, not an
     error, and status_update_matched reports False."""

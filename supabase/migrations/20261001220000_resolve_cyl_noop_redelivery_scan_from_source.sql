@@ -169,12 +169,16 @@ BEGIN
             -- stamped when the source was created, or by the recipe backfill) --
             -- never from this delivery's own image_ids, preserving the "same key,
             -- different scan" rule -- and only when that is NULL from an existing
-            -- run-scan row already carrying this source's id. Neither the trait nor
-            -- the intermediates table is read: no index on the first leads on source_id.
-            -- Then retry the status update scoped to that scan within this workflow
-            -- name, skipping a row already linked to a different source, so a no-op
-            -- never relinks another delivery's result. With no recorded scan and no
-            -- carrying row the update stays at zero rows (status_update_matched false).
+            -- run-scan row already carrying this source's id. The trait table is
+            -- never read (no index on it leads on source_id), nor the intermediates
+            -- table (it misses blob-less sources): the source row already holds the
+            -- scan. Then retry the status update scoped to that scan within this
+            -- workflow name. It skips a row linked to a different source, so a no-op
+            -- never relinks another delivery's result; its "OR source_id =
+            -- v_source_id" half matters only for a concurrent retry of this same
+            -- source, which waits on the first retry's row lock and then re-checks
+            -- the row that retry linked. With no recorded scan and no carrying row
+            -- the update stays at zero rows (status_update_matched false).
             IF v_status_rows = 0 THEN
                 SELECT scan_id INTO v_scan_id
                   FROM public.cyl_trait_sources

@@ -66,7 +66,10 @@ reporting these as failed (`retriable=False` in the batch helper; non-zero exit 
 `cyl ingest-result`): in the first two cases any row stays `queued` and reconciliation closes it
 `failed`, so reporting `skipped` would make bloomctl's summary disagree with `failed_count`. The
 message changes to what happened: already ingested as source N, nothing written, this Workflow's
-row for the scan not updated. The `was_noop: false` message is unchanged.
+row for the scan not updated. The `was_noop: false` message is unchanged. In the D8 case the row
+is already `'written'` with another source and is counted done, so bloomctl's "failed" disagrees
+with `done_count`; PR B's message must not claim the row may still be queued there (review of
+PR #1001).
 
 ### D4 — Remove the UI's bloom#900 note
 
@@ -103,7 +106,9 @@ reverted`.
 New integration tests apply this migration's body inside their own transaction on `pg_conn`
 (supabase_admin) and roll it back. CI's `compose-health-check` applies every migration to a fresh
 DB and runs all of `tests/integration/`, so it is the only run of the existing RPC suite against
-the new body; a green CI run is required evidence.
+the new body; a green CI run is required evidence (PR #1001: 1951 passed). A second connection
+would see the committed old body, so no local test races two deliveries; D8's concurrency
+property is argued, not tested.
 
 ### D7 — Two PRs
 
@@ -119,7 +124,19 @@ The targeted update adds `AND (source_id IS NULL OR source_id = v_source_id)`. S
 several sources (scan 12894756 has four on staging: 133, 168, 198, 228), so a Workflow that
 delivered a fresh source X for a scan and then a no-op of an older source Y for the same scan would
 otherwise relink the row from X to Y. With the guard the row keeps X and the no-op reports
-`status_update_matched: false`.
+`status_update_matched: false`. This is the one case that moves from `true` (#880 relinked) to
+`false`. The guard is one-directional: a fresh delivery (step 8 in the spec's numbering, step 9 in
+the SQL comments) has no such guard and always takes the row.
+
+The `OR source_id = v_source_id` half never decides anything within one statement sequence — the
+primary update would already have matched such a row. It exists for a concurrent retry of the same
+source: under READ COMMITTED the second retry's primary update misses (its snapshot still shows
+`source_id` NULL), its fallback update waits on the first retry's row lock, then re-checks the
+row the first retry linked; without the `OR` it would report a failure for a row that is already
+`'written'` with its own source.
+
+The guard protects data integrity, not authorization: `p_argo_workflow_name` is supplied by the
+caller and never tied to the caller's identity, as before this change.
 
 ## Risks / Trade-offs
 
@@ -128,6 +145,11 @@ otherwise relink the row from X to Y. With the guard the row keeps X and the no-
   which the deployed bloomctl image (`sha-1bc3056`, same check order as HEAD) already reports
   `skipped`. PR B's message reaches the cluster only when the Argo templates' bloomctl pin next
   moves; until then a residual unmatched no-op keeps today's misleading text.
+- **"Result recorded" now also means "matched an existing result".** A rescued row is
+  `'written'` with a source this run did not produce, possibly from a different container build
+  or hardware (the idempotency key does not hash those), and its own output is discarded — as #880
+  already did for Bloom-dispatched originals. The source row records its origin, but the run page
+  does not say so, and PR B removes its one hint (D4). Tracked as tasks 7.16.
 - **Two scans sharing one idempotency key in one batch.** The key hashes `scan_key`, so this needs
   two scans with one `scan_key`; the fallback would then mark the recorded scan's row, which does
   have a result. #880 had the same property.
