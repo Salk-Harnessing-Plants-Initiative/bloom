@@ -266,16 +266,33 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
   - **(d) A read-only parity check** that prod's DB is at staging's migration head for the cyl
     write-back, recipe and contract migrations, and accepts the contract version the shared
     templates emit (compare bloom#685).
-  - **(e) Optional, with a go-ahead.** A one-off Workflow, filtered and labelled `environment=prod`,
-    no GPU, mounting the prod secret and directories, running `test -s` on the credential and
-    `test -d` on each directory.
+  - **(e) Required before 6.5, with a go-ahead** (added by /review-pr on #988). A one-off Workflow,
+    filtered and labelled `environment=prod`, no GPU, mounting the prod secret and directories.
+    It must:
+    - run `test -s` on the credential and `test -d` on each directory;
+    - print only the **host** of `BLOOM_API_URL` (never a secret value) and confirm it is prod's,
+      `bloom.salk.edu`;
+    - sign in once with the account against prod (e.g. `bloomctl` with that credential file), so the
+      account is proven to exist on prod and not on staging.
+
+    Why: nothing at dispatch checks which Bloom a Secret points at. A prod Secret holding staging's
+    `BLOOM_API_URL` would stage staging's images into prod's directories under prod's scan ids.
+    Once the Secret was fixed, stage-in, predict and traits would all skip those scans as done, and
+    write-back would resolve staging's `image_ids` against prod's database: a loud error, or traits
+    recorded under the wrong prod scan.
+  - **(f) Wipe rule.** If any prod Workflow ever ran with an unverified or wrong credential, empty
+    `/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod/{input,predictions,traits}`, including
+    `.locks` and run manifests, before the next prod run.
 - [ ] 6.4 **Promotion 1** (staging→main), with prod's switch `false`. With the author's go-ahead,
   start one prod run with a direct `POST /workflows/pipeline` under a member JWT; prod's web proxy
   answers 503. Confirm it fails at once with "Pipeline dispatch is turned off in this environment"
   and that no `environment=prod` Workflow appears. Record the leftover failed run.
-- [ ] 6.5 After 6.3 **and** 6.4: a one-line PR (Part of #863) flipping `.env.prod.defaults`'s
-  `CYL_PIPELINE_TRIGGER_ENABLED=true`, with the 3.1(d) pin updated in the same commit. On `staging`
-  it is inert.
+- [ ] 6.5 After 6.3 (including (e)) **and** 6.4: a one-line PR (Part of #863) flipping
+  `.env.prod.defaults`'s `CYL_PIPELINE_TRIGGER_ENABLED=true`, with the 3.1(d) pin updated in the
+  same commit. On `staging` it is inert. The worker reads the switch only at start-up, so after
+  promotion 2 confirm prod's `cyl-pipeline-worker` container was recreated (its start time is after
+  the deploy). Do the same check when rolling back by setting the switch to `false`: switching off
+  fails any batches still queued, and is not a pause.
 - [ ] 6.6 **Promotion 2** lands the flip. Then the acceptance pair of runs, with a GPU check and a
   go-ahead first: a numeric scan id that a staging run has processed and a prod run now processes.
   Confirm:

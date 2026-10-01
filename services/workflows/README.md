@@ -311,7 +311,10 @@ same switch bloom-web reads, read here at start-up) and both values above are
 present and valid, the worker fails every batch it claims at once, with "Pipeline
 dispatch is turned off in this environment" or "Pipeline dispatch is not
 configured in this environment", and submits nothing. Which variable, and why,
-is logged at WARNING. This covers every batch on the queue, whether its run
+is logged at WARNING. Turning the switch off is not a pause: batches already
+queued fail too, and the worker reads it only at start-up, so it must be
+recreated (`docker compose up -d`) for a change to take effect. This covers
+every batch on the queue, whether its run
 came from the web trigger or a direct `POST /workflows/pipeline`; a manual
 `argo submit` is outside it.
 

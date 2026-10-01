@@ -104,7 +104,7 @@ exception classes that `dispatch_worker` and the pollers import by name.
 
 **Root rules:**
 
-- Use `PurePosixPath` and string operations only, never `Path` or `os.path`. On Windows,
+- Use string operations on the `/`-split segments only, never `Path`, `PurePosixPath` or `os.path`. On Windows,
   `Path('/hpi/x').is_absolute()` is `False` (checked 2026-09-30), so the developer's machine and CI
   would disagree.
 - Non-empty, absolute, not `/`, with no trailing `/` and no empty segment (`//`).
@@ -169,8 +169,11 @@ outcome and to scope its unsettled rule to those cases.
 
 - Every batch on the queue is dispatched only by this worker. That covers batches enqueued through
   the web proxy and through a direct `POST /workflows/pipeline`.
-- A `bloom_admin` insert into the run tables enqueues nothing, because `enqueue_cyl_pipeline_batch`
-  is `bloom_workflows`-only and there's no trigger. So it was never a dispatch path.
+- A `bloom_admin` insert into the run tables enqueues nothing, because there's no trigger and
+  `enqueue_cyl_pipeline_batch` is executable only by `bloom_workflows` and `service_role` (checked
+  on staging 2026-10-01: not by `anon`, `authenticated`, `bloom_user`, `bloom_writer` or
+  `bloom_admin`). So it was never a dispatch path. A `service_role` enqueue still reaches Argo
+  only through this worker.
 - Unlike #983's option 1 as written ("runs would stay `queued`"), a refused run is created and then
   fails within one poll. The author accepted being refused after creation rather than at the HTTP
   layer.
@@ -246,7 +249,13 @@ this bug.
   §6.3 checks that prod's DB accepts what those templates emit before the flip.
 - **Rollback after the flip.** Reverting this PR alone, once prod's switch is `true`, restores the
   original bug and re-enables bloom-web's run actions in prod. Set prod's switch back to `false` first,
-  or in the same promotion.
+  or in the same promotion, and confirm `cyl-pipeline-worker` was recreated: it reads the switch only
+  at start-up. Switching off fails any batches still queued; it is not a pause.
+- **A Secret pointing at the wrong Bloom.** Nothing at dispatch checks which Bloom instance a
+  credential Secret targets. A prod Secret holding staging's `BLOOM_API_URL` would stage staging's
+  images into prod's directories, and once fixed, the skip-if-done cache would keep them. Mitigated
+  operationally: §6.3(e) verifies the Secret's target host and signs in against prod before the
+  flip, and §6.3(f) wipes prod's directories if a run ever used an unverified credential.
 
 ## Migration Plan
 

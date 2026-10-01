@@ -37,8 +37,9 @@ no compose profile, with prod cluster credentials since before this change. PR #
 `CYL_PIPELINE_TRIGGER_ENABLED` (`false` in prod), but only bloom-web reads it. The Workflows service's
 `POST /workflows/pipeline` stays open to any signed-in member (bloom#983).
 
-Every queued batch reaches Argo through the dispatch worker. `enqueue_cyl_pipeline_batch` is
-`bloom_workflows`-only, and no trigger enqueues on insert
+Every queued batch reaches Argo through the dispatch worker. No member or admin role can call
+`enqueue_cyl_pipeline_batch` (only `bloom_workflows` and `service_role` can, checked on staging
+2026-10-01), and no trigger enqueues on insert
 (`supabase/migrations/20260730120000_create_cyl_pipeline_runs.sql:204-231`).
 
 ## What Changes
