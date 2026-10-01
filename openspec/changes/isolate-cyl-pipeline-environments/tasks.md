@@ -13,7 +13,7 @@ file.
 
 ## 1. Resolvers and the refusal error (`k8s_client.py`)
 
-- [ ] 1.1 **Test first** (`services/workflows/tests/test_k8s_client.py`). Call the private resolvers
+- [x] 1.1 **Test first** (`services/workflows/tests/test_k8s_client.py`). Call the private resolvers
   after `monkeypatch.setenv`/`delenv`, as `test_env_label_defaults_to_dev_when_unset` (`:369-373`)
   does. Never `importlib.reload(k8s_client)`, because that rebinds exception classes other modules
   import by name.
@@ -36,11 +36,11 @@ file.
   - **The exception's place in the hierarchy.** `K8sDispatchRefusedError("off").reason == "off"`.
     `issubclass(K8sDispatchRefusedError, K8sConfigError)` and
     `issubclass(K8sDispatchRefusedError, K8sSubmissionError)` are both `False`.
-- [ ] 1.2 Implement the three resolvers, using `PurePosixPath`, string splitting and `re.fullmatch`.
+- [x] 1.2 Implement the three resolvers, using `PurePosixPath`, string splitting and `re.fullmatch`.
   Bind them to module globals `PIPELINE_HOSTPATH_ROOT`, `PIPELINE_SECRET_NAME` and
   `PIPELINE_DISPATCH_ENABLED`, plus the invalid-reason globals, following `_resolve_ttl_seconds`'
   never-raise shape. Define `K8sDispatchRefusedError(reason)`. Nothing raises it yet.
-- [ ] 1.3 Run `cd services/workflows && uv run --frozen --extra test pytest tests/ -v` and confirm it
+- [x] 1.3 Run `cd services/workflows && uv run --frozen --extra test pytest tests/ -v` and confirm it
   passes. Record the red evidence from 1.1 (counts) in the commit body.
 
 ## 2. The worker settles a refusal at once (`dispatch_worker.py`)

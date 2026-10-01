@@ -1196,3 +1196,160 @@ def test_get_pod_log_raises_a_generic_error_on_a_network_failure(monkeypatch):
     )
     with pytest.raises(K8sStatusError):
         k8s_client.get_pod_log("pod-1", "main", 10, 100)
+
+
+# --- Per-environment root, secret and dispatch switch (bloom#863) -----------
+#
+# Resolved from env at import, like ENV_LABEL. The resolvers are called
+# directly after setenv/delenv; the module is never importlib.reload()-ed,
+# since that would rebind the exception classes dispatch_worker and the
+# pollers import by name.
+
+_STAGING_ROOT = "/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc"
+_PROD_ROOT = "/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod"
+_STAGING_SECRET = "genericsecret-bloom-staging-pipeline-credentials"
+_PROD_SECRET = "genericsecret-bloom-prod-pipeline-credentials"
+
+
+@pytest.mark.parametrize("root", [_STAGING_ROOT, _PROD_ROOT])
+def test_pipeline_hostpath_root_accepts_both_committed_roots(monkeypatch, root):
+    """Judged as a POSIX path on every OS: on Windows,
+    pathlib.Path('/hpi/x').is_absolute() is False, so a Path-based check would
+    reject the real roots on a dev box and accept them in CI."""
+    monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT", root)
+    assert k8s_client._resolve_pipeline_hostpath_root() == (root, None)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "",
+        "   ",
+        "hpi/x",
+        "/",
+        "/hpi/x/",
+        "/hpi//x",
+        "/hpi/x y",
+        "/hpi/x\n",
+        "/hpi/x\t",
+        # DEL, a control character; NUL can't be put in an env var at all.
+        "/hpi/\x7fx",
+        "/hpi/./x",
+        "/hpi/../x",
+        "/hpi/..",
+        "/hpi/.",
+    ],
+)
+def test_pipeline_hostpath_root_rejects_malformed_values_without_raising(
+    monkeypatch, raw
+):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT", raw)
+    value, reason = k8s_client._resolve_pipeline_hostpath_root()
+    assert value is None
+    assert reason
+
+
+@pytest.mark.parametrize(
+    "name", [_STAGING_SECRET, _PROD_SECRET, "a.b", "a" * 253, "a" * 251 + ".b"]
+)
+def test_pipeline_secret_name_accepts_valid_k8s_names(monkeypatch, name):
+    monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", name)
+    assert k8s_client._resolve_pipeline_secret_name() == (name, None)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "",
+        "   ",
+        "Bloom",
+        "bloom_x",
+        "-a",
+        "a-",
+        ".a",
+        "a.",
+        "a..b",
+        "name\n",
+        "a" * 254,
+    ],
+)
+def test_pipeline_secret_name_rejects_malformed_values_without_raising(
+    monkeypatch, raw
+):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raw)
+    value, reason = k8s_client._resolve_pipeline_secret_name()
+    assert value is None
+    assert reason
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("true", True),
+        (None, False),
+        ("false", False),
+        ("TRUE", False),
+        ("1", False),
+        (" true", False),
+        ("true ", False),
+        ("true\n", False),
+    ],
+)
+def test_pipeline_dispatch_is_enabled_only_for_exactly_true(monkeypatch, raw, expected):
+    """Same rule as bloom-web's isPipelineTriggerEnabled, which reads the same
+    CYL_PIPELINE_TRIGGER_ENABLED switch."""
+    if raw is None:
+        monkeypatch.delenv("CYL_PIPELINE_TRIGGER_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("CYL_PIPELINE_TRIGGER_ENABLED", raw)
+    assert k8s_client._resolve_pipeline_dispatch_enabled() is expected
+
+
+def test_importing_with_invalid_pipeline_values_does_not_raise(tmp_path):
+    """An exception at import would crash-loop the worker before it installs
+    its signal handlers; an invalid value must surface as a refusal instead."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = dict(os.environ)
+    env.update(
+        WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT="relative/../x\n",
+        WORKFLOWS_K8S_PIPELINE_SECRET_NAME="Not_A_Name",
+        CYL_PIPELINE_TRIGGER_ENABLED="yes please",
+    )
+    service_dir = Path(k8s_client.__file__).resolve().parent
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import k8s_client as k;"
+            "assert k.PIPELINE_HOSTPATH_ROOT is None and k.PIPELINE_HOSTPATH_ROOT_INVALID;"
+            "assert k.PIPELINE_SECRET_NAME is None and k.PIPELINE_SECRET_NAME_INVALID;"
+            "assert k.PIPELINE_DISPATCH_ENABLED is False",
+        ],
+        cwd=service_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_dispatch_refused_error_carries_its_cause_and_is_its_own_class():
+    exc = k8s_client.K8sDispatchRefusedError("off")
+    assert exc.reason == "off"
+    assert k8s_client.K8sDispatchRefusedError("unconfigured").reason == "unconfigured"
+    # A refusal is neither a config error left unsettled for redelivery nor a
+    # submission attempt recorded as "Argo Workflow submission failed".
+    assert not issubclass(k8s_client.K8sDispatchRefusedError, K8sConfigError)
+    assert not issubclass(k8s_client.K8sDispatchRefusedError, K8sSubmissionError)

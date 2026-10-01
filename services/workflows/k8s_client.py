@@ -36,6 +36,7 @@ missing credential.
 
 import logging
 import os
+import re
 import ssl
 from pathlib import Path
 
@@ -71,6 +72,58 @@ def _resolve_env_label() -> str:
     return os.environ.get("WORKFLOWS_K8S_ENV_LABEL", "dev")
 
 
+# An RFC 1123 subdomain: the name rule for a Kubernetes Secret.
+_K8S_OBJECT_NAME = re.compile(
+    r"[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*"
+)
+
+
+def _resolve_pipeline_hostpath_root() -> tuple[str | None, str | None]:
+    """(root, None) for a usable WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT, else
+    (None, why). Never raises, for the same reason as _resolve_ttl_seconds; an
+    invalid root is reported as a dispatch refusal instead (bloom#863).
+
+    String checks only, never Path/os.path: the root is a path on the cluster's
+    nodes, and on Windows Path('/hpi/x').is_absolute() is False, so a dev box
+    and CI would disagree about the same value."""
+    raw = os.environ.get("WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT")
+    if not raw:
+        return None, "is unset or blank"
+    if any(ch.isspace() or not ch.isprintable() for ch in raw):
+        return None, "contains whitespace or a control character"
+    if not raw.startswith("/"):
+        return None, "is not an absolute path"
+    if raw == "/":
+        return None, "is the filesystem root"
+    if raw.endswith("/"):
+        return None, "ends in '/'"
+    segments = raw.split("/")[1:]
+    if "" in segments:
+        return None, "has an empty segment"
+    if any(seg in (".", "..") for seg in segments):
+        return None, "has a '.' or '..' segment"
+    return raw, None
+
+
+def _resolve_pipeline_secret_name() -> tuple[str | None, str | None]:
+    """(name, None) for a valid WORKFLOWS_K8S_PIPELINE_SECRET_NAME, else
+    (None, why). fullmatch, not match with `$`, which accepts a trailing
+    newline. Never raises (see _resolve_pipeline_hostpath_root)."""
+    raw = os.environ.get("WORKFLOWS_K8S_PIPELINE_SECRET_NAME")
+    if not raw:
+        return None, "is unset or blank"
+    if len(raw) > 253 or not _K8S_OBJECT_NAME.fullmatch(raw):
+        return None, "is not a valid Kubernetes object name"
+    return raw, None
+
+
+def _resolve_pipeline_dispatch_enabled() -> bool:
+    """The same switch, and the same rule, as bloom-web's
+    isPipelineTriggerEnabled (web/lib/cyl-pipeline/trigger-enabled.ts): on only
+    for exactly "true". bloom-web reads it per request; this module at import."""
+    return os.environ.get("CYL_PIPELINE_TRIGGER_ENABLED") == "true"
+
+
 TOKEN = os.environ.get("WORKFLOWS_K8S_TOKEN")
 CA_CERT = os.environ.get("WORKFLOWS_K8S_CA_CERT")
 API_URL = os.environ.get("WORKFLOWS_K8S_API_URL")
@@ -82,6 +135,17 @@ TTL_SECONDS = _resolve_ttl_seconds()
 # pipeline-run-id belongs to. Plain config, not a credential: same
 # never-"missing" treatment as NAMESPACE/TTL_SECONDS.
 ENV_LABEL = _resolve_env_label()
+# Each environment's own stage root and credential Secret, which
+# build_workflow_body puts in place of the vendored file's staging values,
+# and the switch that lets it dispatch at all (bloom#863). No defaults: an
+# environment that sets none of them refuses rather than falling back to
+# another environment's directories. The *_INVALID reasons are logged when a
+# batch is refused, since logging here would run before logging is set up.
+PIPELINE_HOSTPATH_ROOT, PIPELINE_HOSTPATH_ROOT_INVALID = (
+    _resolve_pipeline_hostpath_root()
+)
+PIPELINE_SECRET_NAME, PIPELINE_SECRET_NAME_INVALID = _resolve_pipeline_secret_name()
+PIPELINE_DISPATCH_ENABLED = _resolve_pipeline_dispatch_enabled()
 
 # Vendored, CI-drift-checked copy of sleap-roots-pipeline's canonical
 # sleap-roots-pipeline.yaml (pin recorded in the sibling SLEAP_ROOTS_PIPELINE_REF
@@ -95,6 +159,19 @@ _VENDORED_WORKFLOW_PATH = (
 
 class K8sConfigError(Exception):
     """A required K8s credential is missing — a service misconfiguration."""
+
+
+class K8sDispatchRefusedError(Exception):
+    """This environment may not dispatch: its switch is off (`reason="off"`),
+    or its stage root or credential Secret is missing or invalid
+    (`reason="unconfigured"`). A deliberate state, not a submission attempt:
+    the dispatch worker fails the batch at once with a fixed message chosen
+    from `reason`, never from this exception's text."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(detail or reason)
+        self.reason = reason
+        self.detail = detail
 
 
 class K8sSubmissionError(Exception):
