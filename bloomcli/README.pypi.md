@@ -53,6 +53,9 @@ This logs you in to the Bloom database.
 
 ## 3. Cylinder experiments
 
+In the examples below, we're downloading the experiment with **experiment ID 42**, named
+"drought 2024".
+
 ### Quickstart
 
 ```bash
@@ -72,7 +75,7 @@ Check what's in the experiment first:
 
 ```bash
 bloomctl cyl accessions list --experiment-id 42          # which accessions are in it
-bloomctl cyl accessions sample-counts --species-menu     # plant count per accession
+bloomctl cyl accessions sample-counts --species-menu     # plant count per accession, all experiments
 bloomctl cyl datasets list --experiment-id 42            # trait datasets already built
 bloomctl cyl download ./out --experiment-id 42 --meta-only   # scans.csv only, no images
 ```
@@ -131,6 +134,9 @@ summary line ends with the reason.
 
 Plate (GraviScan) experiments work the same way, with `plate` in place of `cyl`.
 
+In the examples below, we're downloading the plate experiment with **experiment ID 12**, named
+"gravitropism". `PLATE-001` and wave `3` stand for one plate and one wave in that experiment.
+
 ### Quickstart
 
 ```bash
@@ -172,6 +178,9 @@ bloomctl plate download ./gravi --experiment-id 12 --meta-only            # csv 
 A single-cell dataset's whole AnnData file (`.h5ad`) is stored in Bloom, named by the SHA-256 of
 the uncompressed file, so the same file uploaded twice is stored once.
 
+In the examples below, `my_dataset.h5ad` is a file on your computer, and **"My dataset"** is the
+name of a dataset already in Bloom.
+
 ### Quickstart
 
 ```bash
@@ -204,7 +213,8 @@ These commands are for automated pipelines (stage-in and write-back), not everyd
 | `cyl download-for-predict` / `batch-download-for-predict` | Stage scan(s) into the predict-ready layout                    |
 | `cyl ingest-result` / `batch-ingest-result`               | Write per-scan pipeline results back to Bloom *(needs write access)* |
 
-The same CLI is published as a container image:
+The same CLI is published as a container image. In the example below, `path/to/scan.result.json`
+is the result file the pipeline produced for one scan:
 
 ```bash
 docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
