@@ -25,15 +25,18 @@ source_id = <the existing source's id> AND status != 'failed'` — never re-reso
 from this delivery's own `image_ids`, which the "same key, different scan" rule reserves for the
 run of record alone. **When that update affects zero rows**, the RPC SHALL fall back to a second
 update scoped to `argo_workflow_name = p_argo_workflow_name AND scan_id = <scan_id> AND status !=
-'failed'`, setting `status = 'written'` and `source_id` to the existing source's id, where
-`<scan_id>` is the scan the source's own first write recorded: the existing source's
-`cyl_trait_sources.scan_id`, read by primary key. Only when that column is NULL SHALL the RPC look
-`<scan_id>` up instead from any existing `cyl_pipeline_run_scans` row already carrying this
-source's id. Neither lookup reads this delivery's own `image_ids`, and the RPC MUST NOT resolve
-`<scan_id>` by scanning `cyl_scan_traits` or `cyl_scan_intermediates` by `source_id`. If neither
-lookup yields a scan, the fallback SHALL NOT run and the update remains at zero rows. Because the
-targeted update is scoped to this call's `argo_workflow_name`, a source whose scan this Workflow
-never dispatched still matches zero rows. Either way, the no-op branch then returns without
+'failed' AND (source_id IS NULL OR source_id = <the existing source's id>)`, setting `status =
+'written'` and `source_id` to the existing source's id, where `<scan_id>` is the scan recorded on
+the existing source's own row: its `cyl_trait_sources.scan_id`, read by primary key (stamped by
+this RPC when it created the source, or by the recipe backfill from the source's stored
+`image_ids`). Only when that column is NULL SHALL the RPC look `<scan_id>` up instead from any
+existing `cyl_pipeline_run_scans` row already carrying this source's id. Neither lookup reads this
+delivery's own `image_ids`, and the RPC MUST NOT resolve `<scan_id>` by reading `cyl_scan_traits`
+or `cyl_scan_intermediates`. If neither lookup yields a scan, the fallback SHALL NOT run and the
+update remains at zero rows. Because the targeted update is scoped to this call's
+`argo_workflow_name`, a source whose scan this Workflow never dispatched still matches zero rows;
+and because it skips a row already carrying a different source's id, a no-op never replaces the
+source another delivery linked to that row. Either way, the no-op branch then returns without
 resolving a scan for its return value (`scan_id` stays null), without writing any trait, blob, or
 registry row.
 
@@ -45,9 +48,9 @@ the target scan from `provenance.inputs.image_ids`; (6) trait-name resolution an
 `source_id` to the new source's id. This update and the no-op fallback's targeted update are the
 only statements that write `source_id` onto a `cyl_pipeline_run_scans` row, and each sets it in
 the same statement that sets `status = 'written'` — so `source_id IS NOT NULL` on that table
-always implies `status = 'written'`. This RPC never writes `'reused'`, which stays reserved for
-the separate, unimplemented pre-dispatch skip-if-done mechanism (capability `cyl-pipeline-runs`,
-"cyl_pipeline_run_scans table").
+always implies `status = 'written'`. This RPC never writes `'reused'`, which stays reserved for a
+later phase in which the cluster-side skip-if-done check records a scan that needed no new work
+(capability `cyl-pipeline-runs`, "`cyl_pipeline_run_scans` table").
 
 Any validation or constraint failure SHALL abort the entire call, including every status update
 above, so that no partial source, trait, registry, blob, or run-scan-status row persists
@@ -150,6 +153,23 @@ counts will not reflect the data just written.
   `cyl_trait_sources.scan_id`, `"wf-b"`'s row becomes `'written'` with `source_id` set to the
   existing source's id, no new source, trait or blob row is written, and the returned summary's
   `status_update_matched` is `true`
+
+#### Scenario: The source's recorded scan governs over a carrying run-scan row
+
+- **WHEN** an already-ingested source's `cyl_trait_sources.scan_id` is scan S1, an existing
+  `cyl_pipeline_run_scans` row carrying its `source_id` names a different scan S2, and it is
+  re-delivered under a new `p_argo_workflow_name = "wf-b"` that has `'queued'` rows for both S1
+  and S2
+- **THEN** only `"wf-b"`'s S1 row becomes `'written'` with the existing source's id, `"wf-b"`'s S2
+  row is unchanged, and `status_update_matched` is `true`
+
+#### Scenario: A no-op does not replace another source already linked to this workflow's row
+
+- **WHEN** `"wf-b"`'s `cyl_pipeline_run_scans` row for scan S is already `'written'` with
+  `source_id` X (a fresh delivery under `"wf-b"`), and a different, already-ingested source Y whose
+  recorded scan is S is re-delivered under `"wf-b"`
+- **THEN** the call reports `was_noop: true`, the row stays `'written'` with `source_id` X, and
+  `status_update_matched` is `false`
 
 #### Scenario: The run-scan lookup is only a backup for a source with no recorded scan
 

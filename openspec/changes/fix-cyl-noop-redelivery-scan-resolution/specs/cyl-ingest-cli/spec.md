@@ -97,7 +97,9 @@ rather than a plain success, with a message that matches the RPC's `was_noop`:
 
 The command SHALL report the RPC's first-writer-wins no-op — `was_noop=true`, which the RPC
 returns without raising for an already-ingested envelope — as a success distinct from a real
-error, exiting zero. Re-ingesting the same envelope therefore MUST NOT be reported as a failure.
+error, exiting zero, except in the one case "Cyl ingest command reads an envelope from a path or
+stdin" reports as a failure (`ARGO_WORKFLOW_NAME` set and `status_update_matched: false`).
+Re-ingesting the same envelope MUST NOT otherwise be reported as a failure.
 This SHALL hold end to end, not only for the RPC's response: a re-delivery whose producer
 regenerated its artifacts MUST NOT fail at the blob-upload step before the RPC's gate is reached,
 and it MUST NOT be reported as a failure on account of the RPC's `status_update_matched` field
@@ -118,7 +120,8 @@ reads an envelope from a path or stdin".
 
 #### Scenario: Re-ingest of the same envelope
 
-- **WHEN** the RPC returns `was_noop=true` (with a null `scan_id`, per `cyl-trait-writeback`)
+- **WHEN** the RPC returns `was_noop=true` (with a null `scan_id`, per `cyl-trait-writeback`) and
+  a `status_update_matched` that is not `false`
 - **THEN** the command prints an "already ingested" message (naming the `source_id`) that is
   visibly not an error, does not depend on `scan_id` being present, and exits zero
 

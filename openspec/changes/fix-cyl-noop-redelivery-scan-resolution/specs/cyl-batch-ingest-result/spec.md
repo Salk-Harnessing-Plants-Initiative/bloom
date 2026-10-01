@@ -136,7 +136,8 @@ exit code), with the no-op message the `cyl-ingest-cli` capability specifies.
 
 #### Scenario: Re-ingesting an already-ingested envelope in a batch
 
-- **WHEN** one of the envelopes in the batch was already ingested in a prior run
+- **WHEN** one of the envelopes in the batch was already ingested in a prior run, and the RPC did
+  not return `status_update_matched: false` for it
 - **THEN** that envelope is reported `skipped` (not `failed`), and the batch still exits zero if
   every other envelope succeeded or was also skipped
 
