@@ -361,9 +361,6 @@ of being treated as complete forever. If the recorded size is itself wrong, the 
 succeeds and the log carries a `note=` saying so — otherwise that object would be re-fetched on
 every run with no explanation.
 
-> `plate download` requires the `gravi_scans_extended` view and, for `--experiment-name`, the
-> `gravi_experiment_search` function to be applied on the server you're pointed at.
-
 ## Finding what to download
 
 The read commands help you go from "which experiment?" to an id you can feed `cyl download`:

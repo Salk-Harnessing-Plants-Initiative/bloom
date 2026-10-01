@@ -2,7 +2,18 @@
 
 Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative): log in and access data from Bloom, spanning cylinder experiments, plate scanners and expression data.
 
-## Install
+| I want to…                                   | Go to                          |
+| -------------------------------------------- | ------------------------------ |
+| Install bloomctl                             | **1. Install**                 |
+| Sign in                                      | **2. Log in**                  |
+| Download cylinder scans, traits or datasets  | **3. Cylinder experiments**    |
+| Download plate (GraviScan) images            | **4. Plate experiments**       |
+| Upload or download single-cell `.h5ad` files | **5. Single-cell data**        |
+| Run bloomctl inside a pipeline               | **6. Pipelines and containers** |
+
+---
+
+## 1. Install
 
 Releases are still pre-releases (`0.1.0aN`), so install by **asking for the version by name**:
 
@@ -12,6 +23,8 @@ uvx bloomctl@0.1.0a5 --help            # one-off, no install
 pip install "bloomctl==0.1.0a5"        # into the active environment
 ```
 
+Check it worked:
+
 ```bash
 bloomctl --version
 ```
@@ -19,118 +32,60 @@ bloomctl --version
 > **Don't add `--pre` or `--prerelease=allow`.** Those flags aren't specific to `bloomctl` —
 > they let *every* dependency install an unfinished dev version too.
 
-## Quickstart for Cylinder Image Downloads
+---
+
+## 2. Log in
+
+Do this once. It asks for your Bloom email and password and saves them to `~/.bloom`.
 
 ```bash
-# 1. Log in once (prompts for your Bloom email + password; saves to ~/.bloom)
 bloomctl login
+```
 
-# 2. Find an experiment — pick a species from a menu, grab its id
+- Every command logs in to `prod` by default. Use `-p/--profile` to pick a different login.
+- Browsing and downloading work for any account. Commands marked *(needs write access)* need an
+  account that has been given write access.
+
+---
+
+## 3. Cylinder experiments
+
+### Quickstart
+
+```bash
+# Find an experiment: pick a species from a menu, note its id
 bloomctl cyl experiments list --species-menu
 
-# 3. Download it — by id, or just by name
+# Download it, by id or just by name
 bloomctl cyl download ./out --experiment-id 42
 bloomctl cyl download ./out --experiment-name "drought 2024"
 ```
 
-That writes `./out/scans.csv` (metadata) and the per-frame images.
+That writes `./out/scans.csv` (one row per scan) and the per-frame images.
 
-**Downloads run 8 frames at a time.** On a fast connection you can raise that:
+### Before a big download
 
-```bash
-bloomctl cyl download ./out --experiment-id 42 --workers 16    # up to 64
-```
-
-**If a download stops part-way, run the same command again.** It keeps whatever is already on
-disk and fetches only what is missing, so nothing is downloaded twice.
-
-Every command takes `-p/--profile` to target a different login (default `prod`), and the `list`
-commands take `--output csv|json` for machine-readable output.
-
-## Quickstart for Plate Image Downloads
-
-Plate (GraviScan) experiments work the same way, with `plate` in place of `cyl`:
+Check what's in the experiment first:
 
 ```bash
-# 1. Log in once, if you have not already
-bloomctl login
-
-# 2. Download a whole plate experiment — by id, or just by name
-bloomctl plate download ./gravi --experiment-id 12
-bloomctl plate download ./gravi --experiment-name "gravitropism" --species Arabidopsis
+bloomctl cyl accessions list --experiment-id 42          # which accessions are in it
+bloomctl cyl accessions sample-counts --species-menu     # plant count per accession
+bloomctl cyl datasets list --experiment-id 42            # trait datasets already built
+bloomctl cyl download ./out --experiment-id 42 --meta-only   # scans.csv only, no images
 ```
 
-That writes `./gravi/plates.csv` and `plate_sections.csv` (metadata) and the plate images.
+### Tips
 
-**Narrow it down** when you do not want the whole experiment:
+- **Speed.** Downloads fetch 8 frames at a time. On a fast connection, raise it with
+  `--workers 16` (up to 64). If frames start failing because the server is refusing requests,
+  use a *lower* number, not a higher one.
+- **If a download stops part-way, run the same command again.** It keeps what is already on disk
+  and fetches only what is missing. Use one output directory per experiment.
 
-```bash
-bloomctl plate download ./gravi --experiment-id 12 --plate-id PLATE-001   # one plate
-bloomctl plate download ./gravi --experiment-id 12 --wave-number 3        # one wave
-bloomctl plate download ./gravi --experiment-id 12 --meta-only            # csv only, no images
-```
+### The download log
 
-**Start with `--meta-only`.** A continuous plate session captures one image per plate per
-cycle, so a multi-day experiment is thousands of files — the metadata tells you what you are
-about to pull. `--workers` raises the download concurrency here too, and `--limit` fetches at
-most that many scans, for looking at a sample — it is not a way to export an experiment in
-parts, so give a sample and a full download separate directories.
-
-Resume works as it does for cylinder downloads, and a little better: plate images record their
-size, so a file is skipped only when its size matches the database. A download truncated by a
-dropped connection is re-fetched rather than treated as complete.
-
-## Quickstart for Single-cell Dataset Files
-
-A single-cell dataset's whole AnnData file (`.h5ad`) is stored gzipped and named by the SHA-256
-of the uncompressed file, so the same file uploaded twice is one object.
-
-```bash
-bloomctl scrna hdf5 upload my_dataset.h5ad     # needs write access
-bloomctl scrna hdf5 download "My dataset"      # by name, id, or --checksum
-bloomctl scrna hdf5 list                       # what storage holds
-bloomctl scrna hdf5 list --file my_dataset.h5ad  # is this file already stored?
-```
-
-`upload` checks the file's structure before sending anything, and an interrupted upload resumes
-when you run the same command again. `download` writes the file only once its fingerprint matches.
-
-## Commands
-
-**Find & download** (any logged-in user):
-
-| Command                          | What it does                                                                                                               |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `cyl experiments list`         | List experiments (species · name · id); filter with `--species NAME` or `--species-menu`                                  |
-| `cyl accessions list`          | Accessions in an experiment (`--experiment-id`, or pick from a menu)                                                     |
-| `cyl accessions sample-counts` | Plant count per accession/species (`--species NAME`, or `--species-menu`)                                                 |
-| `cyl datasets list` / `get`  | List trait datasets (`--experiment` menu) / show one dataset's traits                                                    |
-| `cyl qc list-sets`             | List cylinder QC sets                                                                                                      |
-| `cyl download <dir>`           | Download an experiment/scan:`scans.csv` + images. Select by `--experiment-id`, `--scan-id`, or `--experiment-name` |
-| `plate download <dir>`         | Download a plate (GraviScan) experiment/scan:`plates.csv` + `plate_sections.csv` + images. Same selectors, narrowed with `--plate-id` or `--wave-number` |
-
-**Pipeline** (stage-in / write-back):
-
-| Command                                                       | What it does                                                        |
-| ------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `cyl download-for-predict` / `batch-download-for-predict` | Stage scan(s) into the predict-ready layout                         |
-| `cyl ingest-result` / `batch-ingest-result`               | Write per-scan pipeline results back to Bloom*(needs write access)* |
-| `cyl datasets create`                                       | Create a trait dataset*(needs write access)*                        |
-
-**Single-cell**:
-
-| Command                     | What it does                                                                      |
-| --------------------------- | --------------------------------------------------------------------------------- |
-| `scrna hdf5 upload <file>`  | Store a dataset's `.h5ad`, after checking its structure*(needs write access)*      |
-| `scrna hdf5 download <ds>`  | Fetch a dataset's `.h5ad` by name, id or `--checksum`, checked against its fingerprint |
-| `scrna hdf5 list [search]`  | The dataset files storage holds; `--file` says whether a local file is stored      |
-
-Run `bloomctl <command> --help` for the full options of any command.
-
-## The download log
-
-Every `cyl download` writes `download_log.txt` next to `scans.csv`, with one line per frame and
-a summary at the bottom. It is the file to send us if something looks wrong.
+Every `cyl download` writes `download_log.txt` next to `scans.csv`: one line per frame and a
+summary at the bottom. It is the file to send us if something looks wrong.
 
 ```
 OK   scan=1 frame=0 cyl-images/0.png
@@ -142,92 +97,133 @@ NOFRAMES scan=7 (no images recorded for this scan)
 Summary: 3/8 frames present (3 downloaded this run, 0 already on disk), 5 failed
 ```
 
-| Status     | What it means                                                                     |
-| ---------- | --------------------------------------------------------------------------------- |
-| `OK`       | Downloaded during this run                                                        |
-| `SKIP`     | Already on disk, so it was not fetched again — this is a resumed run working       |
-| `FAIL`     | This frame is missing; `error=` says why                                          |
-| `UNLISTED` | The scan's frame list could not be fetched, so an **unknown** number is missing    |
-| `NOFRAMES` | The scan has no images recorded in Bloom — nothing to download, not a failure      |
+| Status     | What it means                                                                  |
+| ---------- | ------------------------------------------------------------------------------ |
+| `OK`       | Downloaded during this run                                                     |
+| `SKIP`     | Already on disk, so not fetched again. A log full of these is a resumed run.   |
+| `FAIL`     | This frame is missing; `error=` says why                                       |
+| `UNLISTED` | The scan's frame list couldn't be fetched, so an **unknown** number is missing |
+| `NOFRAMES` | The scan has no images in Bloom. Nothing to download; not a failure.           |
 
-A log full of `SKIP` is normal: it means every frame was already on disk from an earlier run.
+**Watch for `UNLISTED`.** A `FAIL` is one missing frame, but an `UNLISTED` scan means we don't
+know how many are missing, so a run can report every frame present and still be incomplete.
+Re-running picks up both. If the run stopped early (for example, the disk filled up), the
+summary line ends with the reason.
 
-`UNLISTED` is the one to look out for. A `FAIL` is a single missing frame, but an `UNLISTED`
-scan means we do not know how many of its frames are missing — which is why a run can report
-all its frames present and still be incomplete. Re-running picks up both.
+### Cylinder commands
 
-The summary line ends with the reason when the run stopped for one, such as the disk filling up.
+| Command                          | What it does                                                                          |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| `cyl experiments list`           | List experiments (species · name · id); filter with `--species NAME` or `--species-menu` |
+| `cyl accessions list`            | Accessions in an experiment (`--experiment-id`, or pick from a menu)                  |
+| `cyl accessions sample-counts`   | Plant count per accession/species (`--species NAME`, or `--species-menu`)             |
+| `cyl datasets list` / `get`      | List trait datasets (`--experiment` menu) / show one dataset's traits                 |
+| `cyl datasets create`            | Create a trait dataset *(needs write access)*                                         |
+| `cyl qc list-sets`               | List cylinder QC sets                                                                 |
+| `cyl download <dir>`             | Download `scans.csv` + images. Select by `--experiment-id`, `--scan-id` or `--experiment-name` |
 
-## Run as a container
+---
 
-Prefer a container (e.g. a pipeline step) over a `pip install`? The same CLI is published to GHCR:
+## 4. Plate experiments
 
+Plate (GraviScan) experiments work the same way, with `plate` in place of `cyl`.
+
+### Quickstart
+
+```bash
+# Download a whole plate experiment, by id or just by name
+bloomctl plate download ./gravi --experiment-id 12
+bloomctl plate download ./gravi --experiment-name "gravitropism" --species Arabidopsis
 ```
-ghcr.io/salk-harnessing-plants-initiative/bloomctl
+
+That writes `./gravi/plates.csv` and `plate_sections.csv` (metadata) and the plate images.
+
+### Download only part of an experiment
+
+```bash
+bloomctl plate download ./gravi --experiment-id 12 --plate-id PLATE-001   # one plate
+bloomctl plate download ./gravi --experiment-id 12 --wave-number 3        # one wave
+bloomctl plate download ./gravi --experiment-id 12 --meta-only            # csv only, no images
 ```
+
+### Tips
+
+- **Start with `--meta-only`.** A plate session captures one image per plate per cycle, so a
+  multi-day experiment is thousands of files. The metadata shows what you're about to pull.
+- **`--limit N`** fetches at most N scans, to look at a sample. It isn't a way to export an
+  experiment in parts, so give a sample and a full download separate directories.
+- **`--workers`** raises the download speed, as for cylinders.
+- **Resuming** works as for cylinders, and a little better: plate images record their size, so a
+  file cut short by a dropped connection is fetched again instead of being treated as complete.
+
+### Plate commands
+
+| Command                | What it does                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| `plate download <dir>` | Download `plates.csv` + `plate_sections.csv` + images. Same selectors as `cyl download`, narrowed with `--plate-id` or `--wave-number` |
+
+---
+
+## 5. Single-cell data
+
+A single-cell dataset's whole AnnData file (`.h5ad`) is stored in Bloom, named by the SHA-256 of
+the uncompressed file, so the same file uploaded twice is stored once.
+
+### Quickstart
+
+```bash
+bloomctl scrna hdf5 upload my_dataset.h5ad         # needs write access
+bloomctl scrna hdf5 download "My dataset"          # by name, id, or --checksum
+bloomctl scrna hdf5 list                           # what storage holds
+bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored?
+```
+
+- `upload` checks the file's structure before sending anything. If it's interrupted, run the same
+  command again and it resumes.
+- `download` writes the file only once its fingerprint matches.
+
+### Single-cell commands
+
+| Command                    | What it does                                                                           |
+| -------------------------- | -------------------------------------------------------------------------------------- |
+| `scrna hdf5 upload <file>` | Store a dataset's `.h5ad`, after checking its structure *(needs write access)*          |
+| `scrna hdf5 download <ds>` | Fetch a dataset's `.h5ad` by name, id or `--checksum`, checked against its fingerprint |
+| `scrna hdf5 list [search]` | The dataset files storage holds; `--file` says whether a local file is stored          |
+
+---
+
+## 6. Pipelines and containers
+
+These commands are for automated pipelines (stage-in and write-back), not everyday use:
+
+| Command                                                   | What it does                                                   |
+| --------------------------------------------------------- | -------------------------------------------------------------- |
+| `cyl download-for-predict` / `batch-download-for-predict` | Stage scan(s) into the predict-ready layout                    |
+| `cyl ingest-result` / `batch-ingest-result`               | Write per-scan pipeline results back to Bloom *(needs write access)* |
+
+The same CLI is published as a container image:
 
 ```bash
 docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
   cyl ingest-result path/to/scan.result.json
 ```
 
-Tags: `:staging` (latest staging build) · `:<version>` (matches the PyPI release of the same name) ·
-`:sha-<git-sha>` (immutable, one per commit). Image provenance and build details are in the
+Tags: `:staging` (latest staging build) · `:<version>` (matches the PyPI release of the same
+name) · `:sha-<git-sha>` (one per commit, never changes). Build details are in the
 [repo docs](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloomcli#container-image).
 
-## Notes
+---
 
-- **Species selector** — `--species NAME` filters by species (typed, scriptable); `--species-menu`
-  picks from a menu. Same on every command; the two are mutually exclusive.
-- **Interactive menus** (`--species-menu`, `--experiment`) need a terminal; in a pipe/CI they abort
-  rather than guess. For scripting, pass the typed value/id and use `--output json`.
-- **Read vs write** — browsing/downloading works for any account; the write commands
-  (`ingest-result`, `datasets create`) need an account with write access.
-- **`-n/--workers`** — how many frames `cyl download` fetches at once. Default `8`, maximum `64`,
-  `1` for one at a time. Large experiments run tens of thousands of frames, and this is what
-  makes them quick. More is not always better: if the server starts refusing requests you will
-  see frames fail, and the fix is a lower number, not a higher one.
-- **Resuming** — a download that stops for any reason (interrupted, connection dropped, failed
-  frames) picks up where it left off when you re-run the same command in the same directory.
-  Frames already on disk are skipped. One experiment per output directory.
+## Good to know
+
+- **Help on any command:** `bloomctl <command> --help`.
+- **Machine-readable output:** the `list` commands take `--output csv` or `--output json`.
+- **Choosing a species:** `--species NAME` types it (good for scripts); `--species-menu` picks
+  from a menu. Use one or the other.
+- **Menus need a terminal.** In a pipe or CI job, menus stop rather than guess. For scripts, pass
+  the id or name directly and use `--output json`.
 
 ## Documentation
 
-Full docs — per-command detail, the container image, and access roles — are in the
+Full docs, with per-command detail and access roles, are in the
 [project repository](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/tree/main/bloomcli).
-
-## Tutorials
-
-### Download an experiment, from login to files
-
-A start-to-finish walkthrough for the common task — *"get me the images + metadata for the soybean
-drought experiment."*
-
-```bash
-# 1. Log in (once). Defaults to prod; use --server + -p for a named staging/local profile.
-bloomctl login
-#    → prompts for email + password; writes credentials to ~/.bloom
-
-# 2. Find the experiment — browse by species from a menu (menu prints to stderr):
-bloomctl cyl experiments list --species-menu
-#    Select a species:
-#      0) All species
-#      1) Arabidopsis
-#      2) Soybean
-#    → prints the table; note the experiment_id you want, e.g. 42
-#    (or skip this and let `download` resolve the name — see step 4)
-
-# 3. (optional) Sanity-check the contents before pulling gigabytes of images:
-bloomctl cyl accessions list --experiment-id 42       # which accessions are in it
-bloomctl cyl accessions sample-counts --species-menu  # plant count per accession (pick a species)
-bloomctl cyl datasets list --experiment-id 42         # any trait datasets already built
-
-# 4. Download it — metadata only first to preview, then the full pull:
-bloomctl cyl download ./soy-drought --experiment-id 42 --meta-only   # scans.csv only
-bloomctl cyl download ./soy-drought --experiment-id 42               # scans.csv + all frames
-#    …or without ever looking up the id:
-bloomctl cyl download ./soy-drought --experiment-name "drought" --species Soybean
-```
-
-Result: `./soy-drought/scans.csv` (one row per scan) plus `./soy-drought/images/Wave{n}/…` (the
-frames). For scripting, swap the menus for explicit ids and add `--output json`.
