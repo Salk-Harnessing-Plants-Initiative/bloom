@@ -168,10 +168,10 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
 
 ## 6. PR A
 
-- [ ] 6.1 `/pr-description`. Body says "Part of #900, part of #875"; no closing keyword anywhere in
+- [x] 6.1 `/pr-description`. Body says "Part of #900, part of #875"; no closing keyword anywhere in
   title, body or commits, including prose such as "fixes #875's …" (`auto-close-issues-on-staging`
   scans title and body; squash bodies come from commits; promotion is a merge commit).
-- [ ] 6.2 Schema changes: keep the heading; put the literal line `No schema changes.` on its own
+- [x] 6.2 Schema changes: keep the heading; put the literal line `No schema changes.` on its own
   line outside the template's HTML comment (`scripts/lint_migration_pr_body.py` accepts it only
   there); drop the empty constraints table; `make pr-body-check BODY=<file>`.
 - [ ] 6.3 `git push -u origin fix/cyl-noop-redelivery-900` (create the ref via the REST API first
