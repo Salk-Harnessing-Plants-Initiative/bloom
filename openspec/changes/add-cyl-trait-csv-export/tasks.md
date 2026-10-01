@@ -417,6 +417,25 @@
 - [x] 10.4 Run `/pr-description` for PR A.
   **(done 2026-10-01: draft #996 opened with the approved body, then updated after §7 and §10 with their results; "Part of #865", no closing keywords.)**
 
+## 10a. Review fixes (PR #996 review, 2026-10-01; test first, red/green recorded here and in each commit)
+
+The five-reviewer review of #996 (review 5386494362) found one blocking bug and a set of clear-cut fixes. The items needing a user decision (held-slot starvation, the memory reserve, the accession-less plant count, `BLOOM_WEB_BUILD_SHA`, the bloomctl parity test) are not in this section.
+
+- [ ] 10a.1 **Blocking: a job cancelled before it starts must not run.** Test first in `jobs.test.ts`: reserve, `deleteJob` before `start`, then `start` — the run is never invoked, `start` reports the cancellation, the record stays `cancelled`, and the user can reserve again. Also: `deleteJob` and `onDeadline` abort the controller whatever the status. Route test: the POST answers `409` with a fixed `detail` when its reservation was cancelled before it started. Spec scenario "Cancelled before it starts".
+- [ ] 10a.2 **An unreachable GoTrue is `503`, not `401`.** Test first on the jobs, job and listing routes: `getUser` returning `{error: {name: 'AuthRetryableFetchError', status: 0}}` (auth-js's network-failure shape) gives `503`. Spec: the GoTrue-unreachable scenario names status 0.
+- [ ] 10a.3 **No hidden retries.** Test first in `db.test.ts`: every PostgREST builder the adapter sends has `.retry(false)` applied (postgrest-js 2.106.2 retries GET/HEAD up to 3 times on network errors and 503/520). Spec: "No retries" covers the client library's own retries.
+- [ ] 10a.4 **Fewer selection page reads.** Test first: `SELECTION_PAGE_SIZE` is at least 5,000, `pageSelection`'s default page size is that constant, and experiment 1's 18,471 scans resolve in at most 5 page reads plus the count. No PostgREST `max-rows` is set in any compose file, and keyset paging still ends on an empty page.
+- [ ] 10a.5 **`listMergedRecipes` takes `listingBatchSize`, not `batchSize`.** Test first: `listMergedRecipes(db, e, ids, { listingBatchSize: 1 })` makes one call per scan. Rename the option and fix the stale "per batch" comments in `recipes.ts` and `build-export.ts`.
+- [ ] 10a.6 **Tests the review showed to be weak** (test-only; each strengthened test is shown to fail against a mutation in a throwaway copy, recorded here):
+  - (a) the process-wide-limit test makes the listing contend with two jobs and asserts its call waits in the semaphore queue; correct 6.7's note;
+  - (b) error details are asserted exactly ("scan N has no coverage row", "… in batch i of n");
+  - (c) `Sec-Fetch-Site: same-site` and `none` get `403` on every route;
+  - (d) the download `409` covers a cancelled job and asserts its `detail`;
+  - (e) the (a) golden variants also run with `listingBatchSize` 1 and 2, so the multi-chunk listing merge is exercised end to end;
+  - (f) the session-floor boundary test uses fake timers.
+- [ ] 10a.7 **Researcher guide** (`_WIKI/SUPABASE/trait-recipes.md`, "Using a trait export"): the 5 MiB `qc_clean` inline cap; pandas `dtype={'plant_qr_code': str, 'genotype': str}` in place of the bare `keep_default_na=False` advice; whole-experiment exports mix plant ages (and the age-window Pipeline-class blind spot); `unattributed` and an empty pipeline payload mean provenance unknown. README: the listing's empty selection is `200`, and the full `limits.ts` list.
+- [ ] 10a.8 Pre-merge as in §9 (web suite, tsc, build, integration, pre-commit, `openspec validate --strict`), then show the user the push and the PR-body change.
+
 ## PR B
 
 ## 11. Dialog and entry points
