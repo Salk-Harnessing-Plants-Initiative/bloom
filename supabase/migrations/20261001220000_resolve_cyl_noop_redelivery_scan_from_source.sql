@@ -170,7 +170,7 @@ BEGIN
             -- never from this delivery's own image_ids, preserving the "same key,
             -- different scan" rule -- and only when that is NULL from an existing
             -- run-scan row already carrying this source's id. Neither the trait nor
-            -- the intermediates table is read: the first has no index on source_id.
+            -- the intermediates table is read: no index on the first leads on source_id.
             -- Then retry the status update scoped to that scan within this workflow
             -- name, skipping a row already linked to a different source, so a no-op
             -- never relinks another delivery's result. With no recorded scan and no

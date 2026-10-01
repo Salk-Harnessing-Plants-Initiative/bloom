@@ -154,9 +154,15 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
   `python3 scripts/lint_migration_isolation.py origin/staging`, before push and again just before
   merge (the queue re-checks against its base). Before push: both pass (`20261001220000`, 1 new
   file; isolation: 1 migration change, isolated).
-- [ ] 5.3 `/pre-merge`. Known Windows-only local failures (`test_env_defaults.py`
+- [x] 5.3 `/pre-merge`. Known Windows-only local failures (`test_env_defaults.py`
   `test_validator_*`, `test_weekly_backup.py` collection, `test_verify_env_parity`, some
-  fastq/doctor/file-mode tests) are recorded, not fixed.
+  fastq/doctor/file-mode tests) are recorded, not fixed. **2026-10-01:** every
+  `tests/integration/test_cyl*.py` file against the dev DB: 761 passed, 9 skipped.
+  `tests/unit/` (minus `test_weekly_backup.py`, which fails collection on `os.geteuid`): 1362
+  passed, 63 failed, 54 errors across 15 files (deploy-script, doctor, env, fastq, fetch_sra,
+  run_count, …); the same 15 files fail identically on a clean `origin/staging` checkout, so none
+  is this change's. Web build, Python audit and Docker builds skipped: PR A touches no web code,
+  lockfile, or Dockerfile. Self-review fixed one comment ("no index leads on source_id").
 - [ ] 5.4 CI's `compose-health-check` green: the only run of the existing RPC suite against the new
   body (design D6).
 
