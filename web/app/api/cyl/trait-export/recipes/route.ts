@@ -2,7 +2,9 @@
  * The recipes a selection has, for the download dialog (design D3, D7). Same checks
  * as a job start except the session floor, the recipe/chosen parameters and the job
  * limits. The listing is batched and merged exactly as the job does it. A user has
- * at most one listing in flight: a newer one aborts the older.
+ * at most one listing in flight (tasks.md 10b.1): a newer one cancels the older and
+ * waits for it to settle, because the older listing's issued call still runs to
+ * completion and holds a semaphore slot until it returns.
  */
 
 import { listMergedRecipes, resolveSelection } from '@/lib/cyl-trait-export/build-export'
@@ -22,13 +24,18 @@ export async function GET(request: Request): Promise<Response> {
   if (typeof selection === 'string') return detail(422, selection)
 
   const { listings } = getExportState()
-  listings.get(identity.userId)?.abort()
+  const previous = listings.get(identity.userId)
+  previous?.ctrl.abort()
   const ctrl = new AbortController()
-  listings.set(identity.userId, ctrl)
+  let markSettled!: () => void
+  const entry = { ctrl, settled: new Promise<void>((r) => (markSettled = r)) }
+  listings.set(identity.userId, entry)
   const onAbort = () => ctrl.abort()
   request.signal.addEventListener('abort', onAbort, { once: true })
 
   try {
+    await previous?.settled
+    if (ctrl.signal.aborted) return detail(499, 'the listing was replaced or cancelled')
     const db = createExportDb(identity.token)
     const resolved = await resolveSelection(db, selection, ctrl.signal)
     const ids = resolved.scans.map((s) => s.scan_id)
@@ -58,7 +65,8 @@ export async function GET(request: Request): Promise<Response> {
     return detail(502, 'the recipes could not be listed')
   } finally {
     request.signal.removeEventListener('abort', onAbort)
-    if (listings.get(identity.userId) === ctrl) listings.delete(identity.userId)
+    if (listings.get(identity.userId) === entry) listings.delete(identity.userId)
+    markSettled()
   }
 }
 

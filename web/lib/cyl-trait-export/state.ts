@@ -8,25 +8,25 @@
  */
 
 import { ExportError } from './errors'
-import { ABORTED_CALL_HOLD_MS, PG_CONCURRENCY } from './limits'
+import { PG_CONCURRENCY } from './limits'
 
 type Waiter = { grant: () => void; cancel: () => void }
 
 /**
- * A FIFO counting semaphore for PostgREST calls. `run` waits for a slot (the wait can
- * be aborted, which leaves the queue), runs the call, and frees the slot when it
- * settles. A call that settles because it was aborted keeps its slot until `holdMs`
- * after it was issued, because PostgREST may still be running its statement.
+ * A FIFO counting semaphore for PostgREST calls (tasks.md 10b.1). `run` waits for a
+ * slot, and the wait can be cancelled, which leaves the queue. A call that has been
+ * issued is never aborted: cancelling the HTTP request would not stop Postgres, so
+ * the call runs to completion and its slot frees when it really returns. If the
+ * caller was cancelled meanwhile, the result is discarded and the caller gets
+ * "cancelled".
  */
 export class Semaphore {
   private readonly size: number
-  private readonly holdMs: number
   private active = 0
   private readonly waiters: Waiter[] = []
 
-  constructor(size: number, holdMs: number) {
+  constructor(size: number) {
     this.size = size
-    this.holdMs = holdMs
   }
 
   get inFlight(): number {
@@ -39,17 +39,15 @@ export class Semaphore {
 
   async run<T>(fn: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
     await this.acquire(signal)
-    const issuedAt = Date.now()
-    const callSignal = signal ?? new AbortController().signal
     try {
-      return await fn(callSignal)
+      const result = await fn(new AbortController().signal)
+      if (signal?.aborted) throw cancelled()
+      return result
+    } catch (e) {
+      if (signal?.aborted) throw cancelled()
+      throw e
     } finally {
-      if (callSignal.aborted) {
-        const wait = Math.max(0, issuedAt + this.holdMs - Date.now())
-        setTimeout(() => this.release(), wait)
-      } else {
-        this.release()
-      }
+      this.release()
     }
   }
 
@@ -122,8 +120,8 @@ export type ExportState = {
   semaphore: Semaphore
   /** Job registry; the record type lives in jobs.ts. */
   jobs: Map<string, unknown>
-  /** The in-flight recipe listing per user, so a newer one can abort the older. */
-  listings: Map<string, AbortController>
+  /** Each user's listing in flight: cancel it with `ctrl`; `settled` once it has finished. */
+  listings: Map<string, { ctrl: AbortController; settled: Promise<void> }>
   /** The unref'd timer that frees expired jobs; started with the first job. */
   sweeper: ReturnType<typeof setInterval> | null
 }
@@ -133,7 +131,7 @@ type Holder = { [KEY]?: ExportState }
 
 function freshState(): ExportState {
   return {
-    semaphore: new Semaphore(PG_CONCURRENCY, ABORTED_CALL_HOLD_MS),
+    semaphore: new Semaphore(PG_CONCURRENCY),
     jobs: new Map(),
     listings: new Map(),
     sweeper: null,

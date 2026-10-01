@@ -94,7 +94,7 @@ The CSV header needs every trait name, so nothing can be sent until every read f
 - It leaves 7 of PostgREST's 10 connections for everyone else.
 - Each job and each listing keeps at most `PG_CONCURRENCY` calls outstanding (in flight or queued), so they interleave and one job can't queue ahead of everything.
 - An acquire can be aborted, which removes the waiter from the queue.
-- An aborted call keeps its slot until 9 s after it was issued, because PostgREST may still be running its statement.
+- An issued call is never aborted (tasks.md 10b.1, after the #996 review). Cancelling the HTTP request would not stop Postgres, so a cancelled job or listing stops issuing calls, and each issued call keeps its slot until it really returns (at most the 8 s `statement_timeout`), then its result is discarded. This replaced a 9 s hold on aborted calls, which let one user's quick filter changes pin every slot.
 
 **Steps:**
 
@@ -155,7 +155,7 @@ The CSV header needs every trait name, so nothing can be sent until every read f
 
 - **The listing route.** `GET /api/cyl/trait-export/recipes` runs D2 steps 1–3 and returns `n_selected` plus the merged rows, each with the recipe's `definition` as `list_trait_recipes` returned it, so the dialog can say what each recipe is (added 2026-10-01: without it a user chose between key prefixes and counts).
   - An empty selection of a visible experiment returns `200` with `n_selected: 0` and no rows.
-  - Each user has at most one listing in flight; a newer listing aborts the older one. A listing also aborts on `request.signal`.
+  - Each user has at most one listing in flight; a newer listing cancels the older one and waits for it to settle before issuing anything (10b.1). A listing is also cancelled on `request.signal`.
 - **Choosing.** The job request carries an explicit `recipe` and `chosen` (`default` or `user`). The job re-lists, and records `recipe.chosen_by = "default"` only when `chosen` is `default` **and** `K` is still the merged default; otherwise it records `user`.
 - **A `K` absent from the merged listing** fails the job with "this recipe is not in the selection", and no coverage call is made. The dialog prevents this; it can only arise from a direct request or a race.
 

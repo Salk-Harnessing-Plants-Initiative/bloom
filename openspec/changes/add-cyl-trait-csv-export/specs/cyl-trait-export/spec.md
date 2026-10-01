@@ -35,7 +35,7 @@ The web app SHALL export traits through a job: `POST /api/cyl/trait-export/jobs`
 #### Scenario: Cancel
 
 - **WHEN** the owner sends `DELETE` while the job is running
-- **THEN** no further batch starts, in-flight calls are aborted, the status becomes `cancelled`, and the slot is released
+- **THEN** no further call is issued, calls already issued finish and their results are discarded, the status becomes `cancelled`, and the job slot is released
 
 #### Scenario: Cancelled before it starts
 
@@ -65,7 +65,7 @@ An export SHALL read trait data, recipes and coverage only through `list_trait_r
 - **Other reads.** Its other reads (`cyl_experiments`, `cyl_scans_extended`, `accessions`, `cyl_trait_sources`) use the verified user's token, and are keyset-paged or chunked.
 - **Concurrency.** At most 3 PostgREST requests from this feature are in flight in the server process, across all jobs and listings.
   - Each job and each listing has at most 3 requests outstanding.
-  - An aborted request keeps its place until 9 seconds after it was issued.
+  - A request is never aborted once issued: a cancelled job or listing stops issuing requests, and each issued request keeps its place until it returns, then its result is discarded.
 - **Merging listings across batches:**
   - `n_scans` is summed;
   - `newest_source_id` is the maximum;
@@ -341,7 +341,12 @@ The other routes:
 - **THEN** the listing route returns `502` with a fixed `detail` naming the code and batch
 
 ### Requirement: Trait export recipe listing
-`GET /api/cyl/trait-export/recipes` SHALL return `n_selected` and the merged recipe rows (`recipe_key`, `recipe_kind`, `recipe_key_version`, `definition`, `n_scans`, `newest_source_id`, `is_default`) for the same selection parameters as a job. A user's newer listing SHALL abort their older one.
+`GET /api/cyl/trait-export/recipes` SHALL return `n_selected` and the merged recipe rows (`recipe_key`, `recipe_kind`, `recipe_key_version`, `definition`, `n_scans`, `newest_source_id`, `is_default`) for the same selection parameters as a job. A user's newer listing SHALL cancel their older one and issue no request until the older one has settled, so a user has at most one listing's requests in flight.
+
+#### Scenario: Rapid re-listing
+
+- **WHEN** a user starts a new listing while their previous listing's request is still in flight
+- **THEN** the previous listing answers `499`, and the new one issues its first request only after that request has returned
 
 #### Scenario: Each row says what its recipe is
 

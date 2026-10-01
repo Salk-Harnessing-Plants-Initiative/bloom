@@ -452,7 +452,8 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 
 ## 10b. Review decisions (PR #996 review; each decided with the user, test first)
 
-- [ ] 10b.1 **Held-slot starvation** (user decision 2026-10-01: options A + B). A: an issued PostgREST call is never aborted; a cancelled caller stops scheduling calls, an issued call runs to completion, its slot frees when it returns, and its result is discarded (the caller gets `cancelled`). This removes the 9 s hold (`ABORTED_CALL_HOLD_MS`). B: a user has at most one listing in flight; a newer listing cancels the older and waits for it to settle before issuing anything. Spec: the "Concurrency" bullet's hold line, and the listing requirement. Design: "How the semaphore behaves".
+- [x] 10b.1 **Held-slot starvation** (user decision 2026-10-01: options A + B). A: an issued PostgREST call is never aborted; a cancelled caller stops scheduling calls, an issued call runs to completion, its slot frees when it returns, and its result is discarded (the caller gets `cancelled`). This removes the 9 s hold (`ABORTED_CALL_HOLD_MS`). B: a user has at most one listing in flight; a newer listing cancels the older and waits for it to settle before issuing anything. Spec: the "Concurrency" bullet's hold line, and the listing requirement. Design: "How the semaphore behaves".
+  **(done 2026-10-01. Red (`test(web): issued trait-export calls finish; one listing in flight per user`): 2 failed, 25 passed; the issued call's signal was aborted, and the newer listing issued a call while the older one's was in flight. Green: `Semaphore.run` gives the call its own never-aborting signal, releases the slot when the call returns, and turns a late result into `cancelled`; `ABORTED_CALL_HOLD_MS` and the hold are removed. The listing route keeps `{ctrl, settled}` per user and waits for the previous listing to settle. Spec: the Concurrency bullet, the "Cancel" scenario (issued calls finish and are discarded), the listing requirement, and the new scenario "Rapid re-listing". Design: "How the semaphore behaves" and the listing route. README updated. 306/306, tsc clean.)**
 
 ## PR B
 
@@ -548,6 +549,7 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 | Listing error | 6.5 |
 | Filtered listing | 6.5 |
 | Each row says what its recipe is | 6.8 |
+| Rapid re-listing | 10b.1 |
 | No recipes | 6.5 |
 | Empty selection | 6.5 |
 | Default preselected, Failure shown, Interrupted export, Close cancels | 11.1 |

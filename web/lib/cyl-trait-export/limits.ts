@@ -40,9 +40,6 @@ export const EXPORT_MAX_SECONDS = 1500
 /** A finished job (and its zip) is kept this long. */
 export const RETAIN_SECONDS = 600
 
-/** An aborted PostgREST call keeps its semaphore slot until this long after issue. */
-export const ABORTED_CALL_HOLD_MS = 9000
-
 /**
  * Rows per `cyl_scans_extended` keyset page (tasks.md 10a.4). Every page waits its
  * turn in the semaphore, so fewer pages keep a listing well under Kong's 60 s while
