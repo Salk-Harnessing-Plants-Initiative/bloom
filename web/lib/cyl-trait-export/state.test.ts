@@ -21,7 +21,7 @@ const flush = () => new Promise<void>((r) => setImmediate(r))
 
 describe('Semaphore', () => {
   it('never lets more than its size run at once, across owners', async () => {
-    const sem = new Semaphore(3, 9000)
+    const sem = new Semaphore(3)
     let inFlight = 0
     let peak = 0
     const gates = Array.from({ length: 8 }, () => deferred())
@@ -41,7 +41,7 @@ describe('Semaphore', () => {
   })
 
   it('serves waiters first in, first out', async () => {
-    const sem = new Semaphore(1, 9000)
+    const sem = new Semaphore(1)
     const order: string[] = []
     const first = deferred()
     const a = sem.run(async () => {
@@ -57,13 +57,13 @@ describe('Semaphore', () => {
   })
 
   it('releases the slot when the call rejects', async () => {
-    const sem = new Semaphore(1, 9000)
+    const sem = new Semaphore(1)
     await expect(sem.run(async () => Promise.reject(new Error('boom')))).rejects.toThrow('boom')
     await expect(sem.run(async () => 'ok')).resolves.toBe('ok')
   })
 
   it('removes an aborted waiter from the queue', async () => {
-    const sem = new Semaphore(1, 9000)
+    const sem = new Semaphore(1)
     const hold = deferred()
     const running = sem.run(async () => hold.promise)
     const ctrl = new AbortController()
@@ -77,27 +77,27 @@ describe('Semaphore', () => {
     await expect(sem.run(async () => 'next')).resolves.toBe('next')
   })
 
-  describe('an aborted in-flight call', () => {
-    beforeEach(() => vi.useFakeTimers())
-    afterEach(() => vi.useRealTimers())
-
-    it('keeps its slot until the hold time after it was issued', async () => {
-      const sem = new Semaphore(1, 9000)
+  describe('a cancelled caller (tasks.md 10b.1)', () => {
+    // Cancelling the HTTP request never stopped Postgres, so an issued call is left to
+    // finish: its slot frees when it really returns, with no hold time.
+    it('never aborts an issued call; the slot frees when it returns, and the caller gets cancelled', async () => {
+      const sem = new Semaphore(1)
       const ctrl = new AbortController()
-      const call = sem.run(
-        (signal) =>
-          new Promise((_, reject) => {
-            signal.addEventListener('abort', () => reject(new Error('aborted')))
-          }),
-        ctrl.signal
-      )
-      await vi.advanceTimersByTimeAsync(2000)
+      const gate = deferred<string>()
+      let callSignal: AbortSignal | undefined
+      const call = sem.run((signal) => {
+        callSignal = signal
+        return gate.promise
+      }, ctrl.signal)
+      await flush()
       ctrl.abort()
-      await expect(call).rejects.toThrow('aborted')
+      await flush()
+      expect(callSignal?.aborted).toBe(false)
       expect(sem.inFlight).toBe(1)
-      await vi.advanceTimersByTimeAsync(6999)
-      expect(sem.inFlight).toBe(1)
-      await vi.advanceTimersByTimeAsync(1)
+      gate.resolve('late result')
+      const err = await call.catch((e) => e)
+      expect(err).toBeInstanceOf(ExportError)
+      expect((err as ExportError).kind).toBe('cancelled')
       expect(sem.inFlight).toBe(0)
     })
   })
@@ -105,7 +105,7 @@ describe('Semaphore', () => {
 
 describe('pool', () => {
   it('keeps each owner to its limit, so owners interleave', async () => {
-    const sem = new Semaphore(3, 9000)
+    const sem = new Semaphore(3)
     const started: string[] = []
     const gates = new Map<string, { resolve: () => void }>()
     const work = (owner: string) => (i: number) =>

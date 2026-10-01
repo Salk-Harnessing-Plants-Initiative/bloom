@@ -218,11 +218,17 @@ describe('listing', () => {
 })
 
 describe('aborts', () => {
-  it("aborts a user's older listing when they start a newer one", async () => {
+  it("cancels a user's older listing, and the newer one waits for its in-flight call (10b.1)", async () => {
+    // One listing call in flight per user: rapid filter changes cannot fill the
+    // process-wide slots with calls that are still finishing.
     useFake({ hold: true })
+    const tick = () => new Promise((r) => setImmediate(r))
     const older = list('experiment=1')
-    await new Promise((r) => setImmediate(r))
+    while (fake.pending.length === 0) await tick()
+    const issued = fake.calls.length
     const newer = list('experiment=1&age=0')
+    for (let i = 0; i < 20; i++) await tick()
+    expect(fake.calls.length).toBe(issued)
     void fake.drain()
     expect((await older).status).toBe(499)
     expect((await newer).status).toBe(200)
