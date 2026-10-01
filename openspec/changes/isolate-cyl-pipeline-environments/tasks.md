@@ -200,22 +200,21 @@ This group is one commit: the fixture update and the gate must land together.
     "`false` in prod until prod's pipeline credential and stage directories are provisioned
     (bloom#863); the dispatch worker reads the same switch". That change is unarchived, so editing
     its delta adds no archive collision.
-- [ ] 5.3 Draft, for the author's approval, the `talmolab/sleap-roots-pipeline` doc updates. Don't
-  push without a go-ahead.
-  - **`docs/cluster-identities.md`:**
-    - `:155-161`: Bloom overrides the secret at dispatch.
-    - `:179-180`: "distinguished only by an environment label".
-    - `:239-242` and `:244-257`: three directories and one Secret per environment. Per-environment
-      directories are the fix; per-run ones still aren't.
-  - **`scripts/runai_run_pipeline.sh:20-22`.**
-  - **`README.md:404`.**
-  - **The `scripts/check_manifests.py:213-218` comment.** Bloom no longer takes `spec.volumes`
+- [x] 5.3 Draft, for the author's approval, the `talmolab/sleap-roots-pipeline` doc updates. Don't
+  push without a go-ahead. **Drafted** against upstream `origin/main` `367c771` (2026-10-01); kept
+  outside the repo until approved:
+  - **`docs/cluster-identities.md`:** `:155-161` (Bloom overrides the secret at dispatch), `:179-180`
+    ("distinguished only by an environment label"), `:254-257` (Bloom's path is different again)
+    and `:259-275` (three directories and one Secret per environment; per-environment directories
+    are the fix, per-run ones still aren't).
+  - **The `scripts/check_manifests.py:230-235` comment.** Bloom no longer takes `spec.volumes`
     verbatim, so a scratch path redirects only a manual `argo submit`.
-  - **`docs/bloom-integration/roadmap.md`:**
-    - the `credential` row (`:299`). Its dead link to `salk-bloom/docs/credentials/bloom-workflows-a4-pipeline.md`
-      exists only on unmerged bloom PR #549. Ask the author: link the PR, or merge #549 first.
-    - the `:539-542` blocker text;
-    - a status-log entry.
+  - **`docs/bloom-integration/roadmap.md`:** the `credential` row (`:299`), whose link to
+    `salk-bloom/docs/credentials/bloom-workflows-a4-pipeline.md` exists only on unmerged bloom PR
+    #549 (ask the author: link the PR, or merge #549 first); the `:539-542` blocker text; a
+    status-log entry.
+  - Not drafted: `scripts/runai_run_pipeline.sh:20-22` and `README.md:404`, which review cited.
+    At `367c771` that script path doesn't exist and that README line is Argo DAG background.
 - [ ] 5.4 Ask the author whether to file an upstream follow-up issue. It would trim the vendored
   Workflow's CROSS-REPO VENDORING NOTICE (`:6-22`), whose override list is already stale (it omits
   `metadata.namespace`), to point at Bloom's README, and fix `:87`'s `talmo-lab` vs `busch-lab`. Do
