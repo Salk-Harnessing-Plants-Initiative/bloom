@@ -372,6 +372,14 @@
   - `uv run --extra test pytest tests/unit/`, and the 1.2a integration test against `make dev-up`;
   - `pre-commit run --files <changed files outside openspec/>`;
   - `openspec validate add-cyl-trait-csv-export --strict`.
+  **(partial, 2026-09-30:**
+  - **`npm ci` and `npm audit --audit-level=critical`: exit 0, 0 critical.**
+  - **`tsc --noEmit` clean; `npm run test:unit` 139 files / 2,000 tests passed; `npm run build` passes with CI's placeholder env.**
+  - **Integration test: 10 passed.**
+  - **Root `tests/unit`: the export schema test passes. 63 other tests fail and `test_weekly_backup.py` cannot be collected, all in deploy, doctor, env and shell-script tests that need Unix (`os.geteuid`, bash). These are the known Windows-only failures, in no file this branch touches; CI runs them on Linux.**
+  - **pre-commit on the changed files outside `openspec/`: all hooks pass, after one prettier reformat committed as `95d87b67`.**
+  - **`openspec validate --strict`: valid.**
+  - **Open: the `next build && next start` smoke. The production build against the dev stack succeeds, but the dev stack's Kong refuses port 8000 even inside its container while Docker reports it healthy, so neither sign-in nor the routes can be reached. Scratchpad `smoke_trait_export.mjs` is ready to rerun.)**
 
 ## 10. Verification on staging (PR A; user go-ahead for each run)
 
