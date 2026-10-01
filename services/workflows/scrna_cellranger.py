@@ -2,7 +2,9 @@
 Cell Ranger trigger: validate a run request and create the run with
 `request_scrna_cellranger_run`.
 
-A run is one sample (one folder of FASTQs under raw_reads/) and one reference. The
+A run is one sample and one reference. Its FASTQs come from one place: an S3 folder
+(`fastq_url`, checked here and recorded with each file's size and ETag, the sample named
+from the files), SRA run IDs, or a registered sample's folder under raw_reads/. The
 pipeline checks that the reference and the FASTQs exist and fails the run if not.
 An optional `metadata` object (the dataset's species, name, conditions) is stored on the
 run as given, for loading the results later. Optional `sra_runs` (1 to 9 SRA run IDs, one
@@ -16,6 +18,7 @@ import re
 from fastapi import HTTPException
 from postgrest import APIError
 
+import s3_folder
 from supabase_client import app_client
 
 # Allowed names ('__' separates run_key parts); the database checks the same rules.
@@ -85,6 +88,11 @@ def _validate_request(body) -> tuple[str, str, dict | None, list[str] | None]:
         raise HTTPException(
             status_code=422, detail="request body must be a JSON object"
         )
+    if "fastq_url" in body and "sample" in body:
+        raise HTTPException(
+            status_code=422,
+            detail="give an S3 folder or a sample, not both; a folder's sample comes from its files",
+        )
     sample = body.get("sample")
     if not _valid_name(sample, SAMPLE_RULE):
         raise HTTPException(
@@ -103,7 +111,31 @@ def _validate_request(body) -> tuple[str, str, dict | None, list[str] | None]:
     )
 
 
+def check_folder(body) -> dict:
+    """The folder check on its own, for the form: queues nothing."""
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=422, detail="request body must be a JSON object"
+        )
+    return s3_folder.check_folder(body.get("fastq_url"))
+
+
 def trigger_run(body, user_id: str) -> dict:
+    folder = None
+    if isinstance(body, dict) and "fastq_url" in body:
+        if body.get("sra_runs") is not None:
+            raise HTTPException(
+                status_code=422, detail="give SRA run IDs or an S3 folder, not both"
+            )
+        if "sample" in body:
+            raise HTTPException(
+                status_code=422,
+                detail="give an S3 folder or a sample, not both; a folder's sample comes from its files",
+            )
+        # Checked again here: the folder may have changed since the form checked it.
+        folder = s3_folder.check_folder(body["fastq_url"])
+        body = {**body, "sample": folder["sample"]}
+        del body["fastq_url"]
     sample, reference, metadata, sra_runs = _validate_request(body)
 
     args = {"p_sample": sample, "p_reference": reference, "p_requested_by": user_id}
@@ -111,6 +143,9 @@ def trigger_run(body, user_id: str) -> dict:
         args["p_metadata"] = metadata
     if sra_runs is not None:
         args["p_sra_runs"] = sra_runs
+    if folder is not None:
+        args["p_fastq_url"] = folder["fastq_url"]
+        args["p_fastq_files"] = folder["files"]
 
     client = app_client()
     try:
@@ -129,6 +164,8 @@ def trigger_run(body, user_id: str) -> dict:
     }
     if sra_runs is not None:
         started["sra_runs"] = sra_runs
+    if folder is not None:
+        started["fastq_url"] = folder["fastq_url"]
     return started
 
 

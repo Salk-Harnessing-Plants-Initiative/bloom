@@ -35,6 +35,8 @@ EXIT_NO_FASTQS = 4
 EXIT_CELLRANGER_FAILED = 5
 EXIT_BAD_SAMPLE_NAME = 6
 EXIT_BAD_FASTQ_NAMES = 7
+# stage-fastqs: the run's S3 folder changed after the run was started.
+EXIT_FOLDER_CHANGED = 8
 # fetch-sra (argo/scrna/cellranger/fetch-sra.sh) also uses 6 and 7, for its own input.
 EXIT_SRA_TRANSFER_FAILED = 10
 EXIT_SRA_READS_UNUSABLE = 11
@@ -118,8 +120,32 @@ def _fetch_sra_message(exit_code: int | None, params: dict) -> str | None:
     }.get(exit_code)
 
 
+def _folder_message(exit_code: int | None, params: dict) -> str | None:
+    url = params.get("fastq_url")
+    return {
+        EXIT_NO_FASTQS: f"No FASTQs at {url}, even after waiting 10 minutes",
+        EXIT_BAD_SAMPLE_NAME: f"The run's folder {url} or its file list can't be used",
+        EXIT_BAD_FASTQ_NAMES: (
+            f"The FASTQs in {url} must be named like <name>_S1_L001_R1_001.fastq.gz, with an "
+            "R1 and an R2 for every lane; the stage step's log lists the files"
+        ),
+        EXIT_FOLDER_CHANGED: (
+            f"{url} changed after the run was started, so its reads weren't used; the stage "
+            "step's log says which file. Start a new run on the folder as it is now"
+        ),
+        EXIT_SRA_TRANSFER_FAILED: (
+            f"Couldn't list or copy {url}; check the folder is still public and start the "
+            "run again"
+        ),
+    }.get(exit_code)
+
+
 def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     params = run.get("params") or {}
+    if step == "stage" and params.get("fastq_url"):
+        message = _folder_message(exit_code, params)
+        if message:
+            return message
     if step == "fetch-sra":
         message = _fetch_sra_message(exit_code, params)
         if message:

@@ -79,21 +79,24 @@ def require_supabase_user(authorization: str = Header(default=None)) -> str:
     return user_id
 
 
-def enforce_rate_limit(user_id: str) -> None:
-    """Raise 429 if the user has exceeded RATE_LIMIT calls in the window."""
+def enforce_rate_limit(user_id: str, limit: int | None = None, scope: str = "") -> None:
+    """Raise 429 if the user has made `limit` (default RATE_LIMIT) calls in the window.
+    A `scope` counts separately, so one route can't use up another's allowance."""
     global _last_sweep
+    limit = RATE_LIMIT if limit is None else limit
+    key = f"{scope}:{user_id}" if scope else user_id
     now = time.time()
     with _hits_lock:
         # Evict stale users at most once per window (cheap, bounds memory).
         if now - _last_sweep >= RATE_WINDOW_SECONDS:
             _sweep_expired(now)
             _last_sweep = now
-        recent = [t for t in _hits[user_id] if now - t < RATE_WINDOW_SECONDS]
-        if len(recent) >= RATE_LIMIT:
+        recent = [t for t in _hits[key] if now - t < RATE_WINDOW_SECONDS]
+        if len(recent) >= limit:
             raise HTTPException(
                 status_code=429,
-                detail=f"Rate limit exceeded ({RATE_LIMIT}/{RATE_WINDOW_SECONDS}s); retry later",
+                detail=f"Rate limit exceeded ({limit}/{RATE_WINDOW_SECONDS}s); retry later",
                 headers={"Retry-After": str(RATE_WINDOW_SECONDS)},
             )
         recent.append(now)
-        _hits[user_id] = recent
+        _hits[key] = recent

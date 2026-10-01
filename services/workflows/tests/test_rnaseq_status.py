@@ -221,3 +221,38 @@ def test_the_steps_match_the_template_file():
     )
     names = {t["name"] for t in template["spec"]["templates"]}
     assert set(st.CELLRANGER_STEPS) <= names
+
+
+FOLDER_RUN = {
+    "params": {
+        "sample": "tinygex",
+        "reference": "tiny_ref",
+        "fastq_url": "s3://lab-data/run42/",
+        "fastq_files": [
+            {"name": "tinygex_S1_L001_R1_001.fastq.gz", "size": 1, "etag": '"a"'}
+        ],
+    },
+    "run_key": "tinygex__tiny_ref__poller-sample-ok",
+}
+
+
+@pytest.mark.parametrize(
+    "exit_code, words",
+    [
+        ("4", "No FASTQs at s3://lab-data/run42/, even after waiting 10 minutes"),
+        ("7", "The FASTQs in s3://lab-data/run42/ must be named"),
+        ("8", "s3://lab-data/run42/ changed after the run was started"),
+        ("10", "Couldn't list or copy s3://lab-data/run42/"),
+    ],
+)
+def test_a_folder_runs_stage_failure_names_its_folder(exit_code, words):
+    status = st.read_cellranger_status(
+        _failed_at("stage-sample", exit_code), FOLDER_RUN
+    )
+    assert status.current_step == "stage"
+    assert status.message.startswith(words)
+
+
+def test_a_folder_runs_other_steps_fail_as_before():
+    status = st.read_cellranger_status(_failed_at("count", "5"), FOLDER_RUN)
+    assert status.message.startswith("Cell Ranger failed")

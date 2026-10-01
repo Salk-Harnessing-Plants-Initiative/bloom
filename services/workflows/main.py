@@ -72,6 +72,8 @@ logger = logging.getLogger(__name__)
 
 # Comma-separated browser origins allowed to call this API (the frontend).
 # CORS only restricts browser JS — it is not access control for curl/servers.
+# The form checks an S3 folder as the scientist types, so this allows more than starting runs.
+FOLDER_CHECK_RATE_LIMIT = int(os.environ.get("WORKFLOWS_FOLDER_CHECK_RATE_LIMIT", "30"))
 CORS_ORIGINS = os.environ.get("WORKFLOWS_CORS_ORIGINS", "http://localhost:3000").split(
     ","
 )
@@ -251,6 +253,21 @@ def trigger_scrna_cellranger_run_route(
         result["reference"],
     )
     return result
+
+
+@app.post("/scrna/cellranger/folder-check")
+def check_scrna_cellranger_folder_route(
+    body: dict,
+    user_id: str = Depends(require_supabase_user),
+):
+    """Check an S3 folder of FASTQs for a Cell Ranger run, without starting one: its
+    sample, lanes, files, file count and total bytes, or a 422 saying what's wrong.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user, separately from
+    starting runs, since the form checks as the scientist types.
+    """
+    enforce_rate_limit(user_id, limit=FOLDER_CHECK_RATE_LIMIT, scope="folder-check")
+    return scrna_cellranger.check_folder(body)
 
 
 @app.get("/scrna/cellranger/runs/{run_id}")

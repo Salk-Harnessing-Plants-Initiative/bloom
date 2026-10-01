@@ -348,3 +348,160 @@ def _latest_db_rule(name: str) -> str:
 def test_the_api_rule_is_the_databases_rule(name, rule):
     # The database checks '__' separately, so the API's look-ahead is not part of it.
     assert rule.pattern.replace("(?!.*__)", "") == _latest_db_rule(name)
+
+
+# --------------------------------------------------------------------------- #
+# An S3 folder
+# --------------------------------------------------------------------------- #
+
+FOLDER = {
+    "fastq_url": "s3://lab-data/run42/",
+    "sample": "col0",
+    "lanes": [1],
+    "files": [
+        {"name": "col0_S1_L001_R1_001.fastq.gz", "size": 10, "etag": '"a"'},
+        {"name": "col0_S1_L001_R2_001.fastq.gz", "size": 32, "etag": '"b"'},
+    ],
+    "file_count": 2,
+    "total_bytes": 42,
+}
+
+
+@pytest.fixture
+def folder(monkeypatch):
+    checked = []
+
+    def check(url):
+        checked.append(url)
+        return FOLDER
+
+    monkeypatch.setattr(scrna_cellranger.s3_folder, "check_folder", check)
+    return checked
+
+
+def test_a_folder_run_is_checked_and_named_from_its_files(db, folder):
+    started = scrna_cellranger.trigger_run(
+        {"fastq_url": "s3://lab-data/run42", "reference": "tiny_ref"}, USER
+    )
+    assert folder == ["s3://lab-data/run42"]
+    assert db.rpc_calls == [
+        (
+            "request_scrna_cellranger_run",
+            {
+                "p_sample": "col0",
+                "p_reference": "tiny_ref",
+                "p_requested_by": USER,
+                "p_fastq_url": "s3://lab-data/run42/",
+                "p_fastq_files": FOLDER["files"],
+            },
+        )
+    ]
+    assert started["sample"] == "col0"
+    assert started["fastq_url"] == "s3://lab-data/run42/"
+    assert started["run_key"] == f"col0__tiny_ref__{USER}"
+
+
+def test_a_folder_run_keeps_its_metadata(db, folder):
+    scrna_cellranger.trigger_run(
+        {
+            "fastq_url": "s3://lab-data/run42/",
+            "reference": "tiny_ref",
+            "metadata": {"k": "v"},
+        },
+        USER,
+    )
+    assert db.rpc_calls[0][1]["p_metadata"] == {"k": "v"}
+
+
+@pytest.mark.parametrize(
+    "extra, words",
+    [
+        ({"sra_runs": ["SRR28503597"]}, "not both"),
+        ({"sample": "col0"}, "not both"),
+    ],
+)
+def test_a_folder_with_another_source_is_refused(db, folder, extra, words):
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"fastq_url": "s3://lab-data/run42/", "reference": "tiny_ref", **extra},
+            USER,
+        )
+    assert exc.value.status_code == 422 and words in exc.value.detail
+    assert folder == [] and db.rpc_calls == []
+
+
+def test_a_bad_reference_is_refused_after_the_folder_check(db, folder):
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"fastq_url": "s3://lab-data/run42/", "reference": "../x"}, USER
+        )
+    assert exc.value.status_code == 422 and db.rpc_calls == []
+
+
+def test_a_refused_folder_queues_nothing(db, monkeypatch):
+    def refuse(url):
+        raise HTTPException(
+            status_code=422, detail="No FASTQs directly in s3://lab-data/run42/"
+        )
+
+    monkeypatch.setattr(scrna_cellranger.s3_folder, "check_folder", refuse)
+    with pytest.raises(HTTPException):
+        scrna_cellranger.trigger_run(
+            {"fastq_url": "s3://lab-data/run42/", "reference": "tiny_ref"}, USER
+        )
+    assert db.rpc_calls == []
+
+
+def test_the_folder_check_route_returns_the_folder(app_as_user, db, folder):
+    resp = app_as_user.post(
+        "/scrna/cellranger/folder-check", json={"fastq_url": "s3://lab-data/run42/"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == FOLDER
+    assert db.rpc_calls == []
+
+
+def test_the_folder_check_route_requires_a_json_object(app_as_user):
+    assert (
+        app_as_user.post("/scrna/cellranger/folder-check", json=["x"]).status_code
+        == 422
+    )
+
+
+def test_the_folder_check_route_requires_auth():
+    import main
+    from auth import require_supabase_user
+
+    def _raise_401():
+        raise HTTPException(status_code=401, detail="missing token")
+
+    main.app.dependency_overrides[require_supabase_user] = _raise_401
+    try:
+        resp = TestClient(main.app).post(
+            "/scrna/cellranger/folder-check", json={"fastq_url": "x"}
+        )
+        assert resp.status_code == 401
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_checking_folders_doesnt_use_up_the_start_limit(
+    app_as_user, db, folder, monkeypatch
+):
+    import auth
+    import main
+
+    monkeypatch.setattr(auth, "RATE_LIMIT", 1)
+    monkeypatch.setattr(main, "FOLDER_CHECK_RATE_LIMIT", 3)
+    auth._hits.clear()
+    body = {"fastq_url": "s3://lab-data/run42/"}
+    for _ in range(3):
+        assert (
+            app_as_user.post("/scrna/cellranger/folder-check", json=body).status_code
+            == 200
+        )
+    assert (
+        app_as_user.post("/scrna/cellranger/folder-check", json=body).status_code == 429
+    )
+    start = {"fastq_url": "s3://lab-data/run42/", "reference": "tiny_ref"}
+    assert app_as_user.post("/scrna/cellranger/runs", json=start).status_code == 201
