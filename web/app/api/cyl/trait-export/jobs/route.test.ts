@@ -29,7 +29,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 
 const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const token = (sub: string, secondsLeft: number) =>
-  `${b64url({ alg: 'HS256' })}.${b64url({ sub, exp: Math.floor(Date.now() / 1000) + secondsLeft })}.sig`
+  `${b64url({ alg: 'HS256' })}.${b64url({
+    sub,
+    exp: Math.floor(Date.now() / 1000) + secondsLeft,
+  })}.sig`
 
 let fake: ReturnType<typeof fakeDb>
 let getUser: ReturnType<typeof vi.fn>

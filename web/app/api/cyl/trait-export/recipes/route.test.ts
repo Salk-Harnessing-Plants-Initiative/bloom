@@ -33,7 +33,10 @@ const K2 = '2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96'
 
 const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const token = (sub: string, secondsLeft = 3600) =>
-  `${b64url({ alg: 'HS256' })}.${b64url({ sub, exp: Math.floor(Date.now() / 1000) + secondsLeft })}.sig`
+  `${b64url({ alg: 'HS256' })}.${b64url({
+    sub,
+    exp: Math.floor(Date.now() / 1000) + secondsLeft,
+  })}.sig`
 
 let getUser: ReturnType<typeof vi.fn>
 let fake: ReturnType<typeof fakeDb>
