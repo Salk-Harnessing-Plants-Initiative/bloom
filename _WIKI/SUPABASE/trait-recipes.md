@@ -5,7 +5,8 @@ traits code, and which output-defining predict parameters. Pipeline write-back s
 `cyl_trait_sources` row per scan, so an experiment's latest values can mix recipes. The recipe
 key lets a reader take one recipe across a whole selection, and say which scans that leaves out.
 
-The rules live in the specs; this page explains them and defines the export sidecar.
+The recipe rules live in the specs; this page explains them. It also defines the export file
+conventions that every exporter (the web download, bloomctl and bloommcp) follows.
 
 - Key definition: `openspec/specs/cyl-trait-writeback/spec.md`, "Recipe key v1 definition".
 - Presence, listing, coverage and the recipe read: `openspec/specs/cyl-trait-read/spec.md`
@@ -75,10 +76,11 @@ SELECT * FROM get_experiment_traits(12880747, recipe_key_ => '<recipe_key>');
 
 - **Coverage statuses:** `included`, `other_recipe`, `legacy_only` (which covers
   unattributed-only scans too) and `no_traits`.
-- **Selections** are experiments, scans, or both (intersected). A multi-experiment export makes
-  one `get_experiment_traits` call per experiment, with the same `recipe_key_`.
-- **Performance boundary:** a recipe read of a large legacy source (experiment 1's `legacy:5` is
-  about 13.9M rows) still exceeds PostgREST's 8 s limit; that is bloom#936.
+- **Selections** are experiments, scans, or both (intersected). A NULL `scan_ids_` means the whole
+  experiment. An exporter reads in scan batches instead (see "Batched exporters" below).
+- **Performance boundary:** a single recipe read of a large experiment exceeds the 8 s limit
+  (experiment 1's `legacy:5` alone is about 13.9M rows; bloom#936). Batched reads keep each call
+  small.
 
 **Datasets.** `create_cyl_dataset` takes exactly one of `trait_source_id` and `recipe_key`.
 `cyl_datasets.recipe_key` records the recipe the function froze. A source-mode dataset stores its
@@ -106,12 +108,12 @@ An export writes three files:
 | --------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `<stem>.csv`          | One header row, no `#` lines, one row per scan. Metadata columns, then `recipe_key` and `source_id`, then the traits |
 | `<stem>.export.json`  | The sidecar: the recipe, what was included, and every excluded scan with its reason. Authoritative                   |
-| `<stem>.excluded.csv` | Optional flat copy of the excluded list                                                                              |
+| `<stem>.excluded.csv` | Flat copy of the excluded list. Optional; the web download always writes it                                          |
 
 - **The format.** The schema is [`trait-recipes.export.schema.json`](trait-recipes.export.schema.json),
   and there is an illustrative example in [`trait-recipes.export.example.json`](trait-recipes.export.example.json).
   Its keys and ids are made up.
-- **The stem** is `<experiment-slug>_<recipe_key[:8]>_<yyyymmdd>`.
+- **The stem** is `<slug>[_wave<W>][_day<A>][_scan<id>]_<keyseg>_<yyyymmdd>` (see "Stem" below).
 - **An exporter** (the web download, bloomctl or bloommcp) builds `excluded` from exactly the
   coverage rows whose status is not `included`, with `reason` equal to the status.
 
@@ -127,14 +129,14 @@ table against the schema and the RPCs.
 | `generated_by.version`                        | exporter-supplied                                                  |                                           |
 | `selection`                                   | object                                                             |                                           |
 | `selection.experiment_ids`                    | exporter-supplied                                                  | The `experiment_ids_` passed              |
-| `selection.scan_ids`                          | exporter-supplied                                                  | The `scan_ids_` passed, or null           |
-| `selection.filters`                           | exporter-supplied                                                  | Filters applied before the RPC calls      |
-| `selection.scan_ids_sha256`                   | exporter-supplied                                                  | sha256 of the sorted selected scan ids    |
+| `selection.scan_ids`                          | exporter-supplied                                                  | The selected ids, or null (see below)     |
+| `selection.filters`                           | exporter-supplied                                                  | Integer selectors applied (see below)     |
+| `selection.scan_ids_sha256`                   | exporter-supplied                                                  | See "Selection" below                     |
 | `recipe`                                      | object                                                             |                                           |
 | `recipe.recipe_key`                           | `list_trait_recipes.recipe_key`                                    |                                           |
 | `recipe.recipe_key_version`                   | `list_trait_recipes.recipe_key_version`                            |                                           |
 | `recipe.recipe_kind`                          | `list_trait_recipes.recipe_kind`                                   |                                           |
-| `recipe.chosen_by`                            | exporter-supplied                                                  | `default` when `is_default` was taken     |
+| `recipe.chosen_by`                            | exporter-supplied                                                  | `default` only if still the default       |
 | `recipe.definition`                           | `list_trait_recipes.definition`                                    |                                           |
 | `recipe.observed`                             | object                                                             | Distinct values over the included sources |
 | `recipe.observed.contract_versions`           | `cyl_trait_sources.metadata->'contract_version'`                   |                                           |
@@ -154,6 +156,124 @@ table against the schema and the RPCs.
 | `other_recipes_in_selection`                  | array                                                              |                                           |
 | `other_recipes_in_selection[].recipe_key`     | `list_trait_recipes.recipe_key`                                    | Rows other than the chosen recipe         |
 | `other_recipes_in_selection[].n_scans`        | `list_trait_recipes.n_scans`                                       |                                           |
+
+### Export file conventions
+
+These are the rules an exporter follows so its files are **interchangeable** with any other
+exporter's: the same columns and order, the same cell values, the same row and list orders, and
+the same `scan_ids_sha256`. Exporters may differ only in the sidecar's JSON formatting (whitespace
+and key order). The web download's own guarantees are in `openspec/specs/cyl-trait-export/spec.md`.
+
+**CSV layout.**
+
+1. The 22 metadata columns of bloomctl `cyl download`'s `scans.csv`, in its order (`CSV_COLUMNS` in
+   `bloomcli/src/bloomctl/cyl/download.py`), with the same values. `genotype` is `accessions.name`.
+   `scan_path` names bloomctl's image directory for the scan, so the file joins a `cyl download`
+   folder; it is not a path inside an export.
+2. `recipe_key` in full (never shortened: a short hex prefix can parse as a number), then
+   `source_id`, which is empty for `unattributed`.
+3. The traits present in the included rows, sorted by Unicode code point.
+
+- One header row, then one row per included scan, in ascending numeric `scan_id`.
+- A per-scan export has the trait columns of its own scan. It agrees with an experiment export by
+  column name.
+- RFC 4180 quoting (only cells with `,`, `"`, CR or LF), CRLF after every line including the last,
+  UTF-8 without a BOM, and no comment lines.
+
+**Values.** `cyl_scan_traits.value` is `real`, so every value is a float4. A finite value is written
+as the shortest decimal that parses back to the same float4: `0.1`, not `0.10000000149011612`
+(Python: `str(numpy.float32(v))`, which spells some values differently, such as `90.0` or `1e-07`, with the same value). Non-finite values are written `NaN`, `Infinity` and `-Infinity`.
+A NULL value, or a trait the scan lacks, is an empty cell. Cells compare as float4 values, not
+byte for byte.
+
+**Selection.**
+
+- `scan_ids` is null only for a whole, unfiltered experiment; otherwise it is every selected scan
+  id, ascending (not the per-call `scan_ids_` of a batched read).
+- `filters` records the selectors applied, with integer values: the web writes `wave_number`,
+  `plant_age_days` or `scan_id`. Other exporters may add keys named for their own selectors, with
+  integer or integer-array values.
+- `scan_ids_sha256` is the lowercase hex sha256 of the UTF-8 bytes of the ascending decimal ids
+  joined by `,`. The scans 12, 3 and 7 hash the bytes `3,7,12`.
+- `chosen_by` is `default` only when the caller took the default and it is still the selection's
+  default when the export runs; otherwise `user`.
+
+**Orderings.** `included.source_ids` is the distinct non-NULL source ids, ascending (`[]` for
+`unattributed`, `[5]` for `legacy:5` however many scans it covers). `excluded` is in `scan_id`
+order. `other_recipes_in_selection` is in `list_trait_recipes` order. Each `observed` array holds
+distinct values sorted by code point; `inference_configs` are deduplicated and sorted by their
+key-sorted JSON; `observed` is present only for pipeline recipes.
+
+**Excluded CSV.** The header is `scan_id,plant_qr_code,reason,available_recipes`, with the recipes
+joined by `;`, in the same format as the traits CSV. It is header-only when nothing is excluded.
+
+**Stem.** `<slug>[_wave<W>][_day<A>][_scan<id>]_<keyseg>_<yyyymmdd>`:
+
+- `<slug>` is the experiment name with each run of characters outside `[A-Za-z0-9-]` replaced by
+  `-`, lowercased, cut to 60 characters and trimmed of `-`; `experiment-<id>` if nothing remains.
+- `<keyseg>` is the first 8 characters of a 64-hex key, `legacy-<N>` in full for `legacy:N`, or
+  `unattributed`.
+- `<yyyymmdd>` is the UTC date of `generated_at`.
+- An exporter whose filters have no segment here may leave them out; the sidecar records them.
+
+**Batched exporters.** A large selection is read in scan batches, each call under PostgREST's 8 s
+limit:
+
+- pass an explicit `recipe_key_` to every coverage and trait call (NULL means "latest", which mixes
+  recipes) and never a NULL `scan_ids_` (which means the whole experiment);
+- merge per-batch `list_trait_recipes` rows: sum `n_scans`, take the max `newest_source_id` and the
+  other fields from the batch holding it, order by `newest_source_id` descending with NULLs last,
+  and take the first as the default;
+- check each trait read's row count against PostgREST's exact count, and page scan selections by
+  keyset until an empty page;
+- fail rather than write a partial or mixed file if any call errors, any selected scan lacks a
+  coverage row, or the included count disagrees with the merged listing.
+
+## Using a trait export
+
+An export is one recipe's traits for a selection of scans, as a zip of three files:
+
+- `<stem>.csv`: one row per scan that has the recipe;
+- `<stem>.export.json`: which recipe it is (models and code versions), what was selected, and every
+  selected scan left out, with the reason;
+- `<stem>.excluded.csv`: the left-out scans as a table.
+
+**How it differs from the CSV passed around through Box.**
+
+- `genotype` (the accession name) is added after `accession_id`.
+- `recipe_key` and `source_id` are added; every row has the same `recipe_key`.
+- There are no `primary`, `crown`, `lateral` (`.slp` file names) or `plant_name` columns.
+- `scan_path` is where `bloomctl cyl download` puts the scan's images, not a path in the zip.
+- The trait columns depend on the recipe's models: a crown-root recipe has `crown_*` traits, a
+  lateral-root recipe `lateral_*`.
+- Values are the stored single-precision values in shortest form. To compare with a file written
+  from double-precision numbers, round both to float32 first.
+
+**Loading it.** In sleap-roots-analyze:
+
+```python
+from sleap_roots_analyze.data_cleanup import load_trait_data
+
+df = load_trait_data(
+    "export.csv",
+    barcode_col="plant_qr_code",
+    genotype_col="genotype",
+    replicate_col="scan_id",
+)
+```
+
+`get_trait_columns` drops any column whose name contains `index`, `date`, `time`, `day_`, `scan_`
+and similar, which includes real traits such as `curve_index_median`. Pass your trait columns
+explicitly (every column after `source_id`) instead of relying on it. bloommcp's `qc_clean` finds
+`genotype` and `plant_qr_code` by name.
+
+**Things to know.**
+
+- A cell starting with `=`, `+`, `-` or `@` is written as-is, so a spreadsheet may treat it as a
+  formula.
+- There is no byte-order mark, so a spreadsheet may mis-read accession names with non-ASCII
+  characters; import it as UTF-8.
+- pandas reads a genotype named `NA` or `None` as missing unless you pass `keep_default_na=False`.
 
 ## Changing the key
 

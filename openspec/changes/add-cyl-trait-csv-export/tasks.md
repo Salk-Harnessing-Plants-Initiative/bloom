@@ -330,7 +330,8 @@
 
 ## 8. Docs
 
-- [ ] 8.1 Update `_WIKI/SUPABASE/trait-recipes.md` §"Export sidecar v1" so it states design D4–D6 **in full** for every exporter.
+- [x] 8.1 Update `_WIKI/SUPABASE/trait-recipes.md` §"Export sidecar v1" so it states design D4–D6 **in full** for every exporter.
+  **(done 2026-09-30: added an Export file conventions subsection (interchangeable, CSV layout, float4 values, selection, orderings, excluded CSV, stem, batched exporters), amended :8, replaced the stem line, edited the four Notes cells, updated Performance boundary and Selections. Example sidecar: scalar filters, 13 scan_ids, real hash a4d95875…, key-sorted free-form objects. Schema unit test 5 passed)**
   - **Rules to add:**
     - the "interchangeable" definition;
     - float4 value spelling;
@@ -343,7 +344,8 @@
   - **Don't add** a table whose header starts `| Field | Source |`, or new field rows.
   - **Example sidecar.** Update `trait-recipes.export.example.json` with scalar `filters`, the full `scan_ids` and a real `scan_ids_sha256`.
   - **Then run** `uv run --extra test pytest tests/unit/test_trait_recipe_export_schema.py`.
-- [ ] 8.2 In the same page, add a "Using a trait export" section:
+- [x] 8.2 In the same page, add a "Using a trait export" section:
+  **(done 2026-09-30, without the button. The numpy note was checked: str(numpy.float32) gives 0.1 / 90.0 / 1e-07, so the page says spellings may differ with the same value)**
   - what the zip holds;
   - how it differs from the Box file: `genotype` added; `recipe_key`/`source_id` added; no `primary`/`crown`/`lateral`/`plant_name`; `scan_path` names bloomctl's layout; and scan exports carry their own trait columns;
   - values are the stored float4 in shortest form, so compare against float8 sources with float32 rounding;
@@ -354,7 +356,8 @@
     - pandas reads a genotype named `NA` or `None` as NaN unless `keep_default_na=False`.
 
   Don't mention the button; PR B adds it.
-- [ ] 8.3 Add a "Cylinder trait export" section to `web/README.md`, beside "Cylinder pipeline runs":
+- [x] 8.3 Add a "Cylinder trait export" section to `web/README.md`, beside "Cylinder pipeline runs":
+  **(done 2026-09-30)**
   - the routes and error codes;
   - the limit constant names, pointing to `limits.ts`;
   - the single-process assumption;
