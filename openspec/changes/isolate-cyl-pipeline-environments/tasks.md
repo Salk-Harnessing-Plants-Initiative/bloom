@@ -215,11 +215,12 @@ This group is one commit: the fixture update and the gate must land together.
     status-log entry.
   - Not drafted: `scripts/runai_run_pipeline.sh:20-22` and `README.md:404`, which review cited.
     At `367c771` that script path doesn't exist and that README line is Argo DAG background.
-- [ ] 5.4 Ask the author whether to file an upstream follow-up issue. It would trim the vendored
+- [x] 5.4 Ask the author whether to file an upstream follow-up issue. It would trim the vendored
   Workflow's CROSS-REPO VENDORING NOTICE (`:6-22`), whose override list is already stale (it omits
   `metadata.namespace`), to point at Bloom's README, and fix `:87`'s `talmo-lab` vs `busch-lab`. Do
-  it with the next re-pin, not as one forced now.
-- [ ] 5.5 Verification:
+  it with the next re-pin, not as one forced now. **Author: file it.** Filed 2026-10-01 as
+  talmolab/sleap-roots-pipeline#104.
+- [x] 5.5 Verification:
   - `uvx ruff@0.9.9 check services/workflows && uvx ruff@0.9.9 format --check services/workflows && uvx black@26.3.1 --check services/workflows`
     (versions from `.pre-commit-config.yaml`; CI doesn't lint `services/workflows`);
   - `pre-commit run --files <changed files>`;
@@ -227,15 +228,20 @@ This group is one commit: the fixture update and the gate must land together.
   - on the PR, confirm `validate-env-defaults`, `python-audit` and `vendored-workflow-drift-check`
     are green. The drift check is triggered by `k8s_client.py` and fetches upstream over the
     network.
-- [ ] 5.6 Run `/pre-merge`, then `/pr-description`. Open the PR against `staging`. The body says
-  "Part of #863" and "Part of #983", and states the exposure window and the two-promotion plan.
+  - **Done 2026-10-01:** `ruff check services/workflows` clean, and `ruff format --check` clean on
+    the four `services/workflows` files changed. `test_env_defaults.py` keeps ruff-format drift
+    that predates this change. `pre-commit` isn't installed here, so it wasn't run. `--strict`
+    passes. PR #988 CI: 34 passed, 1 skipped, including `validate-env-defaults`, `python-audit`
+    and `vendored-workflow-drift-check`.
+- [x] 5.6 Run `/pre-merge`, then `/pr-description`. Open the PR against `staging`. The body says
+  "Part of #863" and "Part of #983", and states the exposure window and the two-promotion plan. Opened as #988.
 
 ## 6. Deploy verification and prod provisioning
 
 Gated: each step needs the author's go-ahead. Do not archive until done (bloom#780).
 
-- [ ] 6.0 Ask the author whether to stop prod's `cyl-pipeline-worker` until promotion 1. Prod can
-  dispatch with the staging secret until then.
+- [x] 6.0 Ask the author whether to stop prod's `cyl-pipeline-worker` until promotion 1. Prod can
+  dispatch with the staging secret until then. **Author, 2026-10-01: no, leave it running.**
 - [ ] 6.1 After the staging deploy:
   - check `kubectl get pods -n runai-busch-lab` for GPU contention;
   - run a staging pipeline run on one TEST-E2E scan in experiment 12880747;
