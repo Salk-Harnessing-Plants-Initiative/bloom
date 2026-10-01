@@ -180,7 +180,7 @@ This group is one commit: the fixture update and the gate must land together.
 
 ## 5. Documentation and verification
 
-- [ ] 5.1 Update `services/workflows/README.md`:
+- [x] 5.1 Update `services/workflows/README.md`:
   - **`:258-315`:** six overrides, and the per-environment mapping rule
     (`<root>/{input,predictions,traits}`). Point to the defaults files rather than restating the
     values. Add refusal and its two messages, and step 3 at `:289-290` (refusal is an outcome).
@@ -189,7 +189,7 @@ This group is one commit: the fixture update and the gate must land together.
     preconditions that otherwise leave pods `Pending`. The cluster account is distinct from the
     service's own `is_workflows` user in steps 1–2.
   - **Configuration (`:503-527`):** three rows, noting both workers receive them.
-- [ ] 5.2 Grep for the claim:
+- [x] 5.2 Grep for the claim:
   `git grep -n -i -E "four overrides|exactly four|four documented overrides|volumes.*unmodified|pass(es)? through unmodified|until bloom#863|bloom-web only|covers bloom-web" -- ':!openspec/changes/archive'`.
   Update each hit about `build_workflow_body` or the switch. Hits about the four dispatch **labels**
   (live spec `:284`/`:286`, `test_k8s_client.py:946`) are about labels and stay. Known sites from
