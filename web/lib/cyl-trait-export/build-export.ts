@@ -3,8 +3,9 @@
  *
  * `resolveSelection` runs before the job is accepted: the experiment must be visible
  * through RLS, and the selection is paged by keyset and checked against an exact
- * count. `buildExport` then lists recipes per batch and merges them, and for each
- * batch reads coverage and the chosen recipe's traits, always with the explicit key
+ * count. `buildExport` then lists recipes in batches of LISTING_BATCH_SCANS (one call
+ * for every current experiment) and merges them, and for each BATCH_SCANS batch reads
+ * coverage and the chosen recipe's traits, always with the explicit key
  * and a non-empty `scan_ids_`. Any RPC error or integrity failure throws an
  * ExportError with a fixed detail; nothing partial is returned.
  */
@@ -120,17 +121,17 @@ export async function resolveSelection(
 }
 
 /**
- * `list_trait_recipes` per batch of `batchSize` (default LISTING_BATCH_SCANS), merged as
+ * `list_trait_recipes` per batch of `listingBatchSize` (default LISTING_BATCH_SCANS), merged as
  * one call over `ids` would return it.
  */
 export async function listMergedRecipes(
   db: ExportDb,
   experimentId: number,
   ids: number[],
-  opts: Pick<BuildOptions, 'batchSize' | 'concurrency' | 'signal' | 'onProgress'> = {}
+  opts: Pick<BuildOptions, 'listingBatchSize' | 'concurrency' | 'signal' | 'onProgress'> = {}
 ): Promise<RecipeRow[]> {
   const { signal } = opts
-  const chunks = chunkIds(ids, opts.batchSize ?? LISTING_BATCH_SCANS)
+  const chunks = chunkIds(ids, opts.listingBatchSize ?? LISTING_BATCH_SCANS)
   const n = chunks.length
   let listed = 0
   const listings = await pool(
@@ -164,7 +165,7 @@ export async function buildExport(
 
   // Recipes, merged across batches (D2 step 3).
   const merged = await listMergedRecipes(db, expId, ids, {
-    batchSize: opts.listingBatchSize ?? LISTING_BATCH_SCANS,
+    listingBatchSize: opts.listingBatchSize,
     concurrency: limit,
     signal,
     onProgress: opts.onProgress,

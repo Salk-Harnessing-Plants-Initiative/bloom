@@ -1,9 +1,10 @@
 /**
  * Merging per-batch `list_trait_recipes` results (design D2 step 3).
  *
- * The export lists recipes one scan batch at a time, because a single call over a
- * large experiment exceeds PostgREST's 8 s limit. The merge equals one call over the
- * whole selection: batches are disjoint and presence depends only on the scan, so
+ * The export lists recipes in batches of LISTING_BATCH_SCANS scans. One call covers
+ * every current experiment (experiment 1's 18,471 scans took 1.26 s on staging), so
+ * the merge runs only for a larger selection. It equals one call over the whole
+ * selection: batches are disjoint and presence depends only on the scan, so
  * `n_scans` sums and `newest_source_id` is the max; a source row fixes its version,
  * kind and definition; and only `unattributed` has a NULL id, which ranks last
  * (M2:142 orders `newest_source_id DESC NULLS LAST`).
