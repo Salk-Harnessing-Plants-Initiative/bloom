@@ -24,11 +24,17 @@ from __future__ import annotations
 
 import argparse
 import glob
-import json
 import re
-import subprocess
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from compose_health import (  # noqa: E402
+    OPTIONAL_SERVICES,  # noqa: F401 — re-exported for callers and tests
+    check_services_healthy,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
@@ -257,101 +263,6 @@ def check_migrations(conn, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Service checks (docker compose) — local only.
-# --------------------------------------------------------------------------- #
-
-# Services that require user-supplied config to become healthy and are NOT part
-# of the core dev substrate, so an unhealthy one is a warning, not a failure:
-#   - langchain-agent needs LOCAL_LLM_URL / OPENAI_API_KEY (it builds a model at
-#     import; with no LLM configured it can't start).
-OPTIONAL_SERVICES = {"langchain-agent"}
-
-
-def _classify_service_rows(rows: list[dict]) -> tuple[list[str], list[str]]:
-    """Split service-health issues into hard problems vs optional warnings.
-
-    Pure (no docker) so it is unit-testable. A service in OPTIONAL_SERVICES that
-    is unhealthy/exited yields a warning; any other does a problem.
-    """
-    problems: list[str] = []
-    warnings: list[str] = []
-    for svc in rows:
-        name = svc.get("Service") or svc.get("Name", "?")
-        health = (svc.get("Health") or "").lower()
-        state = (svc.get("State") or "").lower()
-        issue = None
-        if health and health not in ("healthy", ""):
-            issue = f"service {name} health={health}"
-        elif state == "exited" and str(svc.get("ExitCode", "0")) not in ("0", "None"):
-            issue = f"service {name} exited (code {svc.get('ExitCode')})"
-        if not issue:
-            continue
-        if name in OPTIONAL_SERVICES:
-            warnings.append(
-                f"{issue} (optional — set LOCAL_LLM_URL / OPENAI_API_KEY to enable it)"
-            )
-        else:
-            problems.append(issue)
-    return problems, warnings
-
-
-def _services_still_settling(rows: list[dict]) -> list[str]:
-    """Required (non-optional) services whose healthcheck is still 'starting'.
-
-    Healthchecks first fire ~30s after start (e.g. bloommcp/realtime), so a
-    `make check` run right after `make dev-up` can catch them mid-`starting`.
-    Treat that as 'keep waiting', not a failure.
-    """
-    out = []
-    for svc in rows:
-        name = svc.get("Service") or svc.get("Name", "?")
-        if name in OPTIONAL_SERVICES:
-            continue
-        if (svc.get("Health") or "").lower() == "starting":
-            out.append(name)
-    return out
-
-
-def _compose_ps_rows() -> tuple[list[dict] | None, list[str]]:
-    """Query `docker compose ps`. Return (rows, problems); rows is None on error."""
-    try:
-        out = subprocess.run(
-            [
-                "docker", "compose", "-f", str(COMPOSE_FILE),
-                "--env-file", str(ENV_DEV), "ps", "--format", "json",
-            ],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return None, [f"could not query docker compose: {exc}"]
-    if out.returncode != 0:
-        return None, [f"`docker compose ps` failed: {out.stderr.strip()[:200]}"]
-    raw = out.stdout.strip()
-    if not raw:
-        return None, ["no compose services are running (did you `make dev-up`?)"]
-    # Newer compose prints one JSON object per line; older prints a JSON array.
-    if raw.startswith("["):
-        return json.loads(raw), []
-    return [json.loads(line) for line in raw.splitlines() if line.strip()], []
-
-
-def check_services_healthy(
-    timeout: float = 90.0, interval: float = 3.0
-) -> tuple[list[str], list[str]]:
-    """Return (problems, warnings) for compose service health, after bounded-
-    waiting for required services to leave 'starting'. Optional LLM services that
-    are down are warnings, not problems."""
-    deadline = time.monotonic() + timeout
-    while True:
-        rows, errors = _compose_ps_rows()
-        if rows is None:
-            return errors, []
-        if not _services_still_settling(rows) or time.monotonic() >= deadline:
-            return _classify_service_rows(rows)
-        time.sleep(interval)
-
-
-# --------------------------------------------------------------------------- #
 # Connection + main.
 # --------------------------------------------------------------------------- #
 
@@ -374,15 +285,63 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip the docker compose health check (DB checks only)",
     )
+    parser.add_argument(
+        "--services-only",
+        action="store_true",
+        help="run only the compose health check (no database checks)",
+    )
+    parser.add_argument(
+        "--compose-file",
+        action="append",
+        type=Path,
+        metavar="PATH",
+        help="compose file to query; repeat to overlay (default: docker-compose.dev.yml)",
+    )
+    parser.add_argument(
+        "--env-file", type=Path, help="env file to pass to docker compose"
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="treat optional services as required (use when gating a merge)",
+    )
+    parser.add_argument(
+        "--require-all",
+        action="store_true",
+        help="also fail when a declared service has no container or is not running",
+    )
+    parser.add_argument(
+        "--service",
+        action="append",
+        metavar="NAME",
+        help="check only this service; repeat for several (default: all)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=90.0,
+        help="seconds to wait for services to settle (default: 90)",
+    )
     args = parser.parse_args(argv)
 
     all_problems: list[str] = []
     all_warnings: list[str] = []
 
     if not args.skip_services:
-        svc_problems, svc_warnings = check_services_healthy()
+        svc_problems, svc_warnings = check_services_healthy(
+            timeout=args.timeout,
+            compose_files=args.compose_file,
+            env_file=args.env_file,
+            strict=args.strict,
+            require_all=args.require_all,
+            services=args.service,
+        )
         all_problems += [f"[services] {p}" for p in svc_problems]
         all_warnings += [f"[services] {w}" for w in svc_warnings]
+
+    if args.services_only:
+        _report(all_problems, all_warnings, subject="Compose services")
+        return 1 if all_problems else 0
 
     try:
         conn = _connect()
@@ -405,13 +364,21 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if all_problems else 0
 
 
-def _report(problems: list[str], warnings: list[str] | None = None) -> None:
+def _report(
+    problems: list[str],
+    warnings: list[str] | None = None,
+    subject: str = "Local dev stack",
+) -> None:
     for w in warnings or []:
         print(f"  ⚠ {w}")
     if problems:
-        print("Local dev stack is NOT healthy:")
+        # ::error:: so the first broken service shows on the GitHub run summary.
+        print(f"::error::{subject} is NOT healthy: {problems[0]}")
+        print(f"{subject} is NOT healthy:")
         for p in problems:
             print(f"  ✗ {p}")
+    elif subject != "Local dev stack":
+        print(f"{subject} are healthy: every declared service is up.")
     else:
         print("Local dev stack is healthy: services up, roles + auth/storage "
               "schemas present, all migrations applied.")

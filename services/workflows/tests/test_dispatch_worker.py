@@ -300,3 +300,71 @@ def test_signal_while_waiting_to_connect_exits_cleanly(monkeypatch):
 
     assert attempts["n"] == 1  # tried once, then stopped retrying after the signal
     assert claimed["called"] is False
+
+
+# --- liveness heartbeat -----------------------------------------------------
+#
+# Asserting the heartbeat file merely EXISTS is not enough: the startup connect
+# writes one too, so a loop that never refreshes it again would still pass. So
+# these record the order of beats and work, which pins both that every
+# iteration beats and that it beats before doing the work.
+
+def _beat_log(monkeypatch):
+    """Record 'beat'/'work' in the order they happen."""
+    events: list[str] = []
+    monkeypatch.setattr(worker.heartbeat, "touch", lambda path=None: events.append("beat"))
+    return events
+
+
+def test_every_iteration_records_a_heartbeat(monkeypatch):
+    events = _beat_log(monkeypatch)
+    monkeypatch.setattr(worker, "app_client", lambda: object())
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    cycles = {"n": 0}
+
+    def fake_claim(c):
+        cycles["n"] += 1
+        events.append("work")
+        if cycles["n"] >= 3:
+            worker._running = False
+        return None
+
+    monkeypatch.setattr(worker, "claim_batch", fake_claim)
+    worker.run()
+
+    # One beat from the startup connect, then one per iteration before its work.
+    assert events == ["beat", "beat", "work", "beat", "work", "beat", "work"], events
+
+
+def test_the_heartbeat_comes_before_the_work_not_after(monkeypatch):
+    """Beating after process_one returns would leave a wedged iteration looking
+    fresh forever — the exact case a probe has to catch."""
+    events = _beat_log(monkeypatch)
+    monkeypatch.setattr(worker, "app_client", lambda: object())
+    monkeypatch.setattr(worker.time, "sleep", lambda s: None)
+
+    def fake_claim(c):
+        events.append("work")
+        worker._running = False
+        return None
+
+    monkeypatch.setattr(worker, "claim_batch", fake_claim)
+    worker.run()
+
+    assert events[-2:] == ["beat", "work"], f"beat must precede the work: {events}"
+
+
+def test_a_startup_outage_still_reports_liveness(monkeypatch, tmp_path):
+    """The connect retry deliberately spins rather than crash-looping, so a
+    worker waiting on Supabase is alive, not broken. Uses the real touch, so
+    this also proves the write itself works."""
+    hb = tmp_path / "heartbeat"
+    monkeypatch.setattr(worker.heartbeat, "DEFAULT_PATH", hb)
+    monkeypatch.setattr(worker, "app_client", lambda: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(worker.time, "sleep", lambda s: setattr(worker, "_running", False))
+    monkeypatch.setattr(worker, "claim_batch", lambda c: None)
+
+    worker.run()
+
+    assert hb.exists(), "a worker waiting on its dependency must still be live"

@@ -32,6 +32,8 @@ import os
 import signal
 import time
 
+import heartbeat
+
 from postgrest import APIError
 
 from k8s_client import get_workflow_status
@@ -494,6 +496,7 @@ def _connect_with_retry():
     forever, unlike the in-loop reconnect below, which already retries."""
     client = None
     while client is None and _running:
+        heartbeat.touch()
         try:
             client = app_client()
         except Exception as exc:
@@ -516,6 +519,8 @@ def run():
     logger.info("status poller started (poll=%ss)", POLL_INTERVAL)
     consecutive_error_cycles = 0
     while _running:
+        # Top of the loop, so a wedged sweep_once stops refreshing it.
+        heartbeat.touch()
         try:
             clean = sweep_once(client)
         except Exception as exc:

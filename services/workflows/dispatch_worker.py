@@ -21,6 +21,8 @@ import os
 import signal
 import time
 
+import heartbeat
+
 from k8s_client import (
     K8sConfigError,
     K8sSubmissionError,
@@ -155,6 +157,7 @@ def _connect_with_retry():
     forever, unlike the in-loop reconnect below, which already retries."""
     client = None
     while client is None and _running:
+        heartbeat.touch()
         try:
             client = app_client()
         except Exception as exc:
@@ -176,6 +179,8 @@ def run():
         return
     logger.info("dispatch worker started (poll=%ss)", POLL_INTERVAL)
     while _running:
+        # Top of the loop, so a wedged process_one stops refreshing it.
+        heartbeat.touch()
         try:
             handled = process_one(client)
         except Exception as exc:
