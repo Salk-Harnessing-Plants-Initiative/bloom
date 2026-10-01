@@ -5,7 +5,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fakeDb, type FakeOptions } from '@/lib/cyl-trait-export/__fixtures__/fake-db'
+import { fakeDb, RECORDED, type FakeOptions } from '@/lib/cyl-trait-export/__fixtures__/fake-db'
+import { LISTING_BATCH_SCANS } from '@/lib/cyl-trait-export/limits'
 
 vi.mock('@/lib/supabase/server', () => ({
   getSession: vi.fn(),
@@ -119,6 +120,7 @@ describe('listing', () => {
     expect(body.rows.filter((r: { is_default: boolean }) => r.is_default)).toHaveLength(1)
     expect(Object.keys(body.rows[0]).sort()).toEqual(
       [
+        'definition',
         'is_default',
         'n_scans',
         'newest_source_id',
@@ -129,6 +131,23 @@ describe('listing', () => {
     )
   })
 
+  it("returns each recipe's definition, so the dialog can say what a recipe is", async () => {
+    const body = await (await list('experiment=1')).json()
+    const recorded = RECORDED.input.chunk_listings['8'][0].rows as {
+      recipe_key: string
+      definition: unknown
+    }[]
+    for (const row of body.rows as { recipe_key: string; definition: unknown }[]) {
+      expect(row.definition).toEqual(recorded.find((r) => r.recipe_key === row.recipe_key)!.definition)
+    }
+    const byKind = Object.fromEntries(
+      (body.rows as { recipe_kind: string; definition: unknown }[]).map((r) => [r.recipe_kind, r.definition])
+    )
+    expect(byKind.pipeline).toMatchObject({ models: expect.any(Array), traits_code_sha: expect.any(String) })
+    expect(byKind.legacy).toMatchObject({ source_id: expect.any(Number), source_name: expect.any(String) })
+    expect(byKind.unattributed).toBeNull()
+  })
+
   it('passes the experiment and a bounded, non-empty scan list on every call', async () => {
     await list('experiment=1')
     const calls = fake.calls.filter((c) => c.method === 'listRecipes')
@@ -137,7 +156,7 @@ describe('listing', () => {
       expect(c.args[0]).toBe(1)
       const ids = c.args[1] as number[]
       expect(ids.length).toBeGreaterThan(0)
-      expect(ids.length).toBeLessThanOrEqual(100)
+      expect(ids.length).toBeLessThanOrEqual(LISTING_BATCH_SCANS)
     }
   })
 
