@@ -267,7 +267,27 @@ df = load_trait_data(
 `get_trait_columns` drops any column whose name contains `index`, `date`, `time`, `day_`, `scan_`
 and similar, which includes real traits such as `curve_index_median`. Pass your trait columns
 explicitly (every column after `source_id`) instead of relying on it. bloommcp's `qc_clean` finds
-`genotype` and `plant_qr_code` by name.
+`genotype` and `plant_qr_code` by name, but takes inline CSV text of at most 5 MiB: a whole large
+experiment is far over that (experiment 1's `legacy:5` CSV is about 110 MB), so export one wave or
+age for it.
+
+`load_trait_data` reads with pandas' defaults, which turn all-digit QR codes into numbers (dropping
+leading zeros) and a genotype named `NA` or `None` into missing. If your data has either, read the
+file with pandas yourself:
+
+```python
+import pandas as pd
+
+df = pd.read_csv(
+    "export.csv",
+    dtype={"plant_qr_code": str, "genotype": str},
+    keep_default_na=False,
+    na_values=["", "NaN"],
+)
+```
+
+That keeps identifiers as text, and an empty cell (no value, or no row for that trait) and `NaN`
+both read as missing, as they do by default.
 
 **Things to know.**
 
@@ -275,7 +295,11 @@ explicitly (every column after `source_id`) instead of relying on it. bloommcp's
   formula.
 - There is no byte-order mark, so a spreadsheet may mis-read accession names with non-ASCII
   characters; import it as UTF-8.
-- pandas reads a genotype named `NA` or `None` as missing unless you pass `keep_default_na=False`.
+- A whole-experiment export mixes plant ages. The sleap-roots Pipeline class is chosen by age
+  window and is not part of the recipe key (see "Known blind spot" above), so filter by
+  `plant_age_days`, or check it, before pooling ages.
+- `unattributed` (trait rows with no source recorded) and a `pipeline` recipe whose payload is
+  empty both mean the provenance is unknown: the rows may not all come from the same computation.
 
 ## Changing the key
 
