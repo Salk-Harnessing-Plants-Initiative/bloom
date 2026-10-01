@@ -119,7 +119,9 @@ These apply across the `cyl` commands, so the per-command sections below stay sh
 
 - **Profiles** — every command takes `-p/--profile <name>` (default `prod`). `bloomctl login`
   writes a profile; use separate profiles to keep prod / staging / local logins side by side
-  (`bloomctl login --server <url> -p staging`, then `… -p staging` on any command).
+  (`bloomctl login --server https://staging.bloom.salk.edu -p staging`, then `… -p staging` on
+  any command). Staging is for the Bloom team only. `-p` only names the saved login: without
+  `--server`, `login` signs in to prod whatever the profile is called.
 - **Machine-readable output** — the `list` commands take `--output csv|json` (with `--json` as a
   back-compat alias for `--output json`); the default is a human table. Pipe it: e.g.
   `cyl experiments list --output json | jq '.[].experiment_id'`.

@@ -42,9 +42,12 @@ Do this once. It asks for your Bloom email and password and saves them to `~/.bl
 bloomctl login
 ```
 
-- Every command logs in to `prod` by default. Use `-p/--profile` to pick a different login.
+This logs you in to the Bloom database.
+
 - Browsing and downloading work for any account. Commands marked *(needs write access)* need an
   account that has been given write access.
+
+<sub>Note for Bloom team developers using the CLI with staging: see **For developers (Bloom team)** below.</sub>
 
 ---
 
@@ -222,6 +225,17 @@ name) · `:sha-<git-sha>` (one per commit, never changes). Build details are in 
   from a menu. Use one or the other.
 - **Menus need a terminal.** In a pipe or CI job, menus stop rather than guess. For scripts, pass
   the id or name directly and use `--output json`.
+
+## For developers (Bloom team)
+
+Staging is for the Bloom team only. To log in to staging, use:
+
+```bash
+bloomctl login --server https://staging.bloom.salk.edu -p staging
+```
+
+Then add `-p staging` to each command. Staging has its own accounts; reach out to a Bloom admin
+to get one.
 
 ## Documentation
 
