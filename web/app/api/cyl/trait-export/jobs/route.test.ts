@@ -116,7 +116,10 @@ describe('check order', () => {
   })
 
   it.each([
-    ['a network failure (auth-js AuthRetryableFetchError, status 0)', { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' }],
+    [
+      'a network failure (auth-js AuthRetryableFetchError, status 0)',
+      { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' },
+    ],
     ['an error with no status', { message: 'unknown' }],
   ])('503 when GoTrue is unreachable: %s (tasks.md 10a.2)', async (_label, error) => {
     getUser.mockResolvedValue({ data: { user: null }, error })
@@ -183,7 +186,9 @@ describe('check order', () => {
     await drained
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ detail: 'the export was cancelled before it started' })
-    expect(fake.calls.filter((c) => ['listRecipes', 'coverage', 'traits'].includes(c.method))).toEqual([])
+    expect(
+      fake.calls.filter((c) => ['listRecipes', 'coverage', 'traits'].includes(c.method))
+    ).toEqual([])
   })
 
   it('429 when two jobs are running', async () => {

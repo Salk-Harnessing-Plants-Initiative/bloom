@@ -89,7 +89,10 @@ describe('module contract and guards', () => {
     getUser.mockResolvedValue({ data: { user: null }, error: { status: 500, message: 'x' } })
     expect((await list('experiment=1')).status).toBe(503)
     // auth-js reports a network failure as AuthRetryableFetchError with status 0 (tasks.md 10a.2).
-    getUser.mockResolvedValue({ data: { user: null }, error: { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' } })
+    getUser.mockResolvedValue({
+      data: { user: null },
+      error: { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' },
+    })
     expect((await list('experiment=1')).status).toBe(503)
     expect(fake.calls).toEqual([])
   })
@@ -141,13 +144,24 @@ describe('listing', () => {
       definition: unknown
     }[]
     for (const row of body.rows as { recipe_key: string; definition: unknown }[]) {
-      expect(row.definition).toEqual(recorded.find((r) => r.recipe_key === row.recipe_key)!.definition)
+      expect(row.definition).toEqual(
+        recorded.find((r) => r.recipe_key === row.recipe_key)!.definition
+      )
     }
     const byKind = Object.fromEntries(
-      (body.rows as { recipe_kind: string; definition: unknown }[]).map((r) => [r.recipe_kind, r.definition])
+      (body.rows as { recipe_kind: string; definition: unknown }[]).map((r) => [
+        r.recipe_kind,
+        r.definition,
+      ])
     )
-    expect(byKind.pipeline).toMatchObject({ models: expect.any(Array), traits_code_sha: expect.any(String) })
-    expect(byKind.legacy).toMatchObject({ source_id: expect.any(Number), source_name: expect.any(String) })
+    expect(byKind.pipeline).toMatchObject({
+      models: expect.any(Array),
+      traits_code_sha: expect.any(String),
+    })
+    expect(byKind.legacy).toMatchObject({
+      source_id: expect.any(Number),
+      source_name: expect.any(String),
+    })
     expect(byKind.unattributed).toBeNull()
   })
 
