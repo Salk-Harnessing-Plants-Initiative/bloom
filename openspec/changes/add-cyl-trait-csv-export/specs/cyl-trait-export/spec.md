@@ -72,7 +72,7 @@ An export SHALL read trait data, recipes and coverage only through `list_trait_r
   - `recipe_key_version`, `recipe_kind` and `definition` come from the batch holding that maximum (any batch for `unattributed`);
   - rows are ordered by `newest_source_id` descending, NULLs last, and the first row is the default.
 - **Counts.** The selection is paged by ascending `scan_id` until an empty page, and must equal its exact count. Each trait call's rows must equal its exact count.
-- **No retries.** No batch is retried.
+- **No retries.** No batch or call is retried, including by the client library (postgrest-js retries reads by default, so every request disables it).
 
 #### Scenario: Batch size and completion order do not change the output
 

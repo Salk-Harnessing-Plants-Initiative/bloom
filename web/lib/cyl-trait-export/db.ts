@@ -70,7 +70,10 @@ type Result = {
   count?: number | null
 }
 // A PostgREST builder: chainable, awaitable, and abortable.
-type Builder = PromiseLike<Result> & { abortSignal(signal: AbortSignal): Builder }
+type Builder = PromiseLike<Result> & {
+  abortSignal(signal: AbortSignal): Builder
+  retry(enabled: boolean): Builder
+}
 
 function nonEmpty(ids: number[], what: string): void {
   // A NULL or missing scan_ids_ makes the recipe RPCs read the whole experiment.
@@ -107,7 +110,10 @@ function supabaseExportDb(accessToken: string): ExportDb {
   const sb = client as any
 
   async function send(make: () => Builder, signal?: AbortSignal): Promise<Result> {
-    const res = await make().abortSignal(signal ?? new AbortController().signal)
+    // No retries (spec): postgrest-js would otherwise retry reads on its own.
+    const res = await make()
+      .retry(false)
+      .abortSignal(signal ?? new AbortController().signal)
     if (res.error) throw { code: res.error.code, message: res.error.message } satisfies DbError
     return res
   }
