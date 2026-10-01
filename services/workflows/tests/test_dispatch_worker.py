@@ -396,3 +396,31 @@ def test_a_refused_batch_whose_fail_rpc_errors_is_left_for_redelivery(
 
     messages = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert any("run 1 batch 0" in m and "fail RPC" in m for m in messages), messages
+
+
+def test_a_switched_off_environment_reaches_neither_argo_nor_the_vendored_file(
+    monkeypatch,
+):
+    """End to end with the real body builder: switched off, the batch is
+    failed with the fixed message and no Kubernetes client is ever created."""
+    import k8s_client
+
+    calls = {}
+    monkeypatch.setattr(k8s_client, "PIPELINE_DISPATCH_ENABLED", False)
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: calls.update(client=True),
+    )
+    monkeypatch.setattr(worker, "claim_batch", lambda c: dict(_BATCH))
+    monkeypatch.setattr(worker, "complete_batch", lambda *a: calls.update(complete=a))
+    monkeypatch.setattr(
+        worker,
+        "fail_batch",
+        lambda c, r, b, m, s, err: calls.update(fail=(r, b, m, s, err)),
+    )
+
+    assert worker.process_one(object()) is True
+    assert calls["fail"] == (1, 0, 9, [5, 6], _REFUSAL_MESSAGES["off"])
+    assert "client" not in calls
+    assert "complete" not in calls

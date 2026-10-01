@@ -14,13 +14,20 @@ WORKFLOWS_K8S_NAMESPACE and WORKFLOWS_K8S_TTL_SECONDS are plain config values
 with safe defaults (`runai-busch-lab`, `3600`) — unlike the three credentials,
 neither is ever treated as "missing".
 
+WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT and WORKFLOWS_K8S_PIPELINE_SECRET_NAME are
+plain config too, but have no default (bloom#863): prod and staging share one
+namespace, and each needs its own stage directories and Supabase credential
+Secret. With either missing or invalid, or CYL_PIPELINE_TRIGGER_ENABLED not
+exactly "true", `build_workflow_body` raises K8sDispatchRefusedError before
+reading the vendored file, and the dispatch worker fails the batch at once.
+
 The submitted `Workflow`'s `spec` is loaded from a vendored, CI-drift-checked
 copy of `sleap-roots-pipeline`'s canonical `sleap-roots-pipeline.yaml`
 (`vendored/sleap-roots-pipeline.yaml`, pin recorded in the sibling
 `SLEAP_ROOTS_PIPELINE_REF`), not hand-built field by field — a prior
 hand-reconstruction silently dropped `spec.volumes` entirely and broke every
 real batch dispatch (bloom #737). `build_workflow_body` re-reads and re-parses
-that file on every call (no caching) and applies exactly four overrides on top
+that file on every call (no caching) and applies exactly six overrides on top
 of it: the batch's `scan-ids` value, attribution labels (merged, not replacing
 whatever the vendored file already sets), `ttlStrategy` (dispatch-only — never
 folded into the shared file, since the submitting identity has no `delete`
@@ -28,10 +35,13 @@ RBAC and would have no other way to ever clean up dispatched Workflows), and
 `metadata.namespace` (forced to `WORKFLOWS_K8S_NAMESPACE` — the vendored file
 hardcodes its own namespace, and the Kubernetes API rejects a submission whose
 body namespace disagrees with the URL's namespace segment, so this keeps
-namespace single-sourced with the value the submission URL already uses). A
-missing/unparseable/wrong-shaped vendored file, or a structural drift in the
-`scan-ids` parameter position, is a `K8sConfigError` — the same treatment as a
-missing credential.
+namespace single-sourced with the value the submission URL already uses), and
+the three stage volumes' `hostPath.path` and `bloom-credentials`' `secretName`
+(set from the two PIPELINE_* values, so each environment stages into its own
+directories with its own credential — the vendored file names staging's). A
+missing/unparseable/wrong-shaped vendored file, a structural drift in the
+`scan-ids` parameter position, or a volume set other than those four volumes,
+is a `K8sConfigError` — the same treatment as a missing credential.
 """
 
 import logging
@@ -156,9 +166,20 @@ _VENDORED_WORKFLOW_PATH = (
     Path(__file__).parent / "vendored" / "sleap-roots-pipeline.yaml"
 )
 
+# Each vendored stage volume and the sub-directory of PIPELINE_HOSTPATH_ROOT it
+# gets. The names match the vendored a4_poc layout, so staging's root yields
+# exactly the vendored paths.
+_STAGE_SUBDIRS = {
+    "images-input-dir": "input",
+    "predictions-output-dir": "predictions",
+    "traits-output-dir": "traits",
+}
+
 
 class K8sConfigError(Exception):
-    """A required K8s credential is missing — a service misconfiguration."""
+    """A required K8s credential is missing, or the vendored Workflow source
+    is missing or has drifted — a service misconfiguration, left unsettled
+    for redelivery by the dispatch worker."""
 
 
 class K8sDispatchRefusedError(Exception):
@@ -270,11 +291,14 @@ def _load_vendored_workflow() -> dict:
 
 def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
     """Construct the Workflow CRD body for one batch by loading the vendored
-    canonical `sleap-roots-pipeline.yaml` and applying exactly four overrides
-    on top of it — see the module docstring for why each one exists. The
-    vendored file's DAG (referencing the five already-registered
-    WorkflowTemplates), volumes, entrypoint, and serviceAccountName all pass
-    through unmodified."""
+    canonical `sleap-roots-pipeline.yaml` and applying exactly six overrides
+    on top of it — see the module docstring for why each one exists. Refuses
+    first (K8sDispatchRefusedError, before the file is read) when this
+    environment is switched off or unconfigured. The vendored file's DAG
+    (referencing the five already-registered WorkflowTemplates), entrypoint,
+    serviceAccountName and volume set pass through unmodified; only the three
+    stage paths and the credential Secret's name change within the volumes."""
+    _refuse_unless_dispatch_allowed()
     body = _load_vendored_workflow()
 
     # .get() chains, not body["spec"]["arguments"]["parameters"] directly:
@@ -319,7 +343,75 @@ def build_workflow_body(run_id, batch_index: int, scan_ids: list[int]) -> dict:
     body["spec"]["ttlStrategy"] = {"secondsAfterCompletion": TTL_SECONDS}
     body["metadata"]["namespace"] = NAMESPACE
 
+    # This environment's own stage directories and credential Secret, in
+    # place of the vendored file's staging values (bloom#863). In place and
+    # by name, so order and every other field are kept.
+    for volume in _stage_and_credential_volumes(body):
+        if volume["name"] in _STAGE_SUBDIRS:
+            subdir = _STAGE_SUBDIRS[volume["name"]]
+            volume["hostPath"]["path"] = f"{PIPELINE_HOSTPATH_ROOT}/{subdir}"
+        else:
+            volume["secret"]["secretName"] = PIPELINE_SECRET_NAME
+
     return body
+
+
+def _refuse_unless_dispatch_allowed() -> None:
+    """Raise K8sDispatchRefusedError unless this environment is switched on
+    and has a valid stage root and credential Secret. The switch first, so an
+    environment that is both off and unconfigured reports "off"."""
+    if not PIPELINE_DISPATCH_ENABLED:
+        raise K8sDispatchRefusedError(
+            "off", 'CYL_PIPELINE_TRIGGER_ENABLED is not exactly "true"'
+        )
+    problems = [
+        f"{name} {why}"
+        for name, value, why in (
+            (
+                "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT",
+                PIPELINE_HOSTPATH_ROOT,
+                PIPELINE_HOSTPATH_ROOT_INVALID,
+            ),
+            (
+                "WORKFLOWS_K8S_PIPELINE_SECRET_NAME",
+                PIPELINE_SECRET_NAME,
+                PIPELINE_SECRET_NAME_INVALID,
+            ),
+        )
+        if value is None
+    ]
+    if problems:
+        raise K8sDispatchRefusedError("unconfigured", "; ".join(problems))
+
+
+def _stage_and_credential_volumes(body: dict) -> list[dict]:
+    """The vendored `spec.volumes`, checked against a closed contract: exactly
+    the three stage hostPaths and the one credential Secret, nothing else of
+    any type. A volume added upstream would otherwise be submitted as-is, still
+    pointing at storage every environment shares. Raises K8sConfigError, never
+    a raw KeyError/TypeError, for anything else."""
+    volumes = body["spec"].get("volumes")
+    drift = K8sConfigError(
+        "K8s client not configured: vendored Workflow source's volumes have "
+        "drifted from the three stage hostPaths and one credential Secret"
+    )
+    if not isinstance(volumes, list) or not all(isinstance(v, dict) for v in volumes):
+        raise drift
+    names = [v.get("name") for v in volumes]
+    if sorted(map(str, names)) != sorted([*_STAGE_SUBDIRS, "bloom-credentials"]):
+        raise drift
+    for volume in volumes:
+        if volume["name"] in _STAGE_SUBDIRS:
+            host_path = volume.get("hostPath")
+            if set(volume) != {"name", "hostPath"} or not isinstance(host_path, dict):
+                raise drift
+            if not isinstance(host_path.get("path"), str):
+                raise drift
+        elif set(volume) != {"name", "secret"} or not isinstance(
+            volume.get("secret"), dict
+        ):
+            raise drift
+    return volumes
 
 
 def submit_workflow(body: dict) -> str:

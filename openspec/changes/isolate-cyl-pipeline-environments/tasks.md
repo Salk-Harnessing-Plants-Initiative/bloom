@@ -126,7 +126,7 @@ This group is one atomic commit; every partial state is red. Write the files as 
 
 This group is one commit: the fixture update and the gate must land together.
 
-- [ ] 4.1 **Test first** (`test_k8s_client.py`).
+- [x] 4.1 **Test first** (`test_k8s_client.py`).
   - **Fixture.** The autouse `_configured` fixture (`:94-104`) also sets
     `PIPELINE_DISPATCH_ENABLED=True` plus staging's root and secret. Every existing test then keeps
     building today's body.
@@ -167,7 +167,7 @@ This group is one commit: the fixture update and the gate must land together.
   - **(m) End to end (2.1(f)).** In `test_dispatch_worker.py`, with the real `build_workflow_body`,
     `k8s_client.PIPELINE_DISPATCH_ENABLED=False` and `k8s_client.httpx.Client` patched to record:
     `fail_batch` gets the "off" message and no client is created.
-- [ ] 4.2 Implement:
+- [x] 4.2 Implement:
   - the gate at the top of `build_workflow_body`;
   - the closed-set check;
   - `_STAGE_SUBDIRS`;
@@ -176,7 +176,7 @@ This group is one commit: the fixture update and the gate must land together.
   Update the module docstring (`:13-31`: list six overrides; say the PIPELINE_* pair has no default
   and causes a refusal), `build_workflow_body`'s docstring, and `K8sConfigError`'s docstring
   (`:96-97`).
-- [ ] 4.3 Run the whole `services/workflows` suite and `tests/unit/`, and confirm both pass.
+- [x] 4.3 Run the whole `services/workflows` suite and `tests/unit/`, and confirm both pass.
 
 ## 5. Documentation and verification
 
