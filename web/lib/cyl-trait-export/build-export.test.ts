@@ -445,6 +445,12 @@ describe('listMergedRecipes batching (tasks.md 7.4)', () => {
     expect(sizes).toEqual([BATCH_SCANS * 2 + 50])
   })
 
+  it('takes the listing batch size as listingBatchSize, as BuildOptions does (tasks.md 10a.5)', async () => {
+    const { db, sizes } = stubDb()
+    await listMergedRecipes(db, 1, ids(5), { listingBatchSize: 2 })
+    expect(sizes).toEqual([2, 2, 1])
+  })
+
   it('splits a larger selection at LISTING_BATCH_SCANS', async () => {
     const { db, sizes } = stubDb()
     await listMergedRecipes(db, 1, ids(LISTING_BATCH_SCANS + 1))
