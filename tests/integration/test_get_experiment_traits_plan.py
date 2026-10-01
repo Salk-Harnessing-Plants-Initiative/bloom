@@ -146,14 +146,16 @@ def test_reads_only_the_selected_scans_trait_rows(fx, case):
 @pytest.mark.parametrize("case", ["recipe", "latest"])
 def test_later_calls_in_a_session_still_read_only_the_batch(fx, case):
     # Each PostgREST connection is reused, and plpgsql may switch to a generic plan
-    # after five calls; force_generic_plan would be that plan on every call.
+    # after five calls; force_generic_plan would be that plan on every call. Seq scans
+    # stay allowed here: the generic latest-branch plan full-scans cyl_scan_traits
+    # when they are, even with the join flattened.
     args, scans = _cases(fx)[case]
     bound = _trait_rows(fx.cur, scans)
     plans = _main_plans(
         fx.cur,
         args,
         calls=REPEAT_CALLS,
-        session=(("plan_cache_mode", "force_generic_plan"),),
+        session=(("plan_cache_mode", "force_generic_plan"), ("enable_seqscan", "on")),
     )
     reads = [_rows_read(p) for p in plans]
     assert max(reads) <= bound, f"{case}: rows read per call {reads}; bound {bound}"
