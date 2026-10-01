@@ -411,7 +411,8 @@
   - **For PR B: with no filter, the default recipe for experiment 1 is a 3-scan pipeline recipe, not the 13,396-scan legacy one, because the default is the newest source (#976). The dialog shows each recipe's `n_scans`, so a user can pick `legacy:5`; whether the default rule should change is a product question for the user.)**
 - [x] 10.3 Export one scan, and check that it matches the experiment export by column.
   **(done 2026-10-01: scan 5386712, picked at random from 10.2's `legacy:5` export of experiment 1, exported at scan grain with its default recipe `legacy:5` in 1.6 s (zip 7 KB, 0 excluded). Against its row in the experiment file: the same 1,059 columns (24 fixed + 1,035 traits) in the same order, the trait order following the experiment file's, `recipe_key` `legacy:5` and `source_id` 5, and 0 differing cells. This scan carries all 1,035 of the recipe's traits, so the subset case (a scan file holds only its own trait columns) is covered by the goldens, not by this real-data check.)**
-- [ ] 10.4 Run `/pr-description` for PR A.
+- [x] 10.4 Run `/pr-description` for PR A.
+  **(done 2026-10-01: draft #996 opened with the approved body, then updated after §7 and §10 with their results; "Part of #865", no closing keywords.)**
 
 ## PR B
 
