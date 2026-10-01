@@ -1,0 +1,70 @@
+celltype	contrast	group1	group2	n_group1	n_group2	tested	n_genes_tested	n_FDR_0.05	n_FDR_0.05_abs_log2FC_0.5	n_up	n_down
+Atrichoblast (mature)	pFACT_vs_Col-0	pFACT	Col-0	245	172	True	15430	7	7	0.0	7.0
+Cortex maturation	pFACT_vs_pHORST	pFACT	pHORST	164	443	True	17988	7	6	5.0	1.0
+Unknown_1	pFACT_vs_Col-0	pFACT	Col-0	407	587	True	18318	6	6	2.0	4.0
+Unknown_1	pFACT_vs_pHORST	pFACT	pHORST	407	470	True	18137	6	4	1.0	3.0
+Columella	pHORST_vs_Col-0	pHORST	Col-0	96	30	True	12853	4	4	0.0	4.0
+Lateral Root Cap	pFACT_vs_pHORST	pFACT	pHORST	153	285	True	16922	3	3	1.0	2.0
+Unknown_1	pHORST_vs_Col-0	pHORST	Col-0	470	587	True	18551	3	3	1.0	2.0
+Pericycle	pFACT_vs_pHORST	pFACT	pHORST	524	330	True	18010	3	3	1.0	2.0
+Pericycle	pFACT_vs_Col-0	pFACT	Col-0	524	426	True	18238	3	2	1.0	1.0
+Columella	pFACT_vs_pHORST	pFACT	pHORST	104	96	True	13938	2	2	1.0	1.0
+Lateral Root Cap	pHORST_vs_Col-0	pHORST	Col-0	285	56	True	16056	1	1	1.0	0.0
+Phellem	pFACT_vs_Col-0	pFACT	Col-0	164	21	True	12085	1	1	1.0	0.0
+Phellem	pFACT_vs_pHORST	pFACT	pHORST	164	42	True	12485	1	1	1.0	0.0
+Cortex (elongation/maturation)	pFACT_vs_pHORST	pFACT	pHORST	21	42	True	14851	0	0	0.0	0.0
+Lateral Root Cap	pFACT_vs_Col-0	pFACT	Col-0	153	56	True	14726	0	0	0.0	0.0
+Cortex maturation	pFACT_vs_Col-0	pFACT	Col-0	164	40	True	16754	0	0	0.0	0.0
+Cortex maturation	pHORST_vs_Col-0	pHORST	Col-0	443	40	True	17508	0	0	0.0	0.0
+LRC	pFACT_vs_Col-0	pFACT	Col-0	276	217	True	15918	0	0	0.0	0.0
+LRC	pHORST_vs_Col-0	pHORST	Col-0	205	217	True	15431	0	0	0.0	0.0
+LRC	pFACT_vs_pHORST	pFACT	pHORST	276	205	True	15831	0	0	0.0	0.0
+Cortex/Atrichoblast (maturation)	pFACT_vs_pHORST	pFACT	pHORST	40	136	True	15350	0	0	0.0	0.0
+Atrichoblast	pFACT_vs_Col-0	pFACT	Col-0	171	113	True	14086	0	0	0.0	0.0
+Atrichoblast	pHORST_vs_Col-0	pHORST	Col-0	171	113	True	13912	0	0	0.0	0.0
+Atrichoblast	pFACT_vs_pHORST	pFACT	pHORST	171	171	True	14623	0	0	0.0	0.0
+Pericycle	pHORST_vs_Col-0	pHORST	Col-0	330	426	True	17668	0	0	0.0	0.0
+Columella	pFACT_vs_Col-0	pFACT	Col-0	104	30	True	11909	0	0	0.0	0.0
+Trichoblast	pFACT_vs_Col-0	pFACT	Col-0	193	180	True	14844	0	0	0.0	0.0
+Trichoblast	pHORST_vs_Col-0	pHORST	Col-0	114	180	True	14258	0	0	0.0	0.0
+Trichoblast	pFACT_vs_pHORST	pFACT	pHORST	193	114	True	14411	0	0	0.0	0.0
+Procambium	pFACT_vs_Col-0	pFACT	Col-0	213	156	True	15683	0	0	0.0	0.0
+Procambium	pHORST_vs_Col-0	pHORST	Col-0	98	156	True	14234	0	0	0.0	0.0
+Procambium	pFACT_vs_pHORST	pFACT	pHORST	213	98	True	15122	0	0	0.0	0.0
+QC	pFACT_vs_Col-0	pFACT	Col-0	82	73	True	12241	0	0	0.0	0.0
+QC	pHORST_vs_Col-0	pHORST	Col-0	47	73	True	11312	0	0	0.0	0.0
+QC	pFACT_vs_pHORST	pFACT	pHORST	82	47	True	11766	0	0	0.0	0.0
+Meristem	pFACT_vs_Col-0	pFACT	Col-0	189	163	True	14473	0	0	0.0	0.0
+Meristem	pHORST_vs_Col-0	pHORST	Col-0	114	163	True	13418	0	0	0.0	0.0
+Meristem	pFACT_vs_pHORST	pFACT	pHORST	189	114	True	13953	0	0	0.0	0.0
+Atrichoblast (mature)	pHORST_vs_Col-0	pHORST	Col-0	181	172	True	14604	0	0	0.0	0.0
+Atrichoblast (mature)	pFACT_vs_pHORST	pFACT	pHORST	245	181	True	15370	0	0	0.0	0.0
+Trichoblast (elongation/maturation)	pFACT_vs_Col-0	pFACT	Col-0	135	96	True	12457	0	0	0.0	0.0
+Trichoblast (elongation/maturation)	pHORST_vs_Col-0	pHORST	Col-0	63	96	True	10733	0	0	0.0	0.0
+Trichoblast (elongation/maturation)	pFACT_vs_pHORST	pFACT	pHORST	135	63	True	11988	0	0	0.0	0.0
+Xylem	pFACT_vs_Col-0	pFACT	Col-0	164	53	True	13467	0	0	0.0	0.0
+Xylem	pHORST_vs_Col-0	pHORST	Col-0	34	53	True	9629	0	0	0.0	0.0
+Xylem	pFACT_vs_pHORST	pFACT	pHORST	164	34	True	13144	0	0	0.0	0.0
+Cortex (elongation/maturation)	pFACT_vs_Col-0	pFACT	Col-0	21	8	False	0	0	0		
+Cortex (elongation/maturation)	pHORST_vs_Col-0	pHORST	Col-0	42	8	False	0	0	0		
+Cortex/Atrichoblast (maturation)	pFACT_vs_Col-0	pFACT	Col-0	40	16	False	0	0	0		
+Cortex/Atrichoblast (maturation)	pHORST_vs_Col-0	pHORST	Col-0	136	16	False	0	0	0		
+Cortex	pFACT_vs_Col-0	pFACT	Col-0	8	5	False	0	0	0		
+Cortex	pHORST_vs_Col-0	pHORST	Col-0	23	5	False	0	0	0		
+Cortex	pFACT_vs_pHORST	pFACT	pHORST	8	23	False	0	0	0		
+Phellem	pHORST_vs_Col-0	pHORST	Col-0	32	18	False	0	0	0		
+Phloem	pFACT_vs_Col-0	pFACT	Col-0	3	7	False	0	0	0		
+Phloem	pHORST_vs_Col-0	pHORST	Col-0	0	7	False	0	0	0		
+Phloem	pFACT_vs_pHORST	pFACT	pHORST	3	0	False	0	0	0		
+Atrichoblast (elongation)	pFACT_vs_Col-0	pFACT	Col-0	15	6	False	0	0	0		
+Atrichoblast (elongation)	pHORST_vs_Col-0	pHORST	Col-0	25	6	False	0	0	0		
+Atrichoblast (elongation)	pFACT_vs_pHORST	pFACT	pHORST	15	25	False	0	0	0		
+Cortex (maturation)	pFACT_vs_Col-0	pFACT	Col-0	31	8	False	0	0	0		
+Cortex (maturation)	pHORST_vs_Col-0	pHORST	Col-0	10	8	False	0	0	0		
+Cortex (maturation)	pFACT_vs_pHORST	pFACT	pHORST	31	10	False	0	0	0		
+Pericycle/endodermis (elongation)	pFACT_vs_Col-0	pFACT	Col-0	2	7	False	0	0	0		
+Pericycle/endodermis (elongation)	pHORST_vs_Col-0	pHORST	Col-0	6	7	False	0	0	0		
+Pericycle/endodermis (elongation)	pFACT_vs_pHORST	pFACT	pHORST	2	6	False	0	0	0		
+Endodermis (elongation/maturation)	pFACT_vs_Col-0	pFACT	Col-0	0	2	False	0	0	0		
+Endodermis (elongation/maturation)	pHORST_vs_Col-0	pHORST	Col-0	2	2	False	0	0	0		
+Endodermis (elongation/maturation)	pFACT_vs_pHORST	pFACT	pHORST	0	2	False	0	0	0		

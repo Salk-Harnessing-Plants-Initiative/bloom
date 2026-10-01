@@ -53,6 +53,14 @@ CANONICAL_TOOL_CLASSES: tuple[str, ...] = (
     "pca",
     "umap",
     "qc_inspect",
+    # #466: plot_trait_histograms/_boxplots/plot_correlation_matrix converged onto
+    # @as_mcp_tool + ResultStore persistence, each under its own class rather than the
+    # shared (and still-unclaimed) "viz" slot above — see
+    # openspec/changes/converge-bloommcp-viz-tools/design.md for why one shared class
+    # would interleave 3 independent, non-composing producers' version history.
+    "trait_histograms",
+    "trait_boxplots",
+    "correlation_matrix",
 )
 
 __all__ = [

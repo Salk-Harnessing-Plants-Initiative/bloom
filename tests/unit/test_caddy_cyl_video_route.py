@@ -1,8 +1,9 @@
 """Config-shape test for the /api/cyl/* edge route.
 
-Two Next.js route handlers live under /api/cyl: generating a video at
-/api/cyl/experiments/{id}/scans/{id}/video, and asking whether one exists at
-/api/cyl/scans/{id}/video. Caddy must send /api/cyl/* to
+Three Next.js route handlers live under /api/cyl: generating a video at
+/api/cyl/experiments/{id}/scans/{id}/video, asking whether one exists at
+/api/cyl/scans/{id}/video, and the pipeline trigger proxy at
+/api/cyl/pipeline. Caddy must send /api/cyl/* to
 bloom-web, NOT to Kong — /api/* otherwise falls through to the Supabase
 gateway, which owns no /cyl/* route and answers with its basic-auth catch-all.
 The dev stack runs no Caddy, so this only breaks in staging/prod: a unit test
@@ -95,3 +96,13 @@ def test_video_routes_still_live_under_api_cyl():
             f"expected a scan video route handler at {route.relative_to(REPO_ROOT)}; "
             "if it moved, update the `handle /api/cyl/*` rule in caddy/Caddyfile"
         )
+
+
+def test_pipeline_trigger_route_lives_under_api_cyl():
+    """The trigger proxy is only reachable through the same rule."""
+    route = REPO_ROOT / "web" / "app" / "api" / "cyl" / "pipeline" / "route.ts"
+    assert route.is_file(), (
+        f"expected the pipeline trigger proxy at {route.relative_to(REPO_ROOT)}; "
+        "if it moved, update the `handle /api/cyl/*` rule in caddy/Caddyfile"
+    )
+

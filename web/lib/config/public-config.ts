@@ -48,7 +48,7 @@ export type PublicConfig = {
   appUrl: string | undefined;
   /** Short git SHA exposed by `/api/health` as the liveness fingerprint. */
   commitSha: string | undefined;
-  /** Public Storage URL for `.bin` fetches in the scRNA viewer. */
+  /** Public Storage URL for direct-by-URL asset fetches. */
   storageUrl: string | undefined;
   /** Public Bloom URL (used by `/app/test` smoke page). */
   bloomUrl: string | undefined;

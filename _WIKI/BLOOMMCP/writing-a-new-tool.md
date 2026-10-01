@@ -94,9 +94,15 @@ Rule of thumb:
 
 - Your tool does an existing analysis kind → reuse the existing class
 - Your tool is a genuinely new analysis kind → add a new class and
-  open a PR that updates both `CANONICAL_TOOL_CLASSES` AND the
-  `TOOL_CLASSES` tuple in
-  [`bloommcp/src/bloom_mcp/tools/storage_tools.py`](../../bloommcp/src/bloom_mcp/tools/storage_tools.py)
+  open a PR that updates both `CANONICAL_TOOL_CLASSES` in
+  [`bloommcp/src/bloom_mcp/manifest/__init__.py`](../../bloommcp/src/bloom_mcp/manifest/__init__.py)
+  AND the `TOOL_CLASSES` tuple (plus its `_TOOL_CLASS_TO_PUBLIC_NAME` entry, so a
+  `list_runs` failure names the tool an agent actually invoked) in
+  [`bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py`](../../bloommcp/src/bloom_mcp/sections/core/list_existing_analyses.py).
+  Miss the second and your tool's runs persist correctly but are structurally
+  undiscoverable — that gap has now been found twice (bloom#669 for `pca`/`umap`/
+  `qc_inspect`, bloom#462 for `heritability`). This step used to point at
+  `tools/storage_tools.py`, which no longer exists.
 
 ## Step 2: Create the file
 

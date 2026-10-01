@@ -86,6 +86,19 @@
 		Cross-Origin-Resource-Policy same-origin
 	}
 
+	# Compress these text types, except on the stream routes: encode holds headers until the first body byte.
+	@compress not path /langchain/* /bloommcp/*
+	encode @compress zstd gzip {
+		match {
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type text/javascript*
+			header Content-Type text/css*
+			header Content-Type text/html*
+			header Content-Type text/plain*
+		}
+	}
+
 	# -------------------
 	# Main Application — DOMAIN_MAIN
 	# -------------------
@@ -107,8 +120,12 @@
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
 
-		# Cyl scan actions on bloom-web. `handle`, not `handle_path` — the /api
-		# prefix is part of the Next.js route.
+		# Cyl scan actions and the pipeline trigger proxy (/api/cyl/pipeline) on
+		# bloom-web. `handle`, not `handle_path` — the /api prefix is part of the
+		# Next.js route. The trigger's same-origin check reads X-Forwarded-Host,
+		# which Caddy overwrites with the request's Host while no `trusted_proxies`
+		# is configured here; revisit that check (web/app/api/cyl/pipeline/route.ts)
+		# if one is added.
 		handle /api/cyl/* {
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
@@ -116,6 +133,12 @@
 		# Plate (gravi) video actions on bloom-web. `handle`, not `handle_path` —
 		# the /api prefix is part of the Next.js route.
 		handle /api/gravi/* {
+			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
+		}
+
+		# scRNA job actions on bloom-web. `handle`, not `handle_path` — the /api
+		# prefix is part of the Next.js route.
+		handle /api/scrna/* {
 			reverse_proxy bloom-web:{$BLOOM_WEB_PORT}
 		}
 

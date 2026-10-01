@@ -20,8 +20,13 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import click
-from pydantic import ValidationError
-from sleap_roots_contracts import RUN_MANIFEST_FILENAME, RunManifest
+from sleap_roots_contracts import (
+    RunManifestError,
+    RunManifestMissingError,
+    load_run_manifest,
+    pipeline_run_id_from_env,
+    run_manifest_filename,
+)
 
 from ..credentials import DEFAULT_PROFILE
 from ._batch import BatchResult, ScanResult, format_json, format_summary
@@ -35,6 +40,13 @@ class EnvelopeError(Exception):
 
 class EnvelopeValidationError(EnvelopeError):
     """Envelope did not conform to the sleap-roots-contracts ResultEnvelope."""
+
+
+class RunManifestNotFoundError(EnvelopeError):
+    """A run identity is set but there is no manifest for this run: neither its per-run
+    manifest nor the legacy one exists, or the only file is a legacy one naming a different run
+    (bloom #934). Distinct from every other manifest failure because it alone still makes the
+    end-of-batch reconciliation call before the batch fails."""
 
 
 class BlobConstructionError(Exception):
@@ -78,30 +90,44 @@ def load_envelope(source: str, *, stdin: TextIO | None = None) -> dict[str, Any]
 
 @dataclass
 class DiscoveredEnvelopes:
-    """Result of scoping envelope discovery to an optional ``run_manifest.json`` (bloom #678).
+    """Result of scoping envelope discovery to the run's manifest, if one resolves (bloom #678,
+    #934).
 
     ``paths``: in-scope ``*.result.json`` files to ingest, sorted. ``missing_scan_keys``:
-    manifest-declared scan_keys with no matching file, sorted.
+    manifest-declared scan_keys with no matching file, sorted. ``manifest_filename``: the
+    manifest file that scoped discovery, or ``None`` when discovery was unscoped.
     """
 
     paths: list[Path]
     missing_scan_keys: list[str]
+    manifest_filename: str | None = None
 
 
-def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
+def discover_envelopes(
+    envelopes_dir: str | Path, *, pipeline_run_id: str | None
+) -> DiscoveredEnvelopes:
     """Non-recursive glob for ``*.result.json`` directly under ``envelopes_dir``, sorted,
-    scoped to a ``run_manifest.json`` when one is present.
+    scoped to the run's manifest when one resolves.
 
     Matches the flat layout ``trait_extractor.extractor.extract_batch``'s ``output_dir``
-    produces (one ``{scan_key}.result.json`` per scan, no nesting). If
-    ``envelopes_dir / RUN_MANIFEST_FILENAME`` exists, only files whose filename stem is in
-    the manifest's ``scan_keys`` are returned, and any declared scan_key with no matching
-    file is reported via ``DiscoveredEnvelopes.missing_scan_keys``. With no manifest,
-    discovery is fully unscoped (identical to the pre-manifest behavior). Raises
-    ``EnvelopeError`` if ``envelopes_dir`` doesn't exist or isn't a directory, or if a
-    present manifest is unreadable or fails to parse; an empty-but-present directory with no
-    manifest returns ``DiscoveredEnvelopes([], [])`` (the empty-batch no-op case, not an
-    error).
+    produces (one ``{scan_key}.result.json`` per scan, no nesting). The manifest is resolved
+    by ``sleap_roots_contracts.load_run_manifest`` for ``pipeline_run_id`` (the run identity
+    from ``pipeline_run_id_from_env()``, or ``None``):
+
+    - with a run identity: ``run_manifest.<id>.json``, else the legacy ``run_manifest.json``
+      only if it names this run (``allow_legacy=True`` during the rollout;
+      sleap-roots-pipeline#82 turns it off). With no manifest for this run — neither file, or
+      only a legacy one naming a different run — raises ``RunManifestNotFoundError`` rather
+      than discovering unscoped over a directory every run shares, or scoping to another run
+      (sleap-roots-pipeline#71 design section 2.2).
+    - without one: only ``run_manifest.json``; absent means fully unscoped discovery.
+
+    When a manifest resolves, only files whose filename stem is in its ``scan_keys`` are
+    returned, and any declared scan_key with no matching file is reported via
+    ``DiscoveredEnvelopes.missing_scan_keys``. Raises ``EnvelopeError`` if ``envelopes_dir``
+    doesn't exist or isn't a directory, if the resolved manifest is unreadable, not a regular
+    file, fails to parse, or names a different run than its per-run file name says, or if the
+    contract rejects ``pipeline_run_id`` itself.
     """
     path = Path(envelopes_dir)
     if not path.is_dir():
@@ -109,28 +135,37 @@ def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
 
     all_paths = sorted(path.glob("*.result.json"))
 
-    manifest_path = path / RUN_MANIFEST_FILENAME
     try:
-        manifest_text = manifest_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
-    except OSError as exc:
-        # Covers a directory (or other non-file entry) at manifest_path
-        # (IsADirectoryError), a permission-denied stat/read (PermissionError), and any
-        # other read failure — all "can't read this as a manifest," same as a parse
-        # failure below. Deliberately not a pre-check via .exists()/.is_file(): those
-        # only swallow ENOENT-class errors, not EACCES, so a permission-denied stat
-        # would otherwise escape uncaught instead of failing loud with a readable error.
-        raise EnvelopeError(
-            f"{manifest_path} exists but is not a valid RunManifest: {exc}"
-        ) from exc
+        loaded = load_run_manifest(path, pipeline_run_id, allow_legacy=True)
+    except RunManifestMissingError as exc:
+        raise RunManifestNotFoundError(str(exc)) from exc
+    except (RunManifestError, ValueError, OSError) as exc:
+        # The set the contract documents for a consumer that must catch everything, so a new
+        # RunManifestError subclass in a later alpha still maps cleanly. load_run_manifest opens
+        # rather than probes, so a permission-denied, dangling-symlink or non-file candidate
+        # raises here instead of reading as "absent" and falling through to the next name.
+        # ValueError covers a malformed manifest (pydantic's ValidationError subclasses it) and a
+        # run identity the contract rejects as a file-name component.
+        raise EnvelopeError(f"could not read the run manifest in {path}: {exc}") from exc
 
-    try:
-        manifest = RunManifest.model_validate_json(manifest_text)
-    except ValidationError as exc:
-        raise EnvelopeError(
-            f"{manifest_path} exists but is not a valid RunManifest: {exc}"
-        ) from exc
+    if loaded is None:
+        return DiscoveredEnvelopes(paths=all_paths, missing_scan_keys=[])
+
+    manifest = loaded.manifest
+    manifest_filename = loaded.read.filename
+    if (
+        pipeline_run_id is not None
+        and not loaded.read.is_per_run
+        and manifest.pipeline_run_id != pipeline_run_id
+    ):
+        # With a run identity this image's own writer never writes the legacy name, so a legacy
+        # file naming a different run is stale or another run's. Scoping to it would ingest that
+        # run's envelopes and mark every real scan of this run failed (PR #940 review).
+        raise RunManifestNotFoundError(
+            f"no {run_manifest_filename(pipeline_run_id)} in {path.as_posix()}, and "
+            f"{manifest_filename} names run {manifest.pipeline_run_id!r}, not this run "
+            f"{pipeline_run_id!r}"
+        )
 
     scoped_keys = set(manifest.scan_keys)
     in_scope: list[Path] = []
@@ -146,13 +181,16 @@ def discover_envelopes(envelopes_dir: str | Path) -> DiscoveredEnvelopes:
 
     if excluded:
         logger.debug(
-            "Excluded %d envelope(s) outside run_manifest.json scope: %s",
+            "Excluded %d envelope(s) outside %s scope: %s",
             len(excluded),
+            manifest_filename,
             sorted(excluded),
         )
 
     missing_scan_keys = sorted(scoped_keys - seen_keys)
-    return DiscoveredEnvelopes(paths=in_scope, missing_scan_keys=missing_scan_keys)
+    return DiscoveredEnvelopes(
+        paths=in_scope, missing_scan_keys=missing_scan_keys, manifest_filename=manifest_filename
+    )
 
 
 def validate_envelope(data: dict[str, Any]) -> None:
@@ -238,6 +276,13 @@ def build_pending_blobs(
                 f"artifact slp_path {artifact.slp_path!r} resolves outside "
                 f"predictions_dir ({predictions_dir}) — refusing to read it"
             )
+        # Existence is checked HERE, at construction, not only in verify_blob_checksum.
+        # verify_blob_checksum runs inside upload_pending_blobs, which the already-ingested
+        # gate skips — so without this a re-delivery whose .slp files are missing entirely
+        # would be reported as a benign no-op. One stat per artifact buys the guarantee that
+        # a manifest naming files that are not there always fails, re-delivery or not.
+        if not local_path.is_file():
+            raise BlobConstructionError(f"blob file not found: {local_path}")
         blob = {
             "kind": artifact.kind,
             "root_type": artifact.root_type,
@@ -289,6 +334,78 @@ def blob_object_path(scan_key: str, idempotency_key: str, kind: str, root_type: 
     return "/".join([scan_key, idempotency_key, f"{kind}.{root_type}.slp"])
 
 
+@dataclass(frozen=True)
+class GateResult:
+    """Outcome of the idempotency-gate check.
+
+    ``degraded_reason`` is non-empty when the check could not be answered and the caller fell
+    back to the unguarded path. That distinction is load-bearing twice over: it is what the
+    batch report surfaces so a missing grant cannot degrade silently, and it is what stops the
+    path-collision error from asserting "these bytes belong to no ingested result" when the
+    truth is only "we could not find out".
+    """
+
+    ingested: bool
+    degraded_reason: str = ""
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.degraded_reason)
+
+
+def source_already_ingested(client: Any, idempotency_key: str) -> GateResult:
+    """True when ``cyl_trait_sources`` already holds ``idempotency_key``.
+
+    When it does, the RPC's ``ON CONFLICT (idempotency_key) DO NOTHING`` gate will discard this
+    delivery's ``blobs`` array without writing it, so uploading those blobs is pointless work
+    that can only fail: predict's ``.slp`` output is not byte-reproducible, so a recompute at an
+    unchanged key writes *different* bytes to the *same* address and ``upload_blob`` refuses to
+    overwrite (sleap-roots-pipeline#76).
+
+    Fails open — every exception yields ``False``, falling through to the existing
+    upload-then-RPC path, so behaviour is never worse than without the check. That matters
+    because the bloomctl image and the ``SELECT (idempotency_key)`` grant deploy independently;
+    a 42501 here simply means the grant has not landed yet. The catch is deliberately broad
+    rather than ``APIError``-only: a column-permission denial does arrive as ``APIError``, but a
+    transport fault (``httpx.ConnectError``, a read timeout) or an unexpected response body does
+    not, and none of them should fail an envelope.
+
+    Failing open *silently* is not acceptable, so this warns. A swallowed 42501 on a column
+    grant is precisely how ``_record_video`` left production holding zero rows against 84,748
+    stored videos (``tests/unit/test_cyl_scan_videos_grants.py``). ``warning``, not ``debug``:
+    bloomctl installs no logging handler, so only WARNING+ reaches ``logging.lastResort``.
+    """
+    try:
+        rows = (
+            client.table("cyl_trait_sources")
+            .select("id")
+            .eq("idempotency_key", idempotency_key)
+            .limit(1)
+            .execute()
+            .data
+            # postgrest returns [] (never None) for a filter matching nothing; `or []` keeps a
+            # None-ish body from reading as "already ingested", which would silently turn every
+            # FIRST delivery into a no-op that uploads nothing and still exits zero.
+            or []
+        )
+    except Exception as exc:  # every failure must fall open; see the docstring
+        reason = (
+            f"idempotency-gate check failed ({type(exc).__name__}: {exc}); fell back to "
+            "upload-then-RPC — the cyl_trait_sources.idempotency_key grant may be missing on "
+            "this deployment, in which case re-delivery of a recomputed scan still fails"
+        )
+        logger.warning("%s", reason)
+        return GateResult(ingested=False, degraded_reason=reason)
+    # `.data` is a list for every postgrest response shape we expect; anything else is treated
+    # as "cannot tell" rather than coerced, because a truthy non-list would read as "ingested"
+    # and silently suppress the upload.
+    if not isinstance(rows, list):
+        reason = f"idempotency-gate check returned an unexpected response shape ({type(rows).__name__})"
+        logger.warning("%s", reason)
+        return GateResult(ingested=False, degraded_reason=reason)
+    return GateResult(ingested=bool(rows))
+
+
 def upload_blob(
     client: Any, local_path: str | Path, object_path: str, expected_checksum: str
 ) -> tuple[str, bool]:
@@ -299,7 +416,15 @@ def upload_blob(
     ``object_path`` with a matching checksum, the upload is skipped
     (idempotent no-op) and ``skipped`` is ``True``. If an object exists there
     with a *different* checksum, raises :class:`BlobConstructionError` rather
-    than overwriting it (a path collision between two different runs' bytes).
+    than overwriting it.
+
+    Since ``source_already_ingested`` gates the upload, a divergent-checksum collision is
+    reachable in four ways, not one: bytes orphaned by a delivery that died before the RPC;
+    bytes orphaned by a *partial* upload (this function's caller records per-blob failures and
+    continues); two concurrent deliveries at the same key; and — the likeliest in a deployment
+    whose grant has not landed — the gate failing open, in which case the key *is* ingested and
+    the bytes *are* referenced. Because the caller cannot tell those apart, nothing is ever
+    overwritten, and the raised message states the cause as inference rather than fact.
     """
     from storage3.exceptions import StorageApiError
 
@@ -321,7 +446,16 @@ def upload_blob(
             return object_path, True
         raise BlobConstructionError(
             f"object already exists at {object_path} with a different checksum "
-            f"(existing={existing_checksum}, new={expected_checksum}) — refusing to overwrite"
+            f"(existing={existing_checksum}, new={expected_checksum}) — refusing to overwrite. "
+            "Reaching this means the idempotency-gate check reported the key as absent — which "
+            "is also what it reports when it could not run at all (it fails open; look for a "
+            "preceding WARNING). So these bytes MAY belong to no ingested result — e.g. a "
+            "delivery that uploaded then failed before the RPC, whose predictions were later "
+            "recomputed — or they may be live bytes a cyl_scan_intermediates row still points "
+            "at. Confirm no row references this path before removing anything; deleting a "
+            "referenced object leaves that row resolving to a 404. Removal needs DELETE on the "
+            "cyl-intermediates bucket (bloom_admin, or an operator via Studio) — bloom_workflows "
+            "holds none."
         )
 
     data = Path(local_path).read_bytes()
@@ -459,12 +593,154 @@ def map_rpc_error(message: str | None, *, profile: str | None = None) -> str:
 # --- supabase / storage I/O -------------------------------------------------
 
 
-def call_insert_envelope(client: Any, envelope: dict[str, Any]) -> dict[str, Any]:
+def resolve_argo_workflow_name() -> str | None:
+    """The run identity: `sleap_roots_contracts.pipeline_run_id_from_env()`, the
+    whitespace-stripped `ARGO_WORKFLOW_NAME` (Argo sets it inside the write-back container —
+    see sleap-roots-write-back-template.yaml), or None when it is unset or blank (the manual/
+    ad-hoc invocation shape). The single definition behind manifest resolution,
+    `p_argo_workflow_name` and reconciliation, so they can never target different workflow
+    names (bloom #934)."""
+    return pipeline_run_id_from_env()
+
+
+def call_insert_envelope(
+    client: Any, envelope: dict[str, Any], *, argo_workflow_name: str | None = None
+) -> dict[str, Any]:
     """Call the SECURITY DEFINER RPC with the original envelope; return its jsonb summary.
+
+    `argo_workflow_name`, when given, links the write-back to the matching
+    `cyl_pipeline_run_scans` row (fix-cyl-pipeline-run-scan-status) — omitted
+    from the payload entirely when None, relying on the RPC's own
+    `DEFAULT NULL` rather than sending an explicit null, matching the
+    existing manual-invocation call shape exactly.
 
     Lets ``postgrest.APIError`` propagate so the command can map it to a message.
     """
-    return client.rpc("insert_cyl_result_envelope", {"envelope": envelope}).execute().data
+    payload: dict[str, Any] = {"envelope": envelope}
+    if argo_workflow_name is not None:
+        payload["p_argo_workflow_name"] = argo_workflow_name
+    return client.rpc("insert_cyl_result_envelope", payload).execute().data
+
+
+# PostgREST's "function signature not found" code — mirrors status_poller.py's
+# own `_SIGNATURE_NOT_FOUND_CODE` (both call an RPC from the same migration and
+# are exposed to the same deploy-ordering window).
+_SIGNATURE_NOT_FOUND_CODE = "PGRST202"
+_RECONCILE_RPC_NAME = "fail_cyl_pipeline_run_scans_without_result"
+
+
+NO_RESULT_MESSAGE = "no result produced for this scan by write-back"
+NO_RUN_MANIFEST_MESSAGE = (
+    "write-back found no run manifest for this run, so nothing was ingested; the scan's "
+    "result may exist — re-dispatch the run"
+)
+# scan_key of the synthetic batch entries that report a batch-level failure rather than one
+# envelope's: no run manifest for this run, and a failed reconciliation call.
+RUN_MANIFEST_SCAN_KEY = "<run-manifest>"
+RECONCILIATION_SCAN_KEY = "<reconciliation>"
+
+
+def reconcile_unresolved_scans(
+    client: Any, argo_workflow_name: str, *, error_message: str = NO_RESULT_MESSAGE
+) -> int:
+    """Close out, as `'failed'`, any scan dispatched under `argo_workflow_name`
+    that write-back never resolved either way — a prediction failure before
+    write-back was ever attempted, or an envelope otherwise never produced
+    (including the "manifest-declared scan_key with no matching file" case).
+    Called once, at the end of a batch, only when there is a run identity.
+    `error_message` is recorded on each closed-out row, the only durable record of why;
+    the no-run-manifest path passes `NO_RUN_MANIFEST_MESSAGE`, since there the envelopes may
+    well exist (bloom #934). Returns the number of scans marked failed."""
+    result = (
+        client.rpc(
+            "fail_cyl_pipeline_run_scans_without_result",
+            {
+                "p_argo_workflow_name": argo_workflow_name,
+                "p_error_message": error_message,
+            },
+        )
+        .execute()
+        .data
+    )
+    return result or 0
+
+
+def _reconcile_unresolved_scans_result(
+    client: Any, argo_workflow_name: str, *, error_message: str | None = None
+) -> ScanResult | None:
+    """Call `reconcile_unresolved_scans`, isolating any failure instead of raising — matching
+    the per-envelope isolation the rest of this file already gives every other RPC call, so a
+    transient error on this one closing call can never crash a batch whose every envelope may
+    have already ingested successfully (review finding: this call had no isolation of its own).
+
+    Returns `None` on success, after logging how many scans were closed out (previously
+    discarded silently). On failure, returns a synthetic `'failed'` `ScanResult` describing it,
+    so it surfaces in the batch's own summary/`--json` output and exit code rather than crashing
+    the command with an unhandled traceback.
+    """
+    from postgrest import APIError
+
+    try:
+        # Only pass a message when the caller chose one, so the normal path keeps the RPC
+        # helper's own default.
+        extra = {} if error_message is None else {"error_message": error_message}
+        count = reconcile_unresolved_scans(client, argo_workflow_name, **extra)
+    except APIError as exc:
+        # Deliberately NOT map_rpc_error: that mapper's hints (e.g. "permission
+        # denied" -> "log in with a bloom_writer / bloom_admin account") are
+        # hardcoded to insert_cyl_result_envelope's own grant, but this call is
+        # against fail_cyl_pipeline_run_scans_without_result — granted to
+        # bloom_workflows only, a different role entirely (review finding:
+        # reusing that mapper here would name the wrong RPC and suggest the
+        # wrong role). The raw message is returned verbatim instead, plus a
+        # role hint of our own on an actual permission-denied response (human
+        # PR review, design.md's Decision 6 addendum 7): this call authenticates
+        # via the same client as write-back, which is not guaranteed to carry
+        # the bloom_workflows grant this RPC actually requires.
+        message = getattr(exc, "message", None) or str(exc)
+        if exc.code == _SIGNATURE_NOT_FOUND_CODE:
+            # Same expected deploy-ordering window status_poller.py's own
+            # reconciliation call already treats quietly (round 7 finding —
+            # this bloomcli call site had no matching framing): the migration
+            # adding this RPC hasn't applied yet in this environment.
+            # retriable stays True (the default) — Argo's own retryStrategy
+            # is the correct recovery for this transient window.
+            return ScanResult(
+                RECONCILIATION_SCAN_KEY,
+                "failed",
+                f"reconciliation for workflow {argo_workflow_name!r} deferred — RPC "
+                "signature not yet migrated (expected, transient deploy-ordering "
+                f"window): {message}",
+            )
+        # Anchored to this specific RPC's exact "permission denied for function
+        # <name>" wording (round 7 finding — Behavioral Correctness) rather than
+        # a bare "permission denied" substring, which could false-positive on an
+        # unrelated permission error that happens to contain the same phrase.
+        hint = (
+            " — this account must be granted the bloom_workflows role to run "
+            "reconciliation (a different grant than write-back's own RPC requires)"
+            if f"permission denied for function {_RECONCILE_RPC_NAME}" in message
+            else ""
+        )
+        return ScanResult(
+            RECONCILIATION_SCAN_KEY,
+            "failed",
+            f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: "
+            f"{message}{hint}",
+        )
+    except Exception as exc:
+        return ScanResult(
+            RECONCILIATION_SCAN_KEY,
+            "failed",
+            f"failed to reconcile unresolved scans for workflow {argo_workflow_name!r}: {exc}",
+        )
+    if count:
+        logger.info(
+            "Reconciled %d scan(s) with no write-back result as 'failed' for workflow %s",
+            count,
+            argo_workflow_name,
+        )
+    return None
 
 
 # --- batch: non-raising per-envelope core ------------------------------------
@@ -482,7 +758,8 @@ def ingest_one_envelope(
     Sequences the same steps `ingest_result` (the single-envelope command) does — read/parse via
     the existing `load_envelope` (so an unreadable or malformed file is isolated the same way a
     bad path/stdin input already is for the single command), validate, optionally construct +
-    upload blobs, call the RPC — but never raises. When `predictions_dir` is given, it is expected
+    upload blobs (skipped when the key is already ingested), call the RPC — but never
+    raises. When `predictions_dir` is given, it is expected
     to be predict's own nested batch output root; this looks up
     `predictions_dir/{scan_key}/{scan_key}.predictions.json` per envelope (reusing
     `load_predictions_manifest`/`build_pending_blobs`/`upload_pending_blobs` unchanged).
@@ -492,21 +769,16 @@ def ingest_one_envelope(
 
     try:
         data = load_envelope(str(envelope_path))
-    except EnvelopeError as exc:
-        return ScanResult(scan_key, "failed", str(exc))
 
-    # Prefer the envelope's own provenance.scan_key once it's readable, so a failure after this
-    # point is reported under the scan's real key rather than the filename stem.
-    scan_key = (data.get("provenance") or {}).get("scan_key") or scan_key
+        # Prefer the envelope's own provenance.scan_key once it's readable, so a failure after
+        # this point is reported under the scan's real key rather than the filename stem.
+        scan_key = (data.get("provenance") or {}).get("scan_key") or scan_key
 
-    try:
         validate_envelope(data)
-    except EnvelopeValidationError as exc:
-        return ScanResult(scan_key, "failed", str(exc))
 
-    try:
         pending: list[PendingBlob] = []
         idempotency_key = ""
+        gate_warning = ""
         if predictions_dir is not None:
             idempotency_key = data["provenance"].get("idempotency_key") or ""
             if not idempotency_key:
@@ -538,23 +810,36 @@ def ingest_one_envelope(
             except BlobConstructionError as exc:
                 return ScanResult(scan_key, "failed", str(exc))
 
-            report = upload_pending_blobs(
-                client, pending, scan_key=scan_key, idempotency_key=idempotency_key
-            )
-            if not report.all_ok:
-                details = "; ".join(f"{o.root_type}: {o.error}" for o in report.failed)
-                return ScanResult(
-                    scan_key,
-                    "failed",
-                    f"blob upload failed for {len(report.failed)} of {len(report.outcomes)} "
-                    f"blob(s): {details}",
+            # The idempotency gate, deliberately HERE: after manifest load and
+            # build_pending_blobs (so a missing/malformed manifest, a missing .slp, an
+            # slp_path escaping predictions_dir, and a conflicting pre-existing blobs entry
+            # all still fail fast on a re-delivery exactly as on a first delivery) and before
+            # any bucket access. An already-ingested key means the RPC will discard this
+            # envelope's blobs anyway, so uploading them is work that can only fail once
+            # predict has recomputed them (sleap-roots-pipeline#76).
+            gate = source_already_ingested(client, idempotency_key)
+            gate_warning = gate.degraded_reason
+            if not gate.ingested:
+                report = upload_pending_blobs(
+                    client, pending, scan_key=scan_key, idempotency_key=idempotency_key
                 )
-            data["blobs"] = [*(data.get("blobs") or []), *(p.blob for p in pending)]
+                if not report.all_ok:
+                    details = "; ".join(f"{o.root_type}: {o.error}" for o in report.failed)
+                    return ScanResult(
+                        scan_key,
+                        "failed",
+                        f"blob upload failed for {len(report.failed)} of {len(report.outcomes)} "
+                        f"blob(s): {details}",
+                    )
+                data["blobs"] = [*(data.get("blobs") or []), *(p.blob for p in pending)]
 
         from postgrest import APIError
 
+        argo_workflow_name = resolve_argo_workflow_name()
         try:
-            result = call_insert_envelope(client, data)
+            result = call_insert_envelope(
+                client, data, argo_workflow_name=argo_workflow_name
+            )
         except APIError as exc:
             return ScanResult(
                 scan_key,
@@ -565,12 +850,54 @@ def ingest_one_envelope(
         if not isinstance(result, dict):
             return ScanResult(scan_key, "failed", f"unexpected RPC response shape: {result!r}")
 
+        # Found during /review-pr round 4: a delivery that genuinely writes trait/blob
+        # data (was_noop=false) can still have its per-scan status UPDATE silently
+        # skipped by the RPC's own late-delivery-resurrection guard (the scan was
+        # already 'failed' — reachable via an ordinary Argo retry racing this batch's
+        # own end-of-batch reconciliation, not an exotic case). Previously this reported
+        # "ok" with zero signal that done_count/failed_count would now permanently
+        # disagree with the real data just written. status_update_matched is None when
+        # argo_workflow_name wasn't supplied (not applicable — the existing manual/
+        # ad-hoc shape, unaffected).
+        #
+        # retriable=False (found during /review-pr round 5): this scan's row was already
+        # 'failed' BEFORE this call ran, and step 9's guard makes that permanent — nothing
+        # about re-running this same delivery can ever change the outcome. Without this,
+        # batch_ingest_result's exit code alone was indistinguishable from a genuinely
+        # retriable failure, so an Argo-retried write-back pod would burn its whole retry
+        # budget on something no retry could fix, ultimately failing the entire Workflow —
+        # and with it, every other scan in the same batch that actually succeeded.
+        #
+        # Message wording (human PR review, design.md's Decision 6 addendum 7): False also
+        # means no row matched the (argo_workflow_name, source_id) join at all — a distinct,
+        # more concerning case than "already closed out failed" (see the no-op-path source_id
+        # gap this same addendum documents as an accepted risk) — so the message must not
+        # assert the reconciliation-attempt explanation as the sole cause.
+        if argo_workflow_name is not None and result.get("status_update_matched") is False:
+            return ScanResult(
+                scan_key,
+                "failed",
+                f"write-back succeeded (source_id={result.get('source_id')}) but this "
+                "scan's cyl_pipeline_run_scans status was not updated. Either no row "
+                "matched this scan under this workflow, or a matching row was already "
+                "closed out as 'failed' by an earlier reconciliation attempt — in the "
+                "latter case that outcome is already reflected in the run's failed_count "
+                "(not a new failure), but in the former case this scan may still be sitting "
+                "as 'queued' with nothing left to resolve it. The written trait/blob data is "
+                "correct either way; verify this scan's row manually.",
+                retriable=False,
+            )
+
         if result.get("was_noop"):
-            return ScanResult(scan_key, "skipped")
-        return ScanResult(scan_key, "ok")
-    except Exception as exc:  # batch isolation: a transient network/auth error on one
-        # envelope must never abort the rest of the batch (review finding: this was
-        # previously uncaught for anything other than postgrest.APIError/BlobConstructionError).
+            return ScanResult(scan_key, "skipped", warning=gate_warning)
+        return ScanResult(scan_key, "ok", warning=gate_warning)
+    except Exception as exc:  # batch isolation: any failure at any stage (an unreadable/corrupt
+        # file, a contract-validation error, a blob problem, a transient network/auth error) must
+        # never abort the rest of the batch. Deliberately covers the whole read->validate->blob->RPC
+        # pipeline in one block, not just the RPC call — review finding: load_envelope's
+        # Path.read_text can raise UnicodeDecodeError (a ValueError, not the OSError load_envelope
+        # itself catches), which previously escaped this function entirely since the narrower
+        # try/except around load_envelope only caught EnvelopeError.
         return ScanResult(scan_key, "failed", str(exc))
 
 
@@ -601,7 +928,9 @@ def ingest_one_envelope(
         "Directory containing predict's {scan_key}.predictions.json + .slp files. "
         "When given, constructs BlobRef entries from the manifest, uploads the .slp "
         "bytes to the cyl-intermediates bucket, and merges them into the envelope's "
-        "blobs before ingesting. Omit to forward blobs unchanged (no upload)."
+        "blobs before ingesting — unless the envelope was already ingested, in which "
+        "case the upload is skipped (the RPC discards those blobs anyway). Omit to "
+        "forward blobs unchanged (no upload)."
     ),
 )
 def ingest_result(
@@ -629,7 +958,9 @@ def ingest_result(
     # authentication, matching the envelope gate's "fail fast before any
     # network call" discipline. Upload needs the authed client, so it happens
     # after — but before the RPC call, since a single-shot RPC must never see
-    # a partially-populated blobs array.
+    # a partially-populated blobs array. The idempotency gate lives with the upload
+    # for the same reason: it needs the client, and hoisting it up here would drag
+    # authentication ahead of construction and void this very property.
     pending: list[PendingBlob] = []
     if predictions_dir is not None:
         # scan_key has no contract-level default (Provenance requires it), so
@@ -656,7 +987,22 @@ def ingest_result(
 
     client = _authed_client(profile)
 
-    if predictions_dir is not None:
+    # The gate sits here, after _authed_client, rather than beside the manifest read above:
+    # it needs the client, and putting it earlier would force authentication ahead of blob
+    # construction, inverting the fail-fast-before-any-network-call discipline the comment
+    # above records. See ingest_one_envelope for why "after construction" is also the right
+    # place on its own merits.
+    gate = (
+        source_already_ingested(client, idempotency_key)
+        if predictions_dir is not None
+        else GateResult(ingested=False)
+    )
+    if gate.degraded:
+        # stderr, not the logger: bloomctl installs no handler, so a logger.warning reaches
+        # only logging.lastResort with no formatter. The batch path surfaces this on the
+        # per-scan result instead; this command has no such envelope to hang it on.
+        click.echo(f"WARNING: {gate.degraded_reason}", err=True)
+    if predictions_dir is not None and not gate.ingested:
         report = upload_pending_blobs(
             client, pending, scan_key=scan_key, idempotency_key=idempotency_key
         )
@@ -670,8 +1016,11 @@ def ingest_result(
 
     from postgrest import APIError
 
+    argo_workflow_name = resolve_argo_workflow_name()
     try:
-        result = call_insert_envelope(client, data)
+        result = call_insert_envelope(
+            client, data, argo_workflow_name=argo_workflow_name
+        )
     except APIError as exc:
         raise click.ClickException(
             map_rpc_error(getattr(exc, "message", None), profile=profile)
@@ -686,6 +1035,31 @@ def ingest_result(
         click.echo(json.dumps(result))
     else:
         click.echo(summarize_result(result))
+
+    # See ingest_one_envelope's identical check for why this matters (review
+    # round 4): a genuinely successful write whose status linkage was silently
+    # skipped by the resurrection guard. Checked after printing the result (the
+    # write itself did succeed) so the operator sees both the real outcome and
+    # the warning, then the command still exits non-zero — unlike
+    # batch_ingest_result's own retriable=False handling (review round 5), a
+    # non-zero exit here has no automated-retry consequence to worry about:
+    # this command is the manual/ad-hoc invocation shape, run by a human who
+    # sees the failure directly, not a write-back pod Argo will retry.
+    #
+    # Message wording (human PR review, design.md's Decision 6 addendum 7): see
+    # ingest_one_envelope's identical message for why this must not assert the
+    # reconciliation-attempt explanation as the sole cause.
+    if argo_workflow_name is not None and result.get("status_update_matched") is False:
+        raise click.ClickException(
+            f"write-back succeeded (source_id={result.get('source_id')}) but this "
+            "scan's cyl_pipeline_run_scans status was not updated. Either no row "
+            "matched this scan under this workflow, or a matching row was already "
+            "closed out as 'failed' by an earlier reconciliation attempt — in the "
+            "latter case that outcome is already reflected in the run's failed_count "
+            "(not a new failure), but in the former case this scan may still be sitting "
+            "as 'queued' with nothing left to resolve it. The written trait/blob data is "
+            "correct either way; verify this scan's row manually."
+        )
 
 
 # --- batch: command -----------------------------------------------------------
@@ -714,8 +1088,9 @@ def ingest_result(
     help=(
         "Predict's own nested batch output root, containing "
         "{scan_key}/{scan_key}.predictions.json + .slp files per scan. When given, constructs + "
-        "uploads blobs for each envelope from its own scan_key's subdirectory. Omit to forward "
-        "blobs unchanged (no upload)."
+        "uploads blobs for each envelope from its own scan_key's subdirectory — except for an "
+        "envelope already ingested, whose upload is skipped (the RPC discards those blobs "
+        "anyway). Omit to forward blobs unchanged (no upload)."
     ),
 )
 @click.pass_context
@@ -727,29 +1102,51 @@ def batch_ingest_result(
     predictions_dir: Path | None,
 ) -> None:
     """Ingest every {scan_key}.result.json file directly under ENVELOPES_DIR — the batch
-    sibling of `ingest-result`. If ENVELOPES_DIR contains a run_manifest.json, only the files
-    it lists are ingested and a declared scan_key with no matching file is reported as a
-    failure — unless a differently-named file's own content actually reports that scan_key
-    (a filename/body mismatch), in which case the real outcome wins and the failure is
-    dropped; with no manifest, every file is ingested (unchanged). Isolates per-envelope
-    failures (one bad envelope doesn't abort the batch); exits non-zero if any envelope
-    failed."""
+    sibling of `ingest-result`. With ARGO_WORKFLOW_NAME set (whitespace stripped), only the
+    files listed in the run's manifest (run_manifest.<ARGO_WORKFLOW_NAME>.json, else a
+    run_manifest.json that names this run) are ingested; with no manifest for this run nothing
+    is ingested, and the batch fails after closing out the workflow's unresolved scans.
+    Without it (unset or blank), run_manifest.json scopes the batch when present, and every
+    file is ingested when it is not. A declared scan_key with no matching
+    file is reported as a failure — unless a differently-named file's own content actually
+    reports that scan_key (a filename/body mismatch), in which case the real outcome wins and
+    the failure is dropped. Isolates per-envelope failures (one bad envelope doesn't abort the
+    batch); exits non-zero if any failure is retriable."""
+    argo_workflow_name = resolve_argo_workflow_name()
+
+    manifest_results: list[ScanResult] = []
+    reconcile_message: str | None = None
     try:
-        discovered = discover_envelopes(envelopes_dir)
+        discovered = discover_envelopes(envelopes_dir, pipeline_run_id=argo_workflow_name)
+    except RunManifestNotFoundError as exc:
+        # The run knows its identity but has no manifest of its own, so no scope exists.
+        # Ingesting every envelope in a directory every run shares — or another run's scope —
+        # would silently widen it (bloom #934). Ingest nothing, but still close out this
+        # workflow's scans through the normal path below. The entry is retriable so write-back,
+        # and with it the Workflow, ends Failed; a retry repeats the same idempotent outcome.
+        discovered = DiscoveredEnvelopes(paths=[], missing_scan_keys=[])
+        manifest_results = [
+            ScanResult(RUN_MANIFEST_SCAN_KEY, "failed", f"{exc}; nothing was ingested")
+        ]
+        reconcile_message = NO_RUN_MANIFEST_MESSAGE
     except EnvelopeError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    missing_results = [
+    missing_results = manifest_results + [
         ScanResult(
             key,
             "failed",
-            f"run_manifest.json lists scan_key {key!r} but no {key}.result.json was found "
-            f"in {envelopes_dir}",
+            f"{discovered.manifest_filename} lists scan_key {key!r} but no {key}.result.json "
+            f"was found in {envelopes_dir}",
         )
         for key in discovered.missing_scan_keys
     ]
 
     if not discovered.paths and not missing_results:
+        # Reachable only without a run identity (bloom #934): with one, a resolved manifest
+        # declares at least one scan_key, and no manifest for this run is the
+        # RunManifestNotFoundError path above. So this is the manual/local
+        # no-envelopes-no-manifest shape: no client, no RPC call.
         click.echo("No envelope files found; nothing to ingest.")
         return
 
@@ -780,7 +1177,22 @@ def batch_ingest_result(
         missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
         scan_results = ingest_results + missing_results
     else:
+        # Only manifest-declared-missing entries, no files at all. The
+        # pre-existing "never authenticate" behavior is preserved when
+        # ARGO_WORKFLOW_NAME is unset; when it IS set, a client is needed
+        # purely to make the one reconciliation call below.
+        if argo_workflow_name:
+            from ..cli import _authed_client
+
+            client = _authed_client(profile)
         scan_results = missing_results
+
+    if argo_workflow_name:
+        reconcile_failure = _reconcile_unresolved_scans_result(
+            client, argo_workflow_name, error_message=reconcile_message
+        )
+        if reconcile_failure is not None:
+            scan_results = [*scan_results, reconcile_failure]
 
     batch_result = BatchResult(scan_results)
 
@@ -793,5 +1205,14 @@ def batch_ingest_result(
             )
         )
 
-    if not batch_result.ok:
+    # needs_retry, not .ok: a batch whose only failures are non-retriable
+    # status_update_matched mismatches (real data written, status linkage
+    # already permanently settled) still shows up as failed in the summary/JSON
+    # above — .ok correctly stays False, and any human/script reading that output
+    # sees it — but exiting non-zero here would tell Argo's retryStrategy to
+    # retry the whole write-back pod, which can never change this outcome and
+    # would burn the retry budget until the run's own Argo Workflow phase itself
+    # fails, cascading one already-fully-reported, unfixable scan into the
+    # entire run reading terminal 'failed' (found during /review-pr round 5).
+    if batch_result.needs_retry:
         ctx.exit(1)

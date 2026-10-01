@@ -16,10 +16,14 @@ here. Sections (namespace -> tools):
     (list_available_experiments, load_experiment_data, list_existing_analyses)
   - sleap_roots: umbrella for the sleap-roots pipeline family. analysis/
     populated (qc_clean, qc_inspect, pca_analysis, remove_outliers, clustering,
-    umap_analysis, descriptive_stats, + 5 plotting tools — histograms, boxplots,
-    correlation matrix, heritability bar, variance decomposition — each
-    delegating all analysis/plotting math to sleap_roots_analyze, never
-    re-implementing it);
+    umap_analysis, descriptive_stats, cross_experiment_correlations,
+    heritability_analysis, + 3 plotting tools — histograms, boxplots,
+    correlation matrix — each delegating all analysis/plotting math to
+    sleap_roots_analyze, never re-implementing it. heritability_analysis (#462)
+    replaced the standalone heritability-bar and variance-decomposition plot
+    tools: both figures are now optional outputs of the same call that returns
+    the per-trait H2 numbers, so a chart and the numbers beside it cannot come
+    from two separate computations);
     extraction/ reserved for future sleap-roots trait-extraction tools (not
     built here).
   - phenotyping_segmentation: Lin's segmentation tools (empty scaffold today)

@@ -1,6 +1,6 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a6"
+version = "0.1.0a7"
 description = "Bloom command-line tool for Bloom Database"
 # The PyPI landing page. README.md is the fuller in-repo doc.
 readme = "README.pypi.md"
@@ -23,9 +23,12 @@ dependencies = [
     "python-dotenv>=1.0.0",
     # Floors, not caps: a cap here would only keep the next security fix out.
     "cryptography>=50.0.0",  # CVE-2026-69247
-    # a5+: pydantic models for `cyl ingest`. a7+: RunManifest/RUN_MANIFEST_FILENAME for
-    # `cyl batch-download-for-predict`'s manifest write (#653).
-    "sleap-roots-contracts>=0.1.0a7",
+    # a5+: pydantic models for `cyl ingest`. a7+: RunManifest/RUN_MANIFEST_FILENAME (#653).
+    # a9+: per-run run-manifest naming and `load_run_manifest` for the writer
+    # (`batch-download-for-predict`) and reader (`batch-ingest-result`) (#934). The Docker
+    # image builds with `uv sync --frozen`, so raising this floor takes effect only with a
+    # matching `uv.lock` re-lock.
+    "sleap-roots-contracts>=0.1.0a9",
     "h2>=4.4.1",  # CVE-2026-71554
 ]
 
@@ -40,8 +43,16 @@ bloomctl = "bloomctl.errors:main"
 
 # An extra, not a dependency-group, so CI runs `uv run --extra test pytest`.
 [project.optional-dependencies]
+# `scrna hdf5 upload` checks a file's structure by reading its HDF5; downloading needs neither.
+scrna = [
+    "h5py>=3.10",
+    "numpy>=1.26",
+]
 test = [
     "pytest>=8.3",
+    "pyyaml>=6",
+    "h5py>=3.10",
+    "numpy>=1.26",
 ]
 
 [build-system]

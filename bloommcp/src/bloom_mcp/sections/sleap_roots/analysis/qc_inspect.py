@@ -44,13 +44,15 @@ from pydantic import BaseModel, Field
 import matplotlib
 
 # Headless: pin Agg before importing the analyze viz funcs below. NOTE: the analyze
-# delegates render on matplotlib's *global* pyplot state (`plt.subplots`), so figure
-# handling here (and the no-leak test's global `get_fignums()` baseline) assumes a
-# single in-flight render — i.e. one bloom-mcp writer at a time. Concurrent qc_inspect
-# calls in one process share that global registry; that is the same single-writer
-# assumption the versioned ResultStore already makes (see qc_clean).
+# delegates render on matplotlib's *global* pyplot state (`plt.subplots`), so concurrent
+# qc_inspect calls in one process — or a concurrent umap_analysis/pca_analysis call —
+# share that global registry. `_render_report`'s figure-creating delegate calls below go
+# through `bloom_mcp.tools._plots.call_with_figure_cleanup` for exactly that reason (#721
+# PR review): without it, a umap_analysis/pca_analysis call's allocate-then-raise cleanup
+# (which detects its own orphaned figure by diffing that same global registry) could
+# mistake a figure created here for its own and close it mid-render. See that helper's own
+# comment for the full reasoning and the complete list of call sites that share it.
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from sleap_roots_analyze import (
     apply_data_cleanup_filters,
     create_exploratory_summary_plots,
@@ -63,6 +65,7 @@ from bloom_mcp.data_access import ExperimentReadError
 from bloom_mcp.result_store import CommitFailedError, ManifestReadError
 from sleap_roots_analyze.data_utils import convert_to_json_serializable
 from bloom_mcp.tools import _ports
+from bloom_mcp.tools._plots import call_with_figure_cleanup, close_figures
 
 # Canonical thresholds + shared helpers are single-sourced in _qc_shared so qc_inspect's
 # overlays/recommendation cannot silently desync from the clean qc_clean would apply.
@@ -367,22 +370,35 @@ def _render_report(
 
     Returns the ``{logical_name: relative_path}`` map for the figures/CSV. All
     matplotlib figures the delegates create are closed before returning (no handle
-    leak in a long-lived server process). The missingness heatmap is best-effort: on
-    a degenerate frame it may be absent from the output set (logged, never raised), so
-    consumers must treat ``missing_data_pattern.png`` as optional.
+    leak in a long-lived server process), via ``close_figures`` — one
+    ``FIGURE_REGISTRY_LOCK`` acquisition per batch, best-effort, and logged rather
+    than raised, so a cleanup failure can neither strand the rest of the batch nor
+    replace an error already propagating out of the ``try`` body (#808).
+
+    The missingness heatmap is best-effort in its *creation*: on a degenerate frame
+    ``create_exploratory_summary_plots`` may fail or omit it, and it is then absent
+    from the output set (logged, never raised), so consumers must treat
+    ``missing_data_pattern.png`` as optional. Note this does not extend to its
+    ``savefig`` below, which has no ``except`` of its own — a failing write still
+    aborts the tool.
     """
     outputs: dict[str, str] = {}
 
     # 1. Per-trait NaN/zero/outlier overlay charts + the traits-actually-removed panel.
-    eda_figs = create_trait_eda_plots(
-        df,
-        trait_cols,
-        thresholds={
-            "nan": params.max_nans_per_trait,
-            "zero": params.max_zeros_per_trait,
-        },
-        cleanup_log=current_log,
-        min_samples_per_trait=params.min_samples_per_trait,
+    # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around this
+    # delegate call (#721 PR review — see the module-level comment above) and closes
+    # any figure(s) it allocates before raising, instead of leaking them.
+    eda_figs = call_with_figure_cleanup(
+        lambda: create_trait_eda_plots(
+            df,
+            trait_cols,
+            thresholds={
+                "nan": params.max_nans_per_trait,
+                "zero": params.max_zeros_per_trait,
+            },
+            cleanup_log=current_log,
+            min_samples_per_trait=params.min_samples_per_trait,
+        )
     )
     try:
         for name, fig in eda_figs.items():
@@ -390,15 +406,24 @@ def _render_report(
             fig.savefig(staging_dir / fname, dpi=120, bbox_inches="tight")
             outputs[fname] = fname
     finally:
-        for fig in eda_figs.values():
-            plt.close(fig)
+        # One acquisition of FIGURE_REGISTRY_LOCK for the batch, taken here and not
+        # around the savefig loop above: the lock must never span disk I/O. See that
+        # lock's comment in tools/_plots.py for why the close side needs it at all.
+        close_figures(eda_figs)
 
     # 2. The sample x trait missingness heatmap (best-effort — the secondary panels of
     #    create_exploratory_summary_plots can be fragile on tiny/degenerate frames; the
     #    overview + recommendation are the load-bearing outputs).
     try:
-        summary_figs = create_exploratory_summary_plots(
-            df, trait_cols, genotype_col=role_kwargs.get("genotype_col", "geno")
+        # call_with_figure_cleanup: acquires the shared FIGURE_REGISTRY_LOCK around
+        # this delegate call and closes any figure(s) it allocates before raising,
+        # instead of leaking them — the except below treats this as best-effort and
+        # would otherwise swallow such an exception without closing whatever was
+        # already rendered.
+        summary_figs = call_with_figure_cleanup(
+            lambda: create_exploratory_summary_plots(
+                df, trait_cols, genotype_col=role_kwargs.get("genotype_col", "geno")
+            )
         )
     except Exception as exc:
         logger.warning(
@@ -420,8 +445,9 @@ def _render_report(
                 _HEATMAP_PNG,
             )
     finally:
-        for fig in summary_figs.values():
-            plt.close(fig)
+        # Same as above. A degenerate frame leaves summary_figs empty, in which case
+        # close_figures returns before acquiring anything.
+        close_figures(summary_figs)
 
     # 3. Per-sample NaN report (which samples, which traits, nan_fraction).
     nan_samples = inspect_nan_samples(df, trait_cols, verbose=False, **role_kwargs)

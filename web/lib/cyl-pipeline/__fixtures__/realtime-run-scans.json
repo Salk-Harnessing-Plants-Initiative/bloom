@@ -1,0 +1,158 @@
+{
+  "_about": "Real Realtime postgres_changes payloads for cyl_pipeline_run_scans, captured 2026-09-28T23:44:09.498Z on the dev stack (realtime v2.34.47, realtime-js 2.106.2) as a signed-in bloom_user (task 0.3). Rows were driven by SQL; \"step\" names the statement. The *-toast-error steps set error_message to 6400 bytes stored out of line (pg_column_size 6400); the later *-only steps change one column and their payloads omit error_message entirely.",
+  "events": [
+    {
+      "step": "insert-run-scans",
+      "payload": {
+        "schema": "public",
+        "table": "cyl_pipeline_run_scans",
+        "commit_timestamp": "2026-09-28T23:43:48.028Z",
+        "eventType": "INSERT",
+        "new": {
+          "argo_workflow_name": null,
+          "attempts": 0,
+          "batch_index": null,
+          "created_at": "2026-09-28T23:43:48.022041+00:00",
+          "error_message": null,
+          "id": 150643,
+          "run_id": 705,
+          "scan_id": 1,
+          "source_id": null,
+          "status": "queued",
+          "updated_at": "2026-09-28T23:43:48.022041+00:00"
+        },
+        "old": {},
+        "errors": null
+      }
+    },
+    {
+      "step": "insert-run-scans",
+      "payload": {
+        "schema": "public",
+        "table": "cyl_pipeline_run_scans",
+        "commit_timestamp": "2026-09-28T23:43:48.028Z",
+        "eventType": "INSERT",
+        "new": {
+          "argo_workflow_name": null,
+          "attempts": 0,
+          "batch_index": null,
+          "created_at": "2026-09-28T23:43:48.022041+00:00",
+          "error_message": null,
+          "id": 150644,
+          "run_id": 705,
+          "scan_id": 2,
+          "source_id": null,
+          "status": "queued",
+          "updated_at": "2026-09-28T23:43:48.022041+00:00"
+        },
+        "old": {},
+        "errors": null
+      }
+    },
+    {
+      "step": "update-scan-written",
+      "payload": {
+        "schema": "public",
+        "table": "cyl_pipeline_run_scans",
+        "commit_timestamp": "2026-09-28T23:43:52.341Z",
+        "eventType": "UPDATE",
+        "new": {
+          "argo_workflow_name": "capture-wf-1",
+          "attempts": 0,
+          "batch_index": null,
+          "created_at": "2026-09-28T23:43:48.022041+00:00",
+          "error_message": null,
+          "id": 150643,
+          "run_id": 705,
+          "scan_id": 1,
+          "source_id": null,
+          "status": "written",
+          "updated_at": "2026-09-28T23:43:52.336868+00:00"
+        },
+        "old": {
+          "id": 150643
+        },
+        "errors": null
+      }
+    },
+    {
+      "step": "update-scan-toast-error",
+      "payload": {
+        "schema": "public",
+        "table": "cyl_pipeline_run_scans",
+        "commit_timestamp": "2026-09-28T23:43:56.669Z",
+        "eventType": "UPDATE",
+        "new": {
+          "argo_workflow_name": null,
+          "attempts": 0,
+          "batch_index": null,
+          "created_at": "2026-09-28T23:43:48.022041+00:00",
+          "error_message": "db29f21b4e9e30b76c3f50ae9f4fe0d6b4166a4528a1f32fd973d11f105dede2d9bd98d80fc2ef024fa48e6c7c021d53dfd35c4d8e801a26265160d6d822efee89aef636721f1df193f32f462641bdd49c7ceb8b689c47e77b12ab8fe21fec956d1be796d924df3f7b61afe6eaf859df6ccfa41348a9cb98a6cdabd95507e86c773f21e654314367d77be4f74bc62e905a1c510a8308e8b6ebe259d9e80731a3d38058fb5ce35c9e1aad5ac189098058d58fa9b65680234002a85f1c353da82fcb1a2ab90e6ba845c2f53c239c4ab70b437ae8708ec9e802f79c99a9e788e89a3edcc81d5492f41d39d0e19a61e4e62e1feec99ffd58d40bf38f254f014aea711344b753bab6a0445635a355022493cc3579b7bab3b37f28201e307a671652eb0c45697893f0d09d8f92d46d41c848d35cf05fd16f4f8e810fe6db337ad789a6e7c240f5c5eb5d6b969c62174f0bce362f1390232c0af34ae1a6a8f75003c0f278021c1685e6a77851dc628aa59c260fe3315ad7726bf5636b5cc382264fc3981f341946641ff0b29ffe06fd79769b9451e7dc1f340762766c03e20b467e414aa853161bc2316716b4f99c97e3a1279dab3f19aa357a41b0bf2f811bad6d44cfd2ddbf06ae545ef2cfe1bc27cb4ac72332966ef0afb6af193a190fa28ae5a0cc7ac9801c89d900902129eecb5602dbdcb85aa03f53f3c9701758b83e09f829cc0012148a452ea3125b9dd8cf9f034de03b9d99cef8195219dcb7344799099bef7cda75f5e9c7c51a5f09d76abfddf8becb5f742fa10f971d1b0e905798b94780dadde373ccd31d46b79b93aa169a9e87bb2504b01ed0e76188ea180491173d0ba5a356102a7dae9181fcc75df6e61c242acf044e9282c2b3afcaea0e7fcda9c96c816ab1cc339693eb7713a51e03a46ca1c7fade8a22bb5dc42fdf9b3e2f3b7b234aa79df4adfc85f892971858ba037064f8569e25fdbc4cbc4c3b7d3af7fc33d6ac9dd54aa6a4fbceda8f8420ed9b6db1d23c42a942d33d34452960cc1ce8172114302a29cce9fd291e02df503e389ae1ae7dd856a42aec1dc3cdc96f1fd19d08d7259da737b8cb34f8a4415ecb76bedf277e12d2daba180ba62987981df14ace9f5d6a4a92ef68102387e8d70374941c1f19f83594bf998420ccae6933d343cee0d15ee4deb51f015a26ebaa73547e9cb6710164f652cbe6c856c9c853364ef3b18264854eb1643e24eca96397c86f72b121301a72368b01ce33b7183987c57ba69a5e42bbba3858ff53420506d5d7483e18767c4c543aad2d56ea5c27afc660766817f82f134a3fdb849af9b4b82a4f200a547ad7120dc6f45774410cedad140db1001629e8997064295cad30015398076ed73acdc057414bf9585151a5ac496aefa6b6f8f4c2ce4166ba3ca74afe11541d47959264f8c97e281964871e97e14e2764a5b7041040b007a73964e379631b326e7d512de346c93a87d269d9ee1dc0c665feebbe41646f197c5fba33d20826fd537c50c0217d2204d5fc881afe59a1782b69967c3319e5e1c0c2b4bad2eb0aabdbd653bdea39fc0c8d4488493b0d2d486a6d29d77d5c5ba62b36b49e081227b94fa0570092a5b0ee3e601509f538dc88bbd9f8f66d764aa875ec3a34184f969567143eaca8ed73fff3dc574a6b3c3454c5bf21d4e5c757ef05529378f26d7603fc54aa1faef6632b907f64dd9da301dc1c13658c262eac2cef8fa3b3744283c288b3e0f47a32490f21a9fedde2c6d6e675a685ec41060094d43d40ccfe31a9e0a5e1623451e6fe5d4c0c21b362d7c9d4ed7b69aada8f27e29829347e309ec3df1834021411b141d7da26441138a045f7d5e39fec07b38b942efa87e70a38b6015154aaa8d00b090da9a901b148cbeb8f97788cfda9012833f22bf20b6c0294c43ef0f02f412119d437147362e1724dfbdbc3616562fdb990c30cf3da73f30f02d8603424d8241ea0d25dcd5e493953d3d77b3a529a4eb8f87c8734245018d1596ccda067a408ccdc12bdb21cf4fdf38ef0a260779a202634edc181f2faab46844d07ebaf6a671fbd15f4ca581eef54d6a2a6358d8a20c4a51caa3967520e03ac6441e9facadec749e74b34327ebf418ae7b5d7551ec8f541e7542882ecb74a25c3c8f2ad53cc48d195119f9b36e34dde2e49d148551ee0722222a73a0fbe6c8327155f69086d6b55c8a87002275693314b22d1c5ff91686cc3f25b9a2fe0874f6dd50938c63dd38a75e51a227b549b5d98f337a4db687da97cafe92ded403a6fbe23393e3a0b88f45dac4b0240c5eb3f701c164f7332f6da72c17b880831a051db7013d87554951d5c422424b819884c0b2260a8f10913bdd3edf31baf1862f538109100933a91c06dc3d0e8ce8339253d8e25449b9c209170b088d82784d1f2b5168d921b8615f0af991188995ac8d56322b847d3aac2020cf28d696ff2fe78e4811e95e0e84af6321ac4578bfe2736e2ffd4df2775436b3fef7927d13c5a49910f09e7321af8b2ed3cfdeee35fbabd33d4ceec52b43d6b484e49caf8bd29637611ee3aa682ebf57fa8deaf41eb15b71d923667d783dcdcc9495d0538ba935f4b80a1c5b7e46cce2db01350c1dedfa1cb49b23ea09a00652476a5074d68ff1355a9ec90c9bb2e03c3ae7f20a59c8d31848f0f3e34cf0f5bd6b664849dea82dd411ab87d2e1cc3a1887657806b725b35d9ad61b70971f3483f98b58f8285968c37f3db45cb294cecf86c47ec842c5703e14aa21755adac6fac8ef451abc88f9c95cac81e38a7b7907e7c55e84b921983e0827ced10c922b1eb71823a8b4555d4d54bec2e9564f30c73d3e7d7641833b7937931ea4a9942f89f0bb9da9d8c387e466401bf5ba9ff54f1a186912c67837747fc25541ab776bbb0249a7a85473939a8c4c70a35a364f1a2c4942b38fb1f9ade8abab6eec99db5bd86295038715cec2521a6315c4664b7ac64031e5f3a5a1d86c54505c0569af6690644ff8a84232436241172ae4dae18c30f60d127be9a3bd775b48831667080cbbf286715099ce938a890150af3e622fcab34bdca3524ac5551b66a5858df2446f998c0b313b6c0b15a96f4ef217ab91f6fbb842f401092c65f4569cc0209bcdb9560a41cba209bdad6f1b7e02726c6ca5abdb3bbefdee91a38323fb23b15e373eaa4da9afb2801f00a2670eb494b65d864efd6e9b0507df0f4ded01bb22717cece035bcc6f4dab49eba385341f52324adad055371175e07f988d3c9f7a0f8eebe68db4f9ef44760c61b7d96ea5a8731c4412015d57bf7767046fba0be0d251884fcbd95b1845793f7af4aeda46f5815a74d05d0efc6e11267cd94e2017dc9877041395b84d81cb0a7d211aa65ebc24db14103241ca86b75ca090a2ddedd98daee80ba60cd9b13903002e908c5b99c4ea6fd417d3762e7f16cecb78e5eeda2f42d88d15046510355015a2c7499782343c07942b82fefa45bb2994d4b4d61715693a32a7946ad59ddef8ee371a08415a48cd478dd2c0296df0cdeaf20132976fe35c2587765a7ef9f9129820ed08f452c33a96049c95529c22a46dcad890bc92a4c162f314f151423b833c6f859fe85ba48c134ff946db7482d37cd5d0102ba83a4fdd9099fa533b642c7572a432934188c5e72d4fbcb73d4320b8eed095f9012e61398d8e57012491b1f75c591325b1aee7cdcf4d7d2394248956698c5ab635f53285f6130c3537123caa4b5dbbd8097c99b63e539c1e0480e5fe5109e51bfc07c4029917088b611f64cc5afe11ee1a8f3eefc7166c55a55dc2e743d0cda5b0731a88d4e1df97570fb25d2ec4398cf71c08b67309926272a9f17ae3db63847d0079a46043045baf00eff8a86221a2d43285034178d95e33b303ff56dc47341964f6a258df9326e88d14cf56f8afad7f66566cbc5776e25c94bacbe41bef80bd09e6c1caf3e748b7b294c360aaa90f9c667dd26b84ab586cb2cdee9dce77ed2df7e16950a349a3faf6d2eccc89f0c77ebb354f28279f1519d74828982cb7881b33fd6a4262facd6c10bad88e87f6bf05b82ea9af9ffb11d70ce28ae6cf150be5364f4ccd3d029d38f0ebc463eaaac84f7fe07253c91c0905fa3420ab29855ae932980501369eb0726cee9c69d79c0afbe09560f3904f11e9ff40a049100f2f5d0123bf474df9c5a9a0c7f77afc74fff0d6168a5c56cc2338f137612206e1f6b699e87d9672bb7f68b4cbed696d214709bc77e643f300fa171ce362e7920762586f01faa9ff5b80607d94a6a24bdde663897ba2841c17eafaf0b0594daea2e5c3c48263e7b45606558fdb05d89c8cea256208681caa16043c4cbc1552d20a237472390dc181b8cd662a8d613a4a0d34cda4a16ebac561d4324cabd39bb3e1724160922342a95ab8871742e30df865a83f244bf09a3ef12613c409a28dbdd63acb68a524683f558cb229c053f6522baa40aae52fa792d77cce21bc456ca8bb5b240a40643df0947b0db002443882a3d436c8e41e7cbf",
+          "id": 150644,
+          "run_id": 705,
+          "scan_id": 2,
+          "source_id": null,
+          "status": "failed",
+          "updated_at": "2026-09-28T23:43:56.657371+00:00"
+        },
+        "old": {
+          "id": 150644
+        },
+        "errors": null
+      }
+    },
+    {
+      "step": "update-scan-attempts-only",
+      "payload": {
+        "schema": "public",
+        "table": "cyl_pipeline_run_scans",
+        "commit_timestamp": "2026-09-28T23:44:03.308Z",
+        "eventType": "UPDATE",
+        "new": {
+          "argo_workflow_name": null,
+          "attempts": 1,
+          "batch_index": null,
+          "created_at": "2026-09-28T23:43:48.022041+00:00",
+          "id": 150644,
+          "run_id": 705,
+          "scan_id": 2,
+          "source_id": null,
+          "status": "failed",
+          "updated_at": "2026-09-28T23:43:56.657371+00:00"
+        },
+        "old": {
+          "id": 150644
+        },
+        "errors": null
+      }
+    },
+    {
+      "step": "cleanup-delete",
+      "payload": {
+        "schema": "public",
+        "table": "cyl_pipeline_run_scans",
+        "commit_timestamp": "2026-09-28T23:44:05.459Z",
+        "eventType": "DELETE",
+        "new": {},
+        "old": {
+          "id": 150643
+        },
+        "errors": null
+      }
+    },
+    {
+      "step": "cleanup-delete",
+      "payload": {
+        "schema": "public",
+        "table": "cyl_pipeline_run_scans",
+        "commit_timestamp": "2026-09-28T23:44:05.459Z",
+        "eventType": "DELETE",
+        "new": {},
+        "old": {
+          "id": 150644
+        },
+        "errors": null
+      }
+    }
+  ]
+}

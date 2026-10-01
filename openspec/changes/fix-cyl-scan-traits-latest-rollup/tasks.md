@@ -1200,9 +1200,303 @@ IMPORTANT checkbox slip (code quality), one follow-up filed (security).**
       (28 passed) and `openspec validate fix-cyl-scan-traits-latest-rollup --strict`; pushed as a third
       commit to PR #738.
 
-**Do not archive this change until Section 14 AND this section are both complete.** Section 14 makes the
-scheduled cron *exist* and resolve its approval gate correctly; this section makes the RPC call it
-issues actually reach a host. The `cyl-experiment-summary-rollup` spec delta's "production refreshes on
-an automatic schedule" scenario is only true in the sense that matters — the schedule actually delivering
-its refresh — once both sections ship. Running `openspec:archive` before 15.7 confirms a real successful
-run would leave that scenario asserting behavior that has, to date, never once actually happened.
+**Do not archive this change until Section 14, Section 15, AND Section 16 are all complete.** Section 14
+makes the scheduled cron *exist* and resolve its approval gate correctly; Section 15 makes the RPC call it
+issues actually reach a host; Section 16 makes the call that reaches the host actually succeed once it
+gets there, instead of failing inside Postgres itself. The `cyl-experiment-summary-rollup` spec delta's
+"production refreshes on an automatic schedule" scenario is only true in the sense that matters — the
+schedule actually delivering a completed refresh — once all three sections ship. Running `openspec:archive`
+before 15.7 AND 16.8 confirm a real successful run would leave that scenario asserting behavior that has,
+to date, never once actually happened.
+
+## 16. bloom#806 — `refresh_cyl_experiment_trait_counts()` fails with "DELETE requires a WHERE clause" now that the network fix (Section 15) actually lets it run
+
+Section 15 fixed the network hop — confirmed by that same fix's own first live scheduled run
+(`2026-09-10T04:39 UTC`, run
+[34438025190](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/actions/runs/34438025190))
+actually reaching the host and getting a real HTTP response for the first time ever. That response was:
+
+```
+HTTP 400
+{"code":"21000","details":null,"hint":null,"message":"DELETE requires a WHERE clause"}
+```
+
+Filed as [bloom#806](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/806). Root cause,
+fix rationale, and every empirical finding are documented in `design.md`'s **D10** — this section only
+summarizes and tracks the work; see D10 for the full investigation narrative rather than duplicating it
+here.
+
+**Why this lands as a section on this change-id rather than a direct, un-proposed fix** (same
+`openspec/AGENTS.md` "Skip proposal for: Bug fixes" question Section 15 already answered, for the same
+reason): the behavior this bug prevents is exactly the same still-unarchived
+`cyl-experiment-summary-rollup` scenario Section 15's own justification cites — "production refreshes on
+an automatic schedule" is only true once a scheduled refresh actually *completes*, not merely reaches the
+host. This is the same archive-gate risk one layer deeper.
+
+**Summary (see D10 for the full reasoning and every command run):** `refresh_cyl_experiment_trait_counts()`'s
+unqualified `DELETE FROM public.cyl_experiment_trait_counts;` (D5's delete-then-reinsert design) is
+rejected by Postgres's `safeupdate` extension, loaded via `session_preload_libraries` on the `authenticator`
+role only (`supabase-postgres`'s own vendor-shipped, 2022-dated init migrations — **not** caused by this
+repo's `15.8.1.060` → `15.14.1.104` image bump, which D10 disproves directly). `authenticator` is the login
+role PostgREST/Supavisor use before `SET ROLE`-ing to `service_role`; the guard survives that role switch.
+The existing integration suite never caught this because it connects as `supabase_admin`, which never loads
+`safeupdate`. **Decided fix (confirmed with the user): `DELETE ... WHERE true`, not `TRUNCATE`** — both
+pass the guard, but `TRUNCATE`'s `AccessExclusiveLock` would require re-verifying D5b/D5c's concurrency
+guarantees under different lock semantics for no real benefit over a one-token diff. Staging is presumed
+equally affected but not yet confirmed (tracked in 16.8).
+
+**Explicitly not this section's scope:**
+- [bloom#740](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/740) (the cache's
+  `updated_at` can look deceptively fresh from the one-time migration-time population, masking that the
+  automated pipeline has never refreshed it) — cross-referenced because it's the same never-refreshed
+  cache, but it's a data/documentation concern, not this section's SQL fix.
+- [bloom#743](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/743) (curl-argv secrets
+  exposure on the shared runner) — unrelated workflow-security follow-up, not touched here.
+- The already-deployed `20260817140000_create_cyl_experiment_trait_counts.sql` migration file itself is
+  **not edited** — this repo's migrations are forward-only. The fix is a new
+  `CREATE OR REPLACE FUNCTION` migration.
+
+- [x] 16.1 Choose the new migration's timestamp per `scripts/lint_migrations.sh`'s convention (14-digit,
+      strictly greater than the highest timestamp already on `origin/staging` at PR-open time — re-check
+      immediately before opening the PR, not just now) and confirm the lowercase-name pattern:
+      `supabase/migrations/<TS>_fix_refresh_cyl_experiment_trait_counts_safeupdate.sql`, with a companion
+      `supabase/rollbacks/<TS>_fix_refresh_cyl_experiment_trait_counts_safeupdate_rollback.sql`, matching
+      `20260817140000`'s own rollback's naming/format convention (sibling `rollbacks/` directory, same
+      timestamp and base name, `_rollback` suffix, wrapped in `BEGIN;`/`COMMIT;`). **Done — chose
+      `20260910120000` (highest on `origin/staging` at the time was `20260909090000`); re-check before
+      opening the PR.**
+- [x] 16.2 **RED first.** Add a new test to `tests/integration/test_cyl_experiment_trait_counts.py` that
+      reproduces the guard the existing suite has never exercised, and proves the fix is functionally
+      correct, not just non-throwing (`/review-openspec`'s TDD and scientific-rigor passes both flagged
+      the original wording as underspecified on these points):
+      - **Connection**: build a second connection string reusing `conftest.py`'s existing
+        `POSTGRES_PASSWORD`/`POSTGRES_HOST_PORT`/`POSTGRES_DB` values with `user=authenticator` in place
+        of `supabase_admin` — `authenticator`'s password is that same `POSTGRES_PASSWORD` value per
+        `docker-compose.dev.yml`/`docker-compose.prod.yml`'s `PGRST_DB_URI` and
+        `volumes/db/init/02-roles.sql`'s `ALTER USER authenticator WITH PASSWORD :'pgpass'` — no new
+        secret needed, in CI or locally. This is the first test in the file to connect as anything other
+        than `supabase_admin`.
+      - **Safety**: this new connection must end with `.rollback()`, never `.commit()` — the function
+        under test does an unscoped rewrite of the *entire* table, unlike every other test in this file,
+        which touches only its own seeded rows.
+      - **Procedure**: on the new connection, `SET ROLE service_role;`, then call
+        `SELECT public.refresh_cyl_experiment_trait_counts();`. Confirm this test FAILS against the
+        currently-deployed (pre-fix) function body with the exact `SQLSTATE 21000` / "DELETE requires a
+        WHERE clause" error — run it now, before 16.3's migration exists, and confirm the failure; then
+        re-run it once 16.3 lands and confirm it passes. The same "prove the test can fail" discipline
+        design.md's Risks section already established for this change's other concurrency tests (D2b,
+        D5b, D5c).
+      - **Functional correctness, not just absence of an exception**: seed an experiment/scan/traits
+        (reuse this file's existing `_seed_experiment_scan`/`_deliver` helpers) before the call, then
+        assert the resulting `n_traits` (via `_n_traits(...)`) matches a live computation
+        (`_live_n_traits(...)`) — the new spec scenario asserts the refresh "commits ... as normal," which
+        a bare no-exception check does not verify.
+      **Done — `test_refresh_succeeds_over_authenticator_service_role_path` added (asserts within the
+      `authenticator` connection's own open transaction, then rolls back). Confirmed RED against the
+      then-deployed function: `psycopg.errors.CardinalityViolation: DELETE requires a WHERE clause`,
+      `CONTEXT: SQL statement "DELETE FROM public.cyl_experiment_trait_counts" ... line 23` — the exact
+      production signature, reproduced by a real pytest run for the first time.**
+- [x] 16.3 Implement the fix: a new migration `CREATE OR REPLACE FUNCTION
+      public.refresh_cyl_experiment_trait_counts()` — identical to the deployed body except line 87's
+      `DELETE FROM public.cyl_experiment_trait_counts;` becomes
+      `DELETE FROM public.cyl_experiment_trait_counts WHERE true;`. Copy the body verbatim otherwise,
+      including `SECURITY DEFINER`/`SET search_path = ...` — these are part of the function's definition
+      text and must be restated explicitly in the new `CREATE OR REPLACE`, unlike the function's ACL
+      (`GRANT EXECUTE ... TO service_role`) and ownership, which Postgres preserves automatically across a
+      same-signature `CREATE OR REPLACE FUNCTION` and need no restatement. Write the rollback to restore
+      the exact pre-fix function body (a `CREATE OR REPLACE FUNCTION` back to the unqualified `DELETE`,
+      not a `DROP` — dropping would lose the `service_role`-only grant state a rollback should restore,
+      not remove). Confirm 16.2's new test now PASSES. **Done — new migration
+      `20260910120000_fix_refresh_cyl_experiment_trait_counts_safeupdate.sql` + rollback applied to the
+      local dev stack (`docker exec ... psql -f`, `supabase` CLI not available locally); 16.2's test
+      passed immediately after (`1 passed`).**
+- [x] 16.4 **(TDD-review finding: the precedent migration `20260817140000` has dedicated rollback and
+      idempotency tests; this migration had none planned.)** Mirroring
+      `test_rollback_guard_blocks_out_of_order_rollback`/`test_rollback_restores_prior_state`/
+      `test_migration_body_is_idempotent` from the same test file: add
+      `test_new_migration_body_is_idempotent` (re-applying the new `CREATE OR REPLACE FUNCTION` body a
+      second time raises no error) and `test_rollback_restores_prior_unqualified_delete_behavior` (apply
+      the new rollback, confirm the `authenticator`/`service_role` call reproduces `SQLSTATE 21000` again,
+      then re-apply the fix migration and confirm 16.2's test passes again). **Done —
+      `test_safeupdate_fix_migration_body_is_idempotent` and
+      `test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior` added; both pass, the
+      latter confirming the rollback genuinely reproduces `CardinalityViolation` before re-applying and
+      confirming the guard-passing behavior returns.**
+- [x] 16.5 Run the existing `tests/integration/test_cyl_experiment_trait_counts.py` suite in full (all 20+
+      pre-existing tests plus 16.2's and 16.4's new ones); confirm zero regressions — the fix must not
+      change any already-verified behavior (concurrency, RLS, cross-experiment isolation, absent-if-zero,
+      etc.), only close the `WHERE`-clause gap. This is also the empirical check for D5b/D5c's
+      concurrency guarantees under the new function body — the existing concurrent-refresh race test
+      re-runs unmodified against it, rather than the fix resting on planner-behavior inference alone.
+      **Done — 25/25 passed (20 pre-existing + 1 from 16.2 + 2 from 16.4 + 2 pre-existing rollback/
+      idempotency tests already counted above; `test_concurrent_refreshes_do_not_raise_duplicate_key`
+      passed unmodified against the new function body). Also ran the two sibling integration files
+      (`test_cyl_read_path.py`, `test_cyl_scan_latest_source.py`) plus `test_migrations.py` to check the
+      shared `conftest.py` addition (`authenticator_conninfo`) for regressions: 70 passed, 2 skipped, 3
+      failed — the 3 failures are `supabase_migrations.schema_migrations` not existing in this local dev
+      stack at all (confirmed via `\dn supabase_migrations` returning zero rows), a pre-existing local
+      environment gap unrelated to this change (this stack was never bootstrapped via `supabase db push`)
+      — not a regression from anything touched here.**
+- [x] 16.6 Update `design.md`'s D10 with this section's investigation and fix rationale (already drafted —
+      confirm it stays the single canonical narrative, with this section only summarizing and
+      cross-referencing it, per the DRY finding from `/review-openspec`'s documentation pass). Add the new
+      scenario to `specs/cyl-experiment-summary-rollup/spec.md` asserting that a refresh invoked as
+      `service_role` over the real RPC path (not just as `supabase_admin` via a direct connection)
+      succeeds — the gap this bug fell through because no existing scenario made this claim explicitly —
+      and add one sentence to the requirement's own normative prose (not just the scenario) stating this
+      guarantee, per the spec-quality pass's finding that every other scenario has a textual anchor in the
+      requirement body and this one didn't. **Done — D10 also gained two more paragraphs during review
+      fix-up: an empirical RLS/ownership confirmation (function and table both owned by
+      `supabase_admin`, `FORCE ROW LEVEL SECURITY` never set) and an explicit statement that the
+      concurrency-preservation claim's real empirical check is 16.5's unmodified re-run of the existing
+      race test, not planner-behavior inference alone.**
+- [x] 16.7 **(Documentation finding, `/review-openspec`'s documentation pass: Section 15's own
+      staleness-caveat fix (15.6) is now incomplete, not just superseded.)** `_WIKI/BLOOMMCP/README.md`'s
+      "Supabase data access" section and `bloommcp/src/bloom_mcp/sections/core/list_available_experiments.py`'s
+      module-level comment (near `_STALE_AFTER`) both currently read as if bloom#736/Section 15 confirming
+      a successful refresh is the *only* remaining blocker — no longer true, since Section 15's own first
+      live run is what surfaced this section's bug. Update both to add "...once bloom#806 (Section 16)
+      also confirms a successful refresh" alongside the existing bloom#736 caveat. **RED first**: update
+      `tests/unit/test_refresh_workflow_staleness_docs.py`'s required/banned phrases to match (mirroring
+      15.9's own pattern) — confirm the test fails against the current (bloom#736-only-caveated) wording,
+      then passes once both files are updated. Run `prettier --check` on the markdown file and
+      `black`/`ruff` on the Python file, per 15.6's own established convention. **Done — both files
+      updated; `test_staleness_docs_reference_bloom_806` added, confirmed RED against the reverted
+      (bloom#736-only) wording via `git stash`, GREEN after restoring. `prettier --check` clean on the
+      markdown file; `black`/`ruff` clean on the Python file (2 pre-existing `UP045` findings on an
+      untouched function signature, confirmed via `git diff` unrelated to this change, matching 15.6's
+      own precedent). Note: `.pre-commit-config.yaml` scopes black/ruff to
+      `(langchain|bloommcp|services/workflows|bloomcli|scheduled-jobs)/` only — `tests/` files are not
+      actually linted by these hooks, so the new/edited test files were checked manually for hygiene but
+      aren't a CI gate.**
+- [ ] 16.8 **Blocked on this section's own PR merging and deploying to staging — not part of this PR's own
+      commit(s), tracked here as a required follow-up, landed in a separate commit/PR once it actually
+      happens**, matching 15.7's own precedent for the same reason (verify the real thing, not just that
+      the code looks right). Once deployed to staging: manually dispatch
+      (`workflow_dispatch`, `environment: staging`) and confirm an actual HTTP 200/204 response with no
+      `21000` error body — the check 15.7 could never actually complete, since every prior opportunity
+      that reached the host failed inside Postgres before this fix existed. Then confirm the next
+      scheduled production run (once this fix promotes to `main` and deploys) also succeeds end-to-end.
+      **(`/review-pr` round 2 finding, design.md Risks/Trade-offs)** Also explicitly confirm the call
+      completes rather than timing out — an API-level `statement_timeout` rejecting the reinsert
+      query's ~6.6s cost as an opaque error is a documented failure mode elsewhere in this repo
+      (`20260710000200_search_accession_genes_force_custom_plan.sql`) and has never been ruled out for
+      this function over the real RPC path. Mark 15.7/15.8 (and this change's archive gate) satisfied
+      only once this task confirms an actual successful RPC delivery through to a committed refresh,
+      completing within whatever timeout budget actually applies — not before.
+- [x] 16.9 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes. **Confirmed.**
+
+**`/review-pr` round 2 pass against PR #809: 5 subagents, zero BLOCKING findings, eight IMPORTANT findings
+converged on across code quality, testing, scientific rigor, and behavioural correctness (security found
+none). All addressed in this same commit rather than as separate follow-ups, since every fix was small and
+none needed further discussion.**
+
+- [x] 16.10 **(Code-quality finding: the `authenticator`-connect/`SET ROLE`/refresh sequence was
+      duplicated once inline and once as a test-local closure, instead of following this file's own
+      top-level-helper convention.)** Hoisted to two shared module-level helpers:
+      `_set_role_service_role_and_refresh(cur)` (the role-switch + call, callers own the
+      connection/transaction) and `_refresh_over_authenticator_service_role(conninfo)` (opens its own
+      connection, always rolls back and closes). Both `test_refresh_succeeds_over_authenticator_service_role_path`
+      and `test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior` now call these
+      instead of duplicating the sequence. **Done — 25/25 tests still pass.**
+- [x] 16.11 **(Testing + behavioural-correctness findings, converged on independently: a test that
+      intentionally rolls the live function back to its pre-fix body has exactly one inline `finally`
+      re-applying the fix — if that re-apply itself raises, the shared dev/CI database is left with
+      bloom#806 live for every other test/developer, with no obvious link back to the interrupted test.
+      Also flagged: no assertion pins that this test is safe to run standalone, given it mutates the
+      live function body directly.)** Added `_ensure_safeupdate_fix_reapplied`, a fixture whose teardown
+      is a second, independent re-apply attempt (pytest fixture teardown fires even when the test body
+      raises) — explicitly documented as NOT protecting against a hard process kill, only an in-process
+      exception during or after the test's own inline re-apply. Added a docstring clarification that the
+      rollback test is self-contained/order-independent (it replaces the live function body itself
+      rather than assuming any prior test's state). **Done — confirmed by running the rollback test in
+      complete isolation (`pytest ...::test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior`):
+      passes standalone.**
+- [x] 16.12 **(Testing finding: the authenticator-success test's cleanup wasn't itself exception-safe —
+      if `conn.rollback()` raised, `conn.close()` and the seeded-row cleanup would be skipped.)** Nested
+      the `finally` block so each cleanup step is attempted independently of whether the prior one
+      raised: `conn.rollback()`/`conn.close()` in their own nested try/finally, then the seeded-row
+      cleanup and `pg_conn.commit()` in a second nested try/finally. **Done.**
+- [x] 16.13 **(Scientific-rigor + behavioural-correctness findings: two real-world risks specific to
+      this being the function's first-ever successful run over the live RPC path were reasoned about
+      informally in review but never written down.)** Added a new Risks/Trade-offs bullet to `design.md`
+      documenting: the unverified API-level `statement_timeout` risk against the reinsert query's ~6.6s
+      cost (with this repo's own precedent for that exact failure mode); the advisory lock's scope
+      (serializes calls to this function only, not writers to the underlying tables, so a multi-commit
+      write-back racing the reinsert's single-snapshot SELECT can produce a stale-but-consistent
+      undercount — D5's original design, now exercised for the first time under real traffic); and an
+      explicit correction that this PR's "no breaking changes" claim covers API/schema surface only, not
+      concurrent-write safety. Extended 16.8 (above) to explicitly check for the timeout risk during live
+      staging verification. **Done.**
+- [x] 16.14 **(Scientific-rigor finding: the rollback SQL restores a function body that will
+      immediately reproduce bloom#806 the next time it's called over the RPC path, with no warning for
+      a future operator rolling back for an unrelated reason.)** Added a `*** WARNING ***` header comment
+      to `supabase/rollbacks/20260910120000_..._rollback.sql` stating this explicitly and instructing an
+      operator to re-apply the fix immediately if the rollback wasn't itself the intent. **Done.**
+- [x] 16.15 Re-ran the full `tests/integration/test_cyl_experiment_trait_counts.py` suite after 16.10-16.12's
+      refactor; `openspec validate fix-cyl-scan-traits-latest-rollup --strict` re-confirmed. **Done — 25/25
+      passed; validation passes.**
+
+**`/review-pr` round 3 pass against PR #809: 5 subagents, explicitly instructed to verify round 2's OWN
+fixes rather than only re-confirm settled findings. Zero BLOCKING, one round-2-fix genuinely didn't work as
+claimed (found independently by two reviewers), plus real gaps in round 2's other fixes and documentation.**
+
+- [x] 16.16 **(Code-quality + behavioural-correctness findings, converged on independently: round 2's
+      "nested try/finally" in `test_refresh_succeeds_over_authenticator_service_role_path` was actually
+      two SIBLING try/finally blocks, not one nested inside the other — a raising `conn.rollback()`
+      would propagate out of the first block entirely, skipping the seeded-row cleanup and
+      `pg_conn.commit()` in the second block altogether, the exact leak 16.12 claimed to have closed.
+      Separately, the `_refresh_over_authenticator_service_role` helper 16.10 extracted in the SAME
+      commit still had the original, non-nested `conn.rollback(); conn.close()` form.)** Fixed both:
+      genuinely chained all four cleanup steps in `test_refresh_succeeds_over_authenticator_service_role_path`
+      into one nested `finally` sequence (rollback → close → cleanup → commit, each guaranteed to run
+      regardless of an earlier step raising), and nested `_refresh_over_authenticator_service_role`'s
+      own rollback/close the same way. **Done — 26/26 pass (see 16.19).**
+- [x] 16.17 **(Testing finding, verified empirically with a standalone fixture-graph reproduction rather
+      than just reasoned about: `_ensure_safeupdate_fix_reapplied`'s "second, independent attempt" reused
+      the exact SAME `pg_conn` connection object the test's own inline re-apply already used — no
+      protection at all against the connection-level failure, e.g. a dropped/broken connection, that the
+      fixture's own docstring named as the motivating example. Both attempts would fail identically on
+      the same broken connection. It also never called `rollback()` before retrying, so a connection left
+      in an aborted-transaction state would raise `InFailedSqlTransaction` instead of succeeding.)** Fixed
+      by changing the fixture's dependency from `pg_conn` to `pg_conninfo` and opening a genuinely fresh
+      connection in its teardown, with a defensive `rollback()` before the retry. **Note: pytest's fixture
+      teardown ORDERING claim from round 2 (this fixture's teardown fires before `pg_conn`'s own teardown
+      closes its connection) was independently verified correct in this round — only the "independence" of
+      the retry connection itself was the actual gap.**
+- [x] 16.18 **(Scientific-rigor finding: the round-2 rollback WARNING was comment-only — decorative,
+      unenforced, and inconsistent with this repo's own established pattern. `20260817140000`'s own
+      rollback enforces its ordering precondition with a real `DO $$ ... RAISE EXCEPTION ... END $$;`
+      guard, not just a header comment; the new rollback broke that discipline for a hazard — silently
+      regressing an already-fixed production bug — at least as dangerous as the one the pattern was built
+      for. Also: the WARNING's own line-number citation had already drifted stale after a subsequent
+      edit, which a hardcoded line reference will always be prone to.)** Added a real `DO $$ ... RAISE
+      EXCEPTION ... END $$;` guard to `supabase/rollbacks/20260910120000_..._rollback.sql`, requiring
+      `SET bloom.confirm_806_regression = 'yes';` first in the same session before the rollback proceeds
+      at all. Removed the fragile line-number citation from the WARNING prose. **RED first**: added
+      `test_safeupdate_fix_rollback_guard_blocks_unconfirmed_run` (asserts the rollback SQL raises
+      `RaiseException` matching "Refusing to run.*bloom#806" when run unconfirmed), confirmed it fails
+      against the pre-guard rollback SQL, then passes after the guard was added. Updated
+      `test_safeupdate_fix_rollback_restores_prior_unqualified_delete_behavior` to `SET
+      bloom.confirm_806_regression = 'yes'` before running the rollback body, matching the new
+      precondition. **Done.**
+- [x] 16.19 **(Scientific-rigor findings on the round-2 Risks/Trade-offs bullet itself: (a) "undercount"
+      was an incomplete characterization — the exposure is directionally symmetric, a partially-visible
+      correction/deletion could equally produce a transient overcount; (b) the bullet led with "this
+      exposure is now live... not merely theoretical" before clarifying it's D5's pre-existing design,
+      risking a skimming reader concluding this fix INTRODUCES the risk rather than merely lets an
+      always-present property finally manifest; (c) unlike every other open risk in this same
+      Risks/Trade-offs section, the bullet never used this doc's own established "Accepted, not fixed —
+      &lt;why that's acceptable&gt;" pattern, leaving it read as an unresolved gap rather than a reasoned
+      acceptance; (d) the RLS/ownership catalog check underpinning `WHERE true`'s safety was run only
+      against the local `15.8.1.060` dev container, never independently re-verified against production's
+      `15.14.1.104`.)** Rewrote the bullet: reordered to state the pre-existing-ness before the
+      novelty-of-manifestation, broadened "undercount" to cover both directions, added explicit "Accepted,
+      not mitigated" language with the actual reasoning (self-heals within D5's own already-accepted
+      staleness window), and added a fourth sub-bullet naming the unverified-across-Postgres-versions gap
+      explicitly rather than leaving it implicit. **Done.**
+- [x] 16.20 Re-ran the full `tests/integration/test_cyl_experiment_trait_counts.py` suite (26 tests now,
+      including 16.18's new guard test) after 16.16-16.18's changes, including both mutating tests run in
+      isolation to re-confirm no hidden order dependency; `openspec validate
+      fix-cyl-scan-traits-latest-rollup --strict` re-confirmed. **Done — 26/26 passed; both mutating tests
+      pass standalone; validation passes.**

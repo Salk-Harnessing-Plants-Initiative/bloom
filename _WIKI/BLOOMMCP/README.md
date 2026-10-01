@@ -47,7 +47,7 @@ bloommcp/
     │                            # list_existing_analyses (not sleap-roots-analyze wrappers)
     ├── sleap_roots/             # umbrella for the sleap-roots pipeline family
     │   ├── analysis/             # pca_analysis, qc_clean, qc_inspect, remove_outliers,
-    │   │                         # clustering, + 5 plot_*.py — one file per tool,
+    │   │                         # clustering, + 3 plot_*.py — one file per tool,
     │   │                         # each delegating to sleap_roots_analyze
     │   └── extraction/           # reserved for future sleap-roots tools (empty)
     └── phenotyping_segmentation/ # Lin's segmentation tools
@@ -88,21 +88,28 @@ not duplicated here to avoid the two docs drifting out of sync. (This is the sam
 
 ## File reading and writing
 
-Use the helper in `bloommcp/src/bloom_mcp/supabase_client.py` — don't call
-`supabase.create_client()` directly:
+> **OUT OF DATE — do not follow this section for a new tool.** Two things are
+> wrong with the example that used to sit here. (1) `write_output_csv` **does not
+> exist** anywhere in the codebase — `supabase_client.py`'s write surface is
+> `write_json`, `upload_file` and `delete_files`. (2) `read_input_csv` does still
+> exist, but it is not how experiment traits are read any more: Tier 2 (#551)
+> moved the default `supabase` backend off bucket CSVs onto direct Postgres reads,
+> and `read_input_csv` has **zero call sites repo-wide** and does not route through
+> `active_backend()`, so a tool using it would bypass the `local` backend entirely.
+> Full retirement is tracked in
+> [#853](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/853).
 
-```python
-from bloom_mcp.supabase_client import read_input_csv, write_output_csv
+**What to do instead.** Read experiment data through the injected
+`ExperimentReader` port, not a storage helper — see
+[adding-a-section-tool.md](./adding-a-section-tool.md) for the current pattern.
+Persist analysis outputs through the `ResultStore` port, which writes a versioned
+run directory rather than a loose object. Both are backend-agnostic, so the same
+tool works under `supabase` and `local`.
 
-df = read_input_csv("plant_traits.csv")
-# reads bloommcp-data/bloommcp_input/plant_traits.csv
-
-write_output_csv("results.csv", df)
-# writes bloommcp-data/bloommcp_output/results.csv
-```
-
-Pass a basename — no slashes. The helper prepends the right folder, so
-the input/output split is enforced in code.
+Reach for `supabase_client.py` directly only for object-storage work that is *not*
+experiment traits or analysis runs (signed URLs, JSON blobs, raw uploads), and
+still don't call `supabase.create_client()` yourself — use the module's helpers so
+the input/output split and the basename validation stay enforced in code.
 
 ## Supabase data access
 
@@ -138,7 +145,8 @@ Every request through this client carries a deliberately chosen, bounded timeout
 you expect to legitimately take longer than the default bound).
 
 **Source-aware cyl trait reads.** A scan can carry multiple `cyl_trait_sources`
-(one per pipeline run — reprocessing mints a new `source_id`), so reading
+(pipeline write-back stores one source per scan per delivery — reprocessing mints a new
+`source_id`; a legacy source covers many scans), so reading
 `cyl_scan_traits` **directly returns duplicate/cross-source rows**. Read the
 source-disambiguated views instead:
 
@@ -166,11 +174,17 @@ computation (bloom#637) — the rule itself is unchanged, only where it's comput
 
 **Loading a whole experiment.** `get_scan_traits` is per-trait — one call per
 trait name. For a wide-pivot read (all of an experiment's traits at once),
-call `get_experiment_traits(experiment_id_, source_id_, run_id_)` instead: same
-latest/`source_id`/`run_id` selection as `get_scan_traits`, but returns every
-trait for the experiment in a single round trip. Use
-`list_experiment_trait_sources(experiment_id_)` to see which sources/runs are
-available before pinning one.
+call `get_experiment_traits(experiment_id_, source_id_, run_id_, recipe_key_, scan_ids_)`
+instead: same latest/`source_id`/`run_id` selection as `get_scan_traits`, but returns every
+trait for the experiment in a single round trip, with a trailing `recipe_key` column.
+`scan_ids_` narrows any mode.
+
+Pinning one `source_id_` reads **one scan** for pipeline data, because each pipeline source
+covers one scan. To read a coherent set, pick a recipe: `list_trait_recipes(ARRAY[42])` lists
+the recipes an experiment has (with a default), `get_trait_recipe_coverage` says which scans a
+recipe leaves out and why, and `get_experiment_traits(42, recipe_key_ => …)` reads it. See
+[trait recipes and exports](../SUPABASE/trait-recipes.md).
+`list_experiment_trait_sources(experiment_id_)` still lists the individual sources.
 
 ```python
 traits = client.rpc("get_experiment_traits", {"experiment_id_": 42}).execute()
@@ -184,17 +198,17 @@ sources = client.rpc("list_experiment_trait_sources", {"experiment_id_": 42}).ex
 via one aggregate call; with all three arguments `NULL` it covers every experiment in a single round
 trip, same latest/`source_id`/`run_id` selection as `get_experiment_traits` — see the `cyl-trait-read`
 spec for the definition (not restated here). With no `source_id_`/`run_id_` pin, `n_plants` is always
-live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656), refreshed by a
-GitHub Action (`.github/workflows/refresh-cyl-experiment-trait-counts.yml`) that **production runs
-automatically on a daily `on: schedule` cron** (bloom#708) while **staging remains on-demand only**
-via manual `workflow_dispatch` (`environment: staging|production`; staging doesn't need frequent
-automatic refreshes — see `design.md` D8's addendum for the full reasoning, including why the
-scheduled path resolves to a second, ungated GitHub Environment rather than `production` itself).
-Staleness is therefore bounded to roughly one refresh interval on production, once bloom#736
-(`fix-cyl-scan-traits-latest-rollup` Section 15) confirms an actual successful refresh —
-unbounded until then, identically to staging today, since the refresh workflow's `runs-on:
-ubuntu-latest` had no network route to either host and every RPC delivery had failed. A pinned
-call is fully live for both counts.
+live but `n_traits` is read from a cache (not per write — bloom#637/bloom#656). A pg_cron job
+inside Postgres refreshes it nightly at 06:00 UTC, in every environment:
+`refresh_changed_cyl_experiment_trait_counts()` recounts only the experiments whose latest-source
+trait data changed since the previous run, then stamps every row's `updated_at` as of that run. The
+job runs as `postgres` over pg_cron's own connection, not through PostgREST, so the API role's 8 s
+statement timeout (bloom#831) doesn't apply. `refresh_cyl_experiment_trait_counts()` remains the
+manual full refresh. Every Sunday a second job puts every experiment back on the list, so that
+night's run also picks up edits the change log can't see: a plant's accession changing, a scan,
+plant or wave moving, or trait rows edited within a scan's current result. A count is therefore at
+most a day old after a new result, and at most a week old after those edits. A pinned call is fully
+live for both counts.
 
 See [`_WIKI/SUPABASE/README.md`](../SUPABASE/README.md) for the full
 role / RLS picture.

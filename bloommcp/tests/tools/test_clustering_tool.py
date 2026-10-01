@@ -1273,8 +1273,10 @@ def test_figure_cleanup_on_partial_plotter_failure_no_run_committed(
     def _boom(*a, **k):
         raise RuntimeError("second plotter blew up")
 
-    def _patched(result_dict, result, frame, trait_cols, *, standardize):
-        calls = real(result_dict, result, frame, trait_cols, standardize=standardize)
+    def _patched(result_dict, result, *, scatter_pca_result_dict):
+        calls = real(
+            result_dict, result, scatter_pca_result_dict=scatter_pca_result_dict
+        )
         calls["create_cluster_size_barplot"] = _boom
         return calls
 
@@ -1295,6 +1297,39 @@ def test_figure_cleanup_on_partial_plotter_failure_no_run_committed(
     assert exc.value.code == "internal_error"
     assert plt.get_fignums() == []
     assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_scatter_pca_computed_before_generate_figures_not_lazily_in_the_plot_callable(
+    injected_ports, monkeypatch
+):
+    """#721 PR review (round 4): the internal PCA fit for create_cluster_scatter_pca
+    had the exact same lazy-inside-the-plot-callable bug umap_analysis's
+    create_umap_colored_by_top_traits was fixed for — it must run before
+    generate_figures, and therefore outside FIGURE_REGISTRY_LOCK's held window, not
+    lazily inside the plot callable itself. Proven by replacing generate_figures with a
+    no-op that never invokes any callable in resolved_calls: if the PCA fit still ran,
+    it must have happened before generate_figures was even called."""
+    import sleap_roots_analyze
+
+    real_pca = sleap_roots_analyze.perform_pca_analysis
+    called = []
+
+    def _spy(*a, **k):
+        called.append(True)
+        return real_pca(*a, **k)
+
+    monkeypatch.setattr(sleap_roots_analyze, "perform_pca_analysis", _spy)
+    monkeypatch.setattr(
+        clustering_tool, "generate_figures", lambda resolved_calls, figures, **k: None
+    )
+
+    _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=True,
+        plots=["create_cluster_scatter_pca"],
+    )
+    assert called == [True]
 
 
 def test_default_path_never_executes_an_import_matplotlib_statement(

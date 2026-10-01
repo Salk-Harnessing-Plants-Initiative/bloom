@@ -1,18 +1,50 @@
 'use client'
 
-import { usePathname } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import type { NavItem, NavSection } from './nav-sections'
 
-type NavItem = { name: string; href: string }
-type NavSection = { heading: string | null; items: NavItem[] }
+/** Whether a link is the current page; a link with `?panel=` also needs that panel open. */
+export function isCurrent(href: string, pathname: string, panel: string | null, defaultPanel?: string) {
+  const [path, query] = href.split('?')
+  if (path === '/app') return pathname === '/app' || pathname === '/app/'
+  if (!pathname.startsWith(path)) return false
+  if (!query) return true
+  const wanted = new URLSearchParams(query).get('panel')
+  // A panel's own pages (e.g. /app/timeline/rnaseq/12) belong to that panel.
+  const fromPath = pathname.slice(path.length).split('/')[1] || null
+  return (panel ?? fromPath ?? defaultPanel ?? null) === wanted
+}
+
+function ItemLink({ item, active, small }: { item: NavItem; active: boolean; small?: boolean }) {
+  return (
+    <Link
+      href={item.href}
+      aria-current={active ? 'page' : undefined}
+      className={[
+        'flex items-center gap-3 rounded-md transition-colors',
+        small ? 'px-4 py-1 text-sm' : 'px-4 py-2',
+        active
+          ? 'bg-stone-50 text-lime-700 font-medium'
+          : 'text-stone-700 hover:bg-stone-50/70 hover:text-stone-900',
+      ].join(' ')}
+    >
+      <span
+        className={[
+          'inline-block rounded-full',
+          small ? 'h-1 w-1' : 'h-1.5 w-1.5',
+          active ? 'bg-lime-700' : 'bg-stone-400',
+        ].join(' ')}
+        aria-hidden
+      />
+      <span className="whitespace-pre-line leading-tight">{item.name}</span>
+    </Link>
+  )
+}
 
 export function Navigation({ sections }: { sections: NavSection[] }) {
   const pathname = usePathname()
-
-  const isActive = (href: string) => {
-    if (href === '/app') return pathname === '/app' || pathname === '/app/'
-    return pathname.startsWith(href)
-  }
+  const panel = useSearchParams().get('panel')
 
   return (
     <nav className="select-none text-stone-700">
@@ -35,27 +67,23 @@ export function Navigation({ sections }: { sections: NavSection[] }) {
           ) : null}
           <ul>
             {section.items.map((item) => {
-              const active = isActive(item.href)
+              // With sub-links, the item itself is highlighted only when no sub-link is.
+              const children = item.children ?? []
+              const firstPanel = children[0] ? new URLSearchParams(children[0].href.split('?')[1] ?? '').get('panel') ?? undefined : undefined
+              const childActive = children.map((c) => isCurrent(c.href, pathname, panel, firstPanel))
+              const active = isCurrent(item.href, pathname, panel) && !childActive.some(Boolean)
               return (
                 <li key={item.name}>
-                  <Link
-                    href={item.href}
-                    className={[
-                      'flex items-center gap-3 px-4 py-2 rounded-md transition-colors',
-                      active
-                        ? 'bg-stone-50 text-lime-700 font-medium'
-                        : 'text-stone-700 hover:bg-stone-50/70 hover:text-stone-900',
-                    ].join(' ')}
-                  >
-                    <span
-                      className={[
-                        'inline-block h-1.5 w-1.5 rounded-full',
-                        active ? 'bg-lime-700' : 'bg-stone-400',
-                      ].join(' ')}
-                      aria-hidden
-                    />
-                    <span className="whitespace-pre-line leading-tight">{item.name}</span>
-                  </Link>
+                  <ItemLink item={item} active={active} />
+                  {children.length ? (
+                    <ul className="mb-1 ml-5 border-l border-stone-200 pl-1">
+                      {children.map((child, i) => (
+                        <li key={child.name}>
+                          <ItemLink item={child} active={childActive[i]} small />
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </li>
               )
             })}

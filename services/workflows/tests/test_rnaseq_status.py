@@ -1,0 +1,223 @@
+"""Unit tests for reading a Cell Ranger run's status from its Argo Workflow. The
+fixtures are real Workflows from runai-busch-lab, trimmed to the fields read."""
+
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+import rnaseq_status as st
+
+FIXTURES = Path(__file__).parent / "fixtures" / "argo"
+WF = "scrna-cellranger-dev-900001-a5d34435"
+RUN = {
+    "params": {"sample": "tinygex", "reference": "tiny_ref"},
+    "run_key": "tinygex__tiny_ref__poller-sample-ok",
+}
+NO_REF_RUN = {
+    "params": {"sample": "tinygex", "reference": "no_such_ref"},
+    "run_key": "tinygex__no_such_ref__poller-sample-noref",
+}
+
+
+def _load(name: str) -> dict:
+    return json.loads((FIXTURES / f"cellranger_{name}.json").read_text())
+
+
+def _pod(workflow: dict, template: str) -> dict:
+    return next(
+        n
+        for n in workflow["status"]["nodes"].values()
+        if n["type"] == "Pod" and st._template(n) == template
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Real Workflows
+# --------------------------------------------------------------------------- #
+
+
+def test_a_just_started_workflow_is_running_at_stage_reference():
+    status = st.read_cellranger_status(_load("started"), RUN)
+    assert status == st.RunStatus(
+        "running",
+        "stage-reference",
+        {"stage-reference": f"{WF}-stage-reference-3880791564"},
+    )
+
+
+def test_a_counting_workflow_is_running_at_count_with_each_started_pod():
+    status = st.read_cellranger_status(_load("counting"), RUN)
+    assert (status.status, status.current_step) == ("running", "count")
+    assert status.step_pods == {
+        "stage-reference": f"{WF}-stage-reference-3880791564",
+        "stage": f"{WF}-stage-sample-2425514970",
+        "qc": f"{WF}-qc-1465883946",
+        "count": f"{WF}-count-3938252481",
+    }
+    assert (status.exit_code, status.message) == (None, None)
+
+
+def test_a_succeeded_workflow_finishes_with_where_the_results_are():
+    status = st.read_cellranger_status(_load("succeeded"), RUN)
+    assert (status.status, status.current_step, status.exit_code) == (
+        "succeeded",
+        "cleanup",
+        0,
+    )
+    assert set(status.step_pods) == {
+        "stage-reference",
+        "stage",
+        "qc",
+        "count",
+        "cleanup",
+    }
+    assert status.message == (
+        "Finished: results in "
+        "s3://bloomv2-workflows/runs_output/tinygex__tiny_ref__poller-sample-ok/h5ad/"
+    )
+
+
+def test_a_missing_reference_fails_at_stage_reference_with_exit_3():
+    status = st.read_cellranger_status(_load("no_reference"), NO_REF_RUN)
+    assert status == st.RunStatus(
+        "failed",
+        "stage-reference",
+        {
+            "stage-reference": "scrna-cellranger-dev-900002-28b84579-stage-reference-2584972205"
+        },
+        3,
+        "No reference at reference_genome/no_such_ref/",
+    )
+
+
+def test_every_reported_step_is_one_the_table_allows():
+    allowed = {"stage-reference", "stage", "qc", "count", "cleanup"}
+    for name in ("started", "counting", "succeeded", "no_reference"):
+        status = st.read_cellranger_status(_load(name), RUN)
+        assert status.current_step in allowed
+        assert set(status.step_pods) <= allowed
+
+
+# --------------------------------------------------------------------------- #
+# Cases built from the real Workflows
+# --------------------------------------------------------------------------- #
+
+
+def test_output_that_already_exists_is_skipped():
+    wf = _load("succeeded")
+    for p in _pod(wf, "stage-sample")["outputs"]["parameters"]:
+        if p["name"] == "done":
+            p["value"] = "true"
+    status = st.read_cellranger_status(wf, RUN)
+    assert (status.status, status.exit_code) == ("skipped", 0)
+    assert status.message.startswith("Already done: results in s3://")
+
+
+def test_a_retried_step_records_its_latest_attempt():
+    wf = _load("counting")
+    first = _pod(wf, "count")
+    retry = copy.deepcopy(first)
+    retry["id"] = f"{WF}-1111111111"
+    retry["startedAt"] = "2099-01-01T00:00:00Z"
+    first["phase"] = "Failed"
+    wf["status"]["nodes"][retry["id"]] = retry
+    status = st.read_cellranger_status(wf, RUN)
+    assert status.step_pods["count"] == f"{WF}-count-1111111111"
+    assert status.current_step == "count"
+
+
+def _failed_at(template: str, exit_code: str | None) -> dict:
+    wf = _load("counting")
+    wf["status"]["phase"] = "Failed"
+    pod = _pod(wf, template)
+    pod["phase"] = "Failed"
+    pod["finishedAt"] = "2099-01-01T00:00:00Z"
+    if exit_code is None:
+        pod.get("outputs", {}).pop("exitCode", None)
+    else:
+        pod.setdefault("outputs", {})["exitCode"] = exit_code
+    return wf
+
+
+@pytest.mark.parametrize(
+    "template, step, exit_code, message",
+    [
+        ("stage-sample", "stage", "4", "No FASTQs at raw_reads/tinygex/"),
+        (
+            "count",
+            "count",
+            "5",
+            "Cell Ranger failed; its log is at "
+            "/hpi/hpi_dev/users/bfernando/scrna/runs/tinygex__tiny_ref__poller-sample-ok/logs/count.log",
+        ),
+        (
+            "count",
+            "count",
+            "6",
+            "Sample tinygex can't be used as a Cell Ranger run id "
+            "(letters, digits, '_' or '-', at most 64)",
+        ),
+        (
+            "stage-sample",
+            "stage",
+            "7",
+            "The FASTQs in raw_reads/tinygex/ must be named like "
+            "<name>_S1_L001_R1_001.fastq.gz, with an R1 and an R2 for every lane; "
+            "the stage step's log lists the files",
+        ),
+        ("qc", "qc", "137", "Step qc failed (exit 137)"),
+        ("qc", "qc", None, "Step qc failed"),
+    ],
+)
+def test_a_failed_step_explains_its_exit_code(template, step, exit_code, message):
+    status = st.read_cellranger_status(_failed_at(template, exit_code), RUN)
+    assert (status.status, status.current_step, status.message) == (
+        "failed",
+        step,
+        message,
+    )
+    assert status.exit_code == (int(exit_code) if exit_code else None)
+
+
+def test_a_workflow_that_failed_before_any_step_says_so():
+    wf = {"metadata": {"name": WF}, "status": {"phase": "Error", "nodes": {}}}
+    assert st.read_cellranger_status(wf, RUN) == st.RunStatus(
+        "failed", None, {}, None, "The workflow failed before a step ran"
+    )
+
+
+def test_nothing_is_reported_before_any_step_starts():
+    wf = {"metadata": {"name": WF}, "status": {"phase": "Pending", "nodes": {}}}
+    assert st.read_cellranger_status(wf, RUN) is None
+
+
+def test_a_workflow_with_no_status_yet_reports_nothing():
+    assert st.read_cellranger_status({"metadata": {"name": WF}}, RUN) is None
+
+
+def test_nodes_of_other_templates_are_ignored():
+    wf = _load("counting")
+    stray = copy.deepcopy(_pod(wf, "qc"))
+    stray["id"] = f"{WF}-2222222222"
+    stray["templateRef"] = {"name": "x", "template": "not-a-step"}
+    wf["status"]["nodes"][stray["id"]] = stray
+    status = st.read_cellranger_status(wf, RUN)
+    assert not any("not-a-step" in pod for pod in status.step_pods.values())
+
+
+def test_the_steps_match_the_template_file():
+    import yaml
+
+    template = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[3]
+            / "argo"
+            / "scrna"
+            / "cellranger"
+            / "cellranger-count-template.yaml"
+        ).read_text()
+    )
+    names = {t["name"] for t in template["spec"]["templates"]}
+    assert set(st.CELLRANGER_STEPS) <= names

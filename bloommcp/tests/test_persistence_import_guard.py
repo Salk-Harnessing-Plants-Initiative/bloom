@@ -52,6 +52,7 @@ _CONSUMERS = [
     # this list pre-dating this change — added here, closing that pre-existing drift.
     "sections/sleap_roots/analysis/umap_analysis.py",
     "sections/sleap_roots/analysis/descriptive_stats.py",
+    "sections/sleap_roots/analysis/heritability_analysis.py",
 ]
 
 # Names that may not be imported by a consumer module.

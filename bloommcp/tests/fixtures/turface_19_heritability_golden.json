@@ -1,0 +1,198 @@
+{
+  "_comment": "Characterization snapshot of the `heritability_analysis` tool's delegate (sleap_roots_analyze.statistics.calculate_heritability_estimates) on the canonical-default cleaned turface_19 frame. Recorded by calling the delegate DIRECTLY, not through the tool. turface_19 has no externally validated per-trait H2, so this is a DRIFT GATE, not scientific ground truth -- the same caveat tests/fixtures/README.md already records for turface_19_pca_golden.json's heritability_mean. The 158-sample / 19-trait canonical-default clean is REUSED from turface_19_stats_golden.json / turface_19_outlier_golden.json, not independently re-derived.",
+  "_raw_source": "turface_19_raw_data.csv",
+  "_reproduced_by_sleap_roots_analyze_version": "0.1.0a5",
+  "role_columns": {
+    "barcode_col": "Barcode",
+    "genotype_col": "geno",
+    "replicate_col": "rep"
+  },
+  "cleaning_params": {
+    "max_zeros_per_trait": 0.5,
+    "max_nans_per_trait": 0.2,
+    "max_nans_per_sample": 0.0,
+    "min_samples_per_trait": 10
+  },
+  "cleaned_samples": 158,
+  "kept_trait_columns": [
+    "Shoot_Biomass_mg",
+    "Root_Biomass_mg",
+    "Root_Shoot_Ratio",
+    "Median.Number.of.Roots",
+    "Maximum.Number.of.Roots",
+    "Number.of.Root.Tips",
+    "Total.Root.Length.mm",
+    "Depth.mm",
+    "Maximum.Width.mm",
+    "Width-to-Depth.Ratio",
+    "Network.Area.mm2",
+    "Convex.Area.mm2",
+    "Solidity",
+    "Lower.Root.Area.mm2",
+    "Perimeter.mm",
+    "Volume.mm3",
+    "Surface.Area.mm2",
+    "Holes",
+    "Average.Hole.Size.mm2"
+  ],
+  "threshold": 0.5,
+  "method": "mixed_model",
+  "mean_h2": 0.4780923914803235,
+  "n_above_threshold": 8,
+  "n_failed": 0,
+  "failed_traits": [],
+  "per_trait": {
+    "Shoot_Biomass_mg": {
+      "heritability": 0.7646162088871536,
+      "var_genetic": 576.4938959887817,
+      "var_residual": 1475.8127307474115,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Root_Biomass_mg": {
+      "heritability": 0.8085954085822967,
+      "var_genetic": 97.13267107760144,
+      "var_residual": 191.2008850049179,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Root_Shoot_Ratio": {
+      "heritability": 0.4497924729979577,
+      "var_genetic": 0.0018410727273891277,
+      "var_residual": 0.018727886752719088,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Median.Number.of.Roots": {
+      "heritability": 0.35913672992676365,
+      "var_genetic": 0.30608316472731817,
+      "var_residual": 4.542014189420487,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Maximum.Number.of.Roots": {
+      "heritability": 0.08119240125394785,
+      "var_genetic": 0.36364167374710504,
+      "var_residual": 34.2204980866169,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Number.of.Root.Tips": {
+      "heritability": 0.35752444748793644,
+      "var_genetic": 50.109674934128286,
+      "var_residual": 748.8174110789506,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Total.Root.Length.mm": {
+      "heritability": 0.6822536439362605,
+      "var_genetic": 16097785.840024674,
+      "var_residual": 62345390.0264468,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Depth.mm": {
+      "heritability": 0.46302984440477435,
+      "var_genetic": 10155.410226734262,
+      "var_residual": 97935.9457944677,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Maximum.Width.mm": {
+      "heritability": 0.4656318539384245,
+      "var_genetic": 7223.776676796394,
+      "var_residual": 68939.11060913114,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Width-to-Depth.Ratio": {
+      "heritability": 0.08065009305548915,
+      "var_genetic": 0.0003634549293732633,
+      "var_residual": 0.03445323552286793,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Network.Area.mm2": {
+      "heritability": 0.7076399126241635,
+      "var_genetic": 1065018764.1493509,
+      "var_residual": 3659034533.4382906,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Convex.Area.mm2": {
+      "heritability": 0.35766783171056465,
+      "var_genetic": 40239085950.98132,
+      "var_residual": 600940374500.3833,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Solidity": {
+      "heritability": 0.39861052981651457,
+      "var_genetic": 7.786687375240405e-05,
+      "var_residual": 0.0009769296201604964,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Lower.Root.Area.mm2": {
+      "heritability": 7.665906739491173e-09,
+      "var_genetic": 7.520980474077759,
+      "var_residual": 8158576917.78072,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Perimeter.mm": {
+      "heritability": 0.6585893444056625,
+      "var_genetic": 47647807.400849834,
+      "var_residual": 205403944.00988823,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Volume.mm3": {
+      "heritability": 0.7457688371252599,
+      "var_genetic": 183923688146.9154,
+      "var_residual": 521393611026.2833,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Surface.Area.mm2": {
+      "heritability": 0.7218460209813028,
+      "var_genetic": 16271050504.103622,
+      "var_residual": 52138650861.01874,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Holes": {
+      "heritability": 0.6718798540566139,
+      "var_genetic": 836.7248597112211,
+      "var_residual": 3398.0317717750354,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    },
+    "Average.Hole.Size.mm2": {
+      "heritability": 0.30932999526915406,
+      "var_genetic": 25825.17191800059,
+      "var_residual": 479507.3490930877,
+      "n_genotypes": 19,
+      "n_observations": 158,
+      "model_type": "mixed_model"
+    }
+  }
+}

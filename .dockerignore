@@ -12,4 +12,5 @@ npm-debug.log
 .gitignore
 docker-compose.*
 Dockerfile*
-volumes/db/data
+# Runtime data mounted into containers; no build reads it, and some is root-only.
+volumes/

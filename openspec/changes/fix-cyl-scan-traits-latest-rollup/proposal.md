@@ -103,6 +103,14 @@ NOT NULL`, and the unnecessary `cyl_experiments` join is dropped. **These branch
   - `tests/integration/` — new/rewritten test files for the trigger, inline backfill, the semi-join
     rewrite, the cache table, and the rewritten `get_experiment_summary_counts`; no `bloommcp`/Python
     changes.
+  - **(bloom#806, Section 16)** A new `CREATE OR REPLACE FUNCTION public.refresh_cyl_experiment_trait_counts()`
+    migration (`supabase/migrations/` + `supabase/rollbacks/` companion — the deployed
+    `20260817140000` migration is forward-only and not edited) qualifying D5's unqualified `DELETE` with
+    `WHERE true`, fixing Postgres's `safeupdate` guard (loaded on the `authenticator` role PostgREST/
+    Supavisor use) rejecting the call the moment Section 15's network fix made it reachable for the first
+    time. A new `tests/integration/` regression test connects as `authenticator`/`service_role` (not this
+    file's existing `supabase_admin`-only connections) to reproduce and close the exact gap the existing
+    suite never exercised.
   - `tests/unit/test_refresh_workflow_shape.py` (new) — locks the refresh workflow's shape: no
     `on: schedule` trigger, a required `environment` choice input with no default, both
     `STAGING_API_URL`/`PROD_API_URL` hardcoded and matching their own `.env.*.defaults`, both

@@ -8,3 +8,5 @@
 # NOTE: this ignore is root-relative — never run prettier from inside contracts/.
 contracts/generated/
 contracts/schema/
+# Drawn by tbls and drift-checked byte for byte in CI.
+_WIKI/SUPABASE/erd.md

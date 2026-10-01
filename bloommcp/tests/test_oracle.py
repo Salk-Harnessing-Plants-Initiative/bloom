@@ -124,8 +124,9 @@ def test_external_library_pca_matches_recorded_oracle_cylinder(cylinder):
 
 
 # Keys the shipped `viz_tools` wrappers consume from each per-trait heritability
-# result. `plot_variance_decomposition` reads var_genetic/var_residual; the bar/table
-# tools read heritability. A library rename/drop of any of these would otherwise be
+# result. `heritability_analysis` (bloom#462, which replaced the two heritability plot
+# tools) reads var_genetic/var_residual for its variance-decomposition figure, and
+# heritability for everything else. A library rename/drop of any of these would otherwise be
 # silently defaulted to 0 by the wrappers' `.get(key, 0)`, shipping a wrong variance
 # decomposition with no failure — so the delegation boundary asserts they exist.
 _WRAPPER_CONSUMED_TRAIT_KEYS = ("heritability", "var_genetic", "var_residual")
@@ -168,9 +169,12 @@ def test_delegated_heritability_returns_wrapper_consumed_keys(turface_19):
     """Delegation-boundary contract: every per-trait result the wrappers plot carries
     the keys they read (heritability, var_genetic, var_residual), non-defaulted.
 
-    Guards I3 — `viz_tools.plot_variance_decomposition` does `r.get("var_genetic", 0)`,
-    so a future library key-rename would silently plot 0 variance instead of erroring.
-    This pins the contract at the source so the rename fails CI here.
+    Guards I3 — `HeritabilityResult.from_heritability_dict` does
+    `float(entry.get("var_genetic", 0.0))`, so a future library key-rename would silently
+    become a 0 variance component instead of erroring. `heritability_analysis` defends
+    against that downstream by validating key PRESENCE before building its result (see
+    its `_scrub_delegate_result`); this pins the contract at the source so the rename
+    fails CI here too, on the library side, rather than only being absorbed by the tool.
     """
     df, golden = turface_19
     results = library_heritability(

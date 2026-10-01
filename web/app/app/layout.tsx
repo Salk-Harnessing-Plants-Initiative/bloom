@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { Navigation } from "@/components/navigation";
+import { navSections } from "@/components/nav-sections";
 import {
   createServerSupabaseClient,
   getUser,
@@ -9,39 +10,6 @@ export const metadata = {
   title: "Bloom",
   description: "Web app for Salk Harnessing Plants Initiative",
 };
-
-const navSections = [
-  {
-    heading: null,
-    items: [{ name: "Home", href: "/app" }],
-  },
-  {
-    heading: "Data",
-    items: [
-      { name: "Cylinder\nPhenotypes", href: "/app/phenotypes" },
-      { name: "Plate\nPhenotypes", href: "/app/plate-phenotypes" },
-      { name: "Traits", href: "/app/traits" },
-      { name: "Genes", href: "/app/genes" },
-      { name: "Expression", href: "/app/expression" },
-    ],
-  },
-  {
-    heading: "Tools",
-    items: [
-      // Temporarily disabled — Bloom Assistant is a work in progress.
-      // { name: "Bloom Assistant", href: "/chat" },
-      { name: "OrthoBrowser", href: "/app/orthofinder" },
-    ],
-  },
-  {
-    heading: "Resources",
-    items: [
-      { name: "Timeline", href: "/app/timeline" },
-      { name: "Translation", href: "/app/translation" },
-      { name: "Software", href: "/app/software" },
-    ],
-  },
-];
 
 export default async function DashboardLayout({
   children,

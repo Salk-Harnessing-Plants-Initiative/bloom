@@ -217,3 +217,22 @@ def test_missing_base_ref_fails_fast(tmp_path):
         f"Expected exit 2 for unreachable base ref; got {result.returncode}\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
+
+
+def test_fetching_the_base_ref_keeps_a_full_clone_full(tmp_path):
+    """Running the lint in a full clone must not turn it into a shallow one."""
+    origin = tmp_path / "origin"
+    _set_up_base(origin)
+    work = tmp_path / "work"
+    _run(["git", "clone", "--quiet", f"file://{origin}", str(work)], cwd=tmp_path)
+    _run(["git", "config", "user.email", "test@example.com"], cwd=work)
+    _run(["git", "config", "user.name", "Test"], cwd=work)
+    # The base branch moves on after the clone, so the lint's fetch has something to get.
+    _commit_file(origin, "README.md", "moved on\n", "main moves on")
+    _add_feature_branch_with(work, "supabase/migrations/20260420010000_add_foo.sql", "SELECT 9;\n")
+
+    result = _run_lint(work, base_ref="origin/main")
+
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    shallow = _run(["git", "rev-parse", "--is-shallow-repository"], cwd=work).stdout.strip()
+    assert shallow == "false"

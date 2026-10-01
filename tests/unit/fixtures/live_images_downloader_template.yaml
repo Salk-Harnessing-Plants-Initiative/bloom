@@ -1,0 +1,57 @@
+# Captured live from `runai-busch-lab` on 2026-09-22 via
+#   kubectl get workflowtemplate sleap-roots-images-downloader-template -n runai-busch-lab -o yaml
+# Volatile metadata (creationTimestamp, generation, resourceVersion, uid) stripped;
+# everything else is verbatim, including the API server's own defaulting
+# (`arguments: {}`, `inputs: {}`, `outputs: {}`, `metadata: {}`, `name: ""`).
+#
+# The point of committing a REAL object rather than a hand-built one: the parser must
+# find `inputs.parameters`, `volumeMounts` and `templates[].name` where the server
+# actually puts them. Note `inputs: {}` -- present but empty, NOT absent, which is the
+# shape four of the five templates have.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  labels:
+    project: busch-lab
+  name: sleap-roots-images-downloader-template
+  namespace: runai-busch-lab
+spec:
+  arguments: {}
+  templates:
+  - container:
+      args:
+      - cyl
+      - batch-download-for-predict
+      - /workspace/images_input
+      - --scan-ids
+      - '{{workflow.parameters.scan-ids}}'
+      env:
+      - name: HOME
+        value: /home/bloom
+      - name: ARGO_WORKFLOW_NAME
+        value: '{{workflow.name}}'
+      image: ghcr.io/salk-harnessing-plants-initiative/bloomctl:sha-28034f6
+      imagePullPolicy: Always
+      name: ''
+      resources:
+        limits:
+          cpu: '2'
+          memory: 2Gi
+        requests:
+          cpu: 500m
+          memory: 512Mi
+      volumeMounts:
+      - mountPath: /workspace/images_input
+        name: images-input-dir
+      - mountPath: /home/bloom/.bloom/credentials.txt
+        name: bloom-credentials
+        readOnly: true
+        subPath: credentials.txt
+    inputs: {}
+    metadata: {}
+    name: images-downloader
+    outputs: {}
+    priorityClassName: interactive-preemptible
+    retryStrategy:
+      limit: 2
+      retryPolicy: Always

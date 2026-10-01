@@ -1,0 +1,210 @@
+{
+ "metadata": {
+  "name": "scrna-cellranger-dev-900001-a5d34435"
+ },
+ "status": {
+  "finishedAt": "2026-09-29T01:06:09Z",
+  "nodes": {
+   "scrna-cellranger-dev-900001-a5d34435": {
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-2501179773"
+    ],
+    "displayName": "scrna-cellranger-dev-900001-a5d34435",
+    "finishedAt": "2026-09-29T01:06:09Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435",
+    "name": "scrna-cellranger-dev-900001-a5d34435",
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:02:16Z",
+    "templateName": "main",
+    "type": "DAG"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-1465883946": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-683597338"
+    ],
+    "displayName": "qc(0)",
+    "finishedAt": "2026-09-29T01:03:18Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-1465883946",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample.qc(0)",
+    "outputs": {
+     "exitCode": "0"
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:03:00Z",
+    "templateName": "qc",
+    "type": "Pod"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-2425514970": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-3091358263"
+    ],
+    "displayName": "stage(0)",
+    "finishedAt": "2026-09-29T01:02:50Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-2425514970",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample.stage(0)",
+    "outputs": {
+     "exitCode": "0",
+     "parameters": [
+      {
+       "name": "done",
+       "value": "false"
+      }
+     ]
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:02:38Z",
+    "templateName": "stage-sample",
+    "type": "Pod"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-2501179773": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-3880791564"
+    ],
+    "displayName": "stage-reference",
+    "finishedAt": "2026-09-29T01:02:38Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-2501179773",
+    "name": "scrna-cellranger-dev-900001-a5d34435.stage-reference",
+    "outputs": {
+     "exitCode": "0"
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:02:16Z",
+    "templateRef": {
+     "name": "cellranger-count-template",
+     "template": "stage-reference"
+    },
+    "type": "Retry"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-2653368231": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-4249322407"
+    ],
+    "displayName": "sample",
+    "finishedAt": "2026-09-29T01:06:09Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample",
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:02:38Z",
+    "templateRef": {
+     "name": "cellranger-count-template",
+     "template": "sample-pipeline"
+    },
+    "type": "DAG"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-2915585869": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "displayName": "cleanup",
+    "finishedAt": "2026-09-29T01:05:58Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-2915585869",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample.cleanup",
+    "outputs": {
+     "exitCode": "0"
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:05:49Z",
+    "templateName": "cleanup",
+    "type": "Pod"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-3091358263": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-1465883946"
+    ],
+    "displayName": "qc",
+    "finishedAt": "2026-09-29T01:03:28Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-3091358263",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample.qc",
+    "outputs": {
+     "exitCode": "0"
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:03:00Z",
+    "templateName": "qc",
+    "type": "Retry"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-3880791564": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-2653368231"
+    ],
+    "displayName": "stage-reference(0)",
+    "finishedAt": "2026-09-29T01:02:26Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-3880791564",
+    "name": "scrna-cellranger-dev-900001-a5d34435.stage-reference(0)",
+    "outputs": {
+     "exitCode": "0"
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:02:16Z",
+    "templateRef": {
+     "name": "cellranger-count-template",
+     "template": "stage-reference"
+    },
+    "type": "Pod"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-3938252481": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-2915585869"
+    ],
+    "displayName": "count(0)",
+    "finishedAt": "2026-09-29T01:05:40Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-3938252481",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample.count(0)",
+    "outputs": {
+     "exitCode": "0"
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:03:28Z",
+    "templateName": "count",
+    "type": "Pod"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-4249322407": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-2425514970"
+    ],
+    "displayName": "stage",
+    "finishedAt": "2026-09-29T01:03:00Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-4249322407",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample.stage",
+    "outputs": {
+     "exitCode": "0",
+     "parameters": [
+      {
+       "name": "done",
+       "value": "false"
+      }
+     ]
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:02:38Z",
+    "templateName": "stage-sample",
+    "type": "Retry"
+   },
+   "scrna-cellranger-dev-900001-a5d34435-683597338": {
+    "boundaryID": "scrna-cellranger-dev-900001-a5d34435-2653368231",
+    "children": [
+     "scrna-cellranger-dev-900001-a5d34435-3938252481"
+    ],
+    "displayName": "count",
+    "finishedAt": "2026-09-29T01:05:49Z",
+    "id": "scrna-cellranger-dev-900001-a5d34435-683597338",
+    "name": "scrna-cellranger-dev-900001-a5d34435.sample.count",
+    "outputs": {
+     "exitCode": "0"
+    },
+    "phase": "Succeeded",
+    "startedAt": "2026-09-29T01:03:28Z",
+    "templateName": "count",
+    "type": "Retry"
+   }
+  },
+  "phase": "Succeeded",
+  "startedAt": "2026-09-29T01:02:16Z"
+ }
+}

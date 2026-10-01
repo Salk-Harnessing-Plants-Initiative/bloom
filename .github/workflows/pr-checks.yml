@@ -3,6 +3,8 @@ name: PR Checks
 on:
   pull_request:
     branches: [main, staging]
+  merge_group:
+    types: [checks_requested]
 
 # Minimum required across jobs. Read-only by default; individual jobs that
 # need to post sticky PR comments (Trivy reports) rely on pull-requests: write.
@@ -21,6 +23,9 @@ env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
   # server (documented in #135). Change here + on the server together.
   SUPABASE_VERSION: "2.92.1"
+  # Base commit and branch, from the PR or from the merge queue's group.
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+  BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
 
 jobs:
   build-and-audit:
@@ -190,6 +195,19 @@ jobs:
       - name: Run workflows service tests
         run: cd services/workflows && uv run --frozen --extra test pytest tests/ -v --tb=short
 
+      - name: Lint scheduled-jobs (ruff)
+        # The pre-commit hook covers this too, but pre-commit runs in CI only
+        # for the bloomcli release workflow — anyone without it installed
+        # locally would otherwise go unchecked. Version pinned to the same rev
+        # as .pre-commit-config.yaml so the two cannot disagree.
+        run: uvx ruff@0.9.9 check scheduled-jobs/
+
+      - name: Run scheduled-jobs tests
+        # These sit next to the job they cover and are named `*_test.py`, so
+        # the root pytest config (testpaths=tests, python_files=test_*.py)
+        # never collects them — point pytest at the directory explicitly.
+        run: uv run --extra test pytest scheduled-jobs/ -o python_files='*_test.py' -v --tb=short
+
       - name: Build bloom_mcp wheel and import in a clean env
         run: |
           cd bloommcp
@@ -223,7 +241,10 @@ jobs:
 
       # Checks bloomcli (bloomctl CLI) Python packages for vulnerabilities
       - name: Audit bloomcli dependencies
-        run: cd bloomcli && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+        # --extra scrna: `uv export` drops optional dependencies, so without it the scrna
+        # extra's h5py/numpy ship to PyPI audited by nothing. Named rather than --all-extras,
+        # which would audit the test extra too.
+        run: cd bloomcli && uv export --frozen --no-hashes --extra scrna | uvx pip-audit@2.10.0 -r /dev/stdin
 
   # bloom #737: the vendored copy of sleap-roots-pipeline's canonical
   # sleap-roots-pipeline.yaml (services/workflows/vendored/) must stay in sync
@@ -248,7 +269,7 @@ jobs:
       - name: Check for relevant path changes
         id: filter
         run: |
-          if git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+          if git diff --quiet "$BASE_SHA" "${{ github.sha }}" -- \
             services/workflows/vendored services/workflows/k8s_client.py services/workflows/pyproject.toml; then
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           else
@@ -271,6 +292,85 @@ jobs:
 
       - name: Check vendored Argo Workflow drift
         run: python3 scripts/check_vendored_workflow_drift.py
+
+  # The backup job's image gets its own job, run only when the job's folder changed.
+  # Gated by `if:` because a skipped job counts as passing; a `paths:` filter would not.
+  detect-box-object-backup-changes:
+    name: Detect Box Object Backup Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for changes to the backup job
+        id: filter
+        run: |
+          if git diff --quiet "$BASE_SHA" "${{ github.sha }}" -- \
+            scheduled-jobs/box-object-backup; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  box-object-backup-image:
+    name: Build Box Object Backup Image & Scan for CVEs
+    needs: detect-box-object-backup-changes
+    if: needs.detect-box-object-backup-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build box-object-backup image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./scheduled-jobs/box-object-backup
+          file: scheduled-jobs/box-object-backup/Dockerfile
+          tags: box-object-backup:ci
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=box-object-backup
+          cache-to: type=gha,mode=max,scope=box-object-backup
+
+      - name: Smoke-test box-object-backup image
+        run: |
+          docker run --rm box-object-backup:ci --help > /dev/null
+          docker run --rm --entrypoint sh box-object-backup:ci -c \
+            'rclone version && psql --version && test "$(id -u)" != 0 && ! ls /app/*_test.py 2>/dev/null && ! test -e /app/conftest.py'
+
+      # Placeholder credentials: `config` checks the file, not the server's paths.
+      - name: Validate box-object-backup compose file
+        env:
+          POSTGRES_PASSWORD: placeholder
+          MINIO_ROOT_USER: placeholder
+          MINIO_ROOT_PASSWORD: placeholder
+        run: docker compose -f scheduled-jobs/box-object-backup/compose.yml config --quiet
+
+      - name: Scan box-object-backup image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'box-object-backup:ci'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+          trivyignores: '.trivyignore'
+
+      - name: Check box-object-backup for critical CVEs
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'box-object-backup:ci'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          trivyignores: '.trivyignore'
 
   docker-build:
     name: Build Docker Images & Scan for CVEs
@@ -523,7 +623,7 @@ jobs:
 
       # Post after the CVE gates so the comment only appears once a pass/fail exists.
       - name: Post Trivy report as PR comment
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-docker-build
@@ -540,7 +640,26 @@ jobs:
           fetch-depth: 0
 
       - name: Run migration lint
-        run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
+        run: ./scripts/lint_migrations.sh "origin/${BASE_REF#refs/heads/}"
+
+  lint-migration-isolation:
+    name: Lint migration changes are isolated
+    # Both bases: the script counts only migrations not already on staging, so a
+    # promotion has nothing to check and a hotfix straight to main still does.
+    # PRs only: a queued group can hold several PRs, so isolation is judged per PR.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Diffs against the base SHA and compares with origin/staging
+          fetch-depth: 0
+
+      # Warning mode until the rollout makes it blocking.
+      - name: Enforce migration PR isolation
+        continue-on-error: true
+        run: python3 scripts/lint_migration_isolation.py "$BASE_SHA"
 
   lint-cve-isolation:
     name: Lint CVE changes are isolated
@@ -562,7 +681,7 @@ jobs:
       # Pass the base SHA directly (no fetch needed) — origin/<branch> requires
       # an extra fetch that can fail with "no merge base" in shallow checkouts.
       - name: Enforce CVE-change PR isolation
-        run: ./scripts/lint_cve_isolation.sh ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/lint_cve_isolation.sh "$BASE_SHA"
 
   # Runs the new web/ Vitest suite added by the openspec change
   # add-ghcr-image-publishing (proposal/tasks/specs already on this branch).
@@ -605,6 +724,8 @@ jobs:
       # custom services so PR CI can build locally even after PR-3 flips
       # docker-compose.prod.yml to `image: ghcr.io/...` refs.
       COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.ci.yml
+      # tbls draws _WIKI/SUPABASE/erd.md; same pin as the Makefile's TBLS_IMAGE.
+      TBLS_IMAGE: ghcr.io/salk-harnessing-plants-initiative/k1low-tbls:v1.96.0@sha256:35e29e5c2e2d8a4555b36eacfdac9d78d8af5aee5c73cc68219cac9cf3723ee1
     steps:
       # Reclaim ~25 GB before anything runs. ubuntu-latest ships only ~14 GB
       # free on /, and this job builds the full prod compose stack
@@ -915,6 +1036,35 @@ jobs:
             psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
             < supabase/grants/schema_grants.sql
 
+      # Redraw the ER diagram from the freshly migrated schema; a stale erd.md fails (warning mode for now).
+      - name: Check the ER diagram is current
+        id: erd
+        continue-on-error: true
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+        run: |
+          set -euo pipefail
+          DB=$(docker compose $COMPOSE_FILES --env-file .env.ci ps -q db-prod)
+          export TBLS_DSN="postgres://supabase_admin:${POSTGRES_PASSWORD}@localhost:5432/postgres?sslmode=disable"
+          mkdir -p "$RUNNER_TEMP/erd"
+          # tbls gets only its config, not the workspace (.env.ci, the checkout token).
+          docker run --rm -e TBLS_DSN --network "container:${DB}" -v "$PWD/.tbls.yml:/work/.tbls.yml:ro" -w /work \
+            "$TBLS_IMAGE" out -c .tbls.yml -t mermaid > "$RUNNER_TEMP/erd.mmd"
+          python3 scripts/schema_erd.py wrap < "$RUNNER_TEMP/erd.mmd" > "$RUNNER_TEMP/erd/erd.md"
+          if ! cmp -s "$RUNNER_TEMP/erd/erd.md" _WIKI/SUPABASE/erd.md; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=ER diagram is stale::_WIKI/SUPABASE/erd.md does not match the migrated schema. Download the erd artifact from this run and commit it as _WIKI/SUPABASE/erd.md."
+            exit 1
+          fi
+
+      # Only a successful redraw is uploaded; a tbls failure fails the step with no artifact.
+      - name: Upload the redrawn ER diagram
+        if: steps.erd.outputs.stale == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: erd
+          path: ${{ runner.temp }}/erd/erd.md
+
       # Layer B — runs only on failure. Prints applied-vs-pending state so an
       # on-call engineer can see which migration broke without digging through
       # step logs. `|| true` stops a diagnostic-fetch failure from masking
@@ -1211,17 +1361,6 @@ jobs:
       - name: make bloommcp-smoke (live persistence smoke through real ports)
         run: make bloommcp-smoke
 
-      # Live plot-tool smoke (issue #472): unlike bloommcp-smoke above (in-process,
-      # env-overridden to host temp dirs), this calls a real plotting tool through
-      # the bloommcp container's actual MCP transport — the only way to prove the
-      # real bind-mounted PLOTS_DIR write path works, since plotting tools always
-      # write straight to disk regardless of storage backend. Proves the
-      # ensure-bloommcp-data-dirs preflight (Makefile `dev-up` prerequisite) is
-      # actually wired in and not silently skipped (e.g. by DOCTOR_SKIP=1, which
-      # this job sets on `make dev-up` above).
-      - name: make bloommcp-plot-smoke (live plot-tool smoke through the real container)
-        run: make bloommcp-plot-smoke
-
       # Granular per-tool smoke coverage (#483): each test calls a bloommcp tool
       # through the real running container's MCP transport, over both the turface_19
       # and cylinder oracle fixtures (see bloommcp/tests/fixtures/README.md). Only the
@@ -1369,6 +1508,7 @@ jobs:
           } > pinned-report.md
 
       - name: Post as PR comment
+        if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-pinned-images

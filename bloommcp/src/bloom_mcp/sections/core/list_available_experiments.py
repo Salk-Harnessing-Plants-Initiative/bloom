@@ -10,17 +10,11 @@ from typing import Optional
 
 from bloom_mcp.tools import _ports
 
-# design.md D8 addendum (bloom#637/#708): production now refreshes on an automatic daily
-# `on: schedule` cron; staging remains on-demand (`workflow_dispatch`) only -- it doesn't
-# need frequent automatic refreshes. So a STAGING cache row can still go quiet
-# indefinitely with no signal beyond a timestamp that keeps looking like ordinary bounded
-# lag; a PRODUCTION row's lag is bounded to roughly one refresh interval ONCE bloom#736
-# (Section 15) confirms an actual successful refresh -- until then it is unbounded,
-# identically to staging, since the refresh workflow's runner had no network route to
-# either host and every RPC delivery had failed. Either way, a missed or delayed scheduled
-# run would otherwise look identical to ordinary lag too. Elapsed time past a couple of
-# days is flagged explicitly rather than printed as a plain "as of" timestamp either way,
-# since this tool has no way to tell which environment a given row came from.
+# bloom#831: a pg_cron job inside Postgres refreshes this cache nightly at 06:00 UTC, in every
+# environment, and a weekly job re-queues every experiment. A row is therefore at most a day
+# behind a new result, and at most a week behind an edit the change log can't see. A missed or
+# delayed run still looks identical to ordinary lag, so elapsed time past a couple of days is
+# flagged explicitly rather than printed as a plain "as of" timestamp.
 _STALE_AFTER = timedelta(days=2)
 
 
@@ -45,8 +39,8 @@ def _traits_note(updated_at: Optional[str], *, now: Optional[datetime] = None) -
     if elapsed > _STALE_AFTER:
         return (
             f" (as of {updated_at}, {elapsed.days}d ago -- "
-            f"trait counts refresh on a schedule or on demand, not on every write; "
-            f"this count may be older than the environment's own refresh cadence)"
+            f"trait counts refresh nightly, not on every write; "
+            f"a timestamp older than a day means a scheduled run did not complete)"
         )
     return f" (as of {updated_at})"
 
