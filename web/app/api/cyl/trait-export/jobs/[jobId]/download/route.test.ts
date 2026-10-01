@@ -23,7 +23,7 @@ import * as downloadRoute from '@/app/api/cyl/trait-export/jobs/[jobId]/download
 import * as statusRoute from '@/app/api/cyl/trait-export/jobs/[jobId]/route'
 import * as startRoute from '@/app/api/cyl/trait-export/jobs/route'
 import { createExportDb } from '@/lib/cyl-trait-export/db'
-import { reserveJob } from '@/lib/cyl-trait-export/jobs'
+import { deleteJob, reserveJob } from '@/lib/cyl-trait-export/jobs'
 import { RETAIN_SECONDS } from '@/lib/cyl-trait-export/limits'
 import { resetExportStateForTests } from '@/lib/cyl-trait-export/state'
 import { createServerSupabaseClient, getSession } from '@/lib/supabase/server'
@@ -104,16 +104,26 @@ describe('guards', () => {
 })
 
 describe('download', () => {
-  it('409 while running, failed or cancelled', async () => {
+  it('409 while running, failed or cancelled, naming the status (10a.6d)', async () => {
     const running = startJob(() => new Promise(() => {}))
-    expect((await download(running)).status).toBe(409)
+    let res = await download(running)
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ detail: 'the export is running' })
     resetExportStateForTests()
     const failed = startJob(async () => {
       throw new Error('boom')
     })
     vi.spyOn(console, 'error').mockImplementation(() => {})
     await new Promise((r) => setImmediate(r))
-    expect((await download(failed)).status).toBe(409)
+    res = await download(failed)
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ detail: 'the export is failed' })
+    resetExportStateForTests()
+    const cancelled = startJob(() => new Promise(() => {}))
+    expect(deleteJob('user-1', cancelled)).toBe(true)
+    res = await download(cancelled)
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ detail: 'the export is cancelled' })
   })
 
   it('streams the ready zip with its headers, repeatably, then 404 after retention', async () => {
