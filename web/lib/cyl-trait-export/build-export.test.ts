@@ -8,9 +8,11 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { fakeDb, RECORDED, type FakeOptions } from './__fixtures__/fake-db'
-import { buildExport, resolveSelection, type BuildOptions } from './build-export'
+import { buildExport, listMergedRecipes, resolveSelection, type BuildOptions } from './build-export'
+import type { ExportDb } from './db'
 import { csvRows } from './csv'
 import { ExportError, SELECTION_CHANGED } from './errors'
+import { BATCH_SCANS, LISTING_BATCH_SCANS } from './limits'
 import type { Selection } from './selection'
 
 const GOLDEN = join(__dirname, '__fixtures__', 'golden')
@@ -97,10 +99,17 @@ describe('(b) call shapes', () => {
       expect(c.args[0]).toBe(1)
       const ids = (c.method === 'traits' ? c.args[2] : c.args[1]) as number[]
       expect(ids.length).toBeGreaterThan(0)
-      expect(ids.length).toBeLessThanOrEqual(2)
+      expect(ids.length).toBeLessThanOrEqual(c.method === 'listRecipes' ? LISTING_BATCH_SCANS : 2)
       if (c.method === 'coverage') expect(c.args[2]).toBe(K)
       if (c.method === 'traits') expect(c.args[1]).toBe(K)
     }
+  })
+
+  it('lists recipes in one call for a selection within LISTING_BATCH_SCANS, whatever batchSize is', async () => {
+    const { f } = await run(WHOLE, { recipeKey: K, batchSize: 1 })
+    const all = RECORDED.input.chunk_listings['8'][0].scan_ids
+    const listings = f.calls.filter((c) => c.method === 'listRecipes')
+    expect(listings.map((c) => c.args[1])).toEqual([all])
   })
 
   it('makes no trait call for a batch with no included scans', async () => {
@@ -408,3 +417,37 @@ describe('resolveSelection', () => {
 
 // csvRows is re-exported for the zip and route layers; keep it imported so a rename breaks here.
 void csvRows
+
+describe('listMergedRecipes batching (tasks.md 7.4)', () => {
+  // Staging, 2026-10-01: one list_trait_recipes call over experiment 1's 18,471 scans
+  // took 1.26 s, while 185 calls of BATCH_SCANS would exceed Kong's 60 s per request
+  // with two jobs running.
+  const stubDb = () => {
+    const sizes: number[] = []
+    const db = {
+      listRecipes: async (_e: number, ids: number[]) => {
+        sizes.push(ids.length)
+        return []
+      },
+    } as unknown as ExportDb
+    return { db, sizes }
+  }
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => i + 1)
+
+  it('is larger than BATCH_SCANS and covers the largest experiment (18,471 scans)', () => {
+    expect(LISTING_BATCH_SCANS).toBeGreaterThan(BATCH_SCANS)
+    expect(LISTING_BATCH_SCANS).toBeGreaterThanOrEqual(18_471)
+  })
+
+  it('makes one call for a selection of up to LISTING_BATCH_SCANS scans by default', async () => {
+    const { db, sizes } = stubDb()
+    await listMergedRecipes(db, 1, ids(BATCH_SCANS * 2 + 50))
+    expect(sizes).toEqual([BATCH_SCANS * 2 + 50])
+  })
+
+  it('splits a larger selection at LISTING_BATCH_SCANS', async () => {
+    const { db, sizes } = stubDb()
+    await listMergedRecipes(db, 1, ids(LISTING_BATCH_SCANS + 1))
+    expect(sizes).toEqual([LISTING_BATCH_SCANS, 1])
+  })
+})
