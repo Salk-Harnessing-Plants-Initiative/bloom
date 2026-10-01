@@ -52,101 +52,108 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
 `_source_id`, `_source_snapshot`). "Unchanged" means equal `_source_snapshot` before and after;
 "row untouched" means equal `(ctid, status, source_id)` before and after.
 
-- [ ] 3.1 `test_manual_origin_noop_is_marked_written`: deliver with no workflow name; seed `wf-b`'s
+- [x] 3.1 `test_manual_origin_noop_is_marked_written`: deliver with no workflow name; seed `wf-b`'s
   queued row for the scan; re-deliver under `wf-b`. `was_noop` true, `status_update_matched` true,
   `scan_id` null, `trait_count`/`blob_count` 0; `wf-b`'s row `('written', <source>)`; the source is
   unchanged and no `cyl_scan_traits` row of the scan has another new `source_id`.
-- [ ] 3.2 `test_hand_submitted_origin_noop_is_marked_written`: as 3.1, but the first delivery is
+- [x] 3.2 `test_hand_submitted_origin_noop_is_marked_written`: as 3.1, but the first delivery is
   under `wf-a` with no run-scan rows for `wf-a`.
-- [ ] 3.3 `test_backfilled_source_noop_is_marked_written`: seed the source the way staging's
+- [x] 3.3 `test_backfilled_source_noop_is_marked_written`: seed the source the way staging's
   source 228 looks — created with recipe and run columns NULL, then `scan_id` set directly — and
   re-deliver under `wf-b` → `('written', <source>)`.
-- [ ] 3.4 `test_source_scan_id_wins_over_a_carrying_row` (D1 order): deliver under `wf-a` (stamps
+- [x] 3.4 `test_source_scan_id_wins_over_a_carrying_row` (D1 order): deliver under `wf-a` (stamps
   `wf-a`'s S1 row); `UPDATE cyl_pipeline_run_scans SET scan_id = S2` on that row; seed `wf-b`
   queued rows for S1 and S2; re-deliver under `wf-b` → S1 row `('written', <source>)`, S2 row
   untouched.
-- [ ] 3.5 `test_run_scan_lookup_is_the_backup_when_source_scan_is_null`: deliver under `wf-a` with
+- [x] 3.5 `test_run_scan_lookup_is_the_backup_when_source_scan_is_null`: deliver under `wf-a` with
   a seeded row; set the source's `scan_id` NULL; seed `wf-b`'s queued row; re-deliver → written.
-- [ ] 3.6 `test_noop_with_no_recorded_scan_and_no_carrying_row_reports_no_match`: manual origin,
+- [x] 3.6 `test_noop_with_no_recorded_scan_and_no_carrying_row_reports_no_match`: manual origin,
   `scan_id` NULL → matched false, `wf-b`'s row untouched.
-- [ ] 3.7 `test_noop_under_workflow_that_did_not_dispatch_the_scan_matches_nothing`: manual origin
+- [x] 3.7 `test_noop_under_workflow_that_did_not_dispatch_the_scan_matches_nothing`: manual origin
   for S1; `wf-b` has a queued row for S2 only → matched false, S2 row untouched.
-- [ ] 3.8 `test_noop_does_not_resurrect_a_failed_row`: `wf-b`'s row `'failed'` → matched false,
+- [x] 3.8 `test_noop_does_not_resurrect_a_failed_row`: `wf-b`'s row `'failed'` → matched false,
   row untouched.
-- [ ] 3.9 `test_noop_does_not_replace_another_source_link` (D8): fresh delivery of source X under
+- [x] 3.9 `test_noop_does_not_replace_another_source_link` (D8): fresh delivery of source X under
   `wf-b` for scan S (row `('written', X)`); then a manual-origin source Y for S (different key) is
   re-delivered under `wf-b` → matched false, row untouched.
-- [ ] 3.10 `test_same_key_different_scan_noop_marks_only_the_recorded_scan`: manual origin for S1;
+- [x] 3.10 `test_same_key_different_scan_noop_marks_only_the_recorded_scan`: manual origin for S1;
   re-deliver the same key with S2's `image_ids` under `wf-b`, which has queued rows for S1 and S2 →
   S1 `('written', <source>)`, S2 untouched, no `cyl_scan_traits` rows for S2.
-- [ ] 3.11 `test_manual_origin_chain_across_two_workflows`: manual, then `wf-b`, then `wf-c` → both
+- [x] 3.11 `test_manual_origin_chain_across_two_workflows`: manual, then `wf-b`, then `wf-c` → both
   rows written with the same source.
-- [ ] 3.12 `test_noop_without_workflow_name_touches_no_run_scan_row`: `status_update_matched` null,
+- [x] 3.12 `test_noop_without_workflow_name_touches_no_run_scan_row`: `status_update_matched` null,
   every seeded row untouched.
-- [ ] 3.13 `test_manual_origin_redelivery_survives_reconciliation`: `wf-b` dispatched two scans; one
+- [x] 3.13 `test_manual_origin_redelivery_survives_reconciliation`: `wf-b` dispatched two scans; one
   is a manual-origin re-delivery, the other delivers nothing; call
   `fail_cyl_pipeline_run_scans_without_result('wf-b', …)`; counting `written`/`reused` vs `failed`
   gives `(1, 1)` and the rescued row is still `('written', <source>)`.
-- [ ] 3.14 `test_noop_reads_no_trait_or_blob_table`: `pg_stat_xact_user_tables` `seq_scan +
+- [x] 3.14 `test_noop_reads_no_trait_or_blob_table`: `pg_stat_xact_user_tables` `seq_scan +
   idx_scan` for `cyl_scan_traits` and `cyl_scan_intermediates` is unchanged across a no-op call
   that takes the new path (D1 timeout guard, behavioural half).
-- [ ] 3.15 `test_redefinition_keeps_hardening_acl_and_single_overload`: EXECUTE ACL is
+- [x] 3.15 `test_redefinition_keeps_hardening_acl_and_single_overload`: EXECUTE ACL is
   `{postgres, service_role, bloom_writer, bloom_admin, bloom_workflows}`, owner `postgres`,
   `prosecdef` true, `proconfig` pins `search_path`, only the 2-arg overload exists.
-- [ ] 3.16 `test_migration_body_is_idempotent`: applying the body a second time succeeds; overloads
+- [x] 3.16 `test_migration_body_is_idempotent`: applying the body a second time succeeds; overloads
   and ACL as 3.15.
-- [ ] 3.17 `test_rollback_restores_the_previous_behaviour`: apply the rollback body; 3.1's shape now
+- [x] 3.17 `test_rollback_restores_the_previous_behaviour`: apply the rollback body; 3.1's shape now
   reports matched false; 3.15's assertions hold.
 
 ### 3b. `tests/unit/test_cyl_noop_redelivery_migration_files.py` (new)
 
-- [ ] 3.18 `test_differs_from_previous_only_in_the_fallback_block`: ordered removed/added line lists
+- [x] 3.18 `test_differs_from_previous_only_in_the_fallback_block`: ordered removed/added line lists
   (as `M2_REMOVED`/`M2_ADDED` in `test_cyl_trait_recipe_migration_files.py`) for the function
   section; the trailing backfill `SELECT` is absent. Comments are compared too, so the two
   rewritten comments of design D5 are pinned.
-- [ ] 3.19 `test_previous_is_the_newest_definition_before_this_one` (`index - 1`, as the
+- [x] 3.19 `test_previous_is_the_newest_definition_before_this_one` (`index - 1`, as the
   precedents; no "newest overall" tripwire).
-- [ ] 3.20 `test_noop_branch_reads_the_source_row_first`: on comment-stripped text, from
+- [x] 3.20 `test_noop_branch_reads_the_source_row_first`: on comment-stripped text, from
   `IF v_was_noop THEN` to the first `RETURN jsonb_build_object(`: no `cyl_scan_traits` or
   `cyl_scan_intermediates`; `FROM public.cyl_trait_sources WHERE id = v_source_id` appears before
   `FROM public.cyl_pipeline_run_scans WHERE source_id = v_source_id`, which sits inside
   `IF v_scan_id IS NULL`; the targeted update carries `source_id IS NULL OR source_id =
   v_source_id`.
-- [ ] 3.21 `test_body_keeps_single_markers`: exactly one `v_was_noop := true;` and one
+- [x] 3.21 `test_body_keeps_single_markers`: exactly one `v_was_noop := true;` and one
   `pinned_version constant text :=`.
-- [ ] 3.22 `test_full_revoke_is_restated` (migration and rollback) and
+- [x] 3.22 `test_full_revoke_is_restated` (migration and rollback) and
   `test_rollback_restores_previous_body_verbatim`.
 
 ### 3c. Red run (record output here)
 
-- [ ] 3.23 Write 3a/3b, then create the migration file as an unmodified copy of `20260930120100`'s
-  function section. Expected: 3.1, 3.2, 3.3, 3.4, 3.9, 3.10 (S1 half), 3.11, 3.13, 3.14 fail
-  (`status_update_matched` false, or the row stays queued, or 3.9's guard absent → relinked);
-  3.5–3.8, 3.12, 3.15, 3.16, 3.19, 3.21 pass; 3.17, 3.18, 3.20, 3.22 fail (no rollback / no diff /
-  old lookup). Then make the D1/D5/D8 edit and write the rollback.
+- [x] 3.23 Write 3a/3b, then create the migration file as an unmodified copy of `20260930120100`'s
+  function section. **Red (2026-10-01): 15 failed, 9 passed.** Failed: 3.1, 3.2, 3.3, 3.4, 3.10,
+  3.11, 3.13, 3.14 (`status_update_matched` false / row still queued); 3.9 (`status_update_matched`
+  true — #880's unguarded update relinked the row); 3.16 (new-body marker absent); 3.17 (no
+  rollback file); unit 3.18 (diff + the two retired comments still present), 3.20 (old lookup),
+  3.22 rollback half. Passed (they pin kept behaviour): 3.5–3.8, 3.12, 3.15, 3.19, 3.21, and the
+  migration half of 3.22. Then the D1/D5/D8 edit and the rollback: **24 passed**.
+  3.14's own guard was never red in that run (it failed earlier, on the match), so it was
+  mutation-tested: a `PERFORM 1 FROM public.cyl_scan_traits WHERE source_id = v_source_id`
+  injected into the no-op path made it fail (`cyl_scan_traits` scans 1 → 2); file restored.
 
 ## 4. PR A implementation (green)
 
-- [ ] 4.1 `supabase/migrations/<ts>_resolve_cyl_noop_redelivery_scan_from_source.sql` per design
+- [x] 4.1 `supabase/migrations/<ts>_resolve_cyl_noop_redelivery_scan_from_source.sql` per design
   D1, D5, D8; header naming bloom#900/#875, the change id and the rollback path.
-- [ ] 4.2 `supabase/rollbacks/<ts>_resolve_cyl_noop_redelivery_scan_from_source_rollback.sql` per
+- [x] 4.2 `supabase/rollbacks/<ts>_resolve_cyl_noop_redelivery_scan_from_source_rollback.sql` per
   D5.
-- [ ] 4.3 `tests/integration/test_cyl_writeback_rpc.py`: rewrite the three docstrings that become
+- [x] 4.3 `tests/integration/test_cyl_writeback_rpc.py`: rewrite the three docstrings that become
   false — `test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id` (hand-submitted
   shape "has nothing to resolve scan_id from"), `…_never_dispatched_workflow_reports_no_match` (the
   lookup now finds the scan; the update matches nothing), `test_fallback_finds_nothing_for_a_never_dispatched_workflow`
   ("v_scan_id never resolves"). No assertion changes.
-- [ ] 4.4 Run 3a/3b green: `uv run --extra test pytest tests/integration/test_cyl_noop_redelivery_scan.py -v`;
+- [x] 4.4 Run 3a/3b green: `uv run --extra test pytest tests/integration/test_cyl_noop_redelivery_scan.py -v`;
   `uv run --extra test pytest tests/unit/test_cyl_noop_redelivery_migration_files.py tests/unit/test_cyl_trait_recipe_migration_files.py tests/unit/test_cyl_writeback_a9_migration_files.py tests/unit/test_cyl_trait_sources_grants.py -v`.
-  Record counts.
+  **2026-10-01: 219 passed** (the two new files, `test_cyl_writeback_rpc.py` against the dev DB's
+  live body, and the three precedent unit files).
 
 ## 5. PR A validation
 
-- [ ] 5.1 `openspec validate fix-cyl-noop-redelivery-scan-resolution --strict`, and the same for
-  `fix-cyl-redelivery-blob-collision` and `add-cyl-trait-recipe-key`.
-- [ ] 5.2 `scripts/lint_migrations.sh origin/staging` and
+- [x] 5.1 `openspec validate fix-cyl-noop-redelivery-scan-resolution --strict`, and the same for
+  `fix-cyl-redelivery-blob-collision` and `add-cyl-trait-recipe-key`. All three valid.
+- [x] 5.2 `scripts/lint_migrations.sh origin/staging` and
   `python3 scripts/lint_migration_isolation.py origin/staging`, before push and again just before
-  merge (the queue re-checks against its base).
+  merge (the queue re-checks against its base). Before push: both pass (`20261001220000`, 1 new
+  file; isolation: 1 migration change, isolated).
 - [ ] 5.3 `/pre-merge`. Known Windows-only local failures (`test_env_defaults.py`
   `test_validator_*`, `test_weekly_backup.py` collection, `test_verify_env_parity`, some
   fastq/doctor/file-mode tests) are recorded, not fixed.
