@@ -152,8 +152,8 @@ the source or by the backfill. The provenance-immutability rule continues to cov
 - the `(jsonb, text)` signature, as its only overload;
 - its validation;
 - its return value, including `status_update_matched`;
-- its run-scan status updates, which on a no-op delivery include the fallback that resolves the
-  scan from an existing run-scan row carrying this source's id;
+- its run-scan status updates, which on a no-op delivery include the fallback specified in
+  "Write-back RPC ingests a ResultEnvelope";
 - its `EXECUTE` grants: revoked from `PUBLIC`, `anon` and `authenticated`, and granted to
   `bloom_writer`, `service_role`, `bloom_admin` and `bloom_workflows`.
 
