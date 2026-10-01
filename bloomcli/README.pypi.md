@@ -1,6 +1,6 @@
 # bloomctl
 
-Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative) — log in, find cylinder experiments, download their images and metadata, and work with cylinder  trait datasets.
+Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative): log in and access data from Bloom, spanning cylinder experiments, plate scanners and expression data.
 
 ## Install
 
@@ -10,6 +10,12 @@ Releases are still pre-releases (`0.1.0aN`), so install by **asking for the vers
 uv tool install "bloomctl==0.1.0a5"    # isolated CLI tool (recommended)
 uvx bloomctl@0.1.0a5 --help            # one-off, no install
 pip install "bloomctl==0.1.0a5"        # into the active environment
+```
+
+For single-cell uploads, install the `scrna` extra instead (upload's structure check needs h5py):
+
+```bash
+uv tool install "bloomctl[scrna]==0.1.0a5"
 ```
 
 ```bash
@@ -80,17 +86,12 @@ Resume works as it does for cylinder downloads, and a little better: plate image
 size, so a file is skipped only when its size matches the database. A download truncated by a
 dropped connection is re-fetched rather than treated as complete.
 
-> `plate download` needs the `gravi_scans_extended` view on the server, and
-> `gravi_experiment_search` if you select by `--experiment-name`.
-
 ## Quickstart for Single-cell Dataset Files
 
 A single-cell dataset's whole AnnData file (`.h5ad`) is stored gzipped and named by the SHA-256
 of the uncompressed file, so the same file uploaded twice is one object.
 
 ```bash
-pip install 'bloomctl[scrna]'                  # upload's structure check needs h5py
-
 bloomctl scrna hdf5 upload my_dataset.h5ad     # needs write access
 bloomctl scrna hdf5 download "My dataset"      # by name, id, or --checksum
 bloomctl scrna hdf5 list                       # what storage holds
@@ -122,7 +123,7 @@ when you run the same command again. `download` writes the file only once its fi
 | `cyl ingest-result` / `batch-ingest-result`               | Write per-scan pipeline results back to Bloom*(needs write access)* |
 | `cyl datasets create`                                       | Create a trait dataset*(needs write access)*                        |
 
-**Single-cell** (`pip install 'bloomctl[scrna]'` for upload):
+**Single-cell** (upload needs the `scrna` extra, see [Install](#install)):
 
 | Command                     | What it does                                                                      |
 | --------------------------- | --------------------------------------------------------------------------------- |

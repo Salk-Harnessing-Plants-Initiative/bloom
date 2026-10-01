@@ -20,8 +20,10 @@ It locks the safety-critical properties the design signed off on:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -175,6 +177,47 @@ def test_validate_tag_script_fails_on_mismatched_tag():
     assert result.returncode == 1
     assert "::error::" in result.stdout
     assert "does not match" in result.stdout
+
+
+def _run_pin_script(tag: str, readme: str, workdir: Path) -> str:
+    """Run the REAL "Pin repo links and install commands" script on a sample README."""
+    job = _load(RELEASE)["jobs"]["build-and-verify"]
+    step = next(
+        s for s in job["steps"] if s.get("name") == "Pin repo links and install commands to the release"
+    )
+    (workdir / "pyproject.toml").write_text('[project]\nname = "bloomctl"\n', encoding="utf-8")
+    (workdir / "README.pypi.md").write_text(readme, encoding="utf-8")
+    path = os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")])
+    env = {**os.environ, "TAG": tag, "PATH": path}
+    result = subprocess.run(
+        [BASH, "-c", step["run"]], cwd=workdir, env=env, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    return (workdir / "README.pypi.md").read_text(encoding="utf-8")
+
+
+def test_pin_script_pins_plain_and_extra_installs(tmp_path):
+    readme = (
+        'uv tool install "bloomctl==0.1.0a1"\n'
+        "uvx bloomctl@0.1.0a1 --help\n"
+        'uv tool install "bloomctl[scrna]==0.1.0a1"\n'
+    )
+    pinned = _run_pin_script("bloomctl-v0.1.0a9", readme, tmp_path)
+
+    assert 'uv tool install "bloomctl==0.1.0a9"' in pinned
+    assert "uvx bloomctl@0.1.0a9 --help" in pinned
+    assert 'uv tool install "bloomctl[scrna]==0.1.0a9"' in pinned
+    assert "0.1.0a1" not in pinned
+
+
+def test_pypi_readme_installs_are_all_pinnable():
+    """Every install line on the PyPI page names a version the pin step can rewrite."""
+    readme = (REPO_ROOT / "bloomcli" / "README.pypi.md").read_text(encoding="utf-8")
+    installs = [line for line in readme.splitlines() if re.match(r"\s*(pip|uv tool) install\b", line)]
+
+    assert installs, "the PyPI page has no install lines"
+    for line in installs:
+        assert re.search(r"bloomctl(\[[^\]]+\])?==", line), f"unpinned install line: {line!r}"
 
 
 # --- publish workflow: trusted publishing + immutability guard -------------

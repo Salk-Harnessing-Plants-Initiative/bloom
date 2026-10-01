@@ -8,6 +8,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Changed
+
+- The PyPI page's Install section lists every install command, pinned to the release,
+  including `bloomctl[scrna]` for single-cell uploads. The intro covers cylinder, plate and
+  expression data.
+
 ## [0.1.0a7] - 2026-09-30 — single-cell dataset files + per-run manifests
 
 ### Added
