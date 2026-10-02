@@ -62,24 +62,38 @@ fi
 if [ "$1" = s3api ]; then
   [ -z "${FAKE_LIST_FAIL:-}" ] || { echo "An error occurred (AccessDenied)" >&2; exit 255; }
   while [ $# -gt 0 ]; do
-    case "$1" in --bucket) bucket="$2" ;; --prefix) prefix="$2" ;; esac
+    case "$1" in --bucket) bucket="$2" ;; --prefix) prefix="$2" ;; --delimiter) delim="$2" ;; --max-keys) max="$2" ;; esac
     shift
   done
   # Each listing can be made to change the folder first, to stand in for a slow upload.
   if [ -n "${FAKE_ON_LIST:-}" ]; then bash -c "${FAKE_ON_LIST}"; fi
-  python3 - "${FAKE_S3}/${bucket}" "${prefix}" <<'PY'
+  python3 - "${FAKE_S3}/${bucket}" "${prefix}" "${delim:-}" "${max:-1000}" <<'PY'
 import hashlib, json, os, sys
-root, prefix = sys.argv[1], sys.argv[2]
+# Like S3: with a delimiter, keys below a subfolder come back as one CommonPrefix; a page
+# holds at most max-keys keys and prefixes, and IsTruncated says there are more.
+root, prefix, delim, max_keys = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 folder = os.path.join(root, prefix)
-contents = []
+entries = []
 if os.path.isdir(folder):
-    for name in sorted(os.listdir(folder)):
-        path = os.path.join(folder, name)
-        if os.path.isfile(path):
-            data = open(path, "rb").read()
-            contents.append({"Key": prefix + name, "Size": len(data),
-                             "ETag": '"%s"' % hashlib.md5(data).hexdigest()})
-print(json.dumps({"Contents": contents} if contents else {}))
+    for dirpath, _, names in os.walk(folder):
+        for name in names:
+            rel = os.path.relpath(os.path.join(dirpath, name), folder)
+            entries.append(rel)
+contents, prefixes = [], set()
+for rel in sorted(entries):
+    if delim and delim in rel:
+        prefixes.add(prefix + rel.split(delim, 1)[0] + delim)
+        continue
+    data = open(os.path.join(folder, rel), "rb").read()
+    contents.append({"Key": prefix + rel, "Size": len(data),
+                     "ETag": '"%s"' % hashlib.md5(data).hexdigest()})
+page = (contents + [{"Prefix": p} for p in sorted(prefixes)])[:max_keys]
+out = {"IsTruncated": len(contents) + len(prefixes) > max_keys}
+if [c for c in page if "Key" in c]:
+    out["Contents"] = [c for c in page if "Key" in c]
+if [c for c in page if "Prefix" in c]:
+    out["CommonPrefixes"] = [c for c in page if "Prefix" in c]
+print(json.dumps(out))
 PY
   exit 0
 fi
@@ -113,6 +127,7 @@ def env(tmp_path):
     aws.write_text(AWS)
     aws.chmod(aws.stat().st_mode | stat.S_IEXEC)
     (bin_dir / "fastq-sample-prefix").symlink_to(CELLRANGER / "fastq-sample-prefix.sh")
+    (bin_dir / "stage-fastqs-lib").symlink_to(CELLRANGER / "stage_fastqs_lib.py")
     s3 = tmp_path / "s3"
     s3.mkdir()
     return {
@@ -211,6 +226,33 @@ def test_no_fastqs_after_waiting_exits_4(env):
     result = _run(e)
     assert result.returncode == 4
     assert "no FASTQs" in result.stderr
+    assert _copies(env) == []
+
+
+def test_it_waits_for_an_empty_folder_to_fill(env, tmp_path):
+    e = _folder(env, R1, R2)
+    folder = Path(env["FAKE_S3"]) / "lab-data/run42"
+    held = tmp_path / "held"
+    held.mkdir()
+    for name in (R1, R2):
+        shutil.move(str(folder / name), str(held / name))
+    # The second listing finds both files in place, as an upload finishing would.
+    flag = tmp_path / "listed"
+    on_list = f"[ -e {flag} ] && mv {held}/* {folder}/ 2>/dev/null; touch {flag}"
+    result = _run(e, WAIT_SECONDS="30", FAKE_ON_LIST=on_list)
+    assert result.returncode == 0, result.stderr
+    assert "Waiting for" in result.stdout and "(empty)" in result.stdout
+    assert _staged(env) == [R1, R2]
+
+
+def test_a_folder_grown_past_one_page_exits_8(env):
+    e = _folder(env, R1, R2)
+    for n in range(1000):
+        _put(env, URL, f"note{n:04d}.txt", data=b"x")
+    result = _run(e)
+    assert result.returncode == 8
+    assert "over 1000 files" in result.stderr
+    assert _copies(env) == []
 
 
 def test_it_waits_for_files_still_arriving(env, tmp_path):
@@ -307,6 +349,24 @@ def test_a_bad_folder_exits_6(env, url):
 @pytest.mark.parametrize("files", ["", "[]", "not json"])
 def test_a_folder_without_its_files_exits_6(env, files):
     assert _run(env, FASTQ_URL=URL, FASTQ_FILES=files).returncode == 6
+    assert _copies(env) == []
+
+
+@pytest.mark.parametrize("entry, words", [
+    ({"name": R1, "size": 1}, "exactly name, size, etag"),
+    ({"name": R1, "size": 1, "etag": '"a"', "key": "x"}, "exactly name, size, etag"),
+    ({"name": R1, "size": 1.5, "etag": '"a"'}, "whole number"),
+    ({"name": R1, "size": True, "etag": '"a"'}, "whole number"),
+    ({"name": R1, "size": 1, "etag": ""}, "ETag"),
+    ({"name": "sub/" + R1, "size": 1, "etag": '"a"'}, "plain file name"),
+    ("not an object", "exactly name, size, etag"),
+])
+def test_a_malformed_file_entry_exits_6_without_a_retry(env, entry, words):
+    files = json.dumps([entry, {"name": R2, "size": 1, "etag": '"b"'}])
+    result = _run(env, FASTQ_URL=URL, FASTQ_FILES=files)
+    assert result.returncode == 6
+    assert words in result.stderr
+    assert _copies(env) == []
 
 
 def test_a_folder_that_cant_be_listed_exits_10(env):
@@ -444,6 +504,8 @@ def test_the_image_installs_it_and_the_stage_step_runs_it():
     dockerfile = (CELLRANGER.parent / "Dockerfile").read_text()
     assert "COPY cellranger/stage-fastqs.sh /usr/local/bin/stage-fastqs" in dockerfile
     assert "/usr/local/bin/stage-fastqs" in dockerfile.split("RUN chmod +x", 1)[1].split("\n")[0]
+    assert "COPY cellranger/stage_fastqs_lib.py /usr/local/bin/stage-fastqs-lib" in dockerfile
+    assert "/usr/local/bin/stage-fastqs-lib" in dockerfile.split("RUN chmod +x", 1)[1].split("\n")[0]
     assert "stage-fastqs" in _template("stage-sample")["container"]["args"][0]
 
 
@@ -468,3 +530,56 @@ def test_the_stage_step_doesnt_retry_failures_a_retry_cant_fix():
     for code in (4, 6, 7, 8, 9):
         assert f"asInt(lastRetry.exitCode) != {code}" in rule
     assert "!= 10" not in rule
+
+
+# --------------------------------------------------------------------------- #
+# stage-fastqs-lib on its own
+# --------------------------------------------------------------------------- #
+
+
+def _lib():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("stage_fastqs_lib", CELLRANGER / "stage_fastqs_lib.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+FILES = [{"name": R1, "size": 3, "etag": '"a"'}, {"name": R2, "size": 4, "etag": '"b"'}]
+
+
+def _listing(*objs, truncated=False):
+    return {"IsTruncated": truncated,
+            "Contents": [{"Key": "run42/" + k, "Size": size, "ETag": etag} for k, size, etag in objs]}
+
+
+def test_compare_ignores_keys_below_the_folder_and_other_files():
+    lib = _lib()
+    listing = _listing((R1, 3, '"a"'), (R2, 4, '"b"'), ("old/" + R1, 9, '"z"'), ("md5sums.txt", 1, '"m"'))
+    assert lib.compare(listing, "run42/", FILES) == "match"
+
+
+@pytest.mark.parametrize("listing, state", [
+    ({}, "empty"),
+    (_listing((R1, 3, '"a"')), f"partial: {R2}"),
+    (_listing((R1, 3, '"a"'), (R2, 5, '"b"')), f"changed: {R2} is 5 bytes, not 4"),
+    (_listing((R1, 3, '"x"'), (R2, 4, '"b"')), f"changed: {R1} was replaced (its ETag differs)"),
+    (_listing((R1, 3, '"a"'), (R2, 4, '"b"'), ("col0_S1_L002_R1_001.fastq.gz", 1, '"c"')),
+     "changed: col0_S1_L002_R1_001.fastq.gz was added"),
+    (_listing((R1, 3, '"a"'), (R2, 4, '"b"'), truncated=True), "changed: the folder now holds over 1000 files"),
+])
+def test_compare_says_how_the_folder_differs(listing, state):
+    assert _lib().compare(listing, "run42/", FILES) == state
+
+
+def test_other_samples_names_each_other_prefix_once():
+    lib = _lib()
+    files = FILES + [{"name": "col1_S1_L001_R1_001.fastq.gz", "size": 1, "etag": '"c"'},
+                     {"name": "col1_S1_L001_R2_001.fastq.gz", "size": 1, "etag": '"d"'}]
+    assert lib.other_samples(files, "col0") == ["col1"]
+    assert lib.other_samples(FILES, "col0") == []
+
+
+def test_a_good_list_has_no_problem():
+    assert _lib().bad_list(FILES) is None
