@@ -77,7 +77,8 @@ EXPORT_LINE = f"export {SHA_VAR}"
 COMPOSE_UP_RE = re.compile(r"\bdocker compose\b.*\sup(\s|$)")
 UP_TOKEN_RE = re.compile(r"(^|\s)up(\s|$)")
 CHECKOUT_RE = re.compile(r"\bgit (reset|checkout|pull)\b")
-SET_E_RE = re.compile(r"^set -[a-z]*e[a-z]*$")
+# `set -e` or `set -euo pipefail`: errexit among the short flags.
+SET_E_RE = re.compile(r"^set -[a-z]*e[a-z]*(\s|$)")
 
 
 def _service() -> dict:

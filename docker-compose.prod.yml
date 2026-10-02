@@ -90,6 +90,11 @@ services:
   # BLOOM WEB
   #-------------------
   bloom-web:
+    # Must run as ONE replica: trait-export jobs and their finished zips live in
+    # this process's memory (web/lib/cyl-trait-export, added by #996), so a
+    # second replica would answer "export not found" for a job started on the
+    # first. For the same reason any recreate (a config change, a hand-run `up`)
+    # drops them.
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.prod
@@ -98,17 +103,22 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
         NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
-    # Must run as ONE replica: trait-export jobs and their finished zips live in
-    # this process's memory (web/lib/cyl-trait-export), so a second replica would
-    # answer "export not found" for a job started on the first.
+    # Brings bloom-web back after a crash or an out-of-memory kill, like every
+    # other long-running service here. (`docker kill` counts as a manual stop,
+    # which this policy respects; it is not a test of it.)
     restart: unless-stopped
     # Bounds a runaway export to this container, and with the restart policy
-    # turns an out-of-memory kill into a restart instead of a dead site. Node 20
-    # sizes its JS heap at about half this limit (node:20-alpine, measured
-    # 2026-10-01: 1536m -> 792 MiB heap, 3g -> 1584 MiB); the largest staging
-    # export peaked at a 575 MB working set, and two may run at once
-    # (MAX_HELD_BYTES in web/lib/cyl-trait-export/limits.ts). 3g is under 1% of
-    # this host, for each of staging and production.
+    # turns an out-of-memory kill into a restart instead of a dead site.
+    # - Node 20 sizes its JS heap at about half this limit (node:20-alpine,
+    #   measured 2026-10-01: 1536m -> 792 MiB heap, 3g -> 1584 MiB). Two running
+    #   exports (MAX_RUNNING_JOBS) plus the Next.js baseline are estimated at
+    #   ~1 GB of heap; at 1536m V8 would abort before the container limit.
+    # - Outside the heap, in the same limit: up to MAX_HELD_BYTES (768 MiB) of
+    #   held zips, running-job reserves and download buffers, ~240 MB of
+    #   baseline and npm, and anything written to the /tmp tmpfs. Worst case is
+    #   estimated at ~2.6-2.8 GB, under 3g.
+    # (Constants in web/lib/cyl-trait-export/limits.ts, added by #996.) 3g is
+    # under 1% of this host, for each of staging and production.
     mem_limit: 3g
     # Without this Docker allows twice mem_limit in swap. Equal values mean no
     # swap: hit the ceiling and restart.
@@ -144,11 +154,15 @@ services:
       # <internal_host>=<public_host>[,<internal_host>=<public_host>]*
       # The .env.prod / .env.staging / .env.ci sources MUST set this var.
       SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
-      # The commit this container was built from, recorded in each trait
-      # export's sidecar as generated_by.version (web/lib/cyl-trait-export).
-      # Read at runtime, so not a build arg. deploy.yml exports it from the
-      # host's checkout before every `up -d --build`; a hand-run compose gets
-      # `unknown` from .env.*.defaults.
+      # The last commit that changed this image's inputs (the Dockerfile's COPY
+      # sources), recorded in each trait export's sidecar as
+      # generated_by.version (web/lib/cyl-trait-export, added by #996). Read at
+      # runtime, so not a build arg. Not HEAD: this is container config, so a
+      # value that changed on every commit would recreate bloom-web on every
+      # deploy. deploy.yml and `make prod-up`/`staging-up` set it from the
+      # host's checkout; any other hand-run compose gets `unknown` from
+      # .env.*.defaults. When add-ghcr-image-publishing lands, fold this into
+      # its BLOOM_IMAGE_SHA.
       BLOOM_WEB_BUILD_SHA: ${BLOOM_WEB_BUILD_SHA:-}
     depends_on:
       - kong
