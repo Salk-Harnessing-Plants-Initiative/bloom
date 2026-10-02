@@ -16,6 +16,11 @@
  * - It predicts no skips: the trigger enqueues every scan, and skipping is
  *   decided per stage on the cluster; a server-side preview is #898. The
  *   resolved params are display only, and no parameter hash is computed.
+ * - It reads the production model cards (model-cards.ts) and, for the scans
+ *   that have images, names the groups the predictor runs past their models'
+ *   validated age and the groups it has no model for (bloom#971). Confirm waits
+ *   for that read too, but its failure only shows a muted line; the model
+ *   checks block confirm only when no scan has a model.
  * - It submits once per target (submissions.ts). The trigger has no
  *   idempotency key and isn't transactional (design D1), so a 502, a 504,
  *   any other 5xx or a lost connection may still have started a run: those
@@ -29,6 +34,8 @@ import Dialog from "@mui/material/Dialog";
 import Link from "next/link";
 import { useEffect, useId, useState } from "react";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
+import { fetchModelCards } from "@/lib/cyl-pipeline/model-cards";
+import { classifyModelGroups, type ModelCardEntry, type ModelGroupClasses } from "@/lib/cyl-pipeline/model-windows";
 import { paramsSummary } from "@/lib/cyl-pipeline/params-summary";
 import {
   fetchConcurrentRuns,
@@ -52,7 +59,9 @@ export const TRIGGER_URL = "/api/cyl/pipeline";
 export const LARGE_RUN_SCANS = 500;
 const PARAM_GROUPS_SHOWN = 3;
 const MISSING_IDS_SHOWN = 20;
-const OVERRIDES_ISSUE = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/897";
+const MODEL_CHOICE_ISSUE = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/897";
+const NO_MODEL_BLOCKER =
+  "None of these scans has a production model for its species and age, so the pipeline can't produce results.";
 
 const SUCCESS_TIMING_NOTE =
   "Results arrive when each batch of up to 25 scans finishes; counts often stay at 0 for most of the run. Reload the traits page to see new results.";
@@ -158,9 +167,18 @@ interface Content {
   K: number;
   L: number;
   groups: ReturnType<typeof paramsSummary>["groups"];
+  /** Whether any scan with images has valid metadata, i.e. any model group exists. */
+  hasModelGroups: boolean;
+  /** The model groups' classes, or null when the cards couldn't be read (or listed none). */
+  models: ModelGroupClasses | null;
+  /** Every model group has no model, and the cards were read. */
+  noModelAtAll: boolean;
 }
 
-function content(target: TriggerTarget, { scans, latest, withImages }: Checked): Content {
+/** Cards read: an array with at least one card. Null (failed) and [] (none listed) are both unknown. */
+const usableCards = (cards: ModelCardEntry[] | null) => (cards !== null && cards.length > 0 ? cards : null);
+
+function content(target: TriggerTarget, { scans, latest, withImages }: Checked, cards: ModelCardEntry[] | null): Content {
   const N = scans.length;
   const blockers: string[] = [];
   if (N === 0) blockers.push("No scans to run");
@@ -185,7 +203,28 @@ function content(target: TriggerTarget, { scans, latest, withImages }: Checked):
   }
   const { groups, stageInCount } = paramsSummary(scans);
   const noImagesCount = scans.filter((s) => !withImages.has(s.scan_id)).length;
-  return { N, blockers, stageInCount, noImagesCount, K, L, groups };
+  // Scans with no images fail at stage-in and never reach predict, so only the
+  // rest are described in model terms.
+  const modelGroups = paramsSummary(scans.filter((s) => withImages.has(s.scan_id))).groups;
+  const read = usableCards(cards);
+  const models = read ? classifyModelGroups(modelGroups, read) : null;
+  const noModelAtAll = models !== null && modelGroups.length > 0 && models.noModel.length === modelGroups.length;
+  if (noModelAtAll) blockers.push(NO_MODEL_BLOCKER);
+  return { N, blockers, stageInCount, noImagesCount, K, L, groups, hasModelGroups: modelGroups.length > 0, models, noModelAtAll };
+}
+
+const sumCounts = (groups: { count: number }[]) => groups.reduce((n, g) => n + g.count, 0);
+
+function pastWindowHeading(n: number): string {
+  return n === 1
+    ? "1 scan is past its models' validated age and is predicted with the nearest models:"
+    : `${n} scans are past their models' validated age and are predicted with the nearest models:`;
+}
+
+function noModelHeading(n: number): string {
+  return n === 1
+    ? "1 scan has no production model for its species and age and will fail:"
+    : `${n} scans have no production model for their species and age and will fail:`;
 }
 
 export function RunPipelineDialog({ target: requested, title: requestedTitle, onClose, onStarted }: RunPipelineDialogProps) {
@@ -198,11 +237,17 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [acknowledged, setAcknowledged] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
+  // undefined while the read is pending; null when it failed.
+  const [cards, setCards] = useState<ModelCardEntry[] | null | undefined>(undefined);
   const submission = useSubmission(key);
 
   useEffect(() => {
     let active = true;
     const client = createClientSupabaseClient();
+    // Optional: never rejects, and never puts the dialog in its failed state.
+    void fetchModelCards().then((read) => {
+      if (active) setCards(read);
+    });
     (async () => {
       const scans = await fetchTargetScans(client, target);
       const experimentIds = [...new Set(scans.flatMap((s) => (s.experiment_id == null ? [] : [s.experiment_id])))];
@@ -226,9 +271,12 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
   }, [target]);
 
   const ready = load.state === "ready" ? load : null;
-  const c = ready ? content(target, ready) : null;
+  // The card read doesn't hold up the counts; it only holds confirm and the model text.
+  const cardsSettled = cards !== undefined;
+  const c = ready ? content(target, ready, cards ?? null) : null;
   const needsAck = c !== null && c.N >= LARGE_RUN_SCANS;
-  const canConfirm = c !== null && c.blockers.length === 0 && (!needsAck || acknowledged) && submission === undefined;
+  const canConfirm =
+    c !== null && cardsSettled && c.blockers.length === 0 && (!needsAck || acknowledged) && submission === undefined;
 
   const submit = async () => {
     if (!canConfirm || !ready) return;
@@ -291,6 +339,31 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
                 {c.noImagesCount === 1 ? "1 scan has" : `${c.noImagesCount} scans have`} no images and will fail at stage-in
               </p>
             )}
+            {c.models && c.models.noModel.length > 0 && !c.noModelAtAll && (
+              <section data-testid="no-model" className="text-amber-800">
+                <p>{noModelHeading(sumCounts(c.models.noModel))}</p>
+                <ul className="ml-4">
+                  {c.models.noModel.map((g) => (
+                    <li key={`${g.species}|${g.age}`}>{`${g.species} · day ${g.age} (${g.count})`}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {c.models && c.models.pastWindow.length > 0 && (
+              <section data-testid="past-window" className="text-amber-800">
+                <p>{pastWindowHeading(sumCounts(c.models.pastWindow))}</p>
+                <ul className="ml-4">
+                  {c.models.pastWindow.map((g) => (
+                    <li key={`${g.species}|${g.age}`}>{`${g.species} · day ${g.age} — models validated up to day ${g.max} (${g.count})`}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {cardsSettled && !c.models && c.hasModelGroups && (
+              <p data-testid="past-window-unknown" className="text-stone-500">
+                Couldn&apos;t check the models&apos; age ranges.
+              </p>
+            )}
 
             {ready.concurrent.runs.length > 0 && (
               <section data-testid="concurrent-runs">
@@ -337,8 +410,8 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
                   </details>
                 )}
                 <p className="mt-1 text-xs text-stone-500">
-                  Parameters come from each scan&apos;s metadata; overrides aren&apos;t supported yet (
-                  <a href={OVERRIDES_ISSUE} target="_blank" rel="noreferrer" className="text-lime-700 underline hover:no-underline">
+                  Parameters come from each scan&apos;s metadata. Choosing models isn&apos;t supported yet (
+                  <a href={MODEL_CHOICE_ISSUE} target="_blank" rel="noreferrer" className="text-lime-700 underline hover:no-underline">
                     bloom#897
                   </a>
                   ).

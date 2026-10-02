@@ -196,28 +196,28 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
 - the existing `fetchSpy` POST assertions are unchanged;
 - existing tests that use pennycress day 21 will now also render the past-window block, and stay green because they assert with `toContain` or `within(params)`.
 
-- [ ] 6.1 **Red.**
+- [x] 6.1 **Red.**
   - **Target:** 60 arabidopsis scans at day 21, 30 at day 28 and 120 at day 14, all with images, plus one stage-in-problem scan, one no-images scan and one concurrent run.
   - **Text:** `past-window` shows the spec's heading and two lines exactly, day 21 before day 28, with no day-14 line.
   - **Position:** document order is stage-in line, no-images line, `past-window`, `concurrent-runs`.
   - **Confirm:** enabled.
-- [ ] 6.2 **Red.** Order: 30 at day 21 and 60 at day 28 → the day-28 line comes first.
-- [ ] 6.3 **Red,** as `it.each`:
+- [x] 6.2 **Red.** Order: 30 at day 21 and 60 at day 28 → the day-28 line comes first.
+- [x] 6.3 **Red,** as `it.each`:
   - singular soybean day 10 (1) → "1 scan is past its models' validated age and is predicted with the nearest models:" and "soybean · day 10 — models validated up to day 8 (1)";
   - rice day 18 (5) → "5 scans are…" and "rice · day 18 — models validated up to day 10 (5)".
-- [ ] 6.4 **Red.** No model:
+- [x] 6.4 **Red.** No model:
   - 100 canola scans at day 7 and 12 at day 0 → `no-model` shows "12 scans have no production model for their species and age and will fail:" and "canola · day 0 (12)", and Confirm is enabled;
   - singular: 1 canola scan at day 0 → "1 scan has no production model for its species and age and will fail:".
-- [ ] 6.5 **Red.** Block: 50 sorghum scans at day 10 → the blocker "None of these scans has a production model for its species and age, so the pipeline can't produce results." is in `blockers`, `no-model` isn't shown, and Confirm is disabled. The same target with `fetchModelCards` resolving `null` → no blocker, the muted line, and Confirm enabled.
-- [ ] 6.6 **Red.** Images: 4 arabidopsis scans at day 28, 1 without images → `past-window` counts 3, and the no-images line counts 1. Only sorghum scans, none with images → the no-images line only; no model warning, muted line or blocker.
-- [ ] 6.7 **Red.** Card read `null`, then `[]` → `past-window-unknown` shows "Couldn't check the models' age ranges.", with no `role="alert"`, no blocker and Confirm enabled. With zero model groups (every scan has a stage-in problem) and `null` → no muted line.
-- [ ] 6.8 **Red.** Card read held while the other reads have settled → Confirm disabled, and none of `past-window`, `no-model` or `past-window-unknown` is shown. Releasing it enables Confirm.
-- [ ] 6.9 **Red.** Caption: `params` contains "Parameters come from each scan's metadata. Choosing models isn't supported yet", with the bloom#897 link. Update the existing assertion of the old text.
-- [ ] 6.10 **Guard** (meaningful once 6.11 renders the warnings; re-run after it):
+- [x] 6.5 **Red.** Block: 50 sorghum scans at day 10 → the blocker "None of these scans has a production model for its species and age, so the pipeline can't produce results." is in `blockers`, `no-model` isn't shown, and Confirm is disabled. The same target with `fetchModelCards` resolving `null` → no blocker, the muted line, and Confirm enabled.
+- [x] 6.6 **Red.** Images: 4 arabidopsis scans at day 28, 1 without images → `past-window` counts 3, and the no-images line counts 1. Only sorghum scans, none with images → the no-images line only; no model warning, muted line or blocker.
+- [x] 6.7 **Red.** Card read `null`, then `[]` → `past-window-unknown` shows "Couldn't check the models' age ranges.", with no `role="alert"`, no blocker and Confirm enabled. With zero model groups (every scan has a stage-in problem) and `null` → no muted line.
+- [x] 6.8 **Red.** Card read held while the other reads have settled → Confirm disabled, and none of `past-window`, `no-model` or `past-window-unknown` is shown. Releasing it enables Confirm.
+- [x] 6.9 **Red.** Caption: `params` contains "Parameters come from each scan's metadata. Choosing models isn't supported yet", with the bloom#897 link. Update the existing assertion of the old text.
+- [x] 6.10 **Guard** (meaningful once 6.11 renders the warnings; re-run after it):
   - pennycress day 14 → no model warning;
   - the banned-phrase tests (`/will run|will be skipped|reused/i`) pass with past-window, no-model and blocked targets added;
   - card read `null` plus a table failure → the failed alert is shown.
-- [ ] 6.11 Implement per design D5: start the read outside the `Promise.all`, store it, gate `canConfirm` on it having settled, build the model groups from scans with images, classify them, and render the blocker, the warnings or the muted line. Update the caption.
+- [x] 6.11 Implement per design D5: start the read outside the `Promise.all`, store it, gate `canConfirm` on it having settled, build the model groups from scans with images, classify them, and render the blocker, the warnings or the muted line. Update the caption.
 
 ## 7. Pre-merge and PR (C7)
 
