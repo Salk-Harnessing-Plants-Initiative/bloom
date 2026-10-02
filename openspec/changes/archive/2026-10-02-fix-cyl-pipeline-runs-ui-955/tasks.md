@@ -177,7 +177,9 @@
     read "—".
   - 8.4: on scan 12894766's page (source 264), the dialog, opened and cancelled without
     submitting, shows "1 selected scan" and "This scan already has pipeline results…".
-- [ ] 8.5 In the archive PR, record the deployed sha and what you saw, tick 8.x, and then close #955 by hand. Don't archive before 8.x is recorded.
+- [x] 8.5 In the archive PR, record the deployed sha and what you saw, tick 8.x, and then close #955 by hand. Don't archive before 8.x is recorded.
+  **2026-10-02:** 8.1–8.4 recorded above (deployed `88cbcbf3`). With eberrigan's yes, #955 was
+  closed by hand with the evidence (issuecomment-5946760656).
 
 ## 9. Archive-ordering hazard (`openspec validate --strict` cannot see it)
 
