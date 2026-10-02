@@ -613,7 +613,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - add `499` to the checks: "a newer listing from the same user replaced it, or the request was aborted".
   - **PR body:** the guide edit reaches the linked `main` page only at the next promotion.
   **(done 2026-10-02: "Getting one" paragraph added; heading unchanged. README names the dialog, `client/` and `ScanTraitExportButton.tsx`, and lists `499` among the checks. The PR body note is carried into 11.9's `/pr-description`.)**
-- [ ] 11.8 **Pre-merge (PR B).**
+- [x] 11.8 **Pre-merge (PR B).**
   - From the root: `npm ci`, then `npm audit --audit-level=critical`.
   - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`. The build catches a server-only import in the client bundle.
   - `pre-commit` on this PR's new files.
@@ -631,7 +631,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - The four edited files pass every hook except prettier, which was skipped; `prettier --check` already flags all four on staging.
     - The two docs pass.
   - **`openspec validate --strict`: valid.**
-  - **CI green on the pushed head: pending.)**
+  - **CI on #1025 head `064e3426` (Node 20): Web Unit Tests (Vitest) pass, Build & npm CVE Audit pass.)**
 - [ ] 11.9 **Browser checks, after PR B deploys to staging** (decided 2026-10-02: on the deployed site, not on a local build, so the checks see the real Caddy, cookies and env with no local anon key or credentials; done together with 12.1's PR B row).
   - In Chrome and Firefox on `https://staging.bloom.salk.edu:8443`, signed in as the staging test user:
     - 3313 at its default;
