@@ -215,7 +215,28 @@ def test_two_samples_are_refused():
 
 def test_a_lane_without_its_r2_is_refused():
     client, _ = _serving([R1, R2, "col0_S1_L002_R1_001.fastq.gz"])
-    assert "L002" in _refusal("s3://lab-data/run42/", client).detail
+    assert "S1 L002" in _refusal("s3://lab-data/run42/", client).detail
+
+
+def test_each_s_number_needs_its_own_r1_and_r2():
+    client, _ = _serving(
+        ["col0_S1_L001_R1_001.fastq.gz", "col0_S2_L001_R2_001.fastq.gz"]
+    )
+    detail = _refusal("s3://lab-data/run42/", client).detail
+    assert "S1 L001" in detail and "S2 L001" in detail
+
+
+def test_two_s_numbers_each_complete_are_accepted():
+    names = [f"col0_S{n}_L001_{r}_001.fastq.gz" for n in (1, 2) for r in ("R1", "R2")]
+    client, _ = _serving(names)
+    result = s3_folder.check_folder("s3://lab-data/run42/", client)
+    assert (result["lanes"], result["file_count"]) == ([1], 4)
+
+
+def test_a_read_both_plain_and_gzipped_is_refused():
+    client, _ = _serving([R1, R1.removesuffix(".gz"), R2])
+    detail = _refusal("s3://lab-data/run42/", client).detail
+    assert "twice" in detail and "col0_S1_L001_R1_001.fastq" in detail
 
 
 def test_a_sample_name_cell_ranger_cant_use_is_refused():

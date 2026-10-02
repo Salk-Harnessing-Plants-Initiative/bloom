@@ -25,7 +25,7 @@ URL_RULE = re.compile(
 DOT_SEGMENT = re.compile(r"/\.{1,2}/")
 MAX_URL = 1024
 FASTQ_RULE = re.compile(
-    r"^(?P<sample>.+)_S[0-9]+_L(?P<lane>[0-9]{3})_(?P<read>R1|R2|I1|I2)_001\.fastq(?:\.gz)?$"
+    r"^(?P<sample>.+)_S(?P<number>[0-9]+)_L(?P<lane>[0-9]{3})_(?P<read>R1|R2|I1|I2)_001\.fastq(?:\.gz)?$"
 )
 SAMPLE_RULE = re.compile(r"^(?!.*__)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_FILES = 96
@@ -152,15 +152,27 @@ def check_folder(url, client: httpx.Client | None = None) -> dict:
             "digits, '_' or '-', starting with a letter or digit, no '__', at most 64"
         )
 
-    reads: dict[str, set[str]] = {}
+    # One read listed both plain and gzipped (e.g. unzipped in place) would be counted twice.
+    by_read: dict[str, list[str]] = {}
+    for f in files:
+        by_read.setdefault(f["name"].removesuffix(".gz"), []).append(f["name"])
+    twice = sorted(read for read, names in by_read.items() if len(names) > 1)
+    if twice:
+        raise _refuse(
+            "These reads are in the folder twice, as .fastq and .fastq.gz; remove one copy: "
+            + ", ".join(twice[:5])
+        )
+
+    # Each S number's lanes are their own set of reads, so each needs its R1 and R2.
+    reads: dict[tuple[str, str], set[str]] = {}
     for f in files:
         m = FASTQ_RULE.fullmatch(f["name"])
-        reads.setdefault(m["lane"], set()).add(m["read"])
-    incomplete = sorted(lane for lane, got in reads.items() if not {"R1", "R2"} <= got)
+        reads.setdefault((m["number"], m["lane"]), set()).add(m["read"])
+    incomplete = sorted(key for key, got in reads.items() if not {"R1", "R2"} <= got)
     if incomplete:
         raise _refuse(
-            "Every lane needs an R1 and an R2; lane "
-            + ", ".join(f"L{lane}" for lane in incomplete)
+            "Every lane needs an R1 and an R2; "
+            + ", ".join(f"S{number} L{lane}" for number, lane in incomplete)
             + " doesn't have both"
         )
     if any(not f["etag"] for f in files):
@@ -170,7 +182,7 @@ def check_folder(url, client: httpx.Client | None = None) -> dict:
     return {
         "fastq_url": url,
         "sample": sample,
-        "lanes": sorted(int(lane) for lane in reads),
+        "lanes": sorted({int(lane) for _, lane in reads}),
         "files": files,
         "file_count": len(files),
         "total_bytes": sum(f["size"] for f in files),
