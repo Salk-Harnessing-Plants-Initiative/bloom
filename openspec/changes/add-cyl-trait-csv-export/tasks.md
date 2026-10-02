@@ -525,7 +525,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - Static test: every value import under `@/lib/cyl-trait-export/` from `client/` or `components/cyl-trait-export/` is `stem` or `limits`; `import type` may name anything.
   **(done 2026-10-02: red against stubs, 33 failed / 3 passed. The 3 that passed are the static import test `client-imports.test.ts`, marked (characterization), since the stubs import nothing it forbids. Mutation: adding `import { reserveJob } from '../jobs'` to `poll.ts` fails it, 1 failed / 2 passed, naming `client/poll.ts: ../jobs`; the file was restored byte for byte.)**
 - [x] 11.2 Implement the three helpers. **(done 2026-10-02: green, 36/36 across the 4 files; `tsc --noEmit` clean; prettier on the new files only.)**
-- [ ] 11.3 **Test first: the dialog and its button.** Write `web/components/cyl-trait-export/TraitExportDialog.test.tsx` and `TraitExportButton.test.tsx` against stubs. The dialog test drives the wiring, and the helpers' cases stay in 11.1.
+- [x] 11.3 **Test first: the dialog and its button.** Write `web/components/cyl-trait-export/TraitExportDialog.test.tsx` and `TraitExportButton.test.tsx` against stubs. The dialog test drives the wiring, and the helpers' cases stay in 11.1.
   - **Listing:**
     - Open:
       - `refreshSession()` runs before the first `GET recipes`, checked with `invocationCallOrder`, and the first listing goes out at once;
@@ -580,7 +580,8 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - it honours `disabled`;
     - a click mounts the dialog with its props;
     - the dialog's `onClose` unmounts it.
-- [ ] 11.4 Implement `TraitExportDialog.tsx` and `TraitExportButton.tsx`.
+  **(done 2026-10-02: red against stubs that render nothing, 56 failed / 0 passed (53 dialog, 3 button), all on assertions or missing elements, none on imports.)**
+- [x] 11.4 Implement `TraitExportDialog.tsx` and `TraitExportButton.tsx`. **(done 2026-10-02: green, 56/56; with the helpers, 92/92; `tsc --noEmit` clean. Mutations, each restored byte for byte, all fail their tests: no `DELETE` for a start that answers after close (1 failed); `blob()` without the `ok` check (2 failed, the 404 and 409 refusals); dropping every `499` (1 failed, "shows a 499 for its only listing").)**
 - [ ] 11.5 **Test first: the entry points.**
   - First add `ScanTraitExportButton.tsx` (`"use client"`) as a stub that renders `null`, so the tests below fail on assertions rather than on imports.
   - Extend `TraitExplorer.test.tsx`, mocking `@/components/cyl-trait-export/TraitExportButton` the way the boxplot is mocked:
