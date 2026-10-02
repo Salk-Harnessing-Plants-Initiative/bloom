@@ -62,7 +62,7 @@ import plate_progress
 import plate_request
 import scrna_cellranger
 import scrna_cellranger_logs
-from auth import enforce_rate_limit, require_supabase_user
+from auth import enforce_folder_check_limit, enforce_rate_limit, require_supabase_user
 from video import generate_experiment_scan_video
 
 logging.basicConfig(
@@ -244,13 +244,29 @@ def trigger_scrna_cellranger_run_route(
     enforce_rate_limit(user_id)
     result = scrna_cellranger.trigger_run(body, user_id)
     logger.info(
-        "Cell Ranger run %s triggered by %s (sample %s, reference %s)",
+        "Cell Ranger run %s triggered by %s (sample %s, reference %s, folder %s)",
         result["run_id"],
         user_id,
         result["sample"],
         result["reference"],
+        result.get("fastq_url"),
     )
     return result
+
+
+@app.post("/scrna/cellranger/folder-check")
+def check_scrna_cellranger_folder_route(
+    body: dict,
+    user_id: str = Depends(require_supabase_user),
+):
+    """Check an S3 folder of FASTQs for a Cell Ranger run, without starting one: its
+    sample, lanes, files, file count and total bytes, or a 422 saying what's wrong.
+
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user, separately from
+    starting runs, since the form checks as the scientist types.
+    """
+    enforce_folder_check_limit(user_id)
+    return scrna_cellranger.check_folder(body)
 
 
 @app.get("/scrna/cellranger/runs/{run_id}")

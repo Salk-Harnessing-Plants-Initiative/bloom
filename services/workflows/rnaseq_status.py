@@ -35,8 +35,13 @@ EXIT_NO_FASTQS = 4
 EXIT_CELLRANGER_FAILED = 5
 EXIT_BAD_SAMPLE_NAME = 6
 EXIT_BAD_FASTQ_NAMES = 7
+# stage-fastqs: the run's S3 folder changed after the run was started.
+EXIT_FOLDER_CHANGED = 8
+# stage-fastqs: the run's FASTQs are named for another sample.
+EXIT_OTHER_SAMPLE = 9
 # fetch-sra (argo/scrna/cellranger/fetch-sra.sh) also uses 6 and 7, for its own input.
-EXIT_SRA_TRANSFER_FAILED = 10
+# fetch-sra and stage-fastqs: a download or copy failed.
+EXIT_TRANSFER_FAILED = 10
 EXIT_SRA_READS_UNUSABLE = 11
 EXIT_SRA_FOLDER_TAKEN = 12
 # The analysis steps (argo/scrna/analysis/bloom_scrna_analysis/steps.py).
@@ -104,7 +109,7 @@ def _fetch_sra_message(exit_code: int | None, params: dict) -> str | None:
     return {
         EXIT_BAD_SAMPLE_NAME: f"Sample {sample} or SRA run IDs {runs} can't be used",
         EXIT_BAD_FASTQ_NAMES: f"The FASTQs downloaded for {sample} couldn't be named the Illumina way",
-        EXIT_SRA_TRANSFER_FAILED: (
+        EXIT_TRANSFER_FAILED: (
             f"Couldn't download {runs} from SRA, or couldn't check raw_reads/{sample}/ in "
             "storage; start the run again, and check the run IDs are public if it fails again"
         ),
@@ -118,8 +123,50 @@ def _fetch_sra_message(exit_code: int | None, params: dict) -> str | None:
     }.get(exit_code)
 
 
+def _folder_message(exit_code: int | None, params: dict) -> str | None:
+    url = params.get("fastq_url")
+    return {
+        EXIT_NO_FASTQS: (
+            f"The FASTQs in {url} were removed after the run was started; start a new run "
+            "once they're back"
+        ),
+        EXIT_BAD_SAMPLE_NAME: (
+            f"The run's folder {url} or its recorded file list couldn't be used; this isn't "
+            "something wrong with the folder, so ask the Bloom admins (the stage step's log "
+            "has the details)"
+        ),
+        EXIT_BAD_FASTQ_NAMES: (
+            f"The FASTQs in {url} must be named like <name>_S1_L001_R1_001.fastq.gz, with an "
+            "R1 and an R2 for every lane; the stage step's log lists the files"
+        ),
+        EXIT_FOLDER_CHANGED: (
+            f"{url} changed after the run was started, so its reads weren't used; the stage "
+            "step's log says which file. Start a new run on the folder as it is now"
+        ),
+        EXIT_OTHER_SAMPLE: (
+            f"The FASTQs in {url} are named for another sample than the run's, "
+            f"{params.get('sample')}; the stage step's log names it"
+        ),
+        EXIT_TRANSFER_FAILED: (
+            f"Couldn't list or copy {url}; the stage step's log has S3's error. Check the "
+            "folder is still public and its files aren't archived, then start the run again"
+        ),
+    }.get(exit_code)
+
+
+def _fastqs(params: dict) -> str:
+    """The run's FASTQs, by where they came from, for the messages any step can give."""
+    if params.get("fastq_url"):
+        return f"The FASTQs copied from {params['fastq_url']}"
+    return f"The FASTQs in raw_reads/{params.get('sample')}/"
+
+
 def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     params = run.get("params") or {}
+    if step == "stage" and params.get("fastq_url"):
+        message = _folder_message(exit_code, params)
+        if message:
+            return message
     if step == "fetch-sra":
         message = _fetch_sra_message(exit_code, params)
         if message:
@@ -129,6 +176,8 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     if exit_code == EXIT_NO_REFERENCE:
         return f"No reference at reference_genome/{params.get('reference')}/"
     if exit_code == EXIT_NO_FASTQS:
+        if params.get("fastq_url"):
+            return f"No FASTQs were found on the shared disk after copying {params['fastq_url']}"
         return f"No FASTQs at raw_reads/{params.get('sample')}/"
     if exit_code == EXIT_CELLRANGER_FAILED:
         return (
@@ -142,7 +191,7 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
         )
     if exit_code == EXIT_BAD_FASTQ_NAMES:
         return (
-            f"The FASTQs in raw_reads/{params.get('sample')}/ must be named like "
+            f"{_fastqs(params)} must be named like "
             "<name>_S1_L001_R1_001.fastq.gz, with an R1 and an R2 for every lane; "
             f"the {step} step's log lists the files"
         )
@@ -191,7 +240,20 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
         )
 
     if phase == "Succeeded":
-        if _output(pods.get("stage", {}), "done") == "true":
+        already_done = _output(pods.get("stage", {}), "done") == "true"
+        if already_done and (run.get("params") or {}).get("fastq_url"):
+            # A folder run only starts on a key whose earlier runs failed, so results already
+            # there came from other reads and aren't this run's.
+            return RunStatus(
+                "failed",
+                "stage",
+                step_pods,
+                None,
+                f"{results} already held results from an earlier run on this sample and "
+                "reference, so these reads weren't processed; ask the Bloom admins to remove "
+                "them, then start the run again",
+            )
+        if already_done:
             return RunStatus(
                 "skipped", current, step_pods, 0, f"Already done: results in {results}"
             )

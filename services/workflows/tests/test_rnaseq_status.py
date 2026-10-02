@@ -221,3 +221,76 @@ def test_the_steps_match_the_template_file():
     )
     names = {t["name"] for t in template["spec"]["templates"]}
     assert set(st.CELLRANGER_STEPS) <= names
+
+
+FOLDER_RUN = {
+    "params": {
+        "sample": "tinygex",
+        "reference": "tiny_ref",
+        "fastq_url": "s3://lab-data/run42/",
+        "fastq_files": [
+            {"name": "tinygex_S1_L001_R1_001.fastq.gz", "size": 1, "etag": '"a"'}
+        ],
+    },
+    "run_key": "tinygex__tiny_ref__poller-sample-ok",
+}
+
+
+@pytest.mark.parametrize(
+    "exit_code, words",
+    [
+        (
+            "4",
+            "The FASTQs in s3://lab-data/run42/ were removed after the run was started",
+        ),
+        ("6", "The run's folder s3://lab-data/run42/ or its recorded file list"),
+        ("7", "The FASTQs in s3://lab-data/run42/ must be named"),
+        ("8", "s3://lab-data/run42/ changed after the run was started"),
+        ("9", "The FASTQs in s3://lab-data/run42/ are named for another sample"),
+        ("10", "Couldn't list or copy s3://lab-data/run42/"),
+    ],
+)
+def test_a_folder_runs_stage_failure_names_its_folder(exit_code, words):
+    status = st.read_cellranger_status(
+        _failed_at("stage-sample", exit_code), FOLDER_RUN
+    )
+    assert status.current_step == "stage"
+    assert status.message.startswith(words)
+
+
+def test_a_folder_runs_other_steps_fail_as_before():
+    status = st.read_cellranger_status(_failed_at("count", "5"), FOLDER_RUN)
+    assert status.message.startswith("Cell Ranger failed")
+
+
+@pytest.mark.parametrize(
+    "exit_code, words",
+    [
+        (
+            "4",
+            "No FASTQs were found on the shared disk after copying s3://lab-data/run42/",
+        ),
+        ("6", "Sample tinygex can't be used as a Cell Ranger run id"),
+        ("7", "The FASTQs copied from s3://lab-data/run42/ must be named"),
+    ],
+)
+def test_a_folder_runs_count_failure_uses_the_count_messages(exit_code, words):
+    status = st.read_cellranger_status(_failed_at("count", exit_code), FOLDER_RUN)
+    assert status.current_step == "count"
+    assert status.message.startswith(words)
+    assert "raw_reads/" not in status.message
+
+
+def test_a_registered_runs_count_failure_names_raw_reads():
+    status = st.read_cellranger_status(_failed_at("count", "4"), RUN)
+    assert status.message == f"No FASTQs at raw_reads/{RUN['params']['sample']}/"
+
+
+def test_a_folder_run_that_finds_earlier_results_fails_instead_of_skipping():
+    wf = _load("succeeded")
+    for p in _pod(wf, "stage-sample")["outputs"]["parameters"]:
+        if p["name"] == "done":
+            p["value"] = "true"
+    status = st.read_cellranger_status(wf, FOLDER_RUN)
+    assert (status.status, status.current_step) == ("failed", "stage")
+    assert "these reads weren't processed" in status.message
