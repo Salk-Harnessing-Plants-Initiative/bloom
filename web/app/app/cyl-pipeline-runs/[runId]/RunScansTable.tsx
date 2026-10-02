@@ -51,11 +51,19 @@ const FILTER_LABELS: [StatusFilter, string][] = [
   ["failed", "Failed"],
 ];
 
-const columns: GridColDef<ScanTableRow>[] = [
-  { field: "scan_id", headerName: "Scan", width: 90, type: "number", align: "left", headerAlign: "left" },
+/**
+ * Ids and counts as plain integers. A numeric column's default formatter is
+ * `toLocaleString()`, which shows a scan id as "12,894,712" (bloom#955); the
+ * columns stay `type: "number"` so sorting and the numeric filter operators
+ * are unchanged.
+ */
+export const plainInteger = (value: number | null) => (value == null ? "" : String(value));
+
+export const scanTableColumns: GridColDef<ScanTableRow>[] = [
+  { field: "scan_id", headerName: "Scan", width: 110, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   { field: "qr_code", headerName: "Plant QR code", width: 140 },
-  { field: "wave_number", headerName: "Wave", width: 70, type: "number", align: "left", headerAlign: "left" },
-  { field: "plant_age_days", headerName: "Day", width: 70, type: "number", align: "left", headerAlign: "left" },
+  { field: "wave_number", headerName: "Wave", width: 70, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
+  { field: "plant_age_days", headerName: "Day", width: 70, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   {
     field: "statusLabel",
     headerName: "Status",
@@ -67,7 +75,7 @@ const columns: GridColDef<ScanTableRow>[] = [
       </span>
     ),
   },
-  { field: "attempts", headerName: "Attempts", width: 90, type: "number", align: "left", headerAlign: "left" },
+  { field: "attempts", headerName: "Attempts", width: 90, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   {
     field: "error_message",
     headerName: "Error",
@@ -82,7 +90,7 @@ const columns: GridColDef<ScanTableRow>[] = [
     ),
   },
   { field: "argo_workflow_name", headerName: "Argo workflow", width: 150 },
-  { field: "source_id", headerName: "Source", width: 90, type: "number", align: "left", headerAlign: "left" },
+  { field: "source_id", headerName: "Source", width: 90, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   {
     field: "current",
     headerName: "Current in trait views",
@@ -152,7 +160,7 @@ export function RunScansTable({
       </div>
       <DataGrid
         rows={shown}
-        columns={columns}
+        columns={scanTableColumns}
         initialState={PAGINATION}
         pageSizeOptions={[100]}
         getRowHeight={autoRowHeight}

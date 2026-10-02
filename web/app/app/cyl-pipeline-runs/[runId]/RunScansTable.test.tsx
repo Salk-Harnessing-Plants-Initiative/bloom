@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { RunScansTable, type ScanTableRow } from "./RunScansTable";
+import { plainInteger, RunScansTable, scanTableColumns, type ScanTableRow } from "./RunScansTable";
 
 afterEach(() => cleanup());
 
@@ -150,5 +150,34 @@ describe("RunScansTable", () => {
     expect(bodyRows()).toHaveLength(1);
     expect(screen.getByRole("option", { name: "Failed (1)" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "All (2)" })).toBeTruthy();
+  });
+});
+
+describe("plain integers (bloom#955)", () => {
+  const cellsOf = (r: ScanTableRow) => {
+    render(<RunScansTable rows={[r]} disableVirtualization />);
+    return within(bodyRows()[0]).getAllByRole("gridcell").map((c) => c.textContent);
+  };
+
+  it("shows ids, wave, day, attempts and source without digit separators", () => {
+    const cells = cellsOf(row(12894712, { wave_number: 9999, plant_age_days: 1000, attempts: 1200, source_id: 1048576 }));
+    expect([cells[0], cells[2], cells[3], cells[5], cells[8]]).toEqual(["12894712", "9999", "1000", "1200", "1048576"]);
+  });
+
+  it("shows zero attempts as 0, and missing wave, day and source as blank", () => {
+    const cells = cellsOf(row(577, { attempts: 0, wave_number: null, plant_age_days: null, source_id: null }));
+    expect([cells[2], cells[3], cells[5], cells[8]]).toEqual(["", "", "0", ""]);
+  });
+
+  it("keeps the integer columns numeric, formatted plainly, with a Scan column wide enough for a full id", () => {
+    const byField = new Map(scanTableColumns.map((c) => [c.field, c]));
+    for (const field of ["scan_id", "wave_number", "plant_age_days", "attempts", "source_id"]) {
+      expect(byField.get(field)?.type, field).toBe("number");
+      expect(byField.get(field)?.valueFormatter, field).toBe(plainInteger);
+    }
+    expect(plainInteger(12894712)).toBe("12894712");
+    expect(plainInteger(0)).toBe("0");
+    expect(plainInteger(null)).toBe("");
+    expect(byField.get("scan_id")?.width).toBeGreaterThanOrEqual(110);
   });
 });
