@@ -45,10 +45,7 @@ fi
 
 # What this run's folder is built from, as one line.
 if [ -n "${FASTQ_URL}" ]; then
-  inputs="$(FASTQ_URL="${FASTQ_URL}" FASTQ_FILES="${FASTQ_FILES}" python3 -c '
-import hashlib, os
-print("folder", os.environ["FASTQ_URL"], hashlib.sha256(os.environ["FASTQ_FILES"].encode()).hexdigest())
-')"
+  inputs="$(FASTQ_URL="${FASTQ_URL}" FASTQ_FILES="${FASTQ_FILES}" stage-fastqs-lib fingerprint)"
 else
   inputs="raw_reads s3://${BUCKET}/raw_reads/${SAMPLE}/"
 fi
@@ -98,65 +95,29 @@ if [ -z "${bucket}" ] || [[ "${FASTQ_URL}" =~ /\.{1,2}/ ]]; then
   echo "ERROR: '${FASTQ_URL}' is not a folder like s3://bucket/folder/" >&2
   exit "${EXIT_BAD_INPUT}"
 fi
-if ! printf '%s' "${FASTQ_FILES}" | python3 -c 'import json, sys; f = json.load(sys.stdin); assert isinstance(f, list) and f' 2>/dev/null; then
-  echo "ERROR: FASTQ_FILES must be the run's list of files" >&2
+# The recorded files must be a usable list, all for this run's sample, before anything is copied.
+rc=0
+problem="$(FASTQ_FILES="${FASTQ_FILES}" SAMPLE="${SAMPLE}" stage-fastqs-lib check-files)" || rc=$?
+if [ "${rc}" -eq 3 ]; then
+  echo "ERROR: the FASTQs in ${FASTQ_URL} are named for ${problem}, not the run's sample '${SAMPLE}'" >&2
+  exit "${EXIT_OTHER_SAMPLE}"
+elif [ "${rc}" -ne 0 ]; then
+  [ -n "${problem}" ] || problem="FASTQ_FILES must be the run's list of files"
+  echo "ERROR: ${problem}" >&2
   exit "${EXIT_BAD_INPUT}"
 fi
 
-# The recorded FASTQs must be this run's sample, checked before anything is copied.
-others="$(FASTQ_FILES="${FASTQ_FILES}" SAMPLE="${SAMPLE}" python3 -c '
-import json, os, re
-rule = re.compile(r"^(.+)_S[0-9]+_L[0-9]{3}_(R1|R2|I1|I2)_001\.fastq(\.gz)?$")
-names = [f["name"] for f in json.loads(os.environ["FASTQ_FILES"])]
-print(", ".join(sorted({m.group(1) for m in map(rule.match, names) if m and m.group(1) != os.environ["SAMPLE"]})))
-')"
-if [ -n "${others}" ]; then
-  echo "ERROR: the FASTQs in ${FASTQ_URL} are named for ${others}, not the run's sample '${SAMPLE}'" >&2
-  exit "${EXIT_OTHER_SAMPLE}"
-fi
-
-# Compares LISTING (the folder's list-objects-v2 JSON) with FASTQ_FILES. Prints "match",
-# "empty" (no FASTQ yet), "partial: <missing>" (only some files, all unchanged) or
-# "changed: <reason>".
-compare() {
-  python3 -c '
-import json, os
-expected = {f["name"]: f for f in json.loads(os.environ["FASTQ_FILES"])}
-prefix = os.environ["PREFIX_PATH"]
-listing = json.loads(os.environ.get("LISTING") or "{}") or {}
-found = {}
-for obj in listing.get("Contents", []):
-    name = obj["Key"][len(prefix):]
-    if name.endswith((".fastq", ".fastq.gz")) and "/" not in name:
-        found[name] = obj
-if not found:
-    print("empty")
-    raise SystemExit
-for name, obj in sorted(found.items()):
-    want = expected.get(name)
-    if want is None:
-        print("changed: %s was added" % name)
-    elif obj["Size"] != want["size"]:
-        print("changed: %s is %s bytes, not %s" % (name, obj["Size"], want["size"]))
-    elif obj["ETag"] != want["etag"]:
-        print("changed: %s was replaced (its ETag differs)" % name)
-    else:
-        continue
-    raise SystemExit
-missing = sorted(set(expected) - set(found))
-print("partial: " + ", ".join(missing) if missing else "match")
-'
-}
-
+list_err="$(mktemp)"
 deadline=$(( $(date +%s) + WAIT_SECONDS ))
 while :; do
   # Unsigned, as the start API checked it: the folder is public, and Bloom's own key reads no more.
   if ! listing="$(aws s3api list-objects-v2 --no-sign-request --bucket "${bucket}" --prefix "${prefix_path}" \
-      --delimiter / --max-keys 1000 --no-paginate --output json 2>/tmp/list.err)"; then
-    echo "ERROR: couldn't list ${FASTQ_URL}: $(head -c 300 /tmp/list.err)" >&2
+      --delimiter / --max-keys 1000 --no-paginate --output json 2>"${list_err}")"; then
+    echo "ERROR: couldn't list ${FASTQ_URL}: $(head -c 300 "${list_err}")" >&2
     exit "${EXIT_TRANSFER_FAILED}"
   fi
-  state="$(LISTING="${listing}" PREFIX_PATH="${prefix_path}" FASTQ_FILES="${FASTQ_FILES}" compare)"
+  # On stdin: a large listing would pass the environment's size limit.
+  state="$(printf '%s' "${listing}" | FASTQ_FILES="${FASTQ_FILES}" stage-fastqs-lib compare "${prefix_path}")"
   case "${state}" in
     match) break ;;
     changed:*)
@@ -200,11 +161,7 @@ while IFS=$'\t' read -r name size etag; do
     exit "${EXIT_TRANSFER_FAILED}"
   fi
   copied=$((copied + 1))
-done < <(printf '%s' "${FASTQ_FILES}" | python3 -c '
-import json, sys
-for f in json.load(sys.stdin):
-    print("%s\t%s\t%s" % (f["name"], f["size"], f["etag"]))
-')
+done < <(FASTQ_FILES="${FASTQ_FILES}" stage-fastqs-lib rows)
 echo "Copied ${copied} FASTQs from ${FASTQ_URL}, each checked against the recorded size and ETag"
 
 prefix="$(fastq-sample-prefix "${DEST_DIR}")" || exit "${EXIT_BAD_FASTQ_NAMES}"
