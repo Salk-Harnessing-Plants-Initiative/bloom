@@ -19,6 +19,7 @@ export default function ScrnaSampleSource({
   onSource,
   samples,
   folderUrl,
+  folderRecheck,
   onFolderUrl,
   onFolderChecked,
   sraText,
@@ -32,6 +33,7 @@ export default function ScrnaSampleSource({
   onSource: (source: SampleSource) => void;
   samples: RnaseqSample[];
   folderUrl: string;
+  folderRecheck?: number;
   onFolderUrl: (url: string) => void;
   onFolderChecked: (check: FolderCheck | null) => void;
   sraText: string;
@@ -78,6 +80,7 @@ export default function ScrnaSampleSource({
       {source === "folder" ? (
         <ScrnaFolderSource
           url={folderUrl}
+          recheck={folderRecheck}
           onUrl={onFolderUrl}
           onChecked={onFolderChecked}
           fieldClass={fieldClass}

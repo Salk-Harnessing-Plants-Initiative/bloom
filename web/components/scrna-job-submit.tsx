@@ -54,6 +54,8 @@ export default function ScrnaJobSubmit({
   const [folderUrl, setFolderUrl] = useState("");
   // The passed check for the folder now entered; Start run waits for it.
   const [folderCheck, setFolderCheck] = useState<FolderCheck | null>(null);
+  // Bumped when the service says the folder changed since its check, to check it again.
+  const [folderRecheck, setFolderRecheck] = useState(0);
   const [sraText, setSraText] = useState("");
   // The new sample's name follows the first run ID until it's edited.
   const [newName, setNewName] = useState("");
@@ -179,6 +181,7 @@ export default function ScrnaJobSubmit({
           source === "folder"
             ? {
                 fastq_url: folderCheck?.fastq_url,
+                fastq_files: folderCheck?.files,
                 reference,
                 metadata: buildRunMetadata(details),
               }
@@ -200,6 +203,9 @@ export default function ScrnaJobSubmit({
     if (!response.ok) {
       setMessage(startRunErrorMessage(response.status, body?.detail));
       setStatus("error");
+      if (source === "folder" && response.status === 409) {
+        setFolderRecheck((n) => n + 1);
+      }
       return;
     }
     if (!isStartedRun(body)) {
@@ -276,6 +282,7 @@ export default function ScrnaJobSubmit({
                 onSource={changeSource}
                 samples={samples}
                 folderUrl={folderUrl}
+                folderRecheck={folderRecheck}
                 onFolderUrl={setFolderUrl}
                 onFolderChecked={setFolderCheck}
                 sraText={sraText}

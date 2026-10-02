@@ -84,12 +84,12 @@ const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
 
 // The stage step of a run that reads an S3 folder (stage-fastqs).
 const FOLDER_STAGE_EXIT_SENTENCES: Record<number, string> = {
-  4: "No FASTQ files were found in the run's S3 folder, even after waiting for an upload to finish.",
-  6: "The run's S3 folder or its file list can't be used.",
+  4: "The FASTQs in the S3 folder were removed after the run was started; start a new run once they're back.",
+  6: "The run's S3 folder or its recorded file list couldn't be used. This isn't something wrong with the folder; ask the Bloom admins.",
   7: "The FASTQ file names in the S3 folder don't follow Illumina's naming (<name>_S1_L001_R1_001.fastq.gz), or a lane lacks R1 or R2.",
   8: "The S3 folder changed after the run was started, so its reads weren't used; the Stage FASTQs step's log says which file. Start a new run on the folder as it is now.",
   9: "The FASTQs in the S3 folder are named for another sample than the run's; the Stage FASTQs step's log names it.",
-  10: "The S3 folder couldn't be listed or copied. Check it's still public and start the run again.",
+  10: "The S3 folder couldn't be listed or copied; the Stage FASTQs step's log has S3's error. Check it's still public and its files aren't archived, then start the run again.",
 };
 
 function field(value: Json | null, key: string): unknown {

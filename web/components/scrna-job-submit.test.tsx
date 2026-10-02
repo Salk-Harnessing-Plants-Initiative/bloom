@@ -212,6 +212,7 @@ describe("starting a run", () => {
     const [[, init]] = startCalls();
     expect(JSON.parse(init.body)).toEqual({
       fastq_url: FOLDER_URL,
+      fastq_files: FOLDER.files,
       reference: "tiny_ref",
       metadata: {
         species_id: 1,
@@ -279,6 +280,22 @@ describe("starting a run", () => {
       "Reference 'tiny_ref' has no reference.json"
     );
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("checks the folder again when the service says it changed since its check", async () => {
+    respond(
+      { detail: "s3://lab-data/tinygex/ changed since it was checked; check it again, then start the run" },
+      409
+    );
+    openForm();
+    await choose();
+    const checks = () =>
+      fetchSpy.mock.calls.filter(([url]) => url === "/api/scrna/cellranger/folder-check").length;
+    const before = checks();
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("changed since it was checked");
+    await waitFor(() => expect(checks()).toBe(before + 1));
   });
 
   it("falls back to a fixed message when there's no detail", async () => {

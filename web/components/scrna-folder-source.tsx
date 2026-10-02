@@ -20,15 +20,18 @@ type CheckState =
   | { kind: "error"; message: string };
 
 // An S3 folder of one sample's FASTQs, checked by the job service as soon as the URL stops
-// changing. onChecked gets the passed check, or null while there isn't one for this URL.
+// changing, and again whenever recheck changes. onChecked gets the passed check, or null
+// while there isn't one for this URL.
 export default function ScrnaFolderSource({
   url,
+  recheck = 0,
   onUrl,
   onChecked,
   fieldClass,
   labelClass,
 }: {
   url: string;
+  recheck?: number;
   onUrl: (url: string) => void;
   onChecked: (check: FolderCheck | null) => void;
   fieldClass: string;
@@ -83,7 +86,7 @@ export default function ScrnaFolderSource({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [url]);
+  }, [url, recheck]);
 
   return (
     <div className="space-y-2">

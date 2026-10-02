@@ -235,7 +235,8 @@ describe("failureSentence", () => {
   });
 
   it.each([
-    [4, /even after waiting for an upload to finish/],
+    [4, /were removed after the run was started/],
+    [6, /recorded file list couldn't be used/],
     [7, /in the S3 folder don't follow/],
     [8, /changed after the run was started/],
     [9, /named for another sample/],
