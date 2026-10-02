@@ -582,7 +582,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - the dialog's `onClose` unmounts it.
   **(done 2026-10-02: red against stubs that render nothing, 56 failed / 0 passed (53 dialog, 3 button), all on assertions or missing elements, none on imports.)**
 - [x] 11.4 Implement `TraitExportDialog.tsx` and `TraitExportButton.tsx`. **(done 2026-10-02: green, 56/56; with the helpers, 92/92; `tsc --noEmit` clean. Mutations, each restored byte for byte, all fail their tests: no `DELETE` for a start that answers after close (1 failed); `blob()` without the `ok` check (2 failed, the 404 and 409 refusals); dropping every `499` (1 failed, "shows a 499 for its only listing").)**
-- [ ] 11.5 **Test first: the entry points.**
+- [x] 11.5 **Test first: the entry points.**
   - First add `ScanTraitExportButton.tsx` (`"use client"`) as a stub that renders `null`, so the tests below fail on assertions rather than on imports.
   - Extend `TraitExplorer.test.tsx`, mocking `@/components/cyl-trait-export/TraitExportButton` the way the boxplot is mocked:
     - **Disabled state:** disabled while loading, and again while a trait change reloads;
@@ -597,9 +597,11 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - Extend the scan page's `page.test.tsx` with `vi.mock("./ScanTraitExportButton")` carrying `scanId`:
     - the button is shown for scan 577 whether `CYL_PIPELINE_TRIGGER_ENABLED` is true or false;
     - it is absent when the scan doesn't exist.
-- [ ] 11.6 Implement:
+  **(done 2026-10-02: red, 7 failed / 19 passed. The 19 are the existing TraitExplorer and scan-page tests, plus "offers no Download traits when the scan doesn't exist", which a `null` stub satisfies (characterization).)**
+- [x] 11.6 Implement:
   - Add the button to `TraitExplorer.tsx`, after "Plant age" in the controls row, with `disabled={isLoading}`.
   - Implement `ScanTraitExportButton.tsx` and add it to the scan page with one import and one block beside `RunPipelineButton`.
+  **(done 2026-10-02: green, 60/60 across the traits and scan directories; `tsc --noEmit` clean. Mutation: `disabled={false}` in TraitExplorer fails 2 ("disabled until the first trait's waves and ages have loaded" and "disabled again while a trait change reloads"); restored byte for byte. Prettier ran only on the two new files; the four edited files keep their own style.)**
 - [ ] 11.7 Docs:
   - **`_WIKI/SUPABASE/trait-recipes.md`:** add a "Getting one" paragraph at the top of "Using a trait export". Keep the heading, because the help link's anchor depends on it. The paragraph says:
     - where the button is, on the traits page and on a scan's page;
