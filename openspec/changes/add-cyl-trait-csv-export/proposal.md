@@ -54,4 +54,6 @@ No migration and no new service. Every read runs as the signed-in user, through 
 - Token-authenticated API access.
 - Parameter-set filters (#897).
 - Moving `TraitExplorer` itself to recipe reads (design Open Questions).
+- Changing which recipe is the default. It stays the newest; the dialog names a recipe that covers more scans (design D8). Coverage-first is open on #865/#936; retiring a stale recipe is #1021.
+- A browser e2e suite (Playwright in Chromium, Firefox and WebKit) for the dialog (#1024). PR B is checked by hand in Chrome and Firefox; Safari is unchecked.
 - Downloading the matching predictions (`.slp`). Each pipeline-recipe row's `(scan_id, source_id)` is already their key in `cyl_scan_intermediates` (design D12).

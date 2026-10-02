@@ -3,7 +3,7 @@
 | PR | Title | Sections | Depends on |
 |---|---|---|---|
 | A | "Export an experiment's or scan's traits, one recipe per file (export jobs and routes)" | §0–10 | Its base contains #976. §7 and §10 need #976 deployed to staging. |
-| B | "Download traits from the traits and scan pages" | §11 | PR A merged. Check #965 first, which edits the same scan page. |
+| B | "Download traits from the traits and scan pages" | §11 | PR A merged (#996). #965 (merged) owns the scan page and its `page.test.tsx`; 11.5 extends it. |
 
 **PR A.**
 - **The local proposal commits.** Before its first push, fold them into one `docs(openspec): propose add-cyl-trait-csv-export` commit, whose body describes the final design. Rebase onto the current `origin/staging` at the same time. Squash merges keep every commit body, so stale round-by-round messages would land in history.
@@ -469,31 +469,169 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 
 ## 11. Dialog and entry points
 
-- [ ] 11.1 **Test first.** `web/components/cyl-trait-export/TraitExportDialog.test.tsx` (jsdom; fake timers with `act()` and `vi.advanceTimersByTimeAsync`).
-  - **Opening and listing:**
-    - on open, refresh, then list;
-    - the recipe list shows the `<keyseg>`, kind and "N of M scans", with the default preselected and labelled;
-    - wave and age are prefilled only when the loaded lists contain the value, otherwise "All" (0 is a value);
-    - a filter change re-lists after a 500 ms debounce, and a stale response is ignored;
-    - `n_selected: 0` shows "No scans match this wave and age", and an empty list shows "No trait results for this selection"; both disable Download;
-    - a listing error is shown.
-  - **Downloading:**
-    - `refreshSession()` runs, then a `POST` with the explicit `recipe` and `chosen`; a failed refresh sends no `POST`;
-    - a per-user `429` offers to resume or cancel the returned job;
-    - polling runs every 2 s, then every 5 s after a minute, showing "Reading batch d of n";
-    - on `ready`, fetch, `blob()` and save `<stem>.zip`.
-  - **Failures:**
-    - on `failed`, the `detail` is shown with Retry, and nothing is saved;
-    - a non-JSON error body or a rejected `blob()` shows a generic message;
-    - a `401` "session expires too soon" refreshes and retries once;
-    - a `404` while polling says "the export was interrupted".
-  - **Closing and help:**
-    - closing sends `DELETE` and stops polling, with no state update after close;
-    - the "What's in this file?" link is present.
-- [ ] 11.2 Implement `TraitExportDialog.tsx` and `TraitExportButton.tsx`.
-- [ ] 11.3 **Test first.** Extend `TraitExplorer.test.tsx`: the button is disabled until waves and ages load, then opens the dialog with the current `waveNumber` and `plantAge`. Write `ScanTraitExportButton.test.tsx`, extending #965's `page.test.tsx` if #965 has merged by then.
-- [ ] 11.4 Add the button to `TraitExplorer.tsx`. Add `ScanTraitExportButton.tsx` beside `web/app/app/phenotypes/[speciesId]/[experimentId]/[waveId]/[accessionId]/[scanId]/page.tsx`, with a one-line import in the page. Add the button to 8.2's section. Note in PR B that the help link targets `main`, so it resolves only after promotion.
-- [ ] 11.5 Pre-merge as in §9. Then verify through the UI in Chrome, Firefox and Safari: 3313 at default, experiment 1 filtered by wave, and one scan. Record the results, then run `/pr-description` for PR B.
+PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cyl-trait-export-dialog` on branch `eberrigan/add-cyl-trait-export-dialog`. Its design is D8. Its behaviour is the three dialog requirements in the spec.
+
+**PR B test rules** (on top of the rules for every task):
+- Helper tests run in the `node` environment. Component tests start with `// @vitest-environment jsdom`.
+- Only `@testing-library/react` and `fireEvent` are available. There is no user-event and no jest-dom.
+- Mocks are written inline. Nothing is imported from `web/lib/cyl-pipeline/__fixtures__/` (D11).
+  - Mock `@/lib/supabase/client` with `createClientSupabaseClient` and `auth.refreshSession`.
+  - `fetch` is a `vi.stubGlobal` spy that answers plain `{ ok, status, headers, json, blob }` objects. Read request URLs with `new URL(call[0], "http://localhost")`.
+  - Install `URL.createObjectURL` and `URL.revokeObjectURL` with `Object.defineProperty` (`configurable: true`) and remove them in `afterEach`. Spy on `HTMLAnchorElement.prototype.click`.
+- `afterEach` runs, in this order: `vi.useRealTimers()`, `cleanup()`, `vi.unstubAllGlobals()`, `vi.restoreAllMocks()`. Unmounting sends `DELETE`, so `fetch` must still be stubbed during `cleanup()`.
+- Timers:
+  - Advance time only with bounded `act(() => vi.advanceTimersByTimeAsync(ms))`, plus a `settle()` loop of zero-ms ticks. Never use `runAllTimers`.
+  - MUI's focus trap holds timers while the dialog is open. "Nothing after close" is therefore asserted as no further `fetch` calls and no `console.error` over 120 s after unmount.
+- Use only Node 20 APIs: no `Promise.withResolvers`, `Object.groupBy` or the new `Set` methods. CI runs Node 20; this machine runs 22.
+
+- [ ] 11.1 **Test first: helpers.** In `web/lib/cyl-trait-export/client/`, write `recipe-view.test.ts`, `requests.test.ts` and `poll.test.ts` against stubs that export the signatures.
+  - **`recipe-view`:**
+    - **Descriptions:**
+      - pipeline: model names and versions, plus both code SHAs;
+      - legacy: `source_name`;
+      - unattributed: "no source recorded";
+      - a pipeline `definition` with no `models` (or `{}`) still describes;
+      - an unknown key falls back to the raw key instead of throwing.
+    - **Fewer-scans note:**
+      - default 3 of 100, `legacy:5` 60 → names `legacy-5` and 60;
+      - when the default already covers the most scans → no note;
+      - a tie → the first in listing order;
+      - only `unattributed` covers more → no note.
+    - **Prefill:**
+      - a value in the loaded list is kept, including `0`;
+      - a value not in the list → "All";
+      - an empty list → "All".
+    - **Empty states:**
+      - `n_selected` 0 → "No scans match this wave and age";
+      - no rows → "No trait results for this selection";
+      - both disable Download.
+  - **`requests`:**
+    - Listing URL:
+      - `experiment=E` with `wave`/`age` only when not "All";
+      - wave 0 → `wave=0`;
+      - `scan=S` alone.
+    - Job URL:
+      - the selection, `recipe` (`legacy:5` arrives decoded as `legacy:5`), and `chosen`;
+      - `chosen` is `default` exactly when the key is the listing's default, otherwise `user`.
+    - Errors:
+      - a `429` with a `job_id` → resume; without one → busy;
+      - a `401` "session expires too soon" → retry, any other `401` → no retry;
+      - a non-JSON body → the generic message.
+  - **`poll`:**
+    - delays: 2 s up to and including 60 s after the start or resume, then 5 s, as a table over 0, 58, 60, 62 and 120 s;
+    - the phase lines in D8's table;
+    - the latest-wins guard drops a response, or a `499`, only once a newer listing has been sent;
+    - after 3 consecutive non-`404` failures it gives up; a success resets the count.
+  - Static test: every value import under `@/lib/cyl-trait-export/` from `client/` or `components/cyl-trait-export/` is `stem` or `limits`; `import type` may name anything.
+- [ ] 11.2 Implement the three helpers.
+- [ ] 11.3 **Test first: the dialog and its button.** Write `web/components/cyl-trait-export/TraitExportDialog.test.tsx` and `TraitExportButton.test.tsx` against stubs. The dialog test drives the wiring, and the helpers' cases stay in 11.1.
+  - **Listing:**
+    - Open:
+      - `refreshSession()` runs before the first `GET recipes`, checked with `invocationCallOrder`, and the first listing goes out at once;
+      - a failed refresh (`{ error }` or a throw) shows the sign-in message and sends no `GET`.
+    - Filter changes:
+      - a change sends no `GET` at 499 ms and one at 500 ms;
+      - two changes within 500 ms send one `GET`, for the second value;
+      - each re-list refreshes first;
+      - Download is disabled from the change until that listing arrives.
+    - Display:
+      - the default is selected and labelled, and each recipe shows its description and "N of M scans";
+      - the note appears for the "Default covers fewer scans" data.
+    - Stale and `499` responses:
+      - a stale response, or a `499` for a superseded listing, changes nothing;
+      - a `499` for the only listing shows its `detail` with Retry.
+    - Listing errors: `401`, `403`, `404`, `422`, `502` or `503` shows its `detail` in `role="alert"`, with Retry; Retry refreshes, then re-lists.
+    - Picking a recipe after a re-list:
+      - a picked recipe that is still listed stays picked;
+      - one that is gone falls back to the new default.
+  - **Starting the job:**
+    - refresh, then `POST`; two clicks in one `act` send one `POST`;
+    - "session expires too soon" twice → exactly 2 `POST`s, then the `detail`; "Sign in to download traits." → no retry;
+    - `429` with a `job_id`:
+      - Resume polls that job through to save;
+      - Cancel sends `DELETE` and returns to Download;
+    - `429` without a `job_id`: the `detail` with Retry, and no Resume;
+    - `403`, `404`, `409` (both kinds), `422` or `502`: the `detail` with Retry, and no polling.
+  - **Polling:**
+    - no second `GET` while a status `GET` is held;
+    - phase `traits` 3/10 → "Reading batch 3 of 10";
+    - `cancelled` → a message with Retry, nothing saved, no `DELETE` on close;
+    - three `503`s → "Check again", which polls the same job and sends no `POST`;
+    - a `404` → "the export was interrupted" with Retry;
+    - `failed` with the 57014 `detail` → that `detail` with Retry, and `createObjectURL` not called;
+    - Retry after a failure refreshes and `POST`s a new job.
+  - **Saving:**
+    - `ready` → `GET download`, `blob()`, then an anchor whose `download` is the job's `filename` is clicked;
+    - `revokeObjectURL` gets the URL that `createObjectURL` returned;
+    - then `DELETE` is sent;
+    - a download that is not ok (`404` or `409`) shows its `detail`, and `blob()` and `createObjectURL` are not called;
+    - a rejected `blob()` or a non-JSON error shows the generic message.
+  - **Closing:**
+    - **Mid-job:** Close and Escape each send one `DELETE`, call `onClose`, and stop polling; a bare `unmount()` while running sends one `DELETE`.
+    - **Before the job exists:**
+      - closed during `refreshSession()` → no `POST`;
+      - closed during the `POST`, with a `202` arriving after → `DELETE` for that `job_id`, and no status `GET`;
+      - closed during a listing → its signal is aborted.
+    - **On the resume offer:** closing → no `DELETE` for that job.
+    - **After close:** nothing else happens for 120 s.
+  - **Help:** the link's `href` is D8's URL, with `target="_blank"` and `rel="noopener noreferrer"`.
+  - **`TraitExportButton`:**
+    - it honours `disabled`;
+    - a click mounts the dialog with its props;
+    - the dialog's `onClose` unmounts it.
+- [ ] 11.4 Implement `TraitExportDialog.tsx` and `TraitExportButton.tsx`.
+- [ ] 11.5 **Test first: the entry points.**
+  - First add `ScanTraitExportButton.tsx` (`"use client"`) as a stub that renders `null`, so the tests below fail on assertions rather than on imports.
+  - Extend `TraitExplorer.test.tsx`, mocking `@/components/cyl-trait-export/TraitExportButton` the way the boxplot is mocked:
+    - **Disabled state:** disabled while loading, and again while a trait change reloads;
+    - **Props once loaded:**
+      - for `trait_a`: `experimentId` 5, the current `waveNumber`/`plantAge`, waves [1, 2, 3] and ages [7, 14, 21];
+      - for the `empty` trait: enabled, with empty lists;
+    - **Existing queries:** the positional combobox and `role="status"` queries still work.
+  - Write `ScanTraitExportButton.test.tsx`:
+    - the first `GET recipes` query is exactly `scan=577`;
+    - there are no wave or age comboboxes;
+    - the `POST` query is `scan=577&recipe=…&chosen=…`.
+  - Extend the scan page's `page.test.tsx` with `vi.mock("./ScanTraitExportButton")` carrying `scanId`:
+    - the button is shown for scan 577 whether `CYL_PIPELINE_TRIGGER_ENABLED` is true or false;
+    - it is absent when the scan doesn't exist.
+- [ ] 11.6 Implement:
+  - Add the button to `TraitExplorer.tsx`, after "Plant age" in the controls row, with `disabled={isLoading}`.
+  - Implement `ScanTraitExportButton.tsx` and add it to the scan page with one import and one block beside `RunPipelineButton`.
+- [ ] 11.7 Docs:
+  - **`_WIKI/SUPABASE/trait-recipes.md`:** add a "Getting one" paragraph at the top of "Using a trait export". Keep the heading, because the help link's anchor depends on it. The paragraph says:
+    - where the button is, on the traits page and on a scan's page;
+    - that the dialog lists each recipe with its scan count and what produced it;
+    - that **the default is the newest recipe, not the one covering the most scans**, and the dialog names the larger one;
+    - that scans the recipe doesn't cover are in `<stem>.excluded.csv`.
+  - **`web/README.md` "Cylinder trait export":**
+    - the dialog is in `components/cyl-trait-export/`, with its helpers in `lib/cyl-trait-export/client/`, and the scan page's button is `ScanTraitExportButton.tsx` beside `page.tsx`;
+    - add `499` to the checks: "a newer listing from the same user replaced it, or the request was aborted".
+  - **PR body:** the guide edit reaches the linked `main` page only at the next promotion.
+- [ ] 11.8 **Pre-merge (PR B).**
+  - From the root: `npm ci`, then `npm audit --audit-level=critical`.
+  - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`. The build catches a server-only import in the client bundle.
+  - `pre-commit` on this PR's new files.
+    - For the four existing files it edits (`TraitExplorer.tsx`, `TraitExplorer.test.tsx`, the scan `page.tsx` and `page.test.tsx`), run the hooks other than prettier.
+    - Those four files aren't prettier-clean on staging today, so any reformatting of them is reverted.
+  - `openspec validate add-cyl-trait-csv-export --strict`.
+  - After pushing, record that the **Web Unit Tests (Vitest)** and **Build & npm CVE Audit** jobs are green on the head SHA. They aren't required checks, so the merge gate won't show it.
+- [ ] 11.9 **Browser checks**, in Chrome and Firefox, on a local `next build && next start` against staging, as in 10.1.
+  - **Env:**
+    - Build with staging's browser-reachable `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and a distinct `NEXT_PUBLIC_SUPABASE_COOKIE_NAME` (`sb-staging-auth-token`).
+    - Set the server's `SUPABASE_URL` and `SUPABASE_URL_HOSTS_ALLOWED`.
+    - No service-role key.
+    - Serve on `127.0.0.1:<port>`.
+    - Sign in as the staging test user, and sign out at the end.
+  - **Checks:**
+    - 3313 at its default;
+    - experiment 1 unfiltered: the note names `legacy-5` over the 3-scan default;
+    - experiment 1 with `wave=1`: the default is `legacy:5`, so no note;
+    - one scan;
+    - closing mid-job: then a new Download is accepted, not `429`;
+    - two tabs: the second gets the resume offer.
+  - Delete each downloaded zip after reading its counts.
+  - Record the results, and that Safari is unchecked (#1024). Then merge `origin/staging` in if it has moved, and run `/pr-description` for PR B.
 
 ## 12. After merge
 
@@ -563,4 +701,12 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 | Metadata matches bloomctl (bloomctl side) | 10b.5 |
 | No recipes | 6.5 |
 | Empty selection | 6.5 |
-| Default preselected, Failure shown, Interrupted export, Close cancels | 11.1 |
+| Button waits for the page, Filters prefilled from the page | 11.1 (prefill), 11.5 |
+| Scan grain | 11.5 (`ScanTraitExportButton.test.tsx`) |
+| Recipe described, Default covers fewer scans, Default covers the most scans | 11.1 (`recipe-view`), 11.3 |
+| Default preselected, Nothing to download | 11.1, 11.3 |
+| Stale listing discarded, Listing replaced elsewhere | 11.1 (`poll`), 11.3 |
+| Progress and save, Download refused | 11.3 (Saving) |
+| Session refreshed and retried once, Own job already running, Server busy | 11.1 (`requests`), 11.3 |
+| Failure shown, Interrupted export | 11.3 (Polling) |
+| Close cancels, Closed before the job started | 11.3 (Closing) |
