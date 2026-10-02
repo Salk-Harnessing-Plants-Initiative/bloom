@@ -463,6 +463,8 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 
 - [x] 10b.4 **`BLOOM_WEB_BUILD_SHA`** (user decision 2026-10-01: option B). Not wired in this PR: it goes in the same small infra PR as 10b.2's restart policy and memory limit (both edit `bloom-web`'s compose service and need a staging deploy to verify). The route reads it at runtime, so the infra PR needs only `bloom-web`'s `environment` entry and an `export BLOOM_WEB_BUILD_SHA=$(git rev-parse --short HEAD)` before `docker compose up` in both deploy blocks. The issue draft covers both; it gates production. Until then sidecars record `"1.0.0"`.
 
+- [x] 10b.5 **bloomctl metadata parity** (user decision 2026-10-01: option A, an exception to the earlier "no bloomcli tests" decision; no bloomcli code changes). `bloomcli/tests/test_cyl_scan_metadata_parity.py` reads `web/lib/cyl-trait-export/__fixtures__/scan-metadata-parity.json`, asserts `CSV_COLUMNS` equals its columns, and runs each of its 13 cases through `build_scan_row` and `write_scans_csv`, comparing the read-back cells with `expected`. **(done 2026-10-01: 14 passed. Mutation, `scan_relative_dir` writing `day` for `Day`: 13 failed; restored byte for byte. The full non-integration bloomcli suite on Windows has 14 failures, none in this file: all POSIX permission, symlink, unwritable-directory and console-encoding tests that CI runs on Linux.)**
+
 ## PR B
 
 ## 11. Dialog and entry points
@@ -559,6 +561,7 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 | Each row says what its recipe is | 6.8 |
 | Rapid re-listing | 10b.1 |
 | A plant with no accession | 10b.3 |
+| Metadata matches bloomctl (bloomctl side) | 10b.5 |
 | No recipes | 6.5 |
 | Empty selection | 6.5 |
 | Default preselected, Failure shown, Interrupted export, Close cancels | 11.1 |
