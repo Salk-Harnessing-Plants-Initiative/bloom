@@ -1,0 +1,56 @@
+name: Weekly TLS certificate check
+
+# Reads the expiry date of the certificate each Bloom site serves, prod and
+# staging, and emails the team through the Salk relay when one has fewer than
+# CERT_CHECK_WARN_DAYS left or can't be checked. Caddy renews about 30 days
+# before expiry, so a healthy certificate never gets that close; an email means
+# renewal has stopped and there are still weeks to fix it.
+#
+# The run also fails, so a problem shows red on the Actions tab even if the
+# email can't be sent. It needs no secrets and no SSH: it connects to the sites
+# the way a browser does, from the salk-network runner.
+#
+# Like the other scheduled workflows, it only fires once this file is on the
+# default branch (main), so it starts with the next staging -> main promotion.
+# "Send test email" on a manual run confirms the relay accepts mail from the runner.
+
+on:
+  schedule:
+    # Sundays 16:17 UTC (09:17 Pacific in summer): alerts land before Monday.
+    - cron: "17 16 * * 0"
+  workflow_dispatch:
+    inputs:
+      send_test_email:
+        description: "Only send a test email, to confirm the relay works"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cert-expiry-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, salk-network]
+    timeout-minutes: 10
+    env:
+      CERT_CHECK_RECIPIENTS: bfernando@salk.edu,eberrigan@salk.edu,nhartwick@salk.edu
+      CERT_CHECK_SMTP_HOST: neoemex1.salk.edu
+      CERT_CHECK_FROM: bloom-cert-check@bloom.salk.edu
+      CERT_CHECK_WARN_DAYS: "21"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Send a test email
+        if: inputs.send_test_email
+        run: python3 scheduled-jobs/cert-expiry-check/check.py --test-email
+
+      - name: Check the certificates
+        if: ${{ !inputs.send_test_email }}
+        run: |
+          python3 scheduled-jobs/cert-expiry-check/check.py \
+            --env-file .env.prod.defaults \
+            --env-file .env.staging.defaults
