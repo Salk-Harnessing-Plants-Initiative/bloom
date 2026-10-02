@@ -30,13 +30,16 @@ wheels = [
 
 [[package]]
 name = "bloomctl"
-version = "0.1.0a6"
+version = "0.1.0a8"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "cryptography" },
     { name = "h2" },
+    { name = "h5py" },
     { name = "httpx" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "sleap-roots-contracts" },
@@ -44,11 +47,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-scrna = [
-    { name = "h5py" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
 test = [
     { name = "h5py" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -62,10 +60,10 @@ requires-dist = [
     { name = "click", specifier = ">=8.2" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "h2", specifier = ">=4.4.1" },
-    { name = "h5py", marker = "extra == 'scrna'", specifier = ">=3.10" },
+    { name = "h5py", specifier = ">=3.10" },
     { name = "h5py", marker = "extra == 'test'", specifier = ">=3.10" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "numpy", marker = "extra == 'scrna'", specifier = ">=1.26" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'test'", specifier = ">=1.26" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
@@ -74,7 +72,7 @@ requires-dist = [
     { name = "sleap-roots-contracts", specifier = ">=0.1.0a9" },
     { name = "supabase", specifier = ">=2.0.0,<3" },
 ]
-provides-extras = ["scrna", "test"]
+provides-extras = ["test"]
 
 [[package]]
 name = "certifi"

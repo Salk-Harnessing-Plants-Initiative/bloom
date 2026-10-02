@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 PROD_DEFAULTS = REPO_ROOT / ".env.prod.defaults"
@@ -183,6 +184,14 @@ def test_env_disambiguating_values_differ():
         # collapsing them to the same value would silently defeat it with no
         # other test catching that.
         "WORKFLOWS_K8S_ENV_LABEL",
+        # Each environment's own stage directories and credential Secret on
+        # that shared namespace (bloom#863): the same value in both would
+        # stage one environment's scans as the other's.
+        "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT",
+        "WORKFLOWS_K8S_PIPELINE_SECRET_NAME",
+        # Each environment's own Cell Ranger WorkflowTemplate on that namespace: the same
+        # name in both would put staging's template and image changes straight into prod.
+        "WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE",
     ):
         assert prod[key] != staging[key], (
             f"{key} identical in prod/staging ({prod[key]!r}); "
@@ -528,3 +537,125 @@ def test_the_destination_is_not_the_v1_archive():
     # Nothing distinguishes it from an empty folder at runtime.
     root = _parse(PROD_DEFAULTS)["OBJECT_BACKUP_BOX_ROOT"].strip().lower()
     assert "old_bloom_final_state" not in root, "points at the V1 archive"
+
+
+def test_pipeline_trigger_is_on_in_staging_and_prod():
+    """Starting cylinder pipeline runs is switched on in staging and in prod.
+    Prod was off until its own pipeline credential Secret and stage
+    directories were provisioned and checked (bloom#863). The switch has two
+    readers: bloom-web, per request (web/lib/cyl-pipeline/trigger-enabled.ts),
+    and the dispatch worker, at start-up (services/workflows/k8s_client.py),
+    which fails every batch it claims while it is off. Compose must pass it to
+    both."""
+    prod = _parse(PROD_DEFAULTS)
+    staging = _parse(STAGING_DEFAULTS)
+    assert staging.get("CYL_PIPELINE_TRIGGER_ENABLED") == "true"
+    assert prod.get("CYL_PIPELINE_TRIGGER_ENABLED") == "true"
+    services = _compose_services(COMPOSE_FILE)
+    for service in ("bloom-web", "cyl-pipeline-worker"):
+        assert (
+            services[service]["environment"].get("CYL_PIPELINE_TRIGGER_ENABLED")
+            == "${CYL_PIPELINE_TRIGGER_ENABLED}"
+        ), service
+
+
+# --- Per-environment pipeline isolation (bloom#863) ---------------------------
+
+_PIPELINE_KEYS = (
+    "CYL_PIPELINE_TRIGGER_ENABLED",
+    "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT",
+    "WORKFLOWS_K8S_PIPELINE_SECRET_NAME",
+)
+VENDORED_WORKFLOW = (
+    REPO_ROOT / "services" / "workflows" / "vendored" / "sleap-roots-pipeline.yaml"
+)
+# The vendored stage volumes and the sub-directory of the root each one gets
+# (k8s_client._STAGE_SUBDIRS).
+_STAGE_SUBDIRS = {
+    "images-input-dir": "input",
+    "predictions-output-dir": "predictions",
+    "traits-output-dir": "traits",
+}
+
+
+def _compose_services(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["services"]
+
+
+def test_pipeline_roots_differ_and_neither_contains_the_other():
+    """Different strings aren't enough: a prod root nested inside staging's
+    tree (or the reverse) would still put one environment's scans where the
+    other's stage-in looks. Compared segment by segment, not as string
+    prefixes, so /a/b and /a/bc don't count as nested."""
+    prod = PurePosixPath(_parse(PROD_DEFAULTS)["WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT"])
+    staging = PurePosixPath(
+        _parse(STAGING_DEFAULTS)["WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT"]
+    )
+    shorter, longer = sorted((prod.parts, staging.parts), key=len)
+    assert longer[: len(shorter)] != shorter, (prod, staging)
+
+
+def test_pipeline_values_are_pinned_and_staging_matches_the_vendored_file():
+    """Staging keeps the directories and Secret the vendored Workflow already
+    names, so its submitted body is unchanged and its skip-if-done cache stays
+    where it is. An upstream re-pin that moved them fails here rather than
+    silently moving staging off that cache."""
+    prod = _parse(PROD_DEFAULTS)
+    staging = _parse(STAGING_DEFAULTS)
+    assert prod["WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT"] == (
+        "/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod"
+    )
+    assert prod["WORKFLOWS_K8S_PIPELINE_SECRET_NAME"] == (
+        "genericsecret-bloom-prod-pipeline-credentials"
+    )
+    assert staging["WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT"] == (
+        "/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc"
+    )
+    assert staging["WORKFLOWS_K8S_PIPELINE_SECRET_NAME"] == (
+        "genericsecret-bloom-staging-pipeline-credentials"
+    )
+
+    vendored = yaml.safe_load(VENDORED_WORKFLOW.read_text(encoding="utf-8"))
+    volumes = {v["name"]: v for v in vendored["spec"]["volumes"]}
+    root = staging["WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT"]
+    for name, subdir in _STAGE_SUBDIRS.items():
+        assert volumes[name]["hostPath"]["path"] == f"{root}/{subdir}", name
+    assert (
+        volumes["bloom-credentials"]["secret"]["secretName"]
+        == staging["WORKFLOWS_K8S_PIPELINE_SECRET_NAME"]
+    )
+
+
+@pytest.mark.parametrize("worker", ["cyl-pipeline-worker", "rnaseq-worker"])
+def test_the_workers_receive_the_pipeline_keys_in_prod_compose(worker):
+    """rnaseq-worker receives them only because its environment must equal
+    cyl-pipeline-worker's (test_rnaseq_worker_container.py); it ignores them."""
+    env = _compose_services(COMPOSE_FILE)[worker]["environment"]
+    for key in _PIPELINE_KEYS:
+        assert env.get(key) == f"${{{key}}}", (worker, key)
+
+
+def test_dev_compose_blanks_the_pipeline_root_and_secret_and_enables_the_switch():
+    """Dev numbers its scans independently too, so it must never default to
+    staging's tree: without both values set, a dev stack holding real cluster
+    credentials refuses ("not configured") instead of dispatching."""
+    env = _compose_services(REPO_ROOT / "docker-compose.dev.yml")[
+        "cyl-pipeline-worker"
+    ]["environment"]
+    assert env["WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT"] == (
+        "${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT:-}"
+    )
+    assert env["WORKFLOWS_K8S_PIPELINE_SECRET_NAME"] == (
+        "${WORKFLOWS_K8S_PIPELINE_SECRET_NAME:-}"
+    )
+    switch = env["CYL_PIPELINE_TRIGGER_ENABLED"]
+    assert switch == "${CYL_PIPELINE_TRIGGER_ENABLED:-true}"
+
+
+def test_prod_keeps_the_cell_ranger_template_it_has_always_used():
+    """Prod's runs keep the template registered as cellranger-count-template; staging's copy
+    is the one a new template or image is tried on first."""
+    assert _parse(PROD_DEFAULTS)["WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE"] == "cellranger-count-template"
+    assert _parse(STAGING_DEFAULTS)["WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE"] == (
+        "cellranger-count-template-staging"
+    )

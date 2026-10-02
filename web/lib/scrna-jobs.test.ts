@@ -165,6 +165,7 @@ describe("startRunErrorMessage", () => {
 
   it.each([
     [401, "Sign in to start a job."],
+    [409, "That sample name is taken or still being imported. Choose another name."],
     [422, "The sample or reference name isn't valid."],
     [429, "Too many requests. Wait a minute and try again."],
     [503, "The job service isn't available right now."],

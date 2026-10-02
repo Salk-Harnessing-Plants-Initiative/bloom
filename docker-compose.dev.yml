@@ -26,6 +26,8 @@ services:
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      # Starting cylinder pipeline runs from Bloom (web/lib/cyl-pipeline/trigger-enabled.ts).
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
     volumes:
       - ./web:/app/web
       - ./packages:/app/packages
@@ -154,6 +156,13 @@ services:
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
       WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
+      # Blank by default: dev numbers its scans independently, so it must not
+      # share staging's directories. Unset, every claimed batch fails "not
+      # configured" (bloom#863); set both to a dev-only tree to dispatch.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT:-}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME:-}
+      WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE: ${WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE:-}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
     volumes:
       - ./services/workflows:/app
     command: ["python", "dispatch_worker.py"]
@@ -172,9 +181,9 @@ services:
   # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
   # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
   # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
-  # use of the K8s API (get, not create), so only four of the five
-  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
-  # submission-only (build_workflow_body), never read by this poller.
+  # use of the K8s API (get, not create), so only TOKEN/CA_CERT/API_URL/
+  # NAMESPACE are needed — TTL_SECONDS, ENV_LABEL and the PIPELINE_* pair
+  # are submission-only (build_workflow_body), never read by this poller.
   # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
   # Python-side default (15s) governs it, matching WORKFLOWS_WORKER_POLL_SECONDS's
   # own precedent above; adding it here without a real default-file entry would
@@ -250,6 +259,13 @@ services:
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
       WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
+      # The three keys below are cyl-pipeline-worker's; this worker ignores
+      # them (RNA-seq dispatch is not gated by them). They're here because
+      # this environment must equal cyl-pipeline-worker's.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT:-}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME:-}
+      WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE: ${WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE:-}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
     command: ["python", "rnaseq_worker.py"]
     networks:
       - supanet

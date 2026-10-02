@@ -67,11 +67,18 @@ def _to_cellranger_schema(c):
     if _queue_exists(c, QUEUE):
         c.execute("SELECT pgmq.drop_queue(%s)", (QUEUE,))
     c.execute(f"DROP TABLE IF EXISTS public.{TABLE} CASCADE")
+    # Every version of the request function, whatever its arguments: one left next to the
+    # one rebuilt below makes calls to it ambiguous.
+    c.execute(
+        "SELECT oid::regprocedure::text FROM pg_proc "
+        "WHERE proname = 'request_scrna_cellranger_run' "
+        "AND pronamespace = 'public'::regnamespace"
+    )
+    for (sig,) in c.fetchall():
+        c.execute(f"DROP FUNCTION IF EXISTS public.{sig.removeprefix('public.')}")
     for sig in (
         *FUNCTIONS.values(),
-        # The request function once rnaseq_runs.metadata exists; dropped too, or the
-        # three-argument calls below would be ambiguous.
-        "public.request_scrna_cellranger_run(text, text, uuid, jsonb)",
+        "public.register_rnaseq_sample(bigint, integer, bigint)",
         "public._check_rnaseq_message(bigint, bigint)",
     ):
         c.execute(f"DROP FUNCTION IF EXISTS {sig}")

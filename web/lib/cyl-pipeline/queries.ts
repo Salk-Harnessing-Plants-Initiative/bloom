@@ -6,11 +6,14 @@
  * (bloom#674) and a large read can hit the 8 s statement timeout.
  *
  * Runs reach traits only through their requested scans (design D6); nothing
- * here reads trait sources by run.
+ * here reads trait sources by run. fetchSourceRuns reads sources by id, for
+ * the latest sources of a run's own scans.
  */
 
-import { PANEL_SIZE, RUN_PAGE_SIZE, type Cursor, type RunRow, type RunScanRow } from "./realtime-reducer";
+import { compareRunsDesc, PANEL_SIZE, RUN_PAGE_SIZE, type Cursor, type RunRow, type RunScanRow } from "./realtime-reducer";
+import { runDisplay } from "./run-display";
 import { SCAN_META_COLUMNS, type ScanMeta } from "./scan-meta";
+import type { TriggerTarget } from "./trigger-target";
 
 export class QueryError extends Error {
   constructor(
@@ -147,6 +150,21 @@ export async function fetchLatestSources(client: ReadClient, ids: number[]): Pro
   return new Map(rows.map((r) => [r.scan_id, r.max_source_id]));
 }
 
+/**
+ * The Bloom run that wrote each trait source, keyed by source id: null for a
+ * source written outside any run or before write-back stamped runs (#976). A
+ * source that isn't visible has no entry.
+ */
+export async function fetchSourceRuns(client: ReadClient, ids: number[]): Promise<Map<number, number | null>> {
+  const rows = await readChunked(ids, async (chunk) =>
+    (await read<{ id: number; cyl_pipeline_run_id: number | null }[]>(
+      "cyl_trait_sources",
+      client.from("cyl_trait_sources").select("id, cyl_pipeline_run_id").in("id", chunk),
+    )) ?? [],
+  );
+  return new Map(rows.map((r) => [r.id, r.cyl_pipeline_run_id]));
+}
+
 type ViewRow = {
   run_id: number;
   experiment_id: number;
@@ -206,4 +224,100 @@ export async function fetchExperimentMembers(client: ReadClient, experimentId: n
 
 export async function isRunInExperiment(client: ReadClient, runId: number, experimentId: number): Promise<boolean> {
   return (await fetchExperimentMembers(client, experimentId, [runId])).has(runId);
+}
+
+const TARGET_FILTER = { scan: "scan_id", wave: "wave_id", experiment: "experiment_id" } as const;
+
+/**
+ * The scans a run action would send, from `cyl_scans_extended` with the
+ * trigger's own filters (`_enumerate` in services/workflows/pipeline.py), so
+ * the dialog's N matches the trigger's count (design D4). A single target is
+ * read in pages of 1000 ordered by `scan_id` until a page is empty; a
+ * `scan_ids` selection is de-duplicated, as the trigger's own existence check
+ * is, and sent in chunks of at most 200 ids.
+ */
+export async function fetchTargetScans(client: ReadClient, target: TriggerTarget): Promise<ScanMeta[]> {
+  if (target.target_level === "scan_ids") {
+    return readChunked([...new Set(target.scan_ids)], async (chunk) =>
+      (await read<ScanMeta[]>(
+        "cyl_scans_extended",
+        client.from("cyl_scans_extended").select(SCAN_META_COLUMNS).in("scan_id", chunk).order("scan_id", { ascending: true }),
+      )) ?? [],
+    );
+  }
+  const column = TARGET_FILTER[target.target_level];
+  const rows: ScanMeta[] = [];
+  for (let from = 0; ; from += TARGET_SCANS_PAGE) {
+    const page =
+      (await read<ScanMeta[]>(
+        "cyl_scans_extended",
+        client
+          .from("cyl_scans_extended")
+          .select(SCAN_META_COLUMNS)
+          .eq(column, target.target_id)
+          .order("scan_id", { ascending: true })
+          .range(from, from + TARGET_SCANS_PAGE - 1),
+      )) ?? [];
+    if (page.length === 0) return rows;
+    rows.push(...page);
+  }
+}
+
+export const TARGET_SCANS_PAGE = 1000;
+export const CONCURRENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const CONCURRENT_RUNS_SHOWN = 10;
+
+export interface ConcurrentRuns {
+  /** At most CONCURRENT_RUNS_SHOWN, newest first. */
+  runs: RunRow[];
+  /** How many more matched beyond those. */
+  more: number;
+}
+
+/**
+ * Runs that may still be working on the same experiments (spec: the confirm
+ * dialog's concurrent runs; design D4): touching one of `experimentIds` per
+ * `cyl_pipeline_run_experiments`, created within 7 days (the view carries each
+ * run's `created_at`), `status` not `complete` or `failed`, and counts
+ * incomplete (a client-side filter, since PostgREST can't compare two
+ * columns). Membership is read first, so unfinished runs on other experiments
+ * can't crowd these out, and `more` is the true count. Runs frozen by
+ * #706/#710 never settle, which is why each shows its counts-first state and
+ * age rather than "in progress".
+ */
+export async function fetchConcurrentRuns(client: ReadClient, experimentIds: number[], now = Date.now()): Promise<ConcurrentRuns> {
+  if (experimentIds.length === 0) return { runs: [], more: 0 };
+  const since = new Date(now - CONCURRENT_WINDOW_MS).toISOString();
+  const touching = await readChunked(experimentIds, async (chunk) =>
+    (await read<{ run_id: number }[]>(
+      "cyl_pipeline_run_experiments",
+      client.from("cyl_pipeline_run_experiments").select("run_id").in("experiment_id", chunk).gte("created_at", since),
+    )) ?? [],
+  );
+  const runIds = [...new Set(touching.map((r) => r.run_id))];
+  const unfinished = await readChunked(runIds, async (chunk) =>
+    (await read<RunRow[]>(
+      "cyl_pipeline_runs",
+      client.from("cyl_pipeline_runs").select(RUN_COLUMNS).in("id", chunk).not("status", "in", "(complete,failed)"),
+    )) ?? [],
+  );
+  const incomplete = unfinished.filter((r) => runDisplay(r).counts.U > 0).sort(compareRunsDesc);
+  return { runs: incomplete.slice(0, CONCURRENT_RUNS_SHOWN), more: Math.max(0, incomplete.length - CONCURRENT_RUNS_SHOWN) };
+}
+
+/**
+ * Which of `ids` have at least one image. Stage-in fails a scan with none
+ * ("No frames found" in bloomctl's download_for_predict), and "Run this
+ * accession" sends scans the grid doesn't show. Each scan embeds at most one
+ * image id, so a chunk of 200 reads at most 200 image rows, not a rotation's
+ * ~72 frames per scan.
+ */
+export async function fetchScansWithImages(client: ReadClient, ids: number[]): Promise<Set<number>> {
+  const rows = await readChunked(ids, async (chunk) =>
+    (await read<{ id: number; cyl_images: { id: number }[] | null }[]>(
+      "cyl_scans",
+      client.from("cyl_scans").select("id, cyl_images(id)").in("id", chunk).limit(1, { referencedTable: "cyl_images" }),
+    )) ?? [],
+  );
+  return new Set(rows.filter((r) => (r.cyl_images?.length ?? 0) > 0).map((r) => r.id));
 }

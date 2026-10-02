@@ -13,19 +13,28 @@ metadata:
     project: busch-lab
 spec:
   templates:
-    # One sample: stage -> qc -> count -> cleanup. Skips everything if the run already finished.
+    # One sample: stage -> qc -> count -> preprocess -> analyses -> build-h5ad -> cleanup, all in
+    # /shared/runs/<run-id>/ so runs never share files. Only build-h5ad uploads: the final .h5ad to
+    # runs_output/<run-id>/h5ad/. Skips everything if that file is already there.
     - name: sample-pipeline
       inputs:
         parameters:
           - name: sample
           - name: reference
           - name: run-id
+          # An S3 folder run reads exactly these files from the folder; empty reads raw_reads/<sample>/.
+          - name: fastq-url
+            value: ""
+          - name: fastq-files
+            value: ""
           - name: cores
             value: "16"
           - name: memory
             value: "64Gi"
           - name: mem-gb
             value: "60"
+          - name: n-top-genes
+            value: "2000"
       dag:
         tasks:
           - name: stage
@@ -36,6 +45,10 @@ spec:
                   value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+                - name: fastq-url
+                  value: "{{inputs.parameters.fastq-url}}"
+                - name: fastq-files
+                  value: "{{inputs.parameters.fastq-files}}"
           - name: qc
             template: qc
             depends: stage
@@ -66,10 +79,40 @@ spec:
                   value: "{{inputs.parameters.mem-gb}}"
           - name: cleanup
             template: cleanup
+            depends: build-h5ad
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: preprocess
+            template: preprocess
             depends: count
             when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: n-top-genes
+                  value: "{{inputs.parameters.n-top-genes}}"
+          # Analyses: each reads the base and writes its own part. A new one is one more task
+          # here, and one more name in build-h5ad's depends.
+          - name: cluster
+            template: cluster
+            depends: preprocess
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: build-h5ad
+            template: build-h5ad
+            depends: cluster
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
 
@@ -86,7 +129,7 @@ spec:
         # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
         command: [bash, -c]
         args:
           - |
@@ -148,12 +191,79 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # Create /shared/runs/<run-id>/ and download the reads; outputs done=true if the run already finished.
+    # For a run that imports its sample from SRA: download the runs into raw_reads/<sample>/ as
+    # Illumina-named FASTQs, next to stage-reference. Outputs the folder's FASTQ count and size.
+    - name: fetch-sra
+      inputs:
+        parameters:
+          - name: sample
+          - name: sra-runs
+          - name: run-id
+      outputs:
+        parameters:
+          - name: fastq-count
+            valueFrom:
+              path: /tmp/outputs/fastq_count
+          - name: total-bytes
+            valueFrom:
+              path: /tmp/outputs/total_bytes
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # only a failed download (10) may be a blip; bad input (6), misnamed files (7),
+        # unusable reads (11) and a taken folder (12) will not fix themselves
+        expression: "asInt(lastRetry.exitCode) == 10"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
+        command: [fetch-sra]
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: SRA_RUNS
+            value: "{{inputs.parameters.sra-runs}}"
+          - name: WORK_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}/sra"
+          - name: THREADS
+            value: "8"
+          - name: OUTPUT_DIR
+            value: /tmp/outputs
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "8", memory: 16Gi}
+          limits: {cpu: "8", memory: 16Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Create /shared/runs/<run-id>/ and copy the reads there, from the run's S3 folder or
+    # raw_reads/<sample>/; outputs done=true if the run already finished.
     - name: stage-sample
       inputs:
         parameters:
           - name: sample
           - name: run-id
+          - name: fastq-url
+            value: ""
+          - name: fastq-files
+            value: ""
       outputs:
         parameters:
           - name: done
@@ -164,32 +274,33 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
+        # exits 4 (no FASTQs), 6 (bad input), 7 (misnamed FASTQs), 8 (the folder changed) and
+        # 9 (FASTQs for another sample) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
         command: [bash, -c]
         args:
           - |
             set -euo pipefail
-            if aws s3 ls "s3://bloomv2-workflows/runs_output/${RUN_ID}/_SUCCESS" >/dev/null 2>&1; then
-              echo "Already done: runs_output/${RUN_ID}/_SUCCESS exists, nothing to do."
+            if aws s3 ls "s3://bloomv2-workflows/runs_output/${RUN_ID}/h5ad/_SUCCESS" >/dev/null 2>&1; then
+              echo "Already done: runs_output/${RUN_ID}/h5ad/_SUCCESS exists, nothing to do."
               echo true > /tmp/done
               exit 0
             fi
-            mkdir -p "/shared/runs/${RUN_ID}/fastq/${SAMPLE}"
-            aws s3 sync "s3://bloomv2-workflows/raw_reads/${SAMPLE}/" "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"
-            # sync from a missing prefix copies nothing and still exits 0
-            if ! ls "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"*.fastq.gz >/dev/null 2>&1; then
-              echo "ERROR: no FASTQs at s3://bloomv2-workflows/raw_reads/${SAMPLE}/"
-              exit 4
-            fi
+            # Fails here, before QC, if a file isn't Illumina-named, a lane lacks R1 or R2, or
+            # the run's S3 folder changed since the run was started.
+            RUN_DIR="/shared/runs/${RUN_ID}" DEST_DIR="/shared/runs/${RUN_ID}/fastq/${SAMPLE}" stage-fastqs
             echo false > /tmp/done
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
           - name: RUN_ID
             value: "{{inputs.parameters.run-id}}"
+          - name: FASTQ_URL
+            value: "{{inputs.parameters.fastq-url}}"
+          - name: FASTQ_FILES
+            value: "{{inputs.parameters.fastq-files}}"
           - name: AWS_DEFAULT_REGION
             value: us-west-2
           - name: AWS_ACCESS_KEY_ID
@@ -226,7 +337,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
         command: [run-qc]
         env:
           - name: SAMPLE
@@ -237,18 +348,12 @@ spec:
             value: "4"
           - name: WORK_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
+          # The report stays in the run's folder; only the final .h5ad goes to S3.
+          - name: UPLOAD_REPORT
+            value: "false"
+          # The stage step has already copied the reads here.
+          - name: DOWNLOAD_READS
+            value: "false"
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
@@ -288,10 +393,11 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference), 4 (no FASTQs) and 6 (unusable sample name) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6"
+        # exit 3 (no reference), 4 (no FASTQs), 6 (unusable sample name) and 7 (misnamed FASTQs)
+        # will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
         command: [run-count]
         env:
           - name: SAMPLE
@@ -306,22 +412,12 @@ spec:
             value: "{{inputs.parameters.mem-gb}}"
           - name: WORK_DIR
             value: /work
+          - name: RESULTS_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}"
           - name: FASTQ_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}/fastq/{{inputs.parameters.sample}}"
           - name: REF_DIR
             value: "/shared/ref/{{inputs.parameters.reference}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         volumeMounts:
           - name: shared
             mountPath: /shared
@@ -336,7 +432,7 @@ spec:
           emptyDir:
             sizeLimit: 500Gi
 
-    # Delete /shared/runs/<run-id>/ after a successful count; results and raw reads stay in S3.
+    # Delete /shared/runs/<run-id>/ once the run has finished; results and raw reads stay in S3.
     - name: cleanup
       inputs:
         parameters:
@@ -344,7 +440,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
         command: [bash, -c]
         args:
           - |
@@ -370,21 +466,83 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # Smoke test: bundled tiny dataset, no reads or reference needed.
-    - name: testrun
+    # /shared/runs/<run-id>/: count matrix -> analysis/preprocess/base.h5ad (filter, normalise, variable genes, PCA).
+    - name: preprocess
+      inputs:
+        parameters:
+          - name: run-id
+          - name: n-top-genes
       schedulerName: runai-scheduler
       priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
-        command: [bash, -c]
-        args:
-          - |
-            set -euo pipefail
-            cd /work
-            cellranger testrun --id=check_install --localcores=4 --localmem=14
-            OUT="s3://bloomv2-workflows/runs_output/argo_testrun_{{workflow.name}}"
-            aws s3 sync check_install/outs "$OUT/outs/"
-            echo "DONE -> $OUT"
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [scrna-analysis]
+        args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base -> analysis/cluster/part.h5ad: neighbour graph, Leiden clusters, UMAP.
+    - name: cluster
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [scrna-analysis]
+        args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
+        resources:
+          requests: {cpu: "4", memory: 8Gi}
+          limits: {cpu: "4", memory: 8Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base + every finished part -> h5ad/<sample>.h5ad and summary.json, copied to runs_output/<run-id>/h5ad/ in S3.
+    - name: build-h5ad
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [scrna-analysis]
+        args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}", "--publish", "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"]
         env:
           - name: AWS_DEFAULT_REGION
             value: us-west-2
@@ -398,6 +556,31 @@ spec:
               secretKeyRef:
                 name: genericsecret-bloomv2-s3
                 key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Smoke test: bundled tiny dataset, no reads or reference needed.
+    - name: testrun
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            cd /work
+            cellranger testrun --id=check_install --localcores=4 --localmem=14
+            echo "Cell Ranger testrun passed"
         resources:
           requests:
             cpu: "4"

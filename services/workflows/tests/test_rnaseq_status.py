@@ -75,7 +75,7 @@ def test_a_succeeded_workflow_finishes_with_where_the_results_are():
     }
     assert status.message == (
         "Finished: results in "
-        "s3://bloomv2-workflows/runs_output/tinygex__tiny_ref__poller-sample-ok/"
+        "s3://bloomv2-workflows/runs_output/tinygex__tiny_ref__poller-sample-ok/h5ad/"
     )
 
 
@@ -150,7 +150,7 @@ def _failed_at(template: str, exit_code: str | None) -> dict:
             "count",
             "5",
             "Cell Ranger failed; its log is at "
-            "runs_output/tinygex__tiny_ref__poller-sample-ok/logs/count.log",
+            "/hpi/hpi_dev/users/bfernando/scrna/runs/tinygex__tiny_ref__poller-sample-ok/logs/count.log",
         ),
         (
             "count",
@@ -158,6 +158,14 @@ def _failed_at(template: str, exit_code: str | None) -> dict:
             "6",
             "Sample tinygex can't be used as a Cell Ranger run id "
             "(letters, digits, '_' or '-', at most 64)",
+        ),
+        (
+            "stage-sample",
+            "stage",
+            "7",
+            "The FASTQs in raw_reads/tinygex/ must be named like "
+            "<name>_S1_L001_R1_001.fastq.gz, with an R1 and an R2 for every lane; "
+            "the stage step's log lists the files",
         ),
         ("qc", "qc", "137", "Step qc failed (exit 137)"),
         ("qc", "qc", None, "Step qc failed"),

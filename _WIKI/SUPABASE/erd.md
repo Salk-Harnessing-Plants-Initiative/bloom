@@ -41,6 +41,8 @@ erDiagram
 "public.scrna_genes" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_counts" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_counts" }o--|| "public.scrna_genes" : "FOREIGN KEY (gene_id) REFERENCES scrna_genes(id)"
+"public.cyl_trait_sources" }o--o| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id) ON DELETE SET NULL"
+"public.cyl_trait_sources" }o--o| "public.cyl_pipeline_runs" : "FOREIGN KEY (cyl_pipeline_run_id) REFERENCES cyl_pipeline_runs(id) ON DELETE SET NULL"
 "public.cyl_qc_codes" }o--|| "public.cyl_plants" : "FOREIGN KEY (plant_id) REFERENCES cyl_plants(id)"
 "public.cyl_qc_sets" }o--o| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id)"
 "public.cyl_qc_set_codes" }o--|| "public.cyl_qc_codes" : "FOREIGN KEY (code_id) REFERENCES cyl_qc_codes(id)"
@@ -98,8 +100,8 @@ erDiagram
 "public.cyl_pipeline_run_scans" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
 "public.cyl_scan_latest_source" |o--|| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_counts" |o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
+"public.scrna_genotypes" }o--o| "public.accessions" : "FOREIGN KEY (accession_id) REFERENCES accessions(id)"
 "public.scrna_genotypes" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
-"public.scrna_genotypes" }o--o| "public.arabidopsis_accessions" : "FOREIGN KEY (accession_id) REFERENCES arabidopsis_accessions(id)"
 "public.scrna_de_runs" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_de_genes" }o--|| "public.scrna_de" : "FOREIGN KEY (dataset_id, de_id) REFERENCES scrna_de(dataset_id, id) ON DELETE CASCADE"
 "public.scrna_de_genes" }o--|| "public.scrna_genes" : "FOREIGN KEY (dataset_id, gene_id) REFERENCES scrna_genes(dataset_id, id)"
@@ -398,6 +400,11 @@ erDiagram
   text name
   jsonb metadata
   text idempotency_key
+  text recipe_key
+  smallint recipe_key_version
+  bigint scan_id FK
+  text argo_workflow_name
+  bigint cyl_pipeline_run_id FK
 }
 "public.cyl_qc_codes" {
   bigint id
@@ -425,6 +432,7 @@ erDiagram
   jsonb timepoints
   bigint trait_source_id FK
   bigint cyl_qc_set_id FK
+  text recipe_key
 }
 "public.cyl_dataset_traits" {
   bigint dataset_id FK
@@ -1045,5 +1053,46 @@ erDiagram
   bigint run_id
   bigint experiment_id
   timestamp_with_time_zone created_at
+}
+"public.rnaseq_runs" {
+  bigint id
+  text run_key
+  uuid requested_by
+  text status
+  text current_step
+  integer exit_code
+  text message
+  jsonb step_pods
+  text argo_workflow_name
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone submitted_at
+  timestamp_with_time_zone completed_at
+  timestamp_with_time_zone updated_at
+  text workflow_type
+  jsonb params
+  jsonb metadata
+}
+"public.rnaseq_samples" {
+  bigint id
+  text name
+  text source
+  text source_ref
+  integer fastq_count
+  bigint total_bytes
+  uuid registered_by
+  timestamp_with_time_zone created_at
+}
+"public.rnaseq_references" {
+  bigint id
+  text name
+  text description
+  timestamp_with_time_zone created_at
+}
+"public.gravi_scan_timeline" {
+  date date_scanned
+  text species_name
+  text experiment_name
+  integer wave_number
+  bigint count
 }
 ```

@@ -2,7 +2,8 @@
 /**
  * The experiment page's runs panel (add-cyl-pipeline-ui task 8.1): the 10
  * most recent runs touching the experiment, kept current by Realtime, with a
- * membership rule for runs it doesn't hold.
+ * membership rule for runs it doesn't hold; and runs started from the page,
+ * added from the trigger response (task 11.7).
  */
 
 import { StrictMode } from "react";
@@ -17,12 +18,13 @@ import {
   type Answer,
   type RecordedQuery,
 } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
-import { at, runRow } from "@/lib/cyl-pipeline/__fixtures__/rows";
+import { at, ME, runRow } from "@/lib/cyl-pipeline/__fixtures__/rows";
 import type { RunRow } from "@/lib/cyl-pipeline/realtime-reducer";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 
 import { ExperimentRunsPanel } from "./ExperimentRunsPanel";
+import { StartedRunsProvider, useAnnounceStartedRun, type StartedRun } from "./started-runs";
 
 /** Runs in the database, and which of them touch experiment 5. */
 let runs: RunRow[] = [];
@@ -96,6 +98,19 @@ describe("the runs it lists", () => {
     );
     expect(screen.getByRole("link", { name: "All cylinder pipeline runs" }).getAttribute("href")).toBe("/app/cyl-pipeline-runs");
     expect(screen.getByRole("heading", { name: "Cylinder pipeline runs" })).toBeTruthy();
+  });
+
+  it("links a failed count to the drill-down's failed filter only when it is above zero (bloom#955)", async () => {
+    runs[11] = runRow(12, at(12), { status: "complete", done_count: 37, failed_count: 3 });
+    runs[10] = runRow(11, at(11), { status: "failed", scan_count: 3, done_count: 0, failed_count: 0 });
+    mount();
+    await subscribe();
+    expect(within(screen.getByTestId("panel-run-12")).getByRole("link", { name: "3 failed" }).getAttribute("href")).toBe(
+      "/app/cyl-pipeline-runs/12?status=failed",
+    );
+    const zero = screen.getByTestId("panel-run-11");
+    expect(zero.textContent).toContain("Failed · 0 succeeded · 0 failed · 3 without a result");
+    expect(within(zero).queryByRole("link", { name: "0 failed" })).toBeNull();
   });
 
   it("says when no run touches the experiment yet", async () => {
@@ -284,5 +299,90 @@ describe("sync", () => {
     await tick(300_000);
     expect(supabaseMock.queries.length).toBe(before);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("runs started from this page", () => {
+  let announce: (run: StartedRun) => void = () => {};
+  function Announcer() {
+    announce = useAnnounceStartedRun();
+    return null;
+  }
+  const mountWithPage = () =>
+    render(
+      <StartedRunsProvider>
+        <Announcer />
+        <ExperimentRunsPanel experimentId={5} />
+      </StartedRunsProvider>,
+    );
+  const started = (overrides: Partial<StartedRun> = {}): StartedRun => ({
+    pipeline_run_id: 95,
+    scan_count: 40,
+    target: { target_level: "experiment", target_id: 5 },
+    requested_by: ME,
+    started_at: "2026-09-28T10:29:59.000Z",
+    ...overrides,
+  });
+
+  it("adds a run from the trigger response at once, with no query", async () => {
+    mountWithPage();
+    await subscribe();
+    const before = supabaseMock.queries.length;
+    act(() => announce(started()));
+    expect(shown()[0]).toBe(95);
+    expect(shown()).toHaveLength(10);
+    expect(screen.getByTestId("panel-run-95").textContent).toContain("Queued · 0 / 40 succeeded");
+    await tick(5000);
+    expect(supabaseMock.queries.length).toBe(before);
+  });
+
+  it("then applies its events as a held run, with no membership query", async () => {
+    mountWithPage();
+    await subscribe();
+    act(() => announce(started()));
+    await emit("UPDATE", runRow(95, at(29 * 60 + 59), { status: "running", done_count: 3 }));
+    await tick(5000);
+    expect(screen.getByTestId("panel-run-95").textContent).toContain("Running · 3 / 40 succeeded");
+    expect(membershipQueries()).toHaveLength(0);
+  });
+
+  it("keeps a run started while a snapshot is in flight", async () => {
+    mountWithPage();
+    const pending = deferred<Answer>();
+    supabaseMock.respond = (q) => (q.table === "cyl_pipeline_runs" ? pending.promise : respond(q));
+    await act(async () => channel().status("SUBSCRIBED"));
+    await tick();
+    act(() => announce(started()));
+    await act(async () => pending.resolve({ data: runs.slice(2), error: null }));
+    await tick();
+    expect(shown()[0]).toBe(95);
+  });
+
+  it("adds nothing for a zero-scan run, which touches no experiment", async () => {
+    mountWithPage();
+    await subscribe();
+    act(() => announce(started({ scan_count: 0 })));
+    expect(screen.queryByTestId("panel-run-95")).toBeNull();
+  });
+
+  it("treats an announced run as a member, so its later events cost no membership query even outside the window", async () => {
+    mountWithPage();
+    await subscribe();
+    // Older than every held run, so the 10-run window drops it at once.
+    act(() => announce(started({ started_at: at(0) })));
+    expect(screen.queryByTestId("panel-run-95")).toBeNull();
+    await emit("UPDATE", runRow(95, at(0), { status: "running" }));
+    await tick(2000);
+    expect(membershipQueries()).toHaveLength(0);
+  });
+
+  it("drops a pending membership question for a run it is then told about", async () => {
+    mountWithPage();
+    await subscribe();
+    await emit("INSERT", runRow(95, at(29 * 60 + 59), { status: "queued" }));
+    act(() => announce(started()));
+    await tick(2000);
+    expect(membershipQueries()).toHaveLength(0);
+    expect(shown()[0]).toBe(95);
   });
 });

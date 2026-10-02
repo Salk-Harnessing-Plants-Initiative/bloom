@@ -10,6 +10,10 @@
  * the run row before its scan rows, so a "no" is cached only when the event
  * that prompted it was past `queued`: by `submitted` the scan rows exist.
  * A cached "no" costs no further query.
+ *
+ * A run started from this page is added from the trigger response, with no
+ * query: the trigger answers only after inserting the run's scan rows, so it
+ * is a member. A zero-scan run has no scan rows and is never one.
  */
 
 import Link from "next/link";
@@ -29,6 +33,7 @@ import {
 import { useLiveSync, type LiveSync } from "@/lib/cyl-pipeline/use-live-sync";
 import { useNow } from "@/lib/cyl-pipeline/use-now";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import { useStartedRuns, type StartedRun } from "./started-runs";
 
 export const MEMBERSHIP_DEBOUNCE_MS = 1000;
 
@@ -40,6 +45,27 @@ interface PanelView {
 /** Realtime INSERT/UPDATE payloads carry every column but an unchanged TOASTed one. */
 const isWholeRow = (row: Partial<RunRow>): row is RunRow =>
   typeof row.id === "number" && typeof row.created_at === "string" && typeof row.scan_count === "number" && typeof row.status === "string";
+
+/** A run row as the trigger just created it: queued, with no outcomes yet. */
+function startedRunRow(run: StartedRun): RunRow {
+  const { target } = run;
+  return {
+    id: run.pipeline_run_id,
+    created_at: run.started_at,
+    requested_by: run.requested_by,
+    target_level: target.target_level,
+    target_id: target.target_level === "scan_ids" ? null : target.target_id,
+    params: {},
+    status: "queued",
+    scan_count: run.scan_count,
+    done_count: 0,
+    failed_count: 0,
+    reused_count: 0,
+    error_message: null,
+    submitted_at: null,
+    completed_at: null,
+  };
+}
 
 /**
  * Add runs the panel doesn't hold yet. A held run is kept as it is: its own
@@ -128,6 +154,13 @@ export function ExperimentRunsPanel({ experimentId }: { experimentId: number }) 
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => void flush(), MEMBERSHIP_DEBOUNCE_MS);
     },
+  });
+
+  useStartedRuns((run) => {
+    if (run.scan_count === 0) return;
+    members.current.set(run.pipeline_run_id, true);
+    pending.current.delete(run.pipeline_run_id);
+    live.update((v) => ({ ...v, runs: addUnheld(v.runs, [startedRunRow(run)]) }));
   });
 
   const { runs, loaded } = live.view;

@@ -81,7 +81,10 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
-  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
+  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`). For pipeline
+  data a source name selects **one scan's** rows (write-back stores one source per scan);
+  a dataset built from a recipe across many scans needs `create_cyl_dataset`'s recipe mode,
+  which bloomctl does not expose yet (#481).
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name. Filter with `--species NAME` (scriptable) or
   `--species-menu` to **pick a species from a menu** (needs a terminal). Choose the output
@@ -116,7 +119,9 @@ These apply across the `cyl` commands, so the per-command sections below stay sh
 
 - **Profiles** — every command takes `-p/--profile <name>` (default `prod`). `bloomctl login`
   writes a profile; use separate profiles to keep prod / staging / local logins side by side
-  (`bloomctl login --server <url> -p staging`, then `… -p staging` on any command).
+  (`bloomctl login --server https://staging.bloom.salk.edu -p staging`, then `… -p staging` on
+  any command). Staging is for the Bloom team only. `-p` only names the saved login: without
+  `--server`, `login` signs in to prod whatever the profile is called.
 - **Machine-readable output** — the `list` commands take `--output csv|json` (with `--json` as a
   back-compat alias for `--output json`); the default is a human table. Pipe it: e.g.
   `cyl experiments list --output json | jq '.[].experiment_id'`.
@@ -358,9 +363,6 @@ of being treated as complete forever. If the recorded size is itself wrong, the 
 succeeds and the log carries a `note=` saying so — otherwise that object would be re-fetched on
 every run with no explanation.
 
-> `plate download` requires the `gravi_scans_extended` view and, for `--experiment-name`, the
-> `gravi_experiment_search` function to be applied on the server you're pointed at.
-
 ## Finding what to download
 
 The read commands help you go from "which experiment?" to an id you can feed `cyl download`:
@@ -507,8 +509,6 @@ finds its file with no lookup table, and the same file uploaded twice is one
 object.
 
 ```bash
-pip install 'bloomctl[scrna]'                   # upload's structure check needs h5py
-
 bloomctl scrna hdf5 upload myb41_transgene_load.h5ad -p staging
 bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
 bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id
@@ -606,7 +606,8 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
 - **Validates** it against `sleap-roots-contracts` before the call (fails fast with
   a readable message) and sends the original JSON unchanged.
 - **Idempotent:** re-ingesting the same envelope is a no-op (first-writer-wins on
-  the envelope's `idempotency_key`), reported as "already ingested" — not an error.
+  the envelope's `idempotency_key`), reported as "already ingested" — not an error,
+  with one exception: see `ARGO_WORKFLOW_NAME` below.
 - `--json` prints the RPC's result object (including `source_id`) to stdout for
   scripting; without it, a human-readable summary line.
 - `--predictions-dir DIR`: construct and upload the envelope's `blobs`. Reads
@@ -637,6 +638,17 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   whitespace-stripped (`pipeline_run_id_from_env()`, the same run id
   `batch-ingest-result` scopes and reconciles with). Omit, unset or blank it for
   the existing manual/ad-hoc invocation shape, which is unaffected.
+
+  If the RPC then reports that it updated no row of this workflow
+  (`status_update_matched: false`), the command prints the outcome and exits
+  non-zero. For a written delivery the message says the data was written but
+  the row was not updated. For an already-ingested envelope (a no-op) it says
+  nothing was written and this workflow's row for the source's scan was not
+  updated: the source's scan could not be resolved (no recorded scan and no
+  run row carrying the source), this workflow did not dispatch that scan, the
+  row is already `'failed'`, or the row is already linked to a different
+  source. A no-op whose row was updated, under this workflow name
+  or a new one, still exits zero.
 
 The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
@@ -701,7 +713,9 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   contract-validation failure, or a mapped RPC error is recorded and reported,
   but does not abort the rest of the batch.
 - **No-op re-deliveries are reported `skipped`**, not `failed` — same
-  first-writer-wins idempotency as `ingest-result`.
+  first-writer-wins idempotency as `ingest-result`. The exception is the same
+  as `ingest-result`'s: with `ARGO_WORKFLOW_NAME` set, a no-op whose row was
+  not updated is reported `failed`, non-retriable, with the same message.
 - `--predictions-dir DIR`: predict's own nested batch output root
   (`DIR/{scan_key}/{scan_key}.predictions.json` + `.slp` files per scan).
   Constructs, verifies, and uploads blobs per envelope from its own scan_key's

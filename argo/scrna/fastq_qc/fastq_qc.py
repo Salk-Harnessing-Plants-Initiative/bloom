@@ -47,8 +47,8 @@ def find_fastqs(fastq_dir, s3_prefix):
     return found
 
 
-def read_stats(path, max_reads):
-    """Count reads and lengths; stop after max_reads if given. Also return the R1 barcodes seen."""
+def read_stats(path, max_reads, keep_barcodes=0):
+    """Count reads and lengths; stop after max_reads if given. Also return the first keep_barcodes barcodes."""
     if path.startswith("s3://"):
         command = f"aws s3 cp {shlex.quote(path)} - | gzip -dc"
     else:
@@ -64,7 +64,8 @@ def read_stats(path, max_reads):
         total_length += len(sequence)
         shortest = len(sequence) if shortest is None else min(shortest, len(sequence))
         longest = max(longest, len(sequence))
-        barcodes.append(sequence[:BARCODE_LENGTH])
+        if len(barcodes) < keep_barcodes:
+            barcodes.append(sequence[:BARCODE_LENGTH])
         if max_reads and reads == max_reads:
             break
 
@@ -123,10 +124,11 @@ def main():
         if args.quick and read not in ("R1", "R2"):
             continue
         print(f"reading {os.path.basename(path)}", flush=True)
-        stats, file_barcodes = read_stats(path, args.sample_reads if args.quick else None)
+        # Only R1's first --sample-reads barcodes are kept; keeping every read's would not fit in memory.
+        keep = args.sample_reads - len(barcodes) if read == "R1" else 0
+        stats, file_barcodes = read_stats(path, args.sample_reads if args.quick else None, keep)
         rows.append({"file": os.path.basename(path), "prefix": prefix, "lane": lane, "read": read, **stats})
-        if read == "R1":
-            barcodes += file_barcodes[: args.sample_reads - len(barcodes)]
+        barcodes += file_barcodes
 
     r1 = [r for r in rows if r["read"] == "R1"]
     r2 = [r for r in rows if r["read"] == "R2"]

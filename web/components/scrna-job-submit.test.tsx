@@ -61,7 +61,7 @@ function type(label: string | RegExp, value: string) {
 }
 
 function choose(sample: string, reference: string) {
-  type("Sample", sample);
+  type("Registered sample", sample);
   type("Reference genome", reference);
   type("Species", "1");
   type("Dataset name", "Col-0 root tip");
@@ -82,11 +82,11 @@ describe("the form", () => {
     render(
       <ScrnaJobSubmit samples={SAMPLES} references={REFERENCES} species={SPECIES} startedBy={null} />
     );
-    expect(screen.queryByLabelText("Sample")).toBeNull();
+    expect(screen.queryByLabelText("Registered sample")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
-    expect(screen.getByLabelText("Sample")).toBeTruthy();
+    expect(screen.getByLabelText("Registered sample")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.queryByLabelText("Sample")).toBeNull();
+    expect(screen.queryByLabelText("Registered sample")).toBeNull();
   });
 
   it("lists samples with their file count and size, and references with their description", () => {
@@ -108,7 +108,7 @@ describe("the form", () => {
     openForm();
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
-    type("Sample", "tinygex");
+    type("Registered sample", "tinygex");
     type("Reference genome", "tiny_ref");
     expect(start.disabled).toBe(true);
     expect(screen.getByText("Choose a species.")).toBeTruthy();
@@ -146,7 +146,7 @@ describe("the form", () => {
   it("says who adds samples when none are registered", () => {
     openForm([], REFERENCES);
     expect(screen.getByRole("option", { name: "No samples registered yet" })).toBeTruthy();
-    expect((screen.getByLabelText("Sample") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Registered sample") as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByText(/added by a Bloom admin/)).toBeTruthy();
   });
 });
@@ -282,7 +282,7 @@ describe("starting a run", () => {
     const start = screen.getByRole("button", { name: "Starting…" }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     // The fieldset disables its fields, which `.disabled` on each one doesn't report.
-    expect(screen.getByLabelText("Sample").matches(":disabled")).toBe(true);
+    expect(screen.getByLabelText("Registered sample").matches(":disabled")).toBe(true);
     expect(screen.getByLabelText("Dataset name").matches(":disabled")).toBe(true);
     fireEvent.click(start);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -307,8 +307,12 @@ describe("after a run is queued", () => {
   it("replaces the form, so the run can't be started twice", async () => {
     await queueRun();
     expect(screen.getByText("Started by scientist@salk.edu")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View run" }).getAttribute("href")).toBe(
+      "/app/timeline/rnaseq/12"
+    );
+    expect(screen.getByText(/saved with the run/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start run" })).toBeNull();
-    expect(screen.queryByLabelText("Sample")).toBeNull();
+    expect(screen.queryByLabelText("Registered sample")).toBeNull();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -316,7 +320,7 @@ describe("after a run is queued", () => {
     await queueRun();
     fireEvent.click(screen.getByRole("button", { name: "Start another run" }));
 
-    expect((screen.getByLabelText("Sample") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Registered sample") as HTMLSelectElement).value).toBe("");
     expect((screen.getByLabelText("Dataset name") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
     expect((screen.getByLabelText("Species") as HTMLSelectElement).value).toBe("1");
@@ -335,7 +339,7 @@ describe("after a run is queued", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
     expect(screen.queryByRole("button", { name: "Start another run" })).toBeNull();
-    expect((screen.getByLabelText("Sample") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Registered sample") as HTMLSelectElement).value).toBe("");
     expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
   });
 });

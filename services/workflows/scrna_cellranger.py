@@ -5,13 +5,16 @@ Cell Ranger trigger: validate a run request and create the run with
 A run is one sample (one folder of FASTQs under raw_reads/) and one reference. The
 pipeline checks that the reference and the FASTQs exist and fails the run if not.
 An optional `metadata` object (the dataset's species, name, conditions) is stored on the
-run as given, for loading the results later.
+run as given, for loading the results later. Optional `sra_runs` (1 to 9 SRA run IDs, one
+lane each) import the sample from SRA under the new name `sample`; the run downloads them
+first and registers the sample once the download succeeds.
 """
 
 import json
 import re
 
 from fastapi import HTTPException
+from postgrest import APIError
 
 from supabase_client import app_client
 
@@ -36,6 +39,15 @@ REQUEST_FN = "request_scrna_cellranger_run"
 # The database refuses a larger metadata object; checking here gives a readable 422.
 METADATA_MAX_BYTES = 65536
 
+# NCBI (SRR), ENA (ERR) and DDBJ (DRR) run IDs; one lane each, named L001-L009.
+SRA_RUN_RULE = re.compile(r"^[SED]RR[0-9]{6,10}$")
+MAX_SRA_RUNS = 9
+SRA_RUNS_HELP = f"1 to {MAX_SRA_RUNS} distinct SRA run IDs like SRR12046049"
+
+# What the request function's refusals mean for the caller: a bad value, or a name that
+# is taken or still being imported.
+_REFUSAL_STATUS = {"22023": 422, "23505": 409, "55000": 409}
+
 
 def _valid_name(value, rule: re.Pattern) -> bool:
     return isinstance(value, str) and bool(rule.fullmatch(value))
@@ -55,7 +67,20 @@ def _validate_metadata(metadata) -> dict | None:
     return metadata
 
 
-def _validate_request(body) -> tuple[str, str, dict | None]:
+def _validate_sra_runs(runs) -> list[str] | None:
+    if runs is None:
+        return None
+    if (
+        not isinstance(runs, list)
+        or not 1 <= len(runs) <= MAX_SRA_RUNS
+        or not all(isinstance(r, str) and SRA_RUN_RULE.fullmatch(r) for r in runs)
+        or len(set(runs)) != len(runs)
+    ):
+        raise HTTPException(status_code=422, detail=f"sra_runs must be {SRA_RUNS_HELP}")
+    return runs
+
+
+def _validate_request(body) -> tuple[str, str, dict | None, list[str] | None]:
     if not isinstance(body, dict):
         raise HTTPException(
             status_code=422, detail="request body must be a JSON object"
@@ -70,25 +95,41 @@ def _validate_request(body) -> tuple[str, str, dict | None]:
         raise HTTPException(
             status_code=422, detail=f"reference must be a name of {REFERENCE_HELP}"
         )
-    return sample, reference, _validate_metadata(body.get("metadata"))
+    return (
+        sample,
+        reference,
+        _validate_metadata(body.get("metadata")),
+        _validate_sra_runs(body.get("sra_runs")),
+    )
 
 
 def trigger_run(body, user_id: str) -> dict:
-    sample, reference, metadata = _validate_request(body)
+    sample, reference, metadata, sra_runs = _validate_request(body)
 
     args = {"p_sample": sample, "p_reference": reference, "p_requested_by": user_id}
     if metadata is not None:
         args["p_metadata"] = metadata
+    if sra_runs is not None:
+        args["p_sra_runs"] = sra_runs
 
     client = app_client()
-    run_id = client.rpc(REQUEST_FN, args).execute().data
+    try:
+        run_id = client.rpc(REQUEST_FN, args).execute().data
+    except APIError as exc:
+        status = _REFUSAL_STATUS.get(exc.code)
+        if status is None:
+            raise
+        raise HTTPException(status_code=status, detail=exc.message) from exc
 
-    return {
+    started = {
         "run_id": run_id,
         "sample": sample,
         "reference": reference,
         "run_key": f"{sample}__{reference}__{user_id}",
     }
+    if sra_runs is not None:
+        started["sra_runs"] = sra_runs
+    return started
 
 
 def get_run(run_id: int) -> dict:

@@ -90,6 +90,11 @@ services:
   # BLOOM WEB
   #-------------------
   bloom-web:
+    # Must run as ONE replica: trait-export jobs and their finished zips live in
+    # this process's memory (web/lib/cyl-trait-export, added by #996), so a
+    # second replica would answer "export not found" for a job started on the
+    # first. For the same reason any recreate (a config change, a hand-run `up`)
+    # drops them.
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.prod
@@ -98,6 +103,26 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
         NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
+    # Brings bloom-web back after a crash or an out-of-memory kill, like every
+    # other long-running service here. (`docker kill` counts as a manual stop,
+    # which this policy respects; it is not a test of it.)
+    restart: unless-stopped
+    # Bounds a runaway export to this container, and with the restart policy
+    # turns an out-of-memory kill into a restart instead of a dead site.
+    # - Node 20 sizes its JS heap at about half this limit (node:20-alpine,
+    #   measured 2026-10-01: 1536m -> 792 MiB heap, 3g -> 1584 MiB). Two running
+    #   exports (MAX_RUNNING_JOBS) plus the Next.js baseline are estimated at
+    #   ~1 GB of heap; at 1536m V8 would abort before the container limit.
+    # - Outside the heap, in the same limit: up to MAX_HELD_BYTES (768 MiB) of
+    #   held zips, running-job reserves and download buffers, ~240 MB of
+    #   baseline and npm, and anything written to the /tmp tmpfs. Worst case is
+    #   estimated at ~2.6-2.8 GB, under 3g.
+    # (Constants in web/lib/cyl-trait-export/limits.ts, added by #996.) 3g is
+    # under 1% of this host, for each of staging and production.
+    mem_limit: 3g
+    # Without this Docker allows twice mem_limit in swap. Equal values mean no
+    # swap: hit the ceiling and restart.
+    memswap_limit: 3g
     read_only: true
     tmpfs:
       - /tmp
@@ -119,12 +144,27 @@ services:
       SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
+      # Starting cylinder pipeline runs from Bloom; "true" in staging, "false" in
+      # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
+      # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
       # Read by web/lib/config/validate-on-boot.ts in production via the
       # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
       # boot fails if unset. Format:
       # <internal_host>=<public_host>[,<internal_host>=<public_host>]*
       # The .env.prod / .env.staging / .env.ci sources MUST set this var.
       SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
+      # The last commit that changed the code this image is built from (the
+      # Dockerfile's COPY sources), recorded in each trait export's sidecar as
+      # generated_by.version (web/lib/cyl-trait-export, added by #996). It names
+      # the code, not everything in the image; build args (NEXT_PUBLIC_*) and
+      # untracked files on the host are not covered. Read at runtime, so not a build arg.
+      # Not HEAD: this is container config, so a value that changed on every
+      # commit would recreate bloom-web on every deploy. deploy.yml and
+      # `make prod-up`/`staging-up` set it from the host's checkout; any other
+      # hand-run compose gets `unknown` from .env.*.defaults. When
+      # add-ghcr-image-publishing lands, fold this into its BLOOM_IMAGE_SHA.
+      BLOOM_WEB_BUILD_SHA: ${BLOOM_WEB_BUILD_SHA:-}
     depends_on:
       - kong
     healthcheck:
@@ -288,7 +328,8 @@ services:
       # Real credentials for the bloom-pipeline ServiceAccount. TOKEN/CA_CERT/
       # API_URL are true secrets (SENSITIVE_INVENTORY); NAMESPACE/TTL_SECONDS
       # are plain config values with safe code defaults, sourced from the
-      # committed .env.*.defaults files instead.
+      # committed .env.*.defaults files instead, as are the PIPELINE_* pair
+      # below, which have no code default.
       WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
       WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
       WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
@@ -298,6 +339,13 @@ services:
       # prod and staging share the runai-busch-lab namespace above and both
       # run_id sequences start at 1 (see k8s_client.py's ENV_LABEL).
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+      # This environment's stage root and credential Secret, put in place of
+      # the vendored Workflow's at dispatch, and the switch that lets it
+      # dispatch at all (bloom#863). No code defaults.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME}
+      WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE: ${WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
     networks:
       - supanet
     depends_on:
@@ -318,9 +366,9 @@ services:
   # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
   # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
   # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
-  # use of the K8s API (get, not create), so only four of the five
-  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
-  # submission-only (build_workflow_body), never read by this poller.
+  # use of the K8s API (get, not create), so only TOKEN/CA_CERT/API_URL/
+  # NAMESPACE are needed — TTL_SECONDS, ENV_LABEL and the PIPELINE_* pair
+  # are submission-only (build_workflow_body), never read by this poller.
   # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
   # Python-side default (15s) governs it; adding it here without a real
   # default-file entry would make compose inject an empty string and
@@ -394,6 +442,13 @@ services:
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
       WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+      # The three keys below are cyl-pipeline-worker's; this worker ignores
+      # them (RNA-seq dispatch is not gated by them). They're here because
+      # this environment must equal cyl-pipeline-worker's.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME}
+      WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE: ${WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
     networks:
       - supanet
     depends_on:

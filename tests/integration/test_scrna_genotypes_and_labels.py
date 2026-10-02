@@ -119,6 +119,60 @@ def test_the_genotypes_table_exists_with_its_columns(pg_conn):
         }
 
 
+def test_a_genotype_links_to_the_shared_accessions_table(pg_conn):
+    """The accessions table cylinder, plate and translation data use, not OrthoVec's."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT confrelid::regclass::text FROM pg_constraint "
+            "WHERE conname = 'scrna_genotypes_accession_id_fkey'"
+        )
+        assert cur.fetchall() == [("accessions",)]
+
+
+def test_a_genotype_takes_an_accession(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO accessions (name) VALUES (%s) RETURNING id",
+            (f"geno-acc-{uuid.uuid4().hex[:8]}",),
+        )
+        acc = cur.fetchone()[0]
+        gid = genotype(cur, dataset(cur, species(cur)), accession_id=acc)
+        cur.execute("SELECT accession_id FROM scrna_genotypes WHERE id = %s", (gid,))
+        assert cur.fetchone()[0] == acc
+    pg_conn.rollback()
+
+
+def _link_migration_body() -> str:
+    """20260930130000 without its BEGIN/COMMIT, so it runs inside the fixture's transaction."""
+    path = (REPO_ROOT / "supabase" / "migrations"
+            / "20260930130000_scrna_genotypes_link_accessions.sql")
+    return "\n".join(
+        line for line in path.read_text().splitlines()
+        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+    )
+
+
+def test_the_link_migration_moves_staging_off_arabidopsis_accessions(pg_conn):
+    """Staging ran 09-09 when it pointed at arabidopsis_accessions; 20260930130000 moves it."""
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.arabidopsis_accessions') IS NULL")
+        if cur.fetchone()[0]:
+            pytest.skip("arabidopsis_accessions is not in this database")
+        cur.execute(
+            "ALTER TABLE public.scrna_genotypes DROP CONSTRAINT scrna_genotypes_accession_id_fkey; "
+            "ALTER TABLE public.scrna_genotypes ADD CONSTRAINT scrna_genotypes_accession_id_fkey "
+            "FOREIGN KEY (accession_id) REFERENCES public.arabidopsis_accessions (id)"
+        )
+        cur.execute(_link_migration_body())
+        cur.execute(
+            "SELECT confrelid::regclass::text FROM pg_constraint "
+            "WHERE conname = 'scrna_genotypes_accession_id_fkey' "
+            "AND conrelid = 'public.scrna_genotypes'::regclass"
+        )
+        assert cur.fetchall() == [("accessions",)]
+    pg_conn.rollback()
+
+
 def test_a_genotype_records_what_it_is(pg_conn):
     """The point of the table: metadata once, not repeated on every cell."""
     with pg_conn.cursor() as cur:

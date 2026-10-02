@@ -2,8 +2,8 @@
  * Metadata that makes a scan fail at stage-in. `bloomctl download_for_predict`
  * resolves each scan's params from its species and plant age, so a blank
  * species, or an age that is null or not a whole number, fails before any
- * prediction (design D4). Shared by the drill-down's likely cause and, in
- * PR 6, the confirm dialog's stage-in warning.
+ * prediction (design D4). Shared by the drill-down's likely cause and the
+ * confirm dialog's stage-in warning (through params-summary.ts).
  */
 
 import type { ScanMeta } from "./scan-meta";
