@@ -32,6 +32,9 @@ opened from `staging` after PR A is deployed there; §8 is post-deploy.
 - [ ] 2.5 At archive time, re-run 2.4's grep, archive this change before
   `fix-cyl-redelivery-blob-collision` (or in the same PR, this one first), and `diff` each
   modified block against `openspec/specs/…` afterwards; record the result here.
+  `fix-cyl-pipeline-runs-ui-955` (bloom#955) also modifies `cyl-pipeline-ui` "Per-run drill-down",
+  raised onto this change's block (its tasks 9.1). Archive this change before it, so that its
+  block lands second.
 
 ## 3. PR A tests first (red)
 
