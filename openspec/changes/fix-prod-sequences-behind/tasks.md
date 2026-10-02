@@ -124,7 +124,7 @@ Tasks:
 
 - [x] 2.4 In the main session (subagents can't write `.claude/`), add `### Insert rows with explicit ids` under "Common SQL Patterns" in `.claude/commands/database-migration.md`. It says an explicit-id insert doesn't move the sequence, and that such a migration must also carry the advance body (design D6). Not a bare `setval(max)`, which can move a sequence backwards.
 - [x] 2.5 Replace the timestamp placeholder in this change's files with the real timestamp (`20261002135631`).
-- [ ] 2.6 Run the following and confirm they all pass, with no diff from the first two:
+- [x] 2.6 Run the following and confirm they all pass, with no diff from the first two:
   - `make gen-types`
   - `make erd`
   - `./scripts/lint_migrations.sh origin/staging`
