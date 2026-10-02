@@ -8,6 +8,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
+
 ### Changed
 
 - `h5py` and `numpy` are regular dependencies, so a plain install can run `scrna hdf5 upload`.
