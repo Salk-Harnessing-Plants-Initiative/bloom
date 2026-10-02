@@ -398,13 +398,13 @@ The traits page SHALL offer an experiment-grain "Download traits" button, and th
 
 ### Requirement: Trait download dialog recipe list
 The trait download dialog SHALL list the selection's recipes for the user to pick one, and SHALL:
-- show each recipe's `<keyseg>`, its kind, its included count as "N of M selected scans" with `M` = `n_selected`, and what the recipe is, from its `definition`: a pipeline recipe's models (name, version and short weights checksum), its code SHAs and whether it has output params, or "no models or code recorded" when it has none; a legacy recipe's source name; or "no source recorded" for unattributed;
+- show each recipe's `<keyseg>`, its kind, its included count as "N of M selected scans" with `M` = `n_selected`, and what the recipe is, from its `definition`: a pipeline recipe's models (name, or "unnamed model", with version and short weights checksum), its code SHAs and its output params with their values, or "no models or code recorded" when it has none; a legacy recipe's source name and that its models and code were not recorded; or "no source recorded" for unattributed;
 - preselect and label the default recipe; keep a recipe the user picked across a re-list while it is still listed, and otherwise select the new listing's default;
-- when the default covers fewer scans than another listed recipe other than `unattributed`, name the one that covers the most scans (the first in listing order on a tie) by its `<keyseg>`, with its count, say that recipes differ in models and trait columns, and keep the default selected;
+- when the default covers fewer scans than another listed recipe other than `unattributed`, name the one that covers the most scans (the first in listing order on a tie) by its `<keyseg>`, with its count, say that recipes differ in models and trait columns (and, for a legacy recipe, that its models and code were not recorded), and keep the default selected;
 - on the traits page, offer wave and age filters, each allowing "All" (which omits that parameter; `0` is a value), show the chosen filters in its heading, and re-list once 500 ms pass with no further change;
 - treat the previous listing as stale as soon as the filters change: discard its response, including a `499`, and cancel its request; show a `499` that has no newer listing of its own as an error;
 - disable Download until the current filters' listing has arrived, and when `n_selected` is 0 ("No scans match this wave and age") or there are no recipes ("No trait results for this selection");
-- show a listing error's `detail`, or a generic message for a response it cannot read, with Retry.
+- show a listing error's `detail`, or a listing-specific generic message for a response it cannot read, with Retry; a `499` from another window's listing says so.
 
 #### Scenario: Default preselected
 
@@ -414,7 +414,7 @@ The trait download dialog SHALL list the selection's recipes for the user to pic
 #### Scenario: Recipe described
 
 - **WHEN** the listing holds a pipeline, a legacy and an unattributed recipe
-- **THEN** the pipeline recipe shows its models' names, versions and short weights checksums and its code SHAs, the legacy recipe its source name, and the unattributed recipe "no source recorded"
+- **THEN** the pipeline recipe shows its models' names, versions and short weights checksums, its code SHAs and its output params with their values, the legacy recipe its source name and that its models and code were not recorded, and the unattributed recipe "no source recorded"
 
 #### Scenario: Default covers fewer scans
 
@@ -455,25 +455,26 @@ The trait download dialog SHALL list the selection's recipes for the user to pic
 ### Requirement: Trait download dialog job lifecycle
 The trait download dialog SHALL run one export job for the picked recipe and save its zip, and SHALL:
 - start a job only from the current filters' listing with the picked recipe in it, from Download and from Retry alike;
-- refresh the browser session first only when it expires within `MIN_SESSION_SECONDS`, then start the job with the selection, `recipe`, and `chosen` = `default` when the picked recipe is the listing's default, else `user`; a refresh the sign-in service rejects shows a sign-in message and starts nothing, and any other refresh failure shows a retryable error;
+- refresh the browser session first only when it expires within `MIN_SESSION_SECONDS`, then start the job with the selection, `recipe`, and `chosen` = `default` when the picked recipe is the listing's default, else `user`; a refresh failure that ends the session shows a sign-in message and starts nothing, and a retryable network failure shows a retryable error;
 - send one start for repeated clicks;
 - after a `401` "session expires too soon", refresh and start again once; show a `401` with any other `detail` without retrying;
-- after a `429` with a `job_id`, offer to resume polling that job or to cancel it, saying it may be another tab's export for a different selection; after a `429` without one, show its `detail` with Retry;
+- after a `429` naming the job it already holds, keep following that job as before; after a `429` naming another job, offer to resume polling it or to cancel it, saying it may be another tab's export for a different selection, and disable both while a cancel is in flight; after a `429` without a `job_id`, show its `detail` with Retry;
+- ignore any poll or download answer for a job it no longer follows;
 - poll the job without overlapping requests, every 2 s for the first 60 s after the job started or was resumed and every 5 s after that, showing "Reading batch d of n" in phase `traits` and a fixed line for each other phase;
 - after a poll `401`, show the sign-in message; after 3 consecutive failed polls that are neither `401` nor `404`, stop and offer to check the same job again, which never starts a new job;
-- on `ready`, download the zip, save it under the job's `filename`, say the download started, offer to save it again while the dialog is open, and then `DELETE` the job;
+- on `ready`, download the zip, save it under the job's `filename`, say the download started, offer to save it again while the dialog is open, and then `DELETE` the job if this dialog started it;
 - never save a download response that is not ok;
 - show a failed job's `detail`, a `cancelled` job, a non-JSON error body and a failed save, each with Retry, saving nothing; Retry refreshes if needed and starts a new job;
-- say the export is no longer on the server, with Retry, when polling returns `404`;
-- not close on a click outside it while a job is active;
-- when closed, stop polling, `DELETE` any job it started that is not yet deleted, including one whose start answers after the close, keep a job it only resumed, and update nothing afterwards;
+- say the export is no longer on the server, naming the possible causes including an earlier download, with Retry, when polling or the download returns `404`;
+- not close on a click outside it or on Escape while a job is active; the Close button still closes it;
+- when closed, stop polling, abort its in-flight requests, `DELETE` any job it started that is not yet deleted, including one whose start answers after the close, keep a job it only resumed, and update nothing afterwards;
 - link to the "Using a trait export" section of `trait-recipes.md`.
 
 #### Scenario: Progress and save
 
 - **WHEN** a poll returns `running` in phase `traits` with `done` 3 and `total` 10, and a later poll returns `ready` with `filename` `exp_legacy-5_20261002.zip`
 - **THEN** the dialog shows "Reading batch 3 of 10", then saves the zip as `exp_legacy-5_20261002.zip` and says the download started
-- **AND** it sends `DELETE` for the job
+- **AND** it sends `DELETE` for the job it started
 
 #### Scenario: Retry needs a current listing
 
@@ -497,8 +498,13 @@ The trait download dialog SHALL run one export job for the picked recipe and sav
 
 #### Scenario: Resumed job kept on close
 
-- **WHEN** the dialog is closed while polling a job it resumed
+- **WHEN** the dialog is closed while polling a job it resumed, or after saving it
 - **THEN** it sends no `DELETE` for that job
+
+#### Scenario: Own job named by a 429
+
+- **WHEN** a job it started is still held, and a later start returns `429` naming that job
+- **THEN** the dialog keeps following it as its own, without an offer, and deletes it on close
 
 #### Scenario: Server busy
 
@@ -530,7 +536,7 @@ The trait download dialog SHALL run one export job for the picked recipe and sav
 - **WHEN** the dialog is closed while the job's start is in flight, and the start then returns a `job_id`
 - **THEN** the dialog sends `DELETE` for that job and no status request
 
-#### Scenario: Backdrop click during a job
+#### Scenario: Click outside or Escape during a job
 
-- **WHEN** the user clicks outside the dialog while a job is active
+- **WHEN** the user clicks outside the dialog or presses Escape while a job is active
 - **THEN** the dialog stays open

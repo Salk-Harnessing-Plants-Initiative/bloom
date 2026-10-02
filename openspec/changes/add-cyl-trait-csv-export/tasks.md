@@ -707,6 +707,53 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - **Guide:** the "Getting one" paragraph now says the dialog starts on the page's wave and age (All/All for the whole experiment), that recipes differ in models and trait columns, and what "Download started" and "Save again" mean.
 - [ ] 11a.5 Pre-merge again as in 11.8, push (with the user's yes), record CI, and update the PR body's review-fixes section.
 
+## 11b. Round-2 review fixes (PR #1025 review 5397656269, 2026-10-02; test first)
+
+- [ ] 11b.1 **Job ownership and lifecycle.** Test first in the dialog test:
+  - **Ownership:**
+    - after a poll `401`, Retry, and a `429` naming the held job, the dialog keeps following it as its own with no offer, and deletes it on close;
+    - resuming another tab's job and then a third job deletes neither;
+    - a resumed job is not deleted after saving.
+  - **Stale answers:**
+    - an answer for a job it no longer follows is ignored: a stale `cancelled` poll after Cancel export, Resume and a new Download leaves the new job followed;
+    - the offer's Resume and Cancel are disabled while its cancel is in flight.
+  - **Closing:**
+    - closing aborts the in-flight start, poll and download requests;
+    - Escape does not close while a job is active;
+    - Close still closes and cancels.
+- [ ] 11b.2 **Sign-out classification.** Test first in `client/requests.test.ts` with auth-js's own error classes:
+  - `AuthRetryableFetchError` (status 0 and 503) is `retry`;
+  - `AuthApiError` 500, `AuthUnknownError` and `AuthSessionMissingError` are `signin`;
+  - a non-auth throw is `retry`.
+- [ ] 11b.3 **Tests that prove each guard on its own** (from the round-2 testing review, each killing a named mutant):
+  - a filter change clears a failed job and its Retry;
+  - a failed job's Retry stays disabled, and starts nothing, while a re-listing is pending;
+  - the fetch mock honours `AbortSignal`, and StrictMode shows no error when the aborted first listing rejects;
+  - an automatic pick follows the default again after the user's pick was dropped;
+  - Check again allows three more failures;
+  - a filter change clears "Download started" and Save again, and revokes the URL;
+  - a thrown refresh shows the retryable message;
+  - a stale body arriving after a filter change is ignored;
+  - `removeJob` warns on a failed DELETE but not on a `404`.
+  - Correct the 11a notes: untick "two errors at once" as unreachable, and replace "guarded three ways".
+- [ ] 11b.4 **What the dialog says.** Test first:
+  - **Recipe descriptions:**
+    - a legacy recipe says its models and code were not recorded, and so does the note when it points at one;
+    - output params show `name=value`;
+    - a model with no name is "unnamed model";
+    - the key segment has the full key as its title.
+  - **Messages:**
+    - an unreadable listing error is the listing message, not the export one;
+    - a listing `499` says another window started listing;
+    - a poll or download `404` names an earlier download among the causes;
+    - the 429 offer reads as one sentence;
+    - for a resumed job, the status line says its selection may differ.
+  - **Docs:**
+    - the guide's "Getting one" paragraph uses "most recently added" and avoids "image";
+    - it no longer overclaims "Download started", and says a legacy recipe has no recorded models or code;
+    - fix the stale doc comments in `TraitExportButton.tsx` and `poll.ts`.
+- [ ] 11b.5 Pre-merge as in 11.8; record 11a.5's CI (green on `ffc25ee6`: 33 pass, 2 skipped) and this push's; update the PR body.
+
 ## 12. After merge
 
 - [ ] 12.1 After each PR deploys to staging, repeat its largest export through the deployed Caddy path. Record the job time, zip size and `bloom-web` peak RSS.
@@ -815,4 +862,6 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
 | Failure shown, Interrupted export | 11.3 (Polling) |
 | Close cancels, Closed before the job started | 11.3 (Closing) |
 | Automatic pick follows the default, Unreadable listing | 11a.1 |
-| Retry needs a current listing, Session refreshed only when needed, Resumed job kept on close, Backdrop click during a job, Export no longer on the server | 11a.2 |
+| Retry needs a current listing, Session refreshed only when needed, Export no longer on the server | 11a.2, 11b.3 |
+| Resumed job kept on close, Own job named by a 429, Click outside or Escape during a job | 11b.1 |
+| Stale listing discarded | 11.3, 11a.1, 11b.3 |
