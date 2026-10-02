@@ -166,7 +166,7 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - the five past-window cases equal talmolab/sleap-roots-predict `tests/test_model_selection.py` `_PAST_WINDOW` at `79939ee`: 28→14, 18→10, 10→8, 14→13, 15→14;
   - the fixture's selectors equal `tests/card_builders.py` `_PRODUCTION` at `79939ee`.
   - Cite both in a comment.
-- [ ] 5.3 **Red (C5b).** `lib/cyl-pipeline/model-cards.test.ts`.
+- [x] 5.3 **Red (C5b).** `lib/cyl-pipeline/model-cards.test.ts`.
   - `isCardList` accepts the fixture and rejects each of: a non-integer or boolean `age_max`, `NaN`, a `null` card, a selector missing `species`, a missing `selectors`, a non-array `cards`, and a missing `fetched_at`.
   - `fetchModelCards()` returns:
     - the cards on 200;
@@ -175,7 +175,7 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
     - `null` from a 200 whose `json()` never settles, after 10 s, because the body read races the signal;
     - and after a successful 200, `vi.getTimerCount() === 0`.
   - It never throws.
-- [ ] 5.4 **Red (C5b).** `app/api/cyl/pipeline/model-cards/route.test.ts`:
+- [x] 5.4 **Red (C5b).** `app/api/cyl/pipeline/model-cards/route.test.ts`:
   - switch off → 503, and neither `getSession` nor fetch is called;
   - no session → 401, and no fetch;
   - upstream 200 with a valid list, on a request with no `Origin` header → 200 pass-through, with the bearer token sent and `init.signal` an `AbortSignal`;
@@ -183,8 +183,8 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - upstream 503 with detail `upstream-text`, a 3xx, a non-JSON 200, a bad shape, or a `TypeError` rejection → 502, and no body contains `upstream-text`;
   - a `DOMException("t", "TimeoutError")` rejection → 504;
   - exports `GET` only, with `dynamic = "force-dynamic"` and `runtime = "nodejs"`.
-- [ ] 5.5 **Guard.** `app/api/cyl/pipeline/route.test.ts` "exports POST and no other method" stays green.
-- [ ] 5.6 Implement:
+- [x] 5.5 **Guard.** `app/api/cyl/pipeline/route.test.ts` "exports POST and no other method" stays green.
+- [x] 5.6 Implement:
   - `model-windows.ts` in C5a;
   - `model-cards.ts` (client-safe: `isCardList`, and `fetchModelCards` with `AbortController` + `setTimeout`), `model-cards-proxy.ts` (server-only, `AbortSignal.timeout(8_000)`) and the route in C5b.
   - `no-provenance-joins.test.ts` stays green.
