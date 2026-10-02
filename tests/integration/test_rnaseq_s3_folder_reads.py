@@ -260,6 +260,131 @@ def test_a_folder_run_is_refused_on_a_registered_samples_key(cur):
     _refused(cur, _request, error=psycopg.errors.UniqueViolation, match=f"run {registered}")
 
 
+def _sra(cur, sample="col0", reference="tiny_ref"):
+    return _as_workflows(
+        cur,
+        "SELECT request_scrna_cellranger_run(p_sample => %s, p_reference => %s, "
+        "p_requested_by => %s, p_sra_runs => %s)",
+        (sample, reference, USER, ["SRR28503597"]),
+    )
+
+
+def _registered(cur, sample="col0", reference="tiny_ref"):
+    return _as_workflows(
+        cur,
+        "SELECT request_scrna_cellranger_run(p_sample => %s, p_reference => %s, "
+        "p_requested_by => %s)",
+        (sample, reference, USER),
+    )
+
+
+@pytest.mark.parametrize("start", [_sra, _registered])
+def test_an_sra_or_registered_run_on_a_folder_runs_key_is_refused(cur, start):
+    folder = _request(cur)
+    _mark(cur, folder, "succeeded")
+    _refused(cur, start, error=psycopg.errors.UniqueViolation,
+             match=rf"col0 against tiny_ref already has run {folder} from an S3 folder")
+    assert _count(cur, TABLE) == 1
+
+
+@pytest.mark.parametrize("start", [_sra, _registered])
+def test_an_sra_or_registered_run_can_follow_a_failed_folder_run(cur, start):
+    _mark(cur, _request(cur), "failed")
+    assert start(cur) > 0
+
+
+def test_an_sra_import_on_another_reference_is_another_key(cur):
+    _mark(cur, _request(cur), "succeeded")
+    assert _sra(cur, reference="other_ref") > 0
+
+
+def test_a_registered_sample_can_still_be_run_again(cur):
+    """Same name, same reads: the second run is skipped by the pipeline, as before."""
+    _mark(cur, _registered(cur), "succeeded")
+    assert _registered(cur) > 0
+
+
+def test_the_run_key_lock_is_held_until_the_request_commits(cur, pg_conninfo):
+    """A folder run and any other run on one key can't both pass the checks at once."""
+    _request(cur)
+    key = f"rnaseq_run_key:col0__tiny_ref__{USER}"
+    with psycopg.connect(pg_conninfo) as other, other.cursor() as c:
+        c.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))", (key,))
+        assert c.fetchone()[0] is False
+        c.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"rnaseq_run_key:col1__tiny_ref__{USER}",),
+        )
+        assert c.fetchone()[0] is True
+
+
+def _sra_ids(cur, runs, sample="col0", reference="tiny_ref", user=USER):
+    return _as_workflows(
+        cur,
+        "SELECT request_scrna_cellranger_run(p_sample => %s, p_reference => %s, "
+        "p_requested_by => %s, p_sra_runs => %s)",
+        (sample, reference, user, runs),
+    )
+
+
+def _register(cur, run_id, name, runs):
+    """What the poller does once an import's download succeeds."""
+    cur.execute(
+        "INSERT INTO rnaseq_samples (name, source, source_ref, fastq_count, total_bytes, registered_by) "
+        "VALUES (%s, 'sra', %s, 2, 10, %s)",
+        (name, ",".join(runs), USER),
+    )
+
+
+SRR = ["SRR28503597", "SRR28503598"]
+
+
+def test_the_same_sra_reads_against_the_same_reference_are_refused(cur):
+    first = _sra_ids(cur, SRR)
+    _mark(cur, first, "succeeded")
+    _register(cur, first, "col0", SRR)
+    _refused(
+        cur, _sra_ids, list(reversed(SRR)), error=psycopg.errors.UniqueViolation,
+        match=rf"SRR28503598, SRR28503597 against tiny_ref was already run as col0 \(run {first}\)",
+    )
+
+
+def test_the_same_sra_reads_under_another_name_are_refused(cur):
+    first = _sra_ids(cur, SRR)
+    _mark(cur, first, "succeeded")
+    _register(cur, first, "col0", SRR)
+    _refused(cur, _sra_ids, SRR, sample="col0_again", error=psycopg.errors.UniqueViolation,
+             match=f"already run as col0 \\(run {first}\\)")
+
+
+def test_the_same_sra_reads_against_another_reference_are_a_new_run(cur):
+    first = _sra_ids(cur, SRR)
+    _mark(cur, first, "succeeded")
+    _register(cur, first, "col0", SRR)
+    second = _sra_ids(cur, SRR, reference="other_ref")
+    assert _params(cur, second) == {"sample": "col0", "reference": "other_ref", "sra_runs": SRR}
+
+
+def test_a_failed_sra_run_can_be_run_again(cur):
+    first = _sra_ids(cur, SRR)
+    _mark(cur, first, "failed")
+    assert _sra_ids(cur, SRR) > first
+
+
+def test_a_registered_name_with_other_sra_reads_is_refused(cur):
+    first = _sra_ids(cur, SRR)
+    _mark(cur, first, "succeeded")
+    _register(cur, first, "col0", SRR)
+    _refused(cur, _sra_ids, ["SRR99999999"], reference="other_ref",
+             error=psycopg.errors.UniqueViolation,
+             match="sample col0 is already used for SRR28503597,SRR28503598; choose another name")
+
+
+def test_another_scientist_can_run_the_same_sra_reads(cur):
+    _mark(cur, _sra_ids(cur, SRR), "succeeded")
+    assert _sra_ids(cur, SRR, sample="col0_b", user=OTHER_USER) > 0
+
+
 def test_another_reference_or_scientist_is_another_key(cur):
     _request(cur)
     assert _request(cur, reference="other_ref") > 0

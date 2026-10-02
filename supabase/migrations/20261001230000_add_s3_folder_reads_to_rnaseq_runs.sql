@@ -82,9 +82,12 @@ DROP FUNCTION IF EXISTS public.request_scrna_cellranger_run(TEXT, TEXT, UUID, JS
 -- The reads come from one source: an S3 folder (p_fastq_url with the p_fastq_files found in it),
 -- SRA run IDs (p_sra_runs, imported under a name nobody has registered), or neither (a
 -- registered sample). No run on a registered name starts while an import of it is still
--- downloading. A folder run is refused when its run key (sample, reference and scientist)
--- already has a run that hasn't failed, since the key is also the run's output folder and
--- a finished one would be reused as this run's results.
+-- downloading. The run key (sample, reference and scientist) is also the run's output
+-- folder, so a finished run there would be reused as a new one's results: a folder run is
+-- refused when the key has any run that hasn't failed, and an SRA or registered run when it
+-- has a folder run that hasn't failed. An SRA import may reuse a registered name only for the
+-- same run IDs, and is refused when the scientist already ran those run IDs against that
+-- reference: the same reads under another reference are a new run.
 CREATE OR REPLACE FUNCTION public.request_scrna_cellranger_run(
     p_sample TEXT,
     p_reference TEXT,
@@ -113,6 +116,8 @@ DECLARE
     v_run_id BIGINT;
     v_run_key TEXT := p_sample || '__' || p_reference || '__' || p_requested_by::text;
     v_earlier BIGINT;
+    v_earlier_sample TEXT;
+    v_source_ref TEXT;
 BEGIN
     IF p_sample IS NULL OR p_sample !~ v_sample_rule OR p_sample ~ '__' THEN
         RAISE EXCEPTION 'invalid sample name: %', p_sample USING ERRCODE = '22023';
@@ -213,6 +218,22 @@ BEGIN
                 USING ERRCODE = '22023';
         END IF;
 
+        -- The run key's lock first, as a folder run takes it, then the name's.
+        PERFORM pg_advisory_xact_lock(hashtextextended('rnaseq_run_key:' || v_run_key, 0));
+        -- A folder run's results on this key would be reused as this run's.
+        SELECT id INTO v_earlier FROM public.rnaseq_runs
+        WHERE workflow_type = 'scrna-cellranger'
+          AND run_key = v_run_key
+          AND params ? 'fastq_url'
+          AND status <> 'failed'
+        ORDER BY id
+        LIMIT 1;
+        IF v_earlier IS NOT NULL THEN
+            RAISE EXCEPTION '% against % already has run % from an S3 folder. Choose another sample name, or another reference',
+                p_sample, p_reference, v_earlier
+                USING ERRCODE = '23505';
+        END IF;
+
         -- Serialises requests for one name, so two can't both pass the checks below.
         PERFORM pg_advisory_xact_lock(hashtextextended('rnaseq_sra_import:' || p_sample, 0));
         IF EXISTS (
@@ -226,13 +247,36 @@ BEGIN
                 RAISE EXCEPTION 'sample % is still being imported from SRA; start the run once it is registered', p_sample
                     USING ERRCODE = '55000';
             END IF;
-            RAISE EXCEPTION 'sample % is already being imported; choose another name', p_sample
+            RAISE EXCEPTION 'sample % is still being imported from SRA; start this run once that import finishes, or choose another name', p_sample
                 USING ERRCODE = '23505';
         END IF;
 
         IF p_sra_runs IS NOT NULL THEN
-            IF EXISTS (SELECT 1 FROM public.rnaseq_samples WHERE name = p_sample) THEN
-                RAISE EXCEPTION 'sample % is already registered; choose another name', p_sample
+            -- A registered name must mean the same reads; the order of the runs doesn't matter.
+            SELECT source_ref INTO v_source_ref FROM public.rnaseq_samples WHERE name = p_sample;
+            IF FOUND AND (
+                SELECT array_agg(r ORDER BY r) FROM unnest(string_to_array(v_source_ref, ',')) r
+            ) IS DISTINCT FROM (SELECT array_agg(r ORDER BY r) FROM unnest(p_sra_runs) r) THEN
+                RAISE EXCEPTION 'sample % is already used for %; choose another name',
+                    p_sample, coalesce(v_source_ref, 'other reads')
+                    USING ERRCODE = '23505';
+            END IF;
+            -- The same reads against the same reference, by the same scientist, are the same job
+            -- under whatever name.
+            SELECT id, params ->> 'sample' INTO v_earlier, v_earlier_sample
+            FROM public.rnaseq_runs
+            WHERE workflow_type = 'scrna-cellranger'
+              AND requested_by = p_requested_by
+              AND params ->> 'reference' = p_reference
+              AND params ? 'sra_runs'
+              AND status <> 'failed'
+              AND (SELECT array_agg(r ORDER BY r) FROM jsonb_array_elements_text(params -> 'sra_runs') r)
+                  = (SELECT array_agg(r ORDER BY r) FROM unnest(p_sra_runs) r)
+            ORDER BY id
+            LIMIT 1;
+            IF v_earlier IS NOT NULL THEN
+                RAISE EXCEPTION '% against % was already run as % (run %); its results are on that run''s page. To run these reads again, choose another reference',
+                    array_to_string(p_sra_runs, ', '), p_reference, v_earlier_sample, v_earlier
                     USING ERRCODE = '23505';
             END IF;
             v_params := v_params || jsonb_build_object('sra_runs', to_jsonb(p_sra_runs));
