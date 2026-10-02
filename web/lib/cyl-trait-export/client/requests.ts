@@ -62,15 +62,18 @@ export function downloadUrl(jobId: string): string {
 }
 
 /** The body's `detail` (and `job_id`), or the generic message when it is not JSON. */
-export async function readErrorBody(res: { json: () => Promise<unknown> }): Promise<ErrorBody> {
+export async function readErrorBody(
+  res: { json: () => Promise<unknown> },
+  fallback: string = GENERIC_ERROR
+): Promise<ErrorBody> {
   let body: unknown
   try {
     body = await res.json()
   } catch {
-    return { detail: GENERIC_ERROR }
+    return { detail: fallback }
   }
   const b = (body ?? {}) as { detail?: unknown; job_id?: unknown }
-  if (typeof b.detail !== 'string' || b.detail === '') return { detail: GENERIC_ERROR }
+  if (typeof b.detail !== 'string' || b.detail === '') return { detail: fallback }
   return isJobId(b.job_id) ? { detail: b.detail, job_id: b.job_id } : { detail: b.detail }
 }
 
@@ -145,8 +148,12 @@ export function sessionNeedsRefresh(expiresAtSec: number | undefined, nowMs: num
   return expiresAtSec === undefined || expiresAtSec - nowMs / 1000 < MIN_SESSION_SECONDS
 }
 
-/** A refresh the sign-in service refused (4xx) means signed out; anything else may be retried. */
+/**
+ * Whether a refresh error ended the session. auth-js keeps the session only for an
+ * `AuthRetryableFetchError` (network, 502-504, 52x, 530) and removes it for every other
+ * auth error, so only that one is worth retrying. A non-auth throw never reached auth-js.
+ */
 export function refreshFailureKind(error: unknown): 'signin' | 'retry' {
-  const status = isObject(error) ? error.status : undefined
-  return typeof status === 'number' && status >= 400 && status < 500 ? 'signin' : 'retry'
+  if (!isObject(error) || error.__isAuthError !== true) return 'retry'
+  return error.name === 'AuthRetryableFetchError' ? 'retry' : 'signin'
 }

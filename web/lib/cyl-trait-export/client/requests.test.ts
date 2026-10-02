@@ -1,5 +1,11 @@
 /** The dialog's requests and error reading (design D8; spec "Trait download dialog job lifecycle"). */
 
+import {
+  AuthApiError,
+  AuthRetryableFetchError,
+  AuthSessionMissingError,
+  AuthUnknownError,
+} from '@supabase/supabase-js'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -254,12 +260,33 @@ describe('sessionNeedsRefresh', () => {
 })
 
 describe('refreshFailureKind', () => {
-  it('is a sign-in only when the sign-in service refused (4xx)', () => {
-    expect(refreshFailureKind({ status: 400 })).toBe('signin')
-    expect(refreshFailureKind({ status: 401 })).toBe('signin')
-    expect(refreshFailureKind({ status: 0 })).toBe('retry')
-    expect(refreshFailureKind({ status: 503 })).toBe('retry')
+  it('is retry only for what auth-js retries (it keeps the session then)', () => {
+    expect(refreshFailureKind(new AuthRetryableFetchError('fetch failed', 0))).toBe('retry')
+    expect(refreshFailureKind(new AuthRetryableFetchError('bad gateway', 503))).toBe('retry')
+  })
+
+  it('is a sign-in for every other auth-js error (auth-js has removed the session)', () => {
+    expect(
+      refreshFailureKind(new AuthApiError('Invalid Refresh Token', 400, 'refresh_token_not_found'))
+    ).toBe('signin')
+    expect(refreshFailureKind(new AuthApiError('server error', 500, 'unexpected_failure'))).toBe(
+      'signin'
+    )
+    expect(refreshFailureKind(new AuthUnknownError('not json', {}))).toBe('signin')
+    expect(refreshFailureKind(new AuthSessionMissingError())).toBe('signin')
+  })
+
+  it('is retry for anything that is not an auth-js error', () => {
     expect(refreshFailureKind(new TypeError('network'))).toBe('retry')
+    expect(refreshFailureKind({ status: 400 })).toBe('retry')
     expect(refreshFailureKind(null)).toBe('retry')
+  })
+})
+
+describe('readErrorBody fallback', () => {
+  it('uses the given fallback for a body it cannot read', async () => {
+    await expect(
+      readErrorBody({ json: async () => Promise.reject(new SyntaxError('html')) }, 'listing failed')
+    ).resolves.toEqual({ detail: 'listing failed' })
   })
 })

@@ -657,7 +657,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
 - [x] 11a.2 **Job lifecycle.** Test first:
   - **Retry gate:**
     - Retry after a job error, with a filter changed and the listing not yet back, starts nothing;
-    - with two errors at once, only one Retry acts.
+    - ~~with two errors at once, only one Retry acts~~: unreachable, because a filter change clears the job error (11b.3).
   - **Session refresh:**
     - no `refreshSession()` for a listing, nor for a start whose session has more than `MIN_SESSION_SECONDS` left;
     - a refresh when it has less;
@@ -703,13 +703,16 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - keeping any still-listed pick fails "moves an automatic pick to the new default";
     - dropping the backdrop guard fails "ignores a click outside while a job is active";
     - deleting resumed jobs on close fails "keeps a job it only resumed when closed".
-  - **Retry gate:** "starts nothing from Retry until the changed filters have been listed" is guarded three ways: a filter change clears the job error, the job Retry is disabled until the listing is current, and `start()` checks the same gate. Removing any one of them leaves the test green.
+  - **Retry gate:** the 11a test that clicked whatever Retry was showing was vacuous, because the filter change clears the error. 11b.3 replaced it:
+    - "clears a failed job and its Retry as soon as a filter changes" tests the reset;
+    - "keeps a failed job's Retry disabled… while a re-listing is pending" tests the disabled Retry;
+    - the `start()` check is unreachable from the UI, so it is defence in depth.
   - **Guide:** the "Getting one" paragraph now says the dialog starts on the page's wave and age (All/All for the whole experiment), that recipes differ in models and trait columns, and what "Download started" and "Save again" mean.
 - [ ] 11a.5 Pre-merge again as in 11.8, push (with the user's yes), record CI, and update the PR body's review-fixes section.
 
 ## 11b. Round-2 review fixes (PR #1025 review 5397656269, 2026-10-02; test first)
 
-- [ ] 11b.1 **Job ownership and lifecycle.** Test first in the dialog test:
+- [x] 11b.1 **Job ownership and lifecycle.** Test first in the dialog test:
   - **Ownership:**
     - after a poll `401`, Retry, and a `429` naming the held job, the dialog keeps following it as its own with no offer, and deletes it on close;
     - resuming another tab's job and then a third job deletes neither;
@@ -721,11 +724,11 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - closing aborts the in-flight start, poll and download requests;
     - Escape does not close while a job is active;
     - Close still closes and cancels.
-- [ ] 11b.2 **Sign-out classification.** Test first in `client/requests.test.ts` with auth-js's own error classes:
+- [x] 11b.2 **Sign-out classification.** Test first in `client/requests.test.ts` with auth-js's own error classes:
   - `AuthRetryableFetchError` (status 0 and 503) is `retry`;
   - `AuthApiError` 500, `AuthUnknownError` and `AuthSessionMissingError` are `signin`;
   - a non-auth throw is `retry`.
-- [ ] 11b.3 **Tests that prove each guard on its own** (from the round-2 testing review, each killing a named mutant):
+- [x] 11b.3 **Tests that prove each guard on its own** (from the round-2 testing review, each killing a named mutant):
   - a filter change clears a failed job and its Retry;
   - a failed job's Retry stays disabled, and starts nothing, while a re-listing is pending;
   - the fetch mock honours `AbortSignal`, and StrictMode shows no error when the aborted first listing rejects;
@@ -736,7 +739,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - a stale body arriving after a filter change is ignored;
   - `removeJob` warns on a failed DELETE but not on a `404`.
   - Correct the 11a notes: untick "two errors at once" as unreachable, and replace "guarded three ways".
-- [ ] 11b.4 **What the dialog says.** Test first:
+- [x] 11b.4 **What the dialog says.** Test first:
   - **Recipe descriptions:**
     - a legacy recipe says its models and code were not recorded, and so does the note when it points at one;
     - output params show `name=value`;
@@ -752,6 +755,20 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - the guide's "Getting one" paragraph uses "most recently added" and avoids "image";
     - it no longer overclaims "Download started", and says a legacy recipe has no recorded models or code;
     - fix the stale doc comments in `TraitExportButton.tsx` and `poll.ts`.
+  **(done 2026-10-02):**
+  - **Red:** 10 failed / 45 passed for the helpers, and 11 failed / 86 passed for the dialog and scan button.
+    - One red test came from the round-2 refresh test still using a plain `{status: 400}` object; it now uses auth-js's real `AuthApiError` and `AuthRetryableFetchError`.
+    - The single-guard tests from the review pass on the current code, as characterization.
+  - **Green:** 152/152 in the changed directories, and the full web suite passes, 157 files / 2,382 tests; `tsc` clean.
+  - **Mutations,** each restored byte for byte, each failing exactly its own test:
+    - a `429` naming the held job going back to the offer;
+    - the offer enabled while cancelling;
+    - Escape closing during a job;
+    - save deleting a resumed job;
+    - no abort signal on polls.
+  - **Untested by design:** the "answer for a job no longer followed" check in `poll()`/`save()` is defence in depth, because the offer is disabled while cancelling and no other UI path changes the followed job while a poll is in flight.
+  - **Closing:** it aborts the listing, poll and download requests but not the start, so a start answering after the close still yields its id and is deleted (spec and D8 updated to match).
+  - **Pick tracking:** the user's pick is now tracked in a ref (`userPick`), so the listing effect reads no state outside its dependencies.
 - [ ] 11b.5 Pre-merge as in 11.8; record 11a.5's CI (green on `ffc25ee6`: 33 pass, 2 skipped) and this push's; update the PR body.
 
 ## 12. After merge

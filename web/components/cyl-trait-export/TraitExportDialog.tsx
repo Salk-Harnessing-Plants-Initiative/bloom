@@ -10,13 +10,17 @@
  *   listing the same user replaced, so a `499` is shown only when nothing newer was
  *   sent here.
  * - Download, and Retry, start a job only from the current listing. The session is
- *   refreshed only when it is near the job route's floor: a refresh the sign-in service
- *   refuses signs the user out of all of Bloom. Polls are chained timeouts, so they
- *   never overlap. A ready zip is saved under the job's filename, kept for "Save
- *   again" while the dialog is open, and the job is then deleted to free server memory.
- * - The dialog is mounted only while open. Unmounting stops polling, aborts a listing,
- *   and deletes any job it started (not one it only resumed: that is often another
- *   tab's export), including one whose start answers after the close.
+ *   refreshed only when it is near the job route's floor: a refresh that fails for any
+ *   reason auth-js does not retry signs the user out of all of Bloom. Polls are chained
+ *   timeouts, so they never overlap, and an answer for a job no longer followed is
+ *   dropped. A ready zip is saved under the job's filename and kept for "Save again"
+ *   while the dialog is open; a job this dialog started is then deleted to free server
+ *   memory.
+ * - The dialog is mounted only while open. Unmounting stops polling, aborts the
+ *   listing, poll and download requests, and deletes any job it started (not one it
+ *   only resumed: that is often another tab's export), including one whose start
+ *   answers after the close; the start request is not aborted, so that job's id
+ *   still arrives.
  */
 
 import Dialog from '@mui/material/Dialog'
@@ -66,10 +70,15 @@ export const HELP_URL =
 export const SIGN_IN = 'Your session has ended. Sign in again to download traits.'
 export const SESSION_RETRY = 'Could not reach the sign-in service. Please try again.'
 export const NOT_ON_SERVER =
-  'The export is no longer on the server (it expired, a newer export replaced it, or the server restarted). Please retry.'
+  'The export is no longer on the server: it was already downloaded (perhaps in another tab), it expired, a newer export replaced it, or the server restarted. Please retry.'
 export const LIST_FAILED = 'Could not list the trait recipes. Please try again.'
+export const LISTING_REPLACED =
+  'Another Download traits window started listing, so this one stopped. Retry to list again.'
 export const CANCELLED = 'The export was cancelled.'
 export const POLL_FAILED = "Could not check the export's progress."
+const OFFER =
+  'You already have an export running, possibly started in another tab for a different selection; its file name will say which. Resume it to save it here, or cancel it to start this one.'
+const RESUMED_NOTE = ' This is the export you resumed; its selection may differ from the one above.'
 
 const DEBOUNCE_MS = 500
 
@@ -82,9 +91,9 @@ type Job =
   | { state: 'idle' }
   | { state: 'starting' }
   | { state: 'running'; line: string }
-  | { state: 'offer'; jobId: string; detail: string }
+  | { state: 'offer'; jobId: string; cancelling: boolean }
   | { state: 'paused' }
-  | { state: 'saved'; filename: string }
+  | { state: 'saved'; filename: string; resumed: boolean }
   | { state: 'error'; detail: string }
 
 /** Refresh only when needed; `force` after a "session expires too soon" 401. */
@@ -151,12 +160,15 @@ export function TraitExportDialog({
   const [relist, setRelist] = useState(0)
 
   const alive = useRef(true)
-  const listedKey = useRef<string | null>(null)
+  /** The filters of the latest listing scheduled; a change from them waits for the debounce. */
+  const scheduledKey = useRef<string | null>(null)
   const guard = useRef(createLatestGuard())
   const listAbort = useRef<AbortController | null>(null)
-  /** True once the user has picked a recipe; an automatic pick follows the default. */
-  const userPicked = useRef(false)
-  /** The job being followed, and whether this dialog started it (only those are deleted on close). */
+  /** Aborts the poll and download requests on close. */
+  const jobAbort = useRef<AbortController | null>(null)
+  /** The recipe the user picked, if any; an automatic pick follows the default instead. */
+  const userPick = useRef<string | null>(null)
+  /** The job being followed, and whether this dialog started it (only those are deleted). */
   const held = useRef<{ id: string; owned: boolean } | null>(null)
   const busy = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -165,16 +177,22 @@ export function TraitExportDialog({
   /** The saved zip's object URL, kept for "Save again" and revoked on unmount. */
   const saved = useRef<{ url: string; filename: string } | null>(null)
 
+  function dropSaved() {
+    if (saved.current) URL.revokeObjectURL(saved.current.url)
+    saved.current = null
+  }
+
   useEffect(() => {
     alive.current = true
+    jobAbort.current = new AbortController()
     return () => {
       alive.current = false
       clearTimeout(timer.current)
       listAbort.current?.abort()
+      jobAbort.current?.abort()
       if (held.current?.owned) void removeJob(held.current.id)
       held.current = null
-      if (saved.current) URL.revokeObjectURL(saved.current.url)
-      saved.current = null
+      dropSaved()
     }
   }, [])
 
@@ -199,7 +217,8 @@ export function TraitExportDialog({
         return fail(LIST_FAILED)
       }
       if (!current()) return
-      if (!res.ok) return fail((await readErrorBody(res)).detail)
+      if (res.status === 499) return fail(LISTING_REPLACED)
+      if (!res.ok) return fail((await readErrorBody(res, LIST_FAILED)).detail)
       let body: unknown
       try {
         body = await res.json()
@@ -209,20 +228,16 @@ export function TraitExportDialog({
       if (!current()) return
       const parsed = parseListing(body)
       if (parsed === null) return fail(LIST_FAILED)
+      const kept = parsed.rows.some((r) => r.recipe_key === userPick.current)
+      if (!kept) userPick.current = null
       setListing({ state: 'ready', nSelected: parsed.nSelected, rows: parsed.rows })
-      setPicked((prev) => {
-        if (userPicked.current && prev !== null && parsed.rows.some((r) => r.recipe_key === prev)) {
-          return prev
-        }
-        userPicked.current = false
-        return parsed.rows.find((r) => r.is_default)?.recipe_key ?? null
-      })
+      setPicked(kept ? userPick.current : parsed.rows.find((r) => r.is_default)?.recipe_key ?? null)
     }
 
     // The first listing, a Retry and a StrictMode re-run list at once; a filter change waits.
     const key = `${wave}|${age}`
-    const immediate = listedKey.current === null || listedKey.current === key
-    listedKey.current = key
+    const immediate = scheduledKey.current === null || scheduledKey.current === key
+    scheduledKey.current = key
     if (immediate) {
       void list()
       return
@@ -246,13 +261,15 @@ export function TraitExportDialog({
   const canDownload = listingReady && !jobActive
 
   function retryListing() {
-    listedKey.current = null
     setRelist((r) => r + 1)
   }
 
   function changeFilter(set: (v: FilterValue) => void, raw: string) {
     set(raw === 'all' ? 'all' : Number(raw))
-    if (job.state === 'error' || job.state === 'saved') setJob({ state: 'idle' })
+    if (job.state === 'error' || job.state === 'saved') {
+      dropSaved()
+      setJob({ state: 'idle' })
+    }
   }
 
   function schedule() {
@@ -263,7 +280,7 @@ export function TraitExportDialog({
   function follow(jobId: string, owned: boolean) {
     const previous = held.current
     if (previous !== null && previous.id !== jobId && previous.owned) void removeJob(previous.id)
-    held.current = { id: jobId, owned }
+    held.current = { id: jobId, owned: owned || (previous?.id === jobId && previous.owned) }
     startedAt.current = Date.now()
     failures.current = createFailureCounter()
     setJob({ state: 'running', line: phaseLine({ phase: 'queued', done: 0, total: 0 }) })
@@ -276,15 +293,20 @@ export function TraitExportDialog({
   }
 
   async function poll() {
-    const jobId = held.current?.id
-    if (jobId === undefined) return
+    const followed = held.current
+    if (followed === null) return
+    const jobId = followed.id
+    const stillFollowing = () => alive.current && held.current?.id === jobId
     let res: Response | null
     try {
-      res = await fetch(jobStatusUrl(jobId), { cache: 'no-store' })
+      res = await fetch(jobStatusUrl(jobId), {
+        cache: 'no-store',
+        signal: jobAbort.current?.signal,
+      })
     } catch {
       res = null
     }
-    if (!alive.current) return
+    if (!stillFollowing()) return
     if (res?.status === 404) {
       held.current = null
       return finish({ state: 'error', detail: NOT_ON_SERVER })
@@ -298,7 +320,7 @@ export function TraitExportDialog({
         view = null
       }
     }
-    if (!alive.current) return
+    if (!stillFollowing()) return
     if (view === null) {
       if (failures.current.fail()) setJob({ state: 'paused' })
       else schedule()
@@ -309,7 +331,7 @@ export function TraitExportDialog({
       setJob({ state: 'running', line: phaseLine(view) })
       schedule()
     } else if (view.status === 'ready') {
-      await save(jobId, safeFilename(view.filename))
+      await save(jobId, followed.owned, safeFilename(view.filename))
     } else if (view.status === 'cancelled') {
       held.current = null
       finish({ state: 'error', detail: CANCELLED })
@@ -318,36 +340,41 @@ export function TraitExportDialog({
     }
   }
 
-  async function save(jobId: string, filename: string) {
+  async function save(jobId: string, owned: boolean, filename: string) {
+    const stillFollowing = () => alive.current && held.current?.id === jobId
     setJob({ state: 'running', line: phaseLine({ phase: 'done', done: 0, total: 0 }) })
     let res: Response | null
     try {
-      res = await fetch(downloadUrl(jobId), { cache: 'no-store' })
+      res = await fetch(downloadUrl(jobId), { cache: 'no-store', signal: jobAbort.current?.signal })
     } catch {
       res = null
     }
-    if (!alive.current) return
+    if (!stillFollowing()) return
     if (res === null) return finish({ state: 'error', detail: GENERIC_ERROR })
+    if (res.status === 404) {
+      held.current = null
+      return finish({ state: 'error', detail: NOT_ON_SERVER })
+    }
     if (!res.ok) {
       const { detail } = await readErrorBody(res)
-      if (alive.current) finish({ state: 'error', detail })
+      if (stillFollowing()) finish({ state: 'error', detail })
       return
     }
     let blob: Blob
     try {
       blob = await res.blob()
     } catch {
-      if (alive.current) finish({ state: 'error', detail: GENERIC_ERROR })
+      if (stillFollowing()) finish({ state: 'error', detail: GENERIC_ERROR })
       return
     }
-    if (!alive.current) return
-    if (saved.current) URL.revokeObjectURL(saved.current.url)
+    if (!stillFollowing()) return
+    dropSaved()
     const url = URL.createObjectURL(blob)
     saved.current = { url, filename }
     saveAs(url, filename)
     held.current = null
-    void removeJob(jobId)
-    finish({ state: 'saved', filename })
+    if (owned) void removeJob(jobId)
+    finish({ state: 'saved', filename, resumed: !owned })
   }
 
   async function start(retried = false) {
@@ -360,8 +387,9 @@ export function TraitExportDialog({
     const sel = selectionOf(target, wave, age)
     const session = await ensureSession(retried)
     if (!alive.current) return
-    if (session !== 'ok')
+    if (session !== 'ok') {
       return finish({ state: 'error', detail: session === 'signin' ? SIGN_IN : SESSION_RETRY })
+    }
     let res: Response
     try {
       res = await fetch(jobUrl(sel, recipe, defaultKey), { method: 'POST', cache: 'no-store' })
@@ -388,14 +416,19 @@ export function TraitExportDialog({
     if (!alive.current) return
     if (refusal.kind === 'refresh' && !retried) return start(true)
     if (refusal.kind === 'resume') {
-      return setJob({ state: 'offer', jobId: refusal.jobId, detail: refusal.detail })
+      // Our own job (e.g. still held after a poll 401): keep following it as ours.
+      if (held.current?.id === refusal.jobId) return follow(refusal.jobId, held.current.owned)
+      return setJob({ state: 'offer', jobId: refusal.jobId, cancelling: false })
     }
     finish({ state: 'error', detail: refusal.detail })
   }
 
   async function cancelOffered(jobId: string) {
+    setJob((j) => (j.state === 'offer' && j.jobId === jobId ? { ...j, cancelling: true } : j))
     await removeJob(jobId)
-    if (alive.current) finish({ state: 'idle' })
+    if (!alive.current) return
+    busy.current = false
+    setJob((j) => (j.state === 'offer' && j.jobId === jobId ? { state: 'idle' } : j))
   }
 
   function checkAgain() {
@@ -406,7 +439,7 @@ export function TraitExportDialog({
   }
 
   function close(_event: unknown, reason?: string) {
-    if (reason === 'backdropClick' && jobActive) return
+    if (jobActive && (reason === 'backdropClick' || reason === 'escapeKeyDown')) return
     onClose()
   }
 
@@ -414,7 +447,7 @@ export function TraitExportDialog({
     job.state === 'running'
       ? job.line
       : job.state === 'saved'
-        ? `Download started: ${job.filename}.`
+        ? `Download started: ${job.filename}.${job.resumed ? RESUMED_NOTE : ''}`
         : ''
 
   return (
@@ -501,15 +534,17 @@ export function TraitExportDialog({
                   checked={picked === row.recipe_key}
                   disabled={jobActive}
                   onChange={() => {
-                    userPicked.current = true
+                    userPick.current = row.recipe_key
                     setPicked(row.recipe_key)
                   }}
                   className="mt-1"
                 />
                 <span className="space-y-0.5">
                   <span className="block">
-                    <span className="font-mono">{recipeLabel(row.recipe_key)}</span> ·{' '}
-                    {row.recipe_kind} · {countLabel(row.n_scans, nSelected)}
+                    <span className="font-mono" title={row.recipe_key}>
+                      {recipeLabel(row.recipe_key)}
+                    </span>{' '}
+                    · {row.recipe_kind} · {countLabel(row.n_scans, nSelected)}
                     {row.is_default && (
                       <span className="ml-2 rounded bg-stone-100 px-1.5 py-0.5 text-xs text-stone-600">
                         default
@@ -532,10 +567,12 @@ export function TraitExportDialog({
             data-testid="fewer-scans-note"
             className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900"
           >
-            The default is the newest recipe and covers {countLabel(defaultRow.n_scans, nSelected)}.{' '}
+            The default is the most recently added recipe and covers{' '}
+            {countLabel(defaultRow.n_scans, nSelected)}.{' '}
             <span className="font-mono">{note.label}</span> covers{' '}
-            {note.nScans.toLocaleString('en-US')}
+            {countLabel(note.nScans, nSelected)}
             {picked === note.key ? '. ' : '; pick it to export more scans. '}
+            {note.kind === 'legacy' ? 'Its models and code were not recorded. ' : ''}
             Recipes differ in models and trait columns, so use one recipe per analysis.
           </p>
         )}
@@ -557,21 +594,20 @@ export function TraitExportDialog({
             role="alert"
             className="flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900"
           >
-            <span>
-              {job.detail}. It may be an export started in another tab, for a different selection;
-              its file name will say which.
-            </span>
+            <span>{OFFER}</span>
             <button
               type="button"
+              disabled={job.cancelling}
               onClick={() => follow(job.jobId, false)}
-              className="underline hover:no-underline"
+              className="underline hover:no-underline disabled:cursor-not-allowed disabled:text-stone-400"
             >
               Resume
             </button>
             <button
               type="button"
+              disabled={job.cancelling}
               onClick={() => void cancelOffered(job.jobId)}
-              className="underline hover:no-underline"
+              className="underline hover:no-underline disabled:cursor-not-allowed disabled:text-stone-400"
             >
               Cancel export
             </button>

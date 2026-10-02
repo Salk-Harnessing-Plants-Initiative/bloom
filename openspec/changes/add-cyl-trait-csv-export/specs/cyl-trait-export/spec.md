@@ -467,7 +467,7 @@ The trait download dialog SHALL run one export job for the picked recipe and sav
 - show a failed job's `detail`, a `cancelled` job, a non-JSON error body and a failed save, each with Retry, saving nothing; Retry refreshes if needed and starts a new job;
 - say the export is no longer on the server, naming the possible causes including an earlier download, with Retry, when polling or the download returns `404`;
 - not close on a click outside it or on Escape while a job is active; the Close button still closes it;
-- when closed, stop polling, abort its in-flight requests, `DELETE` any job it started that is not yet deleted, including one whose start answers after the close, keep a job it only resumed, and update nothing afterwards;
+- when closed, stop polling, abort its in-flight listing, poll and download requests, `DELETE` any job it started that is not yet deleted, including one whose start answers after the close, keep a job it only resumed, and update nothing afterwards;
 - link to the "Using a trait export" section of `trait-recipes.md`.
 
 #### Scenario: Progress and save

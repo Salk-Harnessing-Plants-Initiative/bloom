@@ -3,7 +3,7 @@
 /**
  * Download traits (spec "Trait download entry points"; design D8). It opens the dialog
  * with the target as it was on click; the dialog is mounted only while open, so
- * closing it unmounts it and cancels any job it holds.
+ * closing it unmounts it, which cancels a job it started (not one it only resumed).
  */
 
 import { useState } from 'react'

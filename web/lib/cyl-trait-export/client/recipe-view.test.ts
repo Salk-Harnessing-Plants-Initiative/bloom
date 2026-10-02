@@ -86,8 +86,10 @@ describe('describeRecipe', () => {
         recipe_kind: 'legacy',
         definition: { source_id: 9, source_name: 'legacy-fixture-9' },
       })
-    ).toEqual(['Source: legacy-fixture-9'])
-    expect(describeRecipe({ recipe_kind: 'legacy', definition: { source_id: 9 } })).toEqual([])
+    ).toEqual(['Source: legacy-fixture-9', 'models and code not recorded'])
+    expect(describeRecipe({ recipe_kind: 'legacy', definition: { source_id: 9 } })).toEqual([
+      'models and code not recorded',
+    ])
   })
 
   it('says an unattributed recipe has no source', () => {
@@ -103,7 +105,12 @@ describe('fewerScansNote', () => {
       row({ recipe_key: K, recipe_kind: 'pipeline', n_scans: 3, is_default: true }),
       row({ recipe_key: 'legacy:5', n_scans: 60 }),
     ]
-    expect(fewerScansNote(rows)).toEqual({ key: 'legacy:5', label: 'legacy-5', nScans: 60 })
+    expect(fewerScansNote(rows)).toEqual({
+      key: 'legacy:5',
+      kind: 'legacy',
+      label: 'legacy-5',
+      nScans: 60,
+    })
   })
 
   it('gives no note when the default already covers the most scans', () => {
@@ -127,7 +134,12 @@ describe('fewerScansNote', () => {
       row({ recipe_key: K2, recipe_kind: 'pipeline', n_scans: 40 }),
       row({ recipe_key: 'legacy:5', n_scans: 40 }),
     ]
-    expect(fewerScansNote(rows)).toEqual({ key: K2, label: 'b03e1092', nScans: 40 })
+    expect(fewerScansNote(rows)).toEqual({
+      key: K2,
+      kind: 'pipeline',
+      label: 'b03e1092',
+      nScans: 40,
+    })
   })
 
   it('never names unattributed', () => {
@@ -153,7 +165,7 @@ describe('fewerScansNote', () => {
           newest_source_id: null,
         }),
       ])
-    ).toEqual({ key: 'legacy:5', label: 'legacy-5', nScans: 20 })
+    ).toEqual({ key: 'legacy:5', kind: 'legacy', label: 'legacy-5', nScans: 20 })
   })
 
   it('gives no note for an empty listing', () => {
@@ -213,7 +225,7 @@ describe('describeRecipe (review fixes)', () => {
     ).toEqual([
       'Models: primary-root v2 (sha256:p)',
       'Code: traits def4567',
-      'Output params: max_instances, peak_threshold',
+      'Output params: max_instances=3, peak_threshold=0.2',
     ])
   })
 })
@@ -234,5 +246,26 @@ describe('selectionTitle', () => {
 
   it('names a scan', () => {
     expect(selectionTitle({ scanId: 577 }, 'all', 'all')).toBe('scan 577')
+  })
+})
+
+describe('describeRecipe (round 2)', () => {
+  it('names a model with no registry id "unnamed model" rather than dropping it', () => {
+    expect(
+      describeRecipe({
+        recipe_kind: 'pipeline',
+        definition: { models: [[null, 'v1', 'abc1234def']] },
+      })
+    ).toEqual(['Models: unnamed model v1 (abc1234)'])
+  })
+
+  it('shows each output param value, truncating a long one', () => {
+    const lines = describeRecipe({
+      recipe_kind: 'pipeline',
+      definition: { predict_output_params: { scale: [1, 2], tag: 'x'.repeat(60) } },
+    })
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^Output params: scale=\[1,2\], tag="x+…$/)
+    expect(lines[0].length).toBeLessThan(80)
   })
 })

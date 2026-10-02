@@ -33,7 +33,7 @@ export function phaseLine(view: Pick<JobView, 'phase' | 'done' | 'total'>): stri
   }
 }
 
-/** Numbers each listing; only the newest one sent is current. */
+/** Numbers each listing as it is scheduled; only the latest one is current. */
 export function createLatestGuard(): { next: () => number; isCurrent: (n: number) => boolean } {
   let latest = 0
   return {

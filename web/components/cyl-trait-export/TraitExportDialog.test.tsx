@@ -6,6 +6,7 @@
  */
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { AuthApiError, AuthRetryableFetchError } from '@supabase/supabase-js'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -15,6 +16,7 @@ vi.mock('@/lib/supabase/client', () => ({ createClientSupabaseClient: () => ({ a
 import {
   CANCELLED,
   HELP_URL,
+  LISTING_REPLACED,
   LIST_FAILED,
   NOT_ON_SERVER,
   POLL_FAILED,
@@ -200,7 +202,13 @@ beforeEach(() => {
   fetchSpy.mockReset()
   fetchSpy.mockImplementation((u: string, init?: RequestInit) => {
     const url = new URL(String(u), 'http://localhost')
-    return Promise.resolve(routes[kind(url, init?.method ?? 'GET')](url, init))
+    const signal = init?.signal
+    const aborted = () => new DOMException('aborted', 'AbortError')
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(aborted())
+      signal?.addEventListener('abort', () => reject(aborted()))
+      Promise.resolve(routes[kind(url, init?.method ?? 'GET')](url, init)).then(resolve, reject)
+    })
   })
   vi.stubGlobal('fetch', fetchSpy)
   createObjectURL.mockClear()
@@ -334,7 +342,7 @@ describe('listing', () => {
   it('shows a 499 for its only listing, with Retry', async () => {
     routes.listing = () => reply(499, { detail: 'the listing was replaced or cancelled' })
     await open()
-    expect(alertText()).toContain('the listing was replaced or cancelled')
+    expect(alertText()).toContain(LISTING_REPLACED)
     routes.listing = () => reply(200, LISTING)
     await click(screen.getByRole('button', { name: /retry/i }))
     expect(calls('listing')).toHaveLength(2)
@@ -435,7 +443,14 @@ describe('starting the job', () => {
   it('shows the sign-in message, and starts nothing, when the sign-in service refuses the refresh', async () => {
     await open()
     sessionLeft(600)
-    auth.refreshSession.mockResolvedValue({ data: {}, error: { status: 400, message: 'used' } })
+    auth.refreshSession.mockResolvedValue({
+      data: {},
+      error: new AuthApiError(
+        'Invalid Refresh Token: Already Used',
+        400,
+        'refresh_token_already_used'
+      ),
+    })
     await startDownload()
     expect(calls('start')).toHaveLength(0)
     expect(alertText()).toContain(SIGN_IN)
@@ -444,7 +459,10 @@ describe('starting the job', () => {
   it('shows a retryable error, not the sign-in message, for a refresh network failure', async () => {
     await open()
     sessionLeft(600)
-    auth.refreshSession.mockResolvedValue({ data: {}, error: { status: 0, message: 'fetch' } })
+    auth.refreshSession.mockResolvedValue({
+      data: {},
+      error: new AuthRetryableFetchError('fetch failed', 0),
+    })
     await startDownload()
     expect(calls('start')).toHaveLength(0)
     expect(alertText()).toContain(SESSION_RETRY)
@@ -491,14 +509,15 @@ describe('starting the job', () => {
     routes.start = () => reply(429, { detail: 'you already have an export running', job_id: JOB2 })
     await open()
     await startDownload()
-    expect(alertText()).toContain('you already have an export running')
+    expect(alertText()).toMatch(/already have an export running/i)
     expect(alertText()).toMatch(/another tab/)
     await click(screen.getByRole('button', { name: /resume/i }))
     await tick(2000)
     await settle()
     expect(calls('status')[0].url.pathname).toBe(path(JOB2))
     expect(anchorClick).toHaveBeenCalledTimes(1)
-    expect(calls('remove').map((c) => c.url.pathname)).toEqual([path(JOB2)])
+    expect(calls('remove')).toHaveLength(0)
+    expect(status()).toMatch(/you resumed; its selection may differ/)
     expect(calls('start')).toHaveLength(1)
   })
 
@@ -557,7 +576,7 @@ describe('starting the job', () => {
     expect(calls('status')).toHaveLength(0)
   })
 
-  it('starts nothing from Retry until the changed filters have been listed', async () => {
+  it('clears a failed job and its Retry as soon as a filter changes', async () => {
     routes.status = () =>
       reply(200, { status: 'failed', phase: 'traits', done: 1, total: 4, detail: 'boom' })
     await open()
@@ -567,10 +586,201 @@ describe('starting the job', () => {
     expect(alertText()).toContain('boom')
     fireEvent.change(screen.getByLabelText('Wave'), { target: { value: '3' } })
     await settle()
-    const retries = screen.queryAllByRole('button', { name: /retry/i }) as HTMLButtonElement[]
-    for (const r of retries) fireEvent.click(r)
+    expect(alertText()).not.toContain('boom')
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+  })
+
+  it("keeps a failed job's Retry disabled, and starts nothing, while a re-listing is pending", async () => {
+    routes.status = () =>
+      reply(200, { status: 'failed', phase: 'traits', done: 1, total: 4, detail: 'boom' })
+    const r = await open()
+    await startDownload()
+    await tick(2000)
+    await settle()
+    routes.listing = () => new Promise<Res>(() => {})
+    r.rerender(<TraitExportDialog target={{ ...EXPERIMENT }} onClose={onClose} />)
+    await settle()
+    const retry = screen.getByRole('button', { name: /retry/i }) as HTMLButtonElement
+    expect(retry.disabled).toBe(true)
+    fireEvent.click(retry)
     await settle()
     expect(calls('start')).toHaveLength(1)
+  })
+
+  it('keeps following a job it already holds when a 429 names it, and still deletes it on close', async () => {
+    routes.status = seq(
+      () => reply(401, { detail: 'Sign in to download traits.' }),
+      () => reply(200, { status: 'running', phase: 'traits', done: 1, total: 4 })
+    )
+    const r = await open()
+    await startDownload()
+    await tick(2000)
+    await settle()
+    routes.start = () => reply(429, { detail: 'you already have an export running', job_id: JOB })
+    await click(screen.getByRole('button', { name: /retry/i }))
+    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull()
+    expect(calls('remove')).toHaveLength(0)
+    await tick(2000)
+    await settle()
+    expect(status()).toContain('Reading batch 1 of 4')
+    r.unmount()
+    await settle()
+    expect(calls('remove').map((c) => c.url.pathname)).toEqual([path(JOB)])
+  })
+
+  it('never deletes a resumed job when it resumes another', async () => {
+    routes.start = () => reply(429, { detail: 'you already have an export running', job_id: JOB2 })
+    routes.status = () => reply(401, { detail: 'Sign in to download traits.' })
+    const r = await open()
+    await startDownload()
+    await click(screen.getByRole('button', { name: /resume/i }))
+    await tick(2000)
+    await settle()
+    routes.start = () => reply(429, { detail: 'you already have an export running', job_id: JOB })
+    await click(screen.getByRole('button', { name: /retry/i }))
+    await click(screen.getByRole('button', { name: /resume/i }))
+    r.unmount()
+    await settle()
+    expect(calls('remove')).toHaveLength(0)
+  })
+
+  it('disables the offer while its cancel is in flight', async () => {
+    const removed = deferred<Res>()
+    routes.start = () => reply(429, { detail: 'you already have an export running', job_id: JOB2 })
+    routes.remove = () => removed.promise
+    await open()
+    await startDownload()
+    await click(screen.getByRole('button', { name: /^cancel export$/i }))
+    expect((screen.getByRole('button', { name: /resume/i }) as HTMLButtonElement).disabled).toBe(
+      true
+    )
+    expect(
+      (screen.getByRole('button', { name: /^cancel export$/i }) as HTMLButtonElement).disabled
+    ).toBe(true)
+    await act(async () => removed.resolve(reply(204)))
+    await settle()
+    expect(download().disabled).toBe(false)
+  })
+})
+
+describe('more round-2 cases', () => {
+  it('lets an automatic pick follow the default again after the user pick was dropped', async () => {
+    await open()
+    await click(radio(/legacy-5/))
+    routes.listing = () => reply(200, { n_selected: 10, rows: [PIPELINE_ROW] })
+    await changeWave('3')
+    expect(radio(/1911b908/).checked).toBe(true)
+    routes.listing = () =>
+      reply(200, {
+        n_selected: 50,
+        rows: [
+          { ...LEGACY_ROW, is_default: true },
+          { ...PIPELINE_ROW, is_default: false },
+        ],
+      })
+    await changeWave('1')
+    expect(radio(/legacy-5/).checked).toBe(true)
+  })
+
+  it('shows no error under StrictMode when the aborted first listing rejects', async () => {
+    await open(EXPERIMENT, true)
+    expect(calls('listing')).toHaveLength(2)
+    expect(alertText()).toBe('')
+    expect(radio(/1911b908/).checked).toBe(true)
+  })
+
+  it('ignores a listing body that arrives after a filter change', async () => {
+    const body = deferred<unknown>()
+    let n = 0
+    routes.listing = () =>
+      ++n === 2 ? { ...reply(200), json: () => body.promise } : reply(200, LISTING)
+    await open()
+    await changeWave('1')
+    fireEvent.change(screen.getByLabelText('Wave'), { target: { value: '3' } })
+    await settle()
+    await act(async () => body.resolve({ n_selected: 1, rows: [LEGACY_ROW] }))
+    await settle()
+    expect(screen.queryByRole('radio')).toBeNull()
+    expect(download().disabled).toBe(true)
+  })
+
+  it('a thrown refresh shows the retryable message and starts nothing', async () => {
+    await open()
+    sessionLeft(600)
+    auth.refreshSession.mockRejectedValue(new TypeError('network'))
+    await startDownload()
+    expect(alertText()).toContain(SESSION_RETRY)
+    expect(calls('start')).toHaveLength(0)
+  })
+
+  it('Check again allows three more failures before pausing', async () => {
+    routes.status = () => reply(503, { detail: 'busy' })
+    await open()
+    await startDownload()
+    for (let i = 0; i < 3; i++) {
+      await tick(2000)
+      await settle()
+    }
+    await click(screen.getByRole('button', { name: /check again/i }))
+    await tick(2000)
+    await settle()
+    expect(alertText()).not.toContain(POLL_FAILED)
+  })
+
+  it('a filter change clears "Download started" and Save again, and revokes the URL', async () => {
+    await open()
+    await startDownload()
+    await tick(2000)
+    await settle()
+    expect(status()).toContain('Download started')
+    fireEvent.change(screen.getByLabelText('Wave'), { target: { value: '3' } })
+    await settle()
+    expect(status()).toBe('')
+    expect(screen.queryByRole('button', { name: /save again/i })).toBeNull()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:export')
+  })
+
+  it('aborts its poll and download requests on close', async () => {
+    routes.status = () => new Promise<Res>(() => {})
+    const r = await open()
+    await startDownload()
+    await tick(2000)
+    await settle()
+    const signal = calls('status')[0].init?.signal
+    expect(signal?.aborted).toBe(false)
+    r.unmount()
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it('warns when a DELETE fails, but not for a 404', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    routes.status = () => new Promise<Res>(() => {})
+    routes.remove = () => reply(500, { detail: 'boom' })
+    let r = await open()
+    await startDownload()
+    r.unmount()
+    await settle()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toContain(JOB)
+    routes.remove = () => reply(404, { detail: 'export not found' })
+    r = await open()
+    await startDownload()
+    r.unmount()
+    await settle()
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('says a legacy recipe has no recorded models or code, in its row and in the note', async () => {
+    await open()
+    expect(document.body.textContent).toContain('models and code not recorded')
+    expect(screen.getByTestId('fewer-scans-note').textContent).toMatch(
+      /models and code were not recorded/
+    )
+  })
+
+  it('puts the full recipe key on the key segment', async () => {
+    await open()
+    expect(screen.getByText('1911b908').getAttribute('title')).toBe(K)
   })
 })
 
@@ -753,23 +963,21 @@ describe('saving', () => {
   })
 
   it.each([
-    [404, 'export not found; it may have expired or the server restarted'],
+    [404, NOT_ON_SERVER],
     [409, 'the export is running'],
-  ])(
-    "shows a refused download's detail (%i) with Retry and saves nothing",
-    async (code, detail) => {
-      const blob = vi.fn(async () => BLOB)
-      routes.download = () => reply(code, { detail }, { blob })
-      await open()
-      await startDownload()
-      await tick(2000)
-      await settle()
-      expect(alertText()).toContain(detail)
-      expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
-      expect(blob).not.toHaveBeenCalled()
-      expect(createObjectURL).not.toHaveBeenCalled()
-    }
-  )
+  ])('shows a refused download (%i) with Retry and saves nothing', async (code, detail) => {
+    const blob = vi.fn(async () => BLOB)
+    routes.download = () =>
+      reply(code, { detail: code === 404 ? 'export not found' : detail }, { blob })
+    await open()
+    await startDownload()
+    await tick(2000)
+    await settle()
+    expect(alertText()).toContain(detail)
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+    expect(blob).not.toHaveBeenCalled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
 
   it('shows the generic message for a rejected blob(), a download that rejects, or a non-JSON error', async () => {
     routes.download = () =>
@@ -813,9 +1021,19 @@ describe('closing', () => {
     expect(calls('status')).toHaveLength(polls)
   })
 
-  it('Escape closes', async () => {
+  it('Escape closes when no job is active', async () => {
     await open()
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('Escape does not close while a job is active; Close still does', async () => {
+    routes.status = () => new Promise<Res>(() => {})
+    await open()
+    await startDownload()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    await click(screen.getByRole('button', { name: /^close$/i }))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 

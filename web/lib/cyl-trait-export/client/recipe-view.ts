@@ -13,6 +13,12 @@ export const NO_SCANS = 'No scans match this wave and age'
 export const NO_RECIPES = 'No trait results for this selection'
 
 const SHORT_SHA = 7
+const PARAM_CHARS = 24
+
+/** What a legacy source lacks: its models and code were never recorded. */
+export const NOT_RECORDED = 'models and code not recorded'
+
+const shorten = (v: string) => (v.length > PARAM_CHARS ? `${v.slice(0, PARAM_CHARS)}…` : v)
 
 /** The recipe's `<keyseg>`, or its raw key if it is not one we know. */
 export function recipeLabel(key: string): string {
@@ -31,14 +37,13 @@ export function describeRecipe(row: Pick<RecipeRow, 'recipe_kind' | 'definition'
   if (row.recipe_kind === 'unattributed') return ['no source recorded']
   if (row.recipe_kind === 'legacy') {
     const name = str(def.source_name)
-    return name ? [`Source: ${name}`] : []
+    return name ? [`Source: ${name}`, NOT_RECORDED] : [NOT_RECORDED]
   }
   const lines: string[] = []
   const models = Array.isArray(def.models)
     ? def.models.flatMap((m) => {
         if (!Array.isArray(m)) return []
-        const name = str(m[0])
-        if (!name) return []
+        const name = str(m[0]) ?? 'unnamed model'
         const version = str(m[1])
         const sum = shortChecksum(str(m[2]))
         return [[name, version, sum && `(${sum})`].filter(Boolean).join(' ')]
@@ -52,8 +57,10 @@ export function describeRecipe(row: Pick<RecipeRow, 'recipe_kind' | 'definition'
   if (code.length > 0) lines.push(`Code: ${code.join(', ')}`)
   const params = def.predict_output_params
   if (typeof params === 'object' && params !== null && !Array.isArray(params)) {
-    const names = Object.keys(params).sort()
-    if (names.length > 0) lines.push(`Output params: ${names.join(', ')}`)
+    const pairs = Object.keys(params)
+      .sort()
+      .map((k) => `${k}=${shorten(JSON.stringify((params as Record<string, unknown>)[k]))}`)
+    if (pairs.length > 0) lines.push(`Output params: ${pairs.join(', ')}`)
   }
   return lines.length > 0 ? lines : ['no models or code recorded']
 }
@@ -74,7 +81,7 @@ function shortChecksum(sum: string | null): string | null {
  */
 export function fewerScansNote(
   rows: RecipeRow[]
-): { key: string; label: string; nScans: number } | null {
+): { key: string; kind: RecipeRow['recipe_kind']; label: string; nScans: number } | null {
   const def = rows.find((r) => r.is_default)
   if (def === undefined) return null
   let best: RecipeRow | null = null
@@ -83,7 +90,12 @@ export function fewerScansNote(
     if (best === null || r.n_scans > best.n_scans) best = r
   }
   if (best === null || best.n_scans <= def.n_scans) return null
-  return { key: best.recipe_key, label: recipeLabel(best.recipe_key), nScans: best.n_scans }
+  return {
+    key: best.recipe_key,
+    kind: best.recipe_kind,
+    label: recipeLabel(best.recipe_key),
+    nScans: best.n_scans,
+  }
 }
 
 /** The page's value when the loaded list has it, otherwise "All". */
