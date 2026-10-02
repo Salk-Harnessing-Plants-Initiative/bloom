@@ -1,0 +1,123 @@
+{
+  "export_schema_version": 1,
+  "generated_at": "2026-10-02T12:00:00.000Z",
+  "generated_by": {
+    "tool": "bloom-web",
+    "version": "1.0.0"
+  },
+  "selection": {
+    "experiment_ids": [
+      1
+    ],
+    "scan_ids": null,
+    "filters": {},
+    "scan_ids_sha256": "ccc7cc77fbcb6de942a547e6ff96bd72ababc6333d3d8f706ebfdb36006079a1"
+  },
+  "recipe": {
+    "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+    "recipe_key_version": 1,
+    "recipe_kind": "pipeline",
+    "chosen_by": "user",
+    "definition": {
+      "models": [
+        [
+          "lateral-root",
+          "v3",
+          "sha256:lat3"
+        ],
+        [
+          "primary-root",
+          "v2",
+          "sha256:pri2"
+        ]
+      ],
+      "predict_code_sha": "abc1234",
+      "traits_code_sha": "def4567"
+    },
+    "observed": {
+      "contract_versions": [
+        "0.1.0a9"
+      ],
+      "traits_sleap_roots_versions": [
+        "0.2.1"
+      ],
+      "sleap_nn_versions": [
+        "0.1.0"
+      ],
+      "predict_container_digests": [
+        "sha256:predict1"
+      ],
+      "traits_container_digests": [
+        "sha256:traits1"
+      ],
+      "inference_configs": [
+        {
+          "batch_size": 4,
+          "device": "cuda"
+        }
+      ]
+    }
+  },
+  "included": {
+    "n_scans": 3,
+    "source_ids": [
+      21,
+      22,
+      30
+    ]
+  },
+  "excluded": [
+    {
+      "scan_id": 101,
+      "plant_qr_code": "FX-P3",
+      "reason": "other_recipe",
+      "available_recipes": [
+        "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+      ]
+    },
+    {
+      "scan_id": 102,
+      "plant_qr_code": "FX-P4",
+      "reason": "legacy_only",
+      "available_recipes": [
+        "legacy:9"
+      ]
+    },
+    {
+      "scan_id": 103,
+      "plant_qr_code": "FX-P5",
+      "reason": "legacy_only",
+      "available_recipes": [
+        "unattributed"
+      ]
+    },
+    {
+      "scan_id": 200,
+      "plant_qr_code": "FX-P6",
+      "reason": "no_traits",
+      "available_recipes": []
+    },
+    {
+      "scan_id": 201,
+      "plant_qr_code": "FX-P7",
+      "reason": "other_recipe",
+      "available_recipes": [
+        "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+      ]
+    }
+  ],
+  "other_recipes_in_selection": [
+    {
+      "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+      "n_scans": 2
+    },
+    {
+      "recipe_key": "legacy:9",
+      "n_scans": 1
+    },
+    {
+      "recipe_key": "unattributed",
+      "n_scans": 1
+    }
+  ]
+}

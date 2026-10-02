@@ -38,7 +38,7 @@ import {
   type ConcurrentRuns,
 } from "@/lib/cyl-pipeline/queries";
 import { runDisplay } from "@/lib/cyl-pipeline/run-display";
-import { requesterText } from "@/lib/cyl-pipeline/run-text";
+import { plural, requesterText } from "@/lib/cyl-pipeline/run-text";
 import type { ScanMeta } from "@/lib/cyl-pipeline/scan-meta";
 import { isTriggerResult, MAX_TRIGGER_SCAN_IDS, scanIdsOverLimitText } from "@/lib/cyl-pipeline/trigger-request";
 import type { TriggerTarget } from "@/lib/cyl-pipeline/trigger-target";
@@ -83,7 +83,30 @@ type Load = { state: "loading" } | { state: "failed"; message: string } | ({ sta
 /** What one POST settled as; a refusal is shown here, and every other outcome is kept in submissions.ts. */
 type Settled = Submission | { kind: "refused"; message: string };
 
-const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+/** The pre-check's sentences, worded for one scan where "1 scans" would slip in (bloom#955). */
+function allResultsNotice(N: number): string {
+  const lead = N === 1 ? "This scan already has pipeline results." : `All ${N} scans already have pipeline results.`;
+  return `${lead} The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.`;
+}
+
+function precheckLine(K: number, N: number): string {
+  if (N === 1) return "This scan has no pipeline results yet.";
+  return `${K} of ${N} already ${K === 1 ? "has" : "have"} pipeline results.`;
+}
+
+function precheckDetails(L: number, N: number): string {
+  const subject = N === 1 ? "This scan has" : `${plural(L, "more scan")} ${L === 1 ? "has" : "have"}`;
+  const legacy =
+    L === 0
+      ? ""
+      : `${subject} only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. `;
+  const sent =
+    N === 1
+      ? "The scan will be sent; the cluster skips it if it has already been processed with the same models and code."
+      : `All ${N} will be sent; the cluster skips scans it has already processed with the same models and code.`;
+  return legacy + sent;
+}
+
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** The body the proxy validates; it adds `params: {}` itself. */
@@ -290,22 +313,13 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
 
             {c.N > 0 &&
               (c.K === c.N ? (
-                <p>
-                  All {c.N} scans already have pipeline results. The run will still be created and sent to the cluster, which
-                  skips scans it has already processed with the same models and code.
-                </p>
+                <p>{allResultsNotice(c.N)}</p>
               ) : (
                 <div>
-                  <p>
-                    {c.K} of {c.N} already have pipeline results.
-                  </p>
+                  <p>{precheckLine(c.K, c.N)}</p>
                   <details data-testid="precheck-details" className="text-stone-600">
                     <summary className="cursor-pointer text-stone-500">Details</summary>
-                    <p className="mt-1">
-                      {c.L > 0 &&
-                        `${c.L} more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. `}
-                      {`All ${c.N} will be sent; the cluster skips scans it has already processed with the same models and code.`}
-                    </p>
+                    <p className="mt-1">{precheckDetails(c.L, c.N)}</p>
                   </details>
                 </div>
               ))}

@@ -15,6 +15,7 @@ import {
   fetchRunScans,
   fetchScanMeta,
   fetchScansWithImages,
+  fetchSourceRuns,
   fetchTargetScans,
   isRunInExperiment,
   QueryError,
@@ -155,6 +156,27 @@ describe("fetchLatestSources", () => {
   });
 });
 
+describe("fetchSourceRuns", () => {
+  it("reads id and cyl_pipeline_run_id of trait sources by id, in chunks of at most 200", async () => {
+    supabaseMock.respond = (q) => ({
+      data: (q.arg("in")![1] as number[]).filter((id) => id !== 3).map((id) => ({ id, cyl_pipeline_run_id: id === 2 ? null : id + 90 })),
+      error: null,
+    });
+    const runs = await fetchSourceRuns(client, range(201));
+    const qs = queriesFor("cyl_trait_sources");
+    expect(qs.map((q) => (q.arg("in")![1] as number[]).length)).toEqual([200, 1]);
+    expect(qs[0].arg("select")).toEqual(["id, cyl_pipeline_run_id"]);
+    expect(runs.get(1)).toBe(91);
+    expect(runs.get(2)).toBeNull();
+    expect(runs.has(3)).toBe(false);
+  });
+
+  it("reads nothing for no ids", async () => {
+    expect((await fetchSourceRuns(client, [])).size).toBe(0);
+    expect(queriesFor("cyl_trait_sources")).toHaveLength(0);
+  });
+});
+
 describe("fetchRunExperiments", () => {
   it("reads the view for the given runs, created_at descending, with each experiment's name and species", async () => {
     supabaseMock.respond = () => ({
@@ -214,6 +236,7 @@ describe("errors", () => {
     ["fetchRunScans", () => fetchRunScans(client, 1), "cyl_pipeline_run_scans"],
     ["fetchScanMeta", () => fetchScanMeta(client, [1]), "cyl_scans_extended"],
     ["fetchLatestSources", () => fetchLatestSources(client, [1]), "cyl_scan_latest_source"],
+    ["fetchSourceRuns", () => fetchSourceRuns(client, [1]), "cyl_trait_sources"],
     ["fetchRunExperiments", () => fetchRunExperiments(client, [1]), "cyl_pipeline_run_experiments"],
     ["fetchExperimentRunIds", () => fetchExperimentRunIds(client, 1), "cyl_pipeline_run_experiments"],
     ["fetchExperimentMembers", () => fetchExperimentMembers(client, 1, [1]), "cyl_pipeline_run_experiments"],

@@ -37,6 +37,16 @@ A run whose `runs_output/<run-id>/h5ad/_SUCCESS` already exists skips every step
 
 The FASTQs' prefix is read from their names by `fastq-sample-prefix` and passed to Cell Ranger as `--sample`, so files keep the names the sequencer or core gave them (e.g. `L007-259_S1_L002_R1_001.fastq.gz` under `raw_reads/root_rep1/`). Several prefixes in one folder are counted together as one sample. A `.fastq.gz` or `.fastq` not named that way, or a lane without both R1 and R2, fails the stage step with exit 7 and a message listing the files, before QC and count run. Setting `FASTQ_SAMPLE` overrides the detected prefix.
 
+A run can instead read its FASTQs from any S3 folder, given as the sample pipeline's `fastq-url` (`s3://<bucket>/<folder>/`) with `fastq-files`, the JSON list of each file's name, size and ETag recorded when the run was started. The stage step (`stage-fastqs` in the image):
+- lists the folder unsigned, as the start API checked it (so the folder must be public and Bloom's own key reads nothing more), and compares it with `fastq-files`. Only `.fastq`/`.fastq.gz` files directly in the folder count. Other files and subfolders are left alone;
+- waits up to 10 minutes, checking every 30 s, while the folder holds no FASTQ or only some of the files, in case an upload is still finishing; The start API saw the whole folder when the run was started, so in practice the wait covers a folder deleted and re-uploaded in the meantime. A file re-uploaded with different contents has a new ETag and fails at once, and a deleted file only fails once the wait is over. The JSON handling (comparing the listing, checking the file list) is `stage-fastqs-lib` (`stage_fastqs_lib.py`) in the image;
+- fails with exit 8, before copying anything, if a file was added, resized or replaced (its ETag differs) since the run was started, or one is still missing after the wait. It fails with exit 9, also before copying, if the recorded FASTQs are named for another sample;
+- copies exactly those files onto `/shared/runs/<run-id>/fastq/<sample>/` and writes nothing to S3. Cleanup deletes them with the run's folder. Each copy is then checked: it must have the recorded size, and the object the recorded ETag (`head-object --if-match`). A file replaced while it was being copied fails with exit 8, and its copy is removed.
+
+The run's folder is named by its run key, which a new run can reuse after a failed one. So the stage step records what the folder was built from in `/shared/runs/<run-id>/.inputs`, whatever the source. A retry on the same inputs keeps the folder and resumes. Otherwise the old FASTQs are deleted and the rest of the folder, its logs and Cell Ranger's errors, is moved to `/shared/runs/<run-id>.failed-<time>/` for debugging, so none of an earlier run's reads or results are taken for this run's. `sra/`, which fetch-sra writes earlier in the same run, stays.
+
+A folder still empty after the wait fails with exit 4. A malformed `fastq-url` or `fastq-files` fails with exit 6, and a listing or copy that fails (a network or permission error) with exit 10, which is retried. Without `fastq-url`, the step reads `raw_reads/<sample>/` as above.
+
 A run can also import its sample from SRA. The template's `fetch-sra` step (`fetch-sra` in the image) takes 1 to 9 run accessions, separated by commas, spaces or newlines, and:
 - downloads each run accession with `prefetch` and `fasterq-dump --split-files --include-technical`, so 10x's barcode read, which SRA stores as a technical read, is kept;
 - tells the reads apart by length: 6–12 bp is I1 then I2; of the two longer reads, a 26–28 bp one is R1 and the other R2. If both are longer than 28 bp (R1 left untrimmed, e.g. a 2×150 run), R1 is the one whose first 16 bases are on a 10x barcode list in the image, for at least half of 4,000 sampled reads;
@@ -52,8 +62,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-9
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
@@ -71,6 +81,12 @@ export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml
 argo template create argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
 argo template create argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-lab
 # after editing a template: kubectl replace -f <template file> -n runai-busch-lab
+# Prod and staging share runai-busch-lab, so each runs its own copy of the Cell Ranger template,
+# named by WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE in .env.*.defaults: prod's is
+# cellranger-count-template, staging's cellranger-count-template-staging. A new template or
+# image goes to staging's copy first, and to prod's when staging is promoted:
+sed 's/^  name: cellranger-count-template$/  name: cellranger-count-template-staging/' \
+  argo/scrna/cellranger/cellranger-count-template.yaml | kubectl apply -n runai-busch-lab -f -
 argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p samples='["sample_a","sample_b"]' --watch
 argo submit argo/scrna/cellranger/cellranger-testrun-workflow.yaml -n runai-busch-lab --watch
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
