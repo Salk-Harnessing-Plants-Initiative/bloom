@@ -926,50 +926,36 @@ jobs:
 
       - name: Start MinIO and create buckets
         run: |
-          docker compose $COMPOSE_FILES --env-file .env.ci up -d supabase-minio
-          echo "Waiting for MinIO to be healthy..."
-          timeout 60 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps supabase-minio --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          docker compose $COMPOSE_FILES --env-file .env.ci up -d --wait --wait-timeout 60 supabase-minio
           echo "MinIO is healthy!"
           docker compose $COMPOSE_FILES --env-file .env.ci run --rm minio-init
           echo "Buckets created!"
 
       - name: Start database
         run: |
-          docker compose $COMPOSE_FILES --env-file .env.ci up -d db-prod
-          echo "Waiting for database to be healthy..."
-          timeout 180 bash -c 'until docker compose $COMPOSE_FILES --env-file .env.ci ps db-prod --format json | jq -e "select(.Health == \"healthy\")" > /dev/null 2>&1; do sleep 2; echo "  waiting..."; done'
+          docker compose $COMPOSE_FILES --env-file .env.ci up -d --wait --wait-timeout 180 db-prod
           echo "Database is healthy!"
 
-      - name: Start remaining services
+      - name: Start remaining services and wait for them to be healthy
         # COMPOSE_BAKE routes the build through Buildx bake so the type=gha cache
         # in the ci-cache overlay is honored. The overlay is added only here (not
         # to COMPOSE_FILES) so it never applies to local dev, which lacks the
         # GitHub Actions credentials that gha cache export requires.
+        #
+        # --wait is Compose's own health gate, as deploy.yml uses: services with a
+        # healthcheck must reach healthy, the rest must be running, and one-shot
+        # services must exit 0. Any that don't fail this step.
         env:
           COMPOSE_BAKE: "true"
-        run: docker compose $COMPOSE_FILES -f docker-compose.ci-cache.yml --env-file .env.ci up -d --build
-
-      - name: Wait for services to be healthy
         run: |
-          echo "Waiting for services to become healthy..."
-          TIMEOUT=180
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            UNHEALTHY=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.Health == "unhealthy" or .Health == "starting") | .Name' 2>/dev/null | wc -l)
-            EXITED=$(docker compose $COMPOSE_FILES --env-file .env.ci ps --format json | jq -r '.[] | select(.State == "exited" and .ExitCode != 0) | .Name' 2>/dev/null | wc -l)
-            if [ "$UNHEALTHY" -eq 0 ] && [ "$EXITED" -eq 0 ]; then
-              echo "All services healthy!"
-              docker compose $COMPOSE_FILES --env-file .env.ci ps
-              exit 0
-            fi
-            echo "Waiting... (${ELAPSED}s / ${TIMEOUT}s) — ${UNHEALTHY} unhealthy, ${EXITED} failed"
-            sleep 5
-            ELAPSED=$((ELAPSED + 5))
-          done
-          echo "::error::Services did not become healthy within ${TIMEOUT}s"
+          if ! docker compose $COMPOSE_FILES -f docker-compose.ci-cache.yml --env-file .env.ci \
+              up -d --build --wait --wait-timeout 300; then
+            echo "::error::Services did not become healthy within 300s"
+            docker compose $COMPOSE_FILES --env-file .env.ci ps --all
+            docker compose $COMPOSE_FILES --env-file .env.ci logs --tail=50
+            exit 1
+          fi
           docker compose $COMPOSE_FILES --env-file .env.ci ps
-          docker compose $COMPOSE_FILES --env-file .env.ci logs --tail=50
-          exit 1
 
       - name: Wait for storage schema
         env:

@@ -421,3 +421,24 @@ def test_overlay_build_context_matches_prod(service: str) -> None:
             f"({overlay_dockerfile!r}) doesn't match prod compose's "
             f"({prod_dockerfile!r})."
         )
+
+
+def _health_job() -> dict:
+    return _load_workflow()["jobs"]["compose-health-check"]
+
+
+def test_compose_health_check_never_parses_compose_ps_output() -> None:
+    """Compose prints one JSON object per line; a jq '.[]' filter crashed on it,
+    its stderr was hidden, and the count read 0 unhealthy whatever was running.
+    The job waits with Compose's own --wait instead, as deploy.yml does."""
+    for line in _iter_run_lines(_health_job()):
+        assert "ps --format json" not in line, line
+        assert not re.search(r"\bjq\b", line), line
+
+
+@pytest.mark.parametrize("target", ["supabase-minio", "db-prod", "--build"])
+def test_compose_health_check_starts_services_with_compose_wait(target: str) -> None:
+    starts = [line for line in _iter_run_lines(_health_job())
+              if "docker compose" in line and " up -d" in line and target in line]
+    assert starts, f"no 'up -d' for {target}"
+    assert all("--wait" in line and "--wait-timeout" in line for line in starts), starts
