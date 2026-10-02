@@ -155,6 +155,23 @@ export async function buildExport(
   opts: BuildOptions
 ): Promise<BuiltExport> {
   const { signal, recipeKey: key } = opts
+  // A plant with no accession gets no coverage row (the presence check inner-joins
+  // accessions), which would fail the export as "no coverage row"; say why instead,
+  // before any recipe read (tasks.md 10b.3).
+  const noAccession = resolved.scans.filter((s) => s.accession_id === null)
+  if (noAccession.length > 0) {
+    const first = noAccession[0]
+    const lead =
+      noAccession.length === 1
+        ? `scan ${first.scan_id} (plant ${first.qr_code}) has no accession`
+        : `scan ${first.scan_id} (plant ${first.qr_code}) and ${
+            noAccession.length - 1
+          } other scans have no accession`
+    throw new ExportError(
+      'integrity',
+      `${lead}, so this export cannot run; ask an admin to set the plant's accession, then try again`
+    )
+  }
   const size = opts.batchSize ?? BATCH_SCANS
   const limit = opts.concurrency ?? PG_CONCURRENCY
   const expId = resolved.experiment.id

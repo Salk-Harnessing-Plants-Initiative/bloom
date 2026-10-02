@@ -130,8 +130,13 @@ Every `detail` is a fixed message, and never contains PostgREST's raw text:
 
 #### Scenario: A scan with no coverage row
 
-- **WHEN** a selected scan returns no coverage row (for example, its plant has no accession)
+- **WHEN** a selected scan returns no coverage row
 - **THEN** the job fails with a `detail` naming the scan
+
+#### Scenario: A plant with no accession
+
+- **WHEN** a selected scan's plant has no accession (`accession_id` NULL; the presence check inner-joins `accessions`, so it would get no coverage row)
+- **THEN** the job fails before any recipe read, with a `detail` naming the first such scan and its plant QR code, the number of other such scans, and that an admin must set the plant's accession
 
 #### Scenario: Statement timeout
 
