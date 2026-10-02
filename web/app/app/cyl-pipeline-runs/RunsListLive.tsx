@@ -150,11 +150,31 @@ export function RunsListLive({ initialRuns, initialExperiments, currentUserId, i
           </p>
         )
       ) : (
-        <ul className="divide-y divide-stone-200">
-          {rows.map((run) => (
-            <RunRow key={run.id} run={run} experiments={names.get(run.id)} currentUserId={currentUserId} now={now} />
-          ))}
-        </ul>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wider text-neutral-500">
+              <tr>
+                <th scope="col" className="px-3 py-2 text-left font-medium">
+                  Run
+                </th>
+                <th scope="col" className="px-3 py-2 text-left font-medium">
+                  Target
+                </th>
+                <th scope="col" className="px-3 py-2 text-left font-medium">
+                  Experiments
+                </th>
+                <th scope="col" className="px-3 py-2 text-left font-medium">
+                  State
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((run) => (
+                <RunRow key={run.id} run={run} experiments={names.get(run.id)} currentUserId={currentUserId} now={now} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {hasOlder && rows.length > 0 && (

@@ -391,6 +391,33 @@ describe("lifecycle", () => {
   });
 });
 
+describe("table (bloom#955)", () => {
+  it("heads its columns Run, Target, Experiments and State, one row per run", () => {
+    db = [runRow(92, at(2)), runRow(91, at(1))];
+    mount();
+    const headers = screen.getAllByRole("columnheader");
+    expect(headers.map((h) => h.textContent)).toEqual(["Run", "Target", "Experiments", "State"]);
+    for (const h of headers) expect(h.getAttribute("scope")).toBe("col");
+    expect(row(91).tagName).toBe("TR");
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("renders no table when no run is listed", () => {
+    mount({ initialRuns: [] });
+    expect(screen.getByText("No pipeline runs yet")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("renders no table when Only mine has no runs", async () => {
+    db = [runRow(91, at(1), { requested_by: OTHER })];
+    mount();
+    await act(async () => fireEvent.click(screen.getByRole("checkbox", { name: /only mine/i })));
+    await tick();
+    expect(screen.getByText("You haven't started any pipeline runs")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+});
+
 describe("row contents", () => {
   it("shows the requester, target, experiment links and elapsed time", async () => {
     db = [
@@ -463,6 +490,7 @@ describe("empty and error states", () => {
     await subscribe();
     expect(screen.getByRole("alert").textContent).toContain("timeout");
     expect(row(91)).toBeTruthy();
+    expect(within(screen.getByRole("table")).getByTestId("run-91")).toBeTruthy();
     supabaseMock.respond = respond;
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /retry/i })));
     await tick();
