@@ -8,6 +8,19 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
+
+### Changed
+
+- `h5py` and `numpy` are regular dependencies, so a plain install can run `scrna hdf5 upload`.
+  The `scrna` extra is gone; an old `bloomctl[scrna]` install command still works and installs
+  the same thing, with a warning that the extra no longer exists.
+- If h5py or numpy is missing or broken, `scrna hdf5 upload` names the installed bloomctl
+  version and the command that reinstalls it.
+- The PyPI page is reorganised into numbered sections (Install, Log in, Cylinder, Plate,
+  Single-cell, Pipelines), each with its own quickstart, tips and commands. Staging login moved
+  to a Bloom team section; examples say what they refer to and name their output folder.
+
 ### Fixed
 
 - `cyl ingest-result`/`cyl batch-ingest-result`: when `ARGO_WORKFLOW_NAME` is set and an
