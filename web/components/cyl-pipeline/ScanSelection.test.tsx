@@ -113,11 +113,20 @@ describe("scan selection", () => {
     fireEvent.click(box(6));
     fireEvent.click(screen.getByRole("button", { name: "Run selected (3)" }));
     await settle();
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Run the pipeline on 3 selected scans · 3 scans");
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
     await settle();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0][0]).toBe("/api/cyl/pipeline");
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ target_level: "scan_ids", scan_ids: [9, 2, 6] });
+  });
+
+  it("titles a one-scan selection in the singular (bloom#955)", async () => {
+    render(<Grid ids={[7]} />);
+    fireEvent.click(box(7));
+    fireEvent.click(screen.getByRole("button", { name: "Run selected (1)" }));
+    await settle();
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Run the pipeline on 1 selected scan · 1 scan");
   });
 
   it("disables Run selected over the limit", () => {
