@@ -233,13 +233,17 @@ limit:
 
 ## Using a trait export
 
-**Getting one.** Click "Download traits" on an experiment's traits page (optionally filtered to
-one wave or plant age) or on a scan's page. The dialog lists the recipes in your selection, each
-with how many of the selected scans it covers and what produced it (models and code versions, or
-a legacy source). **The preselected default is the newest recipe, not the one covering the most
-scans.** After a new pipeline image it may cover only a few scans; the dialog then names the
-recipe that covers the most, and you can pick that one instead. Scans the chosen recipe doesn't
-cover are listed in `<stem>.excluded.csv`.
+**Getting one.** Click "Download traits" on an experiment's traits page or on a scan's page. On
+the traits page the dialog starts on the page's wave and plant age; set both to All to export the
+whole experiment. The dialog lists the recipes in your selection, each with how many of the
+selected scans it covers and what produced it (models with their versions and weights checksums,
+code versions and any output params, or a legacy source). **The preselected default is the newest
+recipe, not the one covering the most scans.** After a new pipeline image it may cover only a few
+scans; the dialog then names the recipe that covers the most, and you can pick that one instead.
+Recipes differ in models and trait columns, so use one recipe per analysis rather than combining
+files from different recipes. Scans the chosen recipe doesn't cover are listed in
+`<stem>.excluded.csv`. The dialog says "Download started" once the browser has the file; "Save
+again" saves it again while the dialog is open.
 
 An export is one recipe's traits for a selection of scans, as a zip of three files:
 

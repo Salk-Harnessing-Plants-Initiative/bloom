@@ -647,14 +647,14 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
 
 ## 11a. Review fixes (PR #1025 review 5396953901, 2026-10-02; test first, red/green recorded here and in each commit)
 
-- [ ] 11a.1 **Listing correctness.** Test first in `TraitExportDialog.test.tsx` and `client/requests.test.ts`:
+- [x] 11a.1 **Listing correctness.** Test first in `TraitExportDialog.test.tsx` and `client/requests.test.ts`:
   - a filter change makes the in-flight listing stale at once: if it answers inside the debounce, it fills nothing, Download stays disabled, and its signal is aborted;
   - a stale **200** answering after a newer listing is ignored;
   - a `200` with a JSON `null` body, or a body that is not a listing, shows the generic message with Retry (`parseListing`);
   - a `200` that is not JSON shows the generic message;
   - an automatic pick follows a moved default; a user's pick sticks while listed;
   - StrictMode double-mount shows no error before the first listing.
-- [ ] 11a.2 **Job lifecycle.** Test first:
+- [x] 11a.2 **Job lifecycle.** Test first:
   - **Retry gate:**
     - Retry after a job error, with a filter changed and the listing not yet back, starts nothing;
     - with two errors at once, only one Retry acts.
@@ -683,7 +683,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - Retry on a refused download;
     - a POST or download fetch that rejects;
     - Check again, then a `404`.
-- [ ] 11a.3 **What the dialog says.** Test first in `client/recipe-view.test.ts` and the dialog test:
+- [x] 11a.3 **What the dialog says.** Test first in `client/recipe-view.test.ts` and the dialog test:
   - a pipeline recipe:
     - shows each model's short weights checksum;
     - flags output params;
@@ -693,8 +693,18 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - the heading names the wave and day filters;
   - the `429` offer is `role="alert"`;
   - the progress and saved lines share one always-mounted `role="status"`.
-- [ ] 11a.4 Update the guide's "Getting one" paragraph: the dialog starts on the traits page's wave and age, and All/All exports the whole experiment.
+- [x] 11a.4 Update the guide's "Getting one" paragraph: the dialog starts on the traits page's wave and age, and All/All exports the whole experiment.
   **Helpers (2026-10-02):** `parseListing`, `parseJobView`, `isJobId`, `safeFilename`, `sessionNeedsRefresh`, `refreshFailureKind`, `countLabel` and `selectionTitle` added, and the weights checksum, output params and empty-pipeline line added to `describeRecipe`. Red against stubs: 20 failed / 30 passed. Green: 50/50.
+  **Dialog (11a.1-11a.4, 2026-10-02):**
+  - **Red:** against the old dialog with the new message constants: 25 failed / 57 passed (dialog, scan button and helpers).
+  - **Green:** 132/132 in those directories; the full web suite passes, 157 files / 2,362 tests; `tsc --noEmit` clean.
+  - **Mutations,** each restored byte for byte, each failing exactly its own test:
+    - bumping the listing guard inside `list()` (after the debounce) fails "makes the previous listing stale as soon as a filter changes";
+    - keeping any still-listed pick fails "moves an automatic pick to the new default";
+    - dropping the backdrop guard fails "ignores a click outside while a job is active";
+    - deleting resumed jobs on close fails "keeps a job it only resumed when closed".
+  - **Retry gate:** "starts nothing from Retry until the changed filters have been listed" is guarded three ways: a filter change clears the job error, the job Retry is disabled until the listing is current, and `start()` checks the same gate. Removing any one of them leaves the test green.
+  - **Guide:** the "Getting one" paragraph now says the dialog starts on the page's wave and age (All/All for the whole experiment), that recipes differ in models and trait columns, and what "Download started" and "Save again" mean.
 - [ ] 11a.5 Pre-merge again as in 11.8, push (with the user's yes), record CI, and update the PR body's review-fixes section.
 
 ## 12. After merge

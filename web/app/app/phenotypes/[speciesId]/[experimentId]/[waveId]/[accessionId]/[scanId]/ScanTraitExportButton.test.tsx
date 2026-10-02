@@ -4,7 +4,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const auth = vi.hoisted(() => ({ refreshSession: vi.fn() }))
+const auth = vi.hoisted(() => ({ refreshSession: vi.fn(), getSession: vi.fn() }))
 vi.mock('@/lib/supabase/client', () => ({ createClientSupabaseClient: () => ({ auth }) }))
 
 import ScanTraitExportButton from './ScanTraitExportButton'
@@ -34,6 +34,10 @@ beforeEach(() => {
   vi.useFakeTimers()
   auth.refreshSession.mockReset()
   auth.refreshSession.mockResolvedValue({ data: {}, error: null })
+  auth.getSession.mockResolvedValue({
+    data: { session: { expires_at: Date.now() / 1000 + 3600 } },
+    error: null,
+  })
   fetchSpy.mockReset()
   fetchSpy.mockImplementation((u: string, init?: RequestInit) => {
     const url = new URL(String(u), 'http://localhost')
