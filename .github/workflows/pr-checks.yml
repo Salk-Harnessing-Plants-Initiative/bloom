@@ -479,6 +479,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-bloom-web.txt'
           trivyignores: '.trivyignore'
 
@@ -489,6 +490,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-langchain.txt'
           trivyignores: '.trivyignore'
 
@@ -499,6 +501,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-bloommcp.txt'
           trivyignores: '.trivyignore'
 
@@ -509,6 +512,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-caddy.txt'
           trivyignores: '.trivyignore'
 
@@ -519,6 +523,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-workflows.txt'
           trivyignores: '.trivyignore'
 
@@ -529,6 +534,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-bloomcli.txt'
           trivyignores: '.trivyignore'
 
@@ -543,24 +549,14 @@ jobs:
             for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
-                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
-                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || echo 0)
+                # Sum Trivy's per-target Total lines; the table leaves repeated severity cells blank.
+                crit=$(grep '^Total:' "$file" | grep -oE 'CRITICAL: [0-9]+' | awk '{s += $2} END {print s + 0}')
+                high=$(grep '^Total:' "$file" | grep -oE 'HIGH: [0-9]+' | awk '{s += $2} END {print s + 0}')
                 echo "| ${img} | ${crit} | ${high} |"
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
-              file="trivy-${img}.txt"
-              if [ -f "$file" ] && [ -s "$file" ]; then
-                cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
-                if [ -n "$cves" ]; then
-                  echo "**${img}:** ${cves}"
-                  echo ""
-                fi
-              fi
-            done
-            echo ""
-            echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
+            echo "> Full CVE lists are in the [trivy-built-images-report](../actions/artifacts) artifact."
           } > trivy-report.md
 
       - name: Upload Trivy report artifact
@@ -568,7 +564,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-built-images-report
-          path: trivy-report.md
+          # The raw per-image scans carry the full CVE lists.
+          path: |
+            trivy-report.md
+            trivy-*.txt
 
       - name: Check bloom-web for critical CVEs
         uses: aquasecurity/trivy-action@v0.35.0
@@ -1444,14 +1443,16 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-result.txt'
           trivyignores: '.trivyignore'
 
       - name: Generate summary
         if: always()
         run: |
-          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || echo 0)
-          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || echo 0)
+          # Sum Trivy's per-target Total lines; the table leaves repeated severity cells blank.
+          crit=$(grep '^Total:' trivy-result.txt 2>/dev/null | grep -oE 'CRITICAL: [0-9]+' | awk '{s += $2} END {print s + 0}')
+          high=$(grep '^Total:' trivy-result.txt 2>/dev/null | grep -oE 'HIGH: [0-9]+' | awk '{s += $2} END {print s + 0}')
           cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
           echo "${{ matrix.image }}|${crit}|${high}|${cves}" > summary.txt
 
@@ -1490,18 +1491,16 @@ jobs:
           {
             echo "## Pinned Image CVE Report"
             echo ""
-            echo "| Image | Critical | High | CVEs |"
-            echo "|-------|----------|------|------|"
+            echo "| Image | Critical | High |"
+            echo "|-------|----------|------|"
             for file in results/trivy-pinned-*/summary.txt; do
               if [ -f "$file" ]; then
-                IFS='|' read -r img crit high cves < "$file"
-                if [ -n "$cves" ]; then
-                  echo "| ${img} | ${crit} | ${high} | ${cves} |"
-                else
-                  echo "| ${img} | ${crit} | ${high} | — |"
-                fi
+                IFS='|' read -r img crit high _ < "$file"
+                echo "| ${img} | ${crit} | ${high} |"
               fi
             done
+            echo ""
+            echo "> Per-image CVE lists are in the trivy-pinned-* artifacts."
           } > pinned-report.md
 
       - name: Post as PR comment
