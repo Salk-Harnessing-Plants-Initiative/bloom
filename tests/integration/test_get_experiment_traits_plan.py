@@ -25,6 +25,22 @@ psycopg = pytest.importorskip("psycopg")
 from tests.integration.test_cyl_trait_recipes_read import Fixture  # noqa: E402
 
 SIG = "public.get_experiment_traits(bigint, bigint, text, text, bigint[])"
+# Every relation the function's reads touch. CI's database is fresh, and autovacuum may
+# have analyzed these tables while they were nearly empty; with those statistics the
+# planner rightly prices a full read as cheapest, whatever the function's settings
+# (reproduced on dev: stats taken on an empty table, then the fixture inserted, read
+# all 324 rows; after ANALYZE, 3). The tests check the plan on current statistics.
+PLANNED_TABLES = (
+    "cyl_scan_traits",
+    "cyl_scan_latest_source",
+    "cyl_trait_sources",
+    "cyl_traits",
+    "cyl_scans",
+    "cyl_plants",
+    "cyl_waves",
+    "cyl_experiments",
+    "accessions",
+)
 # More than 5 calls, so plpgsql would have moved to a generic plan by the last one.
 REPEAT_CALLS = 7
 
@@ -42,6 +58,9 @@ def _main_plans(cur, args, *, calls=1, session=()):
     handler = lambda d: notices.append(d.message_primary)  # noqa: E731
     cur.connection.add_notice_handler(handler)
     try:
+        for table in PLANNED_TABLES:
+            # Sees the fixture's own uncommitted rows; rolled back with the test.
+            cur.execute(f"ANALYZE public.{table}")
         # A no-op where auto_explain is in shared_preload_libraries (as in this image).
         cur.execute("LOAD 'auto_explain'")
         for setting, value in (
