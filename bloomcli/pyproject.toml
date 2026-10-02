@@ -1,6 +1,6 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a7"
+version = "0.1.0a8"
 description = "Bloom command-line tool for Bloom Database"
 # The PyPI landing page. README.md is the fuller in-repo doc.
 readme = "README.pypi.md"
@@ -30,6 +30,9 @@ dependencies = [
     # matching `uv.lock` re-lock.
     "sleap-roots-contracts>=0.1.0a9",
     "h2>=4.4.1",  # CVE-2026-71554
+    # `scrna hdf5 upload` reads the file's HDF5 to check its structure.
+    "h5py>=3.10",
+    "numpy>=1.26",
 ]
 
 [project.urls]
@@ -43,11 +46,6 @@ bloomctl = "bloomctl.errors:main"
 
 # An extra, not a dependency-group, so CI runs `uv run --extra test pytest`.
 [project.optional-dependencies]
-# `scrna hdf5 upload` checks a file's structure by reading its HDF5; downloading needs neither.
-scrna = [
-    "h5py>=3.10",
-    "numpy>=1.26",
-]
 test = [
     "pytest>=8.3",
     "pyyaml>=6",

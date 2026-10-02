@@ -119,7 +119,9 @@ These apply across the `cyl` commands, so the per-command sections below stay sh
 
 - **Profiles** — every command takes `-p/--profile <name>` (default `prod`). `bloomctl login`
   writes a profile; use separate profiles to keep prod / staging / local logins side by side
-  (`bloomctl login --server <url> -p staging`, then `… -p staging` on any command).
+  (`bloomctl login --server https://staging.bloom.salk.edu -p staging`, then `… -p staging` on
+  any command). Staging is for the Bloom team only. `-p` only names the saved login: without
+  `--server`, `login` signs in to prod whatever the profile is called.
 - **Machine-readable output** — the `list` commands take `--output csv|json` (with `--json` as a
   back-compat alias for `--output json`); the default is a human table. Pipe it: e.g.
   `cyl experiments list --output json | jq '.[].experiment_id'`.
@@ -361,9 +363,6 @@ of being treated as complete forever. If the recorded size is itself wrong, the 
 succeeds and the log carries a `note=` saying so — otherwise that object would be re-fetched on
 every run with no explanation.
 
-> `plate download` requires the `gravi_scans_extended` view and, for `--experiment-name`, the
-> `gravi_experiment_search` function to be applied on the server you're pointed at.
-
 ## Finding what to download
 
 The read commands help you go from "which experiment?" to an id you can feed `cyl download`:
@@ -510,8 +509,6 @@ finds its file with no lookup table, and the same file uploaded twice is one
 object.
 
 ```bash
-pip install 'bloomctl[scrna]'                   # upload's structure check needs h5py
-
 bloomctl scrna hdf5 upload myb41_transgene_load.h5ad -p staging
 bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
 bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id
