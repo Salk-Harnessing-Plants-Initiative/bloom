@@ -846,7 +846,7 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       - By design ("default recipe" means the most recent), `list_trait_recipes(ARRAY[12880747])`
         now defaults to `b03e1092…` (1 scan, source 271), not 8.1's `1911b908…`. Both are
         `0.1.0a9`.
-- [ ] 8.3 **Drafts for eberrigan to approve before posting:**
+- [x] 8.3 **Drafts for eberrigan to approve before posting:**
   - a note on #936 for egao28, covering:
     - the new arguments;
     - "one recipe per frame";
@@ -854,6 +854,18 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
     - `bloommcp/docs/data-access-roadmap.md:276` and `bloommcp/docs/storage-backends.md:62-70`;
   - notes on #865, #481 and #482;
   - the recipe-retirement follow-up issue (design D10).
+
+  **2026-10-02:** drafted, approved by eberrigan, and posted.
+  - #936 (issuecomment-5958958475): the new arguments and grants; "one recipe per frame" vs
+    tier2's "One source per frame"; the two bloommcp doc lines; "default recipe = most recent"
+    as seen live.
+  - #865 (5958959115): PR A live, with 12.1's numbers; open for PR B.
+  - #481 (5958959704): the RPCs for a `cyl traits export`, and a correction: `create_cyl_dataset`
+    has had a `recipe_key` mode since `20260930120300`, which bloomctl doesn't expose yet.
+  - #482 (5958960390): the RPCs take `scan_ids_`, but the export routes take one experiment or
+    one scan, not a scan set (`request.ts:98-107`).
+  - D10 follow-up filed as **#1021**. It adds 8.2's observation: an image bump moves the code
+    SHAs and starts a new, small default recipe.
 - [x] 8.4 After 8.1, close #935 and #937, with eberrigan's yes.
   **2026-10-02:** closed by hand with the 8.0–8.2 evidence (#935 issuecomment-5958830320,
   #937 issuecomment-5958830924).
