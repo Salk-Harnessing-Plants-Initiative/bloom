@@ -316,6 +316,11 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            # bloom-web stamps this into trait-export sidecars (bloom#1007).
+            # Taken on the host (escaped), and assigned before export so a git
+            # failure stops the deploy instead of stamping an empty SHA.
+            BLOOM_WEB_BUILD_SHA=\$(git rev-parse --short HEAD)
+            export BLOOM_WEB_BUILD_SHA
             docker compose -f docker-compose.prod.yml --env-file .env.prod \
               up -d --build --remove-orphans --wait --wait-timeout 600
             echo 'Production deployed successfully!'
@@ -881,6 +886,9 @@ jobs:
               # broken. Shorter 300s timeout (vs 600s forward) because rollback
               # reuses already-built images — cold-build is not in the critical
               # path.
+              # After the reset, so bloom-web names the commit rolled back to.
+              BLOOM_WEB_BUILD_SHA=\$(git rev-parse --short HEAD)
+              export BLOOM_WEB_BUILD_SHA
               docker compose -f docker-compose.prod.yml --env-file .env.prod \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
@@ -1250,6 +1258,9 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            # See the matching comment in the production deploy step (bloom#1007).
+            BLOOM_WEB_BUILD_SHA=\$(git rev-parse --short HEAD)
+            export BLOOM_WEB_BUILD_SHA
             docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
               up -d --build --remove-orphans --wait --wait-timeout 600
             echo 'Staging deployed successfully!'
@@ -1746,6 +1757,9 @@ jobs:
               # Symmetric --wait with forward deploy — see prod rollback for
               # rationale. Shorter 300s timeout since rollback reuses built
               # images.
+              # After the reset, so bloom-web names the commit rolled back to.
+              BLOOM_WEB_BUILD_SHA=\$(git rev-parse --short HEAD)
+              export BLOOM_WEB_BUILD_SHA
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }

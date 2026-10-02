@@ -98,6 +98,21 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
         NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
+    # Must run as ONE replica: trait-export jobs and their finished zips live in
+    # this process's memory (web/lib/cyl-trait-export), so a second replica would
+    # answer "export not found" for a job started on the first.
+    restart: unless-stopped
+    # Bounds a runaway export to this container, and with the restart policy
+    # turns an out-of-memory kill into a restart instead of a dead site. Node 20
+    # sizes its JS heap at about half this limit (node:20-alpine, measured
+    # 2026-10-01: 1536m -> 792 MiB heap, 3g -> 1584 MiB); the largest staging
+    # export peaked at a 575 MB working set, and two may run at once
+    # (MAX_HELD_BYTES in web/lib/cyl-trait-export/limits.ts). 3g is under 1% of
+    # this host, for each of staging and production.
+    mem_limit: 3g
+    # Without this Docker allows twice mem_limit in swap. Equal values mean no
+    # swap: hit the ceiling and restart.
+    memswap_limit: 3g
     read_only: true
     tmpfs:
       - /tmp
@@ -129,6 +144,12 @@ services:
       # <internal_host>=<public_host>[,<internal_host>=<public_host>]*
       # The .env.prod / .env.staging / .env.ci sources MUST set this var.
       SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
+      # The commit this container was built from, recorded in each trait
+      # export's sidecar as generated_by.version (web/lib/cyl-trait-export).
+      # Read at runtime, so not a build arg. deploy.yml exports it from the
+      # host's checkout before every `up -d --build`; a hand-run compose gets
+      # `unknown` from .env.*.defaults.
+      BLOOM_WEB_BUILD_SHA: ${BLOOM_WEB_BUILD_SHA:-}
     depends_on:
       - kong
     healthcheck:
