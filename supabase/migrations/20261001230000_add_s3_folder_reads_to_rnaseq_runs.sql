@@ -41,18 +41,28 @@ ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_scrna_cellranger_check
                 ~ '^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/([A-Za-z0-9!_.*''()-]+/)+$'
             AND params ->> 'fastq_url' !~ '/\.{1,2}/'
         ))
-        -- 2 to 96 FASTQs, each named for this sample, with a size and an ETag.
+        -- 2 to 96 FASTQs, each an object of exactly a name for this sample, a whole size and
+        -- an ETag. Lax paths find missing and extra keys: a strict path treats a missing key
+        -- as unknown, which a filter lets through.
         AND (NOT params ? 'fastq_files' OR CASE
             WHEN jsonb_typeof(params -> 'fastq_files') = 'array' THEN
                 jsonb_array_length(params -> 'fastq_files') BETWEEN 2 AND 96
+                AND NOT jsonb_path_exists(
+                    params -> 'fastq_files',
+                    'lax $[*] ? (@.type() != "object" || !exists(@.name) || !exists(@.size) || !exists(@.etag))'
+                )
+                AND NOT jsonb_path_exists(
+                    params -> 'fastq_files',
+                    'lax $[*] ? (@.type() == "object").keyvalue() ? (@.key != "name" && @.key != "size" && @.key != "etag")'
+                )
                 AND NOT jsonb_path_exists(
                     params -> 'fastq_files',
                     'strict $[*] ? (@.type() != "object"
                         || @.name.type() != "string"
                         || !(@.name like_regex "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}_S[0-9]+_L[0-9]{3}_(R1|R2|I1|I2)_001\\.fastq(\\.gz)?$")
                         || !(@.name starts with $prefix)
-                        || @.size.type() != "number" || @.size < 0
-                        || @.etag.type() != "string")',
+                        || @.size.type() != "number" || @.size < 0 || @.size.floor() != @.size
+                        || @.etag.type() != "string" || !(@.etag like_regex "^.{1,200}$"))',
                     jsonb_build_object('prefix', (params ->> 'sample') || '_S')
                 )
             ELSE false

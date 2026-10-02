@@ -281,6 +281,16 @@ def test_the_table_accepts_a_folder_written_directly(cur):
     assert _count(cur, TABLE) == 1
 
 
+def test_the_table_accepts_the_limits(cur):
+    """96 files, an ETag of 200 characters, a size of 0 and a URL of 1,024 characters."""
+    files = [_file(f"col0_S1_L{n:03d}_{r}_001.fastq.gz", size=0, etag="e" * 200)
+             for n in range(1, 49) for r in ("R1", "R2")]
+    url = "s3://lab-data/" + "a" * (1024 - len("s3://lab-data/") - 1) + "/"
+    assert len(files) == 96 and len(url) == 1024
+    _insert_run(cur, _folder_params(fastq_url=url, fastq_files=files))
+    assert _count(cur, TABLE) == 1
+
+
 @pytest.mark.parametrize("params", [
     {"sample": "col0", "reference": "tiny_ref", "fastq_url": URL},
     {"sample": "col0", "reference": "tiny_ref", "fastq_files": FILES},
@@ -293,6 +303,20 @@ def test_the_table_accepts_a_folder_written_directly(cur):
     _folder_params(fastq_files=[_file("col0_S1_L001_R1_001.fastq.gz", size=-1), FILES[1]]),
     _folder_params(fastq_files=[_file("col0_S1_L001_R1_001.fastq.gz", etag=7), FILES[1]]),
     _folder_params(fastq_files="nope"),
+    # A file without its size or ETag, an empty object, or one that isn't an object at all.
+    _folder_params(fastq_files=[{"name": "col0_S1_L001_R1_001.fastq.gz"},
+                                {"name": "col0_S1_L001_R2_001.fastq.gz"}]),
+    _folder_params(fastq_files=[{}, {}]),
+    _folder_params(fastq_files=[1, 2]),
+    _folder_params(fastq_files=[{**FILES[0], "key": "x"}, FILES[1]]),
+    _folder_params(fastq_files=[_file("col0_S1_L001_R1_001.fastq.gz", size=1.5), FILES[1]]),
+    _folder_params(fastq_files=[_file("col0_S1_L001_R1_001.fastq.gz", etag=""), FILES[1]]),
+    _folder_params(fastq_files=[_file("col0_S1_L001_R1_001.fastq.gz", etag="e" * 201), FILES[1]]),
+    _folder_params(fastq_url="s3://lab-data/" + "a" * 1020 + "/"),
+    _folder_params(fastq_url="s3://Lab-Data/run42/"),
+    _folder_params(fastq_url=7),
+    _folder_params(fastq_files=[_file(f"col0_S1_L{n:03d}_{r}_001.fastq.gz")
+                                for n in range(1, 50) for r in ("R1", "R2")]),
 ])
 def test_the_table_refuses_a_bad_folder_written_directly(cur, params):
     cur.execute("SAVEPOINT bad")
