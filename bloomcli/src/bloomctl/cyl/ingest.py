@@ -536,6 +536,44 @@ def summarize_result(result: dict[str, Any]) -> str:
     )
 
 
+def status_update_matched_message(result: dict[str, Any]) -> str:
+    """The failure message for an RPC result whose ``status_update_matched`` is false.
+
+    The two ``was_noop`` cases differ in what this delivery wrote:
+
+    - ``was_noop`` false: the trait/blob data was written, but no row matched this scan
+      under this workflow, or the matching row was already ``'failed'`` (the RPC's
+      late-delivery-resurrection guard). Human PR review (design.md's Decision 6
+      addendum 7): the message must not assert either cause as the only one.
+    - ``was_noop`` true: an already-ingested envelope that wrote nothing. The RPC looks
+      for this workflow's row for the source's own recorded scan (``cyl-trait-writeback``),
+      and finds none to update only when the source has no recorded scan, this workflow
+      did not dispatch that scan, its row is already ``'failed'``, or its row is already
+      linked to another source (fix-cyl-noop-redelivery-scan-resolution, design D3/D8).
+      In the last case the row is ``'written'`` and counted done, so the message must not
+      say the row may still be waiting.
+    """
+    source_id = result.get("source_id")
+    if result.get("was_noop"):
+        return (
+            f"already ingested as source_id={source_id}: nothing was written, and this "
+            "workflow's cyl_pipeline_run_scans row for that source's scan was not updated. "
+            "Either the source has no recorded scan, this workflow did not dispatch that "
+            "scan, its row was already closed out as 'failed', or its row is already "
+            "linked to a different source; verify this scan's row manually."
+        )
+    return (
+        f"write-back succeeded (source_id={source_id}) but this "
+        "scan's cyl_pipeline_run_scans status was not updated. Either no row "
+        "matched this scan under this workflow, or a matching row was already "
+        "closed out as 'failed' by an earlier reconciliation attempt — in the "
+        "latter case that outcome is already reflected in the run's failed_count "
+        "(not a new failure), but in the former case this scan may still be sitting "
+        "as 'queued' with nothing left to resolve it. The written trait/blob data is "
+        "correct either way; verify this scan's row manually."
+    )
+
+
 def map_rpc_error(message: str | None, *, profile: str | None = None) -> str:
     """Map an RPC RAISE EXCEPTION message to actionable CLI text.
 
@@ -850,41 +888,26 @@ def ingest_one_envelope(
         if not isinstance(result, dict):
             return ScanResult(scan_key, "failed", f"unexpected RPC response shape: {result!r}")
 
-        # Found during /review-pr round 4: a delivery that genuinely writes trait/blob
-        # data (was_noop=false) can still have its per-scan status UPDATE silently
-        # skipped by the RPC's own late-delivery-resurrection guard (the scan was
-        # already 'failed' — reachable via an ordinary Argo retry racing this batch's
-        # own end-of-batch reconciliation, not an exotic case). Previously this reported
-        # "ok" with zero signal that done_count/failed_count would now permanently
-        # disagree with the real data just written. status_update_matched is None when
-        # argo_workflow_name wasn't supplied (not applicable — the existing manual/
-        # ad-hoc shape, unaffected).
+        # Found during /review-pr round 4: status_update_matched=False means the RPC
+        # updated no cyl_pipeline_run_scans row of this workflow for this delivery, so
+        # done_count/failed_count can disagree with what this delivery saw; reporting it
+        # "ok" or "skipped" would hide that. status_update_matched_message gives the
+        # possible causes, which differ with was_noop. status_update_matched is None when
+        # argo_workflow_name wasn't supplied (no update was attempted — the existing
+        # manual/ad-hoc shape, unaffected).
         #
-        # retriable=False (found during /review-pr round 5): this scan's row was already
-        # 'failed' BEFORE this call ran, and step 9's guard makes that permanent — nothing
-        # about re-running this same delivery can ever change the outcome. Without this,
-        # batch_ingest_result's exit code alone was indistinguishable from a genuinely
-        # retriable failure, so an Argo-retried write-back pod would burn its whole retry
-        # budget on something no retry could fix, ultimately failing the entire Workflow —
-        # and with it, every other scan in the same batch that actually succeeded.
-        #
-        # Message wording (human PR review, design.md's Decision 6 addendum 7): False also
-        # means no row matched the (argo_workflow_name, source_id) join at all — a distinct,
-        # more concerning case than "already closed out failed" (see the no-op-path source_id
-        # gap this same addendum documents as an accepted risk) — so the message must not
-        # assert the reconciliation-attempt explanation as the sole cause.
+        # retriable=False (found during /review-pr round 5): every cause is permanent for
+        # this delivery — a retry sends the same envelope against the same rows and gets the
+        # same answer. Without this, batch_ingest_result's exit code alone was
+        # indistinguishable from a genuinely retriable failure, so an Argo-retried write-back
+        # pod would burn its whole retry budget on something no retry could fix, ultimately
+        # failing the entire Workflow — and with it, every other scan in the same batch that
+        # actually succeeded.
         if argo_workflow_name is not None and result.get("status_update_matched") is False:
             return ScanResult(
                 scan_key,
                 "failed",
-                f"write-back succeeded (source_id={result.get('source_id')}) but this "
-                "scan's cyl_pipeline_run_scans status was not updated. Either no row "
-                "matched this scan under this workflow, or a matching row was already "
-                "closed out as 'failed' by an earlier reconciliation attempt — in the "
-                "latter case that outcome is already reflected in the run's failed_count "
-                "(not a new failure), but in the former case this scan may still be sitting "
-                "as 'queued' with nothing left to resolve it. The written trait/blob data is "
-                "correct either way; verify this scan's row manually.",
+                status_update_matched_message(result),
                 retriable=False,
             )
 
@@ -1037,29 +1060,15 @@ def ingest_result(
         click.echo(summarize_result(result))
 
     # See ingest_one_envelope's identical check for why this matters (review
-    # round 4): a genuinely successful write whose status linkage was silently
-    # skipped by the resurrection guard. Checked after printing the result (the
-    # write itself did succeed) so the operator sees both the real outcome and
-    # the warning, then the command still exits non-zero — unlike
-    # batch_ingest_result's own retriable=False handling (review round 5), a
-    # non-zero exit here has no automated-retry consequence to worry about:
-    # this command is the manual/ad-hoc invocation shape, run by a human who
-    # sees the failure directly, not a write-back pod Argo will retry.
-    #
-    # Message wording (human PR review, design.md's Decision 6 addendum 7): see
-    # ingest_one_envelope's identical message for why this must not assert the
-    # reconciliation-attempt explanation as the sole cause.
+    # round 4): this workflow's run-scan row was not updated. Checked after
+    # printing the result, so the operator sees both the real outcome (written,
+    # or "Already ingested (no-op)") and the failure, then the command still
+    # exits non-zero — unlike batch_ingest_result's own retriable=False handling
+    # (review round 5), a non-zero exit here has no automated-retry consequence
+    # to worry about: this command is the manual/ad-hoc invocation shape, run by
+    # a human who sees the failure directly, not a write-back pod Argo will retry.
     if argo_workflow_name is not None and result.get("status_update_matched") is False:
-        raise click.ClickException(
-            f"write-back succeeded (source_id={result.get('source_id')}) but this "
-            "scan's cyl_pipeline_run_scans status was not updated. Either no row "
-            "matched this scan under this workflow, or a matching row was already "
-            "closed out as 'failed' by an earlier reconciliation attempt — in the "
-            "latter case that outcome is already reflected in the run's failed_count "
-            "(not a new failure), but in the former case this scan may still be sitting "
-            "as 'queued' with nothing left to resolve it. The written trait/blob data is "
-            "correct either way; verify this scan's row manually."
-        )
+        raise click.ClickException(status_update_matched_message(result))
 
 
 # --- batch: command -----------------------------------------------------------
