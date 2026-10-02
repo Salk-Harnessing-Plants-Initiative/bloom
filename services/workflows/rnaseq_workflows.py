@@ -34,8 +34,14 @@ class WorkflowType:
     read_status: Callable[[dict, dict], RunStatus | None]
 
 
-# Registered once in runai-busch-lab from argo/scrna/cellranger/cellranger-count-template.yaml.
-CELLRANGER_TEMPLATE = "cellranger-count-template"
+# The WorkflowTemplate from argo/scrna/cellranger/cellranger-count-template.yaml. Prod and
+# staging share runai-busch-lab, so each registers its own copy and names it here, which lets
+# staging run a newer template and image than prod.
+DEFAULT_CELLRANGER_TEMPLATE = "cellranger-count-template"
+CELLRANGER_TEMPLATE = (
+    os.environ.get("WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE", "").strip()
+    or DEFAULT_CELLRANGER_TEMPLATE
+)
 # Step pods report results as this account; the same as cellranger-count-workflow.yaml.
 STEP_SERVICE_ACCOUNT = "bloom-workflow"
 # The busch-lab Run:ai credential bloom-ghcr-pull.

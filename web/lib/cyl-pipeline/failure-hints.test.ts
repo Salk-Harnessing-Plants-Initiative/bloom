@@ -1,6 +1,6 @@
 /**
  * Failed-row hints in the drill-down: a likely cause from the scan's metadata,
- * and the narrow bloom#900 no-op note.
+ * and a result of this run that arrived after the row was closed.
  */
 
 import { readFileSync } from "node:fs";
@@ -10,9 +10,8 @@ import {
   BACKSTOP_MESSAGE,
   DISPATCH_REFUSED_MESSAGES,
   failedScanCause,
-  isNoOpCandidate,
+  lateResultNote,
   likelyCause,
-  NO_OP_NOTE,
   WRITEBACK_NO_RESULT_MESSAGE,
 } from "./failure-hints";
 import { stageInProblems } from "./stage-in";
@@ -61,33 +60,24 @@ describe("likelyCause", () => {
   });
 });
 
-describe("isNoOpCandidate", () => {
-  const failed = (error_message: string | null) => ({ status: "failed", error_message });
+describe("lateResultNote", () => {
+  const text = "This run's result arrived after this row was closed: the scan's current traits are this run's (source 40).";
 
-  it("is true for the backstop text only on a scan with results, and only for that exact text", () => {
-    expect(isNoOpCandidate(failed(BACKSTOP_MESSAGE), true)).toBe(true);
-    expect(isNoOpCandidate(failed(BACKSTOP_MESSAGE), false)).toBe(false);
-    expect(isNoOpCandidate(failed("stage-in: species missing"), true)).toBe(false);
-    expect(isNoOpCandidate(failed(null), true)).toBe(false);
-    expect(isNoOpCandidate(failed(`${BACKSTOP_MESSAGE}.`), true)).toBe(false);
+  it("names the source when a failed row's scan's latest source was written by this run", () => {
+    expect(lateResultNote("failed", 40, 91, 91)).toBe(text);
   });
 
-  it("is true for write-back's no-result text on a scan with results: the #900 no-op re-delivery", () => {
-    // Staging run 11 (2026-09-30): a re-run of a scan whose only source no run-scan row carries.
-    expect(isNoOpCandidate(failed(WRITEBACK_NO_RESULT_MESSAGE), true)).toBe(true);
-    // Staging run 10's poison scan got the same text with no results: a real failure, no note.
-    expect(isNoOpCandidate(failed(WRITEBACK_NO_RESULT_MESSAGE), false)).toBe(false);
-    expect(isNoOpCandidate(failed(`${WRITEBACK_NO_RESULT_MESSAGE}.`), true)).toBe(false);
+  it("is null for a row that is not failed", () => {
+    expect(lateResultNote("written", 40, 91, 91)).toBeNull();
+    expect(lateResultNote("queued", 40, 91, 91)).toBeNull();
   });
 
-  it("is false for a row that is not failed", () => {
-    expect(isNoOpCandidate({ status: "written", error_message: BACKSTOP_MESSAGE }, true)).toBe(false);
-  });
-
-  it("carries the spec's note text", () => {
-    expect(NO_OP_NOTE).toBe(
-      "This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.",
-    );
+  it("is null when the latest source came from another run, from no run, or is unknown", () => {
+    expect(lateResultNote("failed", 40, 7, 91)).toBeNull();
+    expect(lateResultNote("failed", 40, null, 91)).toBeNull();
+    expect(lateResultNote("failed", 40, undefined, 91)).toBeNull();
+    expect(lateResultNote("failed", null, 91, 91)).toBeNull();
+    expect(lateResultNote("failed", undefined, 91, 91)).toBeNull();
   });
 });
 

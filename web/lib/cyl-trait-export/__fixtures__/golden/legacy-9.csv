@@ -1,0 +1,2 @@
+scan_id,plant_qr_code,scan_path,scanner_id,species_id,species_name,species_genus,species_species,uploaded_at,wave_id,wave_number,wave_name,accession_id,genotype,date_scanned,experiment_id,experiment_name,germ_day,germ_day_color,phenotyper_id,plant_age_days,plant_id,recipe_key,source_id,crown_count_min,crown_length_mean
+102,FX-P4,images/Wave1/Day0_2026-03-02/FX-P4,,1,fixture-plant,Fixturia,exportii,,1,1,Wave 1,1,FIXTURE-ACC-A,2026-03-02,1,Fixture Diversity Screen,4,,,0,4,legacy:9,9,6,20.5

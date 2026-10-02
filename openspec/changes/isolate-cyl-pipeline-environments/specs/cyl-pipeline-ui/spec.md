@@ -6,7 +6,7 @@ The web app SHALL offer run actions, and the trigger proxy SHALL accept a reques
 - `POST /api/cyl/pipeline` responds `503` before reading the session or body, and makes no upstream request;
 - the live views (runs list, drill-down, experiment panel) are unchanged.
 
-It is `true` in staging and `false` in prod until prod's own pipeline credential Secret and stage directories are provisioned (bloom#863). The dispatch worker reads the same switch, at start-up, and fails every batch it claims while it is off (see `cyl-pipeline-dispatch`).
+It is `true` in staging and in prod; prod was `false` until its own pipeline credential Secret and stage directories were provisioned (bloom#863). The dispatch worker reads the same switch, at start-up, and fails every batch it claims while it is off (see `cyl-pipeline-dispatch`).
 
 #### Scenario: Switched off hides the run actions
 - **WHEN** `CYL_PIPELINE_TRIGGER_ENABLED` is unset, `false` or `TRUE`, and a member opens a scan, experiment, accession or drill-down page

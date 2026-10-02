@@ -6,7 +6,8 @@
  * (bloom#674) and a large read can hit the 8 s statement timeout.
  *
  * Runs reach traits only through their requested scans (design D6); nothing
- * here reads trait sources by run.
+ * here reads trait sources by run. fetchSourceRuns reads sources by id, for
+ * the latest sources of a run's own scans.
  */
 
 import { compareRunsDesc, PANEL_SIZE, RUN_PAGE_SIZE, type Cursor, type RunRow, type RunScanRow } from "./realtime-reducer";
@@ -147,6 +148,21 @@ export async function fetchLatestSources(client: ReadClient, ids: number[]): Pro
     )) ?? [],
   );
   return new Map(rows.map((r) => [r.scan_id, r.max_source_id]));
+}
+
+/**
+ * The Bloom run that wrote each trait source, keyed by source id: null for a
+ * source written outside any run or before write-back stamped runs (#976). A
+ * source that isn't visible has no entry.
+ */
+export async function fetchSourceRuns(client: ReadClient, ids: number[]): Promise<Map<number, number | null>> {
+  const rows = await readChunked(ids, async (chunk) =>
+    (await read<{ id: number; cyl_pipeline_run_id: number | null }[]>(
+      "cyl_trait_sources",
+      client.from("cyl_trait_sources").select("id, cyl_pipeline_run_id").in("id", chunk),
+    )) ?? [],
+  );
+  return new Map(rows.map((r) => [r.id, r.cyl_pipeline_run_id]));
 }
 
 type ViewRow = {

@@ -177,9 +177,34 @@ def test_the_body_runs_the_same_steps_as_the_repo_workflow():
     ]
 
 
-def test_the_template_name_is_the_registered_template():
+def test_the_default_template_name_is_the_template_files_own():
     meta = _yaml("cellranger-count-template.yaml")["metadata"]
-    assert wfs.CELLRANGER_TEMPLATE == meta["name"]
+    assert wfs.DEFAULT_CELLRANGER_TEMPLATE == meta["name"]
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("cellranger-count-template-staging", "cellranger-count-template-staging"),
+        ("  cellranger-count-template-staging ", "cellranger-count-template-staging"),
+        ("", "cellranger-count-template"),
+    ],
+)
+def test_each_environment_names_its_own_template(monkeypatch, value, expected):
+    import importlib
+
+    monkeypatch.setenv("WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE", value)
+    try:
+        module = importlib.reload(wfs)
+        body = module.build_cellranger_body(RUN)
+        refs = {
+            t["templateRef"]["name"]
+            for t in body["spec"]["templates"][0]["dag"]["tasks"]
+        }
+        assert refs == {expected}
+    finally:
+        monkeypatch.delenv("WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE")
+        importlib.reload(wfs)
 
 
 @pytest.mark.parametrize("step", ["stage-reference", "sample"])
