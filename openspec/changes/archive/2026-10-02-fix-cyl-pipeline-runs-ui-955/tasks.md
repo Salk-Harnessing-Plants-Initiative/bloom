@@ -155,21 +155,45 @@
   - **2026-10-02:** #1006's own run 36960837578 (`1ab65e24`) was cancelled because a later run
     superseded it. Run 36969184325 on `88cbcbf3` logged "Staging deployed successfully!" at
     05:43:45Z, and `git merge-base --is-ancestor 1ab65e24 88cbcbf3` holds.
-- [ ] 8.2 On `/app/cyl-pipeline-runs`:
+- [x] 8.2 On `/app/cyl-pipeline-runs`:
   - the Run, Target, Experiments and State headings show;
   - runs 1 and 2, or any run with F = 0, have no "0 failed" link;
   - a run with failures still links. The same holds on an experiment page's runs panel.
-- [ ] 8.3 In a drill-down with scan ids ≥ 1000:
+- [x] 8.3 In a drill-down with scan ids ≥ 1000:
   - the Scan cell shows the full id, with no separator and no "…";
   - Wave shows no separator;
   - a failed or queued row with no source shows "—".
-- [ ] 8.4 Open the dialog on a one-scan selection. It shows "1 selected scan". If that scan already has results, it shows "This scan already has pipeline results…".
+- [x] 8.4 Open the dialog on a one-scan selection. It shows "1 selected scan". If that scan already has results, it shows "This scan already has pipeline results…".
+- **8.2–8.4 passed (2026-10-02, about 06:20Z, eberrigan in the browser on
+  `https://staging.bloom.salk.edu:8443`).** Staging was serving `88cbcbf3`: run 36969184325;
+  the next Deploy, 36972180555 for #1009, was still waiting at the gate. Targets were picked
+  from staging's data, read-only:
+  - 8.2: the runs list headings read Run, Target, Experiments, State (screenshot). Runs 19–22
+    read "Finished · 1 succeeded" with no "0 failed" link, and Target reads "1 selected scan" /
+    "scan 12894761 · 1 scan" (screenshot). Runs 1–8 (F = 0) have no failed link. Runs 14
+    (F = 1) and 16 (F = 6) link. Experiment 12880747's runs panel matches.
+  - 8.3: run 16's drill-down (11 scans, ids 12894756–12894766, wave 9999). Scan ids show in
+    full with no separator, Wave reads 9999, and the six `failed` rows with no `source_id`
+    read "—".
+  - 8.4: on scan 12894766's page (source 264), the dialog, opened and cancelled without
+    submitting, shows "1 selected scan" and "This scan already has pipeline results…".
 - [ ] 8.5 In the archive PR, record the deployed sha and what you saw, tick 8.x, and then close #955 by hand. Don't archive before 8.x is recorded.
 
 ## 9. Archive-ordering hazard (`openspec validate --strict` cannot see it)
 
 - [x] 9.1 `fix-cyl-noop-redelivery-scan-resolution` (bloom#900; on staging via #1001, not yet archived) also MODIFIES `cyl-pipeline-ui` "Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`". This change's block is raised onto that block: its one-line "Failed rows" and its no-op scenario are copied byte-identical, and the only line of theirs not kept is the "current in trait views" bullet this change rewrites. An HTML note above the block says so.
-- [ ] 9.2 Archive `fix-cyl-noop-redelivery-scan-resolution` before this change, or in the same PR with that change first. Then `diff` the archived drill-down requirement against this block's intent, and record the result here. If that change's block is revised before archiving, raise this block again first.
+- [x] 9.2 Archive `fix-cyl-noop-redelivery-scan-resolution` before this change, or in the same PR with that change first. Then `diff` the archived drill-down requirement against this block's intent, and record the result here. If that change's block is revised before archiving, raise this block again first.
+  **2026-10-02:** `fix-cyl-noop-redelivery-scan-resolution` is archived first, in the same PR
+  (`2026-10-02-fix-cyl-noop-redelivery-scan-resolution`). Its block was not revised after 9.3.
+  The live `openspec/specs/cyl-pipeline-ui/spec.md` drill-down block `diff`s against this
+  change's block as only this change's edits: the "current in trait views" bullet replaced,
+  then the plain-integer paragraph and seven scenarios added (32 new lines including the
+  replacement). Nothing to raise. No other unarchived change touches any of this change's four
+  requirements. After `openspec archive`, all four blocks in `openspec/specs/cyl-pipeline-ui/spec.md`
+  `diff` byte-identical to this change's delta. `isolate-cyl-pipeline-environments`' only
+  `cyl-pipeline-ui` requirement ("Starting pipeline runs can be switched off per environment") is
+  untouched by it. `openspec validate --all --strict` fails only the same nine bloommcp changes
+  that fail on `88cbcbf3`.
 - [x] 9.3 Raised again (2026-10-01, bloom PR #1008, which revised the noop change's drill-down block
   after review: two-bullet "Failed rows" with a late-result note, a matched-result note, three
   scenarios). This block is now that block plus only this change's edits: the "current in trait
