@@ -353,7 +353,7 @@ The spec's three dialog requirements are the behaviour. This section records how
   - Nothing is imported from the `cyl-pipeline-ui` directories, per D11's placement rule. Their test fixtures are not reused either.
 - **Browser coverage.**
   - Vitest covers the logic: the helpers in `node`, the components in jsdom.
-  - 11.9 checks the dialog by hand in Chrome and Firefox, on a local build against staging.
+  - 11.9 checks the dialog by hand in Chrome and Firefox on the deployed staging site, after PR B merges (decided 2026-10-02).
   - Safari isn't checked, because this work is done on Windows.
   - A Playwright e2e in Chromium, Firefox and WebKit, with seeded rows and a mocked export API, is #1024 (decided 2026-10-02: too large for PR B).
 - **No switch.** The buttons have no feature flag. Rolling back means reverting PR B, which leaves PR A's routes in place.

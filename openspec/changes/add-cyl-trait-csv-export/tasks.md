@@ -632,22 +632,18 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - The two docs pass.
   - **`openspec validate --strict`: valid.**
   - **CI green on the pushed head: pending.)**
-- [ ] 11.9 **Browser checks**, in Chrome and Firefox, on a local `next build && next start` against staging, as in 10.1.
-  - **Env:**
-    - Build with staging's browser-reachable `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and a distinct `NEXT_PUBLIC_SUPABASE_COOKIE_NAME` (`sb-staging-auth-token`).
-    - Set the server's `SUPABASE_URL` and `SUPABASE_URL_HOSTS_ALLOWED`.
-    - No service-role key.
-    - Serve on `127.0.0.1:<port>`.
-    - Sign in as the staging test user, and sign out at the end.
-  - **Checks:**
+- [ ] 11.9 **Browser checks, after PR B deploys to staging** (decided 2026-10-02: on the deployed site, not on a local build, so the checks see the real Caddy, cookies and env with no local anon key or credentials; done together with 12.1's PR B row).
+  - In Chrome and Firefox on `https://staging.bloom.salk.edu:8443`, signed in as the staging test user:
     - 3313 at its default;
     - experiment 1 unfiltered: the note names `legacy-5` over the 3-scan default;
     - experiment 1 with `wave=1`: the default is `legacy:5`, so no note;
     - one scan;
     - closing mid-job: then a new Download is accepted, not `429`;
-    - two tabs: the second gets the resume offer.
+    - two tabs: the second gets the resume offer;
+    - the help link opens the "Using a trait export" section on `main`.
   - Delete each downloaded zip after reading its counts.
-  - Record the results, and that Safari is unchecked (#1024). Then merge `origin/staging` in if it has moved, and run `/pr-description` for PR B.
+  - Record the results, and that Safari is unchecked (#1024). A failure is fixed in a follow-up PR to `staging` before promotion to `main`.
+  - Before merge, PR B's evidence is 11.1–11.8 (unit tests with mutation checks, build, CI); its body says the browser checks follow the staging deploy.
 
 ## 12. After merge
 
