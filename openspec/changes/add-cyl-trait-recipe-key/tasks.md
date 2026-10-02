@@ -807,13 +807,29 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
     6.07 s cold, then 0.70 s and 0.63 s warm. Statuses for the default recipe: `legacy_only`
     13,392, `no_traits` 5,075, `included` 3, `other_recipe` 1.
 
-- [ ] 8.2 On the first Bloom-dispatched run after deploy, confirm the new source's stamps. If no
+- [x] 8.2 On the first Bloom-dispatched run after deploy, confirm the new source's stamps. If no
       such run has happened, record this as blocked.
-      **Blocked (2026-10-02):** no Bloom run since the deploy has created a source. Runs 19–22
-      were all re-deliveries onto existing sources (run-scan rows 1565–1568 → sources 264, 250,
-      228, 251); `max(id)` is still 264. No source has `argo_workflow_name` or
-      `cyl_pipeline_run_id` set. A run over a TEST-E2E scan with no `0.1.0a9` source (not the
-      poison scans 12894751/12894760) would create one.
+      **Passed (2026-10-02, Bloom run 23).** Runs 19–22 were all re-deliveries onto existing
+      sources (run-scan rows 1565–1568 → sources 264, 250, 228, 251), and every non-poison TEST-E2E
+      scan already had a `0.1.0a9` source. So, with eberrigan's yes:
+      - A fresh scan was made with `bloomctl cyl create-test-scan --good -p staging-writer`:
+        12894767 (TEST-E2E-021), image 12894838. Its frame is scan 12894745's, and it downloaded
+        back byte-identical.
+      - eberrigan started run 23 from the scan page. The dialog read "Run the pipeline on scan
+        12894767 · 1 scan" and "This scan has no pipeline results yet".
+      - Argo `sleap-roots-pipeline-v8n7k` Succeeded, 06:42:53–06:52:05Z. The run is `complete`
+        with done 1, failed 0. Run-scan row: `('written', 271)`.
+      - New source **271**: `scan_id` 12894767, `argo_workflow_name` `sleap-roots-pipeline-v8n7k`,
+        `cyl_pipeline_run_id` 23, `recipe_key_version` 1, contract `0.1.0a9`, 1,035 trait rows.
+        `cyl_trait_sources` went from 91 rows / max id 264 to 92 / 271.
+      - Its `recipe_key` is `b03e1092…`, a new key, not `1911b908…`. Diffing
+        `cyl_trait_recipe_payload_v1` between 264 and 271 shows only `predict_code_sha`
+        (`9a6f20c0…` → `79939eec…`) and `traits_code_sha` (`e373b0f9…` → `426ad4dc…`) differ.
+        `models` and `predict_output_params` are equal, so the cluster images moved since
+        2026-09-30, and a new recipe is correct.
+      - By design ("default recipe" means the most recent), `list_trait_recipes(ARRAY[12880747])`
+        now defaults to `b03e1092…` (1 scan, source 271), not 8.1's `1911b908…`. Both are
+        `0.1.0a9`.
 - [ ] 8.3 **Drafts for eberrigan to approve before posting:**
   - a note on #936 for egao28, covering:
     - the new arguments;

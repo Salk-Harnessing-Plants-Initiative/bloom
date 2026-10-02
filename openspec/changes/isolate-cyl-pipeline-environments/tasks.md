@@ -246,13 +246,29 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
 
 - [x] 6.0 Ask the author whether to stop prod's `cyl-pipeline-worker` until promotion 1. Prod can
   dispatch with the staging secret until then. **Author, 2026-10-01: no, leave it running.**
-- [ ] 6.1 After the staging deploy:
+- [x] 6.1 After the staging deploy:
   - check `kubectl get pods -n runai-busch-lab` for GPU contention;
   - run a staging pipeline run on one TEST-E2E scan in experiment 12880747;
   - confirm the Workflow's `.spec.volumes` equals today's `a4_poc` paths and the staging secret
     (filter by `environment=staging`), and that the run completes.
 
-  **Partly evidenced (2026-10-02); left unticked.** #988's Deploy run 36928379446 finished at
+  **Passed (2026-10-02, Bloom run 23).** GPU check before submitting: `runai-busch-lab` had only
+  42 `Completed` pods and no `environment=staging` Workflows. eberrigan started run 23 from the
+  site on TEST-E2E scan 12894767 in experiment 12880747 (created for this check; see
+  `add-cyl-trait-recipe-key` 8.2). The Workflow was read while it ran.
+  - `sleap-roots-pipeline-v8n7k`, labels `environment=staging`, `pipeline-run-id=23`,
+    `submitted-by=bloom-pipeline`, `ttlStrategy.secondsAfterCompletion` 3600.
+  - `.spec.volumes`:
+    - `images-input-dir` = `…/pipeline_orchestration_tests/a4_poc/input`
+    - `predictions-output-dir` = `…/a4_poc/predictions`
+    - `traits-output-dir` = `…/a4_poc/traits`
+    - `bloom-credentials` = secret `genericsecret-bloom-staging-pipeline-credentials`
+
+    These equal the vendored file's paths and secret (prefix `/hpi/hpi_dev/users/eberrigan/`).
+  - It Succeeded 06:42:53–06:52:05Z. Run 23 is `complete` with done 1, failed 0, and its
+    source 271 is written to staging.
+
+  Earlier, partial evidence (kept for the record): #988's Deploy run 36928379446 finished at
   2026-10-01T21:45:24Z. After that, Bloom runs 20, 21 and 22 each ran one TEST-E2E scan in
   experiment 12880747 (12894761, 12894756, 12894762). All three completed with done 1, failed 0,
   and wrote to staging (Argo `fc96k`, `x8hld`, `7bnds`). The staging worker's environment holds
