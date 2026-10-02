@@ -96,7 +96,7 @@ describe("RunScansTable", () => {
   });
 
   it("says current is unknown when the latest source hasn't loaded, and gives no link without metadata", () => {
-    render(<RunScansTable rows={[row(577, { current: null, scanHref: null })]} disableVirtualization />);
+    render(<RunScansTable rows={[row(577, { source_id: 40, current: null, scanHref: null })]} disableVirtualization />);
     const cells = within(bodyRows()[0]).getAllByRole("gridcell").map((c) => c.textContent);
     expect(cells[9]).toBe("unknown");
     expect(within(bodyRows()[0]).queryByRole("link")).toBeNull();
@@ -179,5 +179,24 @@ describe("plain integers (bloom#955)", () => {
     expect(plainInteger(0)).toBe("0");
     expect(plainInteger(null)).toBe("");
     expect(byField.get("scan_id")?.width).toBeGreaterThanOrEqual(110);
+  });
+});
+
+describe("current in trait views (bloom#955)", () => {
+  it.each([
+    // No source: this run recorded no result for the scan, so there is nothing to be current.
+    [null, false, "—"],
+    [null, null, "—"], // even when the latest-source read failed
+    [40, null, "unknown"],
+    [40, true, "yes"],
+    [40, false, "no"],
+  ])("source %s, current %s → %s", (source_id, current, text) => {
+    render(<RunScansTable rows={[row(577, { status: "failed", statusLabel: "Failed", source_id, current })]} disableVirtualization />);
+    expect(within(bodyRows()[0]).getAllByRole("gridcell")[9].textContent).toBe(text);
+  });
+
+  it("explains the dash in the column description", () => {
+    const current = scanTableColumns.find((c) => c.field === "current");
+    expect(current?.description).toContain("—");
   });
 });
