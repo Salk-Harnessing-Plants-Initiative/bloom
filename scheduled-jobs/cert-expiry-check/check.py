@@ -2,8 +2,9 @@
 """Weekly check of the TLS certificates Bloom's sites serve.
 
 Connects to each site named in the given env defaults files, reads the expiry
-date of the certificate it serves, and emails the team through the Salk relay
-when one is close to expiring or can't be checked. Caddy renews about 30 days
+date of the certificate it serves, and emails the team when one is close to
+expiring or can't be checked. Mail goes out the way the site's own email does:
+the SMTP_* relay and sender from the first env file. Caddy renews about 30 days
 before expiry, so a healthy certificate never gets under the warning line.
 
 Exit 0 = every certificate is fine, 1 = a problem was found (and emailed),
@@ -22,11 +23,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import EmailMessage
+from email.utils import formataddr
 from pathlib import Path
 
 DEFAULT_WARN_DAYS = 21
 CONNECT_TIMEOUT_SECONDS = 10
-SMTP_PORT = 25
 SMTP_TIMEOUT_SECONDS = 30
 HOST_KEYS = ("DOMAIN_MAIN", "DOMAIN_STUDIO", "DOMAIN_MINIO")
 ACME_CHALLENGE_NAME = "_acme-challenge.bloom.salk.edu"
@@ -51,6 +52,14 @@ class Result:
         return f"{self.host}:{self.port}"
 
 
+@dataclass(frozen=True)
+class MailSettings:
+    host: str
+    port: int
+    address: str
+    name: str
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -71,6 +80,20 @@ def served_hosts(env_file: Path) -> list[tuple[str, int]]:
         raise ValueError(f"{env_file} has no DOMAIN_MAIN")
     port = int(values.get("CADDY_HTTPS_LISTEN_PORT", "443"))
     return [(values[key], port) for key in HOST_KEYS if values.get(key)]
+
+
+def mail_settings(env_file: Path) -> MailSettings:
+    """Bloom's relay and sender, the SMTP_* settings the site's auth email uses."""
+    values = _read_env(env_file)
+    missing = [k for k in ("SMTP_HOST", "SMTP_ADMIN_EMAIL") if not values.get(k)]
+    if missing:
+        raise ValueError(f"{env_file} has no {', '.join(missing)}")
+    return MailSettings(
+        host=values["SMTP_HOST"],
+        port=int(values.get("SMTP_PORT", "25")),
+        address=values["SMTP_ADMIN_EMAIL"],
+        name=values.get("SMTP_SENDER_NAME", "Bloom"),
+    )
 
 
 def fetch_expiry(host: str, port: int) -> datetime:
@@ -158,14 +181,14 @@ def build_alert(results: list[Result], warn_days: int) -> tuple[str, str]:
 
 
 def send_email(
-    subject: str, body: str, sender: str, recipients: list[str], smtp_host: str
+    subject: str, body: str, mail: MailSettings, recipients: list[str]
 ) -> None:
     msg = EmailMessage()
-    msg["From"] = sender
+    msg["From"] = formataddr((mail.name, mail.address))
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.set_content(body)
-    with smtplib.SMTP(smtp_host, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+    with smtplib.SMTP(mail.host, mail.port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
         smtp.send_message(msg)
 
 
@@ -199,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         type=Path,
         default=[],
-        help="An env defaults file naming the sites to check (repeatable).",
+        help="An env defaults file naming the sites to check (repeatable). "
+        "The first one also supplies the mail relay and sender.",
     )
     parser.add_argument(
         "--test-email",
@@ -216,8 +240,10 @@ def main(argv: list[str] | None = None) -> int:
     if not recipients:
         print("CERT_CHECK_RECIPIENTS is empty; refusing to run", file=sys.stderr)
         return 1
-    smtp_host = os.environ.get("CERT_CHECK_SMTP_HOST", "neoemex1.salk.edu")
-    sender = os.environ.get("CERT_CHECK_FROM", "bloom-cert-check@bloom.salk.edu")
+    if not args.env_file:
+        print("give at least one --env-file", file=sys.stderr)
+        return 1
+    mail = mail_settings(args.env_file[0])
     warn_days = int(os.environ.get("CERT_CHECK_WARN_DAYS", DEFAULT_WARN_DAYS))
 
     if args.test_email:
@@ -226,9 +252,8 @@ def main(argv: list[str] | None = None) -> int:
                 "[bloom-cert-check] test email: the relay works",
                 "This is a test from the weekly Bloom certificate check.\n"
                 "If you got it, alerts will reach you. No action needed.\n",
-                sender,
+                mail,
                 recipients,
-                smtp_host,
             )
         except (smtplib.SMTPException, OSError) as exc:
             print(f"test email failed: {exc}", file=sys.stderr)
@@ -251,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
 
     subject, body = build_alert(results, warn_days)
     try:
-        send_email(subject, body, sender, recipients, smtp_host)
+        send_email(subject, body, mail, recipients)
     except (smtplib.SMTPException, OSError) as exc:
         print(f"alert email failed: {exc}", file=sys.stderr)
         return 2

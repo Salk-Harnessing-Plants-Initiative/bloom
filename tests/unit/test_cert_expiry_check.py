@@ -94,8 +94,6 @@ def test_an_unreachable_site_is_described_in_the_email():
 @pytest.fixture
 def config(monkeypatch, tmp_path):
     monkeypatch.setenv("CERT_CHECK_RECIPIENTS", "a@salk.edu, b@salk.edu")
-    monkeypatch.setenv("CERT_CHECK_SMTP_HOST", "relay.test")
-    monkeypatch.setenv("CERT_CHECK_FROM", "bloom-cert-check@test")
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
     sent = []
     monkeypatch.setattr(check, "send_email", lambda *a: sent.append(a))
@@ -119,8 +117,8 @@ def test_a_problem_emails_the_team_and_fails_the_run(config):
     sent, _ = config
     assert _run(days=10) == 1
     (args,) = sent
-    subject, body, sender, recipients, relay = args
-    assert recipients == ["a@salk.edu", "b@salk.edu"] and relay == "relay.test"
+    subject, body, mail, recipients = args
+    assert recipients == ["a@salk.edu", "b@salk.edu"]
     assert "10 days" in subject
 
 
@@ -135,7 +133,7 @@ def test_a_relay_that_refuses_still_fails_the_run(config, monkeypatch):
 def test_the_test_email_option_sends_one_email_and_checks_nothing(config):
     sent, _ = config
     with patch.object(check, "fetch_expiry", side_effect=AssertionError("no check in test mode")):
-        assert check.main(["--test-email"]) == 0
+        assert check.main(["--env-file", str(REPO / ".env.prod.defaults"), "--test-email"]) == 0
     assert len(sent) == 1 and "test" in sent[0][0].lower()
 
 
@@ -144,16 +142,35 @@ def test_no_recipients_refuses_to_run(monkeypatch):
     assert check.main(["--env-file", str(REPO / ".env.prod.defaults")]) == 1
 
 
-def test_send_email_uses_the_relay_on_port_25():
+MAIL = check.MailSettings(host="relay.test", port=2525, address="noreply@test", name="Bloom")
+
+
+@pytest.mark.parametrize("env_file", [".env.prod.defaults", ".env.staging.defaults"])
+def test_mail_goes_out_as_blooms_own_sender_through_its_relay(env_file):
+    mail = check.mail_settings(REPO / env_file)
+    assert (mail.host, mail.port) == ("neoemex1.salk.edu", 25)
+    assert mail.address == "noreply@bloom.salk.edu" and mail.name == "Bloom"
+
+
+def test_an_env_file_without_smtp_settings_is_refused(tmp_path):
+    f = tmp_path / ".env.x.defaults"
+    f.write_text("DOMAIN_MAIN=x.test\n")
+    with pytest.raises(ValueError, match="SMTP_HOST"):
+        check.mail_settings(f)
+
+
+def test_send_email_uses_the_configured_relay_and_sender_name():
     with patch.object(check.smtplib, "SMTP") as smtp:
-        check.send_email("s", "b", "from@x", ["to@y"], "relay.test")
-    smtp.assert_called_once_with("relay.test", 25, timeout=30)
+        check.send_email("s", "b", MAIL, ["to@y"])
+    smtp.assert_called_once_with("relay.test", 2525, timeout=30)
+    sent = smtp.return_value.__enter__.return_value.send_message.call_args[0][0]
+    assert sent["From"] == "Bloom <noreply@test>"
 
 
 def test_send_email_passes_relay_errors_up():
     with patch.object(check.smtplib, "SMTP", side_effect=smtplib.SMTPException("no")):
         with pytest.raises(smtplib.SMTPException):
-            check.send_email("s", "b", "from@x", ["to@y"], "relay.test")
+            check.send_email("s", "b", MAIL, ["to@y"])
 
 
 # --- the workflow -----------------------------------------------------------------------
@@ -184,6 +201,7 @@ def test_the_workflow_checks_both_environments_and_uses_no_secrets():
     text = WORKFLOW.read_text()
     assert ".env.prod.defaults" in text and ".env.staging.defaults" in text
     assert "secrets." not in text
+    assert "CERT_CHECK_FROM" not in text and "CERT_CHECK_SMTP_HOST" not in text
 
 
 def test_the_tests_never_open_a_real_connection():

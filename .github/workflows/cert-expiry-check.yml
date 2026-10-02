@@ -1,7 +1,7 @@
 name: Weekly TLS certificate check
 
 # Reads the expiry date of the certificate each Bloom site serves, prod and
-# staging, and emails the team through the Salk relay when one has fewer than
+# staging, and emails the team when one has fewer than
 # CERT_CHECK_WARN_DAYS left or can't be checked. Caddy renews about 30 days
 # before expiry, so a healthy certificate never gets that close; an email means
 # renewal has stopped and there are still weeks to fix it.
@@ -12,7 +12,9 @@ name: Weekly TLS certificate check
 #
 # Like the other scheduled workflows, it only fires once this file is on the
 # default branch (main), so it starts with the next staging -> main promotion.
-# "Send test email" on a manual run confirms the relay accepts mail from the runner.
+# Mail goes out as the site's own email does (SMTP_* in .env.prod.defaults: the
+# Salk relay, as "Bloom <noreply@bloom.salk.edu>"). "Send test email" on a manual
+# run confirms the relay accepts mail from the runner.
 
 on:
   schedule:
@@ -38,15 +40,13 @@ jobs:
     timeout-minutes: 10
     env:
       CERT_CHECK_RECIPIENTS: bfernando@salk.edu,eberrigan@salk.edu,nhartwick@salk.edu
-      CERT_CHECK_SMTP_HOST: neoemex1.salk.edu
-      CERT_CHECK_FROM: bloom-cert-check@bloom.salk.edu
       CERT_CHECK_WARN_DAYS: "21"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Send a test email
         if: inputs.send_test_email
-        run: python3 scheduled-jobs/cert-expiry-check/check.py --test-email
+        run: python3 scheduled-jobs/cert-expiry-check/check.py --env-file .env.prod.defaults --test-email
 
       - name: Check the certificates
         if: ${{ !inputs.send_test_email }}
