@@ -775,13 +775,29 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
 
 ## 8. After merge
 
-- [ ] 8.0 **Before promoting staging to main: eberrigan runs a read-only dry run on prod.** Use
+- [x] 8.0 **Before promoting staging to main: eberrigan runs a read-only dry run on prod.** Use
       the 7.2 query, which is committed at `tests/integration/fixtures/recipe_backfill_dry_run.sql`.
       Record the counts here. `empty_payload` must be 0 (design D1, "Provenance without the keyed
       fields"); if it is not, bring the rows to eberrigan before promoting. Record `unplaced`
       next to staging's 5: every recipe read costs about (selected scans) x `unplaced` index
       probes, and staging's 18,471 x 5 took 711 ms (7.3). Run
       `scripts/lint_migrations.sh origin/main` on the promotion PR.
+      **Not run before promotion; checked afterwards (2026-10-02).** Promotion #1018 (`bfcecea2`)
+      merged and prod deployed (Deploy run 36998823516) before this ran. So, with eberrigan's yes,
+      the committed query and the post-migration state were read on prod
+      (`bloom_v2_prod-db-prod-1`, `default_transaction_read_only=on`):
+      - `20260930120000`–`120300` (plus `20261001180000`, `20261001220000`) are applied.
+      - Dry run: `sources` 5, `keyed` 5, `pipeline_keys` 0, **`empty_payload` 0**,
+        `object_metadata` 0, `resolved` 0, **`unplaced` 5** (staging: 5), `with_trait_rows` 0,
+        `agreeing` 0; 138 ms.
+      - Actual state: 5 sources (max id 5), all `legacy:1`–`legacy:5` with no metadata;
+        `recipe_key IS NULL` 0; `scan_id IS NULL` 5 (the same five); no run stamps.
+
+      Prod had never received a pipeline result, so the backfill had nothing to get wrong. A
+      dry run before promotion would have shown these same counts. Recipe reads on prod cost
+      (selected scans) x 5 probes, the same as staging. The first prod pipeline source should
+      come from `isolate-cyl-pipeline-environments` 6.6. #1018's "Lint new migration filenames +
+      timestamps" job (`lint_migrations.sh origin/main`) passed.
 - [x] 8.1 **Read-only checks on staging after deploy:**
 
   - `count(*) WHERE recipe_key IS NULL` is 0;
