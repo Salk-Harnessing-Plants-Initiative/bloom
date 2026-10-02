@@ -29,7 +29,7 @@ export interface ScanTableRow {
   plant_age_days: number | null;
   /**
    * True/false when the scan's latest source is known; null when it isn't.
-   * The cell shows "—" instead whenever `source_id` is null (see the column formatter).
+   * The cell shows "—" instead whenever `source_id` is null (see the column's valueGetter).
    */
   current: boolean | null;
   likelyCause: string | null;
@@ -98,10 +98,11 @@ export const scanTableColumns: GridColDef<ScanTableRow>[] = [
     field: "current",
     headerName: "Current in trait views",
     description:
-      "Whether this row's source is the scan's latest, as of the last load. Rows whose source changed since show unknown; Refresh to recheck. — means this run recorded no result for the scan.",
+      "Whether this row's source is the scan's latest, as of the last load. Rows whose source changed since show unknown; Refresh to recheck. — means no result is linked to this row. The scan may still have pipeline results (for example a result that arrived after the run closed, or another run's), so check its traits before re-running.",
     width: 170,
-    // No source: this run recorded no result for the scan, so "—" even when the latest-source read failed (bloom#955).
-    valueFormatter: (value: boolean | null, row: ScanTableRow) =>
+    // No source: no result is linked to this row, so "—" even when the latest-source read failed (bloom#955).
+    // A getter, not a formatter, so sorting and filtering use the text shown (design D2).
+    valueGetter: (value: boolean | null, row: ScanTableRow) =>
       row.source_id == null ? "—" : value === null ? "unknown" : value ? "yes" : "no",
   },
   {

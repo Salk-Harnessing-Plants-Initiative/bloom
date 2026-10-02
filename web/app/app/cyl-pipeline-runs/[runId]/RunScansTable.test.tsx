@@ -195,8 +195,38 @@ describe("current in trait views (bloom#955)", () => {
     expect(within(bodyRows()[0]).getAllByRole("gridcell")[9].textContent).toBe(text);
   });
 
-  it("explains the dash in the column description", () => {
+  it("explains the dash in the column description, without claiming the scan has no results", () => {
     const current = scanTableColumns.find((c) => c.field === "current");
-    expect(current?.description).toContain("—");
+    expect(current?.description).toBe(
+      "Whether this row's source is the scan's latest, as of the last load. Rows whose source changed since show unknown; Refresh to recheck. — means no result is linked to this row. The scan may still have pipeline results (for example a result that arrived after the run closed, or another run's), so check its traits before re-running.",
+    );
+  });
+
+  it("sorts by what it shows, so dashes and noes don't interleave (PR #1006 review)", async () => {
+    render(
+      <RunScansTable
+        rows={[
+          row(1, { source_id: 10, current: false }),
+          row(2, { source_id: null, current: false }),
+          row(3, { source_id: 30, current: false }),
+          row(4, { source_id: null, current: false }),
+        ]}
+        disableVirtualization
+      />,
+    );
+    await act(async () => fireEvent.click(screen.getByRole("columnheader", { name: /Current in trait views/ })));
+    const shown = bodyRows().map((r) => within(r).getAllByRole("gridcell")[9].textContent);
+    expect([...shown].sort()).toEqual(["no", "no", "—", "—"]);
+    expect(shown.indexOf("—") + 1).toBe(shown.lastIndexOf("—"));
+    expect(shown.indexOf("no") + 1).toBe(shown.lastIndexOf("no"));
+  });
+
+  it("gets the shown text as the column's value, so filtering sees it too", () => {
+    const current = scanTableColumns.find((c) => c.field === "current")!;
+    const get = current.valueGetter as unknown as (value: boolean | null, r: ScanTableRow) => string;
+    expect(get(false, row(1, { source_id: null }))).toBe("—");
+    expect(get(null, row(1, { source_id: 40 }))).toBe("unknown");
+    expect(get(true, row(1, { source_id: 40 }))).toBe("yes");
+    expect(get(false, row(1, { source_id: 40 }))).toBe("no");
   });
 });

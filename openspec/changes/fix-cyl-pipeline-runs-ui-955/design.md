@@ -22,11 +22,11 @@ In MUI x-data-grid 8.x, a numeric column (`GRID_NUMERIC_COL_DEF`, `gridNumericCo
 - The Scan column goes from 90 to 110 px, which fits a ten-digit id at compact density.
 - A null Source cell stays blank (""), not "—". It's a numeric column, and "" is what the grid shows for an empty number.
 
-## D2. "—" without a source: decided in the formatter, not in `RunDetailLive`
+## D2. "—" without a source: decided in the column's `valueGetter`, not in `RunDetailLive`
 
 `current` stays `boolean | null`. `RunDetailLive` computes it, and its tests pin those values (`RunDetailLive.test.tsx:336–396`, `:489–498`). That test file mocks the table, so nothing it checks changes.
 
-The "Current in trait views" formatter reads the row (DataGrid v8 calls `valueFormatter(value, row, colDef, apiRef)`):
+The "Current in trait views" column's `valueGetter` reads the row and returns the text it shows (DataGrid v8 calls `valueGetter(value, row, colDef, apiRef)`):
 
 ```
 row.source_id == null → "—"
@@ -35,11 +35,13 @@ current               → "yes"
 otherwise             → "no"
 ```
 
-**Why "—" comes before "unknown" (user decision, 2026-10-01).** A row with no `source_id` recorded no result in this run, so there's nothing whose currency could be unknown. "—" then means one thing only: "this run wrote no result for this scan". "Unknown" keeps its own meaning: "there is a result, but we couldn't check it".
+**Why "—" comes before "unknown" (user decision, 2026-10-01).** A row with no `source_id` has no result linked to it, so there's nothing whose currency could be checked. "Unknown" keeps its own meaning: "there is a linked result, but we couldn't check it".
 
-**Why the formatter rather than `current`.** Adding a third state to `current` would change a type the live reducer and its tests depend on, just to fix a label.
+**What "—" does not mean (PR #1006 review).** It is not "this run produced nothing". The write-back RPC's step 9 skips the `written`/`source_id` update for a row already `failed` (`supabase/migrations/20261001220000_resolve_cyl_noop_redelivery_scan_from_source.sql`), so a delivery that lands after reconciliation stores this run's traits but leaves the row `failed` with no `source_id`. The description therefore says only that no result is linked to the row, and tells the reader to check the scan's traits before re-running. Today `NO_OP_NOTE` also covers that case; bloom#900 PR B removes it, after which the description is the only explanation.
 
-**Accessibility.** The column's `description` tooltip gets a sentence explaining "—". A bare dash means nothing to a screen reader.
+**Why a `valueGetter`, not a `valueFormatter`.** The first version decided "—" in `valueFormatter`. DataGrid sorts and filters on the value, not the formatted text, so "—" rows sorted in among "no" (`false`) or "unknown" (`null`) rows, and the column filter couldn't find "—". A `valueGetter` returning the shown string makes display, sort and filter agree. Adding a third state to `current` instead would change a type the live reducer and its tests depend on, just to fix a label.
+
+**Accessibility.** The column's `description` tooltip explains "—". A bare dash means nothing to a screen reader.
 
 **What the archived design asked to keep.** D8 of the archived add-cyl-pipeline-ui design (`openspec/changes/archive/2026-10-01-add-cyl-pipeline-ui/design.md:225`) treats `source_id` and current-in-trait-views as the handles a future pinned export needs. Both columns stay.
 

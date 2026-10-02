@@ -185,7 +185,7 @@ It SHALL show:
   - `error_message`;
   - `argo_workflow_name`;
   - `source_id`;
-  - "current in trait views": "—" when the row has no `source_id` (this run recorded no result for the scan), even if the latest-source read failed; otherwise "unknown" when that read failed or the row's `source_id` changed since it; otherwise "yes" when `source_id` equals the scan's last-read `cyl_scan_latest_source.max_source_id`, else "no". The column's description explains "—";
+  - "current in trait views": "—" when the row has no `source_id` (no result is linked to this row), even if the latest-source read failed; otherwise "unknown" when that read failed or the row's `source_id` changed since it; otherwise "yes" when `source_id` equals the scan's last-read `cyl_scan_latest_source.max_source_id`, else "no". The column sorts and filters by the value it shows. Its description reads: "— means no result is linked to this row. The scan may still have pipeline results (for example a result that arrived after the run closed, or another run's), so check its traits before re-running." A "—" does not mean the scan has no results: a delivery that lands after reconciliation failed the row stores its traits but leaves the row `failed` with no `source_id`;
   - `updated_at`;
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 
@@ -220,6 +220,10 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 #### Scenario: A row with a source reads unknown when the read failed
 - **WHEN** a `written` row has `source_id = 40` and the latest-source read failed
 - **THEN** its "current in trait views" cell reads "unknown"
+
+#### Scenario: The column sorts by what it shows
+- **WHEN** the rows' "current in trait views" cells read "no", "—", "no", "—" and the column is sorted
+- **THEN** the "—" rows are adjacent and the "no" rows are adjacent
 
 #### Scenario: A row with a source that is no longer latest reads no
 - **WHEN** a `written` row has `source_id = 40` and the scan's last-read `max_source_id` is 41
