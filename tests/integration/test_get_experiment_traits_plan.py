@@ -59,7 +59,9 @@ def _main_plans(cur, args, *, calls=1, session=()):
     cur.connection.add_notice_handler(handler)
     try:
         for table in PLANNED_TABLES:
-            # Sees the fixture's own uncommitted rows; rolled back with the test.
+            # Sees the fixture's own uncommitted rows. pg_statistic rolls back with the
+            # test; pg_class.reltuples and the analyze counters don't, which no other
+            # test depends on.
             cur.execute(f"ANALYZE public.{table}")
         # A no-op where auto_explain is in shared_preload_libraries (as in this image).
         cur.execute("LOAD 'auto_explain'")
