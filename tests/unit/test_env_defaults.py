@@ -539,17 +539,18 @@ def test_the_destination_is_not_the_v1_archive():
     assert "old_bloom_final_state" not in root, "points at the V1 archive"
 
 
-def test_pipeline_trigger_is_on_in_staging_and_off_in_prod():
-    """Starting cylinder pipeline runs is switched on in staging and off in prod,
-    which stays off until prod's own pipeline credential Secret and stage
-    directories are provisioned (bloom#863). The switch has two readers:
-    bloom-web, per request (web/lib/cyl-pipeline/trigger-enabled.ts), and the
-    dispatch worker, at start-up (services/workflows/k8s_client.py), which fails
-    every batch it claims while it is off. Compose must pass it to both."""
+def test_pipeline_trigger_is_on_in_staging_and_prod():
+    """Starting cylinder pipeline runs is switched on in staging and in prod.
+    Prod was off until its own pipeline credential Secret and stage
+    directories were provisioned and checked (bloom#863). The switch has two
+    readers: bloom-web, per request (web/lib/cyl-pipeline/trigger-enabled.ts),
+    and the dispatch worker, at start-up (services/workflows/k8s_client.py),
+    which fails every batch it claims while it is off. Compose must pass it to
+    both."""
     prod = _parse(PROD_DEFAULTS)
     staging = _parse(STAGING_DEFAULTS)
     assert staging.get("CYL_PIPELINE_TRIGGER_ENABLED") == "true"
-    assert prod.get("CYL_PIPELINE_TRIGGER_ENABLED") == "false"
+    assert prod.get("CYL_PIPELINE_TRIGGER_ENABLED") == "true"
     services = _compose_services(COMPOSE_FILE)
     for service in ("bloom-web", "cyl-pipeline-worker"):
         assert (
