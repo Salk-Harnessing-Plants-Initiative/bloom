@@ -12,9 +12,9 @@ repos:
       # misleading failure for a file nobody edited. Verified: the hook takes it
       # from 10833 to 10834 bytes.
       - id: trailing-whitespace
-        exclude: ^services/workflows/vendored/
+        exclude: ^(services/workflows/vendored/|web/lib/cyl-trait-export/__fixtures__/)
       - id: end-of-file-fixer
-        exclude: ^services/workflows/vendored/
+        exclude: ^(services/workflows/vendored/|web/lib/cyl-trait-export/__fixtures__/)
       - id: check-yaml
         exclude: ^uv\.lock$
       - id: check-added-large-files
@@ -44,7 +44,7 @@ repos:
         files: \.(js|jsx|ts|tsx|json|md)$
         # Keep the bloomctl envelope fixtures byte-stable (real emitter output) —
         # prettier would reformat their JSON and break the byte-for-byte contract.
-        exclude: ^(web/package-lock\.json|bloomcli/tests/fixtures/.*\.result\.json)$
+        exclude: ^(web/package-lock\.json|bloomcli/tests/fixtures/.*\.result\.json|web/lib/cyl-trait-export/__fixtures__/.*)$
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: 6efcfbaae240618685d847c17ab0ba9f6c46ed5c  # v8.9.0

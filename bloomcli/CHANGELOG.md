@@ -19,6 +19,27 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   Single-cell, Pipelines), each with its own quickstart, tips and commands. Staging login moved
   to a Bloom team section; examples say what they refer to and name their output folder.
 
+### Fixed
+
+- `cyl ingest-result`/`cyl batch-ingest-result`: when `ARGO_WORKFLOW_NAME` is set and an
+  already-ingested envelope's re-delivery could not update this workflow's
+  `cyl_pipeline_run_scans` row (`was_noop: true`, `status_update_matched: false`), the failure
+  message now says what happened: already ingested as `source_id` N, nothing was written, and
+  this workflow's row for that source's scan was not updated. It used to reuse the message for a
+  written delivery, which said "write-back succeeded" and that the trait/blob data was correct,
+  and that the row might still be queued, though it can already be `'written'` with another
+  source. The outcome is unchanged: `failed` and non-retriable in a batch, a non-zero exit for
+  `ingest-result` (bloom #900).
+- A re-delivery under a new `ARGO_WORKFLOW_NAME` of a source first written outside any Bloom
+  run (a manual `cyl ingest-result`, or a hand-submitted Workflow) now reports the benign
+  `skipped` no-op, as one first written by a Bloom run already did, provided the source's scan
+  can be resolved and this Workflow's row for that scan is neither `'failed'` nor linked to another
+  source; otherwise it reports the failure above. The fix is server-side (the write-back RPC now
+  finds the scan from the source's own record, bloom PR #1001) and needs no newer `bloomctl`.
+  This corrects 0.1.0a7's bloom #875 entry below, which said such re-deliveries reported
+  `skipped` unconditionally; until that RPC change it held only when an earlier Bloom run's row
+  carried the source (bloom #900).
+
 ## [0.1.0a7] - 2026-09-30 — single-cell dataset files + per-run manifests
 
 ### Added

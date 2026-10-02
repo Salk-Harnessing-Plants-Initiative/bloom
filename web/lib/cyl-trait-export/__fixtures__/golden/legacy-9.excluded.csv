@@ -1,0 +1,8 @@
+scan_id,plant_qr_code,reason,available_recipes
+9,FX-P1,other_recipe,1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa
+10,FX-P1,other_recipe,1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa
+100,FX-P2,other_recipe,1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa
+101,FX-P3,other_recipe,2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96
+103,FX-P5,legacy_only,unattributed
+200,FX-P6,no_traits,
+201,FX-P7,other_recipe,2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96

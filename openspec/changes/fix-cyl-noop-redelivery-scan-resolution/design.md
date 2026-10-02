@@ -76,12 +76,13 @@ PR #1001).
 Once a no-op re-delivery ends `'written'`, the note only mislabels rows; the common mislabel (a
 failed row whose scan a later run fixed) is on bloom#900. `isNoOpCandidate` also named a second
 cause — a write-back landing after the poller's backstop already failed the row — and that hint
-goes too; such a row still shows `failed` with no `source_id`, and "current in trait views" says
-no. `BACKSTOP_MESSAGE` and `WRITEBACK_NO_RESULT_MESSAGE` stay: #988's `failedScanCause` test uses
-the latter, and both keep their source-equality tests, which stop the texts drifting from the
-poller and from `ingest.py`. Rows already recorded `failed` by the bug stay `failed`
-(forward-only). On staging these are test runs; prod's web trigger is off
-(`CYL_PIPELINE_TRIGGER_ENABLED=false`); prod rows were not checked.
+goes too. That case is real: the RPC records the traits but leaves the row `failed` with no
+`source_id`, and "current in trait views" cannot show it, because it says no for every row without
+a source. D10 replaces the hint with an exact one. `BACKSTOP_MESSAGE` and
+`WRITEBACK_NO_RESULT_MESSAGE` stay: #988's `failedScanCause` test uses the latter, and both keep
+their source-equality tests, which stop the texts drifting from the poller and from `ingest.py`.
+Rows already recorded `failed` by the bug stay `failed` (forward-only). On staging these are test
+runs; prod's web trigger is off (`CYL_PIPELINE_TRIGGER_ENABLED=false`); prod rows were not checked.
 
 ### D5 — Migration shape
 
@@ -137,6 +138,31 @@ row the first retry linked; without the `OR` it would report a failure for a row
 
 The guard protects data integrity, not authorization: `p_argo_workflow_name` is supplied by the
 caller and never tied to the caller's identity, as before this change.
+
+### D9 — "Result recorded" says it may be a matched result (tasks 7.16)
+
+The author chose a fixed sentence under the timing note over a per-row mark (2026-10-01). It
+names what the idempotency key covers — images, models, parameters and pipeline code, not the
+container build (`sleap_roots_contracts.identity`) — and says this run matched the earlier result
+instead of recording a new one. It is shown on every run page; it does not say which rows.
+
+### D10 — Name a late result on its failed row (review of PR #1008)
+
+A failed row whose scan's latest source has `cyl_trait_sources.cyl_pipeline_run_id` equal to the
+run's id shows "This run's result arrived after this row was closed: the scan's current traits are
+this run's (source N)." The test is exact: the RPC stamps that column on every source a
+Bloom-dispatched Workflow creates (its name's run-scan rows name one run; #976), a run has one row
+per scan, and a failed row never carries a source (reconciliation fails only `queued` rows; every
+write-back update skips `'failed'` ones). It is silent where it cannot be sure: a source written
+before #976 or outside any run, or a late result that a later run has since superseded as the
+latest.
+
+The page reads `cyl_trait_sources (id, cyl_pipeline_run_id)` by id, only for failed rows' latest
+sources, in the snapshot and in the one lookup a row gets when it turns failed live. That lookup's
+latest-source read had served only the removed note; it now feeds this one (`cyl-pipeline-ui`
+"Live views synchronise from Realtime without polling" names the extra read). A late write-back
+that raises the latest source after that lookup shows on the next snapshot: it changes no
+run-scan row, so no event arrives for it.
 
 ## Risks / Trade-offs
 
