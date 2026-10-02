@@ -498,6 +498,32 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 ## 12. After merge
 
 - [ ] 12.1 After each PR deploys to staging, repeat its largest export through the deployed Caddy path. Record the job time, zip size and `bloom-web` peak RSS.
+  **PR A done (2026-10-02); PR B still to come.** Staging was serving `26ca7b7c` (Deploy run
+  36997056580). bloom-web was built from `f79a1598`: its `BLOOM_WEB_BUILD_SHA` is the last
+  bloom-web-input commit, `deploy.yml:327`, and it contains #996 (`306ab03a`). That build has
+  `SELECTION_PAGE_SIZE` 5000, `RUNNING_JOB_RESERVE_BYTES` 384 MiB and the Float32 pivot. #1009's
+  runtime was live: `restart: unless-stopped`, a 3 GiB memory limit, container started
+  10:59:30Z. With the user's yes, 10.2's largest export went through
+  `https://staging.bloom.salk.edu:8443`, using `scratchpad/drive_export_staging.py` (r101's
+  driver, with BASE and the cookie `sb-bloom-staging-auth-token` from bloom-web's
+  `SUPABASE_COOKIE_NAME`) as the bloomctl `staging-user` (`bloom_user`):
+  - Query `experiment=1`, `recipe=legacy:5&chosen=user`. The listing came back in 2.72 s with
+    `n_selected` 18,471 and 8 recipes; the default is pipeline `1911b908…` (3 scans), and
+    `legacy:5` has 13,396.
+  - Job ready in **137.5 s** (local `next start`: 129.9 s), file
+    `diversity-screen_legacy-5_20261002.zip`, **40,163,127 bytes** (local: 40.2 MB). It holds
+    a CSV of 110,503,355 bytes (13,396 rows), an `.excluded.csv` (5,075 rows) and a 686,698-byte
+    sidecar.
+  - 13,396 + 5,075 = 18,471 = `n_selected`. The sidecar has `chosen_by` `user`, `recipe_key`
+    `legacy:5`, and `generated_by.version` `1.0.0+f79a15985ae5…` (#1007's build SHA, as wired by
+    #1009).
+  - **bloom-web peak memory 377.2 MiB** (`docker stats` MemUsage, sampled about every 1–2 s over
+    SSH, read-only). It idled at 79 MiB, peaked at 17:00:53Z as the job finished, and was still
+    373 MiB after the delete, not yet collected. That is 12% of the 3 GiB limit. It is not
+    directly comparable with 10.2's 547–575 MB, which was the Windows working set of a local
+    `next start`.
+  - Delete answered 204, then 404. The downloaded files were deleted locally once the counts
+    were read.
 - [ ] 12.2 After promotion to main, with the user's go-ahead, rerun 7.1 read-only on production. Open a tuning PR if any p95 is over 4 s.
 - [ ] 12.3 Draft these for the user to approve before filing:
   - ~~a follow-up issue for `restart: unless-stopped`, a `mem_limit` and a single-replica comment on `bloom-web` in compose~~ and ~~a follow-up issue for `BLOOM_WEB_BUILD_SHA` (Open Question 1)~~: filed together as #1007 (2026-10-01);
