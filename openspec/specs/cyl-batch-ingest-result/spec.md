@@ -48,8 +48,9 @@ to a present RunManifest" requirement) SHALL exit `1`.
 Once a batch result exists, the exit code SHALL be non-zero exactly when at least one failed entry
 is `retriable: true`. "Failed entry" covers every kind: an envelope, a missing scan_key, a missing
 manifest, or the reconciliation call. Per the `cyl-ingest-cli` capability's `status_update_matched`
-handling, a delivery that genuinely wrote its data but whose per-scan status linkage was skipped by
-an already-permanent guard is reported as failed but marked `retriable: false`. A batch whose only
+handling, a delivery whose per-scan status linkage was not updated (`status_update_matched:
+false`) — one that genuinely wrote its data, or an already-ingested no-op that wrote nothing — is
+reported as failed but marked `retriable: false`. A batch whose only
 failures are all non-retriable SHALL still print/emit them as failed in the summary/`--json` output,
 so the real outcome is never hidden, but SHALL exit zero.
 
@@ -177,13 +178,25 @@ requirement.
 
 The command SHALL report an envelope for which the RPC returns `was_noop=true` (an
 already-ingested, first-writer-wins re-delivery) with `status="skipped"` — distinct from both
-`ok` and `failed` — and SHALL NOT count it toward the batch's failure exit code.
+`ok` and `failed` — and SHALL NOT count it toward the batch's failure exit code. The one exception
+is a no-op for which `ARGO_WORKFLOW_NAME` was set and the RPC returned `status_update_matched:
+false`: it is reported `failed` with `retriable: false` (so it still does not count toward the
+exit code), with the no-op message the `cyl-ingest-cli` capability specifies.
 
 #### Scenario: Re-ingesting an already-ingested envelope in a batch
 
-- **WHEN** one of the envelopes in the batch was already ingested in a prior run
+- **WHEN** one of the envelopes in the batch was already ingested in a prior run, and the RPC did
+  not return `status_update_matched: false` for it
 - **THEN** that envelope is reported `skipped` (not `failed`), and the batch still exits zero if
   every other envelope succeeded or was also skipped
+
+#### Scenario: An unmatched no-op in a batch is a non-retriable failure
+
+- **WHEN** `ARGO_WORKFLOW_NAME` is set and the RPC returns `was_noop: true` with
+  `status_update_matched: false` for one envelope, and every other envelope succeeded or was
+  skipped
+- **THEN** that envelope is reported `failed` with `retriable: false` and a message saying nothing
+  was written, and the batch exits zero
 
 ### Requirement: Optional --predictions-dir constructs and uploads blobs per envelope
 

@@ -19,12 +19,18 @@ resolve its run manifest and to reconcile, so a batch's manifest scope, per-scan
 reconciliation can never target different workflow names.
 The command SHALL accept a `--profile` option (defaulting like the other commands) and authenticate
 through the existing credentials profile. When `p_argo_workflow_name` was supplied and the RPC's
-returned `status_update_matched` is `false` — a delivery that wrote its trait/blob data correctly
-but whose per-scan status linkage was silently skipped by an already-permanent guard, because the
-matching `cyl_pipeline_run_scans` row was already `'failed'` — both this command and the shared
-per-envelope batch helper (`ingest_one_envelope`, used by `cyl batch-ingest-result`) SHALL report it
-as a failure rather than a plain success, explaining that the failure is already reflected in the
-run's `failed_count` and is not a new one.
+returned `status_update_matched` is `false`, both this command and the shared per-envelope batch
+helper (`ingest_one_envelope`, used by `cyl batch-ingest-result`) SHALL report it as a failure
+rather than a plain success, with a message that matches the RPC's `was_noop`:
+
+- `was_noop: false` — a delivery that wrote its trait/blob data correctly but whose per-scan status
+  linkage was skipped, either because no row matched this scan under this workflow or because the
+  matching `cyl_pipeline_run_scans` row was already `'failed'`. The message SHALL say the data was
+  written and SHALL NOT assert either cause as the only one.
+- `was_noop: true` — an already-ingested envelope that wrote nothing, and whose re-delivery could
+  not update this workflow's row for the source's scan. The message SHALL name the existing
+  `source_id`, SHALL say that nothing was written, and MUST NOT claim that any trait or blob data
+  was written by this delivery.
 
 #### Scenario: A status linkage mismatch is reported as a failure, not a silent success
 
@@ -33,6 +39,15 @@ run's `failed_count` and is not a new one.
   `false`
 - **THEN** the command still prints/emits the real, successful write outcome, but then reports a
   failure explaining the status-linkage mismatch, and exits non-zero
+
+#### Scenario: An unmatched no-op is reported as a failure that wrote nothing
+
+- **WHEN** the command runs with `ARGO_WORKFLOW_NAME` set and the RPC returns `was_noop: true`
+  with `status_update_matched: false`
+- **THEN** the command prints the "already ingested" outcome naming the `source_id`, then reports
+  a failure whose message names that `source_id`, says nothing was written and that this
+  workflow's run-scan row for the scan was not updated, contains neither "write-back succeeded"
+  nor any claim that trait or blob data was written, and exits non-zero
 
 #### Scenario: Ingest from a file path
 
@@ -111,14 +126,20 @@ through the contract model), so the producer's `provenance.idempotency_key` is p
 
 The command SHALL report the RPC's first-writer-wins no-op — `was_noop=true`, which the RPC
 returns without raising for an already-ingested envelope — as a success distinct from a real
-error, exiting zero. Re-ingesting the same envelope therefore MUST NOT be reported as a failure.
+error, exiting zero, except in the one case "Cyl ingest command reads an envelope from a path or
+stdin" reports as a failure (`ARGO_WORKFLOW_NAME` set and `status_update_matched: false`).
+Re-ingesting the same envelope MUST NOT otherwise be reported as a failure.
 This SHALL hold end to end, not only for the RPC's response: a re-delivery whose producer
 regenerated its artifacts MUST NOT fail at the blob-upload step before the RPC's gate is reached,
 and it MUST NOT be reported as a failure on account of the RPC's `status_update_matched` field
-regardless of which `ARGO_WORKFLOW_NAME` re-delivers it — a fresh pipeline run re-dispatching an
-already-ingested scan under a **new** workflow name is exactly as benign a no-op as one
-re-dispatched under the same workflow name, and the `cyl-trait-writeback` capability's fallback
-update is what makes that true at the RPC layer.
+whenever the RPC matched this workflow's run-scan row, whichever `ARGO_WORKFLOW_NAME` re-delivers
+it and however the source was first written (a Bloom-dispatched run, a hand-submitted Workflow, or
+a manual `cyl ingest-result`) — a fresh pipeline run re-dispatching an already-ingested scan under
+a **new** workflow name is exactly as benign a no-op as one re-dispatched under the same workflow
+name, and the `cyl-trait-writeback` capability's fallback update, which resolves the scan from the
+source's own recorded scan, is what makes that true at the RPC layer. A no-op for which the RPC
+still returns `status_update_matched: false` is reported as described in "Cyl ingest command
+reads an envelope from a path or stdin".
 
 #### Scenario: First ingest of an envelope
 
@@ -128,7 +149,8 @@ update is what makes that true at the RPC layer.
 
 #### Scenario: Re-ingest of the same envelope
 
-- **WHEN** the RPC returns `was_noop=true` (with a null `scan_id`, per `cyl-trait-writeback`)
+- **WHEN** the RPC returns `was_noop=true` (with a null `scan_id`, per `cyl-trait-writeback`) and
+  a `status_update_matched` that is not `false`
 - **THEN** the command prints an "already ingested" message (naming the `source_id`) that is
   visibly not an error, does not depend on `scan_id` being present, and exits zero
 
@@ -150,6 +172,15 @@ update is what makes that true at the RPC layer.
   command (and the shared per-envelope batch helper `ingest_one_envelope`, used by `cyl
   batch-ingest-result`) reports the delivery as a benign, distinctly-reported no-op and exits
   zero — not a failure, and not counted against the pipeline run's `failed_count`
+
+#### Scenario: Re-delivery of a source first written outside any Bloom run is a benign no-op
+
+- **WHEN** an envelope was first ingested by a manual `cyl ingest-result` (no `ARGO_WORKFLOW_NAME`)
+  or by a hand-submitted Workflow with no `cyl_pipeline_run_scans` rows, and a Bloom-dispatched run
+  later re-delivers it with its own `ARGO_WORKFLOW_NAME`, whose `'queued'` row is for that scan
+- **THEN** the RPC's fallback marks that row `'written'` and returns `status_update_matched: true`,
+  and the command (and `ingest_one_envelope`) reports the delivery as a benign, distinctly-reported
+  no-op and exits zero
 
 ### Requirement: RPC validation failures map to actionable messages
 
