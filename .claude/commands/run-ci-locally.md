@@ -64,8 +64,8 @@ Matches the `compose-health-check` job (uses prod stack, not dev):
 # Start the prod stack (CI uses prod compose with Caddy routing)
 make prod-up
 
-# Wait for services to be healthy
-docker compose -f docker-compose.prod.yml ps
+# Wait for services to be healthy, as CI does (fails if any isn't)
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait --wait-timeout 300
 
 # Run integration tests
 uv run --extra test pytest tests/integration/ -v --tb=short
