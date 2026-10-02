@@ -519,7 +519,8 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
     #1009).
   - **bloom-web peak memory 377.2 MiB** (`docker stats` MemUsage, sampled about every 1–2 s over
     SSH, read-only). It idled at 79 MiB, peaked at 17:00:53Z as the job finished, and was still
-    373 MiB after the delete, not yet collected. That is 12% of the 3 GiB limit. It is not
+    373 MiB after the delete, not yet collected. By 17:11Z it was back to 83 MiB. That is 12%
+    of the 3 GiB limit. It is not
     directly comparable with 10.2's 547–575 MB, which was the Windows working set of a local
     `next start`.
   - Delete answered 204, then 404. The downloaded files were deleted locally once the counts
