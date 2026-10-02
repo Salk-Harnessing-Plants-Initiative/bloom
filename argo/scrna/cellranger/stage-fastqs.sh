@@ -17,13 +17,15 @@
 # Env: SAMPLE, DEST_DIR, RUN_DIR (default: DEST_DIR's grandparent), and either FASTQ_URL with
 #      FASTQ_FILES, or BUCKET. WAIT_SECONDS and POLL_SECONDS tune the wait.
 # Exit codes: 0 copied, 4 no FASTQs, 6 bad input, 7 misnamed FASTQs (fastq-sample-prefix),
-#      8 the folder changed since the run was started, 10 S3 couldn't be listed or read.
+#      8 the folder changed since the run was started (or while it was being copied),
+#      9 the recorded FASTQs are named for another sample, 10 S3 couldn't be listed or read.
 set -euo pipefail
 
 readonly EXIT_NO_FASTQS=4
 readonly EXIT_BAD_INPUT=6
 readonly EXIT_BAD_FASTQ_NAMES=7
 readonly EXIT_FOLDER_CHANGED=8
+readonly EXIT_OTHER_SAMPLE=9
 readonly EXIT_TRANSFER_FAILED=10
 readonly URL_RULE='^s3://([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])/(([A-Za-z0-9!_.*'"'"'()-]+/)+)$'
 
@@ -101,6 +103,18 @@ if ! printf '%s' "${FASTQ_FILES}" | python3 -c 'import json, sys; f = json.load(
   exit "${EXIT_BAD_INPUT}"
 fi
 
+# The recorded FASTQs must be this run's sample, checked before anything is copied.
+others="$(FASTQ_FILES="${FASTQ_FILES}" SAMPLE="${SAMPLE}" python3 -c '
+import json, os, re
+rule = re.compile(r"^(.+)_S[0-9]+_L[0-9]{3}_(R1|R2|I1|I2)_001\.fastq(\.gz)?$")
+names = [f["name"] for f in json.loads(os.environ["FASTQ_FILES"])]
+print(", ".join(sorted({m.group(1) for m in map(rule.match, names) if m and m.group(1) != os.environ["SAMPLE"]})))
+')"
+if [ -n "${others}" ]; then
+  echo "ERROR: the FASTQs in ${FASTQ_URL} are named for ${others}, not the run's sample '${SAMPLE}'" >&2
+  exit "${EXIT_OTHER_SAMPLE}"
+fi
+
 # Compares LISTING (the folder's list-objects-v2 JSON) with FASTQ_FILES. Prints "match",
 # "empty" (no FASTQ yet), "partial: <missing>" (only some files, all unchanged) or
 # "changed: <reason>".
@@ -162,16 +176,36 @@ while :; do
   sleep "${POLL_SECONDS}"
 done
 
-mapfile -t names < <(printf '%s' "${FASTQ_FILES}" | python3 -c 'import json, sys; [print(f["name"]) for f in json.load(sys.stdin)]')
-for name in "${names[@]}"; do
-  aws s3 cp --only-show-errors --no-sign-request "${FASTQ_URL}${name}" "${DEST_DIR}/${name}" \
+# Each file is copied, then checked: the copy has the recorded size, and the object still has
+# the recorded ETag, so a file replaced while it was being copied isn't used.
+copied=0
+while IFS=$'\t' read -r name size etag; do
+  dest="${DEST_DIR}/${name}"
+  aws s3 cp --only-show-errors --no-sign-request "${FASTQ_URL}${name}" "${dest}" \
     || exit "${EXIT_TRANSFER_FAILED}"
-done
-echo "Copied ${#names[@]} FASTQs from ${FASTQ_URL}"
+  got="$(stat -c %s "${dest}")"
+  if [ "${got}" != "${size}" ]; then
+    rm -f -- "${dest}"
+    echo "ERROR: ${name} copied as ${got} bytes, not the ${size} recorded; it changed while it was being copied" >&2
+    exit "${EXIT_FOLDER_CHANGED}"
+  fi
+  if ! err="$(aws s3api head-object --no-sign-request --bucket "${bucket}" --key "${prefix_path}${name}" \
+      --if-match "${etag}" 2>&1 >/dev/null)"; then
+    rm -f -- "${dest}"
+    if [[ "${err}" == *"412"* || "${err}" == *"Precondition"* ]]; then
+      echo "ERROR: ${name} in ${FASTQ_URL} changed while it was being copied" >&2
+      exit "${EXIT_FOLDER_CHANGED}"
+    fi
+    echo "ERROR: couldn't check ${name} after copying it: $(head -c 300 <<<"${err}")" >&2
+    exit "${EXIT_TRANSFER_FAILED}"
+  fi
+  copied=$((copied + 1))
+done < <(printf '%s' "${FASTQ_FILES}" | python3 -c '
+import json, sys
+for f in json.load(sys.stdin):
+    print("%s\t%s\t%s" % (f["name"], f["size"], f["etag"]))
+')
+echo "Copied ${copied} FASTQs from ${FASTQ_URL}, each checked against the recorded size and ETag"
 
 prefix="$(fastq-sample-prefix "${DEST_DIR}")" || exit "${EXIT_BAD_FASTQ_NAMES}"
-if [ "${prefix}" != "${SAMPLE}" ]; then
-  echo "ERROR: the FASTQs are for '${prefix}', not the run's sample '${SAMPLE}'" >&2
-  exit "${EXIT_FOLDER_CHANGED}"
-fi
 echo "FASTQ prefix: ${prefix}"

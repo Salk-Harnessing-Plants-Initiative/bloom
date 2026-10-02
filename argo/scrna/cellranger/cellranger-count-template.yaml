@@ -274,9 +274,9 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exits 4 (no FASTQs), 6 (bad input), 7 (misnamed FASTQs) and 8 (the folder changed)
-        # will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8"
+        # exits 4 (no FASTQs), 6 (bad input), 7 (misnamed FASTQs), 8 (the folder changed) and
+        # 9 (FASTQs for another sample) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
         command: [bash, -c]

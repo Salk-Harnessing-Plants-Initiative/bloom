@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 CELLRANGER = Path(__file__).resolve().parents[2] / "argo/scrna/cellranger"
 SCRIPT = CELLRANGER / "stage-fastqs.sh"
@@ -45,6 +46,19 @@ local_path() { echo "${FAKE_S3}/${1#s3://}"; }
 # Every call is logged with whether it was signed.
 signed=yes; for a in "$@"; do [ "$a" = --no-sign-request ] && signed=no; done
 echo "$1 $2 signed=${signed}" >> "${FAKE_S3}/.calls"
+if [ "$1" = s3api ] && [ "$2" = head-object ]; then
+  while [ $# -gt 0 ]; do
+    case "$1" in --bucket) bucket="$2" ;; --key) key="$2" ;; --if-match) want="$2" ;; esac
+    shift
+  done
+  [ -z "${FAKE_HEAD_FAIL:-}" ] || { echo "An error occurred (403) when calling the HeadObject operation: Forbidden" >&2; exit 255; }
+  have="\"$(md5sum < "${FAKE_S3}/${bucket}/${key}" | cut -d' ' -f1)\""
+  if [ "${have}" != "${want}" ]; then
+    echo "An error occurred (412) when calling the HeadObject operation: Precondition Failed" >&2
+    exit 254
+  fi
+  exit 0
+fi
 if [ "$1" = s3api ]; then
   [ -z "${FAKE_LIST_FAIL:-}" ] || { echo "An error occurred (AccessDenied)" >&2; exit 255; }
   while [ $# -gt 0 ]; do
@@ -78,6 +92,9 @@ case "$cmd" in
     mkdir -p "$(dirname "${args[1]}")"
     cp "$(local_path "${args[0]}")" "${args[1]}"
     echo "cp ${args[0]}" >> "${FAKE_S3}/.copies"
+    # Stand-ins for a file replaced, or a copy cut short, while it was being copied.
+    case "${args[0]}" in *${FAKE_REPLACE_DURING_COPY:-/nothing/}*) echo "new reads" > "$(local_path "${args[0]}")" ;; esac
+    case "${args[0]}" in *${FAKE_TRUNCATE_COPY:-/nothing/}*) : > "${args[1]}" ;; esac
     ;;
   sync)
     src="$(local_path "${args[0]}")"; mkdir -p "${args[1]}"
@@ -233,11 +250,40 @@ def test_a_file_removed_since_the_start_exits_8(env):
     assert f"missing {R2}" in result.stderr
 
 
-def test_files_for_another_sample_exit_8(env):
+def test_files_for_another_sample_exit_9_before_copying(env):
     e = _folder(env, R1, R2)
     result = _run(e, SAMPLE="col1")
+    assert result.returncode == 9
+    assert "are named for col0, not the run's sample 'col1'" in result.stderr
+    assert _copies(env) == []
+
+
+def test_a_file_replaced_while_it_was_copied_exits_8_and_its_copy_is_removed(env):
+    e = _folder(env, R1, R2)
+    result = _run(e, FAKE_REPLACE_DURING_COPY=R2)
     assert result.returncode == 8
-    assert "not the run's sample 'col1'" in result.stderr
+    assert f"{R2} in {URL} changed while it was being copied" in result.stderr
+    assert R2 not in _staged(env)
+
+
+def test_a_copy_of_the_wrong_size_exits_8(env):
+    e = _folder(env, R1, R2)
+    result = _run(e, FAKE_TRUNCATE_COPY=R1)
+    assert result.returncode == 8
+    assert "not the" in result.stderr and "recorded" in result.stderr
+    assert R1 not in _staged(env)
+
+
+def test_a_copy_that_cant_be_checked_exits_10(env):
+    e = _folder(env, R1, R2)
+    result = _run(e, FAKE_HEAD_FAIL="1")
+    assert result.returncode == 10
+    assert "couldn't check" in result.stderr
+
+
+def test_each_copy_is_checked_unsigned_against_its_etag(env):
+    assert _run(_folder(env, R1, R2)).returncode == 0
+    assert _calls(env).count("s3api head-object signed=no") == 2
 
 
 def test_misnamed_fastqs_exit_7(env):
@@ -250,8 +296,12 @@ def test_misnamed_fastqs_exit_7(env):
     "s3://lab-data/../x/",
 ])
 def test_a_bad_folder_exits_6(env, url):
-    result = _run(env, FASTQ_URL=url, FASTQ_FILES="[]")
+    """With a valid file list, so it's the folder that is refused."""
+    files = json.dumps([{"name": R1, "size": 1, "etag": '"a"'}, {"name": R2, "size": 1, "etag": '"b"'}])
+    result = _run(env, FASTQ_URL=url, FASTQ_FILES=files)
     assert result.returncode == 6
+    assert "is not a folder like s3://bucket/folder/" in result.stderr
+    assert _copies(env) == []
 
 
 @pytest.mark.parametrize("files", ["", "[]", "not json"])
@@ -376,3 +426,45 @@ def test_an_empty_raw_reads_folder_exits_4(env):
 
 def test_sample_and_dest_are_required(env):
     assert _run(env, SAMPLE="").returncode == 6
+
+
+# --------------------------------------------------------------------------- #
+# The image and the template
+# --------------------------------------------------------------------------- #
+
+TEMPLATE = CELLRANGER / "cellranger-count-template.yaml"
+
+
+def _template(name):
+    doc = yaml.safe_load(TEMPLATE.read_text())
+    return next(t for t in doc["spec"]["templates"] if t["name"] == name)
+
+
+def test_the_image_installs_it_and_the_stage_step_runs_it():
+    dockerfile = (CELLRANGER.parent / "Dockerfile").read_text()
+    assert "COPY cellranger/stage-fastqs.sh /usr/local/bin/stage-fastqs" in dockerfile
+    assert "/usr/local/bin/stage-fastqs" in dockerfile.split("RUN chmod +x", 1)[1].split("\n")[0]
+    assert "stage-fastqs" in _template("stage-sample")["container"]["args"][0]
+
+
+def test_the_sample_pipeline_passes_the_folder_to_the_stage_step():
+    pipeline = _template("sample-pipeline")
+    optional = {p["name"]: p.get("value") for p in pipeline["inputs"]["parameters"]}
+    assert optional["fastq-url"] == "" and optional["fastq-files"] == ""
+    stage = next(t for t in pipeline["dag"]["tasks"] if t["name"] == "stage")
+    passed = {p["name"]: p["value"] for p in stage["arguments"]["parameters"]}
+    assert passed["fastq-url"] == "{{inputs.parameters.fastq-url}}"
+    assert passed["fastq-files"] == "{{inputs.parameters.fastq-files}}"
+
+
+def test_the_stage_step_hands_the_folder_to_the_script():
+    env = {e["name"]: e.get("value") for e in _template("stage-sample")["container"]["env"]}
+    assert env["FASTQ_URL"] == "{{inputs.parameters.fastq-url}}"
+    assert env["FASTQ_FILES"] == "{{inputs.parameters.fastq-files}}"
+
+
+def test_the_stage_step_doesnt_retry_failures_a_retry_cant_fix():
+    rule = _template("stage-sample")["retryStrategy"]["expression"]
+    for code in (4, 6, 7, 8, 9):
+        assert f"asInt(lastRetry.exitCode) != {code}" in rule
+    assert "!= 10" not in rule
