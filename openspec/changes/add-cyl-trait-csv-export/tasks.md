@@ -484,7 +484,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - MUI's focus trap holds timers while the dialog is open. "Nothing after close" is therefore asserted as no further `fetch` calls and no `console.error` over 120 s after unmount.
 - Use only Node 20 APIs: no `Promise.withResolvers`, `Object.groupBy` or the new `Set` methods. CI runs Node 20; this machine runs 22.
 
-- [ ] 11.1 **Test first: helpers.** In `web/lib/cyl-trait-export/client/`, write `recipe-view.test.ts`, `requests.test.ts` and `poll.test.ts` against stubs that export the signatures.
+- [x] 11.1 **Test first: helpers.** In `web/lib/cyl-trait-export/client/`, write `recipe-view.test.ts`, `requests.test.ts` and `poll.test.ts` against stubs that export the signatures.
   - **`recipe-view`:**
     - **Descriptions:**
       - pipeline: model names and versions, plus both code SHAs;
@@ -523,7 +523,8 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - the latest-wins guard drops a response, or a `499`, only once a newer listing has been sent;
     - after 3 consecutive non-`404` failures it gives up; a success resets the count.
   - Static test: every value import under `@/lib/cyl-trait-export/` from `client/` or `components/cyl-trait-export/` is `stem` or `limits`; `import type` may name anything.
-- [ ] 11.2 Implement the three helpers.
+  **(done 2026-10-02: red against stubs, 33 failed / 3 passed. The 3 that passed are the static import test `client-imports.test.ts`, marked (characterization), since the stubs import nothing it forbids. Mutation: adding `import { reserveJob } from '../jobs'` to `poll.ts` fails it, 1 failed / 2 passed, naming `client/poll.ts: ../jobs`; the file was restored byte for byte.)**
+- [x] 11.2 Implement the three helpers. **(done 2026-10-02: green, 36/36 across the 4 files; `tsc --noEmit` clean; prettier on the new files only.)**
 - [ ] 11.3 **Test first: the dialog and its button.** Write `web/components/cyl-trait-export/TraitExportDialog.test.tsx` and `TraitExportButton.test.tsx` against stubs. The dialog test drives the wiring, and the helpers' cases stay in 11.1.
   - **Listing:**
     - Open:
