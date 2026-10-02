@@ -461,6 +461,8 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 - [x] 10b.3 **Plants with no accession** (user decision 2026-10-01: measure, then C). Staging count first (read-only); then, test first, `buildExport` fails before any recipe read with a detail naming the first such scan and plant, the count of others, and what to do, instead of "scan N has no coverage row".
   **(done 2026-10-01. Staging (read-only, over SSH): 0 of 40,209 plants lack an accession, in any experiment, deleted ones included; `cyl_scans_extended` does not join `accessions`, so such scans would enter a selection. Red: 2 failed, 55 passed (the fake's coverage does not model the inner join, so the export succeeded where real data fails with "no coverage row"). Green: `buildExport` checks the resolved selection first and fails with e.g. "scan 9 (plant FX-P1) and 2 other scans have no accession, so this export cannot run; ask an admin to set the plant's accession, then try again", with no recipe read. Spec: new scenario "A plant with no accession". 312/312, tsc clean.)**
 
+- [x] 10b.4 **`BLOOM_WEB_BUILD_SHA`** (user decision 2026-10-01: option B). Not wired in this PR: it goes in the same small infra PR as 10b.2's restart policy and memory limit (both edit `bloom-web`'s compose service and need a staging deploy to verify). The route reads it at runtime, so the infra PR needs only `bloom-web`'s `environment` entry and an `export BLOOM_WEB_BUILD_SHA=$(git rev-parse --short HEAD)` before `docker compose up` in both deploy blocks. The issue draft covers both; it gates production. Until then sidecars record `"1.0.0"`.
+
 ## PR B
 
 ## 11. Dialog and entry points
