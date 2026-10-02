@@ -32,6 +32,14 @@ Endpoints:
                                                        pipeline run for a scan/wave/
                                                        experiment/explicit scan list
                                                        (requires a Supabase user JWT)
+    GET  /model-cards                               - externally reachable as
+                                                       GET /workflows/model-cards:
+                                                       the production model cards from
+                                                       the wandb registry, cached 300 s
+                                                       and warmed at startup, for the
+                                                       pipeline confirm dialog's model
+                                                       warnings (requires a Supabase
+                                                       user JWT; not rate-limited)
     GET  /runs/{run_id}                             - externally reachable as
                                                        GET /workflows/runs/{run_id}:
                                                        read a pipeline run's current
@@ -53,10 +61,13 @@ Endpoints:
 
 import logging
 import os
+import threading
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+import model_cards
 import pipeline
 import plate_progress
 import plate_request
@@ -76,7 +87,19 @@ CORS_ORIGINS = os.environ.get("WORKFLOWS_CORS_ORIGINS", "http://localhost:3000")
     ","
 )
 
-app = FastAPI(title="Bloom Workflows API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm the model-card cache in the background so the first confirm dialog
+    # after a deploy doesn't wait on wandb; startup and /health never wait for it.
+    # model_cards.warm() skips without a key and never raises.
+    threading.Thread(
+        target=model_cards.warm, name="model-cards-warm", daemon=True
+    ).start()
+    yield
+
+
+app = FastAPI(title="Bloom Workflows API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -214,6 +237,33 @@ def trigger_pipeline_route(
         result["reused_count"],
     )
     return result
+
+
+@app.get("/model-cards")
+def model_cards_route(user_id: str = Depends(require_supabase_user)):
+    """The production model cards from the wandb registry (reachable externally
+    at GET /workflows/model-cards), for the pipeline confirm dialog's
+    past-window and no-model warnings (bloom#971).
+
+    Requires a valid Supabase user JWT (Bearer). Not rate-limited: the dialog
+    reads it on every open, which the 5-per-60s limiter would refuse, and the
+    300 s cache plus one-refresh-at-a-time bound the cost upstream. A sync def,
+    so waiting on a refresh happens in the threadpool, not the event loop.
+    """
+    try:
+        cards, fetched_at = model_cards.list_production_cards()
+    except model_cards.ModelCatalogNotConfigured:
+        raise HTTPException(
+            status_code=503,
+            detail="The model catalog isn't configured in this environment.",
+        )
+    except model_cards.ModelCatalogUnavailable:
+        # Already logged by model_cards; the cause never reaches the caller.
+        raise HTTPException(status_code=503, detail="Couldn't read the model catalog.")
+    except Exception:
+        logger.exception("GET /model-cards failed")
+        raise HTTPException(status_code=503, detail="Couldn't read the model catalog.")
+    return {"cards": cards, "fetched_at": fetched_at}
 
 
 @app.get("/runs/{run_id}")

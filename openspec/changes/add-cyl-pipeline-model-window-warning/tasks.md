@@ -118,21 +118,21 @@ Tests go in `tests/test_model_cards.py`:
 
 Tests go in `tests/test_main.py`, following its `dependency_overrides` and monkeypatch pattern. The route calls `model_cards.list_production_cards` through the module attribute, so patching works.
 
-- [ ] 3.1 **Red.** `GET /model-cards`, with auth overridden and the listing faked → 200 `{"cards": cards, "fetched_at": ts}`, with exactly those keys. An empty list → 200 `{"cards": [], "fetched_at": ts}`. Fails: 404.
-- [ ] 3.2 **Red.** Rate limit:
+- [x] 3.1 **Red.** `GET /model-cards`, with auth overridden and the listing faked → 200 `{"cards": cards, "fetched_at": ts}`, with exactly those keys. An empty list → 200 `{"cards": [], "fetched_at": ts}`. Fails: 404.
+- [x] 3.2 **Red.** Rate limit:
   - with the real `enforce_rate_limit` and the override returning `"user-1"`, 6 calls → all 200, and `auth._hits.get("user-1", [])` is empty;
   - with `main.enforce_rate_limit` patched to record calls, it's never called.
-- [ ] 3.3 **Red.** Errors:
+- [x] 3.3 **Red.** Errors:
   - `ModelCatalogNotConfigured` → 503 with the exact not-configured text;
   - `ModelCatalogUnavailable`, or `RuntimeError("secret-detail")` → 503 "Couldn't read the model catalog.";
   - the body doesn't contain `secret-detail`, and `caplog` does.
-- [ ] 3.4 **Red.** Auth:
+- [x] 3.4 **Red.** Auth:
   - an override raising `HTTPException(401)` → 401, and the listing isn't called;
   - with `auth.SUPABASE_URL` and `auth.SUPABASE_ANON_KEY` patched and no override, a request without `Authorization` → 401.
-- [ ] 3.5 **Red.** `assert not inspect.iscoroutinefunction(main.model_cards_route)`.
-- [ ] 3.6 **Red.** Lifespan: with `model_cards.warm` patched to set an event, `with TestClient(main.app):` → the event is set within 2 s, and `/health` answers 200 while `warm` is still blocked.
-- [ ] 3.7 Implement the route (a sync `def`) and the `lifespan`, which starts `model_cards.warm` in a daemon thread.
-- [ ] 3.8 Docs in the same commit, in `services/workflows/README.md`:
+- [x] 3.5 **Red.** `assert not inspect.iscoroutinefunction(main.model_cards_route)`.
+- [x] 3.6 **Red.** Lifespan: with `model_cards.warm` patched to set an event, `with TestClient(main.app):` → the event is set within 2 s, and `/health` answers 200 while `warm` is still blocked.
+- [x] 3.7 Implement the route (a sync `def`) and the `lifespan`, which starts `model_cards.warm` in a daemon thread.
+- [x] 3.8 Docs in the same commit, in `services/workflows/README.md`:
   - an Endpoints table row and a short section: auth, no rate limit, 300 s cache, startup warm-up, 6 s wait, 20 s child limit, the two 503 texts;
   - correct Auth model Layer 1 and the `WORKFLOWS_RATE_LIMIT` row ("every application route") to name the two exempt routes.
 

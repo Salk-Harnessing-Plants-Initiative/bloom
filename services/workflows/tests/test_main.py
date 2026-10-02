@@ -325,3 +325,169 @@ def test_plate_video_route_429_before_any_work(monkeypatch):
         assert called["n"] == 0, "a render started for a rate-limited request"
     finally:
         main.app.dependency_overrides.clear()
+
+
+# --- GET /model-cards (bloom#971 phase 1) ------------------------------------
+
+CARDS = [
+    {
+        "root_type": "lateral",
+        "registry_id": "org/wandb-registry-sleap-roots-models/arabidopsis-lateral",
+        "version": "v0",
+        "selectors": [
+            {"species": "arabidopsis", "mode": "cylinder", "age_min": 2, "age_max": 14}
+        ],
+    }
+]
+FETCHED_AT = "2026-10-02T12:00:00+00:00"
+
+
+def test_model_cards_returns_cards_and_fetched_at(monkeypatch):
+    import main
+    import model_cards
+    from auth import require_supabase_user
+
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    monkeypatch.setattr(
+        model_cards, "list_production_cards", lambda: (CARDS, FETCHED_AT)
+    )
+    try:
+        resp = TestClient(main.app).get("/model-cards")
+        assert resp.status_code == 200
+        assert resp.json() == {"cards": CARDS, "fetched_at": FETCHED_AT}
+
+        monkeypatch.setattr(
+            model_cards, "list_production_cards", lambda: ([], FETCHED_AT)
+        )
+        resp = TestClient(main.app).get("/model-cards")
+        assert resp.json() == {"cards": [], "fetched_at": FETCHED_AT}
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_model_cards_never_spends_the_rate_limit(monkeypatch):
+    import auth
+    import main
+    import model_cards
+    from auth import require_supabase_user
+
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    monkeypatch.setattr(
+        model_cards, "list_production_cards", lambda: (CARDS, FETCHED_AT)
+    )
+    try:
+        client = TestClient(main.app)
+        statuses = [client.get("/model-cards").status_code for _ in range(6)]
+        assert statuses == [200] * 6
+        assert auth._hits.get("user-1", []) == []
+
+        calls = []
+        monkeypatch.setattr(
+            main, "enforce_rate_limit", lambda user_id: calls.append(user_id)
+        )
+        client.get("/model-cards")
+        assert calls == []
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_model_cards_errors_are_fixed_503s(monkeypatch, caplog):
+    import main
+    import model_cards
+    from auth import require_supabase_user
+
+    def raising(exc):
+        def _list():
+            raise exc
+
+        return _list
+
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    try:
+        client = TestClient(main.app)
+
+        monkeypatch.setattr(
+            model_cards,
+            "list_production_cards",
+            raising(model_cards.ModelCatalogNotConfigured("no key")),
+        )
+        resp = client.get("/model-cards")
+        assert resp.status_code == 503
+        assert resp.json() == {
+            "detail": "The model catalog isn't configured in this environment."
+        }
+
+        for exc in (
+            model_cards.ModelCatalogUnavailable("secret-detail"),
+            RuntimeError("secret-detail"),
+        ):
+            monkeypatch.setattr(model_cards, "list_production_cards", raising(exc))
+            caplog.clear()
+            resp = client.get("/model-cards")
+            assert resp.status_code == 503
+            assert resp.json() == {"detail": "Couldn't read the model catalog."}
+            assert "secret-detail" not in resp.text
+        # The unexpected error's cause reaches the log (the catalog's own
+        # failures are logged by model_cards itself).
+        assert "secret-detail" in caplog.text
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_model_cards_requires_auth(monkeypatch):
+    import auth
+    import main
+    import model_cards
+    from auth import require_supabase_user
+
+    called = {"n": 0}
+
+    def _list():
+        called["n"] += 1
+        return CARDS, FETCHED_AT
+
+    monkeypatch.setattr(model_cards, "list_production_cards", _list)
+
+    def _raise_401():
+        raise HTTPException(status_code=401, detail="missing token")
+
+    main.app.dependency_overrides[require_supabase_user] = _raise_401
+    try:
+        assert TestClient(main.app).get("/model-cards").status_code == 401
+    finally:
+        main.app.dependency_overrides.clear()
+
+    monkeypatch.setattr(auth, "SUPABASE_URL", "http://kong:8000")
+    monkeypatch.setattr(auth, "SUPABASE_ANON_KEY", "anon")
+    assert TestClient(main.app).get("/model-cards").status_code == 401
+    assert called["n"] == 0
+
+
+def test_model_cards_route_is_synchronous():
+    import inspect
+
+    import main
+
+    assert not inspect.iscoroutinefunction(main.model_cards_route)
+
+
+def test_startup_warms_the_model_card_cache_without_blocking(monkeypatch):
+    import threading
+
+    import main
+    import model_cards
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def warm():
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(model_cards, "warm", warm)
+    try:
+        with TestClient(main.app) as client:
+            assert started.wait(2)
+            assert client.get("/health").status_code == 200
+    finally:
+        release.set()

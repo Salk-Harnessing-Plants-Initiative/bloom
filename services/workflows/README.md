@@ -55,6 +55,7 @@ internal-only and not exposed through the public proxy.
 | POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT    | Generate a scan's video, upload to Storage                                                             |
 | POST   | `/pipeline` (external: `/workflows/pipeline`)            | Supabase user JWT    | Trigger an A4 sleap-roots pipeline run for a scan/wave/experiment/explicit scan list                   |
 | GET    | `/runs/{run_id}` (external: `/workflows/runs/{run_id}`)  | Supabase user JWT    | Read a pipeline run's current status + its scans — a plain DB read, does **not** itself query Argo/K8s |
+| GET    | `/model-cards` (external: `/workflows/model-cards`)      | Supabase user JWT    | The production model cards from the wandb registry, for the confirm dialog's model warnings (not rate-limited) |
 
 ### Video generation
 
@@ -204,6 +205,31 @@ curl -X POST http://localhost:5100/pipeline \
 `pipeline_run_id` here is Bloom's integer `cyl_pipeline_runs.id`, the value the write-back
 RPC stamps as `cyl_trait_sources.cyl_pipeline_run_id`. It is not the producer's text
 `provenance.pipeline_run_id`.
+
+### Model cards
+
+`GET /model-cards` (external `GET /workflows/model-cards`) returns the production model cards
+the pipeline confirm dialog uses to warn about scans past their models' validated age, or with
+no model (bloom#971):
+
+```
+{"cards": [{"root_type": "lateral", "registry_id": "<entity>/wandb-registry-sleap-roots-models/<collection>",
+            "version": "v0", "selectors": [{"species": "arabidopsis", "mode": "cylinder", "age_min": 2, "age_max": 14}]}],
+ "fetched_at": "2026-10-02T12:00:00+00:00"}
+```
+
+- **Source:** `model_cards.py` asks wandb directly: one GraphQL query per page of 100 model
+  collections (`POST https://api.wandb.ai/graphql`, Basic auth `api`/`WANDB_API_KEY`, each
+  collection's `production` alias). It doesn't use the `wandb` library, which routes its API
+  through a bundled Go service from 0.26 and can retry internally for days.
+- **Bounds:** 5 s per request, 15 s for the whole listing.
+- **Cache:** 300 s, warmed in a background thread at startup. One refresh runs at a time; a
+  request that can't get the refresh lock within 6 s answers 503 rather than queueing.
+- **Auth:** a Supabase user JWT, like every route. It isn't rate-limited: the dialog reads it on
+  every open.
+- **Errors (503, fixed text; the cause is logged, never returned):**
+  - "The model catalog isn't configured in this environment." — `WANDB_API_KEY` unset.
+  - "Couldn't read the model catalog." — anything else.
 
 ### Cell Ranger trigger
 
@@ -463,8 +489,8 @@ uv run python status_poller.py
 caller's **Supabase user JWT** (`Authorization: Bearer`). The service validates
 it by delegating to Supabase (`GET /auth/v1/user`), so it **never needs
 `JWT_SECRET`**. A coarse per-user rate limit (`429` when exceeded) is shared
-across every application route in this service (the video-encode route and the
-`/pipeline` trigger route both call the same `enforce_rate_limit`); it is
+across every application route except two read routes that pages call
+repeatedly, the plate-video progress poll and `GET /model-cards`; it is
 enforced per process, so the effective limit scales with workers/replicas
 rather than being a hard global quota.
 `/health` is internal-only and not publicly exposed.
@@ -552,7 +578,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_IMAGES_BUCKET`       | `images`                | Storage bucket to read frames from                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEOS_BUCKET`       | `videos`                | Storage bucket to write the MP4 to                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEO_TABLE`         | `cyl_scan_videos`       | Record table (`scan_id -> path`)                                                                                                                                                                                                                                                                             |
-| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes (429 over)                                                                                                                                                                                                               |
+| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared by the rate-limited routes (429 over)                                                                                                                                                                                                               |
 | `WORKFLOWS_RATE_WINDOW_SECONDS` | `60`                    | Rate-limit window                                                                                                                                                                                                                                                                                            |
 | `WORKFLOWS_PUBLIC_SUPABASE_URL` | –                       | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged.                                                                                                  |
 | `WORKFLOWS_K8S_TOKEN`           | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing)                                                                                                                    |
