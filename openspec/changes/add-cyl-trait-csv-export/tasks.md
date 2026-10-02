@@ -645,6 +645,57 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - Record the results, and that Safari is unchecked (#1024). A failure is fixed in a follow-up PR to `staging` before promotion to `main`.
   - Before merge, PR B's evidence is 11.1–11.8 (unit tests with mutation checks, build, CI); its body says the browser checks follow the staging deploy.
 
+## 11a. Review fixes (PR #1025 review 5396953901, 2026-10-02; test first, red/green recorded here and in each commit)
+
+- [ ] 11a.1 **Listing correctness.** Test first in `TraitExportDialog.test.tsx` and `client/requests.test.ts`:
+  - a filter change makes the in-flight listing stale at once: if it answers inside the debounce, it fills nothing, Download stays disabled, and its signal is aborted;
+  - a stale **200** answering after a newer listing is ignored;
+  - a `200` with a JSON `null` body, or a body that is not a listing, shows the generic message with Retry (`parseListing`);
+  - a `200` that is not JSON shows the generic message;
+  - an automatic pick follows a moved default; a user's pick sticks while listed;
+  - StrictMode double-mount shows no error before the first listing.
+- [ ] 11a.2 **Job lifecycle.** Test first:
+  - **Retry gate:**
+    - Retry after a job error, with a filter changed and the listing not yet back, starts nothing;
+    - with two errors at once, only one Retry acts.
+  - **Session refresh:**
+    - no `refreshSession()` for a listing, nor for a start whose session has more than `MIN_SESSION_SECONDS` left;
+    - a refresh when it has less;
+    - a `4xx` refresh error shows the sign-in message; a network or `5xx` one shows a retryable error.
+  - **Polling:**
+    - two clicks inside one `act` send one start (kills removing the `busy` guard);
+    - a good poll between failures resets the count (503, 503, running, 503, 503, running: no "Check again");
+    - a poll `401` shows the sign-in message;
+    - a poll `404` says the export is no longer on the server;
+    - the filters and radios are disabled while a job is active.
+  - **Resume and cancel:**
+    - the offer says it may be another tab's export;
+    - a resumed job is not deleted on close, and saving it deletes it;
+    - resuming while holding a failed job deletes that one;
+    - Cancel export waits for its `DELETE` before Download is enabled.
+  - **Closing:** a backdrop click while a job is active does not close; Escape does.
+  - **Saving:**
+    - on `ready`, the dialog says "Download started";
+    - the URL is not revoked until unmount, and "Save again" re-clicks it;
+    - `DELETE` follows.
+  - **Shape checks:** a `job_id` that is not a UUID, or a `filename` that is not `<stem>.zip`, is not used (fallback `traits.zip`).
+  - **Other failures:**
+    - Retry on a refused download;
+    - a POST or download fetch that rejects;
+    - Check again, then a `404`.
+- [ ] 11a.3 **What the dialog says.** Test first in `client/recipe-view.test.ts` and the dialog test:
+  - a pipeline recipe:
+    - shows each model's short weights checksum;
+    - flags output params;
+    - says "no models or code recorded" when it has neither;
+  - the note says recipes differ in models and trait columns, and drops "pick it" once that recipe is picked;
+  - counts read "N of M selected scans", with thousands separators;
+  - the heading names the wave and day filters;
+  - the `429` offer is `role="alert"`;
+  - the progress and saved lines share one always-mounted `role="status"`.
+- [ ] 11a.4 Update the guide's "Getting one" paragraph: the dialog starts on the traits page's wave and age, and All/All exports the whole experiment.
+- [ ] 11a.5 Pre-merge again as in 11.8, push (with the user's yes), record CI, and update the PR body's review-fixes section.
+
 ## 12. After merge
 
 - [ ] 12.1 After each PR deploys to staging, repeat its largest export through the deployed Caddy path. Record the job time, zip size and `bloom-web` peak RSS.
@@ -752,3 +803,5 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
 | Session refreshed and retried once, Own job already running, Server busy | 11.1 (`requests`), 11.3 |
 | Failure shown, Interrupted export | 11.3 (Polling) |
 | Close cancels, Closed before the job started | 11.3 (Closing) |
+| Automatic pick follows the default, Unreadable listing | 11a.1 |
+| Retry needs a current listing, Session refreshed only when needed, Resumed job kept on close, Backdrop click during a job, Export no longer on the server | 11a.2 |

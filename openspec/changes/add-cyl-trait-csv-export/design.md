@@ -316,15 +316,20 @@ The spec's three dialog requirements are the behaviour. This section records how
   - The scan page is a server component. `ScanTraitExportButton.tsx` (`"use client"`) sits beside it and takes only the scan id.
 - **Listing.**
   - The first listing is sent when the dialog opens. Each one after that is sent 500 ms after the last filter change.
+  - A filter change makes the previous listing stale at once: the effect bumps the guard and aborts its request before the debounce, so a late answer can never fill the list or enable Download for the old selection (#1025 review).
+  - A response is checked to be a listing (`parseListing` in `client/`); anything else is a generic error with Retry, not a hang.
   - A sequence number decides which response is current. The route keeps one listing per user and answers `499` to the one it replaces (`recipes/route.ts`). The dialog therefore drops a `499` only when it has sent a newer listing itself. A `499` caused by another tab or another dialog shows Retry and is not treated as superseded, so the dialog doesn't wait forever.
   - Closing aborts the listing that is in flight.
+  - **The session is not refreshed for a listing.** The listing route has no session-lifetime floor, and a refresh the sign-in service rejects makes auth-js sign the user out of all of Bloom (our GoTrue's refresh-token reuse interval is 0). Before a job start, the dialog refreshes only when `getSession()`'s `expires_at` is within `MIN_SESSION_SECONDS`, and again after a "session expires too soon" `401`. A `4xx` from the refresh is the sign-in message; a network error or `5xx` is a retryable error.
 - **Recipe description.** Each recipe is described from its `definition`: a pipeline recipe's `models` are `[name, version, checksum]` tuples, plus `predict_code_sha` and `traits_code_sha`, and a legacy recipe has `source_name`. A missing field is left out, because a hand-built source can have an empty payload (`trait-recipes.md` §"Provenance without the keyed fields"). `keySegment` throws on an unknown key, so the dialog falls back to the raw key.
 - **Fewer-scans note** (decided 2026-10-02).
   - The default stays the newest recipe. The note only points at the recipe that covers the most scans.
   - It never names `unattributed`, whose data has no recorded provenance.
   - Whether the default should follow coverage is open (#865, #936). #1021 would let a stale newest recipe be retired.
   - Staging example: experiment 1's default covers 3 scans, while `legacy-5` covers 13,396 (10.2).
+- **Picking.** An automatic pick (the default) follows the default across re-lists; a pick the user made sticks while it is still listed (decided in the #1025 review: otherwise the sidecar recorded `chosen_by: user` for a recipe nobody picked).
 - **Starting the job.**
+  - Download and Retry share one gate: the current filters' listing has arrived and holds the picked recipe.
   - The selection, `recipe` and `chosen` go in the query string, because the route takes no body.
   - `chosen` is `default` exactly when the picked key is the listing's default, however the user reached it (decided 2026-10-02). The server still records `default` only if the key is still the default when the job runs (`recipes.ts`).
   - Both `401`s share a status, so the retry depends on the `detail` "session expires too soon".
@@ -340,11 +345,13 @@ The spec's three dialog requirements are the behaviour. This section records how
     | `traits` | "Reading batch d of n" |
     | `metadata` | "Writing the files" |
 
-  - After 3 failed polls in a row that are not `404`, the dialog stops and offers "Check again" for the same job (decided 2026-10-02). A `404` means the server lost the job: a restart, or more than 600 s past retention.
-- **Saving.** The dialog checks `response.ok` before it calls `blob()`. It saves through an object URL and an `<a download>` named by `filename`, then revokes the URL. Then it sends `DELETE` for the job (decided 2026-10-02). A ready zip otherwise holds bloom-web memory against `MAX_HELD_BYTES` for `RETAIN_SECONDS`, which can turn other users away with `429`.
+  - After 3 failed polls in a row that are neither `401` nor `404`, the dialog stops and offers "Check again" for the same job (decided 2026-10-02). A `401` is the sign-in message. A `404` means the job is no longer on the server: a restart, more than 600 s past retention, or a newer export by the same user replaced it (`jobs.ts`), so the message names all three.
+- **Saving.** The dialog checks `response.ok` before it calls `blob()`. It saves through an object URL and an `<a download>` named by `filename`, and says "Download started", because the browser may still block or cancel the save. It keeps the object URL until the dialog closes, so "Save again" works without the server, and revokes it on unmount (revoking right after the click can cancel the save in some browsers). Then it sends `DELETE` for the job (decided 2026-10-02). A ready zip otherwise holds bloom-web memory against `MAX_HELD_BYTES` for `RETAIN_SECONDS`, which can turn other users away with `429`.
 - **Closing.**
   - The dialog is mounted only while it is open, so closing unmounts it, as `RunPipelineButton` does.
-  - On unmount it clears the timer, aborts in-flight requests, and sends one `DELETE` for any job it holds.
+  - On unmount it clears the timer, aborts in-flight requests, and sends one `DELETE` for any job it started and still holds.
+  - **A resumed job is kept** (decided 2026-10-02 in the #1025 review). A `429`'s `job_id` is the user's running job from anywhere, often another tab's export of a different selection, so the offer says so and closing never deletes it. Saving a resumed job still deletes it, once the zip is in page memory.
+  - A click outside the dialog doesn't close it while a job is active; Escape and Close still do, and cancel the job.
   - A start that answers after the close is cancelled the same way, so no orphan job holds the user's one slot for up to 1,500 s.
 - **Help.** "What's in this file?" links to `https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/_WIKI/SUPABASE/trait-recipes.md#using-a-trait-export`, with `target="_blank" rel="noopener noreferrer"`. Promotion #1018 put that section on `main` on 2026-10-02. Renaming the heading would break the link until the next promotion.
 - **Look.**
