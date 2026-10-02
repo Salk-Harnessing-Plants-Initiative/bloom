@@ -210,12 +210,18 @@ def test_normalization_problems_are_named_without_a_file():
         {"transform": "log1p", "scaling": "library_size"}, layers=set())
 
 
-def test_the_check_says_how_to_install_its_extra(tmp_path, monkeypatch):
+def test_a_missing_h5py_names_the_version_and_how_to_reinstall_it(tmp_path, monkeypatch):
     import sys
 
+    from bloomctl import __version__
+
     monkeypatch.setitem(sys.modules, "h5py", None)
-    with pytest.raises(fmt.MissingExtra, match=r"bloomctl\[scrna\]"):
+    with pytest.raises(fmt.MissingDependency) as exc:
         fmt.check_structure(tmp_path / "any.h5ad")
+    message = str(exc.value)
+    assert f"bloomctl {__version__} includes h5py and numpy" in message
+    assert f'uv tool install --reinstall "bloomctl=={__version__}"' in message
+    assert f'pip install --force-reinstall "bloomctl=={__version__}"' in message
 
 
 def test_a_file_whose_layers_is_not_a_group_is_refused_not_crashed(tmp_path):

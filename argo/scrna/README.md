@@ -71,6 +71,12 @@ export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml
 argo template create argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
 argo template create argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-lab
 # after editing a template: kubectl replace -f <template file> -n runai-busch-lab
+# Prod and staging share runai-busch-lab, so each runs its own copy of the Cell Ranger template,
+# named by WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE in .env.*.defaults: prod's is
+# cellranger-count-template, staging's cellranger-count-template-staging. A new template or
+# image goes to staging's copy first, and to prod's when staging is promoted:
+sed 's/^  name: cellranger-count-template$/  name: cellranger-count-template-staging/' \
+  argo/scrna/cellranger/cellranger-count-template.yaml | kubectl apply -n runai-busch-lab -f -
 argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p samples='["sample_a","sample_b"]' --watch
 argo submit argo/scrna/cellranger/cellranger-testrun-workflow.yaml -n runai-busch-lab --watch
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \

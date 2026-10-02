@@ -28,7 +28,8 @@ class ScanResult:
     ``retriable`` (default ``True``) says whether re-running the batch could plausibly change
     this outcome — every existing failure kind (a transient RPC error, a corrupt file, etc.) is
     at least theoretically retriable. Set it ``False`` for a failure a retry can never fix (e.g.
-    a permanently-guarded status mismatch — see ``ingest.py``'s ``status_update_matched`` check).
+    a run-scan row the RPC did not update, for a written delivery or a no-op re-delivery — see
+    ``ingest.py``'s ``status_update_matched`` check).
     ``BatchResult.ok``/``format_summary``/``format_json`` are unaffected by it (a caller checking
     ``.ok`` or reading the printed summary still sees the real, unfiltered outcome); it exists so
     a *command* can separately decide whether a batch is worth signaling for a retry

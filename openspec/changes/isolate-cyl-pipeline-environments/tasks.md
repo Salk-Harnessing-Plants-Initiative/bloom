@@ -246,14 +246,23 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
 
 - [x] 6.0 Ask the author whether to stop prod's `cyl-pipeline-worker` until promotion 1. Prod can
   dispatch with the staging secret until then. **Author, 2026-10-01: no, leave it running.**
-- [ ] 6.1 After the staging deploy:
+- [x] 6.1 After the staging deploy:
   - check `kubectl get pods -n runai-busch-lab` for GPU contention;
   - run a staging pipeline run on one TEST-E2E scan in experiment 12880747;
   - confirm the Workflow's `.spec.volumes` equals today's `a4_poc` paths and the staging secret
     (filter by `environment=staging`), and that the run completes.
-- [ ] 6.2 With the author's go-ahead, set the dev stack's switch on, with no root or secret, and
+
+  **Done 2026-10-01.** Staging run 20 (scan 12894761, TEST-E2E-015, via `POST /workflows/pipeline`):
+  Workflow `sleap-roots-pipeline-fc96k` Succeeded, 5/5 steps exit 0, with the three `a4_poc`
+  volumes and the staging secret. The run completed (1 done, 0 failed); its row is source_id 250,
+  and the scan still has one distinct source.
+- [x] 6.2 With the author's go-ahead, set the dev stack's switch on, with no root or secret, and
   queue a run. Confirm it fails with "not configured" and that no Workflow is created.
-- [ ] 6.3 Prod provisioning, done by the author, with step-by-step walkthroughs given at the time:
+
+  **Done 2026-10-01.** Dev run 2214 (scan 1): the worker logged the refusal naming both unset
+  variables, `fail_cyl_pipeline_batch` answered 204, and the run and its row ended `failed` with
+  "Pipeline dispatch is not configured in this environment". No Workflow was created.
+- [x] 6.3 Prod provisioning, done by the author, with step-by-step walkthroughs given at the time:
   - **(a) Prod Supabase Auth account** on bloom.salk.edu, flagged `is_workflows: true`, following
     PR #549's recipe (`git show 94329240:docs/credentials/bloom-workflows-a4-pipeline.md`).
     - Only the recipe's grants.
@@ -287,23 +296,41 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
   - **(f) Wipe rule.** If any prod Workflow ever ran with an unverified or wrong credential, empty
     `/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod/{input,predictions,traits}`, including
     `.locks` and run manifests, before the next prod run.
-- [ ] 6.4 **Promotion 1** (staging→main), with prod's switch `false`. With the author's go-ahead,
-  start one prod run with a direct `POST /workflows/pipeline` under a member JWT; prod's web proxy
-  answers 503. Confirm it fails at once with "Pipeline dispatch is turned off in this environment"
-  and that no `environment=prod` Workflow appears. Record the leftover failed run.
-- [ ] 6.5 After 6.3 (including (e)) **and** 6.4: a one-line PR (Part of #863) flipping
-  `.env.prod.defaults`'s `CYL_PIPELINE_TRIGGER_ENABLED=true`, with the 3.1(d) pin updated in the
-  same commit. On `staging` it is inert. The worker reads the switch only at start-up, so after
-  promotion 2 confirm prod's `cyl-pipeline-worker` container was recreated (its start time is after
-  the deploy). Do the same check when rolling back by setting the switch to `false`: switching off
-  fails any batches still queued, and is not a pause.
-- [ ] 6.6 **Promotion 2** lands the flip. Then the acceptance pair of runs, with a GPU check and a
-  go-ahead first: a numeric scan id that a staging run has processed and a prod run now processes.
-  Confirm:
-  - prod's Workflow paths are under `bloom_cyl_pipeline/prod`, and it mounts the prod secret;
-  - prod's stage-in logged that scan as staged, not skipped;
-  - the traits landed in prod's DB under prod's scan;
-  - staging's rows for that id are unchanged (read-only checks; filter by `environment=`).
+
+  **Done 2026-10-01/02.**
+  - (a) Account `bloom-pipeline-workflows-prod@salk.edu` created on prod with `is_workflows` set;
+    `bloomctl login` against `https://bloom.salk.edu/api` succeeded.
+  - (b) RunAI Generic secret `bloom-prod-pipeline-credentials` created by the author (key
+    `credentials.txt`, Project busch-lab).
+  - (c) `/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod/{input,predictions,traits}` created;
+    `readlink -f` resolves none of them under `pipeline_orchestration_tests`.
+  - (d) Read-only: 5 of the 6 cyl RPCs are identical on prod and staging. The sixth,
+    `insert_cyl_result_envelope`, differs only by the bloom#900 fix, which is on `staging` and
+    reaches prod with the promotion. Both accept contract `0.1.0a9`, which the templates' bloomctl
+    `sha-1bc3056` emits. Prod has the `bloom_workflows` role, the envelope grant and the
+    `cyl-intermediates` bucket.
+  - (e) Workflow `bloom863-prod-credential-check-nxzqn` (`environment=prod`, no GPU) Succeeded:
+    `BLOOM_API_URL`'s host is `bloom.salk.edu`, sign-in as the prod account succeeded, and a file
+    was written and deleted in each of the three prod directories as uid 100.
+  - (f) Not needed: no prod Workflow has mounted the prod directories.
+- [x] 6.4 ~~Promotion 1 (staging→main) with prod's switch `false`~~. **Dropped by the author,
+  2026-10-01:** one promotion, with the flip (6.5) already on `staging`. Prod never runs this
+  change with the switch `false`, so the refusal path is proven only on dev (6.2).
+- [x] 6.5 A one-line PR (Part of #863) flipping `.env.prod.defaults`'s
+  `CYL_PIPELINE_TRIGGER_ENABLED=true`, with the 3.1(d) pin updated in the same commit, and the
+  `cyl-pipeline-ui` delta and `trigger-enabled.ts` comments that said prod is off. On `staging` it
+  is inert. Merged to `staging` before the promotion.
+- [ ] 6.6 **The promotion** (staging→main) lands this change and the flip together. Then:
+  - The worker reads the switch only at start-up, so confirm prod's `cyl-pipeline-worker`
+    container was recreated (its start time is after the deploy) and has the switch `true`, the
+    prod root and the prod secret. Do the same check when rolling back by setting the switch to
+    `false`: switching off fails any batches still queued, and is not a pause.
+  - The acceptance pair of runs, with a GPU check and a go-ahead first: a numeric scan id that a
+    staging run has processed and a prod run now processes. Confirm:
+    - prod's Workflow paths are under `bloom_cyl_pipeline/prod`, and it mounts the prod secret;
+    - prod's stage-in logged that scan as staged, not skipped;
+    - the traits landed in prod's DB under prod's scan;
+    - staging's rows for that id are unchanged (read-only checks; filter by `environment=`).
 - [ ] 6.7 With the author's approval, post #863's and #983's evidence and close both by hand. Push
   5.3's upstream docs. Update memory.
 - [ ] 6.8 Archive (`/openspec:archive isolate-cyl-pipeline-environments`). First grep unarchived
