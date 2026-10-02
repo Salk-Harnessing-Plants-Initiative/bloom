@@ -427,8 +427,6 @@ The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigati
 - **THEN** the list is unchanged
 - **AND** the next "load older" returns that run in order, with no run skipped or duplicated
 
-<!-- This block is raised onto fix-cyl-noop-redelivery-scan-resolution's block for the same requirement (as revised in bloom PR #1008: its two-bullet "Failed rows" with the late-result note, its matched-result note and its three scenarios), plus this change's edits. Archive that change first; see tasks 9.1-9.3. -->
-
 ### Requirement: Run display state is derived from counts first
 Run display state SHALL be computed by one total, pure function of a run row. Let `N = scan_count`, `F = min(failed_count, N)`, `D = min(done_count, N − F)` and `U = N − D − F`. The function SHALL evaluate these rules in order:
 1. `N = 0` → "No scans matched".

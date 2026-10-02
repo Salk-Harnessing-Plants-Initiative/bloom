@@ -47,8 +47,13 @@ opened from `staging` after PR A is deployed there; §8 is post-deploy.
   and seven scenarios), as its 9.3 says. It is archived after this one, in the same PR. After
   `openspec archive`, all nine blocks in `openspec/specs/{cyl-batch-ingest-result,cyl-ingest-cli,
   cyl-pipeline-ui,cyl-trait-writeback}/spec.md` `diff` byte-identical to this change's delta
-  blocks. `openspec validate --all --strict`: the only failures are nine bloommcp changes, the
-  same set as on `88cbcbf3`.
+  blocks. `openspec validate --all --strict`: the only failures are nine pre-existing changes (eight
+  bloommcp, one langchain: `remove-langchain-unused-sleap-out-csv`), the
+  same set as on `88cbcbf3`. (2.4 says "eight requirements"; the deltas carry nine headings.)
+  The archive commit comes before the PR's `origin/staging` merge, and the merge touches no live
+  spec. #1023's review re-ran the block diffs and validation at the PR head, and both still hold.
+  `fix-cyl-redelivery-blob-collision` 9.10's precondition ("not before this change has merged
+  and deployed to staging") is now met; that change's own other gates still apply.
 
 ## 3. PR A tests first (red)
 
@@ -341,9 +346,11 @@ Five reviewers, no blocking findings. The author asked for every important item 
   applied, the new body live, ACL as sanctioned, and source 228's `scan_id` is 12894756.
 - [x] 8.2 Before each run: `kubectl get pods -n runai-busch-lab` for GPU contention; filter Bloom
   Workflows by `environment=staging`.
-  **2026-10-02:** applied to runs 21 and 22 (8.3, 8.4). No further run is needed: PR B (#1008)
-  changes only bloomctl's message and the web page, and its bloomctl message reaches the cluster
-  only with the next Argo pin bump (8.7).
+  **2026-10-02:** whether this check was run before runs 21 and 22 (8.3, 8.4) is not recorded;
+  their 2026-10-01 records don't mention it. It is ticked because no further run is needed: PR B
+  (#1008) changes only bloomctl's message and the web page, and its bloomctl message reaches the
+  cluster only with the next Argo pin bump (8.7). (Corrected in #1023's review: an earlier
+  version of this note said the check was applied to runs 21 and 22, without evidence.)
 - [x] 8.3 Acceptance A (bloom#900), after PR A: Bloom-dispatched staging run over scan 12894756.
   Read-only before and after: `max(id)`/`count(*)` of `cyl_trait_sources`, and count plus a value
   checksum of `cyl_scan_traits` for the scan. Expect the row `('written', 228)` (the source the

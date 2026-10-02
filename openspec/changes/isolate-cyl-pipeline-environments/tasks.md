@@ -257,7 +257,10 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
   volumes and the staging secret. The run completed (1 done, 0 failed); its row is source_id 250,
   and the scan still has one distinct source.
 
-  **Confirmed again, 2026-10-02, Bloom run 23** (post-merge archive PR, on a site-started run).
+  **2026-10-02, Bloom run 23** (post-merge archive PR #1023, on a site-started run). The run-20
+  record above comes from #1016, which doesn't say how `fc96k`'s volumes were read. By the
+  next morning `fc96k` was gone (kubectl `NotFound`, the 3600 s TTL below), so it can't be
+  re-checked. Run 23 is the volume read this PR witnessed, made while the Workflow ran.
   The GPU check before submitting showed only 42 `Completed` pods and no `environment=staging`
   Workflows. eberrigan started run 23 from the scan page on TEST-E2E scan 12894767 in experiment
   12880747, created for this check (see `add-cyl-trait-recipe-key` 8.2). The Workflow was read

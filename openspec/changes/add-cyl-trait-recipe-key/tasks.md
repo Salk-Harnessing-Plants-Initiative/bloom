@@ -782,10 +782,10 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       next to staging's 5: every recipe read costs about (selected scans) x `unplaced` index
       probes, and staging's 18,471 x 5 took 711 ms (7.3). Run
       `scripts/lint_migrations.sh origin/main` on the promotion PR.
-      **Not run before promotion; checked afterwards (2026-10-02).** Promotion #1018 (`bfcecea2`)
-      merged and prod deployed (Deploy run 36998823516) before this ran. So, with eberrigan's yes,
-      the committed query and the post-migration state were read on prod
-      (`bloom_v2_prod-db-prod-1`, `default_transaction_read_only=on`):
+      **Ticked late: the "before promoting" gate was missed. It was checked after promotion
+      #1018 (2026-10-02).** #1018 (`bfcecea2`) merged and prod deployed (Deploy run
+      36998823516) before this ran. So, with eberrigan's yes, the committed query and the
+      post-migration state were read on prod's `db-prod` with `default_transaction_read_only=on`:
       - `20260930120000`–`120300` (plus `20261001180000`, `20261001220000`) are applied.
       - Dry run: `sources` 5, `keyed` 5, `pipeline_keys` 0, **`empty_payload` 0**,
         `object_metadata` 0, `resolved` 0, **`unplaced` 5** (staging: 5), `with_trait_rows` 0,
@@ -793,11 +793,16 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       - Actual state: 5 sources (max id 5), all `legacy:1`–`legacy:5` with no metadata;
         `recipe_key IS NULL` 0; `scan_id IS NULL` 5 (the same five); no run stamps.
 
-      Prod had never received a pipeline result, so the backfill had nothing to get wrong. A
-      dry run before promotion would have shown these same counts. Recipe reads on prod cost
-      (selected scans) x 5 probes, the same as staging. The first prod pipeline source should
-      come from `isolate-cyl-pipeline-environments` 6.6. #1018's "Lint new migration filenames +
-      timestamps" job (`lint_migrations.sh origin/main`) passed.
+      Prod had never received a pipeline result, so the backfill had nothing to get wrong. It is
+      an inference that a dry run before promotion would have shown the same counts: max id is 5
+      and every source is legacy, so none can have arrived between the merge and the check.
+      Recipe reads on prod cost (selected scans) x 5 probes, the same as staging. #1018's "Lint
+      new migration filenames + timestamps" job (`lint_migrations.sh origin/main`) passed.
+
+      **Open risk:** prod dispatch is now on (#1016). Prod's first pipeline source will be the
+      first time prod exercises scan resolution, recipe and run stamping, and the no-op
+      fallback. That is unverified until `isolate-cyl-pipeline-environments` 6.6's acceptance
+      run; check that source's stamps then, as 8.2 did on staging.
 - [x] 8.1 **Read-only checks on staging after deploy:**
 
   - `count(*) WHERE recipe_key IS NULL` is 0;
@@ -841,11 +846,19 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       - Its `recipe_key` is `b03e1092…`, a new key, not `1911b908…`. Diffing
         `cyl_trait_recipe_payload_v1` between 264 and 271 shows only `predict_code_sha`
         (`9a6f20c0…` → `79939eec…`) and `traits_code_sha` (`e373b0f9…` → `426ad4dc…`) differ.
-        `models` and `predict_output_params` are equal, so the cluster images moved since
-        2026-09-30, and a new recipe is correct.
+        `models` and `predict_output_params` are equal. A new recipe is correct by the key's
+        definition (any code-SHA change forks it). **The cause is unverified:** that the predict
+        and traits images changed on the cluster between run 18 (2026-09-30, source 264) and
+        run 23 is an inference. No template revision or image digest was recorded, and nobody
+        checked whether the two SHA ranges change scientific code. Runs 19–22 were no-ops and
+        recorded no code SHAs.
       - By design ("default recipe" means the most recent), `list_trait_recipes(ARRAY[12880747])`
-        now defaults to `b03e1092…` (1 scan, source 271), not 8.1's `1911b908…`. Both are
-        `0.1.0a9`.
+        now defaults to `b03e1092…` (1 scan, source 271), not 8.1's `1911b908…` (18 scans). Both
+        are `0.1.0a9`. **For data consumers:** the 18-scan results still exist but are no longer
+        the default. A default read or export of experiment 12880747 now gets 1 scan, unless
+        the reader picks `1911b908…` (see #1021).
+      - 8.2 was met with a synthetic scan made for the purpose, because no organic
+        Bloom-dispatched run since the deploy had created a source.
 - [x] 8.3 **Drafts for eberrigan to approve before posting:**
   - a note on #936 for egao28, covering:
     - the new arguments;

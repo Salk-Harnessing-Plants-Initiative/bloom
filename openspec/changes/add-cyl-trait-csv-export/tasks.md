@@ -504,9 +504,13 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
   `SELECTION_PAGE_SIZE` 5000, `RUNNING_JOB_RESERVE_BYTES` 384 MiB and the Float32 pivot. #1009's
   runtime was live: `restart: unless-stopped`, a 3 GiB memory limit, container started
   10:59:30Z. With the user's yes, 10.2's largest export went through
-  `https://staging.bloom.salk.edu:8443`, using `scratchpad/drive_export_staging.py` (r101's
-  driver, with BASE and the cookie `sb-bloom-staging-auth-token` from bloom-web's
-  `SUPABASE_COOKIE_NAME`) as the bloomctl `staging-user` (`bloom_user`):
+  `https://staging.bloom.salk.edu:8443`, driven by a local script (not committed) as the
+  bloomctl `staging-user` (`bloom_user`). Like §10's driver, it takes the session from
+  `make_authed_client(load_credentials("staging-user"))` and sends it as an @supabase/ssr cookie
+  (`base64-` + base64url of the session JSON, chunked at 3180 characters) under bloom-web's
+  `SUPABASE_COOKIE_NAME` (`sb-bloom-staging-auth-token`), with `Sec-Fetch-Site: same-origin`.
+  It then calls `GET …/recipes`, `POST …/jobs`, polls `GET …/jobs/<id>` every 1 s, and makes
+  `GET …/download` and `DELETE …/jobs/<id>`:
   - Query `experiment=1`, `recipe=legacy:5&chosen=user`. The listing came back in 2.72 s with
     `n_selected` 18,471 and 8 recipes; the default is pipeline `1911b908…` (3 scans), and
     `legacy:5` has 13,396.
@@ -517,12 +521,11 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
   - 13,396 + 5,075 = 18,471 = `n_selected`. The sidecar has `chosen_by` `user`, `recipe_key`
     `legacy:5`, and `generated_by.version` `1.0.0+f79a15985ae5…` (#1007's build SHA, as wired by
     #1009).
-  - **bloom-web peak memory 377.2 MiB** (`docker stats` MemUsage, sampled about every 1–2 s over
-    SSH, read-only). It idled at 79 MiB, peaked at 17:00:53Z as the job finished, and was still
-    373 MiB after the delete, not yet collected. By 17:11Z it was back to 83 MiB. That is 12%
-    of the 3 GiB limit. It is not
-    directly comparable with 10.2's 547–575 MB, which was the Windows working set of a local
-    `next start`.
+  - **bloom-web sampled peak memory 377.2 MiB** (`docker stats` MemUsage, sampled about every
+    1–2 s over SSH, read-only). It idled at 79 MiB, peaked at 17:00:53Z as the job finished,
+    and was still 373 MiB after the delete, not yet collected. By 17:11Z it was back to 83 MiB.
+    That is 12% of the 3 GiB limit. It is not directly comparable with 10.2's 547–575 MB, which
+    was the Windows working set of a local `next start`.
   - Delete answered 204, then 404. The downloaded files were deleted locally once the counts
     were read.
 - [ ] 12.2 After promotion to main, with the user's go-ahead, rerun 7.1 read-only on production. Open a tuning PR if any p95 is over 4 s.
