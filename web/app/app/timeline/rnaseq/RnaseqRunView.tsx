@@ -14,6 +14,7 @@ import {
   runSample,
   runSpeciesId,
   stepStarted,
+  runFastqUrl,
   runSraRuns,
   runSteps,
   stepStates,
@@ -70,6 +71,7 @@ export default function RnaseqRunView({
   const run = live.view;
   const states = stepStates(run);
   const sraRuns = runSraRuns(run);
+  const fastqUrl = runFastqUrl(run);
   const failure = failureSentence(run);
   const origin = metadataText(run, "origin");
   const sourceUrl = metadataText(run, "source_url");
@@ -92,6 +94,11 @@ export default function RnaseqRunView({
           {runSample(run) ?? "—"} against {runReference(run) ?? "—"}
         </span>
       </div>
+      {fastqUrl ? (
+        <p className="-mt-4 mb-6 text-sm text-stone-600">
+          Reads from <span className="break-all font-mono">{fastqUrl}</span>
+        </p>
+      ) : null}
       {sraRuns.length ? (
         <p className="-mt-4 mb-6 text-sm text-stone-600">
           Imported from SRA:{" "}

@@ -1,14 +1,19 @@
 // @vitest-environment jsdom
 /**
  * The job form as a scientist uses it: the choices it offers, that a run starts only
- * once the sample, reference, species and dataset name are given, what it sends, and
- * what it says when the start succeeds or is refused.
+ * once the S3 folder has passed its check and the reference, species and dataset name are
+ * given, what it sends, and what it says when the start succeeds or is refused.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
+// The folder is checked without the form's typing delay.
+vi.mock("@/lib/s3-folder", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/s3-folder")>()),
+  FOLDER_CHECK_DELAY_MS: 0,
+}));
 vi.mock("@/lib/species-options", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/species-options")>()),
   addSpecies: vi.fn(),
@@ -33,15 +38,39 @@ const SPECIES: SpeciesOption[] = [
   { id: 4, label: "Rice (Oryza sativa)" },
 ];
 
+const FOLDER_URL = "s3://lab-data/tinygex/";
+const FOLDER = {
+  fastq_url: FOLDER_URL,
+  sample: "tinygex",
+  lanes: [1],
+  files: [
+    { name: "tinygex_S1_L001_R1_001.fastq.gz", size: 1_000_000_000, etag: '"a"' },
+    { name: "tinygex_S1_L001_R2_001.fastq.gz", size: 3_400_000_000, etag: '"b"' },
+  ],
+  file_count: 2,
+  total_bytes: 4_400_000_000,
+};
+const FOLDER_SUMMARY = "tinygex · 1 lane · 2 files · 4.4 GB";
+
 let fetchSpy: ReturnType<typeof vi.fn>;
+// What the start and the folder check answer; each test can replace them.
+let startReply: () => Promise<Response>;
+let folderReply: () => Promise<Response>;
+
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 function respond(body: unknown, status = 201) {
-  fetchSpy.mockResolvedValue(
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    })
-  );
+  startReply = async () => json(body, status);
+}
+
+/** The calls that started a run, not the folder checks. */
+function startCalls() {
+  return fetchSpy.mock.calls.filter(([url]) => url === "/api/scrna/cellranger/runs");
 }
 
 function openForm(samples = SAMPLES, references = REFERENCES) {
@@ -60,15 +89,24 @@ function type(label: string | RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
-function choose(sample: string, reference: string) {
-  type("Registered sample", sample);
+async function enterFolder(url = FOLDER_URL) {
+  type("S3 folder URL", url);
+  await screen.findByText(FOLDER_SUMMARY);
+}
+
+async function choose(reference = "tiny_ref") {
+  await enterFolder();
   type("Reference genome", reference);
   type("Species", "1");
   type("Dataset name", "Col-0 root tip");
 }
 
 beforeEach(() => {
-  fetchSpy = vi.fn();
+  startReply = async () => json({ detail: "no reply set" }, 500);
+  folderReply = async () => json(FOLDER, 200);
+  fetchSpy = vi.fn((url: string) =>
+    url === "/api/scrna/cellranger/folder-check" ? folderReply() : startReply()
+  );
   vi.stubGlobal("fetch", fetchSpy);
 });
 
@@ -82,17 +120,21 @@ describe("the form", () => {
     render(
       <ScrnaJobSubmit samples={SAMPLES} references={REFERENCES} species={SPECIES} startedBy={null} />
     );
-    expect(screen.queryByLabelText("Registered sample")).toBeNull();
+    expect(screen.queryByLabelText("S3 folder URL")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
-    expect(screen.getByLabelText("Registered sample")).toBeTruthy();
+    expect(screen.getByLabelText("S3 folder URL")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByLabelText("S3 folder URL")).toBeNull();
+  });
+
+  it("reads from an S3 folder by default, with no registered-sample list", () => {
+    openForm();
+    expect((screen.getByLabelText("S3 folder") as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByLabelText("Registered sample")).toBeNull();
   });
 
-  it("lists samples with their file count and size, and references with their description", () => {
+  it("lists references with their description", () => {
     openForm();
-    expect(screen.getByRole("option", { name: "tinygex (4 FASTQs, 31.4 GB)" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "root_rep2" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "tiny_ref — Arabidopsis TAIR10" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "GRCh38" })).toBeTruthy();
   });
@@ -104,11 +146,11 @@ describe("the form", () => {
     expect(jobType.value).toBe("cellranger-count");
   });
 
-  it("keeps Start run disabled until the run and the required details are given", () => {
+  it("keeps Start run disabled until the run and the required details are given", async () => {
     openForm();
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
-    type("Registered sample", "tinygex");
+    await enterFolder();
     type("Reference genome", "tiny_ref");
     expect(start.disabled).toBe(true);
     expect(screen.getByText("Choose a species.")).toBeTruthy();
@@ -126,9 +168,9 @@ describe("the form", () => {
     expect(screen.getByRole("option", { name: "Rice (Oryza sativa)" })).toBeTruthy();
   });
 
-  it("refuses an extra field with a value but no name, or a name used twice", () => {
+  it("refuses an extra field with a value but no name, or a name used twice", async () => {
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
     type("Field 1 value", "root");
     expect(start.disabled).toBe(true);
@@ -143,11 +185,9 @@ describe("the form", () => {
     expect(start.disabled).toBe(false);
   });
 
-  it("says who adds samples when none are registered", () => {
-    openForm([], REFERENCES);
-    expect(screen.getByRole("option", { name: "No samples registered yet" })).toBeTruthy();
-    expect((screen.getByLabelText("Registered sample") as HTMLSelectElement).disabled).toBe(true);
-    expect(screen.getByText(/added by a Bloom admin/)).toBeTruthy();
+  it("says who adds references when none are registered", () => {
+    openForm(SAMPLES, []);
+    expect(screen.getByText(/References are added by a Bloom admin/)).toBeTruthy();
   });
 });
 
@@ -155,7 +195,7 @@ describe("starting a run", () => {
   it("posts the chosen names with the dataset details and shows the queued run", async () => {
     respond({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     type(/Accession or genotype/, " Col-0 ");
     type("Field 1 name", "tissue");
     type("Field 1 value", "root tip");
@@ -169,10 +209,10 @@ describe("starting a run", () => {
     expect(status.textContent).toContain(
       "tinygex against tiny_ref · Col-0 root tip (Arabidopsis (Arabidopsis thaliana))"
     );
-    const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe("/api/scrna/cellranger/runs");
+    const [[, init]] = startCalls();
     expect(JSON.parse(init.body)).toEqual({
-      sample: "tinygex",
+      fastq_url: FOLDER_URL,
+      fastq_files: FOLDER.files,
       reference: "tiny_ref",
       metadata: {
         species_id: 1,
@@ -187,7 +227,7 @@ describe("starting a run", () => {
   it("asks for a public dataset's source link and sends it with the citation", async () => {
     respond({ run_id: 13, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     expect(screen.queryByLabelText("Source link")).toBeNull();
     fireEvent.click(screen.getByLabelText("Public dataset"));
 
@@ -204,7 +244,7 @@ describe("starting a run", () => {
     fireEvent.click(start);
 
     await screen.findByRole("status");
-    expect(JSON.parse(fetchSpy.mock.calls[0][1].body).metadata).toEqual({
+    expect(JSON.parse(startCalls()[0][1].body).metadata).toEqual({
       species_id: 1,
       dataset_name: "Col-0 root tip",
       origin: "public",
@@ -216,7 +256,7 @@ describe("starting a run", () => {
   it("defaults to HPI and drops the source when switched back", async () => {
     respond({ run_id: 14, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     expect((screen.getByLabelText("HPI") as HTMLInputElement).checked).toBe(true);
     fireEvent.click(screen.getByLabelText("Public dataset"));
     type("Source link", "https://example.org/geo");
@@ -225,7 +265,7 @@ describe("starting a run", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await screen.findByRole("status");
-    const metadata = JSON.parse(fetchSpy.mock.calls[0][1].body).metadata;
+    const metadata = JSON.parse(startCalls()[0][1].body).metadata;
     expect(metadata.origin).toBe("hpi");
     expect(metadata).not.toHaveProperty("source_url");
   });
@@ -233,7 +273,7 @@ describe("starting a run", () => {
   it("shows the service's reason when it refuses the names", async () => {
     respond({ detail: "Reference 'tiny_ref' has no reference.json" }, 422);
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe(
@@ -242,10 +282,26 @@ describe("starting a run", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
+  it("checks the folder again when the service says it changed since its check", async () => {
+    respond(
+      { detail: "s3://lab-data/tinygex/ changed since it was checked; check it again, then start the run" },
+      409
+    );
+    openForm();
+    await choose();
+    const checks = () =>
+      fetchSpy.mock.calls.filter(([url]) => url === "/api/scrna/cellranger/folder-check").length;
+    const before = checks();
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("changed since it was checked");
+    await waitFor(() => expect(checks()).toBe(before + 1));
+  });
+
   it("falls back to a fixed message when there's no detail", async () => {
     respond({ detail: null }, 503);
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
     expect((await screen.findByRole("alert")).textContent).toBe(
       "The job service isn't available right now."
@@ -253,9 +309,9 @@ describe("starting a run", () => {
   });
 
   it("says so when the service can't be reached", async () => {
-    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
+    startReply = () => Promise.reject(new TypeError("Failed to fetch"));
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Could not reach the job service."
@@ -265,7 +321,7 @@ describe("starting a run", () => {
   it("rejects a success body it doesn't recognise", async () => {
     respond({ run_id: "12" });
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
     expect((await screen.findByRole("alert")).textContent).toBe(
       "The job service returned an unexpected response."
@@ -274,18 +330,18 @@ describe("starting a run", () => {
 
   it("disables the form while the start is in flight", async () => {
     let finish: (r: Response) => void = () => {};
-    fetchSpy.mockReturnValue(new Promise<Response>((resolve) => (finish = resolve)));
+    startReply = () => new Promise<Response>((resolve) => (finish = resolve));
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     const start = screen.getByRole("button", { name: "Starting…" }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     // The fieldset disables its fields, which `.disabled` on each one doesn't report.
-    expect(screen.getByLabelText("Registered sample").matches(":disabled")).toBe(true);
+    expect(screen.getByLabelText("S3 folder URL").matches(":disabled")).toBe(true);
     expect(screen.getByLabelText("Dataset name").matches(":disabled")).toBe(true);
     fireEvent.click(start);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(startCalls()).toHaveLength(1);
 
     finish(new Response(JSON.stringify({ run_id: 1, sample: "tinygex", reference: "tiny_ref", run_key: "k" }), { status: 201 }));
     await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
@@ -296,7 +352,7 @@ describe("after a run is queued", () => {
   async function queueRun() {
     respond({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
     openForm();
-    choose("tinygex", "tiny_ref");
+    await choose();
     type(/Accession or genotype/, "Col-0");
     fireEvent.click(screen.getByLabelText("Public dataset"));
     type("Source link", "https://doi.org/10.1016/x");
@@ -312,15 +368,15 @@ describe("after a run is queued", () => {
     );
     expect(screen.getByText(/saved with the run/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start run" })).toBeNull();
-    expect(screen.queryByLabelText("Registered sample")).toBeNull();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText("S3 folder URL")).toBeNull();
+    expect(startCalls()).toHaveLength(1);
   });
 
   it("starts another run with the sample and dataset name cleared and the rest kept", async () => {
     await queueRun();
     fireEvent.click(screen.getByRole("button", { name: "Start another run" }));
 
-    expect((screen.getByLabelText("Registered sample") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("S3 folder URL") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Dataset name") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
     expect((screen.getByLabelText("Species") as HTMLSelectElement).value).toBe("1");
@@ -339,7 +395,7 @@ describe("after a run is queued", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
     expect(screen.queryByRole("button", { name: "Start another run" })).toBeNull();
-    expect((screen.getByLabelText("Registered sample") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("S3 folder URL") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
   });
 });

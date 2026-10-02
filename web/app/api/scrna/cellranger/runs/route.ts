@@ -1,7 +1,7 @@
 /**
  * Server-side proxy for starting a Cell Ranger run.
  *
- * Forwards `{sample, reference, metadata?, sra_runs?}` with the signed-in user's Supabase token to the
+ * Forwards `{sample or fastq_url and fastq_files, reference, metadata?, sra_runs?}` with the signed-in user's Supabase token to the
  * workflows service (`POST /scrna/cellranger/runs`, in-cluster at `workflows:5100`),
  * which checks the names, records the run and queues it. Proxying keeps the token out
  * of client JS. A request must be JSON (415 otherwise) and come from a Bloom page (403
@@ -53,15 +53,28 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
-  const { sample, reference, metadata, sra_runs } = (body ?? {}) as {
+  const { sample, fastq_url, fastq_files, reference, metadata, sra_runs } = (body ?? {}) as {
     sample?: unknown;
+    fastq_url?: unknown;
+    fastq_files?: unknown;
     reference?: unknown;
     metadata?: unknown;
     sra_runs?: unknown;
   };
-  if (typeof sample !== "string" || typeof reference !== "string") {
+  // A run's reads come from an S3 folder (whose files name the sample) or a named sample.
+  // A folder comes with the files its check showed; the service refuses it if they changed.
+  const hasFolder = fastq_url !== undefined;
+  if (
+    typeof reference !== "string" ||
+    (hasFolder
+      ? typeof fastq_url !== "string" ||
+        sample !== undefined ||
+        !Array.isArray(fastq_files) ||
+        !fastq_files.every((f) => f !== null && typeof f === "object")
+      : typeof sample !== "string")
+  ) {
     return NextResponse.json(
-      { detail: "Choose a sample and a reference." },
+      { detail: "Choose the reads (an S3 folder or a sample) and a reference." },
       { status: 400 }
     );
   }
@@ -107,7 +120,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        sample,
+        ...(hasFolder ? { fastq_url, fastq_files } : { sample }),
         reference,
         ...(metadata === undefined ? {} : { metadata }),
         ...(sra_runs === undefined ? {} : { sra_runs }),

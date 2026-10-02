@@ -111,11 +111,19 @@ describe("request checks", () => {
     [{ sample: "tinygex" }],
     [{ reference: "tiny_ref" }],
     [{ sample: 1, reference: "tiny_ref" }],
+    [{ fastq_url: 7, reference: "tiny_ref" }],
+    [{ fastq_url: "s3://lab-data/run42/", sample: "col0", reference: "tiny_ref", fastq_files: [] }],
+    [{ fastq_url: "s3://lab-data/run42/" }],
+    [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref" }],
+    [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref", fastq_files: "x" }],
+    [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref", fastq_files: [1] }],
     [null],
   ])("refuses %j without calling upstream", async (body) => {
     const res = await callRoute(body);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ detail: "Choose a sample and a reference." });
+    expect(await res.json()).toEqual({
+      detail: "Choose the reads (an S3 folder or a sample) and a reference.",
+    });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -128,6 +136,23 @@ describe("request checks", () => {
 });
 
 describe("forwarding", () => {
+  it("forwards an S3 folder in place of a sample", async () => {
+    const files = [{ name: "col0_S1_L001_R1_001.fastq.gz", size: 1, etag: '"a"' }];
+    const res = await callRoute({
+      fastq_url: "s3://lab-data/run42/",
+      fastq_files: files,
+      reference: "tiny_ref",
+      metadata: { species_id: 1 },
+    });
+    expect(res.status).toBe(201);
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
+      fastq_url: "s3://lab-data/run42/",
+      fastq_files: files,
+      reference: "tiny_ref",
+      metadata: { species_id: 1 },
+    });
+  });
+
   it("posts only sample and reference with the user's token", async () => {
     const res = await callRoute({
       sample: "tinygex",
