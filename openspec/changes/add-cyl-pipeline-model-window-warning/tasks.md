@@ -59,7 +59,7 @@
 - [x] 1.3 Raise the floor to `sleap-roots-contracts>=0.1.0a9` and run `uv lock --upgrade-package sleap-roots-contracts`. The lock diff is that package only (a5 → a9), and both 1.1 and 1.2 pass.
 - [x] 1.4 Run `uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin`, as CI does. Report any finding to the user. Done 2026-10-02: no known vulnerabilities (run against an exported file, since `/dev/stdin` fails on Windows).
 - [x] 1.5 Run `python scripts/check-uv-locks.py`; it must be green.
-- [ ] 1.6 **Live comparison (local, read-only, once; recorded in C2's body).** After C2, run a scratchpad script with the key from the host environment:
+- [x] 1.6 **Live comparison (local, read-only, once; recorded in C2's body).** After C2, run a scratchpad script with the key from the host environment:
   - it calls `model_cards._list_from_registry(...)` and the `wandb` library's `Api().artifact_collections`/`artifacts` listing (installed only in the scratch environment);
   - the two give the same set of `(root_type, registry_id, version, selectors)`;
   - expected: 8 cards.
@@ -72,14 +72,14 @@ Tests go in `tests/test_model_cards.py`:
 - the key is set with `monkeypatch.setenv`/`delenv`;
 - an autouse fixture clears the cache.
 
-- [ ] 2.1 **Red.** One page: collection `arabidopsis-lateral` with a production membership `{versionIndex: 0, artifact: {metadata: {...selectors...}}}`, and collection `old-flat` with `artifactMembership: null` → one card.
+- [x] 2.1 **Red.** One page: collection `arabidopsis-lateral` with a production membership `{versionIndex: 0, artifact: {metadata: {...selectors...}}}`, and collection `old-flat` with `artifactMembership: null` → one card.
   - Its `registry_id` is `eberrigan-salk-institute-for-biological-studies-org/wandb-registry-sleap-roots-models/arabidopsis-lateral` and its `version` is `v0`.
   - Each card has exactly `{root_type, registry_id, version, selectors}`, and each selector exactly `{species, mode, age_min, age_max}`.
   - The recorded request is `POST https://api.wandb.ai/graphql`, with Basic auth `api`/`<key>`, and JSON variables `entity`, `project` and `cursor: null`. The query text contains `artifactMembership(aliasName: "production")` and `first: 100`.
   - Fails: there's no module.
-- [ ] 2.2 **Red.** Paging: page 1 has `hasNextPage: true` and `endCursor: "c1"`, and page 2 returns more → the second request carries `cursor: "c1"`, and both pages' cards come back. Metadata given as a JSON string parses the same as an object.
-- [ ] 2.3 **Red.** Validation: one flat-metadata membership plus one valid one → one card, and `caplog` names the skipped collection. All memberships invalid → `ModelCatalogUnavailable`. No memberships → `([], fetched_at)`.
-- [ ] 2.4 **Red.** Errors, each giving `ModelCatalogUnavailable`, with the cause in `caplog` and the key never in `caplog`:
+- [x] 2.2 **Red.** Paging: page 1 has `hasNextPage: true` and `endCursor: "c1"`, and page 2 returns more → the second request carries `cursor: "c1"`, and both pages' cards come back. Metadata given as a JSON string parses the same as an object.
+- [x] 2.3 **Red.** Validation: one flat-metadata membership plus one valid one → one card, and `caplog` names the skipped collection. All memberships invalid → `ModelCatalogUnavailable`. No memberships → `([], fetched_at)`.
+- [x] 2.4 **Red.** Errors, each giving `ModelCatalogUnavailable`, with the cause in `caplog` and the key never in `caplog`:
   - HTTP 401;
   - HTTP 500;
   - `{"errors": [{"message": "secret-detail"}]}`;
@@ -87,32 +87,32 @@ Tests go in `tests/test_model_cards.py`:
   - `{"data": {"project": null}}`;
   - `httpx.ReadTimeout`;
   - 21 pages that all report `hasNextPage: true` (the `MAX_PAGES` guard).
-- [ ] 2.5 **Red.** Deadline:
+- [x] 2.5 **Red.** Deadline:
   - assert `REQUEST_TIMEOUT_SECONDS == 5` and `REFRESH_DEADLINE_SECONDS == 15`;
   - with `_monotonic` advancing 10 s per request, the second page is requested with a timeout of at most 5 s, and a third is not requested once 15 s have passed → `ModelCatalogUnavailable`;
   - `_client` is created with `timeout=5`.
-- [ ] 2.6 **Red.** Configuration: `WANDB_API_KEY` unset or `"  "` → `ModelCatalogNotConfigured`, and no request is sent. `" key\n"` is sent unchanged as the Basic password.
-- [ ] 2.7 **Red.** Cache:
+- [x] 2.6 **Red.** Configuration: `WANDB_API_KEY` unset or `"  "` → `ModelCatalogNotConfigured`, and no request is sent. `" key\n"` is sent unchanged as the Basic password.
+- [x] 2.7 **Red.** Cache:
   - two calls 60 s apart → one listing, with the same `fetched_at`;
   - at exactly 300.0 s → a second listing, with a new `fetched_at` that parses as UTC ISO-8601;
   - a failure followed by success → listed again;
   - at 301 s with a failing refresh → raises, and doesn't return the old list.
-- [ ] 2.8 **Red.** Single flight:
+- [x] 2.8 **Red.** Single flight:
   - 5 threads start behind a `threading.Barrier(5)` on a cold cache. The fake transport sets an `entered` event and waits on `release.wait(timeout=5)`; the main thread waits `entered.wait(5)`, sleeps `0.2`, then releases.
   - Exactly 1 listing, and all threads get the same cards.
   - Every `join(timeout=5)` is followed by `assert not t.is_alive()`.
-- [ ] 2.9 **Red.** Bounded wait:
+- [x] 2.9 **Red.** Bounded wait:
   - assert `LOCK_WAIT_SECONDS == 6`;
   - with it patched to `0.2` and a leader blocked in the transport, a second caller raises `ModelCatalogUnavailable` in under 2 s of wall clock;
   - after the leader is released and succeeds, a third caller is served from the cache without a new listing;
   - release and join every thread.
-- [ ] 2.10 **Red.** `warm()`:
+- [x] 2.10 **Red.** `warm()`:
   - key unset → no request, no exception;
   - listing failure → no exception, a log line, and the cache stays empty;
   - success → the cache is filled, and the next call sends no request.
-- [ ] 2.11 **Guard.** `subprocess.run([sys.executable, "-c", "import main, model_cards, sys; assert 'wandb' not in sys.modules"], cwd=<service dir>)` exits 0.
-- [ ] 2.12 Implement `model_cards.py` per design D1 and D3: constants, `_client`, `_monotonic`, `_utcnow`, `_list_from_registry`, the lock and its state, `list_production_cards() -> tuple[list[dict], str]`, and `warm()`.
-- [ ] 2.13 Docs in the same commit: in `contracts/README.md`, the line "Bloom imports neither `ModelCard` nor `Selector`" becomes "Bloom's `services/workflows` validates production model cards as `ModelCard` (with `Selector`) to serve `GET /model-cards`; it needs `>=0.1.0a9`, because the `selectors` shape arrived in a8."
+- [x] 2.11 **Guard.** `subprocess.run([sys.executable, "-c", "import main, model_cards, sys; assert 'wandb' not in sys.modules"], cwd=<service dir>)` exits 0.
+- [x] 2.12 Implement `model_cards.py` per design D1 and D3: constants, `_client`, `_monotonic`, `_utcnow`, `_list_from_registry`, the lock and its state, `list_production_cards() -> tuple[list[dict], str]`, and `warm()`.
+- [x] 2.13 Docs in the same commit: in `contracts/README.md`, the line "Bloom imports neither `ModelCard` nor `Selector`" becomes "Bloom's `services/workflows` validates production model cards as `ModelCard` (with `Selector`) to serve `GET /model-cards`; it needs `>=0.1.0a9`, because the `selectors` shape arrived in a8."
 
 ## 3. Route and startup warm-up, `services/workflows/main.py` (C3)
 
