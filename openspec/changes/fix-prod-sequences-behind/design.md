@@ -175,17 +175,23 @@ That tolerates a dev worker inserting during a test.
 
 **Red phase.** The rejected `GREATEST` sketch lives only as a string in the test module. An env var `SEQ1022_RED_SKETCH=1` selects it, and it is restricted to `_seq1022_%` tables, so it never touches a real sequence. It is never a file under `supabase/`.
 
-### D9. Applying to dev without touching the shared ledger
+### D9. Applying to dev with `make migrate-local`, then cleaning the shared ledger
 
-Because of the dev ledger problem (Context), dev gets the migration from `psql`, run as `postgres`:
+The user chose this on 2026-10-02. Dev gets the migration from `make migrate-local`, run from the worktree, which is the real `db push` path. Because of the dev ledger problem (Context), that push also applies:
 
-```
-SET ROLE postgres; \i <file>
-```
+- `20261001220000`, which the main checkout has;
+- staging's `20261001230000`, which the main checkout lacks.
 
-This puts no row in `schema_migrations`. It is the first execution of the body on dev, so it produces the `cyl_scanners` evidence. Once the main checkout reaches a staging that contains this migration, its `migrate-local` re-applies it and advances 0.
+It is the first execution of the body on dev, so it produces the `cyl_scanners` evidence.
 
-CI's `compose-health-check` exercises the real `db push` path.
+**Cleaning up.** After the evidence is recorded, the user OKs deleting, as `supabase_admin`, the `schema_migrations` rows the main checkout has no file for: `20261001230000` and this migration's `<ts>`. That is what `migration repair --status reverted` does. The `20261001220000` row stays, because the main checkout has that file.
+
+**Why deleting is safe.** Once the main checkout reaches a staging that contains both files, its `migrate-local` re-applies them:
+
+- this migration is idempotent, and advances 0;
+- `20261001230000` is re-runnable: its constraint is dropped if it exists and then re-added, the old function signature is dropped if it exists, and the function uses `CREATE OR REPLACE`.
+
+The database objects those two migrations created stay in place between the cleanup and that re-apply.
 
 ### D10. Guard (PR 2)
 

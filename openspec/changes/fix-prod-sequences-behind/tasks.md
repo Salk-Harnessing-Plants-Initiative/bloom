@@ -86,11 +86,16 @@ Tasks:
 - [ ] 2.2 **Dev evidence, which is the first real body run on dev.** Steps:
   - read-only: snapshot every `public` sequence into the scratchpad;
   - confirm the predicate reports exactly `cyl_scanners`. If it reports anything else, stop and ask the user;
-  - with the user's OK, apply the file as `postgres` without touching the ledger (design D9): `{ echo 'SET ROLE postgres;'; cat <migration>; } | docker exec -i bloom_v2_dev-db-dev-1 psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1`;
-  - record the NOTICE (`cyl_scanners`, old 1, new 2), the summary `1 of <m>`, and a predicate showing 0 behind.
+  - run `wsl.exe -d Ubuntu -e sh -c 'PATH=$HOME/.local/bin:$PATH make migrate-local'` from the worktree (design D9). Retry if WSL start-up times out. Record `supabase --version`;
+  - record the NOTICE (`cyl_scanners`, old 1, new 2), the summary `1 of <m>` if `db push` prints them, and a predicate showing 0 behind;
+  - with the user's OK, clean the ledger: delete the `schema_migrations` rows `20261001230000` and `<ts>` as `supabase_admin`, keep `20261001220000`, and record the result.
 - [ ] 2.3 Run `uv run --extra test pytest tests/integration/test_advance_lagging_id_sequences.py tests/unit/test_advance_lagging_id_sequences_migration_files.py -v` until green, then the full `tests/integration/` and `tests/unit/` suites.
 
-  **If 2.3 exposes a bug after 2.2:** edit the file (it isn't pushed), restore any real sequence that a bug moved wrongly to its 2.2 snapshot value (dev only), then repeat 2.2 and 2.3.
+  **If 2.3 exposes a bug after 2.2:**
+  - edit the file (it isn't pushed);
+  - restore any real sequence that a bug moved wrongly to its 2.2 snapshot value (dev only);
+  - delete the `<ts>` ledger row if it's still there;
+  - repeat 2.2 and 2.3.
 - [ ] 2.4 In the main session (subagents can't write `.claude/`), add `### Insert rows with explicit ids` under "Common SQL Patterns" in `.claude/commands/database-migration.md`. It says an explicit-id insert doesn't move the sequence, and that such a migration must also carry the advance body (design D6). Not a bare `setval(max)`, which can move a sequence backwards.
 - [ ] 2.5 Replace `<ts>` in this change's files with the real timestamp.
 - [ ] 2.6 Run the following and confirm they all pass, with no diff from the first two:
