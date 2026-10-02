@@ -30,6 +30,8 @@ export interface ScanTableRow {
   /** True/false when the scan's latest source is known; null when it isn't. */
   current: boolean | null;
   likelyCause: string | null;
+  /** On a failed row whose scan's latest source this run wrote. */
+  lateResultNote: string | null;
   scanHref: string | null;
 }
 
@@ -76,6 +78,7 @@ const columns: GridColDef<ScanTableRow>[] = [
       <span className="flex flex-col gap-1 whitespace-normal break-words py-1 leading-tight">
         {row.error_message && <span className="max-h-24 overflow-auto">{row.error_message}</span>}
         {row.likelyCause && <span className="text-amber-700">{row.likelyCause}</span>}
+        {row.lateResultNote && <span className="text-stone-600">{row.lateResultNote}</span>}
       </span>
     ),
   },

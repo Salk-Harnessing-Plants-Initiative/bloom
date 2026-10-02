@@ -235,7 +235,7 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
   `failedScanCause` tests. `RunScansTable.test.tsx`: drop `noOpNote` from fixtures and its
   assertion.
 - [x] 7.9 Red run: 7.1, 7.2, 7.5 fail on the current message; 7.7 fails (the note renders).
-  **Red (2026-10-02, branch `fix/cyl-noop-redelivery-900-b`):** bloomctl 5 failed, 10 passed
+  **Red (2026-10-01, branch `fix/cyl-noop-redelivery-900-b`):** bloomctl 5 failed, 10 passed
   (failed: 7.1, both 7.2 cases, both 7.5 cases, each on the missing "nothing was written";
   passed: 7.3, 7.4 and the 7.6 guards). Web 2 failed, 285 passed (failed: 7.7's absence test,
   7.16's note test). The re-pointed `:304-323` test passed on the old code: it pins the lookup
@@ -259,7 +259,7 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
 - [x] 7.14 `rg -n "#900|NO_OP_|isNoOpCandidate|noOpNote|noOpAmongFailed" web bloomcli tests
   services` returns only 7.7's absence assertions; `rg -n "#900" docs openspec/specs bloomcli/*.md`
   (ignoring `deploy-migrations`, which uses #900 as an example number) has no stale claim.
-  **2026-10-02:** no `NO_OP_`, `isNoOpCandidate`, `noOpNote` or `noOpAmongFailed` anywhere. The
+  **2026-10-01:** no `NO_OP_`, `isNoOpCandidate`, `noOpNote` or `noOpAmongFailed` anywhere. The
   `#900` hits are 7.7's absence assertions, the matched-result note's comment, the CHANGELOG
   entries, PR A's tests, and `test_deploy_reopen_on_migration_failure_shape.py`'s example number.
   `openspec/specs/cyl-pipeline-ui/spec.md` still describes the note (`:131`, `:460`, `:488`);
@@ -267,18 +267,54 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
 - [x] 7.15 Green: `cd bloomcli && uv run --extra test pytest tests/test_cyl_ingest.py -m "not
   integration" -v && uv run ruff check`; `cd web && npx vitest run lib/cyl-pipeline
   "app/app/cyl-pipeline-runs/[runId]" && npx tsc --noEmit`; `/pre-merge`; `/pr-description` with
-  "Part of #900, part of #875", no closing keywords. **2026-10-02:** `test_cyl_ingest.py` 228
+  "Part of #900, part of #875", no closing keywords. **2026-10-01:** `test_cyl_ingest.py` 228
   passed, 3 skipped; `ruff check` clean; vitest 16 files, 287 passed; `tsc --noEmit` clean.
 - [x] 7.16 Run page: say that "Result recorded" includes a result this run matched rather than
   produced (design Risks), or mark such rows — e.g. when the row's `argo_workflow_name` differs
   from its source's (incomplete for sources older than #976). Test first in
   `RunDetailLive.test.tsx`; add or modify the `cyl-pipeline-ui` scenario. **Author's choice
-  (2026-10-02): the text note**, `MATCHED_RESULT_NOTE` under the timing note; no per-row mark
+  (2026-10-01): the text note**, `MATCHED_RESULT_NOTE` under the timing note; no per-row mark
   and no new query. Delta: a "Matched-result note" bullet and the scenario "The page says a
   recorded result may have been matched, not produced".
 - [x] 7.17 The unmatched-no-op message (7.1/7.10) must not say the row may still be queued when it
   is already `'written'` with another source (design D3/D8); test first in 7.1. 7.1/7.2/7.5
   assert the message has no "queued".
+
+### 7c. Review of PR #1008 (`/review-pr`, 2026-10-01; not posted)
+
+Five reviewers, no blocking findings. The author asked for every important item to be fixed here.
+
+- [x] 7.18 Late result on a failed row (design D10): test first —
+  `lateResultNote` unit tests, `fetchSourceRuns` (chunked, empty, typed error), and in
+  `RunDetailLive.test.tsx` the snapshot case (only failed rows' latest sources are read; another
+  run's or no run's source gives no note), the unreadable-source-runs case ("source runs:" in the
+  details error), and the live case. `cyl-pipeline-ui` delta: the failed-row note, two scenarios,
+  and "Live views synchronise from Realtime without polling" (one line and one scenario).
+- [x] 7.19 The failed-row live lookup's latest-source read served only the removed note; it now
+  feeds 7.18. The test that showed it with a failed row carrying `source_id: 40` (a state the
+  system cannot reach) now asserts the late-result note from a real failed row instead.
+- [x] 7.20 `ingest.py`'s batch exit comment still said every non-retriable mismatch wrote data;
+  rewritten for the no-op case (missed in 7.10). The no-op cause "the source has no recorded
+  scan" now reads "the source's scan could not be resolved", as the RPC also falls back to a
+  carrying run-scan row (message, docstring, README).
+- [x] 7.21 CHANGELOG: the correction of 0.1.0a7's bloom #875 entry no longer overclaims; it
+  states when the re-delivery reports `skipped`.
+- [x] 7.22 Tests tightened: the 7.7 absence test proves the latest sources loaded
+  (`current=true` on the written row) and that another run's or no run's source gives no
+  late-result note; the 7.2 cases read stdout and stderr separately (`--json` stdout parses to the
+  RPC result); new `test_unmatched_noop_without_workflow_name_is_skipped` and
+  `test_unmatched_noop_and_written_mismatch_messages_differ`.
+- [x] 7.23 Matched-result note wording (D9): "the same images, models, parameters and pipeline
+  code" and "instead of recording a new one". Comment on `WRITEBACK_NO_RESULT_MESSAGE` no longer
+  implies `failedScanCause` reads it. Evidence dates are local (2026-10-01).
+- [x] 7.24 Red (2026-10-01): web 10 failed, 285 passed (`lateResultNote` ×3, `fetchSourceRuns`
+  ×3, the matched-note wording, the two snapshot cases, the live case). The new bloomctl tests
+  passed at once: they pin behaviour that was already right. Green: `test_cyl_ingest.py` 230
+  passed, 3 skipped; `ruff check` clean; vitest 16 files, 295 passed; `tsc --noEmit` clean.
+- [x] 7.25 Not done, with reasons: `"— nothing to do"` before the failure, and naming the
+  `scan_key` in the plain-text failure (suggestions, not important). The two impossible-state
+  guard tests that remain ("drops a failed-row lookup whose row changed source") pin a defensive
+  branch, left as is.
 
 ## 8. After deploy (each step needs the author's go-ahead)
 
@@ -302,10 +338,10 @@ committed old body). Helpers come from `tests/integration/test_cyl_writeback_rpc
   12894762: row 1568 `('written', 251)`, done 1, failed 0, no new source, trait checksum
   unchanged, Argo `7bnds` Succeeded, "1 skipped".
 - [x] 8.5 Drafts for the author to approve before posting: evidence comments on #900 and #875.
-  Close both by hand only after 8.3/8.4 (bloom#780). **2026-10-02:** posted with the author's
+  Close both by hand only after 8.3/8.4 (bloom#780). **2026-10-01:** posted with the author's
   go-ahead (#900 issuecomment-5944455932, #875 issuecomment-5944456206); both closed.
 - [x] 8.6 Draft the sleap-roots-pipeline roadmap update (row-6 E2E note) for the author; do not
-  push. **2026-10-02:** talmolab/sleap-roots-pipeline#111, merged.
+  push. **2026-10-01:** talmolab/sleap-roots-pipeline#111, merged.
   Its "Known gap bloom#900" row is left to whichever of srp#108 and #111 merges second.
 - [x] 8.7 PR B's bloomctl message reaches the cluster only when the Argo templates' bloomctl pin
   next moves; note it for that bump (author's call, cross-repo). Noted in PR B's body; the pin is

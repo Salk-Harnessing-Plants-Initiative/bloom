@@ -16,9 +16,11 @@ export const BACKSTOP_MESSAGE = "workflow reached a terminal status before write
  * Write-back's own text for a scan it dispatched but never resolved
  * (bloomctl `cyl/ingest.py`, `NO_RESULT_MESSAGE`, recorded by
  * `fail_cyl_pipeline_run_scans_without_result` at the end of each batch),
- * for example after a stage-in failure (a poison scan). failedScanCause still
- * gives that row its likely cause. failure-hints.test.ts reads ingest.py to
- * keep the two equal.
+ * for example after a stage-in failure (a poison scan). No hint reads this
+ * text or BACKSTOP_MESSAGE today; both stay, with their source-equality
+ * tests, as the named texts a failed no-result row carries (fix-cyl-noop-
+ * redelivery-scan-resolution, design D4). failure-hints.test.ts reads
+ * ingest.py to keep the two equal.
  */
 export const WRITEBACK_NO_RESULT_MESSAGE = "no result produced for this scan by write-back";
 
@@ -57,4 +59,22 @@ export function failedScanCause(
 ): string | null {
   if (errorMessage !== null && DISPATCH_REFUSED_MESSAGES.includes(errorMessage)) return null;
   return likelyCause(meta);
+}
+
+/**
+ * A failed row whose scan's latest source this run wrote: write-back delivered
+ * this run's result after the row was closed (the poller's backstop, or
+ * end-of-batch reconciliation), and the RPC leaves a failed row as it is. The
+ * row shows no source, so this names it. Exact: a source records the run that
+ * wrote it (`cyl_trait_sources.cyl_pipeline_run_id`), and a run has one row per
+ * scan.
+ */
+export function lateResultNote(
+  status: string,
+  latestSourceId: number | null | undefined,
+  latestSourceRunId: number | null | undefined,
+  runId: number,
+): string | null {
+  if (status !== "failed" || latestSourceId == null || latestSourceRunId !== runId) return null;
+  return `This run's result arrived after this row was closed: the scan's current traits are this run's (source ${latestSourceId}).`;
 }

@@ -647,9 +647,10 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   non-zero. For a written delivery the message says the data was written but
   the row was not updated. For an already-ingested envelope (a no-op) it says
   nothing was written and this workflow's row for the source's scan was not
-  updated: the source has no recorded scan, this workflow did not dispatch
-  that scan, the row is already `'failed'`, or the row is already linked to a
-  different source. A no-op whose row was updated, under this workflow name
+  updated: the source's scan could not be resolved (no recorded scan and no
+  run row carrying the source), this workflow did not dispatch that scan, the
+  row is already `'failed'`, or the row is already linked to a different
+  source. A no-op whose row was updated, under this workflow name
   or a new one, still exits zero.
 
 The most common real-world error is `inputs.image_ids` not resolving to exactly

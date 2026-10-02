@@ -1,5 +1,6 @@
 /**
- * Failed-row hints in the drill-down: a likely cause from the scan's metadata.
+ * Failed-row hints in the drill-down: a likely cause from the scan's metadata,
+ * and a result of this run that arrived after the row was closed.
  */
 
 import { readFileSync } from "node:fs";
@@ -9,6 +10,7 @@ import {
   BACKSTOP_MESSAGE,
   DISPATCH_REFUSED_MESSAGES,
   failedScanCause,
+  lateResultNote,
   likelyCause,
   WRITEBACK_NO_RESULT_MESSAGE,
 } from "./failure-hints";
@@ -55,6 +57,27 @@ describe("likelyCause", () => {
   it("gives nothing when no rule applies, or without metadata", () => {
     expect(likelyCause(meta("pennycress", 14))).toBeNull();
     expect(likelyCause(undefined)).toBeNull();
+  });
+});
+
+describe("lateResultNote", () => {
+  const text = "This run's result arrived after this row was closed: the scan's current traits are this run's (source 40).";
+
+  it("names the source when a failed row's scan's latest source was written by this run", () => {
+    expect(lateResultNote("failed", 40, 91, 91)).toBe(text);
+  });
+
+  it("is null for a row that is not failed", () => {
+    expect(lateResultNote("written", 40, 91, 91)).toBeNull();
+    expect(lateResultNote("queued", 40, 91, 91)).toBeNull();
+  });
+
+  it("is null when the latest source came from another run, from no run, or is unknown", () => {
+    expect(lateResultNote("failed", 40, 7, 91)).toBeNull();
+    expect(lateResultNote("failed", 40, null, 91)).toBeNull();
+    expect(lateResultNote("failed", 40, undefined, 91)).toBeNull();
+    expect(lateResultNote("failed", null, 91, 91)).toBeNull();
+    expect(lateResultNote("failed", undefined, 91, 91)).toBeNull();
   });
 });
 

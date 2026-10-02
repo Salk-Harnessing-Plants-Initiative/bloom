@@ -20,8 +20,11 @@
  *   latest source as last read. A row whose source changes live shows
  *   "unknown" until the next snapshot: it can't be inferred, because an
  *   empty envelope marks a row written without raising the latest source.
- * - A row that turns failed live gets one metadata and latest-source lookup,
- *   for its likely cause and "current in trait views".
+ * - A row that turns failed live gets one lookup: its metadata (for the
+ *   likely cause), its scan's latest source, and the run that wrote that
+ *   source (for the late-result note). A failed row never has a source, so
+ *   the latest source matters only to that note. A write-back that raises the
+ *   latest source after the lookup shows on the next snapshot.
  * - Re-run actions (design D7) submit `scan_ids` targets from the held rows.
  *   "Re-run failed" waits for settled header counts; "Re-run scans without
  *   a result" is offered only on a `complete` or `failed` run with U > 0, so
@@ -34,13 +37,14 @@ import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
 import { RunState } from "@/components/cyl-pipeline/RunState";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
-import { failedScanCause } from "@/lib/cyl-pipeline/failure-hints";
+import { failedScanCause, lateResultNote } from "@/lib/cyl-pipeline/failure-hints";
 import {
   fetchLatestSources,
   fetchRun,
   fetchRunExperiments,
   fetchRunScans,
   fetchScanMeta,
+  fetchSourceRuns,
   type RunExperiment,
 } from "@/lib/cyl-pipeline/queries";
 import {
@@ -70,6 +74,8 @@ interface DetailView {
   meta: Map<number, ScanMeta>;
   /** Each scan's latest source as last read; null when not read (or unreadable). */
   latest: Map<number, number | null> | null;
+  /** The run that wrote each failed row's latest source; null when not read (or unreadable). */
+  sourceRuns: Map<number, number | null> | null;
   /** Scans whose row's source changed since `latest` was read. */
   changed: Set<number>;
   /** From the security-invoker view; null when it couldn't be read. */
@@ -88,12 +94,14 @@ export const TIMING_NOTE =
   "Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.";
 
 /**
- * A re-delivery of an already-ingested result marks its row written with the
- * existing source and discards this run's output (bloom#875, bloom#900), so
- * "Result recorded" doesn't always mean this run produced the result.
+ * A re-delivery of an already-ingested result, when it finds this run's row,
+ * marks it written with the existing source and discards this run's output
+ * (bloom#875, bloom#900), so "Result recorded" doesn't always mean this run's
+ * result was recorded. The idempotency key covers the images, models,
+ * parameters and pipeline code, not the container build.
  */
 export const MATCHED_RESULT_NOTE =
-  "\u201cResult recorded\u201d includes scans already processed with the same inputs and settings: this run matched that earlier result instead of producing a new one, and the row's source is the earlier result.";
+  "\u201cResult recorded\u201d includes scans already processed with the same images, models, parameters and pipeline code: this run matched that earlier result instead of recording a new one, and the row's source is the earlier result.";
 
 function paramsText(params: unknown): string {
   if (params && typeof params === "object" && !Array.isArray(params) && Object.keys(params).length > 0) {
@@ -107,6 +115,11 @@ function paramsText(params: unknown): string {
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The distinct latest source ids of these scans, in order. */
+function latestIds(scanIds: number[], latest: Map<number, number | null>): number[] {
+  return [...new Set(scanIds.map((id) => latest.get(id)).filter((s): s is number => s != null))];
+}
 
 function applyChange(view: DetailView, change: Change<RunRow | RunScanRow>, runId: number): DetailView {
   const detail = applyDetailChange(view.detail, change, runId);
@@ -162,12 +175,15 @@ export function RunDetailLive({
     try {
       const needMeta = ids.filter((id) => !held.meta.has(id));
       const [m, l] = await Promise.all([fetchScanMeta(client, needMeta), fetchLatestSources(client, ids)]);
+      // Without the sources' runs the row just lacks the late-result note.
+      const runs = await fetchSourceRuns(client, latestIds(ids, l)).catch(() => null);
       live.update((v) => {
         const meta = new Map([...v.meta, ...m]);
         // A snapshot that started since read the latest sources afresh.
         if (v.latest === null || live.generation() !== started) return { ...v, meta };
         const latest = new Map(v.latest);
         const changed = new Set(v.changed);
+        const sourceRuns = runs ? new Map([...(v.sourceRuns ?? []), ...runs]) : v.sourceRuns;
         for (const id of ids) {
           // A row whose source changed since the read would be judged on stale data.
           if (sourceOf(v, id) !== sources.get(id)) continue;
@@ -175,7 +191,7 @@ export function RunDetailLive({
           else latest.delete(id);
           changed.delete(id);
         }
-        return { ...v, meta, latest, changed };
+        return { ...v, meta, latest, changed, sourceRuns };
       });
     } catch {
       // The hint is optional; the row still shows its status and error.
@@ -194,6 +210,7 @@ export function RunDetailLive({
       loaded: false,
       meta: new Map(),
       latest: null,
+      sourceRuns: null,
       changed: new Set(),
       experiments: null,
       detailsError: null,
@@ -211,16 +228,27 @@ export function RunDetailLive({
         fetchLatestSources(client, ids),
         fetchRunExperiments(client, [runId]),
       ]);
+      // The late-result note needs the run behind each failed row's latest source.
+      const failedIds = scans.filter((s) => s.status === "failed").map((s) => s.scan_id);
+      const runs =
+        l.status === "fulfilled"
+          ? await fetchSourceRuns(client, latestIds(failedIds, l.value)).then(
+              (value): PromiseSettledResult<Map<number, number | null>> => ({ status: "fulfilled", value }),
+              (reason): PromiseSettledResult<Map<number, number | null>> => ({ status: "rejected", reason }),
+            )
+          : null;
       const failures = [
         ["scan details", m],
         ["latest sources", l],
+        ["source runs", runs],
         ["experiments", exps],
-      ].flatMap(([what, r]) => ((r as PromiseSettledResult<unknown>).status === "rejected" ? [`${what}: ${message((r as PromiseRejectedResult).reason)}`] : []));
+      ].flatMap(([what, r]) => (r !== null && (r as PromiseSettledResult<unknown>).status === "rejected" ? [`${what}: ${message((r as PromiseRejectedResult).reason)}`] : []));
       return {
         detail: detailFromSnapshot(run ?? held.detail.run, scans),
         loaded: true,
         meta: m.status === "fulfilled" ? new Map([...held.meta, ...m.value]) : held.meta,
         latest: l.status === "fulfilled" ? l.value : null,
+        sourceRuns: runs?.status === "fulfilled" ? runs.value : null,
         changed: new Set(),
         experiments: exps.status === "fulfilled" ? exps.value : held.experiments,
         detailsError: failures.length ? failures.join("; ") : null,
@@ -241,7 +269,7 @@ export function RunDetailLive({
     onSnapshot: (view) => view.detail.scans.forEach((s) => s.status === "failed" && failedSeen.current.add(s.id)),
   });
 
-  const { detail, loaded, meta, latest, changed, experiments, detailsError } = live.view;
+  const { detail, loaded, meta, latest, sourceRuns, changed, experiments, detailsError } = live.view;
 
   const scanRows = useMemo(() => [...detail.scans.values()].sort((a, b) => a.scan_id - b.scan_id), [detail.scans]);
 
@@ -266,10 +294,14 @@ export function RunDetailLive({
           plant_age_days: m?.plant_age_days ?? null,
           current: latest === null || changed.has(r.scan_id) ? null : r.source_id !== null && scanLatest === r.source_id,
           likelyCause: failed ? failedScanCause(r.error_message, m) : null,
+          lateResultNote:
+            latest === null || changed.has(r.scan_id) || scanLatest == null
+              ? null
+              : lateResultNote(r.status, scanLatest, sourceRuns?.get(scanLatest), runId),
           scanHref: scanImagesHref(m),
         };
       }),
-    [scanRows, meta, latest, changed],
+    [scanRows, meta, latest, sourceRuns, changed, runId],
   );
 
   const links = useMemo(() => {
@@ -371,8 +403,8 @@ export function RunDetailLive({
       )}
       {loaded && detailsError && (
         <p className="mb-2 text-sm text-amber-700">
-          Scan details unavailable ({detailsError}). Plant, wave, day, Scan images and traits links, likely causes, and
-          &ldquo;current in trait views&rdquo; may be missing or shown as unknown. Refresh to try again.
+          Scan details unavailable ({detailsError}). Plant, wave, day, Scan images and traits links, likely causes,
+          late-result notes and &ldquo;current in trait views&rdquo; may be missing or shown as unknown. Refresh to try again.
         </p>
       )}
 

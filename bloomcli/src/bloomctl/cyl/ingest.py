@@ -546,10 +546,11 @@ def status_update_matched_message(result: dict[str, Any]) -> str:
       late-delivery-resurrection guard). Human PR review (design.md's Decision 6
       addendum 7): the message must not assert either cause as the only one.
     - ``was_noop`` true: an already-ingested envelope that wrote nothing. The RPC looks
-      for this workflow's row for the source's own recorded scan (``cyl-trait-writeback``),
-      and finds none to update only when the source has no recorded scan, this workflow
-      did not dispatch that scan, its row is already ``'failed'``, or its row is already
-      linked to another source (fix-cyl-noop-redelivery-scan-resolution, design D3/D8).
+      for this workflow's row for the source's own recorded scan, or failing that the scan
+      of any run-scan row carrying the source (``cyl-trait-writeback``), and finds none to
+      update only when neither names a scan, this workflow did not dispatch that scan, its
+      row is already ``'failed'``, or its row is already linked to another source
+      (fix-cyl-noop-redelivery-scan-resolution, design D3/D8).
       In the last case the row is ``'written'`` and counted done, so the message must not
       say the row may still be waiting.
     """
@@ -558,7 +559,7 @@ def status_update_matched_message(result: dict[str, Any]) -> str:
         return (
             f"already ingested as source_id={source_id}: nothing was written, and this "
             "workflow's cyl_pipeline_run_scans row for that source's scan was not updated. "
-            "Either the source has no recorded scan, this workflow did not dispatch that "
+            "Either the source's scan could not be resolved, this workflow did not dispatch that "
             "scan, its row was already closed out as 'failed', or its row is already "
             "linked to a different source; verify this scan's row manually."
         )
@@ -1215,8 +1216,9 @@ def batch_ingest_result(
         )
 
     # needs_retry, not .ok: a batch whose only failures are non-retriable
-    # status_update_matched mismatches (real data written, status linkage
-    # already permanently settled) still shows up as failed in the summary/JSON
+    # status_update_matched mismatches (a written delivery or an
+    # already-ingested no-op whose run-scan row the RPC did not update; a retry
+    # sends the same envelope and gets the same answer) still shows up as failed in the summary/JSON
     # above — .ok correctly stays False, and any human/script reading that output
     # sees it — but exiting non-zero here would tell Argo's retryStrategy to
     # retry the whole write-back pod, which can never change this outcome and

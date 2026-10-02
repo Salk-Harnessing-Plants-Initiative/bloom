@@ -3505,9 +3505,33 @@ def test_cli_unmatched_noop_reports_already_ingested_then_fails(monkeypatch, as_
     args = ["cyl", "ingest-result", str(FIXTURE)] + (["--json"] if as_json else [])
     res = CliRunner().invoke(cli, args)
     assert res.exit_code != 0
-    if not as_json:
-        assert "Already ingested (no-op)" in res.output
-    _assert_unmatched_noop_message(res.output)
+    # The outcome goes to stdout and the failure to stderr, so --json output stays parseable.
+    if as_json:
+        assert json.loads(res.stdout) == UNMATCHED_NOOP
+    else:
+        assert "Already ingested (no-op): source_id=55" in res.stdout
+    _assert_unmatched_noop_message(res.stderr)
+
+
+def test_unmatched_noop_without_workflow_name_is_skipped(monkeypatch, tmp_path):
+    """No workflow name means no status update was attempted, so a False status_update_matched is
+    ignored and the no-op stays benign (the RPC returns NULL there; this pins the guard)."""
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.delenv("ARGO_WORKFLOW_NAME", raising=False)
+    path = _write_envelope(tmp_path, "scan_noop_manual")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: UNMATCHED_NOOP)
+    assert ing.ingest_one_envelope(object(), path).status == "skipped"
+
+    _patch_authed(monkeypatch)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code == 0, res.output
+    assert "already ingested" in res.output.lower()
+
+
+def test_unmatched_noop_and_written_mismatch_messages_differ(monkeypatch, tmp_path):
+    assert ing.status_update_matched_message(UNMATCHED_NOOP) != ing.status_update_matched_message(
+        WRITTEN_MISMATCH
+    )
 
 
 def test_written_mismatch_message_still_says_data_written(monkeypatch, tmp_path):
