@@ -125,7 +125,7 @@ def _fetch_sra_message(exit_code: int | None, params: dict) -> str | None:
 def _folder_message(exit_code: int | None, params: dict) -> str | None:
     url = params.get("fastq_url")
     return {
-        EXIT_NO_FASTQS: f"No FASTQs at {url}, even after waiting 10 minutes",
+        EXIT_NO_FASTQS: f"No FASTQs at {url}, even after waiting for an upload to finish",
         EXIT_BAD_SAMPLE_NAME: f"The run's folder {url} or its file list can't be used",
         EXIT_BAD_FASTQ_NAMES: (
             f"The FASTQs in {url} must be named like <name>_S1_L001_R1_001.fastq.gz, with an "

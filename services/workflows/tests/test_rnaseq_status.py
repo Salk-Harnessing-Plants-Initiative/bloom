@@ -239,7 +239,7 @@ FOLDER_RUN = {
 @pytest.mark.parametrize(
     "exit_code, words",
     [
-        ("4", "No FASTQs at s3://lab-data/run42/, even after waiting 10 minutes"),
+        ("4", "No FASTQs at s3://lab-data/run42/, even after waiting for an upload to finish"),
         ("7", "The FASTQs in s3://lab-data/run42/ must be named"),
         ("8", "s3://lab-data/run42/ changed after the run was started"),
         ("9", "The FASTQs in s3://lab-data/run42/ are named for another sample"),
