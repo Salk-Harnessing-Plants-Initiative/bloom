@@ -44,6 +44,12 @@ def fx(pg_conn):
         pg_conn.rollback()
 
 
+def _quote(fx, name: str) -> str:
+    with fx.conn.cursor() as cur:
+        cur.execute("SELECT quote_ident(%s)", (name,))
+        return cur.fetchone()[0]
+
+
 def _behind_identity(fx, label, ids, **kw):
     t = fx.table(label, **kw)
     fx.insert(t, ids)
@@ -61,7 +67,7 @@ def test_t1_fully_behind_identity_is_advanced(fx):
     fx.run()
     assert fx.next_default(t) == 6
     [a] = fx.advanced_for(t)
-    assert (a["table"], a["col"]) == (f'"{t.name}"', "id")
+    assert (a["table"], a["col"]) == (_quote(fx, t.name), "id")
     assert (a["old"], a["new"], a["max"]) == ("1", "6", "5")
 
 
@@ -165,7 +171,7 @@ def test_t9_partitioned_table_is_visited_once_at_the_parent(fx):
         )
     fx.run()
     named = [a["table"] for a in fx.advanced() if parent in a["table"]]
-    assert named == [f'"{parent}"']
+    assert named == [_quote(fx, parent)]
 
 
 def test_t10_other_schemas_are_not_touched(fx):

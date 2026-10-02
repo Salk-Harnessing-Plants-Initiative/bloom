@@ -200,6 +200,16 @@ undo a later one's work.
 
 ## Common SQL Patterns
 
+### Insert rows with explicit ids
+
+Inserting an explicit value into an identity or `serial` column doesn't move its sequence.
+The next insert that lets the database pick the id can then collide with an existing row
+(bloom#1022). A migration that inserts explicit ids must, after its inserts, carry the
+sequence-advance body: the `DO $advance$ … $advance$;` block from
+`supabase/migrations/*_advance_lagging_id_sequences.sql`, copied unchanged. That body
+advances only sequences that are behind and never moves one backwards. Don't write a bare
+`setval(seq, max(id))`: when the sequence is already ahead, that moves it backwards.
+
 ### Add Column
 
 ```sql

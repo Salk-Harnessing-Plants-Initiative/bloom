@@ -41,8 +41,8 @@ The change lands in two PRs. design.md has the context and the reasons.
 
 - **Affected specs:** a new capability, `database-sequence-integrity`, with all requirements ADDED. It references `deploy-health-check` and `deploy-migrations` without modifying them.
 - **Affected code, PR 1:**
-  - `supabase/migrations/<ts>_advance_lagging_id_sequences.sql`
-  - `supabase/rollbacks/<ts>_advance_lagging_id_sequences_rollback.sql`
+  - `supabase/migrations/20261002135631_advance_lagging_id_sequences.sql`
+  - `supabase/rollbacks/20261002135631_advance_lagging_id_sequences_rollback.sql`
   - `tests/integration/sequence_fixtures.py`
   - `tests/integration/test_advance_lagging_id_sequences.py`
   - `tests/unit/test_advance_lagging_id_sequences_migration_files.py`

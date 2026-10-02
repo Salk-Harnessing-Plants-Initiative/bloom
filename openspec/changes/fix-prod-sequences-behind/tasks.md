@@ -88,16 +88,16 @@ Tasks:
   - confirm the predicate reports exactly `cyl_scanners`. If it reports anything else, stop and ask the user;
   - run `wsl.exe -d Ubuntu -e sh -c 'PATH=$HOME/.local/bin:$PATH make migrate-local'` from the worktree (design D9). Retry if WSL start-up times out. Record `supabase --version`;
   - record the NOTICE (`cyl_scanners`, old 1, new 2), the summary `1 of <m>` if `db push` prints them, and a predicate showing 0 behind;
-  - with the user's OK, clean the ledger: delete the `schema_migrations` rows `20261001230000` and `<ts>` as `supabase_admin`, keep `20261001220000`, and record the result.
+  - with the user's OK, clean the ledger: delete the `schema_migrations` rows `20261001230000` and `20261002135631` as `supabase_admin`, keep `20261001220000`, and record the result.
 - [ ] 2.3 Run `uv run --extra test pytest tests/integration/test_advance_lagging_id_sequences.py tests/unit/test_advance_lagging_id_sequences_migration_files.py -v` until green, then the full `tests/integration/` and `tests/unit/` suites.
 
   **If 2.3 exposes a bug after 2.2:**
   - edit the file (it isn't pushed);
   - restore any real sequence that a bug moved wrongly to its 2.2 snapshot value (dev only);
-  - delete the `<ts>` ledger row if it's still there;
+  - delete the `20261002135631` ledger row if it's still there;
   - repeat 2.2 and 2.3.
 - [ ] 2.4 In the main session (subagents can't write `.claude/`), add `### Insert rows with explicit ids` under "Common SQL Patterns" in `.claude/commands/database-migration.md`. It says an explicit-id insert doesn't move the sequence, and that such a migration must also carry the advance body (design D6). Not a bare `setval(max)`, which can move a sequence backwards.
-- [ ] 2.5 Replace `<ts>` in this change's files with the real timestamp.
+- [ ] 2.5 Replace `20261002135631` in this change's files with the real timestamp.
 - [ ] 2.6 Run the following and confirm they all pass, with no diff from the first two:
   - `make gen-types`
   - `make erd`
@@ -105,7 +105,7 @@ Tasks:
   - `python3 scripts/lint_migration_isolation.py origin/staging`
   - `make pr-body-check BODY=<file>` with `No schema changes.`
 - [ ] 2.7 Run `/pre-merge`. Commit, then push once green with the user's go-ahead. Open the PR to `staging` titled `Advance prod's lagging id sequences with a forward-only migration (Part of #1022)`.
-- [ ] 2.8 Before the merge, run `git fetch origin staging` and check the newest migration there. If it is later than ours, `git mv` the migration and rollback to a new timestamp and update `<ts>` everywhere.
+- [ ] 2.8 Before the merge, run `git fetch origin staging` and check the newest migration there. If it is later than ours, `git mv` the migration and rollback to a new timestamp and update `20261002135631` everywhere.
 
 ## 3. Guard (PR 2, code only)
 

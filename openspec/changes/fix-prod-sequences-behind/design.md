@@ -184,7 +184,7 @@ The user chose this on 2026-10-02. Dev gets the migration from `make migrate-loc
 
 It is the first execution of the body on dev, so it produces the `cyl_scanners` evidence.
 
-**Cleaning up.** After the evidence is recorded, the user OKs deleting, as `supabase_admin`, the `schema_migrations` rows the main checkout has no file for: `20261001230000` and this migration's `<ts>`. That is what `migration repair --status reverted` does. The `20261001220000` row stays, because the main checkout has that file.
+**Cleaning up.** After the evidence is recorded, the user OKs deleting, as `supabase_admin`, the `schema_migrations` rows the main checkout has no file for: `20261001230000` and this migration's `20261002135631`. That is what `migration repair --status reverted` does. The `20261001220000` row stays, because the main checkout has that file.
 
 **Why deleting is safe.** Once the main checkout reaches a staging that contains both files, its `migrate-local` re-applies them:
 
