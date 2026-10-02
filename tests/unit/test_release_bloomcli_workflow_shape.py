@@ -215,7 +215,7 @@ _INSTALLER = re.compile(
     r"\b(?:uvx|pipx\s+(?:install|run)|uv\s+tool\s+(?:install|run)|(?:uv\s+)?pip3?\s+install)\b"
 )
 # The package right after the installer's flags, pinned with == (extras allowed) or uvx's @.
-_PINNED = re.compile(r"""^(?:\s*--?[\w-]+)*\s*["']?bloomctl(?:\[[^\]]+\])?(?:==|@)\d""")
+_PINNED = re.compile(r"""^(?:\s+-{1,2}\w[\w-]*)*\s*["']?bloomctl(?:\[[^\]]+\])?(?:==|@)\d""")
 
 
 def _unpinned_install_lines(text: str) -> list[str]:
