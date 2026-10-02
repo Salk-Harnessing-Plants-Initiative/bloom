@@ -181,7 +181,25 @@ def test_a_lane_without_its_r2_is_refused(cur):
     files = [_file("col0_S1_L001_R1_001.fastq.gz"), _file("col0_S1_L001_R2_001.fastq.gz"),
              _file("col0_S1_L002_R1_001.fastq.gz")]
     _refused(cur, _request, files=files, error=psycopg.errors.InvalidParameterValue,
-             match="R1 and an R2")
+             match="needs an R1 and an R2")
+
+
+def test_each_s_number_needs_its_own_r1_and_r2(cur):
+    files = [_file("col0_S1_L001_R1_001.fastq.gz"), _file("col0_S2_L001_R2_001.fastq.gz")]
+    _refused(cur, _request, files=files, error=psycopg.errors.InvalidParameterValue,
+             match="every S number")
+
+
+def test_two_complete_s_numbers_are_accepted(cur):
+    files = [_file(f"col0_S{n}_L001_{r}_001.fastq.gz") for n in (1, 2) for r in ("R1", "R2")]
+    assert _request(cur, files=files) > 0
+
+
+def test_a_read_both_plain_and_gzipped_is_refused(cur):
+    files = [_file("col0_S1_L001_R1_001.fastq.gz"), _file("col0_S1_L001_R1_001.fastq"),
+             _file("col0_S1_L001_R2_001.fastq.gz")]
+    _refused(cur, _request, files=files, error=psycopg.errors.InvalidParameterValue,
+             match=r"as \.fastq and \.fastq\.gz")
 
 
 def test_a_file_listed_twice_is_refused(cur):

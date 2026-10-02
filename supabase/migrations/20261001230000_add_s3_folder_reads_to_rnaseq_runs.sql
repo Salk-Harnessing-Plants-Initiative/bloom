@@ -104,7 +104,8 @@ DECLARE
     v_reference_rule CONSTANT TEXT := '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$';
     v_run_id_rule CONSTANT TEXT := '^[SED]RR[0-9]{6,10}$';
     v_url_rule CONSTANT TEXT := '^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/([A-Za-z0-9!_.*''()-]+/)+$';
-    v_fastq_rule CONSTANT TEXT := '^(.+)_S[0-9]+_L([0-9]{3})_(R1|R2|I1|I2)_001\.fastq(\.gz)?$';
+    -- Groups: the sample, the S number, the lane and the read.
+    v_fastq_rule CONSTANT TEXT := '^(.+)_S([0-9]+)_L([0-9]{3})_(R1|R2|I1|I2)_001\.fastq(\.gz)?$';
     v_max_runs CONSTANT INTEGER := 9;
     v_max_files CONSTANT INTEGER := 96;
     v_max_url CONSTANT INTEGER := 1024;
@@ -163,18 +164,25 @@ BEGIN
            <> jsonb_array_length(p_fastq_files) THEN
             RAISE EXCEPTION 'a FASTQ is listed twice' USING ERRCODE = '22023';
         END IF;
-        -- Every lane needs its R1 and R2.
+        -- One read as both .fastq and .fastq.gz would be counted twice.
+        IF (SELECT count(DISTINCT regexp_replace(f ->> 'name', '\.gz$', ''))
+            FROM jsonb_array_elements(p_fastq_files) f)
+           <> jsonb_array_length(p_fastq_files) THEN
+            RAISE EXCEPTION 'a read is listed twice, as .fastq and .fastq.gz' USING ERRCODE = '22023';
+        END IF;
+        -- Each S number's lanes need their R1 and R2.
         IF EXISTS (
             SELECT 1
             FROM (
-                SELECT (regexp_match(f ->> 'name', v_fastq_rule))[2] AS lane,
-                       (regexp_match(f ->> 'name', v_fastq_rule))[3] AS read
+                SELECT (regexp_match(f ->> 'name', v_fastq_rule))[2] AS number,
+                       (regexp_match(f ->> 'name', v_fastq_rule))[3] AS lane,
+                       (regexp_match(f ->> 'name', v_fastq_rule))[4] AS read
                 FROM jsonb_array_elements(p_fastq_files) f
             ) r
-            GROUP BY lane
+            GROUP BY number, lane
             HAVING NOT (bool_or(read = 'R1') AND bool_or(read = 'R2'))
         ) THEN
-            RAISE EXCEPTION 'every lane needs an R1 and an R2' USING ERRCODE = '22023';
+            RAISE EXCEPTION 'every lane of every S number needs an R1 and an R2' USING ERRCODE = '22023';
         END IF;
         -- Serialises folder runs on one key, so two can't both pass the check below.
         PERFORM pg_advisory_xact_lock(hashtextextended('rnaseq_run_key:' || v_run_key, 0));
