@@ -775,14 +775,35 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
 
 ## 8. After merge
 
-- [ ] 8.0 **Before promoting staging to main: eberrigan runs a read-only dry run on prod.** Use
+- [x] 8.0 **Before promoting staging to main: eberrigan runs a read-only dry run on prod.** Use
       the 7.2 query, which is committed at `tests/integration/fixtures/recipe_backfill_dry_run.sql`.
       Record the counts here. `empty_payload` must be 0 (design D1, "Provenance without the keyed
       fields"); if it is not, bring the rows to eberrigan before promoting. Record `unplaced`
       next to staging's 5: every recipe read costs about (selected scans) x `unplaced` index
       probes, and staging's 18,471 x 5 took 711 ms (7.3). Run
       `scripts/lint_migrations.sh origin/main` on the promotion PR.
-- [ ] 8.1 **Read-only checks on staging after deploy:**
+      **Ticked late: the "before promoting" gate was missed. It was checked after promotion
+      #1018 (2026-10-02).** #1018 (`bfcecea2`) merged and prod deployed (Deploy run
+      36998823516) before this ran. So, with eberrigan's yes, the committed query and the
+      post-migration state were read on prod's `db-prod` with `default_transaction_read_only=on`:
+      - `20260930120000`–`120300` (plus `20261001180000`, `20261001220000`) are applied.
+      - Dry run: `sources` 5, `keyed` 5, `pipeline_keys` 0, **`empty_payload` 0**,
+        `object_metadata` 0, `resolved` 0, **`unplaced` 5** (staging: 5), `with_trait_rows` 0,
+        `agreeing` 0; 138 ms.
+      - Actual state: 5 sources (max id 5), all `legacy:1`–`legacy:5` with no metadata;
+        `recipe_key IS NULL` 0; `scan_id IS NULL` 5 (the same five); no run stamps.
+
+      Prod had never received a pipeline result, so the backfill had nothing to get wrong. It is
+      an inference that a dry run before promotion would have shown the same counts: max id is 5
+      and every source is legacy, so none can have arrived between the merge and the check.
+      Recipe reads on prod cost (selected scans) x 5 probes, the same as staging. #1018's "Lint
+      new migration filenames + timestamps" job (`lint_migrations.sh origin/main`) passed.
+
+      **Open risk:** prod dispatch is now on (#1016). Prod's first pipeline source will be the
+      first time prod exercises scan resolution, recipe and run stamping, and the no-op
+      fallback. That is unverified until `isolate-cyl-pipeline-environments` 6.6's acceptance
+      run; check that source's stamps then, as 8.2 did on staging.
+- [x] 8.1 **Read-only checks on staging after deploy:**
 
   - `count(*) WHERE recipe_key IS NULL` is 0;
   - the NULL `scan_id`s are only the known unresolvable sources;
@@ -794,9 +815,51 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
   If any `recipe_key` is NULL, run `SELECT cyl_backfill_trait_source_recipe_identity();` as
   `postgres`, with eberrigan's yes.
 
-- [ ] 8.2 On the first Bloom-dispatched run after deploy, confirm the new source's stamps. If no
+  **Passed (2026-10-02, read-only, staging at `88cbcbf3`).** #976 (`57242f36`) first deployed
+  in Deploy run 36792301776 (`618cbeb8`). `20260930120000`–`120300` are applied.
+  - 91 sources (max id 264); `recipe_key IS NULL`: 0, so no backfill was run.
+  - `scan_id IS NULL`: 5, exactly sources 1–5 (`legacy:1`–`legacy:5`, no `image_ids`). These are
+    7.2's unplaced 5.
+  - 10 distinct pipeline keys (nine `0.1.0a7`, one `0.1.0a9`); 5 `legacy:` sources.
+  - `list_trait_recipes(ARRAY[12880747])` returns 6 pipeline recipes. The default
+    (`is_default`) is `1911b908…`, the only `0.1.0a9` key: 18 scans, newest source 264.
+  - Experiment 1's coverage through Kong/PostgREST, as the bloomctl `staging-user` (`bloom_user`)
+    session: 18,471 rows in 1.48 s, 1.03 s and 0.93 s. In psql as `authenticated` it took
+    6.07 s cold, then 0.70 s and 0.63 s warm. Statuses for the default recipe: `legacy_only`
+    13,392, `no_traits` 5,075, `included` 3, `other_recipe` 1.
+
+- [x] 8.2 On the first Bloom-dispatched run after deploy, confirm the new source's stamps. If no
       such run has happened, record this as blocked.
-- [ ] 8.3 **Drafts for eberrigan to approve before posting:**
+      **Passed (2026-10-02, Bloom run 23).** Runs 19–22 were all re-deliveries onto existing
+      sources (run-scan rows 1565–1568 → sources 264, 250, 228, 251), and every non-poison TEST-E2E
+      scan already had a `0.1.0a9` source. So, with eberrigan's yes:
+      - A fresh scan was made with `bloomctl cyl create-test-scan --good -p staging-writer`:
+        12894767 (TEST-E2E-021), image 12894838. Its frame is scan 12894745's, and it downloaded
+        back byte-identical.
+      - eberrigan started run 23 from the scan page. The dialog read "Run the pipeline on scan
+        12894767 · 1 scan" and "This scan has no pipeline results yet".
+      - Argo `sleap-roots-pipeline-v8n7k` Succeeded, 06:42:53–06:52:05Z. The run is `complete`
+        with done 1, failed 0. Run-scan row: `('written', 271)`.
+      - New source **271**: `scan_id` 12894767, `argo_workflow_name` `sleap-roots-pipeline-v8n7k`,
+        `cyl_pipeline_run_id` 23, `recipe_key_version` 1, contract `0.1.0a9`, 1,035 trait rows.
+        `cyl_trait_sources` went from 91 rows / max id 264 to 92 / 271.
+      - Its `recipe_key` is `b03e1092…`, a new key, not `1911b908…`. Diffing
+        `cyl_trait_recipe_payload_v1` between 264 and 271 shows only `predict_code_sha`
+        (`9a6f20c0…` → `79939eec…`) and `traits_code_sha` (`e373b0f9…` → `426ad4dc…`) differ.
+        `models` and `predict_output_params` are equal. A new recipe is correct by the key's
+        definition (any code-SHA change forks it). **The cause is unverified:** that the predict
+        and traits images changed on the cluster between run 18 (2026-09-30, source 264) and
+        run 23 is an inference. No template revision or image digest was recorded, and nobody
+        checked whether the two SHA ranges change scientific code. Runs 19–22 were no-ops and
+        recorded no code SHAs.
+      - By design ("default recipe" means the most recent), `list_trait_recipes(ARRAY[12880747])`
+        now defaults to `b03e1092…` (1 scan, source 271), not 8.1's `1911b908…` (18 scans). Both
+        are `0.1.0a9`. **For data consumers:** the 18-scan results still exist but are no longer
+        the default. A default read or export of experiment 12880747 now gets 1 scan, unless
+        the reader picks `1911b908…` (see #1021).
+      - 8.2 was met with a synthetic scan made for the purpose, because no organic
+        Bloom-dispatched run since the deploy had created a source.
+- [x] 8.3 **Drafts for eberrigan to approve before posting:**
   - a note on #936 for egao28, covering:
     - the new arguments;
     - "one recipe per frame";
@@ -804,7 +867,21 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
     - `bloommcp/docs/data-access-roadmap.md:276` and `bloommcp/docs/storage-backends.md:62-70`;
   - notes on #865, #481 and #482;
   - the recipe-retirement follow-up issue (design D10).
-- [ ] 8.4 After 8.1, close #935 and #937, with eberrigan's yes.
+
+  **2026-10-02:** drafted, approved by eberrigan, and posted.
+  - #936 (issuecomment-5958958475): the new arguments and grants; "one recipe per frame" vs
+    tier2's "One source per frame"; the two bloommcp doc lines; "default recipe = most recent"
+    as seen live.
+  - #865 (5958959115): PR A live, with 12.1's numbers; open for PR B.
+  - #481 (5958959704): the RPCs for a `cyl traits export`, and a correction: `create_cyl_dataset`
+    has had a `recipe_key` mode since `20260930120300`, which bloomctl doesn't expose yet.
+  - #482 (5958960390): the RPCs take `scan_ids_`, but the export routes take one experiment or
+    one scan, not a scan set (`request.ts:98-107`).
+  - D10 follow-up filed as **#1021**. It adds 8.2's observation: an image bump moves the code
+    SHAs and starts a new, small default recipe.
+- [x] 8.4 After 8.1, close #935 and #937, with eberrigan's yes.
+  **2026-10-02:** closed by hand with the 8.0–8.2 evidence (#935 issuecomment-5958830320,
+  #937 issuecomment-5958830924).
 - [ ] 8.5 After the staging→main promotion is verified, run
       `/openspec:archive add-cyl-trait-recipe-key`. Archive `fix-cyl-redelivery-blob-collision` before
       or with it (design D11).

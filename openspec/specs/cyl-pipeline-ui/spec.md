@@ -128,7 +128,7 @@ The web app SHALL offer run actions on these surfaces. Each submits only through
   - "Run this accession" (`scan_ids`): every scan of every listed plant, including scans the grid does not render;
   - a checkbox selection of rendered scans (`scan_ids`), keyed by scan id.
 - **A run's drill-down:**
-  - "Re-run failed scans (F)" (`scan_ids`: the held rows with status `failed`). Shown when the header counts satisfy `done + failed ≥ scan_count` and F > 0. It warns when any of those rows carries the bloom#900 note.
+  - "Re-run failed scans (F)" (`scan_ids`: the held rows with status `failed`). Shown when the header counts satisfy `done + failed ≥ scan_count` and F > 0.
   - "Re-run scans without a result (M)" (`scan_ids`: the held rows whose status is not `written`, `reused` or `failed`, plus the `failed` rows). Shown only when the run's `status` is `complete` or `failed` and U > 0, with a warning that in-flight scans could be processed twice. M is the number of ids submitted.
 
 A `scan_ids` action whose id count exceeds `MAX_TRIGGER_SCAN_IDS` SHALL be disabled with an explanation.
@@ -171,7 +171,7 @@ The dialog SHALL enumerate the target's scans from `cyl_scans_extended` using th
 The dialog SHALL keep confirm disabled until enumeration, the pre-check and the concurrent-run query have all settled.
 
 It SHALL display, in this order:
-1. **Headline:** the target and N.
+1. **Headline:** the target and N. A selection made with the scan-selection bar is titled "N selected scans", or "1 selected scan" for one; other `scan_ids` targets keep their caller's title.
 2. **Blocking reasons.** Confirm is disabled when any of these holds:
    - N = 0: "No scans to run".
    - A `scan_ids` selection enumerates fewer scans than selected: list the missing ids.
@@ -185,10 +185,10 @@ It SHALL display, in this order:
 
    Each entry shows its id, requester, counts-first display state and age, and links to its drill-down.
 5. **Pre-check line.**
-   - When K = N > 0, the all-results notice replaces it: "*All N scans already have pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.*"
-   - Otherwise: "*K of N already have pipeline results.*"
+   - When K = N > 0, the all-results notice replaces it: "*All N scans already have pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.*" When N = 1, its first sentence is "*This scan already has pipeline results.*"
+   - Otherwise: "*K of N already have pipeline results.*" When K = 1 it reads "*1 of N already has pipeline results.*" When N = 1 (so K = 0) it reads "*This scan has no pipeline results yet.*"
 
-   A details disclosure holds the full text: "*L more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All N will be sent; the cluster skips scans it has already processed with the same models and code.*" Its first sentence is omitted when L = 0.
+   A details disclosure holds the full text: "*L more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All N will be sent; the cluster skips scans it has already processed with the same models and code.*" Its first sentence is omitted when L = 0, and begins "*1 more scan has only traits*" when L = 1. When N = 1 the details read "*This scan has only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. The scan will be sent; the cluster skips it if it has already been processed with the same models and code.*", again without the first sentence when L = 0.
    - N is the number of enumerated scans.
    - K is the number with `max_source_id IS NOT NULL`.
    - L is the number with a `cyl_scan_latest_source` row whose `max_source_id IS NULL`.
@@ -200,7 +200,29 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 #### Scenario: Pre-check separates pipeline results from legacy traits
 - **WHEN** 40 scans are enumerated: 38 have `max_source_id` not null, 1 has a row with `max_source_id` null, and 1 has no row
 - **THEN** the pre-check line reads "38 of 40 already have pipeline results."
-- **AND** its details read "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code."
+- **AND** its details read "1 more scan has only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code."
+
+#### Scenario: One scan of many already has results
+- **WHEN** 40 scans are enumerated, 1 has `max_source_id` not null, and none has a row with `max_source_id` null
+- **THEN** the pre-check line reads "1 of 40 already has pipeline results."
+
+#### Scenario: One selected scan is named in the singular
+- **WHEN** the dialog opens from the scan-selection bar with one scan selected
+- **THEN** its headline reads exactly "Run the pipeline on 1 selected scan · 1 scan"
+
+#### Scenario: A single scan that already has results
+- **WHEN** K = N = 1
+- **THEN** the all-results notice reads "This scan already has pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code."
+
+#### Scenario: A single scan with only legacy traits
+- **WHEN** N = 1, K = 0 and L = 1
+- **THEN** the pre-check line reads "This scan has no pipeline results yet."
+- **AND** its details read "This scan has only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. The scan will be sent; the cluster skips it if it has already been processed with the same models and code."
+
+#### Scenario: A single scan with no traits at all
+- **WHEN** N = 1, K = 0 and L = 0
+- **THEN** the pre-check line reads "This scan has no pipeline results yet."
+- **AND** its details read "The scan will be sent; the cluster skips it if it has already been processed with the same models and code."
 
 #### Scenario: Everything already has results
 - **WHEN** K = N = 12
@@ -311,7 +333,7 @@ A live view MUST NOT fetch periodically. Every fetch SHALL be caused by one of t
 - a `SUBSCRIBED` transition;
 - a user action;
 - the experiment panel's membership rule;
-- at most one auxiliary lookup per row: experiment names for a live-inserted run, on its first event whose status is not `queued`; or scan metadata and latest-source data for a row that turns `failed` live.
+- at most one auxiliary lookup per row: experiment names for a live-inserted run, on its first event whose status is not `queued`; or scan metadata, the scan's latest source, and the run that wrote that source (`cyl_trait_sources.cyl_pipeline_run_id`, read by source id), for a row that turns `failed` live.
 
 A live view MUST NOT call the workflows `GET /runs/{run_id}` route.
 
@@ -339,6 +361,10 @@ A live view MUST NOT call the workflows `GET /runs/{run_id}` route.
 - **WHEN** a live view stays open for five minutes after its initial resync, with no events and no user action
 - **THEN** it issues no further queries and no requests to `/workflows/runs`
 
+#### Scenario: A row that turns failed live is looked up once
+- **WHEN** the drill-down holds scan 578's row and an `UPDATE` turns it `failed`, followed by two more `UPDATE`s for that row
+- **THEN** one read each of its latest source and of that source's run is made, after the batch window, and none for the later events
+
 ### Requirement: Shared runs list at `/app/cyl-pipeline-runs`
 The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigation as "Cylinder Pipeline Runs" and headed "Cylinder pipeline runs", listing `cyl_pipeline_runs` for every signed-in member. The name says which pipeline: other pipelines (such as RNA-seq) have runs of their own.
 
@@ -351,19 +377,41 @@ The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigati
 
 **Filter.** The list SHALL offer an "Only mine" filter, which filters by `requested_by` on the server.
 
-**Row contents.** Each row SHALL show:
-- the run id;
-- the target: level, plus the scan count, and for `scan_ids` runs "N selected scans";
-- the experiment name(s) from `cyl_pipeline_run_experiments`, linked. These are absent until looked up. A soft-deleted experiment is absent for `bloom_user`, because the view drops it, so a run whose only experiment is soft-deleted shows no experiment link.
-- the requester: "you" for the current user, otherwise "another member · " followed by the first 8 characters of `requested_by`;
-- the elapsed time since creation;
-- the counts-first display state, with the failed count linking to the drill-down.
+**Table.** The list SHALL be a table whose header row has the column headings **Run**, **Target**, **Experiments** and **State**, each a column header (`<th scope="col">`), with one table row per run. When no run is listed, the table is not rendered.
 
-**Empty and error states.** With no runs, the list SHALL show "No pipeline runs yet". When the snapshot fails, it SHALL show an error rather than an empty list.
+**Row contents.** Each row SHALL show:
+- **Run:** the run id, and the elapsed time since creation;
+- **Target:** the level, plus the scan count, and for `scan_ids` runs "N selected scans" ("1 selected scan" for one); then the requester: "you" for the current user, otherwise "another member · " followed by the first 8 characters of `requested_by`;
+- **Experiments:** the experiment name(s) from `cyl_pipeline_run_experiments`, linked. These are absent until looked up. A soft-deleted experiment is absent for `bloom_user`, because the view drops it, so a run whose only experiment is soft-deleted shows no experiment link.
+- **State:** the counts-first display state, with the failed count linking to the drill-down's failed filter only when it is greater than zero; "0 failed" is plain text.
+
+**Empty and error states.** With no runs, the list SHALL show "No pipeline runs yet", or "You haven't started any pipeline runs" when "Only mine" is on. When the snapshot fails, it SHALL show an error rather than an empty list; runs already held stay listed below the error.
 
 #### Scenario: The navigation names the cylinder pipeline
 - **WHEN** a signed-in member opens the app navigation
 - **THEN** it has a "Cylinder Pipeline Runs" entry linking to `/app/cyl-pipeline-runs`, and no entry named "Pipeline runs"
+
+#### Scenario: The list has column headings
+- **WHEN** a signed-in member opens `/app/cyl-pipeline-runs` and at least one run is listed
+- **THEN** the list exposes the column headers "Run", "Target", "Experiments" and "State", in that order, each with `scope="col"`
+- **AND** each run is one row under them
+
+#### Scenario: No runs, no table
+- **WHEN** no run is listed
+- **THEN** "No pipeline runs yet" is shown and no table is rendered
+
+#### Scenario: A failed resync keeps the held runs
+- **WHEN** run 91 is listed and a later snapshot fails
+- **THEN** the error is shown and run 91 is still a row of the table
+
+#### Scenario: Zero failures are not a link
+- **WHEN** run 7 has `status = 'failed'`, `scan_count = 3`, `done_count = 0` and `failed_count = 0`
+- **THEN** its state reads "Failed · 0 succeeded · 0 failed · 3 without a result"
+- **AND** "0 failed" is not a link
+
+#### Scenario: A failure count links to the failed filter
+- **WHEN** run 91 is `complete` with 37 succeeded and 3 failed
+- **THEN** "3 failed" links to `/app/cyl-pipeline-runs/91?status=failed`
 
 #### Scenario: A run update arrives live
 - **WHEN** run 91 shows "12 / 40 succeeded" and an `UPDATE` arrives with `done_count = 13`
@@ -452,13 +500,16 @@ It SHALL show:
   - `error_message`;
   - `argo_workflow_name`;
   - `source_id`;
-  - "current in trait views" (yes when `source_id` equals the scan's `cyl_scan_latest_source.max_source_id` as last read; unknown when that read failed, or when the row's `source_id` changed since it);
+  - "current in trait views": "—" when the row has no `source_id` (no result is linked to this row), even if the latest-source read failed; otherwise "unknown" when that read failed or the row's `source_id` changed since it; otherwise "yes" when `source_id` equals the scan's last-read `cyl_scan_latest_source.max_source_id`, else "no". The column sorts and filters by the value it shows. Its description reads: "— means no result is linked to this row. The scan may still have pipeline results (for example a result that arrived after the run closed, or another run's), so check its traits before re-running." A "—" does not mean the scan has no results: a delivery that lands after reconciliation failed the row stores its traits but leaves the row `failed` with no `source_id`;
   - `updated_at`;
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
+
+  `scan_id`, wave, day, `attempts` and `source_id` SHALL be shown as plain integers, without digit grouping, and SHALL stay numeric columns, so sorting and the column filter's numeric operators are unchanged. The scan column SHALL be at least 110 px wide, enough for a ten-digit id at compact density.
 - **Failed rows:**
   - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
-  - when the row's `error_message` equals write-back's no-result message or the status poller's backstop message, *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
+  - when the scan's latest source (`cyl_scan_latest_source.max_source_id`, as last read) was written by this run (its `cyl_trait_sources.cyl_pipeline_run_id` equals the run's id), the note: "*This run's result arrived after this row was closed: the scan's current traits are this run's (source N).*" A write-back that lands after the row was failed records its traits but leaves the row `failed` with no `source_id`, so the row alone would say this run produced nothing.
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
+- **Matched-result note:** "*“Result recorded” includes scans already processed with the same images, models, parameters and pipeline code: this run matched that earlier result instead of recording a new one, and the row's source is the earlier result.*" A re-delivery of an already-ingested result marks its row `written` with the existing source, so the label alone does not say this run produced the result.
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
 It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_pipeline_run_scans` filtered `run_id=eq.<runId>`.
@@ -466,6 +517,35 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 #### Scenario: A scan row turns written live, and the header follows
 - **WHEN** scan 577 of run 91 is `queued` and an `UPDATE` for `(91, 577)` arrives with `status = 'written'`
 - **THEN** the row shows "Result recorded" and the header's succeeded count increases by one
+
+#### Scenario: Ids are shown as plain integers
+- **WHEN** a scan row has `scan_id = 12894712`, wave 9999, day 1000, `attempts = 1200` and `source_id = 1048576`
+- **THEN** its cells read "12894712", "9999", "1000", "1200" and "1048576", with no digit separators
+
+#### Scenario: Integer columns stay numeric
+- **WHEN** the scan table's columns are inspected
+- **THEN** the scan, wave, day, attempts and source columns are numeric columns whose formatter returns "12894712" for 12894712 and "0" for 0
+- **AND** the scan column is at least 110 px wide
+
+#### Scenario: A row without a source shows a dash
+- **WHEN** a `failed` or `queued` row has no `source_id`
+- **THEN** its "current in trait views" cell reads "—", not "no"
+
+#### Scenario: A row without a source shows a dash even when the read failed
+- **WHEN** a `failed` row has no `source_id` and the latest-source read failed
+- **THEN** its "current in trait views" cell reads "—", not "unknown"
+
+#### Scenario: A row with a source reads unknown when the read failed
+- **WHEN** a `written` row has `source_id = 40` and the latest-source read failed
+- **THEN** its "current in trait views" cell reads "unknown"
+
+#### Scenario: The column sorts by what it shows
+- **WHEN** the rows' "current in trait views" cells read "no", "—", "no", "—" and the column is sorted
+- **THEN** the "—" rows are adjacent and the "no" rows are adjacent
+
+#### Scenario: A row with a source that is no longer latest reads no
+- **WHEN** a `written` row has `source_id = 40` and the scan's last-read `max_source_id` is 41
+- **THEN** its "current in trait views" cell reads "no"
 
 #### Scenario: Events for another run are ignored
 - **WHEN** the drill-down for run 91 receives a scan event whose `run_id` is 92
@@ -483,14 +563,22 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 - **WHEN** a failed row's scan has a null `plant_age_days`
 - **THEN** the row shows "Likely cause: plant age missing"
 
-#### Scenario: The no-op note is narrow
-- **WHEN** a failed row has an `error_message` other than write-back's no-result message or the backstop message
-- **THEN** no bloom#900 note is shown, even if the scan has pipeline results
+#### Scenario: A failed no-result row whose scan has another run's results carries no re-delivery note
+- **WHEN** a failed row's `error_message` is write-back's no-result message or the status poller's backstop message, and the scan's latest source was written by another run or outside any run
+- **THEN** the row shows no bloom#900 note and no late-result note, and "Re-run failed scans" shows no bloom#900 warning
+
+#### Scenario: A result that arrived after its row was closed is named
+- **WHEN** scan 577's row in run 91 is `failed` with no `source_id`, and the scan's latest source is 40, whose `cyl_pipeline_run_id` is 91
+- **THEN** the row shows "*This run's result arrived after this row was closed: the scan's current traits are this run's (source 40).*"
+
+#### Scenario: The page says a recorded result may have been matched, not produced
+- **WHEN** the drill-down renders
+- **THEN** it shows the matched-result note, which says "Result recorded" includes scans whose earlier result this run matched instead of recording a new one
 
 ### Requirement: Experiment page shows that experiment's runs
 The experiment page SHALL show the 10 most recent runs that include at least one of its scans. It SHALL read them from `cyl_pipeline_run_experiments`, ordered by `created_at` then `run_id`, both descending, and show each run's counts-first display state.
 
-**Links.** Each run SHALL link to its drill-down. The panel SHALL link to "All cylinder pipeline runs".
+**Links.** Each run SHALL link to its drill-down. The panel SHALL link to "All cylinder pipeline runs". A run's failed count SHALL link to the drill-down's failed filter only when it is greater than zero; "0 failed" is plain text.
 
 **Live events.**
 - The panel SHALL apply live events for runs it holds.
@@ -510,6 +598,14 @@ The experiment page SHALL show the 10 most recent runs that include at least one
 #### Scenario: Foreign runs stop costing queries
 - **WHEN** ten `UPDATE`s arrive for a `running` run whose membership query returned no rows
 - **THEN** the panel issues exactly one membership query for it
+
+#### Scenario: Zero failures are not a link in the panel
+- **WHEN** a run in experiment 5's panel has `status = 'failed'`, `scan_count = 3`, `done_count = 0` and `failed_count = 0`
+- **THEN** its state reads "Failed · 0 succeeded · 0 failed · 3 without a result" and "0 failed" is not a link
+
+#### Scenario: A failure count in the panel links to the failed filter
+- **WHEN** run 91 in experiment 5's panel is `complete` with 37 succeeded and 3 failed
+- **THEN** "3 failed" links to `/app/cyl-pipeline-runs/91?status=failed`
 
 #### Scenario: View missing
 - **WHEN** the view query fails with relation-not-found

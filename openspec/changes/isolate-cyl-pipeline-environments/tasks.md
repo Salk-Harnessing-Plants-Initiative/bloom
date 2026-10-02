@@ -256,6 +256,30 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
   Workflow `sleap-roots-pipeline-fc96k` Succeeded, 5/5 steps exit 0, with the three `a4_poc`
   volumes and the staging secret. The run completed (1 done, 0 failed); its row is source_id 250,
   and the scan still has one distinct source.
+
+  **2026-10-02, Bloom run 23** (post-merge archive PR #1023, on a site-started run). The run-20
+  record above comes from #1016, which doesn't say how `fc96k`'s volumes were read. By the
+  next morning `fc96k` was gone (kubectl `NotFound`, the 3600 s TTL below), so it can't be
+  re-checked. Run 23 is the volume read this PR witnessed, made while the Workflow ran.
+  The GPU check before submitting showed only 42 `Completed` pods and no `environment=staging`
+  Workflows. eberrigan started run 23 from the scan page on TEST-E2E scan 12894767 in experiment
+  12880747, created for this check (see `add-cyl-trait-recipe-key` 8.2). The Workflow was read
+  while it ran.
+  - `sleap-roots-pipeline-v8n7k`, labels `environment=staging`, `pipeline-run-id=23`,
+    `submitted-by=bloom-pipeline`, `ttlStrategy.secondsAfterCompletion` 3600.
+  - `.spec.volumes`:
+    - `images-input-dir` = `…/pipeline_orchestration_tests/a4_poc/input`
+    - `predictions-output-dir` = `…/a4_poc/predictions`
+    - `traits-output-dir` = `…/a4_poc/traits`
+    - `bloom-credentials` = secret `genericsecret-bloom-staging-pipeline-credentials`
+
+    These equal the vendored file's paths and secret (prefix `/hpi/hpi_dev/users/eberrigan/`).
+  - It Succeeded 06:42:53–06:52:05Z. Run 23 is `complete` with done 1, failed 0, and its
+    source 271 is written to staging.
+  - The staging worker's environment (read 2026-10-02 at `88cbcbf3`) held the same root
+    (`/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc`), secret name and
+    `CYL_PIPELINE_TRIGGER_ENABLED=true`. Bloom adds a 3600 s `ttlStrategy` when it dispatches, so a
+    Workflow can only be read back within an hour of finishing.
 - [x] 6.2 With the author's go-ahead, set the dev stack's switch on, with no root or secret, and
   queue a run. Confirm it fails with "not configured" and that no Workflow is created.
 

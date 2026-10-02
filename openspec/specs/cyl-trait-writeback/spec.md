@@ -271,11 +271,19 @@ source_id = <the existing source's id> AND status != 'failed'` — never re-reso
 from this delivery's own `image_ids`, which the "same key, different scan" rule reserves for the
 run of record alone. **When that update affects zero rows**, the RPC SHALL fall back to a second
 update scoped to `argo_workflow_name = p_argo_workflow_name AND scan_id = <scan_id> AND status !=
-'failed'`, where `<scan_id>` is looked up from any existing `cyl_pipeline_run_scans` row already
-carrying this source's id (stamped by that source's original successful delivery) — not from this
-delivery's own `image_ids` either. If no such row exists (this source was never delivered under
-any workflow name), the fallback SHALL NOT run and the update remains at zero rows. Either way,
-the no-op branch then returns without resolving a scan, without writing any trait, blob, or
+'failed' AND (source_id IS NULL OR source_id = <the existing source's id>)`, setting `status =
+'written'` and `source_id` to the existing source's id, where `<scan_id>` is the scan recorded on
+the existing source's own row: its `cyl_trait_sources.scan_id`, read by primary key (stamped by
+this RPC when it created the source, or by the recipe backfill from the source's stored
+`image_ids`). Only when that column is NULL SHALL the RPC look `<scan_id>` up instead from any
+existing `cyl_pipeline_run_scans` row already carrying this source's id. Neither lookup reads this
+delivery's own `image_ids`, and the RPC MUST NOT resolve `<scan_id>` by reading `cyl_scan_traits`
+or `cyl_scan_intermediates`. If neither lookup yields a scan, the fallback SHALL NOT run and the
+update remains at zero rows. Because the targeted update is scoped to this call's
+`argo_workflow_name`, a source whose scan this Workflow never dispatched still matches zero rows;
+and because it skips a row already carrying a different source's id, a no-op never replaces the
+source another delivery linked to that row. Either way, the no-op branch then returns without
+resolving a scan for its return value (`scan_id` stays null), without writing any trait, blob, or
 registry row.
 
 **On a non-no-op delivery** (the upsert wrote a new source row): the RPC proceeds to (5) resolve
@@ -283,12 +291,12 @@ the target scan from `provenance.inputs.image_ids`; (6) trait-name resolution an
 (7) blob writes; (8) when `p_argo_workflow_name` is non-null, an update of the matching
 `cyl_pipeline_run_scans` row, joining on `argo_workflow_name = p_argo_workflow_name AND scan_id =
 <the scan resolved in step 5> AND status != 'failed'`, setting `status = 'written'` and
-`source_id` to the new source's id. This is the only statement that ever writes `source_id` onto
-a `cyl_pipeline_run_scans` row, and it does so in the same statement that sets
-`status = 'written'` — so `source_id IS NOT NULL` on that table always implies `status =
-'written'`, which the no-op branch's fallback lookup above relies on. This RPC never writes
-`'reused'`, which stays reserved for the separate, unimplemented pre-dispatch skip-if-done
-mechanism `cyl_pipeline_run_scans`' own column comment documents.
+`source_id` to the new source's id. This update and the no-op fallback's targeted update are the
+only statements that write `source_id` onto a `cyl_pipeline_run_scans` row, and each sets it in
+the same statement that sets `status = 'written'` — so `source_id IS NOT NULL` on that table
+always implies `status = 'written'`. This RPC never writes `'reused'`, which stays reserved for a
+later phase in which the cluster-side skip-if-done check records a scan that needed no new work
+(capability `cyl-pipeline-runs`, "`cyl_pipeline_run_scans` table").
 
 Any validation or constraint failure SHALL abort the entire call, including every status update
 above, so that no partial source, trait, registry, blob, or run-scan-status row persists
@@ -375,30 +383,65 @@ counts will not reflect the data just written.
   `p_argo_workflow_name = "wf-b"`
 - **THEN** the call reports `was_noop: true`; the primary `(argo_workflow_name, source_id)`-keyed
   update matches zero rows under `"wf-b"` (its row's `source_id` is still `NULL`); the fallback
-  looks up the scan id from the `"wf-a"` row (the one already carrying this source's id) and
+  takes the scan id from the existing source's own `cyl_trait_sources.scan_id` and
   updates the `"wf-b"` row by `(argo_workflow_name = "wf-b", scan_id)`, setting its `status` to
   `'written'` and its `source_id` to the existing source's id; and the returned summary's
   `status_update_matched` is `true`
 
-#### Scenario: A no-op re-delivery under a workflow name that never existed reports no match
+#### Scenario: A no-op re-delivery of a source no run-scan row carries is marked written
 
 - **WHEN** an already-ingested envelope's source has never had any `cyl_pipeline_run_scans` row
-  stamped with its `source_id` (e.g. its only prior delivery omitted `p_argo_workflow_name`
-  entirely), and it is re-delivered with a `p_argo_workflow_name` that matches no row
-- **THEN** the call still reports `was_noop: true`, the fallback lookup finds no row to resolve a
-  scan id from and does not run, and the returned summary's `status_update_matched` is `false` —
-  unchanged from behavior before this change, since there was never a row for either update to
-  find
+  stamped with its `source_id` — its only prior delivery omitted `p_argo_workflow_name` (a manual
+  `cyl ingest-result`), or named a Workflow that has no `cyl_pipeline_run_scans` rows (a
+  hand-submitted `argo submit`) — and it is re-delivered with `p_argo_workflow_name = "wf-b"`,
+  whose `'queued'` row is for that source's recorded scan
+- **THEN** the call reports `was_noop: true`, the fallback takes the scan id from the source's own
+  `cyl_trait_sources.scan_id`, `"wf-b"`'s row becomes `'written'` with `source_id` set to the
+  existing source's id, no new source, trait or blob row is written, and the returned summary's
+  `status_update_matched` is `true`
+
+#### Scenario: The source's recorded scan governs over a carrying run-scan row
+
+- **WHEN** an already-ingested source's `cyl_trait_sources.scan_id` is scan S1, an existing
+  `cyl_pipeline_run_scans` row carrying its `source_id` names a different scan S2, and it is
+  re-delivered under a new `p_argo_workflow_name = "wf-b"` that has `'queued'` rows for both S1
+  and S2
+- **THEN** only `"wf-b"`'s S1 row becomes `'written'` with the existing source's id, `"wf-b"`'s S2
+  row is unchanged, and `status_update_matched` is `true`
+
+#### Scenario: A no-op does not replace another source already linked to this workflow's row
+
+- **WHEN** `"wf-b"`'s `cyl_pipeline_run_scans` row for scan S is already `'written'` with
+  `source_id` X (a fresh delivery under `"wf-b"`), and a different, already-ingested source Y whose
+  recorded scan is S is re-delivered under `"wf-b"`
+- **THEN** the call reports `was_noop: true`, the row stays `'written'` with `source_id` X, and
+  `status_update_matched` is `false`
+
+#### Scenario: The run-scan lookup is only a backup for a source with no recorded scan
+
+- **WHEN** an already-ingested source has `cyl_trait_sources.scan_id` NULL but an existing
+  `cyl_pipeline_run_scans` row carries its `source_id`, and it is re-delivered under a new
+  `p_argo_workflow_name` whose `'queued'` row is for that row's scan
+- **THEN** the fallback takes the scan id from the carrying row, the new Workflow's row becomes
+  `'written'` with the existing source's id, and `status_update_matched` is `true`
+
+#### Scenario: A no-op re-delivery with no recorded scan and no carrying row reports no match
+
+- **WHEN** an already-ingested source has `cyl_trait_sources.scan_id` NULL and no
+  `cyl_pipeline_run_scans` row carries its `source_id`, and it is re-delivered with a
+  `p_argo_workflow_name`
+- **THEN** the call still reports `was_noop: true`, the fallback finds no scan and does not run,
+  no `cyl_pipeline_run_scans` row changes, and the returned summary's `status_update_matched` is
+  `false`
 
 #### Scenario: A no-op re-delivery under a workflow that never dispatched THIS scan finds no match
 
-- **WHEN** an already-ingested envelope's source has an existing `cyl_pipeline_run_scans` row
-  stamped with its `source_id` (its original delivery did supply a workflow name), and it is
-  re-delivered with a `p_argo_workflow_name` for which no `cyl_pipeline_run_scans` row exists at
-  all for this scan (distinct from the previous scenario: here the fallback's scan-id lookup
-  succeeds, but its own targeted update finds no row to update under the new workflow name)
-- **THEN** the call still reports `was_noop: true`, the fallback resolves a scan id from the
-  existing row but its own update affects zero rows, and the returned summary's
+- **WHEN** an already-ingested envelope's source has a recorded scan (its
+  `cyl_trait_sources.scan_id`), and it is re-delivered with a `p_argo_workflow_name` for which no
+  `cyl_pipeline_run_scans` row exists at all for that scan (the fallback's scan-id lookup
+  succeeds, but its own targeted update finds no row to update under that workflow name)
+- **THEN** the call still reports `was_noop: true`, the fallback resolves the scan id but its own
+  update affects zero rows, no `cyl_pipeline_run_scans` row changes, and the returned summary's
   `status_update_matched` is `false` — a clean degrade, not an error
 
 #### Scenario: The fallback chains correctly across a third re-delivery
@@ -406,10 +449,10 @@ counts will not reflect the data just written.
 - **WHEN** a scan is delivered successfully under `"wf-a"`, re-delivered as a no-op under a new
   `"wf-b"` (triggering the fallback, which stamps `"wf-b"`'s row with this source's id), and then
   re-delivered again as a no-op under a third new `"wf-c"`
-- **THEN** `"wf-c"`'s fallback resolves a scan id from either of the two existing rows that now
-  carry this source's id (both are guaranteed to name the same scan, since the fallback never
-  re-derives scan id from a redelivery's own `image_ids`), and `"wf-c"`'s row is set to
-  `'written'` with the correct `source_id`, exactly as `"wf-b"`'s was
+- **THEN** `"wf-c"`'s fallback resolves the same scan id from the source's own
+  `cyl_trait_sources.scan_id` (the fallback never re-derives scan id from a redelivery's own
+  `image_ids`), and `"wf-c"`'s row is set to `'written'` with the correct `source_id`, exactly as
+  `"wf-b"`'s was
 
 #### Scenario: Omitting argo_workflow_name leaves cyl_pipeline_run_scans untouched
 
@@ -448,7 +491,7 @@ counts will not reflect the data just written.
 - **WHEN** a scan is delivered successfully under `"wf-a"`, that row is then marked `'failed'`,
   and the same envelope is re-delivered as a no-op under a **new** `argo_workflow_name = "wf-b"`
   whose own `cyl_pipeline_run_scans` row is still `'queued'`
-- **THEN** the fallback resolves the scan id from the `"wf-a"` row as usual, but its own update —
+- **THEN** the fallback resolves the scan id as usual, but its own update —
   scoped to `"wf-b"`'s row by `scan_id` — is unaffected by `"wf-a"`'s `'failed'` status (a
   different row, matched on `argo_workflow_name = "wf-b"`) and still sets `"wf-b"`'s row to
   `'written'`; the guard only ever blocks resurrecting the row the update's own
@@ -460,7 +503,7 @@ counts will not reflect the data just written.
   is dispatched for the same scan under a **new** `argo_workflow_name = "wf-b"`, that `"wf-b"`
   row is itself marked `'failed'` (not `"wf-a"`'s), and the same envelope is then re-delivered as
   a no-op under `"wf-b"`
-- **THEN** the fallback still resolves the scan id from `"wf-a"`'s row, but its update — scoped
+- **THEN** the fallback still resolves the scan id, but its update — scoped
   to `"wf-b"`'s row by `scan_id` — matches zero rows because `"wf-b"`'s own row is `'failed'`;
   `"wf-b"`'s row stays `'failed'` with `source_id` unset, and the returned summary's
   `status_update_matched` is `false`
@@ -513,7 +556,8 @@ so a partial/failed delivery leaves nothing and a retry writes the full envelope
   governs) — and, if that different delivery also supplies a `p_argo_workflow_name` whose
   dispatched row is for the divergent scan, the fallback in "Write-back RPC ingests a
   ResultEnvelope" does not mark that row `'written'` either, since it resolves the scan id from
-  the run of record's own row, not from this delivery's claim
+  the existing source's own recorded scan (or, when that is NULL, a run-scan row carrying the
+  source), not from this delivery's claim
 
 ### Requirement: Write-back validates the idempotency key
 
