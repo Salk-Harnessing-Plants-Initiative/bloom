@@ -235,7 +235,7 @@ describe("failureSentence", () => {
   });
 
   it.each([
-    [4, /even after waiting 10 minutes/],
+    [4, /even after waiting for an upload to finish/],
     [7, /in the S3 folder don't follow/],
     [8, /changed after the run was started/],
     [9, /named for another sample/],

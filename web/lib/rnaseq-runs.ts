@@ -84,7 +84,7 @@ const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
 
 // The stage step of a run that reads an S3 folder (stage-fastqs).
 const FOLDER_STAGE_EXIT_SENTENCES: Record<number, string> = {
-  4: "No FASTQ files were found in the run's S3 folder, even after waiting 10 minutes.",
+  4: "No FASTQ files were found in the run's S3 folder, even after waiting for an upload to finish.",
   6: "The run's S3 folder or its file list can't be used.",
   7: "The FASTQ file names in the S3 folder don't follow Illumina's naming (<name>_S1_L001_R1_001.fastq.gz), or a lane lacks R1 or R2.",
   8: "The S3 folder changed after the run was started, so its reads weren't used; the Stage FASTQs step's log says which file. Start a new run on the folder as it is now.",
