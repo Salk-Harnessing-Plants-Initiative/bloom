@@ -332,7 +332,10 @@ worktree alone is a one-command undo.
       against production.
 - [ ] 9.10 Only once 9.1–9.9 are ticked: close sleap-roots-pipeline#76, then open the
       `chore(openspec): archive fix-cyl-redelivery-blob-collision` PR. Do not archive earlier —
-      bloom#708 and bloom#806 both still carry unfinished deploy-verification tails.
+      bloom#708 and bloom#806 both still carry unfinished deploy-verification tails. Also do not
+      archive before `fix-cyl-noop-redelivery-scan-resolution` (bloom#900) has merged and deployed
+      to staging: this change's `cyl-ingest-cli` "Re-ingest is a benign, distinctly-reported
+      no-op" block was raised to that change's text on 2026-10-01 and describes its behaviour.
 - [x] 9.11 **CONFIRMED** — PR #75 merged 2026-09-16T18:50:18Z (`561d0571`); its change is now archived upstream as `2026-09-21-add-partial-success-exit-gate`. sleap-roots-pipeline PR #75 has **merged**, so the earlier hold on editing its
       `docs/bloom-integration/roadmap.md` and `add-partial-success-exit-gate/tasks.md` is
       lifted. That merge is what introduced the third pin site in 9.5 — re-read it before

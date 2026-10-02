@@ -11,7 +11,7 @@
  * Checks run in this order, before the handler reads the body or contacts
  * upstream (Next has already buffered the body; see trigger-proxy.ts):
  *  0. Starting runs is switched on (503 otherwise; trigger-enabled.ts). Off in
- *     prod until bloom#863 is fixed.
+ *     prod until prod's pipeline credential and directories exist (bloom#863).
  *  1. Media type `application/json` (415). A no-cors form post cannot send it,
  *     and a cross-site fetch that does is preflighted, which nothing here
  *     answers with `Access-Control-Allow-*`.
