@@ -20,8 +20,10 @@ It locks the safety-critical properties the design signed off on:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -175,6 +177,96 @@ def test_validate_tag_script_fails_on_mismatched_tag():
     assert result.returncode == 1
     assert "::error::" in result.stdout
     assert "does not match" in result.stdout
+
+
+def _run_pin_script(tag: str, readme: str, workdir: Path) -> str:
+    """Run the REAL "Pin repo links and install commands" script on a sample README."""
+    job = _load(RELEASE)["jobs"]["build-and-verify"]
+    step = next(
+        s for s in job["steps"] if s.get("name") == "Pin repo links and install commands to the release"
+    )
+    (workdir / "pyproject.toml").write_text('[project]\nname = "bloomctl"\n', encoding="utf-8")
+    (workdir / "README.pypi.md").write_text(readme, encoding="utf-8")
+    path = os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")])
+    env = {**os.environ, "TAG": tag, "PATH": path}
+    result = subprocess.run(
+        [BASH, "-c", step["run"]], cwd=workdir, env=env, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    return (workdir / "README.pypi.md").read_text(encoding="utf-8")
+
+
+def test_pin_script_pins_plain_and_extra_installs(tmp_path):
+    readme = (
+        'uv tool install "bloomctl==0.1.0a1"\n'
+        "uvx bloomctl@0.1.0a1 --help\n"
+        'uv tool install "bloomctl[extra]==0.1.0a1"\n'
+    )
+    pinned = _run_pin_script("bloomctl-v0.1.0a9", readme, tmp_path)
+
+    assert 'uv tool install "bloomctl==0.1.0a9"' in pinned
+    assert "uvx bloomctl@0.1.0a9 --help" in pinned
+    assert 'uv tool install "bloomctl[extra]==0.1.0a9"' in pinned
+    assert "0.1.0a1" not in pinned
+
+
+# Anything that installs or runs a package: pip/pip3/python -m pip, uv pip, uv tool, pipx, uvx.
+_INSTALLER = re.compile(
+    r"\b(?:uvx|pipx\s+(?:install|run)|uv\s+tool\s+(?:install|run)|(?:uv\s+)?pip3?\s+install)\b"
+)
+# The package right after the installer's flags, pinned with == (extras allowed) or uvx's @.
+_PINNED = re.compile(r"""^(?:\s+-{1,2}\w[\w-]*)*\s*["']?bloomctl(?:\[[^\]]+\])?(?:==|@)\d""")
+
+
+def _unpinned_install_lines(text: str) -> list[str]:
+    """Lines that install or run bloomctl without naming a version."""
+    bad = []
+    for line in text.splitlines():
+        match = _INSTALLER.search(line)
+        if match and "bloomctl" in line[match.end():] and not _PINNED.match(line[match.end():]):
+            bad.append(line)
+    return bad
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "uvx bloomctl --help",
+        "uv pip install bloomctl",
+        "pipx install bloomctl",
+        "python -m pip install bloomctl",
+        "$ pip install bloomctl",
+        "Run `pip install bloomctl` first.",
+        "pip install --upgrade bloomctl",
+        'uv tool install "bloomctl[extra]"',
+        "uv tool install bloomctl  # bloomctl==latest",
+    ],
+)
+def test_an_unpinned_install_is_caught(line):
+    assert _unpinned_install_lines(line) == [line]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'uv tool install "bloomctl==0.1.0a5"',
+        "uvx bloomctl@0.1.0a5 --help",
+        'pip install "bloomctl==0.1.0a5"',
+        'uv tool install --reinstall "bloomctl[extra]==0.1.0a5"',
+        "bloomctl --version",
+        "docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging",
+    ],
+)
+def test_a_pinned_install_or_a_plain_run_passes(line):
+    assert _unpinned_install_lines(line) == []
+
+
+def test_pypi_readme_installs_are_all_pinned():
+    """Every command on the PyPI page that installs or runs bloomctl names a version."""
+    readme = (REPO_ROOT / "bloomcli" / "README.pypi.md").read_text(encoding="utf-8")
+
+    assert any(_INSTALLER.search(line) for line in readme.splitlines()), "no install lines"
+    assert _unpinned_install_lines(readme) == []
 
 
 # --- publish workflow: trusted publishing + immutability guard -------------

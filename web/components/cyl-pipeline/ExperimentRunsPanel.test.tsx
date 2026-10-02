@@ -100,6 +100,19 @@ describe("the runs it lists", () => {
     expect(screen.getByRole("heading", { name: "Cylinder pipeline runs" })).toBeTruthy();
   });
 
+  it("links a failed count to the drill-down's failed filter only when it is above zero (bloom#955)", async () => {
+    runs[11] = runRow(12, at(12), { status: "complete", done_count: 37, failed_count: 3 });
+    runs[10] = runRow(11, at(11), { status: "failed", scan_count: 3, done_count: 0, failed_count: 0 });
+    mount();
+    await subscribe();
+    expect(within(screen.getByTestId("panel-run-12")).getByRole("link", { name: "3 failed" }).getAttribute("href")).toBe(
+      "/app/cyl-pipeline-runs/12?status=failed",
+    );
+    const zero = screen.getByTestId("panel-run-11");
+    expect(zero.textContent).toContain("Failed · 0 succeeded · 0 failed · 3 without a result");
+    expect(within(zero).queryByRole("link", { name: "0 failed" })).toBeNull();
+  });
+
   it("says when no run touches the experiment yet", async () => {
     members = new Set();
     mount();
