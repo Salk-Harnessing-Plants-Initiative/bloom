@@ -621,6 +621,17 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - Those four files aren't prettier-clean on staging today, so any reformatting of them is reverted.
   - `openspec validate add-cyl-trait-csv-export --strict`.
   - After pushing, record that the **Web Unit Tests (Vitest)** and **Build & npm CVE Audit** jobs are green on the head SHA. They aren't required checks, so the merge gate won't show it.
+  **(partial, 2026-10-02, local on Node 22:**
+  - **`npm ci`; `npm audit --audit-level=critical`: exit 0.**
+  - **`tsc --noEmit`: clean.**
+  - **`npm run test:unit`: 157 files / 2,329 tests passed.** It prints one jsdom "Not implemented: navigation" error from an existing test; none of PR B's tests produce it (0 in a run of PR B's directories).
+  - **`npm run build`: passes with CI's placeholder `NEXT_PUBLIC_SUPABASE_*` env.** Without it, `/test` fails to prerender, as on staging. The build rewrites `web/tsconfig.json`, which was restored.
+  - **pre-commit:**
+    - All hooks pass on the new files after the prettier hook (pinned 3.1.0) changed one line of `TraitExportDialog.tsx`. The repo's `npx prettier` (3.6.2) formats that line the other way; the hook's version is kept.
+    - The four edited files pass every hook except prettier, which was skipped; `prettier --check` already flags all four on staging.
+    - The two docs pass.
+  - **`openspec validate --strict`: valid.**
+  - **CI green on the pushed head: pending.)**
 - [ ] 11.9 **Browser checks**, in Chrome and Firefox, on a local `next build && next start` against staging, as in 10.1.
   - **Env:**
     - Build with staging's browser-reachable `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and a distinct `NEXT_PUBLIC_SUPABASE_COOKIE_NAME` (`sb-staging-auth-token`).

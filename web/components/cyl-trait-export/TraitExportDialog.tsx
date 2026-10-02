@@ -175,7 +175,7 @@ export function TraitExportDialog({
       setPicked((prev) =>
         prev !== null && rows.some((r) => r.recipe_key === prev)
           ? prev
-          : (rows.find((r) => r.is_default)?.recipe_key ?? null)
+          : rows.find((r) => r.is_default)?.recipe_key ?? null
       )
     }
 
