@@ -77,6 +77,8 @@ The spec defines "behind". The implementation:
 
 A behind sequence gets `setval(seq, max(col), true)`.
 
+Descending sequences (negative increment) are skipped: they count down from their start, so "behind" doesn't apply. None exist in dev, staging or prod. The user chose skipping over failing on 2026-10-02, so that the PR 2 guard wouldn't flag a healthy one forever.
+
 **Rejected: the issue's sketch,** `setval(seq, GREATEST(max, last_value), true)` on every non-empty table. It rewrites ahead sequences:
 
 - One at `last_value` 50, never called, over rows 1–3, jumps from 50 to 51.
@@ -99,14 +101,13 @@ It visits them in table, then column order. On PG 15, `pg_get_serial_sequence` r
 1. **Find and check.** Read `max` and the sequence state, and compute the behind set. For each behind sequence, raise if any of these holds:
 
    - `current_user` lacks `UPDATE` on the sequence. The message names the sequence and its owner.
-   - `current_user` lacks `UPDATE`, `DELETE` or `TRUNCATE` on the table, which `LOCK … SHARE ROW EXCLUSIVE` needs. The message names the table and its owner.
-   - The increment is negative.
+   - `current_user` lacks all of `UPDATE`, `DELETE` and `TRUNCATE` on the table. `LOCK … SHARE ROW EXCLUSIVE` needs any one of them, which is also what the multi-privilege `has_table_privilege` tests. The message names the table and its owner.
    - `max + increment > seqmax`, so the next insert would fail anyway.
 
    A read-permission error also lands here, because this stage only reads.
 
 2. **Lock.** Issue one `LOCK TABLE <distinct behind tables> IN SHARE ROW EXCLUSIVE MODE`. It is skipped when there is nothing to lock. It waits at most `lock_timeout` (5s).
-3. **Re-check under the lock.** Recompute stage 1 for the locked tables. Then:
+3. **Re-check under the lock.** Recompute stage 1 for the locked tables, checking first whether a table outside the lock set has become behind. Then:
    - re-raise any of its failures;
    - raise if a table outside the lock set has become behind meanwhile. That would take a concurrent explicit-id import, and a retry handles it.
 4. **Advance.** `setval` each sequence that is still behind, and emit a NOTICE for each.
@@ -173,7 +174,11 @@ That tolerates a dev worker inserting during a test.
 
 **Privileges in tests.** `postgres` inherits rights from `anon`, `authenticated` and `service_role`, and reads through `pg_read_all_data`. So to remove a right in a test, revoke it from all four: `REVOKE … FROM postgres, anon, authenticated, service_role`. Reads keep working. Probes on 2026-10-02 confirmed that revoking from `postgres` alone leaves `UPDATE` in place.
 
-**What stays untested.** The `lock_timeout` path and stage 3's re-check can't be exercised. Scratch tables are invisible to a second connection, and a concurrent change can't be injected between stages. They are covered by file-text tests and review only.
+On dev, `postgres` is also a member of `bloom_writer`, which holds rights on existing tables and sequences. The four-role revoke is enough for scratch objects that `supabase_admin` creates, and T13/T14 assert the precondition before relying on it.
+
+**What stays untested.** The `lock_timeout` path and stage 3's re-check aren't exercised. Testing them needs committed scratch tables and a second connection, which these tests avoid, so they are covered by file-text tests and review only. This was recorded as a known gap after the PR review on 2026-10-02.
+
+**Real behind sequences.** If a real `public` sequence is already behind, every test skips with a message naming it, because running the body would advance it for good. Apply the migration first.
 
 **Red phase.** The rejected `GREATEST` sketch lives only as a string in the test module. An env var `SEQ1022_RED_SKETCH=1` selects it, and it is restricted to `_seq1022_%` tables, so it never touches a real sequence. It is never a file under `supabase/`.
 

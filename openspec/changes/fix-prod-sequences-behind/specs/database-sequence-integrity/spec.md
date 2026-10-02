@@ -13,6 +13,8 @@ No sequence-backed column in schema `public` SHALL be behind.
 
 **Behind.** A sequence is behind when its column has at least one row and `max(col)` is greater than or equal to the sequence's next value.
 
+Only ascending sequences (a positive increment) are in scope: a descending sequence counts down from its start, so "behind" doesn't apply to it.
+
 The sequence-advance body restores this property. The deploy check and `make check` detect a violation. Supabase-managed schemas (`auth`, `storage`, `realtime`, `net`, `pgmq`, `supabase_functions`) are out of scope.
 
 #### Scenario: A freshly migrated database has no behind sequences
@@ -37,7 +39,13 @@ advanced <seq> for public.<table>.<col>: next value <old> -> <new> (max = <max>)
 
 It SHALL end with the NOTICE `advance_behind_sequences: <n> of <m> sequences advanced`, where `<m>` is the number of sequence-backed columns it visited.
 
-It SHALL lock every behind table against writes, in one statement, before advancing any of them. It SHALL NOT visit child partitions or any schema other than `public`.
+It SHALL lock every behind table against writes, in one statement, before advancing any of them. It SHALL NOT visit child partitions or any schema other than `public`, and SHALL skip descending sequences. It SHALL pin its own `search_path` to `pg_catalog, pg_temp`, so a copy behaves the same wherever it runs.
+
+#### Scenario: Descending sequences are skipped
+
+- **GIVEN** a table with explicit rows 1–5 whose sequence has `INCREMENT BY -1`, at `last_value` 1, `is_called` false
+- **WHEN** the body runs
+- **THEN** the sequence is unchanged, no NOTICE names it, and nothing is raised
 
 #### Scenario: A fully behind identity sequence is advanced
 
@@ -131,8 +139,7 @@ It SHALL lock every behind table against writes, in one statement, before advanc
 The body SHALL `RAISE EXCEPTION` **before its first `setval`** when, for any behind sequence:
 
 - `current_user` lacks `UPDATE` on the sequence. The message names the sequence and its owner.
-- `current_user` cannot lock the table, because it lacks `UPDATE`, `DELETE` and `TRUNCATE` on it. The message names the table and its owner.
-- The increment is negative.
+- `current_user` cannot lock the table, because it lacks all of `UPDATE`, `DELETE` and `TRUNCATE` on it. The message names the table and its owner.
 - `max(col) + increment` exceeds the sequence's maximum.
 - A table that was not locked has become behind by the time the locks are held.
 
@@ -155,12 +162,6 @@ It SHALL NOT skip such a sequence with a warning. When `current_user` can read t
 - **WHEN** the body runs as `postgres`
 - **THEN** it raises an exception naming that table and its owner
 - **AND** the first table's sequence is unchanged
-
-#### Scenario: A behind sequence with a negative increment fails
-
-- **GIVEN** a behind table whose sequence has `INCREMENT BY -1`
-- **WHEN** the body runs
-- **THEN** it raises an exception naming the sequence and its increment
 
 #### Scenario: A behind sequence that would pass its maximum fails
 

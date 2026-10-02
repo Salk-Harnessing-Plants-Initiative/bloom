@@ -1,5 +1,6 @@
 -- Migration: advance_lagging_id_sequences
 -- Created: 2026-10-02
+-- Change: fix-prod-sequences-behind (bloom#1022)
 --
 -- WHY (bloom#1022): in prod, 21 public tables have an id sequence behind their data.
 -- An import or restore kept explicit ids without resetting sequences, so an insert
@@ -8,9 +9,10 @@
 --
 -- WHAT: the sequence-advance body below. For every sequence-backed column in public
 -- (found through pg_get_serial_sequence, never a list) it advances exactly the
--- sequences that are behind -- max(col) >= the value the sequence hands out next -- to
--- setval(seq, max(col), true). A sequence that is not behind is never touched, so none
--- ever moves backwards and re-applying changes nothing.
+-- ascending sequences that are behind -- max(col) >= the value the sequence hands out
+-- next -- to setval(seq, max(col), true). A sequence that is not behind is never
+-- touched, so none ever moves backwards and re-applying changes nothing. Descending
+-- sequences (negative increment) are out of scope and skipped.
 --
 -- setval is not transactional, so the body works in stages and every failure comes
 -- before the first setval: (1) find the behind set and check each member can be
@@ -18,8 +20,10 @@
 -- re-check under the lock, (4) setval and NOTICE. It fails loudly rather than skip a
 -- sequence it can't advance (openspec/changes/fix-prod-sequences-behind, design D3).
 --
--- The DO block is copied verbatim to scripts/sql/advance_behind_sequences.sql and to
--- any later *_readvance_id_sequences_<reason>.sql migration; a unit test pins them.
+-- The DO block is meant to be reused unchanged: a later re-advance migration
+-- (*_readvance_id_sequences_<reason>.sql) copies it, and the follow-up guard change plans
+-- a scripts/ copy with a test pinning the copies (design D6). It pins its own search_path
+-- so a copy behaves the same wherever it runs.
 --
 -- Forward-only. Manual rollback (staging hot-apply only):
 --   supabase/rollbacks/20261002135631_advance_lagging_id_sequences_rollback.sql
@@ -47,6 +51,8 @@ DECLARE
   v_maxes numeric[];
   v_incs numeric[];
 BEGIN
+  PERFORM set_config('search_path', 'pg_catalog, pg_temp', true);
+
   -- Pass 1 finds and checks the behind set, then locks it; pass 2 re-checks under the lock.
   FOR v_pass IN 1..2 LOOP
     v_visited := 0;
@@ -81,11 +87,18 @@ BEGIN
         FROM pg_sequence s
        WHERE s.seqrelid = r.seq::regclass;
 
+      -- Descending sequences count down from their start; "behind" doesn't apply to them.
+      CONTINUE WHEN v_inc < 0;
+
       -- numeric, so a bigint sequence at its maximum can't overflow here.
       v_next := v_last + (CASE WHEN v_called THEN v_inc ELSE 0 END);
       CONTINUE WHEN v_max < v_next;
 
       -- Behind. Raise now, before any setval, if it can't be advanced correctly.
+      IF v_pass = 2 AND NOT (r.tbl = ANY (v_locked)) THEN
+        RAISE EXCEPTION 'public.% became behind after the locks were taken; re-run the migration',
+          quote_ident(r.tbl);
+      END IF;
       IF NOT has_sequence_privilege(r.seq, 'UPDATE') THEN
         SELECT pg_get_userbyid(relowner) INTO v_owner FROM pg_class WHERE oid = r.seq::regclass;
         RAISE EXCEPTION 'cannot advance %: % lacks UPDATE on it (owner %)',
@@ -94,19 +107,12 @@ BEGIN
       IF NOT has_table_privilege(format('public.%I', r.tbl), 'UPDATE, DELETE, TRUNCATE') THEN
         SELECT pg_get_userbyid(relowner) INTO v_owner
           FROM pg_class WHERE oid = format('public.%I', r.tbl)::regclass;
-        RAISE EXCEPTION 'cannot lock public.%: % lacks UPDATE, DELETE and TRUNCATE on it (owner %)',
+        RAISE EXCEPTION 'cannot lock public.%: % lacks all of UPDATE, DELETE and TRUNCATE on it (owner %)',
           quote_ident(r.tbl), current_user, v_owner;
-      END IF;
-      IF v_inc < 0 THEN
-        RAISE EXCEPTION 'cannot advance %: its increment is %', r.seq, v_inc;
       END IF;
       IF v_max + v_inc > v_seqmax THEN
         RAISE EXCEPTION 'cannot advance %: max(%) = % plus increment % passes its maximum %',
           r.seq, quote_ident(r.col), v_max, v_inc, v_seqmax;
-      END IF;
-      IF v_pass = 2 AND NOT (r.tbl = ANY (v_locked)) THEN
-        RAISE EXCEPTION 'public.% became behind after the locks were taken; re-run the migration',
-          quote_ident(r.tbl);
       END IF;
 
       v_seqs := v_seqs || r.seq;

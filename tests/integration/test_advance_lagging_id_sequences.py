@@ -4,9 +4,10 @@ advances exactly the `public` id sequences that are behind their data, and fails
 changing any sequence when it can't advance one correctly.
 
 Every fixture is a `_seq1022_<uid>_*` table created inside the test's own transaction on
-`pg_conn` and dropped by the final rollback (`setval` itself is not rolled back, so tests
-never seed real tables). Tests use savepoints only and never a second connection. The body
-also visits real tables; each test checks it only moved real sequences forward.
+`pg_conn` and dropped by the final rollback. Tests use savepoints only and never a second
+connection. The body also visits the real `public` tables, and `setval` is not rolled back,
+so every test skips when a real sequence is already behind (the body would advance it for
+good); run the migration first. Each test then checks it moved no real sequence.
 
 Set SEQ1022_RED_SKETCH=1 to run these against the rejected GREATEST sketch (tasks 1.23).
 """
@@ -31,6 +32,13 @@ from tests.integration.sequence_fixtures import (  # noqa: E402
 def fx(pg_conn):
     f = Fixtures(pg_conn)
     with pg_conn.cursor() as cur:
+        real_behind = behind(cur)
+        if real_behind:
+            pg_conn.rollback()
+            pytest.skip(
+                f"real public sequences are behind on this database {sorted(real_behind)}: "
+                "running the body here would advance them for good. Apply the migration first."
+            )
         before = snapshot(cur)
     yield f
     try:
@@ -50,7 +58,7 @@ def _quote(fx, name: str) -> str:
         return cur.fetchone()[0]
 
 
-def _behind_identity(fx, label, ids, **kw):
+def _identity_with_rows(fx, label, ids, **kw):
     t = fx.table(label, **kw)
     fx.insert(t, ids)
     return t
@@ -61,8 +69,8 @@ def _behind_identity(fx, label, ids, **kw):
 # --------------------------------------------------------------------------- #
 
 
-def test_t1_fully_behind_identity_is_advanced(fx):
-    t = _behind_identity(fx, "t1", range(1, 6))
+def test_t1_fully_identity_with_rows_is_advanced(fx):
+    t = _identity_with_rows(fx, "t1", range(1, 6))
     assert fx.state(t) == (1, False)
     fx.run()
     assert fx.next_default(t) == 6
@@ -82,14 +90,14 @@ def test_t2_partly_behind_serial_is_advanced(fx):
 
 
 def test_t3_never_called_equal_to_max_is_advanced(fx):
-    t = _behind_identity(fx, "t3", range(1, 4))
+    t = _identity_with_rows(fx, "t3", range(1, 4))
     fx.setval(t, 3, False)
     fx.run()
     assert fx.next_default(t) == 4
 
 
 def test_t4_called_equal_to_max_is_untouched(fx):
-    t = _behind_identity(fx, "t4", range(1, 4))
+    t = _identity_with_rows(fx, "t4", range(1, 4))
     fx.setval(t, 3, True)
     fx.run()
     assert fx.state(t) == (3, True)
@@ -97,9 +105,9 @@ def test_t4_called_equal_to_max_is_untouched(fx):
 
 
 def test_t5_ahead_sequences_are_untouched(fx):
-    called = _behind_identity(fx, "t5a", range(1, 4))
+    called = _identity_with_rows(fx, "t5a", range(1, 4))
     fx.setval(called, 50, True)
-    not_called = _behind_identity(fx, "t5b", range(1, 4))
+    not_called = _identity_with_rows(fx, "t5b", range(1, 4))
     fx.setval(not_called, 50, False)
     fx.run()
     assert fx.state(called) == (50, True)
@@ -145,6 +153,8 @@ def test_t8_large_ids_quoted_names_and_two_columns(fx):
         other_seq = cur.fetchone()[0]
     fx.run()
     assert fx.next_default(big) == 3_000_000_001
+    [a] = fx.advanced_for(big)
+    assert (a["table"], a["col"]) == (f'"{big.name}"', '"Id"')
     advanced_two = {a["col"] for a in fx.advanced() if a["seq"] in (two.seq, other_seq)}
     assert advanced_two == {"id", "other"}
 
@@ -194,8 +204,8 @@ def test_t10_other_schemas_are_not_touched(fx):
 
 
 def test_t11_only_behind_tables_are_locked(fx):
-    _behind_identity(fx, "t11a", range(1, 4))
-    ahead = _behind_identity(fx, "t11b", range(1, 4))
+    _identity_with_rows(fx, "t11a", range(1, 4))
+    ahead = _identity_with_rows(fx, "t11b", range(1, 4))
     fx.setval(ahead, 50, True)
     fx.table("t11c")
     with fx.conn.cursor() as cur:
@@ -214,8 +224,8 @@ def test_t11_only_behind_tables_are_locked(fx):
 
 
 def test_t12_reapplying_changes_nothing(fx):
-    _behind_identity(fx, "t12a", range(1, 6))
-    ahead = _behind_identity(fx, "t12b", range(1, 4))
+    _identity_with_rows(fx, "t12a", range(1, 6))
+    ahead = _identity_with_rows(fx, "t12b", range(1, 4))
     fx.setval(ahead, 50, False)
     fx.table("t12c")
     fx.run()
@@ -238,40 +248,48 @@ def test_t12_reapplying_changes_nothing(fx):
 
 
 def _advanceable_first(fx):
-    a = _behind_identity(fx, "a", range(1, 6))
+    a = _identity_with_rows(fx, "a", range(1, 6))
     return a, fx.state(a)
 
 
 def test_t13_cannot_advance_fails_and_changes_nothing(fx):
     a, a_before = _advanceable_first(fx)
-    b = _behind_identity(fx, "b", range(1, 6), as_admin=True)
+    b = _identity_with_rows(fx, "b", range(1, 6), as_admin=True)
     revoke_four(fx.conn, f"ALL ON SEQUENCE {b.seq}")
     with fx.conn.cursor() as cur:
         cur.execute("SELECT has_sequence_privilege('postgres', %s, 'UPDATE')", (b.seq,))
         assert cur.fetchone()[0] is False
     exc = fx.run_expecting_failure()
     assert isinstance(exc, psycopg.errors.RaiseException), exc
-    assert b.name in str(exc) and "supabase_admin" in str(exc)
+    assert str(exc).startswith(f"cannot advance {b.seq}: postgres lacks UPDATE on it")
+    assert "(owner supabase_admin)" in str(exc)
     assert fx.state(a) == a_before
 
 
 def test_t14_cannot_lock_fails_and_changes_nothing(fx):
     a, a_before = _advanceable_first(fx)
-    b = _behind_identity(fx, "b", range(1, 6), as_admin=True)
+    b = _identity_with_rows(fx, "b", range(1, 6), as_admin=True)
     revoke_four(fx.conn, f"UPDATE, DELETE, TRUNCATE ON TABLE {b.ident}")
+    with fx.conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('postgres', %s, 'UPDATE, DELETE, TRUNCATE')", (b.ident,)
+        )
+        assert cur.fetchone()[0] is False
     exc = fx.run_expecting_failure()
     assert isinstance(exc, psycopg.errors.RaiseException), exc
-    assert b.name in str(exc) and "supabase_admin" in str(exc)
+    assert str(exc).startswith("cannot lock public.")
+    assert "lacks all of UPDATE, DELETE and TRUNCATE" in str(exc)
+    assert b.name in str(exc) and "(owner supabase_admin)" in str(exc)
     assert fx.state(a) == a_before
 
 
-def test_t15_negative_increment_fails(fx):
-    b = fx.table("b", kind="serial", type_="integer")
-    fx.insert(b, range(1, 6))
-    fx.alter_seq(b, "INCREMENT BY -1")
-    exc = fx.run_expecting_failure()
-    assert isinstance(exc, psycopg.errors.RaiseException), exc
-    assert b.name in str(exc) and "-1" in str(exc)
+def test_t15_descending_sequences_are_out_of_scope(fx):
+    t = fx.table("t15", kind="serial", type_="integer")
+    fx.insert(t, range(1, 6))
+    fx.alter_seq(t, "INCREMENT BY -1")  # next value 1 <= max 5, but it counts down
+    fx.run()
+    assert fx.state(t) == (1, False)
+    assert fx.advanced_for(t) == []
 
 
 def test_t16_passing_the_maximum_fails_and_changes_nothing(fx):
@@ -281,12 +299,13 @@ def test_t16_passing_the_maximum_fails_and_changes_nothing(fx):
     fx.alter_seq(b, "MAXVALUE 5")
     exc = fx.run_expecting_failure()
     assert isinstance(exc, psycopg.errors.RaiseException), exc
-    assert b.name in str(exc)
+    assert str(exc).startswith(f"cannot advance {b.seq}: max(id) = 10 plus increment 1")
+    assert "passes its maximum 5" in str(exc)
     assert fx.state(a) == a_before
 
 
 def test_t17_unusual_sequences_that_are_not_behind_are_ignored(fx):
-    locked_out = _behind_identity(fx, "c", range(1, 4), as_admin=True)
+    locked_out = _identity_with_rows(fx, "c", range(1, 4), as_admin=True)
     fx.setval(locked_out, 50, False)
     revoke_four(fx.conn, f"ALL ON SEQUENCE {locked_out.seq}")
     descending = fx.table("d", kind="serial", type_="integer")

@@ -204,11 +204,14 @@ undo a later one's work.
 
 Inserting an explicit value into an identity or `serial` column doesn't move its sequence.
 The next insert that lets the database pick the id can then collide with an existing row
-(bloom#1022). A migration that inserts explicit ids must, after its inserts, carry the
-sequence-advance body: the `DO $advance$ … $advance$;` block from
-`supabase/migrations/*_advance_lagging_id_sequences.sql`, copied unchanged. That body
-advances only sequences that are behind and never moves one backwards. Don't write a bare
-`setval(seq, max(id))`: when the sequence is already ahead, that moves it backwards.
+(bloom#1022). If you have to load rows with explicit ids, follow that migration with a
+separate re-advance migration named `<timestamp>_readvance_id_sequences_<reason>.sql`. It
+contains the `DO $advance$ … $advance$;` block from
+`supabase/migrations/*_advance_lagging_id_sequences.sql`, copied unchanged, inside the
+same `BEGIN; SET LOCAL lock_timeout = '5s'; … COMMIT;` wrapper. The block advances every
+behind `public` sequence, never moves one backwards, and fails before changing anything if
+it can't advance one. Don't write a bare `setval(seq, max(id))`: when the sequence is
+already ahead, that moves it backwards.
 
 ### Add Column
 

@@ -19,7 +19,6 @@ from pathlib import Path
 from tests.integration.cyl_recipe_helpers import REPO_ROOT, sql_body
 
 MIGRATION_GLOB = "*_advance_lagging_id_sequences.sql"
-ROLLBACK_GLOB = "*_advance_lagging_id_sequences_rollback.sql"
 PREFIX = "_seq1022_"
 FOUR_ROLES = "postgres, anon, authenticated, service_role"
 

@@ -60,7 +60,7 @@ Tasks:
   - run in a savepoint: it raises, naming B's sequence and `supabase_admin`, and A is unchanged;
   - after `ROLLBACK TO SAVEPOINT`, set the role again.
 - [x] 1.16 **T14, cannot lock:** A sorts first, and table B has a four-role revoke of `UPDATE, DELETE, TRUNCATE`. The run raises, naming B and its owner, and A is unchanged.
-- [x] 1.17 **T15, negative increment:** a behind table with `INCREMENT BY -1` raises, naming the sequence and its increment.
+- [x] 1.17 **T15, descending:** a table with rows 1–5 whose sequence has `INCREMENT BY -1` is skipped: it is unchanged, and no NOTICE names it. This changed from "raises" after the PR review (user decision, 2026-10-02).
 - [x] 1.18 **T16, maximum:** A sorts first, and table B has explicit rows 1–10 followed by `MAXVALUE 5`. The run raises, naming B's sequence, and A is unchanged.
 - [x] 1.19 **T17, unusual but not behind:** a not-behind sequence with the four-role revoke, and one with `INCREMENT BY -1` (rows 1–3, `setval(50, false)`). The run completes, and both are unchanged.
 - [x] 1.20 **T18, migrated DB is clean:** the predicate over real `public` returns 0 rows. Skip it unless `CI` is set: on dev it depends on what was loaded locally.
@@ -76,7 +76,11 @@ Tasks:
 - [x] 1.23 **Red, part two:** run with `SEQ1022_RED_SKETCH=1`. Confirm:
 
   - T5 (the not-called case) and T7 fail on sequence state;
-  - T13–T16 fail because nothing raises.
+  - T14 and T15 fail with "did not raise";
+  - T13 and T16 hit unhandled `InsufficientPrivilege` and `NumericValueOutOfRange` errors instead of the designed exception;
+  - T17 fails on a permission error.
+
+  Corrected after the PR review: an earlier version said T13–T16 all failed because nothing raised.
 
   The sketch emits no NOTICE, so failures in T1–T4, T6 and T12 don't count.
 
@@ -133,6 +137,27 @@ Tasks:
 - [ ] 2.7 Run `/pre-merge`. Commit, then push once green with the user's go-ahead. Open the PR to `staging` titled `Advance prod's lagging id sequences with a forward-only migration (Part of #1022)`.
 - [ ] 2.8 Before the merge, run `git fetch origin staging` and check the newest migration there. If it is later than ours, `git mv` the migration and rollback to a new timestamp, and replace `20261002135631` everywhere: the change files, the migration and rollback headers, and the rollback's `migration repair` line.
 
+- [x] 2.9 `/review-pr` round 1 on #1029, at head `b146929f`.
+
+  **Result:** 5/5 subagents completed with no blocking issues. The review was posted as a comment with the user's OK.
+
+  **Fixed:**
+
+  - the header no longer describes PR 2's copy and pin test as existing;
+  - T13, T14 and T16 assert each failure message's prefix, and T14 checks its precondition;
+  - T8 asserts that the NOTICE quotes mixed-case names;
+  - every test skips when a real sequence is already behind;
+  - descending sequences are skipped (user decision), and T15 was rewritten to match;
+  - the body pins `search_path`, with a new unit test;
+  - the "became behind" check runs first in the behind branch;
+  - the lock message says "lacks all of";
+  - the `database-migration.md` rule was rewritten to use a `*_readvance_id_sequences_<reason>.sql` migration;
+  - design D3, D8 and tasks 1.23 were corrected.
+
+  **Known gaps:** the `lock_timeout` path and the stage-2 re-check are untested (design D8).
+
+  **Prod pre-checks:** moved to §5.0.
+
 ## 3. Guard (PR 2, code only)
 
 - [ ] 3.1 **Tests first, integration** (`tests/integration/test_sequences_behind_check.py`, using `sequence_fixtures`):
@@ -173,6 +198,12 @@ Tasks:
 - [ ] 4.3 Run the read-only predicate against `bloom_v2_staging-db-prod-1` over ssh, with the SQL on stdin and no `$$` in a double-quoted remote command. Expect 0 behind, and record the result.
 
 ## 5. Prod verification (after the curated staging→main promotion; each prod read needs the user's OK)
+
+- [ ] 5.0 Before approving the prod deploy (read-only, with the user's OK; raised in the PR review):
+
+  - Run `SELECT count(*), min(id), max(id)` on the ids above each sequence in `cyl_experiments`, `phenotypers` and `cyl_scientists`, with creation dates where the table has them. Ask Benfica whether Bloom Desktop or another external writer ever sends `id`. If one does, advancing only brings the collisions back.
+  - List every `public` column whose default calls `nextval` but which `pg_get_serial_sequence` doesn't find. Expect 0.
+  - Take a fresh snapshot of every sequence (`last_value`, `is_called`, `max`), then take it again after the deploy, and diff the two.
 
 - [ ] 5.1 Before: on 2026-10-02, 21 of 65 behind (design Context).
 - [ ] 5.2 Approve the prod deploy outside 05:00–06:30 UTC (pg_cron). If 4.2 showed NOTICEs, record the 21 `advanced` lines and `21 of <m>`.

@@ -103,3 +103,12 @@ def test_rollback_changes_no_sequence():
     assert "STAGING HOT-APPLY ONLY" in text
     assert "supabase migration repair --status reverted" in text
     assert "behind" in text  # the header says why it does nothing
+
+
+def test_body_pins_search_path_before_any_dynamic_sql():
+    """The body is copied into later files (design D6), so it pins its own search_path."""
+    code = _without_comments(_text(_exactly_one(MIGRATIONS, MIGRATION_GLOB)))
+    pin = code.find("set_config('search_path', 'pg_catalog, pg_temp', true)")
+    first_execute = code.find("EXECUTE")
+    assert pin != -1 and first_execute != -1 and pin < first_execute
+    assert pin > code.find("DO $advance$")
