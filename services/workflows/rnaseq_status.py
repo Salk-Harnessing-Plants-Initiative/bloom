@@ -37,6 +37,8 @@ EXIT_BAD_SAMPLE_NAME = 6
 EXIT_BAD_FASTQ_NAMES = 7
 # stage-fastqs: the run's S3 folder changed after the run was started.
 EXIT_FOLDER_CHANGED = 8
+# stage-fastqs: the run's FASTQs are named for another sample.
+EXIT_OTHER_SAMPLE = 9
 # fetch-sra (argo/scrna/cellranger/fetch-sra.sh) also uses 6 and 7, for its own input.
 EXIT_SRA_TRANSFER_FAILED = 10
 EXIT_SRA_READS_UNUSABLE = 11
@@ -132,6 +134,10 @@ def _folder_message(exit_code: int | None, params: dict) -> str | None:
         EXIT_FOLDER_CHANGED: (
             f"{url} changed after the run was started, so its reads weren't used; the stage "
             "step's log says which file. Start a new run on the folder as it is now"
+        ),
+        EXIT_OTHER_SAMPLE: (
+            f"The FASTQs in {url} are named for another sample than the run's, "
+            f"{params.get('sample')}; the stage step's log names it"
         ),
         EXIT_SRA_TRANSFER_FAILED: (
             f"Couldn't list or copy {url}; check the folder is still public and start the "

@@ -242,6 +242,7 @@ FOLDER_RUN = {
         ("4", "No FASTQs at s3://lab-data/run42/, even after waiting 10 minutes"),
         ("7", "The FASTQs in s3://lab-data/run42/ must be named"),
         ("8", "s3://lab-data/run42/ changed after the run was started"),
+        ("9", "The FASTQs in s3://lab-data/run42/ are named for another sample"),
         ("10", "Couldn't list or copy s3://lab-data/run42/"),
     ],
 )
