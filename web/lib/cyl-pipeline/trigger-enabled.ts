@@ -4,12 +4,13 @@
  * the client bundle, so an environment can be switched without a rebuild. On
  * only for exactly "true".
  *
- * It is off in prod until bloom#863 is fixed: every dispatched Workflow mounts
- * the staging Supabase credential, so a prod run's write-back would land in
- * staging and its own rows would end up failed. Off hides every run action and
- * makes POST /api/cyl/pipeline answer 503. The live views stay. It doesn't
- * reach the Workflows service, whose own POST /pipeline stays public
- * (bloom#983).
+ * It is on in staging and prod. Prod was off until its own pipeline
+ * credential Secret and stage directories were provisioned (bloom#863).
+ * Off hides every run action and makes POST /api/cyl/pipeline answer 503.
+ * The live views stay. The Workflows service's dispatch worker reads the same
+ * switch (at start-up), and while it is off fails every batch it claims: a
+ * direct POST /workflows/pipeline still creates a run, but none of its batches
+ * reaches the cluster.
  */
 
 export const TRIGGER_ENABLED_ENV = "CYL_PIPELINE_TRIGGER_ENABLED";

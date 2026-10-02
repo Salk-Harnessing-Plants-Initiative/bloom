@@ -128,7 +128,7 @@ prod-up:
 		echo " package-lock.json found. Installing .. "; \
 	fi
 	@echo " Starting Bloom Production Stack..."
-	docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+	sha=$$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore) && test -n "$$sha" && BLOOM_WEB_BUILD_SHA=$$sha docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 	@echo " Bloom Production running in background"
 
 .PHONY: rebuild-prod-fresh
@@ -155,7 +155,7 @@ prod-down:
 .PHONY: staging-up
 staging-up:
 	@echo " Starting Bloom Staging Stack..."
-	docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build
+	sha=$$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore) && test -n "$$sha" && BLOOM_WEB_BUILD_SHA=$$sha docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build
 	@echo " Bloom Staging running on port 8080"
 
 # Stop staging

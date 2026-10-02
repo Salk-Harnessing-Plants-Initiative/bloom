@@ -9,6 +9,7 @@
  */
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { plural } from "@/lib/cyl-pipeline/run-text";
 import { RunPipelineButton } from "./RunPipelineButton";
 
 interface Selection {
@@ -77,7 +78,7 @@ export function SelectionBar() {
       className="sticky bottom-4 z-10 mt-4 flex flex-wrap items-start gap-4 rounded-md border border-stone-300 bg-white p-3 text-sm shadow-md"
     >
       <span className="py-1">{ids.length} selected</span>
-      <RunPipelineButton target={{ target_level: "scan_ids", scan_ids: ids }} label={`Run selected (${ids.length})`} title={`${ids.length} selected scans`} />
+      <RunPipelineButton target={{ target_level: "scan_ids", scan_ids: ids }} label={`Run selected (${ids.length})`} title={plural(ids.length, "selected scan")} />
       <button type="button" onClick={clear} className="py-1 text-stone-600 underline hover:no-underline">
         Clear selection
       </button>

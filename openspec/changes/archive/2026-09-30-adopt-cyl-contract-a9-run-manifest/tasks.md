@@ -163,17 +163,28 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
 
 ## 10. Post-merge (each step needs explicit user approval)
 
-- [ ] 10.1 Wait for `docker-build-bloomcli` on the staging push. Its `cancel-in-progress` can drop the build if another bloomcli push lands at the same time. `workflow_dispatch` can't target a SHA; it builds the branch tip and shares the concurrency group. So:
+- [x] 10.1 Wait for `docker-build-bloomcli` on the staging push. Its `cancel-in-progress` can drop the build if another bloomcli push lands at the same time. `workflow_dispatch` can't target a SHA; it builds the branch tip and shares the concurrency group. So:
   - if the merge's own build succeeded, use `sha-<merge short>`;
   - if it was cancelled because a later bloomcli push landed, pin that later push's image, which contains the merge, and re-derive the carried-along PR list from `git log 28034f6d..<that sha> -- bloomcli`;
   - dispatch only while staging's tip is still the merge commit.
-  - [ ] Confirm the image's `org.opencontainers.image.revision` label with `docker buildx imagetools inspect <ref> --format '{{json .Image.Config.Labels}}'`, and its contracts version is `0.1.0a9` (8.3's command).
-  - [ ] Record the digest.
-- [ ] 10.2 In sleap-roots-pipeline `docs/bloom-integration/roadmap.md`:
-  - [ ] Correct l.410-411, l.480-484 and l.1010-1011. The unbounded pin did not adopt a9: `uv.lock` plus `--frozen` held a7.
-  - [ ] Update l.418 and l.705 ("still on the pre-a9 image").
-  - [ ] Tick row 5 as "merged, image `sha-<X>`", noting that the bump also carries #880, #882, #884 and #861.
-- [ ] 10.3 Row 6, in sleap-roots-pipeline:
+  - [x] Confirm the image's `org.opencontainers.image.revision` label with `docker buildx imagetools inspect <ref> --format '{{json .Image.Config.Labels}}'`, and its contracts version is `0.1.0a9` (8.3's command). **2026-09-30:** the merge's own build succeeded (`sha-1bc3056`). `org.opencontainers.image.revision` = `1bc3056cc78f6ab101f0f8e727839e3d1169a605`. `docker run --entrypoint python <digest> -c "…m.version('sleap-roots-contracts')"` printed `0.1.0a9`.
+  - [x] Record the digest. `sha256:8e9eb22c7cd0ed5f3af45d7393463d3261699032dd8bb8aa4f1899ede250d802`, which is also GHCR's `Docker-Content-Digest` for the tag.
+- [x] 10.2 In sleap-roots-pipeline `docs/bloom-integration/roadmap.md`: done in talmolab/sleap-roots-pipeline#97 (merged `619b711`, 2026-09-30).
+  - [x] Correct l.410-411, l.480-484 and l.1010-1011. The unbounded pin did not adopt a9: `uv.lock` plus `--frozen` held a7.
+  - [x] Update l.418 and l.705 ("still on the pre-a9 image").
+  - [x] Tick row 5 as "merged, image `sha-<X>`", noting that the bump also carries #880, #882, #884 and #861.
+- [x] 10.3 Row 6, in sleap-roots-pipeline. **Done 2026-09-29/30**; evidence in talmolab/sleap-roots-pipeline#99 and #100 (the roadmap's 2026-09-30 status-log entry):
+  - Steps 1–2: #99 pins `sha-1bc3056@sha256:8e9eb22c…`. `check_manifests.py` passes 75/75. Drained, then registered write-back → images-downloader → exit-gate, each read back live. `check_cluster_drift.sh`: IN SYNC.
+  - Step 3: the stale files were `rr4zj`'s 15-key manifests, not `hpdpf`'s. Snapshotted to `a4_poc/_stale-manifests-2026-09-29/` with hashes verified, then deleted.
+  - Step 4, on fresh scans; see `fix-cyl-pipeline-run-scan-status` 8.1 for why:
+    - Bloom run 12 (N=1) and run 13 (N=3): `run_manifest.<wf>.json` with exactly N keys; `Ingested N/N`; N new sources (250; 251–253); no `run_manifest.json` reappeared; no fallback involved.
+    - An earlier N=1 on an old scan (run 11) failed only through bloom#900.
+  - Step 5: Bloom run 14 (poison 12894760) ended `status failed`, `failed_count 1 = scan_count`, via write-back's no-run-manifest path.
+  - Step 6: the counts are recorded in the roadmap entry and in `fix-cyl-pipeline-run-scan-status` 8.2/8.4.
+  - Step 7: the rollback plan was written down in #99's body before starting.
+  - Not measured: the `cyl_trait_sources` row delta, directly (no DB access). The evidence is each scan's new `source_id`.
+
+  The original checklist:
   1. Drain first: no workflow in flight. Then bump the pins to `sha-<X>@sha256:<digest>`, as predictor/traits already pin, updating `write-back` before `images-downloader`, so a workflow that straddles the update never pairs the new per-run writer with the old legacy-only reader (design, Rollout and rollback). Update the pin-history comments (images-downloader l.20-26, write-back l.16).
   2. Run `check_manifests.py`, then drain, then run `argo template update`.
   3. Snapshot the three stale `run_manifest.json` files to a dated folder, then delete them.
@@ -189,8 +200,8 @@ Sections 2–5 each pair a RED step with its GREEN step, and each pair lands as 
 - [x] 10.4 File the sleap-roots follow-up drafted with this change (traits' manifest forward is best-effort; make it fail loudly as predict's does; design Decision 4), with the user's approval. Filed 2026-09-29 as talmolab/sleap-roots#271.
 - [ ] 10.5 After 10.3 passes:
   - [ ] Close bloom#934 by hand.
-  - [ ] Open one archive PR that archives `fix-cyl-pipeline-run-scan-status` first, then this change, and fills that change's placeholder Purpose sections (its 15.3).
-  - [ ] Tick roadmap row 6.
+  - [x] Open one archive PR that archives `fix-cyl-pipeline-run-scan-status` first, then this change, and fills that change's placeholder Purpose sections (its 15.3). This PR.
+  - [x] Tick roadmap row 6. talmolab/sleap-roots-pipeline#100, merged `1192f47`.
   - [ ] The staging→main promotion PR must not carry a closing keyword for #934.
 
 ## 11. Post-review revisions (PR #940 review, 2026-09-29)
@@ -235,4 +246,4 @@ The user decided two points in the review: a legacy file naming another run is n
   - Rename the zero-envelope reconcile test to say what it now tests, and tighten it to `== 1`.
 - [x] 11.7 **Docs:** README (fallback, blank, run identity, manual-recovery warning), CHANGELOG (the run-identity breaking entry, the legacy-other-run rule) and the `batch-ingest-result` `--help`.
 - [x] 11.9 Round-4 review fixes (2026-09-29): `ingest-result` command-level tests for the padded and blank run id (11.2 had claimed them; they fail on the pre-H code); both stale docstrings; the dead reconcile block in the empty-batch branch removed; the reconcile-message assertion on the other-run legacy path; superseded notes on Sections 4–6; the pin-order rule for row 6; wording fixes in design, proposal, CHANGELOG, README, contracts/README and the cyl-ingest-cli scenario.
-- [ ] 11.8 Full suite with `--locked` compared with the Windows baseline, `uvx ruff@0.9.9 check bloomcli/`, and both `openspec validate --strict`. Push, then confirm the PR's `Python Security Audit for CVEs` job (bloomctl's Linux test run) passes, including the dangling-symlink tests' first real run.
+- [ ] 11.8 Full suite with `--locked` compared with the Windows baseline, `uvx ruff@0.9.9 check bloomcli/`, and both `openspec validate --strict`. Push, then confirm the PR's `Python Security Audit for CVEs` job (bloomctl's Linux test run) passes, including the dangling-symlink tests' first real run. *Partly verified 2026-09-30:* #940's `Python Security Audit for CVEs` job, and every other check on the PR, is `SUCCESS`. The local `--locked` suite comparison and the `ruff` run have no recorded evidence here.

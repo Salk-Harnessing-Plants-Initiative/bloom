@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { RunScansTable, type ScanTableRow } from "./RunScansTable";
+import { plainInteger, RunScansTable, scanTableColumns, type ScanTableRow } from "./RunScansTable";
 
 afterEach(() => cleanup());
 
@@ -23,7 +23,7 @@ function row(scan_id: number, overrides: Partial<ScanTableRow> = {}): ScanTableR
     plant_age_days: 14,
     current: false,
     likelyCause: null,
-    noOpNote: null,
+    lateResultNote: null,
     scanHref: `/app/phenotypes/2/5/11/7/${scan_id}`,
     ...overrides,
   };
@@ -71,7 +71,7 @@ describe("RunScansTable", () => {
             source_id: 40,
             current: true,
             likelyCause: "Likely cause: plant age missing",
-            noOpNote: "bloom#900 note",
+            lateResultNote: "late result note",
           }),
         ]}
         disableVirtualization
@@ -87,7 +87,7 @@ describe("RunScansTable", () => {
     expect(cells[5]).toBe("2");
     expect(cells[6]).toContain("stage-in failed");
     expect(cells[6]).toContain("Likely cause: plant age missing");
-    expect(cells[6]).toContain("bloom#900 note");
+    expect(cells[6]).toContain("late result note");
     expect(cells[7]).toBe("cyl-abc12");
     expect(cells[8]).toBe("40");
     expect(cells[9]).toBe("yes");
@@ -96,7 +96,7 @@ describe("RunScansTable", () => {
   });
 
   it("says current is unknown when the latest source hasn't loaded, and gives no link without metadata", () => {
-    render(<RunScansTable rows={[row(577, { current: null, scanHref: null })]} disableVirtualization />);
+    render(<RunScansTable rows={[row(577, { source_id: 40, current: null, scanHref: null })]} disableVirtualization />);
     const cells = within(bodyRows()[0]).getAllByRole("gridcell").map((c) => c.textContent);
     expect(cells[9]).toBe("unknown");
     expect(within(bodyRows()[0]).queryByRole("link")).toBeNull();
@@ -150,5 +150,83 @@ describe("RunScansTable", () => {
     expect(bodyRows()).toHaveLength(1);
     expect(screen.getByRole("option", { name: "Failed (1)" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "All (2)" })).toBeTruthy();
+  });
+});
+
+describe("plain integers (bloom#955)", () => {
+  const cellsOf = (r: ScanTableRow) => {
+    render(<RunScansTable rows={[r]} disableVirtualization />);
+    return within(bodyRows()[0]).getAllByRole("gridcell").map((c) => c.textContent);
+  };
+
+  it("shows ids, wave, day, attempts and source without digit separators", () => {
+    const cells = cellsOf(row(12894712, { wave_number: 9999, plant_age_days: 1000, attempts: 1200, source_id: 1048576 }));
+    expect([cells[0], cells[2], cells[3], cells[5], cells[8]]).toEqual(["12894712", "9999", "1000", "1200", "1048576"]);
+  });
+
+  it("shows zero attempts as 0, and missing wave, day and source as blank", () => {
+    const cells = cellsOf(row(577, { attempts: 0, wave_number: null, plant_age_days: null, source_id: null }));
+    expect([cells[2], cells[3], cells[5], cells[8]]).toEqual(["", "", "0", ""]);
+  });
+
+  it("keeps the integer columns numeric, formatted plainly, with a Scan column wide enough for a full id", () => {
+    const byField = new Map(scanTableColumns.map((c) => [c.field, c]));
+    for (const field of ["scan_id", "wave_number", "plant_age_days", "attempts", "source_id"]) {
+      expect(byField.get(field)?.type, field).toBe("number");
+      expect(byField.get(field)?.valueFormatter, field).toBe(plainInteger);
+    }
+    expect(plainInteger(12894712)).toBe("12894712");
+    expect(plainInteger(0)).toBe("0");
+    expect(plainInteger(null)).toBe("");
+    expect(byField.get("scan_id")?.width).toBeGreaterThanOrEqual(110);
+  });
+});
+
+describe("current in trait views (bloom#955)", () => {
+  it.each([
+    // No source: this run recorded no result for the scan, so there is nothing to be current.
+    [null, false, "—"],
+    [null, null, "—"], // even when the latest-source read failed
+    [40, null, "unknown"],
+    [40, true, "yes"],
+    [40, false, "no"],
+  ])("source %s, current %s → %s", (source_id, current, text) => {
+    render(<RunScansTable rows={[row(577, { status: "failed", statusLabel: "Failed", source_id, current })]} disableVirtualization />);
+    expect(within(bodyRows()[0]).getAllByRole("gridcell")[9].textContent).toBe(text);
+  });
+
+  it("explains the dash in the column description, without claiming the scan has no results", () => {
+    const current = scanTableColumns.find((c) => c.field === "current");
+    expect(current?.description).toBe(
+      "Whether this row's source is the scan's latest, as of the last load. Rows whose source changed since show unknown; Refresh to recheck. — means no result is linked to this row. The scan may still have pipeline results (for example a result that arrived after the run closed, or another run's), so check its traits before re-running.",
+    );
+  });
+
+  it("sorts by what it shows, so dashes and noes don't interleave (PR #1006 review)", async () => {
+    render(
+      <RunScansTable
+        rows={[
+          row(1, { source_id: 10, current: false }),
+          row(2, { source_id: null, current: false }),
+          row(3, { source_id: 30, current: false }),
+          row(4, { source_id: null, current: false }),
+        ]}
+        disableVirtualization
+      />,
+    );
+    await act(async () => fireEvent.click(screen.getByRole("columnheader", { name: /Current in trait views/ })));
+    const shown = bodyRows().map((r) => within(r).getAllByRole("gridcell")[9].textContent);
+    expect([...shown].sort()).toEqual(["no", "no", "—", "—"]);
+    expect(shown.indexOf("—") + 1).toBe(shown.lastIndexOf("—"));
+    expect(shown.indexOf("no") + 1).toBe(shown.lastIndexOf("no"));
+  });
+
+  it("gets the shown text as the column's value, so filtering sees it too", () => {
+    const current = scanTableColumns.find((c) => c.field === "current")!;
+    const get = current.valueGetter as unknown as (value: boolean | null, r: ScanTableRow) => string;
+    expect(get(false, row(1, { source_id: null }))).toBe("—");
+    expect(get(null, row(1, { source_id: 40 }))).toBe("unknown");
+    expect(get(true, row(1, { source_id: 40 }))).toBe("yes");
+    expect(get(false, row(1, { source_id: 40 }))).toBe("no");
   });
 });

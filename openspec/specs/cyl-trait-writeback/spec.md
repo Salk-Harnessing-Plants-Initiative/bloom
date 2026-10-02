@@ -296,7 +296,11 @@ above, so that no partial source, trait, registry, blob, or run-scan-status row 
 scan id (null on a no-op), the trait and blob counts (equal to rows written), whether the call was
 a no-op re-delivery, and — as `status_update_matched` — whether the (possibly fallback-assisted)
 status update actually affected a row: `true`/`false` when `p_argo_workflow_name` was supplied,
-`null` when it was omitted (not applicable, since no status update is ever attempted).
+`null` when it was omitted (not applicable, since no status update is ever attempted). This lets
+a caller detect the case where write-back itself succeeds yet the `status != 'failed'` guard left
+the scan's status unchanged (a late/out-of-order delivery arriving after the scan was already
+closed out `'failed'`), rather than reporting a plain success with no signal that the run-level
+counts will not reflect the data just written.
 
 #### Scenario: A valid envelope writes source, trait, and blob rows in one transaction
 
@@ -460,6 +464,17 @@ status update actually affected a row: `true`/`false` when `p_argo_workflow_name
   to `"wf-b"`'s row by `scan_id` — matches zero rows because `"wf-b"`'s own row is `'failed'`;
   `"wf-b"`'s row stays `'failed'` with `source_id` unset, and the returned summary's
   `status_update_matched` is `false`
+
+#### Scenario: The same guard applies to a no-op re-delivery arriving after the scan was failed
+
+- **WHEN** the RPC is called a second time with the same envelope (a no-op re-delivery) and the
+  same `p_argo_workflow_name`, but the matching `cyl_pipeline_run_scans` row (already stamped with
+  this source's id by the first call) was marked `'failed'` between the first and second calls
+- **THEN** the second call still reports `was_noop: true` (write-back's own idempotency is
+  unaffected), but neither the primary `(argo_workflow_name, source_id)`-keyed update nor the
+  fallback's `(argo_workflow_name, scan_id)`-keyed update changes that row — both carry the
+  identical `AND status != 'failed'` guard as the non-no-op branch's update — so the row stays
+  `'failed'` and the returned summary's `status_update_matched` is `false`
 
 ### Requirement: Write-back is idempotent and provenance-immutable
 
@@ -806,4 +821,55 @@ exactly such rows.)
 - **THEN** the call is rejected with a `contract_version mismatch` error, before the source gate
   (so it is not reported as an idempotent no-op)
 - **AND** the existing row is unchanged
+
+### Requirement: Failure-marking RPC closes out scans that never produced a result
+
+Bloom SHALL provide a `SECURITY DEFINER` function
+`fail_cyl_pipeline_run_scans_without_result(p_argo_workflow_name text, p_error_message text DEFAULT
+NULL) RETURNS integer` that, for every `cyl_pipeline_run_scans` row matching `argo_workflow_name =
+p_argo_workflow_name` and currently `status = 'queued'`, sets `status = 'failed'`, `error_message =
+p_error_message` (when supplied), and `updated_at = now()`, and returns the number of rows updated.
+A row already `'written'`, `'reused'`, or `'failed'` for this workflow name is left untouched — this
+function only closes out scans write-back never resolved either way. `EXECUTE` SHALL be revoked from
+`PUBLIC`, `anon`, and `authenticated`, and granted only to `bloom_workflows`, matching this program's
+established `SECURITY DEFINER` wrapper convention. `bloomctl cyl batch-ingest-result` SHALL call this
+function once, after ingesting every envelope discovered for the batch, passing the `ARGO_WORKFLOW_NAME`
+environment variable Argo sets on the write-back container — and SHALL skip the call entirely when that
+environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
+`cyl_pipeline_run_scans` rows (if any happen to exist) untouched.
+
+#### Scenario: A scan with no envelope is marked failed
+
+- **WHEN** `fail_cyl_pipeline_run_scans_without_result` is called with an `argo_workflow_name` for
+  which a `cyl_pipeline_run_scans` row is still `'queued'` (its scan's prediction never produced an
+  envelope for write-back to ingest)
+- **THEN** that row's `status` becomes `'failed'`, its `error_message` is set to the supplied value,
+  and the function returns `1`
+
+#### Scenario: A scan already written by this batch is left untouched
+
+- **WHEN** `fail_cyl_pipeline_run_scans_without_result` is called for a workflow name whose batch
+  included one scan already marked `'written'` earlier in the same `batch-ingest-result` invocation
+- **THEN** that row's `status`, `source_id`, and `updated_at` are unchanged, and it is not counted in
+  the function's returned count
+
+#### Scenario: Calling it twice for the same workflow name is a harmless no-op the second time
+
+- **WHEN** `fail_cyl_pipeline_run_scans_without_result` is called twice in a row for the same
+  `argo_workflow_name` (e.g. the write-back step's `retryStrategy` re-runs the whole container)
+- **THEN** the first call marks the remaining `'queued'` rows `'failed'` and returns their count; the
+  second call returns `0` and leaves every row exactly as the first call left it
+
+#### Scenario: A workflow name matching no rows returns zero, not an error
+
+- **WHEN** `fail_cyl_pipeline_run_scans_without_result` is called with an `argo_workflow_name` that
+  matches no `cyl_pipeline_run_scans` row at all
+- **THEN** the call succeeds and returns `0`
+
+#### Scenario: EXECUTE is denied to every role except bloom_workflows
+
+- **WHEN** `has_function_privilege` is checked for `anon`, `authenticated`, the implicit `PUBLIC`
+  grantee, and `bloom_user`/`bloom_writer`/`bloom_admin` against this function's signature
+- **THEN** each reports `EXECUTE` as `false`
+- **AND** the same check for `bloom_workflows` reports `true`
 

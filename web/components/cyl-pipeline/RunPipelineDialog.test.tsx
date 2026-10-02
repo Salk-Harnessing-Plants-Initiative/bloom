@@ -109,6 +109,8 @@ async function settle() {
 }
 const confirmButton = () => screen.queryByRole("button", { name: "Start run" }) as HTMLButtonElement | null;
 const dialogText = () => screen.getByRole("dialog").textContent ?? "";
+/** The pre-check details paragraph alone, without its "Details" summary. */
+const detailsText = () => screen.getByTestId("precheck-details").querySelector("p")?.textContent;
 const ack = () => screen.queryByRole("checkbox", { name: /I understand this queues/ }) as HTMLInputElement | null;
 
 /** A fetch answer as the proxy gives it. */
@@ -298,8 +300,8 @@ describe("the pre-check", () => {
     expect(dialogText()).toContain("38 of 40 already have pipeline results.");
     const details = screen.getByTestId("precheck-details");
     expect(details.tagName).toBe("DETAILS");
-    expect(details.textContent).toContain(
-      "1 more scans have only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code.",
+    expect(detailsText()).toBe(
+      "1 more scan has only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code.",
     );
   });
 
@@ -308,7 +310,7 @@ describe("the pre-check", () => {
     mount();
     await settle();
     const details = screen.getByTestId("precheck-details").textContent ?? "";
-    expect(details).not.toContain("more scans have only traits");
+    expect(details).not.toContain("only traits without a recorded source");
     expect(details).toContain("All 40 will be sent; the cluster skips scans it has already processed with the same models and code.");
   });
 
@@ -321,6 +323,76 @@ describe("the pre-check", () => {
       "All 12 scans already have pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.",
     );
     expect(dialogText()).not.toContain("of 12 already have pipeline results");
+  });
+});
+
+describe("the pre-check, in the singular (bloom#955)", () => {
+  const SINGLE_DETAILS =
+    "This scan has only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. The scan will be sent; the cluster skips it if it has already been processed with the same models and code.";
+
+  it("says this scan already has results when K = N = 1", async () => {
+    scans = someScans(1);
+    latest = [{ scan_id: 1, max_source_id: 10 }];
+    mount();
+    await settle();
+    expect(dialogText()).toContain(
+      "This scan already has pipeline results. The run will still be created and sent to the cluster, which skips scans it has already processed with the same models and code.",
+    );
+    expect(dialogText()).not.toContain("All 1 scans");
+  });
+
+  it("speaks of this scan when N = 1 and it has only legacy traits", async () => {
+    scans = someScans(1);
+    latest = [{ scan_id: 1, max_source_id: null }];
+    mount();
+    await settle();
+    expect(dialogText()).toContain("This scan has no pipeline results yet.");
+    expect(dialogText()).not.toContain("0 of 1");
+    expect(detailsText()).toBe(SINGLE_DETAILS);
+  });
+
+  it("speaks of the scan when N = 1 and it has no traits at all", async () => {
+    scans = someScans(1);
+    latest = [];
+    mount();
+    await settle();
+    expect(dialogText()).toContain("This scan has no pipeline results yet.");
+    expect(detailsText()).toBe("The scan will be sent; the cluster skips it if it has already been processed with the same models and code.");
+  });
+
+  it("keeps the plural for none of many (PR #1006 review)", async () => {
+    latest = [];
+    mount();
+    await settle();
+    expect(dialogText()).toContain("0 of 40 already have pipeline results.");
+    expect(dialogText()).not.toContain("This scan");
+    expect(detailsText()).toBe("All 40 will be sent; the cluster skips scans it has already processed with the same models and code.");
+  });
+
+  it("says 1 of N already has results", async () => {
+    latest = [{ scan_id: 1, max_source_id: 10 }];
+    mount();
+    await settle();
+    expect(dialogText()).toContain("1 of 40 already has pipeline results.");
+  });
+
+  it("keeps the plural for two or more legacy-only scans", async () => {
+    latest = [...latest, { scan_id: 40, max_source_id: null }];
+    mount();
+    await settle();
+    expect(screen.getByTestId("precheck-details").textContent).toContain("2 more scans have only traits without a recorded source");
+  });
+
+  it("never uses a banned phrase in the one-scan texts", async () => {
+    const banned = /will run|will be skipped|reused/i;
+    scans = someScans(1);
+    for (const max_source_id of [10, null]) {
+      latest = [{ scan_id: 1, max_source_id }];
+      mount();
+      await settle();
+      expect(dialogText()).not.toMatch(banned);
+      cleanup();
+    }
   });
 });
 

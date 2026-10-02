@@ -856,10 +856,11 @@ def test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id(pg_conn):
     during /review-pr, PR #880): there, both re-delivered scans' ORIGINAL
     delivery was a hand-submitted `argo submit`, which never inserts a
     cyl_pipeline_run_scans row at all (only services/workflows/pipeline.py's
-    dispatch path does) — so source_id was never stamped anywhere for those
-    sources, and this fallback has nothing to resolve scan_id from. See
-    design.md's Verification section for that scope limit;
-    test_fallback_finds_nothing_for_a_never_dispatched_workflow pins it."""
+    dispatch path does). #880's fallback had nothing to resolve scan_id from in
+    that shape; since fix-cyl-noop-redelivery-scan-resolution (bloom#900) it
+    reads the source's own cyl_trait_sources.scan_id first, and
+    tests/integration/test_cyl_noop_redelivery_scan.py covers the hand-submitted
+    and manual shapes."""
     with pg_conn.cursor() as cur:
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-a")
@@ -881,10 +882,14 @@ def test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id(pg_conn):
 
 
 def test_noop_redelivery_under_never_dispatched_workflow_reports_no_match(pg_conn):
-    """Negative control: if this source's ONLY prior delivery never supplied an
-    argo_workflow_name at all, no cyl_pipeline_run_scans row anywhere carries
-    its source_id, so the fallback lookup finds nothing and must not invent a
-    match — status_update_matched stays False, unchanged from before this fix."""
+    """Negative control: this source's ONLY prior delivery never supplied an
+    argo_workflow_name, and "wf-orphan" has no cyl_pipeline_run_scans row at all.
+    Since bloom#900 the fallback resolves the scan from the source's own
+    cyl_trait_sources.scan_id, but its targeted UPDATE (scoped to "wf-orphan")
+    finds no row and must not invent a match — status_update_matched is False.
+    It now exercises the same branch as
+    test_fallback_finds_nothing_for_a_never_dispatched_workflow; they differ only in
+    how the source was first written (no workflow name here, a Bloom run there)."""
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
         env = _envelope(imgs, idempotency_key="redeliver-orphan")
@@ -952,10 +957,11 @@ def test_fallback_chains_across_a_third_workflow_redelivery(pg_conn):
     """/review-pr behavioral-correctness finding: after wf-b's fallback succeeds,
     TWO cyl_pipeline_run_scans rows now carry this source_id (wf-a's and wf-b's).
     A THIRD re-delivery under yet another new workflow name must still resolve
-    correctly -- the fallback's un-ordered `LIMIT 1` is safe here only because
-    every row ever stamped with this source_id is guaranteed to share the same
-    scan_id (the no-op branch never re-derives scan_id from a redelivery's own
-    image_ids), so which of the two candidate rows it picks cannot matter."""
+    correctly. Since bloom#900 the fallback reads the source's own
+    cyl_trait_sources.scan_id first; #880's un-ordered `LIMIT 1` over the carrying
+    rows is only the backup when that is NULL, and is safe because every row ever
+    stamped with this source_id shares the same scan_id (the no-op branch never
+    re-derives scan_id from a redelivery's own image_ids)."""
     with pg_conn.cursor() as cur:
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-chain-a")
@@ -978,12 +984,13 @@ def test_fallback_chains_across_a_third_workflow_redelivery(pg_conn):
 
 
 def test_fallback_finds_nothing_for_a_never_dispatched_workflow(pg_conn):
-    """/review-pr behavioral-correctness finding: distinct from
-    test_noop_redelivery_under_never_dispatched_workflow_reports_no_match (where
-    the ORIGINAL delivery never had a workflow name at all, so v_scan_id never
-    resolves and the fallback UPDATE never even runs). Here the original delivery
-    DID have a workflow name (so the fallback's scan_id lookup succeeds), but the
-    NEW workflow's own cyl_pipeline_run_scans row was never seeded at all -- not
+    """/review-pr behavioral-correctness finding. Under #880 this was distinct from
+    test_noop_redelivery_under_never_dispatched_workflow_reports_no_match, whose
+    original delivery had no workflow name, so #880's lookup found no scan at all.
+    Since bloom#900 both resolve the scan from the source's own scan_id and differ only
+    in how the source was first written. Here the original delivery DID have a
+    workflow name, but the NEW workflow's own cyl_pipeline_run_scans row was never
+    seeded at all -- not
     just source_id NULL, but no row for (new workflow, scan) exists at all. The
     fallback UPDATE must still degrade cleanly: it matches zero rows, not an
     error, and status_update_matched reports False."""
