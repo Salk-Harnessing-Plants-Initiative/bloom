@@ -38,6 +38,15 @@ class CertProblem(Exception):
     """A site's certificate could not be read or verified."""
 
 
+@dataclass(frozen=True)
+class Cert:
+    """The certificate a site served: when it expires, its serial, and the names it covers."""
+
+    expires: datetime
+    serial: str
+    names: tuple[str, ...]
+
+
 @dataclass
 class Result:
     host: str
@@ -46,6 +55,8 @@ class Result:
     days_left: int | None = None
     problem: str | None = None
     ok: bool = False
+    serial: str | None = None
+    names: tuple[str, ...] = ()
 
     @property
     def site(self) -> str:
@@ -73,6 +84,11 @@ def _read_env(path: Path) -> dict[str, str]:
     return values
 
 
+def env_name(env_file: Path) -> str:
+    """'prod' for .env.prod.defaults."""
+    return env_file.name.removeprefix(".env.").removesuffix(".defaults")
+
+
 def served_hosts(env_file: Path) -> list[tuple[str, int]]:
     """The (host, port) pairs Caddy serves for one environment."""
     values = _read_env(env_file)
@@ -96,9 +112,16 @@ def mail_settings(env_file: Path) -> MailSettings:
     )
 
 
-def fetch_expiry(host: str, port: int) -> datetime:
-    """The verified certificate's notAfter, or CertProblem saying why it can't be read."""
+def tls_context() -> ssl.SSLContext:
+    """Verifies the chain and the hostname, and refuses anything older than TLS 1.2."""
     context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def fetch_expiry(host: str, port: int) -> Cert:
+    """The verified certificate the site serves, or CertProblem saying why it can't be read."""
+    context = tls_context()
     try:
         with (
             socket.create_connection(
@@ -111,70 +134,108 @@ def fetch_expiry(host: str, port: int) -> datetime:
         raise CertProblem(exc.verify_message or str(exc)) from exc
     except (OSError, ssl.SSLError) as exc:
         raise CertProblem(str(exc) or type(exc).__name__) from exc
-    return datetime.fromtimestamp(ssl.cert_time_to_seconds(cert["notAfter"]), tz=UTC)
+    return Cert(
+        expires=datetime.fromtimestamp(
+            ssl.cert_time_to_seconds(cert["notAfter"]), tz=UTC
+        ),
+        serial=cert.get("serialNumber", ""),
+        names=tuple(v for k, v in cert.get("subjectAltName", ()) if k == "DNS"),
+    )
 
 
 def check(
     hosts: list[tuple[str, int]],
     now: datetime,
     warn_days: int,
-    fetch: Callable[[str, int], datetime] | None = None,
+    fetch: Callable[[str, int], Cert] | None = None,
 ) -> list[Result]:
     fetch = fetch or fetch_expiry  # looked up at call time, so tests can replace it
     results = []
     for host, port in hosts:
         try:
-            expires = fetch(host, port)
+            cert = fetch(host, port)
         except CertProblem as exc:
             results.append(Result(host, port, problem=str(exc)))
             continue
-        days = (expires - now).days
-        results.append(Result(host, port, expires, days, ok=days >= warn_days))
+        days = (cert.expires - now).days
+        results.append(
+            Result(
+                host,
+                port,
+                cert.expires,
+                days,
+                ok=days >= warn_days,
+                serial=cert.serial,
+                names=cert.names,
+            )
+        )
     return results
 
 
-def build_alert(results: list[Result], warn_days: int) -> tuple[str, str]:
-    problems = [r for r in results if not r.ok]
-    unreadable = [r for r in problems if r.problem]
-    expiring = sorted((r for r in problems if not r.problem), key=lambda r: r.days_left)
-    if expiring:
-        first = expiring[0]
-        subject = (
-            f"[bloom-cert-check] {first.host} cert expires in {first.days_left} days"
-        )
+def _certificates(results: list[Result]) -> list[list[Result]]:
+    """Expiring results grouped by the certificate that served them, most urgent first."""
+    groups: dict[str, list[Result]] = {}
+    for r in results:
+        if not r.ok and not r.problem:
+            groups.setdefault(r.serial or r.site, []).append(r)
+    return sorted(groups.values(), key=lambda g: g[0].days_left)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def build_alert(results: list[Result], warn_days: int, env: str) -> tuple[str, str]:
+    certificates = _certificates(results)
+    unreadable = [r for r in results if r.problem]
+    if certificates:
+        first = certificates[0][0]
+        name = ", ".join(first.names) or first.host
+        subject = f"[bloom-cert-check] {env}: certificate for {name} expires in {first.days_left} days"
+        others = len(certificates) - 1 + len(unreadable)
+        if others:
+            subject += f", {others} more {'problem' if others == 1 else 'problems'}"
     else:
-        subject = f"[bloom-cert-check] {unreadable[0].host} could not be checked"
+        subject = f"[bloom-cert-check] {env}: {_plural(len(unreadable), 'site')} could not be checked"
+
     lines = [
-        "Urgent Notice: a Bloom TLS certificate needs attention.",
+        f"Urgent Notice: a {env} TLS certificate for Bloom needs attention.",
         "",
         "Caddy renews certificates about 30 days before they expire, so none should",
-        f"ever have fewer than {warn_days} days left. These do:",
+        f"ever have fewer than {warn_days} days left.",
         "",
     ]
-    for r in expiring:
-        lines.append(
-            f"  {r.site}  expires in {r.days_left} days ({r.expires:%Y-%m-%d})"
-        )
-    for r in unreadable:
-        lines.append(f"  {r.site}  could not be checked: {r.problem}")
+    if certificates:
+        lines.append(f"Expiring soon (fewer than {warn_days} days left):")
+        for group in certificates:
+            first = group[0]
+            name = ", ".join(first.names) or first.host
+            lines.append(
+                f"  {name}: expires in {first.days_left} days ({first.expires:%Y-%m-%d})"
+            )
+            lines.append(f"    used by {', '.join(r.host for r in group)}")
+        lines.append("")
+    if unreadable:
+        lines.append("Could not be checked:")
+        lines += [f"  {r.site}: {r.problem}" for r in unreadable]
+        lines.append("")
     lines += [
-        "",
         "When a certificate expires, browsers refuse the site and the scanners'",
         "uploads fail.",
         "",
         "What to do:",
         "",
         "1. SSH to bloom-dev and look at Caddy's renewal errors:",
-        "     docker logs --since 168h bloom_v2_prod-caddy-1 2>&1 | grep -i -E 'error|obtain'",
-        "     (bloom_v2_staging-caddy-1 for the staging sites)",
+        f"     docker logs --since 168h bloom_v2_{env}-caddy-1 2>&1 | grep -i -E 'error|obtain'",
         "",
         "2. Common causes:",
         "     - Cloudflare API token revoked or expired",
         f"     - Salk CNAME {ACME_CHALLENGE_NAME} -> {ACME_CNAME_TARGET} removed",
         "     - Caddy stopped, so nothing is renewing",
         "",
-        "3. Once the cause is fixed Caddy renews on its own within minutes.",
-        "   Re-run this check from the Actions tab to confirm.",
+        "3. Once the cause is fixed, Caddy retries on its own, though after repeated",
+        "   failures its retries can be hours apart. A new Cloudflare token only takes",
+        "   effect after a redeploy. Re-run this check from the Actions tab to confirm.",
         "",
     ]
     return subject, "\n".join(lines)
@@ -189,6 +250,12 @@ def send_email(
     msg["Subject"] = subject
     msg.set_content(body)
     with smtplib.SMTP(mail.host, mail.port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+        smtp.ehlo()
+        if smtp.has_extn(
+            "starttls"
+        ):  # encrypt when the relay offers it, as GoTrue does
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.ehlo()
         smtp.send_message(msg)
 
 
@@ -201,18 +268,22 @@ def write_summary(results: list[Result], warn_days: int) -> None:
         "",
         f"Warning line: {warn_days} days.",
         "",
-        "| Site | Expires | Days left | Status |",
-        "| --- | --- | --- | --- |",
+        "| Site | Certificate | Expires | Days left | Status |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for r in results:
         if r.problem:
-            rows.append(f"| {r.site} | — | — | could not be checked: {r.problem} |")
+            rows.append(f"| {r.site} | — | — | — | could not be checked: {r.problem} |")
         else:
+            status = "ok" if r.ok else "renew now"
             rows.append(
-                f"| {r.site} | {r.expires:%Y-%m-%d} | {r.days_left} | {'ok' if r.ok else 'renew now'} |"
+                f"| {r.site} | {', '.join(r.names) or '—'} | {r.expires:%Y-%m-%d} | {r.days_left} | {status} |"
             )
-    with open(path, "a") as fh:
-        fh.write("\n".join(rows) + "\n")
+    try:
+        with open(path, "a") as fh:
+            fh.write("\n".join(rows) + "\n")
+    except OSError as exc:  # the summary is a convenience; never let it fail the run
+        print(f"could not write the run summary: {exc}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -222,8 +293,8 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         type=Path,
         default=[],
-        help="An env defaults file naming the sites to check (repeatable). "
-        "The first one also supplies the mail relay and sender.",
+        help="The environment's env defaults file, naming the sites to check. "
+        "The first one also supplies the mail relay, the sender and the environment name.",
     )
     parser.add_argument(
         "--test-email",
@@ -244,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         print("give at least one --env-file", file=sys.stderr)
         return 1
     mail = mail_settings(args.env_file[0])
+    env = env_name(args.env_file[0])
     warn_days = int(os.environ.get("CERT_CHECK_WARN_DAYS", DEFAULT_WARN_DAYS))
 
     if args.test_email:
@@ -270,17 +342,20 @@ def main(argv: list[str] | None = None) -> int:
             else f"{r.days_left} days left"
         )
         print(f"{r.site}: {status}")
-    write_summary(results, warn_days)
     if all(r.ok for r in results):
+        write_summary(results, warn_days)
         return 0
 
-    subject, body = build_alert(results, warn_days)
+    # The alert goes first: nothing after this point may stop it.
+    subject, body = build_alert(results, warn_days, env)
     try:
         send_email(subject, body, mail, recipients)
     except (smtplib.SMTPException, OSError) as exc:
         print(f"alert email failed: {exc}", file=sys.stderr)
+        write_summary(results, warn_days)
         return 2
     print(f"alert emailed to {', '.join(recipients)}")
+    write_summary(results, warn_days)
     return 1
 
 

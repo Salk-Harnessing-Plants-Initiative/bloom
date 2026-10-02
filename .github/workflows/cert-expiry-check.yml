@@ -1,7 +1,7 @@
 name: Weekly TLS certificate check
 
-# Reads the expiry date of the certificate each Bloom site serves, prod and
-# staging, and emails the team when one has fewer than
+# Reads the expiry date of the certificate each prod Bloom site serves, and
+# emails the team when one has fewer than
 # CERT_CHECK_WARN_DAYS left or can't be checked. Caddy renews about 30 days
 # before expiry, so a healthy certificate never gets that close; an email means
 # renewal has stopped and there are still weeks to fix it.
@@ -51,6 +51,4 @@ jobs:
       - name: Check the certificates
         if: ${{ !inputs.send_test_email }}
         run: |
-          python3 scheduled-jobs/cert-expiry-check/check.py \
-            --env-file .env.prod.defaults \
-            --env-file .env.staging.defaults
+          python3 scheduled-jobs/cert-expiry-check/check.py --env-file .env.prod.defaults

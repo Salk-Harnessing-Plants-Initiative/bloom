@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import smtplib
+import ssl
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -18,24 +19,38 @@ import check  # noqa: E402
 
 NOW = datetime(2026, 10, 2, 16, 0, tzinfo=timezone.utc)
 WORKFLOW = REPO / ".github" / "workflows" / "cert-expiry-check.yml"
+PROD = REPO / ".env.prod.defaults"
+APEX = ("bloom.salk.edu",)
+WILDCARD = ("*.bloom.salk.edu",)
+
+
+def _cert(days, serial="APEX", names=APEX):
+    return check.Cert(NOW + timedelta(days=days, hours=1), serial, names)
 
 
 def _expiring_in(days):
-    return lambda host, port: NOW + timedelta(days=days, hours=1)
+    return lambda host, port: _cert(days)
+
+
+def _prod_certs(apex_days, wildcard_days):
+    """Prod's two certificates: the apex has its own, studio. and minio. share the wildcard."""
+
+    def fetch(host, port):
+        if host == "bloom.salk.edu":
+            return _cert(apex_days, "APEX", APEX)
+        return _cert(wildcard_days, "WILD", WILDCARD)
+
+    return fetch
+
+
+PROD_HOSTS = [("bloom.salk.edu", 443), ("studio.bloom.salk.edu", 443), ("minio.bloom.salk.edu", 443)]
 
 
 # --- which sites are checked ---------------------------------------------------------
 
 
 def test_prod_checks_the_three_sites_caddy_serves_on_443():
-    assert check.served_hosts(REPO / ".env.prod.defaults") == [
-        ("bloom.salk.edu", 443), ("studio.bloom.salk.edu", 443), ("minio.bloom.salk.edu", 443)]
-
-
-def test_staging_checks_its_sites_on_8443():
-    assert check.served_hosts(REPO / ".env.staging.defaults") == [
-        ("staging.bloom.salk.edu", 8443), ("staging-studio.bloom.salk.edu", 8443),
-        ("staging-minio.bloom.salk.edu", 8443)]
+    assert check.served_hosts(PROD) == PROD_HOSTS
 
 
 def test_an_env_file_without_a_main_domain_is_refused(tmp_path):
@@ -43,6 +58,10 @@ def test_an_env_file_without_a_main_domain_is_refused(tmp_path):
     f.write_text("CADDY_HTTPS_LISTEN_PORT=443\n")
     with pytest.raises(ValueError, match="DOMAIN_MAIN"):
         check.served_hosts(f)
+
+
+def test_the_environment_name_comes_from_the_env_file_name():
+    assert check.env_name(PROD) == "prod"
 
 
 # --- the decision ---------------------------------------------------------------------
@@ -53,9 +72,10 @@ def test_a_cert_with_plenty_of_time_is_fine():
     assert r.ok and r.days_left == 60
 
 
-def test_a_cert_under_the_warning_line_is_a_problem():
-    (r,) = check.check([("bloom.salk.edu", 443)], NOW, warn_days=21, fetch=_expiring_in(20))
-    assert not r.ok and r.days_left == 20
+@pytest.mark.parametrize("days, ok", [(21, True), (20, False)])
+def test_the_warning_line_is_inclusive(days, ok):
+    (r,) = check.check([("bloom.salk.edu", 443)], NOW, warn_days=21, fetch=_expiring_in(days))
+    assert r.ok is ok
 
 
 def test_a_site_that_cannot_be_checked_is_a_problem_not_a_crash():
@@ -66,26 +86,56 @@ def test_a_site_that_cannot_be_checked_is_a_problem_not_a_crash():
     assert not r.ok and r.problem == "certificate has expired"
 
 
+def test_each_result_records_which_certificate_served_it():
+    results = check.check(PROD_HOSTS, NOW, 21, fetch=_prod_certs(60, 60))
+    assert [r.serial for r in results] == ["APEX", "WILD", "WILD"]
+
+
 # --- the email --------------------------------------------------------------------------
 
 
-def test_the_email_names_each_problem_site_and_what_to_do():
-    results = check.check([("bloom.salk.edu", 443), ("staging.bloom.salk.edu", 8443)], NOW,
-                          warn_days=21, fetch=lambda h, p: NOW + timedelta(days=5 if p == 443 else 80))
-    subject, body = check.build_alert(results, warn_days=21)
-    assert "bloom.salk.edu" in subject and "5 days" in subject
-    assert "bloom.salk.edu:443" in body and "expires in 5 days" in body
-    assert "staging.bloom.salk.edu" not in body, "healthy sites are left out of the alert"
-    assert "docker logs" in body and "_acme-challenge.bloom.salk.edu" in body
+def test_the_email_lists_one_line_per_certificate_with_the_sites_it_serves():
+    results = check.check(PROD_HOSTS, NOW, 21, fetch=_prod_certs(60, 5))
+    subject, body = check.build_alert(results, 21, "prod")
+    lines = body.splitlines()
+
+    assert subject == "[bloom-cert-check] prod: certificate for *.bloom.salk.edu expires in 5 days"
+    assert "  *.bloom.salk.edu: expires in 5 days (2026-10-07)" in lines
+    assert "    used by studio.bloom.salk.edu, minio.bloom.salk.edu" in lines
+    assert sum("expires in" in line for line in lines) == 1, "one line for the shared wildcard"
+    assert not any(line.startswith("  bloom.salk.edu:") for line in lines), "the healthy apex is left out"
 
 
-def test_an_unreachable_site_is_described_in_the_email():
+def test_expiring_and_unreachable_sites_are_under_separate_headings():
+    def fetch(host, port):
+        if host == "minio.bloom.salk.edu":
+            raise check.CertProblem("connection timed out")
+        return _prod_certs(10, 60)(host, port)
+
+    subject, body = check.build_alert(check.check(PROD_HOSTS, NOW, 21, fetch=fetch), 21, "prod")
+    lines = body.splitlines()
+
+    assert subject == "[bloom-cert-check] prod: certificate for bloom.salk.edu expires in 10 days, 1 more problem"
+    assert lines.index("Expiring soon (fewer than 21 days left):") < lines.index("Could not be checked:")
+    assert "  minio.bloom.salk.edu:443: connection timed out" in lines
+
+
+def test_only_unreachable_sites_say_so_in_the_subject():
     def broken(host, port):
         raise check.CertProblem("connection refused")
 
-    subject, body = check.build_alert(check.check([("bloom.salk.edu", 443)], NOW, 21, fetch=broken), 21)
-    assert "could not be checked" in subject
-    assert "connection refused" in body
+    subject, body = check.build_alert(check.check(PROD_HOSTS[:1], NOW, 21, fetch=broken), 21, "prod")
+    assert subject == "[bloom-cert-check] prod: 1 site could not be checked"
+    assert "Expiring soon (fewer than 21 days left):" not in body.splitlines()
+
+
+def test_the_email_names_the_prod_environment_and_its_container():
+    results = check.check(PROD_HOSTS, NOW, 21, fetch=_prod_certs(5, 60))
+    _, body = check.build_alert(results, 21, "prod")
+    lines = body.splitlines()
+
+    assert lines[0] == "Urgent Notice: a prod TLS certificate for Bloom needs attention."
+    assert "     docker logs --since 168h bloom_v2_prod-caddy-1 2>&1 | grep -i -E 'error|obtain'" in lines
 
 
 # --- the command ------------------------------------------------------------------------
@@ -100,26 +150,27 @@ def config(monkeypatch, tmp_path):
     return sent, tmp_path / "summary.md"
 
 
-def _run(*args, days=60):
-    with patch.object(check, "fetch_expiry", _expiring_in(days)), \
+def _run(*args, apex=60, wildcard=60):
+    with patch.object(check, "fetch_expiry", _prod_certs(apex, wildcard)), \
          patch.object(check, "utc_now", return_value=NOW):
-        return check.main(["--env-file", str(REPO / ".env.prod.defaults"), *args])
+        return check.main(["--env-file", str(PROD), *args])
 
 
 def test_all_fine_sends_no_email_and_passes(config):
     sent, summary = config
     assert _run() == 0
     assert sent == []
-    assert "bloom.salk.edu" in summary.read_text()
+    assert "| bloom.salk.edu:443 | bloom.salk.edu | 2026-12-01 | 60 | ok |" in summary.read_text().splitlines()
 
 
 def test_a_problem_emails_the_team_and_fails_the_run(config):
     sent, _ = config
-    assert _run(days=10) == 1
+    assert _run(apex=10) == 1
     (args,) = sent
     subject, body, mail, recipients = args
     assert recipients == ["a@salk.edu", "b@salk.edu"]
-    assert "10 days" in subject
+    assert mail == check.mail_settings(PROD)
+    assert subject == "[bloom-cert-check] prod: certificate for bloom.salk.edu expires in 10 days"
 
 
 def test_a_relay_that_refuses_still_fails_the_run(config, monkeypatch):
@@ -127,27 +178,38 @@ def test_a_relay_that_refuses_still_fails_the_run(config, monkeypatch):
         raise ConnectionRefusedError("relay down")
 
     monkeypatch.setattr(check, "send_email", refuse)
-    assert _run(days=10) == 2
+    assert _run(apex=10) == 2
 
 
 def test_the_test_email_option_sends_one_email_and_checks_nothing(config):
     sent, _ = config
     with patch.object(check, "fetch_expiry", side_effect=AssertionError("no check in test mode")):
-        assert check.main(["--env-file", str(REPO / ".env.prod.defaults"), "--test-email"]) == 0
+        assert check.main(["--env-file", str(PROD), "--test-email"]) == 0
     assert len(sent) == 1 and "test" in sent[0][0].lower()
 
 
 def test_no_recipients_refuses_to_run(monkeypatch):
     monkeypatch.delenv("CERT_CHECK_RECIPIENTS", raising=False)
-    assert check.main(["--env-file", str(REPO / ".env.prod.defaults")]) == 1
+    assert check.main(["--env-file", str(PROD)]) == 1
+
+
+# --- TLS to the sites -------------------------------------------------------------------
+
+
+def test_connections_to_the_sites_refuse_anything_older_than_tls_1_2():
+    context = check.tls_context()
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+
+
+# --- mail -------------------------------------------------------------------------------
 
 
 MAIL = check.MailSettings(host="relay.test", port=2525, address="noreply@test", name="Bloom")
 
 
-@pytest.mark.parametrize("env_file", [".env.prod.defaults", ".env.staging.defaults"])
-def test_mail_goes_out_as_blooms_own_sender_through_its_relay(env_file):
-    mail = check.mail_settings(REPO / env_file)
+def test_mail_goes_out_as_blooms_own_sender_through_its_relay():
+    mail = check.mail_settings(PROD)
     assert (mail.host, mail.port) == ("neoemex1.salk.edu", 25)
     assert mail.address == "noreply@bloom.salk.edu" and mail.name == "Bloom"
 
@@ -159,12 +221,36 @@ def test_an_env_file_without_smtp_settings_is_refused(tmp_path):
         check.mail_settings(f)
 
 
+def _smtp(offers_starttls):
+    smtp_class = MagicMock()
+    smtp = smtp_class.return_value.__enter__.return_value
+    smtp.has_extn.side_effect = lambda name: offers_starttls and name.lower() == "starttls"
+    return smtp_class, smtp
+
+
 def test_send_email_uses_the_configured_relay_and_sender_name():
-    with patch.object(check.smtplib, "SMTP") as smtp:
+    smtp_class, smtp = _smtp(offers_starttls=False)
+    with patch.object(check.smtplib, "SMTP", smtp_class):
         check.send_email("s", "b", MAIL, ["to@y"])
-    smtp.assert_called_once_with("relay.test", 2525, timeout=30)
-    sent = smtp.return_value.__enter__.return_value.send_message.call_args[0][0]
-    assert sent["From"] == "Bloom <noreply@test>"
+    smtp_class.assert_called_once_with("relay.test", 2525, timeout=30)
+    assert smtp.send_message.call_args[0][0]["From"] == "Bloom <noreply@test>"
+
+
+def test_mail_is_encrypted_when_the_relay_offers_it():
+    smtp_class, smtp = _smtp(offers_starttls=True)
+    with patch.object(check.smtplib, "SMTP", smtp_class):
+        check.send_email("s", "b", MAIL, ["to@y"])
+    smtp.starttls.assert_called_once()
+    assert smtp.method_calls.index(next(c for c in smtp.method_calls if c[0] == "starttls")) < \
+        smtp.method_calls.index(next(c for c in smtp.method_calls if c[0] == "send_message"))
+
+
+def test_mail_is_sent_plain_when_the_relay_does_not_offer_encryption():
+    smtp_class, smtp = _smtp(offers_starttls=False)
+    with patch.object(check.smtplib, "SMTP", smtp_class):
+        check.send_email("s", "b", MAIL, ["to@y"])
+    smtp.starttls.assert_not_called()
+    smtp.send_message.assert_called_once()
 
 
 def test_send_email_passes_relay_errors_up():
@@ -186,7 +272,7 @@ def _on(wf):
 
 
 def test_the_workflow_runs_weekly_and_by_hand(wf):
-    assert len(_on(wf)["schedule"]) == 1
+    assert _on(wf)["schedule"] == [{"cron": "17 16 * * 0"}]
     assert "send_test_email" in _on(wf)["workflow_dispatch"]["inputs"]
 
 
@@ -197,15 +283,9 @@ def test_the_workflow_runs_on_the_salk_network_runner_with_read_only_access(wf):
     assert job["timeout-minutes"] <= 15
 
 
-def test_the_workflow_checks_both_environments_and_uses_no_secrets():
+def test_the_workflow_checks_prod_only_and_uses_no_secrets():
     text = WORKFLOW.read_text()
-    assert ".env.prod.defaults" in text and ".env.staging.defaults" in text
+    assert "--env-file .env.prod.defaults" in text
+    assert ".env.staging.defaults" not in text
     assert "secrets." not in text
     assert "CERT_CHECK_FROM" not in text and "CERT_CHECK_SMTP_HOST" not in text
-
-
-def test_the_tests_never_open_a_real_connection():
-    with patch.object(check.socket, "create_connection", side_effect=AssertionError("network used")):
-        with patch.object(check, "fetch_expiry", _expiring_in(60)):
-            (r,) = check.check([("bloom.salk.edu", 443)], NOW, warn_days=21)
-    assert r.ok
