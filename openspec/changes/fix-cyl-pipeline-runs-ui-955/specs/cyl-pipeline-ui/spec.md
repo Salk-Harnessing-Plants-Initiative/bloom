@@ -162,6 +162,8 @@ The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigati
 - **THEN** the list is unchanged
 - **AND** the next "load older" returns that run in order, with no run skipped or duplicated
 
+<!-- This block is raised onto fix-cyl-noop-redelivery-scan-resolution's block for the same requirement (its one-line "Failed rows" and its no-op scenario), plus this change's edits. Archive that change first; see tasks 9.1. -->
+
 ### Requirement: Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`
 The web app SHALL provide `/app/cyl-pipeline-runs/[runId]`. It SHALL:
 - parse `runId` with `parseId`, look the run up with `maybeSingle`, and call `notFound()` when parsing fails or no run is visible to the caller;
@@ -188,9 +190,7 @@ It SHALL show:
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 
   `scan_id`, wave, day, `attempts` and `source_id` SHALL be shown as plain integers, without digit grouping, and SHALL stay numeric columns, so sorting and the column filter's numeric operators are unchanged. The scan column SHALL be at least 110 px wide, enough for a ten-digit id at compact density.
-- **Failed rows:**
-  - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
-  - when the row's `error_message` equals write-back's no-result message or the status poller's backstop message, *and* the scan currently has pipeline results, the note: "*This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.*"
+- **Failed rows:** a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies.
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
@@ -241,9 +241,9 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 - **WHEN** a failed row's scan has a null `plant_age_days`
 - **THEN** the row shows "Likely cause: plant age missing"
 
-#### Scenario: The no-op note is narrow
-- **WHEN** a failed row has an `error_message` other than write-back's no-result message or the backstop message
-- **THEN** no bloom#900 note is shown, even if the scan has pipeline results
+#### Scenario: A failed no-result row whose scan has results carries no re-delivery note
+- **WHEN** a failed row's `error_message` is write-back's no-result message or the status poller's backstop message, and the scan currently has pipeline results
+- **THEN** the row shows no bloom#900 note, and "Re-run failed scans" shows no bloom#900 warning
 
 ### Requirement: Experiment page shows that experiment's runs
 The experiment page SHALL show the 10 most recent runs that include at least one of its scans. It SHALL read them from `cyl_pipeline_run_experiments`, ordered by `created_at` then `run_id`, both descending, and show each run's counts-first display state.

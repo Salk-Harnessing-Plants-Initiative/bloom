@@ -162,3 +162,9 @@
   - a failed or queued row with no source shows "—".
 - [ ] 8.4 Open the dialog on a one-scan selection. It shows "1 selected scan". If that scan already has results, it shows "This scan already has pipeline results…".
 - [ ] 8.5 In the archive PR, record the deployed sha and what you saw, tick 8.x, and then close #955 by hand. Don't archive before 8.x is recorded.
+
+## 9. Archive-ordering hazard (`openspec validate --strict` cannot see it)
+
+- [x] 9.1 `fix-cyl-noop-redelivery-scan-resolution` (bloom#900; on staging via #1001, not yet archived) also MODIFIES `cyl-pipeline-ui` "Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`". This change's block is raised onto that block: its one-line "Failed rows" and its no-op scenario are copied byte-identical, and the only line of theirs not kept is the "current in trait views" bullet this change rewrites. An HTML note above the block says so.
+- [ ] 9.2 Archive `fix-cyl-noop-redelivery-scan-resolution` before this change, or in the same PR with that change first. Then `diff` the archived drill-down requirement against this block's intent, and record the result here. If that change's block is revised before archiving, raise this block again first.
+
