@@ -221,18 +221,18 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
 
 ## 7. Pre-merge and PR (C7)
 
-- [ ] 7.1 `openspec validate add-cyl-pipeline-model-window-warning --strict`.
-- [ ] 7.2 Python checks:
+- [x] 7.1 `openspec validate add-cyl-pipeline-model-window-warning --strict`.
+- [x] 7.2 Python checks (2026-10-02: all green; Black flags 9 untouched `services/workflows` files and two `tests/unit` files, all already unformatted on staging and outside the Black hook's scope for `tests/unit`, so left alone):
   - `uvx black@26.3.1 --check services/workflows tests/unit`
   - `uvx ruff@0.9.9 check services/workflows tests/unit`
   - `python scripts/check-uv-locks.py`
   - the workflows tests
   - `uv run --extra test pytest tests/unit/ -q`
   - `python scripts/verify_env_parity.py .github/workflows/deploy.yml`
-- [ ] 7.3 Web checks: from `web/`, run `npx tsc --noEmit`, `npm run lint`, `npm run build` (with CI's placeholder `NEXT_PUBLIC_*` env; restore `web/tsconfig.json` afterwards) and `npm run test:unit`.
-- [ ] 7.4 Re-run 1.4 and 1.5, and confirm 1.6's comparison is recorded in C2's body.
+- [x] 7.3 Web checks (2026-10-02: tsc clean; 153 files / 2302 tests pass; build OK with the route listed; `web/` has no lint script and CI doesn't lint it): from `web/`, run `npx tsc --noEmit`, `npm run build` (with CI's placeholder `NEXT_PUBLIC_*` env; restore `web/tsconfig.json` afterwards) and `npm run test:unit`.
+- [x] 7.4 Re-run 1.4 and 1.5, and confirm 1.6's comparison is recorded in C2's body.
 - [ ] 7.5 Run `/pre-merge` and fix anything until green.
-- [ ] 7.6 Tick 0–7, write the PR body with `/pr-description` ("Part of #971"; gates 9.1 and 9.2; dev stacks must rebuild the workflows image), and update the draft PR.
+- [x] 7.6 Tick 0–7, write the PR body with `/pr-description` ("Part of #971"; gates 9.1 and 9.2; dev stacks must rebuild the workflows image), and update the draft PR.
 
 ## 8. Rebase watch
 
