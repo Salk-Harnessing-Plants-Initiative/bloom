@@ -88,6 +88,7 @@ const FOLDER_STAGE_EXIT_SENTENCES: Record<number, string> = {
   6: "The run's S3 folder or its file list can't be used.",
   7: "The FASTQ file names in the S3 folder don't follow Illumina's naming (<name>_S1_L001_R1_001.fastq.gz), or a lane lacks R1 or R2.",
   8: "The S3 folder changed after the run was started, so its reads weren't used; the Stage FASTQs step's log says which file. Start a new run on the folder as it is now.",
+  9: "The FASTQs in the S3 folder are named for another sample than the run's; the Stage FASTQs step's log names it.",
   10: "The S3 folder couldn't be listed or copied. Check it's still public and start the run again.",
 };
 

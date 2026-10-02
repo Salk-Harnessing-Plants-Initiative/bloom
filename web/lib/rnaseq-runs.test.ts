@@ -238,6 +238,7 @@ describe("failureSentence", () => {
     [4, /even after waiting 10 minutes/],
     [7, /in the S3 folder don't follow/],
     [8, /changed after the run was started/],
+    [9, /named for another sample/],
     [10, /couldn't be listed or copied/],
   ])("explains exit %i from staging an S3 folder", (code, sentence) => {
     const failed = run({
