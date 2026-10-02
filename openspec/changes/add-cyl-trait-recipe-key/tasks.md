@@ -782,7 +782,7 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
       next to staging's 5: every recipe read costs about (selected scans) x `unplaced` index
       probes, and staging's 18,471 x 5 took 711 ms (7.3). Run
       `scripts/lint_migrations.sh origin/main` on the promotion PR.
-- [ ] 8.1 **Read-only checks on staging after deploy:**
+- [x] 8.1 **Read-only checks on staging after deploy:**
 
   - `count(*) WHERE recipe_key IS NULL` is 0;
   - the NULL `scan_id`s are only the known unresolvable sources;
@@ -794,8 +794,26 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
   If any `recipe_key` is NULL, run `SELECT cyl_backfill_trait_source_recipe_identity();` as
   `postgres`, with eberrigan's yes.
 
+  **Passed (2026-10-02, read-only, staging at `88cbcbf3`).** #976 (`57242f36`) first deployed
+  in Deploy run 36792301776 (`618cbeb8`). `20260930120000`–`120300` are applied.
+  - 91 sources (max id 264); `recipe_key IS NULL`: 0, so no backfill was run.
+  - `scan_id IS NULL`: 5, exactly sources 1–5 (`legacy:1`–`legacy:5`, no `image_ids`). These are
+    7.2's unplaced 5.
+  - 10 distinct pipeline keys (nine `0.1.0a7`, one `0.1.0a9`); 5 `legacy:` sources.
+  - `list_trait_recipes(ARRAY[12880747])` returns 6 pipeline recipes. The default
+    (`is_default`) is `1911b908…`, the only `0.1.0a9` key: 18 scans, newest source 264.
+  - Experiment 1's coverage through Kong/PostgREST, as the bloomctl `staging-user` (`bloom_user`)
+    session: 18,471 rows in 1.48 s, 1.03 s and 0.93 s. In psql as `authenticated` it took
+    6.07 s cold, then 0.70 s and 0.63 s warm. Statuses for the default recipe: `legacy_only`
+    13,392, `no_traits` 5,075, `included` 3, `other_recipe` 1.
+
 - [ ] 8.2 On the first Bloom-dispatched run after deploy, confirm the new source's stamps. If no
       such run has happened, record this as blocked.
+      **Blocked (2026-10-02):** no Bloom run since the deploy has created a source. Runs 19–22
+      were all re-deliveries onto existing sources (run-scan rows 1565–1568 → sources 264, 250,
+      228, 251); `max(id)` is still 264. No source has `argo_workflow_name` or
+      `cyl_pipeline_run_id` set. A run over a TEST-E2E scan with no `0.1.0a9` source (not the
+      poison scans 12894751/12894760) would create one.
 - [ ] 8.3 **Drafts for eberrigan to approve before posting:**
   - a note on #936 for egao28, covering:
     - the new arguments;

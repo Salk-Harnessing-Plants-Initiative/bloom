@@ -149,9 +149,12 @@
 
 ## 8. Staging check (after merge; recorded in the archive PR)
 
-- [ ] 8.1 Approve the Deploy run at the `staging` environment gate and wait for "Staging deployed successfully!".
+- [x] 8.1 Approve the Deploy run at the `staging` environment gate and wait for "Staging deployed successfully!".
   - Confirm that the deployed sha contains the merge commit: `git merge-base --is-ancestor <merge_sha> <deployed_sha>`.
   - A later merge may supersede this run, so don't expect the two shas to be equal.
+  - **2026-10-02:** #1006's own run 36960837578 (`1ab65e24`) was cancelled because a later run
+    superseded it. Run 36969184325 on `88cbcbf3` logged "Staging deployed successfully!" at
+    05:43:45Z, and `git merge-base --is-ancestor 1ab65e24 88cbcbf3` holds.
 - [ ] 8.2 On `/app/cyl-pipeline-runs`:
   - the Run, Target, Experiments and State headings show;
   - runs 1 and 2, or any run with F = 0, have no "0 failed" link;

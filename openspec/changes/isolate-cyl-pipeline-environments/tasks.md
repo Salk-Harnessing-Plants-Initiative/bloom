@@ -251,6 +251,17 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
   - run a staging pipeline run on one TEST-E2E scan in experiment 12880747;
   - confirm the Workflow's `.spec.volumes` equals today's `a4_poc` paths and the staging secret
     (filter by `environment=staging`), and that the run completes.
+
+  **Partly evidenced (2026-10-02); left unticked.** #988's Deploy run 36928379446 finished at
+  2026-10-01T21:45:24Z. After that, Bloom runs 20, 21 and 22 each ran one TEST-E2E scan in
+  experiment 12880747 (12894761, 12894756, 12894762). All three completed with done 1, failed 0,
+  and wrote to staging (Argo `fc96k`, `x8hld`, `7bnds`). The staging worker's environment holds
+  `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT=/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc`,
+  `WORKFLOWS_K8S_PIPELINE_SECRET_NAME=genericsecret-bloom-staging-pipeline-credentials` and
+  `CYL_PIPELINE_TRIGGER_ENABLED=true`. These match the vendored file's three `a4_poc` paths and
+  its secret. Not verifiable after the fact: Bloom's dispatch-time `ttlStrategy` had already
+  deleted the three Workflows (kubectl `NotFound`), and the 05:43Z deploy recreated the worker,
+  so its earlier logs are gone. Checking `.spec.volumes` needs a new run, read while it runs.
 - [ ] 6.2 With the author's go-ahead, set the dev stack's switch on, with no root or secret, and
   queue a run. Confirm it fails with "not configured" and that no Workflow is created.
 - [ ] 6.3 Prod provisioning, done by the author, with step-by-step walkthroughs given at the time:
