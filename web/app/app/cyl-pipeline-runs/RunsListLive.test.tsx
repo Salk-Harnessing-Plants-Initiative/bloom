@@ -491,6 +491,8 @@ describe("empty and error states", () => {
     expect(screen.getByRole("alert").textContent).toContain("timeout");
     expect(row(91)).toBeTruthy();
     expect(within(screen.getByRole("table")).getByTestId("run-91")).toBeTruthy();
+    // Held runs stay listed below the error.
+    expect(screen.getByRole("alert").compareDocumentPosition(screen.getByRole("table")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     supabaseMock.respond = respond;
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /retry/i })));
     await tick();

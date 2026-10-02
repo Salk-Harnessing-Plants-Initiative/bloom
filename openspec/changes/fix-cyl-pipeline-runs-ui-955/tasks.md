@@ -170,11 +170,11 @@
 
 ## 10. PR #1006 review, round 1 (Important 1–3)
 
-- [ ] 10.1 **Red** (`RunScansTable.test.tsx`). The column's `description` equals the spec delta's text exactly ("— means no result is linked to this row. …"). Fails today: the old text says "this run recorded no result for the scan".
-- [ ] 10.2 **Red** (`RunScansTable.test.tsx`). Covers the scenario "The column sorts by what it shows": four rows reading "no", "—", "no", "—"; click the column header to sort; the "—" rows are adjacent and the "no" rows are adjacent. Also, the column's `valueGetter(false, { source_id: null })` returns "—". Fails today: sorting uses the raw `false`, so the order doesn't change.
-- [ ] 10.3 Replace the column's `valueFormatter` with a `valueGetter` returning the shown string, and reword its `description`. Update the `current` field doc and the `RunDetailLive.tsx` header comment (`:19-22`) to point at it. `RunDetailLive`'s computation is unchanged.
-- [ ] 10.4 **Red** (`RunPipelineDialog.test.tsx`). "0 of 40" (K = 0, N = 40, L = 0): the pre-check line reads "0 of 40 already have pipeline results.", and the details paragraph is exactly "All 40 will be sent; the cluster skips scans it has already processed with the same models and code." Red by mutation: changing `precheckLine`'s `N === 1` to `K === 0` must fail it. Confirm, then revert the mutation.
-- [ ] 10.5 Tighten the details assertions to exact equality on the details `<p>`: the 38-of-40 scenario and both N = 1 scenarios.
-- [ ] 10.6 **Guard** (`RunsListLive.test.tsx`). "A failed resync keeps the held runs": the alert comes before the table in document order.
-- [ ] 10.7 The web unit suite, `tsc --noEmit` and `openspec validate --strict` all pass.
+- [x] 10.1 **Red** (`RunScansTable.test.tsx`). The column's `description` equals the spec delta's text exactly ("— means no result is linked to this row. …"). Fails today: the old text says "this run recorded no result for the scan".
+- [x] 10.2 **Red** (`RunScansTable.test.tsx`). Covers the scenario "The column sorts by what it shows": four rows reading "no", "—", "no", "—"; click the column header to sort; the "—" rows are adjacent and the "no" rows are adjacent. Also, the column's `valueGetter(false, { source_id: null })` returns "—". Fails today: sorting uses the raw `false`, so the order doesn't change.
+- [x] 10.3 Replace the column's `valueFormatter` with a `valueGetter` returning the shown string, and reword its `description`. Update the `current` field doc and the `RunDetailLive.tsx` header comment (`:19-22`) to point at it. `RunDetailLive`'s computation is unchanged.
+- [x] 10.4 **Red** (`RunPipelineDialog.test.tsx`). "0 of 40" (K = 0, N = 40, L = 0): the pre-check line reads "0 of 40 already have pipeline results.", and the details paragraph is exactly "All 40 will be sent; the cluster skips scans it has already processed with the same models and code." Red by mutation: changing `precheckLine`'s `N === 1` to `K === 0` must fail it. Confirm, then revert the mutation.
+- [x] 10.5 Tighten the details assertions to exact equality on the details `<p>`: the 38-of-40 scenario and both N = 1 scenarios.
+- [x] 10.6 **Guard** (`RunsListLive.test.tsx`). "A failed resync keeps the held runs": the alert comes before the table in document order.
+- [x] 10.7 The web unit suite, `tsc --noEmit` and `openspec validate --strict` all pass.
 

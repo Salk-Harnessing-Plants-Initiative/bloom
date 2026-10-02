@@ -109,6 +109,8 @@ async function settle() {
 }
 const confirmButton = () => screen.queryByRole("button", { name: "Start run" }) as HTMLButtonElement | null;
 const dialogText = () => screen.getByRole("dialog").textContent ?? "";
+/** The pre-check details paragraph alone, without its "Details" summary. */
+const detailsText = () => screen.getByTestId("precheck-details").querySelector("p")?.textContent;
 const ack = () => screen.queryByRole("checkbox", { name: /I understand this queues/ }) as HTMLInputElement | null;
 
 /** A fetch answer as the proxy gives it. */
@@ -298,7 +300,7 @@ describe("the pre-check", () => {
     expect(dialogText()).toContain("38 of 40 already have pipeline results.");
     const details = screen.getByTestId("precheck-details");
     expect(details.tagName).toBe("DETAILS");
-    expect(details.textContent).toContain(
+    expect(detailsText()).toBe(
       "1 more scan has only traits without a recorded source (typically older, pre-pipeline data), which a successful run replaces in trait views. All 40 will be sent; the cluster skips scans it has already processed with the same models and code.",
     );
   });
@@ -346,7 +348,7 @@ describe("the pre-check, in the singular (bloom#955)", () => {
     await settle();
     expect(dialogText()).toContain("This scan has no pipeline results yet.");
     expect(dialogText()).not.toContain("0 of 1");
-    expect(screen.getByTestId("precheck-details").textContent).toContain(SINGLE_DETAILS);
+    expect(detailsText()).toBe(SINGLE_DETAILS);
   });
 
   it("speaks of the scan when N = 1 and it has no traits at all", async () => {
@@ -355,10 +357,16 @@ describe("the pre-check, in the singular (bloom#955)", () => {
     mount();
     await settle();
     expect(dialogText()).toContain("This scan has no pipeline results yet.");
-    const details = screen.getByTestId("precheck-details").textContent ?? "";
-    expect(details).toContain("The scan will be sent; the cluster skips it if it has already been processed with the same models and code.");
-    expect(details).not.toContain("only traits without a recorded source");
-    expect(details).not.toContain("All 1 will be sent");
+    expect(detailsText()).toBe("The scan will be sent; the cluster skips it if it has already been processed with the same models and code.");
+  });
+
+  it("keeps the plural for none of many (PR #1006 review)", async () => {
+    latest = [];
+    mount();
+    await settle();
+    expect(dialogText()).toContain("0 of 40 already have pipeline results.");
+    expect(dialogText()).not.toContain("This scan");
+    expect(detailsText()).toBe("All 40 will be sent; the cluster skips scans it has already processed with the same models and code.");
   });
 
   it("says 1 of N already has results", async () => {
