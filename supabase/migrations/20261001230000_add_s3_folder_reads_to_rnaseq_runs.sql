@@ -72,7 +72,9 @@ DROP FUNCTION IF EXISTS public.request_scrna_cellranger_run(TEXT, TEXT, UUID, JS
 -- The reads come from one source: an S3 folder (p_fastq_url with the p_fastq_files found in it),
 -- SRA run IDs (p_sra_runs, imported under a name nobody has registered), or neither (a
 -- registered sample). No run on a registered name starts while an import of it is still
--- downloading.
+-- downloading. A folder run is refused when its run key (sample, reference and scientist)
+-- already has a run that hasn't failed, since the key is also the run's output folder and
+-- a finished one would be reused as this run's results.
 CREATE OR REPLACE FUNCTION public.request_scrna_cellranger_run(
     p_sample TEXT,
     p_reference TEXT,
@@ -98,6 +100,8 @@ DECLARE
     v_max_url CONSTANT INTEGER := 1024;
     v_params JSONB;
     v_run_id BIGINT;
+    v_run_key TEXT := p_sample || '__' || p_reference || '__' || p_requested_by::text;
+    v_earlier BIGINT;
 BEGIN
     IF p_sample IS NULL OR p_sample !~ v_sample_rule OR p_sample ~ '__' THEN
         RAISE EXCEPTION 'invalid sample name: %', p_sample USING ERRCODE = '22023';
@@ -162,6 +166,19 @@ BEGIN
         ) THEN
             RAISE EXCEPTION 'every lane needs an R1 and an R2' USING ERRCODE = '22023';
         END IF;
+        -- Serialises folder runs on one key, so two can't both pass the check below.
+        PERFORM pg_advisory_xact_lock(hashtextextended('rnaseq_run_key:' || v_run_key, 0));
+        SELECT id INTO v_earlier FROM public.rnaseq_runs
+        WHERE workflow_type = 'scrna-cellranger'
+          AND run_key = v_run_key
+          AND status <> 'failed'
+        ORDER BY id
+        LIMIT 1;
+        IF v_earlier IS NOT NULL THEN
+            RAISE EXCEPTION '% against % has already been processed (run %). To process these reads as a new sample, rename the FASTQs so they start with a new sample name, e.g. %_rep2_S1_L001_R1_001.fastq.gz, and start again',
+                p_sample, p_reference, v_earlier, p_sample
+                USING ERRCODE = '23505';
+        END IF;
         v_params := v_params || jsonb_build_object(
             'fastq_url', p_fastq_url,
             'fastq_files', (SELECT jsonb_agg(f ORDER BY f ->> 'name')
@@ -208,7 +225,7 @@ BEGIN
     VALUES (
         'scrna-cellranger',
         v_params,
-        p_sample || '__' || p_reference || '__' || p_requested_by::text,
+        v_run_key,
         p_requested_by,
         p_metadata
     )

@@ -3,6 +3,8 @@ Integration tests for reading a Cell Ranger run's FASTQs from an S3 folder:
 - params may carry the folder and the files found in it, and only with each other;
 - request_scrna_cellranger_run takes them, and refuses a bad folder, bad files, a lane
   without its R1 or R2, and a folder together with SRA run IDs;
+- a folder run is refused when its run key already has a run that hasn't failed, since the
+  key is also its output folder;
 - SRA imports and registered samples still start as before;
 - only bloom_workflows may call the function;
 - the rollback restores the earlier check and signature.
@@ -13,13 +15,14 @@ back, so the database is left unchanged.
 
 import pytest
 
-from tests.integration.test_rnaseq_runs import USER, _find_one, _sql_body
+from tests.integration.test_rnaseq_runs import OTHER_USER, USER, _find_one, _sql_body
 from tests.integration.test_rnaseq_sra_import import MIGRATION as SRA_MIGRATION
 from tests.integration.test_rnaseq_sra_import import (
     QUEUE_TABLE,
     TABLE,
     _as_workflows,
     _bare,
+    _mark,
     _build,
     _can_execute,
     _count,
@@ -65,12 +68,12 @@ def cur(pg_conn):
     pg_conn.rollback()
 
 
-def _request(cur, sample="col0", url=URL, files=FILES, runs=None, reference="tiny_ref"):
+def _request(cur, sample="col0", url=URL, files=FILES, runs=None, reference="tiny_ref", user=USER):
     return _as_workflows(
         cur,
         "SELECT request_scrna_cellranger_run(p_sample => %s, p_reference => %s, "
         "p_requested_by => %s, p_sra_runs => %s, p_fastq_url => %s, p_fastq_files => %s)",
-        (sample, reference, USER, runs, url, None if files is None else Jsonb(files)),
+        (sample, reference, user, runs, url, None if files is None else Jsonb(files)),
     )
 
 
@@ -193,14 +196,56 @@ def test_more_than_96_files_are_refused(cur):
              match="2 to 96")
 
 
-def test_a_folder_run_doesnt_wait_for_an_import_of_the_same_name(cur):
-    _as_workflows(
+def test_a_folder_run_on_the_key_of_an_import_is_refused(cur):
+    """The import's results would land in the same output folder."""
+    imported = _as_workflows(
         cur,
         "SELECT request_scrna_cellranger_run(p_sample => 'col0', p_reference => 'tiny_ref', "
         "p_requested_by => %s, p_sra_runs => %s)",
         (USER, ["SRR28503597"]),
     )
-    assert _request(cur) > 0
+    _refused(cur, _request, error=psycopg.errors.UniqueViolation, match=f"run {imported}")
+
+
+@pytest.mark.parametrize("status", ["queued", "submitted", "running", "succeeded", "skipped"])
+def test_a_folder_run_on_a_key_already_processed_is_refused(cur, status):
+    first = _request(cur)
+    _mark(cur, first, status)
+    _refused(
+        cur, _request, url="s3://lab-data/run43/",
+        error=psycopg.errors.UniqueViolation,
+        match=rf"col0 against tiny_ref has already been processed \(run {first}\)\. To process "
+              r"these reads as a new sample, rename the FASTQs",
+    )
+    assert _count(cur, TABLE) == 1
+
+
+def test_the_same_folder_again_is_refused_too(cur):
+    _request(cur)
+    _refused(cur, _request, error=psycopg.errors.UniqueViolation, match="already been processed")
+
+
+def test_a_folder_run_can_follow_a_failed_one(cur):
+    first = _request(cur)
+    _mark(cur, first, "failed")
+    assert _request(cur) > first
+
+
+def test_a_folder_run_is_refused_on_a_registered_samples_key(cur):
+    registered = _as_workflows(
+        cur,
+        "SELECT request_scrna_cellranger_run(p_sample => 'col0', p_reference => 'tiny_ref', "
+        "p_requested_by => %s)",
+        (USER,),
+    )
+    _mark(cur, registered, "succeeded")
+    _refused(cur, _request, error=psycopg.errors.UniqueViolation, match=f"run {registered}")
+
+
+def test_another_reference_or_scientist_is_another_key(cur):
+    _request(cur)
+    assert _request(cur, reference="other_ref") > 0
+    assert _request(cur, user=OTHER_USER) > 0
 
 
 def test_sra_imports_and_registered_samples_start_as_before(cur):
