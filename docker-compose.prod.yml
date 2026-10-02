@@ -154,15 +154,16 @@ services:
       # <internal_host>=<public_host>[,<internal_host>=<public_host>]*
       # The .env.prod / .env.staging / .env.ci sources MUST set this var.
       SUPABASE_URL_HOSTS_ALLOWED: ${SUPABASE_URL_HOSTS_ALLOWED}
-      # The last commit that changed this image's inputs (the Dockerfile's COPY
-      # sources), recorded in each trait export's sidecar as
-      # generated_by.version (web/lib/cyl-trait-export, added by #996). Read at
-      # runtime, so not a build arg. Not HEAD: this is container config, so a
-      # value that changed on every commit would recreate bloom-web on every
-      # deploy. deploy.yml and `make prod-up`/`staging-up` set it from the
-      # host's checkout; any other hand-run compose gets `unknown` from
-      # .env.*.defaults. When add-ghcr-image-publishing lands, fold this into
-      # its BLOOM_IMAGE_SHA.
+      # The last commit that changed the code this image is built from (the
+      # Dockerfile's COPY sources), recorded in each trait export's sidecar as
+      # generated_by.version (web/lib/cyl-trait-export, added by #996). It names
+      # the code, not the whole image: build args (NEXT_PUBLIC_*) and untracked
+      # files on the host are not covered. Read at runtime, so not a build arg.
+      # Not HEAD: this is container config, so a value that changed on every
+      # commit would recreate bloom-web on every deploy. deploy.yml and
+      # `make prod-up`/`staging-up` set it from the host's checkout; any other
+      # hand-run compose gets `unknown` from .env.*.defaults. When
+      # add-ghcr-image-publishing lands, fold this into its BLOOM_IMAGE_SHA.
       BLOOM_WEB_BUILD_SHA: ${BLOOM_WEB_BUILD_SHA:-}
     depends_on:
       - kong

@@ -317,14 +317,15 @@ jobs:
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
             # bloom-web stamps this into trait-export sidecars (bloom#1007): the
-            # last commit that changed its image inputs (the Dockerfile's COPY
-            # sources), not HEAD, so a deploy that leaves the image alone does
-            # not recreate bloom-web and drop its in-memory exports. Taken on
-            # the host (escaped); assigned, then checked non-empty (git log
+            # last commit that changed the code its image is built from (the
+            # Dockerfile's COPY sources), not HEAD, so a deploy that leaves that
+            # code alone does not recreate bloom-web and drop its in-memory
+            # exports. Build args and untracked host files are not covered.
+            # Taken on the host (escaped); assigned, then checked non-empty (git log
             # exits 0 when nothing matches), then exported, so a failure stops
             # the deploy instead of stamping an empty SHA.
             BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
-            test -n \"\$BLOOM_WEB_BUILD_SHA\"
+            test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
             export BLOOM_WEB_BUILD_SHA
             docker compose -f docker-compose.prod.yml --env-file .env.prod \
               up -d --build --remove-orphans --wait --wait-timeout 600
@@ -894,7 +895,7 @@ jobs:
               # After the reset, so bloom-web names the code rolled back to; see
               # the production deploy step's comment (bloom#1007).
               BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
-              test -n \"\$BLOOM_WEB_BUILD_SHA\"
+              test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
               export BLOOM_WEB_BUILD_SHA
               docker compose -f docker-compose.prod.yml --env-file .env.prod \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
@@ -1267,7 +1268,7 @@ jobs:
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
             # See the matching comment in the production deploy step (bloom#1007).
             BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
-            test -n \"\$BLOOM_WEB_BUILD_SHA\"
+            test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
             export BLOOM_WEB_BUILD_SHA
             docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
               up -d --build --remove-orphans --wait --wait-timeout 600
@@ -1768,7 +1769,7 @@ jobs:
               # After the reset, so bloom-web names the code rolled back to; see
               # the production deploy step's comment (bloom#1007).
               BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
-              test -n \"\$BLOOM_WEB_BUILD_SHA\"
+              test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
               export BLOOM_WEB_BUILD_SHA
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
