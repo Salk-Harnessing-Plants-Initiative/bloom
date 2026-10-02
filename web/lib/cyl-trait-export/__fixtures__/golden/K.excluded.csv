@@ -1,0 +1,6 @@
+scan_id,plant_qr_code,reason,available_recipes
+101,FX-P3,other_recipe,2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96
+102,FX-P4,legacy_only,legacy:9
+103,FX-P5,legacy_only,unattributed
+200,FX-P6,no_traits,
+201,FX-P7,other_recipe,2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96
