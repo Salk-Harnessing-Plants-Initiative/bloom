@@ -12,7 +12,8 @@ plan_cache_mode = force_custom_plan on the function (50 ms at the same batch).
 The tests read the function's main statement, the one that reads cyl_scan_traits_source,
 through auto_explain with log_analyze at notice level, and bound the cyl_scan_traits
 rows it actually read by the trait rows of the selected scans. Sequential scans are off
-so the small fixture cannot hide a full read behind a cheap seq scan. LOCAL ONLY: every
+so the small fixture cannot hide a full read behind a cheap seq scan, and filler scans
+keep a full read from being the cheapest plan where they are on. LOCAL ONLY: every
 test rolls back.
 """
 
@@ -22,6 +23,7 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
+from tests.integration.test_cyl_read_path import _seed_experiment  # noqa: E402
 from tests.integration.test_cyl_trait_recipes_read import Fixture  # noqa: E402
 
 SIG = "public.get_experiment_traits(bigint, bigint, text, text, bigint[])"
@@ -41,6 +43,12 @@ PLANNED_TABLES = (
     "cyl_experiments",
     "accessions",
 )
+# Scans in an experiment of their own, three trait rows each. In CI's otherwise empty
+# database the fixture alone is 24 cyl_scan_traits rows, and with current statistics a
+# full read of those is rightly the cheapest plan once seq scans are allowed (reproduced
+# on dev: the later-calls test read 23.5 rows per call against a bound of 5). With 50
+# filler scans every case read only its batch, so 1000 leaves a wide margin.
+FILLER_SCANS = 1000
 # More than 5 calls, so plpgsql would have moved to a generic plan by the last one.
 REPEAT_CALLS = 7
 
@@ -48,7 +56,34 @@ REPEAT_CALLS = 7
 @pytest.fixture
 def fx(pg_conn):
     with pg_conn.cursor() as cur:
-        yield Fixture(cur)
+        fixture = Fixture(cur)
+        _add_filler(cur, fixture)
+        yield fixture
+
+
+def _add_filler(cur, fx):
+    _, wave = _seed_experiment(cur)
+    cur.execute(
+        """
+        WITH acc AS (
+            INSERT INTO accessions (name)
+            SELECT 'plan-filler-' || md5(random()::text)
+              FROM generate_series(1, %(n)s)
+            RETURNING id),
+        plant AS (
+            INSERT INTO cyl_plants (wave_id, accession_id, germ_day, qr_code)
+            SELECT %(wave)s, id, 5, 'plan-filler-' || id FROM acc
+            RETURNING id),
+        scan AS (
+            INSERT INTO cyl_scans (plant_id, date_scanned, plant_age_days)
+            SELECT id, '2026-01-01', 10 FROM plant
+            RETURNING id)
+        INSERT INTO cyl_scan_traits (scan_id, source_id, trait_id, value)
+        SELECT scan.id, NULL, t, 1.0
+          FROM scan CROSS JOIN unnest(%(traits)s::bigint[]) AS t
+        """,
+        {"n": FILLER_SCANS, "wave": wave, "traits": list(fx.trait.values())},
+    )
 
 
 def _main_plans(cur, args, *, calls=1, session=()):
