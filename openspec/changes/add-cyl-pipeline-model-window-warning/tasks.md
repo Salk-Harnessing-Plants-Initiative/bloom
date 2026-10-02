@@ -138,14 +138,14 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
 
 ## 4. Secret wiring (C4)
 
-- [ ] 4.1 **Red.** New `tests/unit/test_wandb_key_scope.py`:
+- [x] 4.1 **Red.** New `tests/unit/test_wandb_key_scope.py`:
   - prod compose `services.workflows.environment["WANDB_API_KEY"] == "${WANDB_API_KEY}"`; dev compose's is `"${WANDB_API_KEY:-}"`;
   - no other service in either compose file has the key;
   - the `deploy.yml` prod heredoc contains `WANDB_API_KEY=${{ secrets.PROD_WANDB_API_KEY }}`, and the staging heredoc the `STAGING_` line.
-- [ ] 4.2 Add the two compose entries. Observe red in `test_env_defaults.py::test_all_compose_vars_are_sourced` and in `test_video_worker_containers.py::test_the_worker_carries_the_services_own_credentials`, for prod and dev.
-- [ ] 4.3 Add `WANDB_API_KEY` to `SENSITIVE_INVENTORY`. Pop it from the `workflows` side of the worker-parity test, next to `WORKFLOWS_CORS_ORIGINS` ("workers don't get the key"). Add the blank `WANDB_API_KEY=` with a comment to `.env.dev.example`. `test_env_dev_example.py` and `test_no_overlap_with_sensitive_inventory` stay green.
-- [ ] 4.4 Add the two `deploy.yml` heredoc lines. `python scripts/verify_env_parity.py .github/workflows/deploy.yml` and 4.1 go green.
-- [ ] 4.5 Docs in the same commit:
+- [x] 4.2 Add the two compose entries. Observe red in `test_env_defaults.py::test_all_compose_vars_are_sourced` and in `test_video_worker_containers.py::test_the_worker_carries_the_services_own_credentials`, for prod and dev.
+- [x] 4.3 Add `WANDB_API_KEY` to `SENSITIVE_INVENTORY`. Pop it from the `workflows` side of the worker-parity test, next to `WORKFLOWS_CORS_ORIGINS` ("workers don't get the key"). Add the blank `WANDB_API_KEY=` with a comment to `.env.dev.example`. `test_env_dev_example.py` and `test_no_overlap_with_sensitive_inventory` stay green.
+- [x] 4.4 Add the two `deploy.yml` heredoc lines. `python scripts/verify_env_parity.py .github/workflows/deploy.yml` and 4.1 go green.
+- [x] 4.5 Docs in the same commit:
   - `services/workflows/README.md`: Provisioning step 7 (the deploy secrets; ideally a service-account key; only `workflows` gets it), a Configuration row, and the Auth model Layer 2 correction ("no privileged Supabase credential", plus `WANDB_API_KEY` for `GET /model-cards`).
   - `DEV_SETUP.md` "optional keys": `WANDB_API_KEY` shows the dialog's model warnings locally; without it the dialog shows "Couldn't check the models' age ranges."
   - `.env.prod.defaults` header, `scripts/setup-env-secrets.sh` comment and `PROD_SETUP.md` secrets table: replace the hand-kept lists with a pointer to the two `deploy.yml` heredocs (kept in sync by `scripts/verify_env_parity.py`) and each service's README. `.env.staging.defaults` isn't touched.

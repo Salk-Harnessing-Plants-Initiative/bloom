@@ -499,7 +499,9 @@ rather than being a hard global quota.
 `/health` is internal-only and not publicly exposed.
 
 **Layer 2 — service identity (what the server may touch):** the service holds
-**no privileged credential** — it signs into Supabase as a dedicated app user
+**no privileged Supabase credential** (its one third-party credential is
+`WANDB_API_KEY`, which only reads the wandb model registry for
+`GET /model-cards`) — it signs into Supabase as a dedicated app user
 (`WORKFLOWS_SUPABASE_EMAIL` / `_PASSWORD`) flagged `is_workflows` in its
 service-role-only `raw_app_meta_data`. On login, `custom_access_token_hook`
 stamps the token's Postgres `role` claim to `bloom_workflows`, so **its grants
@@ -568,6 +570,11 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
    either, and a missing one leaves the pods `Pending`, not `Failed`. Neither
    `bloom-pipeline` nor `argo-user` can read Secrets, so check the secret in the
    RunAI console.
+7. For `GET /model-cards` (bloom#971): set the deploy secrets
+   `PROD_/STAGING_WANDB_API_KEY`, ideally a wandb service-account key with read access
+   to the `sleap-roots-models` registry. Only the `workflows` service gets it. It is
+   required in both environments: `scripts/validate_env.sh` rejects a deploy whose
+   compose file references an unset variable.
 
 ## Configuration
 
@@ -585,6 +592,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_RATE_WINDOW_SECONDS` | `60`                    | Rate-limit window                                                                                                                                                                                                                                                                                            |
 | `WORKFLOWS_FOLDER_CHECK_RATE_LIMIT` | `30` | Max S3 folder checks per user per window, per process, counted apart from the other routes. Like `WORKFLOWS_RATE_LIMIT`, not passed in either compose file, so the code default applies |
 | `WORKFLOWS_PUBLIC_SUPABASE_URL` | –                       | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged.                                                                                                  |
+| `WANDB_API_KEY`                 | –                       | `workflows` only. wandb key that reads the production model cards for `GET /model-cards` (Basic auth to wandb's GraphQL API). Unset → that route answers 503 and the confirm dialog shows "Couldn't check the models' age ranges." Required in prod and staging, optional in dev |
 | `WORKFLOWS_K8S_TOKEN`           | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing)                                                                                                                    |
 | `WORKFLOWS_K8S_CA_CERT`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required                                                                                                                                           |
 | `WORKFLOWS_K8S_API_URL`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required                                                                                                                                                                     |
