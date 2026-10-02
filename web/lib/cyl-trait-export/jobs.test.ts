@@ -10,6 +10,7 @@ import {
   deleteJob,
   getJob,
   jobDownload,
+  openDownload,
   reserveJob,
   sweepExpiredJobs,
   type BuildResult,
@@ -18,6 +19,7 @@ import {
 import {
   EXPORT_MAX_SECONDS,
   MAX_HELD_BYTES,
+  MAX_RUNNING_JOBS,
   RETAIN_SECONDS,
   RUNNING_JOB_RESERVE_BYTES,
 } from './limits'
@@ -223,6 +225,30 @@ describe('limits', () => {
     const mine = reserveJob('u1')
     expect(mine.ok).toBe(true)
     if (mine.ok) mine.release()
+  })
+})
+
+describe('memory budget (tasks.md 10b.2)', () => {
+  it('reserves at least the measured per-job peak, and still fits two running jobs', () => {
+    // Staging 2026-10-01 (10.2): the largest export took the server from about 237 MB
+    // to a 575 MB working set, about 340 MB for one job.
+    expect(RUNNING_JOB_RESERVE_BYTES).toBeGreaterThanOrEqual(340 * 1024 * 1024)
+    expect(MAX_RUNNING_JOBS * RUNNING_JOB_RESERVE_BYTES).toBeLessThanOrEqual(MAX_HELD_BYTES)
+  })
+
+  it('counts a zip still being downloaded after its job is dropped, until the download closes', async () => {
+    const big = MAX_HELD_BYTES - RUNNING_JOB_RESERVE_BYTES + 1
+    const { jobId, gate } = startControlled('u1')
+    gate.resolve(result(big))
+    await settle()
+    const stream = openDownload('u1', jobId)
+    expect(stream).toMatchObject({ kind: 'ready', bytes: big })
+    expect(deleteJob('u1', jobId)).toBe(true)
+    expect(reserveJob('u2')).toEqual({ ok: false, reason: 'memory' })
+    if (stream?.kind === 'ready') stream.close()
+    const after = reserveJob('u2')
+    expect(after.ok).toBe(true)
+    if (after.ok) after.release()
   })
 })
 

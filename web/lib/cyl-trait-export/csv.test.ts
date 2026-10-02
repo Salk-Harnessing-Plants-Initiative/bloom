@@ -189,6 +189,20 @@ describe('TraitPivot integrity', () => {
     ...over,
   })
 
+  it('stores values as float32, 9 bytes each (tasks.md 10b.2)', () => {
+    // Values are float4 in the database, so float32 storage loses nothing and halves the
+    // largest part of a job's memory (13,396 scans x 1,035 traits for experiment 1).
+    const p = new TraitPivot()
+    p.add([
+      row({ trait_name: 'a', trait_value: 0.1 }),
+      row({ trait_name: 'b', trait_value: 3.4028234663852886e38 }),
+      row({ scan_id: 2, trait_name: 'a', trait_value: null }),
+    ])
+    expect(p.storedBytes()).toBe(3 * 9)
+    expect(p.rowCells(1)).toEqual(['0.1', '3.4028235e+38'])
+    expect(p.rowCells(2)).toEqual(['', ''])
+  })
+
   it('rejects a repeated scan and trait pair', () => {
     const p = new TraitPivot()
     expect(() => p.add([row({}), row({ trait_value: 2 })])).toThrow(ExportError)
