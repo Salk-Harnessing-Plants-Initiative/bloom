@@ -1,6 +1,6 @@
 "use client";
 
-/** One row of the runs list. */
+/** One row of the runs list table: Run, Target, Experiments, State. */
 
 import Link from "next/link";
 import { RunState } from "@/components/cyl-pipeline/RunState";
@@ -22,35 +22,37 @@ export function RunRow({
 }) {
   const href = `/app/cyl-pipeline-runs/${run.id}`;
   return (
-    <li data-testid={`run-${run.id}`} className="grid grid-cols-12 gap-4 py-3 text-sm">
-      <div className="col-span-2">
+    <tr data-testid={`run-${run.id}`} className="border-t border-stone-100 align-top">
+      <td className="px-3 py-3">
         <Link href={href} className="font-medium text-lime-700 hover:underline">
           Run {run.id}
         </Link>
         <div className="text-xs text-stone-500">{now === null ? "" : `requested ${formatElapsed(run.created_at, now)} ago`}</div>
-      </div>
-      <div className="col-span-3">
+      </td>
+      <td className="px-3 py-3">
         <div>{targetText(run)}</div>
         <div className="text-xs text-stone-500">{requesterText(run.requested_by, currentUserId)}</div>
-      </div>
-      <div className="col-span-3 flex flex-wrap gap-x-2">
-        {(experiments ?? []).map((e) =>
-          e.species_id == null ? (
-            <span key={e.experiment_id}>{e.name ?? `Experiment ${e.experiment_id}`}</span>
-          ) : (
-            <Link
-              key={e.experiment_id}
-              href={`/app/phenotypes/${e.species_id}/${e.experiment_id}`}
-              className="text-lime-700 hover:underline"
-            >
-              {e.name ?? `Experiment ${e.experiment_id}`}
-            </Link>
-          ),
-        )}
-      </div>
-      <div className="col-span-4">
+      </td>
+      <td className="px-3 py-3">
+        <div className="flex flex-wrap gap-x-2">
+          {(experiments ?? []).map((e) =>
+            e.species_id == null ? (
+              <span key={e.experiment_id}>{e.name ?? `Experiment ${e.experiment_id}`}</span>
+            ) : (
+              <Link
+                key={e.experiment_id}
+                href={`/app/phenotypes/${e.species_id}/${e.experiment_id}`}
+                className="text-lime-700 hover:underline"
+              >
+                {e.name ?? `Experiment ${e.experiment_id}`}
+              </Link>
+            ),
+          )}
+        </div>
+      </td>
+      <td className="px-3 py-3">
         <RunState run={run} failedHref={`${href}?status=failed`} />
-      </div>
-    </li>
+      </td>
+    </tr>
   );
 }

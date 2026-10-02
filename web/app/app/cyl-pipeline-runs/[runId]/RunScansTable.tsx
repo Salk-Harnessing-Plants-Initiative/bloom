@@ -27,7 +27,10 @@ export interface ScanTableRow {
   qr_code: string | null;
   wave_number: number | null;
   plant_age_days: number | null;
-  /** True/false when the scan's latest source is known; null when it isn't. */
+  /**
+   * True/false when the scan's latest source is known; null when it isn't.
+   * The cell shows "—" instead whenever `source_id` is null (see the column's valueGetter).
+   */
   current: boolean | null;
   likelyCause: string | null;
   /** On a failed row whose scan's latest source this run wrote. */
@@ -52,11 +55,19 @@ const FILTER_LABELS: [StatusFilter, string][] = [
   ["failed", "Failed"],
 ];
 
-const columns: GridColDef<ScanTableRow>[] = [
-  { field: "scan_id", headerName: "Scan", width: 90, type: "number", align: "left", headerAlign: "left" },
+/**
+ * Ids and counts as plain integers. A numeric column's default formatter is
+ * `toLocaleString()`, which shows a scan id as "12,894,712" (bloom#955); the
+ * columns stay `type: "number"` so sorting and the numeric filter operators
+ * are unchanged.
+ */
+export const plainInteger = (value: number | null) => (value == null ? "" : String(value));
+
+export const scanTableColumns: GridColDef<ScanTableRow>[] = [
+  { field: "scan_id", headerName: "Scan", width: 110, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   { field: "qr_code", headerName: "Plant QR code", width: 140 },
-  { field: "wave_number", headerName: "Wave", width: 70, type: "number", align: "left", headerAlign: "left" },
-  { field: "plant_age_days", headerName: "Day", width: 70, type: "number", align: "left", headerAlign: "left" },
+  { field: "wave_number", headerName: "Wave", width: 70, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
+  { field: "plant_age_days", headerName: "Day", width: 70, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   {
     field: "statusLabel",
     headerName: "Status",
@@ -68,7 +79,7 @@ const columns: GridColDef<ScanTableRow>[] = [
       </span>
     ),
   },
-  { field: "attempts", headerName: "Attempts", width: 90, type: "number", align: "left", headerAlign: "left" },
+  { field: "attempts", headerName: "Attempts", width: 90, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   {
     field: "error_message",
     headerName: "Error",
@@ -83,14 +94,17 @@ const columns: GridColDef<ScanTableRow>[] = [
     ),
   },
   { field: "argo_workflow_name", headerName: "Argo workflow", width: 150 },
-  { field: "source_id", headerName: "Source", width: 90, type: "number", align: "left", headerAlign: "left" },
+  { field: "source_id", headerName: "Source", width: 90, type: "number", valueFormatter: plainInteger, align: "left", headerAlign: "left" },
   {
     field: "current",
     headerName: "Current in trait views",
     description:
-      "Whether this row's source is the scan's latest, as of the last load. Rows whose source changed since show unknown; Refresh to recheck.",
+      "Whether this row's source is the scan's latest, as of the last load. Rows whose source changed since show unknown; Refresh to recheck. — means no result is linked to this row. The scan may still have pipeline results (for example a result that arrived after the run closed, or another run's), so check its traits before re-running.",
     width: 170,
-    valueFormatter: (value: boolean | null) => (value === null ? "unknown" : value ? "yes" : "no"),
+    // No source: no result is linked to this row, so "—" even when the latest-source read failed (bloom#955).
+    // A getter, not a formatter, so sorting and filtering use the text shown (design D2).
+    valueGetter: (value: boolean | null, row: ScanTableRow) =>
+      row.source_id == null ? "—" : value === null ? "unknown" : value ? "yes" : "no",
   },
   {
     field: "updated_at",
@@ -153,7 +167,7 @@ export function RunScansTable({
       </div>
       <DataGrid
         rows={shown}
-        columns={columns}
+        columns={scanTableColumns}
         initialState={PAGINATION}
         pageSizeOptions={[100]}
         getRowHeight={autoRowHeight}

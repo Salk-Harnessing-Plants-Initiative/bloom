@@ -29,9 +29,16 @@ opened from `staging` after PR A is deployed there; §8 is post-deploy.
   every `### Requirement:` heading under `openspec/changes/*/specs/`, excluding `archive/`).
   `isolate-cyl-pipeline-environments` (#988, merged) modifies only `cyl-pipeline-ui` "Starting
   pipeline runs can be switched off per environment".
+- [x] 2.6 Since 2.4, `fix-cyl-pipeline-runs-ui-955` (bloom PR #1006, merged 2026-10-01) MODIFIES
+  `cyl-pipeline-ui` "Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`", raised onto this change's
+  block. PR #1008 revised this block, so it raised that block again (its tasks 9.3). It does not touch
+  "Live views synchronise from Realtime without polling". Archive this change first (its tasks 9.2).
 - [ ] 2.5 At archive time, re-run 2.4's grep, archive this change before
   `fix-cyl-redelivery-blob-collision` (or in the same PR, this one first), and `diff` each
   modified block against `openspec/specs/…` afterwards; record the result here.
+  `fix-cyl-pipeline-runs-ui-955` (bloom#955) also modifies `cyl-pipeline-ui` "Per-run drill-down",
+  raised onto this change's block (its tasks 9.1). Archive this change before it, so that its
+  block lands second.
 
 ## 3. PR A tests first (red)
 
