@@ -3,14 +3,21 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  FALLBACK_FILENAME,
   GENERIC_ERROR,
   SESSION_TOO_SHORT,
   classifyStartError,
   downloadUrl,
   jobStatusUrl,
   jobUrl,
+  isJobId,
+  parseJobView,
+  parseListing,
   readErrorBody,
   recipesUrl,
+  refreshFailureKind,
+  safeFilename,
+  sessionNeedsRefresh,
 } from './requests'
 
 const K = '1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa'
@@ -137,5 +144,122 @@ describe('classifyStartError', () => {
       kind: 'error',
       detail: 'x',
     })
+  })
+})
+
+const ROW = {
+  recipe_key: 'legacy:5',
+  recipe_kind: 'legacy',
+  recipe_key_version: null,
+  definition: { source_id: 5, source_name: 'five' },
+  n_scans: 60,
+  newest_source_id: 5,
+  is_default: true,
+}
+
+describe('parseListing', () => {
+  it('reads a listing', () => {
+    expect(parseListing({ n_selected: 100, rows: [ROW] })).toEqual({ nSelected: 100, rows: [ROW] })
+    expect(parseListing({ n_selected: 0, rows: [] })).toEqual({ nSelected: 0, rows: [] })
+  })
+
+  it('refuses anything that is not a listing', () => {
+    for (const body of [
+      null,
+      [],
+      'x',
+      { rows: [ROW] },
+      { n_selected: '1', rows: [ROW] },
+      { n_selected: 1, rows: 'x' },
+      { n_selected: 1, rows: [{ ...ROW, recipe_key: 5 }] },
+      { n_selected: 1, rows: [{ ...ROW, recipe_kind: 'other' }] },
+      { n_selected: 1, rows: [{ ...ROW, n_scans: '60' }] },
+      { n_selected: 1, rows: [{ ...ROW, is_default: 'yes' }] },
+      { n_selected: 1, rows: [{ ...ROW, definition: 'x' }] },
+    ]) {
+      expect([body, parseListing(body)]).toEqual([body, null])
+    }
+  })
+})
+
+describe('parseJobView', () => {
+  it('reads a job view, keeping a safe filename', () => {
+    expect(parseJobView({ status: 'running', phase: 'traits', done: 3, total: 10 })).toEqual({
+      status: 'running',
+      phase: 'traits',
+      done: 3,
+      total: 10,
+    })
+    expect(
+      parseJobView({
+        status: 'ready',
+        phase: 'done',
+        done: 1,
+        total: 1,
+        filename: 'exp_legacy-5_20261002.zip',
+      })
+    ).toMatchObject({ status: 'ready', filename: 'exp_legacy-5_20261002.zip' })
+    expect(
+      parseJobView({ status: 'failed', phase: 'traits', done: 1, total: 4, detail: 'boom' })
+    ).toMatchObject({
+      detail: 'boom',
+    })
+  })
+
+  it('refuses an unknown status or missing counts, and drops an unsafe filename', () => {
+    expect(parseJobView(null)).toBeNull()
+    expect(parseJobView({ status: 'queued', phase: 'x', done: 0, total: 0 })).toBeNull()
+    expect(parseJobView({ status: 'running', phase: 'traits', done: '3', total: 10 })).toBeNull()
+    expect(parseJobView({ status: 'running', done: 3, total: 10 })).toBeNull()
+    expect(
+      parseJobView({ status: 'ready', phase: 'done', done: 1, total: 1, filename: '../x.zip' })
+    ).not.toHaveProperty('filename')
+  })
+})
+
+describe('isJobId and safeFilename', () => {
+  it('accepts only a lowercase UUID', () => {
+    expect(isJobId(JOB)).toBe(true)
+    for (const v of ['..', '.', JOB.toUpperCase(), `${JOB}/x`, 7, null])
+      expect(isJobId(v)).toBe(false)
+  })
+
+  it('keeps a <stem>.zip name and falls back otherwise', () => {
+    expect(safeFilename('diversity-screen_legacy-5_20261002.zip')).toBe(
+      'diversity-screen_legacy-5_20261002.zip'
+    )
+    expect(FALLBACK_FILENAME).toBe('traits.zip')
+    for (const v of ['../x.zip', 'x.exe', 'X.zip', '', undefined, 3])
+      expect(safeFilename(v)).toBe('traits.zip')
+  })
+
+  it('drops a job_id that is not a UUID from an error body', async () => {
+    await expect(
+      readErrorBody({ json: async () => ({ detail: 'busy', job_id: '..' }) })
+    ).resolves.toEqual({
+      detail: 'busy',
+    })
+  })
+})
+
+describe('sessionNeedsRefresh', () => {
+  const now = Date.parse('2026-10-02T12:00:00Z')
+  const s = now / 1000
+  it('refreshes when the session has under MIN_SESSION_SECONDS left, or no expiry', () => {
+    expect(sessionNeedsRefresh(undefined, now)).toBe(true)
+    expect(sessionNeedsRefresh(s + 1799, now)).toBe(true)
+    expect(sessionNeedsRefresh(s + 1800, now)).toBe(false)
+    expect(sessionNeedsRefresh(s + 3600, now)).toBe(false)
+  })
+})
+
+describe('refreshFailureKind', () => {
+  it('is a sign-in only when the sign-in service refused (4xx)', () => {
+    expect(refreshFailureKind({ status: 400 })).toBe('signin')
+    expect(refreshFailureKind({ status: 401 })).toBe('signin')
+    expect(refreshFailureKind({ status: 0 })).toBe('retry')
+    expect(refreshFailureKind({ status: 503 })).toBe('retry')
+    expect(refreshFailureKind(new TypeError('network'))).toBe('retry')
+    expect(refreshFailureKind(null)).toBe('retry')
   })
 })

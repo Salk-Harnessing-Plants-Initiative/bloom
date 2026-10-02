@@ -694,6 +694,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - the `429` offer is `role="alert"`;
   - the progress and saved lines share one always-mounted `role="status"`.
 - [ ] 11a.4 Update the guide's "Getting one" paragraph: the dialog starts on the traits page's wave and age, and All/All exports the whole experiment.
+  **Helpers (2026-10-02):** `parseListing`, `parseJobView`, `isJobId`, `safeFilename`, `sessionNeedsRefresh`, `refreshFailureKind`, `countLabel` and `selectionTitle` added, and the weights checksum, output params and empty-pipeline line added to `describeRecipe`. Red against stubs: 20 failed / 30 passed. Green: 50/50.
 - [ ] 11a.5 Pre-merge again as in 11.8, push (with the user's yes), record CI, and update the PR body's review-fixes section.
 
 ## 12. After merge
