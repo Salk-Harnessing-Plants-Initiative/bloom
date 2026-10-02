@@ -120,10 +120,17 @@ export function reserveJob(userId: string): Reservation {
     return { ok: false, reason: 'user_limit', runningJobId: mine[0].id }
   }
   if (running.length >= MAX_RUNNING_JOBS) return { ok: false, reason: 'global_limit' }
+  const counted = all.filter((j) => j.status === 'ready' && j.userId !== userId)
+  const countedIds = new Set(counted.map((j) => j.id))
+  // A zip still being downloaded is held by its stream even after its job is dropped
+  // (deleted, expired, or replaced by the user's next job); count it until it closes.
+  let streaming = 0
+  for (const d of getExportState().downloads.values()) {
+    if (!countedIds.has(d.jobId)) streaming += d.bytes
+  }
   const held =
-    all
-      .filter((j) => j.status === 'ready' && j.userId !== userId)
-      .reduce((sum, j) => sum + j.bytes, 0) +
+    counted.reduce((sum, j) => sum + j.bytes, 0) +
+    streaming +
     running.length * RUNNING_JOB_RESERVE_BYTES
   if (held + RUNNING_JOB_RESERVE_BYTES > MAX_HELD_BYTES) return { ok: false, reason: 'memory' }
 
@@ -231,6 +238,28 @@ export function jobDownload(
     return { kind: 'not_ready', status: rec.status }
   }
   return { kind: 'ready', filename: rec.filename, chunks: rec.chunks, bytes: rec.bytes }
+}
+
+let nextDownloadId = 0
+
+/**
+ * `jobDownload` for a stream that is about to be served: the zip's bytes are counted
+ * against MAX_HELD_BYTES until `close` (idempotent) is called, even if the job is
+ * dropped meanwhile (tasks.md 10b.2).
+ */
+export function openDownload(
+  userId: string,
+  jobId: string
+):
+  | { kind: 'ready'; filename: string; chunks: Uint8Array[]; bytes: number; close: () => void }
+  | { kind: 'not_ready'; status: JobStatus }
+  | null {
+  const found = jobDownload(userId, jobId)
+  if (!found || found.kind !== 'ready') return found
+  const { downloads } = getExportState()
+  const id = nextDownloadId++
+  downloads.set(id, { jobId, bytes: found.bytes })
+  return { ...found, close: () => void downloads.delete(id) }
 }
 
 /** Cancel a running job, or drop a finished one. False if not the owner's. */

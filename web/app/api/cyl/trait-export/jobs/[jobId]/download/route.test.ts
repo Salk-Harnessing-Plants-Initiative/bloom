@@ -25,7 +25,7 @@ import * as startRoute from '@/app/api/cyl/trait-export/jobs/route'
 import { createExportDb } from '@/lib/cyl-trait-export/db'
 import { deleteJob, reserveJob } from '@/lib/cyl-trait-export/jobs'
 import { RETAIN_SECONDS } from '@/lib/cyl-trait-export/limits'
-import { resetExportStateForTests } from '@/lib/cyl-trait-export/state'
+import { getExportState, resetExportStateForTests } from '@/lib/cyl-trait-export/state'
 import { createServerSupabaseClient, getSession } from '@/lib/supabase/server'
 
 const K = '1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa'
@@ -124,6 +124,22 @@ describe('download', () => {
     res = await download(cancelled)
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ detail: 'the export is cancelled' })
+  })
+
+  it('counts the zip against the budget only while it streams (10b.2)', async () => {
+    const jobId = startJob(async () => ({
+      stem: 's',
+      chunks: [new Uint8Array(3), new Uint8Array(2)],
+    }))
+    await new Promise((r) => setImmediate(r))
+    const done = await download(jobId)
+    expect(getExportState().downloads.size).toBe(1)
+    await done.arrayBuffer()
+    expect(getExportState().downloads.size).toBe(0)
+    const cancelled = await download(jobId)
+    expect(getExportState().downloads.size).toBe(1)
+    await cancelled.body!.cancel()
+    expect(getExportState().downloads.size).toBe(0)
   })
 
   it('streams the ready zip with its headers, repeatably, then 404 after retention', async () => {

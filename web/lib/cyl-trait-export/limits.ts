@@ -25,11 +25,14 @@ export const MAX_RUNNING_JOBS = 2
 /** Running export jobs per user. */
 export const MAX_JOBS_PER_USER = 1
 
-/** Memory budget: unexpired ready zips plus one reserve per running job. */
+/** Memory budget: unexpired ready zips, zips still being downloaded, and one reserve per running job. */
 export const MAX_HELD_BYTES = 768 * 1024 * 1024
 
-/** Bytes reserved for each running job when checking MAX_HELD_BYTES. */
-export const RUNNING_JOB_RESERVE_BYTES = 256 * 1024 * 1024
+/**
+ * Bytes reserved for each running job when checking MAX_HELD_BYTES (tasks.md 10b.2).
+ * The largest staging export (10.2) used about 340 MB; two reserves fill the budget.
+ */
+export const RUNNING_JOB_RESERVE_BYTES = 384 * 1024 * 1024
 
 /** A job start needs at least this much life left on the verified token. */
 export const MIN_SESSION_SECONDS = 1800

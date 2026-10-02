@@ -122,6 +122,8 @@ export type ExportState = {
   jobs: Map<string, unknown>
   /** Each user's listing in flight: cancel it with `ctrl`; `settled` once it has finished. */
   listings: Map<string, { ctrl: AbortController; settled: Promise<void> }>
+  /** Zips being streamed to a client, by download id: counted until the stream closes. */
+  downloads: Map<number, { jobId: string; bytes: number }>
   /** The unref'd timer that frees expired jobs; started with the first job. */
   sweeper: ReturnType<typeof setInterval> | null
 }
@@ -134,6 +136,7 @@ function freshState(): ExportState {
     semaphore: new Semaphore(PG_CONCURRENCY),
     jobs: new Map(),
     listings: new Map(),
+    downloads: new Map(),
     sweeper: null,
   }
 }

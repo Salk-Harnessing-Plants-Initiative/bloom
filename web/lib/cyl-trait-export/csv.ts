@@ -66,7 +66,7 @@ export function csvLine(cells: string[]): string {
   return cells.map(quote).join(',') + '\r\n'
 }
 
-type ScanTraits = { idx: Uint32Array; values: Float64Array; nulls: Uint8Array }
+type ScanTraits = { idx: Uint32Array; values: Float32Array; nulls: Uint8Array }
 
 function toValue(v: unknown): { value: number; isNull: boolean } | undefined {
   if (v === null) return { value: 0, isNull: true }
@@ -84,8 +84,9 @@ function valueCell(value: number, isNull: boolean): string {
 }
 
 /**
- * Long trait rows pivoted to one row per scan, held in typed arrays (about 13 bytes
- * per value) so a large experiment stays off the V8 heap. Each `add` call is sealed at
+ * Long trait rows pivoted to one row per scan, held in typed arrays (9 bytes per value:
+ * the values are float4 in the database, so float32 storage is exact; tasks.md 10b.2)
+ * so a large experiment stays off the V8 heap. Each `add` call is sealed at
  * once; it rejects a repeated (scan, trait), a trait named like a fixed column, and a
  * value that is not a number, NULL, NaN or an infinity (design D2 step 6 e, g, h).
  */
@@ -152,10 +153,18 @@ export class TraitPivot {
       }
       this.scans.set(scanId, {
         idx: Uint32Array.from(idx),
-        values: Float64Array.from(prev ? [...prev.values, ...g.values] : g.values),
+        values: Float32Array.from(prev ? [...prev.values, ...g.values] : g.values),
         nulls: Uint8Array.from(prev ? [...prev.nulls, ...g.nulls] : g.nulls),
       })
     }
+  }
+
+  /** Bytes held for values: index, value and NULL flag (4 + 4 + 1 per value). */
+  storedBytes(): number {
+    let n = 0
+    for (const s of this.scans.values())
+      n += s.idx.byteLength + s.values.byteLength + s.nulls.byteLength
+    return n
   }
 
   /** The trait cells of one scan, in `traitNames` order; absent traits are empty. */

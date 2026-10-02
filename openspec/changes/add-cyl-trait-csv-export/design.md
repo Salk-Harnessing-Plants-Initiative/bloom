@@ -72,7 +72,7 @@ The CSV header needs every trait name, so nothing can be sent until every read f
   - Lookups treat `now − finished_at > RETAIN_SECONDS` as absent, so expiry is exact. An `unref`'d sweep only frees memory.
   - A ready zip can be downloaded any number of times until it expires, its owner deletes it, or its owner's next job is accepted.
   - Each user holds at most one finished job: when their `POST` returns `202`, their previous finished job is dropped. A refused `POST` drops nothing.
-- **Memory budget.** Held bytes are the sizes of unexpired ready zips plus `RUNNING_JOB_RESERVE_BYTES` = 256 MB for each running job. A start is refused with `429` "server busy" if held bytes (minus the caller's own finished job) plus one reserve would exceed `MAX_HELD_BYTES` = 768 MB.
+- **Memory budget.** Held bytes are the sizes of unexpired ready zips, plus zips still being streamed to a client whose job has been dropped, plus `RUNNING_JOB_RESERVE_BYTES` = 384 MB for each running job (10b.2: the largest staging export used about 340 MB; it was 256 MB). A start is refused with `429` "server busy" if held bytes (minus the caller's own finished job) plus one reserve would exceed `MAX_HELD_BYTES` = 768 MB.
 - **Lost job ids.** A per-user `429` carries the owner's running `job_id`. If a `202` was lost, or the tab closed, the dialog can then resume or cancel that job instead of waiting out its deadline.
 - **Restarts** lose all jobs. The dialog reports a `404` during polling as "the export was interrupted".
 - **Why not a durable job.** It would need a table, pgmq, a worker, a bucket, and `bloom_workflows` grants on the RPCs and every table they read. That stays a follow-up.
@@ -138,7 +138,7 @@ The CSV header needs every trait name, so nothing can be sent until every read f
 **Completion order.** Calls can complete in any order, so every structure built from them is sorted explicitly before output: the pivot, the trait union, the source ids and `observed`. Nothing relies on arrival order or on M2's `ORDER BY`.
 
 **Memory and the event loop.**
-- The pivot keeps, per scan, a `Uint32Array` of trait indexes, a `Float64Array` of values and a `Uint8Array` marking NULL, all off the V8 heap. That is about 17M × 13 B ≈ 220 MB for experiment 1.
+- The pivot keeps, per scan, a `Uint32Array` of trait indexes, a `Float32Array` of values and a `Uint8Array` marking NULL, all off the V8 heap. The values are float4 in the database, so float32 storage is exact (10b.2; it was `Float64Array`). That is about 17M × 9 B ≈ 150 MB for experiment 1.
 - The CSV is generated in fresh `TextEncoder` slices of about 50,000 cells and pushed into fflate's synchronous `ZipDeflate`, with `await new Promise(setImmediate)` between slices.
 - That avoids worker threads and unmeasurable queues, keeps each slice's CPU time to tens of milliseconds, and keeps the fflate code bundler-safe.
 - The code uses only Node 20 APIs.
@@ -379,7 +379,7 @@ This is not built here.
   - **The listing.** At `BATCH_SCANS`, experiment 1's listing is 185 calls: about 65 s with one job running and 123 s with two, over Kong's 60 s. One `list_trait_recipes` call over all 18,471 scans took 1.26 s (largest age, 3,819 scans: 0.45 s), so listings use `LISTING_BATCH_SCANS` (task 7.4) and stay in the route rather than moving into the job.
   - If a later experiment's job would exceed `EXPORT_MAX_SECONDS`, work stops and the durable job goes back to the user.
 - **A restart loses jobs.** `bloom-web` has no `restart:` policy, so an out-of-memory crash leaves the site down. Task 12.3 drafts an infra issue: `restart: unless-stopped`, a `mem_limit`, and a single-replica comment.
-- **Memory** is bounded by `MAX_HELD_BYTES` (running reserves plus held zips) and at most 2 running jobs. Peak RSS under `next start` is recorded in task 10.2.
+- **Memory** is bounded by `MAX_HELD_BYTES` (running reserves, held zips and zips still streaming) and at most 2 running jobs. Peak RSS under `next start` is recorded in task 10.2. With 384 MB reserves, two running jobs fill the budget, so a second concurrent job is refused ("server busy") while another user's finished zip is held; raising `MAX_HELD_BYTES` needs the deploy host's memory (10b.2).
 - **sleap-roots-analyze's `get_trait_columns`** drops any column whose name contains `index`, `date`, `time`, `day_`, `scan_` and similar (`data_cleanup.py:115-141`), so `curve_index` is dropped. Task 1.4 records this, the wiki (task 8.2) tells users to pass their trait columns explicitly, and task 12.3 drafts an upstream issue.
 - **Spreadsheets and pandas:**
   - A cell starting `=`, `+`, `-` or `@` can run as a formula in Excel.
