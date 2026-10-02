@@ -127,8 +127,9 @@ export default function ScrnaFolderSource({
               (md5sums, reports) are ignored.
             </li>
             <li>
-              Files named <code>&lt;sample&gt;_S1_L001_R1_001.fastq.gz</code>, the same
-              sample in every name. It becomes the run&apos;s sample.
+              Files named like <code>col0_S1_L001_R1_001.fastq.gz</code>. The part before{" "}
+              <code>_S1</code> (here <code>col0</code>) is the sample name. Every file must start
+              with the same name, and it becomes the run&apos;s name.
             </li>
             <li>R1 and R2 for every lane; I1 and I2 are optional.</li>
             <li>A public folder: anyone can list it and read its files.</li>
