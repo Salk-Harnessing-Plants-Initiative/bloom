@@ -20,6 +20,7 @@
  *   latest source as last read. A row whose source changes live shows
  *   "unknown" until the next snapshot: it can't be inferred, because an
  *   empty envelope marks a row written without raising the latest source.
+ *   A row with no `source_id` shows "—" whatever `current` is (RunScansTable).
  * - A row that turns failed live gets one metadata and latest-source lookup,
  *   for its likely cause and the bloom#900 note.
  * - Re-run actions (design D7) submit `scan_ids` targets from the held rows.
