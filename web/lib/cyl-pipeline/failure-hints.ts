@@ -24,6 +24,18 @@ export const BACKSTOP_MESSAGE = "workflow reached a terminal status before write
  */
 export const WRITEBACK_NO_RESULT_MESSAGE = "no result produced for this scan by write-back";
 
+/**
+ * The dispatch worker's texts for a batch it refused before submitting
+ * anything: the environment is switched off, or has no stage root or
+ * credential Secret (`services/workflows/dispatch_worker.py`,
+ * `_REFUSAL_MESSAGES`; bloom#863). failure-hints.test.ts reads that file to
+ * keep the two equal.
+ */
+export const DISPATCH_REFUSED_MESSAGES: readonly string[] = [
+  "Pipeline dispatch is turned off in this environment",
+  "Pipeline dispatch is not configured in this environment",
+];
+
 export const NO_OP_NOTE =
   "This scan has pipeline results, but this row recorded none. Either its result arrived after the run closed, or, if the scan already had results before this run, this was an unrecognised no-op re-delivery, which re-running won't change (bloom#900). Check the scan's traits before re-running.";
 
@@ -37,6 +49,19 @@ export function likelyCause(meta: Pick<ScanMeta, "species_name" | "plant_age_day
   if (!meta) return null;
   const problems = stageInProblems(meta);
   return problems.length ? `Likely cause: ${problems.map((p) => CAUSES[p]).join("; ")}` : null;
+}
+
+/**
+ * The likely-cause hint for a failed row, or none when the dispatch worker
+ * refused the batch: that scan never reached stage-in, so its metadata didn't
+ * cause the failure.
+ */
+export function failedScanCause(
+  errorMessage: string | null,
+  meta: Pick<ScanMeta, "species_name" | "plant_age_days"> | undefined,
+): string | null {
+  if (errorMessage !== null && DISPATCH_REFUSED_MESSAGES.includes(errorMessage)) return null;
+  return likelyCause(meta);
 }
 
 /**

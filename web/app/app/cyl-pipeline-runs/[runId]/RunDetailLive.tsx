@@ -34,7 +34,7 @@ import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
 import { RunState } from "@/components/cyl-pipeline/RunState";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
-import { isNoOpCandidate, likelyCause, NO_OP_NOTE } from "@/lib/cyl-pipeline/failure-hints";
+import { failedScanCause, isNoOpCandidate, NO_OP_NOTE } from "@/lib/cyl-pipeline/failure-hints";
 import {
   fetchLatestSources,
   fetchRun,
@@ -260,7 +260,7 @@ export function RunDetailLive({
           wave_number: m?.wave_number ?? null,
           plant_age_days: m?.plant_age_days ?? null,
           current: latest === null || changed.has(r.scan_id) ? null : r.source_id !== null && scanLatest === r.source_id,
-          likelyCause: failed ? likelyCause(m) : null,
+          likelyCause: failed ? failedScanCause(r.error_message, m) : null,
           noOpNote: failed && latest !== null && isNoOpCandidate(r, scanLatest != null) ? NO_OP_NOTE : null,
           scanHref: scanImagesHref(m),
         };
