@@ -33,12 +33,22 @@ opened from `staging` after PR A is deployed there; §8 is post-deploy.
   `cyl-pipeline-ui` "Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`", raised onto this change's
   block. PR #1008 revised this block, so it raised that block again (its tasks 9.3). It does not touch
   "Live views synchronise from Realtime without polling". Archive this change first (its tasks 9.2).
-- [ ] 2.5 At archive time, re-run 2.4's grep, archive this change before
+- [x] 2.5 At archive time, re-run 2.4's grep, archive this change before
   `fix-cyl-redelivery-blob-collision` (or in the same PR, this one first), and `diff` each
   modified block against `openspec/specs/…` afterwards; record the result here.
   `fix-cyl-pipeline-runs-ui-955` (bloom#955) also modifies `cyl-pipeline-ui` "Per-run drill-down",
   raised onto this change's block (its tasks 9.1). Archive this change before it, so that its
   block lands second.
+  **2026-10-02 (archive PR, on staging `88cbcbf3`):** the grep over the nine modified headings
+  finds only the two known overlaps. `fix-cyl-redelivery-blob-collision`'s "Re-ingest is a
+  benign, distinctly-reported no-op" is byte-identical to this change's block. It is unarchived and
+  untouched here, so it lands after this one. `fix-cyl-pipeline-runs-ui-955`'s drill-down block is
+  this change's block with 1 bullet replaced, plus 31 added lines (the plain-integer paragraph
+  and seven scenarios), as its 9.3 says. It is archived after this one, in the same PR. After
+  `openspec archive`, all nine blocks in `openspec/specs/{cyl-batch-ingest-result,cyl-ingest-cli,
+  cyl-pipeline-ui,cyl-trait-writeback}/spec.md` `diff` byte-identical to this change's delta
+  blocks. `openspec validate --all --strict`: the only failures are nine bloommcp changes, the
+  same set as on `88cbcbf3`.
 
 ## 3. PR A tests first (red)
 
@@ -329,8 +339,11 @@ Five reviewers, no blocking findings. The author asked for every important item 
   live body's no-op branch contains `FROM public.cyl_trait_sources`; the ACL is the sanctioned set.
   **2026-10-01:** PR #1001 merged as `413bd1eb`; staging deploy succeeded; `20261001220000`
   applied, the new body live, ACL as sanctioned, and source 228's `scan_id` is 12894756.
-- [ ] 8.2 Before each run: `kubectl get pods -n runai-busch-lab` for GPU contention; filter Bloom
+- [x] 8.2 Before each run: `kubectl get pods -n runai-busch-lab` for GPU contention; filter Bloom
   Workflows by `environment=staging`.
+  **2026-10-02:** applied to runs 21 and 22 (8.3, 8.4). No further run is needed: PR B (#1008)
+  changes only bloomctl's message and the web page, and its bloomctl message reaches the cluster
+  only with the next Argo pin bump (8.7).
 - [x] 8.3 Acceptance A (bloom#900), after PR A: Bloom-dispatched staging run over scan 12894756.
   Read-only before and after: `max(id)`/`count(*)` of `cyl_trait_sources`, and count plus a value
   checksum of `cyl_scan_traits` for the scan. Expect the row `('written', 228)` (the source the
@@ -353,4 +366,7 @@ Five reviewers, no blocking findings. The author asked for every important item 
 - [x] 8.7 PR B's bloomctl message reaches the cluster only when the Argo templates' bloomctl pin
   next moves; note it for that bump (author's call, cross-repo). Noted in PR B's body; the pin is
   not moved by this change.
-- [ ] 8.8 Archive only after PR B merges, 8.3–8.5, and 2.5.
+- [x] 8.8 Archive only after PR B merges, 8.3–8.5, and 2.5.
+  **2026-10-02:** PR B #1008 merged as `88cbcbf3`. Staging Deploy run 36969184325 on `88cbcbf3`
+  logged "Staging deployed successfully!" (it contains `413bd1eb` and `88cbcbf3`). 8.3–8.5 and
+  2.5 are done. Archived in the post-merge archive PR, before `fix-cyl-pipeline-runs-ui-955`.
