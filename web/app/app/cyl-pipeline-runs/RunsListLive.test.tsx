@@ -430,6 +430,13 @@ describe("row contents", () => {
     expect(within(row(91)).getByRole("link", { name: "3 failed" }).getAttribute("href")).toBe("/app/cyl-pipeline-runs/91?status=failed");
   });
 
+  it("does not link a failed count of zero (bloom#955)", () => {
+    db = [runRow(7, at(1), { status: "failed", scan_count: 3, done_count: 0, failed_count: 0 })];
+    mount();
+    expect(row(7).textContent).toContain("Failed · 0 succeeded · 0 failed · 3 without a result");
+    expect(within(row(7)).queryByRole("link", { name: "0 failed" })).toBeNull();
+  });
+
   it("shows a failed run's error message", () => {
     db = [runRow(91, at(1), { status: "failed", failed_count: 40, error_message: "dispatch rejected" })];
     mount();
