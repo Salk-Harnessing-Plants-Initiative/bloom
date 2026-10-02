@@ -6,7 +6,7 @@ Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative)
 | -------------------------------------------- | ------------------------------ |
 | Install bloomctl                             | **1. Install**                 |
 | Sign in                                      | **2. Log in**                  |
-| Download cylinder scans, traits or datasets  | **3. Cylinder experiments**    |
+| Download cylinder scans and images           | **3. Cylinder experiments**    |
 | Download plate (GraviScan) images            | **4. Plate experiments**       |
 | Upload or download single-cell `.h5ad` files | **5. Single-cell data**        |
 | Run bloomctl inside a pipeline               | **6. Pipelines and containers** |
