@@ -63,11 +63,12 @@ In the examples below, we're downloading the experiment with **experiment ID 42*
 bloomctl cyl experiments list --species-menu
 
 # Download it, by id or just by name
-bloomctl cyl download ./out --experiment-id 42
-bloomctl cyl download ./out --experiment-name "drought 2024"
+bloomctl cyl download ./cyl_output --experiment-id 42
+bloomctl cyl download ./cyl_output --experiment-name "drought 2024"
 ```
 
-That writes `./out/scans.csv` (one row per scan) and the per-frame images.
+`./cyl_output` is the **output folder**: where the files are saved. Pick any name; it is created
+if it doesn't exist. This writes `./cyl_output/scans.csv` (one row per scan) and the per-frame images.
 
 ### Before a big download
 
@@ -77,7 +78,7 @@ Check what's in the experiment first:
 bloomctl cyl accessions list --experiment-id 42          # which accessions are in it
 bloomctl cyl accessions sample-counts --species-menu     # plant count per accession, all experiments
 bloomctl cyl datasets list --experiment-id 42            # trait datasets already built
-bloomctl cyl download ./out --experiment-id 42 --meta-only   # scans.csv only, no images
+bloomctl cyl download ./cyl_output --experiment-id 42 --meta-only   # scans.csv only, no images
 ```
 
 ### Tips
@@ -86,7 +87,7 @@ bloomctl cyl download ./out --experiment-id 42 --meta-only   # scans.csv only, n
   `--workers 16` (up to 64). If frames start failing because the server is refusing requests,
   use a *lower* number, not a higher one.
 - **If a download stops part-way, run the same command again.** It keeps what is already on disk
-  and fetches only what is missing. Use one output directory per experiment.
+  and fetches only what is missing. Use one output folder per selection (an experiment plus any filters).
 
 ### The download log
 
@@ -141,26 +142,31 @@ In the examples below, we're downloading the plate experiment with **experiment 
 
 ```bash
 # Download a whole plate experiment, by id or just by name
-bloomctl plate download ./gravi --experiment-id 12
-bloomctl plate download ./gravi --experiment-name "gravitropism" --species Arabidopsis
+bloomctl plate download ./plate_output --experiment-id 12
+bloomctl plate download ./plate_output --experiment-name "gravitropism" --species Arabidopsis
 ```
 
-That writes `./gravi/plates.csv` and `plate_sections.csv` (metadata) and the plate images.
+`./plate_output` is the **output folder**: where the files are saved. Pick any name; it is
+created if it doesn't exist. This writes `./plate_output/plates.csv` and `plate_sections.csv`
+(metadata) and the plate images.
 
 ### Download only part of an experiment
 
 ```bash
-bloomctl plate download ./gravi --experiment-id 12 --plate-id PLATE-001   # one plate
-bloomctl plate download ./gravi --experiment-id 12 --wave-number 3        # one wave
-bloomctl plate download ./gravi --experiment-id 12 --meta-only            # csv only, no images
+bloomctl plate download ./plate_output_plate001 --experiment-id 12 --plate-id PLATE-001   # one plate
+bloomctl plate download ./plate_output_wave3    --experiment-id 12 --wave-number 3        # one wave
+bloomctl plate download ./plate_output          --experiment-id 12 --meta-only            # csv only, no images
 ```
+
+Each selection needs its **own output folder**. A folder remembers what it holds, so asking for a
+different selection into it is refused. Re-running the same command in the same folder resumes.
 
 ### Tips
 
 - **Start with `--meta-only`.** A plate session captures one image per plate per cycle, so a
   multi-day experiment is thousands of files. The metadata shows what you're about to pull.
 - **`--limit N`** fetches at most N scans, to look at a sample. It isn't a way to export an
-  experiment in parts, so give a sample and a full download separate directories.
+  experiment in parts, so give a sample and a full download separate output folders.
 - **`--workers`** raises the download speed, as for cylinders.
 - **Resuming** works as for cylinders, and a little better: plate images record their size, so a
   file cut short by a dropped connection is fetched again instead of being treated as complete.
