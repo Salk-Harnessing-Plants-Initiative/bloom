@@ -97,12 +97,14 @@ It visits them in table, then column order. On PG 15, `pg_get_serial_sequence` r
 `setval` is not transactional. So the body works in stages, and every way it can fail happens before the first `setval`:
 
 1. **Find and check.** Read `max` and the sequence state, and compute the behind set. For each behind sequence, raise if any of these holds:
+
    - `current_user` lacks `UPDATE` on the sequence. The message names the sequence and its owner.
    - `current_user` lacks `UPDATE`, `DELETE` or `TRUNCATE` on the table, which `LOCK … SHARE ROW EXCLUSIVE` needs. The message names the table and its owner.
    - The increment is negative.
    - `max + increment > seqmax`, so the next insert would fail anyway.
 
    A read-permission error also lands here, because this stage only reads.
+
 2. **Lock.** Issue one `LOCK TABLE <distinct behind tables> IN SHARE ROW EXCLUSIVE MODE`. It is skipped when there is nothing to lock. It waits at most `lock_timeout` (5s).
 3. **Re-check under the lock.** Recompute stage 1 for the locked tables. Then:
    - re-raise any of its failures;

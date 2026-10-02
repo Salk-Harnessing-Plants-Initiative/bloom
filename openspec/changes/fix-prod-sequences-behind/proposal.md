@@ -9,11 +9,13 @@ The change lands in two PRs. design.md has the context and the reasons.
 **PR 1: migration (carries this proposal)**
 
 - A forward-only migration that runs the **sequence-advance body**. The body:
+
   - visits every sequence-backed column in `public`;
   - advances only the sequences that are behind (see the spec), and never moves one backwards;
   - checks and locks every behind table before advancing any of them, so a run that can't finish changes nothing.
 
   In prod it advances 21 sequences. On staging it does nothing. It is safe to re-apply.
+
 - A rollback file that is a documented no-op.
 - Tests, written first:
   - integration tests on scratch tables;

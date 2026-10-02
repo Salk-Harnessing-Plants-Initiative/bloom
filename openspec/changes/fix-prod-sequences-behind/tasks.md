@@ -74,16 +74,19 @@ Tasks:
   - it contains none of #1022's 21 table names.
 - [x] 1.22 **Red, part one:** run §1. Every test must fail because the file is missing. Use `assert`, not skip.
 - [x] 1.23 **Red, part two:** run with `SEQ1022_RED_SKETCH=1`. Confirm:
+
   - T5 (the not-called case) and T7 fail on sequence state;
   - T13–T16 fail because nothing raises.
 
   The sketch emits no NOTICE, so failures in T1–T4, T6 and T12 don't count.
+
 - [x] 1.24 Commit locally. Don't push red.
 
 ## 2. Migration (PR 1)
 
 - [x] 2.1 Run `make new-migration name=advance_lagging_id_sequences` and write the migration (design D1–D6), then the rollback (D7). Make only the unit tests in 1.21 green. **Do not run the integration tests yet** (dev-safety rule).
 - [x] 2.2 **Dev evidence, which is the first real body run on dev.** Steps:
+
   - read-only: snapshot every `public` sequence into the scratchpad;
   - confirm the predicate reports exactly `cyl_scanners`. If it reports anything else, stop and ask the user;
   - run `wsl.exe -d Ubuntu -e sh -c 'PATH=$HOME/.local/bin:$PATH make migrate-local'` from the worktree (design D9). Retry if WSL start-up times out. Record `supabase --version`;
@@ -98,12 +101,14 @@ Tasks:
     - `advance_behind_sequences: 1 of 68 sequences advanced`
   - **After:** the snapshot differs only in `cyl_scanners_id_seq` (1, called), and 0 sequences are behind.
   - **Ledger:** with the user's OK, deleted `20261001230000` and `20261002135631`. Dev's history now ends at `20261001220000`, matching the main checkout.
+
 - [x] 2.3 Run `uv run --extra test pytest tests/integration/test_advance_lagging_id_sequences.py tests/unit/test_advance_lagging_id_sequences_migration_files.py -v` until green, then the full `tests/integration/` and `tests/unit/` suites.
 
   **Recorded 2026-10-02 (Windows host):**
 
   - **New tests:** 25 passed. T18 is CI-only, and also passed on dev with `CI=1`.
   - **Full suites:** every other failure is environment-bound, for one of these reasons:
+
     - HTTP through Caddy or PostgREST is refused from the Windows host;
     - git-subprocess and bash tests;
     - `os.geteuid`.
@@ -111,10 +116,12 @@ Tasks:
     Or it fails identically from the main checkout, without this change: `test_view_excludes_deleted_experiments` and `test_concurrent_first_calls_from_same_new_identity_do_not_lose_an_update`. CI on Linux is authoritative.
 
   **If 2.3 exposes a bug after 2.2:**
+
   - edit the file (it isn't pushed);
   - restore any real sequence that a bug moved wrongly to its 2.2 snapshot value (dev only);
   - delete the `20261002135631` ledger row if it's still there;
   - repeat 2.2 and 2.3.
+
 - [x] 2.4 In the main session (subagents can't write `.claude/`), add `### Insert rows with explicit ids` under "Common SQL Patterns" in `.claude/commands/database-migration.md`. It says an explicit-id insert doesn't move the sequence, and that such a migration must also carry the advance body (design D6). Not a bare `setval(max)`, which can move a sequence backwards.
 - [x] 2.5 Replace the timestamp placeholder in this change's files with the real timestamp (`20261002135631`).
 - [ ] 2.6 Run the following and confirm they all pass, with no diff from the first two:
