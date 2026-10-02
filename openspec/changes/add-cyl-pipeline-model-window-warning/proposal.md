@@ -13,7 +13,7 @@ The user chose to run these scans by default, with a visible warning. Today, tho
 
 ## What Changes
 
-- **New capability `cyl-model-catalog`.** The workflows route `GET /model-cards` lists the production model cards from the wandb registry with the `wandb` library and validates them as sleap-roots-contracts `ModelCard`s. The listing runs in a child process that's killed after 20 s, because wandb's internal retries can run for days. The result is cached for 5 minutes and warmed at startup; the route is authenticated and outside the shared rate limit (design D1–D3).
+- **New capability `cyl-model-catalog`.** The workflows route `GET /model-cards` lists the production model cards from the wandb registry with one direct GraphQL query over `httpx`: the same request and auth wandb's own client uses, bounded at 5 s per request and 15 s overall. It validates them as sleap-roots-contracts `ModelCard`s. The result is cached for 5 minutes and warmed at startup; the route is authenticated and outside the shared rate limit (design D1–D3).
 - **Web proxy `GET /api/cyl/pipeline/model-cards`,** behind the trigger's switch and session check (D4).
 - **Confirm dialog** (a MODIFIED of its requirement; D5, D6). Only scans with images count.
   - **Past-window warning:** groups above their species' highest model window.
@@ -22,7 +22,7 @@ The user chose to run these scans by default, with a visible warning. Today, tho
   - **Failed check:** a failed, timed-out or empty card read shows a muted "Couldn't check the models' age ranges." and never blocks.
   - **Caption:** the Parameters caption now points at model choice (#897), not param overrides.
 - **Secret.** `WANDB_API_KEY` goes to the `workflows` service only, and is required in prod and staging (D7).
-- **Image.** `services/workflows` requires `sleap-roots-contracts>=0.1.0a9` and adds `wandb>=0.21.3`. The Dockerfile sets wandb's directories under `/tmp`, turns off its error reporting, and, in the install layer, removes wandb's bundled binaries, provided a read-only container smoke test shows listing works without them (D1b).
+- **Dependencies.** `services/workflows` raises `sleap-roots-contracts` to `>=0.1.0a9` and adds nothing else. The `wandb` library isn't used: the version the image would install routes its API through a bundled Go service (design D1).
 
 ## Impact
 
@@ -30,9 +30,9 @@ The user chose to run these scans by default, with a visible warning. Today, tho
   - `cyl-model-catalog`: new, ADDED.
   - `cyl-pipeline-ui`: ADDED proxy requirement, and MODIFIED "Confirm dialog shows read-only resolved params and a pre-check, without predicting skips". `fix-cyl-pipeline-runs-ui-955` was archived on staging (#1023), and no other active change modifies it (D6).
 - **Code, `services/workflows/`:**
-  - `model_cards.py`, `model_cards_fetch.py`, `main.py`
-  - `pyproject.toml`, `uv.lock`, `Dockerfile`, `README.md`
-  - `tests/test_contracts_pin.py`, `tests/test_model_cards.py`, `tests/test_model_cards_fetch.py`, `tests/test_main.py`
+  - `model_cards.py`, `main.py`
+  - `pyproject.toml`, `uv.lock`, `README.md`
+  - `tests/test_contracts_pin.py`, `tests/test_model_cards.py`, `tests/test_main.py`
 - **Code, `web/`:**
   - `app/api/cyl/pipeline/model-cards/route.ts` and its test
   - `lib/cyl-pipeline/{model-windows.ts,model-cards.ts,model-cards-proxy.ts}` and their tests
@@ -40,9 +40,9 @@ The user chose to run these scans by default, with a visible warning. Today, tho
   - `components/cyl-pipeline/RunPipelineDialog.tsx` and its test
 - **Code, deploy and tests:**
   - `docker-compose.{prod,dev}.yml`, `.env.dev.example`, `.github/workflows/deploy.yml`
-  - `tests/unit/{test_env_defaults.py,test_video_worker_containers.py}`, plus new `tests/unit/test_wandb_key_scope.py` and `tests/unit/test_workflows_dockerfile_shape.py`
+  - `tests/unit/{test_env_defaults.py,test_video_worker_containers.py}`, plus a new `tests/unit/test_wandb_key_scope.py`
 - **Docs:** `DEV_SETUP.md`, `PROD_SETUP.md`, `.env.prod.defaults` (header), `scripts/setup-env-secrets.sh` (comment), `contracts/README.md`.
-- **Image:** the `workflows` image is shared by 7 containers (`workflows`, `cyl-pipeline-worker`, `cyl-status-poller`, `rnaseq-worker`, `rnaseq-status-poller`, `plate-video-worker`, `cyl-video-worker`). All of them carry `wandb`; only `workflows` gets the key.
+- **Image:** unchanged apart from the contracts version. Of the 7 containers that share it, only `workflows` gets the key.
 - **Operations:**
   - The GitHub secrets `PROD_WANDB_API_KEY` and `STAGING_WANDB_API_KEY` must exist before merge. Without them every staging deploy, and every later prod promotion, aborts at env validation (D7).
   - Outbound HTTPS from the staging `workflows` container to `api.wandb.ai` was checked on 2026-10-02 and works. Prod runs on the same host.

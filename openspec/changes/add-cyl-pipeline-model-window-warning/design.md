@@ -39,7 +39,7 @@ Production registry (`sleap-roots-models`, alias `production`, read 2026-09-30):
 - The dialog names every parameter group the cluster will predict past its window, and every group it can't predict at all, from the same card data and rule as predict.
 - A run where no scan can produce results is stopped before it reaches the cluster.
 - Defaults stay one click. Warnings never disable Confirm, and failing to check never does either.
-- A slow or broken registry can't degrade the workflows service.
+- A slow or broken registry can't degrade the workflows service, and the image gains no new dependency.
 
 **Non-Goals**
 - Choosing models (phase 2, #897) and suggesting models for species with none (#993).
@@ -52,56 +52,50 @@ Production registry (`sleap-roots-models`, alias `production`, read 2026-09-30):
 
 ## Decisions
 
-### D1. Read the registry with the `wandb` library, in a child process with a hard limit (user decisions)
+### D1. Read the registry with one direct GraphQL query over `httpx` (user decision)
 
-**Why a child process.** wandb's public `Api(timeout=…)` doesn't bound a listing:
-- `api.artifacts(...)` builds its own `InternalApi()` (`apis/public/artifacts.py`, `sdk/artifacts/_graphql_fragments.py:18`).
-- That client's `_retry_gql` retries timeouts, connection errors, 5xx and 429 for `retry_timedelta = 7 days` by default (`sdk/internal/internal_api.py:239-241`), with backoff up to 300 s.
-- The constructor's login check also uses `InternalApi` (20 s).
-- A Python thread stuck in that loop can't be stopped, and it would hold the refresh lock until the container restarts.
+**Why not the `wandb` library.** Implementation found that the version the image would actually install (wandb 0.30.0, since the Dockerfile installs from `pyproject.toml`) routes every public-API GraphQL call through `ServiceApi`, a connection to the bundled Go `wandb-core` service. `Api()` has started that service since 0.26. That would mean:
+- shipping the Go binary, with its Trivy CRITICAL risk;
+- 73 MB plus an OpenTelemetry stack in the image;
+- killing a grandchild process on timeout;
+- behaviour changing with every wandb release.
 
-**How it works.**
-- `model_cards.py`, in the API process, runs `subprocess.run([sys.executable, "-m", "model_cards_fetch"], capture_output=True, timeout=20, env={**os.environ, "WANDB_HTTP_TIMEOUT": "5"})`. On `TimeoutExpired`, `subprocess.run` kills the child.
-- `model_cards_fetch.py` is the child, the only module that imports `wandb`. It:
-  - lists `artifact_collections(project_name=PROJECT, type_name="model")`, then `artifacts(type_name="model", name=f"{PROJECT}/{collection.name}")`, with `PROJECT = "eberrigan-salk-institute-for-biological-studies-org/wandb-registry-sleap-roots-models"`;
-  - keeps artifacts aliased `production`;
-  - validates `ModelCard.model_validate({**metadata, "registry_id": qualified_name.split(":")[0], "version": artifact.version, "weights_checksum": artifact.digest})`;
-  - skips and logs invalid ones on stderr;
-  - writes `{"cards": [...]}` to stdout and exits 0.
-  - All invalid → exit 2. Any other error → exit 1.
-  - It never calls `artifact.download()` or `.files()`, which would start `wandb-core` (D1b).
-  - The client is `wandb.Api(api_key=os.environ["WANDB_API_KEY"], timeout=5)`.
-- `WANDB_HTTP_TIMEOUT` is read when wandb's API classes are defined, so it has to be in the child's environment. It caps `InternalApi`'s 20 s too.
+Older releases (predict's lock is 0.21.3) instead retry inside `InternalApi` for up to 7 days, ignoring `Api(timeout=...)`.
 
-**What the parent checks.**
-- `WANDB_API_KEY` unset or whitespace-only → `ModelCatalogNotConfigured`, and no child is started.
-- The key is **not** stripped: wandb's internal clients re-read the raw environment value, so a stripped copy would authenticate some calls and not others.
-- Non-zero exit, unparseable stdout or a timeout → `ModelCatalogUnavailable`, with the child's stderr logged (never returned).
+**What the service does instead.** It makes the same HTTP request wandb's own client makes:
+- **Request:** `POST https://api.wandb.ai/graphql`, with HTTP Basic auth `("api", WANDB_API_KEY)` (wandb `apis/public/api.py`, `sdk/internal/internal_api.py`), sent by the `httpx` client the service already depends on.
+- **Query**, one per page:
 
-**Cost.** A healthy cold listing is about 4 + 2N wandb calls (verify, viewer, server info, collections, then an introspection call and an artifacts query per collection; N ≈ 8), plus about 1–2 s of interpreter and wandb start-up. That's one per 5 minutes per container, at most.
+  ```graphql
+  query ($entity: String!, $project: String!, $cursor: String) {
+    project(name: $project, entityName: $entity) {
+      artifactType(name: "model") {
+        artifactCollections(after: $cursor, first: 100) {
+          pageInfo { endCursor hasNextPage }
+          edges { node { name
+            artifactMembership(aliasName: "production") { versionIndex artifact { metadata } } } }
+        }
+      }
+    }
+  }
+  ```
 
-**Side benefit.** wandb's global singleton, background threads and the in-memory key never live in the uvicorn process.
+  with `entity = "eberrigan-salk-institute-for-biological-studies-org"` and `project = "wandb-registry-sleap-roots-models"`. These are module constants.
+  - `artifactMembership(aliasName: ...)` is the field wandb's own generated operations use to resolve `name:alias`, in both 0.21.3 and 0.30.0.
+- **Card build.** For every collection whose membership is non-null: `ModelCard.model_validate({**metadata, "registry_id": f"{entity}/{project}/{collection}", "version": f"v{versionIndex}"})`.
+  - `metadata` is parsed if it arrives as a JSON string.
+  - The `registry_id` form matches what predict records in provenance (checked on staging source 264).
+  - `weights_checksum` isn't requested; the response doesn't carry it.
+- **Bad cards.** A collection whose metadata fails validation is skipped and logged. Alias-carrying collections that all fail → `ModelCatalogUnavailable`. None aliased → `[]`.
+- **Errors.** A GraphQL `errors` array, a non-2xx status, unparseable JSON, a missing expected key, or more than `MAX_PAGES = 20` pages → `ModelCatalogUnavailable`.
+- **Measured.** Live and read-only on 2026-10-02, with the user's key: 108 collections, 8 production cards, identical to the `wandb` library's listing, in 2 requests and 0.7 s. The library's per-collection route took 109 requests and 13.7 s.
 
-**Alternatives rejected with the user:**
-- Calling GraphQL through `httpx`: undocumented, and we'd re-implement the alias and pinning logic.
+**Alternatives considered with the user:**
+- The `wandb` library with its Go binary and a process-group kill.
+- The library capped at `<0.26`: an upper bound on an aging line.
 - Having the cluster publish the list: a new step in the pipeline repos.
-- Tuning retries in-process: relies on internals that change.
-- A give-up thread: leaks a stuck thread per refresh during an outage.
 
-### D1b. Image: wandb environment and bundled binaries
-
-All in `services/workflows/Dockerfile`, for all 7 containers that share the image. Only `workflows` ever imports wandb. All 7 are `read_only: true` with a `/tmp` tmpfs.
-
-- **Environment.** `ENV WANDB_CONFIG_DIR=/tmp/wandb/config WANDB_CACHE_DIR=/tmp/wandb/cache WANDB_DATA_DIR=/tmp/wandb/data WANDB_DIR=/tmp WANDB_SILENT=true WANDB_ERROR_REPORTING=false`.
-  - `workflows` runs read-only as a system user with an unwritable home.
-  - `WANDB_ERROR_REPORTING=false` turns off the Sentry reporter that `wandb.Api()` otherwise starts, tagged with the entity and the viewer's email.
-- **Binaries (user decision).** Remove wandb's `bin/` directory (`wandb-core`, Go, about 43 MB; `gpu_stats`, Rust, about 8 MB) **in the same `RUN` as `uv pip install`**. A later `RUN` would leave them in the install layer.
-  - The package is located without importing it: `d=$(python -c "import importlib.util,pathlib;print(pathlib.Path(importlib.util.find_spec('wandb').origin).parent)") && rm -r "$d/bin"`.
-  - There's no `-f`, so a moved directory fails the build loudly.
-  - `wandb-core` is reached only through `util.get_core_path()`, from `ensure_service()`, which runs on `wandb.init` or an artifact download. `gpu_stats` isn't referenced from Python. Listing with `wandb.Api()` touches neither.
-  - **Why:** CI's Trivy step fails on any CRITICAL in the `workflows` image (`pr-checks.yml`, `exit-code: '1'`, every PR). Go stdlib CRITICALs in bundled binaries are common, and `.trivyignore` already carries one for the Supabase CLI binary. A `.trivyignore` edit must be its own PR (`lint_cve_isolation.sh`).
-  - **Condition:** kept only if the read-only container smoke test (task 1.5) lists the cards with `bin/` removed. Otherwise `bin/` stays, and Trivy's result (task 1.6) is taken to the user.
-- **Guard.** A new `tests/unit/test_workflows_dockerfile_shape.py` pins the ENV block, and that the removal sits in the install `RUN`, before `USER bloom`. The precedent is `test_bloommcp_dockerfile_shape.py`.
+**Trade-off.** We own one query against wandb's GraphQL API, which isn't formally documented. It's the same field and auth that wandb's clients from 0.21 to 0.30 use. A live comparison against the library (task 1.6) is recorded once, and the dialog's muted line makes a runtime break visible.
 
 ### D2. Response shape and contracts version
 
@@ -115,39 +109,43 @@ All in `services/workflows/Dockerfile`, for all 7 containers that share the imag
 
 - **Contracts floor:** raised from `>=0.1.0a5` to `>=0.1.0a9` and re-locked, because `ModelCard.selectors` arrived in a8.
 - **Why the bump is safe:** the service's other contracts use, `compute_param_hash` in `pipeline.py`, comes from `hashing.py`, which is unchanged from a5 to a9 (task 1.1 pins the value).
-- **Prod already runs a newer version.** The Dockerfile installs from `pyproject.toml`, not the lock, so the deployed image likely already resolves a9.
+- **Prod already runs a newer version.** The Dockerfile installs from `pyproject.toml`, not the lock, so the deployed image likely already resolves a9. No other dependency is added.
 
-### D3. Cache, startup warm-up, bounded waiting, auth and rate limit
+### D3. Cache, startup warm-up, bounded refresh, auth and rate limit
+
+**Bounded refresh.**
+- Each request has a 5 s `httpx` timeout, and the whole listing has a 15 s deadline (`REFRESH_DEADLINE_SECONDS`), checked before each page and passed as a shrinking per-request timeout.
+- `httpx` doesn't retry, so these bounds hold.
 
 **Cache.**
 - A module-level entry `(fetched_monotonic, cards, fetched_at)` with a TTL of 300 s; a refresh is due at `now - fetched_monotonic >= 300`.
-- Time comes from injectable `_monotonic` and `_utcnow`; tests never patch `time.monotonic`.
+- Time comes from injectable `_monotonic` and `_utcnow`.
 - The service runs one uvicorn worker, so it's one cache per container.
 
 **Single flight.**
-- A `threading.Lock` ensures at most one listing runs at a time.
-- A request that finds the cache cold or expired acquires the lock with `timeout=LOCK_WAIT_SECONDS` (6), read at call time.
-- With the lock held, it re-checks the cache, so it's served if another request's refresh just succeeded, and only lists if the cache is still cold.
+- A `threading.Lock` ensures at most one listing at a time.
+- A request that finds the cache cold or expired acquires the lock with `timeout=LOCK_WAIT_SECONDS` (6, read at call time), then re-checks the cache: it's served if another request's refresh just succeeded, and only lists if the cache is still cold.
 - Not getting the lock in time → `ModelCatalogUnavailable` → 503.
-- After a *failed* refresh, the next lock holder lists again. That's sequential, never concurrent, and each attempt is bounded at 20 s.
+- After a failed refresh, the next lock holder lists again, sequentially.
 
 **Startup warm-up (user decision).**
 - `main.py` gains a FastAPI `lifespan` that starts one `threading.Thread(target=model_cards.warm, daemon=True)`.
-- `warm()` returns immediately when the key is unset or blank, and swallows and logs failures.
-- Startup and `/health` never wait for it.
-- Tests construct `TestClient(main.app)` without entering the lifespan, and the key is unset in CI, so the warm-up doesn't run in tests unless a test asks for it.
+- `warm()` returns at once when the key is unset or blank, and swallows and logs failures.
+- Tests construct `TestClient(main.app)` without entering the lifespan, and CI has no key.
+
+**Key handling.** `WANDB_API_KEY` that's unset or whitespace-only → `ModelCatalogNotConfigured`, and no request is made. The value is sent as-is.
 
 **Timing budget.**
 
 | Stage | Limit |
 |---|---|
-| child listing | killed at 20 s |
+| one GraphQL request | 5 s |
+| whole listing | 15 s |
 | waiting for another request's refresh | 6 s |
-| web proxy → workflows | 8 s (`AbortSignal.timeout`) |
+| web proxy → workflows | 8 s |
 | dialog → proxy | 10 s |
 
-- A leader whose proxy has given up keeps running in its threadpool thread, because sync routes aren't cancelled. It finishes within 20 s and warms the cache for the next open.
-- At most two threadpool threads are ever tied up by this route for a meaningful time: the leader, plus waiters for at most 6 s. The other sync routes, `/health` included, share the 40-thread pool.
+A healthy refresh is under 1 s, so dialogs essentially never wait.
 
 **Failure.** A failed listing isn't cached, and an expired listing isn't served after a failed refresh.
 
@@ -155,14 +153,14 @@ All in `services/workflows/Dockerfile`, for all 7 containers that share the imag
 
 **Rate limit.** Not applied.
 - The precedent is the plate-video progress route (`main.py:127-139`).
-- The shared limiter is 5 per 60 s per user across routes (`auth.py:24-25`).
-- The cache and the single-flight lock bound the upstream cost.
+- The shared limiter is 5 per 60 s per user across routes.
+- The cache and the lock bound the upstream cost.
 
-**Errors.** Both are 503 with a fixed detail; the cause goes to the log only.
+**Errors.** Both are 503 with a fixed detail; the cause, never the key, goes to the log only.
 - `ModelCatalogNotConfigured` → "The model catalog isn't configured in this environment."
 - Anything else → "Couldn't read the model catalog."
 
-**The trigger switch.** The upstream route doesn't check `CYL_PIPELINE_TRIGGER_ENABLED`: the cards aren't sensitive and the cost is bounded. The web proxy (D4) does check it.
+**The trigger switch.** The upstream route doesn't check `CYL_PIPELINE_TRIGGER_ENABLED`; the web proxy does.
 
 ### D4. Web proxy route, server/client split
 
@@ -277,15 +275,8 @@ The PR is opened as a draft and marked ready only after both gates. Merging is t
 
 ## Risks / Trade-offs
 
-- **The first open after a cache expiry may wait.** The warm-up covers the first open after startup. After a 5-minute expiry, the first dialog's request leads a refresh. If that takes over 8 s, that one dialog shows the muted line and the next is served warm. Task 9.3 measures it.
-- **Image size and audit surface.**
-  - New packages: requests, urllib3, charset-normalizer, protobuf, sentry-sdk, gitpython, gitdb, smmap and platformdirs. A `pip-audit` finding fails CI until resolved.
-  - wandb caps `protobuf<7`, so a fix only in 7.x would have no path.
-  - Removing `bin/` in the install layer removes most of the size.
-- **The Dockerfile installs from `pyproject.toml`, not the lock.**
-  - The image can get a newer wandb than CI's lock, and the unit tests fake the child, so an API change would surface only at runtime, as the muted line.
-  - This is existing behaviour for every dependency here and stays out of scope.
-  - Task 9.3's live check and the muted line make a break visible.
+- **The first open after a cache expiry leads a refresh.** That's under 1 s when healthy (measured 0.7 s); up to the 15 s deadline when wandb is slow, in which case that dialog shows the muted line.
+- **We own the GraphQL query.** If wandb changes the `artifactMembership` field or Basic auth, the endpoint answers 503 and the dialog shows the muted line until the query is updated. Task 9.3's live check covers each deploy.
 - **Traits windows could diverge from model windows.** The dialog reads model cards only. Phase 2's shared catalog removes the gap.
 - **Past-window results are unmarked in exports.** A day-28 arabidopsis result has the same recipe key as a day-10 one, because the weights are the same. The #865 export doesn't mark it. It's out of scope here and was raised with the user.
 - **Rebase hotspot.** An in-flight `feat/rnaseq-s3-folder-service` edits `services/workflows/main.py` and `README.md`.

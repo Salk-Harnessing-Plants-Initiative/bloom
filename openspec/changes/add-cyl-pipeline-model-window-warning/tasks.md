@@ -12,7 +12,7 @@
 |---|---|---|
 | C0 | `docs(openspec): propose add-cyl-pipeline-model-window-warning (bloom#971)` (exists) | — |
 | C0r | `docs(openspec): revise add-cyl-pipeline-model-window-warning after review` (rounds 1 and 2) | — |
-| C1 | `build(workflows): require sleap-roots-contracts 0.1.0a9 and add wandb` | 1 |
+| C1 | `build(workflows): require sleap-roots-contracts 0.1.0a9` | 1 |
 | C2 | `feat(workflows): list production model cards from the wandb registry` | 2 |
 | C3 | `feat(workflows): serve GET /model-cards outside the shared rate limit` | 3 |
 | C4 | `feat(deploy): give only the workflows service a WANDB_API_KEY` | 4 |
@@ -22,7 +22,7 @@
 | C7 | `docs(openspec): tick add-cyl-pipeline-model-window-warning tasks` | 7 |
 
 **Push and PR.**
-- After C1, push and open a **draft** PR against `staging`, for early pip-audit and Trivy feedback.
+- After C1, push and open a **draft** PR against `staging`, with the user's go-ahead, for early CI feedback.
 - **Never amend or rewrite a pushed commit.** A fix found later becomes a new commit; the PR is squash-merged.
 - Tick tasks (C7) before the last push.
 
@@ -39,7 +39,7 @@
 - Workflows tests run from `services/workflows/` with `uv run --frozen --extra test pytest tests/ -q`.
 - Repo unit tests run from the root with `uv run --extra test pytest tests/unit/ -q`.
 
-**Key handling.** Never put the wandb key on a command line, in a file in the repo, or in a log. Use `-e WANDB_API_KEY` with no value, so Docker takes it from the host environment.
+**Key handling.** Never put the wandb key on a command line, in a file in the repo, or in a log. Scripts read it from the host environment.
 
 ## 0. Setup and gates (no commit)
 
@@ -52,75 +52,66 @@
 - [ ] 0.3 **Gate (user):** the GitHub secrets `PROD_WANDB_API_KEY` and `STAGING_WANDB_API_KEY` exist, ideally a service-account key with registry read access. They're needed before merge (design D7).
 - [x] 0.4 Egress: from `bloom_v2_staging-workflows-1`, `https://api.wandb.ai` answered HTTP 404 at the API root on 2026-10-02 (user go-ahead). The prod container runs on the same host.
 
-## 1. Workflows dependencies and image (C1)
+## 1. Workflows dependency (C1)
 
-- [ ] 1.1 **Characterisation,** green before and after. New `tests/test_contracts_pin.py` asserts that `compute_param_hash({"species": "canola", "mode": "cylinder", "age": 2})` equals the literal it returns at a5, computed before the bump.
-- [ ] 1.2 **Red,** same file. Inside the test function: `from sleap_roots_contracts import ModelCard, Selector`, then validate a card with `selectors=[{"species": "arabidopsis", "mode": "cylinder", "age_min": 2, "age_max": 14}]`. Fails at a5, where there's no `Selector` (it was added in a8). The import stays inside the function so 1.1 still collects.
-- [ ] 1.3 Raise the floor to `sleap-roots-contracts>=0.1.0a9`, add `wandb>=0.21.3`, run `uv lock --upgrade-package sleap-roots-contracts`, review the lock diff for unrelated bumps, and keep `python scripts/check-uv-locks.py` green.
-- [ ] 1.4 Run `uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin`, as CI does. Report any finding to the user before going further.
-- [ ] 1.5 **Red.** New `tests/unit/test_workflows_dockerfile_shape.py`, modelled on `test_bloommcp_dockerfile_shape.py`. It asserts:
-  - an `ENV` sets `WANDB_CONFIG_DIR`, `WANDB_CACHE_DIR`, `WANDB_DATA_DIR` and `WANDB_DIR` under `/tmp`, plus `WANDB_SILENT=true` and `WANDB_ERROR_REPORTING=false`;
-  - the `RUN` that contains `uv pip install` also contains `rm -r` of wandb's `bin` directory (located via `importlib.util.find_spec`, never `import wandb`), with no `-f`;
-  - that `RUN` comes before `USER bloom`.
-  - Fails: none of these exist.
-- [ ] 1.6 Edit the Dockerfile per design D1b, and 1.5 goes green.
-- [ ] 1.7 **Container smoke test, before committing C1.**
-  - Build: `docker build -t workflows:local services/workflows`.
-  - Run: `docker run --rm --read-only --tmpfs /tmp:mode=1777,size=512m --cap-drop ALL --security-opt no-new-privileges -e WANDB_API_KEY -e WANDB_SILENT=false workflows:local python -c "<inline listing>"`. The inline script mirrors design D1: it lists collections, keeps `production`, and validates each as `ModelCard`.
-  - It prints `8`, and its stderr is empty.
-  - **If it fails because `bin/` is missing,** drop the removal from 1.6, adjust 1.5, and record why in the commit body.
-  - After C2, re-run it with `python -m model_cards_fetch` (task 7.4).
-- [ ] 1.8 Trivy: `trivy image --severity CRITICAL --exit-code 1 --ignorefile .trivyignore workflows:local`. Report any finding to the user, and never add a `.trivyignore` entry without their sign-off (it would need its own PR).
+- [x] 1.1 **Characterisation,** green before and after. New `tests/test_contracts_pin.py` asserts that `compute_param_hash({"species": "canola", "mode": "cylinder", "age": 2})` equals the literal it returned at a5: `0ad8b866…f462`.
+- [x] 1.2 **Red,** same file. Inside the test function: `from sleap_roots_contracts import ModelCard, Selector`, then validate a card with `selectors=[...]`. It failed at a5 with `ImportError: cannot import name 'Selector'`.
+- [x] 1.3 Raise the floor to `sleap-roots-contracts>=0.1.0a9` and run `uv lock --upgrade-package sleap-roots-contracts`. The lock diff is that package only (a5 → a9), and both 1.1 and 1.2 pass.
+- [x] 1.4 Run `uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin`, as CI does. Report any finding to the user. Done 2026-10-02: no known vulnerabilities (run against an exported file, since `/dev/stdin` fails on Windows).
+- [x] 1.5 Run `python scripts/check-uv-locks.py`; it must be green.
+- [ ] 1.6 **Live comparison (local, read-only, once; recorded in C2's body).** After C2, run a scratchpad script with the key from the host environment:
+  - it calls `model_cards._list_from_registry(...)` and the `wandb` library's `Api().artifact_collections`/`artifacts` listing (installed only in the scratch environment);
+  - the two give the same set of `(root_type, registry_id, version, selectors)`;
+  - expected: 8 cards.
 
-## 2. Card listing: `model_cards_fetch.py` (child) and `model_cards.py` (parent) (C2)
+## 2. Card listing, `services/workflows/model_cards.py` (C2)
 
-**Child tests** go in `tests/test_model_cards_fetch.py`. They run `model_cards_fetch.main()` in-process, with a fake `wandb` module installed via `monkeypatch.setitem(sys.modules, "wandb", fake)`, and capture stdout and stderr with `capsys`.
-
-- [ ] 2.1 **Red.** Two collections, with artifacts aliased `["production"]`, `["latest"]` and `["production", "v0"]` → exit 0, and stdout JSON `{"cards": [...]}` with the two production cards.
-  - Assert `fake.Api` was called with `api_key=<env value>` and `timeout=5`.
-  - Assert `artifact_collections(project_name="eberrigan-salk-institute-for-biological-studies-org/wandb-registry-sleap-roots-models", type_name="model")` and `artifacts(type_name="model", name=f"{project}/{collection.name}")`.
-  - Each card has exactly `{root_type, registry_id, version, selectors}`, each selector exactly `{species, mode, age_min, age_max}`, and `registry_id` is the qualified name before `:`.
-  - No artifact's `download` or `files` is called.
-  - Fails: there's no module.
-- [ ] 2.2 **Red.** One flat-metadata production artifact plus one valid one → one card, and stderr names the bad artifact.
-- [ ] 2.3 **Red.** All invalid → exit 2, with no stdout JSON. Zero production artifacts → exit 0 and `{"cards": []}`. `fake.Api` raising → exit 1, with the message on stderr.
-
-**Parent tests** go in `tests/test_model_cards.py`:
-- the child is replaced through the seam `model_cards._run_child(env) -> CompletedProcess`, which may raise `subprocess.TimeoutExpired`;
-- the clock through `model_cards._monotonic` and `model_cards._utcnow`;
-- the key through `monkeypatch.setenv`/`delenv`;
+Tests go in `tests/test_model_cards.py`:
+- HTTP is faked with an `httpx.MockTransport`, injected through the seam `model_cards._client(timeout) -> httpx.Client`;
+- the clock is faked with `model_cards._monotonic` and `model_cards._utcnow`;
+- the key is set with `monkeypatch.setenv`/`delenv`;
 - an autouse fixture clears the cache.
 
-- [ ] 2.4 **Red.** Configuration:
-  - `WANDB_API_KEY` unset or `"  "` → `ModelCatalogNotConfigured`, and `_run_child` isn't called.
-  - With `" key\n"`, the child's env carries the value unchanged, plus `WANDB_HTTP_TIMEOUT="5"`.
-  - The real `_run_child` calls `subprocess.run` with `[sys.executable, "-m", "model_cards_fetch"]`, `timeout=20` and `capture_output=True`; assert by patching `model_cards.subprocess.run`.
-- [ ] 2.5 **Red.** Child results:
-  - exit 0 with valid JSON → `(cards, fetched_at)`, with `fetched_at` UTC ISO-8601;
-  - exit 1 or 2 with stderr `secret-detail` → `ModelCatalogUnavailable`, and `caplog` contains `secret-detail`;
-  - unparseable stdout → `ModelCatalogUnavailable`;
-  - `TimeoutExpired` → `ModelCatalogUnavailable`.
-- [ ] 2.6 **Red.** Real kill: patch `model_cards.CHILD_COMMAND` to `[sys.executable, "-c", "import time; time.sleep(30)"]` and `model_cards.CHILD_TIMEOUT_SECONDS` to `1` → `ModelCatalogUnavailable` within 5 s of wall clock. Also assert `CHILD_TIMEOUT_SECONDS == 20` in an unpatched test.
+- [ ] 2.1 **Red.** One page: collection `arabidopsis-lateral` with a production membership `{versionIndex: 0, artifact: {metadata: {...selectors...}}}`, and collection `old-flat` with `artifactMembership: null` → one card.
+  - Its `registry_id` is `eberrigan-salk-institute-for-biological-studies-org/wandb-registry-sleap-roots-models/arabidopsis-lateral` and its `version` is `v0`.
+  - Each card has exactly `{root_type, registry_id, version, selectors}`, and each selector exactly `{species, mode, age_min, age_max}`.
+  - The recorded request is `POST https://api.wandb.ai/graphql`, with Basic auth `api`/`<key>`, and JSON variables `entity`, `project` and `cursor: null`. The query text contains `artifactMembership(aliasName: "production")` and `first: 100`.
+  - Fails: there's no module.
+- [ ] 2.2 **Red.** Paging: page 1 has `hasNextPage: true` and `endCursor: "c1"`, and page 2 returns more → the second request carries `cursor: "c1"`, and both pages' cards come back. Metadata given as a JSON string parses the same as an object.
+- [ ] 2.3 **Red.** Validation: one flat-metadata membership plus one valid one → one card, and `caplog` names the skipped collection. All memberships invalid → `ModelCatalogUnavailable`. No memberships → `([], fetched_at)`.
+- [ ] 2.4 **Red.** Errors, each giving `ModelCatalogUnavailable`, with the cause in `caplog` and the key never in `caplog`:
+  - HTTP 401;
+  - HTTP 500;
+  - `{"errors": [{"message": "secret-detail"}]}`;
+  - a non-JSON body;
+  - `{"data": {"project": null}}`;
+  - `httpx.ReadTimeout`;
+  - 21 pages that all report `hasNextPage: true` (the `MAX_PAGES` guard).
+- [ ] 2.5 **Red.** Deadline:
+  - assert `REQUEST_TIMEOUT_SECONDS == 5` and `REFRESH_DEADLINE_SECONDS == 15`;
+  - with `_monotonic` advancing 10 s per request, the second page is requested with a timeout of at most 5 s, and a third is not requested once 15 s have passed → `ModelCatalogUnavailable`;
+  - `_client` is created with `timeout=5`.
+- [ ] 2.6 **Red.** Configuration: `WANDB_API_KEY` unset or `"  "` → `ModelCatalogNotConfigured`, and no request is sent. `" key\n"` is sent unchanged as the Basic password.
 - [ ] 2.7 **Red.** Cache:
-  - two calls 60 s apart → one child run, with the same `fetched_at`;
-  - at exactly 300.0 s → a second run, with a new `fetched_at`;
+  - two calls 60 s apart → one listing, with the same `fetched_at`;
+  - at exactly 300.0 s → a second listing, with a new `fetched_at` that parses as UTC ISO-8601;
   - a failure followed by success → listed again;
   - at 301 s with a failing refresh → raises, and doesn't return the old list.
 - [ ] 2.8 **Red.** Single flight:
-  - 5 threads start behind a `threading.Barrier(5)` on a cold cache. The fake child sets an `entered` event, the main thread waits for it, sleeps `0.2` so the other four queue on the lock, then releases.
-  - Exactly 1 child run, and all threads get the same cards.
+  - 5 threads start behind a `threading.Barrier(5)` on a cold cache. The fake transport sets an `entered` event and waits on `release.wait(timeout=5)`; the main thread waits `entered.wait(5)`, sleeps `0.2`, then releases.
+  - Exactly 1 listing, and all threads get the same cards.
   - Every `join(timeout=5)` is followed by `assert not t.is_alive()`.
 - [ ] 2.9 **Red.** Bounded wait:
   - assert `LOCK_WAIT_SECONDS == 6`;
-  - with it patched to `0.2` and a leader blocked in the child, a second caller raises `ModelCatalogUnavailable` in under 2 s of wall clock;
-  - after the leader is released and succeeds, a third caller is served from the cache without a new run;
+  - with it patched to `0.2` and a leader blocked in the transport, a second caller raises `ModelCatalogUnavailable` in under 2 s of wall clock;
+  - after the leader is released and succeeds, a third caller is served from the cache without a new listing;
   - release and join every thread.
 - [ ] 2.10 **Red.** `warm()`:
-  - key unset → no child run, no exception;
-  - child failure → no exception, a log line, and the cache stays empty;
-  - success → the cache is filled, and the next call doesn't run the child.
-- [ ] 2.11 **Red.** `subprocess.run([sys.executable, "-c", "import main, model_cards, sys; assert 'wandb' not in sys.modules"], cwd=<service dir>)` exits 0.
-- [ ] 2.12 Implement `model_cards_fetch.py` and `model_cards.py` per design D1 and D3.
+  - key unset → no request, no exception;
+  - listing failure → no exception, a log line, and the cache stays empty;
+  - success → the cache is filled, and the next call sends no request.
+- [ ] 2.11 **Guard.** `subprocess.run([sys.executable, "-c", "import main, model_cards, sys; assert 'wandb' not in sys.modules"], cwd=<service dir>)` exits 0.
+- [ ] 2.12 Implement `model_cards.py` per design D1 and D3: constants, `_client`, `_monotonic`, `_utcnow`, `_list_from_registry`, the lock and its state, `list_production_cards() -> tuple[list[dict], str]`, and `warm()`.
 - [ ] 2.13 Docs in the same commit: in `contracts/README.md`, the line "Bloom imports neither `ModelCard` nor `Selector`" becomes "Bloom's `services/workflows` validates production model cards as `ModelCard` (with `Selector`) to serve `GET /model-cards`; it needs `>=0.1.0a9`, because the `selectors` shape arrived in a8."
 
 ## 3. Route and startup warm-up, `services/workflows/main.py` (C3)
@@ -239,7 +230,7 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - `uv run --extra test pytest tests/unit/ -q`
   - `python scripts/verify_env_parity.py .github/workflows/deploy.yml`
 - [ ] 7.3 Web checks: from `web/`, run `npx tsc --noEmit`, `npm run lint`, `npm run build` (with CI's placeholder `NEXT_PUBLIC_*` env; restore `web/tsconfig.json` afterwards) and `npm run test:unit`.
-- [ ] 7.4 Re-run 1.4, then 1.7 using `python -m model_cards_fetch` (prints the 8 cards; empty stderr with `WANDB_SILENT=false`), then 1.8, on the final image.
+- [ ] 7.4 Re-run 1.4 and 1.5, and confirm 1.6's comparison is recorded in C2's body.
 - [ ] 7.5 Run `/pre-merge` and fix anything until green.
 - [ ] 7.6 Tick 0–7, write the PR body with `/pr-description` ("Part of #971"; gates 9.1 and 9.2; dev stacks must rebuild the workflows image), and update the draft PR.
 
@@ -255,7 +246,6 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - `GET /workflows/model-cards` with a staging session returns 8 cards matching design's Context table;
   - the warm-up logged a successful listing at startup;
   - a request just after the 300 s expiry: record its time.
-  - If the refresh takes over about 8 s, draft a follow-up for background refresh before expiry, for the user; don't post it.
   - Repeat the endpoint check on prod after the next promotion, with the user's go-ahead.
 - [ ] 9.4 On staging, open the confirm dialog without submitting:
   - an arabidopsis experiment with day-20/21 scans → the past-window block;

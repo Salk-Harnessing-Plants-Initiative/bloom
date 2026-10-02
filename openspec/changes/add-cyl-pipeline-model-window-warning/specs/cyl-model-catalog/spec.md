@@ -13,14 +13,14 @@
 - **THEN** every call answers `200`
 - **AND** `enforce_rate_limit` is never called for these requests, so the user's per-user hit count is unchanged
 
-### Requirement: `GET /model-cards` SHALL return the validated production model cards from the wandb registry, listed in a child process with a hard time limit, or `503` when they cannot be read
-The service SHALL list the cards by running `python -m model_cards_fetch` as a child process and SHALL kill the child if it has not finished within 20 seconds. The child inherits the environment, with `WANDB_HTTP_TIMEOUT=5`, and writes the cards as JSON to stdout.
+### Requirement: `GET /model-cards` SHALL return the validated production model cards from the wandb registry, read with a bounded direct GraphQL query, or `503` when they cannot be read
+**Request.** The service SHALL send `POST https://api.wandb.ai/graphql` with HTTP Basic auth, user `api` and password the value of `WANDB_API_KEY`. Each request SHALL time out after 5 seconds, the whole listing SHALL be abandoned after 15 seconds, and no request SHALL be retried.
 
-**What the child lists.** It SHALL list the wandb model registry `sleap-roots-models` of entity `eberrigan-salk-institute-for-biological-studies` with the `wandb` library, using `wandb.Api(api_key=<WANDB_API_KEY>, timeout=5)`:
-- keep only `model` artifacts whose aliases include `production`;
-- build each as a `sleap_roots_contracts.ModelCard` (contracts `>=0.1.0a9`) from the artifact's metadata plus `registry_id` (its qualified name without `:version`), `version` and `weights_checksum` (its digest).
+**Query.** It SHALL page through the `model` artifact collections of project `wandb-registry-sleap-roots-models` of entity `eberrigan-salk-institute-for-biological-studies-org`, 100 per page, requesting each collection's `artifactMembership(aliasName: "production")` with its `versionIndex` and artifact `metadata`. It SHALL NOT import the `wandb` library.
 
-It SHALL NOT download artifacts or list their files.
+**Card build.** Each collection with a production membership SHALL be built as a `sleap_roots_contracts.ModelCard` (contracts `>=0.1.0a9`) from its metadata, which is parsed when it arrives as a JSON string, plus:
+- `registry_id` = `<entity>/<project>/<collection name>`;
+- `version` = `v<versionIndex>`.
 
 **Response.** The route SHALL respond `200` with exactly the keys `cards` and `fetched_at`:
 - `fetched_at` is the ISO-8601 UTC time the served listing was read;
@@ -28,45 +28,53 @@ It SHALL NOT download artifacts or list their files.
 - each selector has exactly the keys `species`, `mode`, `age_min` and `age_max`.
 
 **Bad or missing cards.**
-- An artifact that fails validation SHALL be skipped and logged.
-- If at least one alias-carrying artifact exists and none validates, the route SHALL respond `503`.
-- Zero alias-carrying artifacts SHALL give `200` with an empty `cards` list.
+- A collection whose metadata fails validation SHALL be skipped and logged.
+- If at least one collection has a production membership and none validates, the route SHALL respond `503`.
+- No production membership at all SHALL give `200` with an empty `cards` list.
 
 **Errors.**
-- When `WANDB_API_KEY` is unset or contains only whitespace, the route SHALL respond `503` "*The model catalog isn't configured in this environment.*" without starting the child.
-- A child that exits non-zero, prints unparseable output, or is killed at the time limit SHALL produce `503` "*Couldn't read the model catalog.*". The cause SHALL be logged and SHALL NOT appear in the response body.
-- Importing `main` or `model_cards` SHALL NOT import `wandb`.
+- When `WANDB_API_KEY` is unset or contains only whitespace, the route SHALL respond `503` "*The model catalog isn't configured in this environment.*" without sending a request.
+- Any of these SHALL produce `503` "*Couldn't read the model catalog.*": a non-2xx status, a GraphQL `errors` array, an unparseable or unexpectedly shaped body, a timeout, the 15-second deadline, or more than 20 pages.
+- The cause SHALL be logged and SHALL NOT appear in the response body. The key SHALL NOT be logged.
 
 #### Scenario: An authenticated caller gets the production cards
-- **WHEN** the registry holds an artifact aliased `production` whose metadata has `root_type: "lateral"` and `selectors: [{species: "arabidopsis", mode: "cylinder", age_min: 2, age_max: 14}]`, and another artifact aliased only `latest`
+- **WHEN** the registry has a collection `arabidopsis-lateral` whose production membership is version 0 with metadata `root_type: "lateral"` and `selectors: [{species: "arabidopsis", mode: "cylinder", age_min: 2, age_max: 14}]`, and another collection with no production membership
 - **THEN** the response is `200`
-- **AND** `cards` holds exactly one card, `{root_type: "lateral", registry_id, version, selectors: [{species: "arabidopsis", mode: "cylinder", age_min: 2, age_max: 14}]}`
+- **AND** `cards` holds exactly one card, `{root_type: "lateral", registry_id: "eberrigan-salk-institute-for-biological-studies-org/wandb-registry-sleap-roots-models/arabidopsis-lateral", version: "v0", selectors: [{species: "arabidopsis", mode: "cylinder", age_min: 2, age_max: 14}]}`
 - **AND** `fetched_at` parses as an ISO-8601 time in UTC
 
-#### Scenario: One non-conforming artifact is skipped
-- **WHEN** the registry holds two `production` artifacts and one has flat (pre-selector) metadata
+#### Scenario: The request authenticates the way wandb's client does
+- **WHEN** a listing is made with `WANDB_API_KEY` set to `k`
+- **THEN** each request is a `POST` to `https://api.wandb.ai/graphql` with HTTP Basic credentials `api` / `k`
+
+#### Scenario: Collections are read page by page
+- **WHEN** the first page reports `hasNextPage: true` with an `endCursor`
+- **THEN** a second request is sent with that cursor, and cards from both pages are returned
+
+#### Scenario: One non-conforming card is skipped
+- **WHEN** two collections have production memberships and one has flat (pre-selector) metadata
 - **THEN** the response is `200` with the one valid card
-- **AND** the skipped artifact is named in the log
+- **AND** the skipped collection is named in the log
 
 #### Scenario: No readable card is an error, not an empty catalog
-- **WHEN** every `production` artifact fails `ModelCard` validation
+- **WHEN** every production membership's metadata fails `ModelCard` validation
 - **THEN** the response is `503` "*Couldn't read the model catalog.*"
 
 #### Scenario: An empty registry is an empty list
-- **WHEN** no artifact carries the `production` alias
+- **WHEN** no collection has a production membership
 - **THEN** the response is `200` with `cards: []` and a `fetched_at`
 
-#### Scenario: A missing key is reported without starting the child
+#### Scenario: A missing key is reported without a request
 - **WHEN** `WANDB_API_KEY` is unset, or is only whitespace, and an authenticated caller requests `GET /model-cards`
 - **THEN** the response is `503` "*The model catalog isn't configured in this environment.*"
-- **AND** no child process is started
+- **AND** no request is sent
 
-#### Scenario: A hung registry is cut off at the time limit
-- **WHEN** the child is still running 20 seconds after it started
-- **THEN** it is killed and the request answers `503` "*Couldn't read the model catalog.*"
+#### Scenario: A slow registry is cut off
+- **WHEN** a request to wandb does not answer within 5 seconds, or the listing has run for 15 seconds
+- **THEN** the request answers `503` "*Couldn't read the model catalog.*"
 
 #### Scenario: A registry error is logged, not returned
-- **WHEN** the child exits non-zero with `secret-detail` on stderr
+- **WHEN** wandb answers with a GraphQL `errors` array whose message is `secret-detail`
 - **THEN** the response is `503` "*Couldn't read the model catalog.*" and does not contain `secret-detail`
 - **AND** the log contains `secret-detail`
 
