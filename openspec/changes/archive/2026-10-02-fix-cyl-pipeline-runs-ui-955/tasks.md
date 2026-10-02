@@ -163,8 +163,16 @@
   - the Scan cell shows the full id, with no separator and no "…";
   - Wave shows no separator;
   - a failed or queued row with no source shows "—".
-- [ ] 8.4 Open the dialog on a one-scan selection. It shows "1 selected scan". If that scan already has results, it shows "This scan already has pipeline results…".
-  - **8.2 and 8.3 passed; 8.4 needs a re-check (2026-10-02, about 06:20Z, eberrigan in the
+- [x] 8.4 Open the dialog on a one-scan selection. It shows "1 selected scan". If that scan already has results, it shows "This scan already has pipeline results…".
+  **Re-checked and passed (2026-10-02, about 19:30Z, eberrigan, screenshot shared in the
+  session).** Staging was serving `26ca7b7c` (Deploy run 36997056580, which contains
+  `1ab65e24`). On the TEST-E2E accession page (`/app/phenotypes/2/12880747/12880747/12877043`),
+  only TEST-E2E-020 (scan 12894766, source 264) was selected, then "Run selected (1)". The
+  dialog read "Run the pipeline on 1 selected scan · 1 scan" and "This scan already has
+  pipeline results. The run will still be created and sent to the cluster, which skips scans
+  it has already processed with the same models and code." It was cancelled without starting
+  a run. The earlier, wrong-path attempt is recorded below.
+  - **8.2 and 8.3 passed; 8.4's first attempt used the wrong path (2026-10-02, about 06:20Z, eberrigan in the
     browser on `https://staging.bloom.salk.edu:8443`).** Staging was serving `88cbcbf3` (run
     36969184325); the next Deploy, 36972180555 for #1009, was still waiting at the gate. Targets
     were picked from staging's data, read-only. eberrigan reported each item as passing. One
@@ -189,7 +197,8 @@
 - [x] 8.5 In the archive PR, record the deployed sha and what you saw, tick 8.x, and then close #955 by hand. Don't archive before 8.x is recorded.
   **2026-10-02:** 8.1–8.3 recorded above (deployed `88cbcbf3`). With eberrigan's yes, #955 was
   closed by hand with the evidence (issuecomment-5946760656). That comment repeats 8.4's
-  "1 selected scan" from the wrong path, so it needs a correction once 8.4 is re-checked.
+  "1 selected scan" from the wrong path; 8.4 has since been re-checked on the right path
+  (above), so a short correction belongs on #955.
 
 ## 9. Archive-ordering hazard (`openspec validate --strict` cannot see it)
 
