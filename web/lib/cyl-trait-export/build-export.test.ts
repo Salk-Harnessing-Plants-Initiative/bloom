@@ -259,6 +259,38 @@ describe('(d) integrity and RPC failures produce no output', () => {
     expect((err as ExportError).detail).toMatch(detail)
   })
 
+  // cyl_plants.accession_id is nullable, and #976's presence check inner-joins
+  // accessions, so such a scan gets no coverage row and fails every export of its
+  // experiment. Say why, before any recipe read (tasks.md 10b.3).
+  it.each([
+    [[100], 'scan 100 (plant FX-P2) has no accession'],
+    [[100, 9, 101], 'scan 9 (plant FX-P1) and 2 other scans have no accession'],
+  ])('names a scan whose plant has no accession: %j', async (ids, lead) => {
+    const f = fakeDb({
+      tamper: {
+        pageScans: (r: unknown) =>
+          (r as { scan_id: number }[]).map((row) =>
+            ids.includes(row.scan_id) ? { ...row, accession_id: null } : row
+          ),
+      },
+    })
+    const resolved = await resolveSelection(f.db, WHOLE)
+    const err = await buildExport(f.db, resolved, WHOLE, {
+      recipeKey: K,
+      chosen: 'user',
+      generatedAt: AT,
+      version: '1.0.0',
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(ExportError)
+    expect((err as ExportError).kind).toBe('integrity')
+    expect((err as ExportError).detail).toBe(
+      `${lead}, so this export cannot run; ask an admin to set the plant's accession, then try again`
+    )
+    expect(f.calls.filter((c) => ['listRecipes', 'coverage', 'traits'].includes(c.method))).toEqual(
+      []
+    )
+  })
+
   it('reports an included-count drift as a changed selection', async () => {
     const { err } = await failure(
       WHOLE,

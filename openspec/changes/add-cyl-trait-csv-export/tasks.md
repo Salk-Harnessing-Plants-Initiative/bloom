@@ -458,6 +458,8 @@ The five-reviewer review of #996 (review 5386494362) found one blocking bug and 
 - [x] 10b.2 **Memory** (user decision 2026-10-01: the recommendation). `RUNNING_JOB_RESERVE_BYTES` at least the measured 340 MB per job (10.2), with two reserves still inside `MAX_HELD_BYTES`; `TraitPivot` stores values as float32 (9 bytes per value, not 13; the database values are float4, so nothing is lost and the goldens stay byte-identical); a zip still being downloaded counts against the budget after its job is dropped, until its stream closes or is cancelled. Draft an infra issue (restart policy and memory limit for `bloom-web`) for the user to approve; it gates production (12.3).
   **(done 2026-10-01 in code; the infra issue is drafted for the user. Red (`test(web): the trait-export memory budget covers measured jobs and open downloads`): 3 failed, 55 passed. Green: `RUNNING_JOB_RESERVE_BYTES` 384 MB; `TraitPivot` values in `Float32Array` with `storedBytes()`, and the golden files are byte-identical; `openDownload` registers a stream's bytes in `ExportState.downloads`, `reserveJob` counts them unless the job's ready zip is already counted, and the download route closes them when the stream ends or is cancelled (route test; a mutation leaving `cancel` unwired fails it). With two reserves filling the 768 MB budget, a second concurrent job is refused while another user's zip is held. 310/310, tsc clean.)**
 
+- [ ] 10b.3 **Plants with no accession** (user decision 2026-10-01: measure, then C). Staging count first (read-only); then, test first, `buildExport` fails before any recipe read with a detail naming the first such scan and plant, the count of others, and what to do, instead of "scan N has no coverage row".
+
 ## PR B
 
 ## 11. Dialog and entry points
