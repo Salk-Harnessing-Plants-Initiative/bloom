@@ -252,3 +252,274 @@ def test_more_than_96_fastqs_are_refused():
     ]
     client, _ = _serving(names)
     assert "at most 96" in _refusal("s3://lab-data/run42/", client).detail
+
+
+# --------------------------------------------------------------------------- #
+# The client the routes use
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingHttpx:
+    """httpx with Client recorded, serving `handler` instead of the network."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.kwargs = []
+
+    def __getattr__(self, name):
+        return getattr(httpx, name)
+
+    def Client(self, **kwargs):
+        self.kwargs.append(kwargs)
+        return httpx.Client(transport=httpx.MockTransport(self.handler))
+
+
+def test_the_routes_client_has_a_short_connect_and_read_timeout(monkeypatch):
+    fake = _RecordingHttpx(
+        lambda r: httpx.Response(200, text=_listing("run42/", [R1, R2]))
+    )
+    monkeypatch.setattr(s3_folder, "httpx", fake)
+    assert s3_folder.check_folder("s3://lab-data/run42/")["sample"] == "col0"
+    assert fake.kwargs == [{"timeout": s3_folder.TIMEOUT}]
+    assert (s3_folder.TIMEOUT.connect, s3_folder.TIMEOUT.read) == (3.0, 10.0)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ReadTimeout("slow"),
+        httpx.ConnectTimeout("slow"),
+        httpx.RemoteProtocolError("x"),
+    ],
+)
+def test_a_slow_or_broken_s3_is_a_502_on_the_routes_client(monkeypatch, error):
+    def handler(request):
+        raise error
+
+    monkeypatch.setattr(s3_folder, "httpx", _RecordingHttpx(handler))
+    err = _refusal("s3://lab-data/run42/", None)
+    assert err.status_code == 502 and "Couldn't reach S3" in err.detail
+
+
+# --------------------------------------------------------------------------- #
+# Limits, the database's own
+# --------------------------------------------------------------------------- #
+
+
+def _url_of_length(n):
+    head = "s3://lab-data/"
+    return head + "a" * (n - len(head) - 1) + "/"
+
+
+def test_a_url_of_exactly_1024_characters_is_accepted():
+    url = _url_of_length(s3_folder.MAX_URL)
+    assert len(url) == 1024 and s3_folder.normalise_url(url)[2] == url
+
+
+def test_1024_characters_counts_the_slash_that_is_added():
+    url = _url_of_length(s3_folder.MAX_URL)
+    assert s3_folder.normalise_url(url.removesuffix("/"))[2] == url
+
+
+def test_a_url_of_1025_characters_is_refused():
+    with pytest.raises(HTTPException) as exc:
+        s3_folder.normalise_url(_url_of_length(s3_folder.MAX_URL + 1))
+    assert exc.value.status_code == 422
+
+
+def _lanes(count):
+    return [
+        f"col0_S1_L{ln:03d}_{r}_001.fastq.gz"
+        for ln in range(1, count + 1)
+        for r in ("R1", "R2")
+    ]
+
+
+def test_exactly_96_fastqs_are_accepted():
+    client, _ = _serving(_lanes(48))
+    assert s3_folder.check_folder("s3://lab-data/run42/", client)["file_count"] == 96
+
+
+def test_97_fastqs_are_refused():
+    client, _ = _serving(_lanes(48) + ["col0_S1_L049_I1_001.fastq.gz"])
+    assert "at most 96" in _refusal("s3://lab-data/run42/", client).detail
+
+
+# --------------------------------------------------------------------------- #
+# Friendlier refusals
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://lab-data.s3.us-west-2.amazonaws.com/run42/", "S3://lab-data/run42/"],
+)
+def test_a_web_address_or_upper_case_scheme_says_which_form_to_use(url):
+    with pytest.raises(HTTPException) as exc:
+        s3_folder.normalise_url(url)
+    assert (
+        exc.value.status_code == 422 and "s3://bucket/folder/ form" in exc.value.detail
+    )
+
+
+@pytest.mark.parametrize("bucket", ["a..b", "192.168.1.1"])
+def test_a_bucket_name_s3_cant_have_is_refused_before_listing(bucket):
+    with pytest.raises(HTTPException) as exc:
+        s3_folder.normalise_url(f"s3://{bucket}/run42/")
+    assert (
+        exc.value.status_code == 422
+        and "isn't a valid S3 bucket name" in exc.value.detail
+    )
+
+
+def test_s3s_invalid_bucket_name_is_a_refusal_not_a_502():
+    body = "<Error><Code>InvalidBucketName</Code></Error>"
+    err = _refusal(
+        "s3://lab-data/run42/", _client(lambda r: httpx.Response(400, text=body))
+    )
+    assert err.status_code == 422 and "isn't a valid S3 bucket name" in err.detail
+
+
+@pytest.mark.parametrize("status", [301, 307, 400])
+def test_each_kind_of_region_redirect_is_followed(status):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        if request.url.host == "s3.amazonaws.com":
+            return httpx.Response(status, headers={"x-amz-bucket-region": "us-west-2"})
+        return httpx.Response(200, text=_listing("run42/", [R1, R2]))
+
+    s3_folder.check_folder("s3://lab-data/run42/", _client(handler))
+    assert seen == ["s3.amazonaws.com", "s3.us-west-2.amazonaws.com"]
+
+
+def test_a_second_redirect_is_not_followed():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        return httpx.Response(301, headers={"x-amz-bucket-region": "us-west-2"})
+
+    err = _refusal("s3://lab-data/run42/", _client(handler))
+    assert err.status_code == 502 and len(seen) == 2
+
+
+@pytest.mark.parametrize(
+    "region", ["evil.example/#", "us-west-2.evil", "", "US-WEST-2"]
+)
+def test_a_region_s3_wouldnt_send_is_not_followed(region):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        return httpx.Response(301, headers={"x-amz-bucket-region": region})
+
+    err = _refusal("s3://lab-data/run42/", _client(handler))
+    assert err.status_code == 502 and seen == ["s3.amazonaws.com"]
+
+
+def test_a_listing_that_isnt_xml_is_a_502():
+    err = _refusal(
+        "s3://lab-data/run42/", _client(lambda r: httpx.Response(200, text="not xml"))
+    )
+    assert err.status_code == 502 and "can't read" in err.detail
+
+
+def _listing_with(prefix, items):
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        f"<Prefix>{prefix}</Prefix><IsTruncated>false</IsTruncated>{items}</ListBucketResult>"
+    )
+
+
+def _serving_items(items):
+    return _client(lambda r: httpx.Response(200, text=_listing_with("run42/", items)))
+
+
+def _item(name, size="100", etag="&quot;e&quot;", storage=None):
+    parts = [f"<Key>run42/{name}</Key>"]
+    if size is not None:
+        parts.append(f"<Size>{size}</Size>")
+    if etag is not None:
+        parts.append(f"<ETag>{etag}</ETag>")
+    if storage:
+        parts.append(f"<StorageClass>{storage}</StorageClass>")
+    return "<Contents>" + "".join(parts) + "</Contents>"
+
+
+@pytest.mark.parametrize("etag", [None, "", "x" * 201])
+def test_a_file_without_a_usable_etag_is_a_502(etag):
+    client = _serving_items(_item(R1) + _item(R2, etag=etag))
+    assert _refusal("s3://lab-data/run42/", client).status_code == 502
+
+
+@pytest.mark.parametrize("size", [None, "", "1.5", "lots"])
+def test_a_file_without_a_whole_size_is_a_502(size):
+    client = _serving_items(_item(R1) + _item(R2, size=size))
+    err = _refusal("s3://lab-data/run42/", client)
+    assert err.status_code == 502 and "without a size" in err.detail
+
+
+def test_empty_fastqs_are_refused():
+    client = _serving_items(_item(R1) + _item(R2, size="0"))
+    err = _refusal("s3://lab-data/run42/", client)
+    assert err.status_code == 422 and "empty" in err.detail and R2 in err.detail
+
+
+@pytest.mark.parametrize("storage", ["GLACIER", "DEEP_ARCHIVE"])
+def test_archived_fastqs_are_refused(storage):
+    client = _serving_items(_item(R1) + _item(R2, storage=storage))
+    err = _refusal("s3://lab-data/run42/", client)
+    assert err.status_code == 422 and "restored" in err.detail and R2 in err.detail
+
+
+def test_instantly_readable_storage_classes_are_accepted():
+    client = _serving_items(
+        _item(R1, storage="STANDARD_IA") + _item(R2, storage="GLACIER_IR")
+    )
+    assert s3_folder.check_folder("s3://lab-data/run42/", client)["file_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "col0_S1_L002_R1_001.fq.gz",
+        "col0_S1_L002_R1_001.fq",
+        "col0_S1_L002_R1_001.FASTQ.GZ",
+    ],
+)
+def test_fastqs_with_another_extension_are_named_not_dropped(other):
+    client, _ = _serving([R1, R2, other])
+    err = _refusal("s3://lab-data/run42/", client)
+    assert err.status_code == 422 and other in err.detail
+
+
+def test_at_most_five_misnamed_files_are_shown():
+    names = [f"reads_{n}.fastq.gz" for n in range(7)]
+    client, _ = _serving(names)
+    detail = _refusal("s3://lab-data/run42/", client).detail
+    assert sum(name in detail for name in names) == 5
+
+
+def test_no_fastqs_names_the_subfolders_that_might_hold_them():
+    items = (
+        "<CommonPrefixes><Prefix>run42/sampleA/</Prefix></CommonPrefixes>"
+        "<CommonPrefixes><Prefix>run42/sampleB/</Prefix></CommonPrefixes>"
+    )
+    detail = _refusal("s3://lab-data/run42/", _serving_items(items)).detail
+    assert "No FASTQs directly in" in detail and "sampleA/, sampleB/" in detail
+
+
+def test_undetermined_reads_beside_a_sample_are_explained():
+    client, _ = _serving(
+        [
+            R1,
+            R2,
+            "Undetermined_S0_L001_R1_001.fastq.gz",
+            "Undetermined_S0_L001_R2_001.fastq.gz",
+        ]
+    )
+    detail = _refusal("s3://lab-data/run42/", client).detail
+    assert "Undetermined, col0" in detail and "couldn't assign" in detail

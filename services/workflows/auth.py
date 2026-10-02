@@ -23,6 +23,9 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 # limit scales with workers/replicas until a shared store is warranted).
 RATE_LIMIT = int(os.environ.get("WORKFLOWS_RATE_LIMIT", "5"))
 RATE_WINDOW_SECONDS = int(os.environ.get("WORKFLOWS_RATE_WINDOW_SECONDS", "60"))
+# The form checks an S3 folder as the scientist types, so it gets its own, larger allowance.
+FOLDER_CHECK_RATE_LIMIT = int(os.environ.get("WORKFLOWS_FOLDER_CHECK_RATE_LIMIT", "30"))
+FOLDER_CHECK_SCOPE = "folder-check"
 _hits: dict[str, list[float]] = defaultdict(list)
 _hits_lock = threading.Lock()
 # Timestamp of the last stale-key sweep; keeps _hits from growing one dead entry
@@ -100,3 +103,8 @@ def enforce_rate_limit(user_id: str, limit: int | None = None, scope: str = "") 
             )
         recent.append(now)
         _hits[key] = recent
+
+
+def enforce_folder_check_limit(user_id: str) -> None:
+    """Raise 429 if the user has checked FOLDER_CHECK_RATE_LIMIT folders in the window."""
+    enforce_rate_limit(user_id, limit=FOLDER_CHECK_RATE_LIMIT, scope=FOLDER_CHECK_SCOPE)

@@ -62,7 +62,7 @@ import plate_progress
 import plate_request
 import scrna_cellranger
 import scrna_cellranger_logs
-from auth import enforce_rate_limit, require_supabase_user
+from auth import enforce_folder_check_limit, enforce_rate_limit, require_supabase_user
 from video import generate_experiment_scan_video
 
 logging.basicConfig(
@@ -72,8 +72,6 @@ logger = logging.getLogger(__name__)
 
 # Comma-separated browser origins allowed to call this API (the frontend).
 # CORS only restricts browser JS — it is not access control for curl/servers.
-# The form checks an S3 folder as the scientist types, so this allows more than starting runs.
-FOLDER_CHECK_RATE_LIMIT = int(os.environ.get("WORKFLOWS_FOLDER_CHECK_RATE_LIMIT", "30"))
 CORS_ORIGINS = os.environ.get("WORKFLOWS_CORS_ORIGINS", "http://localhost:3000").split(
     ","
 )
@@ -246,11 +244,12 @@ def trigger_scrna_cellranger_run_route(
     enforce_rate_limit(user_id)
     result = scrna_cellranger.trigger_run(body, user_id)
     logger.info(
-        "Cell Ranger run %s triggered by %s (sample %s, reference %s)",
+        "Cell Ranger run %s triggered by %s (sample %s, reference %s, folder %s)",
         result["run_id"],
         user_id,
         result["sample"],
         result["reference"],
+        result.get("fastq_url"),
     )
     return result
 
@@ -266,7 +265,7 @@ def check_scrna_cellranger_folder_route(
     Requires a valid Supabase user JWT (Bearer). Rate-limited per user, separately from
     starting runs, since the form checks as the scientist types.
     """
-    enforce_rate_limit(user_id, limit=FOLDER_CHECK_RATE_LIMIT, scope="folder-check")
+    enforce_folder_check_limit(user_id)
     return scrna_cellranger.check_folder(body)
 
 
