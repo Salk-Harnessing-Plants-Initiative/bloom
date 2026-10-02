@@ -12,9 +12,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 - `h5py` and `numpy` are regular dependencies, so a plain install can run `scrna hdf5 upload`.
   The `scrna` extra is gone; an old `bloomctl[scrna]` install command still works and installs
-  the same thing.
-- The PyPI page's Install section lists every install command, pinned to the release, and the
-  intro covers cylinder, plate and expression data.
+  the same thing, with a warning that the extra no longer exists.
+- If h5py or numpy is missing or broken, `scrna hdf5 upload` names the installed bloomctl
+  version and the command that reinstalls it.
+- The PyPI page is reorganised into numbered sections (Install, Log in, Cylinder, Plate,
+  Single-cell, Pipelines), each with its own quickstart, tips and commands. Staging login moved
+  to a Bloom team section; examples say what they refer to and name their output folder.
 
 ## [0.1.0a7] - 2026-09-30 — single-cell dataset files + per-run manifests
 

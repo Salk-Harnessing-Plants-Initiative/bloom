@@ -97,11 +97,11 @@ summary at the bottom. It is the file to send us if something looks wrong.
 ```
 OK   scan=1 frame=0 cyl-images/0.png
 SKIP scan=1 frame=1 cyl-images/1.png
-FAIL scan=1 frame=3 cyl-images/3.png  error=[Errno 28] No space left on device
+FAIL scan=1 frame=3 cyl-images/3.png  error=ReadTimeout: timed out
 UNLISTED scan=5 (frame count unknown)  error=...
 NOFRAMES scan=7 (no images recorded for this scan)
 
-Summary: 3/8 frames present (3 downloaded this run, 0 already on disk), 5 failed
+Summary: 2/3 frames present (1 downloaded this run, 1 already on disk), 1 failed, 1 scan(s) could not be listed (frames unknown), 1 scan(s) have no images
 ```
 
 | Status     | What it means                                                                  |
@@ -113,9 +113,9 @@ Summary: 3/8 frames present (3 downloaded this run, 0 already on disk), 5 failed
 | `NOFRAMES` | The scan has no images in Bloom. Nothing to download; not a failure.           |
 
 **Watch for `UNLISTED`.** A `FAIL` is one missing frame, but an `UNLISTED` scan means we don't
-know how many are missing, so a run can report every frame present and still be incomplete.
-Re-running picks up both. If the run stopped early (for example, the disk filled up), the
-summary line ends with the reason.
+know how many of its frames are missing, so they aren't in the "present" count at all. Check the
+summary's "could not be listed" number, not just "frames present". Re-running picks up both. If
+the run stopped early (for example, the disk filled up), the summary line ends with the reason.
 
 ### Cylinder commands
 

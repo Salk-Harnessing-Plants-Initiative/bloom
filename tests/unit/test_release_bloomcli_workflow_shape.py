@@ -200,24 +200,73 @@ def test_pin_script_pins_plain_and_extra_installs(tmp_path):
     readme = (
         'uv tool install "bloomctl==0.1.0a1"\n'
         "uvx bloomctl@0.1.0a1 --help\n"
-        'uv tool install "bloomctl[scrna]==0.1.0a1"\n'
+        'uv tool install "bloomctl[extra]==0.1.0a1"\n'
     )
     pinned = _run_pin_script("bloomctl-v0.1.0a9", readme, tmp_path)
 
     assert 'uv tool install "bloomctl==0.1.0a9"' in pinned
     assert "uvx bloomctl@0.1.0a9 --help" in pinned
-    assert 'uv tool install "bloomctl[scrna]==0.1.0a9"' in pinned
+    assert 'uv tool install "bloomctl[extra]==0.1.0a9"' in pinned
     assert "0.1.0a1" not in pinned
 
 
-def test_pypi_readme_installs_are_all_pinnable():
-    """Every install line on the PyPI page names a version the pin step can rewrite."""
-    readme = (REPO_ROOT / "bloomcli" / "README.pypi.md").read_text(encoding="utf-8")
-    installs = [line for line in readme.splitlines() if re.match(r"\s*(pip|uv tool) install\b", line)]
+# Anything that installs or runs a package: pip/pip3/python -m pip, uv pip, uv tool, pipx, uvx.
+_INSTALLER = re.compile(
+    r"\b(?:uvx|pipx\s+(?:install|run)|uv\s+tool\s+(?:install|run)|(?:uv\s+)?pip3?\s+install)\b"
+)
+# The package right after the installer's flags, pinned with == (extras allowed) or uvx's @.
+_PINNED = re.compile(r"""^(?:\s*--?[\w-]+)*\s*["']?bloomctl(?:\[[^\]]+\])?(?:==|@)\d""")
 
-    assert installs, "the PyPI page has no install lines"
-    for line in installs:
-        assert re.search(r"bloomctl(\[[^\]]+\])?==", line), f"unpinned install line: {line!r}"
+
+def _unpinned_install_lines(text: str) -> list[str]:
+    """Lines that install or run bloomctl without naming a version."""
+    bad = []
+    for line in text.splitlines():
+        match = _INSTALLER.search(line)
+        if match and "bloomctl" in line[match.end():] and not _PINNED.match(line[match.end():]):
+            bad.append(line)
+    return bad
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "uvx bloomctl --help",
+        "uv pip install bloomctl",
+        "pipx install bloomctl",
+        "python -m pip install bloomctl",
+        "$ pip install bloomctl",
+        "Run `pip install bloomctl` first.",
+        "pip install --upgrade bloomctl",
+        'uv tool install "bloomctl[extra]"',
+        "uv tool install bloomctl  # bloomctl==latest",
+    ],
+)
+def test_an_unpinned_install_is_caught(line):
+    assert _unpinned_install_lines(line) == [line]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'uv tool install "bloomctl==0.1.0a5"',
+        "uvx bloomctl@0.1.0a5 --help",
+        'pip install "bloomctl==0.1.0a5"',
+        'uv tool install --reinstall "bloomctl[extra]==0.1.0a5"',
+        "bloomctl --version",
+        "docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging",
+    ],
+)
+def test_a_pinned_install_or_a_plain_run_passes(line):
+    assert _unpinned_install_lines(line) == []
+
+
+def test_pypi_readme_installs_are_all_pinned():
+    """Every command on the PyPI page that installs or runs bloomctl names a version."""
+    readme = (REPO_ROOT / "bloomcli" / "README.pypi.md").read_text(encoding="utf-8")
+
+    assert any(_INSTALLER.search(line) for line in readme.splitlines()), "no install lines"
+    assert _unpinned_install_lines(readme) == []
 
 
 # --- publish workflow: trusted publishing + immutability guard -------------

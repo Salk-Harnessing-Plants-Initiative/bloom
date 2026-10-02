@@ -32,15 +32,25 @@ MAX_DUPLICATE_POINT_SHARE = 0.001
 # Values read at a time when scanning a matrix, so a large file is never read whole.
 SCAN_VALUES = 4 * 1024 * 1024
 
-INSTALL = "reinstall bloomctl"
-
 
 class FormatError(ValueError):
     """The file does not meet the format; the message names the first problem."""
 
 
-class MissingExtra(ImportError):
-    """h5py or numpy is not installed."""
+class MissingDependency(ImportError):
+    """h5py or numpy is missing or broken in this install."""
+
+
+def missing_dependency_message() -> str:
+    """Name this bloomctl version, which includes h5py and numpy, and how to reinstall it."""
+    from bloomctl import __version__
+
+    return (
+        f"the structure check needs h5py and numpy. bloomctl {__version__} includes h5py and numpy, "
+        "but they are missing or broken here. Reinstall with: "
+        f'uv tool install --reinstall "bloomctl=={__version__}" '
+        f'(or: pip install --force-reinstall "bloomctl=={__version__}")'
+    )
 
 
 @dataclass(frozen=True)
@@ -56,7 +66,7 @@ def _modules():
         import h5py
         import numpy
     except ImportError as exc:
-        raise MissingExtra(f"the structure check needs h5py and numpy: {INSTALL}") from exc
+        raise MissingDependency(missing_dependency_message()) from exc
     return h5py, numpy
 
 

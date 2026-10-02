@@ -128,14 +128,14 @@ def test_a_file_that_does_not_meet_the_format_is_refused_before_sending(tmp_path
     assert storage.requests == []
 
 
-def test_a_missing_h5py_says_to_reinstall(tmp_path, env, monkeypatch):
+def test_a_missing_h5py_reaches_the_user_with_the_reinstall_command(tmp_path, env, monkeypatch):
     def missing(_path):
-        raise _format.MissingExtra(f"the structure check needs h5py and numpy: {_format.INSTALL}")
+        raise _format.MissingDependency(_format.missing_dependency_message())
 
     monkeypatch.setattr(_format, "check_structure", missing)
     result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
-    assert "reinstall bloomctl" in result.output
+    assert "uv tool install --reinstall" in result.output
 
 
 def test_the_same_file_twice_is_one_object(tmp_path, env, storage):
