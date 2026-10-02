@@ -73,6 +73,7 @@ It SHALL show:
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 - **Failed rows:** a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies.
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
+- **Matched-result note:** "*“Result recorded” includes scans already processed with the same inputs and settings: this run matched that earlier result instead of producing a new one, and the row's source is the earlier result.*" A re-delivery of an already-ingested result marks its row `written` with the existing source, so the label alone does not say this run produced the result.
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
 It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_pipeline_run_scans` filtered `run_id=eq.<runId>`.
@@ -100,3 +101,7 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 #### Scenario: A failed no-result row whose scan has results carries no re-delivery note
 - **WHEN** a failed row's `error_message` is write-back's no-result message or the status poller's backstop message, and the scan currently has pipeline results
 - **THEN** the row shows no bloom#900 note, and "Re-run failed scans" shows no bloom#900 warning
+
+#### Scenario: The page says a recorded result may have been matched, not produced
+- **WHEN** the drill-down renders
+- **THEN** it shows the matched-result note, which says "Result recorded" includes scans whose earlier result this run matched instead of producing a new one

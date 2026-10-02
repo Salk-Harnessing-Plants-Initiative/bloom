@@ -21,7 +21,7 @@
  *   "unknown" until the next snapshot: it can't be inferred, because an
  *   empty envelope marks a row written without raising the latest source.
  * - A row that turns failed live gets one metadata and latest-source lookup,
- *   for its likely cause and the bloom#900 note.
+ *   for its likely cause and "current in trait views".
  * - Re-run actions (design D7) submit `scan_ids` targets from the held rows.
  *   "Re-run failed" waits for settled header counts; "Re-run scans without
  *   a result" is offered only on a `complete` or `failed` run with U > 0, so
@@ -34,7 +34,7 @@ import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
 import { RunState } from "@/components/cyl-pipeline/RunState";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
-import { failedScanCause, isNoOpCandidate, NO_OP_NOTE } from "@/lib/cyl-pipeline/failure-hints";
+import { failedScanCause } from "@/lib/cyl-pipeline/failure-hints";
 import {
   fetchLatestSources,
   fetchRun,
@@ -81,14 +81,19 @@ interface DetailView {
 /** How long a burst of rows turning failed is collected before one lookup. */
 export const FAILED_LOOKUP_BATCH_MS = 500;
 
-export const NO_OP_RERUN_WARNING =
-  "Some of these scans already have pipeline results this run didn't record (bloom#900); re-running won't change them. Check their traits before re-running.";
-
 export const DOUBLE_PROCESSING_WARNING =
   "The run has ended, but some of these scans have no outcome. Scans still processing on the cluster could be processed twice.";
 
 export const TIMING_NOTE =
   "Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.";
+
+/**
+ * A re-delivery of an already-ingested result marks its row written with the
+ * existing source and discards this run's output (bloom#875, bloom#900), so
+ * "Result recorded" doesn't always mean this run produced the result.
+ */
+export const MATCHED_RESULT_NOTE =
+  "\u201cResult recorded\u201d includes scans already processed with the same inputs and settings: this run matched that earlier result instead of producing a new one, and the row's source is the earlier result.";
 
 function paramsText(params: unknown): string {
   if (params && typeof params === "object" && !Array.isArray(params) && Object.keys(params).length > 0) {
@@ -261,7 +266,6 @@ export function RunDetailLive({
           plant_age_days: m?.plant_age_days ?? null,
           current: latest === null || changed.has(r.scan_id) ? null : r.source_id !== null && scanLatest === r.source_id,
           likelyCause: failed ? failedScanCause(r.error_message, m) : null,
-          noOpNote: failed && latest !== null && isNoOpCandidate(r, scanLatest != null) ? NO_OP_NOTE : null,
           scanHref: scanImagesHref(m),
         };
       }),
@@ -291,7 +295,6 @@ export function RunDetailLive({
   const ended = detail.run.status === "complete" || detail.run.status === "failed";
   const offerFailed = triggerEnabled && settled && failedIds.length > 0;
   const offerUnresulted = triggerEnabled && loaded && ended && runDisplay(headerRun).counts.U > 0 && unresultedIds.length > 0;
-  const noOpAmongFailed = tableRows.some((r) => r.noOpNote !== null);
 
   const lastUpdate = scanRows.reduce<string | null>(
     (max, r) => (max === null || compareTimestamps(r.updated_at, max) > 0 ? r.updated_at : max),
@@ -316,7 +319,6 @@ export function RunDetailLive({
             target={{ target_level: "scan_ids", scan_ids: failedIds }}
             label={`Re-run failed scans (${failedIds.length})`}
             title={`the failed scans of run ${runId}`}
-            note={noOpAmongFailed ? NO_OP_RERUN_WARNING : undefined}
             hidden={!offerFailed}
           />
           <RunPipelineButton
@@ -356,6 +358,7 @@ export function RunDetailLive({
           </ul>
         )}
         <p className="text-stone-500">{TIMING_NOTE}</p>
+        <p className="text-stone-500">{MATCHED_RESULT_NOTE}</p>
       </section>
 
       {live.error && (

@@ -18,7 +18,7 @@ import {
   type RecordedQuery,
 } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 import { at, runRow, scanMeta, scanRow } from "@/lib/cyl-pipeline/__fixtures__/rows";
-import { BACKSTOP_MESSAGE, NO_OP_NOTE, WRITEBACK_NO_RESULT_MESSAGE } from "@/lib/cyl-pipeline/failure-hints";
+import { BACKSTOP_MESSAGE, WRITEBACK_NO_RESULT_MESSAGE } from "@/lib/cyl-pipeline/failure-hints";
 import type { RunRow, RunScanRow } from "@/lib/cyl-pipeline/realtime-reducer";
 import type { ScanMeta } from "@/lib/cyl-pipeline/scan-meta";
 import type { ScanTableRow } from "./RunScansTable";
@@ -38,7 +38,7 @@ vi.mock("./RunScansTable", () => ({
     <div data-testid="table" data-count={rows.length} data-filter={initialFilter}>
       {rows.slice(0, 20).map((r) => (
         <div key={r.id} data-testid={`scan-${r.scan_id}`}>
-          {r.statusLabel} | current={String(r.current)} | {r.likelyCause ?? ""} | {r.noOpNote ?? ""} | {r.qr_code ?? ""}
+          {r.statusLabel} | current={String(r.current)} | {r.likelyCause ?? ""} | {r.qr_code ?? ""}
           {r.scanHref && <a href={r.scanHref}>Scan images</a>}
         </div>
       ))}
@@ -218,6 +218,15 @@ describe("live rows and the header", () => {
     mount();
     expect(screen.getByText("Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.")).toBeTruthy();
   });
+
+  it("says that Result recorded includes a result this run matched rather than produced", () => {
+    mount();
+    expect(
+      screen.getByText(
+        "\u201cResult recorded\u201d includes scans already processed with the same inputs and settings: this run matched that earlier result instead of producing a new one, and the row's source is the earlier result.",
+      ),
+    ).toBeTruthy();
+  });
 });
 
 describe("loading", () => {
@@ -248,26 +257,16 @@ describe("loading", () => {
 });
 
 describe("failed rows", () => {
-  it("explains a stage-in failure, and shows the #900 note only for backstop text on a scan with results", async () => {
+  it("explains a stage-in failure", async () => {
     scans = [
       scanRow(1, 577, { status: "failed", error_message: "stage-in failed" }),
-      scanRow(2, 578, { status: "failed", error_message: BACKSTOP_MESSAGE }),
-      scanRow(3, 579, { status: "failed", error_message: BACKSTOP_MESSAGE }),
-      scanRow(4, 580, { status: "failed", error_message: "other" }),
+      scanRow(2, 578, { status: "failed", error_message: "other" }),
     ];
-    run = { ...run, scan_count: 4 };
-    meta = [scanMeta(577, { plant_age_days: null }), scanMeta(578), scanMeta(579), scanMeta(580)];
-    latest = [
-      { scan_id: 578, max_source_id: 40 },
-      { scan_id: 579, max_source_id: null },
-      { scan_id: 580, max_source_id: 41 },
-    ];
+    meta = [scanMeta(577, { plant_age_days: null }), scanMeta(578)];
     mount();
     await subscribe();
     expect(scanEl(577).textContent).toContain("Likely cause: plant age missing");
-    expect(scanEl(578).textContent).toContain(NO_OP_NOTE);
-    expect(scanEl(579).textContent).not.toContain("bloom#900");
-    expect(scanEl(580).textContent).not.toContain("bloom#900");
+    expect(scanEl(578).textContent).not.toContain("Likely cause");
   });
 
   it("batches a burst of rows turning failed into one latest-source read, and reads no metadata it holds", async () => {
@@ -310,8 +309,10 @@ describe("failed rows", () => {
     const latestCalls = queriesFor("cyl_scan_latest_source").length;
     latest = [{ scan_id: 578, max_source_id: 40 }];
 
-    await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, status: "failed", error_message: BACKSTOP_MESSAGE });
+    // A source on the failed row makes the lookup visible: "current" is unknown until it lands.
+    await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, status: "failed", error_message: BACKSTOP_MESSAGE, source_id: 40 });
     await tick();
+    expect(scanEl(578).textContent).toContain("current=null");
     await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, attempts: 2 });
     await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, status: "failed" });
     await tick(1000); // the batch window
@@ -319,7 +320,7 @@ describe("failed rows", () => {
     expect(queriesFor("cyl_scans_extended").length).toBe(metaCalls);
     expect(queriesFor("cyl_scan_latest_source").length).toBe(latestCalls + 1);
     expect(queriesFor("cyl_scan_latest_source").at(-1)!.arg("in")).toEqual(["scan_id", [578]]);
-    expect(scanEl(578).textContent).toContain(NO_OP_NOTE);
+    expect(scanEl(578).textContent).toContain("current=true");
   });
 
   it("does no lookup for a row that was already failed in the snapshot", async () => {
@@ -566,33 +567,25 @@ describe("re-run actions", () => {
     expect(screen.queryByText(/bloom#900/)).toBeNull();
   });
 
-  it("warns when a failed row carries the #900 note", async () => {
-    run = { ...run, scan_count: 2, status: "complete" };
-    scans = [scanRow(1, 577, { status: "written", source_id: 5 }), scanRow(2, 578, { status: "failed", error_message: BACKSTOP_MESSAGE })];
+  it("shows no bloom#900 note or warning for a failed no-result row on a scan with results", async () => {
+    // A no-op re-delivery now marks its row written (bloom#900), so neither no-result text implies one.
+    run = { ...run, scan_count: 3, status: "complete" };
+    scans = [
+      scanRow(1, 577, { status: "written", source_id: 5 }),
+      scanRow(2, 578, { status: "failed", error_message: BACKSTOP_MESSAGE }),
+      scanRow(3, 579, { status: "failed", error_message: WRITEBACK_NO_RESULT_MESSAGE }),
+    ];
+    meta = [scanMeta(577), scanMeta(578), scanMeta(579)];
     latest = [
       { scan_id: 577, max_source_id: 5 },
       { scan_id: 578, max_source_id: 7 },
+      { scan_id: 579, max_source_id: 228 },
     ];
     mount();
     await subscribe();
-    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (1)");
-    expect(screen.getByTestId("rerun-actions").textContent).toContain(
-      "Some of these scans already have pipeline results this run didn't record (bloom#900); re-running won't change them. Check their traits before re-running.",
-    );
-  });
-
-  it("warns about #900 for write-back's no-result text too, and only where the scan has results", async () => {
-    run = { ...run, scan_count: 2, status: "complete" };
-    scans = [
-      scanRow(1, 577, { status: "failed", error_message: WRITEBACK_NO_RESULT_MESSAGE }),
-      scanRow(2, 578, { status: "failed", error_message: WRITEBACK_NO_RESULT_MESSAGE }),
-    ];
-    latest = [{ scan_id: 577, max_source_id: 228 }];
-    mount();
-    await subscribe();
-    expect(scanEl(577).textContent).toContain(NO_OP_NOTE);
-    expect(scanEl(578).textContent).not.toContain(NO_OP_NOTE);
-    expect(screen.getByTestId("rerun-actions").textContent).toContain("(bloom#900)");
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (2)");
+    expect(document.body.textContent).not.toContain("bloom#900");
+    expect(document.body.textContent).not.toContain("already have pipeline results this run didn't record");
   });
 
   it.each(["complete", "failed"])("offers Re-run scans without a result on a %s run with unresulted scans", async (status) => {

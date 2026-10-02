@@ -23,7 +23,6 @@ function row(scan_id: number, overrides: Partial<ScanTableRow> = {}): ScanTableR
     plant_age_days: 14,
     current: false,
     likelyCause: null,
-    noOpNote: null,
     scanHref: `/app/phenotypes/2/5/11/7/${scan_id}`,
     ...overrides,
   };
@@ -71,7 +70,6 @@ describe("RunScansTable", () => {
             source_id: 40,
             current: true,
             likelyCause: "Likely cause: plant age missing",
-            noOpNote: "bloom#900 note",
           }),
         ]}
         disableVirtualization
@@ -87,7 +85,6 @@ describe("RunScansTable", () => {
     expect(cells[5]).toBe("2");
     expect(cells[6]).toContain("stage-in failed");
     expect(cells[6]).toContain("Likely cause: plant age missing");
-    expect(cells[6]).toContain("bloom#900 note");
     expect(cells[7]).toBe("cyl-abc12");
     expect(cells[8]).toBe("40");
     expect(cells[9]).toBe("yes");
