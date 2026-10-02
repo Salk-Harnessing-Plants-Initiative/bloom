@@ -189,6 +189,9 @@ def test_env_disambiguating_values_differ():
         # stage one environment's scans as the other's.
         "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT",
         "WORKFLOWS_K8S_PIPELINE_SECRET_NAME",
+        # Each environment's own Cell Ranger WorkflowTemplate on that namespace: the same
+        # name in both would put staging's template and image changes straight into prod.
+        "WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE",
     ):
         assert prod[key] != staging[key], (
             f"{key} identical in prod/staging ({prod[key]!r}); "
@@ -646,3 +649,12 @@ def test_dev_compose_blanks_the_pipeline_root_and_secret_and_enables_the_switch(
     )
     switch = env["CYL_PIPELINE_TRIGGER_ENABLED"]
     assert switch == "${CYL_PIPELINE_TRIGGER_ENABLED:-true}"
+
+
+def test_prod_keeps_the_cell_ranger_template_it_has_always_used():
+    """Prod's runs keep the template registered as cellranger-count-template; staging's copy
+    is the one a new template or image is tried on first."""
+    assert _parse(PROD_DEFAULTS)["WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE"] == "cellranger-count-template"
+    assert _parse(STAGING_DEFAULTS)["WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE"] == (
+        "cellranger-count-template-staging"
+    )
