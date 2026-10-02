@@ -602,7 +602,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - Add the button to `TraitExplorer.tsx`, after "Plant age" in the controls row, with `disabled={isLoading}`.
   - Implement `ScanTraitExportButton.tsx` and add it to the scan page with one import and one block beside `RunPipelineButton`.
   **(done 2026-10-02: green, 60/60 across the traits and scan directories; `tsc --noEmit` clean. Mutation: `disabled={false}` in TraitExplorer fails 2 ("disabled until the first trait's waves and ages have loaded" and "disabled again while a trait change reloads"); restored byte for byte. Prettier ran only on the two new files; the four edited files keep their own style.)**
-- [ ] 11.7 Docs:
+- [x] 11.7 Docs:
   - **`_WIKI/SUPABASE/trait-recipes.md`:** add a "Getting one" paragraph at the top of "Using a trait export". Keep the heading, because the help link's anchor depends on it. The paragraph says:
     - where the button is, on the traits page and on a scan's page;
     - that the dialog lists each recipe with its scan count and what produced it;
@@ -612,6 +612,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - the dialog is in `components/cyl-trait-export/`, with its helpers in `lib/cyl-trait-export/client/`, and the scan page's button is `ScanTraitExportButton.tsx` beside `page.tsx`;
     - add `499` to the checks: "a newer listing from the same user replaced it, or the request was aborted".
   - **PR body:** the guide edit reaches the linked `main` page only at the next promotion.
+  **(done 2026-10-02: "Getting one" paragraph added; heading unchanged. README names the dialog, `client/` and `ScanTraitExportButton.tsx`, and lists `499` among the checks. The PR body note is carried into 11.9's `/pr-description`.)**
 - [ ] 11.8 **Pre-merge (PR B).**
   - From the root: `npm ci`, then `npm audit --audit-level=critical`.
   - `cd web && npx tsc --noEmit && npm run test:unit && npm run build`. The build catches a server-only import in the client bundle.
