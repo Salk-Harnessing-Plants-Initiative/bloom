@@ -167,6 +167,10 @@
 
 - [x] 9.1 `fix-cyl-noop-redelivery-scan-resolution` (bloom#900; on staging via #1001, not yet archived) also MODIFIES `cyl-pipeline-ui` "Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`". This change's block is raised onto that block: its one-line "Failed rows" and its no-op scenario are copied byte-identical, and the only line of theirs not kept is the "current in trait views" bullet this change rewrites. An HTML note above the block says so.
 - [ ] 9.2 Archive `fix-cyl-noop-redelivery-scan-resolution` before this change, or in the same PR with that change first. Then `diff` the archived drill-down requirement against this block's intent, and record the result here. If that change's block is revised before archiving, raise this block again first.
+- [x] 9.3 Raised again (2026-10-01, bloom PR #1008, which revised the noop change's drill-down block
+  after review: two-bullet "Failed rows" with a late-result note, a matched-result note, three
+  scenarios). This block is now that block plus only this change's edits: the "current in trait
+  views" bullet, the plain-integer paragraph, and seven scenarios (diff: 1 line replaced, 32 added).
 
 ## 10. PR #1006 review, round 1 (Important 1–3)
 

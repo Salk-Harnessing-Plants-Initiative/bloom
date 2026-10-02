@@ -162,7 +162,7 @@ The web app SHALL provide `/app/cyl-pipeline-runs`, linked from the app navigati
 - **THEN** the list is unchanged
 - **AND** the next "load older" returns that run in order, with no run skipped or duplicated
 
-<!-- This block is raised onto fix-cyl-noop-redelivery-scan-resolution's block for the same requirement (its one-line "Failed rows" and its no-op scenario), plus this change's edits. Archive that change first; see tasks 9.1. -->
+<!-- This block is raised onto fix-cyl-noop-redelivery-scan-resolution's block for the same requirement (as revised in bloom PR #1008: its two-bullet "Failed rows" with the late-result note, its matched-result note and its three scenarios), plus this change's edits. Archive that change first; see tasks 9.1-9.3. -->
 
 ### Requirement: Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`
 The web app SHALL provide `/app/cyl-pipeline-runs/[runId]`. It SHALL:
@@ -190,8 +190,11 @@ It SHALL show:
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
 
   `scan_id`, wave, day, `attempts` and `source_id` SHALL be shown as plain integers, without digit grouping, and SHALL stay numeric columns, so sorting and the column filter's numeric operators are unchanged. The scan column SHALL be at least 110 px wide, enough for a ten-digit id at compact density.
-- **Failed rows:** a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies.
+- **Failed rows:**
+  - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
+  - when the scan's latest source (`cyl_scan_latest_source.max_source_id`, as last read) was written by this run (its `cyl_trait_sources.cyl_pipeline_run_id` equals the run's id), the note: "*This run's result arrived after this row was closed: the scan's current traits are this run's (source N).*" A write-back that lands after the row was failed records its traits but leaves the row `failed` with no `source_id`, so the row alone would say this run produced nothing.
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
+- **Matched-result note:** "*“Result recorded” includes scans already processed with the same images, models, parameters and pipeline code: this run matched that earlier result instead of recording a new one, and the row's source is the earlier result.*" A re-delivery of an already-ingested result marks its row `written` with the existing source, so the label alone does not say this run produced the result.
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
 It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_pipeline_run_scans` filtered `run_id=eq.<runId>`.
@@ -245,9 +248,17 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 - **WHEN** a failed row's scan has a null `plant_age_days`
 - **THEN** the row shows "Likely cause: plant age missing"
 
-#### Scenario: A failed no-result row whose scan has results carries no re-delivery note
-- **WHEN** a failed row's `error_message` is write-back's no-result message or the status poller's backstop message, and the scan currently has pipeline results
-- **THEN** the row shows no bloom#900 note, and "Re-run failed scans" shows no bloom#900 warning
+#### Scenario: A failed no-result row whose scan has another run's results carries no re-delivery note
+- **WHEN** a failed row's `error_message` is write-back's no-result message or the status poller's backstop message, and the scan's latest source was written by another run or outside any run
+- **THEN** the row shows no bloom#900 note and no late-result note, and "Re-run failed scans" shows no bloom#900 warning
+
+#### Scenario: A result that arrived after its row was closed is named
+- **WHEN** scan 577's row in run 91 is `failed` with no `source_id`, and the scan's latest source is 40, whose `cyl_pipeline_run_id` is 91
+- **THEN** the row shows "*This run's result arrived after this row was closed: the scan's current traits are this run's (source 40).*"
+
+#### Scenario: The page says a recorded result may have been matched, not produced
+- **WHEN** the drill-down renders
+- **THEN** it shows the matched-result note, which says "Result recorded" includes scans whose earlier result this run matched instead of recording a new one
 
 ### Requirement: Experiment page shows that experiment's runs
 The experiment page SHALL show the 10 most recent runs that include at least one of its scans. It SHALL read them from `cyl_pipeline_run_experiments`, ordered by `created_at` then `run_id`, both descending, and show each run's counts-first display state.

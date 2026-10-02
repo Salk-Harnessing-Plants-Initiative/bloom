@@ -71,8 +71,11 @@ It SHALL show:
   - "current in trait views" (yes when `source_id` equals the scan's `cyl_scan_latest_source.max_source_id` as last read; unknown when that read failed, or when the row's `source_id` changed since it);
   - `updated_at`;
   - a "Scan images" link, when the scan's species, experiment, wave and accession are known.
-- **Failed rows:** a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies.
+- **Failed rows:**
+  - a likely cause from the scan's metadata (blank species; null or non-whole age) when one applies;
+  - when the scan's latest source (`cyl_scan_latest_source.max_source_id`, as last read) was written by this run (its `cyl_trait_sources.cyl_pipeline_run_id` equals the run's id), the note: "*This run's result arrived after this row was closed: the scan's current traits are this run's (source N).*" A write-back that lands after the row was failed records its traits but leaves the row `failed` with no `source_id`, so the row alone would say this run produced nothing.
 - **Timing note:** "*Results arrive when each batch of up to 25 scans finishes. Reload the traits page to see new results.*"
+- **Matched-result note:** "*“Result recorded” includes scans already processed with the same images, models, parameters and pipeline code: this run matched that earlier result instead of recording a new one, and the row's source is the earlier result.*" A re-delivery of an already-ingested result marks its row `written` with the existing source, so the label alone does not say this run produced the result.
 - **Empty state:** "No scan rows recorded", when `scan_count > 0` and there are no rows.
 
 It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_pipeline_run_scans` filtered `run_id=eq.<runId>`.
@@ -97,6 +100,62 @@ It SHALL subscribe to `cyl_pipeline_runs` filtered `id=eq.<runId>`, and to `cyl_
 - **WHEN** a failed row's scan has a null `plant_age_days`
 - **THEN** the row shows "Likely cause: plant age missing"
 
-#### Scenario: A failed no-result row whose scan has results carries no re-delivery note
-- **WHEN** a failed row's `error_message` is write-back's no-result message or the status poller's backstop message, and the scan currently has pipeline results
-- **THEN** the row shows no bloom#900 note, and "Re-run failed scans" shows no bloom#900 warning
+#### Scenario: A failed no-result row whose scan has another run's results carries no re-delivery note
+- **WHEN** a failed row's `error_message` is write-back's no-result message or the status poller's backstop message, and the scan's latest source was written by another run or outside any run
+- **THEN** the row shows no bloom#900 note and no late-result note, and "Re-run failed scans" shows no bloom#900 warning
+
+#### Scenario: A result that arrived after its row was closed is named
+- **WHEN** scan 577's row in run 91 is `failed` with no `source_id`, and the scan's latest source is 40, whose `cyl_pipeline_run_id` is 91
+- **THEN** the row shows "*This run's result arrived after this row was closed: the scan's current traits are this run's (source 40).*"
+
+#### Scenario: The page says a recorded result may have been matched, not produced
+- **WHEN** the drill-down renders
+- **THEN** it shows the matched-result note, which says "Result recorded" includes scans whose earlier result this run matched instead of recording a new one
+
+### Requirement: Live views synchronise from Realtime without polling
+Every live view (the runs list, the drill-down and the experiment panel) SHALL subscribe to Supabase Realtime `postgres_changes`, on a channel topic unique per mounted instance. Each view SHALL:
+- **Resync:**
+  - refetch its snapshot on the first transition to `SUBSCRIBED`, immediately;
+  - after any refetch, collapse all further `SUBSCRIBED` transitions within 2 s of its start into exactly one more refetch, issued when that window ends.
+- **Buffer:** hold events that arrive while a snapshot fetch is in flight, and apply them after the snapshot.
+- **Merge:** merge each event's `new` record into the held row, so fields absent from the payload keep their held values.
+- **Counts:** never let a held run's `done_count` or `failed_count` decrease.
+- **Connection state:** show connecting until the first `SUBSCRIBED`, then live. After `CHANNEL_ERROR`, `TIMED_OUT` or `CLOSED`, show offline with a manual refresh control.
+- **Cleanup:** remove its channel on unmount.
+
+A live view MUST NOT fetch periodically. Every fetch SHALL be caused by one of these:
+- mount;
+- a `SUBSCRIBED` transition;
+- a user action;
+- the experiment panel's membership rule;
+- at most one auxiliary lookup per row: experiment names for a live-inserted run, on its first event whose status is not `queued`; or scan metadata, the scan's latest source, and the run that wrote that source (`cyl_trait_sources.cyl_pipeline_run_id`, read by source id), for a row that turns `failed` live.
+
+A live view MUST NOT call the workflows `GET /runs/{run_id}` route.
+
+#### Scenario: First subscription closes the gap after server render
+- **WHEN** a view mounts with a server snapshot and its channel first reports `SUBSCRIBED`
+- **THEN** the view refetches its snapshot once, immediately
+
+#### Scenario: Reconnects inside the window still resync
+- **WHEN** the channel reports `CLOSED` then `SUBSCRIBED` 500 ms after a resync started
+- **THEN** exactly one more refetch occurs, when the 2 s window ends
+
+#### Scenario: Events during a resync are not lost
+- **WHEN** an `UPDATE` with `done_count = 13` arrives while a resync fetch is in flight, and that fetch returns `done_count = 12`
+- **THEN** after the snapshot is applied, the held row shows 13
+
+#### Scenario: A missing TOASTed field keeps its value
+- **WHEN** a held run has a 4 KB `error_message` and an `UPDATE` payload for it omits `error_message`
+- **THEN** the held `error_message` is unchanged
+
+#### Scenario: Offline is visible
+- **WHEN** the channel reports `CHANNEL_ERROR` and does not recover
+- **THEN** the view shows offline with a refresh control
+
+#### Scenario: No polling
+- **WHEN** a live view stays open for five minutes after its initial resync, with no events and no user action
+- **THEN** it issues no further queries and no requests to `/workflows/runs`
+
+#### Scenario: A row that turns failed live is looked up once
+- **WHEN** the drill-down holds scan 578's row and an `UPDATE` turns it `failed`, followed by two more `UPDATE`s for that row
+- **THEN** one read each of its latest source and of that source's run is made, after the batch window, and none for the later events

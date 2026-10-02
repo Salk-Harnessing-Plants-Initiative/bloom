@@ -57,7 +57,8 @@ Two PRs under this one change (design D7):
     failure whose message says the envelope was already ingested as source N and nothing was
     written (design D3). Exit codes and `retriable` are unchanged. CHANGELOG and README follow.
   - Web: remove the bloom#900 note (`NO_OP_NOTE`, `isNoOpCandidate`, `NO_OP_RERUN_WARNING`) and
-    its tests (design D4).
+    its tests (design D4); say that "Result recorded" includes matched results (D9); and name a
+    result of this run that arrived after its row was closed (D10).
 - **Specs.** The no-op's run-scan update is specified against the source's recorded scan; the
   "never existed reports no match" scenario becomes "is marked written"; the CLI's "regardless of
   `ARGO_WORKFLOW_NAME`" sentence is narrowed to the cases the RPC can match; two false statements
