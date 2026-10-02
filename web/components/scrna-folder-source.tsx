@@ -132,7 +132,7 @@ export default function ScrnaFolderSource({
               run&apos;s name.
             </li>
             <li>R1 and R2 for every lane; I1 and I2 are optional.</li>
-            <li>A public folder: anyone can list it and read its files.</li>
+            <li>A public folder, so Bloom has access to the files.</li>
           </ul>
           <p className="mt-2 font-medium text-stone-700">For example</p>
           <pre className="mt-1 overflow-x-auto rounded bg-stone-50 p-2 text-xs">
