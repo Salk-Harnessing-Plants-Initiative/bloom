@@ -153,7 +153,7 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
 
 ## 5. Web: classification, client and proxy (C5a, C5b)
 
-- [ ] 5.1 **Red (C5a).** New `lib/cyl-pipeline/model-windows.test.ts`, using `lib/cyl-pipeline/__fixtures__/model-cards.ts` (the 8 production cards of 2026-09-30, selectors only). `classifyModelGroups(groups, cards)` returns `{pastWindow: [...], noModel: [...]}` in the groups' order:
+- [x] 5.1 **Red (C5a).** New `lib/cyl-pipeline/model-windows.test.ts`, using `lib/cyl-pipeline/__fixtures__/model-cards.ts` (the 8 production cards of 2026-09-30, selectors only). `classifyModelGroups(groups, cards)` returns `{pastWindow: [...], noModel: [...]}` in the groups' order:
   - **past its window** (with `max`): arabidopsis 21 and 28 (max 14), rice 18 (max 10), soybean 10 (max 8), canola 14 (max 13), pennycress 15 (max 14);
   - **no model:** sorghum 10, canola 0, soybean 1;
   - **in neither list:** arabidopsis 14 (equal to the max), rice 8, rice 3;
@@ -162,7 +162,7 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - a species with cards only in multiplant cylinder → no model for cylinder;
   - empty cards → everything no model (the dialog never calls it with an empty list); zero groups → both lists empty.
   - Fails: there's no module.
-- [ ] 5.2 **Cross-check (C5a; a hand-copied snapshot that won't detect later drift),** same file:
+- [x] 5.2 **Cross-check (C5a; a hand-copied snapshot that won't detect later drift),** same file:
   - the five past-window cases equal talmolab/sleap-roots-predict `tests/test_model_selection.py` `_PAST_WINDOW` at `79939ee`: 28→14, 18→10, 10→8, 14→13, 15→14;
   - the fixture's selectors equal `tests/card_builders.py` `_PRODUCTION` at `79939ee`.
   - Cite both in a comment.
