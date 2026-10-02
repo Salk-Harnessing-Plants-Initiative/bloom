@@ -501,3 +501,19 @@ class TestShaExportBehaviour:
 
         assert result.returncode != 0, "continued past an empty stamp"
         assert seen is None, f"compose ran with {seen!r}"
+
+
+def test_no_comment_looks_like_an_image_key_to_the_cve_scan():
+    """pr-checks.yml's extract-pinned-images job runs
+    `grep "image:" docker-compose.prod.yml | awk '{print $2}'`, so a comment
+    containing `image:` becomes an image to pull: "not the whole image: build
+    args" made the scan run `docker pull the`."""
+    matched = [
+        line.strip()
+        for line in COMPOSE_FILE.read_text(encoding="utf-8").splitlines()
+        if "image:" in line
+    ]
+
+    assert all(line.startswith("image:") for line in matched), [
+        line for line in matched if not line.startswith("image:")
+    ]

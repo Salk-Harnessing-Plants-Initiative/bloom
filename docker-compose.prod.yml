@@ -157,8 +157,8 @@ services:
       # The last commit that changed the code this image is built from (the
       # Dockerfile's COPY sources), recorded in each trait export's sidecar as
       # generated_by.version (web/lib/cyl-trait-export, added by #996). It names
-      # the code, not the whole image: build args (NEXT_PUBLIC_*) and untracked
-      # files on the host are not covered. Read at runtime, so not a build arg.
+      # the code, not everything in the image; build args (NEXT_PUBLIC_*) and
+      # untracked files on the host are not covered. Read at runtime, so not a build arg.
       # Not HEAD: this is container config, so a value that changed on every
       # commit would recreate bloom-web on every deploy. deploy.yml and
       # `make prod-up`/`staging-up` set it from the host's checkout; any other
