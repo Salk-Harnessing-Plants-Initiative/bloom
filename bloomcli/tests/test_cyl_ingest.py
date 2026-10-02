@@ -3462,3 +3462,149 @@ def test_cli_fails_open_and_warns_on_stderr_when_the_gate_cannot_answer(monkeypa
     assert uploaded == [SCAN_KEY], "the gate must fall through to the real upload path"
     assert "idempotency-gate check failed" in res.stderr
     assert "grant" in res.stderr.lower()
+
+
+# --- unmatched no-op (bloom#900 PR B, fix-cyl-noop-redelivery-scan-resolution 7.1-7.5) --------
+#
+# A no-op re-delivery wrote nothing, so its status_update_matched=False message must not reuse the
+# was_noop=False text, which says the delivery's trait/blob data was written. It also must not say
+# the row may still be queued: under design D8 the row can already be 'written' with another
+# source.
+
+UNMATCHED_NOOP = {**RESULT_NOOP, "status_update_matched": False}
+WRITTEN_MISMATCH = {**RESULT_OK, "status_update_matched": False}
+
+
+def _assert_unmatched_noop_message(message):
+    assert f"source_id={RESULT_NOOP['source_id']}" in message
+    assert "nothing was written" in message
+    assert "not updated" in message
+    assert "write-back succeeded" not in message
+    assert "trait/blob data" not in message
+    assert "queued" not in message
+
+
+def test_ingest_one_envelope_unmatched_noop_is_a_failure_that_wrote_nothing(
+    monkeypatch, tmp_path
+):
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-unmatched-noop")
+    path = _write_envelope(tmp_path, "scan_unmatched_noop")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: UNMATCHED_NOOP)
+    result = ing.ingest_one_envelope(object(), path)
+    assert result.status == "failed"
+    assert result.retriable is False
+    _assert_unmatched_noop_message(result.error)
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_cli_unmatched_noop_reports_already_ingested_then_fails(monkeypatch, as_json):
+    _patch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-cli-unmatched-noop")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: UNMATCHED_NOOP)
+    args = ["cyl", "ingest-result", str(FIXTURE)] + (["--json"] if as_json else [])
+    res = CliRunner().invoke(cli, args)
+    assert res.exit_code != 0
+    # The outcome goes to stdout and the failure to stderr, so --json output stays parseable.
+    if as_json:
+        assert json.loads(res.stdout) == UNMATCHED_NOOP
+    else:
+        assert "Already ingested (no-op): source_id=55" in res.stdout
+    _assert_unmatched_noop_message(res.stderr)
+
+
+def test_unmatched_noop_without_workflow_name_is_skipped(monkeypatch, tmp_path):
+    """No workflow name means no status update was attempted, so a False status_update_matched is
+    ignored and the no-op stays benign (the RPC returns NULL there; this pins the guard)."""
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.delenv("ARGO_WORKFLOW_NAME", raising=False)
+    path = _write_envelope(tmp_path, "scan_noop_manual")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: UNMATCHED_NOOP)
+    assert ing.ingest_one_envelope(object(), path).status == "skipped"
+
+    _patch_authed(monkeypatch)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code == 0, res.output
+    assert "already ingested" in res.output.lower()
+
+
+def test_unmatched_noop_and_written_mismatch_messages_differ(monkeypatch, tmp_path):
+    assert ing.status_update_matched_message(UNMATCHED_NOOP) != ing.status_update_matched_message(
+        WRITTEN_MISMATCH
+    )
+
+
+def test_written_mismatch_message_still_says_data_written(monkeypatch, tmp_path):
+    """7.3: the was_noop=False message is unchanged, in the helper and the command."""
+    _skip_contract_validation(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-written-mismatch")
+    path = _write_envelope(tmp_path, "scan_written_mismatch")
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: WRITTEN_MISMATCH)
+    result = ing.ingest_one_envelope(object(), path)
+    assert "write-back succeeded" in result.error
+    assert "trait/blob data is correct" in result.error
+
+    _patch_authed(monkeypatch)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code != 0
+    assert "write-back succeeded" in res.output
+    assert "trait/blob data is correct" in res.output
+
+
+def test_cli_matched_noop_under_workflow_name_exits_zero(monkeypatch):
+    _patch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-cli-matched-noop")
+    matched_noop = {**RESULT_NOOP, "status_update_matched": True}
+    monkeypatch.setattr(ing, "call_insert_envelope", lambda client, env, **_kw: matched_noop)
+    res = CliRunner().invoke(cli, ["cyl", "ingest-result", str(FIXTURE)])
+    assert res.exit_code == 0, res.output
+    assert "already ingested" in res.output.lower()
+
+
+def test_batch_unmatched_noop_as_the_only_failure_exits_zero(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-batch-unmatched-noop")
+    _write_per_run_manifest(tmp_path, "wf-batch-unmatched-noop", ["scan_1", "scan_noop"])
+
+    def _selective_call(client, env, **_kw):
+        if env["provenance"]["scan_key"] == "scan_noop":
+            return UNMATCHED_NOOP
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name, **_kw: 0)
+    for key in ("scan_1", "scan_noop"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_noop"]["status"] == "failed"
+    assert payload["scan_noop"]["retriable"] is False
+    _assert_unmatched_noop_message(payload["scan_noop"]["error"])
+    assert payload["scan_1"]["status"] == "ok"
+
+
+def test_batch_unmatched_noop_with_a_retriable_failure_exits_nonzero(monkeypatch, tmp_path):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-batch-noop-mixed")
+    _write_per_run_manifest(tmp_path, "wf-batch-noop-mixed", ["scan_noop", "scan_timeout"])
+
+    def _selective_call(client, env, **_kw):
+        if env["provenance"]["scan_key"] == "scan_noop":
+            return UNMATCHED_NOOP
+        raise TimeoutError("simulated network timeout")
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name, **_kw: 0)
+    for key in ("scan_noop", "scan_timeout"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert result.exit_code != 0, result.output
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    assert payload["scan_noop"]["retriable"] is False
+    _assert_unmatched_noop_message(payload["scan_noop"]["error"])
+    assert payload["scan_timeout"]["retriable"] is True
