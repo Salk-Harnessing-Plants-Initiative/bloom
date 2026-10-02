@@ -70,7 +70,10 @@ SHA_CMD = "git log -1 --format=%H -- " + " ".join(IMAGE_INPUTS)
 # git log that matched no commit, which exits 0 with no output. Either way an
 # empty value would override `unknown` and stamp a bare `1.0.0`.
 ASSIGN_LINE = f"{SHA_VAR}=\\$({SHA_CMD})"
-GUARD_LINE = f'test -n \\"\\${SHA_VAR}\\"'
+GUARD_ERROR = (
+    "::error::no commit touches bloom-web image inputs; cannot stamp its build"
+)
+GUARD_LINE = f'test -n \\"\\${SHA_VAR}\\" || {{ echo \\"{GUARD_ERROR}\\"; exit 1; }}'
 EXPORT_LINE = f"export {SHA_VAR}"
 # Any `docker compose ... up`, however its flags are ordered or spelled: every
 # one of them can recreate bloom-web, so every one needs the stamp.
@@ -163,18 +166,41 @@ def test_the_build_sha_has_a_visible_fallback(defaults_file):
     )
 
 
-def _dockerfile_inputs() -> set[str]:
-    """Top-level repo paths the builder stage COPYs from the build context."""
-    service = _service()
-    dockerfile = REPO_ROOT / service["build"]["dockerfile"]
-    found = set()
-    for line in dockerfile.read_text(encoding="utf-8").splitlines():
+def _dockerfile_inputs(text: str) -> set[str]:
+    """Top-level repo paths a Dockerfile reads from the build context.
+
+    Continuation lines are joined first. Forms this parser cannot resolve to a
+    path fail loudly rather than being skipped: a JSON-array COPY, a `--from`
+    that names no earlier stage (an extra build context), and a `RUN --mount`
+    that binds from the context.
+    """
+    stages: set[str] = set()
+    found: set[str] = set()
+    for _, line in _logical_lines(text):
         words = line.split()
-        if not words or words[0].upper() not in ("COPY", "ADD"):
+        instruction = words[0].upper()
+        if instruction == "FROM":
+            if len(words) >= 4 and words[-2].upper() == "AS":
+                stages.add(words[-1])
+            continue
+        if instruction == "RUN":
+            mounts = [w for w in words[1:] if w.startswith("--mount=")]
+            assert not any(
+                "type=bind" in m or "source=" in m for m in mounts
+            ), f"RUN mounts from the build context, which the stamp cannot see: {line}"
+            continue
+        if instruction not in ("COPY", "ADD"):
+            continue
+        assert "[" not in line, f"JSON-array {instruction} is not parsed: {line}"
+        flags = [w for w in words[1:] if w.startswith("--")]
+        source_from = [f.split("=", 1)[1] for f in flags if f.startswith("--from=")]
+        if source_from:
+            assert source_from[0] in stages, (
+                f"{instruction} --from={source_from[0]} is not an earlier stage; an "
+                f"extra build context is an input the stamp cannot see: {line}"
+            )
             continue
         args = [w for w in words[1:] if not w.startswith("--")]
-        if any(w.startswith("--from") for w in words[1:]):
-            continue  # from another stage, not the build context
         for source in args[:-1]:
             top = source.split("/", 1)[0]
             matches = sorted(p.name for p in REPO_ROOT.glob(top))
@@ -183,16 +209,54 @@ def _dockerfile_inputs() -> set[str]:
     return found
 
 
+def _bloom_web_dockerfile() -> str:
+    return (REPO_ROOT / _service()["build"]["dockerfile"]).read_text(encoding="utf-8")
+
+
 def test_the_stamped_paths_are_the_image_inputs():
     """If the Dockerfile starts COPYing something else, a change to it would ship
-    under an older stamp."""
+    under an older stamp. .dockerignore decides what those sources contain."""
     service = _service()
     assert service["build"]["context"] == ".", "paths are relative to the repo root"
+    assert not service["build"].get(
+        "additional_contexts"
+    ), "an extra build context is an input the stamp cannot see"
     dockerfile_top = service["build"]["dockerfile"].lstrip("./").split("/", 1)[0]
 
-    assert _dockerfile_inputs() == set(IMAGE_INPUTS) - {".dockerignore"}
+    assert _dockerfile_inputs(_bloom_web_dockerfile()) == set(IMAGE_INPUTS) - {
+        ".dockerignore"
+    }
     assert dockerfile_top in IMAGE_INPUTS, "a Dockerfile change must move the stamp"
+    assert ".dockerignore" in IMAGE_INPUTS
     assert (REPO_ROOT / ".dockerignore").exists()
+
+
+@pytest.mark.parametrize(
+    "dockerfile,expected",
+    [
+        ("FROM n AS b\nCOPY web ./web\n", {"web"}),
+        ("FROM n AS b\nCOPY packages \\\n  web ./x/\n", {"packages", "web"}),
+        ("FROM n AS b\nFROM n AS r\nCOPY --from=b /app ./\n", set()),
+        ("FROM n AS b\nCOPY --chown=1:1 web packages ./x/\n", {"web", "packages"}),
+    ],
+    ids=["single", "continued", "from-stage", "chown"],
+)
+def test_the_dockerfile_parser_reads_these_forms(dockerfile, expected):
+    assert _dockerfile_inputs(dockerfile) == expected
+
+
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        'FROM n AS b\nCOPY ["web", "./web"]\n',
+        "FROM n AS b\nCOPY --from=contracts / ./c\n",
+        "FROM n AS b\nRUN --mount=type=bind,source=packages,target=/p true\n",
+    ],
+    ids=["json-array", "extra-context", "bind-mount"],
+)
+def test_the_dockerfile_parser_refuses_forms_it_cannot_resolve(dockerfile):
+    with pytest.raises(AssertionError):
+        _dockerfile_inputs(dockerfile)
 
 
 def _compose_up_steps() -> list[tuple[str, str, str]]:
@@ -268,20 +332,25 @@ def test_the_sha_export_is_never_combined():
     assert not re.search(rf"\b(export|declare -x)\s+{SHA_VAR}=", text)
 
 
-def test_the_makefile_stamps_its_prod_compose_up():
-    """`make prod-up` / `make staging-up` recreate bloom-web too; unstamped, they
-    would drop every export and record `unknown` for the deployed code."""
-    ups = [
+def _makefile_ups() -> list[str]:
+    return [
         line
         for _, line in _logical_lines(MAKEFILE.read_text(encoding="utf-8"))
         if "docker-compose.prod.yml" in line and COMPOSE_UP_RE.search(line)
     ]
 
-    assert len(ups) == 2, f"expected prod-up and staging-up, found {ups}"
-    for line in ups:
+
+MAKEFILE_UPS = _makefile_ups()
+
+
+def test_the_makefile_stamps_its_prod_compose_up():
+    """`make prod-up` / `make staging-up` recreate bloom-web too; unstamped, they
+    would drop every export and record `unknown` for the deployed code. The
+    behaviour tests below run these lines; this pins that both are found and use
+    the same command as the deploy."""
+    assert len(MAKEFILE_UPS) == 2, f"expected prod-up and staging-up: {MAKEFILE_UPS}"
+    for line in MAKEFILE_UPS:
         assert f"sha=$$({SHA_CMD})" in line, line
-        assert 'test -n "$$sha"' in line, line
-        assert f"{SHA_VAR}=$$sha docker compose" in line, line
 
 
 class TestShaExportBehaviour:
@@ -318,6 +387,9 @@ class TestShaExportBehaviour:
         return fake_bin
 
     def _run(self, tmp_path: Path, run: str, cwd: Path):
+        return self._run_script(tmp_path, self._snippet(run), cwd)
+
+    def _run_script(self, tmp_path: Path, script: str, cwd: Path):
         import os
         import subprocess
 
@@ -331,7 +403,7 @@ class TestShaExportBehaviour:
         }
         env.pop(SHA_VAR, None)
         result = subprocess.run(
-            [_BASH, "-c", self._snippet(run)],
+            [_BASH, "-c", script],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -390,6 +462,7 @@ class TestShaExportBehaviour:
 
         assert result.returncode != 0, f"{job} / {step_name}: continued past it"
         assert seen is None, f"{job} / {step_name}: compose ran with {seen!r}"
+        assert GUARD_ERROR in result.stdout, f"{job} / {step_name}: no ::error::"
 
     @pytest.mark.parametrize("job,step_name,run", STEPS, ids=STEP_IDS)
     def test_a_failing_git_stops_before_compose(self, tmp_path, job, step_name, run):
@@ -401,3 +474,30 @@ class TestShaExportBehaviour:
 
         assert result.returncode != 0, f"{job} / {step_name}: continued past git"
         assert seen is None, f"{job} / {step_name}: compose ran with {seen!r}"
+
+    @staticmethod
+    def _make_line(line: str) -> str:
+        """A recipe line as make hands it to the shell: `$$` is a literal `$`."""
+        return line.replace("$$", "$") + "\n"
+
+    @pytest.mark.parametrize("line", MAKEFILE_UPS, ids=["prod-up", "staging-up"])
+    def test_the_makefile_line_passes_the_last_image_input_commit(self, tmp_path, line):
+        repo, shas = self._repo(tmp_path, ["web/page.ts", "docs/notes.md"])
+
+        result, seen = self._run_script(tmp_path, self._make_line(line), repo)
+
+        assert result.returncode == 0, result.stderr
+        assert seen == shas[0], f"compose saw {seen!r}"
+
+    @pytest.mark.parametrize("line", MAKEFILE_UPS, ids=["prod-up", "staging-up"])
+    def test_the_makefile_line_stops_without_an_image_input_commit(
+        self, tmp_path, line
+    ):
+        """make runs each recipe line without `set -e`, so only the `&&` chain
+        keeps an empty stamp from reaching compose."""
+        repo, _ = self._repo(tmp_path, ["docs/notes.md"])
+
+        result, seen = self._run_script(tmp_path, self._make_line(line), repo)
+
+        assert result.returncode != 0, "continued past an empty stamp"
+        assert seen is None, f"compose ran with {seen!r}"
