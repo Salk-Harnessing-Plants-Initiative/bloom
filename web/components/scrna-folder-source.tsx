@@ -147,13 +147,19 @@ export default function ScrnaFolderSource({
             {problem}
           </p>
         ) : state.kind === "checking" ? (
-          <p className="flex items-center gap-2 text-stone-500">
-            <span
-              aria-hidden="true"
-              className="h-3 w-3 animate-spin rounded-full border-2 border-stone-300 border-t-lime-700"
-            />
-            Checking the folder…
-          </p>
+          <div className="space-y-1.5 pt-1">
+            {/* No fraction to report while S3 answers, so a segment sweeps across. */}
+            <div
+              role="progressbar"
+              aria-label="Checking the folder"
+              className="h-1.5 w-full overflow-hidden rounded-full bg-stone-200"
+            >
+              <div className="h-1.5 w-1/4 animate-sweep rounded-full bg-lime-400 shadow-[0_0_8px_2px_rgba(163,230,53,0.7)] motion-reduce:w-full motion-reduce:animate-none" />
+            </div>
+            <p className="text-stone-500">
+              Verifying the S3 folder is accessible and correctly formatted…
+            </p>
+          </div>
         ) : state.kind === "ok" ? (
           <p className="text-lime-800">{folderSummary(state.check)}</p>
         ) : state.kind === "error" ? (

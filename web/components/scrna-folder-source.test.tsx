@@ -78,7 +78,10 @@ describe("checking the folder", () => {
   it("checks a folder URL and shows what it found", async () => {
     render(<Harness />);
     enter("s3://lab-data/run42");
-    expect(screen.getByText("Checking the folder…")).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Checking the folder" })).toBeTruthy();
+    expect(
+      screen.getByText("Verifying the S3 folder is accessible and correctly formatted…")
+    ).toBeTruthy();
     expect(await screen.findByText("col0 · 2 lanes · 4 files · 38.2 GB")).toBeTruthy();
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe("/api/scrna/cellranger/folder-check");
@@ -119,7 +122,10 @@ describe("checking the folder", () => {
     await screen.findByText(/col0 · 2 lanes/);
     enter("s3://lab-data/run43/");
     expect(checked.at(-1)).toBeNull();
-    expect(screen.getByText("Checking the folder…")).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Checking the folder" })).toBeTruthy();
+    expect(
+      screen.getByText("Verifying the S3 folder is accessible and correctly formatted…")
+    ).toBeTruthy();
   });
 
   it("ignores the reply for a URL that has since changed", async () => {
