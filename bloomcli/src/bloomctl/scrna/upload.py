@@ -38,7 +38,7 @@ def upload(file: Path, profile: str) -> None:
         )
     try:
         summary = _format.check_structure(file)
-    except _format.MissingExtra as exc:
+    except _format.MissingDependency as exc:
         raise click.ClickException(str(exc)) from exc
     except _format.FormatError as exc:
         raise click.ClickException(f"{file.name} does not meet Bloom's h5ad format: {exc}") from exc
