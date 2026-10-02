@@ -290,7 +290,7 @@ spec:
             fi
             # Fails here, before QC, if a file isn't Illumina-named, a lane lacks R1 or R2, or
             # the run's S3 folder changed since the run was started.
-            DEST_DIR="/shared/runs/${RUN_ID}/fastq/${SAMPLE}" stage-fastqs
+            RUN_DIR="/shared/runs/${RUN_ID}" DEST_DIR="/shared/runs/${RUN_ID}/fastq/${SAMPLE}" stage-fastqs
             echo false > /tmp/done
         env:
           - name: SAMPLE

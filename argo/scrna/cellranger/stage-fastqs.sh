@@ -8,8 +8,14 @@
 # run was started fails the step, so the run never uses other reads than it was started on.
 # Without FASTQ_URL, the reads come from s3://<bucket>/raw_reads/<sample>/ as before.
 #
-# Env: SAMPLE, DEST_DIR, and either FASTQ_URL with FASTQ_FILES, or BUCKET. WAIT_SECONDS and
-#      POLL_SECONDS tune the wait.
+# The run's folder (RUN_DIR) is named by its run key, which a new run can reuse after a failed
+# one. RUN_DIR/.inputs records what the folder was built from: a retry on the same inputs
+# resumes, and anything else is cleared first. The old FASTQs are deleted, and the rest (its
+# logs and Cell Ranger's errors) is moved to RUN_DIR.failed-<time>/. sra/ stays: fetch-sra
+# writes it earlier in this same run.
+#
+# Env: SAMPLE, DEST_DIR, RUN_DIR (default: DEST_DIR's grandparent), and either FASTQ_URL with
+#      FASTQ_FILES, or BUCKET. WAIT_SECONDS and POLL_SECONDS tune the wait.
 # Exit codes: 0 copied, 4 no FASTQs, 6 bad input, 7 misnamed FASTQs (fastq-sample-prefix),
 #      8 the folder changed since the run was started, 10 S3 couldn't be listed or read.
 set -euo pipefail
@@ -23,6 +29,7 @@ readonly URL_RULE='^s3://([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])/(([A-Za-z0-9!_.*'"'"
 
 SAMPLE="${SAMPLE:-}"
 DEST_DIR="${DEST_DIR:-}"
+RUN_DIR="${RUN_DIR:-$(dirname "$(dirname "${DEST_DIR:-/x/y}")")}"
 FASTQ_URL="${FASTQ_URL:-}"
 FASTQ_FILES="${FASTQ_FILES:-}"
 BUCKET="${BUCKET:-bloomv2-workflows}"
@@ -32,6 +39,38 @@ POLL_SECONDS="${POLL_SECONDS:-30}"
 if [ -z "${SAMPLE}" ] || [ -z "${DEST_DIR}" ]; then
   echo "ERROR: SAMPLE and DEST_DIR are required" >&2
   exit "${EXIT_BAD_INPUT}"
+fi
+
+# What this run's folder is built from, as one line.
+if [ -n "${FASTQ_URL}" ]; then
+  inputs="$(FASTQ_URL="${FASTQ_URL}" FASTQ_FILES="${FASTQ_FILES}" python3 -c '
+import hashlib, os
+print("folder", os.environ["FASTQ_URL"], hashlib.sha256(os.environ["FASTQ_FILES"].encode()).hexdigest())
+')"
+else
+  inputs="raw_reads s3://${BUCKET}/raw_reads/${SAMPLE}/"
+fi
+
+# A folder left by a run on other inputs is set aside, so none of its FASTQs or results are
+# taken for this run's.
+mkdir -p "${RUN_DIR}"
+if [ "$(cat "${RUN_DIR}/.inputs" 2>/dev/null)" != "${inputs}" ]; then
+  shopt -s nullglob dotglob
+  leftover=()
+  for entry in "${RUN_DIR}"/*; do
+    case "${entry##*/}" in sra | .inputs) ;; *) leftover+=("${entry}") ;; esac
+  done
+  shopt -u nullglob dotglob
+  if [ "${#leftover[@]}" -gt 0 ]; then
+    rm -rf -- "${RUN_DIR}/fastq"
+    aside="${RUN_DIR}.failed-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "${aside}"
+    for entry in "${leftover[@]}"; do
+      [ -e "${entry}" ] && mv -- "${entry}" "${aside}/"
+    done
+    echo "Set aside an earlier run's folder (other inputs) in ${aside}; its FASTQs were deleted"
+  fi
+  printf '%s\n' "${inputs}" > "${RUN_DIR}/.inputs"
 fi
 mkdir -p "${DEST_DIR}"
 
@@ -97,7 +136,8 @@ print("partial: " + ", ".join(missing) if missing else "match")
 
 deadline=$(( $(date +%s) + WAIT_SECONDS ))
 while :; do
-  if ! listing="$(aws s3api list-objects-v2 --bucket "${bucket}" --prefix "${prefix_path}" \
+  # Unsigned, as the start API checked it: the folder is public, and Bloom's own key reads no more.
+  if ! listing="$(aws s3api list-objects-v2 --no-sign-request --bucket "${bucket}" --prefix "${prefix_path}" \
       --delimiter / --max-keys 1000 --no-paginate --output json 2>/tmp/list.err)"; then
     echo "ERROR: couldn't list ${FASTQ_URL}: $(head -c 300 /tmp/list.err)" >&2
     exit "${EXIT_TRANSFER_FAILED}"
@@ -124,7 +164,8 @@ done
 
 mapfile -t names < <(printf '%s' "${FASTQ_FILES}" | python3 -c 'import json, sys; [print(f["name"]) for f in json.load(sys.stdin)]')
 for name in "${names[@]}"; do
-  aws s3 cp --only-show-errors "${FASTQ_URL}${name}" "${DEST_DIR}/${name}" || exit "${EXIT_TRANSFER_FAILED}"
+  aws s3 cp --only-show-errors --no-sign-request "${FASTQ_URL}${name}" "${DEST_DIR}/${name}" \
+    || exit "${EXIT_TRANSFER_FAILED}"
 done
 echo "Copied ${#names[@]} FASTQs from ${FASTQ_URL}"
 

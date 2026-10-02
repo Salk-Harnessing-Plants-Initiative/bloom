@@ -42,6 +42,9 @@ pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash 4+ (the pipelin
 AWS = r"""#!/usr/bin/env bash
 # aws s3api list-objects-v2 | s3 cp | s3 sync against ${FAKE_S3}, standing in for s3://
 local_path() { echo "${FAKE_S3}/${1#s3://}"; }
+# Every call is logged with whether it was signed.
+signed=yes; for a in "$@"; do [ "$a" = --no-sign-request ] && signed=no; done
+echo "$1 $2 signed=${signed}" >> "${FAKE_S3}/.calls"
 if [ "$1" = s3api ]; then
   [ -z "${FAKE_LIST_FAIL:-}" ] || { echo "An error occurred (AccessDenied)" >&2; exit 255; }
   while [ $# -gt 0 ]; do
@@ -68,7 +71,7 @@ PY
 fi
 [ "$1" = s3 ] || exit 2
 cmd="$2"; shift 2
-args=(); for a in "$@"; do [ "$a" = --only-show-errors ] || args+=("$a"); done
+args=(); for a in "$@"; do case "$a" in --only-show-errors | --no-sign-request) ;; *) args+=("$a") ;; esac; done
 case "$cmd" in
   cp)
     case "${args[0]}" in *${FAKE_CP_FAIL_ON:-/nothing/}*) echo "download failed" >&2; exit 1 ;; esac
@@ -138,6 +141,28 @@ def _copies(env):
 def _staged(env):
     dest = Path(env["DEST_DIR"])
     return sorted(p.name for p in dest.iterdir()) if dest.exists() else []
+
+
+def _run_dir(env):
+    return Path(env["DEST_DIR"]).parent.parent
+
+
+def _calls(env):
+    log = Path(env["FAKE_S3"]) / ".calls"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def _leave_a_failed_run(env, fastqs=("col0_S1_L002_R1_001.fastq.gz",)):
+    """What a failed run on the same key leaves: its FASTQs, Cell Ranger's output, its log."""
+    run = _run_dir(env)
+    for name in fastqs:
+        (run / "fastq/col0").mkdir(parents=True, exist_ok=True)
+        (run / "fastq/col0" / name).write_text("old reads")
+    (run / "outs").mkdir(parents=True, exist_ok=True)
+    (run / "outs/_SUCCESS").write_text("")
+    (run / "logs").mkdir(exist_ok=True)
+    (run / "logs/count.log").write_text("cell ranger failed")
+    (run / ".inputs").write_text("folder s3://lab-data/older/ abc\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -248,10 +273,82 @@ def test_a_failed_copy_exits_10(env):
 
 def test_nothing_is_written_to_s3(env):
     e = _folder(env, R1, R2)
-    before = sorted(p.relative_to(env["FAKE_S3"]) for p in Path(env["FAKE_S3"]).rglob("*") if p.name != ".copies")
+    before = sorted(p.relative_to(env["FAKE_S3"]) for p in Path(env["FAKE_S3"]).rglob("*") if p.name not in (".copies", ".calls"))
     assert _run(e).returncode == 0
-    after = sorted(p.relative_to(env["FAKE_S3"]) for p in Path(env["FAKE_S3"]).rglob("*") if p.name != ".copies")
+    after = sorted(p.relative_to(env["FAKE_S3"]) for p in Path(env["FAKE_S3"]).rglob("*") if p.name not in (".copies", ".calls"))
     assert after == before
+
+
+def test_a_folder_run_reads_unsigned(env):
+    e = _folder(env, R1, R2)
+    assert _run(e).returncode == 0
+    assert _calls(env) and all(c.endswith("signed=no") for c in _calls(env))
+
+
+# --------------------------------------------------------------------------- #
+# A folder left by an earlier run on the same key
+# --------------------------------------------------------------------------- #
+
+
+def test_another_runs_files_and_results_are_set_aside(env):
+    _leave_a_failed_run(env)
+    e = _folder(env, R1, R2)
+    result = _run(e)
+    assert result.returncode == 0, result.stderr
+    run = _run_dir(env)
+    # Only this run's reads, and none of the earlier run's results, are in the folder.
+    assert _staged(env) == [R1, R2]
+    assert not (run / "outs").exists() and not (run / "logs").exists()
+    # The earlier run's log is kept beside it, marked failed; its FASTQs are gone.
+    [aside] = [p for p in run.parent.iterdir() if p.name.startswith(run.name + ".failed-")]
+    assert (aside / "logs/count.log").read_text() == "cell ranger failed"
+    assert (aside / "outs/_SUCCESS").exists()
+    assert not (aside / "fastq").exists()
+    assert "Set aside an earlier run's folder" in result.stdout
+
+
+def test_a_retry_on_the_same_inputs_keeps_its_work(env):
+    e = _folder(env, R1, R2)
+    assert _run(e).returncode == 0
+    (_run_dir(env) / "outs").mkdir()
+    (_run_dir(env) / "outs/_SUCCESS").write_text("")
+    assert _run(e).returncode == 0
+    assert (_run_dir(env) / "outs/_SUCCESS").exists()
+    assert not [p for p in _run_dir(env).parent.iterdir() if ".failed-" in p.name]
+
+
+def test_other_files_from_the_same_folder_change_the_inputs(env):
+    e = _folder(env, R1, R2)
+    assert _run(e).returncode == 0
+    (_run_dir(env) / "outs").mkdir()
+    changed = {**e, "FASTQ_FILES": e["FASTQ_FILES"].replace('"size": ', '"size": 1')}
+    _run(changed)
+    assert not (_run_dir(env) / "outs").exists()
+
+
+def test_a_folder_without_a_record_of_its_inputs_is_set_aside(env):
+    _leave_a_failed_run(env)
+    (_run_dir(env) / ".inputs").unlink()
+    assert _run(_folder(env, R1, R2)).returncode == 0
+    assert _staged(env) == [R1, R2]
+
+
+def test_this_runs_sra_download_is_kept(env):
+    _leave_a_failed_run(env)
+    (_run_dir(env) / "sra").mkdir()
+    (_run_dir(env) / "sra/SRR1.sra").write_text("downloading")
+    assert _run(_folder(env, R1, R2)).returncode == 0
+    assert (_run_dir(env) / "sra/SRR1.sra").exists()
+
+
+def test_raw_reads_runs_set_aside_another_runs_folder_too(env):
+    raw = "s3://bloomv2-workflows/raw_reads/col0/"
+    _put(env, raw, R1)
+    _put(env, raw, R2)
+    _leave_a_failed_run(env)
+    assert _run(env).returncode == 0
+    assert _staged(env) == [R1, R2]
+    assert not (_run_dir(env) / "outs").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -267,6 +364,8 @@ def test_without_a_folder_it_reads_raw_reads(env):
     assert result.returncode == 0, result.stderr
     assert _copies(env) == [f"sync {raw}"]
     assert _staged(env) == [R1, R2]
+    # Bloom's own bucket is read with Bloom's key.
+    assert _calls(env) == ["s3 sync signed=yes"]
 
 
 def test_an_empty_raw_reads_folder_exits_4(env):
