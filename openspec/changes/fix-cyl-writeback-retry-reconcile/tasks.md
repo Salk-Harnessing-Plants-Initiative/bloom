@@ -236,7 +236,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
   - the bloomctl deferral literal is pinned.
 - [x] 5b.5 Design: D2 and Risks are rewritten (404 never settled, and why); the stuck-run case is
       left for the follow-up issue (5b.6).
-- [ ] 5b.6 File the follow-up issue (approved): deferred rows of a 404'd Workflow in an
+- [x] 5b.6 Filed as bloom#1042 (approved): deferred rows of a 404'd Workflow in an
       unconcluded or withheld run, the pre-existing withheld-`'complete'` stall, and the
       pre-existing `'partial'`-run re-polling. Link it here and in the PR body.
 
