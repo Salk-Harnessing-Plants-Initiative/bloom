@@ -223,3 +223,53 @@ def test_check_health_and_deploy_reference_the_sql_file_not_a_copy():
     assert "sequences_behind.sql" in script
     assert deploy.count("< scripts/sql/sequences_behind.sql") == 2
     assert "query_to_xml" not in script and "query_to_xml" not in deploy
+
+
+class _Cursor:
+    def __init__(self, rows=None, error=None):
+        self.rows, self.error, self.executed = rows or [], error, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql):
+        self.executed.append(sql)
+        if self.error:
+            raise self.error
+
+    def fetchall(self):
+        return self.rows
+
+
+class _Conn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def rollback(self):
+        pass
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_check_sequences_runs_the_sql_file_and_formats_its_rows():
+    cursor = _Cursor(rows=[("t", "id", 5, 1)])
+    problems = check_health.check_sequences(_Conn(cursor))
+    assert cursor.executed == [SEQUENCES_BEHIND_SQL.read_text(encoding="utf-8")]
+    assert len(problems) == 1 and "public.t.id" in problems[0]
+
+
+def test_check_sequences_reports_a_query_error_instead_of_raising():
+    cursor = _Cursor(error=RuntimeError("canceling statement due to statement timeout"))
+    problems = check_health.check_sequences(_Conn(cursor))
+    assert len(problems) == 1
+    assert "could not run the id-sequence check" in problems[0]
+    assert "statement timeout" in problems[0]
+
+
+def test_check_sequences_reports_a_missing_sql_file(tmp_path):
+    problems = check_health.check_sequences(_Conn(_Cursor()), sql_path=tmp_path / "missing.sql")
+    assert len(problems) == 1 and "could not run the id-sequence check" in problems[0]
