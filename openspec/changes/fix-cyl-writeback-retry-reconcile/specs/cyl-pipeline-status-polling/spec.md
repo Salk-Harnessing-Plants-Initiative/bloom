@@ -31,9 +31,15 @@ lookups and the reconciliation call itself, and can go stale if a scan's write-b
 resolved in that window), since a run whose rollup has already concluded will never be polled again
 once its terminal status is written, and this is the only remaining chance to resolve a scan whose
 write-back step never ran at all (its own workflow failed before reaching write-back, or the
-write-back container never started), or whose write-back step's final attempt still had a retriable
-envelope failure, in which case `bloomctl cyl batch-ingest-result` deliberately made no reconciliation
-call and left that workflow's rows `'queued'` for this poller (capability `cyl-batch-ingest-result`). If that reconciliation call itself fails, the run's status
+write-back container never started), or whose write-back step's final attempt still had a
+retriable envelope failure (`bloomctl cyl batch-ingest-result` then deliberately makes no
+reconciliation call; capability `cyl-batch-ingest-result`). While the computed status is
+`'running'`, the poller SHALL also close out, the same way, the `'queued'` rows of every
+`argo_workflow_name` whose own phase this cycle is `Succeeded`, `Failed`, or `Error` — a confirmed
+terminal phase, never a `404`, whose rows are left to the terminal-rollup reconciliation above —
+since a terminal workflow can write no further result, and SHALL then re-derive
+`done_count`/`failed_count` from a fresh read before its status write; a failure of either SHALL be
+handled exactly as for the terminal-rollup reconciliation below. If that reconciliation call itself fails, the run's status
 update SHALL be skipped entirely this
 cycle (the run's `cyl_pipeline_runs.status` left untouched, so it remains a candidate and is retried
 next cycle), matching the isolation the rule below already gives every other per-run failure. It SHALL isolate a failure fetching or updating any one
@@ -151,9 +157,34 @@ matching `dispatch_worker.py`'s established conventions for both.
 
 #### Scenario: A still-running workflow's queued rows are not reconciled
 
-- **WHEN** a candidate run's rollup this cycle concludes `'running'`
-- **THEN** the poller does not call `fail_cyl_pipeline_run_scans_without_result` for any of that
-  run's `'queued'` rows — they are not stuck, merely not yet resolved
+- **WHEN** a candidate run's rollup this cycle concludes `'running'`, and the workflow owning a
+  `'queued'` row is itself `Pending` or `Running`
+- **THEN** the poller does not call `fail_cyl_pipeline_run_scans_without_result` for that
+  workflow's `'queued'` rows — they are not stuck, merely not yet resolved
+
+#### Scenario: A terminal workflow's queued rows are reconciled while a sibling still runs
+
+- **WHEN** a candidate run has two workflows, `"wf-a"` whose phase this cycle is `Failed` and
+  `"wf-b"` still `Running`, so the rollup concludes `'running'`, and `"wf-a"` still has `'queued'`
+  rows
+- **THEN** the poller calls `fail_cyl_pipeline_run_scans_without_result` once for `"wf-a"` and never
+  for `"wf-b"`, re-derives the counts, and writes `'running'` with a `failed_count` that includes
+  `"wf-a"`'s newly closed rows
+
+#### Scenario: A 404'd workflow's queued rows wait for the terminal-rollup reconciliation
+
+- **WHEN** a candidate run's rollup concludes `'running'`, and a workflow with `'queued'` rows
+  returned `None` (`404`) from `get_workflow_status` this cycle
+- **THEN** the poller makes no reconciliation call for that workflow this cycle; its rows are
+  closed out once the run's rollup concludes a non-`'running'` status
+
+#### Scenario: A failed reconciliation of a terminal workflow in a running run leaves the run unsettled
+
+- **WHEN** a candidate run's rollup concludes `'running'`, one of its workflows is `Failed` with
+  `'queued'` rows, and the `fail_cyl_pipeline_run_scans_without_result` call for it raises an error
+  other than `PGRST202`
+- **THEN** the poller does not call `update_cyl_pipeline_run_status` for that run this cycle, marks
+  the cycle unclean, and continues with the remaining candidates
 
 #### Scenario: A failed reconciliation call leaves the run unsettled for the next cycle
 

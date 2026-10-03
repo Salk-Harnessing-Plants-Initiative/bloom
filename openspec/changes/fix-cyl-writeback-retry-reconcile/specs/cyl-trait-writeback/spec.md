@@ -235,8 +235,9 @@ counts will not reflect the data just written.
 
 - **WHEN** the RPC is called with a valid envelope and a `p_argo_workflow_name` matching a
   `cyl_pipeline_run_scans` row whose `status` is already `'failed'` (e.g. the
-  status poller already closed it out with `fail_cyl_pipeline_run_scans_without_result` after its
-  Workflow finished, and the envelope is then delivered again under that workflow name)
+  status poller closed it out with `fail_cyl_pipeline_run_scans_without_result` after its workflow
+  ended, and the envelope is then delivered under that workflow name by an `argo retry` of that
+  workflow or a manual `cyl ingest-result` run with that `ARGO_WORKFLOW_NAME`)
 - **THEN** the envelope's trait/source/blob rows are still written as usual (write-back itself is
   unaffected), but the `cyl_pipeline_run_scans` row's `status` remains `'failed'` — it is not
   overwritten to `'written'` — and the returned summary's `status_update_matched` is `false`
@@ -285,12 +286,12 @@ A row already `'written'`, `'reused'`, or `'failed'` for this workflow name is l
 function only closes out scans write-back never resolved either way. `EXECUTE` SHALL be revoked from
 `PUBLIC`, `anon`, and `authenticated`, and granted only to `bloom_workflows`, matching this program's
 established `SECURITY DEFINER` wrapper convention. `bloomctl cyl batch-ingest-result` SHALL call this
-function at most once per invocation, after ingesting every envelope discovered for the batch, and only
-when no envelope it attempted failed retriably (capability `cyl-batch-ingest-result`), passing the
-`ARGO_WORKFLOW_NAME` environment variable Argo sets on the write-back container. When it skips the call
-because a retry of the step could still write a result, the status poller makes the same call once the
-Workflow has finished (capability `cyl-pipeline-status-polling`) — and SHALL skip the call entirely when that
-environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
+function at most once per invocation, after ingesting every envelope discovered for the batch, passing
+the `ARGO_WORKFLOW_NAME` environment variable Argo sets on the write-back container. It SHALL skip
+the call when an envelope it attempted failed retriably (capability `cyl-batch-ingest-result`);
+the status poller then makes an equivalent call, with its own `p_error_message`, once that workflow's
+Argo phase is terminal (capability `cyl-pipeline-status-polling`). `bloomctl` SHALL also skip
+the call entirely when that environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
 `cyl_pipeline_run_scans` rows (if any happen to exist) untouched.
 
 #### Scenario: A scan with no envelope is marked failed

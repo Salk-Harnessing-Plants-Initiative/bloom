@@ -1,103 +1,212 @@
-## 1. Red: tests first
+## 1. Red: bloomctl tests first
 
-Write these and run them before section 2. Capture the red output to the scratchpad and paste it
-into the PR body. Don't create a standalone red commit: no workflow runs on a feature-branch push,
-so a red commit proves nothing.
+Write these before §2 and run them. Save the output to the scratchpad and paste it into the PR
+body. Don't create a standalone red commit: no workflow runs on a feature-branch push.
 
-- [ ] 1.1 `bloomcli/tests/test_cyl_ingest.py`: add
-      `test_batch_ingest_cli_defers_reconcile_when_an_envelope_fails_retriably`.
-      - Setup: `ARGO_WORKFLOW_NAME="wf-a"`, a manifest listing `scan_1` and `scan_2`, `scan_1`
-        ingests ok, and `scan_2`'s `ingest_one_envelope` returns `failed` with `retriable=True`.
-      - Assert `reconcile_unresolved_scans` is **never** called.
-      - Assert the output has no `<reconciliation>` entry.
-      - Assert exit 1.
-- [ ] 1.2 Add `test_batch_ingest_cli_retry_after_a_retriable_failure_marks_the_scan_written`, the
-      #1034 regression.
-      - Use a stateful fake that models `cyl_pipeline_run_scans` for one workflow:
-        - Rows `scan_1`, `scan_2` and `scan_3` (dispatched, but with no envelope) start `'queued'`.
-        - The fake's insert sets a row `'written'` only `WHERE status != 'failed'` and returns
-          `status_update_matched` to match.
-        - The fake's reconcile sets `'queued'` → `'failed'`.
-      - Attempt 1: `scan_2`'s insert raises a retriable error. Assert exit 1.
-      - Attempt 2: the same directory and workflow name, with `scan_2`'s insert now succeeding.
-      - Assert the end state: `scan_1` and `scan_2` are `'written'` and `scan_3` is `'failed'`.
-      - Assert attempt 2 exits 0 and reports no `status_update_matched` mismatch.
-      - Run it against the current code and confirm it fails with `scan_2 == 'failed'`.
-- [ ] 1.3 Add `test_batch_ingest_cli_non_retriable_failure_still_reconciles`.
-      - Setup: the only failure is a non-retriable `status_update_matched` mismatch.
-      - Assert the reconcile is called once and the exit is 0.
-- [ ] 1.4 Add `test_batch_ingest_cli_missing_declared_scan_key_with_a_retriable_failure_defers`.
-      - Setup: a missing declared `scan_9` alongside a retriable `scan_2` failure.
-      - Assert there is no reconcile call and the exit is 1. The retriable envelope is what
-        decides it.
-- [ ] 1.5 Update `test_batch_ingest_cli_isolates_unreadable_file_among_several` (`:1819`). Today
-      it asserts `calls == ["wf-corrupt"]` ("reconciliation must still run despite the corrupt
-      file"). An unreadable file is a retriable envelope failure, so it now defers. Assert
-      `calls == []`, exit non-zero, and that `scan_1` and `scan_3` are still ingested. Update its
-      docstring to match.
-- [ ] 1.6 Re-run the existing reconcile tests unchanged. These must stay green, proving the
-      no-manifest and missing-declared paths still reconcile:
-      - `:2035`, `:2070`, `:2094`
-      - `:2119`–`:2330`
-      - `:2481`
-      - `:2789`, `:2815`, `:2835`
-- [ ] 1.7 `tests/integration/test_cyl_writeback_rpc.py`: add
-      `test_retry_delivery_without_an_intervening_reconcile_marks_written`. It pins the DB-level
-      contract D1 relies on, against the real RPCs:
-      - Two scans are queued under `wf-a`.
-      - Deliver `scan_1`.
-      - Deliver `scan_2` as the "retry", with no reconcile in between.
-      - Call `fail_cyl_pipeline_run_scans_without_result('wf-a')`.
-      - Assert both rows are `'written'`, the call returned `0`, and both deliveries'
-        `status_update_matched` is `true`.
-      - This needs the local stack but **no migration**. Don't run `make migrate-local`. Check
-        that the other session (#1022 PR 2) isn't mid-migration before running integration tests,
-        and leave no test rows behind.
+- **Expected red:** 1.1, 1.2, 1.4, 1.5.
+- **Expected green (guards):** 1.3, 1.6.
 
-## 2. Green: implement
+All tests are in `bloomcli/tests/test_cyl_ingest.py`. Record reconcile calls with the existing
+`_record_reconcile` helper and assert `== []`. Don't use a stub that raises:
+`_reconcile_unresolved_scans_result` catches every exception, so a raising stub can't fail the
+test.
 
-- [ ] 2.1 In `batch_ingest_result` (`bloomcli/src/bloomctl/cyl/ingest.py`), compute
-      `retry_could_still_write = any(r.status == "failed" and r.retriable for r in ingest_results)`.
-      - It is computed over `ingest_one_envelope` results only, so it is `False` when nothing was
-        ingested.
-      - Gate the existing `_reconcile_unresolved_scans_result` call on
-        `argo_workflow_name and not retry_could_still_write`.
-      - When it is skipped for that reason, log at info level that reconciliation is deferred to
-        the status poller, naming the count of retriable envelope failures.
-- [ ] 2.2 Update the comment block and the command docstring to state the rule and point to
-      bloom#1034. Leave `status_update_matched_message` as it is: a late delivery after the
-      poller closed a row is still a real cause.
-- [ ] 2.3 Run section 1. All tests pass.
+- [ ] 1.1 `test_batch_ingest_cli_defers_reconcile_when_an_envelope_fails_retriably`
+  - Parametrize the injected failure over `TimeoutError` (generic path) and `_api_error(...)`
+    (`map_rpc_error` path).
+  - Setup: `ARGO_WORKFLOW_NAME="wf-a"`; the manifest lists `scan_1` and `scan_2`; `scan_1`
+    ingests; `scan_2`'s `call_insert_envelope` raises.
+  - Assert:
+    - no reconcile call;
+    - no `<reconciliation>` entry in `--json`;
+    - exit 1;
+    - stderr contains `reconciliation deferred to the status poller: 1 envelope(s) failed
+      retriably`;
+    - stdout is still valid JSON.
+- [ ] 1.2 `test_batch_ingest_cli_retry_after_a_retriable_failure_marks_the_scan_written` (the
+      #1034 regression). Use a stateful fake over a dict of rows:
+  - **Rows:** `scan_1`, `scan_2` and `scan_3` start `'queued'`. The run manifest lists only
+    `scan_1` and `scan_2`; `scan_3` models a scan whose stage-in failed, which
+    `write_run_manifest` leaves out.
+  - **Fake `call_insert_envelope`:**
+    - on the injected failure, it raises *before* changing any state;
+    - on a first delivery, it sets `'written'` only `WHERE status != 'failed'` and returns
+      `status_update_matched` to match;
+    - on a second delivery of the same key, it returns `was_noop: True`, matched against the
+      row's current status.
+  - **Fake `reconcile_unresolved_scans`:** changes `'queued'` to `'failed'` and returns the count.
+  - **Attempt 1:** `scan_2` raises a retriable error. Assert `scan_1 == 'written'`,
+    `scan_2 == scan_3 == 'queued'`, 0 reconcile calls, and exit 1.
+  - **Attempt 2:** same directory and name; `scan_2` succeeds. Assert in this order, so the red
+    run fails on the first one:
+    1. end state is `scan_1 == scan_2 == 'written'`, `scan_3 == 'failed'`;
+    2. exactly one reconcile call, which returned 1;
+    3. `--json` shows `scan_1` `skipped` and `scan_2` `ok`;
+    4. exit 0.
+- [ ] 1.3 `test_batch_ingest_cli_missing_declared_and_non_retriable_mismatch_still_reconcile`
+  - Setup: the manifest lists `[scan_1, scan_9]`; `scan_1` returns
+    `{**RESULT_OK, "status_update_matched": False}`; there is no `scan_9` file.
+  - Assert: reconcile is called with `["wf-a"]`; exit 1; `scan_9` is failed and retriable;
+    `scan_1` has `retriable is False`; no `<reconciliation>` entry; no deferral line on stderr.
+- [ ] 1.4 `test_batch_ingest_cli_missing_declared_scan_key_with_a_retriable_failure_defers`
+  - Setup: declared `scan_9` is missing alongside a retriable `scan_2` failure.
+  - Assert: no reconcile call; exit 1.
+- [ ] 1.5 Update `test_batch_ingest_cli_isolates_unreadable_file_among_several`
+  - It currently asserts `calls == ["wf-corrupt"]`. Change that to `calls == []`.
+  - Keep the assertions that the run exits non-zero and that `scan_1` and `scan_3` are still
+    ingested.
+  - Update its docstring.
+- [ ] 1.6 Strengthen the two existing tests that mix a retriable failure with a non-retriable
+      mismatch (`test_batch_ingest_cli_exits_nonzero_when_a_genuine_failure_also_present` and
+      `test_batch_unmatched_noop_with_a_retriable_failure_exits_nonzero`). Add `_record_reconcile` and assert `== []`.
+  - The other existing reconcile tests stay unchanged and green. They cover the no-manifest path,
+    the missing-declared path, reconcile failure, `PGRST202`, the count log, the unset name, and
+    the manifest errors.
 
-## 3. Docs and specs
+## 2. Red: poller tests first
 
-- [ ] 3.1 `bloomcli/README.md` (`batch-ingest-result`, around lines 735-755): describe the
-      reconcile condition and the hand-off to the status poller. Replace "never prevents this
-      call from running" for unreadable files.
-- [ ] 3.2 `services/workflows/README.md` (around line 380) and the `status_poller.py`
-      docstring/comment that say a leftover `'queued'` row "can only mean write-back never ran":
-      add the deferred-after-final-retry cause. Make no code change in the poller.
-- [ ] 3.3 `bloomcli/CHANGELOG.md`: add an Unreleased "Fixed" entry citing bloom#1034.
-- [ ] 3.4 Run `openspec validate fix-cyl-writeback-retry-reconcile --strict`.
+All tests are in `services/workflows/tests/test_status_poller.py`.
 
-## 4. Verify
+- **Expected red:** 2.1, 2.3.
+- **Expected green (guards):** 2.2, 2.4, 2.5, 2.6.
 
-- [ ] 4.1 Run the bloomcli test suite, then `ruff check` and `ruff format --check` in `bloomcli/`.
-- [ ] 4.2 Run the integration test from 1.7 and the existing reconcile, guard and poller suites:
-      - `tests/integration/test_cyl_writeback_rpc.py`
-      - `tests/integration/test_cyl_noop_redelivery_scan.py`
-      - `services/workflows/tests/test_status_poller.py`
-- [ ] 4.3 Run `/pre-merge`, then open the PR to `staging` (`Part of #1034`). Never merge.
+- [ ] 2.1 `test_sweep_reconciles_a_terminal_workflows_queued_rows_while_a_sibling_still_runs`
+  - Setup: run phases `wf-a: Failed`, `wf-b: Running`; queued names `["wf-a"]`; reconcile returns
+    2; the recount is `(3, 2)`.
+  - Assert:
+    - `reconcile_calls == ["wf-a"]`;
+    - the status write is `('running', 3, 2)`, using the fresh recount;
+    - a docstring cites bloom#1034.
+- [ ] 2.2 `test_sweep_does_not_reconcile_a_still_running_workflows_queued_rows`
+  - Setup: `wf-a: Running`, `wf-b: Succeeded`; queued names `["wf-a"]`.
+  - Assert no reconcile call. This updates or keeps the existing
+    `test_sweep_does_not_reconcile_queued_rows_while_still_running`.
+- [ ] 2.3 `test_sweep_leaves_a_404d_workflows_rows_for_the_run_level_backstop_while_running`
+  - Setup: `wf-a` 404s, `wf-b: Running`; queued names `["wf-a"]`.
+  - Assert no reconcile call this cycle.
+  - It is red only if the implementation must expose per-name phases. Otherwise it is a guard.
+    Label it in the PR either way.
+- [ ] 2.4 `test_sweep_running_run_reconcile_failure_skips_the_status_write`
+  - Setup: the per-workflow reconcile raises a non-`PGRST202` error while the rollup is
+    `'running'`.
+  - Assert: no `update_cyl_pipeline_run_status` call for that run this cycle; the cycle is marked
+    unclean; the next candidate is still processed.
+- [ ] 2.5 `test_sweep_reconciles_rows_write_back_deferred_after_its_final_retry`
+  - Setup: phases `["Failed"]`, snapshot `(1, 0, ["wf-a"])`, reconcile returns 2, recount
+    `(1, 2)`.
+  - Assert `reconcile_calls == ["wf-a"]` and the update is `(run, "failed", 1, 2)`.
+  - This maps the modified spec scenario.
+- [ ] 2.6 Existing reconcile tests in the file stay green: terminal rollup, multiple names, fresh
+      recount, unsettled-on-failure, no queued rows, withheld `'complete'` on 404, unresolved
+      sibling, `PGRST202`, non-`PGRST202`.
 
-## 5. Post-merge: rollout (blocks archive)
+## 3. Integration test (expected green: pins the DB contract D1 relies on)
 
-- [ ] 5.1 Confirm the bloomctl image for the merge commit was published (`sha-<short>` tag and
-      digest).
-- [ ] 5.2 With the user's OK, open a sleap-roots-pipeline PR bumping
-      `sleap-roots-write-back-template.yaml`'s bloomctl pin to that digest. After it merges,
-      confirm the template is re-registered on the cluster (`scripts/check_template_contract.py`
-      or `argo template get`).
-- [ ] 5.3 Evidence: on the first run whose write-back step retried, or on a deliberately induced
-      retriable failure in staging, `cyl_pipeline_run_scans` for the scan shows `'written'`, not
-      `'failed'`. If no such run happens soon, record the bloomctl log line "reconciliation
-      deferred" from a staging run instead. Then close #1034 and archive.
+- [ ] 3.1 In `tests/integration/test_cyl_writeback_rpc.py`, add
+      `test_retry_attempt_sequence_without_an_intervening_reconcile_ends_written`.
+  - **Seed:** one run with 3 queued scans under one `_wf()` name, using the
+    `test_batch_workflow_stamps_its_one_run` seeding pattern. Use uuid idempotency keys.
+  - **Attempt 1:**
+    - deliver `scan_1`;
+    - inside `with pg_conn.transaction():` (a savepoint), deliver an envelope for `scan_2` that
+      the RPC rejects, and assert it raises and `scan_2` stays `'queued'`;
+    - no reconcile.
+  - **Attempt 2:**
+    - re-deliver `scan_1`; assert `was_noop` and `status_update_matched` are both `true`;
+    - deliver a valid `scan_2`; assert `status_update_matched` is `true`;
+    - call `fail_cyl_pipeline_run_scans_without_result`; assert it returns `1`;
+    - assert the final rows are written / written / failed.
+  - **Docstring:** cite `test_late_delivery_after_already_failed_does_not_resurrect` as the
+    contrast.
+  - **Cleanup:** follow the file's rollback pattern; commit nothing.
+  - **Dev DB:** needs the local stack, but **no migration**. Don't run `make migrate-local`.
+    Check that the #1022 PR 2 session isn't mid-migration before running.
+
+## 4. Green: implement
+
+- [ ] 4.1 **bloomctl:** in `batch_ingest_result`:
+  - Initialise `retriable_envelope_failures = 0` before the `if discovered.paths:` branch, so the
+    no-envelope path binds it.
+  - In that branch, count `ingest_results` entries with `status == "failed" and retriable`.
+  - Gate the reconcile on `argo_workflow_name and not retriable_envelope_failures`.
+  - When it is skipped for that reason, print
+    `reconciliation deferred to the status poller: N envelope(s) failed retriably` with
+    `click.echo(..., err=True)`.
+  - Update the comment block, the command docstring (one sentence; it is `--help` output), and
+    the `reconcile_unresolved_scans` docstring.
+- [ ] 4.2 **`ScanResult.retriable` docstring** (`_batch.py`): note that a retriable *envelope*
+      failure also defers `batch-ingest-result`'s reconciliation, so a failure must not be made
+      retriable "just to fail the Workflow".
+- [ ] 4.3 **Poller:**
+  - `_fetch_effective_phases` additionally returns the `{workflow_name: phase | None}` map.
+  - In `sweep_once`, when the rollup is `'running'`, reconcile only queued names whose phase is in
+    `{"Succeeded", "Failed", "Error"}`, then recount. When it is non-`'running'`, keep today's
+    behaviour.
+  - Reuse the existing failure, `PGRST202` and recount handling. Don't duplicate it.
+  - Update the three docstrings/comments that say a leftover `'queued'` row "can only mean
+    write-back never ran": `_fetch_effective_phases`, `_reconcile_unresolved_scans`, and the
+    `sweep_once` backstop comment.
+- [ ] 4.4 Run §1–§3; all pass.
+
+## 5. Docs, specs, verification
+
+- [ ] 5.1 `bloomcli/README.md` (the `batch-ingest-result` reconcile bullet): describe the
+      condition, the stderr line and the hand-off to the poller. Replace "never prevents this
+      call from running".
+- [ ] 5.2 `services/workflows/README.md` (the backstop paragraph): describe per-Workflow
+      reconciliation while the run is running, and the run-level backstop for 404s. Add the
+      deferred-retry cause.
+- [ ] 5.3 `web/lib/cyl-pipeline/failure-hints.ts` (comment on `NO_RESULT_MESSAGE`): change "at the
+      end of each batch" to "at the end of a batch with no retriable envelope failure".
+- [ ] 5.4 `bloomcli/CHANGELOG.md` `[Unreleased]` → Fixed, in house style (bloom #1034), saying it
+      takes effect with the template pin bump.
+- [ ] 5.5 `openspec validate fix-cyl-writeback-retry-reconcile --strict`.
+- [ ] 5.6 Run checks with the exact CI invocations:
+  - **bloomctl tests:** `cd bloomcli && uv run --extra test pytest tests/ -m "not integration"`
+  - **bloomctl lint:** `cd bloomcli && uvx ruff@0.9.9 check .` (the release gate; PR CI doesn't
+    lint bloomcli, see #531). Don't run `ruff format` over bloomcli: it isn't enforced and
+    would reformat 36 files.
+  - **Poller tests:** `cd services/workflows && uv run --frozen --extra test pytest tests/test_status_poller.py -v`
+  - **Integration tests:** `uv run --extra test pytest tests/integration/test_cyl_writeback_rpc.py tests/integration/test_cyl_noop_redelivery_scan.py tests/integration/test_cyl_pipeline_status_polling.py -v`
+- [ ] 5.7 Run `/pre-merge` and open the PR to `staging`.
+  - Title: "Leave a retried write-back's scans to the status poller so a retry can mark them
+    written (Part of #1034)".
+  - Use "Part of #1034" only. No closing keyword anywhere in the title or body, including
+    quoted tasks. `/pr-description` defaults to `Closes`, so override it.
+  - Never merge.
+
+## 6. Post-merge rollout (blocks archive)
+
+- [ ] 6.1 Confirm that `docker-build-bloomcli` published `sha-<squash short>`, using
+      `docker buildx imagetools inspect ghcr.io/salk-harnessing-plants-initiative/bloomctl:sha-<short>`.
+  - If the build was cancelled by a later staging push (concurrency `cancel-in-progress`), use
+    the next published staging sha that contains the merge, and list the commits it carries
+    along.
+  - Record the digest and the rollback target: `sha-88cbcbf@sha256:0259ec0a…`.
+  - Re-run `git log origin/main..origin/staging -- bloomcli`. Confirm that no ride-along commit
+    needs an RPC or migration that prod lacks, because the bump reaches prod at once (design D4).
+- [ ] 6.2 In sleap-roots-pipeline (WSL; kubectl and argo live there), run
+      `bash scripts/check_cluster_drift.sh`. Record the before state: comparator, namespace, date,
+      exit code.
+- [ ] 6.3 With the user's OK, open a sleap-roots-pipeline PR that bumps bloomctl in **all three**
+      templates (write-back, images-downloader, exit-gate) to the immutable sha and digest.
+  - Follow the upstream pin-comment format: sha, digest, squash commit, version, what changed,
+    ride-along commits, rollback target.
+  - Use "Part of salk-harnessing-plants-initiative/bloom#1034", never `Closes`.
+  - Run `scripts/check_manifests.py` / `check_all.sh` by hand (upstream has no CI).
+  - No bloom `SLEAP_ROOTS_PIPELINE_REF` bump is needed: the vendored Workflow doesn't change.
+- [ ] 6.4 After the PR merges and the templates are re-registered:
+  - re-run `check_cluster_drift.sh`;
+  - run `kubectl -n runai-busch-lab get workflowtemplate sleap-roots-write-back-template -o jsonpath='{.spec.templates[0].container.image}'`;
+  - record that the digest matches.
+- [ ] 6.5 Confirm the poller half is live: the workflows service on staging is running the merge
+      commit (`BUILD_SHA` or the image tag). Prod gets it at the next staging→main promotion.
+- [ ] 6.6 Evidence: the first run whose write-back step retried, or a run with a scan failing
+      write-back in a multi-Workflow run, shows:
+  - the `reconciliation deferred` stderr line in the write-back pod log;
+  - a retried scan ending `'written'`, or a failed scan reading `'failed'` while sibling
+    Workflows were still running.
+
+  Then mark bloom#1034 done by hand, and open the archive PR separately.
+- [ ] 6.7 Draft the separate issue for repairing prod run 2's 5 stale rows. Post it only with the
+      user's OK.

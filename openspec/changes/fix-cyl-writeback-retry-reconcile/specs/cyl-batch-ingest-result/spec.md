@@ -17,21 +17,17 @@ no `run_manifest.json` is present. Otherwise discovery SHALL be scoped, or SHALL
 "Discovery is scoped to a present RunManifest" requirement.
 
 After every discovered envelope has been processed (ingested, skipped, or reported failed), and only
-when the run identity is not `None` and no automated retry of the write-back step could still write a
-result, the command SHALL call `fail_cyl_pipeline_run_scans_without_result` (capability
-`cyl-trait-writeback`) exactly once, passing the run identity and a fixed, descriptive
-`p_error_message`. A retry could still write a result exactly when at least one envelope file this
-invocation attempted to ingest is reported failed with `retriable: true`: a retry of the step re-reads
-the same files, so only such an envelope's outcome can change. A missing manifest-declared scan_key, a
-missing run manifest, and a non-retriable envelope failure SHALL NOT count, since what they lack comes
-from earlier steps of the Workflow that a retry of this step does not re-run. When a retry could still
-write a result, the command SHALL make no reconciliation call, SHALL add no reconciliation entry to
-the batch result, and SHALL log that reconciliation was deferred to the status poller (capability
-`cyl-pipeline-status-polling`), which closes out this workflow's still-`'queued'` rows only once the
-Workflow, including every retry of this step, has finished. Reconciling here instead would close out
-as `'failed'` a scan that a later attempt then ingests, and the write-back RPC's `status != 'failed'`
-guard (capability `cyl-trait-writeback`) would then keep that scan `'failed'` although its data was
-written (bloom#1034). The reconciliation call closes out,
+when the run identity is not `None` and no envelope file this invocation attempted to ingest is
+reported failed with `retriable: true`, the command SHALL call
+`fail_cyl_pipeline_run_scans_without_result` (capability `cyl-trait-writeback`) exactly once,
+passing the run identity and a fixed, descriptive `p_error_message`. A missing manifest-declared
+scan_key, a missing run manifest, and a non-retriable envelope failure SHALL NOT prevent the call.
+When an attempted envelope did fail retriably, an automated retry of the write-back step could still
+write that scan's result, so the command SHALL make no reconciliation call, SHALL add no
+reconciliation entry to the batch result, and SHALL write one line to stderr saying that
+reconciliation was deferred to the status poller and how many envelopes failed retriably; the status
+poller (capability `cyl-pipeline-status-polling`) closes out this workflow's still-`'queued'` rows
+once the workflow's own Argo phase is terminal. That call closes out,
 as `'failed'`, any `cyl_pipeline_run_scans` row for this workflow name that no envelope in this
 batch resolved. That includes a scan whose prediction failed before producing any file at all,
 which this command cannot discover directly, since it can only see files that exist. The same single
@@ -108,36 +104,38 @@ so the real outcome is never hidden, but SHALL exit zero.
 - **WHEN** one envelope file in the batch cannot be read as UTF-8 text (e.g. truncated mid-write by
   an OOM-killed producer), and `ARGO_WORKFLOW_NAME` is set
 - **THEN** that envelope is reported as a failed, retriable `ScanResult`, every other envelope in the
-  batch is still ingested normally, the command exits non-zero, and, because that failure is
-  retriable, no reconciliation call is made (the status poller closes out any row still `'queued'`
-  once the Workflow has finished)
+  batch is still ingested normally, and the command exits non-zero
+- **AND** because that failure is retriable, no reconciliation call is made; the status poller
+  closes out any row still `'queued'` once the workflow is terminal
 
 #### Scenario: A retriable envelope failure defers reconciliation to the status poller
 
 - **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, `run_manifest.wf-a.json` lists `scan_1` and `scan_2`,
   `scan_1` ingests, `scan_2`'s ingest fails with `retriable: true` (e.g. a transient RPC or network
-  error), and a third scan dispatched under `"wf-a"` has no envelope
+  error), and a third scan dispatched under `"wf-a"` is not listed in the manifest
 - **THEN** the command makes no `fail_cyl_pipeline_run_scans_without_result` call and reports no
-  reconciliation entry, so the rows for `scan_2` and the third scan stay `'queued'`; it logs that
-  reconciliation was deferred to the status poller and exits non-zero
+  reconciliation entry, so the rows for `scan_2` and the third scan stay `'queued'`
+- **AND** it writes a stderr line saying reconciliation was deferred to the status poller because
+  `1` envelope failed retriably, and exits non-zero
 
-#### Scenario: A retry of the step marks written a scan the first attempt failed to ingest
+#### Scenario: A retry of the step marks written a scan an earlier attempt failed to ingest
 
-- **GIVEN** the attempt in the previous scenario, after which Argo retries the write-back step in
-  the same Workflow (same `ARGO_WORKFLOW_NAME`, same files)
-- **WHEN** `scan_2` now ingests successfully, and `scan_1` is re-delivered as a no-op
+- **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, `run_manifest.wf-a.json` lists `scan_1` and `scan_2`,
+  a third scan dispatched under `"wf-a"` is not listed, and an earlier attempt of this write-back
+  step in the same Workflow wrote `scan_1` but failed retriably on `scan_2` (so it made no
+  reconciliation call), and this attempt now ingests `scan_2` and re-delivers `scan_1` as a no-op
 - **THEN** `scan_2`'s `cyl_pipeline_run_scans` row becomes `'written'` with
-  `status_update_matched: true`, `scan_1`'s stays `'written'`, the command then makes its one
-  reconciliation call, which closes out only the scan with no envelope as `'failed'`, and the
-  command exits zero
+  `status_update_matched: true`, `scan_1`'s stays `'written'`, the command makes its one
+  reconciliation call, which closes out only the third scan as `'failed'`, and the command exits
+  zero
 
 #### Scenario: Missing files and non-retriable failures do not defer reconciliation
 
 - **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, and the batch's only failures are a manifest-declared
   scan_key with no matching file and an envelope whose `status_update_matched` came back `false`
   (`retriable: false`)
-- **THEN** the command still makes its one reconciliation call, and exits non-zero because of the
-  missing scan_key
+- **THEN** the command still makes its one reconciliation call, writes no deferral line, and exits
+  non-zero because of the missing scan_key
 
 #### Scenario: A reconciliation-call failure is isolated, not a crash
 

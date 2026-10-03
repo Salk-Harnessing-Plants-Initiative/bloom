@@ -2,111 +2,157 @@
 
 Three components decide a cylinder scan's final `cyl_pipeline_run_scans.status`:
 
-| Component | When it runs | What it does to the scan's row |
+| Component | When it runs today | What it does to the row |
 | --- | --- | --- |
-| `insert_cyl_result_envelope` | Once per envelope, during each write-back attempt | `'queued'` → `'written'`, guarded by `AND status != 'failed'` |
-| `bloomctl cyl batch-ingest-result` | At the end of **every** write-back attempt | Calls `fail_cyl_pipeline_run_scans_without_result`, which turns `'queued'` → `'failed'` |
-| `status_poller.py` | Once the Workflow's rollup is no longer `'running'` | Calls the same RPC for every name with a leftover `'queued'` row, then writes the run's status and counts |
+| `insert_cyl_result_envelope` | Once per envelope, in each write-back attempt | `'queued'` → `'written'`, guarded by `AND status != 'failed'` |
+| `bloomctl cyl batch-ingest-result` | At the end of **every** write-back attempt | `fail_cyl_pipeline_run_scans_without_result`: `'queued'` → `'failed'` |
+| `status_poller.py` `sweep_once` | Once the whole **run's** rollup is no longer `'running'` | The same RPC for each Workflow name with a leftover `'queued'` row, then a recount and the status write |
 
-Argo's write-back template has `retryStrategy: limit: 2, retryPolicy: Always`, so a non-zero exit
-re-runs the pod up to twice in the same Workflow, against the same rows. The guard's original
-rationale (`20260912110000_add_cyl_writeback_run_scan_status.sql:37-43`) is that a late delivery
-must not flip a closed row back, because "the parent run may have already gone terminal and
-dropped out of status_poller.py's candidate-run query for good". bloom#1034 is the one case where
-the closing and the later delivery belong to the same, still-running Workflow.
+Argo retries the write-back step (`retryStrategy: limit: 2, retryPolicy: Always`) in the same
+Workflow, against the same rows. The guard exists so that a delivery arriving after a row was
+closed can't flip it back, "since the parent run may have already gone terminal"
+(`20260912110000_add_cyl_writeback_run_scan_status.sql:37-44`). bloom#1034 is the case where the
+close and the later delivery both come from one still-running Workflow.
+
+The dispatcher splits a run into 25-scan Workflows (`services/workflows/pipeline.py`
+`BATCH_SIZE`), and these can finish hours apart.
 
 ## Goals / Non-Goals
 
 - **Goal:** a scan that a later attempt of the same write-back step ingests ends `'written'`.
-- **Goal:** keep every closing guarantee. Each scan this Workflow dispatched still ends
-  `'written'`, `'reused'` or `'failed'` once the Workflow is terminal.
-- **Non-goal:** repairing rows already stuck this way (prod run 2).
-- **Non-goal:** any change to the guard, the RPCs or the poller's behaviour.
+- **Goal:** every dispatched scan still ends `'written'`, `'reused'` or `'failed'`, and it does
+  so within one poller cycle of its own Workflow ending. That is no slower than today for a
+  failed scan.
+- **Non-goals:**
+  - repairing rows already stuck (prod run 2; separate issue);
+  - changing the guard or either RPC;
+  - an `argo retry` of a Workflow that has already failed. The poller has closed its rows by
+    then, and the guard keeps them closed, as it does today;
+  - reclassifying deterministic envelope failures, which are `retriable: true` today;
+  - cross-run writes into the shared input directories (srp#37).
 
 ## Decisions
 
-### D1. Reconcile only when no retry can still write a result
+### D1. bloomctl reconciles only when no attempted envelope failed retriably
 
-`batch_ingest_result` skips its reconciliation call when any `ScanResult` from
-`ingest_one_envelope` (an envelope file it actually tried to ingest) has `status == "failed"` and
-`retriable == True`. In every other case it reconciles exactly as today.
+`batch_ingest_result` skips its reconciliation call when any `ScanResult` produced by
+`ingest_one_envelope` (an envelope file it actually tried to ingest) is failed with
+`retriable: true`. Otherwise it reconciles as today. The flag is computed over those results
+only, so it is `False` when nothing was ingested (the no-manifest and all-declared-missing
+paths).
 
-This predicate is exact for the question "could a retry of this step still write a result?":
+**The predicate is conservative, not exact.** Only those envelopes can change on a retry,
+because the files and manifest a retry reads come from earlier DAG steps that a step-level
+retry doesn't re-run. Missing declared files and a missing run manifest are `retriable: true`,
+but a retry can't change them. Today every `ingest_one_envelope` failure except the
+`status_update_matched` mismatch is `retriable: true` (`_batch.py` `ScanResult`), and that
+includes deterministic ones: contract validation, a missing `idempotency_key`,
+`BlobConstructionError`, and an RPC rejection. Those also defer. Deferring is always safe,
+because the poller closes the rows (D2). Its only cost is the poller's generic message in place
+of bloomctl's.
 
-- A retry runs the same container against the same `/workspace/input` and `/workspace/predictions`
-  volumes. Those are produced by earlier DAG steps, which a step-level retry doesn't re-run. So
-  the retry sees the same envelope files and the same manifest.
-- An envelope that ingested, or was a no-op, is already `'written'`. Reconciling never touches it.
-- A non-retriable envelope failure, such as a `status_update_matched: false` mismatch, gets the
-  same answer on retry by definition (`_batch.py:28-40`).
-- A missing manifest-declared file or a missing run manifest can't appear on a retry. Both are
-  marked `retriable: true` today only so that the step, and with it the Workflow, ends `Failed`
-  (`ingest.py:1131-1141`). They are not marked that way because a retry could fix them.
-- Only a retriable envelope failure, such as a transient RPC, network, upload or #1022-style
-  constraint error, can turn into a write on the next attempt.
+**Deferral has to be visible in the Argo pod log.** bloomctl installs no logging handler, so a
+`logger.info` never reaches the pod log (`_batch.py` already notes the log sink is unreadable
+there). The command therefore prints one stderr line through `click.echo(..., err=True)`:
+`reconciliation deferred to the status poller: N envelope(s) failed retriably`. stdout's
+summary/`--json` output and the exit code don't change (D3).
 
-Rejected: **"reconcile only when exiting 0"**, the first framing. It is equivalent except that it
-also defers on the no-manifest path and on missing declared files. Those always exit 1, so the
-in-pod reconcile would never run for them. That would turn `NO_RUN_MANIFEST_MESSAGE` and its
-"re-dispatch the run" hint into dead code, and the scans would wait for the poller's generic
-message for no benefit.
+Rejected alternatives:
 
-Rejected: **pass `{{retries}}` into the pod and reconcile on the final attempt** (#1034 option 1
-as written). It needs an upstream template change plus a new bloomctl input. It still mis-closes
-scans when the final attempt is cut short by a pod kill, where the poller is the backstop anyway.
-And it adds nothing over D1.
+- **"Reconcile only when exiting 0".** This would also defer the no-manifest and missing-file
+  paths, which always exit 1. `NO_RUN_MANIFEST_MESSAGE` and its re-dispatch hint would become
+  dead code, for no benefit.
+- **Reconcile on the final attempt using `{{retries}}`.** That needs an upstream template change
+  and a new input. It still leaves the poller as the backstop for a killed final attempt, and
+  adds nothing over D1.
+- **Let a Workflow overwrite its own `'failed'` rows (#1034 option 2).** That means redefining
+  the roughly 300-line `insert_cyl_result_envelope`, which
+  `test_cyl_noop_redelivery_migration_files.py` pins, and weakening a guard that four scenarios
+  rely on.
 
-Rejected: **let the same Workflow overwrite its own `'failed'`** (#1034 option 2). It redefines
-the roughly 300-line `insert_cyl_result_envelope` body, which `test_cyl_noop_redelivery_migration_files.py`
-pins for equality. It weakens a guard four spec scenarios rely on. And it needs a run-terminal
-check inside the RPC. D1 removes the cause without touching SQL.
+### D2. The poller closes each Workflow's leftover rows once that Workflow is terminal
 
-### D2. The poller is the closer of last resort, and that is already true
+Today `sweep_once` reconciles only when the run's rollup is non-`'running'`, so it waits for every
+Workflow in the run. With D1, rows deferred by a Workflow whose write-back exhausted its retries
+would wait for the slowest sibling, which can take hours. Before D1, those rows were closed at the
+end of the final attempt.
 
-The poller already reconciles leftover `'queued'` rows before every non-`'running'` status write
-(`status_poller.py:385-420`). It re-derives counts afterwards and holds the run as a candidate
-when the call fails. `rollup()` returns `'running'` while any phase is Pending or Running, and
-Argo reports the Workflow `Running` until the write-back node, including its retries, and the
-`exit-gate` leaf have finished. So the poller can't race an in-flight attempt, and a deferred row
-is always closed once the Workflow ends. Nothing in the poller changes. Its spec text and README
-are updated because they say a `'queued'` row at that point "can only mean write-back never ran",
-which is no longer the only cause.
+**Change.**
 
-### D3. Exit code and output are unchanged
+- `_fetch_effective_phases` additionally returns each Workflow name's phase, with `None` for a
+  404.
+- When the rollup is `'running'`, `sweep_once` reconciles every Workflow name that both has a
+  leftover `'queued'` row and has a **confirmed** terminal phase (`Succeeded`, `Failed` or
+  `Error`).
+- When the rollup is non-`'running'`, it reconciles every queued name, including 404'd ones,
+  exactly as today.
+- After any reconcile it recounts with `_count_done_and_failed` before the status write.
+- **Failure handling is unchanged.** A failed reconcile or recount skips that run's status write
+  this cycle, marks the cycle unclean, and retries next cycle. `PGRST202` is quiet, as today.
 
-When reconciliation is deferred, the batch already contains a retriable failure, so it already
-exits 1, and no `<reconciliation>` entry is added. A reconciliation-call failure on a
-non-deferred batch is still a retriable synthetic entry, so the step is retried. The retry's
-re-ingest of already-written envelopes is a no-op that the primary
-`(argo_workflow_name, source_id)` update still matches, and its reconcile is idempotent.
+**Why it is safe.**
 
-### D4. Deployment needs an upstream pin bump
+- A Workflow's phase becomes `Succeeded`, `Failed` or `Error` only after every node has
+  finished. That includes the write-back node with all its retries and the downstream
+  `exit-gate`. So no attempt can still write.
+- While the run is `'running'`, 404'd Workflows are left to the run-level backstop. A 404 isn't
+  a confirmed phase, and the existing addendum-8 reasoning applies only once the rollup has
+  concluded.
+- The status write already happens every cycle, so the run's `done_count`/`failed_count`
+  reflect the newly closed rows at once.
+- The only thing that can restart a terminal Workflow is a manual `argo retry`. Today, that
+  Workflow's rows are closed by the run-level backstop once the run settles anyway, so this
+  doesn't change the outcome for a retried Workflow (see Non-goals).
 
-The cluster runs `bloomctl:sha-<sha>@sha256:…` pinned in upstream
-`sleap-roots-write-back-template.yaml`, not anything bloom deploys. Until that pin moves to an
-image built from this merge and the template is re-registered, prod and staging keep the old
-behaviour. `tasks.md` §5 covers verifying the image, the cross-repo PR (opened only with the
-user's OK), and evidence that it took effect. The change is not archived before then.
+### D3. bloomctl's exit code and output are unchanged
+
+A deferring batch already contains a retriable failure, so it exits 1, and no `<reconciliation>`
+entry is added. A reconciliation failure on a non-deferring batch is still a retriable synthetic
+entry. Its retry re-ingests already-written envelopes as no-ops: the primary
+`(argo_workflow_name, source_id)` update still matches the `'written'` row, so
+`status_update_matched` stays `true`. It then reconciles again, idempotently.
+
+### D4. Rollout
+
+- **Poller (bloom-side).** It deploys with the workflows service on the staging push, and
+  promotes with the next staging→main cut.
+- **bloomctl (cluster-side).** The cluster runs the image pinned in the upstream
+  sleap-roots-pipeline templates. `docker-build-bloomcli.yml` publishes `sha-<squash short>` on
+  the staging push. Upstream bumps all bloomctl-pinned templates to one build together; the
+  last time was `fix-cyl-redelivery-blob-collision` §9.5. This change follows that convention.
+- **The bump switches prod and staging at once.** Both submit to the shared `runai-busch-lab`
+  namespace and resolve the same `templateRef`. So the bump ships every bloomctl commit on staging
+  up to that merge. §6 re-checks `origin/main..origin/staging -- bloomcli` at bump time.
+- **Rollback is a re-pin** to `sha-88cbcbf@sha256:0259ec0a…` plus re-registration.
+- **Ordering.** The poller half alone is harmless: it only closes rows earlier for Workflows that
+  are already terminal. So the two halves can land in either order.
 
 ## Risks / Trade-offs
 
-- **Deferred rows read `'queued'` a little longer.** After a final attempt that still failed
-  retriably, they stay `'queued'` until the next poller cycle, and then read `'failed'` with the
-  poller's generic message instead of bloomctl's. That is acceptable: the run itself also reads
-  `'running'` until that same cycle.
-- **The poller now carries more of the load.** If the poller is down, deferred rows stay
-  `'queued'`. But the run's terminal status, counts, and every "write-back never ran" scan already
-  depend on the poller in exactly the same way. This adds no new single point of failure.
-- **The guard's late-delivery protection is unchanged.** A delivery after the poller has closed a
-  row still can't resurrect it, which is the guard's original purpose.
-- **Unreadable or malformed envelope files** are retriable today, although a retry rereads the
-  same bytes, so they now defer reconciliation too. Their rows are closed by the poller after the
-  retries. Reclassifying them as non-retriable is a separate exit-code question, out of scope.
+- **Failed scans show a different message.** A scan that write-back failed on its final attempt
+  reads `'queued'` until the first poller cycle after its Workflow ends, then gets the poller's
+  generic message. That's acceptable: it is the same moment the run's counts update.
+- **More rests on the poller.** If the poller is down, deferred rows stay `'queued'`. But the
+  run's status, its counts, and every "write-back never ran" scan already depend on the poller
+  in the same way.
+- **Deterministic failures defer too** (D1). Their rows are closed by the poller with its
+  message.
+- **Shared input directories (srp#37).** Another run can write a `{scan_key}.result.json` into
+  the shared hostPath directory between attempts. One sequence then still leaves a stale
+  `'failed'` row:
+  1. Attempt 1 finds declared `scan_9` missing, has no retriable envelope failure, and
+     reconciles.
+  2. A concurrent run writes `scan_9.result.json`.
+  3. Attempt 2 ingests it.
+
+  That is pre-existing cross-run contamination, and it needs overlapping runs of the same scan.
+  It is out of scope here.
+- **The guard's late-delivery protection is unchanged.**
 
 ## Migration Plan
 
-No schema migration. Rollout follows D4. Rollback means reverting the bloomctl change and the pin
-bump. Rows left `'queued'` by a deferred attempt are closed by the poller either way.
+No schema migration. The rollout is described in D4. Rolling back means reverting the poller
+commit, re-pinning bloomctl, or both. Each half can be rolled back on its own.
 
 ## Open Questions
 

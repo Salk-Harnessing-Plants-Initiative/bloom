@@ -1,69 +1,67 @@
 ## Why
 
-Argo's write-back step (`sleap-roots-write-back-template`, `retryStrategy: limit: 2, retryPolicy:
-Always`) re-runs `bloomctl cyl batch-ingest-result` in the **same** Workflow when an attempt exits
-non-zero. At the end of every attempt, the command closes out every scan of this Workflow that is
-still `'queued'` as `'failed'` (`reconcile_unresolved_scans` →
-`fail_cyl_pipeline_run_scans_without_result`, `bloomcli/src/bloomctl/cyl/ingest.py:1200-1205`). That
-includes scans whose envelope failed retriably in this attempt, which a retry may still ingest.
-When the retry does, `insert_cyl_result_envelope` writes the data but cannot mark the row
-`'written'`: every status update there carries `AND status != 'failed'`, a deliberate guard
-against resurrecting a closed scan. The row stays `'failed'` and the run page reports a failure
-for a scan that has a result.
-
-This happened in prod run 2 (Workflow `sleap-roots-pipeline-x68sv`, 2026-10-02): 5 of 24
-envelopes hit the #1022 sequence bug on the first attempt, the retry ingested all 5 (sources
-25–29), and the 5 rows stayed `'failed'` (bloom#1034). The #1022 fix (#1029) removes that trigger,
-but any retriable write-back failure that a retry then fixes leaves the same stale rows.
-
-The end-of-attempt reconcile also isn't needed as a backstop. `services/workflows/status_poller.py`
-already closes out every leftover `'queued'` row with the same RPC, and does so only once the
-Workflow's rollup is no longer `'running'`. Argo keeps a Workflow `Running` until the step's last
-retry has finished.
+`bloomctl cyl batch-ingest-result` closes out every still-`'queued'` scan of its Workflow as
+`'failed'` at the end of **every** attempt of the write-back step. Argo retries a failed attempt
+in the same Workflow (`retryStrategy: limit: 2, retryPolicy: Always`). When a retry then ingests
+a scan the earlier attempt had closed, `insert_cyl_result_envelope` writes the data, but its
+`status != 'failed'` guard keeps the row `'failed'`. In prod run 2 (Workflow
+`sleap-roots-pipeline-x68sv`, 2026-10-02), 5 of 24 scans have results but read as failures
+(bloom#1034).
 
 ## What Changes
 
-- `bloomctl cyl batch-ingest-result` makes its reconciliation call only when no retry of the step
-  could still write a result. That holds unless an envelope this invocation tried to ingest failed
-  with `retriable: true`. A retry re-reads the same files, so only those envelopes' outcomes can
-  change.
-  - A missing manifest-declared scan_key, a missing run manifest, and a non-retriable envelope
-    failure don't count. Their missing files come from earlier DAG steps that a retry of this
-    step doesn't re-run.
-  - So the call still runs on every clean exit, and on the no-manifest path with its specific
+- **`bloomctl cyl batch-ingest-result` skips its reconciliation call when any envelope it tried
+  to ingest failed with `retriable: true`.** Those are the only failures a retry of the step might
+  turn into a write.
+  - Missing declared files, a missing run manifest and non-retriable failures don't count. So the
+    call still runs on every clean exit and on the no-manifest path, which keeps
     `NO_RUN_MANIFEST_MESSAGE`.
-- When an envelope failed retriably, the command makes **no** reconciliation call and leaves this
-  Workflow's `'queued'` rows to the status poller. The exit code is unchanged.
-- **No SQL change.** The `status != 'failed'` guard and `fail_cyl_pipeline_run_scans_without_result`
-  stay exactly as they are, so there is no migration.
-- Spec and doc updates:
-  - `cyl-batch-ingest-result` gets the new reconcile condition.
-  - `cyl-trait-writeback` updates bloomctl's call contract and drops a guard-scenario example that
-    can no longer happen.
-  - `cyl-pipeline-status-polling` notes that the poller now also closes out rows bloomctl deferred
-    after its final attempt.
-  - `bloomcli/README.md`, `services/workflows/README.md` and `bloomcli/CHANGELOG.md` are updated
-    to match.
+  - When it skips, it prints one line to stderr saying reconciliation was deferred to the status
+    poller. The exit code and the summary/JSON output are unchanged.
+- **`status_poller.py` closes a Workflow's leftover `'queued'` rows once that Workflow's own
+  Argo phase is terminal** (`Succeeded`, `Failed` or `Error`), even while sibling Workflows in
+  the same run are still running.
+  - Today it waits for the whole run's rollup to stop being `'running'`. A run is split into
+    25-scan Workflows that can finish hours apart, so deferred rows would otherwise read
+    `'queued'` for that long.
+  - The run-level backstop for 404'd Workflows is unchanged.
+- **No SQL change.** The guard and `fail_cyl_pipeline_run_scans_without_result` are untouched.
+- **Docs, docstrings and the bloomcli changelog** are updated wherever they say the reconcile
+  runs after every batch, or that a leftover `'queued'` row "can only mean write-back never ran".
 
-**Deployment.** The cluster runs the bloomctl image pinned in upstream
-`sleap-roots-pipeline/sleap-roots-write-back-template.yaml`, so the fix is live only once that pin
-is bumped to an image built from this merge and re-registered. That is a cross-repo follow-up,
-tracked in `tasks.md` §5 and opened only with the maintainer's OK.
+The bloomctl half takes effect only once the upstream write-back template's image pin is bumped
+(design D4, tasks §6). The poller half deploys with bloom.
 
 **Not included:**
-- Repairing prod run 2's 5 stale rows (handled separately per #1034).
-- Changing the guard to allow `'failed'` → `'written'` (option 2 on #1034).
-- Passing Argo's retry count into the pod (option 1 as first framed). The predicate above needs no
-  attempt number.
+- Repairing prod run 2's 5 rows. That gets its own issue.
+- Relaxing the guard (#1034 option 2).
+- Passing Argo's retry count into the pod (#1034 option 1 as first framed).
+- Reclassifying deterministic envelope failures as non-retriable.
+- Shared-directory cross-run contamination (srp#37).
 
 ## Impact
 
-- Affected specs: `cyl-batch-ingest-result`, `cyl-trait-writeback`, `cyl-pipeline-status-polling`
-- Affected code: `bloomcli/src/bloomctl/cyl/ingest.py` (`batch_ingest_result`),
-  `bloomcli/tests/test_cyl_ingest.py`, `tests/integration/test_cyl_writeback_rpc.py`, the READMEs
-  and changelog above, and a docstring/comment in `services/workflows/status_poller.py`
-- No migration, no change to the RPCs, the poller's behaviour or the vendored Workflow
-- Behaviour change visible to operators: after a write-back step whose final attempt still had a
-  retriable envelope failure, the affected scans read `'queued'` until the next poller cycle, then
-  `'failed'` with the poller's message ("workflow reached a terminal status before write-back
-  produced a result for this scan") instead of bloomctl's.
+- **Affected specs:** `cyl-batch-ingest-result`, `cyl-trait-writeback`,
+  `cyl-pipeline-status-polling`.
+- **Affected code:**
+  - `bloomcli/` (bloomctl):
+    - `src/bloomctl/cyl/ingest.py`: `batch_ingest_result`, `reconcile_unresolved_scans` docstring
+    - `src/bloomctl/cyl/_batch.py`: `ScanResult.retriable` docstring
+    - `tests/test_cyl_ingest.py`
+    - `README.md`
+    - `CHANGELOG.md`
+  - `services/workflows/` (status poller):
+    - `status_poller.py`: `_fetch_effective_phases`, `sweep_once`, docstrings
+    - `tests/test_status_poller.py`
+    - `README.md`
+  - `tests/integration/test_cyl_writeback_rpc.py`
+  - `web/lib/cyl-pipeline/failure-hints.ts` (comment only)
+- **No migration**, and no change to the RPCs or the vendored Workflow.
+- **Behaviour visible to operators:**
+  - A scan that a write-back retry ingests now ends `'written'`.
+  - A scan that write-back still failed on its last attempt reads `'queued'` until the first
+    poller cycle after its Workflow ends. It then reads `'failed'` with the poller's message
+    ("workflow reached a terminal status before write-back produced a result for this scan")
+    instead of bloomctl's.
+  - In a multi-Workflow run, a Workflow's unresolved scans now settle when that Workflow ends,
+    not when the last one does.
