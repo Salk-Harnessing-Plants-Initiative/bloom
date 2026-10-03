@@ -252,3 +252,47 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - an experiment of a species with no cards (for example sorghum) → the blocker.
   - Any GPU run needs the user's yes for that run.
 - [ ] 9.5 Archive with `/openspec:archive add-cyl-pipeline-model-window-warning` after 9.3–9.4. Replace the new `cyl-model-catalog` spec's "Purpose: TBD" with one sentence.
+
+## 10. PR #1028 review round (user decisions: C, keep "validated", A)
+
+Tests first. Each red is recorded in its commit body.
+
+- [ ] 10.1 **Red (workflows).** `tests/test_model_cards.py`, rewritten for design D3's revised state machine:
+  - stale (301 s) served at once with its original `fetched_at`, plus exactly one background refresh, even with a second request during it;
+  - a failed refresh keeps the held listing until 3600 s, with no new refresh for 60 s;
+  - 300 s backoff after 401, 403 and 429;
+  - cold request: served if the refresh finishes within `COLD_WAIT_SECONDS` (6, asserted), else 503 at the limit while the refresh continues;
+  - cold during a backoff → 503 with no request;
+  - 3601 s-old listing not served;
+  - `skipped` counted, for flat metadata, invalid JSON-string metadata and a missing `versionIndex`;
+  - `edges: null` and a non-dict edge fail the listing as `ModelCatalogUnavailable`;
+  - `hasNextPage` without an `endCursor` fails at page 2;
+  - a trickling body (a fake stream yielding a chunk per fake-clock step) is cut off at 15 s;
+  - the second page gets a shrinking timeout (step 12 s, so page 2's timeout is 3);
+  - 401 and 302 with a valid page body still fail;
+  - the real `_utcnow` gives a UTC `fetched_at`;
+  - every failure cause in `caplog`, never the key.
+- [ ] 10.2 **Red (workflows).** `tests/test_main.py`:
+  - the response includes `skipped`;
+  - the 61st call from one user is a 429 that doesn't call the listing, while the shared hit count stays empty;
+  - the lifespan test's fake `warm` blocks indefinitely (released in `finally`), and entering `TestClient` takes under 1 s.
+- [ ] 10.3 Implement design D3 in `model_cards.py` and `main.py`, plus `MODEL_CARDS_RATE_LIMIT` and `enforce_model_cards_limit` in `auth.py`. README: Model cards section and Configuration row (`WORKFLOWS_MODEL_CARDS_RATE_LIMIT`).
+- [ ] 10.4 **Red (web).**
+  - `model-windows.test.ts`: covered at canola day 2 and rice day 6.
+  - `model-cards.test.ts`: `isCardList` requires a non-negative integer `skipped`; `fetchModelCards` returns `{cards, skipped}`.
+  - `route.test.ts`: `AbortSignal.timeout` is called with 8000; a session without `access_token` → 401; the logged error never contains the token or upstream text.
+- [ ] 10.5 **Red (web).** `RunPipelineDialog.test.tsx`:
+  - `skipped: 1` with sorghum → warning, not block, Confirm enabled;
+  - the singular blocker;
+  - a mixed target (sorghum day 10 + arabidopsis day 28) → `no-model` before `past-window`, Confirm enabled;
+  - canola day 2 and rice day 6 → no warning;
+  - unmount while the card read is pending → no state update (spy on `setCards` via a rejected-after-unmount promise);
+  - a rejected `fetchModelCards` → the muted line (the `.catch`).
+- [ ] 10.6 Implement:
+  - client `skipped`;
+  - dialog block rule and singular text;
+  - a `.catch` on the card read;
+  - the proxy reuses `detailResponse` and the trigger's not-enabled text;
+  - `import "server-only"` in `model-cards-proxy.ts`;
+  - the compose comment fixed ("six other containers").
+- [ ] 10.7 Re-run 7.1–7.4. Push, with the user's go-ahead covered by PR #1028's standing push approval.

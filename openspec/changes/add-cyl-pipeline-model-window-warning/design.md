@@ -104,59 +104,61 @@ Older releases (predict's lock is 0.21.3) instead retry inside `InternalApi` for
 ```
 {"cards": [{"root_type": "...", "registry_id": "...", "version": "...",
             "selectors": [{"species": "...", "mode": "...", "age_min": 2, "age_max": 14}, ...]}, ...],
- "fetched_at": "<ISO-8601 UTC, when the cached listing was read>"}
+ "fetched_at": "<ISO-8601 UTC, when the served listing was read>",
+ "skipped": 0}
 ```
 
 - **Contracts floor:** raised from `>=0.1.0a5` to `>=0.1.0a9` and re-locked, because `ModelCard.selectors` arrived in a8.
 - **Why the bump is safe:** the service's other contracts use, `compute_param_hash` in `pipeline.py`, comes from `hashing.py`, which is unchanged from a5 to a9 (task 1.1 pins the value).
 - **Prod already runs a newer version.** The Dockerfile installs from `pyproject.toml`, not the lock, so the deployed image likely already resolves a9. No other dependency is added.
 
-### D3. Cache, startup warm-up, bounded refresh, auth and rate limit
+### D3. Cache, background refresh, backoff, rate limit and auth (revised after the PR #1028 review; user decision C)
 
-**Bounded refresh.**
-- Each request has a 5 s `httpx` timeout, and the whole listing has a 15 s deadline (`REFRESH_DEADLINE_SECONDS`), checked before each page and passed as a shrinking per-request timeout.
-- `httpx` doesn't retry, so these bounds hold.
+The first version waited on a lock and never served an expired listing. The PR review found three problems with it:
+- httpx's 5 s timeout is per network phase, not per request, so a probe held the lock for 18.8 s with a trickling response;
+- a request waiting behind a failed refresh ran its own listing, answering after 12.8 s instead of 6;
+- with open email signup in prod (`.env.prod.defaults`: `ENABLE_EMAIL_SIGNUP=true`, autoconfirm), anyone could tie up the 40-thread pool, `/health` included, and hammer the key while wandb was failing.
 
-**Cache.**
-- A module-level entry `(fetched_monotonic, cards, fetched_at)` with a TTL of 300 s; a refresh is due at `now - fetched_monotonic >= 300`.
-- Time comes from injectable `_monotonic` and `_utcnow`.
-- The service runs one uvicorn worker, so it's one cache per container.
+**State.** One module-level entry, `(fetched_monotonic, cards, fetched_at, skipped)`; a `_backoff_until` monotonic time; and a single-thread `ThreadPoolExecutor` that runs refreshes, holding the running refresh's `Future`. Time comes from injectable `_monotonic` and `_utcnow`. The service runs one uvicorn worker, so it's one cache per container.
 
-**Single flight.**
-- A `threading.Lock` ensures at most one listing at a time.
-- A request that finds the cache cold or expired acquires the lock with `timeout=LOCK_WAIT_SECONDS` (6, read at call time), then re-checks the cache: it's served if another request's refresh just succeeded, and only lists if the cache is still cold.
-- Not getting the lock in time → `ModelCatalogUnavailable` → 503.
-- After a failed refresh, the next lock holder lists again, sequentially.
+**Serving.**
 
-**Startup warm-up (user decision).**
-- `main.py` gains a FastAPI `lifespan` that starts one `threading.Thread(target=model_cards.warm, daemon=True)`.
-- `warm()` returns at once when the key is unset or blank, and swallows and logs failures.
-- Tests construct `TestClient(main.app)` without entering the lifespan, and CI has no key.
+| Situation | What happens |
+|---|---|
+| Fresh (under 300 s) | Served without contacting wandb. |
+| Stale (300–3600 s) | Served at once with its original `fetched_at`. If no refresh is running and none is backing off, one is submitted to the worker. |
+| Over 3600 s, or nothing held | A cold request submits a refresh (unless one is running or backing off) and waits on its `Future` for at most `COLD_WAIT_SECONDS` (6), then answers 503. The refresh keeps going on the worker, so the next request finds the result. |
+| Cold during a backoff | 503 at once, without contacting wandb. |
 
-**Key handling.** `WANDB_API_KEY` that's unset or whitespace-only → `ModelCatalogNotConfigured`, and no request is made. The value is sent as-is.
+**Backoff.** A failed refresh sets `_backoff_until` to now + 60 s, or + 300 s on a wandb 401, 403 or 429, and never replaces a held listing.
+
+**Bounded refresh.** The listing streams each response and checks the 15 s deadline (`REFRESH_DEADLINE_SECONDS`) before each page and as each body chunk arrives. httpx's 5 s per-phase timeout covers connect and write, and stalls between chunks. So a trickling body is cut off at the deadline, which closes the probe's 18.8 s case.
+- A hung worker can still occupy that one thread, but never a request thread.
+- DNS lookup isn't covered; that's a stated limit.
+
+**Waiting.** Requests never wait on a lock: they wait on a `Future` with a timeout, or not at all. At most one request thread per cold request is held, for at most 6 s, and stale or fresh requests hold none.
+
+**Startup warm-up (user decision).** The FastAPI `lifespan` submits one refresh without waiting. It's skipped when the key is unset or blank.
+
+**Key handling.** `WANDB_API_KEY` that's unset or whitespace-only → `ModelCatalogNotConfigured`, and no request is made. The value is sent as-is, because wandb's own clients use the raw value. A 401 is logged with a hint to check the key.
+
+**Rate limit (user decision C).** The route doesn't spend the shared limit (5 per 60 s), which would cause 429s on Confirm. It has its own: `auth.enforce_rate_limit(user_id, limit=MODEL_CARDS_RATE_LIMIT, scope="model-cards")`, 60 per 60 s by default (`WORKFLOWS_MODEL_CARDS_RATE_LIMIT`). This follows #1004's `folder-check` scope. A 429 reaches the dialog as the proxy's 502, so the dialog shows the muted line.
 
 **Timing budget.**
 
 | Stage | Limit |
 |---|---|
-| one GraphQL request | 5 s |
+| one network phase | 5 s |
 | whole listing | 15 s |
-| waiting for another request's refresh | 6 s |
+| a cold request waiting for a refresh | 6 s |
 | web proxy → workflows | 8 s |
 | dialog → proxy | 10 s |
 
-A healthy refresh is under 1 s, so dialogs essentially never wait.
-
-**Failure.** A failed listing isn't cached, and an expired listing isn't served after a failed refresh.
+The nesting that matters is 6 s < 8 s < 10 s. The 15 s limit caps the worker, not any request.
 
 **Auth.** `Depends(require_supabase_user)`, like every route.
 
-**Rate limit.** Not applied.
-- The precedent is the plate-video progress route (`main.py:127-139`).
-- The shared limiter is 5 per 60 s per user across routes.
-- The cache and the lock bound the upstream cost.
-
-**Errors.** Both are 503 with a fixed detail; the cause, never the key, goes to the log only.
+**Errors.** Both are 503 with a fixed detail; causes, never the key, go to the log only.
 - `ModelCatalogNotConfigured` → "The model catalog isn't configured in this environment."
 - Anything else → "Couldn't read the model catalog."
 
@@ -222,8 +224,9 @@ A healthy refresh is under 1 s, so dialogs essentially never wait.
 
 Both warnings list every group, uncollapsed, in `text-amber-800`.
 
-**Block (user decision).** When the card read returned cards, at least one model group exists, and **every** model group is no model, a blocking reason disables Confirm:
-- "*None of these scans has a production model for its species and age, so the pipeline can't produce results.*"
+**Block (user decision).** When the card read returned cards with `skipped` = 0, at least one model group exists, and **every** model group is no model, a blocking reason disables Confirm:
+- "*None of these scans has a production model for its species and age, so the pipeline can't produce results.*" (singular at N = 1: "*This scan has no production model …*")
+- When `skipped` > 0 (user decision, PR #1028 review), the list may be incomplete: Bloom's contracts version can drift from predict's `==0.1.0a9`, because the image installs from `pyproject.toml`. The no-model warning is shown instead of the block, so the check fails open.
 - The no-model warning isn't shown in addition.
 - Since an experiment has one species, this stops unsupported-species runs, while a supported species with a few too-young scans still runs with the warning.
 - A failed or empty card read never blocks.
@@ -277,6 +280,7 @@ The PR is opened as a draft and marked ready only after both gates. Merging is t
 
 - **The first open after a cache expiry leads a refresh.** That's under 1 s when healthy (measured 0.7 s); up to the 15 s deadline when wandb is slow, in which case that dialog shows the muted line.
 - **We own the GraphQL query.** If wandb changes the `artifactMembership` field or Basic auth, the endpoint answers 503 and the dialog shows the muted line until the query is updated. Task 9.3's live check covers each deploy.
+- **"Covered" means some root type has a model, not that traits can run.** A traits pipeline needs every root type it requires (Dicot: primary + lateral; YoungerMonocot: primary + crown). If one root type's card is demoted or narrowed, or a species gains model cards but no `PipelineCard`, the dialog shows nothing while traits fail. None of this applies to today's cards; phase 2's shared matcher (#13, #14) would check it.
 - **Traits windows could diverge from model windows.** The dialog reads model cards only. Phase 2's shared catalog removes the gap.
 - **Past-window results are unmarked in exports.** A day-28 arabidopsis result has the same recipe key as a day-10 one, because the weights are the same. The #865 export doesn't mark it. It's out of scope here and was raised with the user.
 - **Rebase hotspot.** An in-flight `feat/rnaseq-s3-folder-service` edits `services/workflows/main.py` and `README.md`.

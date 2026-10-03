@@ -7,7 +7,7 @@
 2. Respond `401` when `getSession()` has no access token.
 3. Call `GET ${WORKFLOWS_URL ?? "http://workflows:5100"}/model-cards` with `Authorization: Bearer <access token>`, `redirect: "manual"` and an 8-second `AbortSignal.timeout`.
 
-**Pass-through.** It SHALL pass through a `200` whose JSON body has a string `fetched_at` and a `cards` array in which every card has a string `root_type`, `registry_id` and `version`, and a `selectors` array of `{species: string, mode: string, age_min: integer, age_max: integer}`.
+**Pass-through.** It SHALL pass through a `200` whose JSON body has a string `fetched_at`, a non-negative integer `skipped` and a `cards` array in which every card has a string `root_type`, `registry_id` and `version`, and a `selectors` array of `{species: string, mode: string, age_min: integer, age_max: integer}`.
 
 **Failures.** It SHALL respond `502` with a fixed detail to:
 - any other status, including a redirect;
@@ -45,7 +45,7 @@ It SHALL respond `504` to its timeout. No error response SHALL include upstream 
 ### Requirement: Confirm dialog shows read-only resolved params and a pre-check, without predicting skips
 The dialog SHALL enumerate the target's scans from `cyl_scans_extended` using the trigger's filters: `scan_id`, `wave_id`, `experiment_id`, or `scan_id IN (...)`. It SHALL read in pages of 1000 ordered by `scan_id` until a page is empty, and send `scan_ids` filters in chunks of at most 200. It SHALL read K and L with one `cyl_scan_latest_source` query per chunk of at most 200 scan ids, and which scans have at least one image with one `cyl_scans` query per chunk of at most 200 ids, embedding at most one `cyl_images` row per scan.
 
-**Model cards.** It SHALL read the production model cards through `GET /api/cyl/pipeline/model-cards` with a 10-second timeout that also covers reading the body. A failed, timed-out or malformed card read SHALL NOT put the dialog in its failed state. A read that returns an empty `cards` list SHALL be treated like a failed one.
+**Model cards.** It SHALL read the production model cards, and the count of skipped cards, through `GET /api/cyl/pipeline/model-cards` with a 10-second timeout that also covers reading the body. A failed, timed-out or malformed card read SHALL NOT put the dialog in its failed state. A read that returns an empty `cards` list SHALL be treated like a failed one.
 
 **Settling.** The dialog SHALL keep confirm disabled until enumeration, the pre-check, the concurrent-run query and the card read have all settled.
 
@@ -59,7 +59,7 @@ It SHALL display, in this order:
    - N = 0: "No scans to run".
    - A `scan_ids` selection enumerates fewer scans than selected: list the missing ids.
    - N > `MAX_TRIGGER_SCAN_IDS` for a `scan_ids` target.
-   - The card read returned cards, at least one model group exists, and every model group is **no model**: "*None of these scans has a production model for its species and age, so the pipeline can't produce results.*"
+   - The card read returned cards with `skipped` = 0, at least one model group exists, and every model group is **no model**: "*None of these scans has a production model for its species and age, so the pipeline can't produce results.*" ("*This scan has no production model for its species and age, so the pipeline can't produce results.*" when N = 1). When `skipped` > 0 the card list may be incomplete, so this is not a blocking reason and the no-model warning below is shown instead.
 3. **Stage-in and model warnings.** None of these disables confirm.
    - A count of scans whose species is blank, or whose age is null or not a whole number: "*will fail at stage-in — ask a Bloom admin to fix the plant metadata*". These scans are not included in the params groups.
    - Separately, a count of scans with no images: "*have no images and will fail at stage-in*" (bloomctl's stage-in fails a scan with no frames).
@@ -218,3 +218,21 @@ The dialog MUST NOT contain the phrases "will run", "will be skipped" or "reused
 #### Scenario: The caption points at model choice
 - **WHEN** the dialog shows its Parameters section
 - **THEN** the caption reads "*Parameters come from each scan's metadata. Choosing models isn't supported yet*", linking bloom#897
+
+#### Scenario: A possibly incomplete card list never blocks
+- **WHEN** the target holds 50 sorghum scans at day 10 with images, and the card read returned the production cards with `skipped: 1`
+- **THEN** no model blocker is shown and confirm is enabled once the other checks pass
+- **AND** the dialog shows "*50 scans have no production model for their species and age and will fail:*" and the line "*sorghum · day 10 (50)*"
+
+#### Scenario: One scan with no model is blocked in the singular
+- **WHEN** the target is 1 sorghum scan at day 10 with images, and the card read returned cards with `skipped: 0`
+- **THEN** the blocking reason reads "*This scan has no production model for its species and age, so the pipeline can't produce results.*"
+
+#### Scenario: Both model warnings appear in a mixed target, and nothing blocks
+- **WHEN** the target holds, all with images, 10 sorghum scans at day 10 and 5 arabidopsis scans at day 28
+- **THEN** the no-model warning appears before the past-window warning
+- **AND** no model blocker is shown and confirm is enabled once the other checks pass
+
+#### Scenario: The first day of each window is covered
+- **WHEN** the target holds canola scans at day 2 and rice scans at day 6, all with images
+- **THEN** neither model warning is shown
