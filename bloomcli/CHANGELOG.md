@@ -8,6 +8,15 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Fixed
+
+- `cyl batch-ingest-result`: when an envelope fails retriably, the command no longer closes out
+  this workflow's still-`queued` scans as `failed`. A scan that Argo's retry of the write-back
+  step then ingests now ends `written` instead of staying `failed` with its data written. Those
+  scans are left to the status poller, which closes any still `queued` once the Workflow ends,
+  and stderr says so. Takes effect once the write-back template's bloomctl pin is bumped
+  (bloom #1034).
+
 ## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
 
 ### Changed
