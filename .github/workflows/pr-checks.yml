@@ -1317,7 +1317,7 @@ jobs:
       - name: make migrate-local (apply all migrations; waits for storage schema)
         run: make migrate-local
 
-      - name: make check (verify services, roles, schemas, migrations)
+      - name: make check (verify services, roles, schemas, migrations, id sequences)
         run: make check
 
       # bloom#551 round-2 review: SupabaseReader's raw tier is DB-only now, so

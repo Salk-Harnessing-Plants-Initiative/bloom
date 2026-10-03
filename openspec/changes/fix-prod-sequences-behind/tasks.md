@@ -169,42 +169,70 @@ Tasks:
 
 ## 3. Guard (PR 2, code only)
 
-- [ ] 3.1 **Tests first, integration** (`tests/integration/test_sequences_behind_check.py`, using `sequence_fixtures`):
+- [x] 3.1 **Tests first, integration** (`tests/integration/test_sequences_behind_check.py`, using `sequence_fixtures`):
   - the guard's rows equal the set the body's NOTICEs advance;
   - afterwards, the guard returns no scratch rows;
   - it runs under `default_transaction_read_only=on`.
-- [ ] 3.2 **Tests first, unit** (`tests/unit/test_check_health.py`):
+- [x] 3.2 **Tests first, unit** (`tests/unit/test_check_health.py`):
   - `sequence_problems` gives one problem per row, naming table, column, max and next value;
   - no rows gives no problems;
   - `main()` exits 1 when there are problems;
   - the SQL file is a single `SELECT` with no `CREATE`, `DO`, `FUNCTION`, DML or `setval`.
-- [ ] 3.3 **Tests first, unit** (`tests/unit/test_advance_body_copies.py`):
+- [x] 3.3 **Tests first, unit** (`tests/unit/test_advance_body_copies.py`):
   - every `DO $advance$` block in `scripts/sql/advance_behind_sequences.sql` and in `supabase/migrations/*_readvance_id_sequences_*.sql` equals the migration's, compared line by line;
   - the `seed-gravi` target pipes the seed and then the advance script, and the seed header names the target.
-- [ ] 3.4 **Tests first, unit** (`tests/unit/test_deploy_sequence_check.py`). For each of the prod and staging jobs:
+- [x] 3.4 **Tests first, unit** (`tests/unit/test_deploy_sequence_check.py`). For each of the prod and staging jobs:
   - the step is the last one before Cleanup, after "Rollback on failure";
   - it has no `if:`;
   - it has `timeout-minutes`;
   - its psql call has `-X -At`, `ON_ERROR_STOP=1`, `-e PGOPTIONS=` with `default_transaction_read_only=on`, and the SQL file on stdin;
   - it has both `::error` titles;
   - Rollback's `if:` is unchanged, and `test_deploy_staging_supersede_and_pin.py` stays green.
-- [ ] 3.5 Write `scripts/sql/sequences_behind.sql` (design D10).
-- [ ] 3.6 Add `sequence_problems` and `check_sequences` to `scripts/check_health.py`, wire them into `main`, and update the docstring (lines 4–15).
-- [ ] 3.7 Add `scripts/sql/advance_behind_sequences.sql`, the `make seed-gravi` target, and the seed header line.
-- [ ] 3.8 Add the `deploy.yml` steps for prod and staging (design D10), each with the "must stay after Rollback" comment.
-- [ ] 3.9 Docs:
+- [x] 3.5 Write `scripts/sql/sequences_behind.sql` (design D10).
+- [x] 3.6 Add `sequence_problems` and `check_sequences` to `scripts/check_health.py`, wire them into `main`, and update the docstring (lines 4–15).
+- [x] 3.7 Add `scripts/sql/advance_behind_sequences.sql`, the `make seed-gravi` target, and the seed header line.
+- [x] 3.8 Add the `deploy.yml` steps for prod and staging (design D10), each with the "must stay after Rollback" comment.
+- [x] 3.9 Docs:
   - the `make check` text in `README.md:76`, `Makefile:32` and the `pr-checks.yml:1321` step name;
   - an `## Id sequences behind their data` section in `_WIKI/SUPABASE/README.md`. It explains the annotation, says the fix is a `*_readvance_id_sequences_<reason>.sql` migration and never a hand `setval` on prod, and says to check deploy-gated issues by hand. For dev, it gives the `psql < scripts/sql/advance_behind_sequences.sql` one-liner;
   - a bullet in `_WIKI/SCHEDULEDJOBS/weekly-backup.md` under "Notes on what this does not do": a restore reproduces the dumped sequence state, dumps from before PR 1's prod deploy carry 21 behind sequences, so run `scripts/sql/sequences_behind.sql` after any restore.
-- [ ] 3.10 Manual check: on dev, run `make seed-gravi && make check`. Record that there are no behind sequences.
-- [ ] 3.11 Run `/pre-merge` (including `pre-commit run --all-files` and the full unit suite). Open PR 2 to `staging` titled `Fail deploy and make check when an id sequence is behind its data (Part of #1022)`.
-- [ ] 3.12 Draft the `make load-test-data` issue: localhost-only URL derived from `.env.dev`, a sequence reset that runs even after a partial load, and the exit code passed on. Show it to the user, and post it only with their OK.
+- [x] 3.10 Manual check: on dev, run `make seed-gravi && make check`. Record that there are no behind sequences.
+
+  **Recorded 2026-10-03,** with the user's OK to write to the dev DB:
+
+  - **The first run caught a bug:** the target's `docker compose exec` lacked `--env-file .env.dev`, so compose refused to run (`invalid spec: :/data`). Fixed, and pinned in `test_advance_body_copies.py`. The same fix went into the runbook command and the advance script's header.
+  - **The seed itself then failed, for a reason outside this change.** It `UPDATE`s `gravi_experiments` 9101 and 9102 and references them from `gravi_scan_sessions`, but no script in the repo creates them, and dev has none. Under `ON_ERROR_STOP` its transaction rolled back, so nothing was written.
+  - **The advance half of the target was run on its own** through the same compose command and printed `advance_behind_sequences: 0 of 68 sequences advanced`.
+  - **`check_health`'s sequence check is clean on dev.** It reports only the two migration-history rows removed in §2.2.
+
+- [x] 3.11 Run `/pre-merge` (including `pre-commit run --all-files` and the full unit suite). Open PR 2 to `staging` titled `Fail deploy and make check when an id sequence is behind its data (Part of #1022)`. **Opened as #1040** (2026-10-03).
+- [x] 3.13 `/review-pr` on #1040, at head `25f98745`. Five subagents, no blocking issues; the review was posted as a comment with the user's OK. Fixed, tests first (`fc1c8e6b`):
+
+  - the guard calls `pg_get_serial_sequence` only behind a `CASE` on the table's own schema, so it no longer depends on plan order;
+  - the deploy step escapes `%`, `\r` and `\n` in everything it echoes, uses `sed -n 1,9p` rather than `head -9`, prefixes the full listing, and adds `lock_timeout=5s` to `PGOPTIONS`;
+  - new execution tests run the step with a stand-in `ssh`: 0, 3, 12 and 5,000 rows, a failure, and hostile names;
+  - `check_sequences` reports errors instead of raising;
+  - the guard tests fail instead of skipping under CI;
+  - the agreement test gains partition, two-column and other-schema fixtures;
+  - the runbook gains an impact statement, the read-only re-check command, a break-glass path (the user's decision: with sign-off, run `advance_behind_sequences.sql`, then land the re-advance migration), and "don't use Re-run jobs";
+  - `seed-gravi` is marked as blocked on #1041;
+  - the backup note says "about 21–22".
+
+  The plan-order risk also applies to the merged #1029 migration's catalog query, which can't be edited now that staging has applied it. It is covered by a read-only prod run in 5.0.
+
+- [x] 3.12 Draft the `make load-test-data` issue: localhost-only URL derived from `.env.dev`, a sequence reset that runs even after a partial load, and the exit code passed on. Show it to the user, and post it only with their OK. **Filed as #1033** (2026-10-03, with the user's OK).
 
 ## 4. Staging verification (after PR 1's staging deploy)
 
-- [ ] 4.1 Before: on 2026-10-02, staging had 0 of 68 behind.
-- [ ] 4.2 The staging deploy log: record whether `advance_behind_sequences: 0 of <m>` appears. That answers whether `db push` prints NOTICEs (design D5).
-- [ ] 4.3 Run the read-only predicate against `bloom_v2_staging-db-prod-1` over ssh, with the SQL on stdin and no `$$` in a double-quoted remote command. Expect 0 behind, and record the result.
+- [x] 4.1 Before: on 2026-10-02, staging had 0 of 68 behind.
+- [x] 4.2 The staging deploy log: record whether `advance_behind_sequences: 0 of <m>` appears. That answers whether `db push` prints NOTICEs (design D5).
+- [x] 4.3 Run the read-only predicate against `bloom_v2_staging-db-prod-1` over ssh, with the SQL on stdin and no `$$` in a double-quoted remote command. Expect 0 behind, and record the result.
+
+  **Recorded 2026-10-03:**
+
+  - **Deploy:** #1029 merged as `5ca8aed5`. Staging deploy run 37141822090 (Deploy to Staging: success) applied `20261002135631` at 18:03Z.
+  - **4.2:** its log shows `advance_behind_sequences: 0 of 68 sequences advanced`, so `db push --debug` does put the NOTICEs in the deploy log.
+  - **4.3:** the read-only predicate over staging's 68 sequence-backed columns found 0 behind, and `20261002135631` is in staging's `schema_migrations`.
 
 ## 5. Prod verification (after the curated staging→main promotion; each prod read needs the user's OK)
 
@@ -213,11 +241,16 @@ Tasks:
   - ~~Ask whether an external writer sends `id`~~: **answered from the code** on 2026-10-02 (design Context). Neither `bloom-desktop` nor `bloom-desktop-pilot` ever sends an `id`, so the high ids are historical rows copied in with their ids, and no live writer brings the collisions back. The distribution query (`count`, `min`, `max` above each sequence) is now optional context only.
   - List every `public` column whose default calls `nextval` but which `pg_get_serial_sequence` doesn't find. Expect 0.
   - Take a fresh snapshot of every sequence (`last_value`, `is_called`, `max`), then take it again after the deploy, and diff the two.
+  - Run the #1029 migration's catalog `SELECT` on prod, read-only (the `FOR r IN` query, with `EXPLAIN` and then executed), and confirm it doesn't error. Postgres doesn't promise to apply its `public` filter before calling `pg_get_serial_sequence`. Dev's and staging's plans are safe, but prod's statistics could differ, and the merged migration can't be changed.
+
+    **Done 2026-10-03, with the user's OK** (`BEGIN TRANSACTION READ ONLY … ROLLBACK`, as `postgres`). Prod's plan joins `pg_class` to `pg_namespace` (filtered to `public`) first, and evaluates `pg_get_serial_sequence` only afterwards, in the `pg_attribute` index scan's filter: the same shape as dev's. Executed, it returned 65 sequence-backed columns with no error, matching the 2026-10-02 count. Re-check this only if prod's catalog changes a lot before the promotion.
+
+  - Confirm the promotion carries #1029 together with #1040, or that #1029 is already on `main`. Otherwise prod's first run of the new check goes red with every behind table listed.
 
 - [ ] 5.1 Before: on 2026-10-02, 21 of 65 behind (design Context).
 - [ ] 5.2 Approve the prod deploy outside 05:00–06:30 UTC (pg_cron). If 4.2 showed NOTICEs, record the 21 `advanced` lines and `21 of <m>`.
 - [ ] 5.3 Run the read-only predicate against `bloom_v2_prod-db-prod-1`. Expect 0 behind, and record the result. No hand `setval` or other write on prod.
 - [ ] 5.4 With the user's approval, close the issue by hand, linking 5.3.
 - [ ] 5.5 Ask about adding a line to `talmolab/sleap-roots-pipeline` `docs/bloom-integration/roadmap.md`.
-- [ ] 5.6 Ask about filing the write-back retry-gap issue, and about correcting run 2's 5 rows.
+- [ ] 5.6 Ask about filing the write-back retry-gap issue, and about correcting run 2's 5 rows. **Filed 2026-10-03** with the user's OK: #1034 (retry gap) and #1035 (run 2's rows; the data fix itself still needs its own go-ahead). Also #1036 (types drift, low priority).
 - [ ] 5.7 After PR 2's step has run green on staging and prod, run `/openspec:archive fix-prod-sequences-behind`.

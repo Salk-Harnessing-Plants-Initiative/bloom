@@ -242,7 +242,7 @@ Rollback's conditions stay unchanged on both environments. Staging's is pinned b
 
 - **Lock waits or deadlock during the prod deploy.** Mitigated by D3/D4: one lock statement over behind tables only, a 5s timeout, and nothing changed on failure, so a retry is safe. There is also guidance on deploy timing.
 - **The prod fix can't be proven in CI,** because CI's database is empty. Read-only before/after checks cover it (tasks §4–§5).
-- **A red deploy from data drift** keeps the code, by the user's decision. Clearing it takes a re-advance migration (D6). A red sequence check doesn't reopen deploy-gated issues, which are keyed on migration failure only; the runbook says to check them by hand.
+- **A red deploy from data drift** keeps the code, by the user's decision. Clearing it takes a re-advance migration (D6). When the affected inserts can't wait for a promotion, there is a break-glass path (the user's decision, 2026-10-03): with the maintainer's sign-off, run `scripts/sql/advance_behind_sequences.sql` on the affected database, keep its NOTICEs, then land the re-advance migration for the record. It is never a bare hand `setval`. A red sequence check doesn't reopen deploy-gated issues, which are keyed on migration failure only; the runbook says to check them by hand.
 - **`make load-test-data` still leaves sequences behind on dev** until its separate issue is fixed. `make check` flags it after PR 2, and the runbook gives the one-line `psql < scripts/sql/advance_behind_sequences.sql` fix.
 
 ## Migration Plan
