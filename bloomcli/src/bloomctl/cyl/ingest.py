@@ -686,7 +686,10 @@ def reconcile_unresolved_scans(
     that write-back never resolved either way — a prediction failure before
     write-back was ever attempted, or an envelope otherwise never produced
     (including the "manifest-declared scan_key with no matching file" case).
-    Called once, at the end of a batch, only when there is a run identity.
+    Called at most once, at the end of a batch, only when there is a run identity and no
+    envelope the batch attempted failed retriably (bloom #1034: a retry of the write-back
+    step could still write that scan, and the RPC's `status != 'failed'` guard would then
+    keep a row this call had closed 'failed'; the status poller closes such rows instead).
     `error_message` is recorded on each closed-out row, the only durable record of why;
     the no-run-manifest path passes `NO_RUN_MANIFEST_MESSAGE`, since there the envelopes may
     well exist (bloom #934). Returns the number of scans marked failed."""
@@ -1121,11 +1124,13 @@ def batch_ingest_result(
     file is reported as a failure — unless a differently-named file's own content actually
     reports that scan_key (a filename/body mismatch), in which case the real outcome wins and
     the failure is dropped. Isolates per-envelope failures (one bad envelope doesn't abort the
-    batch); exits non-zero if any failure is retriable."""
+    batch); exits non-zero if any failure is retriable. An envelope that failed retriably leaves
+    the workflow's unresolved scans to the status poller instead of closing them out here."""
     argo_workflow_name = resolve_argo_workflow_name()
 
     manifest_results: list[ScanResult] = []
     reconcile_message: str | None = None
+    retriable_envelope_failures = 0
     try:
         discovered = discover_envelopes(envelopes_dir, pipeline_run_id=argo_workflow_name)
     except RunManifestNotFoundError as exc:
@@ -1186,6 +1191,9 @@ def batch_ingest_result(
             )
         missing_results = [r for r in missing_results if r.scan_key not in ingested_scan_keys]
         scan_results = ingest_results + missing_results
+        retriable_envelope_failures = sum(
+            1 for r in ingest_results if r.status == "failed" and r.retriable
+        )
     else:
         # Only manifest-declared-missing entries, no files at all. The
         # pre-existing "never authenticate" behavior is preserved when
@@ -1197,7 +1205,22 @@ def batch_ingest_result(
             client = _authed_client(profile)
         scan_results = missing_results
 
-    if argo_workflow_name:
+    # bloom #1034: Argo retries this step in the same Workflow, against the same rows. Closing
+    # out this workflow's 'queued' rows while an envelope failed retriably would mark 'failed' a
+    # scan the retry may then ingest — and insert_cyl_result_envelope's `status != 'failed'`
+    # guard would keep it 'failed' despite its data being written. Only an attempted envelope's
+    # outcome can change on a retry: the files and manifest come from earlier DAG steps a step
+    # retry does not re-run, so a missing declared file, a missing run manifest and a
+    # non-retriable failure don't defer. status_poller.py closes deferred rows once this
+    # workflow's own phase is terminal. stderr, because bloomctl installs no logging handler and
+    # an INFO log never reaches the Argo pod log.
+    if argo_workflow_name and retriable_envelope_failures:
+        click.echo(
+            "reconciliation deferred to the status poller: "
+            f"{retriable_envelope_failures} envelope(s) failed retriably",
+            err=True,
+        )
+    elif argo_workflow_name:
         reconcile_failure = _reconcile_unresolved_scans_result(
             client, argo_workflow_name, error_message=reconcile_message
         )

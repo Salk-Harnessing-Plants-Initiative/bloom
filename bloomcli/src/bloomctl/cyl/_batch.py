@@ -30,6 +30,10 @@ class ScanResult:
     at least theoretically retriable. Set it ``False`` for a failure a retry can never fix (e.g.
     a run-scan row the RPC did not update, for a written delivery or a no-op re-delivery — see
     ``ingest.py``'s ``status_update_matched`` check).
+    A retriable failure of an envelope ``batch-ingest-result`` attempted also defers that
+    command's end-of-batch reconciliation to the status poller (bloom #1034), so don't make a
+    failure retriable merely to fail the Workflow: a scan it closes out late reads ``'queued'``
+    until the poller runs.
     ``BatchResult.ok``/``format_summary``/``format_json`` are unaffected by it (a caller checking
     ``.ok`` or reading the printed summary still sees the real, unfiltered outcome); it exists so
     a *command* can separately decide whether a batch is worth signaling for a retry
