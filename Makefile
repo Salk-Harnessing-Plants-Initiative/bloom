@@ -32,7 +32,7 @@ help:
 	@echo "  make check            - Verify local stack: services, roles, schemas, migrations, id sequences"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
-	@echo "  make seed-gravi       - Load the gravi (plate) mock data into dev, then advance any id sequence it left behind"
+	@echo "  make seed-gravi       - Load the gravi (plate) mock data into dev, then advance any id sequence it left behind (the seed fails on a fresh DB until bloom#1041)"
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
 	@echo "  make list-buckets     - List all S3 buckets"

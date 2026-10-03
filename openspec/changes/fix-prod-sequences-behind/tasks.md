@@ -205,7 +205,21 @@ Tasks:
   - **The advance half of the target was run on its own** through the same compose command and printed `advance_behind_sequences: 0 of 68 sequences advanced`.
   - **`check_health`'s sequence check is clean on dev.** It reports only the two migration-history rows removed in §2.2.
 
-- [ ] 3.11 Run `/pre-merge` (including `pre-commit run --all-files` and the full unit suite). Open PR 2 to `staging` titled `Fail deploy and make check when an id sequence is behind its data (Part of #1022)`.
+- [x] 3.11 Run `/pre-merge` (including `pre-commit run --all-files` and the full unit suite). Open PR 2 to `staging` titled `Fail deploy and make check when an id sequence is behind its data (Part of #1022)`. **Opened as #1040** (2026-10-03).
+- [x] 3.13 `/review-pr` on #1040, at head `25f98745`. Five subagents, no blocking issues; the review was posted as a comment with the user's OK. Fixed, tests first (`fc1c8e6b`):
+
+  - the guard calls `pg_get_serial_sequence` only behind a `CASE` on the table's own schema, so it no longer depends on plan order;
+  - the deploy step escapes `%`, `\r` and `\n` in everything it echoes, uses `sed -n 1,9p` rather than `head -9`, prefixes the full listing, and adds `lock_timeout=5s` to `PGOPTIONS`;
+  - new execution tests run the step with a stand-in `ssh`: 0, 3, 12 and 5,000 rows, a failure, and hostile names;
+  - `check_sequences` reports errors instead of raising;
+  - the guard tests fail instead of skipping under CI;
+  - the agreement test gains partition, two-column and other-schema fixtures;
+  - the runbook gains an impact statement, the read-only re-check command, a break-glass path (the user's decision: with sign-off, run `advance_behind_sequences.sql`, then land the re-advance migration), and "don't use Re-run jobs";
+  - `seed-gravi` is marked as blocked on #1041;
+  - the backup note says "about 21–22".
+
+  The plan-order risk also applies to the merged #1029 migration's catalog query, which can't be edited now that staging has applied it. It is covered by a read-only prod run in 5.0.
+
 - [x] 3.12 Draft the `make load-test-data` issue: localhost-only URL derived from `.env.dev`, a sequence reset that runs even after a partial load, and the exit code passed on. Show it to the user, and post it only with their OK. **Filed as #1033** (2026-10-03, with the user's OK).
 
 ## 4. Staging verification (after PR 1's staging deploy)
@@ -227,6 +241,8 @@ Tasks:
   - ~~Ask whether an external writer sends `id`~~: **answered from the code** on 2026-10-02 (design Context). Neither `bloom-desktop` nor `bloom-desktop-pilot` ever sends an `id`, so the high ids are historical rows copied in with their ids, and no live writer brings the collisions back. The distribution query (`count`, `min`, `max` above each sequence) is now optional context only.
   - List every `public` column whose default calls `nextval` but which `pg_get_serial_sequence` doesn't find. Expect 0.
   - Take a fresh snapshot of every sequence (`last_value`, `is_called`, `max`), then take it again after the deploy, and diff the two.
+  - Run the #1029 migration's catalog `SELECT` on prod, read-only (the `FOR r IN` query, with `EXPLAIN` and then executed), and confirm it doesn't error. Postgres doesn't promise to apply its `public` filter before calling `pg_get_serial_sequence`. Dev's and staging's plans are safe, but prod's statistics could differ, and the merged migration can't be changed.
+  - Confirm the promotion carries #1029 together with #1040, or that #1029 is already on `main`. Otherwise prod's first run of the new check goes red with every behind table listed.
 
 - [ ] 5.1 Before: on 2026-10-02, 21 of 65 behind (design Context).
 - [ ] 5.2 Approve the prod deploy outside 05:00–06:30 UTC (pg_cron). If 4.2 showed NOTICEs, record the 21 `advanced` lines and `21 of <m>`.

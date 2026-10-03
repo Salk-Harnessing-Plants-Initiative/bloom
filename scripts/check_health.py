@@ -181,11 +181,19 @@ def _scalar(conn, sql: str):
 
 
 def check_sequences(conn, sql_path: Path = SEQUENCES_BEHIND_SQL) -> list[str]:
-    """Report every public id sequence that is behind its column's data (bloom#1022)."""
+    """Report every public id sequence that is behind its column's data (bloom#1022).
+
+    A query error (a missing file, a timeout, a permission error) is reported as a
+    problem rather than raised, so the other checks' results still print."""
     conn.rollback()  # fresh snapshot
-    with conn.cursor() as cur:
-        cur.execute(sql_path.read_text(encoding="utf-8"))
-        rows = cur.fetchall()
+    try:
+        sql = sql_path.read_text(encoding="utf-8")
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001 — surface any failure as a problem
+        conn.rollback()
+        return [f"could not run the id-sequence check ({sql_path.name}): {exc}"]
     conn.rollback()
     return sequence_problems(rows)
 

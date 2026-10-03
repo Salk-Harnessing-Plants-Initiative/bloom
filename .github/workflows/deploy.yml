@@ -981,20 +981,22 @@ jobs:
             PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
             docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
               -e PGPASSWORD=\"\$PG_PASSWORD\" \
-              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s' \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
               db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
               < scripts/sql/sequences_behind.sql
           ") || {
-            echo '::error title=Sequence check could not run (production)::ssh or psql failed; see this step log. The deployed code was not rolled back.'
+            echo '::error title=Sequence check could not run (production)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
             exit 1
           }
           if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
             n=$(printf '%s\n' "$out" | wc -l)
-            echo "::error title=Id sequence behind its data (production)::$n id sequence(s) behind their data, so a default-id insert can collide. The deployed code was NOT rolled back. Fix with a *_readvance_id_sequences_<reason>.sql migration, never a hand setval (see _WIKI/SUPABASE/README.md)."
-            printf '%s\n' "$out" | head -9 | while IFS= read -r row; do
-              echo "::error title=Id sequence behind its data (production)::$row"
+            echo "::error title=Id sequence behind its data (production)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (production)::$(esc "$row")"
             done
-            printf '%s\n' "$out"
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
             exit 1
           fi
           echo "No public id sequence is behind its data."
@@ -1870,20 +1872,22 @@ jobs:
             PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
             docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
               -e PGPASSWORD=\"\$PG_PASSWORD\" \
-              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s' \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
               db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
               < scripts/sql/sequences_behind.sql
           ") || {
-            echo '::error title=Sequence check could not run (staging)::ssh or psql failed; see this step log. The deployed code was not rolled back.'
+            echo '::error title=Sequence check could not run (staging)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
             exit 1
           }
           if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
             n=$(printf '%s\n' "$out" | wc -l)
-            echo "::error title=Id sequence behind its data (staging)::$n id sequence(s) behind their data, so a default-id insert can collide. The deployed code was NOT rolled back. Fix with a *_readvance_id_sequences_<reason>.sql migration, never a hand setval (see _WIKI/SUPABASE/README.md)."
-            printf '%s\n' "$out" | head -9 | while IFS= read -r row; do
-              echo "::error title=Id sequence behind its data (staging)::$row"
+            echo "::error title=Id sequence behind its data (staging)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (staging)::$(esc "$row")"
             done
-            printf '%s\n' "$out"
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
             exit 1
           fi
           echo "No public id sequence is behind its data."

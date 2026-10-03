@@ -13,6 +13,13 @@
 -- even a pg_temp one, can't be created there). last_value and is_called are read from
 -- the sequence itself: pg_sequences.last_value is NULL until a sequence is first used.
 --
+-- Run it as a superuser or a BYPASSRLS role (the deploy uses supabase_admin): under
+-- row-level security max() could see too few rows, and the check would pass wrongly.
+--
+-- pg_get_serial_sequence resolves a name, so it sits behind a CASE on the table's own
+-- schema: Postgres doesn't promise to apply the WHERE's public filter before calling it,
+-- and resolving a non-public table's name as public.<name> would raise.
+--
 -- Run by scripts/check_health.py (make check) and by the deploy's "Check id sequences
 -- are not behind" step. By hand:
 --   psql -X -At -v ON_ERROR_STOP=1 < scripts/sql/sequences_behind.sql
@@ -31,7 +38,7 @@ SELECT y.tbl AS table_name,
                        a.attname AS col,
                        ps.seqincrement::numeric AS inc,
                        (pg_catalog.xpath('/row/m/text()', pg_catalog.query_to_xml(
-                           pg_catalog.format('SELECT max(%I) AS m FROM public.%I', a.attname, c.relname),
+                           pg_catalog.format('SELECT pg_catalog.max(%I) AS m FROM public.%I', a.attname, c.relname),
                            false, true, '')))[1]::text::numeric AS max_id,
                        (pg_catalog.xpath('/row/last_value/text()', pg_catalog.query_to_xml(
                            pg_catalog.format('SELECT last_value FROM %s', s.seq),
@@ -44,8 +51,10 @@ SELECT y.tbl AS table_name,
                   JOIN pg_catalog.pg_attribute a
                     ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
                  CROSS JOIN LATERAL (
-                        SELECT pg_catalog.pg_get_serial_sequence(
-                                   pg_catalog.format('public.%I', c.relname), a.attname) AS seq
+                        SELECT CASE WHEN c.relnamespace = 'public'::pg_catalog.regnamespace
+                                    THEN pg_catalog.pg_get_serial_sequence(
+                                             pg_catalog.format('public.%I', c.relname), a.attname)
+                               END AS seq
                        ) s
                   JOIN pg_catalog.pg_sequence ps ON ps.seqrelid = s.seq::regclass
                  WHERE n.nspname = 'public'
@@ -57,4 +66,4 @@ SELECT y.tbl AS table_name,
          WHERE x.max_id IS NOT NULL
        ) y
  WHERE y.max_id >= y.next_value
- ORDER BY y.tbl COLLATE "C", y.col;
+ ORDER BY y.tbl, y.col;

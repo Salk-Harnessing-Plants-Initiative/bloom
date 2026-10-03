@@ -359,11 +359,13 @@ The dump contains `auth.users`. Do not leave a copy on disk.
 
 - **A restore brings back the dumped sequence state, including a behind one.** The
   plain dump restores every id sequence exactly as dumped. Dumps from before the
-  bloom#1022 fix reached prod carry 21 sequences behind their data. After any
-  restore, run `scripts/sql/sequences_behind.sql` and expect no rows. If rows come
-  back, fix them with a re-advance migration (see `_WIKI/SUPABASE/README.md`, "Id
-  sequences behind their data"). A partial or table-level load that keeps the ids
-  (`COPY`, CSV, PostgREST upserts) has the same effect.
+  bloom#1022 fix reached prod carry about 21–22 sequences behind their data (the
+  exact number depends on the dump's date). After any restore, run
+  `scripts/sql/sequences_behind.sql` and trust its output, not this number. Such a
+  dump also lacks the fix's migration-history row, so the next deploy re-applies the
+  advance migration on its own. See `_WIKI/SUPABASE/README.md`, "Id sequences behind
+  their data". A partial or table-level load that keeps the ids (`COPY`, CSV,
+  PostgREST upserts) has the same effect, without the automatic re-apply.
 - **A full Box quota, or a partial upload, is not verified against.** The job
   checks what it produced, not what arrived. If Box fills or the transfer dies
   after the retries are exhausted, the run fails and the summary shows the
