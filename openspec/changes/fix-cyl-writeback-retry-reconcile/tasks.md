@@ -21,7 +21,7 @@ test.
     - no `<reconciliation>` entry in `--json`;
     - exit 1;
     - stderr contains `reconciliation deferred to the status poller: 1 envelope(s) failed
-      retriably`;
+retriably`;
     - stdout is still valid JSON.
 - [x] 1.2 `test_batch_ingest_cli_retry_after_a_retriable_failure_marks_the_scan_written` (the
       #1034 regression). Use a stateful fake over a dict of rows:
@@ -29,7 +29,7 @@ test.
     `scan_1` and `scan_2`; `scan_3` models a scan whose stage-in failed, which
     `write_run_manifest` leaves out.
   - **Fake `call_insert_envelope`:**
-    - on the injected failure, it raises *before* changing any state;
+    - on the injected failure, it raises _before_ changing any state;
     - on a first delivery, it sets `'written'` only `WHERE status != 'failed'` and returns
       `status_update_matched` to match;
     - on a second delivery of the same key, it returns `was_noop: True`, matched against the
@@ -134,7 +134,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
     `click.echo(..., err=True)`.
   - Update the comment block, the command docstring (one sentence; it is `--help` output), and
     the `reconcile_unresolved_scans` docstring.
-- [x] 4.2 **`ScanResult.retriable` docstring** (`_batch.py`): note that a retriable *envelope*
+- [x] 4.2 **`ScanResult.retriable` docstring** (`_batch.py`): note that a retriable _envelope_
       failure also defers `batch-ingest-result`'s reconciliation, so a failure must not be made
       retriable "just to fail the Workflow".
 - [x] 4.3 (Every existing `_fetch_effective_phases` mock now returns a 6th element, `{}`, which keeps its behaviour unchanged. The log messages say "before writing status", since the status may now be `'running'`.) **Poller:**
@@ -175,6 +175,48 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
     quoted tasks. `/pr-description` defaults to `Closes`, so override it.
   - Never merge.
 
+## 5a. /review-pr round 1 (PR #1038, review 5402607775)
+
+- [x] 5a.1 Poller: closes out _settled_ workflows in every cycle that writes no terminal status.
+  - "Settled" means a terminal phase, or a 404 whose `'queued'` rows were all dispatched more than
+    the TTL plus 5 minutes ago.
+  - This covers `'running'`, an unconcluded rollup, and a withheld `'complete'`.
+  - It closes the stuck-forever case for a run whose workflows all 404 (design D2).
+  - Tests: `test_a_404_dispatched_longer_ago_than_the_ttl_is_settled`,
+    `test_a_recent_or_undated_404_is_not_settled`,
+    `test_sweep_closes_a_garbage_collected_workflows_rows_when_no_rollup_concludes`,
+    `test_sweep_closes_settled_rows_while_withholding_complete`, and others.
+- [x] 5a.2 Poller: a `'running'` run writes its progress even when the close-out or recount fails.
+  - It writes the snapshot counts and marks the cycle unclean.
+  - Tests: `test_sweep_running_run_reconcile_failure_still_writes_progress`,
+    `..._recount_failure_still_writes_progress`, `..._signature_not_found_is_quiet` (asserts no
+    WARNING).
+- [x] 5a.3 Poller:
+  - `_fetch_effective_phases` returns an `EffectivePhases` `NamedTuple`.
+  - Each close-out logs how many rows it closed.
+  - The backstop text says "…recorded a result for this scan; its result file may exist", kept
+    in sync with `failure-hints.ts` `BACKSTOP_MESSAGE` by `failure-hints.test.ts`.
+  - The module docstring is updated.
+- [x] 5a.4 Poller tests:
+  - The sibling test runs through the real `_fetch_effective_phases`, with queued rows on both
+    workflows.
+  - `settled_workflow_names` replaces the phase map. Existing mocks pass `[]` (nothing settled),
+    so the still-running test means what its docstring says again.
+  - Several settled workflows are each reconciled once, with one recount.
+- [x] 5a.5 bloomctl:
+  - Adds the `RECONCILE_DEFERRED_MESSAGE` constant.
+  - The comment states the rule is conservative.
+  - The `_batch.py` docstring is clarified.
+  - Tests: N=2 counting, the non-retriable failure left out of N in both mixed tests, the summary
+    on stdout unchanged, and no reconcile and no deferral line when `ARGO_WORKFLOW_NAME` is unset.
+- [x] 5a.6 Spec and design:
+  - The poller requirement covers settled workflows and the `'running'` write. Its "sole
+    remaining exception" wording is corrected.
+  - The new scenarios cover a GC'd workflow with no conclusion and a failed close-out in a running
+    run.
+  - D2/D4/Risks are rewritten: the residual eviction race, the poller-first rollout order, and
+    the real error not kept on the row.
+
 ## 6. Post-merge rollout (blocks archive)
 
 - [ ] 6.1 Confirm that `docker-build-bloomcli` published `sha-<squash short>`, using
@@ -188,7 +230,9 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
 - [ ] 6.2 In sleap-roots-pipeline (WSL; kubectl and argo live there), run
       `bash scripts/check_cluster_drift.sh`. Record the before state: comparator, namespace, date,
       exit code.
-- [ ] 6.3 With the user's OK, open a sleap-roots-pipeline PR that bumps bloomctl in **all three**
+- [ ] 6.3 **Only after prod's workflows service runs this commit** (6.5; design D4: the template
+      bump reaches prod at once, the poller only with a staging→main promotion), and with the
+      user's OK, open a sleap-roots-pipeline PR that bumps bloomctl in **all three**
       templates (write-back, images-downloader, exit-gate) to the immutable sha and digest.
   - Follow the upstream pin-comment format: sha, digest, squash commit, version, what changed,
     ride-along commits, rollback target.
@@ -199,7 +243,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
   - re-run `check_cluster_drift.sh`;
   - run `kubectl -n runai-busch-lab get workflowtemplate sleap-roots-write-back-template -o jsonpath='{.spec.templates[0].container.image}'`;
   - record that the digest matches.
-- [ ] 6.5 Confirm the poller half is live: the workflows service on staging is running the merge
+- [ ] 6.5 (Do before 6.3.) Confirm the poller half is live: the workflows service on staging and prod is running the merge
       commit (`BUILD_SHA` or the image tag). Prod gets it at the next staging→main promotion.
 - [ ] 6.6 Evidence: the first run whose write-back step retried, or a run with a scan failing
       write-back in a multi-Workflow run, shows:
@@ -208,5 +252,6 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
     Workflows were still running.
 
   Then mark bloom#1034 done by hand, and open the archive PR separately.
-- [ ] 6.7 Draft the separate issue for repairing prod run 2's 5 stale rows. Post it only with the
+
+- [ ] 6.7 Prod run 2's 5 stale rows are tracked in bloom#1035 (already filed); link it here. Post any comment there only with the
       user's OK.
