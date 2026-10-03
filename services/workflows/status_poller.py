@@ -14,7 +14,10 @@ Decision 3). Before writing a run's status whenever the computed conclusion
 is anything other than `'running'`, this poller also reconciles — via
 `fail_cyl_pipeline_run_scans_without_result` — any of that run's scans still
 `'queued'`, since a run whose status write just went terminal will never be
-polled again to fix them otherwise (see design.md's Decision 6).
+polled again to fix them otherwise (see design.md's Decision 6). While the
+run is still `'running'`, it also reconciles the `'queued'` scans of each workflow
+whose own Argo phase is Succeeded/Failed/Error, so they don't wait for the run's
+slowest workflow (fix-cyl-writeback-retry-reconcile, bloom #1034).
 Distinct from `dispatch_worker.py`: that worker reacts to new pgmq messages
 (event-driven); this poller runs on a fixed wall-clock cadence regardless of
 dispatch activity, sweeping every currently-active run. Runs as the
@@ -31,6 +34,7 @@ import logging
 import os
 import signal
 import time
+from typing import NamedTuple
 
 from postgrest import APIError
 
@@ -46,6 +50,11 @@ from supabase_client import app_client as _app_client
 # generic isolated error so a burst of these during that window doesn't also
 # trigger an unnecessary proactive reconnect.
 _SIGNATURE_NOT_FOUND_CODE = "PGRST202"
+
+# A workflow in one of these phases has finished every node, write-back's
+# retries included, so it can write no further result
+# (fix-cyl-writeback-retry-reconcile, bloom #1034).
+_TERMINAL_WORKFLOW_PHASES = frozenset({"Succeeded", "Failed", "Error"})
 
 
 def app_client():
@@ -150,9 +159,18 @@ def _fetch_candidate_runs(client) -> list[dict]:
     )
 
 
-def _fetch_effective_phases(
-    client, run_id
-) -> tuple[list[str], bool, int, int, list[str]]:
+class EffectivePhases(NamedTuple):
+    """_fetch_effective_phases's result; see its docstring for each field."""
+
+    phases: list[str]
+    any_unknown: bool
+    done_count: int
+    failed_count: int
+    queued_workflow_names: list[str]
+    settled_workflow_names: list[str]
+
+
+def _fetch_effective_phases(client, run_id) -> EffectivePhases:
     """One run's effective-phase list: 'Failed' for each scan whose dispatch
     itself failed (status='failed', argo_workflow_name IS NULL), plus the
     real Argo phase of each distinct argo_workflow_name among the run's
@@ -179,9 +197,17 @@ def _fetch_effective_phases(
     Also returns queued_workflow_names (fix-cyl-pipeline-run-scan-status
     round 2 — see design.md's Decision 6): the sorted, distinct
     argo_workflow_names among this run's rows still status = 'queued'. Used
-    by sweep_once as the backstop reconciliation list once this run's
-    rollup concludes a terminal status — a scan can otherwise stay
-    'queued' forever if write-back never ran at all for it."""
+    by sweep_once as the backstop reconciliation list — a scan can otherwise
+    stay 'queued' forever if write-back never ran at all for it, or if
+    write-back's final attempt still had a retriable envelope failure (bloomctl
+    then deliberately leaves the workflow's rows to this poller, bloom #1034).
+
+    Also returns settled_workflow_names (fix-cyl-writeback-retry-reconcile,
+    bloom #1034): the queued_workflow_names whose own phase this cycle is
+    Succeeded/Failed/Error, so they can write nothing more. A 404 is never
+    settled: a 404 can also come from a misconfigured namespace, API URL or CRD
+    while the workflow is still running, so those rows wait for the
+    terminal-rollup backstop."""
     rows = (
         client.table("cyl_pipeline_run_scans")
         .select("argo_workflow_name, status")
@@ -202,8 +228,10 @@ def _fetch_effective_phases(
         {r["argo_workflow_name"] for r in rows if r.get("argo_workflow_name")}
     )
     any_unknown = False
+    workflow_phases: dict[str, str | None] = {}
     for name in workflow_names:
         phase = get_workflow_status(name)
+        workflow_phases[name] = phase
         if phase is None:
             any_unknown = True
             continue
@@ -219,25 +247,42 @@ def _fetch_effective_phases(
         }
     )
 
-    return phases, any_unknown, done_count, failed_count, queued_workflow_names
+    settled_workflow_names = [
+        name
+        for name in queued_workflow_names
+        if workflow_phases.get(name) in _TERMINAL_WORKFLOW_PHASES
+    ]
+
+    return EffectivePhases(
+        phases,
+        any_unknown,
+        done_count,
+        failed_count,
+        queued_workflow_names,
+        settled_workflow_names,
+    )
 
 
 def _reconcile_unresolved_scans(client, argo_workflow_name: str) -> int:
     """Close out, as 'failed', any cyl_pipeline_run_scans row for
     argo_workflow_name still 'queued' — the backstop for a scan whose
     write-back step never ran at all (fix-cyl-pipeline-run-scan-status
-    round 2; see design.md's Decision 6). Called by sweep_once only once a
-    run's rollup has concluded a terminal (non-'running') status, since a
-    run that never polls again has no other remaining chance to resolve
-    such a scan. Returns the number of rows marked failed."""
+    round 2; see design.md's Decision 6), or one whose write-back step's
+    final attempt still had a retriable envelope failure, which bloomctl
+    leaves for this poller (bloom #1034). Called by sweep_once for a workflow
+    whose own phase is confirmed terminal while its run is still 'running', and
+    for every workflow once the run's rollup has concluded a non-'running'
+    status, since a run that never polls again has no other remaining chance to
+    resolve such a scan. Returns the number of rows marked failed."""
     result = (
         client.rpc(
             "fail_cyl_pipeline_run_scans_without_result",
             {
                 "p_argo_workflow_name": argo_workflow_name,
                 "p_error_message": (
-                    "workflow reached a terminal status before write-back "
-                    "produced a result for this scan"
+                    "write-back recorded no result for this scan before its "
+                    "workflow ended; check whether a result file exists before "
+                    "re-running prediction"
                 ),
             },
         )
@@ -272,6 +317,62 @@ def _count_done_and_failed(client, run_id) -> tuple[int, int]:
     done_count = sum(1 for r in rows if r.get("status") in ("written", "reused"))
     failed_count = sum(1 for r in rows if r.get("status") == "failed")
     return done_count, failed_count
+
+
+def _close_out_workflows(
+    client, run_id, names: list[str], context: str
+) -> tuple[tuple[int, int] | None, bool]:
+    """Reconcile each of `names`' still-'queued' rows, then recount the run.
+    `context` says why, for the logs.
+
+    Returns (counts, clean):
+      - success: (fresh (done_count, failed_count), True)
+      - PGRST202, the RPC not yet migrated (design.md's Decision 6 addendum 7):
+        (None, True), expected and transient, so the cycle stays clean
+      - any other reconcile or recount failure: (None, False)
+    The counts are re-derived fresh rather than by incrementing the snapshot
+    _fetch_effective_phases returned, which predates this cycle's K8s lookups
+    and this reconciliation and can go stale (see _count_done_and_failed)."""
+    try:
+        for name in names:
+            closed = _reconcile_unresolved_scans(client, name)
+            if closed:
+                logger.info(
+                    "status_poller: run %s closed %s 'queued' scan(s) of %s (%s)",
+                    run_id,
+                    closed,
+                    name,
+                    context,
+                )
+    except Exception as exc:
+        if isinstance(exc, APIError) and exc.code == _SIGNATURE_NOT_FOUND_CODE:
+            logger.info(
+                "status_poller: run %s reconciliation deferred — RPC "
+                "signature not yet migrated (expected transient "
+                "deploy-ordering window): %s",
+                run_id,
+                exc,
+            )
+            return None, True
+        logger.warning(
+            "status_poller: run %s failed to reconcile unresolved scans (%s), "
+            "leaving them for the next cycle: %s",
+            run_id,
+            context,
+            exc,
+        )
+        return None, False
+    try:
+        return _count_done_and_failed(client, run_id), True
+    except Exception as exc:
+        logger.warning(
+            "status_poller: run %s failed to recount scans after reconciling "
+            "(%s), leaving them for the next cycle: %s",
+            run_id,
+            context,
+            exc,
+        )
+        return None, False
 
 
 def update_run_status(
@@ -329,6 +430,7 @@ def sweep_once(client) -> bool:
                 done_count,
                 failed_count,
                 queued_workflow_names,
+                settled_workflow_names,
             ) = _fetch_effective_phases(client, run_id)
         except Exception as exc:
             logger.warning(
@@ -352,93 +454,70 @@ def sweep_once(client) -> bool:
             )
             continue
 
-        # Backstop reconciliation (fix-cyl-pipeline-run-scan-status round 2 —
-        # see design.md's Decision 6): once this run's rollup has concluded
-        # anything other than 'running', it will not be checked again after
-        # this cycle's status write (a terminal write drops it from
-        # _fetch_candidate_runs's candidate set for good). Any scan row still
-        # 'queued' at that point can only mean write-back never ran for it at
-        # all (its workflow failed before reaching write-back, or the
-        # write-back container never started) — nothing else will ever
-        # resolve it. Reconcile BEFORE writing the status, not after: if
-        # reconciliation itself fails, skip the status write entirely this
-        # cycle so the run stays a candidate and is retried next cycle,
-        # matching this loop's existing per-run isolation discipline.
-        #
-        # Deliberately NOT gated on `any_unknown` (round 7 reverted a prior
-        # round's attempt to add that gate — see design.md's Decision 6
-        # addendum 8): get_workflow_status returns None ONLY on a clean 404,
-        # which its own docstring says is normally a *permanent* condition
-        # ("most often ttlStrategy already cleaned it up") — a genuine
-        # transient failure raises K8sStatusError instead, an entirely
-        # separate path this loop's outer try/except already isolates
-        # per-run. A 404'd workflow "cannot still be silently running," so a
-        # row still 'queued' under it (or under any other terminal-rollup
-        # workflow in this run) is exactly this backstop's target regardless
-        # of any_unknown. Gating on any_unknown instead let an ordinary,
-        # expected TTL-GC'd sibling workflow (any multi-batch run's batches
-        # routinely finish more than the ~1hr default TTL apart — see
-        # addendum 5) stall this run's reconciliation and status write
-        # forever, since any_unknown for a GC'd workflow never clears.
-        if status != "running" and queued_workflow_names:
-            try:
-                for name in queued_workflow_names:
-                    _reconcile_unresolved_scans(client, name)
-            except APIError as exc:
-                if exc.code == _SIGNATURE_NOT_FOUND_CODE:
-                    # Same expected deploy-ordering window as
-                    # update_run_status's carve-out below — found missing
-                    # here in human PR review (design.md's Decision 6
-                    # addendum 7).
-                    logger.info(
-                        "status_poller: run %s reconciliation deferred — RPC "
-                        "signature not yet migrated (expected transient "
-                        "deploy-ordering window): %s",
-                        run_id,
-                        exc,
-                    )
-                else:
-                    logger.warning(
-                        "status_poller: run %s failed to reconcile unresolved "
-                        "scans before writing terminal status %s, leaving "
-                        "unsettled for the next cycle: %s",
-                        run_id,
-                        status,
-                        exc,
-                    )
-                    ok = False
-                continue
-            except Exception as exc:
-                logger.warning(
-                    "status_poller: run %s failed to reconcile unresolved "
-                    "scans before writing terminal status %s, leaving "
-                    "unsettled for the next cycle: %s",
+        if status == "running":
+            # Close out each workflow whose own phase is confirmed terminal
+            # (fix-cyl-writeback-retry-reconcile, bloom #1034): bloomctl leaves
+            # a workflow's rows to this poller when write-back's last attempt
+            # had a retriable envelope failure, and a run's 25-scan workflows
+            # can finish hours apart. A 404 is not a confirmed phase (a
+            # misconfigured namespace or API URL also returns 404 while the
+            # workflow still runs), so those rows wait for the backstop below.
+            # Write progress whether or not this succeeded: the run stays a
+            # candidate either way, so skipping the write would only freeze its
+            # counts; a failed close-out already marked the cycle unclean.
+            if settled_workflow_names:
+                counts, clean = _close_out_workflows(
+                    client,
                     run_id,
-                    status,
-                    exc,
+                    settled_workflow_names,
+                    "terminal workflows of a running run",
                 )
-                ok = False
+                ok = ok and clean
+                if counts is not None:
+                    done_count, failed_count = counts
+        elif queued_workflow_names:
+            # Backstop reconciliation (fix-cyl-pipeline-run-scan-status round 2
+            # — see design.md's Decision 6): once this run's rollup has
+            # concluded anything other than 'running', it will not be checked
+            # again after this cycle's status write (a terminal write drops it
+            # from _fetch_candidate_runs's candidate set for good). Any scan row
+            # still 'queued' at that point means write-back never ran for it at
+            # all (its workflow failed before reaching write-back, or the
+            # write-back container never started), or write-back's final
+            # attempt still had a retriable envelope failure and bloomctl left
+            # it to this poller (bloom #1034) — nothing else will ever resolve
+            # it. Reconcile BEFORE writing the status, not after: if
+            # reconciliation itself fails, skip the status write entirely this
+            # cycle so the run stays a candidate and is retried next cycle,
+            # matching this loop's existing per-run isolation discipline.
+            #
+            # Deliberately NOT gated on `any_unknown` (round 7 reverted a prior
+            # round's attempt to add that gate — see design.md's Decision 6
+            # addendum 8): get_workflow_status returns None ONLY on a clean 404,
+            # which its own docstring says is normally a *permanent* condition
+            # ("most often ttlStrategy already cleaned it up") — a genuine
+            # transient failure raises K8sStatusError instead, an entirely
+            # separate path this loop's outer try/except already isolates
+            # per-run. A 404'd workflow "cannot still be silently running," so a
+            # row still 'queued' under it (or under any other terminal-rollup
+            # workflow in this run) is exactly this backstop's target regardless
+            # of any_unknown. Gating on any_unknown instead let an ordinary,
+            # expected TTL-GC'd sibling workflow (any multi-batch run's batches
+            # routinely finish more than the ~1hr default TTL apart — see
+            # addendum 5) stall this run's reconciliation and status write
+            # forever, since any_unknown for a GC'd workflow never clears.
+            # A 404 of any age is accepted here, unlike the 'running' branch
+            # above: a terminal write ends polling, so this is the last chance.
+            counts, clean = _close_out_workflows(
+                client,
+                run_id,
+                queued_workflow_names,
+                f"before writing terminal status {status}",
+            )
+            ok = ok and clean
+            if counts is None:
                 continue
-            # Re-derive both counts fresh, rather than incrementing the
-            # snapshot _fetch_effective_phases already returned — that
-            # snapshot was taken before this cycle's K8s lookups and the
-            # reconciliation call above even ran, and can go stale if a
-            # scan's write-back genuinely resolved in that window (see
-            # _count_done_and_failed's own docstring for the failure mode
-            # this avoids).
-            try:
-                done_count, failed_count = _count_done_and_failed(client, run_id)
-            except Exception as exc:
-                logger.warning(
-                    "status_poller: run %s failed to recount scans after "
-                    "reconciling before writing terminal status %s, leaving "
-                    "unsettled for the next cycle: %s",
-                    run_id,
-                    status,
-                    exc,
-                )
-                ok = False
-                continue
+            done_count, failed_count = counts
 
         # No same-value skip for 'running' anymore (removed by
         # fix-cyl-pipeline-run-scan-status): done_count/failed_count can

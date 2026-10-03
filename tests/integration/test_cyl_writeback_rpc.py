@@ -2149,3 +2149,54 @@ def test_rollback_1_refuses_while_stamping_body_is_live(pg_conn):
         with pytest.raises(psycopg.errors.RaiseException, match="insert_cyl_result_envelope"):
             cur.execute(sql_body(rollback(1)))
         cur.execute("ROLLBACK TO SAVEPOINT r1")
+
+
+# --------------------------------------------------------------------------- #
+# fix-cyl-writeback-retry-reconcile (bloom #1034): the DB contract bloomctl's
+# deferred reconciliation relies on. Contrast
+# test_late_delivery_after_already_failed_does_not_resurrect: there the row was
+# closed before the delivery, so the guard keeps it 'failed'. With no reconcile
+# between attempts, a retried delivery marks it 'written'.
+# --------------------------------------------------------------------------- #
+
+
+def test_retry_attempt_sequence_without_an_intervening_reconcile_ends_written(pg_conn):
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        (s1, imgs1), (s2, imgs2), (s3, _) = (_seed_scan(cur) for _ in range(3))
+        run_id = _seed_run_scan_for_writeback(cur, s1, wf)
+        for scan_id in (s2, s3):
+            cur.execute(
+                "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status)"
+                " VALUES (%s, %s, %s, 'queued')",
+                (run_id, scan_id, wf),
+            )
+        key1, key2 = f"retry-{uuid.uuid4().hex}", f"retry-{uuid.uuid4().hex}"
+
+        # Attempt 1: scan 1 is written; scan 2's delivery is rejected and rolled back.
+        first = _call(cur, _envelope(imgs1, idempotency_key=key1), argo_workflow_name=wf)
+        assert first["status_update_matched"] is True
+        with pg_conn.transaction():
+            with pytest.raises(psycopg.errors.RaiseException):
+                with pg_conn.transaction():
+                    _call(
+                        cur,
+                        _envelope(imgs2, contract_version="v0.0.0a0", idempotency_key=key2),
+                        argo_workflow_name=wf,
+                    )
+            assert _run_scan_status(cur, wf, s2) == ("queued", None)
+        # No reconciliation: bloomctl defers it because scan 2 failed retriably.
+
+        # Attempt 2 (Argo's retry, same workflow name): scan 1 is a no-op re-delivery.
+        again = _call(cur, _envelope(imgs1, idempotency_key=key1), argo_workflow_name=wf)
+        assert again["was_noop"] is True and again["status_update_matched"] is True
+        second = _call(cur, _envelope(imgs2, idempotency_key=key2), argo_workflow_name=wf)
+        assert second["was_noop"] is False and second["status_update_matched"] is True
+
+        cur.execute(f"SELECT {FAIL_RPC}(%s, 'no result produced')", (wf,))
+        assert cur.fetchone()[0] == 1  # only scan 3, which never had an envelope
+
+        assert _run_scan_status(cur, wf, s1)[0] == "written"
+        assert _run_scan_status(cur, wf, s2) == ("written", second["source_id"])
+        assert _run_scan_status(cur, wf, s3) == ("failed", None)
+    pg_conn.rollback()

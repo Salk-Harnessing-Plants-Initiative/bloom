@@ -1818,8 +1818,9 @@ def test_ingest_one_envelope_isolates_unreadable_file_error(tmp_path):
 
 def test_batch_ingest_cli_isolates_unreadable_file_among_several(monkeypatch, tmp_path):
     """The same corrupt-file failure, exercised through the full batch command: it must
-    be isolated to its own ScanResult, not abort ingestion of the other envelopes or
-    skip the end-of-batch reconciliation call."""
+    be isolated to its own ScanResult, not abort ingestion of the other envelopes. It is a
+    retriable failure, so the end-of-batch reconciliation call is deferred to the status
+    poller (bloom #1034)."""
     _patch_batch_authed(monkeypatch)
     monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-corrupt")
     _write_per_run_manifest(tmp_path, 'wf-corrupt', ['scan_1', 'scan_corrupt', 'scan_3'])
@@ -1835,11 +1836,11 @@ def test_batch_ingest_cli_isolates_unreadable_file_among_several(monkeypatch, tm
     result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
 
     assert result.exit_code != 0
-    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.stdout)}
     assert payload["scan_1"]["status"] == "ok"
     assert payload["scan_corrupt"]["status"] == "failed"
     assert payload["scan_3"]["status"] == "ok"
-    assert calls == ["wf-corrupt"], "reconciliation must still run despite the corrupt file"
+    assert calls == [], "a retriable envelope failure defers reconciliation (bloom #1034)"
 
 
 def test_batch_ingest_cli_isolates_unexpected_network_error_among_several(monkeypatch, tmp_path):
@@ -2466,16 +2467,18 @@ def test_batch_ingest_cli_exits_nonzero_when_a_genuine_failure_also_present(
         return RESULT_OK
 
     monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
-    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name, **_kw: 0)
+    reconciles = _record_reconcile(monkeypatch)
     for key in ("scan_mismatch", "scan_timeout"):
         _write_envelope(tmp_path, key)
 
     result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
 
     assert result.exit_code != 0, result.output
-    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.stdout)}
     assert payload["scan_mismatch"]["retriable"] is False
     assert payload["scan_timeout"]["retriable"] is True
+    assert reconciles == [], "the retriable failure defers reconciliation (bloom #1034)"
+    assert _deferral_line(1) in result.stderr, "the non-retriable failure is not counted"
 
 
 def test_batch_ingest_cli_exits_nonzero_when_mismatch_and_reconcile_failure_coexist(
@@ -3597,14 +3600,229 @@ def test_batch_unmatched_noop_with_a_retriable_failure_exits_nonzero(monkeypatch
         raise TimeoutError("simulated network timeout")
 
     monkeypatch.setattr(ing, "call_insert_envelope", _selective_call)
-    monkeypatch.setattr(ing, "reconcile_unresolved_scans", lambda client, name, **_kw: 0)
+    reconciles = _record_reconcile(monkeypatch)
     for key in ("scan_noop", "scan_timeout"):
         _write_envelope(tmp_path, key)
 
     result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
 
     assert result.exit_code != 0, result.output
-    payload = {entry["scan_key"]: entry for entry in json.loads(result.output)}
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.stdout)}
     assert payload["scan_noop"]["retriable"] is False
     _assert_unmatched_noop_message(payload["scan_noop"]["error"])
     assert payload["scan_timeout"]["retriable"] is True
+    assert reconciles == [], "the retriable failure defers reconciliation (bloom #1034)"
+    assert _deferral_line(1) in result.stderr, "the non-retriable failure is not counted"
+
+
+# --- fix-cyl-writeback-retry-reconcile (bloom #1034): defer reconciliation while a retry can write --
+#
+# Argo's retryStrategy re-runs the write-back step in the SAME Workflow. Reconciling at the end of
+# an attempt that had a retriable envelope failure closed that scan out as 'failed'; the retry then
+# ingested it, but insert_cyl_result_envelope's `status != 'failed'` guard kept the row 'failed'.
+
+def _deferral_line(n):
+    return ing.RECONCILE_DEFERRED_MESSAGE.format(count=n)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [TimeoutError("simulated network timeout"), _api_error("simulated transient RPC failure")],
+    ids=["generic-exception", "rpc-api-error"],
+)
+def test_batch_ingest_cli_defers_reconcile_when_an_envelope_fails_retriably(
+    monkeypatch, tmp_path, failure
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    _write_per_run_manifest(tmp_path, "wf-a", ["scan_1", "scan_2"])
+
+    def _call(client, env, **_kw):
+        if env["provenance"]["scan_key"] == "scan_2":
+            raise failure
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _call)
+    reconciles = _record_reconcile(monkeypatch)
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert reconciles == [], "a retry could still write scan_2, so nothing may be closed out yet"
+    assert result.exit_code == 1, result.output
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.stdout)}
+    assert "<reconciliation>" not in payload
+    assert payload["scan_2"]["status"] == "failed"
+    assert payload["scan_2"]["retriable"] is True
+    assert _deferral_line(1) in result.stderr
+
+
+class _RunScanRows:
+    """A stateful stand-in for one workflow's cyl_pipeline_run_scans rows plus the two RPCs that
+    write them, modelling insert_cyl_result_envelope's `status != 'failed'` guard and
+    fail_cyl_pipeline_run_scans_without_result's `'queued'` -> `'failed'` close-out."""
+
+    def __init__(self, scan_keys, *, failing):
+        self.status = {key: "queued" for key in scan_keys}
+        self.ingested = set()
+        self.failing = set(failing)
+        self.reconcile_returns = []
+
+    def insert(self, client, env, **_kw):
+        key = env["provenance"]["scan_key"]
+        if key in self.failing:
+            raise TimeoutError("simulated transient failure (rolled back, nothing written)")
+        was_noop = key in self.ingested
+        self.ingested.add(key)
+        if not was_noop and self.status[key] != "failed":
+            self.status[key] = "written"
+        # The no-op path's primary update matches the row this source already wrote.
+        matched = self.status[key] == "written"
+        base = RESULT_NOOP if was_noop else RESULT_OK
+        return {**base, "status_update_matched": matched}
+
+    def reconcile(self, client, name, **_kw):
+        closed = [k for k, s in self.status.items() if s == "queued"]
+        for key in closed:
+            self.status[key] = "failed"
+        self.reconcile_returns.append(len(closed))
+        return len(closed)
+
+
+def test_batch_ingest_cli_retry_after_a_retriable_failure_marks_the_scan_written(
+    monkeypatch, tmp_path
+):
+    """The bloom #1034 regression, end to end across two attempts of the same write-back step.
+    scan_3 was dispatched under the workflow but is not in the run manifest (its stage-in failed,
+    so write_run_manifest left it out) — the scan only reconciliation can close out."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    _write_per_run_manifest(tmp_path, "wf-a", ["scan_1", "scan_2"])
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+    rows = _RunScanRows(["scan_1", "scan_2", "scan_3"], failing=["scan_2"])
+    monkeypatch.setattr(ing, "call_insert_envelope", rows.insert)
+    monkeypatch.setattr(ing, "reconcile_unresolved_scans", rows.reconcile)
+
+    first = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert rows.status == {"scan_1": "written", "scan_2": "queued", "scan_3": "queued"}
+    assert rows.reconcile_returns == []
+    assert first.exit_code == 1, first.output
+
+    rows.failing.clear()  # Argo's retry: same files, same workflow name, and scan_2 now succeeds
+    second = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    # End state first, so the pre-fix code fails here (scan_2 == 'failed'), not on the exit code.
+    assert rows.status == {"scan_1": "written", "scan_2": "written", "scan_3": "failed"}
+    assert rows.reconcile_returns == [1]
+    payload = {entry["scan_key"]: entry for entry in json.loads(second.stdout)}
+    assert payload["scan_1"]["status"] == "skipped"
+    assert payload["scan_2"]["status"] == "ok"
+    assert second.exit_code == 0, second.output
+
+
+def test_batch_ingest_cli_missing_declared_and_non_retriable_mismatch_still_reconcile(
+    monkeypatch, tmp_path
+):
+    """Neither a missing manifest-declared file nor a non-retriable mismatch can change on a
+    retry, so neither defers reconciliation."""
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    _write_per_run_manifest(tmp_path, "wf-a", ["scan_1", "scan_9"])
+    monkeypatch.setattr(
+        ing,
+        "call_insert_envelope",
+        lambda client, env, **_kw: {**RESULT_OK, "status_update_matched": False},
+    )
+    reconciles = _record_reconcile(monkeypatch)
+    _write_envelope(tmp_path, "scan_1")
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert reconciles == ["wf-a"]
+    assert result.exit_code == 1, result.output
+    payload = {entry["scan_key"]: entry for entry in json.loads(result.stdout)}
+    assert payload["scan_9"]["status"] == "failed"
+    assert payload["scan_9"]["retriable"] is True
+    assert payload["scan_1"]["retriable"] is False
+    assert "<reconciliation>" not in payload
+    assert "deferred" not in result.stderr
+
+
+def test_batch_ingest_cli_missing_declared_scan_key_with_a_retriable_failure_defers(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    _write_per_run_manifest(tmp_path, "wf-a", ["scan_1", "scan_2", "scan_9"])
+
+    def _call(client, env, **_kw):
+        if env["provenance"]["scan_key"] == "scan_2":
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _call)
+    reconciles = _record_reconcile(monkeypatch)
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path), "--json"])
+
+    assert reconciles == []
+    assert result.exit_code == 1, result.output
+    assert _deferral_line(1) in result.stderr
+
+
+def test_batch_ingest_cli_deferral_line_counts_every_retriable_envelope_failure(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    _write_per_run_manifest(tmp_path, "wf-a", ["scan_1", "scan_2", "scan_3"])
+
+    def _call(client, env, **_kw):
+        if env["provenance"]["scan_key"] in ("scan_2", "scan_3"):
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _call)
+    reconciles = _record_reconcile(monkeypatch)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert reconciles == []
+    assert _deferral_line(2) in result.stderr
+    assert (
+        "reconciliation deferred to the status poller: 2 envelope(s) failed retriably"
+        in result.stderr
+    ), "the literal operators grep write-back pod logs for"
+    assert "deferred" not in result.stdout, "the summary on stdout is unchanged"
+    assert result.exit_code == 1, result.output
+
+
+def test_batch_ingest_cli_unset_workflow_name_with_a_retriable_failure_neither_reconciles_nor_defers(
+    monkeypatch, tmp_path
+):
+    """Without a run identity there is no workflow to reconcile, so there is nothing to
+    defer either: no RPC call and no deferral line."""
+    _patch_batch_authed(monkeypatch)
+
+    def _call(client, env, **_kw):
+        if env["provenance"]["scan_key"] == "scan_2":
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _call)
+    reconciles = _record_reconcile(monkeypatch)
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert reconciles == []
+    assert "deferred" not in result.stderr
+    assert result.exit_code == 1, result.output
