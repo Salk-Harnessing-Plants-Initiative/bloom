@@ -632,7 +632,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - The two docs pass.
   - **`openspec validate --strict`: valid.**
   - **CI on #1025 head `064e3426` (Node 20): Web Unit Tests (Vitest) pass, Build & npm CVE Audit pass.)**
-- [ ] 11.9 **Browser checks, after PR B deploys to staging** (decided 2026-10-02: on the deployed site, not on a local build, so the checks see the real Caddy, cookies and env with no local anon key or credentials; done together with 12.1's PR B row).
+- [x] 11.9 **Browser checks, after PR B deploys to staging** (decided 2026-10-02: on the deployed site, not on a local build, so the checks see the real Caddy, cookies and env with no local anon key or credentials; done together with 12.1's PR B row).
   - In Chrome and Firefox on `https://staging.bloom.salk.edu:8443`, signed in as the staging test user:
     - 3313 at its default;
     - experiment 1 unfiltered: the note names `legacy-5` over the 3-scan default;
@@ -644,6 +644,27 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - Delete each downloaded zip after reading its counts.
   - Record the results, and that Safari is unchecked (#1024). A failure is fixed in a follow-up PR to `staging` before promotion to `main`.
   - Before merge, PR B's evidence is 11.1–11.8 (unit tests with mutation checks, build, CI); its body says the browser checks follow the staging deploy.
+  **(done 2026-10-03, in Chrome only; Firefox was not run, by the user's decision, and Safari is unchecked (#1024).**
+  - **Build checked:** Deploy run 37141822090 succeeded. The running `bloom-web` had `BLOOM_WEB_BUILD_SHA=cba1c28a`, started 18:02:44Z (read over SSH, read-only). All checks were made by the user in Chrome, with no Console errors. Each downloaded zip was inspected from Downloads, then deleted.
+  - **1. 3313:**
+    - The button sits beside the selectors. The dialog opened prefilled with wave 4 / day 3: `unattributed`, 157 of 157.
+    - At All/All: 647 of 5,547 selected scans.
+    - `fn2023-round3_unattributed_20261003.zip`: 647 rows × 942 columns, 4,900 excluded (all `no_traits`), 647 + 4,900 = 5,547. All 647 are plant age 3 across waves 1–4; the other ages have no trait results.
+    - Sidecar: `chosen_by: default`, `included.source_ids` `[]`, `generated_by` `1.0.0+cba1c28a…`.
+  - **2. Experiment 1, All/All:**
+    - Default `1911b908…` covers 3 of 18,471. The note named `legacy-5` (13,396 of 18,471) and said its models and code were not recorded. Pipeline rows showed short weights checksums, code SHAs and `Output params: peak_threshold=0.2`.
+    - Picking `legacy-5` dropped "pick it". Progress ran "Reading batch d of n" (185 batches), with polls not overlapping.
+    - `diversity-screen_legacy-5_20261003.zip`, 40,163,132 bytes: 13,396 rows × 1,059 columns, 5,075 excluded (all `no_traits`), 13,396 + 5,075 = 18,471. `chosen_by: user`, 7 other recipes listed.
+  - **3. Experiment 1, wave 1:** default `legacy-5`, 1,419 of 1,420, no note.
+  - **4. Scan 144354:** the button is on the scan page, and there are no filters. `legacy-5` 1 of 1. `diversity-screen_scan144354_legacy-5_20261003.zip`: 1 row, 0 excluded, `chosen_by: default`.
+  - **5. During an export:**
+    - A click outside and Escape both left the dialog open. Close sent `DELETE` and closed it.
+    - An immediate new Download started normally, with no `429` offer.
+  - **6. Two tabs:**
+    - First try: the filtered export (wave 26 / day 13, 73 scans) finished in about a second, so each tab ran its own job. The two zips had different `generated_at` times.
+    - Rerun with All/All `legacy-5` in tab A: tab B showed the offer alert and Resume.
+    - Both tabs saved the same job (`generated_at` 2026-10-03T18:48:22.260Z in both zips, 40,163,130 bytes each), and tab A did not lose the job to tab B.
+  - **7. Help link:** "What's in this file?" opened `trait-recipes.md#using-a-trait-export` on `main`.)**
 
 ## 11a. Review fixes (PR #1025 review 5396953901, 2026-10-02; test first, red/green recorded here and in each commit)
 
@@ -708,7 +729,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
     - "keeps a failed job's Retry disabled… while a re-listing is pending" tests the disabled Retry;
     - the `start()` check is unreachable from the UI, so it is defence in depth.
   - **Guide:** the "Getting one" paragraph now says the dialog starts on the page's wave and age (All/All for the whole experiment), that recipes differ in models and trait columns, and what "Download started" and "Save again" mean.
-- [ ] 11a.5 Pre-merge again as in 11.8, push (with the user's yes), record CI, and update the PR body's review-fixes section.
+- [x] 11a.5 Pre-merge again as in 11.8, push (with the user's yes), record CI, and update the PR body's review-fixes section.
 
 ## 11b. Round-2 review fixes (PR #1025 review 5397656269, 2026-10-02; test first)
 
@@ -769,12 +790,22 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - **Untested by design:** the "answer for a job no longer followed" check in `poll()`/`save()` is defence in depth, because the offer is disabled while cancelling and no other UI path changes the followed job while a poll is in flight.
   - **Closing:** it aborts the listing, poll and download requests but not the start, so a start answering after the close still yields its id and is deleted (spec and D8 updated to match).
   - **Pick tracking:** the user's pick is now tracked in a ref (`userPick`), so the listing effect reads no state outside its dependencies.
-- [ ] 11b.5 Pre-merge as in 11.8; record 11a.5's CI (green on `ffc25ee6`: 33 pass, 2 skipped) and this push's; update the PR body.
+- [x] 11b.5 Pre-merge as in 11.8; record 11a.5's CI (green on `ffc25ee6`: 33 pass, 2 skipped) and this push's; update the PR body.
+  **(done 2026-10-03:**
+  - **CI on `88550e27`:** green.
+  - **CI on `207dacf0`** (`88550e27` with staging merged in): 33 pass, 2 skipped, after a re-run. The first two attempts failed the required Docker Compose Health Check on ghcr.io `429 Too Many Requests`, pulling `ghcr.io/astral-sh/uv` without logging in (filed as #1032). That took #1025 out of the merge queue until the re-run passed.
+  - **PR body:** "Review fixes" and "Round-2 review fixes" sections.
+  - **Merge:** #1025 was approved and squash-merged as `cba1c28a` (2026-10-03 17:47Z).)**
 
 ## 12. After merge
 
-- [ ] 12.1 After each PR deploys to staging, repeat its largest export through the deployed Caddy path. Record the job time, zip size and `bloom-web` peak RSS.
-  **PR A done (2026-10-02); PR B still to come.** Staging was serving `26ca7b7c` (Deploy run
+- [x] 12.1 After each PR deploys to staging, repeat its largest export through the deployed Caddy path. Record the job time, zip size and `bloom-web` peak RSS.
+  **PR B done (2026-10-03), from 11.9's check 2 (user decision: no second run to sample memory).**
+  - **Build:** staging was serving `bloom-web` built from `cba1c28a` (Deploy run 37141822090).
+  - **Run:** experiment 1, `legacy:5`, All/All, from the dialog in Chrome. The job was created at 18:30:07.457Z (sidecar `generated_at`), and the zip was saved at 18:32:28Z: about **141 s** from start to saved file, including the 40 MB download. PR A took 137.5 s to ready.
+  - **Output:** **40,163,132 bytes**, with 13,396 + 5,075 = 18,471.
+  - **Memory:** `bloom-web` peak RSS was not sampled. PR B changes only browser code, so the server path is PR A's (peak 377.2 MiB of 3 GiB).
+  **PR A done (2026-10-02).** Staging was serving `26ca7b7c` (Deploy run
   36997056580). bloom-web was built from `f79a1598`: its `BLOOM_WEB_BUILD_SHA` is the last
   bloom-web-input commit, `deploy.yml:327`, and it contains #996 (`306ab03a`). That build has
   `SELECTION_PAGE_SIZE` 5000, `RUNNING_JOB_RESERVE_BYTES` 384 MiB and the Float32 pivot. #1009's
@@ -811,6 +842,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
   - an upstream sleap-roots-analyze issue on the substring exclusion in `get_trait_columns`;
   - a follow-up issue for a durable export job, if §7 or 12.1 shows the need;
   - a follow-up issue for the superseded `param_hash` wording in add-cyl-pipeline-ui D8;
+  - a follow-up issue for the dialog to say how many selected scans have no trait results. Seen on 3313 All/All: 4,900 of 5,547 excluded as `no_traits`, which shows today only in `<stem>.excluded.csv` (user, 2026-10-03);
   - the #865 closing comment.
 - [ ] 12.4 Archive with `/openspec:archive add-cyl-trait-csv-export` only after all of these:
   - 12.1 for both PRs;
