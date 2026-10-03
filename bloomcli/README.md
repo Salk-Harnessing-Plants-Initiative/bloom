@@ -749,9 +749,17 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
   batch's summary/`--json` output and reflected in the exit code, alongside
   every real envelope's own outcome; a successful call logs how many scans it
-  closed out. An unreadable envelope file at any earlier stage (e.g. a
-  truncated file left by an OOM-killed producer) is isolated the same way and
-  never prevents this call from running.
+  closed out. **Exception (bloom #1034):** when an envelope the batch tried to
+  ingest failed retriably, the call is skipped and stderr says
+  `reconciliation deferred to the status poller: N envelope(s) failed
+  retriably`. Argo retries the write-back step in the same Workflow, and
+  closing those scans now would keep them `'failed'` even after the retry
+  ingests them. The status poller closes whatever is still `'queued'` once
+  the Workflow ends. A missing declared file, a missing run manifest and a
+  non-retriable failure don't count, since a retry can't change them. An
+  unreadable envelope file (e.g. a truncated file left by an OOM-killed
+  producer) is isolated without aborting the batch, and, being retriable,
+  defers the call too.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 

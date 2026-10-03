@@ -413,10 +413,17 @@ at this program's poll interval and run volume.
 Before writing a run's status whenever the computed conclusion is anything
 other than `'running'`, the poller also reconciles that run's leftover
 `'queued'` scan rows: since a terminal status write drops the run from this
-poller's candidate set for good, a scan still `'queued'` at that point can
-only mean write-back never ran for it at all (its workflow failed before
-reaching write-back, or the write-back container never started), and this is
-the last chance to close it out. It does so via
+poller's candidate set for good, a scan still `'queued'` at that point means
+write-back never ran for it at all (its workflow failed before reaching
+write-back, or the write-back container never started), or write-back's final
+attempt still had a retriable envelope failure, in which case `bloomctl`
+deliberately left the workflow's rows to this poller (bloom #1034). This is
+the last chance to close it out. While a run is still `'running'`, the poller
+also closes out, the same way, the leftover `'queued'` rows of each workflow
+whose own phase is confirmed `Succeeded`, `Failed` or `Error`: that workflow
+has finished every node, write-back's retries included, and a run's 25-scan
+workflows can finish hours apart. A 404'd workflow is not a confirmed phase,
+so its rows wait for the run-level case. It does so via
 `fail_cyl_pipeline_run_scans_without_result` (one call per distinct
 `argo_workflow_name` with a leftover `'queued'` row), then re-deriving
 `done_count`/`failed_count` from a fresh read of that run's scan rows before

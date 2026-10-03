@@ -6,7 +6,7 @@ import type { ScanMeta } from "./scan-meta";
 import { stageInProblems, type StageInProblem } from "./stage-in";
 
 /**
- * The status poller's backstop text, for a scan still `queued` when its run
+ * The status poller's backstop text, for a scan still `queued` when its workflow
  * ended (`services/workflows/status_poller.py`, `_reconcile_unresolved_scans`).
  * failure-hints.test.ts reads the poller's source to keep the two equal.
  */
@@ -15,7 +15,8 @@ export const BACKSTOP_MESSAGE = "workflow reached a terminal status before write
 /**
  * Write-back's own text for a scan it dispatched but never resolved
  * (bloomctl `cyl/ingest.py`, `NO_RESULT_MESSAGE`, recorded by
- * `fail_cyl_pipeline_run_scans_without_result` at the end of each batch),
+ * `fail_cyl_pipeline_run_scans_without_result` at the end of a batch with no
+ * retriable envelope failure),
  * for example after a stage-in failure (a poison scan). No hint reads this
  * text or BACKSTOP_MESSAGE today; both stay, with their source-equality
  * tests, as the named texts a failed no-result row carries (fix-cyl-noop-
