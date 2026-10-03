@@ -40,11 +40,24 @@ function isCard(v: unknown): boolean {
 }
 
 /** The body of a successful GET /model-cards. */
-export function isCardList(v: unknown): v is { cards: ModelCardEntry[]; fetched_at: string } {
-  return isRecord(v) && typeof v.fetched_at === "string" && Array.isArray(v.cards) && v.cards.every(isCard);
+export function isCardList(v: unknown): v is { cards: ModelCardEntry[]; fetched_at: string; skipped: number } {
+  return (
+    isRecord(v) &&
+    typeof v.fetched_at === "string" &&
+    isInt(v.skipped) &&
+    v.skipped >= 0 &&
+    Array.isArray(v.cards) &&
+    v.cards.every(isCard)
+  );
 }
 
-export async function fetchModelCards(): Promise<ModelCardEntry[] | null> {
+/** The production cards, and how many production cards the service couldn't read. */
+export interface ModelCardsRead {
+  cards: ModelCardEntry[];
+  skipped: number;
+}
+
+export async function fetchModelCards(): Promise<ModelCardsRead | null> {
   const controller = new AbortController();
   const aborted = new Promise<never>((_resolve, reject) => {
     controller.signal.addEventListener("abort", () => reject(controller.signal.reason));
@@ -58,7 +71,7 @@ export async function fetchModelCards(): Promise<ModelCardEntry[] | null> {
     const res = await Promise.race([fetch(MODEL_CARDS_URL, { signal: controller.signal }), aborted]);
     if (!res.ok) return null;
     const body: unknown = await Promise.race([res.json(), aborted]);
-    return isCardList(body) ? body.cards : null;
+    return isCardList(body) ? { cards: body.cards, skipped: body.skipped } : null;
   } catch {
     return null;
   } finally {

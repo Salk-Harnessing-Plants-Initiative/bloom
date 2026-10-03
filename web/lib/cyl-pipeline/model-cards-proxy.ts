@@ -11,20 +11,18 @@
 
 import { NextResponse } from "next/server";
 import { isCardList } from "./model-cards";
+import { detailResponse } from "./trigger-proxy";
 
 // Under the dialog's own 10 s budget, so the dialog sees this route's answer.
 export const MODEL_CARDS_UPSTREAM_TIMEOUT_MS = 8_000;
 
-export const MODEL_CARDS_NOT_ENABLED = "Starting pipeline runs from Bloom is not enabled in this environment.";
 export const MODEL_CARDS_SIGNED_OUT = "Sign in to check the model cards.";
 export const MODEL_CARDS_UNAVAILABLE = "Couldn't read the model catalog.";
 export const MODEL_CARDS_TIMED_OUT = "Reading the model catalog timed out.";
 
 const LOG_PREFIX = "[api/cyl/pipeline/model-cards]";
 
-export function modelCardsDetail(status: number, text: string) {
-  return NextResponse.json({ detail: text }, { status });
-}
+export const modelCardsDetail = detailResponse;
 
 export async function forwardToModelCards(workflowsUrl: string, accessToken: string): Promise<NextResponse> {
   let upstream: Response;
@@ -61,5 +59,6 @@ export async function forwardToModelCards(workflowsUrl: string, accessToken: str
     console.error(`${LOG_PREFIX} upstream answered 200 with an unexpected shape`);
     return modelCardsDetail(502, MODEL_CARDS_UNAVAILABLE);
   }
-  return NextResponse.json(body, { status: 200 });
+  // Rebuilt from the checked fields, so nothing else upstream sent reaches the browser.
+  return NextResponse.json({ cards: body.cards, fetched_at: body.fetched_at, skipped: body.skipped }, { status: 200 });
 }

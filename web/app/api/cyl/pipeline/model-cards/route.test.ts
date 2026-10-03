@@ -23,7 +23,7 @@ import {
 const mockedGetSession = vi.mocked(getSession);
 const TOKEN = "sekret-access-token";
 const URL_ = "http://0.0.0.0:3000/api/cyl/pipeline/model-cards";
-const LIST = { cards: PRODUCTION_CARDS, fetched_at: "2026-10-02T12:00:00+00:00" };
+const LIST = { cards: PRODUCTION_CARDS, fetched_at: "2026-10-02T12:00:00+00:00", skipped: 0 };
 
 let fetchSpy: ReturnType<typeof vi.fn>;
 
@@ -104,7 +104,8 @@ describe("upstream failures", () => {
     ["a 503 with detail", () => upstreamJson({ detail: "upstream-text" }, 503)],
     ["a redirect", () => new Response(null, { status: 302, headers: { Location: "/elsewhere" } })],
     ["a non-JSON 200", () => new Response("upstream-text", { status: 200 })],
-    ["a bad shape", () => upstreamJson({ cards: [{ ...PRODUCTION_CARDS[0], selectors: "upstream-text" }], fetched_at: "t" })],
+    ["a bad shape", () => upstreamJson({ cards: [{ ...PRODUCTION_CARDS[0], selectors: "upstream-text" }], fetched_at: "t", skipped: 0 })],
+    ["a missing skipped", () => upstreamJson({ cards: PRODUCTION_CARDS, fetched_at: "upstream-text" })],
   ])("maps %s to a fixed 502", async (_label, make) => {
     fetchSpy.mockImplementation(async () => make());
     const res = await get();
@@ -126,5 +127,30 @@ describe("upstream failures", () => {
     const res = await get();
     expect(res.status).toBe(504);
     expect((await res.json()).detail).toBe(MODEL_CARDS_TIMED_OUT);
+  });
+});
+
+describe("timeout wiring and logging", () => {
+  it("bounds upstream with AbortSignal.timeout(8000)", async () => {
+    const spy = vi.spyOn(AbortSignal, "timeout");
+    await get();
+    expect(spy).toHaveBeenCalledWith(8_000);
+  });
+
+  it("answers 401 for a session object without an access token", async () => {
+    mockedGetSession.mockResolvedValue({} as never);
+    const res = await get();
+    expect(res.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("never logs the token or upstream text", async () => {
+    fetchSpy.mockImplementation(async () => upstreamJson({ detail: "upstream-text" }, 503));
+    await get();
+    fetchSpy.mockRejectedValue(new TypeError("fetch failed"));
+    await get();
+    const logged = vi.mocked(console.error).mock.calls.flat().join(" ");
+    expect(logged).not.toContain(TOKEN);
+    expect(logged).not.toContain("upstream-text");
   });
 });

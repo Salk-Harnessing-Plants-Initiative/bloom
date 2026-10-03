@@ -31,6 +31,7 @@ vi.mock("@/lib/cyl-pipeline/model-cards", async (importOriginal) => ({
   fetchModelCards,
 }));
 import { PRODUCTION_CARDS } from "@/lib/cyl-pipeline/__fixtures__/model-cards";
+const READ = { cards: PRODUCTION_CARDS, skipped: 0 };
 
 import { RunPipelineButton } from "./RunPipelineButton";
 import { RunPipelineDialog } from "./RunPipelineDialog";
@@ -148,7 +149,7 @@ beforeEach(() => {
   fetchSpy.mockReset();
   vi.stubGlobal("fetch", fetchSpy);
   fetchModelCards.mockReset();
-  fetchModelCards.mockResolvedValue(PRODUCTION_CARDS);
+  fetchModelCards.mockResolvedValue(READ);
   onClose.mockReset();
   onStarted.mockReset();
 });
@@ -948,7 +949,7 @@ describe("model warnings (bloom#971)", () => {
 
   it.each([
     ["fails", null],
-    ["is empty", []],
+    ["is empty", { cards: [], skipped: 0 }],
   ])("shows the muted line, no alert and an enabled confirm when the card read %s", async (_label, value) => {
     fetchModelCards.mockResolvedValue(value);
     scans = arabidopsis(5, 1, 28);
@@ -968,14 +969,14 @@ describe("model warnings (bloom#971)", () => {
   });
 
   it("keeps confirm disabled, with no model text, until the card read settles", async () => {
-    const gate = deferred<typeof PRODUCTION_CARDS>();
+    const gate = deferred<typeof READ>();
     fetchModelCards.mockReturnValue(gate.promise);
     scans = arabidopsis(5, 1, 28);
     mount();
     await settle();
     expect(confirmButton()!.disabled).toBe(true);
     expect(modelTestIds()).toEqual([]);
-    await act(async () => gate.resolve(PRODUCTION_CARDS));
+    await act(async () => gate.resolve(READ));
     await settle();
     expect(confirmButton()!.disabled).toBe(false);
     expect(modelTestIds()).toEqual(["past-window"]);
@@ -1016,11 +1017,70 @@ describe("model warnings (bloom#971)", () => {
 
 describe("model warnings while the card read is pending (bloom#971)", () => {
   it("shows the counts before the card read settles", async () => {
-    fetchModelCards.mockReturnValue(deferred<typeof PRODUCTION_CARDS>().promise);
+    fetchModelCards.mockReturnValue(deferred<typeof READ>().promise);
     mount();
     await settle();
     expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("40 scans");
     expect(screen.queryByTestId("past-window-unknown")).toBeNull();
     expect(confirmButton()!.disabled).toBe(true);
+  });
+});
+
+describe("model warnings after the PR #1028 review (bloom#971)", () => {
+  const BLOCKER = "None of these scans has a production model for its species and age, so the pipeline can't produce results.";
+  const ONE_BLOCKER = "This scan has no production model for its species and age, so the pipeline can't produce results.";
+  const modelTestIds = () => ["past-window", "no-model", "past-window-unknown"].filter((id) => screen.queryByTestId(id));
+
+  it("never blocks when cards were skipped, and shows the no-model warning instead", async () => {
+    fetchModelCards.mockResolvedValue({ cards: PRODUCTION_CARDS, skipped: 1 });
+    scans = someScans(50, 1, { species_name: "sorghum", plant_age_days: 10 });
+    mount();
+    await settle();
+    expect(screen.queryByTestId("blockers")).toBeNull();
+    expect(screen.getByTestId("no-model").querySelector("p")?.textContent).toBe(
+      "50 scans have no production model for their species and age and will fail:",
+    );
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("uses the singular blocker for one scan", async () => {
+    scans = someScans(1, 1, { species_name: "sorghum", plant_age_days: 10 });
+    mount();
+    await settle();
+    expect(screen.getByTestId("blockers").textContent).toContain(ONE_BLOCKER);
+    expect(screen.getByTestId("blockers").textContent).not.toContain(BLOCKER);
+  });
+
+  it("shows both warnings in a mixed target, no-model first, and doesn't block", async () => {
+    scans = [
+      ...someScans(10, 1, { species_name: "sorghum", plant_age_days: 10 }),
+      ...someScans(5, 11, { species_name: "arabidopsis", plant_age_days: 28 }),
+    ];
+    mount();
+    await settle();
+    const noModel = screen.getByTestId("no-model");
+    const pastWindow = screen.getByTestId("past-window");
+    expect(noModel.compareDocumentPosition(pastWindow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId("blockers")).toBeNull();
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("treats the first day of each window as covered", async () => {
+    scans = [
+      ...someScans(3, 1, { species_name: "canola", plant_age_days: 2 }),
+      ...someScans(3, 4, { species_name: "rice", plant_age_days: 6 }),
+    ];
+    mount();
+    await settle();
+    expect(modelTestIds()).toEqual([]);
+  });
+
+  it("shows the muted line if the card read rejects", async () => {
+    fetchModelCards.mockRejectedValue(new Error("boom"));
+    scans = someScans(5, 1, { species_name: "arabidopsis", plant_age_days: 28 });
+    mount();
+    await settle();
+    expect(screen.getByTestId("past-window-unknown")).not.toBeNull();
+    expect(confirmButton()!.disabled).toBe(false);
   });
 });

@@ -45,6 +45,8 @@ describe("classifyModelGroups on the production cards", () => {
     ["arabidopsis", 14],
     ["rice", 8],
     ["rice", 3],
+    ["canola", 2],
+    ["rice", 6],
   ])("%s at day %i is covered", (species, age) => {
     expect(classifyModelGroups([group(species, age)], PRODUCTION_CARDS)).toEqual({ pastWindow: [], noModel: [] });
   });

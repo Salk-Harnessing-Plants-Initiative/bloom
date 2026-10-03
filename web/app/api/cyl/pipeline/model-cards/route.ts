@@ -13,9 +13,8 @@
  */
 
 import { getSession } from "@/lib/supabase/server";
-import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
+import { TRIGGER_DISABLED_DETAIL, isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 import {
-  MODEL_CARDS_NOT_ENABLED,
   MODEL_CARDS_SIGNED_OUT,
   forwardToModelCards,
   modelCardsDetail,
@@ -25,7 +24,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(_request: Request): Promise<Response> {
-  if (!isPipelineTriggerEnabled()) return modelCardsDetail(503, MODEL_CARDS_NOT_ENABLED);
+  if (!isPipelineTriggerEnabled()) return modelCardsDetail(503, TRIGGER_DISABLED_DETAIL);
   const session = await getSession();
   if (!session?.access_token) return modelCardsDetail(401, MODEL_CARDS_SIGNED_OUT);
   // Read per request, not at module load, so one image works in any environment.

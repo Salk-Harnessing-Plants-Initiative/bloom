@@ -277,22 +277,22 @@ Tests first. Each red is recorded in its commit body.
   - the 61st call from one user is a 429 that doesn't call the listing, while the shared hit count stays empty;
   - the lifespan test's fake `warm` blocks indefinitely (released in `finally`), and entering `TestClient` takes under 1 s.
 - [x] 10.3 Implement design D3 in `model_cards.py` and `main.py`, plus `MODEL_CARDS_RATE_LIMIT` and `enforce_model_cards_limit` in `auth.py`. README: Model cards section and Configuration row (`WORKFLOWS_MODEL_CARDS_RATE_LIMIT`).
-- [ ] 10.4 **Red (web).**
+- [x] 10.4 **Red (web).**
   - `model-windows.test.ts`: covered at canola day 2 and rice day 6.
   - `model-cards.test.ts`: `isCardList` requires a non-negative integer `skipped`; `fetchModelCards` returns `{cards, skipped}`.
   - `route.test.ts`: `AbortSignal.timeout` is called with 8000; a session without `access_token` → 401; the logged error never contains the token or upstream text.
-- [ ] 10.5 **Red (web).** `RunPipelineDialog.test.tsx`:
+- [x] 10.5 **Red (web).** `RunPipelineDialog.test.tsx`:
   - `skipped: 1` with sorghum → warning, not block, Confirm enabled;
   - the singular blocker;
   - a mixed target (sorghum day 10 + arabidopsis day 28) → `no-model` before `past-window`, Confirm enabled;
   - canola day 2 and rice day 6 → no warning;
   - unmount while the card read is pending → no state update (spy on `setCards` via a rejected-after-unmount promise);
   - a rejected `fetchModelCards` → the muted line (the `.catch`).
-- [ ] 10.6 Implement:
+- [x] 10.6 Implement (`import "server-only"` skipped: the package isn't installed and vitest can't resolve it; the client never imports the proxy):
   - client `skipped`;
   - dialog block rule and singular text;
   - a `.catch` on the card read;
   - the proxy reuses `detailResponse` and the trigger's not-enabled text;
   - `import "server-only"` in `model-cards-proxy.ts`;
   - the compose comment fixed ("six other containers").
-- [ ] 10.7 Re-run 7.1–7.4. Push, with the user's go-ahead covered by PR #1028's standing push approval.
+- [x] 10.7 Re-run 7.1–7.4. Push, with the user's go-ahead covered by PR #1028's standing push approval.

@@ -15,7 +15,10 @@ vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/_
 // which counts the trigger POST.
 vi.mock("@/lib/cyl-pipeline/model-cards", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/cyl-pipeline/model-cards")>()),
-  fetchModelCards: async () => (await import("@/lib/cyl-pipeline/__fixtures__/model-cards")).PRODUCTION_CARDS,
+  fetchModelCards: async () => ({
+    cards: (await import("@/lib/cyl-pipeline/__fixtures__/model-cards")).PRODUCTION_CARDS,
+    skipped: 0,
+  }),
 }));
 
 import { ScanCheckbox, ScanSelectionProvider, SelectAllShown, SelectionBar } from "./ScanSelection";

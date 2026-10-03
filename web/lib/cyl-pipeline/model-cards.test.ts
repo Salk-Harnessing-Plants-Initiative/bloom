@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PRODUCTION_CARDS } from "./__fixtures__/model-cards";
 import { MODEL_CARDS_TIMEOUT_MS, MODEL_CARDS_URL, fetchModelCards, isCardList } from "./model-cards";
 
-const body = (cards: unknown = PRODUCTION_CARDS) => ({ cards, fetched_at: "2026-10-02T12:00:00+00:00" });
+const body = (cards: unknown = PRODUCTION_CARDS, skipped: unknown = 0) => ({
+  cards,
+  fetched_at: "2026-10-02T12:00:00+00:00",
+  skipped,
+});
 const okResponse = (payload: unknown = body()) =>
   new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
 
@@ -25,7 +29,10 @@ describe("isCardList", () => {
     ["a selector missing species", body([{ ...card, selectors: [{ mode: "cylinder", age_min: 2, age_max: 14 }] }])],
     ["a missing selectors", body([{ root_type: "primary", registry_id: "r", version: "v0" }])],
     ["a non-array cards", body({})],
-    ["a missing fetched_at", { cards: PRODUCTION_CARDS }],
+    ["a missing fetched_at", { cards: PRODUCTION_CARDS, skipped: 0 }],
+    ["a missing skipped", { cards: PRODUCTION_CARDS, fetched_at: "t" }],
+    ["a negative skipped", body(PRODUCTION_CARDS, -1)],
+    ["a fractional skipped", body(PRODUCTION_CARDS, 0.5)],
     ["null", null],
   ])("rejects %s", (_label, value) => {
     expect(isCardList(value)).toBe(false);
@@ -47,18 +54,18 @@ describe("fetchModelCards", () => {
 
   it("returns the cards from the proxy", async () => {
     fetchSpy.mockResolvedValue(okResponse());
-    await expect(fetchModelCards()).resolves.toEqual(PRODUCTION_CARDS);
+    await expect(fetchModelCards()).resolves.toEqual({ cards: PRODUCTION_CARDS, skipped: 0 });
     expect(fetchSpy.mock.calls[0][0]).toBe(MODEL_CARDS_URL);
   });
 
   it("returns an empty list as an empty list", async () => {
-    fetchSpy.mockResolvedValue(okResponse(body([])));
-    await expect(fetchModelCards()).resolves.toEqual([]);
+    fetchSpy.mockResolvedValue(okResponse(body([], 2)));
+    await expect(fetchModelCards()).resolves.toEqual({ cards: [], skipped: 2 });
   });
 
   it.each([
     ["a 502", () => new Response(JSON.stringify({ detail: "x" }), { status: 502 })],
-    ["a bad shape", () => okResponse({ cards: "nope", fetched_at: "t" })],
+    ["a bad shape", () => okResponse({ cards: "nope", fetched_at: "t", skipped: 0 })],
     ["a non-JSON body", () => new Response("<html>", { status: 200 })],
   ])("returns null for %s", async (_label, make) => {
     fetchSpy.mockResolvedValue(make());

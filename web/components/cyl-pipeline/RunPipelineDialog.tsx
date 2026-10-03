@@ -34,8 +34,8 @@ import Dialog from "@mui/material/Dialog";
 import Link from "next/link";
 import { useEffect, useId, useState } from "react";
 import { formatElapsed } from "@/lib/cyl-pipeline/elapsed";
-import { fetchModelCards } from "@/lib/cyl-pipeline/model-cards";
-import { classifyModelGroups, type ModelCardEntry, type ModelGroupClasses } from "@/lib/cyl-pipeline/model-windows";
+import { fetchModelCards, type ModelCardsRead } from "@/lib/cyl-pipeline/model-cards";
+import { classifyModelGroups, type ModelGroupClasses } from "@/lib/cyl-pipeline/model-windows";
 import { paramsSummary } from "@/lib/cyl-pipeline/params-summary";
 import {
   fetchConcurrentRuns,
@@ -60,8 +60,10 @@ export const LARGE_RUN_SCANS = 500;
 const PARAM_GROUPS_SHOWN = 3;
 const MISSING_IDS_SHOWN = 20;
 const MODEL_CHOICE_ISSUE = "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/897";
-const NO_MODEL_BLOCKER =
-  "None of these scans has a production model for its species and age, so the pipeline can't produce results.";
+const noModelBlocker = (n: number) =>
+  n === 1
+    ? "This scan has no production model for its species and age, so the pipeline can't produce results."
+    : "None of these scans has a production model for its species and age, so the pipeline can't produce results.";
 
 const SUCCESS_TIMING_NOTE =
   "Results arrive when each batch of up to 25 scans finishes; counts often stay at 0 for most of the run. Reload the traits page to see new results.";
@@ -171,14 +173,14 @@ interface Content {
   hasModelGroups: boolean;
   /** The model groups' classes, or null when the cards couldn't be read (or listed none). */
   models: ModelGroupClasses | null;
-  /** Every model group has no model, and the cards were read. */
+  /** Every model group has no model, and the card list was read whole (nothing skipped). */
   noModelAtAll: boolean;
 }
 
-/** Cards read: an array with at least one card. Null (failed) and [] (none listed) are both unknown. */
-const usableCards = (cards: ModelCardEntry[] | null) => (cards !== null && cards.length > 0 ? cards : null);
+/** A usable read has at least one card. Null (failed) and no cards (none listed) are both unknown. */
+const usableRead = (read: ModelCardsRead | null) => (read !== null && read.cards.length > 0 ? read : null);
 
-function content(target: TriggerTarget, { scans, latest, withImages }: Checked, cards: ModelCardEntry[] | null): Content {
+function content(target: TriggerTarget, { scans, latest, withImages }: Checked, cardsRead: ModelCardsRead | null): Content {
   const N = scans.length;
   const blockers: string[] = [];
   if (N === 0) blockers.push("No scans to run");
@@ -206,10 +208,13 @@ function content(target: TriggerTarget, { scans, latest, withImages }: Checked, 
   // Scans with no images fail at stage-in and never reach predict, so only the
   // rest are described in model terms.
   const modelGroups = paramsSummary(scans.filter((s) => withImages.has(s.scan_id))).groups;
-  const read = usableCards(cards);
-  const models = read ? classifyModelGroups(modelGroups, read) : null;
-  const noModelAtAll = models !== null && modelGroups.length > 0 && models.noModel.length === modelGroups.length;
-  if (noModelAtAll) blockers.push(NO_MODEL_BLOCKER);
+  const read = usableRead(cardsRead);
+  const models = read ? classifyModelGroups(modelGroups, read.cards) : null;
+  // Only a complete list can prove no scan has a model: with skipped cards the
+  // list may be missing one the cluster uses, so the no-model warning stands in.
+  const noModelAtAll =
+    models !== null && read !== null && read.skipped === 0 && modelGroups.length > 0 && models.noModel.length === modelGroups.length;
+  if (noModelAtAll) blockers.push(noModelBlocker(N));
   return { N, blockers, stageInCount, noImagesCount, K, L, groups, hasModelGroups: modelGroups.length > 0, models, noModelAtAll };
 }
 
@@ -238,16 +243,18 @@ export function RunPipelineDialog({ target: requested, title: requestedTitle, on
   const [acknowledged, setAcknowledged] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   // undefined while the read is pending; null when it failed.
-  const [cards, setCards] = useState<ModelCardEntry[] | null | undefined>(undefined);
+  const [cards, setCards] = useState<ModelCardsRead | null | undefined>(undefined);
   const submission = useSubmission(key);
 
   useEffect(() => {
     let active = true;
     const client = createClientSupabaseClient();
     // Optional: never rejects, and never puts the dialog in its failed state.
-    void fetchModelCards().then((read) => {
-      if (active) setCards(read);
-    });
+    void fetchModelCards()
+      .catch(() => null)
+      .then((read) => {
+        if (active) setCards(read);
+      });
     (async () => {
       const scans = await fetchTargetScans(client, target);
       const experimentIds = [...new Set(scans.flatMap((s) => (s.experiment_id == null ? [] : [s.experiment_id])))];

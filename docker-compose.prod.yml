@@ -276,7 +276,7 @@ services:
       # download_url is usable by outside callers.
       WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       # Reads the production model cards from the wandb registry for GET /model-cards
-      # (bloom#971). Only this service gets it, though six containers share its image.
+      # (bloom#971). Only this service gets it; the six other containers built from its image don't.
       WANDB_API_KEY: ${WANDB_API_KEY}
     networks:
       - supanet
