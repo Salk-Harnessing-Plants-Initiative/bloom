@@ -676,6 +676,11 @@ NO_RUN_MANIFEST_MESSAGE = (
 # scan_key of the synthetic batch entries that report a batch-level failure rather than one
 # envelope's: no run manifest for this run, and a failed reconciliation call.
 RUN_MANIFEST_SCAN_KEY = "<run-manifest>"
+# stderr line when batch-ingest-result leaves its workflow's unresolved scans to the status poller
+# (bloom #1034); operators grep write-back pod logs for it.
+RECONCILE_DEFERRED_MESSAGE = (
+    "reconciliation deferred to the status poller: {count} envelope(s) failed retriably"
+)
 RECONCILIATION_SCAN_KEY = "<reconciliation>"
 
 
@@ -1208,17 +1213,17 @@ def batch_ingest_result(
     # bloom #1034: Argo retries this step in the same Workflow, against the same rows. Closing
     # out this workflow's 'queued' rows while an envelope failed retriably would mark 'failed' a
     # scan the retry may then ingest — and insert_cyl_result_envelope's `status != 'failed'`
-    # guard would keep it 'failed' despite its data being written. Only an attempted envelope's
-    # outcome can change on a retry: the files and manifest come from earlier DAG steps a step
-    # retry does not re-run, so a missing declared file, a missing run manifest and a
-    # non-retriable failure don't defer. status_poller.py closes deferred rows once this
-    # workflow's own phase is terminal. stderr, because bloomctl installs no logging handler and
-    # an INFO log never reaches the Argo pod log.
+    # guard would keep it 'failed' despite its data being written. The rule is conservative:
+    # any attempted envelope flagged retriable defers, including permanent errors such as a
+    # truncated file or a contract-validation failure, because `retriable` defaults to True.
+    # Missing declared files, a missing run manifest and non-retriable failures don't defer:
+    # they are not attempted envelopes, and their files come from earlier DAG steps a step retry
+    # does not re-run. status_poller.py closes deferred rows once this workflow can write
+    # nothing more. stderr, because bloomctl installs no logging handler and an INFO log never
+    # reaches the Argo pod log.
     if argo_workflow_name and retriable_envelope_failures:
         click.echo(
-            "reconciliation deferred to the status poller: "
-            f"{retriable_envelope_failures} envelope(s) failed retriably",
-            err=True,
+            RECONCILE_DEFERRED_MESSAGE.format(count=retriable_envelope_failures), err=True
         )
     elif argo_workflow_name:
         reconcile_failure = _reconcile_unresolved_scans_result(

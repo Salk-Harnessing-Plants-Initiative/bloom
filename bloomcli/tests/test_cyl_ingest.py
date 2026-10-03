@@ -2478,6 +2478,7 @@ def test_batch_ingest_cli_exits_nonzero_when_a_genuine_failure_also_present(
     assert payload["scan_mismatch"]["retriable"] is False
     assert payload["scan_timeout"]["retriable"] is True
     assert reconciles == [], "the retriable failure defers reconciliation (bloom #1034)"
+    assert _deferral_line(1) in result.stderr, "the non-retriable failure is not counted"
 
 
 def test_batch_ingest_cli_exits_nonzero_when_mismatch_and_reconcile_failure_coexist(
@@ -3611,6 +3612,7 @@ def test_batch_unmatched_noop_with_a_retriable_failure_exits_nonzero(monkeypatch
     _assert_unmatched_noop_message(payload["scan_noop"]["error"])
     assert payload["scan_timeout"]["retriable"] is True
     assert reconciles == [], "the retriable failure defers reconciliation (bloom #1034)"
+    assert _deferral_line(1) in result.stderr, "the non-retriable failure is not counted"
 
 
 # --- fix-cyl-writeback-retry-reconcile (bloom #1034): defer reconciliation while a retry can write --
@@ -3619,7 +3621,8 @@ def test_batch_unmatched_noop_with_a_retriable_failure_exits_nonzero(monkeypatch
 # an attempt that had a retriable envelope failure closed that scan out as 'failed'; the retry then
 # ingested it, but insert_cyl_result_envelope's `status != 'failed'` guard kept the row 'failed'.
 
-DEFERRAL_LINE = "reconciliation deferred to the status poller: {n} envelope(s) failed retriably"
+def _deferral_line(n):
+    return ing.RECONCILE_DEFERRED_MESSAGE.format(count=n)
 
 
 @pytest.mark.parametrize(
@@ -3652,7 +3655,7 @@ def test_batch_ingest_cli_defers_reconcile_when_an_envelope_fails_retriably(
     assert "<reconciliation>" not in payload
     assert payload["scan_2"]["status"] == "failed"
     assert payload["scan_2"]["retriable"] is True
-    assert DEFERRAL_LINE.format(n=1) in result.stderr
+    assert _deferral_line(1) in result.stderr
 
 
 class _RunScanRows:
@@ -3769,4 +3772,53 @@ def test_batch_ingest_cli_missing_declared_scan_key_with_a_retriable_failure_def
 
     assert reconciles == []
     assert result.exit_code == 1, result.output
-    assert DEFERRAL_LINE.format(n=1) in result.stderr
+    assert _deferral_line(1) in result.stderr
+
+
+def test_batch_ingest_cli_deferral_line_counts_every_retriable_envelope_failure(
+    monkeypatch, tmp_path
+):
+    _patch_batch_authed(monkeypatch)
+    monkeypatch.setenv("ARGO_WORKFLOW_NAME", "wf-a")
+    _write_per_run_manifest(tmp_path, "wf-a", ["scan_1", "scan_2", "scan_3"])
+
+    def _call(client, env, **_kw):
+        if env["provenance"]["scan_key"] in ("scan_2", "scan_3"):
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _call)
+    reconciles = _record_reconcile(monkeypatch)
+    for key in ("scan_1", "scan_2", "scan_3"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert reconciles == []
+    assert _deferral_line(2) in result.stderr
+    assert "deferred" not in result.stdout, "the summary on stdout is unchanged"
+    assert result.exit_code == 1, result.output
+
+
+def test_batch_ingest_cli_unset_workflow_name_with_a_retriable_failure_neither_reconciles_nor_defers(
+    monkeypatch, tmp_path
+):
+    """Without a run identity there is no workflow to reconcile, so there is nothing to
+    defer either: no RPC call and no deferral line."""
+    _patch_batch_authed(monkeypatch)
+
+    def _call(client, env, **_kw):
+        if env["provenance"]["scan_key"] == "scan_2":
+            raise TimeoutError("simulated network timeout")
+        return RESULT_OK
+
+    monkeypatch.setattr(ing, "call_insert_envelope", _call)
+    reconciles = _record_reconcile(monkeypatch)
+    for key in ("scan_1", "scan_2"):
+        _write_envelope(tmp_path, key)
+
+    result = CliRunner().invoke(cli, ["cyl", "batch-ingest-result", str(tmp_path)])
+
+    assert reconciles == []
+    assert "deferred" not in result.stderr
+    assert result.exit_code == 1, result.output

@@ -10,7 +10,8 @@ import { stageInProblems, type StageInProblem } from "./stage-in";
  * ended (`services/workflows/status_poller.py`, `_reconcile_unresolved_scans`).
  * failure-hints.test.ts reads the poller's source to keep the two equal.
  */
-export const BACKSTOP_MESSAGE = "workflow reached a terminal status before write-back produced a result for this scan";
+export const BACKSTOP_MESSAGE =
+  "workflow reached a terminal status before write-back recorded a result for this scan; its result file may exist";
 
 /**
  * Write-back's own text for a scan it dispatched but never resolved
