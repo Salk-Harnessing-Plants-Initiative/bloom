@@ -11,7 +11,7 @@ All tests are in `bloomcli/tests/test_cyl_ingest.py`. Record reconcile calls wit
 `_reconcile_unresolved_scans_result` catches every exception, so a raising stub can't fail the
 test.
 
-- [ ] 1.1 `test_batch_ingest_cli_defers_reconcile_when_an_envelope_fails_retriably`
+- [x] 1.1 `test_batch_ingest_cli_defers_reconcile_when_an_envelope_fails_retriably`
   - Parametrize the injected failure over `TimeoutError` (generic path) and `_api_error(...)`
     (`map_rpc_error` path).
   - Setup: `ARGO_WORKFLOW_NAME="wf-a"`; the manifest lists `scan_1` and `scan_2`; `scan_1`
@@ -23,7 +23,7 @@ test.
     - stderr contains `reconciliation deferred to the status poller: 1 envelope(s) failed
       retriably`;
     - stdout is still valid JSON.
-- [ ] 1.2 `test_batch_ingest_cli_retry_after_a_retriable_failure_marks_the_scan_written` (the
+- [x] 1.2 `test_batch_ingest_cli_retry_after_a_retriable_failure_marks_the_scan_written` (the
       #1034 regression). Use a stateful fake over a dict of rows:
   - **Rows:** `scan_1`, `scan_2` and `scan_3` start `'queued'`. The run manifest lists only
     `scan_1` and `scan_2`; `scan_3` models a scan whose stage-in failed, which
@@ -43,20 +43,20 @@ test.
     2. exactly one reconcile call, which returned 1;
     3. `--json` shows `scan_1` `skipped` and `scan_2` `ok`;
     4. exit 0.
-- [ ] 1.3 `test_batch_ingest_cli_missing_declared_and_non_retriable_mismatch_still_reconcile`
+- [x] 1.3 `test_batch_ingest_cli_missing_declared_and_non_retriable_mismatch_still_reconcile`
   - Setup: the manifest lists `[scan_1, scan_9]`; `scan_1` returns
     `{**RESULT_OK, "status_update_matched": False}`; there is no `scan_9` file.
   - Assert: reconcile is called with `["wf-a"]`; exit 1; `scan_9` is failed and retriable;
     `scan_1` has `retriable is False`; no `<reconciliation>` entry; no deferral line on stderr.
-- [ ] 1.4 `test_batch_ingest_cli_missing_declared_scan_key_with_a_retriable_failure_defers`
+- [x] 1.4 `test_batch_ingest_cli_missing_declared_scan_key_with_a_retriable_failure_defers`
   - Setup: declared `scan_9` is missing alongside a retriable `scan_2` failure.
   - Assert: no reconcile call; exit 1.
-- [ ] 1.5 Update `test_batch_ingest_cli_isolates_unreadable_file_among_several`
+- [x] 1.5 Update `test_batch_ingest_cli_isolates_unreadable_file_among_several`
   - It currently asserts `calls == ["wf-corrupt"]`. Change that to `calls == []`.
   - Keep the assertions that the run exits non-zero and that `scan_1` and `scan_3` are still
     ingested.
   - Update its docstring.
-- [ ] 1.6 Strengthen the two existing tests that mix a retriable failure with a non-retriable
+- [x] 1.6 Strengthen the two existing tests that mix a retriable failure with a non-retriable
       mismatch (`test_batch_ingest_cli_exits_nonzero_when_a_genuine_failure_also_present` and
       `test_batch_unmatched_noop_with_a_retriable_failure_exits_nonzero`). Add `_record_reconcile` and assert `== []`.
   - The other existing reconcile tests stay unchanged and green. They cover the no-manifest path,
@@ -70,39 +70,39 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
 - **Expected red:** 2.1, 2.3.
 - **Expected green (guards):** 2.2, 2.4, 2.5, 2.6.
 
-- [ ] 2.1 `test_sweep_reconciles_a_terminal_workflows_queued_rows_while_a_sibling_still_runs`
+- [x] 2.1 `test_sweep_reconciles_a_terminal_workflows_queued_rows_while_a_sibling_still_runs`
   - Setup: run phases `wf-a: Failed`, `wf-b: Running`; queued names `["wf-a"]`; reconcile returns
     2; the recount is `(3, 2)`.
   - Assert:
     - `reconcile_calls == ["wf-a"]`;
     - the status write is `('running', 3, 2)`, using the fresh recount;
     - a docstring cites bloom#1034.
-- [ ] 2.2 `test_sweep_does_not_reconcile_a_still_running_workflows_queued_rows`
+- [x] 2.2 (Done as a test parametrized over `Pending` and `Running`, plus a sibling test parametrized over every terminal phase, and a `PGRST202` test for the running branch.) `test_sweep_does_not_reconcile_a_still_running_workflows_queued_rows`
   - Setup: `wf-a: Running`, `wf-b: Succeeded`; queued names `["wf-a"]`.
   - Assert no reconcile call. This updates or keeps the existing
     `test_sweep_does_not_reconcile_queued_rows_while_still_running`.
-- [ ] 2.3 `test_sweep_leaves_a_404d_workflows_rows_for_the_run_level_backstop_while_running`
+- [x] 2.3 `test_sweep_leaves_a_404d_workflows_rows_for_the_run_level_backstop_while_running`
   - Setup: `wf-a` 404s, `wf-b: Running`; queued names `["wf-a"]`.
   - Assert no reconcile call this cycle.
   - It is red only if the implementation must expose per-name phases. Otherwise it is a guard.
     Label it in the PR either way.
-- [ ] 2.4 `test_sweep_running_run_reconcile_failure_skips_the_status_write`
+- [x] 2.4 `test_sweep_running_run_reconcile_failure_skips_the_status_write`
   - Setup: the per-workflow reconcile raises a non-`PGRST202` error while the rollup is
     `'running'`.
   - Assert: no `update_cyl_pipeline_run_status` call for that run this cycle; the cycle is marked
     unclean; the next candidate is still processed.
-- [ ] 2.5 `test_sweep_reconciles_rows_write_back_deferred_after_its_final_retry`
+- [x] 2.5 `test_sweep_reconciles_rows_write_back_deferred_after_its_final_retry`
   - Setup: phases `["Failed"]`, snapshot `(1, 0, ["wf-a"])`, reconcile returns 2, recount
     `(1, 2)`.
   - Assert `reconcile_calls == ["wf-a"]` and the update is `(run, "failed", 1, 2)`.
   - This maps the modified spec scenario.
-- [ ] 2.6 Existing reconcile tests in the file stay green: terminal rollup, multiple names, fresh
+- [x] 2.6 Existing reconcile tests in the file stay green: terminal rollup, multiple names, fresh
       recount, unsettled-on-failure, no queued rows, withheld `'complete'` on 404, unresolved
       sibling, `PGRST202`, non-`PGRST202`.
 
 ## 3. Integration test (expected green: pins the DB contract D1 relies on)
 
-- [ ] 3.1 In `tests/integration/test_cyl_writeback_rpc.py`, add
+- [x] 3.1 In `tests/integration/test_cyl_writeback_rpc.py`, add
       `test_retry_attempt_sequence_without_an_intervening_reconcile_ends_written`.
   - **Seed:** one run with 3 queued scans under one `_wf()` name, using the
     `test_batch_workflow_stamps_its_one_run` seeding pattern. Use uuid idempotency keys.
@@ -124,7 +124,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
 
 ## 4. Green: implement
 
-- [ ] 4.1 **bloomctl:** in `batch_ingest_result`:
+- [x] 4.1 **bloomctl:** in `batch_ingest_result`:
   - Initialise `retriable_envelope_failures = 0` before the `if discovered.paths:` branch, so the
     no-envelope path binds it.
   - In that branch, count `ingest_results` entries with `status == "failed" and retriable`.
@@ -134,10 +134,10 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
     `click.echo(..., err=True)`.
   - Update the comment block, the command docstring (one sentence; it is `--help` output), and
     the `reconcile_unresolved_scans` docstring.
-- [ ] 4.2 **`ScanResult.retriable` docstring** (`_batch.py`): note that a retriable *envelope*
+- [x] 4.2 **`ScanResult.retriable` docstring** (`_batch.py`): note that a retriable *envelope*
       failure also defers `batch-ingest-result`'s reconciliation, so a failure must not be made
       retriable "just to fail the Workflow".
-- [ ] 4.3 **Poller:**
+- [x] 4.3 (Every existing `_fetch_effective_phases` mock now returns a 6th element, `{}`, which keeps its behaviour unchanged. The log messages say "before writing status", since the status may now be `'running'`.) **Poller:**
   - `_fetch_effective_phases` additionally returns the `{workflow_name: phase | None}` map.
   - In `sweep_once`, when the rollup is `'running'`, reconcile only queued names whose phase is in
     `{"Succeeded", "Failed", "Error"}`, then recount. When it is non-`'running'`, keep today's
@@ -146,22 +146,22 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
   - Update the three docstrings/comments that say a leftover `'queued'` row "can only mean
     write-back never ran": `_fetch_effective_phases`, `_reconcile_unresolved_scans`, and the
     `sweep_once` backstop comment.
-- [ ] 4.4 Run §1–§3; all pass.
+- [x] 4.4 Run §1–§3; all pass.
 
 ## 5. Docs, specs, verification
 
-- [ ] 5.1 `bloomcli/README.md` (the `batch-ingest-result` reconcile bullet): describe the
+- [x] 5.1 `bloomcli/README.md` (the `batch-ingest-result` reconcile bullet): describe the
       condition, the stderr line and the hand-off to the poller. Replace "never prevents this
       call from running".
-- [ ] 5.2 `services/workflows/README.md` (the backstop paragraph): describe per-Workflow
+- [x] 5.2 `services/workflows/README.md` (the backstop paragraph): describe per-Workflow
       reconciliation while the run is running, and the run-level backstop for 404s. Add the
       deferred-retry cause.
-- [ ] 5.3 `web/lib/cyl-pipeline/failure-hints.ts` (comment on `NO_RESULT_MESSAGE`): change "at the
+- [x] 5.3 `web/lib/cyl-pipeline/failure-hints.ts` (comment on `NO_RESULT_MESSAGE`): change "at the
       end of each batch" to "at the end of a batch with no retriable envelope failure".
-- [ ] 5.4 `bloomcli/CHANGELOG.md` `[Unreleased]` → Fixed, in house style (bloom #1034), saying it
+- [x] 5.4 `bloomcli/CHANGELOG.md` `[Unreleased]` → Fixed, in house style (bloom #1034), saying it
       takes effect with the template pin bump.
-- [ ] 5.5 `openspec validate fix-cyl-writeback-retry-reconcile --strict`.
-- [ ] 5.6 Run checks with the exact CI invocations:
+- [x] 5.5 `openspec validate fix-cyl-writeback-retry-reconcile --strict`.
+- [x] 5.6 (bloomctl: 14 failures that also fail on clean `origin/staging` on Windows, from permissions, symlinks and logs; none in `test_cyl_ingest.py`. Poller suite: 1245 passed. Integration: 174 passed against the dev DB, which already had 20261001220000; no migration run, no rows left. Prettier already fails on staging's copies of the 4 md/ts files, so they aren't reformatted here. Black and ruff-format disagree on one pre-existing assert in `test_status_poller.py`, and the file keeps staging's ruff style.) Run checks with the exact CI invocations:
   - **bloomctl tests:** `cd bloomcli && uv run --extra test pytest tests/ -m "not integration"`
   - **bloomctl lint:** `cd bloomcli && uvx ruff@0.9.9 check .` (the release gate; PR CI doesn't
     lint bloomcli, see #531). Don't run `ruff format` over bloomcli: it isn't enforced and
