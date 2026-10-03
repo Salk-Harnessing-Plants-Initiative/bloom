@@ -1,0 +1,332 @@
+"""
+Integration tests for `fix-prod-sequences-behind` (bloom#1022): the sequence-advance body
+advances exactly the `public` id sequences that are behind their data, and fails before
+changing any sequence when it can't advance one correctly.
+
+Every fixture is a `_seq1022_<uid>_*` table created inside the test's own transaction on
+`pg_conn` and dropped by the final rollback. Tests use savepoints only and never a second
+connection. The body also visits the real `public` tables, and `setval` is not rolled back,
+so every test skips when a real sequence is already behind (the body would advance it for
+good); run the migration first. Each test then checks it moved no real sequence.
+
+Set SEQ1022_RED_SKETCH=1 to run these against the rejected GREATEST sketch (tasks 1.23).
+"""
+
+import os
+
+import pytest
+
+psycopg = pytest.importorskip("psycopg")
+
+from tests.integration.sequence_fixtures import (  # noqa: E402
+    Fixtures,
+    assert_real_sequences_only_moved_forward,
+    behind,
+    revoke_four,
+    sequence_columns,
+    snapshot,
+)
+
+
+@pytest.fixture
+def fx(pg_conn):
+    f = Fixtures(pg_conn)
+    with pg_conn.cursor() as cur:
+        real_behind = behind(cur)
+        if real_behind:
+            pg_conn.rollback()
+            pytest.skip(
+                f"real public sequences are behind on this database {sorted(real_behind)}: "
+                "running the body here would advance them for good. Apply the migration first."
+            )
+        before = snapshot(cur)
+    yield f
+    try:
+        if pg_conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS:
+            with pg_conn.cursor() as cur:
+                after = snapshot(cur)
+                assert_real_sequences_only_moved_forward(
+                    cur, before, after, {a["seq"] for a in f.advanced()}
+                )
+    finally:
+        pg_conn.rollback()
+
+
+def _quote(fx, name: str) -> str:
+    with fx.conn.cursor() as cur:
+        cur.execute("SELECT quote_ident(%s)", (name,))
+        return cur.fetchone()[0]
+
+
+def _identity_with_rows(fx, label, ids, **kw):
+    t = fx.table(label, **kw)
+    fx.insert(t, ids)
+    return t
+
+
+# --------------------------------------------------------------------------- #
+# Advancing exactly the behind sequences
+# --------------------------------------------------------------------------- #
+
+
+def test_t1_fully_identity_with_rows_is_advanced(fx):
+    t = _identity_with_rows(fx, "t1", range(1, 6))
+    assert fx.state(t) == (1, False)
+    fx.run()
+    assert fx.next_default(t) == 6
+    [a] = fx.advanced_for(t)
+    assert (a["table"], a["col"]) == (_quote(fx, t.name), "id")
+    assert (a["old"], a["new"], a["max"]) == ("1", "6", "5")
+
+
+def test_t2_partly_behind_serial_is_advanced(fx):
+    t = fx.table("t2", kind="serial", type_="integer")
+    fx.insert(t, range(1, 11))
+    fx.setval(t, 4, True)
+    fx.run()
+    assert fx.next_default(t) == 11
+    [a] = fx.advanced_for(t)
+    assert (a["old"], a["new"], a["max"]) == ("5", "11", "10")
+
+
+def test_t3_never_called_equal_to_max_is_advanced(fx):
+    t = _identity_with_rows(fx, "t3", range(1, 4))
+    fx.setval(t, 3, False)
+    fx.run()
+    assert fx.next_default(t) == 4
+
+
+def test_t4_called_equal_to_max_is_untouched(fx):
+    t = _identity_with_rows(fx, "t4", range(1, 4))
+    fx.setval(t, 3, True)
+    fx.run()
+    assert fx.state(t) == (3, True)
+    assert fx.advanced_for(t) == []
+
+
+def test_t5_ahead_sequences_are_untouched(fx):
+    called = _identity_with_rows(fx, "t5a", range(1, 4))
+    fx.setval(called, 50, True)
+    not_called = _identity_with_rows(fx, "t5b", range(1, 4))
+    fx.setval(not_called, 50, False)
+    fx.run()
+    assert fx.state(called) == (50, True)
+    assert fx.state(not_called) == (50, False)
+
+
+def test_t6_empty_table_is_skipped(fx):
+    t = fx.table("t6")
+    fx.run()
+    assert fx.state(t) == (1, False)
+    assert fx.next_default(t) == 1
+
+
+def test_t7_increment_decides_whether_behind(fx):
+    t = fx.table("t7", kind="serial", type_="integer")
+    fx.insert(t, range(1, 26))
+    fx.alter_seq(t, "INCREMENT BY 10")
+    fx.setval(t, 20, True)
+    fx.run()
+    assert fx.state(t) == (20, True)  # next value is 30, not 21
+
+
+def test_t7b_increment_sets_where_an_advanced_sequence_lands(fx):
+    t = fx.table("t7b", kind="serial", type_="integer")
+    fx.insert(t, range(1, 26))
+    fx.alter_seq(t, "INCREMENT BY 5")
+    fx.setval(t, 20, True)  # next value 25 is taken
+    fx.run()
+    assert fx.next_default(t) == 30
+
+
+def test_t8_large_ids_quoted_names_and_two_columns(fx):
+    big = fx.table("Mixed", col="Id")
+    fx.insert(big, [3_000_000_000])
+    two = fx.table("two")
+    with fx.conn.cursor() as cur:
+        cur.execute(f"ALTER TABLE {two.ident} ADD COLUMN other bigserial")
+        cur.execute(f"INSERT INTO {two.ident} (id, other) OVERRIDING SYSTEM VALUE VALUES (7, 9)")
+        cur.execute(
+            "SELECT pg_get_serial_sequence(format('public.%%I', %s::text), 'other')",
+            (two.name,),
+        )
+        other_seq = cur.fetchone()[0]
+    fx.run()
+    assert fx.next_default(big) == 3_000_000_001
+    [a] = fx.advanced_for(big)
+    assert (a["table"], a["col"]) == (f'"{big.name}"', '"Id"')
+    advanced_two = {a["col"] for a in fx.advanced() if a["seq"] in (two.seq, other_seq)}
+    assert advanced_two == {"id", "other"}
+
+
+def test_t9_partitioned_table_is_visited_once_at_the_parent(fx):
+    parent = fx.name("part")
+    with fx.conn.cursor() as cur:
+        cur.execute("SET LOCAL ROLE postgres")
+        cur.execute(
+            f'CREATE TABLE public."{parent}" (id bigint GENERATED BY DEFAULT AS IDENTITY) '
+            "PARTITION BY RANGE (id)"
+        )
+        cur.execute(
+            f'CREATE TABLE public."{parent}_p1" PARTITION OF public."{parent}" '
+            "FOR VALUES FROM (1) TO (100)"
+        )
+        cur.execute(
+            f'CREATE TABLE public."{parent}_p2" PARTITION OF public."{parent}" '
+            "FOR VALUES FROM (100) TO (1000)"
+        )
+        cur.execute("RESET ROLE")
+        cur.execute(
+            f'INSERT INTO public."{parent}" (id) OVERRIDING SYSTEM VALUE VALUES (5), (150)'
+        )
+    fx.run()
+    named = [a["table"] for a in fx.advanced() if parent in a["table"]]
+    assert named == [_quote(fx, parent)]
+
+
+def test_t10_other_schemas_are_not_touched(fx):
+    schema = fx.name("schema")
+    with fx.conn.cursor() as cur:
+        cur.execute(f'CREATE SCHEMA "{schema}"')
+        cur.execute(
+            f'CREATE TABLE "{schema}".t (id bigint GENERATED BY DEFAULT AS IDENTITY)'
+        )
+        cur.execute(f'INSERT INTO "{schema}".t (id) OVERRIDING SYSTEM VALUE VALUES (1), (2)')
+        cur.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO postgres')
+        cur.execute(f"SELECT pg_get_serial_sequence(format('%%I.t', %s::text), 'id')", (schema,))
+        other_seq = cur.fetchone()[0]
+        visited = len(sequence_columns(cur))
+    fx.run()
+    with fx.conn.cursor() as cur:
+        cur.execute(f"SELECT last_value, is_called FROM {other_seq}")
+        assert cur.fetchone() == (1, False)
+    assert [m for _, m in fx.summaries()] == [visited]
+
+
+def test_t11_only_behind_tables_are_locked(fx):
+    _identity_with_rows(fx, "t11a", range(1, 4))
+    ahead = _identity_with_rows(fx, "t11b", range(1, 4))
+    fx.setval(ahead, 50, True)
+    fx.table("t11c")
+    with fx.conn.cursor() as cur:
+        expected = {table for table, _ in behind(cur)}
+    fx.run()
+    with fx.conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relname FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+             WHERE l.pid = pg_backend_pid() AND l.locktype = 'relation'
+               AND l.mode = 'ShareRowExclusiveLock' AND c.relkind IN ('r', 'p')
+            """
+        )
+        locked = {r[0] for r in cur.fetchall()}
+    assert expected and locked == expected
+
+
+def test_t12_reapplying_changes_nothing(fx):
+    _identity_with_rows(fx, "t12a", range(1, 6))
+    ahead = _identity_with_rows(fx, "t12b", range(1, 4))
+    fx.setval(ahead, 50, False)
+    fx.table("t12c")
+    fx.run()
+    with fx.conn.cursor() as cur:
+        first = snapshot(cur)
+    fx.notices.clear()
+    fx.run()
+    with fx.conn.cursor() as cur:
+        second = snapshot(cur)
+    assert fx.advanced() == []
+    assert [n for n, _ in fx.summaries()] == [0]
+    scratch = {s for s in first if fx.uid in s}
+    assert len(scratch) == 3
+    assert {s: second[s] for s in scratch} == {s: first[s] for s in scratch}
+
+
+# --------------------------------------------------------------------------- #
+# Failing before any setval
+# --------------------------------------------------------------------------- #
+
+
+def _advanceable_first(fx):
+    a = _identity_with_rows(fx, "a", range(1, 6))
+    return a, fx.state(a)
+
+
+def test_t13_cannot_advance_fails_and_changes_nothing(fx):
+    a, a_before = _advanceable_first(fx)
+    b = _identity_with_rows(fx, "b", range(1, 6), as_admin=True)
+    revoke_four(fx.conn, f"ALL ON SEQUENCE {b.seq}")
+    with fx.conn.cursor() as cur:
+        cur.execute("SELECT has_sequence_privilege('postgres', %s, 'UPDATE')", (b.seq,))
+        assert cur.fetchone()[0] is False
+    exc = fx.run_expecting_failure()
+    assert isinstance(exc, psycopg.errors.RaiseException), exc
+    assert str(exc).startswith(f"cannot advance {b.seq}: postgres lacks UPDATE on it")
+    assert "(owner supabase_admin)" in str(exc)
+    assert fx.state(a) == a_before
+
+
+def test_t14_cannot_lock_fails_and_changes_nothing(fx):
+    a, a_before = _advanceable_first(fx)
+    b = _identity_with_rows(fx, "b", range(1, 6), as_admin=True)
+    revoke_four(fx.conn, f"UPDATE, DELETE, TRUNCATE ON TABLE {b.ident}")
+    with fx.conn.cursor() as cur:
+        cur.execute(
+            "SELECT has_table_privilege('postgres', %s, 'UPDATE, DELETE, TRUNCATE')", (b.ident,)
+        )
+        assert cur.fetchone()[0] is False
+    exc = fx.run_expecting_failure()
+    assert isinstance(exc, psycopg.errors.RaiseException), exc
+    assert str(exc).startswith("cannot lock public.")
+    assert "lacks all of UPDATE, DELETE and TRUNCATE" in str(exc)
+    assert b.name in str(exc) and "(owner supabase_admin)" in str(exc)
+    assert fx.state(a) == a_before
+
+
+def test_t15_descending_sequences_are_out_of_scope(fx):
+    t = fx.table("t15", kind="serial", type_="integer")
+    fx.insert(t, range(1, 6))
+    fx.alter_seq(t, "INCREMENT BY -1")  # next value 1 <= max 5, but it counts down
+    fx.run()
+    assert fx.state(t) == (1, False)
+    assert fx.advanced_for(t) == []
+
+
+def test_t16_passing_the_maximum_fails_and_changes_nothing(fx):
+    a, a_before = _advanceable_first(fx)
+    b = fx.table("b", kind="serial", type_="integer")
+    fx.insert(b, range(1, 11))
+    fx.alter_seq(b, "MAXVALUE 5")
+    exc = fx.run_expecting_failure()
+    assert isinstance(exc, psycopg.errors.RaiseException), exc
+    assert str(exc).startswith(f"cannot advance {b.seq}: max(id) = 10 plus increment 1")
+    assert "passes its maximum 5" in str(exc)
+    assert fx.state(a) == a_before
+
+
+def test_t17_a_sequence_the_role_cannot_advance_is_ignored_when_not_behind(fx):
+    locked_out = _identity_with_rows(fx, "c", range(1, 4), as_admin=True)
+    fx.setval(locked_out, 50, False)
+    revoke_four(fx.conn, f"ALL ON SEQUENCE {locked_out.seq}")
+    fx.run()
+    assert fx.state(locked_out) == (50, False)
+
+
+def test_t19_the_body_restores_the_callers_search_path(fx):
+    with fx.conn.cursor() as cur:
+        cur.execute("SHOW search_path")
+        before = cur.fetchone()[0]
+    _identity_with_rows(fx, "t19", range(1, 4))
+    fx.run()
+    with fx.conn.cursor() as cur:
+        cur.execute("SHOW search_path")
+        assert cur.fetchone()[0] == before
+
+
+@pytest.mark.skipif(not os.environ.get("CI"), reason="dev data may be loaded with explicit ids")
+def test_t18_migrated_database_has_no_behind_sequences(pg_conn):
+    try:
+        with pg_conn.cursor() as cur:
+            assert behind(cur) == set()
+    finally:
+        pg_conn.rollback()
