@@ -201,7 +201,7 @@ Tasks:
 
 - [ ] 5.0 Before approving the prod deploy (read-only, with the user's OK; raised in the PR review):
 
-  - Run `SELECT count(*), min(id), max(id)` on the ids above each sequence in `cyl_experiments`, `phenotypers` and `cyl_scientists`, with creation dates where the table has them. Ask Benfica whether Bloom Desktop or another external writer ever sends `id`. If one does, advancing only brings the collisions back.
+  - ~~Ask whether an external writer sends `id`~~: **answered from the code** on 2026-10-02 (design Context). Neither `bloom-desktop` nor `bloom-desktop-pilot` ever sends an `id`, so the high ids are historical rows copied in with their ids, and no live writer brings the collisions back. The distribution query (`count`, `min`, `max` above each sequence) is now optional context only.
   - List every `public` column whose default calls `nextval` but which `pg_get_serial_sequence` doesn't find. Expect 0.
   - Take a fresh snapshot of every sequence (`last_value`, `is_called`, `max`), then take it again after the deploy, and diff the two.
 

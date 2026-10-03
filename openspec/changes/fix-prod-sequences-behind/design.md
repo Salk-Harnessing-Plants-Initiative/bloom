@@ -25,7 +25,20 @@ A second read-only check (`BEGIN TRANSACTION READ ONLY … ROLLBACK`, run as `po
 
 ### How sequences fall behind
 
-Identity (`BY DEFAULT`) and `serial` columns both accept explicit ids without moving the sequence. Prod's original load is unrecorded. The repo has loaders that do the same:
+Identity (`BY DEFAULT`) and `serial` columns both accept explicit ids without moving the sequence. Prod's original load is unrecorded.
+
+**Bloom Desktop is not the source.** Both Desktop repos were checked read-only on 2026-10-02 after the PR review asked who writes the ids above each sequence:
+
+- `bloom-desktop` (main, 28716be) and `bloom-desktop-pilot` (all branches) never send an `id` to Bloom. Every write goes through the `insert_image_v3_0` and `insert_gravi_image` RPCs, which have no id parameter, or through name- and email-keyed inserts. Their local ids are UUIDs.
+- The pilot's ElectricSQL period (Feb–Jul 2024) synced into separate UUID-keyed `electric_*` tables.
+
+The high ids (for example `cyl_experiments` max 12,940,090 against sequence 1,174,754) are therefore most likely rows copied in from an older Bloom database with their ids kept. Prod `accessions` ids were already near 7.7M by Aug 2025.
+
+They grew that large because the upload RPC's `INSERT … ON CONFLICT DO NOTHING` consumes a sequence value on every call, even when the row exists. Each image upload burns one value from the experiments, phenotypers and scientists sequences. That is also why prod's `phenotypers` and `cyl_scientists` sequences both sit at 804,600: they have advanced in lockstep since prod's sequences restarted.
+
+No live writer supplies ids, so once the sequences are advanced the collisions don't come back, and the burning only moves them further ahead.
+
+The repo has loaders that do the same:
 
 - **`make load-test-data`** upserts `test_data/*.csv` through PostgREST. That covers 13 sequence-backed tables, 7 of them on prod's list (plus `cyl_trait_sources`).
 - **`scripts/seed_gravi_mock_data.sql`** inserts explicit ids into 8 tables: `cyl_scientists` and 7 `gravi_*` tables.
