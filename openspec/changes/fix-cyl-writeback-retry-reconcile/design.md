@@ -2,11 +2,11 @@
 
 Three components decide a cylinder scan's final `cyl_pipeline_run_scans.status`:
 
-| Component | When it runs today | What it does to the row |
-| --- | --- | --- |
-| `insert_cyl_result_envelope` | Once per envelope, in each write-back attempt | `'queued'` → `'written'`, guarded by `AND status != 'failed'` |
-| `bloomctl cyl batch-ingest-result` | At the end of **every** write-back attempt | `fail_cyl_pipeline_run_scans_without_result`: `'queued'` → `'failed'` |
-| `status_poller.py` `sweep_once` | Once the whole **run's** rollup is no longer `'running'` | The same RPC for each Workflow name with a leftover `'queued'` row, then a recount and the status write |
+| Component                          | When it runs today                                       | What it does to the row                                                                                 |
+| ---------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `insert_cyl_result_envelope`       | Once per envelope, in each write-back attempt            | `'queued'` → `'written'`, guarded by `AND status != 'failed'`                                           |
+| `bloomctl cyl batch-ingest-result` | At the end of **every** write-back attempt               | `fail_cyl_pipeline_run_scans_without_result`: `'queued'` → `'failed'`                                   |
+| `status_poller.py` `sweep_once`    | Once the whole **run's** rollup is no longer `'running'` | The same RPC for each Workflow name with a leftover `'queued'` row, then a recount and the status write |
 
 Argo retries the write-back step (`retryStrategy: limit: 2, retryPolicy: Always`) in the same
 Workflow, against the same rows. The guard exists so that a delivery arriving after a row was
@@ -79,8 +79,7 @@ end of the final attempt.
 
 **Change.**
 
-- `_fetch_effective_phases` additionally returns each Workflow name's phase, with `None` for a
-  404.
+- `_fetch_effective_phases` additionally returns each Workflow name's phase, with `None` for a 404.
 - When the rollup is `'running'`, `sweep_once` reconciles every Workflow name that both has a
   leftover `'queued'` row and has a **confirmed** terminal phase (`Succeeded`, `Failed` or
   `Error`).
@@ -147,6 +146,23 @@ entry. Its retry re-ingests already-written envelopes as no-ops: the primary
 
   That is pre-existing cross-run contamination, and it needs overlapping runs of the same scan.
   It is out of scope here.
+
+- **A run already stuck behind a withheld `'complete'` now also keeps its deferred rows
+  `'queued'`.** This needs all of the following:
+  - the deferring Workflow is TTL-garbage-collected (a 404) before the poller ever sees its
+    `Failed` phase, which takes poller downtime longer than the TTL;
+  - every sibling Workflow `Succeeded`.
+
+  The rollup is then `'complete'` with an unknown, which is withheld every cycle, so nothing
+  reconciles. The run staying `'running'` happens today too. What's new is only that its
+  deferred rows also stay `'queued'` instead of being closed by bloomctl. Closing a 404'd
+  Workflow's rows while the run is `'running'` is excluded on purpose (D2), so this is left to
+  whatever fixes the withheld-`'complete'` stall.
+
+- **A reconcile call that keeps failing now affects more.** If it fails for a terminal
+  Workflow in a `'running'` run, it skips that run's progress write every cycle until it
+  succeeds. That is the same isolation as the terminal-rollup case, which until now could only
+  happen once per run.
 - **The guard's late-delivery protection is unchanged.**
 
 ## Migration Plan
