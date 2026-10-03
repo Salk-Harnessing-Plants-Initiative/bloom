@@ -168,7 +168,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
     would reformat 36 files.
   - **Poller tests:** `cd services/workflows && uv run --frozen --extra test pytest tests/test_status_poller.py -v`
   - **Integration tests:** `uv run --extra test pytest tests/integration/test_cyl_writeback_rpc.py tests/integration/test_cyl_noop_redelivery_scan.py tests/integration/test_cyl_pipeline_status_polling.py -v`
-- [ ] 5.7 Run `/pre-merge` and open the PR to `staging`.
+- [x] 5.7 (PR #1038.) Run `/pre-merge` and open the PR to `staging`.
   - Title: "Leave a retried write-back's scans to the status poller so a retry can mark them
     written (Part of #1034)".
   - Use "Part of #1034" only. No closing keyword anywhere in the title or body, including
