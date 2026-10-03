@@ -301,24 +301,71 @@ The zip is `<stem>.zip`. The stem is checked against `^[a-z0-9_-]+$` before it g
 
 ### D8. The dialog
 
-- **Buttons.** `TraitExportButton` opens `TraitExportDialog`, an MUI Dialog.
-  - On the traits page the button is disabled until `TraitExplorer` has loaded its waves and ages. `waveNumber` and `plantAge` start at `0` and are set from the loaded selection (`TraitExplorer.tsx:55-56, 99-101`).
-  - The filters are prefilled from that state only when the loaded lists contain the value; otherwise they use "All". `0` is a real value.
+The spec's three dialog requirements are the behaviour. This section records how, and why.
+
+- **Shape** (decided 2026-10-02):
+  - The logic lives in pure helpers under `web/lib/cyl-trait-export/client/`, which are tested in the `node` environment:
+    - `recipe-view.ts`: a recipe's description, the fewer-scans note, the filter prefill, and the empty-state messages;
+    - `requests.ts`: the listing and job URLs, telling the two `429`s apart, and reading error bodies;
+    - `poll.ts`: the poll delay, the phase lines, and a latest-wins guard for listings.
+  - `TraitExportDialog` and `TraitExportButton` in `web/components/cyl-trait-export/` do only the wiring.
+  - `client/` and the components import values only from `stem.ts` and `limits.ts`, which have no server imports. Types come from `recipes.ts` and `jobs.ts` through `import type`, because `jobs.ts` and `selection.ts` import `node:crypto`. A static test enforces this.
+  - Browser code uses only APIs that Node 20 has as well, since CI runs Node 20. So no `Promise.withResolvers`, `Object.groupBy` or the newer `Set` methods.
+- **Entry points.**
+  - The traits page's button takes `TraitExplorer`'s `waveNumber`, `plantAge`, `waves` and `plantAges` (`TraitExplorer.tsx:55-56, 98-101`). These reset on every trait change, so the button follows `isLoading`. `plantAges` is the union over all waves.
+  - The scan page is a server component. `ScanTraitExportButton.tsx` (`"use client"`) sits beside it and takes only the scan id.
 - **Listing.**
-  - The dialog refreshes the session and fetches the listing when it opens, and on each filter change (debounced 500 ms). A stale response is discarded.
-  - Each recipe shows its `<keyseg>`, kind and "N of M scans". The default is preselected and labelled.
-  - `n_selected: 0` shows "No scans match this wave and age". An empty recipe list shows "No trait results for this selection". Both disable Download.
-- **Download:**
-  1. `refreshSession()`; if it fails, stop with a sign-in message.
-  2. `POST` the job. On a per-user `429`, offer to resume or cancel the returned job.
-  3. Poll, showing "Reading batch d of n".
-  4. On `ready`, fetch, `blob()`, and save by object URL.
-- **Errors:**
-  - A `detail` is shown with Retry.
-  - A non-JSON body or a rejected `blob()` shows a generic message and saves nothing.
-  - A `404` while polling says "the export was interrupted (the server restarted); please retry".
-- **Closing** sends `DELETE` and stops polling. No state is updated after close.
-- **Help.** "What's in this file?" links to the "Using a trait export" section of `trait-recipes.md` on GitHub's `main` branch, which has it only after promotion to main (noted in PR B).
+  - The first listing is sent when the dialog opens. Each one after that is sent 500 ms after the last filter change.
+  - A filter change makes the previous listing stale at once: the effect bumps the guard and aborts its request before the debounce, so a late answer can never fill the list or enable Download for the old selection (#1025 review).
+  - A response is checked to be a listing (`parseListing` in `client/`); anything else is a generic error with Retry, not a hang.
+  - A sequence number decides which response is current. The route keeps one listing per user and answers `499` to the one it replaces (`recipes/route.ts`). The dialog therefore drops a `499` only when it has sent a newer listing itself. A `499` caused by another tab or another dialog shows Retry and is not treated as superseded, so the dialog doesn't wait forever.
+  - Closing aborts the listing that is in flight.
+  - **The session is not refreshed for a listing.** The listing route has no session-lifetime floor, and a refresh the sign-in service rejects makes auth-js sign the user out of all of Bloom (our GoTrue's refresh-token reuse interval is 0). Before a job start, the dialog refreshes only when `getSession()`'s `expires_at` is within `MIN_SESSION_SECONDS`, and again after a "session expires too soon" `401`. A refresh error is retryable only when auth-js says so (`AuthRetryableFetchError`: network, 502–504, 52x, 530); auth-js removes the session on any other refresh error, so that is the sign-in message (#1025 round 2: a JSON 500 or an HTML error page had read as retryable).
+- **Recipe description.** Each recipe is described from its `definition`: a pipeline recipe's `models` are `[name, version, checksum]` tuples, plus `predict_code_sha` and `traits_code_sha`, and a legacy recipe has `source_name`. A missing field is left out, because a hand-built source can have an empty payload (`trait-recipes.md` §"Provenance without the keyed fields"). `keySegment` throws on an unknown key, so the dialog falls back to the raw key.
+- **Fewer-scans note** (decided 2026-10-02).
+  - The default stays the newest recipe. The note only points at the recipe that covers the most scans.
+  - It never names `unattributed`, whose data has no recorded provenance.
+  - Whether the default should follow coverage is open (#865, #936). #1021 would let a stale newest recipe be retired.
+  - Staging example: experiment 1's default covers 3 scans, while `legacy-5` covers 13,396 (10.2).
+- **Picking.** An automatic pick (the default) follows the default across re-lists; a pick the user made sticks while it is still listed (decided in the #1025 review: otherwise the sidecar recorded `chosen_by: user` for a recipe nobody picked).
+- **Starting the job.**
+  - Download and Retry share one gate: the current filters' listing has arrived and holds the picked recipe.
+  - The selection, `recipe` and `chosen` go in the query string, because the route takes no body.
+  - `chosen` is `default` exactly when the picked key is the listing's default, however the user reached it (decided 2026-10-02). The server still records `default` only if the key is still the default when the job runs (`recipes.ts`).
+  - Both `401`s share a status, so the retry depends on the `detail` "session expires too soon".
+  - A ref guards against double clicks, because the disabled state lags a render behind.
+- **Polling.**
+  - Each poll is a `setTimeout` chained after the previous response, never `setInterval`, so polls never overlap. Each poll costs two GoTrue `/user` calls (middleware and route). With at most 2 running jobs that is about one per second.
+  - A new job is `running` in phase `queued`. The phase lines are:
+
+    | Phase | Line |
+    |---|---|
+    | `queued` | "Waiting to start" |
+    | `recipes` | "Checking recipes (d of n)" |
+    | `traits` | "Reading batch d of n" |
+    | `metadata` | "Writing the files" |
+    | `done` (while saving) | "Preparing the download" |
+
+  - After 3 failed polls in a row that are neither `401` nor `404`, the dialog stops and offers "Check again" for the same job (decided 2026-10-02). A `401` is the sign-in message. A `404` means the job is no longer on the server: a restart, more than 600 s past retention, or a newer export by the same user replaced it (`jobs.ts`), so the message names all three.
+- **Saving.** The dialog checks `response.ok` before it calls `blob()`. It saves through an object URL and an `<a download>` named by `filename`, and says "Download started", because the browser may still block or cancel the save. It keeps the object URL until the dialog closes, so "Save again" works without the server, and revokes it on unmount (revoking right after the click can cancel the save in some browsers). Then it sends `DELETE` for the job if it started it (decided 2026-10-02; a resumed job is left for the tab that started it, round 2). A ready zip otherwise holds bloom-web memory against `MAX_HELD_BYTES` for `RETAIN_SECONDS`, which can turn other users away with `429`.
+- **Closing.**
+  - The dialog is mounted only while it is open, so closing unmounts it, as `RunPipelineButton` does.
+  - On unmount it clears the timer, aborts its in-flight listing, poll and download requests (one `AbortController` for the job's), and sends one `DELETE` for any job it started and still holds. The start request is not aborted, so a job whose start answers after the close still reports its id and is deleted.
+  - **Ownership.** A `429` naming the job it already holds keeps that job's ownership and skips the offer (a poll `401` then Retry otherwise turned its own job into a resumed one and leaked it on close). Every poll and download answer is dropped unless the job is still the one followed, and the offer's buttons are disabled while its cancel is in flight.
+  - **A resumed job is kept** (decided 2026-10-02 in the #1025 review). A `429`'s `job_id` is the user's running job from anywhere, often another tab's export of a different selection, so the offer says so and closing never deletes it. Saving a resumed job still deletes it, once the zip is in page memory.
+  - While a job is active, a click outside the dialog and Escape don't close it (decided 2026-10-02, round 2); the Close button still does, and cancels a job it started.
+  - A start that answers after the close is cancelled the same way, so no orphan job holds the user's one slot for up to 1,500 s.
+- **Help.** "What's in this file?" links to `https://github.com/Salk-Harnessing-Plants-Initiative/bloom/blob/main/_WIKI/SUPABASE/trait-recipes.md#using-a-trait-export`, with `target="_blank" rel="noopener noreferrer"`. Promotion #1018 put that section on `main` on 2026-10-02. Renaming the heading would break the link until the next promotion.
+- **Look.**
+  - The dialog follows `RunPipelineDialog` and `RunPipelineButton`: an MUI `Dialog` shell with Tailwind inside, `role="alert"` for errors, and a lime primary button.
+  - The filters are native `<select>`s, as on the traits page.
+  - Nothing is imported from the `cyl-pipeline-ui` directories, per D11's placement rule. Their test fixtures are not reused either.
+- **Browser coverage.**
+  - Vitest covers the logic: the helpers in `node`, the components in jsdom.
+  - 11.9 checks the dialog by hand in Chrome and Firefox on the deployed staging site, after PR B merges (decided 2026-10-02).
+  - Safari isn't checked, because this work is done on Windows.
+  - A Playwright e2e in Chromium, Firefox and WebKit, with seeded rows and a mocked export API, is #1024 (decided 2026-10-02: too large for PR B).
+- **No switch.** The buttons have no feature flag. Rolling back means reverting PR B, which leaves PR A's routes in place.
 
 ### D9. `generated_by.version`
 
@@ -364,7 +411,7 @@ It runs the RPCs as `bloom_user` (`SET LOCAL ROLE`), as `test_cyl_trait_recipes_
 ### D11. Where code lives
 
 - New code lives under `web/lib/cyl-trait-export/`, `web/components/cyl-trait-export/` and `web/app/api/cyl/trait-export/`. It is outside the `cyl-pipeline-ui` guard directories, and imports nothing from them.
-- The scan-page button is `ScanTraitExportButton.tsx` beside `page.tsx`, so the page gains one line and the conflict with #965 stays small.
+- The scan-page button is `ScanTraitExportButton.tsx` beside `page.tsx`, so the page gains one import and one block beside #965's `RunPipelineButton`.
 
 ### D12. Forward compatibility with a predictions download
 

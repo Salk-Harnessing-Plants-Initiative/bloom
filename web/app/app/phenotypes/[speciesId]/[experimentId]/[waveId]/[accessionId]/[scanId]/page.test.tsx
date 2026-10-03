@@ -32,6 +32,10 @@ vi.mock("@/components/cyl-pipeline/RunPipelineButton", () => ({
   ),
 }));
 
+vi.mock("./ScanTraitExportButton", () => ({
+  default: (props: { scanId: number }) => <button data-scan={props.scanId}>Download traits</button>,
+}));
+
 import ScanPage from "./page";
 
 beforeEach(() => vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "true"));
@@ -63,5 +67,20 @@ describe("the scan page", () => {
     render(await page());
     expect(screen.getByText(/Replicate/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Run this scan" })).toBeNull();
+  });
+
+  it("offers Download traits for an existing scan whether or not runs can start", async () => {
+    db.scan = { id: 577, plant_age_days: 14, cyl_images: [], cyl_plants: { qr_code: "Q", cyl_waves: { number: 1 } } };
+    render(await page());
+    expect(screen.getByRole("button", { name: "Download traits" }).dataset.scan).toBe("577");
+    cleanup();
+    vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "false");
+    render(await page());
+    expect(screen.getByRole("button", { name: "Download traits" }).dataset.scan).toBe("577");
+  });
+
+  it("offers no Download traits when the scan doesn't exist", async () => {
+    render(await page());
+    expect(screen.queryByRole("button", { name: "Download traits" })).toBeNull();
   });
 });
