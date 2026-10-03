@@ -43,13 +43,13 @@
 
 ## 0. Setup and gates (no commit)
 
-- [ ] 0.1 Run `npm ci` at the worktree root, then `uv sync --extra test` in `services/workflows/`.
-- [ ] 0.2 Baselines, all green before any change:
+- [x] 0.1 Run `npm ci` at the worktree root, then `uv sync --extra test` in `services/workflows/`. Done 2026-10-02.
+- [x] 0.2 Baselines, all green before any change: Done 2026-10-02: web 533, workflows 1073 passed; `tests/unit/` baseline saved (63 failed + 97 errors, all Windows/WSL; `test_weekly_backup.py` ignored for `os.geteuid`).
   - `npx vitest run components/cyl-pipeline lib/cyl-pipeline app/api/cyl`
   - the workflows tests
   - `tests/unit/`
   - Record any Windows-only failures that come from unrelated tests.
-- [ ] 0.3 **Gate (user):** the GitHub secrets `PROD_WANDB_API_KEY` and `STAGING_WANDB_API_KEY` exist, ideally a service-account key with registry read access. They're needed before merge (design D7).
+- [x] 0.3 **Gate (user):** the GitHub secrets `PROD_WANDB_API_KEY` and `STAGING_WANDB_API_KEY` exist, ideally a service-account key with registry read access. They're needed before merge (design D7). Done 2026-10-02 (user's choice: their personal key; moving every wandb key to a service account is bloom#1031).
 - [x] 0.4 Egress: from `bloom_v2_staging-workflows-1`, `https://api.wandb.ai` answered HTTP 404 at the API root on 2026-10-02 (user go-ahead). The prod container runs on the same host.
 
 ## 1. Workflows dependency (C1)
@@ -149,7 +149,7 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - `services/workflows/README.md`: Provisioning step 7 (the deploy secrets; ideally a service-account key; only `workflows` gets it), a Configuration row, and the Auth model Layer 2 correction ("no privileged Supabase credential", plus `WANDB_API_KEY` for `GET /model-cards`).
   - `DEV_SETUP.md` "optional keys": `WANDB_API_KEY` shows the dialog's model warnings locally; without it the dialog shows "Couldn't check the models' age ranges."
   - `.env.prod.defaults` header, `scripts/setup-env-secrets.sh` comment and `PROD_SETUP.md` secrets table: replace the hand-kept lists with a pointer to the two `deploy.yml` heredocs (kept in sync by `scripts/verify_env_parity.py`) and each service's README. `.env.staging.defaults` isn't touched.
-- [ ] 4.6 `tests/unit/` is green, apart from the Windows-only failures recorded in 0.2.
+- [x] 4.6 `tests/unit/` is green, apart from the Windows-only failures recorded in 0.2. Done: identical to the 0.2 baseline (no new failures; +6 passes).
 
 ## 5. Web: classification, client and proxy (C5a, C5b)
 
@@ -231,27 +231,27 @@ Tests go in `tests/test_main.py`, following its `dependency_overrides` and monke
   - `python scripts/verify_env_parity.py .github/workflows/deploy.yml`
 - [x] 7.3 Web checks (2026-10-02: tsc clean; 153 files / 2302 tests pass; build OK with the route listed; `web/` has no lint script and CI doesn't lint it): from `web/`, run `npx tsc --noEmit`, `npm run build` (with CI's placeholder `NEXT_PUBLIC_*` env; restore `web/tsconfig.json` afterwards) and `npm run test:unit`.
 - [x] 7.4 Re-run 1.4 and 1.5, and confirm 1.6's comparison is recorded in C2's body.
-- [ ] 7.5 Run `/pre-merge` and fix anything until green.
+- [x] 7.5 Run `/pre-merge` and fix anything until green. Done: PR #1028 CI all green (34 checks) at 54d64d05 and again at 1b50c80f after the review round.
 - [x] 7.6 Tick 0–7, write the PR body with `/pr-description` ("Part of #971"; gates 9.1 and 9.2; dev stacks must rebuild the workflows image), and update the draft PR.
 
 ## 8. Rebase watch
 
-- [ ] 8.1 Before marking the PR ready, rebase onto `origin/staging`. Expect conflicts with changes to `docker-compose.prod.yml`, `deploy.yml` or `services/workflows/{main.py,README.md}`, for example from `feat/rnaseq-s3-folder-service`. Re-run 7.1–7.3 after. Re-check that no new active change modifies "Confirm dialog shows read-only resolved params and a pre-check, without predicting skips".
+- [x] 8.1 Before marking the PR ready, rebase onto `origin/staging`. Expect conflicts with changes to `docker-compose.prod.yml`, `deploy.yml` or `services/workflows/{main.py,README.md}`, for example from `feat/rnaseq-s3-folder-service`. Re-run 7.1–7.3 after. Re-check that no new active change modifies "Confirm dialog shows read-only resolved params and a pre-check, without predicting skips". Done by merging `origin/staging` (#1004 with a README conflict, #1027, #1029) rather than rebasing, so no pushed commit was rewritten; 7.1-7.3 re-run after each.
 
 ## 9. Merge gates and verification
 
-- [ ] 9.1 **Gate (satisfied).** The cluster re-pin is live: srp #112 (traits `sha-426ad4d`) and #113 (predict `sha-79939ee`), with `argo template update` run, traits first, per #115. Confirm that those srp changes didn't alter the canonical `sleap-roots-pipeline.yaml` that Bloom vendors.
-- [ ] 9.2 **Gate.** Both secrets exist; record the names from `gh secret list` (read-only). Mark the PR ready only after 9.1 and 9.2; merging is the user's.
-- [ ] 9.3 After the staging deploy, read-only checks:
+- [x] 9.1 **Gate (satisfied).** The cluster re-pin is live: srp #112 (traits `sha-426ad4d`) and #113 (predict `sha-79939ee`), with `argo template update` run, traits first, per #115. Confirm that those srp changes didn't alter the canonical `sleap-roots-pipeline.yaml` that Bloom vendors. Confirmed 2026-10-03: srp c0cc06e (#112) and e43f145 (#113) touch only the two templates and docs, not `sleap-roots-pipeline.yaml`.
+- [x] 9.2 **Gate.** Both secrets exist; record the names from `gh secret list` (read-only). Mark the PR ready only after 9.1 and 9.2; merging is the user's. Done 2026-10-02: `PROD_WANDB_API_KEY` (environment `production`) and `STAGING_WANDB_API_KEY` (environment `staging`). #1028 merged 2026-10-03 as 2f02bf29.
+- [x] 9.3 After the staging deploy, read-only checks: Done 2026-10-03 after Deploy 37142779046: the staging `workflows` container is healthy; its startup log shows two wandb GraphQL `200`s, then "Model-card refresh listed 8 production cards (0 skipped)"; `/workflows/model-cards` and `/api/cyl/pipeline/model-cards` answer 401 without a session. The post-expiry refresh timing wasn't measured.
   - `GET /workflows/model-cards` with a staging session returns 8 cards matching design's Context table;
   - the warm-up logged a successful listing at startup;
   - a request just after the 300 s expiry: record its time.
   - Repeat the endpoint check on prod after the next promotion, with the user's go-ahead.
-- [ ] 9.4 On staging, open the confirm dialog without submitting:
+- [x] 9.4 On staging, open the confirm dialog without submitting: Done 2026-10-03 by the user, with screenshots: IP-Boa-0 (arabidopsis day 20) showed the past-window warning "…models validated up to day 14 (12)" with Start run enabled; PI 154844 (sorghum days 6 and 12) showed the blocker with Start run disabled; Emily Shane CQuesta (pennycress day 8) showed no model text. No run was submitted.
   - an arabidopsis experiment with day-20/21 scans → the past-window block;
   - an experiment of a species with no cards (for example sorghum) → the blocker.
   - Any GPU run needs the user's yes for that run.
-- [ ] 9.5 Archive with `/openspec:archive add-cyl-pipeline-model-window-warning` after 9.3–9.4. Replace the new `cyl-model-catalog` spec's "Purpose: TBD" with one sentence.
+- [x] 9.5 Archive with `/openspec:archive add-cyl-pipeline-model-window-warning` after 9.3–9.4. Replace the new `cyl-model-catalog` spec's "Purpose: TBD" with one sentence. Done 2026-10-03.
 
 ## 10. PR #1028 review round (user decisions: C, keep "validated", A)
 
