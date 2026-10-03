@@ -14,7 +14,7 @@
 -- For dev data loaded with explicit ids (e.g. `make seed-gravi` runs this after its
 -- seed). Never as a hand fix on prod or staging: there, a behind sequence is fixed by a
 -- re-advance migration through the normal deploy.
---   docker compose -f docker-compose.dev.yml exec -T db-dev \
+--   docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
 --     psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < scripts/sql/advance_behind_sequences.sql
 
 BEGIN;

@@ -196,7 +196,15 @@ Tasks:
   - the `make check` text in `README.md:76`, `Makefile:32` and the `pr-checks.yml:1321` step name;
   - an `## Id sequences behind their data` section in `_WIKI/SUPABASE/README.md`. It explains the annotation, says the fix is a `*_readvance_id_sequences_<reason>.sql` migration and never a hand `setval` on prod, and says to check deploy-gated issues by hand. For dev, it gives the `psql < scripts/sql/advance_behind_sequences.sql` one-liner;
   - a bullet in `_WIKI/SCHEDULEDJOBS/weekly-backup.md` under "Notes on what this does not do": a restore reproduces the dumped sequence state, dumps from before PR 1's prod deploy carry 21 behind sequences, so run `scripts/sql/sequences_behind.sql` after any restore.
-- [ ] 3.10 Manual check: on dev, run `make seed-gravi && make check`. Record that there are no behind sequences.
+- [x] 3.10 Manual check: on dev, run `make seed-gravi && make check`. Record that there are no behind sequences.
+
+  **Recorded 2026-10-03,** with the user's OK to write to the dev DB:
+
+  - **The first run caught a bug:** the target's `docker compose exec` lacked `--env-file .env.dev`, so compose refused to run (`invalid spec: :/data`). Fixed, and pinned in `test_advance_body_copies.py`. The same fix went into the runbook command and the advance script's header.
+  - **The seed itself then failed, for a reason outside this change.** It `UPDATE`s `gravi_experiments` 9101 and 9102 and references them from `gravi_scan_sessions`, but no script in the repo creates them, and dev has none. Under `ON_ERROR_STOP` its transaction rolled back, so nothing was written.
+  - **The advance half of the target was run on its own** through the same compose command and printed `advance_behind_sequences: 0 of 68 sequences advanced`.
+  - **`check_health`'s sequence check is clean on dev.** It reports only the two migration-history rows removed in §2.2.
+
 - [ ] 3.11 Run `/pre-merge` (including `pre-commit run --all-files` and the full unit suite). Open PR 2 to `staging` titled `Fail deploy and make check when an id sequence is behind its data (Part of #1022)`.
 - [x] 3.12 Draft the `make load-test-data` issue: localhost-only URL derived from `.env.dev`, a sequence reset that runs even after a partial load, and the exit code passed on. Show it to the user, and post it only with their OK. **Filed as #1033** (2026-10-03, with the user's OK).
 

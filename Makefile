@@ -415,7 +415,7 @@ seed-gravi:
 		exit 1; \
 	fi
 	@cat scripts/seed_gravi_mock_data.sql scripts/sql/advance_behind_sequences.sql \
-		| docker compose -f docker-compose.dev.yml exec -T db-dev \
+		| docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T db-dev \
 			psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1
 
 ## Upload test images to MinIO storage

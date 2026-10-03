@@ -65,6 +65,9 @@ def test_seed_gravi_runs_the_seed_then_the_advance_script():
     advance = recipe.find("scripts/sql/advance_behind_sequences.sql")
     assert seed != -1 and advance != -1 and seed < advance
     assert "db-dev" in recipe and "ON_ERROR_STOP=1" in recipe
+    # Without it compose can't resolve the stack's variables and refuses to run (found by
+    # the manual run, tasks 3.10).
+    assert "--env-file .env.dev" in recipe
 
 
 def test_gravi_seed_header_points_to_the_make_target():
