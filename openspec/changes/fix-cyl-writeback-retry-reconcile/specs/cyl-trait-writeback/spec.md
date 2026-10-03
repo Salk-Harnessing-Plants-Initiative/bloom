@@ -289,8 +289,8 @@ established `SECURITY DEFINER` wrapper convention. `bloomctl cyl batch-ingest-re
 function at most once per invocation, after ingesting every envelope discovered for the batch, passing
 the `ARGO_WORKFLOW_NAME` environment variable Argo sets on the write-back container. It SHALL skip
 the call when an envelope it attempted failed retriably (capability `cyl-batch-ingest-result`);
-the status poller then makes an equivalent call, with its own `p_error_message`, once that workflow
-can write nothing more (capability `cyl-pipeline-status-polling`). `bloomctl` SHALL also skip
+the status poller then makes an equivalent call, with its own `p_error_message`, once that workflow's
+Argo phase is terminal or the run's rollup concludes (capability `cyl-pipeline-status-polling`). `bloomctl` SHALL also skip
 the call entirely when that environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
 `cyl_pipeline_run_scans` rows (if any happen to exist) untouched.
 

@@ -34,19 +34,16 @@ once its terminal status is written, and this is the only remaining chance to re
 write-back step never ran at all (its own workflow failed before reaching write-back, or the
 write-back container never started), or whose write-back step's final attempt still had a
 retriable envelope failure (`bloomctl cyl batch-ingest-result` then deliberately makes no
-reconciliation call; capability `cyl-batch-ingest-result`). In every cycle that writes no terminal
-status — the computed status is `'running'`, no status can be concluded, or `'complete'` is
-withheld — the poller SHALL instead close out, the same way, the `'queued'` rows of every *settled*
-`argo_workflow_name`: one whose own phase this cycle is `Succeeded`, `Failed`, or `Error`, or one
-that returned `None` (`404`) and whose every `'queued'` row was last updated (for a `'queued'` row,
-when dispatch stamped its workflow name) longer ago than the Workflow TTL plus a clock-skew
-allowance — a `404` that old can only be `ttlStrategy`'s garbage collection, which fires no sooner
-than the TTL after the workflow finished. A settled workflow can write no further result. After
-such a close-out the poller SHALL re-derive `done_count`/`failed_count` from a fresh read; when the
-computed status is `'running'` it SHALL write that status every cycle even if the close-out or the
-recount failed (with the snapshot counts, marking the cycle unclean unless the failure is
-`PGRST202`), since a `'running'` run stays a candidate regardless and skipping the write would only
-freeze its counts. It SHALL log how many rows each reconciliation call closed out. If that reconciliation call itself fails, the run's status
+reconciliation call; capability `cyl-batch-ingest-result`). While the computed status is
+`'running'`, the poller SHALL also close out, the same way, the `'queued'` rows of every
+`argo_workflow_name` whose own phase this cycle is `Succeeded`, `Failed`, or `Error` — a confirmed
+terminal phase, never a `404`, since a `404` can also come from a misconfigured namespace, API URL
+or CRD while the workflow still runs; such rows wait for the terminal-rollup reconciliation — and
+SHALL then re-derive `done_count`/`failed_count` from a fresh read. It SHALL write the `'running'`
+status every such cycle even if that close-out or recount failed (with the snapshot counts,
+marking the cycle unclean unless the failure is `PGRST202`), since a `'running'` run stays a
+candidate regardless and skipping the write would only freeze its counts. It SHALL log how many
+rows each reconciliation call closed out. If that reconciliation call itself fails, the run's status
 update SHALL be skipped entirely this
 cycle (the run's `cyl_pipeline_runs.status` left untouched, so it remains a candidate and is retried
 next cycle), matching the isolation the rule below already gives every other per-run failure. It SHALL isolate a failure fetching or updating any one
@@ -93,7 +90,7 @@ matching `dispatch_worker.py`'s established conventions for both.
 - **WHEN** one of a run's workflows returns `None` from `get_workflow_status` (a `404`)
 - **THEN** that workflow does not contribute a phase to the rollup computation this cycle
 - **AND** if it was the only workflow the run had left to check, the run's status is left unchanged
-  this cycle rather than guessed (its `'queued'` rows are still closed out once it is settled)
+  this cycle rather than guessed
 
 #### Scenario: A 404 among otherwise-Succeeded siblings withholds a `'complete'` conclusion, not writes one
 
@@ -177,21 +174,12 @@ matching `dispatch_worker.py`'s established conventions for both.
   for `"wf-b"`, re-derives the counts, and writes `'running'` with a `failed_count` that includes
   `"wf-a"`'s newly closed rows
 
-#### Scenario: A recently dispatched 404'd workflow's queued rows wait
+#### Scenario: A 404'd workflow's queued rows wait while the run is running
 
-- **WHEN** a workflow with `'queued'` rows returned `None` (`404`) from `get_workflow_status` this
-  cycle, and one of those rows was dispatched less than the Workflow TTL ago
-- **THEN** the poller makes no reconciliation call for that workflow while the run's rollup is
-  `'running'`, unconcluded, or withheld from `'complete'`
-
-#### Scenario: A garbage-collected workflow's rows are closed even when no status can be concluded
-
-- **WHEN** every workflow of a candidate run returns `None` (`404`) — for example because the poller
-  could not read them for longer than the Workflow TTL — so the rollup concludes nothing, and their
-  `'queued'` rows were all dispatched longer ago than the TTL
-- **THEN** the poller calls `fail_cyl_pipeline_run_scans_without_result` for each of those workflows
-  and still writes no status for the run
-- **AND** the same close-out happens when such a workflow's run is withheld from `'complete'`
+- **WHEN** a candidate run's rollup concludes `'running'`, and a workflow with `'queued'` rows
+  returned `None` (`404`) from `get_workflow_status` this cycle, however long ago it was dispatched
+- **THEN** the poller makes no reconciliation call for that workflow this cycle; its rows are
+  closed out once the run's rollup concludes a non-`'running'` status
 
 #### Scenario: A failed close-out in a running run does not freeze its progress
 

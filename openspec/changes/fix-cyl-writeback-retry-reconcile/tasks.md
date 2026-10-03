@@ -16,13 +16,8 @@ test.
     (`map_rpc_error` path).
   - Setup: `ARGO_WORKFLOW_NAME="wf-a"`; the manifest lists `scan_1` and `scan_2`; `scan_1`
     ingests; `scan_2`'s `call_insert_envelope` raises.
-  - Assert:
-    - no reconcile call;
-    - no `<reconciliation>` entry in `--json`;
-    - exit 1;
-    - stderr contains `reconciliation deferred to the status poller: 1 envelope(s) failed
-retriably`;
-    - stdout is still valid JSON.
+  - Assert: - no reconcile call; - no `<reconciliation>` entry in `--json`; - exit 1; - stderr contains `reconciliation deferred to the status poller: 1 envelope(s) failed
+retriably`; - stdout is still valid JSON.
 - [x] 1.2 `test_batch_ingest_cli_retry_after_a_retriable_failure_marks_the_scan_written` (the
       #1034 regression). Use a stateful fake over a dict of rows:
   - **Rows:** `scan_1`, `scan_2` and `scan_3` start `'queued'`. The run manifest lists only
@@ -177,7 +172,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
 
 ## 5a. /review-pr round 1 (PR #1038, review 5402607775)
 
-- [x] 5a.1 Poller: closes out _settled_ workflows in every cycle that writes no terminal status.
+- [x] 5a.1 (Reverted in 5b.1.) Poller: closes out _settled_ workflows in every cycle that writes no terminal status.
   - "Settled" means a terminal phase, or a 404 whose `'queued'` rows were all dispatched more than
     the TTL plus 5 minutes ago.
   - This covers `'running'`, an unconcluded rollup, and a withheld `'complete'`.
@@ -216,6 +211,34 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
     run.
   - D2/D4/Risks are rewritten: the residual eviction race, the poller-first rollout order, and
     the real error not kept on the row.
+
+## 5b. /review-pr round 2 (PR #1038, review 5402723820)
+
+- [x] 5b.1 Revert 5a.1's 404/TTL "settled" rule. It measured time since dispatch, not since the
+      Workflow finished, so it could permanently fail a live batch's rows on a non-GC 404; the
+      poller also never received `WORKFLOWS_K8S_TTL_SECONDS`.
+  - Now only a confirmed terminal phase is settled, and only while the run is `'running'`.
+  - Unconcluded and withheld cycles close nothing and write nothing, as before.
+  - Tests: `test_a_404d_workflow_is_never_settled`,
+    `test_sweep_leaves_a_404d_workflows_rows_alone_while_the_run_runs_end_to_end`,
+    `test_sweep_closes_nothing_and_writes_nothing_without_a_conclusion`.
+- [x] 5b.2 Backstop text: "write-back recorded no result for this scan before its workflow
+      ended; check whether a result file exists before re-running prediction" (mirrored in
+      `failure-hints.ts`).
+- [x] 5b.3 `_close_out_workflows`:
+  - takes a `context` phrase for logs, instead of a misleading "before writing status …";
+  - uses one exception handler;
+  - documents its three return outcomes.
+- [x] 5b.4 Tests:
+  - `ok = ok and clean` is pinned in both branches
+    (`test_a_clean_close_out_does_not_clear_an_earlier_runs_unclean_cycle`);
+  - a non-`PGRST202` `APIError` is tested on the running branch;
+  - the bloomctl deferral literal is pinned.
+- [x] 5b.5 Design: D2 and Risks are rewritten (404 never settled, and why); the stuck-run case is
+      left for the follow-up issue (5b.6).
+- [ ] 5b.6 File the follow-up issue (approved): deferred rows of a 404'd Workflow in an
+      unconcluded or withheld run, the pre-existing withheld-`'complete'` stall, and the
+      pre-existing `'partial'`-run re-polling. Link it here and in the PR body.
 
 ## 6. Post-merge rollout (blocks archive)
 

@@ -20,9 +20,9 @@ The dispatcher splits a run into 25-scan Workflows (`services/workflows/pipeline
 ## Goals / Non-Goals
 
 - **Goal:** a scan that a later attempt of the same write-back step ingests ends `'written'`.
-- **Goal:** every dispatched scan still ends `'written'`, `'reused'` or `'failed'`. It does so
-  within one poller cycle of its own Workflow ending, once the run has been fully dispatched and
-  its poller is live (D4). That is no slower than today for a failed scan.
+- **Goal:** every dispatched scan still ends `'written'`, `'reused'` or `'failed'`. Normally it
+  does so within one poller cycle of its own Workflow ending, once the run has been fully
+  dispatched and its poller is live (D4). Risks lists the exceptions.
 - **Non-goals:**
   - repairing rows already stuck (prod run 2; bloom#1035);
   - changing the guard or either RPC;
@@ -70,7 +70,7 @@ Rejected alternatives:
   `test_cyl_noop_redelivery_migration_files.py` pins, and weakening a guard that four scenarios
   rely on.
 
-### D2. The poller closes each _settled_ Workflow's leftover rows in every non-terminal cycle
+### D2. While a run is `'running'`, the poller closes each terminal Workflow's leftover rows
 
 Before this change, `sweep_once` reconciled only when the run's rollup was non-`'running'`, so
 it waited for every Workflow in the run. With D1, rows deferred by a Workflow whose write-back
@@ -80,44 +80,42 @@ rows were closed at the end of the final attempt.
 **Change.**
 
 - `_fetch_effective_phases` returns an `EffectivePhases` `NamedTuple`. Its sixth field,
-  `settled_workflow_names`, lists the queued Workflow names that can write nothing more:
-  - the phase is `Succeeded`, `Failed` or `Error`; or
-  - it returns a 404, and every one of its `'queued'` rows was last updated longer ago than
-    `WORKFLOWS_K8S_TTL_SECONDS` plus a 5-minute skew allowance. For a `'queued'` row, last updated
-    means when `complete_cyl_pipeline_batch` stamped the Workflow name. A 404 that old can only
-    be `ttlStrategy` garbage collection, which fires no sooner than the TTL after the Workflow
-    finished. A younger 404 is left alone.
-- In every cycle that writes no terminal status, `sweep_once` reconciles the settled names and
-  then recounts. That covers a rollup of `'running'`, no conclusion at all (`None`), and a
-  withheld `'complete'`. Without this, the review of PR #1038 found deferred rows stuck in two
-  cases:
-  - a run whose Workflows all 404 because the poller couldn't read them for longer than the
-    TTL, as with a bad CA cert (#1019);
-  - a run withheld from `'complete'`.
+  `settled_workflow_names`, lists the queued Workflow names whose own phase this cycle is
+  `Succeeded`, `Failed` or `Error`.
+- When the rollup is `'running'`, `sweep_once` reconciles those names, recounts, and writes
+  `'running'`. It writes even if the close-out or recount failed, using the snapshot counts and
+  marking the cycle unclean (`PGRST202` stays quiet). The run stays a candidate either way, so
+  skipping the write would only freeze its progress counts.
+- An unconcluded rollup (`None`) and a withheld `'complete'` close nothing and write nothing,
+  exactly as before.
 - When the rollup is terminal, it reconciles every queued name, including 404'd ones, exactly
-  as before.
-- **Failure handling.**
-  - A terminal rollup still skips its status write when the reconcile or recount fails, so the
-    run stays a candidate.
-  - A `'running'` run still writes its status with the snapshot counts and marks the cycle
-    unclean. It stays a candidate either way, so skipping the write would only freeze its
-    progress counts.
-  - `PGRST202` is quiet in both cases.
-- Each reconcile logs how many rows it closed, so operators can see that the poller closed them
-  rather than bloomctl.
+  as before. It accepts a 404 of any age there because a terminal write ends polling, so this
+  is the run's last chance.
+- Each reconcile logs how many rows it closed, so operators can see that the poller closed
+  them rather than bloomctl.
+
+**Why a 404 is never "settled" (review round 2 on PR #1038).**
+
+- Round 1 treated a 404 as settled once every `'queued'` row was dispatched more than
+  TTL + 5 minutes ago. Three reviewers showed that rule was unsound:
+  - Garbage collection happens TTL seconds after a Workflow _finishes_, but the check measured
+    time since _dispatch_. Any batch running past about 65 minutes, which is normal behind a
+    GPU queue, passed while still alive.
+  - So one cycle of a 404 that isn't garbage collection would permanently fail every row of a
+    live batch, and the write-back guard would then keep them `'failed'`. Such a 404 can come
+    from a namespace change on redeploy, a re-pointed API URL, an Argo CRD reinstall, or a proxy.
+  - The poller also never received `WORKFLOWS_K8S_TTL_SECONDS`.
+- That rule was reverted. The rare case it covered goes back to Risks and to a follow-up issue.
 
 **Why it is safe.**
 
 - A Workflow's phase becomes `Succeeded`, `Failed` or `Error` only after every node has
   finished. That includes the write-back node with all its retries and the downstream
   `exit-gate`. So no ordinary attempt can still write.
-- **One residual race.** Argo can mark an evicted pod's node `Failed` before its container
-  exits, and an RPC the pod already sent still commits. If a poller cycle lands in that window,
-  which is about one RPC long, it can close a row the RPC then writes, and the guard keeps it
-  `'failed'`. Before this change, the same window existed only at run-terminal time.
-- A 404'd Workflow's rows are closed only once garbage collection is the sole explanation. A
-  misconfigured namespace can't close fresh rows early, because every row also has to be older
-  than the TTL.
+- **One residual race.** Argo can mark an evicted or terminated pod's node `Failed` before its
+  container exits, and an RPC the pod already sent still commits. If a poller cycle lands in that
+  window, which is about one RPC long, it can close a row the RPC then writes, and the guard keeps
+  it `'failed'`. Before this change, the same window existed only at run-terminal time.
 - The only thing that can restart a terminal Workflow is a manual `argo retry` (see Non-goals).
 
 ### D3. bloomctl's exit code and output are unchanged
@@ -141,9 +139,10 @@ entry. Its retry re-ingests already-written envelopes as no-ops: the primary
   up to that merge. §6 re-checks `origin/main..origin/staging -- bloomcli` at bump time.
 - **Rollback is a re-pin** to `sha-88cbcbf@sha256:0259ec0a…` plus re-registration.
 - **Ordering: the poller first.** The poller half alone is harmless: it only closes rows
-  earlier for Workflows that are already settled. The bloomctl half is not harmless on its own.
+  earlier for Workflows whose phase is already terminal. The bloomctl half is not harmless on its
+  own.
   - Without the new poller, a deferred row in a multi-Workflow run waits for the slowest
-    sibling, and an unconcluded or withheld run keeps it `'queued'`.
+    sibling.
   - The template bump reaches prod at once, while the poller reaches prod only at the next
     staging→main promotion.
   - So tasks §6.3 waits until prod's workflows service runs this commit.
@@ -151,29 +150,38 @@ entry. Its retry re-ingests already-written envelopes as no-ops: the primary
 ## Risks / Trade-offs
 
 - **The real error isn't kept on the row.** A scan that write-back failed on its final attempt
-  reads `'queued'` until the first poller cycle after its Workflow is settled. It then gets the
-  poller's message: "…before write-back recorded a result for this scan; its result file may
-  exist". The text was reworded from "produced a result" so it no longer claims nothing was
-  produced.
+  reads `'queued'` until the poller closes it. It then gets the poller's message: "write-back
+  recorded no result for this scan before its workflow ended; check whether a result file
+  exists before re-running prediction". That wording is neutral on purpose: it covers a
+  Workflow that failed before write-back as well as one whose envelope was rejected.
   - The specific error (a DB rejection, a validation failure) only reached the write-back pod
     log, which Argo deletes with the Workflow after the TTL. Before this change the row got
-    bloomctl's equally generic `NO_RESULT_MESSAGE`, so nothing is lost relative to that.
+    bloomctl's equally generic `NO_RESULT_MESSAGE`.
   - Recording per-scan errors on the row would need a new RPC parameter. That is out of scope.
+- **Deferred rows can stay `'queued'` while a run is stuck.** This happens when the deferring
+  Workflow 404s before the poller ever sees its terminal phase, for example after poller
+  downtime or persistent `K8sStatusError`s longer than the TTL. Then:
+  - if every Workflow 404s, the rollup is `None`;
+  - if every sibling succeeded, `'complete'` is withheld.
+
+  Either way nothing reconciles, and the run itself is already stuck (it stays `'running'`), as
+  it was before this change. What's new is only that its deferred rows also stay `'queued'`
+  instead of being closed by bloomctl. Closing a 404'd Workflow's rows safely needs a signal a
+  misconfiguration can't fake. That is a follow-up issue, together with the pre-existing
+  withheld-`'complete'` stall.
+
 - **More rests on the poller.** If the poller is down, deferred rows stay `'queued'` until it
-  returns. Once it does, rows of Workflows garbage-collected in the meantime are closed too
-  (D2). The run's status, its counts and every "write-back never ran" scan already depend on the
-  poller in the same way.
+  returns. The run's status, its counts and every "write-back never ran" scan already depend on
+  the poller in the same way.
 - **Deterministic failures defer too** (D1). Their rows are closed by the poller with its
   message.
-- **Closing rows doesn't unstick the run.** For a run whose Workflows all 404, or one withheld
-  from `'complete'`, D2 closes the rows but the run's status stays as it was, as today. That
-  stall is outside this change.
 - **Undispatched batches hold everything back.** While some batches of a run are still waiting
   to be dispatched, the run isn't a polling candidate yet (`_settle_cyl_pipeline_run`), so its
-  finished Workflows' rows wait too. If that lasts longer than the TTL, D2's 404 rule closes
-  them once the run becomes a candidate.
+  finished Workflows' rows wait too.
 - **One sibling's K8s error blocks the run.** It skips that whole run for the cycle, including
-  its settled siblings' close-out. This isolation predates the change.
+  its terminal siblings' close-out. This isolation predates the change.
+- **The reconcile RPC is keyed by `argo_workflow_name` alone.** `generateName` suffixes could
+  in principle recur after garbage collection. That is pre-existing and very unlikely.
 - **Shared input directories (srp#37).** Another run can write a `{scan_key}.result.json` into
   the shared hostPath directory between attempts. One sequence then still leaves a stale
   `'failed'` row:

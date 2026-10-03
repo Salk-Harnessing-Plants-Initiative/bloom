@@ -27,7 +27,7 @@ write that scan's result, so the command SHALL make no reconciliation call, SHAL
 reconciliation entry to the batch result, and SHALL write one line to stderr saying that
 reconciliation was deferred to the status poller and how many envelopes failed retriably; the status
 poller (capability `cyl-pipeline-status-polling`) closes out this workflow's still-`'queued'` rows
-once the workflow can write nothing more. That call closes out,
+once the workflow's Argo phase is terminal or the run's rollup concludes. That call closes out,
 as `'failed'`, any `cyl_pipeline_run_scans` row for this workflow name that no envelope in this
 batch resolved. That includes a scan whose prediction failed before producing any file at all,
 which this command cannot discover directly, since it can only see files that exist. The same single

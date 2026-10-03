@@ -418,18 +418,16 @@ write-back never ran for it at all (its workflow failed before reaching
 write-back, or the write-back container never started), or write-back's final
 attempt still had a retriable envelope failure, in which case `bloomctl`
 deliberately left the workflow's rows to this poller (bloom #1034). This is
-the last chance to close it out. In every other cycle (the run is still
-`'running'`, no status can be concluded, or `'complete'` is withheld), the
-poller closes out, the same way, the leftover `'queued'` rows of each *settled*
-workflow, one that can write nothing more: its own phase is `Succeeded`,
-`Failed` or `Error`, or it 404s and every one of its `'queued'` rows was
-dispatched longer ago than `WORKFLOWS_K8S_TTL_SECONDS` (plus 5 minutes for clock
-skew). Only `ttlStrategy` garbage collection explains a 404 that old. A run's
-25-scan workflows can finish hours apart, so this keeps a finished workflow's
-rows from waiting for the slowest one. For a `'running'` run, a failed close-out
-or recount still lets that cycle's progress write happen (with the snapshot
-counts), since the run stays a candidate anyway. Each close-out logs how many
-rows it closed. It does so via
+the last chance to close it out. While a run is still `'running'`, the
+poller also closes out, the same way, the leftover `'queued'` rows of each
+workflow whose own phase is confirmed `Succeeded`, `Failed` or `Error`: that
+workflow has finished every node, write-back's retries included, and a run's
+25-scan workflows can finish hours apart. A 404 is never enough here, since a
+misconfigured namespace or API URL also returns 404 while the workflow still
+runs; those rows wait for the run-level case. For a `'running'` run, a failed
+close-out or recount still lets that cycle's progress write happen (with the
+snapshot counts), since the run stays a candidate anyway. Each close-out logs
+how many rows it closed. It does so via
 `fail_cyl_pipeline_run_scans_without_result` (one call per distinct
 `argo_workflow_name` with a leftover `'queued'` row), then re-deriving
 `done_count`/`failed_count` from a fresh read of that run's scan rows before
