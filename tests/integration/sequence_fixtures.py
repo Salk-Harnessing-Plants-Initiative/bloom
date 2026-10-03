@@ -209,16 +209,19 @@ def sequence_columns(cur, schema: str = "public") -> list[tuple[str, str, str]]:
 
 
 def behind(cur, schema: str = "public") -> set[tuple[str, str]]:
-    """(table, column) pairs that are behind, by the spec's definition, computed in Python."""
+    """(table, column) pairs that are behind, by the spec's definition, computed in Python.
+    Only ascending sequences are in scope; descending ones are never behind."""
     out = set()
     for table, col, seq in sequence_columns(cur, schema):
+        cur.execute("SELECT seqincrement FROM pg_sequence WHERE seqrelid = %s::regclass", (seq,))
+        inc = cur.fetchone()[0]
+        if inc < 0:
+            continue
         cur.execute(f'SELECT max("{col}") FROM "{schema}"."{table}"')
         mx = cur.fetchone()[0]
         if mx is None:
             continue
         lv, called = seq_state(cur, seq)
-        cur.execute("SELECT seqincrement FROM pg_sequence WHERE seqrelid = %s::regclass", (seq,))
-        inc = cur.fetchone()[0]
         nxt = lv + inc if called else lv
         if mx >= nxt:
             out.add((table, col))

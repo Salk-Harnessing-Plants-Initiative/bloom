@@ -105,10 +105,22 @@ def test_rollback_changes_no_sequence():
     assert "behind" in text  # the header says why it does nothing
 
 
-def test_body_pins_search_path_before_any_dynamic_sql():
-    """The body is copied into later files (design D6), so it pins its own search_path."""
-    code = _without_comments(_text(_exactly_one(MIGRATIONS, MIGRATION_GLOB)))
-    pin = code.find("set_config('search_path', 'pg_catalog, pg_temp', true)")
-    first_execute = code.find("EXECUTE")
-    assert pin != -1 and first_execute != -1 and pin < first_execute
-    assert pin > code.find("DO $advance$")
+def _body_statements() -> list[str]:
+    """The advance block's code lines between its own BEGIN and END, comments dropped."""
+    lines = [
+        line.strip()
+        for line in _without_comments(_text(_exactly_one(MIGRATIONS, MIGRATION_GLOB))).splitlines()
+    ]
+    start = lines.index("DO $advance$")
+    begin = lines.index("BEGIN", start)
+    end = lines.index("$advance$;", begin) - 1
+    assert lines[end] == "END", lines[end]
+    return [line for line in lines[begin + 1 : end] if line]
+
+
+def test_body_pins_search_path_first_and_restores_it_last():
+    """The body is copied into later files (design D6): it pins its own search_path first
+    and gives the caller's back last, so nothing after it in the transaction is affected."""
+    body = _body_statements()
+    assert body[0] == "PERFORM set_config('search_path', 'pg_catalog, pg_temp', true);"
+    assert body[-1] == "PERFORM set_config('search_path', v_saved_path, true);"

@@ -166,7 +166,7 @@ The local supabase CLI version differs from deploy's pinned 2.92.1. So whether `
 
 ### D6. The advance body, its copies, and re-runs
 
-The body is the migration's `DO $advance$ … $advance$;` block. Its file-level wrapper (`BEGIN`, `SET LOCAL lock_timeout`, `COMMIT`) sits outside the block.
+The body is the migration's `DO $advance$ … $advance$;` block. It pins `search_path` to `pg_catalog, pg_temp` as its first statement and restores the caller's as its last, so a copy can't change name resolution for anything after it in the same transaction. Its file-level wrapper (`BEGIN`, `SET LOCAL lock_timeout`, `COMMIT`) sits outside the block.
 
 PR 2 copies the block to `scripts/sql/advance_behind_sequences.sql`, wrapped there in its own `BEGIN; SET LOCAL lock_timeout …; COMMIT;`. A unit test compares the two blocks line by line, from `DO $advance$` through `$advance$;`. The isolation lint stops PR 1 from shipping `scripts/`, and the body has to run inside `db push`, so a copy is unavoidable.
 

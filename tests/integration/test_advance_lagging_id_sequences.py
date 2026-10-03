@@ -304,17 +304,23 @@ def test_t16_passing_the_maximum_fails_and_changes_nothing(fx):
     assert fx.state(a) == a_before
 
 
-def test_t17_unusual_sequences_that_are_not_behind_are_ignored(fx):
+def test_t17_a_sequence_the_role_cannot_advance_is_ignored_when_not_behind(fx):
     locked_out = _identity_with_rows(fx, "c", range(1, 4), as_admin=True)
     fx.setval(locked_out, 50, False)
     revoke_four(fx.conn, f"ALL ON SEQUENCE {locked_out.seq}")
-    descending = fx.table("d", kind="serial", type_="integer")
-    fx.insert(descending, range(1, 4))
-    fx.setval(descending, 50, False)
-    fx.alter_seq(descending, "INCREMENT BY -1")
     fx.run()
     assert fx.state(locked_out) == (50, False)
-    assert fx.state(descending) == (50, False)
+
+
+def test_t19_the_body_restores_the_callers_search_path(fx):
+    with fx.conn.cursor() as cur:
+        cur.execute("SHOW search_path")
+        before = cur.fetchone()[0]
+    _identity_with_rows(fx, "t19", range(1, 4))
+    fx.run()
+    with fx.conn.cursor() as cur:
+        cur.execute("SHOW search_path")
+        assert cur.fetchone()[0] == before
 
 
 @pytest.mark.skipif(not os.environ.get("CI"), reason="dev data may be loaded with explicit ids")

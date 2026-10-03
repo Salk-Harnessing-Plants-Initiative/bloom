@@ -62,7 +62,8 @@ Tasks:
 - [x] 1.16 **T14, cannot lock:** A sorts first, and table B has a four-role revoke of `UPDATE, DELETE, TRUNCATE`. The run raises, naming B and its owner, and A is unchanged.
 - [x] 1.17 **T15, descending:** a table with rows 1–5 whose sequence has `INCREMENT BY -1` is skipped: it is unchanged, and no NOTICE names it. This changed from "raises" after the PR review (user decision, 2026-10-02).
 - [x] 1.18 **T16, maximum:** A sorts first, and table B has explicit rows 1–10 followed by `MAXVALUE 5`. The run raises, naming B's sequence, and A is unchanged.
-- [x] 1.19 **T17, unusual but not behind:** a not-behind sequence with the four-role revoke, and one with `INCREMENT BY -1` (rows 1–3, `setval(50, false)`). The run completes, and both are unchanged.
+- [x] 1.19 **T17, unadvanceable but not behind:** a not-behind sequence with the four-role revoke. The run completes, and it is unchanged. Its former descending case was dropped once T15 covered descending sequences.
+- [x] 1.19b **T19, search_path restored:** after the body runs, `SHOW search_path` equals its value before the run.
 - [x] 1.20 **T18, migrated DB is clean:** the predicate over real `public` returns 0 rows. Skip it unless `CI` is set: on dev it depends on what was loaded locally.
 - [x] 1.21 **File-text unit tests** in `tests/unit/test_advance_lagging_id_sequences_migration_files.py`, which need no DB (pattern: `test_cyl_noop_redelivery_migration_files.py`):
   - each file exists exactly once;
@@ -76,7 +77,8 @@ Tasks:
 - [x] 1.23 **Red, part two:** run with `SEQ1022_RED_SKETCH=1`. Confirm:
 
   - T5 (the not-called case) and T7 fail on sequence state;
-  - T14 and T15 fail with "did not raise";
+  - T14 fails with "did not raise";
+  - T15 fails on sequence state: the sketch advances the descending sequence (re-checked after the review of `e86830e6`);
   - T13 and T16 hit unhandled `InsufficientPrivilege` and `NumericValueOutOfRange` errors instead of the designed exception;
   - T17 fails on a permission error.
 
@@ -157,6 +159,13 @@ Tasks:
   **Known gaps:** the `lock_timeout` path and the stage-2 re-check are untested (design D8).
 
   **Prod pre-checks:** moved to §5.0.
+
+- [x] 2.10 A targeted review of `e86830e6` (the post-review fixes), with probes on dev, found nothing blocking. It confirmed that the `search_path` pin resolves every name and resets at COMMIT. Fixed:
+
+  - the test oracle `behind()` now skips descending sequences, as the spec says;
+  - the body restores the caller's `search_path` as its last statement (new T19, and the unit test now pins first and last statement);
+  - descending sequences are skipped before any read, so they need no privileges;
+  - T15's red-phase line and T17's scope were corrected.
 
 ## 3. Guard (PR 2, code only)
 

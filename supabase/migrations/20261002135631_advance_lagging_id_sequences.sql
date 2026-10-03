@@ -23,7 +23,7 @@
 -- The DO block is meant to be reused unchanged: a later re-advance migration
 -- (*_readvance_id_sequences_<reason>.sql) copies it, and the follow-up guard change plans
 -- a scripts/ copy with a test pinning the copies (design D6). It pins its own search_path
--- so a copy behaves the same wherever it runs.
+-- so a copy behaves the same wherever it runs, and restores the caller's at the end.
 --
 -- Forward-only. Manual rollback (staging hot-apply only):
 --   supabase/rollbacks/20261002135631_advance_lagging_id_sequences_rollback.sql
@@ -50,6 +50,7 @@ DECLARE
   v_nexts numeric[];
   v_maxes numeric[];
   v_incs numeric[];
+  v_saved_path text := current_setting('search_path');
 BEGIN
   PERFORM set_config('search_path', 'pg_catalog, pg_temp', true);
 
@@ -78,17 +79,18 @@ BEGIN
     LOOP
       v_visited := v_visited + 1;
 
+      SELECT s.seqincrement, s.seqmax INTO v_inc, v_seqmax
+        FROM pg_sequence s
+       WHERE s.seqrelid = r.seq::regclass;
+      -- Descending sequences count down from their start; "behind" doesn't apply to them.
+      -- Skipped before reading anything, so they need no privileges.
+      CONTINUE WHEN v_inc < 0;
+
       EXECUTE format('SELECT max(%I)::numeric FROM public.%I', r.col, r.tbl) INTO v_max;
       CONTINUE WHEN v_max IS NULL;
 
       EXECUTE format('SELECT last_value::numeric, is_called FROM %s', r.seq)
         INTO v_last, v_called;
-      SELECT s.seqincrement, s.seqmax INTO v_inc, v_seqmax
-        FROM pg_sequence s
-       WHERE s.seqrelid = r.seq::regclass;
-
-      -- Descending sequences count down from their start; "behind" doesn't apply to them.
-      CONTINUE WHEN v_inc < 0;
 
       -- numeric, so a bigint sequence at its maximum can't overflow here.
       v_next := v_last + (CASE WHEN v_called THEN v_inc ELSE 0 END);
@@ -143,6 +145,8 @@ BEGIN
 
   RAISE NOTICE 'advance_behind_sequences: % of % sequences advanced',
     cardinality(v_seqs), v_visited;
+
+  PERFORM set_config('search_path', v_saved_path, true);
 END
 $advance$;
 

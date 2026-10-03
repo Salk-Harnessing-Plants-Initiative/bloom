@@ -39,7 +39,7 @@ advanced <seq> for public.<table>.<col>: next value <old> -> <new> (max = <max>)
 
 It SHALL end with the NOTICE `advance_behind_sequences: <n> of <m> sequences advanced`, where `<m>` is the number of sequence-backed columns it visited.
 
-It SHALL lock every behind table against writes, in one statement, before advancing any of them. It SHALL NOT visit child partitions or any schema other than `public`, and SHALL skip descending sequences. It SHALL pin its own `search_path` to `pg_catalog, pg_temp`, so a copy behaves the same wherever it runs.
+It SHALL lock every behind table against writes, in one statement, before advancing any of them. It SHALL NOT visit child partitions or any schema other than `public`, and SHALL skip descending sequences. It SHALL pin its own `search_path` to `pg_catalog, pg_temp` as its first statement, so a copy behaves the same wherever it runs, and SHALL restore the caller's `search_path` as its last.
 
 #### Scenario: Descending sequences are skipped
 
