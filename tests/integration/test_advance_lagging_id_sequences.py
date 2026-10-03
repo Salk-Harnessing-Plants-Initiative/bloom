@@ -25,20 +25,15 @@ from tests.integration.sequence_fixtures import (  # noqa: E402
     revoke_four,
     sequence_columns,
     snapshot,
+    stop_if_real_sequences_behind,
 )
 
 
 @pytest.fixture
 def fx(pg_conn):
+    stop_if_real_sequences_behind(pg_conn)
     f = Fixtures(pg_conn)
     with pg_conn.cursor() as cur:
-        real_behind = behind(cur)
-        if real_behind:
-            pg_conn.rollback()
-            pytest.skip(
-                f"real public sequences are behind on this database {sorted(real_behind)}: "
-                "running the body here would advance them for good. Apply the migration first."
-            )
         before = snapshot(cur)
     yield f
     try:

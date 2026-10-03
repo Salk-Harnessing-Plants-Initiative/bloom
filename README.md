@@ -73,7 +73,7 @@ make prod-logs           # View production logs
 ```bash
 make init                # Generate .env.dev from .env.dev.example (fresh secrets)
 make migrate-local       # Apply all migrations to the local dev DB
-make check               # Verify the stack: roles, schemas, migrations
+make check               # Verify the stack: roles, schemas, migrations, id sequences
 make verify-dev          # Clean reset -> up -> migrate -> check (destructive)
 make test-integration    # Run integration tests against the local stack
 make reset-storage       # Reset database and storage (DEV only)
