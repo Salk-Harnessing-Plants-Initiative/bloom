@@ -11,7 +11,7 @@ import { stageInProblems, type StageInProblem } from "./stage-in";
  * failure-hints.test.ts reads the poller's source to keep the two equal.
  */
 export const BACKSTOP_MESSAGE =
-  "workflow reached a terminal status before write-back recorded a result for this scan; its result file may exist";
+  "write-back recorded no result for this scan before its workflow ended; check whether a result file exists before re-running prediction";
 
 /**
  * Write-back's own text for a scan it dispatched but never resolved

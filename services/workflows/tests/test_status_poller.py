@@ -193,7 +193,7 @@ def test_rollup_skips_a_404d_workflow_rather_than_guessing(monkeypatch):
         "still 'queued' regardless of the 404 — a 404'd workflow can no longer be "
         "silently running, so its queued rows are reconciliation candidates too"
     )
-    assert settled_workflow_names == [], "an undated 404 is never old"
+    assert settled_workflow_names == [], "a 404 is never settled"
 
 
 def test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown(
@@ -807,8 +807,9 @@ def test_reconcile_unresolved_scans_sends_the_real_rpc_shape():
     assert captured["params"] == {
         "p_argo_workflow_name": "wf-abc",
         "p_error_message": (
-            "workflow reached a terminal status before write-back "
-            "recorded a result for this scan; its result file may exist"
+            "write-back recorded no result for this scan before its "
+            "workflow ended; check whether a result file exists before "
+            "re-running prediction"
         ),
     }
     assert count == 2
@@ -1040,8 +1041,7 @@ def test_sweep_reconciles_a_queued_scan_even_when_rollup_concludes_complete(
 def test_sweep_withheld_complete_on_404_never_reaches_reconciliation(monkeypatch):
     """The existing withheld-'complete'-on-404 rule already `continue`s before
     this backstop's code runs at all — pin that ordering explicitly, since a
-    queued row here must not be reconciled from incomplete evidence. (Only a
-    settled workflow's rows are, bloom #1034; none is settled here.)"""
+    queued row here must not be reconciled from incomplete evidence."""
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
     monkeypatch.setattr(
         worker,
@@ -1560,18 +1560,13 @@ def test_poll_interval_logs_a_warning_when_falling_back_for_a_bad_value(
     )
 
 
-# --- fix-cyl-writeback-retry-reconcile (bloom #1034): settled-workflow close-out --------------
+# --- fix-cyl-writeback-retry-reconcile (bloom #1034): terminal-workflow close-out -------------
 #
 # bloomctl now leaves a workflow's 'queued' rows alone when an envelope failed retriably (a retry
 # of write-back could still write it). A run is split into 25-scan workflows that can finish hours
-# apart, so in any cycle that writes no terminal status the poller closes out the workflows that
-# can write nothing more: a confirmed terminal phase, or a 404 older than the Workflow TTL.
-
-from datetime import datetime, timedelta, timezone  # noqa: E402
-
-NOW = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
-LONG_AGO = (NOW - timedelta(seconds=worker.WORKFLOW_TTL_SECONDS, hours=1)).isoformat()
-RECENT = (NOW - timedelta(minutes=10)).isoformat()
+# apart, so while the run is 'running' the poller closes out each workflow whose own phase is
+# confirmed terminal. A 404 is never enough: it can also come from a misconfigured namespace, API
+# URL or CRD while the workflow still runs (PR #1038 review round 2).
 
 
 def _patch_sweep(monkeypatch, fetched, *, reconcile=None, recount=(0, 0)):
@@ -1602,18 +1597,11 @@ def _patch_sweep(monkeypatch, fetched, *, reconcile=None, recount=(0, 0)):
 def _settled(rows, phases, monkeypatch):
     client = _FakeClient(cyl_pipeline_run_scans=rows)
     monkeypatch.setattr(worker, "get_workflow_status", phases.get)
-    return worker._fetch_effective_phases(
-        client, run_id=1, now=NOW
-    ).settled_workflow_names
+    return worker._fetch_effective_phases(client, run_id=1).settled_workflow_names
 
 
-def _row(name, status="queued", updated_at=RECENT):
-    return {
-        "run_id": 1,
-        "argo_workflow_name": name,
-        "status": status,
-        "updated_at": updated_at,
-    }
+def _row(name, status="queued"):
+    return {"run_id": 1, "argo_workflow_name": name, "status": status}
 
 
 @pytest.mark.parametrize("terminal", ["Succeeded", "Failed", "Error"])
@@ -1623,31 +1611,21 @@ def test_a_queued_workflow_in_a_terminal_phase_is_settled(monkeypatch, terminal)
 
 @pytest.mark.parametrize("live", ["Pending", "Running"])
 def test_a_live_workflow_is_never_settled(monkeypatch, live):
-    rows = [_row("wf-a", updated_at=LONG_AGO)]
-    assert _settled(rows, {"wf-a": live}, monkeypatch) == []
+    assert _settled([_row("wf-a")], {"wf-a": live}, monkeypatch) == []
 
 
-def test_a_404_dispatched_longer_ago_than_the_ttl_is_settled(monkeypatch):
-    """Only ttlStrategy's garbage collection explains a 404 that old: it fires no
-    sooner than TTL seconds after the workflow finished."""
-    rows = [_row("wf-gone", updated_at=LONG_AGO)]
-    assert _settled(rows, {}, monkeypatch) == ["wf-gone"]
-
-
-@pytest.mark.parametrize("updated_at", [RECENT, None, "not-a-timestamp"])
-def test_a_recent_or_undated_404_is_not_settled(monkeypatch, updated_at):
-    rows = [_row("wf-gone", updated_at=updated_at)]
-    assert _settled(rows, {}, monkeypatch) == []
-
-
-def test_a_404_with_any_recently_dispatched_queued_row_is_not_settled(monkeypatch):
-    rows = [_row("wf-gone", updated_at=LONG_AGO), _row("wf-gone", updated_at=RECENT)]
-    assert _settled(rows, {}, monkeypatch) == []
+def test_a_404d_workflow_is_never_settled(monkeypatch):
+    """However old its rows: a 404 can also mean a misconfigured namespace, API URL or
+    CRD while the workflow is still running, and closing its rows then would be
+    permanent (the write-back guard keeps them 'failed')."""
+    assert _settled([_row("wf-gone")], {}, monkeypatch) == []
 
 
 def test_only_workflows_with_queued_rows_are_settled(monkeypatch):
-    rows = [_row("wf-a", status="written")]
-    assert _settled(rows, {"wf-a": "Failed"}, monkeypatch) == []
+    assert (
+        _settled([_row("wf-a", status="written")], {"wf-a": "Failed"}, monkeypatch)
+        == []
+    )
 
 
 def test_sweep_closes_out_only_the_terminal_workflow_end_to_end(monkeypatch):
@@ -1675,7 +1653,29 @@ def test_sweep_closes_out_only_the_terminal_workflow_end_to_end(monkeypatch):
     assert update_calls == [(1, "running", 0, 1)]
 
 
-def test_sweep_reconciles_each_settled_workflow_once_and_recounts_once(monkeypatch):
+def test_sweep_leaves_a_404d_workflows_rows_alone_while_the_run_runs_end_to_end(
+    monkeypatch,
+):
+    client = _FakeClient(cyl_pipeline_run_scans=[_row("wf-gone"), _row("wf-b")])
+    reconcile_calls, update_calls = [], []
+    monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
+    monkeypatch.setattr(worker, "get_workflow_status", {"wf-b": "Running"}.get)
+    monkeypatch.setattr(
+        worker,
+        "_reconcile_unresolved_scans",
+        lambda c, name: reconcile_calls.append(name) or 1,
+    )
+    monkeypatch.setattr(
+        worker,
+        "update_run_status",
+        lambda c, r, s, d=None, f=None: update_calls.append((r, s, d, f)),
+    )
+    worker.sweep_once(client)
+    assert reconcile_calls == []
+    assert update_calls == [(1, "running", 0, 0)]
+
+
+def test_sweep_reconciles_each_terminal_workflow_once_and_recounts_once(monkeypatch):
     fetched = (
         ["Failed", "Running", "Succeeded"],
         False,
@@ -1707,12 +1707,22 @@ def test_sweep_running_run_with_nothing_settled_makes_no_call(monkeypatch):
     assert update_calls == [(1, "running", 2, 0)], "the snapshot counts"
 
 
-def test_sweep_running_run_reconcile_failure_still_writes_progress(monkeypatch):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("transient reconciliation failure"),
+        APIError({"message": "boom", "code": "XX000", "details": None, "hint": None}),
+    ],
+    ids=["exception", "api-error"],
+)
+def test_sweep_running_run_reconcile_failure_still_writes_progress(
+    monkeypatch, failure
+):
     """The run stays a candidate either way, so skipping the write would only freeze its
     counts. The failure still marks the cycle unclean and is retried next cycle."""
 
     def boom(client, name):
-        raise RuntimeError("transient reconciliation failure")
+        raise failure
 
     _, update_calls, _ = _patch_sweep(
         monkeypatch,
@@ -1751,27 +1761,51 @@ def test_sweep_running_run_reconcile_signature_not_found_is_quiet(monkeypatch, c
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
-def test_sweep_closes_a_garbage_collected_workflows_rows_when_no_rollup_concludes(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "fetched",
+    [
+        ([], True, 0, 0, ["wf-gone"], []),
+        (["Succeeded"], True, 3, 0, ["wf-a"], ["wf-a"]),
+    ],
+    ids=["no-rollup", "withheld-complete"],
+)
+def test_sweep_closes_nothing_and_writes_nothing_without_a_conclusion(
+    monkeypatch, fetched
 ):
-    """Every workflow of the run 404s (e.g. the poller could not read them for longer
-    than the TTL), so rollup() is None and no status is written. Rows of a workflow
-    that old cannot be written any more, so they are still closed (bloom #1034)."""
-    reconcile_calls, update_calls, _ = _patch_sweep(
-        monkeypatch, ([], True, 0, 0, ["wf-gone"], ["wf-gone"])
-    )
-    assert worker.sweep_once(object()) is True
-    assert reconcile_calls == ["wf-gone"]
-    assert update_calls == [], "the run's status is still not guessed"
-
-
-def test_sweep_closes_settled_rows_while_withholding_complete(monkeypatch):
-    reconcile_calls, update_calls, _ = _patch_sweep(
-        monkeypatch, (["Succeeded"], True, 3, 0, ["wf-gone"], ["wf-gone"])
-    )
+    """No status is concluded (all 404) or 'complete' is withheld: nothing is closed
+    and nothing is written, even for a terminal workflow, as before bloom #1034."""
+    reconcile_calls, update_calls, _ = _patch_sweep(monkeypatch, fetched)
     worker.sweep_once(object())
-    assert reconcile_calls == ["wf-gone"]
-    assert update_calls == [], "'complete' is still withheld"
+    assert reconcile_calls == []
+    assert update_calls == []
+
+
+@pytest.mark.parametrize(
+    "second_run",
+    [
+        (["Failed", "Running"], False, 0, 0, ["wf-a"], ["wf-a"]),
+        (["Failed"], False, 0, 0, ["wf-a"], ["wf-a"]),
+    ],
+    ids=["running-close-out", "terminal-close-out"],
+)
+def test_a_clean_close_out_does_not_clear_an_earlier_runs_unclean_cycle(
+    monkeypatch, second_run
+):
+    def fake_fetch(client, run_id):
+        if run_id == 1:
+            raise RuntimeError("transient DB blip")
+        return second_run
+
+    monkeypatch.setattr(
+        worker, "_fetch_candidate_runs", lambda c: [{"id": 1}, {"id": 2}]
+    )
+    monkeypatch.setattr(worker, "_fetch_effective_phases", fake_fetch)
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, n: 1)
+    monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 1))
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda c, r, s, d=None, f=None: None
+    )
+    assert worker.sweep_once(object()) is False
 
 
 def test_sweep_logs_how_many_rows_each_close_out_closed(monkeypatch, caplog):

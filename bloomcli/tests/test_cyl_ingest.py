@@ -3796,6 +3796,10 @@ def test_batch_ingest_cli_deferral_line_counts_every_retriable_envelope_failure(
 
     assert reconciles == []
     assert _deferral_line(2) in result.stderr
+    assert (
+        "reconciliation deferred to the status poller: 2 envelope(s) failed retriably"
+        in result.stderr
+    ), "the literal operators grep write-back pod logs for"
     assert "deferred" not in result.stdout, "the summary on stdout is unchanged"
     assert result.exit_code == 1, result.output
 
