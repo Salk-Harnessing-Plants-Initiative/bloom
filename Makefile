@@ -29,9 +29,10 @@ help:
 	@echo "  make migrate-local    - Apply migrations to local dev DB via Supabase CLI"
 	@echo "  make test-integration - Run integration tests against the local dev stack"
 	@echo "  make bloommcp-smoke   - Live persistence smoke: drive granular tools through real Supabase storage"
-	@echo "  make check            - Verify local stack: services, roles, schemas, migrations"
+	@echo "  make check            - Verify local stack: services, roles, schemas, migrations, id sequences"
 	@echo "  make verify-dev       - Clean reset -> up -> migrate -> check (destructive)"
 	@echo "  make load-test-data   - Load CSV test data into dev database"
+	@echo "  make seed-gravi       - Load the gravi (plate) mock data into dev, then advance any id sequence it left behind"
 	@echo "  make upload-images    - Upload test images to MinIO storage"
 	@echo "  make create-bucket    - Create a new S3 bucket (BUCKET=name [PUBLIC=true])"
 	@echo "  make list-buckets     - List all S3 buckets"
@@ -404,6 +405,18 @@ load-test-data: check-uv
 	fi
 	@echo "Running data loader script..."
 	@uv run --with supabase,pandas -- python3 scripts/load_test_data.py
+
+## Load the gravi (plate) mock data into the dev DB, then run the sequence-advance body:
+## the seed inserts explicit ids, which don't move their sequences (bloom#1022).
+.PHONY: seed-gravi
+seed-gravi:
+	@if ! docker ps | grep -q db-dev; then \
+		echo "Error: Development database not running. Start with 'make dev-up' first."; \
+		exit 1; \
+	fi
+	@cat scripts/seed_gravi_mock_data.sql scripts/sql/advance_behind_sequences.sql \
+		| docker compose -f docker-compose.dev.yml exec -T db-dev \
+			psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1
 
 ## Upload test images to MinIO storage
 .PHONY: upload-images

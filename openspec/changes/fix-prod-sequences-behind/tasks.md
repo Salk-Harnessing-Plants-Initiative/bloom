@@ -169,42 +169,48 @@ Tasks:
 
 ## 3. Guard (PR 2, code only)
 
-- [ ] 3.1 **Tests first, integration** (`tests/integration/test_sequences_behind_check.py`, using `sequence_fixtures`):
+- [x] 3.1 **Tests first, integration** (`tests/integration/test_sequences_behind_check.py`, using `sequence_fixtures`):
   - the guard's rows equal the set the body's NOTICEs advance;
   - afterwards, the guard returns no scratch rows;
   - it runs under `default_transaction_read_only=on`.
-- [ ] 3.2 **Tests first, unit** (`tests/unit/test_check_health.py`):
+- [x] 3.2 **Tests first, unit** (`tests/unit/test_check_health.py`):
   - `sequence_problems` gives one problem per row, naming table, column, max and next value;
   - no rows gives no problems;
   - `main()` exits 1 when there are problems;
   - the SQL file is a single `SELECT` with no `CREATE`, `DO`, `FUNCTION`, DML or `setval`.
-- [ ] 3.3 **Tests first, unit** (`tests/unit/test_advance_body_copies.py`):
+- [x] 3.3 **Tests first, unit** (`tests/unit/test_advance_body_copies.py`):
   - every `DO $advance$` block in `scripts/sql/advance_behind_sequences.sql` and in `supabase/migrations/*_readvance_id_sequences_*.sql` equals the migration's, compared line by line;
   - the `seed-gravi` target pipes the seed and then the advance script, and the seed header names the target.
-- [ ] 3.4 **Tests first, unit** (`tests/unit/test_deploy_sequence_check.py`). For each of the prod and staging jobs:
+- [x] 3.4 **Tests first, unit** (`tests/unit/test_deploy_sequence_check.py`). For each of the prod and staging jobs:
   - the step is the last one before Cleanup, after "Rollback on failure";
   - it has no `if:`;
   - it has `timeout-minutes`;
   - its psql call has `-X -At`, `ON_ERROR_STOP=1`, `-e PGOPTIONS=` with `default_transaction_read_only=on`, and the SQL file on stdin;
   - it has both `::error` titles;
   - Rollback's `if:` is unchanged, and `test_deploy_staging_supersede_and_pin.py` stays green.
-- [ ] 3.5 Write `scripts/sql/sequences_behind.sql` (design D10).
-- [ ] 3.6 Add `sequence_problems` and `check_sequences` to `scripts/check_health.py`, wire them into `main`, and update the docstring (lines 4–15).
-- [ ] 3.7 Add `scripts/sql/advance_behind_sequences.sql`, the `make seed-gravi` target, and the seed header line.
-- [ ] 3.8 Add the `deploy.yml` steps for prod and staging (design D10), each with the "must stay after Rollback" comment.
-- [ ] 3.9 Docs:
+- [x] 3.5 Write `scripts/sql/sequences_behind.sql` (design D10).
+- [x] 3.6 Add `sequence_problems` and `check_sequences` to `scripts/check_health.py`, wire them into `main`, and update the docstring (lines 4–15).
+- [x] 3.7 Add `scripts/sql/advance_behind_sequences.sql`, the `make seed-gravi` target, and the seed header line.
+- [x] 3.8 Add the `deploy.yml` steps for prod and staging (design D10), each with the "must stay after Rollback" comment.
+- [x] 3.9 Docs:
   - the `make check` text in `README.md:76`, `Makefile:32` and the `pr-checks.yml:1321` step name;
   - an `## Id sequences behind their data` section in `_WIKI/SUPABASE/README.md`. It explains the annotation, says the fix is a `*_readvance_id_sequences_<reason>.sql` migration and never a hand `setval` on prod, and says to check deploy-gated issues by hand. For dev, it gives the `psql < scripts/sql/advance_behind_sequences.sql` one-liner;
   - a bullet in `_WIKI/SCHEDULEDJOBS/weekly-backup.md` under "Notes on what this does not do": a restore reproduces the dumped sequence state, dumps from before PR 1's prod deploy carry 21 behind sequences, so run `scripts/sql/sequences_behind.sql` after any restore.
 - [ ] 3.10 Manual check: on dev, run `make seed-gravi && make check`. Record that there are no behind sequences.
 - [ ] 3.11 Run `/pre-merge` (including `pre-commit run --all-files` and the full unit suite). Open PR 2 to `staging` titled `Fail deploy and make check when an id sequence is behind its data (Part of #1022)`.
-- [ ] 3.12 Draft the `make load-test-data` issue: localhost-only URL derived from `.env.dev`, a sequence reset that runs even after a partial load, and the exit code passed on. Show it to the user, and post it only with their OK.
+- [x] 3.12 Draft the `make load-test-data` issue: localhost-only URL derived from `.env.dev`, a sequence reset that runs even after a partial load, and the exit code passed on. Show it to the user, and post it only with their OK. **Filed as #1033** (2026-10-03, with the user's OK).
 
 ## 4. Staging verification (after PR 1's staging deploy)
 
-- [ ] 4.1 Before: on 2026-10-02, staging had 0 of 68 behind.
-- [ ] 4.2 The staging deploy log: record whether `advance_behind_sequences: 0 of <m>` appears. That answers whether `db push` prints NOTICEs (design D5).
-- [ ] 4.3 Run the read-only predicate against `bloom_v2_staging-db-prod-1` over ssh, with the SQL on stdin and no `$$` in a double-quoted remote command. Expect 0 behind, and record the result.
+- [x] 4.1 Before: on 2026-10-02, staging had 0 of 68 behind.
+- [x] 4.2 The staging deploy log: record whether `advance_behind_sequences: 0 of <m>` appears. That answers whether `db push` prints NOTICEs (design D5).
+- [x] 4.3 Run the read-only predicate against `bloom_v2_staging-db-prod-1` over ssh, with the SQL on stdin and no `$$` in a double-quoted remote command. Expect 0 behind, and record the result.
+
+  **Recorded 2026-10-03:**
+
+  - **Deploy:** #1029 merged as `5ca8aed5`. Staging deploy run 37141822090 (Deploy to Staging: success) applied `20261002135631` at 18:03Z.
+  - **4.2:** its log shows `advance_behind_sequences: 0 of 68 sequences advanced`, so `db push --debug` does put the NOTICEs in the deploy log.
+  - **4.3:** the read-only predicate over staging's 68 sequence-backed columns found 0 behind, and `20261002135631` is in staging's `schema_migrations`.
 
 ## 5. Prod verification (after the curated staging→main promotion; each prod read needs the user's OK)
 
@@ -219,5 +225,5 @@ Tasks:
 - [ ] 5.3 Run the read-only predicate against `bloom_v2_prod-db-prod-1`. Expect 0 behind, and record the result. No hand `setval` or other write on prod.
 - [ ] 5.4 With the user's approval, close the issue by hand, linking 5.3.
 - [ ] 5.5 Ask about adding a line to `talmolab/sleap-roots-pipeline` `docs/bloom-integration/roadmap.md`.
-- [ ] 5.6 Ask about filing the write-back retry-gap issue, and about correcting run 2's 5 rows.
+- [ ] 5.6 Ask about filing the write-back retry-gap issue, and about correcting run 2's 5 rows. **Filed 2026-10-03** with the user's OK: #1034 (retry gap) and #1035 (run 2's rows; the data fix itself still needs its own go-ahead). Also #1036 (types drift, low priority).
 - [ ] 5.7 After PR 2's step has run green on staging and prod, run `/openspec:archive fix-prod-sequences-behind`.

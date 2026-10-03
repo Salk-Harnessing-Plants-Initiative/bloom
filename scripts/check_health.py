@@ -12,7 +12,10 @@
   a silent grant no-op fails here, loudly),
 - every ``supabase/migrations/*.sql`` is recorded in
   ``supabase_migrations.schema_migrations`` — by **set comparison** (no missing,
-  no orphan), not a brittle count.
+  no orphan), not a brittle count,
+- no ``public`` id sequence is behind its column's data, so a default-id insert
+  can't collide with an existing row (bloom#1022; the query is
+  ``scripts/sql/sequences_behind.sql``, shared with the deploy's check).
 
 The migration set-comparison mirrors
 ``tests/integration/test_migrations.py::test_all_migrations_recorded``.
@@ -38,6 +41,8 @@ ENV_DEV = REPO_ROOT / ".env.dev"
 # the same .sql file applied (as supabase_admin) by `make migrate-local`, CI, and
 # the prod/staging manual step. check_schema_usage parses it for the expected set.
 GRANT_FILE = REPO_ROOT / "supabase" / "grants" / "schema_grants.sql"
+# Read-only "id sequences behind their data" query (bloom#1022), also run by deploy.yml.
+SEQUENCES_BEHIND_SQL = REPO_ROOT / "scripts" / "sql" / "sequences_behind.sql"
 _GRANT_RE = re.compile(
     r"GRANT\s+USAGE\s+ON\s+SCHEMA\s+(\w+)\s+TO\s+([^;]+);",
     re.IGNORECASE,
@@ -63,6 +68,16 @@ REQUIRED_APP_ROLES = ["bloom_admin", "bloom_user", "bloom_writer", "bloom_agent"
 # --------------------------------------------------------------------------- #
 # Pure helpers (no DB / no docker) — unit-testable.
 # --------------------------------------------------------------------------- #
+
+def sequence_problems(rows) -> list[str]:
+    """One problem per (table, column, max, next value) row from sequences_behind.sql."""
+    return [
+        f"id sequence behind its data: public.{table}.{column} has max {max_id}, "
+        f"next value {next_value} (a default-id insert would collide; run "
+        "scripts/sql/advance_behind_sequences.sql)"
+        for table, column, max_id, next_value in rows
+    ]
+
 
 def migration_file_versions(migrations_dir: Path = MIGRATIONS_DIR) -> set[str]:
     """The 14-digit version prefix of every migration file on disk."""
@@ -163,6 +178,16 @@ def _scalar(conn, sql: str):
         cur.execute(sql)
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def check_sequences(conn, sql_path: Path = SEQUENCES_BEHIND_SQL) -> list[str]:
+    """Report every public id sequence that is behind its column's data (bloom#1022)."""
+    conn.rollback()  # fresh snapshot
+    with conn.cursor() as cur:
+        cur.execute(sql_path.read_text(encoding="utf-8"))
+        rows = cur.fetchall()
+    conn.rollback()
+    return sequence_problems(rows)
 
 
 def check_schemas(conn) -> list[str]:
@@ -398,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         all_problems += [f"[db] {p}" for p in check_schemas(conn)]
         all_problems += [f"[db] {p}" for p in check_migrations(conn)]
         all_problems += [f"[db] {p}" for p in check_schema_usage(conn)]
+        all_problems += [f"[db] {p}" for p in check_sequences(conn)]
     finally:
         conn.close()
 
@@ -414,7 +440,7 @@ def _report(problems: list[str], warnings: list[str] | None = None) -> None:
             print(f"  ✗ {p}")
     else:
         print("Local dev stack is healthy: services up, roles + auth/storage "
-              "schemas present, all migrations applied.")
+              "schemas present, all migrations applied, no id sequence behind.")
         if warnings:
             print("(optional services are down — see warnings above)")
 
