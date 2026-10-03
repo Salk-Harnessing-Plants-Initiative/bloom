@@ -257,6 +257,28 @@ def _next(state: tuple[int, bool]) -> int:
     return lv + 1 if called else lv
 
 
+def stop_if_real_sequences_behind(conn) -> None:
+    """Skip (fail under CI) when a real public sequence is already behind.
+
+    Running the body would advance it for good (setval survives rollback), so a dev DB
+    with loaded data skips. In CI the database is fresh, so a behind sequence there means
+    an earlier test or a migration left one behind: fail rather than skip silently."""
+    import pytest
+
+    with conn.cursor() as cur:
+        real_behind = behind(cur)
+    if not real_behind:
+        return
+    conn.rollback()
+    message = (
+        f"real public sequences are behind on this database {sorted(real_behind)}; "
+        "running the body here would advance them for good. Apply the advance migration first."
+    )
+    if os.environ.get("CI"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 def revoke_four(conn, what: str) -> None:
     """Revoke from postgres AND the three roles it inherits rights from (design D8)."""
     with conn.cursor() as cur:
