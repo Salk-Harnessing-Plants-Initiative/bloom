@@ -242,6 +242,9 @@ Tasks:
   - List every `public` column whose default calls `nextval` but which `pg_get_serial_sequence` doesn't find. Expect 0.
   - Take a fresh snapshot of every sequence (`last_value`, `is_called`, `max`), then take it again after the deploy, and diff the two.
   - Run the #1029 migration's catalog `SELECT` on prod, read-only (the `FOR r IN` query, with `EXPLAIN` and then executed), and confirm it doesn't error. Postgres doesn't promise to apply its `public` filter before calling `pg_get_serial_sequence`. Dev's and staging's plans are safe, but prod's statistics could differ, and the merged migration can't be changed.
+
+    **Done 2026-10-03, with the user's OK** (`BEGIN TRANSACTION READ ONLY … ROLLBACK`, as `postgres`). Prod's plan joins `pg_class` to `pg_namespace` (filtered to `public`) first, and evaluates `pg_get_serial_sequence` only afterwards, in the `pg_attribute` index scan's filter: the same shape as dev's. Executed, it returned 65 sequence-backed columns with no error, matching the 2026-10-02 count. Re-check this only if prod's catalog changes a lot before the promotion.
+
   - Confirm the promotion carries #1029 together with #1040, or that #1029 is already on `main`. Otherwise prod's first run of the new check goes red with every behind table listed.
 
 - [ ] 5.1 Before: on 2026-10-02, 21 of 65 behind (design Context).
