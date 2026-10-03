@@ -55,7 +55,7 @@ internal-only and not exposed through the public proxy.
 | POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT    | Generate a scan's video, upload to Storage                                                             |
 | POST   | `/pipeline` (external: `/workflows/pipeline`)            | Supabase user JWT    | Trigger an A4 sleap-roots pipeline run for a scan/wave/experiment/explicit scan list                   |
 | GET    | `/runs/{run_id}` (external: `/workflows/runs/{run_id}`)  | Supabase user JWT    | Read a pipeline run's current status + its scans — a plain DB read, does **not** itself query Argo/K8s |
-| GET    | `/model-cards` (external: `/workflows/model-cards`)      | Supabase user JWT    | The production model cards from the wandb registry, for the confirm dialog's model warnings (not rate-limited) |
+| GET    | `/model-cards` (external: `/workflows/model-cards`)      | Supabase user JWT    | The production model cards from the wandb registry, for the confirm dialog's model warnings (its own rate limit) |
 
 ### Video generation
 
@@ -215,18 +215,26 @@ no model (bloom#971):
 ```
 {"cards": [{"root_type": "lateral", "registry_id": "<entity>/wandb-registry-sleap-roots-models/<collection>",
             "version": "v0", "selectors": [{"species": "arabidopsis", "mode": "cylinder", "age_min": 2, "age_max": 14}]}],
- "fetched_at": "2026-10-02T12:00:00+00:00"}
+ "fetched_at": "2026-10-02T12:00:00+00:00", "skipped": 0}
 ```
+
+`skipped` counts production cards that couldn't be read as a contracts `ModelCard`; the dialog never
+blocks a run while it is above 0.
 
 - **Source:** `model_cards.py` asks wandb directly: one GraphQL query per page of 100 model
   collections (`POST https://api.wandb.ai/graphql`, Basic auth `api`/`WANDB_API_KEY`, each
   collection's `production` alias). It doesn't use the `wandb` library, which routes its API
   through a bundled Go service from 0.26 and can retry internally for days.
-- **Bounds:** 5 s per request, 15 s for the whole listing.
-- **Cache:** 300 s, warmed in a background thread at startup. One refresh runs at a time; a
-  request that can't get the refresh lock within 6 s answers 503 rather than queueing.
-- **Auth:** a Supabase user JWT, like every route. It isn't rate-limited: the dialog reads it on
-  every open.
+- **Bounds:** 5 s per network phase; each listing is abandoned 15 s after it starts, including
+  while a response is still arriving.
+- **Cache:** fresh for 300 s. Until 3600 s the listing is still served at once while one refresh
+  runs in the background; refreshes run on a single worker thread. A request with nothing to serve
+  waits for the refresh at most 6 s, then answers 503. After a failed refresh nothing contacts
+  wandb for 60 s (300 s after a 401, 403 or 429), and the last good listing keeps being served.
+  The cache is warmed at startup.
+- **Auth:** a Supabase user JWT, like every route. It has its own per-user limit,
+  `WORKFLOWS_MODEL_CARDS_RATE_LIMIT` (60 per window), instead of the shared one, since the dialog
+  reads it on every open.
 - **Errors (503, fixed text; the cause is logged, never returned):**
   - "The model catalog isn't configured in this environment." — `WANDB_API_KEY` unset.
   - "Couldn't read the model catalog." — anything else.
@@ -491,9 +499,9 @@ uv run python status_poller.py
 caller's **Supabase user JWT** (`Authorization: Bearer`). The service validates
 it by delegating to Supabase (`GET /auth/v1/user`), so it **never needs
 `JWT_SECRET`**. A coarse per-user rate limit (`429` when exceeded) is shared
-across every application route except three: `folder-check`, which has its own
-limit, and two read routes that pages call repeatedly, the plate-video progress
-poll and `GET /model-cards`; it is
+across every application route except three: `folder-check` and `GET /model-cards`,
+which each have their own limit, and the plate-video progress poll, which pages
+call repeatedly and has none; it is
 enforced per process, so the effective limit scales with workers/replicas
 rather than being a hard global quota.
 `/health` is internal-only and not publicly exposed.
@@ -588,9 +596,10 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_IMAGES_BUCKET`       | `images`                | Storage bucket to read frames from                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEOS_BUCKET`       | `videos`                | Storage bucket to write the MP4 to                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEO_TABLE`         | `cyl_scan_videos`       | Record table (`scan_id -> path`)                                                                                                                                                                                                                                                                             |
-| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes but `folder-check`, the plate-video progress poll and `GET /model-cards` (429 over)                                                                                                                                                                                                               |
+| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes but `folder-check` and `GET /model-cards` (their own limits) and the plate-video progress poll (none) (429 over)                                                                                                                                                                                                               |
 | `WORKFLOWS_RATE_WINDOW_SECONDS` | `60`                    | Rate-limit window                                                                                                                                                                                                                                                                                            |
 | `WORKFLOWS_FOLDER_CHECK_RATE_LIMIT` | `30` | Max S3 folder checks per user per window, per process, counted apart from the other routes. Like `WORKFLOWS_RATE_LIMIT`, not passed in either compose file, so the code default applies |
+| `WORKFLOWS_MODEL_CARDS_RATE_LIMIT` | `60` | Max `GET /model-cards` reads per user per window, per process, counted apart from the other routes. Not passed in either compose file, so the code default applies |
 | `WORKFLOWS_PUBLIC_SUPABASE_URL` | –                       | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged.                                                                                                  |
 | `WANDB_API_KEY`                 | –                       | `workflows` only. wandb key that reads the production model cards for `GET /model-cards` (Basic auth to wandb's GraphQL API). Unset → that route answers 503 and the confirm dialog shows "Couldn't check the models' age ranges." Required in prod and staging, optional in dev |
 | `WORKFLOWS_K8S_TOKEN`           | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing)                                                                                                                    |

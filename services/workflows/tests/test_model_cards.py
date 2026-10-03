@@ -1,6 +1,8 @@
 """Unit tests for model_cards.py — the production model-card listing behind
-GET /model-cards (bloom#971 phase 1). HTTP is an httpx.MockTransport injected
-through `model_cards._client`; the clock through `_monotonic`/`_utcnow`. No real
+GET /model-cards (bloom#971 phase 1; caching per design D3 as revised after the
+PR #1028 review). HTTP is an httpx.MockTransport injected through
+`model_cards._client`; the clock through `_monotonic`/`_utcnow`. Refreshes run on
+the module's single worker thread, so tests wait on `_current_refresh()`. No real
 network call is made."""
 
 import base64
@@ -70,6 +72,9 @@ def _page(edges, has_next=False, end_cursor=None):
     }
 
 
+GOOD_PAGE = _page([_edge("arabidopsis-lateral", LATERAL_META)])
+
+
 class _Clock:
     def __init__(self):
         self.now = 1000.0
@@ -80,10 +85,10 @@ class _Clock:
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    model_cards._reset_cache()
+    model_cards._reset()
     monkeypatch.setenv("WANDB_API_KEY", KEY)
     yield
-    model_cards._reset_cache()
+    model_cards._reset()
 
 
 @pytest.fixture
@@ -115,7 +120,21 @@ def _json(payload, status=200):
     return lambda request: httpx.Response(status, json=payload)
 
 
-# --- 2.1 listing ----------------------------------------------------------
+def _settle():
+    """Wait for the background refresh, if any, to finish."""
+    future = model_cards._current_refresh()
+    if future is not None:
+        try:
+            future.result(timeout=5)
+        except Exception:
+            pass
+
+
+def _cards():
+    return model_cards.list_production_cards()
+
+
+# --- listing --------------------------------------------------------------
 
 
 def test_lists_production_memberships_as_cards(transport, clock):
@@ -123,7 +142,7 @@ def test_lists_production_memberships_as_cards(transport, clock):
         _page([_edge("arabidopsis-lateral", LATERAL_META), _edge("old-flat")])
     )
 
-    cards, fetched_at = model_cards.list_production_cards()
+    cards, fetched_at, skipped = _cards()
 
     assert cards == [
         {
@@ -140,13 +159,17 @@ def test_lists_production_memberships_as_cards(transport, clock):
             ],
         }
     ]
-    assert isinstance(fetched_at, str)
+    assert skipped == 0
+    # The real _utcnow: an ISO-8601 time in UTC.
+    assert datetime.datetime.fromisoformat(
+        fetched_at
+    ).utcoffset() == datetime.timedelta(0)
 
 
 def test_request_matches_wandbs_own_client(transport, clock):
-    transport["responder"] = _json(_page([_edge("arabidopsis-lateral", LATERAL_META)]))
+    transport["responder"] = _json(GOOD_PAGE)
 
-    model_cards.list_production_cards()
+    _cards()
 
     (request,) = transport["requests"]
     assert request.method == "POST"
@@ -161,9 +184,7 @@ def test_request_matches_wandbs_own_client(transport, clock):
     }
     assert 'artifactMembership(aliasName: "production")' in body["query"]
     assert "first: 100" in body["query"]
-
-
-# --- 2.2 paging and string metadata ---------------------------------------
+    assert transport["client_timeouts"] == [5]
 
 
 def test_follows_pages_and_parses_string_metadata(transport, clock):
@@ -179,7 +200,7 @@ def test_follows_pages_and_parses_string_metadata(transport, clock):
     )
     transport["responder"] = lambda request: httpx.Response(200, json=next(pages))
 
-    cards, _ = model_cards.list_production_cards()
+    cards, _, _ = _cards()
 
     cursors = [
         json.loads(r.content)["variables"]["cursor"] for r in transport["requests"]
@@ -191,45 +212,59 @@ def test_follows_pages_and_parses_string_metadata(transport, clock):
     ]
 
 
-# --- 2.3 validation -------------------------------------------------------
+# --- skipped cards --------------------------------------------------------
 
 
-def test_skips_a_non_conforming_card_and_names_it(transport, clock, caplog):
+@pytest.mark.parametrize(
+    "bad_edge",
+    [
+        _edge("retired-flat", FLAT_META),
+        _edge("bad-json", "{not json"),
+        {
+            "node": {
+                "name": "no-version",
+                "artifactMembership": {"artifact": {"metadata": LATERAL_META}},
+            }
+        },
+    ],
+    ids=["flat-metadata", "invalid-json-string", "missing-versionIndex"],
+)
+def test_skips_and_counts_an_unbuildable_card(transport, clock, caplog, bad_edge):
     transport["responder"] = _json(
-        _page(
-            [
-                _edge("retired-flat", FLAT_META),
-                _edge("arabidopsis-lateral", LATERAL_META),
-            ]
-        )
+        _page([bad_edge, _edge("arabidopsis-lateral", LATERAL_META)])
     )
 
     with caplog.at_level(logging.WARNING, logger="model_cards"):
-        cards, _ = model_cards.list_production_cards()
+        cards, _, skipped = _cards()
 
     assert [c["registry_id"].rsplit("/", 1)[1] for c in cards] == [
         "arabidopsis-lateral"
     ]
-    assert "retired-flat" in caplog.text
+    assert skipped == 1
+    assert bad_edge["node"]["name"] in caplog.text
 
 
 def test_no_readable_card_is_unavailable(transport, clock):
     transport["responder"] = _json(_page([_edge("retired-flat", FLAT_META)]))
 
     with pytest.raises(ModelCatalogUnavailable):
-        model_cards.list_production_cards()
+        _cards()
 
 
 def test_no_production_membership_is_an_empty_list(transport, clock):
     transport["responder"] = _json(_page([_edge("old-a"), _edge("old-b")]))
 
-    cards, fetched_at = model_cards.list_production_cards()
+    cards, fetched_at, skipped = _cards()
 
-    assert cards == []
+    assert (cards, skipped) == ([], 0)
     assert fetched_at
 
 
-# --- 2.4 errors -----------------------------------------------------------
+# --- registry failures ----------------------------------------------------
+
+
+def _timeout(request):
+    raise httpx.ReadTimeout("read timed out", request=request)
 
 
 def _endless_pages(request):
@@ -238,40 +273,58 @@ def _endless_pages(request):
     )
 
 
-def _timeout(request):
-    raise httpx.ReadTimeout("read timed out", request=request)
-
-
 @pytest.mark.parametrize(
     "responder",
     [
-        _json({"detail": "nope"}, status=401),
+        _json(GOOD_PAGE, status=401),
+        lambda request: httpx.Response(302, headers={"Location": "/x"}, json=GOOD_PAGE),
         _json({"detail": "boom"}, status=500),
         _json({"errors": [{"message": "secret-detail"}]}),
         lambda request: httpx.Response(200, text="<html>not json</html>"),
         _json({"data": {"project": None}}),
+        _json(_page(None)),
+        _json(
+            {
+                "data": {
+                    "project": {
+                        "artifactType": {
+                            "artifactCollections": {
+                                "pageInfo": {"hasNextPage": False},
+                                "edges": ["junk"],
+                            }
+                        }
+                    }
+                }
+            }
+        ),
         _timeout,
         _endless_pages,
+        _json(_page([_edge("x", LATERAL_META)], has_next=True, end_cursor=None)),
     ],
     ids=[
-        "401",
+        "401-with-a-valid-body",
+        "302-with-a-valid-body",
         "500",
         "graphql-errors",
         "not-json",
-        "unexpected-shape",
+        "project-null",
+        "edges-null",
+        "non-dict-edge",
         "timeout",
         "too-many-pages",
+        "next-page-without-cursor",
     ],
 )
-def test_registry_failures_are_unavailable_and_never_log_the_key(
+def test_registry_failures_are_unavailable_logged_and_never_log_the_key(
     transport, clock, caplog, responder
 ):
     transport["responder"] = responder
 
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(ModelCatalogUnavailable):
-            model_cards.list_production_cards()
+            _cards()
 
+    assert "Model-card refresh failed" in caplog.text
     assert KEY not in caplog.text
 
 
@@ -280,31 +333,38 @@ def test_graphql_error_message_is_logged(transport, clock, caplog):
 
     with caplog.at_level(logging.WARNING, logger="model_cards"):
         with pytest.raises(ModelCatalogUnavailable):
-            model_cards.list_production_cards()
+            _cards()
 
     assert "secret-detail" in caplog.text
 
 
-def test_page_guard_stops_at_max_pages(transport, clock):
+def test_page_guards(transport, clock):
     transport["responder"] = _endless_pages
-
     with pytest.raises(ModelCatalogUnavailable):
-        model_cards.list_production_cards()
-
+        _cards()
     assert len(transport["requests"]) == model_cards.MAX_PAGES == 20
 
+    model_cards._reset()
+    transport["requests"].clear()
+    transport["responder"] = _json(
+        _page([_edge("x", LATERAL_META)], has_next=True, end_cursor=None)
+    )
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+    assert len(transport["requests"]) == 1
 
-# --- 2.5 deadline ---------------------------------------------------------
+
+# --- deadline -------------------------------------------------------------
 
 
-def test_timeouts_are_five_and_fifteen_seconds():
+def test_limits_are_five_and_fifteen_seconds():
     assert model_cards.REQUEST_TIMEOUT_SECONDS == 5
     assert model_cards.REFRESH_DEADLINE_SECONDS == 15
 
 
-def test_listing_stops_at_the_deadline(transport, clock):
+def test_later_pages_get_a_shrinking_timeout(transport, clock):
     def slow_page(request):
-        clock.now += 10
+        clock.now += 12
         return httpx.Response(
             200,
             json=_page([_edge("x", LATERAL_META)], has_next=True, end_cursor="more"),
@@ -313,16 +373,31 @@ def test_listing_stops_at_the_deadline(transport, clock):
     transport["responder"] = slow_page
 
     with pytest.raises(ModelCatalogUnavailable):
-        model_cards.list_production_cards()
+        _cards()
 
-    # Page 1 at t=0, page 2 at t=10 (5 s left), none at t=20.
-    assert len(transport["requests"]) == 2
-    assert transport["client_timeouts"] == [5]
+    # Page 1 at t=0 with 5 s, page 2 at t=12 with 3 s left, none at t=24.
     read_timeouts = [r.extensions["timeout"]["read"] for r in transport["requests"]]
-    assert all(t <= 5 for t in read_timeouts)
+    assert read_timeouts == [5, 3]
 
 
-# --- 2.6 configuration ----------------------------------------------------
+def test_a_trickling_body_is_cut_off_at_the_deadline(transport, clock):
+    body = json.dumps(GOOD_PAGE).encode()
+
+    def trickle():
+        for i in range(0, len(body), 16):
+            clock.now += 2  # each chunk arrives 2 s after the last
+            yield body[i : i + 16]
+
+    transport["responder"] = lambda request: httpx.Response(200, content=trickle())
+
+    started = clock.now
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+
+    assert clock.now - started <= model_cards.REFRESH_DEADLINE_SECONDS + 2
+
+
+# --- configuration --------------------------------------------------------
 
 
 @pytest.mark.parametrize("value", [None, "", "   "])
@@ -333,10 +408,10 @@ def test_missing_key_is_not_configured_and_sends_nothing(
         monkeypatch.delenv("WANDB_API_KEY", raising=False)
     else:
         monkeypatch.setenv("WANDB_API_KEY", value)
-    transport["responder"] = _json(_page([]))
+    transport["responder"] = _json(GOOD_PAGE)
 
     with pytest.raises(ModelCatalogNotConfigured):
-        model_cards.list_production_cards()
+        _cards()
 
     assert transport["requests"] == []
 
@@ -345,88 +420,132 @@ def test_key_is_sent_unchanged(monkeypatch, transport, clock):
     monkeypatch.setenv("WANDB_API_KEY", " key\n")
     transport["responder"] = _json(_page([]))
 
-    model_cards.list_production_cards()
+    _cards()
 
     expected = base64.b64encode(b"api: key\n").decode()
     assert transport["requests"][0].headers["authorization"] == f"Basic {expected}"
 
 
-# --- 2.7 cache ------------------------------------------------------------
+# --- fresh and stale ------------------------------------------------------
 
 
-def test_cache_serves_repeat_calls_until_it_expires(monkeypatch, transport, clock):
-    stamps = iter(
-        [
-            datetime.datetime(2026, 10, 2, 12, 0, tzinfo=datetime.timezone.utc),
-            datetime.datetime(2026, 10, 2, 12, 5, tzinfo=datetime.timezone.utc),
-        ]
-    )
-    monkeypatch.setattr(model_cards, "_utcnow", lambda: next(stamps))
-    transport["responder"] = _json(_page([_edge("arabidopsis-lateral", LATERAL_META)]))
+def test_cache_limits():
+    assert model_cards.FRESH_SECONDS == 300
+    assert model_cards.MAX_STALE_SECONDS == 3600
+    assert model_cards.COLD_WAIT_SECONDS == 6
+    assert model_cards.BACKOFF_SECONDS == 60
+    assert model_cards.AUTH_BACKOFF_SECONDS == 300
 
-    _, first = model_cards.list_production_cards()
+
+def test_fresh_listing_is_served_without_a_request(transport, clock):
+    transport["responder"] = _json(GOOD_PAGE)
+
+    _, first, _ = _cards()
     clock.now += 60
-    _, second = model_cards.list_production_cards()
+    _, second, _ = _cards()
+
     assert len(transport["requests"]) == 1
     assert second == first
 
-    clock.now += 240  # exactly 300.0 s after the listing
-    _, third = model_cards.list_production_cards()
-    assert len(transport["requests"]) == 2
-    assert third != first
-    parsed = datetime.datetime.fromisoformat(third)
-    assert parsed.utcoffset() == datetime.timedelta(0)
 
-
-def test_a_failure_is_not_cached(transport, clock):
-    responses = iter(
+def test_stale_listing_is_served_at_once_while_one_refresh_runs(
+    monkeypatch, transport, clock
+):
+    stamps = iter(
         [
-            httpx.Response(500, json={}),
-            httpx.Response(
-                200, json=_page([_edge("arabidopsis-lateral", LATERAL_META)])
-            ),
+            datetime.datetime(2026, 10, 3, 12, 0, tzinfo=datetime.timezone.utc),
+            datetime.datetime(2026, 10, 3, 12, 5, tzinfo=datetime.timezone.utc),
         ]
     )
-    transport["responder"] = lambda request: next(responses)
+    monkeypatch.setattr(model_cards, "_utcnow", lambda: next(stamps))
+    transport["responder"] = _json(GOOD_PAGE)
+    _, first, _ = _cards()
 
-    with pytest.raises(ModelCatalogUnavailable):
-        model_cards.list_production_cards()
-    cards, _ = model_cards.list_production_cards()
-
-    assert len(cards) == 1
-    assert len(transport["requests"]) == 2
-
-
-def test_an_expired_listing_is_not_served_after_a_failed_refresh(transport, clock):
-    responses = iter(
-        [
-            httpx.Response(
-                200, json=_page([_edge("arabidopsis-lateral", LATERAL_META)])
-            ),
-            httpx.Response(500, json={}),
-        ]
-    )
-    transport["responder"] = lambda request: next(responses)
-
-    model_cards.list_production_cards()
-    clock.now += 301
-    with pytest.raises(ModelCatalogUnavailable):
-        model_cards.list_production_cards()
-
-
-# --- 2.8 single flight ----------------------------------------------------
-
-
-def test_concurrent_cold_calls_share_one_listing(transport, clock):
     entered = threading.Event()
     release = threading.Event()
 
     def blocking(request):
         entered.set()
         release.wait(timeout=5)
-        return httpx.Response(
-            200, json=_page([_edge("arabidopsis-lateral", LATERAL_META)])
-        )
+        return httpx.Response(200, json=GOOD_PAGE)
+
+    transport["responder"] = blocking
+    clock.now += 301
+    try:
+        _, served, _ = _cards()
+        assert served == first
+        assert entered.wait(5)
+        _, again, _ = _cards()  # a second request during the refresh
+        assert again == first
+        assert len(transport["requests"]) == 2  # the first listing plus one refresh
+    finally:
+        release.set()
+    _settle()
+
+    _, refreshed, _ = _cards()
+    assert refreshed != first
+    assert len(transport["requests"]) == 2
+
+
+def test_a_failed_refresh_keeps_the_last_good_listing_and_backs_off(transport, clock):
+    transport["responder"] = _json(GOOD_PAGE)
+    _, first, _ = _cards()
+
+    transport["responder"] = _json({}, status=500)
+    clock.now += 301
+    assert _cards()[1] == first  # starts the refresh, which fails
+    _settle()
+    assert len(transport["requests"]) == 2
+
+    clock.now += 30  # inside the 60 s backoff
+    assert _cards()[1] == first
+    _settle()
+    assert len(transport["requests"]) == 2
+
+    clock.now += 31  # past the backoff
+    assert _cards()[1] == first
+    _settle()
+    assert len(transport["requests"]) == 3
+
+
+@pytest.mark.parametrize("status", [401, 403, 429])
+def test_auth_and_rate_limit_failures_back_off_longer(transport, clock, status):
+    transport["responder"] = _json({}, status=status)
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+
+    clock.now += 61
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+    assert len(transport["requests"]) == 1
+
+    clock.now += 240  # 301 s after the failure
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+    assert len(transport["requests"]) == 2
+
+
+def test_a_very_old_listing_is_not_served(transport, clock):
+    transport["responder"] = _json(GOOD_PAGE)
+    _cards()
+
+    transport["responder"] = _json({}, status=500)
+    clock.now += 3601
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+
+
+# --- cold requests --------------------------------------------------------
+
+
+def test_concurrent_cold_requests_share_one_listing(transport, clock):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking(request):
+        entered.set()
+        release.wait(timeout=5)
+        return httpx.Response(200, json=GOOD_PAGE)
 
     transport["responder"] = blocking
     barrier = threading.Barrier(5)
@@ -434,13 +553,13 @@ def test_concurrent_cold_calls_share_one_listing(transport, clock):
 
     def call():
         barrier.wait(timeout=5)
-        results.append(model_cards.list_production_cards()[0])
+        results.append(_cards()[0])
 
     threads = [threading.Thread(target=call) for _ in range(5)]
     for t in threads:
         t.start()
     assert entered.wait(5)
-    time.sleep(0.2)  # let the other four queue on the lock
+    time.sleep(0.2)  # let the other four reach the wait
     release.set()
     for t in threads:
         t.join(timeout=5)
@@ -451,45 +570,45 @@ def test_concurrent_cold_calls_share_one_listing(transport, clock):
     assert all(r == results[0] for r in results)
 
 
-# --- 2.9 bounded wait -----------------------------------------------------
-
-
-def test_lock_wait_is_six_seconds():
-    assert model_cards.LOCK_WAIT_SECONDS == 6
-
-
-def test_a_waiter_gives_up_then_the_cache_serves(monkeypatch, transport, clock):
-    monkeypatch.setattr(model_cards, "LOCK_WAIT_SECONDS", 0.2)
-    entered = threading.Event()
+def test_a_slow_cold_refresh_answers_503_at_the_limit_and_keeps_running(
+    monkeypatch, transport, clock
+):
+    monkeypatch.setattr(model_cards, "COLD_WAIT_SECONDS", 0.2)
     release = threading.Event()
 
     def blocking(request):
-        entered.set()
         release.wait(timeout=5)
-        return httpx.Response(
-            200, json=_page([_edge("arabidopsis-lateral", LATERAL_META)])
-        )
+        return httpx.Response(200, json=GOOD_PAGE)
 
     transport["responder"] = blocking
-    leader = threading.Thread(target=model_cards.list_production_cards)
-    leader.start()
+    started = time.monotonic()
     try:
-        assert entered.wait(5)
-        started = time.monotonic()
         with pytest.raises(ModelCatalogUnavailable):
-            model_cards.list_production_cards()
+            _cards()
         assert time.monotonic() - started < 2
     finally:
         release.set()
-        leader.join(timeout=5)
-    assert not leader.is_alive()
+    _settle()
 
-    cards, _ = model_cards.list_production_cards()
+    cards, _, _ = _cards()  # the refresh finished in the background
     assert len(cards) == 1
     assert len(transport["requests"]) == 1
 
 
-# --- 2.10 warm ------------------------------------------------------------
+def test_a_cold_request_during_a_backoff_fails_at_once(transport, clock):
+    transport["responder"] = _json({}, status=500)
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+
+    clock.now += 10
+    started = time.monotonic()
+    with pytest.raises(ModelCatalogUnavailable):
+        _cards()
+    assert time.monotonic() - started < 1
+    assert len(transport["requests"]) == 1
+
+
+# --- warm -----------------------------------------------------------------
 
 
 def test_warm_without_a_key_does_nothing(monkeypatch, transport, clock):
@@ -497,40 +616,32 @@ def test_warm_without_a_key_does_nothing(monkeypatch, transport, clock):
     transport["responder"] = _json(_page([]))
 
     model_cards.warm()
+    _settle()
 
     assert transport["requests"] == []
 
 
-def test_warm_swallows_a_failure_and_leaves_the_cache_empty(transport, clock, caplog):
-    responses = iter(
-        [
-            httpx.Response(500, json={}),
-            httpx.Response(
-                200, json=_page([_edge("arabidopsis-lateral", LATERAL_META)])
-            ),
-        ]
-    )
-    transport["responder"] = lambda request: next(responses)
-
-    with caplog.at_level(logging.WARNING, logger="model_cards"):
-        model_cards.warm()
-
-    assert caplog.records
-    cards, _ = model_cards.list_production_cards()
-    assert len(cards) == 1
-    assert len(transport["requests"]) == 2
-
-
-def test_warm_fills_the_cache(transport, clock):
-    transport["responder"] = _json(_page([_edge("arabidopsis-lateral", LATERAL_META)]))
+def test_warm_fills_the_cache_without_waiting(transport, clock):
+    transport["responder"] = _json(GOOD_PAGE)
 
     model_cards.warm()
-    model_cards.list_production_cards()
+    _settle()
+    _cards()
 
     assert len(transport["requests"]) == 1
 
 
-# --- 2.11 no wandb import -------------------------------------------------
+def test_warm_swallows_a_failure(transport, clock, caplog):
+    transport["responder"] = _json({}, status=500)
+
+    with caplog.at_level(logging.WARNING, logger="model_cards"):
+        model_cards.warm()
+        _settle()
+
+    assert "Model-card refresh failed" in caplog.text
+
+
+# --- no wandb import ------------------------------------------------------
 
 
 def test_importing_the_service_does_not_import_wandb():

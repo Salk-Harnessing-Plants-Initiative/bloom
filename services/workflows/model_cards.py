@@ -14,19 +14,28 @@ query reads every model collection's "production" alias directly
 (`artifactMembership(aliasName:)`, the field wandb's generated operations use
 to resolve name:alias), so a listing is a couple of requests.
 
-httpx doesn't retry, so the bounds below hold: 5 s per request and 15 s for the
-whole listing. A successful listing is cached for 300 s; one refresh runs at a
-time, and a request that can't get the refresh lock within LOCK_WAIT_SECONDS
-fails rather than queueing in the threadpool. See
-openspec/changes/add-cyl-pipeline-model-window-warning/design.md (D1, D3).
+Serving (design D3, revised after the PR #1028 review):
+- A listing is fresh for FRESH_SECONDS and served without contacting wandb.
+- Until MAX_STALE_SECONDS it is still served at once while one background
+  refresh runs; after that it isn't served.
+- Refreshes run on one worker thread, so at most one listing is in progress
+  and a hung one never holds a request thread. A request with nothing to
+  serve waits for the refresh at most COLD_WAIT_SECONDS.
+- A failed refresh starts a backoff (longer after 401/403/429) and never
+  replaces a held listing.
+- Each listing streams its responses and checks REFRESH_DEADLINE_SECONDS as
+  bytes arrive; httpx's per-phase timeout covers connect, write and stalls.
+  httpx doesn't retry.
 """
 
+import concurrent.futures
 import datetime
 import json
 import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 
 import httpx
 from pydantic import ValidationError
@@ -41,8 +50,12 @@ PAGE_SIZE = 100
 MAX_PAGES = 20
 REQUEST_TIMEOUT_SECONDS = 5
 REFRESH_DEADLINE_SECONDS = 15
-CACHE_TTL_SECONDS = 300
-LOCK_WAIT_SECONDS = 6
+FRESH_SECONDS = 300
+MAX_STALE_SECONDS = 3600
+COLD_WAIT_SECONDS = 6
+BACKOFF_SECONDS = 60
+AUTH_BACKOFF_SECONDS = 300
+_AUTH_OR_RATE_STATUSES = frozenset({401, 403, 429})
 
 QUERY = f"""
 query ProductionModelCards($entity: String!, $project: String!, $cursor: String) {{
@@ -71,7 +84,12 @@ class ModelCatalogNotConfigured(Exception):
 
 
 class ModelCatalogUnavailable(Exception):
-    """The registry couldn't be read, or held no readable production card."""
+    """No card list can be served: the registry couldn't be read, held no
+    readable production card, or a refresh is still running or backing off."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def _monotonic() -> float:
@@ -111,26 +129,49 @@ def _card_dict(card: ModelCard) -> dict:
     }
 
 
-def _collections_page(client: httpx.Client, key: str, cursor, timeout: float) -> dict:
-    """One page of artifactCollections, or ModelCatalogUnavailable."""
+def _post_page(
+    client: httpx.Client, key: str, cursor: str | None, started: float
+) -> dict:
+    """One page of artifactCollections, or ModelCatalogUnavailable. The body is
+    streamed so the listing deadline holds while it arrives."""
+    remaining = REFRESH_DEADLINE_SECONDS - (_monotonic() - started)
+    if remaining <= 0:
+        raise ModelCatalogUnavailable(f"listing exceeded {REFRESH_DEADLINE_SECONDS}s")
+    payload = {
+        "query": QUERY,
+        "variables": {"entity": ENTITY, "project": PROJECT, "cursor": cursor},
+    }
     try:
-        response = client.post(
+        with client.stream(
+            "POST",
             GRAPHQL_URL,
-            json={
-                "query": QUERY,
-                "variables": {"entity": ENTITY, "project": PROJECT, "cursor": cursor},
-            },
+            json=payload,
             auth=("api", key),
-            timeout=timeout,
-        )
+            timeout=min(REQUEST_TIMEOUT_SECONDS, remaining),
+        ) as response:
+            if response.status_code != 200:
+                hint = (
+                    " (check WANDB_API_KEY)"
+                    if response.status_code in (401, 403)
+                    else ""
+                )
+                raise ModelCatalogUnavailable(
+                    f"wandb answered HTTP {response.status_code}{hint}",
+                    status=response.status_code,
+                )
+            chunks = []
+            for chunk in response.iter_bytes():
+                chunks.append(chunk)
+                if _monotonic() - started > REFRESH_DEADLINE_SECONDS:
+                    raise ModelCatalogUnavailable(
+                        f"listing exceeded {REFRESH_DEADLINE_SECONDS}s while a response arrived"
+                    )
     except httpx.HTTPError as exc:
         raise ModelCatalogUnavailable(
             f"wandb request failed: {type(exc).__name__}"
         ) from exc
-    if response.status_code != 200:
-        raise ModelCatalogUnavailable(f"wandb answered HTTP {response.status_code}")
     try:
-        body = response.json()
+        body = json.loads(b"".join(chunks))
     except ValueError as exc:
         raise ModelCatalogUnavailable("wandb answered with a non-JSON body") from exc
     if not isinstance(body, dict):
@@ -140,39 +181,44 @@ def _collections_page(client: httpx.Client, key: str, cursor, timeout: float) ->
             e.get("message") if isinstance(e, dict) else str(e) for e in body["errors"]
         ]
         raise ModelCatalogUnavailable(f"wandb GraphQL errors: {messages}")
+    project = (body.get("data") or {}).get("project")
+    if project is None:
+        raise ModelCatalogUnavailable(
+            f"project {ENTITY}/{PROJECT} isn't visible to this key, or doesn't exist"
+        )
     try:
-        connection = body["data"]["project"]["artifactType"]["artifactCollections"]
-        connection["edges"], connection["pageInfo"]["hasNextPage"]
+        connection = project["artifactType"]["artifactCollections"]
+        edges = connection["edges"]
+        has_next = connection["pageInfo"]["hasNextPage"]
     except (KeyError, TypeError) as exc:
         raise ModelCatalogUnavailable(
             "wandb answered with an unexpected shape"
         ) from exc
+    if (
+        not isinstance(edges, list)
+        or not all(isinstance(e, dict) for e in edges)
+        or not isinstance(has_next, bool)
+    ):
+        raise ModelCatalogUnavailable("wandb answered with an unexpected shape")
     return connection
 
 
-def _list_from_registry(key: str) -> list[dict]:
-    """Every collection's production card, validated, within the deadline."""
+def _list_from_registry(key: str) -> tuple[list[dict], int]:
+    """Every collection's production card, validated, within the deadline, and
+    how many production memberships couldn't be built into a card."""
     started = _monotonic()
     cards: list[dict] = []
-    seen_production = 0
-    cursor = None
+    skipped = 0
+    cursor: str | None = None
     with _client(REQUEST_TIMEOUT_SECONDS) as client:
-        for _ in range(MAX_PAGES):
-            remaining = REFRESH_DEADLINE_SECONDS - (_monotonic() - started)
-            if remaining <= 0:
-                raise ModelCatalogUnavailable(
-                    f"listing exceeded {REFRESH_DEADLINE_SECONDS}s"
-                )
-            connection = _collections_page(
-                client, key, cursor, min(REQUEST_TIMEOUT_SECONDS, remaining)
-            )
+        for page in range(MAX_PAGES):
+            connection = _post_page(client, key, cursor, started)
             for edge in connection["edges"]:
-                node = (edge or {}).get("node") or {}
+                node = edge.get("node") or {}
                 name = node.get("name")
                 membership = node.get("artifactMembership")
                 if not membership:
                     continue
-                seen_production += 1
                 try:
                     metadata = (membership.get("artifact") or {}).get("metadata")
                     if isinstance(metadata, str):
@@ -185,6 +231,7 @@ def _list_from_registry(key: str) -> list[dict]:
                         }
                     )
                 except (ValidationError, ValueError, TypeError, KeyError) as exc:
+                    skipped += 1
                     logger.warning(
                         "Skipping production model card %r: %s",
                         name,
@@ -196,73 +243,142 @@ def _list_from_registry(key: str) -> list[dict]:
             if not page_info["hasNextPage"]:
                 break
             cursor = page_info.get("endCursor")
+            if not cursor:
+                raise ModelCatalogUnavailable(
+                    f"page {page + 1} has a next page but no endCursor"
+                )
         else:
             raise ModelCatalogUnavailable(f"more than {MAX_PAGES} pages of collections")
-    if seen_production and not cards:
+    if skipped and not cards:
         raise ModelCatalogUnavailable(
-            f"none of the {seen_production} production model cards is readable"
+            f"none of the {skipped} production model cards is readable"
         )
-    return cards
+    return cards, skipped
 
 
-# (fetched_monotonic, cards, fetched_at) of the last successful listing.
-_cache: tuple[float, list[dict], str] | None = None
-_lock = threading.Lock()
+@dataclass(frozen=True)
+class _Listing:
+    fetched_monotonic: float
+    cards: list[dict]
+    fetched_at: str
+    skipped: int
+
+    def view(self) -> tuple[list[dict], str, int]:
+        return self.cards, self.fetched_at, self.skipped
 
 
-def _fresh() -> tuple[list[dict], str] | None:
-    entry = _cache
-    if entry is None or _monotonic() - entry[0] >= CACHE_TTL_SECONDS:
+_state_lock = threading.Lock()
+_listing: _Listing | None = None
+_backoff_until = 0.0
+_refresh: concurrent.futures.Future | None = None
+_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _worker() -> concurrent.futures.ThreadPoolExecutor:
+    global _executor
+    if _executor is None:
+        _executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="model-cards"
+        )
+    return _executor
+
+
+def _run_refresh(key: str) -> None:
+    """One listing on the worker thread. Updates the listing or the backoff."""
+    global _listing, _backoff_until
+    try:
+        cards, skipped = _list_from_registry(key)
+    except Exception as exc:
+        status = getattr(exc, "status", None)
+        backoff = (
+            AUTH_BACKOFF_SECONDS
+            if status in _AUTH_OR_RATE_STATUSES
+            else BACKOFF_SECONDS
+        )
+        with _state_lock:
+            _backoff_until = _monotonic() + backoff
+        if isinstance(exc, ModelCatalogUnavailable):
+            logger.warning("Model-card refresh failed (retry in %ss): %s", backoff, exc)
+        else:
+            logger.exception("Model-card refresh failed (retry in %ss)", backoff)
+        raise
+    listing = _Listing(_monotonic(), cards, _utcnow().isoformat(), skipped)
+    with _state_lock:
+        _listing = listing
+        _backoff_until = 0.0
+    logger.info(
+        "Model-card refresh listed %d production cards (%d skipped)",
+        len(cards),
+        skipped,
+    )
+
+
+def _start_refresh_locked(key: str, now: float) -> concurrent.futures.Future | None:
+    """The running refresh, a newly started one, or None while backing off.
+    Call with _state_lock held."""
+    global _refresh
+    if _refresh is not None and not _refresh.done():
+        return _refresh
+    if now < _backoff_until:
         return None
-    return entry[1], entry[2]
+    _refresh = _worker().submit(_run_refresh, key)
+    return _refresh
 
 
-def list_production_cards() -> tuple[list[dict], str]:
-    """The production cards and when they were read (ISO-8601 UTC).
+def list_production_cards() -> tuple[list[dict], str, int]:
+    """The production cards, when they were read (ISO-8601 UTC), and how many
+    production memberships were skipped.
 
     Raises ModelCatalogNotConfigured without a key, and ModelCatalogUnavailable
-    when the registry can't be read or the refresh lock isn't free in time.
+    when no listing can be served.
     """
-    global _cache
     key = _api_key()
-    cached = _fresh()
-    if cached is not None:
-        return cached
-    if not _lock.acquire(timeout=LOCK_WAIT_SECONDS):
-        raise ModelCatalogUnavailable("another model-card refresh is still running")
+    now = _monotonic()
+    with _state_lock:
+        listing = _listing
+        age = None if listing is None else now - listing.fetched_monotonic
+        if listing is not None and age < FRESH_SECONDS:
+            return listing.view()
+        refresh = _start_refresh_locked(key, now)
+        if listing is not None and age < MAX_STALE_SECONDS:
+            return listing.view()
+    if refresh is None:
+        raise ModelCatalogUnavailable("the last model-card refresh failed; backing off")
     try:
-        cached = _fresh()
-        if cached is not None:
-            return cached
-        try:
-            cards = _list_from_registry(key)
-        except ModelCatalogUnavailable as exc:
-            # The cause is logged here, never returned to the caller (GET /model-cards
-            # answers a fixed 503). httpx errors don't carry the auth header.
-            logger.warning("Model-card listing failed: %s", exc)
-            raise
-        fetched_at = _utcnow().isoformat()
-        _cache = (_monotonic(), cards, fetched_at)
-        return cards, fetched_at
-    finally:
-        _lock.release()
+        refresh.result(timeout=COLD_WAIT_SECONDS)
+    except concurrent.futures.TimeoutError as exc:
+        raise ModelCatalogUnavailable("a model-card refresh is still running") from exc
+    except Exception as exc:
+        raise ModelCatalogUnavailable("the model-card refresh failed") from exc
+    with _state_lock:
+        listing = _listing
+    if listing is None or _monotonic() - listing.fetched_monotonic >= MAX_STALE_SECONDS:
+        raise ModelCatalogUnavailable("no model-card listing to serve")
+    return listing.view()
 
 
 def warm() -> None:
-    """Fill the cache once at startup; never raises."""
+    """Start one background refresh at startup; never waits, never raises."""
     try:
-        cards, _ = list_production_cards()
+        key = _api_key()
     except ModelCatalogNotConfigured:
         return
-    except ModelCatalogUnavailable:
-        return  # already logged by list_production_cards
-    except Exception as exc:
-        logger.warning("Model-card warm-up failed: %s", exc)
-        return
-    logger.info("Model-card warm-up listed %d production cards", len(cards))
+    with _state_lock:
+        _start_refresh_locked(key, _monotonic())
 
 
-def _reset_cache() -> None:
-    """For tests."""
-    global _cache
-    _cache = None
+def _current_refresh() -> concurrent.futures.Future | None:
+    """For tests: the most recent refresh."""
+    return _refresh
+
+
+def _reset() -> None:
+    """For tests: forget the listing, the backoff and the worker."""
+    global _listing, _backoff_until, _refresh, _executor
+    with _state_lock:
+        _listing = None
+        _backoff_until = 0.0
+        _refresh = None
+        executor, _executor = _executor, None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)

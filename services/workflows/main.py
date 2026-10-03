@@ -39,7 +39,7 @@ Endpoints:
                                                        and warmed at startup, for the
                                                        pipeline confirm dialog's model
                                                        warnings (requires a Supabase
-                                                       user JWT; not rate-limited)
+                                                       user JWT; its own rate limit)
     GET  /runs/{run_id}                             - externally reachable as
                                                        GET /workflows/runs/{run_id}:
                                                        read a pipeline run's current
@@ -73,7 +73,12 @@ import plate_progress
 import plate_request
 import scrna_cellranger
 import scrna_cellranger_logs
-from auth import enforce_folder_check_limit, enforce_rate_limit, require_supabase_user
+from auth import (
+    enforce_folder_check_limit,
+    enforce_model_cards_limit,
+    enforce_rate_limit,
+    require_supabase_user,
+)
 from video import generate_experiment_scan_video
 
 logging.basicConfig(
@@ -245,13 +250,15 @@ def model_cards_route(user_id: str = Depends(require_supabase_user)):
     at GET /workflows/model-cards), for the pipeline confirm dialog's
     past-window and no-model warnings (bloom#971).
 
-    Requires a valid Supabase user JWT (Bearer). Not rate-limited: the dialog
-    reads it on every open, which the 5-per-60s limiter would refuse, and the
-    300 s cache plus one-refresh-at-a-time bound the cost upstream. A sync def,
-    so waiting on a refresh happens in the threadpool, not the event loop.
+    Requires a valid Supabase user JWT (Bearer). It has its own per-user
+    limit (MODEL_CARDS_RATE_LIMIT, scope "model-cards") instead of the shared
+    5-per-60s one, which dialog opens would use up. The cache, background
+    refresh and backoff in model_cards bound the cost upstream. A sync def, so
+    a cold request's wait for a refresh happens in the threadpool.
     """
+    enforce_model_cards_limit(user_id)
     try:
-        cards, fetched_at = model_cards.list_production_cards()
+        cards, fetched_at, skipped = model_cards.list_production_cards()
     except model_cards.ModelCatalogNotConfigured:
         raise HTTPException(
             status_code=503,
@@ -263,7 +270,7 @@ def model_cards_route(user_id: str = Depends(require_supabase_user)):
     except Exception:
         logger.exception("GET /model-cards failed")
         raise HTTPException(status_code=503, detail="Couldn't read the model catalog.")
-    return {"cards": cards, "fetched_at": fetched_at}
+    return {"cards": cards, "fetched_at": fetched_at, "skipped": skipped}
 
 
 @app.get("/runs/{run_id}")

@@ -7,6 +7,8 @@ this route, matching test_pipeline.py's own route-wiring test convention.
 `pipeline.get_run`'s own behavior (the DB read, the 404) is exercised
 directly, not through the route, by mocking it here."""
 
+import time
+
 import pipeline
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -349,18 +351,18 @@ def test_model_cards_returns_cards_and_fetched_at(monkeypatch):
 
     main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
     monkeypatch.setattr(
-        model_cards, "list_production_cards", lambda: (CARDS, FETCHED_AT)
+        model_cards, "list_production_cards", lambda: (CARDS, FETCHED_AT, 0)
     )
     try:
         resp = TestClient(main.app).get("/model-cards")
         assert resp.status_code == 200
-        assert resp.json() == {"cards": CARDS, "fetched_at": FETCHED_AT}
+        assert resp.json() == {"cards": CARDS, "fetched_at": FETCHED_AT, "skipped": 0}
 
         monkeypatch.setattr(
-            model_cards, "list_production_cards", lambda: ([], FETCHED_AT)
+            model_cards, "list_production_cards", lambda: ([], FETCHED_AT, 2)
         )
         resp = TestClient(main.app).get("/model-cards")
-        assert resp.json() == {"cards": [], "fetched_at": FETCHED_AT}
+        assert resp.json() == {"cards": [], "fetched_at": FETCHED_AT, "skipped": 2}
     finally:
         main.app.dependency_overrides.clear()
 
@@ -373,7 +375,7 @@ def test_model_cards_never_spends_the_rate_limit(monkeypatch):
 
     main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
     monkeypatch.setattr(
-        model_cards, "list_production_cards", lambda: (CARDS, FETCHED_AT)
+        model_cards, "list_production_cards", lambda: (CARDS, FETCHED_AT, 0)
     )
     try:
         client = TestClient(main.app)
@@ -381,12 +383,8 @@ def test_model_cards_never_spends_the_rate_limit(monkeypatch):
         assert statuses == [200] * 6
         assert auth._hits.get("user-1", []) == []
 
-        calls = []
-        monkeypatch.setattr(
-            main, "enforce_rate_limit", lambda user_id: calls.append(user_id)
-        )
-        client.get("/model-cards")
-        assert calls == []
+        # Its own scope only: the shared count (key "user-1") is untouched.
+        assert len(auth._hits.get("model-cards:user-1", [])) == 6
     finally:
         main.app.dependency_overrides.clear()
 
@@ -444,7 +442,7 @@ def test_model_cards_requires_auth(monkeypatch):
 
     def _list():
         called["n"] += 1
-        return CARDS, FETCHED_AT
+        return CARDS, FETCHED_AT, 0
 
     monkeypatch.setattr(model_cards, "list_production_cards", _list)
 
@@ -482,12 +480,40 @@ def test_startup_warms_the_model_card_cache_without_blocking(monkeypatch):
 
     def warm():
         started.set()
-        release.wait(timeout=5)
+        release.wait()  # blocks until the test releases it
 
     monkeypatch.setattr(model_cards, "warm", warm)
     try:
+        entered = time.monotonic()
         with TestClient(main.app) as client:
+            assert time.monotonic() - entered < 1, "startup waited for the warm-up"
             assert started.wait(2)
             assert client.get("/health").status_code == 200
     finally:
         release.set()
+
+
+def test_model_cards_has_its_own_rate_limit(monkeypatch):
+    import auth
+    import main
+    import model_cards
+    from auth import require_supabase_user
+
+    assert auth.MODEL_CARDS_RATE_LIMIT == 60
+    calls = {"n": 0}
+
+    def _list():
+        calls["n"] += 1
+        return CARDS, FETCHED_AT, 0
+
+    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
+    monkeypatch.setattr(model_cards, "list_production_cards", _list)
+    try:
+        client = TestClient(main.app)
+        statuses = [client.get("/model-cards").status_code for _ in range(61)]
+        assert statuses[:60] == [200] * 60
+        assert statuses[60] == 429
+        assert calls["n"] == 60
+        assert auth._hits.get("user-1", []) == []
+    finally:
+        main.app.dependency_overrides.clear()
