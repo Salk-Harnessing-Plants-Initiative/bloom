@@ -22,8 +22,10 @@
 #
 # Scope:
 #   Uploads only the 11 cryptographically random secrets (generate-secrets.sh
-#   handles those). The 5 other env-prefixed secrets that the deploy workflow
-#   reads are out of this script's scope and must be set manually:
+#   handles those). Every other env-prefixed secret that the deploy workflow
+#   reads is out of this script's scope and must be set manually; the
+#   authoritative list is the env heredocs in .github/workflows/deploy.yml.
+#   Common ones:
 #     <PREFIX>_OPENAI_API_KEY        — provided by you / OpenAI
 #     <PREFIX>_LANGCHAIN_API_KEY     — provided by LangSmith
 #     <PREFIX>_MINIO_DATA_PATH       — host filesystem path
