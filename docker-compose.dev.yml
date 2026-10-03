@@ -109,6 +109,9 @@ services:
       # Public base for rewriting signed URLs off the internal kong host so
       # download_url is usable by outside callers.
       WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      # Optional in dev: without it GET /model-cards answers 503 and the pipeline
+      # confirm dialog shows "Couldn't check the models' age ranges." (bloom#971).
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
     volumes:
       - ./services/workflows:/app
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--reload"]

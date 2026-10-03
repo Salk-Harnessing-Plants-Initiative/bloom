@@ -32,7 +32,7 @@
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
-import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
+import { TRIGGER_DISABLED_DETAIL, isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 import { parseTriggerRequest } from "@/lib/cyl-pipeline/trigger-request";
 import {
   TRIGGER_BODY_MAX_BYTES,
@@ -48,7 +48,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request): Promise<NextResponse> {
   if (!isPipelineTriggerEnabled()) {
-    return detailResponse(503, "Starting pipeline runs from Bloom is not enabled in this environment.");
+    return detailResponse(503, TRIGGER_DISABLED_DETAIL);
   }
   if (!isJsonMediaType(request.headers)) {
     return detailResponse(415, "Content-Type must be application/json.");

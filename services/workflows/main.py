@@ -32,6 +32,14 @@ Endpoints:
                                                        pipeline run for a scan/wave/
                                                        experiment/explicit scan list
                                                        (requires a Supabase user JWT)
+    GET  /model-cards                               - externally reachable as
+                                                       GET /workflows/model-cards:
+                                                       the production model cards from
+                                                       the wandb registry, cached 300 s
+                                                       and warmed at startup, for the
+                                                       pipeline confirm dialog's model
+                                                       warnings (requires a Supabase
+                                                       user JWT; its own rate limit)
     GET  /runs/{run_id}                             - externally reachable as
                                                        GET /workflows/runs/{run_id}:
                                                        read a pipeline run's current
@@ -53,16 +61,23 @@ Endpoints:
 
 import logging
 import os
+import threading
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+import model_cards
 import pipeline
 import plate_progress
 import plate_request
 import scrna_cellranger
 import scrna_cellranger_logs
-from auth import enforce_rate_limit, require_supabase_user
+from auth import (
+    enforce_model_cards_limit,
+    enforce_rate_limit,
+    require_supabase_user,
+)
 from video import generate_experiment_scan_video
 
 logging.basicConfig(
@@ -76,7 +91,19 @@ CORS_ORIGINS = os.environ.get("WORKFLOWS_CORS_ORIGINS", "http://localhost:3000")
     ","
 )
 
-app = FastAPI(title="Bloom Workflows API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm the model-card cache in the background so the first confirm dialog
+    # after a deploy doesn't wait on wandb; startup and /health never wait for it.
+    # model_cards.warm() skips without a key and never raises.
+    threading.Thread(
+        target=model_cards.warm, name="model-cards-warm", daemon=True
+    ).start()
+    yield
+
+
+app = FastAPI(title="Bloom Workflows API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -214,6 +241,35 @@ def trigger_pipeline_route(
         result["reused_count"],
     )
     return result
+
+
+@app.get("/model-cards")
+def model_cards_route(user_id: str = Depends(require_supabase_user)):
+    """The production model cards from the wandb registry (reachable externally
+    at GET /workflows/model-cards), for the pipeline confirm dialog's
+    past-window and no-model warnings (bloom#971).
+
+    Requires a valid Supabase user JWT (Bearer). It has its own per-user
+    limit (MODEL_CARDS_RATE_LIMIT, scope "model-cards") instead of the shared
+    5-per-60s one, which dialog opens would use up. The cache, background
+    refresh and backoff in model_cards bound the cost upstream. A sync def, so
+    a cold request's wait for a refresh happens in the threadpool.
+    """
+    enforce_model_cards_limit(user_id)
+    try:
+        cards, fetched_at, skipped = model_cards.list_production_cards()
+    except model_cards.ModelCatalogNotConfigured:
+        raise HTTPException(
+            status_code=503,
+            detail="The model catalog isn't configured in this environment.",
+        )
+    except model_cards.ModelCatalogUnavailable:
+        # Already logged by model_cards; the cause never reaches the caller.
+        raise HTTPException(status_code=503, detail="Couldn't read the model catalog.")
+    except Exception:
+        logger.exception("GET /model-cards failed")
+        raise HTTPException(status_code=503, detail="Couldn't read the model catalog.")
+    return {"cards": cards, "fetched_at": fetched_at, "skipped": skipped}
 
 
 @app.get("/runs/{run_id}")

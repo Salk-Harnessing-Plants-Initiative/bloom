@@ -11,6 +11,15 @@ import { resetSupabaseMock, type Answer, type RecordedQuery } from "@/lib/cyl-pi
 import { scanMeta } from "@/lib/cyl-pipeline/__fixtures__/rows";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
+// The dialog also reads the model cards (bloom#971); keep that off `fetchSpy`,
+// which counts the trigger POST.
+vi.mock("@/lib/cyl-pipeline/model-cards", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/cyl-pipeline/model-cards")>()),
+  fetchModelCards: async () => ({
+    cards: (await import("@/lib/cyl-pipeline/__fixtures__/model-cards")).PRODUCTION_CARDS,
+    skipped: 0,
+  }),
+}));
 
 import { ScanCheckbox, ScanSelectionProvider, SelectAllShown, SelectionBar } from "./ScanSelection";
 import { resetSubmissions } from "./submissions";

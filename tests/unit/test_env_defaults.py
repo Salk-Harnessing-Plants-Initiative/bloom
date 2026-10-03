@@ -60,6 +60,7 @@ SENSITIVE_INVENTORY = {
     # defaults, sourced from .env.*.defaults instead (see
     # openspec/changes/add-cyl-pipeline-dispatch/design.md).
     "WORKFLOWS_K8S_TOKEN",
+    "WANDB_API_KEY",
     "WORKFLOWS_K8S_CA_CERT",
     "WORKFLOWS_K8S_API_URL",
 }
