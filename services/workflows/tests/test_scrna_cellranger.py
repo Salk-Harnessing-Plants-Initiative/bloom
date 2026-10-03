@@ -348,3 +348,262 @@ def _latest_db_rule(name: str) -> str:
 def test_the_api_rule_is_the_databases_rule(name, rule):
     # The database checks '__' separately, so the API's look-ahead is not part of it.
     assert rule.pattern.replace("(?!.*__)", "") == _latest_db_rule(name)
+
+
+# --------------------------------------------------------------------------- #
+# An S3 folder
+# --------------------------------------------------------------------------- #
+
+FOLDER = {
+    "fastq_url": "s3://lab-data/run42/",
+    "sample": "col0",
+    "lanes": [1],
+    "files": [
+        {"name": "col0_S1_L001_R1_001.fastq.gz", "size": 10, "etag": '"a"'},
+        {"name": "col0_S1_L001_R2_001.fastq.gz", "size": 32, "etag": '"b"'},
+    ],
+    "file_count": 2,
+    "total_bytes": 42,
+}
+
+
+@pytest.fixture
+def folder(monkeypatch):
+    checked = []
+
+    def check(url):
+        checked.append(url)
+        return FOLDER
+
+    monkeypatch.setattr(scrna_cellranger.s3_folder, "check_folder", check)
+    return checked
+
+
+SHOWN = FOLDER["files"]
+
+
+def test_a_folder_run_is_checked_and_named_from_its_files(db, folder):
+    started = scrna_cellranger.trigger_run(
+        {
+            "fastq_url": "s3://lab-data/run42",
+            "reference": "tiny_ref",
+            "fastq_files": SHOWN,
+        },
+        USER,
+    )
+    assert folder == ["s3://lab-data/run42"]
+    assert db.rpc_calls == [
+        (
+            "request_scrna_cellranger_run",
+            {
+                "p_sample": "col0",
+                "p_reference": "tiny_ref",
+                "p_requested_by": USER,
+                "p_fastq_url": "s3://lab-data/run42/",
+                "p_fastq_files": FOLDER["files"],
+            },
+        )
+    ]
+    assert started["sample"] == "col0"
+    assert started["run_key"] == f"col0__tiny_ref__{USER}"
+    assert {
+        k: started[k]
+        for k in ("fastq_url", "lanes", "files", "file_count", "total_bytes")
+    } == {
+        "fastq_url": "s3://lab-data/run42/",
+        "lanes": [1],
+        "files": FOLDER["files"],
+        "file_count": 2,
+        "total_bytes": 42,
+    }
+
+
+def test_a_folder_run_keeps_its_metadata(db, folder):
+    scrna_cellranger.trigger_run(
+        {
+            "fastq_url": "s3://lab-data/run42/",
+            "reference": "tiny_ref",
+            "metadata": {"k": "v"},
+            "fastq_files": SHOWN,
+        },
+        USER,
+    )
+    assert db.rpc_calls[0][1]["p_metadata"] == {"k": "v"}
+
+
+def test_the_files_shown_may_come_in_any_order(db, folder):
+    scrna_cellranger.trigger_run(
+        {
+            "fastq_url": "s3://lab-data/run42/",
+            "reference": "tiny_ref",
+            "fastq_files": list(reversed(SHOWN)),
+        },
+        USER,
+    )
+    assert len(db.rpc_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "shown",
+    [
+        SHOWN[:1],
+        SHOWN + [{"name": "col0_S1_L002_R1_001.fastq.gz", "size": 5, "etag": '"c"'}],
+        [{**SHOWN[0], "size": 11}, SHOWN[1]],
+        [{**SHOWN[0], "etag": '"new"'}, SHOWN[1]],
+    ],
+    ids=["a-file-gone", "a-file-added", "a-size-changed", "a-file-replaced"],
+)
+def test_a_folder_that_changed_since_its_check_is_refused(db, folder, shown):
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {
+                "fastq_url": "s3://lab-data/run42/",
+                "reference": "tiny_ref",
+                "fastq_files": shown,
+            },
+            USER,
+        )
+    assert exc.value.status_code == 409 and "check it again" in exc.value.detail
+    assert db.rpc_calls == []
+
+
+@pytest.mark.parametrize(
+    "shown", [None, "x", [1, 2]], ids=["missing", "string", "not-objects"]
+)
+def test_a_folder_run_needs_the_files_it_was_shown(db, folder, shown):
+    body = {"fastq_url": "s3://lab-data/run42/", "reference": "tiny_ref"}
+    if shown is not None:
+        body["fastq_files"] = shown
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(body, USER)
+    assert exc.value.status_code == 422 and "fastq_files" in exc.value.detail
+    assert folder == [] and db.rpc_calls == []
+
+
+@pytest.mark.parametrize(
+    "extra, words",
+    [
+        ({"sra_runs": ["SRR28503597"]}, "not both"),
+        ({"sample": "col0"}, "not both"),
+    ],
+)
+def test_a_folder_with_another_source_is_refused(db, folder, extra, words):
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"fastq_url": "s3://lab-data/run42/", "reference": "tiny_ref", **extra},
+            USER,
+        )
+    assert exc.value.status_code == 422 and words in exc.value.detail
+    assert folder == [] and db.rpc_calls == []
+
+
+def test_a_null_sample_or_sra_runs_beside_a_folder_counts_as_absent(db, folder):
+    scrna_cellranger.trigger_run(
+        {
+            "fastq_url": "s3://lab-data/run42/",
+            "reference": "tiny_ref",
+            "fastq_files": SHOWN,
+            "sample": None,
+            "sra_runs": None,
+        },
+        USER,
+    )
+    assert db.rpc_calls[0][1]["p_sample"] == "col0"
+
+
+def test_a_null_folder_beside_a_sample_counts_as_absent(db, folder):
+    scrna_cellranger.trigger_run(
+        {"sample": "col0", "reference": "tiny_ref", "fastq_url": None}, USER
+    )
+    assert folder == []
+    assert "p_fastq_url" not in db.rpc_calls[0][1]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"reference": "../x"}, {"reference": "tiny_ref", "metadata": "x"}],
+    ids=["bad-reference", "bad-metadata"],
+)
+def test_bad_fields_are_refused_before_the_folder_is_listed(db, folder, extra):
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"fastq_url": "s3://lab-data/run42/", "fastq_files": SHOWN, **extra}, USER
+        )
+    assert exc.value.status_code == 422
+    assert folder == [] and db.rpc_calls == []
+
+
+def test_a_refused_folder_queues_nothing(db, monkeypatch):
+    def refuse(url):
+        raise HTTPException(
+            status_code=422, detail="No FASTQs directly in s3://lab-data/run42/"
+        )
+
+    monkeypatch.setattr(scrna_cellranger.s3_folder, "check_folder", refuse)
+    with pytest.raises(HTTPException):
+        scrna_cellranger.trigger_run(
+            {
+                "fastq_url": "s3://lab-data/run42/",
+                "reference": "tiny_ref",
+                "fastq_files": SHOWN,
+            },
+            USER,
+        )
+    assert db.rpc_calls == []
+
+
+def test_the_folder_check_route_returns_the_folder(app_as_user, db, folder):
+    resp = app_as_user.post(
+        "/scrna/cellranger/folder-check", json={"fastq_url": "s3://lab-data/run42/"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == FOLDER
+    assert db.rpc_calls == []
+
+
+def test_the_folder_check_route_requires_a_json_object(app_as_user):
+    assert (
+        app_as_user.post("/scrna/cellranger/folder-check", json=["x"]).status_code
+        == 422
+    )
+
+
+def test_the_folder_check_route_requires_auth():
+    import main
+    from auth import require_supabase_user
+
+    def _raise_401():
+        raise HTTPException(status_code=401, detail="missing token")
+
+    main.app.dependency_overrides[require_supabase_user] = _raise_401
+    try:
+        resp = TestClient(main.app).post(
+            "/scrna/cellranger/folder-check", json={"fastq_url": "x"}
+        )
+        assert resp.status_code == 401
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_checking_folders_doesnt_use_up_the_start_limit(
+    app_as_user, db, folder, monkeypatch
+):
+    import auth
+
+    monkeypatch.setattr(auth, "RATE_LIMIT", 1)
+    monkeypatch.setattr(auth, "FOLDER_CHECK_RATE_LIMIT", 3)
+    auth._hits.clear()
+    body = {"fastq_url": "s3://lab-data/run42/"}
+    for _ in range(3):
+        assert (
+            app_as_user.post("/scrna/cellranger/folder-check", json=body).status_code
+            == 200
+        )
+    refused = app_as_user.post("/scrna/cellranger/folder-check", json=body)
+    assert refused.status_code == 429 and "(3/" in refused.json()["detail"]
+    start = {
+        "fastq_url": "s3://lab-data/run42/",
+        "reference": "tiny_ref",
+        "fastq_files": SHOWN,
+    }
+    assert app_as_user.post("/scrna/cellranger/runs", json=start).status_code == 201
