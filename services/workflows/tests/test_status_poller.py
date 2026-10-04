@@ -5,6 +5,8 @@ seam — no real K8s, DB, or httpx needed) plus a minimal fake fluent Supabase
 client (matching test_pipeline.py's convention) for the two functions that
 build real queries (`_fetch_candidate_runs`/`_fetch_effective_phases`)."""
 
+import datetime as _dt
+
 import pytest
 from postgrest import APIError
 
@@ -38,8 +40,11 @@ class _Query:
         self._client = client
         self._table = table_name
         self._filters = []
+        self._columns = None
 
-    def select(self, *a, **k):
+    def select(self, columns="*", *a, **k):
+        if columns != "*":
+            self._columns = [c.strip() for c in columns.split(",")]
         return self
 
     def eq(self, key, val):
@@ -53,15 +58,28 @@ class _Query:
     def execute(self):
         rows = list(self._client._tables.get(self._table, []))
         rows = _apply_filters(rows, self._filters)
+        if self._columns is not None:
+            # Like PostgREST: only the selected columns come back.
+            rows = [{c: r[c] for c in self._columns if c in r} for r in rows]
         return _Result(rows)
 
 
 class _FakeClient:
     def __init__(self, **tables):
         self._tables = tables
+        self.rpcs = []
+        self.handlers = {}
 
     def table(self, name):
         return _Query(self, name)
+
+    def rpc(self, name, params):
+        return _Rpc(self, name, params)
+
+
+def _always(phase):
+    """get_workflow_status stand-in that reports `phase` for every workflow."""
+    return lambda name, run_id=None: phase
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +134,7 @@ def test_rollup_treats_dispatch_failed_scan_as_effective_failed_phase(monkeypatc
     monkeypatch.setattr(
         worker,
         "get_workflow_status",
-        lambda name: checked.append(name) or "Succeeded",
+        lambda name, run_id=None: checked.append(name) or "Succeeded",
     )
     (
         phases,
@@ -125,6 +143,7 @@ def test_rollup_treats_dispatch_failed_scan_as_effective_failed_phase(monkeypatc
         failed_count,
         queued_workflow_names,
         settled_workflow_names,
+        _clean,
     ) = worker._fetch_effective_phases(client, run_id=1)
     assert checked == ["wf-a"], "must not look up a workflow belonging to another run"
     assert sorted(phases) == ["Failed", "Succeeded"]
@@ -146,7 +165,9 @@ def test_run_with_no_workflow_names_and_no_dispatch_failures_is_left_unchanged(
     )
     called = {"get_status": False}
     monkeypatch.setattr(
-        worker, "get_workflow_status", lambda name: called.update(get_status=True)
+        worker,
+        "get_workflow_status",
+        lambda name, run_id=None: called.update(get_status=True),
     )
     (
         phases,
@@ -155,6 +176,7 @@ def test_run_with_no_workflow_names_and_no_dispatch_failures_is_left_unchanged(
         failed_count,
         queued_workflow_names,
         settled_workflow_names,
+        _clean,
     ) = worker._fetch_effective_phases(client, run_id=1)
     assert phases == []
     assert any_unknown is False
@@ -174,7 +196,9 @@ def test_rollup_skips_a_404d_workflow_rather_than_guessing(monkeypatch):
     )
     checked = []
     monkeypatch.setattr(
-        worker, "get_workflow_status", lambda name: checked.append(name) or None
+        worker,
+        "get_workflow_status",
+        lambda name, run_id=None: checked.append(name) or None,
     )
     (
         phases,
@@ -183,17 +207,17 @@ def test_rollup_skips_a_404d_workflow_rather_than_guessing(monkeypatch):
         failed_count,
         queued_workflow_names,
         settled_workflow_names,
+        _clean,
     ) = worker._fetch_effective_phases(client, run_id=1)
     assert checked == ["wf-gone"], "the workflow name must actually be looked up"
     assert phases == []
     assert any_unknown is True
     assert worker.rollup(phases) is None
     assert (done_count, failed_count) == (0, 0)
-    assert queued_workflow_names == ["wf-gone"], (
-        "still 'queued' regardless of the 404 — a 404'd workflow can no longer be "
-        "silently running, so its queued rows are reconciliation candidates too"
+    assert queued_workflow_names == ["wf-gone"], "its rows are still 'queued'"
+    assert settled_workflow_names == [], (
+        "a verified NotFound with no stored phase is unresolved, never settled"
     )
-    assert settled_workflow_names == [], "a 404 is never settled"
 
 
 def test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown(
@@ -212,7 +236,7 @@ def test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown(
     monkeypatch.setattr(
         worker,
         "get_workflow_status",
-        lambda name: None if name == "wf-b-gone" else "Succeeded",
+        lambda name, run_id=None: None if name == "wf-b-gone" else "Succeeded",
     )
     (
         phases,
@@ -221,6 +245,7 @@ def test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown(
         failed_count,
         queued_workflow_names,
         settled_workflow_names,
+        _clean,
     ) = worker._fetch_effective_phases(client, run_id=1)
     assert phases == ["Succeeded"]
     assert any_unknown is True
@@ -291,8 +316,8 @@ def test_sweep_once_computes_counts_from_real_scan_rows_and_passes_them_through(
             {"run_id": 1, "argo_workflow_name": "wf-a", "status": "queued"},
         ]
     )
-    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Succeeded")
-    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, name: 0)
+    monkeypatch.setattr(worker, "get_workflow_status", _always("Succeeded"))
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, r, name: 0)
     monkeypatch.setattr(
         worker,
         "update_run_status",
@@ -319,7 +344,7 @@ def test_sweep_once_computes_a_genuine_full_success_from_real_scan_rows(monkeypa
             {"run_id": 1, "argo_workflow_name": "wf-a", "status": "written"},
         ]
     )
-    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Succeeded")
+    monkeypatch.setattr(worker, "get_workflow_status", _always("Succeeded"))
     monkeypatch.setattr(
         worker,
         "update_run_status",
@@ -349,7 +374,7 @@ def test_a_downloader_stage_isolation_rolls_up_to_complete_with_failures(monkeyp
             {"run_id": 1, "argo_workflow_name": "wf-a", "status": "failed"},
         ]
     )
-    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Succeeded")
+    monkeypatch.setattr(worker, "get_workflow_status", _always("Succeeded"))
     monkeypatch.setattr(
         worker,
         "update_run_status",
@@ -375,7 +400,7 @@ def test_a_failed_run_may_still_have_written_results(monkeypatch):
             {"run_id": 1, "argo_workflow_name": "wf-a", "status": "failed"},
         ]
     )
-    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Failed")
+    monkeypatch.setattr(worker, "get_workflow_status", _always("Failed"))
     monkeypatch.setattr(
         worker,
         "update_run_status",
@@ -399,7 +424,7 @@ def test_sweep_once_computes_a_genuine_total_failure_from_real_scan_rows(monkeyp
             {"run_id": 1, "argo_workflow_name": None, "status": "failed"},
         ]
     )
-    monkeypatch.setattr(worker, "get_workflow_status", lambda name: "Failed")
+    monkeypatch.setattr(worker, "get_workflow_status", _always("Failed"))
     monkeypatch.setattr(
         worker,
         "update_run_status",
@@ -555,13 +580,13 @@ def test_sweep_withholds_complete_when_a_workflow_is_unresolved_this_cycle(
     )
 
 
-def test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow(
+def test_sweep_waits_to_conclude_failed_or_partial_while_a_workflow_is_unresolved(
     monkeypatch,
 ):
-    """A confirmed non-Succeeded phase already rules out 'complete' regardless
-    of what an unresolved sibling workflow turns out to have been — 'partial'/
-    'failed' conclusions are safe to write even with incomplete information,
-    unlike 'complete'."""
+    """Inverted by fix-cyl-poller-unconcluded-runs (design D5): a 'partial' or
+    'failed' conclusion is now final, and writing it would also close the
+    unresolved workflow's rows, so it waits like 'complete' does. The removal
+    rule bounds the wait, which is what let addendum 8 skip this gate before."""
     calls = []
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
     monkeypatch.setattr(
@@ -575,7 +600,7 @@ def test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow(
         lambda c, r, s, d=None, f=None: calls.append((r, s)),
     )
     worker.sweep_once(object())
-    assert calls == [(1, "partial")]
+    assert calls == []
 
 
 # --- round 2: sweep_once's clean/unclean return value ------------------------
@@ -801,10 +826,13 @@ def test_reconcile_unresolved_scans_sends_the_real_rpc_shape():
             captured["params"] = params
             return _RPC()
 
-    count = worker._reconcile_unresolved_scans(_Client(), "wf-abc")
+    count = worker._reconcile_unresolved_scans(_Client(), 7, "wf-abc")
 
-    assert captured["name"] == "fail_cyl_pipeline_run_scans_without_result"
+    # Run-scoped (fix-cyl-poller-unconcluded-runs): a GC'd workflow's generated
+    # name can be reused by a later run.
+    assert captured["name"] == "close_cyl_pipeline_run_workflow_scans"
     assert captured["params"] == {
+        "p_run_id": 7,
         "p_argo_workflow_name": "wf-abc",
         "p_error_message": (
             "write-back recorded no result for this scan before its "
@@ -824,7 +852,7 @@ def test_reconcile_unresolved_scans_returns_zero_when_rpc_returns_none():
         def rpc(self, name, params):
             return _RPC()
 
-    assert worker._reconcile_unresolved_scans(_Client(), "wf-abc") == 0
+    assert worker._reconcile_unresolved_scans(_Client(), 7, "wf-abc") == 0
 
 
 def test_sweep_reconciles_a_queued_scan_before_writing_a_terminal_status(monkeypatch):
@@ -844,7 +872,7 @@ def test_sweep_reconciles_a_queued_scan_before_writing_a_terminal_status(monkeyp
     monkeypatch.setattr(
         worker,
         "_reconcile_unresolved_scans",
-        lambda c, name: reconcile_calls.append(name) or 1,
+        lambda c, r, name: reconcile_calls.append(name) or 1,
     )
     monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 2))
     monkeypatch.setattr(
@@ -875,7 +903,7 @@ def test_sweep_reconciles_multiple_distinct_queued_workflow_names_once_each(
     monkeypatch.setattr(
         worker,
         "_reconcile_unresolved_scans",
-        lambda c, name: reconcile_calls.append(name) or 1,
+        lambda c, r, name: reconcile_calls.append(name) or 1,
     )
     monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 2))
     monkeypatch.setattr(
@@ -911,7 +939,7 @@ def test_sweep_recomputes_counts_fresh_after_reconciling_instead_of_incrementing
     # The reconciliation call itself finds nothing left to fail — the one
     # queued row it would have touched already resolved to 'written' for
     # real, between the snapshot above and this call.
-    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, name: 0)
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, r, name: 0)
     # A fresh recount now sees that real completion.
     monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (1, 0))
     calls = []
@@ -938,14 +966,15 @@ def test_sweep_does_not_reconcile_queued_rows_while_still_running(monkeypatch):
         lambda c, r: (["Running"], False, 0, 0, ["wf-a"], []),
     )
 
-    def boom(client, name):
-        raise AssertionError("must not reconcile a still-running run's queued rows")
-
-    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", boom)
+    reconciles = []
+    monkeypatch.setattr(
+        worker, "_reconcile_unresolved_scans", lambda *a: reconciles.append(a)
+    )
     monkeypatch.setattr(
         worker, "update_run_status", lambda c, r, s, d=None, f=None: None
     )
-    worker.sweep_once(object())  # must not raise
+    assert worker.sweep_once(object()) is True
+    assert reconciles == [], "a still-running run's queued rows are not stuck"
 
 
 def test_sweep_leaves_the_run_unsettled_when_reconciliation_itself_fails(
@@ -966,7 +995,7 @@ def test_sweep_leaves_the_run_unsettled_when_reconciliation_itself_fails(
 
     monkeypatch.setattr(worker, "_fetch_effective_phases", fake_fetch)
 
-    def boom(client, name):
+    def boom(client, run_id, name):
         raise RuntimeError("transient reconciliation failure")
 
     monkeypatch.setattr(worker, "_reconcile_unresolved_scans", boom)
@@ -991,7 +1020,7 @@ def test_sweep_skips_reconciliation_when_no_queued_rows_remain(monkeypatch):
         lambda c, r: (["Succeeded"], False, 1, 0, [], []),
     )
 
-    def boom(client, name):
+    def boom(client, run_id, name):
         raise AssertionError("must not be called with no leftover queued rows")
 
     monkeypatch.setattr(worker, "_reconcile_unresolved_scans", boom)
@@ -1024,7 +1053,7 @@ def test_sweep_reconciles_a_queued_scan_even_when_rollup_concludes_complete(
     monkeypatch.setattr(
         worker,
         "_reconcile_unresolved_scans",
-        lambda c, name: reconcile_calls.append(name) or 1,
+        lambda c, r, name: reconcile_calls.append(name) or 1,
     )
     monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (3, 1))
     calls = []
@@ -1049,39 +1078,23 @@ def test_sweep_withheld_complete_on_404_never_reaches_reconciliation(monkeypatch
         lambda c, r: (["Succeeded"], True, 1, 0, ["wf-a"], []),
     )
 
-    def boom(client, name):
-        raise AssertionError("must not reconcile while complete is withheld")
-
-    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", boom)
-
-    def update_boom(*a, **k):
-        raise AssertionError("must not write anything while complete is withheld")
-
-    monkeypatch.setattr(worker, "update_run_status", update_boom)
-    worker.sweep_once(object())  # must not raise
+    reconciles, updates = [], []
+    monkeypatch.setattr(
+        worker, "_reconcile_unresolved_scans", lambda *a: reconciles.append(a)
+    )
+    monkeypatch.setattr(worker, "update_run_status", lambda *a: updates.append(a))
+    assert worker.sweep_once(object()) is True
+    assert reconciles == [], "nothing is reconciled while the conclusion is withheld"
+    assert updates == [], "nothing is written while the conclusion is withheld"
 
 
-def test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_workflow(
+def test_sweep_waits_to_reconcile_partial_or_failed_while_a_sibling_is_unresolved(
     monkeypatch,
 ):
-    """Round 7 finding: a prior round's fix (design.md's Decision 6 addendum 7,
-    item 1) gated this backstop's reconciliation on `not any_unknown`, based on
-    the premise that an unresolved (404'd) workflow "might still resolve" on a
-    later cycle. That premise doesn't hold given get_workflow_status's actual
-    contract: it returns None ONLY on a clean 404 ("most often ttlStrategy
-    already cleaned it up" — its own docstring), which is, by construction,
-    normally a *permanent* condition, not transient — a genuine transient
-    failure raises K8sStatusError instead, a completely separate path this
-    loop's outer try/except already isolates per-run. Gating reconciliation on
-    any_unknown therefore didn't protect against a real "might still resolve"
-    case; it just made a TTL-GC'd sibling workflow (an ordinary, expected
-    occurrence in any multi-batch run per addendum 5's own numbers) able to
-    stall this run's reconciliation AND status write forever, silently
-    (`ok=True` every such cycle) — confirmed independently by two review
-    rounds tracing the same mechanism. Reverted: restores Decision 6's
-    original, already-adversarially-reviewed design, which already reasoned
-    that a 404'd workflow's own queued rows are safe to reconcile ("it cannot
-    still be silently running")."""
+    """Inverted by fix-cyl-poller-unconcluded-runs: the backstop closes rows only
+    once no workflow is unresolved, so a misconfigured namespace's NotFound can't
+    fail a live workflow's rows. A garbage-collected sibling no longer stalls the
+    run forever, because a stored phase or the removal rule resolves it."""
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
     monkeypatch.setattr(
         worker,
@@ -1092,9 +1105,8 @@ def test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_
     monkeypatch.setattr(
         worker,
         "_reconcile_unresolved_scans",
-        lambda c, name: reconcile_calls.append(name) or 1,
+        lambda c, r, name: reconcile_calls.append(name) or 1,
     )
-    monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 2))
     calls = []
     monkeypatch.setattr(
         worker,
@@ -1102,10 +1114,8 @@ def test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_
         lambda c, r, s, d=None, f=None: calls.append((r, s, d, f)),
     )
     worker.sweep_once(object())
-    assert reconcile_calls == ["wf-a"]
-    assert calls == [(1, "failed", 0, 2)]
-    assert reconcile_calls == ["wf-a"]
-    assert calls == [(1, "failed", 0, 2)]
+    assert reconcile_calls == []
+    assert calls == []
 
 
 # --- round 2: a real (unmocked) K8sStatusError from get_workflow_status -----
@@ -1201,7 +1211,7 @@ def test_sweep_treats_reconciliation_signature_not_found_as_expected_and_transie
         lambda c, r: (["Succeeded"], False, 0, 0, ["wf-a"], []),
     )
 
-    def fake_reconcile(client, name):
+    def fake_reconcile(client, run_id, name):
         raise APIError({"code": "PGRST202", "message": "function not found"})
 
     monkeypatch.setattr(worker, "_reconcile_unresolved_scans", fake_reconcile)
@@ -1217,7 +1227,7 @@ def test_sweep_treats_reconciliation_signature_not_found_as_expected_and_transie
 
 
 def test_sweep_still_marks_unclean_for_a_non_pgrst202_reconciliation_apierror(
-    monkeypatch,
+    monkeypatch, caplog
 ):
     """Contrast case: an APIError from reconciliation that is NOT the
     signature-not-found code is a real problem and must still mark the cycle
@@ -1229,18 +1239,21 @@ def test_sweep_still_marks_unclean_for_a_non_pgrst202_reconciliation_apierror(
         lambda c, r: (["Succeeded"], False, 0, 0, ["wf-a"], []),
     )
 
-    def fake_reconcile(client, name):
+    def fake_reconcile(client, run_id, name, message=None):
         raise APIError({"code": "PGRST301", "message": "JWT expired"})
 
     monkeypatch.setattr(worker, "_reconcile_unresolved_scans", fake_reconcile)
-
-    def update_boom(*a, **k):
-        raise AssertionError(
-            "must not write a status this cycle when reconciliation itself failed"
-        )
-
-    monkeypatch.setattr(worker, "update_run_status", update_boom)
-    assert worker.sweep_once(object()) is False
+    updates = []
+    monkeypatch.setattr(
+        worker, "update_run_status", lambda *a, **k: updates.append(a)
+    )
+    with caplog.at_level("WARNING", logger=worker.logger.name):
+        assert worker.sweep_once(object()) is False
+    assert updates == [], "no status write when reconciliation itself failed"
+    assert any(
+        "failed to reconcile" in r.getMessage() and "JWT expired" in r.getMessage()
+        for r in caplog.records
+    ), "the APIError itself reached the reconcile handler"
 
 
 # --- run(): connection retry, signal handling -------------------------------
@@ -1576,7 +1589,7 @@ def _patch_sweep(monkeypatch, fetched, *, reconcile=None, recount=(0, 0)):
     monkeypatch.setattr(
         worker,
         "_reconcile_unresolved_scans",
-        reconcile or (lambda c, name: reconcile_calls.append(name) or 1),
+        reconcile or (lambda c, r, name: reconcile_calls.append(name) or 1),
     )
 
     def _recount(c, r):
@@ -1596,7 +1609,7 @@ def _patch_sweep(monkeypatch, fetched, *, reconcile=None, recount=(0, 0)):
 
 def _settled(rows, phases, monkeypatch):
     client = _FakeClient(cyl_pipeline_run_scans=rows)
-    monkeypatch.setattr(worker, "get_workflow_status", phases.get)
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name(phases))
     return worker._fetch_effective_phases(client, run_id=1).settled_workflow_names
 
 
@@ -1615,10 +1628,17 @@ def test_a_live_workflow_is_never_settled(monkeypatch, live):
 
 
 def test_a_404d_workflow_is_never_settled(monkeypatch):
-    """However old its rows: a 404 can also mean a misconfigured namespace, API URL or
-    CRD while the workflow is still running, and closing its rows then would be
-    permanent (the write-back guard keeps them 'failed')."""
-    assert _settled([_row("wf-gone")], {}, monkeypatch) == []
+    """A verified NotFound with no stored phase is unresolved, however old its rows: it
+    can also mean a misconfigured namespace while the workflow is still running, and
+    closing its rows then would be permanent (the write-back guard keeps them
+    'failed')."""
+    client = _FakeClient(cyl_pipeline_run_scans=[_row("wf-gone")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    fetched = worker._fetch_effective_phases(client, run_id=1)
+    assert fetched.settled_workflow_names == []
+    assert fetched.any_unknown is True
+    assert client.rpcs == [], "no record call and no close-out"
+    assert worker._not_found.count((1, "wf-gone")) == 1
 
 
 def test_only_workflows_with_queued_rows_are_settled(monkeypatch):
@@ -1635,12 +1655,12 @@ def test_sweep_closes_out_only_the_terminal_workflow_end_to_end(monkeypatch):
     reconcile_calls, update_calls = [], []
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
     monkeypatch.setattr(
-        worker, "get_workflow_status", {"wf-a": "Failed", "wf-b": "Running"}.get
+        worker, "get_workflow_status", _by_name({"wf-a": "Failed", "wf-b": "Running"})
     )
     monkeypatch.setattr(
         worker,
         "_reconcile_unresolved_scans",
-        lambda c, name: reconcile_calls.append(name) or 1,
+        lambda c, r, name: reconcile_calls.append(name) or 1,
     )
     monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 1))
     monkeypatch.setattr(
@@ -1659,11 +1679,11 @@ def test_sweep_leaves_a_404d_workflows_rows_alone_while_the_run_runs_end_to_end(
     client = _FakeClient(cyl_pipeline_run_scans=[_row("wf-gone"), _row("wf-b")])
     reconcile_calls, update_calls = [], []
     monkeypatch.setattr(worker, "_fetch_candidate_runs", lambda c: [{"id": 1}])
-    monkeypatch.setattr(worker, "get_workflow_status", {"wf-b": "Running"}.get)
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-b": "Running"}))
     monkeypatch.setattr(
         worker,
         "_reconcile_unresolved_scans",
-        lambda c, name: reconcile_calls.append(name) or 1,
+        lambda c, r, name: reconcile_calls.append(name) or 1,
     )
     monkeypatch.setattr(
         worker,
@@ -1673,6 +1693,8 @@ def test_sweep_leaves_a_404d_workflows_rows_alone_while_the_run_runs_end_to_end(
     worker.sweep_once(client)
     assert reconcile_calls == []
     assert update_calls == [(1, "running", 0, 0)]
+    assert client.rpcs == [], "no phase is recorded for a live Running workflow"
+    assert worker._not_found.count((1, "wf-gone")) == 1
 
 
 def test_sweep_reconciles_each_terminal_workflow_once_and_recounts_once(monkeypatch):
@@ -1694,16 +1716,12 @@ def test_sweep_reconciles_each_terminal_workflow_once_and_recounts_once(monkeypa
 
 
 def test_sweep_running_run_with_nothing_settled_makes_no_call(monkeypatch):
-    def boom(*_a):
-        raise AssertionError("nothing is settled: no reconcile, no recount")
-
-    _, update_calls, _ = _patch_sweep(
+    reconcile_calls, update_calls, recounts = _patch_sweep(
         monkeypatch,
         (["Succeeded", "Running"], False, 2, 0, ["wf-b"], []),
-        reconcile=boom,
     )
-    monkeypatch.setattr(worker, "_count_done_and_failed", boom)
-    worker.sweep_once(object())
+    assert worker.sweep_once(object()) is True
+    assert reconcile_calls == [] and recounts == [], "nothing is settled"
     assert update_calls == [(1, "running", 2, 0)], "the snapshot counts"
 
 
@@ -1721,7 +1739,7 @@ def test_sweep_running_run_reconcile_failure_still_writes_progress(
     """The run stays a candidate either way, so skipping the write would only freeze its
     counts. The failure still marks the cycle unclean and is retried next cycle."""
 
-    def boom(client, name):
+    def boom(client, run_id, name):
         raise failure
 
     _, update_calls, _ = _patch_sweep(
@@ -1745,7 +1763,7 @@ def test_sweep_running_run_recount_failure_still_writes_progress(monkeypatch):
 
 
 def test_sweep_running_run_reconcile_signature_not_found_is_quiet(monkeypatch, caplog):
-    def not_migrated(client, name):
+    def not_migrated(client, run_id, name):
         raise APIError(
             {"message": "not found", "code": "PGRST202", "details": None, "hint": None}
         )
@@ -1800,7 +1818,7 @@ def test_a_clean_close_out_does_not_clear_an_earlier_runs_unclean_cycle(
         worker, "_fetch_candidate_runs", lambda c: [{"id": 1}, {"id": 2}]
     )
     monkeypatch.setattr(worker, "_fetch_effective_phases", fake_fetch)
-    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, n: 1)
+    monkeypatch.setattr(worker, "_reconcile_unresolved_scans", lambda c, r, n: 1)
     monkeypatch.setattr(worker, "_count_done_and_failed", lambda c, r: (0, 1))
     monkeypatch.setattr(
         worker, "update_run_status", lambda c, r, s, d=None, f=None: None
@@ -1812,7 +1830,7 @@ def test_sweep_logs_how_many_rows_each_close_out_closed(monkeypatch, caplog):
     _patch_sweep(
         monkeypatch,
         (["Failed", "Running"], False, 0, 0, ["wf-a"], ["wf-a"]),
-        reconcile=lambda c, name: 3,
+        reconcile=lambda c, r, name: 3,
     )
     with caplog.at_level("INFO", logger=worker.logger.name):
         worker.sweep_once(object())
@@ -1831,9 +1849,797 @@ def test_sweep_reconciles_rows_write_back_deferred_after_its_final_retry(monkeyp
     _, update_calls, _ = _patch_sweep(
         monkeypatch,
         (["Failed"], False, 1, 0, ["wf-a"], ["wf-a"]),
-        reconcile=lambda c, name: calls.append(name) or 2,
+        reconcile=lambda c, r, name: calls.append(name) or 2,
         recount=(1, 2),
     )
     worker.sweep_once(object())
     assert calls == ["wf-a"]
     assert update_calls == [(1, "failed", 1, 2)]
+
+
+# --- fix-cyl-poller-unconcluded-runs (bloom #1042): stored phases, removal, finality -----------
+#
+# Argo deletes a finished Workflow WORKFLOWS_K8S_TTL_SECONDS after it ends. The poller now keeps
+# each workflow's last terminal phase in cyl_pipeline_run_workflows and falls back to it on a
+# verified NotFound. A workflow it never saw finish is "removed" only after 3 consecutive verified
+# NotFounds spanning the grace period, and only once its newest row is older than the TTL; its
+# queued rows are then closed through the run-scoped RPC and its phase comes from its rows. While
+# any workflow is unresolved, no terminal status is written. A concluded run is never re-selected.
+
+
+OLD = "2026-01-01T00:00:00+00:00"
+NOW = "2026-10-04T12:00:00+00:00"
+
+
+class _Clock:
+    def __init__(self):
+        self.mono = 1000.0
+        self.wall = _dt.datetime.fromisoformat(NOW)
+
+    def advance(self, seconds):
+        self.mono += seconds
+        self.wall += _dt.timedelta(seconds=seconds)
+
+
+@pytest.fixture(autouse=True)
+def _reset_not_found_tracker():
+    worker._not_found.clear()
+    yield
+    worker._not_found.clear()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    c = _Clock()
+    monkeypatch.setattr(worker, "_monotonic", lambda: c.mono)
+    monkeypatch.setattr(worker, "_utcnow", lambda: c.wall)
+    monkeypatch.setattr(worker, "NOT_FOUND_GRACE_SECONDS", 600.0)
+    monkeypatch.setattr(worker, "TTL_SECONDS", 3600)
+    return c
+
+
+def _by_name(phases):
+    """get_workflow_status stand-in: a name missing from `phases` is a verified NotFound,
+    and an exception value is raised."""
+    calls = []
+
+    def lookup(name, run_id=None):
+        calls.append((name, run_id))
+        value = phases.get(name)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    lookup.calls = calls
+    return lookup
+
+
+class _Rpc:
+    def __init__(self, client, name, params):
+        self._client, self._name, self._params = client, name, params
+
+    def execute(self):
+        self._client.rpcs.append((self._name, dict(self._params)))
+        handler = self._client.handlers.get(self._name)
+        if isinstance(handler, Exception):
+            raise handler
+        return _Result(handler(self._params) if handler else None)
+
+
+class _Db(_FakeClient):
+    """_FakeClient plus .rpc(): records every call and applies the poller's writes to its
+    tables, so a re-read after a close-out sees the closed rows."""
+
+    def __init__(self, **tables):
+        tables.setdefault("cyl_pipeline_run_workflows", [])
+        super().__init__(**tables)
+        self.rpcs = []
+        self.handlers = {
+            "close_cyl_pipeline_run_workflow_scans": self._close,
+            "record_cyl_pipeline_workflow_phase": self._record,
+            "update_cyl_pipeline_run_status": self._update,
+        }
+
+    def rpc(self, name, params):
+        return _Rpc(self, name, params)
+
+    def calls(self, name):
+        return [p for n, p in self.rpcs if n == name]
+
+    def _close(self, p):
+        closed = 0
+        for r in self._tables.get("cyl_pipeline_run_scans", []):
+            if (
+                r["run_id"] == p["p_run_id"]
+                and r.get("argo_workflow_name") == p["p_argo_workflow_name"]
+                and r["status"] == "queued"
+            ):
+                r["status"] = "failed"
+                # Like the real RPC: updated_at = now().
+                r["updated_at"] = worker._utcnow().isoformat()
+                closed += 1
+        return closed
+
+    def _update(self, p):
+        """Like the real RPC: a terminal write concludes the run, and a concluded
+        run is never written again."""
+        for r in self._tables.get("cyl_pipeline_runs", []):
+            if r["id"] != p["p_run_id"]:
+                continue
+            open_ = r["status"] in ("submitted", "running") or (
+                r["status"] == "partial" and not r.get("poller_concluded_at")
+            )
+            if not open_:
+                return
+            r["status"] = p["p_status"]
+            if p["p_status"] in ("complete", "failed", "partial"):
+                r["poller_concluded_at"] = worker._utcnow().isoformat()
+
+    def _record(self, p):
+        rows = self._tables["cyl_pipeline_run_workflows"]
+        key = (p["p_run_id"], p["p_argo_workflow_name"])
+        for r in rows:
+            if (r["run_id"], r["argo_workflow_name"]) == key:
+                if r["phase"] == p["p_phase"]:
+                    return False
+                r["phase"] = p["p_phase"]
+                return True
+        rows.append(
+            {"run_id": key[0], "argo_workflow_name": key[1], "phase": p["p_phase"]}
+        )
+        return True
+
+
+def _wrow(name, status="queued", updated_at=OLD, run_id=1):
+    """A scan row; updated_at is when it was last written (dispatch, then
+    write-back), which the TTL guard reads."""
+    return {
+        "run_id": run_id,
+        "argo_workflow_name": name,
+        "status": status,
+        "updated_at": updated_at,
+    }
+
+
+def _dispatch_failed_row():
+    return {
+        "run_id": 1,
+        "argo_workflow_name": None,
+        "status": "failed",
+        "updated_at": OLD,
+    }
+
+
+def _stored(name, phase, run_id=1):
+    return {"run_id": run_id, "argo_workflow_name": name, "phase": phase}
+
+
+def _run(run_id=1, status="running", concluded=None):
+    return {"id": run_id, "status": status, "poller_concluded_at": concluded}
+
+
+def _db(rows, *, stored=(), runs=None):
+    return _Db(
+        cyl_pipeline_runs=runs if runs is not None else [_run()],
+        cyl_pipeline_run_scans=rows,
+        cyl_pipeline_run_workflows=list(stored),
+    )
+
+
+def _writes(db):
+    return [
+        (p["p_status"], p["p_done_count"], p["p_failed_count"])
+        for p in db.calls("update_cyl_pipeline_run_status")
+    ]
+
+
+def _closes(db):
+    return db.calls("close_cyl_pipeline_run_workflow_scans")
+
+
+def _sweep_cycles(db, clock, n, step=300):
+    results = []
+    for _ in range(n):
+        results.append(worker.sweep_once(db))
+        clock.advance(step)
+    return results
+
+
+def _pgrst202():
+    return APIError({"message": "x", "code": "PGRST202", "details": None, "hint": None})
+
+
+def test_terminal_phase_is_recorded_once_and_used_after_gc(monkeypatch, clock):
+    db = _db([_wrow("wf-a", "written"), _wrow("wf-b")])
+    monkeypatch.setattr(
+        worker,
+        "get_workflow_status",
+        _by_name({"wf-a": "Succeeded", "wf-b": "Running"}),
+    )
+    assert worker.sweep_once(db) is True
+    assert db.calls("record_cyl_pipeline_workflow_phase") == [
+        {"p_run_id": 1, "p_argo_workflow_name": "wf-a", "p_phase": "Succeeded"}
+    ]
+    assert _writes(db) == [("running", 1, 0)]
+
+    db._tables["cyl_pipeline_run_scans"][1]["status"] = "written"
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-b": "Succeeded"}))
+    assert worker.sweep_once(db) is True
+    assert _writes(db)[-1] == ("complete", 2, 0), "wf-a's stored phase is used"
+    recorded = [
+        p["p_argo_workflow_name"]
+        for p in db.calls("record_cyl_pipeline_workflow_phase")
+    ]
+    assert recorded == ["wf-a", "wf-b"]
+
+
+def test_record_phase_sends_the_real_rpc_shape():
+    db = _Db()
+    worker._record_phase(db, 7, "wf-a", "Failed")
+    assert db.rpcs == [
+        (
+            "record_cyl_pipeline_workflow_phase",
+            {"p_run_id": 7, "p_argo_workflow_name": "wf-a", "p_phase": "Failed"},
+        )
+    ]
+
+
+def test_fetch_stored_phases_reads_only_this_runs_rows():
+    db = _Db(
+        cyl_pipeline_run_workflows=[
+            _stored("wf-a", "Succeeded"),
+            _stored("wf-b", "Failed", run_id=2),
+        ]
+    )
+    assert worker._fetch_stored_phases(db, 1) == {"wf-a": "Succeeded"}
+
+
+@pytest.mark.parametrize(
+    ("stored", "expect_call"), [("Succeeded", False), ("Failed", True)]
+)
+def test_record_is_called_only_when_the_phase_changes(
+    monkeypatch, clock, stored, expect_call
+):
+    db = _db([_wrow("wf-a", "written")], stored=[_stored("wf-a", stored)])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-a": "Succeeded"}))
+    worker.sweep_once(db)
+    assert bool(db.calls("record_cyl_pipeline_workflow_phase")) is expect_call
+
+
+def test_live_phase_wins_over_stored_phase(monkeypatch, clock):
+    db = _db([_wrow("wf-a")], stored=[_stored("wf-a", "Failed")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-a": "Running"}))
+    worker.sweep_once(db)
+    assert _writes(db) == [("running", 0, 0)]
+    assert db.calls("record_cyl_pipeline_workflow_phase") == []
+    assert _closes(db) == []
+
+
+def test_lookups_carry_the_run_id(monkeypatch, clock):
+    lookup = _by_name({"wf-a": "Running"})
+    monkeypatch.setattr(worker, "get_workflow_status", lookup)
+    worker.sweep_once(_db([_wrow("wf-a")]))
+    assert lookup.calls == [("wf-a", 1)]
+
+
+def test_gone_never_seen_workflow_is_removed_after_grace(monkeypatch, clock):
+    db = _db([_wrow("wf-a", "written"), _wrow("wf-a", "written"), _wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 2, step=300)
+    assert _closes(db) == []
+    assert _writes(db) == [], "unresolved: every conclusion is withheld"
+
+    assert worker.sweep_once(db) is True
+    assert _closes(db) == [
+        {
+            "p_run_id": 1,
+            "p_argo_workflow_name": "wf-a",
+            "p_error_message": worker._REMOVED_MESSAGE,
+        }
+    ]
+    assert _writes(db) == [("failed", 2, 1)]
+
+
+def test_removal_needs_the_grace_period_not_just_three_cycles(monkeypatch, clock):
+    db = _db([_wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 5, step=15)
+    assert _closes(db) == []
+    clock.advance(600)
+    worker.sweep_once(db)
+    assert len(_closes(db)) == 1
+
+
+def test_removed_workflow_with_all_rows_written_counts_succeeded(monkeypatch, clock):
+    db = _db(
+        [_wrow("wf-a", "written"), _wrow("wf-b", "written")],
+        stored=[_stored("wf-a", "Succeeded")],
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 3)
+    assert _closes(db) == []
+    assert _writes(db) == [("complete", 2, 0)]
+
+
+def test_removed_workflow_with_written_and_failed_rows_counts_failed(
+    monkeypatch, clock
+):
+    db = _db([_wrow("wf-a", "written"), _wrow("wf-a", "failed")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 3)
+    assert _writes(db) == [("failed", 1, 1)]
+
+
+@pytest.mark.parametrize(
+    "fresh", ["2026-10-04T11:30:00+00:00", None], ids=["young", "unknown"]
+)
+def test_not_found_too_soon_after_dispatch_is_never_removed(
+    monkeypatch, clock, fresh
+):
+    db = _db([_wrow("wf-a", updated_at=fresh)])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 4, step=300)
+    assert _closes(db) == []
+    assert _writes(db) == []
+
+    # Positive control: the same setup with old rows is removed.
+    worker._not_found.clear()
+    old = _db([_wrow("wf-a")])
+    _sweep_cycles(old, clock, 3)
+    assert len(_closes(old)) == 1
+
+
+def test_newest_updated_at_governs_ttl_guard(monkeypatch, clock):
+    db = _db([_wrow("wf-a"), _wrow("wf-a", updated_at="2026-10-04T11:30:00+00:00")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 4, step=300)
+    assert _closes(db) == []
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    ["Running", K8sStatusError("lookup failed")],
+    ids=["live-phase", "run-check-error"],
+)
+def test_not_found_count_resets_on_any_other_result(monkeypatch, clock, interruption):
+    db = _db([_wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 2)
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-a": interruption}))
+    worker.sweep_once(db)
+    clock.advance(300)
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 2)
+    assert _closes(db) == [], "the count restarted"
+    # Positive control: a third NotFound after the reset does remove it.
+    worker.sweep_once(db)
+    assert len(_closes(db)) == 1
+
+
+def test_a_failed_lookup_resets_only_that_workflows_streak(monkeypatch, clock):
+    """One flaky lookup must not restart a whole run's removal clock (PR #1048
+    review): only the workflow whose lookup raised loses its NotFound streak, and
+    it is unresolved that cycle."""
+    db = _db([_wrow("wf-a"), _wrow("wf-b")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    # Short cycles, so neither reaches the grace period here.
+    _sweep_cycles(db, clock, 2, step=15)
+    monkeypatch.setattr(
+        worker, "get_workflow_status", _by_name({"wf-a": K8sStatusError("x")})
+    )
+    assert worker.sweep_once(db) is False, "a failed lookup marks the cycle unclean"
+    assert worker._not_found.count((1, "wf-a")) == 0
+    assert worker._not_found.count((1, "wf-b")) == 3
+    assert _writes(db) == []
+
+
+def test_a_flaky_sibling_does_not_stop_removal(monkeypatch, clock):
+    """wf-a is gone; wf-b's lookup raises every third cycle. wf-a is still removed
+    on schedule, and the run concludes once wf-b's lookup succeeds."""
+    db = _db([_wrow("wf-a"), _wrow("wf-b", "written")])
+    calls = {"n": 0}
+
+    def flaky(name, run_id=None):
+        if name == "wf-b":
+            calls["n"] += 1
+            if calls["n"] % 3 == 0:
+                raise K8sStatusError("flaky")
+            return "Succeeded"
+        return None
+
+    monkeypatch.setattr(worker, "get_workflow_status", flaky)
+    _sweep_cycles(db, clock, 3)
+    assert [p["p_argo_workflow_name"] for p in _closes(db)] == ["wf-a"]
+    worker.sweep_once(db)
+    assert _writes(db) == [("partial", 1, 1)]
+
+
+def test_a_run_read_error_resets_every_pair_of_that_run(monkeypatch, clock):
+    db = _db([_wrow("wf-a"), _wrow("wf-b")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 2)
+    real = worker._fetch_run_rows
+    monkeypatch.setattr(
+        worker,
+        "_fetch_run_rows",
+        lambda c, r: (_ for _ in ()).throw(RuntimeError("db blip")),
+    )
+    assert worker.sweep_once(db) is False
+    monkeypatch.setattr(worker, "_fetch_run_rows", real)
+    assert worker._not_found.count((1, "wf-a")) == 0
+    assert worker._not_found.count((1, "wf-b")) == 0
+
+
+def test_tracker_is_keyed_by_run_and_name(monkeypatch, clock):
+    db = _db(
+        [_wrow("wf-a", run_id=1), _wrow("wf-a", run_id=2)],
+        runs=[_run(1), _run(2)],
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    worker.sweep_once(db)
+    assert worker._not_found.count((1, "wf-a")) == 1
+    assert worker._not_found.count((2, "wf-a")) == 1
+
+
+def test_tracker_drops_pairs_not_looked_up(monkeypatch, clock):
+    db = _db([_wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    worker.sweep_once(db)
+    assert worker._not_found.count((1, "wf-a")) == 1
+    db._tables["cyl_pipeline_runs"] = []
+    worker.sweep_once(db)
+    assert worker._not_found.count((1, "wf-a")) == 0
+
+
+@pytest.mark.parametrize(
+    ("failure", "clean"),
+    [(RuntimeError("close failed"), False), (_pgrst202(), True)],
+    ids=["error", "pgrst202"],
+)
+def test_removed_close_out_failure_leaves_workflow_unresolved(
+    monkeypatch, clock, failure, clean
+):
+    db = _db([_wrow("wf-a")])
+    db.handlers["close_cyl_pipeline_run_workflow_scans"] = failure
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    results = _sweep_cycles(db, clock, 3)
+    assert len(_closes(db)) == 1, "the removal was attempted on the third cycle"
+    assert results[-1] is clean
+    assert _writes(db) == [], "never concluded with rows still queued"
+
+
+def test_terminal_conclusion_waits_for_an_unresolved_sibling(monkeypatch, clock):
+    db = _db([_wrow("wf-a"), _wrow("wf-b", "written")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-a": "Failed"}))
+    worker.sweep_once(db)
+    assert _writes(db) == []
+    assert _closes(db) == [], "a withheld conclusion closes nothing"
+    clock.advance(300)
+    _sweep_cycles(db, clock, 2)
+    assert _writes(db) == [("partial", 1, 1)], "concluded once wf-b is removed"
+
+
+def test_unconcluded_partial_with_unresolved_workflow_is_not_turned_failed(
+    monkeypatch, clock
+):
+    db = _db(
+        [_dispatch_failed_row(), _wrow("wf-a", "written")],
+        runs=[_run(status="partial")],
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 2)
+    assert _writes(db) == []
+    worker.sweep_once(db)
+    assert _writes(db) == [("partial", 1, 1)]
+
+
+def test_gcd_succeeded_sibling_keeps_partial_run_partial(monkeypatch, clock):
+    db = _db(
+        [_dispatch_failed_row(), _wrow("wf-a", "written")],
+        stored=[_stored("wf-a", "Succeeded")],
+        runs=[_run(status="partial")],
+    )
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    worker.sweep_once(db)
+    assert _writes(db) == [("partial", 1, 1)]
+
+
+def test_failed_record_call_keeps_live_phase_and_marks_cycle_unclean(
+    monkeypatch, clock
+):
+    db = _db([_wrow("wf-a", "written")])
+    db.handlers["record_cyl_pipeline_workflow_phase"] = RuntimeError("record failed")
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-a": "Succeeded"}))
+    assert worker.sweep_once(db) is False
+    assert _writes(db) == [("complete", 1, 0)]
+
+
+def test_record_phase_pgrst202_is_quiet_and_clean(monkeypatch, clock, caplog):
+    db = _db([_wrow("wf-a", "written")])
+    db.handlers["record_cyl_pipeline_workflow_phase"] = _pgrst202()
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-a": "Succeeded"}))
+    with caplog.at_level("INFO", logger=worker.logger.name):
+        assert worker.sweep_once(db) is True
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_poller_concluded_partial_is_not_a_candidate():
+    db = _Db(
+        cyl_pipeline_runs=[
+            _run(1, "partial", concluded=NOW),
+            _run(2, "partial"),
+            _run(3, "running"),
+            _run(4, "submitted"),
+            _run(5, "complete", concluded=NOW),
+        ]
+    )
+    assert [r["id"] for r in worker._fetch_candidate_runs(db)] == [2, 3, 4]
+
+
+def test_dispatch_settled_partial_is_still_a_candidate():
+    db = _Db(cyl_pipeline_runs=[_run(2, "partial")])
+    assert [r["id"] for r in worker._fetch_candidate_runs(db)] == [2]
+
+
+def test_stored_phase_workflow_queued_rows_closed_while_running(monkeypatch, clock):
+    db = _db([_wrow("wf-a"), _wrow("wf-b")], stored=[_stored("wf-a", "Failed")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-b": "Running"}))
+    worker.sweep_once(db)
+    assert _closes(db) == [
+        {
+            "p_run_id": 1,
+            "p_argo_workflow_name": "wf-a",
+            "p_error_message": worker._BACKSTOP_MESSAGE,
+        }
+    ]
+    assert _writes(db) == [("running", 0, 1)]
+
+
+def test_all_poller_close_outs_are_run_scoped(monkeypatch, clock):
+    db = _db([_wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-a": "Failed"}))
+    worker.sweep_once(db)
+    assert _closes(db) == [
+        {
+            "p_run_id": 1,
+            "p_argo_workflow_name": "wf-a",
+            "p_error_message": worker._BACKSTOP_MESSAGE,
+        }
+    ]
+    names = [n for n, _ in db.rpcs]
+    assert "fail_cyl_pipeline_run_scans_without_result" not in names
+    assert _writes(db) == [("failed", 0, 1)]
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:00:00.12345+00:00",
+        "2026-01-01T00:00:00.123456-07:00",
+    ],
+)
+def test_timestamps_parse_postgrest_formats(stamp):
+    parsed = worker._parse_timestamp(stamp)
+    assert parsed is not None and parsed.tzinfo is not None
+
+
+@pytest.mark.parametrize("bad", [None, "", "not a time", "2026-01-01T00:00:00"])
+def test_unparseable_or_naive_timestamp_is_none(bad):
+    assert worker._parse_timestamp(bad) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("900", 900.0), ("abc", 600.0), ("0", 600.0), ("-5", 600.0)],
+)
+def test_grace_env_resolution(monkeypatch, caplog, raw, expected):
+    monkeypatch.setenv("WORKFLOWS_NOT_FOUND_GRACE_SECONDS", raw)
+    with caplog.at_level("WARNING", logger=worker.logger.name):
+        assert worker._resolve_not_found_grace() == expected
+    assert bool(caplog.records) is (raw != "900")
+
+
+def test_non_positive_ttl_disables_removal_with_a_warning(monkeypatch, clock, caplog):
+    monkeypatch.setattr(worker, "TTL_SECONDS", 0)
+    db = _db([_wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    with caplog.at_level("WARNING", logger=worker.logger.name):
+        worker._warn_if_removal_disabled()
+    assert any("WORKFLOWS_K8S_TTL_SECONDS" in r.getMessage() for r in caplog.records)
+    _sweep_cycles(db, clock, 4)
+    assert _closes(db) == []
+
+
+def test_stored_phase_is_never_overridden_by_removal(monkeypatch, clock):
+    """A stored phase beats removal: its queued rows close with the backstop
+    message, and the run concludes from the stored Succeeded."""
+    db = _db([_wrow("wf-a")], stored=[_stored("wf-a", "Succeeded")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    # Well past the grace period and the TTL: removal would apply if it could.
+    clock.advance(10_000)
+    worker.sweep_once(db)
+    assert [p["p_error_message"] for p in _closes(db)] == [worker._BACKSTOP_MESSAGE]
+    assert _writes(db) == [("complete", 0, 1)]
+    assert worker._not_found.count((1, "wf-a")) == 0, "no streak for a stored phase"
+
+
+def test_removed_workflow_closed_while_sibling_runs(monkeypatch, clock):
+    db = _db([_wrow("wf-a"), _wrow("wf-b")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-b": "Running"}))
+    _sweep_cycles(db, clock, 3)
+    assert _closes(db) == [
+        {
+            "p_run_id": 1,
+            "p_argo_workflow_name": "wf-a",
+            "p_error_message": worker._REMOVED_MESSAGE,
+        }
+    ], "closed once, by the removal, not again by the settled path"
+    assert _writes(db)[-1] == ("running", 0, 1), "fresh counts after the close-out"
+
+
+def test_a_failed_removed_close_out_is_retried_next_cycle(monkeypatch, clock):
+    db = _db([_wrow("wf-a")])
+    db.handlers["close_cyl_pipeline_run_workflow_scans"] = RuntimeError("blip")
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 3)
+    assert _writes(db) == []
+    db.handlers["close_cyl_pipeline_run_workflow_scans"] = db._close
+    assert worker.sweep_once(db) is True
+    assert _writes(db) == [("failed", 0, 1)]
+
+
+def test_a_concluded_run_looks_up_none_of_its_workflows(monkeypatch, clock):
+    lookup = _by_name({"wf-a": "Succeeded"})
+    monkeypatch.setattr(worker, "get_workflow_status", lookup)
+    db = _db([_wrow("wf-a", "written")], runs=[_run(status="partial", concluded=NOW)])
+    worker.sweep_once(db)
+    assert lookup.calls == []
+    assert db.rpcs == []
+
+
+def test_lookups_carry_each_runs_own_id(monkeypatch, clock):
+    lookup = _by_name({"wf-a": "Running", "wf-b": "Running"})
+    monkeypatch.setattr(worker, "get_workflow_status", lookup)
+    worker.sweep_once(
+        _db(
+            [_wrow("wf-a", run_id=1), _wrow("wf-b", run_id=2)],
+            runs=[_run(1), _run(2)],
+        )
+    )
+    assert lookup.calls == [("wf-a", 1), ("wf-b", 2)]
+
+
+@pytest.mark.parametrize(("elapsed", "removed"), [(599.9, False), (600.0, True)])
+def test_grace_boundary(monkeypatch, clock, elapsed, removed):
+    db = _db([_wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    worker.sweep_once(db)
+    clock.advance(1)
+    worker.sweep_once(db)
+    clock.advance(elapsed - 1)
+    worker.sweep_once(db)
+    assert bool(_closes(db)) is removed
+
+
+@pytest.mark.parametrize(
+    ("updated_at", "removed"),
+    [
+        ("2026-10-04T11:00:00+00:00", True),  # exactly TTL before NOW
+        ("2026-10-04T11:00:01+00:00", False),  # one second short
+        ("2026-10-04T04:00:00-07:00", True),  # 11:00Z, another offset
+        ("2026-10-04T05:30:00-07:00", False),  # 12:30Z: young, despite the offset
+    ],
+)
+def test_ttl_boundary_and_offsets(monkeypatch, clock, updated_at, removed):
+    # The removal cycle runs at NOW + 600s, so shift the stamps by the same amount.
+    shifted = (
+        _dt.datetime.fromisoformat(updated_at) + _dt.timedelta(seconds=600)
+    ).isoformat()
+    db = _db([_wrow("wf-a", updated_at=shifted)])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 3)
+    assert bool(_closes(db)) is removed
+
+
+def test_a_failed_candidate_fetch_drops_every_streak(monkeypatch, clock):
+    db = _db([_wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    worker.sweep_once(db)
+    assert worker._not_found.count((1, "wf-a")) == 1
+    monkeypatch.setattr(
+        worker,
+        "_fetch_candidate_runs",
+        lambda c: (_ for _ in ()).throw(RuntimeError("db down")),
+    )
+    assert worker.sweep_once(db) is False
+    assert worker._not_found.count((1, "wf-a")) == 0
+
+
+def test_the_poller_reads_the_columns_it_uses():
+    """The fake honours .select(), so dropping a column the poller reads fails here."""
+    db = _Db(
+        cyl_pipeline_runs=[_run(1, "partial", concluded=NOW), _run(2)],
+        cyl_pipeline_run_scans=[_wrow("wf-a", run_id=2)],
+        cyl_pipeline_run_workflows=[_stored("wf-a", "Failed", run_id=2)],
+    )
+    assert [r["id"] for r in worker._fetch_candidate_runs(db)] == [2]
+    assert worker._fetch_run_rows(db, 2) == [
+        {"argo_workflow_name": "wf-a", "status": "queued", "updated_at": OLD}
+    ]
+    assert worker._fetch_stored_phases(db, 2) == {"wf-a": "Failed"}
+
+
+def test_run_warns_at_startup_when_removal_is_disabled(monkeypatch):
+    warned = []
+    monkeypatch.setattr(worker, "_warn_if_removal_disabled", lambda: warned.append(1))
+    monkeypatch.setattr(worker, "_connect_with_retry", lambda: None)
+    worker.run()
+    assert warned == [], "no client: run() returns before the loop"
+    monkeypatch.setattr(worker, "_connect_with_retry", lambda: object())
+    monkeypatch.setattr(worker, "_running", False)
+    worker.run()
+    assert warned == [1]
+
+
+def test_a_removed_workflow_records_its_phase_before_closing(monkeypatch, clock):
+    db = _db([_wrow("wf-a", "written"), _wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 3)
+    names = [n for n, _ in db.rpcs if n != "update_cyl_pipeline_run_status"]
+    assert names == [
+        "record_cyl_pipeline_workflow_phase",
+        "close_cyl_pipeline_run_workflow_scans",
+    ]
+    assert db.calls("record_cyl_pipeline_workflow_phase") == [
+        {"p_run_id": 1, "p_argo_workflow_name": "wf-a", "p_phase": "Failed"}
+    ]
+    assert _writes(db) == [("failed", 1, 1)]
+
+
+def test_a_removal_sticks_after_its_close_out(monkeypatch, clock):
+    """The close-out stamps updated_at = now(), which would restart the TTL
+    guard if the removal weren't recorded (PR #1048 re-review): wf-a must stay
+    resolved while wf-b keeps running, even through a failed lookup of wf-a."""
+    db = _db([_wrow("wf-a"), _wrow("wf-b")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-b": "Running"}))
+    _sweep_cycles(db, clock, 3)
+    assert len(_closes(db)) == 1
+    monkeypatch.setattr(
+        worker,
+        "get_workflow_status",
+        _by_name({"wf-a": K8sStatusError("flaky"), "wf-b": "Running"}),
+    )
+    _sweep_cycles(db, clock, 2)
+    monkeypatch.setattr(
+        worker, "get_workflow_status", _by_name({"wf-b": "Succeeded"})
+    )
+    worker.sweep_once(db)
+    assert _writes(db)[-1] == ("partial", 0, 2), "concluded on wf-b's first terminal cycle"
+    assert len(_closes(db)) == 2, "wf-b's queued row closed by the backstop"
+
+
+def test_a_failed_removal_record_leaves_the_workflow_unresolved(monkeypatch, clock):
+    db = _db([_wrow("wf-a")])
+    db.handlers["record_cyl_pipeline_workflow_phase"] = RuntimeError("record failed")
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    results = _sweep_cycles(db, clock, 3)
+    assert results[-1] is False
+    assert _closes(db) == [], "no close-out without the recorded phase"
+    assert _writes(db) == []
+    db.handlers["record_cyl_pipeline_workflow_phase"] = db._record
+    worker.sweep_once(db)
+    assert len(_closes(db)) == 1
+    assert _writes(db) == [("failed", 0, 1)]
+
+
+def test_a_failed_lookup_uses_the_stored_phase(monkeypatch, clock):
+    """A recorded terminal phase can't change, so a workflow whose lookup fails
+    isn't left unresolved when one exists (PR #1048 re-review)."""
+    db = _db([_wrow("wf-a", "written")], stored=[_stored("wf-a", "Succeeded")])
+    monkeypatch.setattr(
+        worker, "get_workflow_status", _by_name({"wf-a": K8sStatusError("500")})
+    )
+    assert worker.sweep_once(db) is False, "the failed lookup still marks the cycle"
+    assert _writes(db) == [("complete", 1, 0)]

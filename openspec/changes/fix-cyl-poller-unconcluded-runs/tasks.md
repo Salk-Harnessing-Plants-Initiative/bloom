@@ -139,9 +139,19 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 
 ## 4. After PR A merges
 
-- [ ] 4.1 Once deployed to staging, confirm the table, the functions and the column exist, and that
+- [x] 4.1 Once deployed to staging, confirm the table, the functions and the column exist, and that
       the old poller still writes run status. This is a read-only check over the staging SSH
       access.
+  - **Checked 2026-10-04** (deploy run 37221976279, read-only):
+    - migration `20261004120000` is recorded;
+    - the table and `poller_concluded_at` exist;
+    - all three functions are SECURITY DEFINER, owned by `postgres`, with EXECUTE held only by
+      `bloom_workflows`;
+    - there are no stored phases and no concluded runs;
+    - run 17 is unchanged (`'running'`, 1,515 `'queued'`).
+  - The redeployed `cyl-status-poller` sweeps run 17 every cycle, and all 61 of its workflows return
+    `404 Not Found`. That is bloom#1042 item 1 live: an empty rollup, so no write. Run 17 is the only
+    candidate, so no status write could be watched on staging.
 
 # PR B: code (after PR A is on staging)
 
@@ -149,7 +159,7 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 
 All in `services/workflows/tests/test_k8s_client.py`.
 
-- [ ] 5.1 `test_get_workflow_status_raises_on_unverified_404`, parametrized over:
+- [x] 5.1 `test_get_workflow_status_raises_on_unverified_404`, parametrized over:
   - a body whose `.json()` raises (a new `_FakeResp` subclass);
   - `{}`;
   - a JSON list;
@@ -162,24 +172,28 @@ All in `services/workflows/tests/test_k8s_client.py`.
   Each case raises `K8sStatusError` with the generic message, never `AttributeError`, and the body
   appears only in the log.
 
-- [ ] 5.2 `test_get_workflow_status_returns_none_for_another_runs_label`, plus
+- [x] 5.2 `test_get_workflow_status_returns_none_for_another_runs_label`, plus
       `..._returns_phase_for_own_or_missing_label`.
-- [ ] 5.3 Replace the empty-body `test_get_workflow_status_returns_none_on_404` with
+- [x] 5.3 Replace the empty-body `test_get_workflow_status_returns_none_on_404` with
       `..._returns_none_on_verified_not_found`. This one is a guard.
-- [ ] 5.4 Rewrite the two `get_workflow_status` tests that monkeypatch `k8s_client.get_workflow` so
+- [x] 5.4 Rewrite the two `get_workflow_status` tests that monkeypatch `k8s_client.get_workflow` so
       they drive the HTTP fake instead.
-- [ ] 5.5 Guard: `test_get_workflow_still_returns_none_on_any_404`, with the same parametrization
+- [x] 5.5 Guard: `test_get_workflow_still_returns_none_on_any_404`, with the same parametrization
       as 5.1.
 
 **Red:** 5.1, 5.2. **Guard:** 5.3, 5.5. 5.4 is rewritten so it stays meaningful.
 
+Recorded red run: 14 failed, 165 passed (all 11 unverified-404 cases returned `None`; the
+three label tests had no `run_id` parameter). Green: the whole `services/workflows` suite,
+1,282 passed.
+
 ## 6. Green: `k8s_client`
 
-- [ ] 6.1 Add a private fetch shared by `get_workflow` and `get_workflow_status`, plus
+- [x] 6.1 Add a private fetch shared by `get_workflow` and `get_workflow_status`, plus
       `_is_verified_not_found(resp, name)`. Add the `run_id` parameter and the label check.
-- [ ] 6.2 Update the docstrings: the module docstring's TTL framing, `K8sStatusError` (no longer
+- [x] 6.2 Update the docstrings: the module docstring's TTL framing, `K8sStatusError` (no longer
       "non-404" only), `get_workflow_status`.
-- [ ] 6.3 Confirm §5 and `test_rnaseq_status_poller.py` are green.
+- [x] 6.3 Confirm §5 and `test_rnaseq_status_poller.py` are green.
 
 ## 7. Red: poller
 
@@ -199,45 +213,45 @@ Test hooks:
 
 Tests:
 
-- [ ] 7.1 `test_terminal_phase_is_recorded_once_and_used_after_gc`
-- [ ] 7.2 `test_record_phase_sends_the_real_rpc_shape` and
+- [x] 7.1 `test_terminal_phase_is_recorded_once_and_used_after_gc`
+- [x] 7.2 `test_record_phase_sends_the_real_rpc_shape` and
       `test_fetch_stored_phases_reads_only_this_runs_rows`
-- [ ] 7.3 `test_same_stored_phase_makes_no_record_call`, with a positive control in the same test:
+- [x] 7.3 `test_same_stored_phase_makes_no_record_call`, with a positive control in the same test:
       a different stored phase does make the call.
-- [ ] 7.4 `test_live_phase_wins_over_stored_phase`
-- [ ] 7.5 `test_gone_never_seen_workflow_is_removed_after_grace`. Assert:
+- [x] 7.4 `test_live_phase_wins_over_stored_phase`
+- [x] 7.5 `test_gone_never_seen_workflow_is_removed_after_grace`. Assert:
   - nothing is called on cycles 1–2, or before the grace period ends;
   - on removal, the close-out goes through `close_cyl_pipeline_run_workflow_scans` with this run id
     and the removed message;
   - the run is written `'failed'` with counts 2/1.
-- [ ] 7.6 `test_removed_workflow_with_all_rows_written_counts_succeeded` and
+- [x] 7.6 `test_removed_workflow_with_all_rows_written_counts_succeeded` and
       `test_removed_workflow_with_written_and_failed_rows_counts_failed`
-- [ ] 7.7 `test_not_found_too_soon_after_row_creation_is_never_removed` and
+- [x] 7.7 `test_not_found_too_soon_after_row_creation_is_never_removed` and
       `test_newest_created_at_governs_ttl_guard`, each with a positive control: the same setup with
       old rows is removed.
-- [ ] 7.8 `test_not_found_count_resets_on_any_other_result`: a live phase in between, and a run
+- [x] 7.8 `test_not_found_count_resets_on_any_other_result`: a live phase in between, and a run
       check error that resets every pair of that run. Positive control: three more cycles after
       the reset do remove it.
-- [ ] 7.9 `test_tracker_is_keyed_by_run_and_name` and `test_tracker_drops_pairs_not_looked_up`
-- [ ] 7.10 `test_removed_close_out_failure_leaves_workflow_unresolved`: parametrized over an error
+- [x] 7.9 `test_tracker_is_keyed_by_run_and_name` and `test_tracker_drops_pairs_not_looked_up`
+- [x] 7.10 `test_removed_close_out_failure_leaves_workflow_unresolved`: parametrized over an error
       (cycle unclean) and `PGRST202` (cycle clean). In both, no status is written.
-- [ ] 7.11 `test_terminal_conclusion_waits_for_an_unresolved_sibling`: no close-out and no write,
+- [x] 7.11 `test_terminal_conclusion_waits_for_an_unresolved_sibling`: no close-out and no write,
       then a conclusion once the sibling is removed.
-- [ ] 7.12 `test_unconcluded_partial_with_unresolved_workflow_is_not_turned_failed`
-- [ ] 7.13 `test_gcd_succeeded_sibling_keeps_partial_run_partial`, read through the real stored
+- [x] 7.12 `test_unconcluded_partial_with_unresolved_workflow_is_not_turned_failed`
+- [x] 7.13 `test_gcd_succeeded_sibling_keeps_partial_run_partial`, read through the real stored
       phase fetch.
-- [ ] 7.14 `test_failed_record_call_keeps_live_phase_and_marks_cycle_unclean` and
+- [x] 7.14 `test_failed_record_call_keeps_live_phase_and_marks_cycle_unclean` and
       `test_record_phase_pgrst202_is_quiet_and_clean`
-- [ ] 7.15 `test_poller_concluded_partial_is_not_a_candidate`, which replaces the assertion that
+- [x] 7.15 `test_poller_concluded_partial_is_not_a_candidate`, which replaces the assertion that
       every partial run is a candidate.
-- [ ] 7.16 `test_stored_phase_workflow_queued_rows_closed_while_running`
-- [ ] 7.17 `test_all_poller_close_outs_are_run_scoped`: the backstop and the running-run
+- [x] 7.16 `test_stored_phase_workflow_queued_rows_closed_while_running`
+- [x] 7.17 `test_all_poller_close_outs_are_run_scoped`: the backstop and the running-run
       close-out both call `close_cyl_pipeline_run_workflow_scans` with `p_run_id`.
-- [ ] 7.18 `test_created_at_parses_postgrest_timestamps`: `+00:00`, `Z`, 5-digit fractions.
-- [ ] 7.19 `test_grace_env_resolution` (malformed or non-positive values fall back with a warning)
+- [x] 7.18 `test_created_at_parses_postgrest_timestamps`: `+00:00`, `Z`, 5-digit fractions.
+- [x] 7.19 `test_grace_env_resolution` (malformed or non-positive values fall back with a warning)
       and `test_non_positive_ttl_disables_removal_with_a_warning`
-- [ ] 7.20 Guard: `test_dispatch_settled_partial_is_still_a_candidate`
-- [ ] 7.21 Update the tests that pin today's 404 behaviour so they describe an **unresolved**
+- [x] 7.20 Guard: `test_dispatch_settled_partial_is_still_a_candidate`
+- [x] 7.21 Update the tests that pin today's 404 behaviour so they describe an **unresolved**
       workflow, and so they expect the new withhold-every-conclusion rule:
   - `test_rollup_skips_a_404d_workflow_rather_than_guessing`
   - `test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown`
@@ -251,35 +265,41 @@ Tests:
   - `test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow` and
     `test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_workflow`. These
     two are **inverted**: rename them to `..._waits_...` and assert there is no write.
-- [ ] 7.22 Update every `_reconcile_unresolved_scans` stub (`_patch_sweep` and the inline lambdas)
+- [x] 7.22 Update every `_reconcile_unresolved_scans` stub (`_patch_sweep` and the inline lambdas)
       to the new signature `(client, run_id, name, message)`.
 
 **Red:** 7.1, 7.2, 7.4–7.19 and the two inverted tests in 7.21. **Guard:** 7.3's control, 7.20,
 the rest of 7.21, and 7.22.
 
+Recorded red run: 126 errors (the autouse fixture referenced the missing `_not_found`), then 9
+failures from the old stubs once it existed. The two inverted tests are
+`test_sweep_waits_to_conclude_failed_or_partial_while_a_workflow_is_unresolved` and
+`test_sweep_waits_to_reconcile_partial_or_failed_while_a_sibling_is_unresolved`. Raw
+`_fetch_effective_phases` stubs keep working: `EffectivePhases.clean` defaults to `True`.
+
 ## 8. Green: poller
 
-- [ ] 8.1 Add the grace resolver. Import `k8s_client.TTL_SECONDS`, and warn at startup if it is
+- [x] 8.1 Add the grace resolver. Import `k8s_client.TTL_SECONDS`, and warn at startup if it is
       ≤ 0.
-- [ ] 8.2 Add `_fetch_stored_phases` and `_record_phase`, and make the close-outs run-scoped. The
+- [x] 8.2 Add `_fetch_stored_phases` and `_record_phase`, and make the close-outs run-scoped. The
       messages become module constants `_BACKSTOP_MESSAGE` and `_REMOVED_MESSAGE`.
-- [ ] 8.3 Add the `_NotFoundTracker` with `(run_id, name)` keys, resets and pruning.
-- [ ] 8.4 Extend `_fetch_effective_phases`:
+- [x] 8.3 Add the `_NotFoundTracker` with `(run_id, name)` keys, resets and pruning.
+- [x] 8.4 Extend `_fetch_effective_phases`:
   - pass `run_id` to the lookups;
   - resolve each effective phase;
   - close out removed workflows;
   - include stored phases in the "settled" set;
   - make `any_unknown` mean "unresolved".
-- [ ] 8.5 In `sweep_once`, withhold every terminal conclusion while any workflow is unresolved
+- [x] 8.5 In `sweep_once`, withhold every terminal conclusion while any workflow is unresolved
       (design D5).
-- [ ] 8.6 In `_fetch_candidate_runs`, select `id, status, poller_concluded_at` and filter in code.
-- [ ] 8.7 Update the docstrings and comments: the module docstring, `_fetch_effective_phases`,
+- [x] 8.6 In `_fetch_candidate_runs`, select `id, status, poller_concluded_at` and filter in code.
+- [x] 8.7 Update the docstrings and comments: the module docstring, `_fetch_effective_phases`,
       `_reconcile_unresolved_scans`, and `sweep_once`'s addendum-8 block.
-- [ ] 8.8 Confirm §7 and the whole `services/workflows` suite are green.
+- [x] 8.8 Confirm §7 and the whole `services/workflows` suite are green.
 
 ## 9. UI: red, then green
 
-- [ ] 9.1 Red, in the `RunDetailLive.test.tsx` "re-run actions" block:
+- [x] 9.1 Red, in the `RunDetailLive.test.tsx` "re-run actions" block:
   - "does not offer a failed row whose late result is this run's": 3 failed rows, 1 with a note.
     Expect "Re-run failed scans (2)" and that the submit sends the other 2 ids. The excluded row
     still reads failed with its note and is still counted in the header.
@@ -287,30 +307,35 @@ the rest of 7.21, and 7.22.
   - "leaves a late-result row out of Re-run scans without a result" (the spec's 9-id case)
   - "hides Re-run failed when every failed row shows a late-result note"
   - "drops a row from Re-run failed once its late-result lookup lands", using fake timers
-- [ ] 9.2 Green: in `RunDetailLive.tsx`, `failedIds` and `unresultedIds` skip rows with a
+- [x] 9.2 Green: in `RunDetailLive.tsx`, `failedIds` and `unresultedIds` skip rows with a
       `lateResultNote`. Update the "Re-run actions" docstring at the top of the file.
-- [ ] 9.3 Update `failure-hints.ts`:
+- [x] 9.3 Update `failure-hints.ts`:
   - add the removal close-out to `lateResultNote`'s list of ways a row gets closed;
   - export `REMOVED_WORKFLOW_MESSAGE`;
   - point the `BACKSTOP_MESSAGE` and the new source-equality tests at the poller's constants (red,
     then green).
-- [ ] 9.4 Update the comments in `run-display.ts` (only dispatch stamps an early `completed_at`)
+- [x] 9.4 Update the comments in `run-display.ts` (only dispatch stamps an early `completed_at`)
       and `realtime-reducer.ts` (a concluded `'partial'` run gets no more sweep updates).
-- [ ] 9.5 Add `poller_concluded_at` to the `cyl_pipeline_runs` Row, Insert and Update types in
+- [x] 9.5 Add `poller_concluded_at` to the `cyl_pipeline_runs` Row, Insert and Update types in
       `web/lib/database.types.ts`, and to the three `RunRow` literals named in task 2.3.
-- [ ] 9.6 Confirm `cd web && npm run test:unit` is green.
+- [x] 9.6 Confirm `cd web && npm run test:unit` is green.
+
+Recorded red run: 4 failed (the three exclusions and the live drop); "offers every failed row when
+the latest-source lookup fails" passed as a guard. Green: the whole web unit suite, 2,475 passed,
+and `tsc --noEmit` is clean. The web files are left in their existing formatting: the pinned
+prettier 3.1.0 would rewrite all of them wholesale, so it was not applied.
 
 ## 10. Config and docs
 
-- [ ] 10.1 Pass `WORKFLOWS_K8S_TTL_SECONDS` to both `cyl-status-poller` and `rnaseq-status-poller`:
+- [x] 10.1 Pass `WORKFLOWS_K8S_TTL_SECONDS` to both `cyl-status-poller` and `rnaseq-status-poller`:
   - `${WORKFLOWS_K8S_TTL_SECONDS:-3600}` in dev, `${WORKFLOWS_K8S_TTL_SECONDS}` in prod. This keeps
     `test_the_poller_has_the_cyl_pollers_environment` green.
   - Update the "submission-only" comments in both compose files, and note that the NotFound
     tracker is kept per replica.
   - Leave `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` unset.
-- [ ] 10.2 Update the `.env.prod.defaults`, `.env.staging.defaults` and `.env.dev.example`
+- [x] 10.2 Update the `.env.prod.defaults`, `.env.staging.defaults` and `.env.dev.example`
       comments, which file the TTL under `cyl-pipeline-worker` only.
-- [ ] 10.3 Update `services/workflows/README.md`:
+- [x] 10.3 Update `services/workflows/README.md`:
   - the partial-sweep paragraph;
   - the "404 is permanent" / addendum-8 paragraph;
   - replace the "render unknown" counts note;
@@ -318,17 +343,84 @@ the rest of 7.21, and 7.22.
   - a new `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` row;
   - the RNA-seq paragraph, which says the sleap-roots TTL doesn't apply.
 
+- [x] 10.4 PR #1048 review follow-ups:
+  - **Lookups and the TTL guard:**
+    - a lookup that raises makes only that workflow unresolved, rather than resetting the whole
+      run's streaks;
+    - the ownership check also compares the `environment` label;
+    - an unexpected Argo phase is a failed lookup;
+    - the TTL guard reads `updated_at` (dispatch time);
+    - the tracker is pruned when the candidate fetch fails, and keeps no count for a workflow with a
+      stored phase.
+  - **Tests:**
+    - the stale reconcile stub is fixed;
+    - recorders replace the swallowed `AssertionError` stubs;
+    - the fake `.select()` returns only the selected columns;
+    - new tests for: a stored phase beating removal, a removal while a sibling runs, a retry after
+      a failed close-out, a concluded run doing no lookups, two runs' ids, the grace and TTL
+      boundaries and offsets, a flaky sibling, and the startup warning.
+  - **Docs:** docstrings, README, env comments and the spec delta are updated to match.
+
+- [x] 10.5 PR #1048 re-review of bc9ee951 (behaviour probes and mutation testing):
+  - **Blocker found:** `cyl-status-poller` was never given `WORKFLOWS_K8S_ENV_LABEL` (code default
+    `dev`; staging confirmed unset), so the new environment check would have read every staging and
+    prod workflow as gone. It is now passed to both status pollers, and
+    `tests/unit/test_cyl_status_poller_container.py` pins it to the dispatcher's value.
+  - A removed workflow's row-derived phase is now recorded before its rows are closed. The
+    close-out stamps `updated_at`, which had restarted the TTL guard.
+  - A failed lookup now uses a stored phase when one exists.
+  - The run-17 simulation now concludes at a 1% per-lookup error rate (141–146 cycles); before the
+    fix it never did.
+  - Mutation testing: 12 of 13 mutants killed; the survivor has no behavioural effect.
+
 ## 11. Verification for PR B, then after merge
 
-- [ ] 11.1 Run `openspec validate --strict`, then each of:
+- [x] 11.1 Run `openspec validate --strict`, then each of:
   - `cd services/workflows && uv run --frozen --extra test pytest tests/ -q`
   - `uv run --extra test pytest tests/unit/`
   - `cd web && npm run test:unit && npm run build`
   - `pre-commit run --all-files` (CI has no ruff or black step for `services/workflows`)
   - `/pre-merge`
-- [ ] 11.2 Run a read-only query on staging and prod listing the candidate runs the new poller will
+  - **Run 2026-10-04:**
+    - `openspec validate --strict`: valid.
+    - `services/workflows`: 1,325 passed.
+    - `cd web && npx vitest run`: 2,475 passed. `npx tsc --noEmit`: clean.
+    - `ruff` (each service's own config) is clean on the changed Python files, apart from
+      `BLE001` broad excepts that follow the file's existing pattern.
+  - **Not run or not applied locally:**
+    - `npm run build` is left to CI's build-and-audit job.
+    - `tests/unit` on Windows: `test_rnaseq_status_poller_container` passes (13). The other
+      failures there are bash-path and WSL environment issues, the same before this change.
+    - The pinned black 26.3.1 and prettier 3.1.0 would rewrite unrelated, already non-conforming
+      code in the touched files, so only the new code was formatted.
+
+- [x] 11.2 Run a read-only query on staging and prod listing the candidate runs the new poller will
       conclude, and their expected outcomes. Record them in the PR body. CI's DB is empty, so this
       is the only check against real data.
+  - **Recorded 2026-10-04:**
+    - **prod:** no open runs.
+    - **staging:** one candidate, run 17: `'running'`, 1,515 `'queued'` rows across 61 workflows,
+      rows created 2026-09-30.
+  - A read-only GET from the staging `cyl-status-poller` container for one of run 17's workflows
+    (`sleap-roots-pipeline-wp6pv`) returned 404 with
+    `{"kind":"Status","reason":"NotFound","details":{"name":"sleap-roots-pipeline-wp6pv","group":"argoproj.io","kind":"workflows"}}`.
+    That is exactly a verified NotFound.
+  - **Expected once PR B is live:**
+    - every workflow is removed about 10 minutes after the redeploy (3 or more cycles and the grace
+      period; the rows are far older than the TTL);
+    - all 1,515 rows are closed with the removed message;
+    - run 17 is written `'failed'` with `done_count` 0 and `failed_count` 1,515, and is final.
+  - **Do run 17's results already exist? Checked read-only 2026-10-04 (PR #1048 review blocker):**
+    - All 1,515 rows were dispatched on 2026-09-30 between 18:38:16 and 18:38:25 UTC and never
+      updated after that (`attempts` 0).
+    - No `cyl_trait_sources` row carries `cyl_pipeline_run_id` 17 or any of its 61 workflow names.
+    - On the stage root (`/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc`):
+      none of the 61 workflow names has a run manifest in `input/`, `predictions/`, `traits/` or
+      the archive folders. `images-downloader` writes one on every invocation.
+    - Runs 18–23 (from 2026-09-30 19:01 UTC) completed normally.
+    - **Conclusion:** run 17's workflows never staged a scan, so no result exists to ingest.
+      Concluding it `'failed'` with every row closed is correct.
+
 - [ ] 11.3 After staging deploy, compare those runs with their actual status, counts and closed
       rows. Staging run 17 (task 3.6) must end concluded with no `'queued'` rows. Confirm a fresh run's workflows appear in `cyl_pipeline_run_workflows`. Record the
       results here.

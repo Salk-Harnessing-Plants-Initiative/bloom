@@ -1006,12 +1006,149 @@ def test_get_workflow_status_returns_the_phase_on_success(monkeypatch):
     assert k8s_client.get_workflow_status("wf-abc") == "Succeeded"
 
 
-def test_get_workflow_status_returns_none_on_404(monkeypatch):
-    resp = _FakeResp(404, {}, text="not found")
+def _not_found(name, **details_overrides):
+    """The body the Kubernetes API returns for a GET of a Workflow that doesn't
+    exist (fix-cyl-poller-unconcluded-runs, bloom#1042)."""
+    details = {"name": name, "group": "argoproj.io", "kind": "workflows"}
+    details.update(details_overrides)
+    return {
+        "kind": "Status",
+        "apiVersion": "v1",
+        "status": "Failure",
+        "message": f'workflows.argoproj.io "{name}" not found',
+        "reason": "NotFound",
+        "details": details,
+        "code": 404,
+    }
+
+
+class _UnparseableResp(_FakeResp):
+    def json(self):
+        raise ValueError("not json")
+
+
+def _serve(monkeypatch, resp):
     monkeypatch.setattr(
         k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
     )
+
+
+def test_get_workflow_status_returns_none_on_verified_not_found(monkeypatch):
+    _serve(monkeypatch, _FakeResp(404, _not_found("wf-gone")))
     assert k8s_client.get_workflow_status("wf-gone") is None
+
+
+_UNVERIFIED_404S = {
+    "html-proxy-page": _UnparseableResp(404, text="<html>404 Not Found</html>"),
+    "empty-object": _FakeResp(404, {}, text="not found"),
+    "json-list": _FakeResp(404, ["not", "an", "object"]),
+    "other-reason": _FakeResp(404, {**_not_found("wf-a"), "reason": "Forbidden"}),
+    "not-a-status": _FakeResp(404, {**_not_found("wf-a"), "kind": "Workflow"}),
+    "details-null": _FakeResp(404, {**_not_found("wf-a"), "details": None}),
+    "details-string": _FakeResp(404, {**_not_found("wf-a"), "details": "wf-a"}),
+    "missing-crd-no-name": _FakeResp(
+        404, {**_not_found("wf-a"), "details": {"group": "argoproj.io"}}
+    ),
+    "another-workflow": _FakeResp(404, _not_found("wf-b")),
+    "another-kind": _FakeResp(404, _not_found("wf-a", kind="pods")),
+    "another-group": _FakeResp(404, _not_found("wf-a", group="example.com")),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNVERIFIED_404S))
+def test_get_workflow_status_raises_on_unverified_404(monkeypatch, caplog, case):
+    """A 404 whose body is not Kubernetes saying "this Workflow does not exist"
+    (a proxy page, a missing CRD, a wrong API path) is not evidence the
+    workflow is gone: it is a failed lookup."""
+    _serve(monkeypatch, _UNVERIFIED_404S[case])
+    with (
+        caplog.at_level("WARNING", logger="k8s_client"),
+        pytest.raises(K8sStatusError) as exc,
+    ):
+        k8s_client.get_workflow_status("wf-a")
+    assert str(exc.value) == "Argo Workflow status check failed"
+    assert any("404" in r.getMessage() for r in caplog.records)
+    body = _UNVERIFIED_404S[case].text
+    if body:
+        assert any(body[:40] in r.getMessage() for r in caplog.records), "body logged"
+        assert body[:40] not in str(exc.value), "never in the error message"
+
+
+@pytest.mark.parametrize("case", sorted(_UNVERIFIED_404S))
+def test_get_workflow_still_returns_none_on_any_404(monkeypatch, case):
+    """The RNA-seq poller and the log readers keep today's behaviour."""
+    _serve(monkeypatch, _UNVERIFIED_404S[case])
+    assert k8s_client.get_workflow("wf-a") is None
+
+
+def _workflow(phase, run_label=None, env_label=None):
+    labels = {} if run_label is None else {"pipeline-run-id": run_label}
+    if env_label is not None:
+        labels["environment"] = env_label
+    return {"metadata": {"name": "wf-a", "labels": labels}, "status": {"phase": phase}}
+
+
+def test_get_workflow_status_returns_none_for_another_environments_workflow(
+    monkeypatch,
+):
+    """Prod and staging share a namespace and both number runs from 1, so the run
+    id alone can't tell their workflows apart (PR #1048 review)."""
+    other = "prod" if k8s_client.ENV_LABEL != "prod" else "staging"
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", "7", env_label=other)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) is None
+
+
+def test_get_workflow_status_accepts_its_own_environment(monkeypatch):
+    own = k8s_client.ENV_LABEL
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", "7", env_label=own)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Running"
+
+
+@pytest.mark.parametrize("metadata", [None, "x", {"labels": None}, {"labels": "x"}])
+def test_get_workflow_status_with_run_id_tolerates_odd_metadata(monkeypatch, metadata):
+    _serve(
+        monkeypatch,
+        _FakeResp(200, {"metadata": metadata, "status": {"phase": "Failed"}}),
+    )
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Failed"
+
+
+@pytest.mark.parametrize("phase", ["", "Unknown", "Skipped", None, 3])
+def test_get_workflow_status_refuses_an_unexpected_phase(monkeypatch, phase):
+    """A terminal conclusion built on an unknown phase would be final."""
+    _serve(monkeypatch, _FakeResp(200, {"status": {"phase": phase}}))
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow_status("wf-a")
+
+
+def test_get_workflow_status_reads_the_dispatchers_own_labels(monkeypatch):
+    """Round trip: the labels build_workflow_body stamps are the ones the
+    ownership check reads."""
+    body = k8s_client.build_workflow_body(run_id=7, batch_index=0, scan_ids=[1])
+    body["status"] = {"phase": "Succeeded"}
+    _serve(monkeypatch, _FakeResp(200, body))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Succeeded"
+    assert k8s_client.get_workflow_status("wf-a", run_id=8) is None
+
+
+def test_get_workflow_status_returns_none_for_another_runs_label(monkeypatch):
+    """A garbage-collected Workflow's generated name can be reused by a later
+    dispatch; that Workflow is not this run's."""
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", run_label="9")))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) is None
+
+
+@pytest.mark.parametrize("label", ["7", None])
+def test_get_workflow_status_returns_phase_for_own_or_missing_label(
+    monkeypatch, label
+):
+    _serve(monkeypatch, _FakeResp(200, _workflow("Succeeded", run_label=label)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Succeeded"
+
+
+def test_get_workflow_status_ignores_the_label_without_a_run_id(monkeypatch):
+    _serve(monkeypatch, _FakeResp(200, _workflow("Failed", run_label="9")))
+    assert k8s_client.get_workflow_status("wf-a") == "Failed"
 
 
 def test_get_workflow_status_raises_k8sstatuserror_on_5xx(monkeypatch):
@@ -1130,14 +1267,12 @@ def test_get_workflow_refuses_an_unparseable_body(monkeypatch):
 
 
 def test_get_workflow_status_is_the_workflows_phase(monkeypatch):
-    monkeypatch.setattr(
-        k8s_client, "get_workflow", lambda name: {"status": {"phase": "Succeeded"}}
-    )
+    _serve(monkeypatch, _FakeResp(200, {"status": {"phase": "Succeeded"}}))
     assert k8s_client.get_workflow_status("wf-1") == "Succeeded"
 
 
 def test_get_workflow_status_refuses_a_workflow_without_a_phase(monkeypatch):
-    monkeypatch.setattr(k8s_client, "get_workflow", lambda name: {"metadata": {}})
+    _serve(monkeypatch, _FakeResp(200, {"metadata": {}}))
     with pytest.raises(K8sStatusError):
         k8s_client.get_workflow_status("wf-1")
 

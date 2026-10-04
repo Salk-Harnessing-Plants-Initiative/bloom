@@ -57,7 +57,10 @@ The normative rules are in the spec deltas. This file gives the reasons for them
   - a proxy's HTML page;
   - a missing CRD, which returns a `Status` without the workflow's name;
   - a different reason.
-- A live Workflow whose `pipeline-run-id` label names another run is treated as gone for this run.
+- A live Workflow whose `pipeline-run-id` label names another run, or whose `environment` label
+  names another environment, is treated as gone for this run. Prod and staging share the namespace
+  and both number runs from 1 (PR #1048 review).
+- A phase outside Pending/Running/Succeeded/Failed/Error is a failed lookup, not an outcome.
   Without that check, a reused name would feed another run's phase into this one, and later its
   stored phase too.
 - `get_workflow` keeps its behaviour for the RNA-seq poller and the log readers. The checks live in
@@ -73,12 +76,14 @@ The three conditions are in the spec. The reasons:
 
 - **Consecutive cycles plus a minimum time** filter out a transient NotFound, such as one during an
   API server failover.
-- **`newest created_at + TTL` is a necessary condition, not a sufficient one** (unlike #1038 round
+- **`newest updated_at + TTL` is a necessary condition, not a sufficient one** (unlike #1038 round
   1's rule).
-  - Rows are inserted before dispatch, and Argo deletes a workflow TTL after it _ends_, so deletion
-    cannot happen before `created_at + TTL`.
-  - Any NotFound earlier than that is not a garbage collection. A run younger than the TTL is
-    therefore never touched by a namespace or URL mistake.
+  - A row's `updated_at` is stamped at dispatch and by write-back while the workflow runs, and Argo deletes a workflow TTL after it _ends_, so deletion
+    cannot happen before `updated_at + TTL`.
+  - Any NotFound earlier than that is not a garbage collection. A workflow dispatched less than the
+    TTL ago is therefore never touched by a namespace or URL mistake. (`created_at` was the first
+    choice; the PR #1048 review moved it to `updated_at`, which also covers a dispatch delayed past
+    the TTL.)
   - The poller reuses `k8s_client.TTL_SECONDS`, the dispatcher's own resolved value, so the two
     can't drift.
   - If that value is not positive, the guard means nothing, so removal is switched off and the
@@ -100,9 +105,10 @@ accepted because:
 
 ### D4. A removed workflow's phase comes from its rows
 
-- After its `'queued'` rows are closed, a removed workflow counts as `Succeeded` only if every row
-  is `'written'` or `'reused'`. Nothing is stored, because those rows are final and recomputing
-  gives the same answer.
+- A removed workflow counts as `Succeeded` only if every row is `'written'` or `'reused'`. That
+  phase is recorded in `cyl_pipeline_run_workflows` **before** its `'queued'` rows are closed. The
+  close-out stamps the rows' `updated_at`, which would restart the TTL guard, and a later failed
+  lookup would make the workflow unresolved again (PR #1048 re-review). So a removal has to stick.
 - If the close-out fails, `PGRST202` included, the workflow stays unresolved for that cycle.
   Otherwise its leftover `'queued'` rows would read as `Failed` in a run that was about to become
   final.
@@ -149,8 +155,7 @@ poller_concluded_at IS NULL)`. The row lock on that UPDATE makes concurrent term
 - **`NULL` does not mean open.** A run dispatch alone settled to `'failed'` is never a candidate
   and never gets `poller_concluded_at`.
 - **Refused writes are silent.** The RPC keeps its `VOID` signature, so until PR B the old poller
-  logs `run X -> partial` for writes the guard refuses. PR B re-reads the row rather than trusting
-  the call.
+  logs `run X -> partial` for writes the guard refuses. PR B never selects a concluded run, so it never makes a refused write.
 - **A retried workflow after conclusion.** `argo retry` on a concluded run's workflow updates its
   stored phase but never the run, whose rows the write-back guard keeps `'failed'`. Re-running
   means a new run.

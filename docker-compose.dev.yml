@@ -185,8 +185,14 @@ services:
   # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
   # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
   # use of the K8s API (get, not create), so only TOKEN/CA_CERT/API_URL/
-  # NAMESPACE are needed — TTL_SECONDS, ENV_LABEL and the PIPELINE_* pair
-  # are submission-only (build_workflow_body), never read by this poller.
+  # NAMESPACE are needed, plus TTL_SECONDS: the poller never treats a workflow
+  # as removed sooner than that after the workflow was dispatched, because Argo
+  # can't have garbage-collected it yet (bloom#1042). It also needs ENV_LABEL:
+  # it trusts a Workflow as a run's own only if its `environment` label matches,
+  # so this must be the value cyl-pipeline-worker stamps (prod and staging share
+  # a namespace). The PIPELINE_* pair is submission-only (build_workflow_body). Like the poll
+  # interval below, WORKFLOWS_NOT_FOUND_GRACE_SECONDS is left to its code
+  # default (600s).
   # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
   # Python-side default (15s) governs it, matching WORKFLOWS_WORKER_POLL_SECONDS's
   # own precedent above; adding it here without a real default-file entry would
@@ -195,7 +201,9 @@ services:
   # worker above: each sweep is an idempotent recompute from Argo's current
   # state (see design.md's "rollup computation happens in Python" decision),
   # not a claimed, exactly-once event — redundant concurrent sweeps just
-  # mean harmless, wasted-work overlap, not a correctness risk.
+  # mean harmless, wasted-work overlap, not a correctness risk. Each replica
+  # keeps its own in-memory count of a workflow's NotFound lookups, so each
+  # must see a workflow's removal conditions for itself before closing its rows.
   cyl-status-poller:
     build:
       context: ./services/workflows
@@ -220,6 +228,8 @@ services:
       WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
       WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
     volumes:
       - ./services/workflows:/app
     command: ["python", "status_poller.py"]
@@ -303,6 +313,8 @@ services:
       WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
       WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
     command: ["python", "rnaseq_status_poller.py"]
     networks:
       - supanet

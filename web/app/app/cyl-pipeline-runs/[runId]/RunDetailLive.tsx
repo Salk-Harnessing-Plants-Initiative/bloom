@@ -29,7 +29,10 @@
  * - Re-run actions (design D7) submit `scan_ids` targets from the held rows.
  *   "Re-run failed" waits for settled header counts; "Re-run scans without
  *   a result" is offered only on a `complete` or `failed` run with U > 0, so
- *   the two are never offered together.
+ *   the two are never offered together. Neither includes a failed row showing
+ *   the late-result note: its scan's current traits are already this run's
+ *   (fix-cyl-poller-unconcluded-runs). Without the note's lookups the row is
+ *   offered.
  */
 
 import Link from "next/link";
@@ -321,9 +324,13 @@ export function RunDetailLive({
   const tallies = countsFromScanRows(scanRows);
   // Until the rows load, the run row's own counts are all there is.
   const headerRun = loaded ? { ...detail.run, done_count: tallies.done, failed_count: tallies.failed } : detail.run;
-  // Re-run targets, from the held rows only.
-  const failedIds = scanRows.filter((r) => r.status === "failed").map((r) => r.scan_id);
-  const unresultedIds = scanRows.filter((r) => r.status !== "written" && r.status !== "reused").map((r) => r.scan_id);
+  // Re-run targets, from the held rows only, leaving out failed rows that
+  // already hold this run's late result.
+  const lateResult = new Set(tableRows.filter((r) => r.lateResultNote !== null).map((r) => r.scan_id));
+  const failedIds = scanRows.filter((r) => r.status === "failed" && !lateResult.has(r.scan_id)).map((r) => r.scan_id);
+  const unresultedIds = scanRows
+    .filter((r) => r.status !== "written" && r.status !== "reused" && !lateResult.has(r.scan_id))
+    .map((r) => r.scan_id);
   const settled = loaded && tallies.done + tallies.failed >= detail.run.scan_count;
   const ended = detail.run.status === "complete" || detail.run.status === "failed";
   const offerFailed = triggerEnabled && settled && failedIds.length > 0;

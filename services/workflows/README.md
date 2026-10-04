@@ -272,7 +272,7 @@ Each pass, the worker claims the next queued run of any type, builds its Workflo
 - the K8s settings are missing: the run is left queued and comes back once they are fixed;
 - the run's type has no entry in `rnaseq_workflows.py`: the run becomes `failed` with a message naming the type.
 
-A Cell Ranger Workflow takes `sample` and `reference` from the run's `params` and runs the registered `cellranger-count-template`: `stage-reference`, then `sample-pipeline` with the run's `run_key` as its run id. A run with `sra_runs` also runs `fetch-sra` alongside `stage-reference`, given the run IDs comma-separated, and `sample-pipeline` waits for both, so its final `.h5ad` goes to `runs_output/<run_key>/h5ad/`. Its name is fixed per run (`scrna-cellranger-<environment>-<run id>-<hash of run_key>`), so the same run is never submitted twice. It carries the labels `workflow-type`, `rnaseq-run-id` (the `rnaseq_runs` id, the same label for every workflow type) and `environment`. It runs as `bloom-workflow` with the GHCR pull secret, and is deleted 24 hours after it finishes, so its step logs can still be read the next day (`WORKFLOWS_RNASEQ_TTL_SECONDS` overrides it; the sleap-roots `WORKFLOWS_K8S_TTL_SECONDS` doesn't apply). Tests compare the body with `argo/scrna/cellranger/cellranger-count-workflow.yaml` and the template's inputs, so a change to either shows up as a failing test.
+A Cell Ranger Workflow takes `sample` and `reference` from the run's `params` and runs the registered `cellranger-count-template`: `stage-reference`, then `sample-pipeline` with the run's `run_key` as its run id. A run with `sra_runs` also runs `fetch-sra` alongside `stage-reference`, given the run IDs comma-separated, and `sample-pipeline` waits for both, so its final `.h5ad` goes to `runs_output/<run_key>/h5ad/`. Its name is fixed per run (`scrna-cellranger-<environment>-<run id>-<hash of run_key>`), so the same run is never submitted twice. It carries the labels `workflow-type`, `rnaseq-run-id` (the `rnaseq_runs` id, the same label for every workflow type) and `environment`. It runs as `bloom-workflow` with the GHCR pull secret, and is deleted 24 hours after it finishes, so its step logs can still be read the next day (`WORKFLOWS_RNASEQ_TTL_SECONDS` overrides it; the sleap-roots `WORKFLOWS_K8S_TTL_SECONDS` doesn't apply, although `rnaseq-status-poller` receives it to keep its environment identical to `cyl-status-poller`'s). Tests compare the body with `argo/scrna/cellranger/cellranger-count-workflow.yaml` and the template's inputs, so a change to either shows up as a failing test.
 
 The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none. Its compose environment equals `cyl-pipeline-worker`'s (a test enforces it), so it also receives `CYL_PIPELINE_TRIGGER_ENABLED` and `WORKFLOWS_K8S_PIPELINE_*`, but it ignores them: RNA-seq dispatch is not gated by that switch.
 
@@ -388,9 +388,10 @@ distinct from `dispatch_worker.py` above — deployed as its own
 to new pgmq messages, this poller runs on a fixed wall-clock cadence
 (`WORKFLOWS_STATUS_POLL_SECONDS`, default 15s) regardless of dispatch
 activity, sweeping every `cyl_pipeline_runs` row still `'submitted'`/
-`'running'`/`'partial'` (a `'partial'` run may still have genuinely-dispatched
-batches whose real Argo outcome hasn't been checked yet — it is not excluded
-merely because Phase 2 already settled its dispatch outcome). For each such
+`'running'`, or `'partial'` and not yet concluded by this poller (a `'partial'`
+that dispatch settled may still have genuinely-dispatched batches whose real
+Argo outcome hasn't been checked yet; once the poller writes a terminal status
+it sets `poller_concluded_at` and the run is final). For each such
 run it fetches the real Argo phase of every distinct `argo_workflow_name`
 among that run's scans (`k8s_client.get_workflow_status` — a read-only `GET`,
 not the `create` `dispatch_worker.py` does), computes `done_count`/`failed_count`
@@ -422,14 +423,17 @@ the last chance to close it out. While a run is still `'running'`, the
 poller also closes out, the same way, the leftover `'queued'` rows of each
 workflow whose own phase is confirmed `Succeeded`, `Failed` or `Error`: that
 workflow has finished every node, write-back's retries included, and a run's
-25-scan workflows can finish hours apart. A 404 is never enough here, since a
-misconfigured namespace or API URL also returns 404 while the workflow still
-runs; those rows wait for the run-level case. For a `'running'` run, a failed
+25-scan workflows can finish hours apart. A NotFound with no stored phase is
+not enough here, since a misconfigured namespace also returns NotFound while
+the workflow still runs; those rows wait for the removal rule below. For a
+`'running'` run, a failed
 close-out or recount still lets that cycle's progress write happen (with the
 snapshot counts), since the run stays a candidate anyway. Each close-out logs
-how many rows it closed. It does so via
-`fail_cyl_pipeline_run_scans_without_result` (one call per distinct
-`argo_workflow_name` with a leftover `'queued'` row), then re-deriving
+how many rows it closed. It does so via the run-scoped
+`close_cyl_pipeline_run_workflow_scans` (one call per distinct
+`argo_workflow_name` with a leftover `'queued'` row; a garbage-collected
+workflow's generated name can be reused by a later run, so the name-only RPC
+`bloomctl` uses is not safe here), then re-deriving
 `done_count`/`failed_count` from a fresh read of that run's scan rows before
 the status write — not by incrementing the counts `_fetch_effective_phases`
 already returned, since that snapshot was taken before this cycle's K8s
@@ -438,17 +442,51 @@ scan's write-back genuinely resolved in that window. If the reconciliation
 call itself fails, the status write is skipped entirely for that run this
 cycle — it remains a candidate and is retried next cycle, the same isolation
 already given to every other per-run failure — rather than writing a
-terminal status while leaving those rows permanently unresolved. This
-reconciliation is deliberately **not** gated on whether some other workflow
-in the run is unresolved (404'd) this cycle: `get_workflow_status` returns
-`None` only on a clean 404, which is normally a permanent condition (the
-Workflow object no longer exists), not a transient one — a genuine transient
-K8s failure raises `K8sStatusError` instead, an entirely separate path this
-loop already isolates per-run. A prior attempt to add such a gate was
-reverted after two review passes traced it letting an ordinary, expected
-TTL-GC'd sibling workflow stall a run's reconciliation and status write
-forever (see `openspec/changes/fix-cyl-pipeline-run-scan-status/design.md`'s
-Decision 6 addendum 8). Like `update_cyl_pipeline_run_status` below, the
+terminal status while leaving those rows permanently unresolved.
+
+**Workflows Argo has deleted** (bloom#1042, `fix-cyl-poller-unconcluded-runs`).
+Argo deletes a finished Workflow `WORKFLOWS_K8S_TTL_SECONDS` after it ends.
+
+- **Stored phases.** The poller records each workflow's terminal phase in
+  `cyl_pipeline_run_workflows` the first cycle it sees it, through
+  `record_cyl_pipeline_workflow_phase`, and uses that stored phase once
+  lookups stop finding the workflow. A live phase always wins (`argo retry`
+  can revive a finished workflow).
+- **What counts as "not found".** `get_workflow_status` returns `None` only
+  for a verified NotFound: a Kubernetes `Status` with reason `NotFound` naming
+  that exact Workflow, or a live Workflow whose `pipeline-run-id` or
+  `environment` label names
+  another run. Any other 404 is a lookup error.
+- **Removal.** A workflow that is gone and was never seen finishing counts as
+  removed only when all three hold:
+  - 3 consecutive verified NotFound lookups;
+  - those lookups span `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` (default 600);
+  - its scan rows were last updated (at dispatch, or by write-back while it
+    ran) at least `WORKFLOWS_K8S_TTL_SECONDS` ago. Argo
+    can't have deleted it sooner, so a wrong namespace can't fail a young run.
+
+  The poller then records the workflow's phase from its rows (`Succeeded` when
+  all are `'written'`/`'reused'`, else `Failed`) and closes its `'queued'` rows
+  with "the workflow was removed before Bloom saw it finish…". Recording first
+  makes the removal stick: the close-out stamps `updated_at`, which would
+  otherwise restart the TTL bound.
+- **Failed lookups.** A lookup that fails resets only that workflow's count. With
+  a stored phase the workflow uses it; without one it is unresolved for that
+  cycle.
+- **Environment.** `cyl-status-poller` must get the same
+  `WORKFLOWS_K8S_ENV_LABEL` as `cyl-pipeline-worker`. Its ownership check compares
+  the `environment` label, so with the code default (`dev`) every staging or prod
+  workflow would read as gone.
+- **Unresolved workflows.** A workflow that is neither stored nor removed is
+  unresolved. While any workflow is unresolved, the poller writes no terminal
+  status at all, neither `'complete'` nor `'failed'`/`'partial'`, and the
+  terminal backstop closes no rows: a terminal write is final, and the removal
+  rule bounds the wait. Rows of a removed workflow, and of a workflow with a
+  live or stored terminal phase in a still-running run, are still closed. A
+  lookup that fails makes only that workflow unresolved for the cycle.
+  This replaces the earlier ungated backstop (`fix-cyl-pipeline-run-scan-status`
+  Decision 6 addendum 8), which existed only because a garbage-collected
+  sibling's 404 never cleared. Like `update_cyl_pipeline_run_status` below, the
 reconciliation RPC call also treats a `PGRST202` (function-signature-not-found)
 response as an expected, transient condition during the brief window between
 this deploy's app code going live and its migration actually applying —
@@ -487,14 +525,20 @@ Concretely:
 - **`'partial'` no longer means what its name suggests.** It no longer arises
   from partial failure _within_ a batch — only from terminal phases differing
   across a multi-batch run. Do not treat its absence as "nothing was partial".
-- **The counts can be absent, not just zero.** When any of a run's workflows
-  404s (normally because it was TTL-GC'd), the poller withholds a `'complete'`
-  conclusion and skips the run's status write entirely rather than concluding
-  from incomplete information. A GC'd workflow 404s permanently, so a run whose
-  batches finished more than `WORKFLOWS_K8S_TTL_SECONDS` apart can sit at its
-  previous status with the counts never updated. **Render that as "unknown",
-  not as zero** — it is the one case where "read the counts" is not by itself
-  sufficient advice.
+- **A run can sit unconcluded for a while, but not forever.** While one of a
+  run's workflows is unresolved (gone, never seen finishing, and not yet past
+  the removal rule above), the poller writes no terminal status. The run keeps
+  its previous status and counts until the workflow is removed: about
+  `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` once the TTL bound is met. A workflow the
+  poller saw finish keeps its stored phase, so this happens only after poller
+  downtime or a broken lookup that outlasted the TTL.
+- **A removed workflow's phase is approximate.** It is derived from its rows, so
+  a batch whose producers exited `3` reads `Failed` once its isolated scans are
+  `'failed'`. The counts are exact either way.
+- **A concluded run is final.** Once `poller_concluded_at` is set, the status,
+  counts and `completed_at` never change again. Re-running its scans means
+  starting a new run. A `NULL` `poller_concluded_at` does not mean the run is
+  open: a run that dispatch alone settled to `'failed'` never gets one.
 
 A zero-scan run is set to `'complete'` at enumerate time by the trigger route
 and never dispatched, so it never reaches the rollup at all.
@@ -635,7 +679,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_K8S_CA_CERT`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required                                                                                                                                           |
 | `WORKFLOWS_K8S_API_URL`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required                                                                                                                                                                     |
 | `WORKFLOWS_K8S_NAMESPACE`       | `runai-busch-lab`       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Single hardcoded namespace for v1 (not a credential — never eagerly required)                                                                                                                                                                             |
-| `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `cyl-pipeline-worker` only. `ttlStrategy.secondsAfterCompletion` on every submitted Workflow, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required)                                                                                                                 |
+| `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `ttlStrategy.secondsAfterCompletion` on every Workflow `cyl-pipeline-worker` submits, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required). `cyl-status-poller` reads the same value: it never treats a workflow as removed sooner than this after the workflow was dispatched. A value that isn't positive switches removal off, with a warning |
 | `WORKFLOWS_K8S_ENV_LABEL`       | `dev`                   | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required)                |
 | `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). This environment's stage root: the three stage volumes become `<root>/input`, `/predictions`, `/traits` (bloom#863). An absolute POSIX path; no default. Missing or invalid, every claimed batch fails "not configured" |
 | `WORKFLOWS_K8S_PIPELINE_SECRET_NAME` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). The Kubernetes Secret `bloom-credentials` mounts — this environment's own Supabase pipeline credential (bloom#863). No default. Missing or invalid, every claimed batch fails "not configured" |
@@ -643,6 +687,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `CYL_PIPELINE_TRIGGER_ENABLED` | – | `cyl-pipeline-worker` (and bloom-web; `rnaseq-worker` receives it and ignores it). On only for exactly `true`; otherwise every claimed batch fails "turned off" and nothing is submitted. Read at start-up |
 | `WORKFLOWS_WORKER_POLL_SECONDS` | `5`                     | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check                                                                                                                                                                           |
 | `WORKFLOWS_STATUS_POLL_SECONDS` | `15`                    | `cyl-status-poller` only. Sleep between sweep cycles, and the retry interval for the startup Supabase connection check. Not wired into either compose file's `environment:` block, matching `WORKFLOWS_WORKER_POLL_SECONDS`'s own treatment — the code-side default governs every deployed environment today |
+| `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` | `600`               | `cyl-status-poller` only. How long a workflow that is gone and was never seen finishing must keep returning a verified NotFound (over at least 3 lookups) before the poller treats it as removed. A malformed or non-positive value falls back to 600 with a warning. Not wired into the compose files, like the poll interval |
 | `WORKFLOWS_DISPATCH_VT_SECONDS` | `60`                    | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery                                                                                                                                      |
 | `WORKFLOWS_DISPATCH_MAX_READS`  | `5`                     | `cyl-pipeline-worker` only. Poison-message threshold passed to `claim_cyl_pipeline_batch` — a batch redelivered more than this many times is dead-lettered (marked failed) instead of claimed again                                                                                                          |
 
