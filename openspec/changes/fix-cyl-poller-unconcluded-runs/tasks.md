@@ -299,7 +299,7 @@ failures from the old stubs once it existed. The two inverted tests are
 
 ## 9. UI: red, then green
 
-- [ ] 9.1 Red, in the `RunDetailLive.test.tsx` "re-run actions" block:
+- [x] 9.1 Red, in the `RunDetailLive.test.tsx` "re-run actions" block:
   - "does not offer a failed row whose late result is this run's": 3 failed rows, 1 with a note.
     Expect "Re-run failed scans (2)" and that the submit sends the other 2 ids. The excluded row
     still reads failed with its note and is still counted in the header.
@@ -307,18 +307,23 @@ failures from the old stubs once it existed. The two inverted tests are
   - "leaves a late-result row out of Re-run scans without a result" (the spec's 9-id case)
   - "hides Re-run failed when every failed row shows a late-result note"
   - "drops a row from Re-run failed once its late-result lookup lands", using fake timers
-- [ ] 9.2 Green: in `RunDetailLive.tsx`, `failedIds` and `unresultedIds` skip rows with a
+- [x] 9.2 Green: in `RunDetailLive.tsx`, `failedIds` and `unresultedIds` skip rows with a
       `lateResultNote`. Update the "Re-run actions" docstring at the top of the file.
-- [ ] 9.3 Update `failure-hints.ts`:
+- [x] 9.3 Update `failure-hints.ts`:
   - add the removal close-out to `lateResultNote`'s list of ways a row gets closed;
   - export `REMOVED_WORKFLOW_MESSAGE`;
   - point the `BACKSTOP_MESSAGE` and the new source-equality tests at the poller's constants (red,
     then green).
-- [ ] 9.4 Update the comments in `run-display.ts` (only dispatch stamps an early `completed_at`)
+- [x] 9.4 Update the comments in `run-display.ts` (only dispatch stamps an early `completed_at`)
       and `realtime-reducer.ts` (a concluded `'partial'` run gets no more sweep updates).
-- [ ] 9.5 Add `poller_concluded_at` to the `cyl_pipeline_runs` Row, Insert and Update types in
+- [x] 9.5 Add `poller_concluded_at` to the `cyl_pipeline_runs` Row, Insert and Update types in
       `web/lib/database.types.ts`, and to the three `RunRow` literals named in task 2.3.
-- [ ] 9.6 Confirm `cd web && npm run test:unit` is green.
+- [x] 9.6 Confirm `cd web && npm run test:unit` is green.
+
+Recorded red run: 4 failed (the three exclusions and the live drop); "offers every failed row when
+the latest-source lookup fails" passed as a guard. Green: the whole web unit suite, 2,475 passed,
+and `tsc --noEmit` is clean. The web files are left in their existing formatting: the pinned
+prettier 3.1.0 would rewrite all of them wholesale, so it was not applied.
 
 ## 10. Config and docs
 
