@@ -139,9 +139,19 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 
 ## 4. After PR A merges
 
-- [ ] 4.1 Once deployed to staging, confirm the table, the functions and the column exist, and that
+- [x] 4.1 Once deployed to staging, confirm the table, the functions and the column exist, and that
       the old poller still writes run status. This is a read-only check over the staging SSH
       access.
+  - **Checked 2026-10-04** (deploy run 37221976279, read-only):
+    - migration `20261004120000` is recorded;
+    - the table and `poller_concluded_at` exist;
+    - all three functions are SECURITY DEFINER, owned by `postgres`, with EXECUTE held only by
+      `bloom_workflows`;
+    - there are no stored phases and no concluded runs;
+    - run 17 is unchanged (`'running'`, 1,515 `'queued'`).
+  - The redeployed `cyl-status-poller` sweeps run 17 every cycle, and all 61 of its workflows return
+    `404 Not Found`. That is bloom#1042 item 1 live: an empty rollup, so no write. Run 17 is the only
+    candidate, so no status write could be watched on staging.
 
 # PR B: code (after PR A is on staging)
 
