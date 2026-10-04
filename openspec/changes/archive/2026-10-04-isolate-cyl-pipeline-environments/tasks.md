@@ -215,7 +215,8 @@ This group is one commit: the fixture update and the gate must land together.
     verbatim, so a scratch path redirects only a manual `argo submit`.
   - **`docs/bloom-integration/roadmap.md`:** the `credential` row (`:299`), whose link to
     `salk-bloom/docs/credentials/bloom-workflows-a4-pipeline.md` exists only on unmerged bloom PR
-    #549 (ask the author: link the PR, or merge #549 first); the `:539-542` blocker text; a
+    #549. #549 was closed unmerged on 2026-10-04, so link bloom's
+    `services/workflows/README.md` "Provisioning (per environment)" instead; the `:539-542` blocker text; a
     status-log entry.
   - Not drafted: `scripts/runai_run_pipeline.sh:20-22` and `README.md:404`, which review cited.
     At `367c771` that script path doesn't exist and that README line is Argo DAG background.
@@ -289,6 +290,11 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
 - [x] 6.3 Prod provisioning, done by the author, with step-by-step walkthroughs given at the time:
   - **(a) Prod Supabase Auth account** on bloom.salk.edu, flagged `is_workflows: true`, following
     PR #549's recipe (`git show 94329240:docs/credentials/bloom-workflows-a4-pipeline.md`).
+    #549 was closed unmerged on 2026-10-04 as stale, so don't reuse that recipe. It pairs the
+    staging account with the prod URL, its `defaultMode: 0600` advice fails the
+    `bloom-credentials` volume check in `services/workflows/k8s_client.py`, and its grant list
+    predates most of `bloom_workflows`' grants. The current recipe is
+    `services/workflows/README.md` "Provisioning (per environment)" step 6.
     - Only the recipe's grants.
     - Separate from the Workflows service's own `is_workflows` user.
     - Record that the credential is readable by any holder of the namespace's shared identities.
