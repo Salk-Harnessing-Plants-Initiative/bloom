@@ -1,211 +1,189 @@
 ## Context
 
-The cylinder status poller (`services/workflows/status_poller.py`) reads every candidate run's
-scan rows, asks Argo for each distinct workflow's phase, rolls the phases up into a run status
-and writes it through `update_cyl_pipeline_run_status`. It keeps no state between cycles. Argo
-deletes a finished workflow `WORKFLOWS_K8S_TTL_SECONDS` after it ends, and from then on the
-lookup 404s. Every gap in bloom#1042 comes from that loss of history:
+`services/workflows/status_poller.py` reads a run's scan rows, asks Argo for each workflow's
+phase, rolls the phases up and writes the result. It keeps nothing between cycles. Argo's
+`ttlStrategy` deletes a finished workflow `WORKFLOWS_K8S_TTL_SECONDS` after it ends. After that,
+`get_workflow` returns `None` on **any** 404 without reading the response body.
 
-| Gap | Today's code path |
-|---|---|
-| All workflows 404 | `rollup([])` is `None` → `continue` (`sweep_once`) |
-| Some 404, rest `Succeeded` | `'complete'` withheld → `continue`, no counts written |
-| `'partial'` re-polled | `_fetch_candidate_runs` selects `'partial'`; RPC accepts it as a source status |
-| `partial` → `failed` | GC'd `Succeeded` sibling drops out of `phases`, leaving only `Failed` |
+This change builds on two earlier decisions:
+- `fix-cyl-pipeline-run-scan-status`, Decision 6 and addenda 5, 7 and 8: the terminal-rollup
+  backstop. Gating it on `any_unknown` was reverted because a garbage-collected sibling then stalled
+  the run forever.
+- `fix-cyl-writeback-retry-reconcile` (#1038) D2: a 404 is never "settled". A rule based on dispatch
+  age was tried and reverted.
 
-`get_workflow` returns `None` on **any** 404 without reading the body, so a proxy page or a
-missing CRD looks the same as a GC'd workflow.
-
-Earlier decisions this builds on:
-- `fix-cyl-pipeline-run-scan-status` Decision 6, addenda 5, 7 and 8: the terminal-rollup backstop
-  reconciles 404'd workflows too, and gating it on `any_unknown` was reverted because a
-  GC'd sibling then stalled the run forever.
-- `fix-cyl-writeback-retry-reconcile` D2: a 404 is never "settled" while the run runs. A
-  dispatch-age rule was tried and reverted.
+The normative rules are in the spec deltas. This file gives the reasons for them.
 
 ## Goals / Non-Goals
 
 **Goals**
-- Every run whose workflows have all finished eventually concludes, with no row left `'queued'`.
-- A workflow the poller saw finish keeps that outcome after GC.
-- A 404 that is not Kubernetes saying "this workflow does not exist" never closes rows.
+- A run whose workflows have all ended eventually concludes, with no row left `'queued'`.
+- A workflow the poller saw finish keeps that outcome after Argo deletes it.
+- Only Kubernetes saying "this workflow, for this run, does not exist" can close rows.
 - A run the poller concluded is never re-polled, re-stamped or downgraded.
 - The run page never offers to re-run a scan that already has this run's result.
 
 **Non-Goals**
-- Callbacks from inside the workflow (`onExit`, exit-gate) or `activeDeadlineSeconds`.
-- Changing the write-back guard (a `'failed'` row stays `'failed'`).
+- Callbacks from inside the workflow, and `activeDeadlineSeconds` (see Alternatives).
+- Changing the write-back guard: a `'failed'` row stays `'failed'`.
 - The RNA-seq poller's 404 handling.
 
 ## Decisions
 
-### D1. Store each workflow's terminal phase in a new table
+### D1. A table of terminal phases, keyed by run and workflow
 
-`cyl_pipeline_run_workflows`:
+- **Why a table, not a column on `cyl_pipeline_run_scans`.** The phase belongs to the workflow, not
+  the scan. A column would have to be written to about 25 rows per workflow.
+- **Why key by run.** `generateName` names can be reused once Argo deletes a workflow
+  (`fix-cyl-pipeline-run-scan-status` addendum 5 estimates about 1% at 500–1,000 submissions).
+- **The poller writes only on a change.** It reads the run's stored phases once per cycle and
+  calls the RPC only when a live terminal phase differs from the stored one, so a run in a steady
+  state costs no writes.
+- **The live phase wins over the stored one.** `argo retry` can bring a `Failed` workflow back to
+  `Running`. The stored value is only a fallback for a NotFound, and it is overwritten when the
+  workflow finishes again.
+  - Residual risk: a retried workflow that Argo deletes while the poller is down keeps its old
+    stored phase.
+- **A failed write changes nothing this cycle.** The poller still uses the live phase. The next
+  cycle retries the write while the workflow still exists.
 
-| Column | Type | Notes |
-|---|---|---|
-| `run_id` | `BIGINT NOT NULL REFERENCES cyl_pipeline_runs(id)` | |
-| `argo_workflow_name` | `TEXT NOT NULL` | |
-| `phase` | `TEXT NOT NULL CHECK (phase IN ('Succeeded','Failed','Error'))` | last terminal phase seen |
-| `observed_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | when that phase was first recorded |
-| | `PRIMARY KEY (run_id, argo_workflow_name)` | |
+### D2. Verify a 404, and verify ownership
 
-- Keyed by run and name, not name alone. `generateName` collisions are possible (addendum 5).
-- RLS follows `cyl_pipeline_run_scans`:
-  - read for `bloom_workflows`, `bloom_user`, `bloom_agent`;
-  - all for `bloom_admin`;
-  - no direct write grant to `bloom_workflows`.
-- Writes go through `record_cyl_pipeline_workflow_phase(p_run_id BIGINT,
-  p_argo_workflow_name TEXT, p_phase TEXT) RETURNS BOOLEAN`, `SECURITY DEFINER`, EXECUTE only
-  for `bloom_workflows`. The RPC:
-  - raises on a phase outside the three terminal values;
-  - inserts or updates only when some `cyl_pipeline_run_scans` row has that `run_id` and
-    `argo_workflow_name`, so a typo can't create an orphan;
-  - on conflict updates `phase` and `observed_at` only when the phase differs;
-  - returns whether a row was written.
-- The poller reads the run's stored phases with one `select` per run per cycle. It calls the
-  RPC only when a live lookup returns a terminal phase different from the stored one, so a
-  steady state costs no writes.
+- A 404 means "gone" only when the body is a Kubernetes `Status` whose `reason` is `NotFound` and
+  whose `details` name this exact Argo Workflow. Anything else raises `K8sStatusError`:
+  - a proxy's HTML page;
+  - a missing CRD, which returns a `Status` without the workflow's name;
+  - a different reason.
+- A live Workflow whose `pipeline-run-id` label names another run is treated as gone for this run.
+  Without that check, a reused name would feed another run's phase into this one, and later its
+  stored phase too.
+- `get_workflow` keeps its behaviour for the RNA-seq poller and the log readers. The checks live in
+  a private helper that only `get_workflow_status` uses.
+- A wrong **namespace** still produces a verified NotFound for the exact name. D3 limits that case.
+- Residual risk: a 404 that can never be verified (an API front end that rewrites error bodies)
+  raises on every cycle. That run is isolated and its counts freeze until an operator notices the
+  repeated warning. This is preferred to guessing that the workflow is gone.
 
-**Why not a column on `cyl_pipeline_run_scans`:** the phase belongs to the workflow, not the
-scan. Storing it there means writing ~25 rows per workflow and reading back a value that is
-duplicated across them.
+### D3. Removal: a grace period plus the earliest possible GC
 
-**Why the live phase wins:** `argo retry` can move a `Failed` workflow back to `Running`. The
-stored value is only a fallback for a 404, and is overwritten when the workflow finishes again.
+The three conditions are in the spec. The reasons:
 
-**Failure handling:** if the RPC fails, the cycle is marked unclean (`PGRST202` stays clean, as
-elsewhere) and this cycle's live phase is still used. Nothing is lost: the next cycle retries
-while the workflow still exists.
+- **Consecutive cycles plus a minimum time** filter out a transient NotFound, such as one during an
+  API server failover.
+- **`newest created_at + TTL` is a necessary condition, not a sufficient one** (unlike #1038 round
+  1's rule).
+  - Rows are inserted before dispatch, and Argo deletes a workflow TTL after it *ends*, so deletion
+    cannot happen before `created_at + TTL`.
+  - Any NotFound earlier than that is not a garbage collection. A run younger than the TTL is
+    therefore never touched by a namespace or URL mistake.
+  - The poller reuses `k8s_client.TTL_SECONDS`, the dispatcher's own resolved value, so the two
+    can't drift.
+  - If that value is not positive, the guard means nothing, so removal is switched off and the
+    poller logs a warning.
+- **The count lives in memory, keyed by `(run_id, name)`.**
+  - A restart delays a conclusion by one grace period. These conclusions are already hours late.
+  - Storing the count would add a write every cycle for every 404'd workflow.
+  - Each poller replica counts on its own, so every replica must see the condition for itself.
+- **When a count resets.** A run whose check ends early resets every pair it has, because none of
+  them was looked up that cycle. A pair absent from a cycle is dropped, which keeps the map bounded.
 
-### D2. Verify a 404 before calling it NotFound
+**Residual risk.** A namespace change that Kubernetes answers with NotFound would, after the grace
+period, conclude every still-running run older than the TTL and fail its `'queued'` rows. This is
+accepted because:
+- the logs would show a NotFound warning for every workflow on every cycle;
+- results written later still land as data and show the late-result note (D6);
+- the alternative leaves genuinely stuck runs unconcluded forever.
 
-- `get_workflow_status` parses a 404 body. It returns `None` only when the body is a JSON object
-  with:
-  - `kind == "Status"`
-  - `reason == "NotFound"`
-  - `details.name == name`
-  - `details.kind == "workflows"`
-  - `details.group == "argoproj.io"`
-- Any other 404 logs the status and body server-side and raises `K8sStatusError` with the
-  existing generic message. This covers a non-JSON body, a different reason, or details naming
-  something else. A missing CRD returns a `Status` without the workflow's name; a proxy returns
-  HTML.
-- `get_workflow` and the RNA-seq poller keep their current behaviour (`None` on any 404). The
-  verification lives in a private helper that `get_workflow_status` calls.
+### D4. A removed workflow's phase comes from its rows
 
-A wrong **namespace** still returns a verified NotFound for the exact name. D3's age guard is
-what limits that case.
+- After its `'queued'` rows are closed, a removed workflow counts as `Succeeded` only if every row
+  is `'written'` or `'reused'`. Nothing is stored, because those rows are final and recomputing
+  gives the same answer.
+- If the close-out fails, `PGRST202` included, the workflow stays unresolved for that cycle.
+  Otherwise its leftover `'queued'` rows would read as `Failed` in a run that was about to become
+  final.
+- **Approximation.** A removed workflow whose producers exited `3` (gate `Succeeded`) but whose
+  isolated scans are `'failed'` counts as `Failed`. The run then reads `'partial'`/`'failed'`
+  rather than `'complete'`. The counts are exact either way.
 
-### D3. "Removed": verified NotFound, held through a grace period, past the earliest possible GC
+### D5. Withhold every terminal conclusion while a workflow is unresolved
 
-The poller keeps an in-memory map from workflow name to the first verified-NotFound time
-(`time.monotonic()`) and a consecutive count.
-- Any other outcome for that name resets its entry: a live phase, or an error for the run.
-- A name that no longer appears in any candidate run is dropped.
+Today only `'complete'` is withheld. A `'failed'`/`'partial'` conclusion is written even with an
+unresolved sibling, and the backstop closes that sibling's rows. With D6, that conclusion would be
+final, and so would its mistakes:
+- an old `'partial'` run would flip to `'failed'`;
+- a young run's live rows would be failed by a namespace mistake.
 
-A workflow with no stored phase is **removed** only when all three hold:
-1. its consecutive verified NotFound count is ≥ 3;
-2. at least `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` (default 600; non-positive or malformed values
-   fall back with a warning, matching `_resolve_poll_interval`) have passed since the first one;
-3. `now() - max(created_at of its rows) ≥ WORKFLOWS_K8S_TTL_SECONDS`.
+The reason not to withhold (addendum 8: a garbage-collected sibling stalls the run forever) no
+longer holds, because D3 ends every unresolved state. So rules (2)–(4) all wait, and every row the
+terminal backstop closes belongs to a resolved workflow.
 
-Condition 3 is a **necessary** condition only, unlike #1038 round 1's sufficient one:
-- The rows are inserted before dispatch, and GC happens TTL after completion, so GC cannot
-  happen before `created_at + TTL`.
-- A NotFound earlier than that is certainly not GC, so a fresh run is never touched by a
-  namespace or URL mistake.
-- The poller reads the TTL from the same `WORKFLOWS_K8S_TTL_SECONDS` variable the dispatcher
-  uses, now passed to `cyl-status-poller` in both compose files.
+The backstop and the running-run close-out both switch to the run-scoped RPC, because a stored
+phase now lets them close a workflow whose name may already be reused. `bloomctl` keeps the RPC
+that matches on the name alone: it runs inside a live workflow that owns the name.
 
-**Why in memory, not in the DB:** a restart only delays a conclusion by one grace period, and
-the scenario is already hours late. Persisting the count would add a write every cycle for every
-404'd workflow.
+### D6. Finality: `poller_concluded_at`
 
-**Residual risk:** a namespace or URL change that leaves Kubernetes answering NotFound would,
-after the grace period, conclude every still-running run older than the TTL, failing its
-`'queued'` rows. This is accepted:
-- the K8s API answering NotFound for every workflow is loud in the logs (one warning per
-  workflow per cycle);
-- results written later still land as data and show the late-result note (D5);
-- the alternative leaves real stuck runs unconcluded forever.
+- **Why a new column, not `completed_at`.** `_settle_cyl_pipeline_run` stamps `completed_at` for
+  `'submitted'` and `'partial'` too, so `completed_at` can't tell "dispatch guessed" from "poller
+  confirmed".
+- **The guard is in the RPC.** `WHERE status IN ('submitted','running') OR (status = 'partial' AND
+  poller_concluded_at IS NULL)`. The row lock on that UPDATE makes concurrent terminal writes
+  conclude exactly once.
+- **The poller doesn't re-select concluded runs.** It selects `id, status, poller_concluded_at` for
+  the three statuses and drops concluded `'partial'` rows in code. The PostgREST `or=` filter that
+  could do this would need a nested `and(...)`; filtering in code is clearer, and the rows are few.
+- **Existing rows start `NULL`.** A run the old poller concluded `'partial'` gets one more
+  confirmation and is then final. D4 and D5 make that confirmation safe.
 
-### D4. A removed workflow's effective phase comes from its rows
+### D7. Two PRs: database first
 
-Once a workflow is removed:
-- its still-`'queued'` rows are closed by `fail_cyl_pipeline_run_scans_without_result` with
-  this message: "the workflow was removed before Bloom saw it finish; check whether a result
-  file exists before re-running prediction";
-- it then counts in the rollup as `Succeeded` if every one of its rows is `'written'` or
-  `'reused'`, and as `Failed` otherwise.
+The repo's rule (`.claude/commands/database-migration.md`, enforced in warning mode by
+`scripts/lint_migration_isolation.py`) is that a PR changing migrations ships alone and its code
+follows. It also matters here, because `deploy.yml` starts the new containers before `db push`:
+- **New code on the old schema breaks the poller.** The candidate select hits a missing column
+  (`42703`), so every sweep fails and the poller reconnects every three cycles.
+- **Old code on the new schema is safe.**
+  - The column is nullable.
+  - The old poller never reads the new table.
+  - `update_cyl_pipeline_run_status` keeps its signature. The old poller's repeated `'partial'`
+    writes simply stop matching once a run is concluded, which already fixes item 3's flip.
 
-The phase is not stored: after close-out the rows are final, so re-deriving it gives the same
-answer. A removed workflow is settled (closed while the run runs, like a terminal phase) and no
-longer makes `any_unknown` true.
+The resulting PRs:
+- **PR A:** this proposal, the migration, its rollback, the SQL tests, `database.types.ts` and the ER
+  diagram.
+- **PR B:** opened once PR A is on staging (and on main before or with PR B in a targeted
+  promotion).
 
-`any_unknown` now means at least one workflow is in its grace period: a verified NotFound with
-no stored phase that is not yet removed. The withheld-`'complete'` rule and the terminal-rollup
-backstop keep their current meaning.
+Rollback order: revert PR B's code first, then PR A's SQL, as the rollback script's header says.
 
-### D5. A poller conclusion is final: `poller_concluded_at`
+### D8. Run page: leave late-result rows out of re-runs
 
-- New column: `cyl_pipeline_runs.poller_concluded_at TIMESTAMPTZ NULL`.
-- `update_cyl_pipeline_run_status`:
-  - matches rows `WHERE status IN ('submitted','running') OR (status = 'partial' AND
-    poller_concluded_at IS NULL)`;
-  - on a terminal `p_status`, sets `completed_at = now()` and `poller_concluded_at = now()`.
-- `_fetch_candidate_runs` selects `id, status, poller_concluded_at` for the three statuses and
-  keeps a `'partial'` row only when `poller_concluded_at` is null. This is filtered in Python;
-  the fake client has no `or_`.
-- A dispatch-settled `'partial'` (`_settle_cyl_pipeline_run`, column `NULL`) is still confirmed
-  once.
+- `failedIds` and `unresultedIds` skip rows whose `lateResultNote` is non-null, so the counts and the
+  submitted IDs agree.
+- If the lookup fails, the note is null and the row is offered.
+- A row that turns `'failed'` while the page is open is offered until its batched lookup lands
+  (≤ 500 ms).
 
-**Why a column and not `completed_at`:** `_settle_cyl_pipeline_run` stamps `completed_at` for
-`'submitted'` and `'partial'` too, so it can't tell "dispatch guessed" from "poller confirmed".
+## Alternatives
 
-**Rows from before this change:** the migration leaves the column `NULL` everywhere. A run the
-old poller already concluded `'partial'` therefore gets one more confirmation and is then final.
-Thanks to D4 that confirmation can no longer flip it to `failed` because a sibling was GC'd.
-
-### D6. Run page: leave late-result rows out of the re-run actions
-
-In `RunDetailLive.tsx`, `failedIds` and `unresultedIds` exclude rows whose computed
-`lateResultNote` is non-null. The button counts come from these lists, so they match.
-- When the latest-source or source-runs lookup failed, the note is null, so every failed row is
-  offered, as today.
-- A row that turns `failed` live is offered until its batched lookup lands (≤ 500 ms), then
-  drops out.
-- `settled` and the header counts are unchanged: the row is still `failed`.
-
-## Risks / Trade-offs
-
-- **Namespace misconfiguration** (D3 residual risk): bounded to runs older than the TTL; loud
-  in the logs.
-- **Rows-derived phase is an approximation.** A removed workflow whose producers exited `3`
-  (gate `Succeeded`) but whose isolated scans are `'failed'` counts as `Failed`, not
-  `Succeeded`. The run then reads `'partial'`/`'failed'` instead of `'complete'`. The per-scan
-  counts are exact either way, and the spec already says to read counts, not status.
-- **Deploy ordering.** App code deploys before migrations. Until the migration applies:
-  - the phase select fails → that run's check is isolated and the cycle is unclean;
-  - the record RPC and the five-column status RPC return `PGRST202` → logged quietly.
-
-  So the poller falls back to the stored-nothing behaviour for at most the deploy window.
-- **More rows read per cycle**: one extra small `select` per candidate run.
+- **`activeDeadlineSeconds` at dispatch.** It conflicts with `isolate-cyl-pipeline-environments`'
+  "six overrides" requirement. It also needs a dispatch time per workflow, and it kills batches that
+  run long.
+- **Have the exit gate or an `onExit` step report the end to Bloom.** That needs sleap-roots-pipeline
+  and bloomctl changes plus a pin bump, and `check_template_contract.py` can't verify an inline
+  step. It is the follow-up to consider if gaps from poller downtime come back.
+- **A 404 with dispatch age above TTL + 5 min.** Rejected in #1038 round 2: it was a sufficient
+  condition built on the wrong clock.
 
 ## Migration
 
-- Forward-only migration `2026100312xxxx_add_cyl_pipeline_run_workflows.sql`:
-  - creates the table, RLS, grants and the record RPC;
-  - adds `poller_concluded_at`;
-  - re-creates `update_cyl_pipeline_run_status` with the same signature.
-- Companion rollback in `supabase/rollbacks/`.
-- After deploy the poller concludes runs already stuck by #1042 on its own, once condition 3
-  and the grace period hold, which is immediate for old runs plus ~10 min. Before promoting,
-  run a read-only query on staging and prod listing the runs it will conclude, and record them
-  in the PR.
-
-## Open Questions
-
-None. The mechanism (D1), the never-seen rule (D3), finality (D5) and the UI exclusion (D6)
-were chosen by the user on 2026-10-03.
+- PR A's migration does the following:
+  - creates the table, its RLS, the revokes and grants, and both RPCs;
+  - adds `poller_concluded_at` under `lock_timeout`;
+  - re-creates `update_cyl_pipeline_run_status` with the same signature;
+  - ends with `NOTIFY pgrst, 'reload schema'`.
+- After PR B deploys, the poller concludes runs already stuck by #1042 on its own: those runs are
+  long past the TTL, so roughly one grace period later.
+- Before PR B is promoted, a read-only query on staging and prod lists the runs that will conclude
+  (tasks 9.3).

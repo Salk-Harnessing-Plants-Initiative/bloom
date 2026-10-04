@@ -12,7 +12,7 @@ The web app SHALL offer run actions on these surfaces. Each submits only through
 - **A run's drill-down:**
   - "Re-run failed scans (F)" (`scan_ids`: the held rows with status `failed`, except rows showing the late-result note). Shown when the header counts satisfy `done + failed ≥ scan_count` and F > 0.
   - "Re-run scans without a result (M)" (`scan_ids`: the held rows whose status is not `written`, `reused` or `failed`, plus the `failed` rows, except rows showing the late-result note). Shown only when the run's `status` is `complete` or `failed` and U > 0, with a warning that in-flight scans could be processed twice. M is the number of ids submitted.
-  - A `failed` row showing the late-result note already has this run's result as the scan's current traits, so neither action re-runs it. When the note cannot be computed (its lookups failed or have not landed), the row is offered as before.
+  - A `failed` row showing the late-result note already has this run's result as the scan's current traits, so neither action re-runs it. When the note cannot be computed (its lookups failed or have not landed), the row is offered. An action whose list is empty after this exclusion is not shown.
 
 A `scan_ids` action whose id count exceeds `MAX_TRIGGER_SCAN_IDS` SHALL be disabled with an explanation.
 
@@ -56,3 +56,11 @@ A `scan_ids` action whose id count exceeds `MAX_TRIGGER_SCAN_IDS` SHALL be disab
 #### Scenario: Without the late-result lookup every failed row is offered
 - **WHEN** the latest-source lookup failed, and two rows are `failed`
 - **THEN** "Re-run failed scans (2)" submits both scan ids
+
+#### Scenario: A late-result row is left out of Re-run scans without a result
+- **WHEN** a `complete` run has `scan_count = 40`, 30 `written`, 2 `failed` and 8 `queued` rows, and one of the failed rows shows the late-result note
+- **THEN** "Re-run scans without a result (9)" is offered and submits the 8 queued ids and the other failed id
+
+#### Scenario: Re-run failed is hidden when every failed row has this run's late result
+- **WHEN** a `complete` run's settled rows are 38 `written` and 2 `failed`, and both failed rows show the late-result note
+- **THEN** no "Re-run failed scans" action is rendered
