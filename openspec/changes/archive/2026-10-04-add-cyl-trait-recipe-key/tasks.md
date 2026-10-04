@@ -882,6 +882,7 @@ NULL)` returns no rows, and a call with an experiment still returns rows. The he
 - [x] 8.4 After 8.1, close #935 and #937, with eberrigan's yes.
   **2026-10-02:** closed by hand with the 8.0–8.2 evidence (#935 issuecomment-5958830320,
   #937 issuecomment-5958830924).
-- [ ] 8.5 After the staging→main promotion is verified, run
+- [x] 8.5 After the staging→main promotion is verified, run
       `/openspec:archive add-cyl-trait-recipe-key`. Archive `fix-cyl-redelivery-blob-collision` before
       or with it (design D11).
+  - **Done:** promotion verified. Prod run 3's sources 49–51 carry recipe key `129d58b9`, and Download traits on prod lists and exports that recipe (2026-10-04). Archived in the post-promotion archive PR, after `fix-cyl-redelivery-blob-collision` (D11).

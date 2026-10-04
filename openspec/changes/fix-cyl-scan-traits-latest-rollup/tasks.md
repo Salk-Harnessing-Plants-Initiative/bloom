@@ -174,7 +174,7 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       all. Guarded by `tests/unit/test_refresh_workflow_shape.py`, which fails if either literal drifts
       from its `.env.*.defaults` or if a `secrets.STAGING_API_URL`/`secrets.PROD_API_URL` reference
       reappears.
-- [ ] 5.3 **CORRECTED (bloom#708 investigation): genuinely blocked on promotion to `main`, not just
+- [x] 5.3 **CORRECTED (bloom#708 investigation): genuinely blocked on promotion to `main`, not just
       deferred to "after this PR merges."** `workflow_dispatch` is gated on default-branch presence
       exactly like `schedule:` (GitHub's own docs: "To trigger the workflow_dispatch event, your
       workflow must be in the default branch") — confirmed against the live repo while this file
@@ -184,7 +184,8 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       via the UI, `gh workflow run`, or the REST API — until this repo's next `chore: promote staging to
       main` PR carries this file to `main`. Do this once that promotion has happened, not merely "after
       this PR merges."
-- [ ] 5.4 **CORRECTED (bloom#708 investigation): the original round-7 finding was resolved by redesign
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
+- [x] 5.4 **CORRECTED (bloom#708 investigation): the original round-7 finding was resolved by redesign
       in name only — the promotion dependency was never actually closed.** GitHub Actions `schedule:`
       triggers only fire from the workflow file's copy on the repo's default branch, so a cron here would
       have sat inert on `staging` until a separate promotion PR landed it on `main`. Dropping
@@ -193,23 +194,26 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       `schedule:` (see 5.3's correction); it was never actually dispatchable pre-promotion, contrary to
       what this task originally claimed. Nothing about the redesign closed 5.4; it is still gated on this
       repo's normal `staging -> main` promotion practice, same as 5.6 below.
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
 - [x] 5.5 **Found in round 8 — resolved by an `environment` input, not a second workflow.** The original
       staging-only version would never have refreshed production's cache even once promoted (a genuinely
       separate host per `.env.prod.defaults`'s `API_EXTERNAL_URL`, and `deploy.yml` only ever populates it
       once, at deploy time, via the migration's inline call). Closed by adding a `choice` input,
       `environment` (`staging`/`production`), that resolves to the right hardcoded URL/secret pair inside
       the run script — no new secrets needed (`PROD_SERVICE_ROLE_KEY` already existed).
-- [ ] 5.6 **CORRECTED (bloom#708 investigation):** verify the workflow's authenticated call also succeeds
+- [x] 5.6 **CORRECTED (bloom#708 investigation):** verify the workflow's authenticated call also succeeds
       against production via `workflow_dispatch` (`environment: production`) once this workflow file has
       been **promoted to `main`** — not merely "live" on any branch. Same blocker as 5.3: genuinely
       undispatchable pre-promotion, confirmed against the live repo (see 5.3's correction).
-- [ ] 5.7 **Follow-up tracked, now scoped by Section 14 below, not deferred as originally written:**
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
+- [x] 5.7 **Follow-up tracked, now scoped by Section 14 below, not deferred as originally written:**
       [bloom#708](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/708) tracks adding an
       automatic (scheduled) trigger for production once its write volume grows enough that on-demand
       dispatch stops being sufficient. Implemented on this same change (Section 14) rather than in a
       separate change-id, since `cyl-experiment-summary-rollup`'s refresh-mechanism requirement was still
       unarchived (this change hadn't been archived yet) and this is a direct continuation of D8's own
       still-open refresh-scheduling decision, not an unrelated new capability.
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
 - [x] 5.8 **Found in round 9 — two real gaps in the redesign itself, both fixed.** (1)
       `concurrency.group` was a single string shared by both environments, so a `staging` dispatch and a
       `production` dispatch could cancel each other despite touching independent databases — fixed by
@@ -233,9 +237,10 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
 
 - [x] 6.1 Run the full section 1-4 test suite against local dev Postgres; no regressions in
       `test_cyl_read_path.py`, `test_cyl_experiment_traits.py`, `test_cyl_experiment_summary_counts.py`.
-- [ ] 6.2 Run `bloommcp`'s full test suite; confirm zero changes needed. **Not yet run in this pass —
+- [x] 6.2 Run `bloommcp`'s full test suite; confirm zero changes needed. **Not yet run in this pass —
       Python-side contract is unchanged (no `bloommcp/` files touched), but the actual suite run is still
       outstanding.**
+  - **Waived (user decision 2026-10-04); the full suite was never run.** No `bloommcp/` files changed. CI ran only bloommcp's subset on #684 (`-m "not integration and not live_smoke"`, job 96884481361: 1374 passed, 33 deselected).
 - [x] 6.3 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes.
 - [x] 6.4 Migration lint (`scripts/lint_migrations.sh origin/staging`) passes (3 new files, timestamps
       after the `20260807000000` base). `openspec validate --strict` repo-wide shows the same 9
@@ -253,10 +258,11 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       matching that same precedent: each file's existing style needs its own careful pass, not a rushed
       edit at the end of this one. Do this before opening the PR, or as an immediate follow-up commit on
       the PR branch before requesting review.
-- [ ] 6.6 (staging-only, post-merge, before closing bloom#637 — a hard gate): time `list_experiments()`
+- [x] 6.6 (staging-only, post-merge, before closing bloom#637 — a hard gate): time `list_experiments()`
       end-to-end against staging and confirm it's well under a second; post the result on bloom#637
       before archiving this change. Also benchmark the `source_id_`/`run_id_`-pinned branches at
       `experiment_id=1` scale (design.md D7's unresolved item) and record the result.
+  - **Waived (user decision 2026-10-04); the timing was never taken.** #637 was closed without it, and D7's pinned-branch benchmark is unrecorded.
 
 ## 7. Docs + follow-up
 
@@ -295,10 +301,11 @@ findings (the concurrency-test construction bug and the RLS/anon-grant security 
 - [x] 8.4 Re-run the full `cyl`-scoped integration suite after all fixes — 365 passed, 5 skipped, up from
       351 before this section (14 new tests: RLS × 2 tables, anon-grant × 2 functions, boundary values × 2,
       backfill-concurrency × 1, rollback-guard × 2).
-- [ ] 8.5 Post the synthesized review to PR #684 (`gh pr review --comment`, since a self-review can't
+- [x] 8.5 Post the synthesized review to PR #684 (`gh pr review --comment`, since a self-review can't
       `--request-changes`/`--approve`). **Blocked**: the posting attempt was denied by the local auto-mode
       permission classifier (not a GitHub-side restriction) — the full synthesized review was shown to the
       user directly in-conversation instead. Still outstanding if GitHub-side posting is wanted later.
+  - **Waived 2026-10-04 (user decision):** PR #684 merged 2026-08-21; the review was shown to the user in conversation.
 - [x] 8.6 Iterate with additional `/review-pr` passes if the posted review (or CI) surfaces anything new,
       until it converges. **Done — see section 9**: a second round found three more genuine bugs the first
       missed (D2b, D5b, plus several test-quality items), all fixed. A third round has not yet been run;
@@ -343,8 +350,9 @@ UNIQUE` assumption it depends on. - `test_read_roles_can_call_function`'s `count
 - [x] 9.4 Re-run the full `cyl`-scoped integration suite after all fixes — 369 passed, 5 skipped, up from
       365 after round 1 (4 net new tests: cross-scan `UPDATE`, concurrent-refresh race, plus fixes to
       existing tests that didn't add new test functions).
-- [ ] 9.5 Post round 2's synthesized review to PR #684 — same GitHub-posting blocker as 8.5; shown to the
+- [x] 9.5 Post round 2's synthesized review to PR #684 — same GitHub-posting blocker as 8.5; shown to the
       user directly instead.
+  - **Waived 2026-10-04 (user decision):** PR #684 merged 2026-08-21; the review was shown to the user in conversation.
 
 ## 10. Third `/review-pr` round — verify rounds 1 and 2's fixes hold up, find what they missed
 
@@ -649,7 +657,8 @@ metadata)`), already correctly granted. Pre-existing, out-of-scope, not a regres
       failures are unrelated to this change (reproduced identically with this round's changes
       stashed out) and that all `data_access`/`supabase_reader` tests, including the 3 new/updated
       ones, pass.
-- [ ] 13.7 Post round 6's synthesized review to PR #684.
+- [x] 13.7 Post round 6's synthesized review to PR #684.
+  - **Waived 2026-10-04 (user decision):** PR #684 merged 2026-08-21; the review was shown to the user in conversation.
 
 ## 14. bloom#708 — scheduled (cron) refresh for production, plus the promotion-claim correction
 
@@ -834,7 +843,7 @@ host. See 14.9's correction and Section 15.
       parametrized `test_resolution_truth_table_for_schedule_vs_dispatch` contributes 3 — the two tests
       updated in 14.2 keep their existing collected-item count).
 - [x] 14.8 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes. **Confirmed.**
-- [ ] 14.9 Verify the promoted-to-`main` dispatch, the live cron, the approval-gate resolution, and actual
+- [x] 14.9 Verify the promoted-to-`main` dispatch, the live cron, the approval-gate resolution, and actual
       RPC delivery. **Promotion has since happened (2026-08-24/25) and the workflow's first live scheduled
       run occurred — see the CORRECTED note below for exactly what it confirmed and what it didn't.** The
       bullets immediately below were the original pre-promotion verification checklist (still relevant for
@@ -863,6 +872,7 @@ host. See 14.9's correction and Section 15.
         limitation `deploy.yml` already documents for its own jobs. This task is left unchecked; do not
         check it off until Section 15's own 15.7 confirms an actual successful RPC call post-fix. Section
         15 owns closing this gap.
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
 - [x] 14.10 Run the 5-subagent `/review-pr` pass against the implemented diff (not yet a GitHub PR — run
       locally against the working tree). All 5 returned; **no BLOCKING findings.** One real, already-fixed
       bug found: see 14.4's note above (the `_traits_note()` user-facing string, not just its module
@@ -1079,7 +1089,7 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
       `black --check` clean on the Python file (comment-only edit); `ruff check` on the Python file
       shows 2 pre-existing `UP045` findings on an untouched function signature (line 27, not part of
       this edit's diff) — confirmed via `git diff` unrelated to this change, left as-is.**
-- [ ] 15.7 **Genuinely blocked on this section's own PR merging, promoting to `main`, AND a self-hosted
+- [x] 15.7 **Genuinely blocked on this section's own PR merging, promoting to `main`, AND a self-hosted
       runner actually being available — same "verify the real thing, not just static config" discipline
       as 14.9, not something this PR can complete on its own. Not part of this PR's own commit(s) —
       tracked here as a required follow-up, landed in a separate commit/PR once it actually happens.**
@@ -1093,11 +1103,13 @@ and gave a false-reassuring result before the real cause (documented in `deploy.
         confirm it succeeded end-to-end — the check 14.9 could never actually complete, since every prior
         opportunity failed on the network hop before this fix existed.
       - Mark 14.9 checked off only once this task confirms an actual successful RPC delivery — not before.
-- [ ] 15.8 Once 15.7 confirms a real successful run against both hosts (in its own separate follow-up
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
+- [x] 15.8 Once 15.7 confirms a real successful run against both hosts (in its own separate follow-up
       commit/PR, not this section's implementation PR): update 14.9's own checkbox to `[x]` with a
       one-line pointer to 15.7's evidence, remove 15.6's "once bloom#736 confirms..." caveat now that
       it's resolved, and update this change's standing archive-gate note (Section 14's, and this
       section's own below) to reflect that both are now closed.
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
 
 **`/review-pr` pass against PR #738 (the implementation PR for 15.1-15.6): 5 subagents, zero BLOCKING
 findings, several IMPORTANT ones — two closed here with new regression tests (TDD), two closed with
@@ -1369,7 +1381,7 @@ equally affected but not yet confirmed (tracked in 16.8).
       `(langchain|bloommcp|services/workflows|bloomcli|scheduled-jobs)/` only — `tests/` files are not
       actually linted by these hooks, so the new/edited test files were checked manually for hygiene but
       aren't a CI gate.**
-- [ ] 16.8 **Blocked on this section's own PR merging and deploying to staging — not part of this PR's own
+- [x] 16.8 **Blocked on this section's own PR merging and deploying to staging — not part of this PR's own
       commit(s), tracked here as a required follow-up, landed in a separate commit/PR once it actually
       happens**, matching 15.7's own precedent for the same reason (verify the real thing, not just that
       the code looks right). Once deployed to staging: manually dispatch
@@ -1384,6 +1396,7 @@ equally affected but not yet confirmed (tracked in 16.8).
       this function over the real RPC path. Mark 15.7/15.8 (and this change's archive gate) satisfied
       only once this task confirms an actual successful RPC delivery through to a committed refresh,
       completing within whatever timeout budget actually applies — not before.
+  - **Superseded 2026-10-04 (user decision):** #858 (2026-09-21) replaced the GitHub Actions refresh with an in-database pg_cron job (`refresh-cyl-experiment-trait-counts`, daily 06:00 UTC, changed experiments only), and #886 deleted the workflow, so this check targets a mechanism that no longer exists. The replacement succeeded daily on prod (2026-10-02, 10-03, 10-04; at most 19 s) and on staging (09-29 to 10-04). bloom#708 and #806 closed 2026-10-04.
 - [x] 16.9 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes. **Confirmed.**
 
 **`/review-pr` round 2 pass against PR #809: 5 subagents, zero BLOCKING findings, eight IMPORTANT findings
@@ -1500,3 +1513,13 @@ claimed (found independently by two reviewers), plus real gaps in round 2's othe
       isolation to re-confirm no hidden order dependency; `openspec validate
       fix-cyl-scan-traits-latest-rollup --strict` re-confirmed. **Done — 26/26 passed; both mutating tests
       pass standalone; validation passes.**
+
+## 17. Not archived on 2026-10-04
+
+- [ ] 17.1 Before archiving, bring this change's `cyl-experiment-summary-rollup` and `cyl-trait-read`
+  deltas up to date with #858 (2026-09-21), which replaced the refresh this change specifies and
+  had no OpenSpec change of its own. Today the cache is refreshed by pg_cron as `postgres` on both
+  environments, recounting only experiments a trigger on `cyl_scan_latest_source` logged, plus a
+  weekly re-queue; the change-log table is locked to `postgres`. Also settle what
+  `n_traits_updated_at` promises: the nightly job sets it on every row, recounted or not. Tracked
+  with its author in bloom#1047.

@@ -44,8 +44,11 @@ functions can return.
 
 **No cross-source mixing, no dropped values.**
 
-- A scan whose selected source did not measure a trait that another source measured SHALL NOT have
-  that trait filled in from the other source.
+- In the latest, `source_id_` and `recipe_key_` modes, a scan whose selected source did not measure
+  a trait that another source measured SHALL NOT have that trait filled in from the other source.
+  In `run_id_` mode the source is chosen per `(scan, trait)` (the newest source of that run that
+  measured the trait), so a run that delivered a scan more than once can return that scan's traits
+  from more than one of its sources.
 - A trait whose selected value is non-finite (stored `NULL`) SHALL be returned as a `NULL`-valued
   row, not omitted.
 
@@ -150,13 +153,13 @@ experiment SHALL be returned under any argument combination.
 - **WHEN** `recipe_key_` is a stored recipe that no scan of `experiment_id_` has
 - **THEN** the call returns zero rows without error
 
-#### Scenario: scan*ids* narrows the default path
+#### Scenario: `scan_ids_` narrows the default path
 
 - **WHEN** `get_experiment_traits(experiment_id_, scan_ids_ => ARRAY[s1])` is called
 - **THEN** only scan `s1`'s latest-source rows are returned, and an empty `scan_ids_` returns zero
   rows
 
-#### Scenario: The default path is unaffected by recipe*key* and scan*ids*
+#### Scenario: The default path is unaffected by `recipe_key_` and `scan_ids_`
 
 - **WHEN** the `20260728000000` three-argument definition and this definition are each called on
   the same data with the same `experiment_id_`, `source_id_` and `run_id_`

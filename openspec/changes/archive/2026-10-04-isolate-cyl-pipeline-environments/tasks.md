@@ -215,7 +215,8 @@ This group is one commit: the fixture update and the gate must land together.
     verbatim, so a scratch path redirects only a manual `argo submit`.
   - **`docs/bloom-integration/roadmap.md`:** the `credential` row (`:299`), whose link to
     `salk-bloom/docs/credentials/bloom-workflows-a4-pipeline.md` exists only on unmerged bloom PR
-    #549 (ask the author: link the PR, or merge #549 first); the `:539-542` blocker text; a
+    #549. #549 was closed unmerged on 2026-10-04, so link bloom's
+    `services/workflows/README.md` "Provisioning (per environment)" instead; the `:539-542` blocker text; a
     status-log entry.
   - Not drafted: `scripts/runai_run_pipeline.sh:20-22` and `README.md:404`, which review cited.
     At `367c771` that script path doesn't exist and that README line is Argo DAG background.
@@ -289,6 +290,11 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
 - [x] 6.3 Prod provisioning, done by the author, with step-by-step walkthroughs given at the time:
   - **(a) Prod Supabase Auth account** on bloom.salk.edu, flagged `is_workflows: true`, following
     PR #549's recipe (`git show 94329240:docs/credentials/bloom-workflows-a4-pipeline.md`).
+    #549 was closed unmerged on 2026-10-04 as stale, so don't reuse that recipe. It pairs the
+    staging account with the prod URL, its `defaultMode: 0600` advice fails the
+    `bloom-credentials` volume check in `services/workflows/k8s_client.py`, and its grant list
+    predates most of `bloom_workflows`' grants. The current recipe is
+    `services/workflows/README.md` "Provisioning (per environment)" step 6.
     - Only the recipe's grants.
     - Separate from the Workflows service's own `is_workflows` user.
     - Record that the credential is readable by any holder of the namespace's shared identities.
@@ -344,7 +350,7 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
   `CYL_PIPELINE_TRIGGER_ENABLED=true`, with the 3.1(d) pin updated in the same commit, and the
   `cyl-pipeline-ui` delta and `trigger-enabled.ts` comments that said prod is off. On `staging` it
   is inert. Merged to `staging` before the promotion.
-- [ ] 6.6 **The promotion** (staging→main) lands this change and the flip together. Then:
+- [x] 6.6 **The promotion** (staging→main) lands this change and the flip together. Then:
   - The worker reads the switch only at start-up, so confirm prod's `cyl-pipeline-worker`
     container was recreated (its start time is after the deploy) and has the switch `true`, the
     prod root and the prod secret. Do the same check when rolling back by setting the switch to
@@ -355,8 +361,11 @@ Gated: each step needs the author's go-ahead. Do not archive until done (bloom#7
     - prod's stage-in logged that scan as staged, not skipped;
     - the traits landed in prod's DB under prod's scan;
     - staging's rows for that id are unchanged (read-only checks; filter by `environment=`).
-- [ ] 6.7 With the author's approval, post #863's and #983's evidence and close both by hand. Push
+  - **Done.** Landed with #1018 (2026-10-02). Re-verified after #1043 (2026-10-04): prod's `cyl-pipeline-worker` started 16:10:14Z with `CYL_PIPELINE_TRIGGER_ENABLED=true`, root `/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod` and secret `genericsecret-bloom-prod-pipeline-credentials` (staging's keeps the `a4_poc` root and the staging secret). Prod run 3 (`sleap-roots-pipeline-cqc5b`) mounts only the prod root's `input`/`predictions`/`traits` and the prod secret, labelled `environment=prod`; its stage-in logged `Staged 3/3 scans`; its traits landed in prod's DB (sources 49–51). **The acceptance pair can't be built (user decision):** none of the 10 scan ids staging has processed exist in prod, and runs 2 and 3's scans don't exist on staging. Isolation holds by construction (D5), as shown above.
+- [x] 6.7 With the author's approval, post #863's and #983's evidence and close both by hand. Push
   5.3's upstream docs. Update memory.
-- [ ] 6.8 Archive (`/openspec:archive isolate-cyl-pipeline-environments`). First grep unarchived
+  - **Done 2026-10-04**, with the user's OK: #863 (comment 5982646016) and #983 (comment 5982646630) closed by hand. 5.3's upstream docs were re-drafted against sleap-roots-pipeline `main` `028d063` (the earlier draft was lost) and opened as talmolab/sleap-roots-pipeline#130.
+- [x] 6.8 Archive (`/openspec:archive isolate-cyl-pipeline-environments`). First grep unarchived
   changes for MODIFIED deltas on the three `cyl-pipeline-dispatch` headings and the one
   `cyl-pipeline-ui` heading this change modifies, and raise any to the live text.
+  - **Done:** overlap check run 2026-10-04; no other unarchived change modifies this change's three `cyl-pipeline-dispatch` requirements or its `cyl-pipeline-ui` requirement. Archived in the post-promotion archive PR.

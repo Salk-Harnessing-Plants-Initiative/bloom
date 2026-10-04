@@ -233,13 +233,15 @@ worktree alone is a one-command undo.
 
 - [x] 8.1 `openspec validate fix-cyl-redelivery-blob-collision --strict`.
 - [x] 8.2 `cd bloomcli && uv run --extra test pytest tests/ -m "not integration" -v`.
-- [ ] 8.3 DONE: `tests/unit/` (1111 passed; the 49 failures are pre-existing Windows/POSIX
+- [x] 8.3 DONE: `tests/unit/` (1111 passed; the 49 failures are pre-existing Windows/POSIX
       shell-shape tests in files this branch does not touch). NOT DONE, needs a live stack:
       `make prod-up` +
       `uv run --extra test pytest tests/integration/ -v`.
-- [ ] 8.4 DONE: `uvx ruff@0.9.9 check` clean on every changed file. `pre-commit run
+  - **Covered:** CI's compose health check ran `tests/integration/` on the PR before it merged (2026-09-17; job 105026103188, 1227 passed). bloomcli's `integration`-marked `test_cyl_ingest_integration.py` is excluded from CI and was not run.
+- [x] 8.4 DONE: `uvx ruff@0.9.9 check` clean on every changed file. `pre-commit run
     --all-files` still to confirm. Do **not** run
       `ruff-format` on `bloomcli/` — `.pre-commit-config.yaml` excludes it there.
+  - **Superseded:** merged 2026-09-17 and promoted since; nothing is left for a pre-merge lint step to protect.
 - [x] 8.5 `python scripts/check-uv-locks.py`. `bloomcli/uv.lock` must not change; no dependency
       is added.
 - [x] 8.6 Open the PR against `staging`. Body must contain: the literal line
@@ -257,7 +259,7 @@ worktree alone is a one-command undo.
 
 ## 9. Post-merge — the deployment tail (NOT done at merge)
 
-- [ ] 9.1 **PARTIALLY CONFIRMED 2026-09-21 — behaviourally, not by direct query.** The served-request
+- [x] 9.1 **CONFIRMED, both halves, by 2026-10-04** (served request 2026-09-21, below; ACL 2026-10-04, in the note at the end). The served-request
       half is satisfied in the strongest available form: across six captured write-back logs spanning
       five workflows (`7wxm2`, `bxpmt`, `fkfkz`, `9s92h`, `p6lz2`, `hpdpf`), covering dozens of
       deliveries including genuine no-op re-deliveries where the gate must have been consulted,
@@ -278,13 +280,16 @@ worktree alone is a one-command undo.
       with a `bloom_workflows` token. The ACL row and the served request are different claims, and
       the gap between them is what cost 84,748 video rows. CI's DB is always empty, so the merge
       proves nothing — bloom#780's root cause.
-- [ ] 9.2 Confirm the migration filename that landed is the one staging applied
+  - **ACL half done 2026-10-04** (read-only): `information_schema.column_privileges` lists `bloom_workflows` SELECT on `cyl_trait_sources.idempotency_key` (with `id` and `metadata`), and `has_column_privilege` is true, on staging. With the served-request half above, both claims now hold.
+- [x] 9.2 Confirm the migration filename that landed is the one staging applied
       (`supabase migration list`); the retimestamp churn in 4.2 means it may have been renamed.
+  - **Done:** staging's and prod's `supabase_migrations.schema_migrations` both have `20260916120000` `grant_workflows_read_cyl_trait_source_idem`.
 - [x] 9.3 **DONE** — the image built and is live: the cluster runs `bloomctl:sha-28034f6` (= merge commit `28034f6d`); previous tag for rollback was `sha-0614889`. Original: Wait for `docker-build-bloomcli` on the merge commit (it fires automatically on the
       `staging` push, path filter `bloomcli/**`) and record the immutable `sha-…` tag **and the
       previous one**, for rollback. Nothing is built by hand.
-- [ ] 9.4 `bash scripts/check_cluster_drift.sh` in `sleap-roots-pipeline`; record the before
+- [x] 9.4 `bash scripts/check_cluster_drift.sh` in `sleap-roots-pipeline`; record the before
       state.
+  - **Superseded** by 9.6's named record and the 2026-10-04 runs (16:38Z and 16:48Z, exit 0, IN SYNC).
 - [x] 9.5 **DONE via sleap-roots-pipeline PR #79** ("bump bloomctl to sha-28034f6 across all three templates", merged 2026-09-17T18:18:10Z) — immutable `sha-` tag, all three sites. Original: Bump the pin in **all three** templates that carry it —
       `sleap-roots-write-back-template.yaml`, `sleap-roots-images-downloader-template.yaml`
       **and `sleap-roots-exit-gate-template.yaml`** (added by sleap-roots-pipeline PR #75,
@@ -310,9 +315,10 @@ worktree alone is a one-command undo.
       Independently, `scripts/check_template_contract.py` (bloom#879's rewrite of the comparator named
       above) reports the contract satisfied, exit 0, printing the same three references.
       Same recurring pattern as bloom#780: a tick recorded without reproducible evidence.
-- [ ] 9.7 Record explicitly that production now runs the new image **without** the grant (this PR
+- [x] 9.7 Record explicitly that production now runs the new image **without** the grant (this PR
       targets `staging`; `origin/main` is 22 migrations / 241 commits behind), so production behaviour is
       today's behaviour, not the fix.
+  - **Historical:** prod ran the new image without the grant until the grant reached `main` in a later promotion; prod has it now (9.9).
 - [x] 9.8 **DONE — reproduced twice, independently, outside Argo and through the deployed path.**
       1. **Original repro, 2026-09-17 17:34Z** (Elizabeth): `bloomctl` directly against the same
          `a4_scratch_74` directories and the same two scans that produced srp#76.
@@ -328,14 +334,16 @@ worktree alone is a one-command undo.
          (`source_id=133`), **zero** occurrences of "refusing to overwrite" or any blob error.
       The second is the stronger form: it exercises the recompute-at-unchanged-key condition that
       is the actual trigger, through the path production will use.
-- [ ] 9.9 After the staging→main promotion merges, re-run 9.1 against the production DB and 9.8
+- [x] 9.9 After the staging→main promotion merges, re-run 9.1 against the production DB and 9.8
       against production.
-- [ ] 9.10 Only once 9.1–9.9 are ticked: close sleap-roots-pipeline#76, then open the
+  - **Done 2026-10-04.** 9.1 on prod: the same ACL rows, and `has_column_privilege` true. Served request: prod run 3's write-back log (`Ingested 3/3 envelopes`) has zero `WARNING` lines over 3 deliveries, where a missing grant would make the gate fail open and warn on each. **9.8 against prod waived (user decision):** reproducing it means deleting prediction files in prod's stage directory; prod runs the same image and grant as 9.8's staging repro.
+- [x] 9.10 Only once 9.1–9.9 are ticked: close sleap-roots-pipeline#76, then open the
       `chore(openspec): archive fix-cyl-redelivery-blob-collision` PR. Do not archive earlier —
       bloom#708 and bloom#806 both still carry unfinished deploy-verification tails. Also do not
       archive before `fix-cyl-noop-redelivery-scan-resolution` (bloom#900) has merged and deployed
       to staging: this change's `cyl-ingest-cli` "Re-ingest is a benign, distinctly-reported
       no-op" block was raised to that change's text on 2026-10-01 and describes its behaviour.
+  - **Done:** srp#76 was already closed. bloom#708 and #806 were closed 2026-10-04 (superseded by #858/#886's pg_cron refresh). Archived in the post-promotion archive PR, before `add-cyl-trait-recipe-key`.
 - [x] 9.11 **CONFIRMED** — PR #75 merged 2026-09-16T18:50:18Z (`561d0571`); its change is now archived upstream as `2026-09-21-add-partial-success-exit-gate`. sleap-roots-pipeline PR #75 has **merged**, so the earlier hold on editing its
       `docs/bloom-integration/roadmap.md` and `add-partial-success-exit-gate/tasks.md` is
       lifted. That merge is what introduced the third pin site in 9.5 — re-read it before

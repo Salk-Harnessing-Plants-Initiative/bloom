@@ -632,7 +632,25 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
    `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` on the `/hpi/hpi_dev` NFS. Nothing creates
    either, and a missing one leaves the pods `Pending`, not `Failed`. Neither
    `bloom-pipeline` nor `argo-user` can read Secrets, so check the secret in the
-   RunAI console.
+   RunAI console. Before creating it:
+   - Set `is_workflows` in `raw_app_meta_data`, as in step 2. In user metadata the
+     hook ignores it and the account signs in as `bloom_user`.
+   - `credentials.txt` is `bloomctl`'s dotenv file: `BLOOM_API_URL`,
+     `BLOOM_ANON_KEY`, `BLOOM_EMAIL`, `BLOOM_PASSWORD`. Take the URL and anon key
+     from **that environment's** `/api/client-info`. Staging's URL is
+     `https://staging.bloom.salk.edu:8443/api`; without `:8443` it reaches prod. A
+     Secret pointing at the other environment's Bloom writes traits under the
+     wrong scans, and nothing at dispatch checks which Bloom it points at.
+   - The file is always named `credentials.txt`, which `bloomctl` reads as its
+     `prod` profile whatever the environment. The templates mount it with
+     `subPath` at `/home/bloom/.bloom/credentials.txt` and set `HOME=/home/bloom`.
+   - Leave the vendored Workflow's `bloom-credentials` volume as `secretName`
+     only. `k8s_client.py` rejects any other key, such as `defaultMode`, and the
+     batch fails.
+   - The account gets the whole `bloom_workflows` role, shared with the
+     service's user: the grants above, write-back's and Cell Ranger's. A separate
+     account gives separate revocation, not narrower access. To rotate it, change
+     the password and update the Generic secret; each new pod reads the file fresh.
 7. For `GET /model-cards` (bloom#971): set the deploy secrets
    `PROD_/STAGING_WANDB_API_KEY`, ideally a wandb service-account key with read access
    to the `sleap-roots-models` registry. Only the `workflows` service gets it. It is

@@ -104,7 +104,7 @@ NULL`, results SHALL cover every experiment in one call.
 - **THEN** both counts agree with the distinct plant/trait counts of `get_experiment_traits`'s rows for
   run `R`, including for an experiment whose run `R` values were later superseded by a newer run
 
-#### Scenario: Supplying both source*id* and run*id* is rejected
+#### Scenario: Supplying both `source_id_` and `run_id_` is rejected
 
 - **WHEN** `get_experiment_summary_counts` is called with both `source_id_` and `run_id_` non-null
 - **THEN** the call raises an error and returns no rows
