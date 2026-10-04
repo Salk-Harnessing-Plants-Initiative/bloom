@@ -983,6 +983,11 @@ ROLLBACK = _find_one("rollbacks", _ROLLBACK_GLOB)
 RUN_EXPERIMENTS_ROLLBACK = _find_one(
     "rollbacks", "*_add_cyl_pipeline_run_experiments_rollback.sql"
 )
+# fix-cyl-poller-unconcluded-runs' cyl_pipeline_run_workflows has a foreign key to
+# cyl_pipeline_runs, so its rollback runs before this one too.
+RUN_WORKFLOWS_ROLLBACK = _find_one(
+    "rollbacks", "*_add_cyl_pipeline_run_workflows_rollback.sql"
+)
 
 
 def test_migration_body_is_idempotent(pg_conn):
@@ -1005,6 +1010,8 @@ def test_rollback_removes_everything(pg_conn):
     with pg_conn.cursor() as cur:
         # add-cyl-trait-recipe-key's cyl_trait_sources.cyl_pipeline_run_id FK references
         # cyl_pipeline_runs, so its rollbacks (newest first) run before these.
+        if RUN_WORKFLOWS_ROLLBACK is not None:
+            cur.execute(_sql_body(RUN_WORKFLOWS_ROLLBACK))
         apply_recipe_rollbacks(cur, down_to=1)
         if RUN_EXPERIMENTS_ROLLBACK is not None:
             cur.execute(_sql_body(RUN_EXPERIMENTS_ROLLBACK))

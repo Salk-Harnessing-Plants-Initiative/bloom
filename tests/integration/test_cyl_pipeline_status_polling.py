@@ -160,6 +160,7 @@ def test_update_is_a_noop_on_a_run_already_terminal(pg_conn):
         status, completed_at = _run_row(cur, run_id)
         assert status == "failed"
         assert completed_at is None
+        assert _concluded(cur, run_id)[4] is None, "a refused write must not stamp poller_concluded_at"
     pg_conn.rollback()
 
 
@@ -173,6 +174,7 @@ def test_update_with_counts_is_a_noop_on_a_run_already_terminal(pg_conn):
         status, completed_at, done_count, failed_count = _run_row_with_counts(cur, run_id)
         assert status == "failed" and completed_at is None
         assert (done_count, failed_count) == (3, 1)
+        assert _concluded(cur, run_id)[4] is None, "a refused write must not stamp poller_concluded_at"
     pg_conn.rollback()
 
 
@@ -198,30 +200,93 @@ def test_update_omitting_counts_leaves_them_unchanged(pg_conn):
     pg_conn.rollback()
 
 
-def test_update_accepts_partial_as_a_source_state_and_advances_completed_at(pg_conn):
-    """Found during /review-pr: Phase 2 can settle a run straight to 'partial'
-    (some scans dispatch-failed, some succeeded) while it still has
-    genuinely-dispatched batches whose real Argo outcome hasn't been checked.
-    The poller must be able to re-examine such a run, so 'partial' is now an
-    eligible source state (not just a terminal target) -- and each real
-    reconfirmation advances completed_at, an accepted consequence of 'partial'
-    runs remaining pollable (see design.md)."""
+def _concluded(cur, run_id: int):
+    cur.execute(
+        f"SELECT status, done_count, failed_count, completed_at, poller_concluded_at "
+        f"FROM {RUNS_TABLE} WHERE id = %s",
+        (run_id,),
+    )
+    return cur.fetchone()
+
+
+@pytest.mark.parametrize("second", ["partial", "failed", "complete", "running"])
+def test_dispatch_settled_partial_is_confirmed_once_then_final(pg_conn, second):
+    """fix-cyl-poller-unconcluded-runs (bloom#1042): Phase 2 can settle a run to
+    'partial' while some of its batches still run, so the poller confirms it
+    once from Argo. That first terminal write stamps poller_concluded_at (and
+    replaces the dispatch-time completed_at); after it, the run is final — no
+    later write changes its status, counts or timestamps, so a GC'd Succeeded
+    batch can no longer flip it to 'failed'."""
     with pg_conn.cursor() as cur:
         run_id = _seed_run(cur, status="partial")
         cur.execute(
-            f"UPDATE {RUNS_TABLE} SET completed_at = '2020-01-01T00:00:00+00' "
-            f"WHERE id = %s",
+            f"UPDATE {RUNS_TABLE} SET completed_at = '2020-01-01T00:00:00+00' WHERE id = %s",
             (run_id,),
         )
-        _update_status(cur, run_id, "partial")
-        status, completed_at = _run_row(cur, run_id)
-        assert status == "partial"
-        assert completed_at is not None
-        assert completed_at.year > 2020, (
-            "a 'partial' run's completed_at must advance on each real "
-            "reconfirmation, not stay frozen at the first dispatch-time stamp"
-        )
+        _update_status(cur, run_id, "partial", done_count=3, failed_count=1)
+        first = _concluded(cur, run_id)
+        status, done, failed, completed_at, concluded_at = first
+        assert (status, done, failed) == ("partial", 3, 1)
+        assert completed_at.year > 2020
+        assert concluded_at is not None
+
+        _update_status(cur, run_id, second, done_count=0, failed_count=4)
+        assert _concluded(cur, run_id) == first
     pg_conn.rollback()
+
+
+@pytest.mark.parametrize("source", ["submitted", "partial"])
+def test_running_write_never_stamps_poller_concluded_at(pg_conn, source):
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur, status=source)
+        _update_status(cur, run_id, "running", done_count=1, failed_count=0)
+        status, _done, _failed, _completed_at, concluded_at = _concluded(cur, run_id)
+        assert status == "running"
+        assert concluded_at is None
+    pg_conn.rollback()
+
+
+def test_concurrent_terminal_writes_conclude_once(pg_conn, pg_conninfo):
+    """Two independent connections write 'partial' and 'failed' for the same
+    'running' run at once: the row lock plus the finality guard let exactly one
+    take effect, and both timestamps are that write's."""
+    with pg_conn.cursor() as cur:
+        run_id = _seed_run(cur, status="running")
+    pg_conn.commit()
+
+    errors = {}
+    barrier = threading.Barrier(2)
+
+    def updater(status, failed):
+        try:
+            with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:
+                cur.execute("SET ROLE bloom_workflows")
+                barrier.wait()
+                cur.execute(
+                    f"SELECT {UPDATE_FN}(%s, %s, %s, %s)", (run_id, status, 1, failed)
+                )
+        except Exception as exc:  # pragma: no cover - failure path only
+            errors[status] = exc
+
+    try:
+        threads = [
+            threading.Thread(target=updater, args=("partial", 1)),
+            threading.Thread(target=updater, args=("failed", 2)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+        assert not errors, f"concurrent update calls raised: {errors}"
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:
+            status, _done, failed, completed_at, concluded_at = _concluded(cur, run_id)
+        assert (status, failed) in {("partial", 1), ("failed", 2)}, (
+            "the counts must come from the same write as the status"
+        )
+        assert concluded_at is not None and concluded_at == completed_at
+    finally:
+        with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {RUNS_TABLE} WHERE id = %s", (run_id,))
 
 
 def test_update_is_a_noop_on_a_run_still_queued(pg_conn):

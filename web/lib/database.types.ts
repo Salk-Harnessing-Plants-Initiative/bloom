@@ -697,6 +697,35 @@ export type Database = {
           },
         ]
       }
+      cyl_pipeline_run_workflows: {
+        Row: {
+          argo_workflow_name: string
+          observed_at: string
+          phase: string
+          run_id: number
+        }
+        Insert: {
+          argo_workflow_name: string
+          observed_at?: string
+          phase: string
+          run_id: number
+        }
+        Update: {
+          argo_workflow_name?: string
+          observed_at?: string
+          phase?: string
+          run_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_pipeline_run_workflows_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_pipeline_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cyl_pipeline_runs: {
         Row: {
           completed_at: string | null
@@ -706,6 +735,7 @@ export type Database = {
           failed_count: number
           id: number
           params: Json
+          poller_concluded_at: string | null
           requested_by: string | null
           reused_count: number
           scan_count: number
@@ -722,6 +752,7 @@ export type Database = {
           failed_count?: number
           id?: number
           params?: Json
+          poller_concluded_at?: string | null
           requested_by?: string | null
           reused_count?: number
           scan_count?: number
@@ -738,6 +769,7 @@ export type Database = {
           failed_count?: number
           id?: number
           params?: Json
+          poller_concluded_at?: string | null
           requested_by?: string | null
           reused_count?: number
           scan_count?: number
@@ -4629,6 +4661,14 @@ export type Database = {
           scan_ids: number[]
         }[]
       }
+      close_cyl_pipeline_run_workflow_scans: {
+        Args: {
+          p_argo_workflow_name: string
+          p_error_message: string
+          p_run_id: number
+        }
+        Returns: number
+      }
       compare_gene_across_accessions: {
         Args: {
           match_count?: number
@@ -5012,6 +5052,10 @@ export type Database = {
       record_bloommcp_usage: {
         Args: { p_action: string; p_identity: string }
         Returns: undefined
+      }
+      record_cyl_pipeline_workflow_phase: {
+        Args: { p_argo_workflow_name: string; p_phase: string; p_run_id: number }
+        Returns: boolean
       }
       record_cyl_scan_video: {
         Args: { p_frames: number; p_path: string; p_scan_id: number }

@@ -2,6 +2,7 @@ This change ships as two PRs (design D7). PR A covers §1–4. PR B covers §5�
 only after PR A is deployed to staging.
 
 How each "Red" section works:
+
 - Write and run it before its "Green" section.
 - Save the red run's output to the scratchpad and paste it into the PR body. Don't make a red-only
   commit.
@@ -12,81 +13,90 @@ How each "Red" section works:
 ## 1. Red: SQL (integration, real Postgres via `pg_conn`)
 
 New file: `tests/integration/test_cyl_pipeline_run_workflows.py`.
+
 - Import the seed helpers from `test_cyl_pipeline_status_polling.py` / `test_cyl_writeback_rpc.py`
   where that's possible.
 - Cleanup deletes `cyl_pipeline_run_workflows` rows before their run, because the FK has no
   cascade.
 
-- [ ] 1.1 `test_record_phase_inserts_a_first_terminal_phase`
-- [ ] 1.2 `test_record_phase_same_phase_is_a_noop`: returns `false`; `observed_at` is unchanged.
-- [ ] 1.3 `test_record_phase_different_phase_replaces_and_advances_observed_at`
-- [ ] 1.4 `test_record_phase_unknown_workflow_for_run_writes_nothing`: covers both a name no row
+- [x] 1.1 `test_record_phase_inserts_a_first_terminal_phase`
+- [x] 1.2 `test_record_phase_same_phase_is_a_noop`: returns `false`; `observed_at` is unchanged.
+- [x] 1.3 `test_record_phase_different_phase_replaces_and_advances_observed_at`
+- [x] 1.4 `test_record_phase_unknown_workflow_for_run_writes_nothing`: covers both a name no row
       carries and a name only another run carries.
-- [ ] 1.5 `test_record_phase_rejects_non_terminal_phase`: parametrized over `'Running'`,
+- [x] 1.5 `test_record_phase_rejects_non_terminal_phase`: parametrized over `'Running'`,
       `'Pending'`, `''` and `NULL`.
-- [ ] 1.6 `test_record_phase_works_as_bloom_workflows_without_table_write_grant`: run it under
+- [x] 1.6 `test_record_phase_works_as_bloom_workflows_without_table_write_grant`: run it under
       `SET LOCAL ROLE bloom_workflows`.
-- [ ] 1.7 `test_concurrent_record_phase_same_key_does_not_raise`: two connections via
+- [x] 1.7 `test_concurrent_record_phase_same_key_does_not_raise`: two connections via
       `pg_conninfo`.
-- [ ] 1.8 `test_close_run_workflow_scans_is_scoped_to_its_run`: runs `r1` and `r2` share `'wf-a'`.
+- [x] 1.8 `test_close_run_workflow_scans_is_scoped_to_its_run`: runs `r1` and `r2` share `'wf-a'`.
       Assert the return of 1, that the other rows are untouched, that a second call returns 0, and
       that `'written'`/`'failed'` rows are left as they are.
-- [ ] 1.9 `test_run_workflows_privileges`: covers every grant and privilege in the spec scenario
+- [x] 1.9 `test_run_workflows_privileges`: covers every grant and privilege in the spec scenario
       "Only bloom_workflows may call the functions…", including the SELECT policy checks under
       `SET LOCAL ROLE`.
-- [ ] 1.10 `test_run_workflow_functions_are_hardened`: both are `SECURITY DEFINER` with
+- [x] 1.10 `test_run_workflow_functions_are_hardened`: both are `SECURITY DEFINER` with
       `search_path = pg_catalog, public`.
-- [ ] 1.11 `test_run_workflows_migration_is_idempotent` and
+- [x] 1.11 `test_run_workflows_migration_is_idempotent` and
       `test_run_workflows_rollback_restores_the_previous_status_rpc`. Follow the existing
       idempotency and rollback tests in `test_cyl_pipeline_status_polling.py`.
 
 In `tests/integration/test_cyl_pipeline_status_polling.py`:
-- [ ] 1.12 Replace `test_update_accepts_partial_as_a_source_state_and_advances_completed_at` with
+
+- [x] 1.12 Replace `test_update_accepts_partial_as_a_source_state_and_advances_completed_at` with
       `test_dispatch_settled_partial_is_confirmed_once_then_final`.
   - The first call writes `'partial'` and stamps both columns.
   - The second call is parametrized over `'partial'`/`'failed'`/`'complete'`/`'running'` with
     different counts, and changes nothing.
-- [ ] 1.13 `test_running_write_never_stamps_poller_concluded_at`: covers both `'submitted'` →
+- [x] 1.13 `test_running_write_never_stamps_poller_concluded_at`: covers both `'submitted'` →
       `'running'` and dispatch-settled `'partial'` → `'running'`.
-- [ ] 1.14 `test_concurrent_terminal_writes_conclude_once`: two connections write `'partial'` and
+- [x] 1.14 `test_concurrent_terminal_writes_conclude_once`: two connections write `'partial'` and
       `'failed'`; exactly one takes effect.
-- [ ] 1.15 Guard: the existing tests "a run already complete or failed is untouched" and "with
+- [x] 1.15 Guard: the existing tests "a run already complete or failed is untouched" and "with
       counts" also assert that `poller_concluded_at` is unchanged.
 
 In `tests/integration/test_cyl_writeback_rpc.py`:
-- [ ] 1.16 Full-flow test beside the existing reconcile, status and counts test: reconcile, then a
+
+- [x] 1.16 Full-flow test beside the existing reconcile, status and counts test: reconcile, then a
       `'partial'` status write, then a later `'failed'` write that does nothing. The counts stay as
       first written.
 
 **Red:** 1.1–1.14 and 1.16. **Guard:** 1.15's original assertions.
+
+Recorded red run: 23 failed, 20 passed. 1.5 passed vacuously before the migration (the missing
+function raised `psycopg.Error`); it is meaningful only against the migrated schema.
+
+Also changed: `test_cyl_pipeline_dispatch.py::test_rollback_removes_everything` now runs this
+change's rollback first, since `cyl_pipeline_run_workflows` references `cyl_pipeline_runs`.
 
 ## 2. Green: migration
 
 Use the `database-migration` skill. Choose the timestamp when the file is created; it must be
 later than the newest migration on staging at PR time.
 
-- [ ] 2.1 Write `supabase/migrations/<ts>_add_cyl_pipeline_run_workflows.sql`. It must be
+- [x] 2.1 Write `supabase/migrations/<ts>_add_cyl_pipeline_run_workflows.sql`. It must be
       re-runnable (`IF NOT EXISTS`, `DROP POLICY IF EXISTS`, `CREATE OR REPLACE`, and named
       constraints guarded in `DO` blocks). It contains:
   - `SET LOCAL lock_timeout = '5s'` right after `BEGIN`;
   - the table with its named PK, FK and CHECK;
   - `REVOKE ALL ... FROM PUBLIC, anon, authenticated, service_role, bloom_user, bloom_writer,
-    bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies, and ALL for
+bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies, and ALL for
     `bloom_admin`;
   - both new functions, each with a triple REVOKE and a single GRANT;
   - `ADD COLUMN IF NOT EXISTS poller_concluded_at`;
   - `CREATE OR REPLACE update_cyl_pipeline_run_status` with the D6 guard and stamping, with its
     grants re-issued;
   - `NOTIFY pgrst, 'reload schema';` after `COMMIT`.
-- [ ] 2.2 Write `supabase/rollbacks/<ts>_add_cyl_pipeline_run_workflows_rollback.sql`.
+- [x] 2.2 Write `supabase/rollbacks/<ts>_add_cyl_pipeline_run_workflows_rollback.sql`.
   - Its header says to redeploy code that doesn't use these objects first.
   - It restores the `20260912111000` body of `update_cyl_pipeline_run_status`, drops both functions,
     the table and the column, then runs `NOTIFY pgrst`.
-- [ ] 2.3 Hand-edit `web/lib/database.types.ts`: the new column (Row, Insert, Update), the new
+- [x] 2.3 Hand-edit `web/lib/database.types.ts`: the new column (Row, Insert, Update), the new
       table, and both functions' Args and Returns. Don't bulk-regenerate the file. The PR body
       notes that the `packages/*` copies are left as they are.
-- [ ] 2.4 Run `make erd`, or commit CI's artifact, so `_WIKI/SUPABASE/erd.md` is current.
-- [ ] 2.5 Run `./scripts/lint_migrations.sh origin/staging` and then §1, against a fresh
+- [x] 2.4 Run `make erd`, or commit CI's artifact, so `_WIKI/SUPABASE/erd.md` is current.
+- [x] 2.5 Run `./scripts/lint_migrations.sh origin/staging` and then §1, against a fresh
       `make migrate-local`. All green.
 
 ## 3. Verification for PR A
@@ -94,12 +104,14 @@ later than the newest migration on staging at PR time.
 - [ ] 3.1 Run `openspec validate fix-cyl-poller-unconcluded-runs --strict`.
 - [ ] 3.2 Run `/pre-merge`, and `cd web && npm run build` (which type-checks the edited types).
 - [ ] 3.3 Fill in the PR body's **Schema changes** section:
+
   - a mermaid `erDiagram` showing `cyl_pipeline_runs` and `cyl_pipeline_run_workflows`;
   - a constraints table listing the PK, FK and CHECK;
   - the new column.
 
   Run `make erd-snapshot CHANGED=origin/staging` and `make pr-body-check BODY=<file>`.
-- [ ] 3.4 Add one line to `fix-cyl-writeback-retry-reconcile/tasks.md` §6 saying it must be
+
+- [x] 3.4 Add one line to `fix-cyl-writeback-retry-reconcile/tasks.md` §6 saying it must be
       archived before `fix-cyl-poller-unconcluded-runs`.
 - [ ] 3.5 In the PR body, note that the only text the poller requirement drops is the "exit gate
       routes more runs into it" sentence in "`'complete'` does not imply…".
@@ -117,6 +129,7 @@ later than the newest migration on staging at PR time.
 All in `services/workflows/tests/test_k8s_client.py`.
 
 - [ ] 5.1 `test_get_workflow_status_raises_on_unverified_404`, parametrized over:
+
   - a body whose `.json()` raises (a new `_FakeResp` subclass);
   - `{}`;
   - a JSON list;
@@ -128,6 +141,7 @@ All in `services/workflows/tests/test_k8s_client.py`.
 
   Each case raises `K8sStatusError` with the generic message, never `AttributeError`, and the body
   appears only in the log.
+
 - [ ] 5.2 `test_get_workflow_status_returns_none_for_another_runs_label`, plus
       `..._returns_phase_for_own_or_missing_label`.
 - [ ] 5.3 Replace the empty-body `test_get_workflow_status_returns_none_on_404` with
@@ -152,6 +166,7 @@ All in `services/workflows/tests/test_k8s_client.py`.
 All in `services/workflows/tests/test_status_poller.py`.
 
 Test hooks:
+
 - `_FakeClient` gains a recording `.rpc(name, params)` that returns configurable data or raises.
   Every test that runs the real `_fetch_effective_phases` with a terminal phase uses it, so record
   calls are seen, not swallowed.
@@ -163,6 +178,7 @@ Test hooks:
   builds the named tuple.
 
 Tests:
+
 - [ ] 7.1 `test_terminal_phase_is_recorded_once_and_used_after_gc`
 - [ ] 7.2 `test_record_phase_sends_the_real_rpc_shape` and
       `test_fetch_stored_phases_reads_only_this_runs_rows`
