@@ -245,7 +245,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
 Archive this change **before** `fix-cyl-poller-unconcluded-runs` (bloom#1042). Both MODIFY "A
 standalone poller periodically reconciles…", and that change's delta is written on top of this one's.
 
-- [ ] 6.1 Confirm that `docker-build-bloomcli` published `sha-<squash short>`, using
+- [x] 6.1 Confirm that `docker-build-bloomcli` published `sha-<squash short>`, using
       `docker buildx imagetools inspect ghcr.io/salk-harnessing-plants-initiative/bloomctl:sha-<short>`.
   - If the build was cancelled by a later staging push (concurrency `cancel-in-progress`), use
     the next published staging sha that contains the merge, and list the commits it carries
@@ -253,10 +253,12 @@ standalone poller periodically reconciles…", and that change's delta is writte
   - Record the digest and the rollback target: `sha-88cbcbf@sha256:0259ec0a…`.
   - Re-run `git log origin/main..origin/staging -- bloomcli`. Confirm that no ride-along commit
     needs an RPC or migration that prod lacks, because the bump reaches prod at once (design D4).
-- [ ] 6.2 In sleap-roots-pipeline (WSL; kubectl and argo live there), run
+  - **Done:** `sha-5b709d0@sha256:f2c2fb412a4a6ee48477e0b89f762dea70b8ad51f78c367f51cbd218c957e640`, from `docker-build-bloomcli` run 37161135184 (not cancelled). `git log origin/main..origin/staging -- bloomcli` listed only #1038; between the pins (`88cbcbf3..5b709d0b`) the one ride-along is #1002 (version 0.1.0a8), which needs no migration or RPC. Rollback target `sha-88cbcbf@sha256:0259ec0a…`.
+- [x] 6.2 In sleap-roots-pipeline (WSL; kubectl and argo live there), run
       `bash scripts/check_cluster_drift.sh`. Record the before state: comparator, namespace, date,
       exit code.
-- [ ] 6.3 **Only after prod's workflows service runs this commit** (6.5; design D4: the template
+  - **Done:** 2026-10-04T16:38:58Z, `check_cluster_drift.sh` at sleap-roots-pipeline `1615d5a`, namespace `runai-busch-lab`: exit 0, all 5 templates and the semaphores IN SYNC, the three bloomctl templates on `sha-88cbcbf`.
+- [x] 6.3 **Only after prod's workflows service runs this commit** (6.5; design D4: the template
       bump reaches prod at once, the poller only with a staging→main promotion), and with the
       user's OK, open a sleap-roots-pipeline PR that bumps bloomctl in **all three**
       templates (write-back, images-downloader, exit-gate) to the immutable sha and digest.
@@ -265,13 +267,16 @@ standalone poller periodically reconciles…", and that change's delta is writte
   - Use "Part of salk-harnessing-plants-initiative/bloom#1034", never `Closes`.
   - Run `scripts/check_manifests.py` / `check_all.sh` by hand (upstream has no CI).
   - No bloom `SLEAP_ROOTS_PIPELINE_REF` bump is needed: the vendored Workflow doesn't change.
-- [ ] 6.4 After the PR merges and the templates are re-registered:
+  - **Done:** talmolab/sleap-roots-pipeline#125 ("Part of bloom#1034"), opened with the user's OK after 6.5; `check_all.sh` and `lint_manifests.sh` passed; merged as `028d063`.
+- [x] 6.4 After the PR merges and the templates are re-registered:
   - re-run `check_cluster_drift.sh`;
   - run `kubectl -n runai-busch-lab get workflowtemplate sleap-roots-write-back-template -o jsonpath='{.spec.templates[0].container.image}'`;
   - record that the digest matches.
-- [ ] 6.5 (Do before 6.3.) Confirm the poller half is live: the workflows service on staging and prod is running the merge
+  - **Done 2026-10-04 ~16:48Z**, with the user's OK: no workflow was running; `argo template update` for write-back, then images-downloader, then exit-gate; `check_cluster_drift.sh` exit 0, IN SYNC; the `kubectl … jsonpath` read of the write-back template gives `bloomctl:sha-5b709d0@sha256:f2c2fb41…`.
+- [x] 6.5 (Do before 6.3.) Confirm the poller half is live: the workflows service on staging and prod is running the merge
       commit (`BUILD_SHA` or the image tag). Prod gets it at the next staging→main promotion.
-- [ ] 6.6 Evidence: the first run whose write-back step retried, or a run with a scan failing
+  - **Done before 6.3:** staging's workflows service and `cyl-status-poller` run a `status_poller.py` byte-identical to `origin/staging`'s (2026-10-04 ~03:30Z); prod's match `main`'s after the #1043 deploy (16:11Z).
+- [x] 6.6 Evidence: the first run whose write-back step retried, or a run with a scan failing
       write-back in a multi-Workflow run, shows:
 
   - the `reconciliation deferred` stderr line in the write-back pod log;
@@ -279,6 +284,8 @@ standalone poller periodically reconciles…", and that change's delta is writte
     Workflows were still running.
 
   Then mark bloom#1034 done by hand, and open the archive PR separately.
+  - **Closed as an opportunistic check (user decision 2026-10-04).** Prod run 3 succeeded on the new image without a retry, so the retry path hasn't been seen live; #1038's tests cover it, and #1034 was closed on the deployment evidence. Record the live evidence the next time a write-back retries: within an hour of that workflow ending (its pods are deleted with it at TTL 3600), `kubectl logs <write-back pod> -c main` under the `bloom-pipeline` kubeconfig (`argo-user` has no log access) should show `reconciliation deferred`, and the retried scans' rows should end `written`.
 
-- [ ] 6.7 Prod run 2's 5 stale rows are tracked in bloom#1035 (already filed); link it here. Post any comment there only with the
+- [x] 6.7 Prod run 2's 5 stale rows are tracked in bloom#1035 (already filed); link it here. Post any comment there only with the
       user's OK.
+  - **Done:** #1035 was fixed by the user on 2026-10-04 and closed (run 2 = `complete`, 24 done / 0 failed).

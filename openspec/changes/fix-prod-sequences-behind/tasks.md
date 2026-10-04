@@ -136,8 +136,10 @@ Tasks:
   - `./scripts/lint_migrations.sh origin/staging`
   - `python3 scripts/lint_migration_isolation.py origin/staging`
   - `make pr-body-check BODY=<file>` with `No schema changes.`
-- [ ] 2.7 Run `/pre-merge`. Commit, then push once green with the user's go-ahead. Open the PR to `staging` titled `Advance prod's lagging id sequences with a forward-only migration (Part of #1022)`.
-- [ ] 2.8 Before the merge, run `git fetch origin staging` and check the newest migration there. If it is later than ours, `git mv` the migration and rollback to a new timestamp, and replace `20261002135631` everywhere: the change files, the migration and rollback headers, and the rollback's `migration repair` line.
+- [x] 2.7 Run `/pre-merge`. Commit, then push once green with the user's go-ahead. Open the PR to `staging` titled `Advance prod's lagging id sequences with a forward-only migration (Part of #1022)`.
+  - **Done:** #1029 opened and merged to `staging` 2026-10-03 17:28Z.
+- [x] 2.8 Before the merge, run `git fetch origin staging` and check the newest migration there. If it is later than ours, `git mv` the migration and rollback to a new timestamp, and replace `20261002135631` everywhere: the change files, the migration and rollback headers, and the rollback's `migration repair` line.
+  - **Done:** at merge, `staging`'s newest migration was `20261001230000`, older than ours, so no rename was needed.
 
 - [x] 2.9 `/review-pr` round 1 on #1029, at head `b146929f`.
 
@@ -236,7 +238,7 @@ Tasks:
 
 ## 5. Prod verification (after the curated staging→main promotion; each prod read needs the user's OK)
 
-- [ ] 5.0 Before approving the prod deploy (read-only, with the user's OK; raised in the PR review):
+- [x] 5.0 Before approving the prod deploy (read-only, with the user's OK; raised in the PR review):
 
   - ~~Ask whether an external writer sends `id`~~: **answered from the code** on 2026-10-02 (design Context). Neither `bloom-desktop` nor `bloom-desktop-pilot` ever sends an `id`, so the high ids are historical rows copied in with their ids, and no live writer brings the collisions back. The distribution query (`count`, `min`, `max` above each sequence) is now optional context only.
   - List every `public` column whose default calls `nextval` but which `pg_get_serial_sequence` doesn't find. Expect 0.
@@ -246,11 +248,19 @@ Tasks:
     **Done 2026-10-03, with the user's OK** (`BEGIN TRANSACTION READ ONLY … ROLLBACK`, as `postgres`). Prod's plan joins `pg_class` to `pg_namespace` (filtered to `public`) first, and evaluates `pg_get_serial_sequence` only afterwards, in the `pg_attribute` index scan's filter: the same shape as dev's. Executed, it returned 65 sequence-backed columns with no error, matching the 2026-10-02 count. Re-check this only if prod's catalog changes a lot before the promotion.
 
   - Confirm the promotion carries #1029 together with #1040, or that #1029 is already on `main`. Otherwise prod's first run of the new check goes red with every behind table listed.
+  - **Done 2026-10-04 ~15:50Z**, read-only as `postgres` (`BEGIN TRANSACTION READ ONLY … ROLLBACK`): 0 `public` columns with a `nextval` default and no owned sequence; a 65-row snapshot of every sequence (`last_value`, table max) taken before the deploy; the catalog `SELECT` was done 2026-10-03 (above). The promotion #1043 carried #1029 together with #1040.
 
-- [ ] 5.1 Before: on 2026-10-02, 21 of 65 behind (design Context).
-- [ ] 5.2 Approve the prod deploy outside 05:00–06:30 UTC (pg_cron). If 4.2 showed NOTICEs, record the 21 `advanced` lines and `21 of <m>`.
-- [ ] 5.3 Run the read-only predicate against `bloom_v2_prod-db-prod-1`. Expect 0 behind, and record the result. No hand `setval` or other write on prod.
-- [ ] 5.4 With the user's approval, close the issue by hand, linking 5.3.
-- [ ] 5.5 Ask about adding a line to `talmolab/sleap-roots-pipeline` `docs/bloom-integration/roadmap.md`.
-- [ ] 5.6 Ask about filing the write-back retry-gap issue, and about correcting run 2's 5 rows. **Filed 2026-10-03** with the user's OK: #1034 (retry gap) and #1035 (run 2's rows; the data fix itself still needs its own go-ahead). Also #1036 (types drift, low priority).
-- [ ] 5.7 After PR 2's step has run green on staging and prod, run `/openspec:archive fix-prod-sequences-behind`.
+- [x] 5.1 Before: on 2026-10-02, 21 of 65 behind (design Context).
+  - **Reconfirmed 2026-10-04** just before the deploy: the same 21 of 65.
+- [x] 5.2 Approve the prod deploy outside 05:00–06:30 UTC (pg_cron). If 4.2 showed NOTICEs, record the 21 `advanced` lines and `21 of <m>`.
+  - **Done:** approved 2026-10-04 ~15:53Z, outside the pg_cron window; deploy run 37177596444 succeeded. The migration printed 21 `advanced` NOTICEs (assemblies, cyl_datasets, cyl_experiments, cyl_qc_codes, cyl_qc_set_codes, cyl_qc_sets, cyl_scanners, cyl_scientists, gene_candidate_scientists, ortho_gene_id_map, people, phenotypers, plate_plant_traits_list, plates_trait_source, scrna_cells, scrna_counts, scrna_datasets, scrna_genes, species, translation_project_users, translation_projects): 21 of 65.
+- [x] 5.3 Run the read-only predicate against `bloom_v2_prod-db-prod-1`. Expect 0 behind, and record the result. No hand `setval` or other write on prod.
+  - **Done:** 0 behind. The deploy's "Check id sequences are not behind (production)" step passed, and the read-only predicate returns no rows. The before/after snapshot diff shows exactly those 21 sequences changed, each to its table's max id; no other sequence and no max id moved. Prod run 3 then wrote trait sources 49–51 with no collision.
+- [x] 5.4 With the user's approval, close the issue by hand, linking 5.3.
+  - **Done:** #1022 closed by hand 2026-10-04 with the user's OK (comment 5982562653).
+- [x] 5.5 Ask about adding a line to `talmolab/sleap-roots-pipeline` `docs/bloom-integration/roadmap.md`.
+  - **Done:** the user said yes; added as the 2026-10-04 status-log entry in talmolab/sleap-roots-pipeline#126.
+- [x] 5.6 Ask about filing the write-back retry-gap issue, and about correcting run 2's 5 rows. **Filed 2026-10-03** with the user's OK: #1034 (retry gap) and #1035 (run 2's rows; the data fix itself still needs its own go-ahead). Also #1036 (types drift, low priority).
+  - **Done:** #1034 shipped (both halves live 2026-10-04) and closed. #1035's data fix was applied by the user on 2026-10-04 and verified read-only (run 2 = `complete`, 24 done / 0 failed), and closed.
+- [x] 5.7 After PR 2's step has run green on staging and prod, run `/openspec:archive fix-prod-sequences-behind`.
+  - **Done:** the guard step passed on staging (deploy run 37161263490) and prod (37177596444); archived in the post-promotion archive PR.
