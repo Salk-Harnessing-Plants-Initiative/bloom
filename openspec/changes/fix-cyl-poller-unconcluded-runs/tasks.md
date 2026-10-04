@@ -345,15 +345,42 @@ prettier 3.1.0 would rewrite all of them wholesale, so it was not applied.
 
 ## 11. Verification for PR B, then after merge
 
-- [ ] 11.1 Run `openspec validate --strict`, then each of:
+- [x] 11.1 Run `openspec validate --strict`, then each of:
   - `cd services/workflows && uv run --frozen --extra test pytest tests/ -q`
   - `uv run --extra test pytest tests/unit/`
   - `cd web && npm run test:unit && npm run build`
   - `pre-commit run --all-files` (CI has no ruff or black step for `services/workflows`)
   - `/pre-merge`
-- [ ] 11.2 Run a read-only query on staging and prod listing the candidate runs the new poller will
+  - **Run 2026-10-04:**
+    - `openspec validate --strict`: valid.
+    - `services/workflows`: 1,325 passed.
+    - `cd web && npx vitest run`: 2,475 passed. `npx tsc --noEmit`: clean.
+    - `ruff` (each service's own config) is clean on the changed Python files, apart from
+      `BLE001` broad excepts that follow the file's existing pattern.
+  - **Not run or not applied locally:**
+    - `npm run build` is left to CI's build-and-audit job.
+    - `tests/unit` on Windows: `test_rnaseq_status_poller_container` passes (13). The other
+      failures there are bash-path and WSL environment issues, the same before this change.
+    - The pinned black 26.3.1 and prettier 3.1.0 would rewrite unrelated, already non-conforming
+      code in the touched files, so only the new code was formatted.
+
+- [x] 11.2 Run a read-only query on staging and prod listing the candidate runs the new poller will
       conclude, and their expected outcomes. Record them in the PR body. CI's DB is empty, so this
       is the only check against real data.
+  - **Recorded 2026-10-04:**
+    - **prod:** no open runs.
+    - **staging:** one candidate, run 17: `'running'`, 1,515 `'queued'` rows across 61 workflows,
+      rows created 2026-09-30.
+  - A read-only GET from the staging `cyl-status-poller` container for one of run 17's workflows
+    (`sleap-roots-pipeline-wp6pv`) returned 404 with
+    `{"kind":"Status","reason":"NotFound","details":{"name":"sleap-roots-pipeline-wp6pv","group":"argoproj.io","kind":"workflows"}}`.
+    That is exactly a verified NotFound.
+  - **Expected once PR B is live:**
+    - every workflow is removed about 10 minutes after the redeploy (3 or more cycles and the grace
+      period; the rows are far older than the TTL);
+    - all 1,515 rows are closed with the removed message;
+    - run 17 is written `'failed'` with `done_count` 0 and `failed_count` 1,515, and is final.
+
 - [ ] 11.3 After staging deploy, compare those runs with their actual status, counts and closed
       rows. Staging run 17 (task 3.6) must end concluded with no `'queued'` rows. Confirm a fresh run's workflows appear in `cyl_pipeline_run_workflows`. Record the
       results here.
