@@ -272,6 +272,8 @@ def test_get_storage_client_returns_bucket_bound_handle(supabase_mock, monkeypat
 
 
 def test_list_prefix_returns_basenames(supabase_mock):
+    from bloom_mcp import storage_backend as sb
+
     supabase_mock.list.return_value = [
         {"name": "v1_2026-06-05_initial", "id": "a"},
         {"name": "v2_2026-06-05_rerun", "id": "b"},
@@ -279,7 +281,18 @@ def test_list_prefix_returns_basenames(supabase_mock):
     ]
     names = supabase_client.list_prefix("bloommcp_output/qc_my_exp/")
     assert names == ["v1_2026-06-05_initial", "v2_2026-06-05_rerun", "manifest.json"]
-    supabase_mock.list.assert_called_once_with("bloommcp_output/qc_my_exp/")
+    # The call now carries explicit paging options (#396). Asserted via the
+    # backend's own constants rather than restated literals, so the two files
+    # cannot drift. Three names is a short page, so the sweep still ends in one
+    # request.
+    supabase_mock.list.assert_called_once_with(
+        "bloommcp_output/qc_my_exp/",
+        {
+            "limit": sb._SUPABASE_LIST_PAGE_SIZE,
+            "offset": 0,
+            "sortBy": {"column": "name", "order": "asc"},
+        },
+    )
 
 
 def test_list_prefix_returns_empty_when_no_objects(supabase_mock):
