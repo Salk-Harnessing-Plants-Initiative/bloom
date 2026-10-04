@@ -7,29 +7,40 @@
 --    for each (run, workflow). Argo deletes a finished Workflow WORKFLOWS_K8S_TTL_SECONDS after it
 --    ends; the poller falls back to this row once a lookup 404s. Keyed by run as well as name,
 --    because a GC'd Workflow's generated name can be reused by a later dispatch.
--- 2. record_cyl_pipeline_workflow_phase: the poller's only way to write that table. It refuses
---    a non-terminal phase and a workflow the run's scan rows never carried.
+-- 2. record_cyl_pipeline_workflow_phase: the poller's only way to write that table. It raises on
+--    a non-terminal phase, and writes nothing for a workflow the run's scan rows never carried.
+--    It returns false both then and when the phase is unchanged; only true means a write.
 -- 3. close_cyl_pipeline_run_workflow_scans: the run-scoped counterpart of
 --    fail_cyl_pipeline_run_scans_without_result, which matches on the workflow name alone. The
 --    poller can now close a GC'd workflow's rows, and by then that name may belong to another
 --    run. bloomctl keeps the name-only RPC: it runs inside the live workflow that owns the name.
+--    It raises on a NULL or blank message, so every row it closes says why.
 -- 4. cyl_pipeline_runs.poller_concluded_at, and update_cyl_pipeline_run_status re-created with
 --    the same signature: its first terminal write stamps completed_at and poller_concluded_at,
 --    and the source-status guard then refuses every later write, so a concluded run is final.
 --    A 'partial' that dispatch settled (_settle_cyl_pipeline_run, column still NULL) still gets
---    its one confirmation. Existing rows are left NULL.
+--    one confirmation. The column is NULL on every existing row, and stays NULL on a run that
+--    dispatch alone settled to 'failed': NULL does not mean "not final".
 --
--- The old poller is safe against this schema: it never reads the new table, the column is
--- nullable, and the RPC signature is unchanged; its repeated 'partial' writes just stop matching
--- once a run is concluded. The new poller (PR B) must not deploy before this migration.
+-- Until PR B deploys, the poller running today is the one that confirms. Within a cycle of this
+-- migration it writes its usual rollup to every candidate run, so each existing poller-written
+-- 'partial' becomes final with today's rules (404'd workflows left out, 'failed'/'partial' not
+-- withheld), and its completed_at, which that poller re-stamped every cycle, stays at about the
+-- deploy time. Compared with today the only lost correction is a 'partial' that would later
+-- have gone back to 'running' because a 404'd workflow was in fact still alive; 'failed' and
+-- 'complete' were already final, and that workflow's queued rows were already failed for good.
+-- The RPC still returns VOID, so that poller keeps logging "-> partial" for writes it refuses.
+-- The new poller (PR B) must not deploy before this migration.
 --
 -- lock_timeout: ADD COLUMN takes ACCESS EXCLUSIVE on cyl_pipeline_runs and the new foreign key
 -- SHARE ROW EXCLUSIVE; the table is polled every 15 s and Realtime-published. Fail fast instead
 -- of queueing writers behind a long transaction; a timeout rolls this file back unrecorded, so
 -- re-running the deploy is safe.
 --
--- REVOKE first: default privileges grant writes on every new relation (see 20260924120000).
--- Only bloom_admin may write the table directly; the poller writes through the RPCs.
+-- REVOKE first: default privileges grant writes on every new relation (see 20260924120000), and
+-- EXECUTE on every new function to service_role. Only bloom_admin may write the table directly;
+-- the poller writes through the RPCs, which only bloom_workflows may call. The functions are owned
+-- by postgres explicitly (as in 20260912110000), whichever role applies the migration.
 --
 -- Idempotent as the newest migration: CREATE ... IF NOT EXISTS, named constraints guarded in DO
 -- blocks, DROP POLICY IF EXISTS, CREATE OR REPLACE FUNCTION.
@@ -69,15 +80,20 @@ BEGIN
 END $$;
 
 DO $$
+DECLARE
+    existing text;
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conname = 'cyl_pipeline_run_workflows_run_id_fkey'
-           AND conrelid = 'public.cyl_pipeline_run_workflows'::regclass
-    ) THEN
+    SELECT pg_get_constraintdef(oid) INTO existing
+      FROM pg_constraint
+     WHERE conname = 'cyl_pipeline_run_workflows_run_id_fkey'
+       AND conrelid = 'public.cyl_pipeline_run_workflows'::regclass;
+    IF existing IS NULL THEN
         ALTER TABLE public.cyl_pipeline_run_workflows
             ADD CONSTRAINT cyl_pipeline_run_workflows_run_id_fkey
             FOREIGN KEY (run_id) REFERENCES public.cyl_pipeline_runs(id);
+    ELSIF existing NOT IN ('FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)',
+                           'FOREIGN KEY (run_id) REFERENCES public.cyl_pipeline_runs(id)') THEN
+        RAISE EXCEPTION 'cyl_pipeline_run_workflows_run_id_fkey is %, expected FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)', existing;
     END IF;
 END $$;
 
@@ -153,8 +169,9 @@ BEGIN
 END;
 $$;
 
+ALTER FUNCTION public.record_cyl_pipeline_workflow_phase(BIGINT, TEXT, TEXT) OWNER TO postgres;
 REVOKE EXECUTE ON FUNCTION public.record_cyl_pipeline_workflow_phase(BIGINT, TEXT, TEXT)
-    FROM PUBLIC, anon, authenticated;
+    FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.record_cyl_pipeline_workflow_phase(BIGINT, TEXT, TEXT)
     TO bloom_workflows;
 
@@ -172,6 +189,11 @@ AS $$
 DECLARE
     v_rows integer;
 BEGIN
+    IF p_error_message IS NULL OR btrim(p_error_message) = '' THEN
+        RAISE EXCEPTION
+            'close_cyl_pipeline_run_workflow_scans: p_error_message must say why the rows closed';
+    END IF;
+
     UPDATE public.cyl_pipeline_run_scans
        SET status = 'failed', error_message = p_error_message, updated_at = now()
      WHERE run_id = p_run_id
@@ -182,8 +204,9 @@ BEGIN
 END;
 $$;
 
+ALTER FUNCTION public.close_cyl_pipeline_run_workflow_scans(BIGINT, TEXT, TEXT) OWNER TO postgres;
 REVOKE EXECUTE ON FUNCTION public.close_cyl_pipeline_run_workflow_scans(BIGINT, TEXT, TEXT)
-    FROM PUBLIC, anon, authenticated;
+    FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.close_cyl_pipeline_run_workflow_scans(BIGINT, TEXT, TEXT)
     TO bloom_workflows;
 
@@ -233,8 +256,9 @@ BEGIN
 END;
 $$;
 
+ALTER FUNCTION public.update_cyl_pipeline_run_status(BIGINT, TEXT, INTEGER, INTEGER) OWNER TO postgres;
 REVOKE EXECUTE ON FUNCTION public.update_cyl_pipeline_run_status(BIGINT, TEXT, INTEGER, INTEGER)
-    FROM PUBLIC, anon, authenticated;
+    FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.update_cyl_pipeline_run_status(BIGINT, TEXT, INTEGER, INTEGER)
     TO bloom_workflows;
 

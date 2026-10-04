@@ -109,7 +109,6 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 - [x] 3.1 Run `openspec validate fix-cyl-poller-unconcluded-runs --strict`.
 - [x] 3.2 Run `/pre-merge`, and `cd web && npm run build` (which type-checks the edited types).
 - [x] 3.3 Fill in the PR body's **Schema changes** section:
-
   - a mermaid `erDiagram` showing `cyl_pipeline_runs` and `cyl_pipeline_run_workflows`;
   - a constraints table listing the PK, FK and CHECK;
   - the new column.
@@ -120,6 +119,23 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
       archived before `fix-cyl-poller-unconcluded-runs`.
 - [x] 3.5 In the PR body, note that the only text the poller requirement drops is the "exit gate
       routes more runs into it" sentence in "`'complete'` does not imply…".
+
+- [x] 3.6 Before PR A merges, record a read-only baseline on staging and prod: every
+      `'partial'`/`'running'`/`'submitted'` run with its `completed_at` and workflow names. The old
+      poller makes each existing `'partial'` final within a cycle of the migration (design D6).
+  - **Recorded 2026-10-04** (read-only, `default_transaction_read_only=on`):
+    - **prod:** no open runs.
+    - **staging:** no `'partial'` runs, so the old poller has nothing to make final early. One
+      open run: **run 17**.
+  - **Run 17:**
+    - `'running'` since 2026-09-30, 1,515 scans across 61 workflows, every row `'queued'`,
+      `done_count` 0.
+    - This is bloom#1042 item 1. PR A doesn't change it.
+    - PR B's removal rule should conclude it. Check that in 11.3.
+- [x] 3.7 Review follow-ups (PR #1045 review): service_role revoke and `OWNER TO postgres` on the
+      functions, FK guard compares its definition, close-out refuses a blank message, deterministic
+      conclude-once test, phase-guard test matching the RPC's own error, barrier timeouts and
+      hung-thread checks, defaults/Realtime/admin-grant/close-as-bloom_workflows tests.
 
 ## 4. After PR A merges
 
@@ -134,7 +150,6 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 All in `services/workflows/tests/test_k8s_client.py`.
 
 - [ ] 5.1 `test_get_workflow_status_raises_on_unverified_404`, parametrized over:
-
   - a body whose `.json()` raises (a new `_FakeResp` subclass);
   - `{}`;
   - a JSON list;
@@ -208,7 +223,7 @@ Tests:
       (cycle unclean) and `PGRST202` (cycle clean). In both, no status is written.
 - [ ] 7.11 `test_terminal_conclusion_waits_for_an_unresolved_sibling`: no close-out and no write,
       then a conclusion once the sibling is removed.
-- [ ] 7.12 `test_pre_change_partial_with_unresolved_workflow_is_not_turned_failed`
+- [ ] 7.12 `test_unconcluded_partial_with_unresolved_workflow_is_not_turned_failed`
 - [ ] 7.13 `test_gcd_succeeded_sibling_keeps_partial_run_partial`, read through the real stored
       phase fetch.
 - [ ] 7.14 `test_failed_record_call_keeps_live_phase_and_marks_cycle_unclean` and
@@ -315,7 +330,7 @@ the rest of 7.21, and 7.22.
       conclude, and their expected outcomes. Record them in the PR body. CI's DB is empty, so this
       is the only check against real data.
 - [ ] 11.3 After staging deploy, compare those runs with their actual status, counts and closed
-      rows. Confirm a fresh run's workflows appear in `cyl_pipeline_run_workflows`. Record the
+      rows. Staging run 17 (task 3.6) must end concluded with no `'queued'` rows. Confirm a fresh run's workflows appear in `cyl_pipeline_run_workflows`. Record the
       results here.
 - [ ] 11.4 Promote PR A to main before or together with PR B. #1038's poller must already be on
       main.

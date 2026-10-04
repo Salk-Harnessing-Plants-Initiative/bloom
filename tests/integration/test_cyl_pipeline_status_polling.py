@@ -24,6 +24,7 @@ Runs in CI's `compose-health-check` job after migrations are applied
 
 import re
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -247,42 +248,58 @@ def test_running_write_never_stamps_poller_concluded_at(pg_conn, source):
 
 
 def test_concurrent_terminal_writes_conclude_once(pg_conn, pg_conninfo):
-    """Two independent connections write 'partial' and 'failed' for the same
-    'running' run at once: the row lock plus the finality guard let exactly one
-    take effect, and both timestamps are that write's."""
+    """A second terminal write that queues behind the first must not apply once
+    the first commits: transaction A writes 'partial' and holds the row lock, B
+    writes 'failed' and blocks on it, A commits, and the row keeps A's status,
+    counts and timestamps. Without the finality guard B would re-check its WHERE,
+    still match a 'partial' row, and overwrite it."""
     with pg_conn.cursor() as cur:
         run_id = _seed_run(cur, status="running")
     pg_conn.commit()
 
     errors = {}
-    barrier = threading.Barrier(2)
-
-    def updater(status, failed):
-        try:
-            with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:
-                cur.execute("SET ROLE bloom_workflows")
-                barrier.wait()
-                cur.execute(
-                    f"SELECT {UPDATE_FN}(%s, %s, %s, %s)", (run_id, status, 1, failed)
-                )
-        except Exception as exc:  # pragma: no cover - failure path only
-            errors[status] = exc
-
+    b_pid = {}
     try:
-        threads = [
-            threading.Thread(target=updater, args=("partial", 1)),
-            threading.Thread(target=updater, args=("failed", 2)),
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=15)
-        assert not errors, f"concurrent update calls raised: {errors}"
+        with psycopg.connect(pg_conninfo) as conn_a:
+            with conn_a.cursor() as cur_a:
+                cur_a.execute("SET ROLE bloom_workflows")
+                _update_status(cur_a, run_id, "partial", done_count=1, failed_count=1)
+
+                def writer_b():
+                    try:
+                        with (
+                            psycopg.connect(pg_conninfo, autocommit=True) as conn,
+                            conn.cursor() as cur,
+                        ):
+                            b_pid["pid"] = conn.info.backend_pid
+                            cur.execute("SET ROLE bloom_workflows")
+                            _update_status(cur, run_id, "failed", done_count=0, failed_count=2)
+                    except Exception as exc:  # noqa: BLE001 - reported to the test
+                        errors["b"] = exc
+
+                thread = threading.Thread(target=writer_b, daemon=True)
+                thread.start()
+                with psycopg.connect(pg_conninfo, autocommit=True) as watcher:
+                    for _ in range(100):
+                        pid = b_pid.get("pid")
+                        if pid is not None:
+                            row = watcher.execute(
+                                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = %s",
+                                (pid,),
+                            ).fetchone()
+                            if row and row[0] == "Lock":
+                                break
+                        time.sleep(0.1)
+                    else:
+                        pytest.fail("the second write never blocked on the row lock")
+            conn_a.commit()
+            thread.join(timeout=15)
+            assert not thread.is_alive(), "the second write never returned"
+            assert not errors, f"the second write raised: {errors}"
+
         with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:
-            status, _done, failed, completed_at, concluded_at = _concluded(cur, run_id)
-        assert (status, failed) in {("partial", 1), ("failed", 2)}, (
-            "the counts must come from the same write as the status"
-        )
+            status, done, failed, completed_at, concluded_at = _concluded(cur, run_id)
+        assert (status, done, failed) == ("partial", 1, 1)
         assert concluded_at is not None and concluded_at == completed_at
     finally:
         with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:

@@ -188,8 +188,13 @@ def test_record_phase_rejects_non_terminal_phase(schema, phase):
     with schema.cursor() as cur:
         run_id = _seed_run(cur)
         _seed_row(cur, run_id, "wf-a")
-        with pytest.raises(psycopg.Error):
+        cur.execute("SAVEPOINT bad_phase")
+        # The RPC's own guard, not the table's CHECK or NOT NULL, must refuse it.
+        with pytest.raises(psycopg.errors.RaiseException, match="invalid p_phase"):
             _record(cur, run_id, "wf-a", phase)
+        cur.execute("ROLLBACK TO SAVEPOINT bad_phase")
+        cur.execute(f"SELECT count(*) FROM {TABLE} WHERE run_id = %s", (run_id,))
+        assert cur.fetchone()[0] == 0
 
 
 def test_record_phase_works_as_bloom_workflows_without_table_write_grant(schema):
@@ -221,15 +226,17 @@ def _cleanup(conninfo, run_ids):
 
 def test_concurrent_record_phase_same_key_does_not_raise(pg_conn, pg_conninfo):
     """Two independent connections record the same (run, workflow) at once:
-    neither may hit a unique violation. Needs the migration applied to the
-    database (`make migrate-local`), since the seed rows are committed."""
+    neither may hit a unique violation, and exactly one reports a write. Needs
+    the migration applied to the database (`make migrate-local`), since the
+    seed rows are committed."""
     with pg_conn.cursor() as cur:
         run_id = _seed_run(cur)
         _seed_row(cur, run_id, "wf-a")
     pg_conn.commit()
 
     errors = {}
-    barrier = threading.Barrier(2)
+    results = {}
+    barrier = threading.Barrier(2, timeout=10)
 
     def recorder(key):
         try:
@@ -239,17 +246,22 @@ def test_concurrent_record_phase_same_key_does_not_raise(pg_conn, pg_conninfo):
             ):
                 cur.execute("SET ROLE bloom_workflows")
                 barrier.wait()
-                _record(cur, run_id, "wf-a", "Succeeded")
+                results[key] = _record(cur, run_id, "wf-a", "Succeeded")
         except Exception as exc:  # noqa: BLE001 - reported to the test
             errors[key] = exc
 
     try:
-        threads = [threading.Thread(target=recorder, args=(k,)) for k in ("a", "b")]
+        threads = [
+            threading.Thread(target=recorder, args=(k,), daemon=True)
+            for k in ("a", "b")
+        ]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=15)
+        assert not any(t.is_alive() for t in threads), "a record call hung"
         assert not errors, f"concurrent record calls raised: {errors}"
+        assert sorted(results.values()) == [False, True]
         with (
             psycopg.connect(pg_conninfo, autocommit=True) as conn,
             conn.cursor() as cur,
@@ -283,6 +295,28 @@ def test_close_run_workflow_scans_is_scoped_to_its_run(schema):
         assert _close(cur, r1, "wf-a", "removed") == 0
 
 
+def test_close_run_workflow_scans_works_as_bloom_workflows(schema):
+    with schema.cursor() as cur:
+        run_id = _seed_run(cur)
+        row = _seed_row(cur, run_id, "wf-a")
+        cur.execute("SET LOCAL ROLE bloom_workflows")
+        assert _close(cur, run_id, "wf-a", "removed") == 1
+        cur.execute("RESET ROLE")
+        assert _row_state(cur, row) == ("failed", "removed")
+
+
+@pytest.mark.parametrize("message", [None, "", "  "])
+def test_close_run_workflow_scans_refuses_a_blank_message(schema, message):
+    with schema.cursor() as cur:
+        run_id = _seed_run(cur)
+        row = _seed_row(cur, run_id, "wf-a")
+        cur.execute("SAVEPOINT blank")
+        with pytest.raises(psycopg.errors.RaiseException, match="p_error_message"):
+            _close(cur, run_id, "wf-a", message)
+        cur.execute("ROLLBACK TO SAVEPOINT blank")
+        assert _row_state(cur, row) == ("queued", None)
+
+
 # --------------------------------------------------------------------------- #
 # Privileges, RLS and hardening
 # --------------------------------------------------------------------------- #
@@ -290,6 +324,7 @@ def test_close_run_workflow_scans_is_scoped_to_its_run(schema):
 FUNCTION_SIGS = (
     f"{RECORD_FN}(bigint, text, text)",
     f"{CLOSE_FN}(bigint, text, text)",
+    f"{UPDATE_FN}(bigint, text, integer, integer)",
 )
 
 
@@ -300,8 +335,10 @@ def test_run_workflows_privileges(schema):
                 "anon",
                 "authenticated",
                 "public",
+                "service_role",
                 "bloom_user",
                 "bloom_writer",
+                "bloom_agent",
                 "bloom_admin",
             ):
                 cur.execute(
@@ -339,6 +376,19 @@ def test_run_workflows_privileges(schema):
             (f"public.{TABLE}",),
         )
         assert cur.fetchone()[0] is True, "RLS must be enabled"
+        for priv in ("INSERT", "UPDATE", "DELETE"):
+            cur.execute(
+                "SELECT has_table_privilege('bloom_admin', %s, %s)",
+                (f"public.{TABLE}", priv),
+            )
+            assert cur.fetchone()[0] is True, f"bloom_admin must hold {priv}"
+        cur.execute(
+            "SELECT 1 FROM pg_publication_tables "
+            "WHERE pubname = 'supabase_realtime' AND schemaname = 'public' "
+            "AND tablename = %s",
+            (TABLE,),
+        )
+        assert cur.fetchone() is None, f"{TABLE} must not be Realtime-published"
 
         run_id = _seed_run(cur)
         _seed_row(cur, run_id, "wf-a")
@@ -352,15 +402,22 @@ def test_run_workflows_privileges(schema):
             cur.execute("RESET ROLE")
 
 
-@pytest.mark.parametrize("fn", [RECORD_FN, CLOSE_FN])
-def test_run_workflow_functions_are_hardened(schema, fn):
+@pytest.mark.parametrize(
+    ("fn", "nargs"), [(RECORD_FN, 3), (CLOSE_FN, 3), (UPDATE_FN, 4)]
+)
+def test_run_workflow_functions_are_hardened(schema, fn, nargs):
     with schema.cursor() as cur:
         cur.execute(
-            "SELECT prosecdef, proconfig FROM pg_proc WHERE proname = %s", (fn,)
+            "SELECT prosecdef, proconfig, pg_get_userbyid(proowner) FROM pg_proc "
+            "WHERE proname = %s AND pronargs = %s",
+            (fn, nargs),
         )
-        secdef, proconfig = cur.fetchone()
+        rows = cur.fetchall()
+        assert len(rows) == 1, f"expected exactly one {fn}/{nargs}"
+        secdef, proconfig, owner = rows[0]
         assert secdef is True
         assert "search_path=pg_catalog, public" in (proconfig or [])
+        assert owner == "postgres"
 
 
 # --------------------------------------------------------------------------- #

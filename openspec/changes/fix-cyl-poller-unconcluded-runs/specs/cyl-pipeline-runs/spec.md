@@ -26,9 +26,9 @@ dispatched, set by `update_cyl_pipeline_run_status` (the `cyl-pipeline-status-po
 `'partial'` and `'failed'` are each reused across both dispatch-level and pipeline-level meaning
 rather than given separate values.
 
-*(The clause that used to end this paragraph — "since both describe 'some or all scans got no useful
+_(The clause that used to end this paragraph — "since both describe 'some or all scans got no useful
 pipeline result' regardless of which stage produced that outcome" — is deliberately removed, not
-lost. The exit gate falsifies it: `'complete'` now describes that outcome too. Do not restore it.)*
+lost. The exit gate falsifies it: `'complete'` now describes that outcome too. Do not restore it.)_
 
 **`status` is a batch-level outcome and SHALL NOT be read as a per-scan completeness guarantee.**
 Since the pipeline DAG gained its terminal exit gate, a batch in which `images-downloader` isolated
@@ -62,7 +62,7 @@ Three bounds on that statement, all load-bearing:
   this: predict and traits may fall back to it, but write-back treats a legacy file naming another
   run as no manifest for this run.
 
-Pipeline-level `'partial'` consequently no longer arises from partial failure *within* a batch — the
+Pipeline-level `'partial'` consequently no longer arises from partial failure _within_ a batch — the
 case it was originally introduced for — and now arises only when whole batch Workflows differ in
 outcome across a multi-batch run.
 
@@ -83,7 +83,7 @@ outcome across a multi-batch run.
 - **WHEN** a run's scans have genuinely completed write-back (some `'written'`/`'reused'`, some
   `'failed'` with no result ever produced) and the status poller has swept at least once since
 - **THEN** `done_count` equals the number of that run's `cyl_pipeline_run_scans` rows with `status IN
-  ('written', 'reused')`, and `failed_count` equals the number with `status = 'failed'` — not the
+('written', 'reused')`, and `failed_count` equals the number with `status = 'failed'` — not the
   number of batches that merely reached the K8s API
 
 #### Scenario: A complete run may still have failed scans
@@ -103,7 +103,7 @@ outcome across a multi-batch run.
   non-zero, the exit gate is omitted, and the run's `status` is `'failed'`
 - **AND** `done_count` may still be greater than zero, because the scans that did produce results
   were committed by their own envelope transactions before write-back exited
-- **AND** in a *multi-batch* run whose other batches succeeded, the same isolation yields
+- **AND** in a _multi-batch_ run whose other batches succeeded, the same isolation yields
   `'partial'` rather than `'failed'`, since the rollup sees a mix of terminal phases
 
 #### Scenario: A batch in which every scan failed at images-downloader reads failed

@@ -129,11 +129,12 @@ def test_cyl_pipeline_runs_defaults(pg_conn):
         run_id = _seed_run(cur)
         cur.execute(
             f"SELECT status, scan_count, done_count, reused_count, failed_count, "
-            f"submitted_at, completed_at, error_message FROM {RUNS_TABLE} WHERE id = %s",
+            f"submitted_at, completed_at, error_message, poller_concluded_at "
+            f"FROM {RUNS_TABLE} WHERE id = %s",
             (run_id,),
         )
         row = cur.fetchone()
-        assert row == ("queued", 0, 0, 0, 0, None, None, None)
+        assert row == ("queued", 0, 0, 0, 0, None, None, None, None)
     pg_conn.rollback()
 
 
@@ -1008,10 +1009,11 @@ def test_rollback_removes_everything(pg_conn):
     if MIGRATION is None or ROLLBACK is None:
         pytest.skip("migration/rollback not written yet")
     with pg_conn.cursor() as cur:
-        # add-cyl-trait-recipe-key's cyl_trait_sources.cyl_pipeline_run_id FK references
-        # cyl_pipeline_runs, so its rollbacks (newest first) run before these.
+        # Newest first: cyl_pipeline_run_workflows' FK references cyl_pipeline_runs.
         if RUN_WORKFLOWS_ROLLBACK is not None:
             cur.execute(_sql_body(RUN_WORKFLOWS_ROLLBACK))
+        # add-cyl-trait-recipe-key's cyl_trait_sources.cyl_pipeline_run_id FK references
+        # cyl_pipeline_runs, so its rollbacks (newest first) run before these.
         apply_recipe_rollbacks(cur, down_to=1)
         if RUN_EXPERIMENTS_ROLLBACK is not None:
             cur.execute(_sql_body(RUN_EXPERIMENTS_ROLLBACK))

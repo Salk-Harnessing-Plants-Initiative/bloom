@@ -9,6 +9,9 @@
 -- Restores update_cyl_pipeline_run_status to its 20260912111000 body: 'partial' is again a
 -- source status, so a concluded run can be re-polled and re-stamped (bloom#1042 item 3). Then
 -- drops both new functions, the table (and the phases it holds) and poller_concluded_at.
+-- The service_role EXECUTE revoke on update_cyl_pipeline_run_status is not undone: nothing calls
+-- it as service_role, and the narrower grant is the intended one. Concluded 'partial' runs become
+-- pollable again, and the old poller resumes re-stamping their completed_at.
 
 BEGIN;
 

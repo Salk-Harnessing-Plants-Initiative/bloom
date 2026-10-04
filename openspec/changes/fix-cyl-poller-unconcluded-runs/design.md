@@ -6,6 +6,7 @@ phase, rolls the phases up and writes the result. It keeps nothing between cycle
 `get_workflow` returns `None` on **any** 404 without reading the response body.
 
 This change builds on two earlier decisions:
+
 - `fix-cyl-pipeline-run-scan-status`, Decision 6 and addenda 5, 7 and 8: the terminal-rollup
   backstop. Gating it on `any_unknown` was reverted because a garbage-collected sibling then stalled
   the run forever.
@@ -17,6 +18,7 @@ The normative rules are in the spec deltas. This file gives the reasons for them
 ## Goals / Non-Goals
 
 **Goals**
+
 - A run whose workflows have all ended eventually concludes, with no row left `'queued'`.
 - A workflow the poller saw finish keeps that outcome after Argo deletes it.
 - Only Kubernetes saying "this workflow, for this run, does not exist" can close rows.
@@ -24,6 +26,7 @@ The normative rules are in the spec deltas. This file gives the reasons for them
 - The run page never offers to re-run a scan that already has this run's result.
 
 **Non-Goals**
+
 - Callbacks from inside the workflow, and `activeDeadlineSeconds` (see Alternatives).
 - Changing the write-back guard: a `'failed'` row stays `'failed'`.
 - The RNA-seq poller's 404 handling.
@@ -72,7 +75,7 @@ The three conditions are in the spec. The reasons:
   API server failover.
 - **`newest created_at + TTL` is a necessary condition, not a sufficient one** (unlike #1038 round
   1's rule).
-  - Rows are inserted before dispatch, and Argo deletes a workflow TTL after it *ends*, so deletion
+  - Rows are inserted before dispatch, and Argo deletes a workflow TTL after it _ends_, so deletion
     cannot happen before `created_at + TTL`.
   - Any NotFound earlier than that is not a garbage collection. A run younger than the TTL is
     therefore never touched by a namespace or URL mistake.
@@ -90,6 +93,7 @@ The three conditions are in the spec. The reasons:
 **Residual risk.** A namespace change that Kubernetes answers with NotFound would, after the grace
 period, conclude every still-running run older than the TTL and fail its `'queued'` rows. This is
 accepted because:
+
 - the logs would show a NotFound warning for every workflow on every cycle;
 - results written later still land as data and show the late-result note (D6);
 - the alternative leaves genuinely stuck runs unconcluded forever.
@@ -111,6 +115,7 @@ accepted because:
 Today only `'complete'` is withheld. A `'failed'`/`'partial'` conclusion is written even with an
 unresolved sibling, and the backstop closes that sibling's rows. With D6, that conclusion would be
 final, and so would its mistakes:
+
 - an old `'partial'` run would flip to `'failed'`;
 - a young run's live rows would be failed by a namespace mistake.
 
@@ -128,19 +133,34 @@ that matches on the name alone: it runs inside a live workflow that owns the nam
   `'submitted'` and `'partial'` too, so `completed_at` can't tell "dispatch guessed" from "poller
   confirmed".
 - **The guard is in the RPC.** `WHERE status IN ('submitted','running') OR (status = 'partial' AND
-  poller_concluded_at IS NULL)`. The row lock on that UPDATE makes concurrent terminal writes
+poller_concluded_at IS NULL)`. The row lock on that UPDATE makes concurrent terminal writes
   conclude exactly once.
 - **The poller doesn't re-select concluded runs.** It selects `id, status, poller_concluded_at` for
   the three statuses and drops concluded `'partial'` rows in code. The PostgREST `or=` filter that
   could do this would need a nested `and(...)`; filtering in code is clearer, and the rows are few.
-- **Existing rows start `NULL`.** A run the old poller concluded `'partial'` gets one more
-  confirmation and is then final. D4 and D5 make that confirmation safe.
+- **Existing rows start `NULL`, and the poller running today confirms them.** Between PR A and PR B
+  the old poller writes its usual rollup to every candidate run within a cycle, so each existing
+  poller-written `'partial'` becomes final under today's rules, without D4/D5. Compared with today
+  that loses one correction: a `'partial'` that would later have gone back to `'running'` because a
+  404'd workflow was in fact alive. `'failed'` and `'complete'` were already final, and that
+  workflow's queued rows were already failed for good by the old backstop. Those runs'
+  `completed_at`, which the old poller re-stamped every cycle, stays at about the deploy time, so
+  it is not a completion time for them. Tasks 3.6 records the affected runs first.
+- **`NULL` does not mean open.** A run dispatch alone settled to `'failed'` is never a candidate
+  and never gets `poller_concluded_at`.
+- **Refused writes are silent.** The RPC keeps its `VOID` signature, so until PR B the old poller
+  logs `run X -> partial` for writes the guard refuses. PR B re-reads the row rather than trusting
+  the call.
+- **A retried workflow after conclusion.** `argo retry` on a concluded run's workflow updates its
+  stored phase but never the run, whose rows the write-back guard keeps `'failed'`. Re-running
+  means a new run.
 
 ### D7. Two PRs: database first
 
 The repo's rule (`.claude/commands/database-migration.md`, enforced in warning mode by
 `scripts/lint_migration_isolation.py`) is that a PR changing migrations ships alone and its code
 follows. It also matters here, because `deploy.yml` starts the new containers before `db push`:
+
 - **New code on the old schema breaks the poller.** The candidate select hits a missing column
   (`42703`), so every sweep fails and the poller reconnects every three cycles.
 - **Old code on the new schema is safe.**
@@ -150,6 +170,7 @@ follows. It also matters here, because `deploy.yml` starts the new containers be
     writes simply stop matching once a run is concluded, which already fixes item 3's flip.
 
 The resulting PRs:
+
 - **PR A:** this proposal, the migration, its rollback, the SQL tests, `database.types.ts` and the ER
   diagram.
 - **PR B:** opened once PR A is on staging (and on main before or with PR B in a targeted

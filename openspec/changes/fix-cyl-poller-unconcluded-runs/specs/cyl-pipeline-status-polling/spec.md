@@ -199,7 +199,7 @@ matching `dispatch_worker.py`'s established conventions for both.
 - **WHEN** a run has two batches, one whose workflow returns `Succeeded` this cycle and one whose
   workflow is unresolved (a verified NotFound with no stored phase, inside its grace period)
 - **THEN** the poller does NOT call `update_cyl_pipeline_run_status` with `'complete'` for that run
-  this cycle, even though the *observed* phases alone would satisfy rule (2) — a workflow whose real
+  this cycle, even though the _observed_ phases alone would satisfy rule (2) — a workflow whose real
   outcome was never confirmed must not be silently treated as if it had succeeded, and `done_count`/
   `failed_count` are likewise not written this cycle
 
@@ -292,7 +292,7 @@ matching `dispatch_worker.py`'s established conventions for both.
   `'running'` (no status transition), but one additional scan has moved to `'written'` since the last
   sweep
 - **THEN** the poller still calls `update_cyl_pipeline_run_status` this cycle, with `p_status =
-  'running'` and the newly higher `done_count` — this is a deliberate change from prior behavior,
+'running'` and the newly higher `done_count` — this is a deliberate change from prior behavior,
   which skipped the call entirely when the computed status matched a known `'running'` status; that
   skip is removed because it would otherwise freeze `done_count`/`failed_count` at whatever they were
   on the run's first `'running'` cycle
@@ -383,7 +383,7 @@ matching `dispatch_worker.py`'s established conventions for both.
 #### Scenario: A terminal conclusion waits while a sibling workflow is unresolved
 
 - **WHEN** a candidate run's rollup would conclude `'partial'`/`'failed'` from one or more
-  confirmed-bad phases, it has a `'queued'` row under a terminal workflow, and a *different* workflow
+  confirmed-bad phases, it has a `'queued'` row under a terminal workflow, and a _different_ workflow
   in the same run is unresolved this cycle
 - **THEN** the poller makes no `close_cyl_pipeline_run_workflow_scans` call for the unresolved
   workflow and no `update_cyl_pipeline_run_status` call for the run this cycle — a NotFound inside the
@@ -392,11 +392,11 @@ matching `dispatch_worker.py`'s established conventions for both.
 - **AND** once the unresolved workflow is removed (or a live or stored phase resolves it), the run
   concludes in that cycle with every `'queued'` row closed out
 
-#### Scenario: A poller-concluded partial from before this change is not turned failed by an unresolved sibling
+#### Scenario: An unconcluded partial run is not turned failed by an unresolved workflow
 
-- **WHEN** a run is `'partial'` with `poller_concluded_at IS NULL` (concluded by the poller before
-  `poller_concluded_at` existed), its dispatch-failed scan gives an effective `'Failed'`, and its one
-  workflow `"wf-a"` has no stored phase and returns a verified NotFound
+- **WHEN** a run is `'partial'` with `poller_concluded_at IS NULL` (settled by dispatch), its
+  dispatch-failed scan gives an effective `'Failed'`, and its one workflow `"wf-a"` has no stored
+  phase and returns a verified NotFound
 - **THEN** the poller writes nothing for the run until `"wf-a"` is removed
 - **AND** once removed, `"wf-a"`'s phase is derived from its rows, so a run whose `"wf-a"` rows are
   all `'written'` is written `'partial'`, not `'failed'`
@@ -445,12 +445,12 @@ matching `dispatch_worker.py`'s established conventions for both.
 
 ### Requirement: Rollup rule for aggregating per-workflow phases into one run status
 
-The rollup SHALL compute a run's status, in order, from the *effective phase* of every one of its
+The rollup SHALL compute a run's status, in order, from the _effective phase_ of every one of its
 scans: `'Failed'` for a scan whose dispatch itself failed (`cyl_pipeline_run_scans.status = 'failed'`
 AND `argo_workflow_name IS NULL`), otherwise the real Argo phase of that scan's batch's workflow
 (its effective phase as the poller requirement above defines it — live, stored, or a removed
 workflow's row-derived phase — or excluded from this cycle's computation when the workflow is
-unresolved; the poller SHALL separately track whether *any* workflow was unresolved this cycle,
+unresolved; the poller SHALL separately track whether _any_ workflow was unresolved this cycle,
 distinct from the phase list itself). Rule: (0) if the effective-phase list is
 empty (every workflow this cycle was unresolved, or there were no
 `argo_workflow_name`s and no dispatch failures to begin with), the rollup concludes nothing — no
@@ -543,10 +543,11 @@ supply them continue to work exactly as before. On a transition into a terminal 
 `cyl_pipeline_runs.poller_concluded_at` SHALL both be set to `now()`, replacing
 any `completed_at` Phase 2's dispatch-settle wrote earlier. Because the row then no longer matches the
 update's source-status guard, this happens exactly once per run: a concluded run's `status`, counts,
-`completed_at` and `poller_concluded_at` never change again through this function.
-`EXECUTE` SHALL be revoked from `PUBLIC`, `anon`, and `authenticated`, and granted only to
-`bloom_workflows`, the same triple-revoke/single-grant pattern every other `SECURITY DEFINER` wrapper
-in this program uses.
+`completed_at` and `poller_concluded_at` never change again through this function; re-running
+such a run's scans means starting a new run. `poller_concluded_at IS NULL` does not mean a run is
+still open: a run that dispatch alone settled to `'failed'` is never a poller candidate and never
+gets one. The function SHALL be owned by `postgres`, and `EXECUTE` SHALL be revoked from `PUBLIC`,
+`anon`, `authenticated` and `service_role`, and granted only to `bloom_workflows`.
 
 #### Scenario: bloom_workflows can update a submitted run to running
 
@@ -647,7 +648,7 @@ does), not by adding a redundant "skip if queued" check inside the poller itself
 
 ### Requirement: A `'complete'` rollup does not imply every scan produced a result
 
-The rollup SHALL continue to compute run status from the *effective phases* defined by the rollup
+The rollup SHALL continue to compute run status from the _effective phases_ defined by the rollup
 rule — the real Argo phase per distinct workflow, plus a synthesized `'Failed'` for scans whose
 dispatch failed and that have no workflow at all — and callers SHALL NOT infer per-scan completeness
 from the result. Since the pipeline DAG gained its terminal exit gate, a Workflow phase of
@@ -690,7 +691,7 @@ way can read `'partial'`/`'failed'` where Argo would have given `'complete'`; th
 either way.
 
 Pipeline-level `'partial'` (rule (4)) is unchanged in definition but narrowed in practice: it no
-longer arises from partial failure *within* a batch. It still arises from terminal effective phases
+longer arises from partial failure _within_ a batch. It still arises from terminal effective phases
 differing across a run — whole batch Workflows ending differently, or a dispatch-failed batch that
 never had a Workflow at all alongside one that succeeded.
 
@@ -750,7 +751,7 @@ TEXT, p_phase TEXT) RETURNS BOOLEAN`, `SECURITY DEFINER` with `search_path` pinn
 `'Failed'`, `'Error'`; SHALL write nothing and return `false` when no `cyl_pipeline_run_scans` row has
 that `run_id` and `argo_workflow_name`; SHALL otherwise insert the row, or, when one exists with a
 different `phase`, set `phase = p_phase` and `observed_at = now()`; and SHALL return whether a row was
-inserted or changed. Concurrent calls for the same key SHALL NOT raise a unique violation.
+inserted or changed (so `false` covers both an unchanged phase and a workflow the run never carried). Concurrent calls for the same key SHALL NOT raise a unique violation.
 
 The database SHALL provide `close_cyl_pipeline_run_workflow_scans(p_run_id BIGINT,
 p_argo_workflow_name TEXT, p_error_message TEXT) RETURNS INTEGER`, `SECURITY DEFINER` with the same
@@ -760,7 +761,9 @@ pinned `search_path`, which SHALL set `status = 'failed'`, `error_message = p_er
 run-scoped counterpart of `fail_cyl_pipeline_run_scans_without_result`, which matches on the workflow
 name alone and stays in use by `bloomctl` (capability `cyl-trait-writeback`).
 
-For both functions `EXECUTE` SHALL be revoked from `PUBLIC`, `anon` and `authenticated` and granted
+`close_cyl_pipeline_run_workflow_scans` SHALL raise an error when `p_error_message` is `NULL` or
+blank, so every row it closes says why. Both functions SHALL be owned by `postgres`, and for both
+`EXECUTE` SHALL be revoked from `PUBLIC`, `anon`, `authenticated` and `service_role` and granted
 only to `bloom_workflows`. The migration SHALL also add `cyl_pipeline_runs.poller_concluded_at
 TIMESTAMPTZ NULL` (its meaning is defined by the `update_cyl_pipeline_run_status` requirement),
 leaving it `NULL` on every existing row; SHALL set a `lock_timeout` before altering
@@ -806,18 +809,27 @@ objects before running it.
 
 #### Scenario: Only bloom_workflows may call the functions, and no other role writes the table
 
-- **WHEN** `has_function_privilege` is checked for `anon`, `authenticated`, `PUBLIC`, `bloom_user`,
-  `bloom_writer` and `bloom_admin` against both functions, and `has_table_privilege` for `INSERT`,
+- **WHEN** `has_function_privilege` is checked for `anon`, `authenticated`, `PUBLIC`, `service_role`,
+  `bloom_user`, `bloom_writer`, `bloom_agent` and `bloom_admin` against both functions and
+  `update_cyl_pipeline_run_status`, and `has_table_privilege` for `INSERT`,
   `UPDATE` and `DELETE` on `cyl_pipeline_run_workflows` for `anon`, `authenticated`, `bloom_user`,
   `bloom_writer`, `bloom_agent` and `bloom_workflows`
 - **THEN** each reports `false`, and `EXECUTE` for `bloom_workflows` on both functions reports `true`
-- **AND** `bloom_workflows`, `bloom_user` and `bloom_agent` can `SELECT` the table's rows, and `anon`
-  cannot
+- **AND** `bloom_workflows`, `bloom_user` and `bloom_agent` can `SELECT` the table's rows, `anon`
+  cannot, and `bloom_admin` holds `INSERT`, `UPDATE` and `DELETE`
+- **AND** the table is not in the `supabase_realtime` publication
 
 #### Scenario: The functions are hardened
 
-- **WHEN** `pg_proc` is read for both functions
-- **THEN** each is `SECURITY DEFINER` with `search_path` set to `pg_catalog, public`
+- **WHEN** `pg_proc` is read for both functions and `update_cyl_pipeline_run_status`
+- **THEN** each is `SECURITY DEFINER`, owned by `postgres`, with `search_path` set to
+  `pg_catalog, public`
+
+#### Scenario: A close-out without a reason is refused
+
+- **WHEN** `close_cyl_pipeline_run_workflow_scans` is called with `p_error_message` `NULL`, `''` or
+  `'  '`
+- **THEN** it raises an error and no row changes
 
 #### Scenario: The migration and rollback are re-runnable
 

@@ -1100,8 +1100,20 @@ def test_a_concluded_run_keeps_its_first_status_and_counts(pg_conn):
 
         _call(cur, _envelope(imgs_ok, idempotency_key="final-1"), argo_workflow_name=wf)
         cur.execute(f"SELECT {FAIL_RPC}(%s, %s)", (wf, "no envelope produced"))
+        assert _run_scan_status(cur, wf, scan_ok)[0] == "written"
+        assert _run_scan_status(cur, wf, scan_fail)[0] == "failed"
         cur.execute(
-            "SELECT update_cyl_pipeline_run_status(%s, 'partial', 1, 1)", (run_id,)
+            "SELECT "
+            "  count(*) FILTER (WHERE status IN ('written', 'reused')), "
+            "  count(*) FILTER (WHERE status = 'failed') "
+            "FROM cyl_pipeline_run_scans WHERE run_id = %s",
+            (run_id,),
+        )
+        done_count, failed_count = cur.fetchone()
+        assert (done_count, failed_count) == (1, 1)
+        cur.execute(
+            "SELECT update_cyl_pipeline_run_status(%s, 'partial', %s, %s)",
+            (run_id, done_count, failed_count),
         )
         cur.execute(
             "SELECT update_cyl_pipeline_run_status(%s, 'failed', 0, 2)", (run_id,)
