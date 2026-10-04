@@ -1522,4 +1522,4 @@ claimed (found independently by two reviewers), plus real gaps in round 2's othe
   environments, recounting only experiments a trigger on `cyl_scan_latest_source` logged, plus a
   weekly re-queue; the change-log table is locked to `postgres`. Also settle what
   `n_traits_updated_at` promises: the nightly job sets it on every row, recounted or not. Tracked
-  with its author in the issue filed from PR #1046's review.
+  with its author in bloom#1047.
