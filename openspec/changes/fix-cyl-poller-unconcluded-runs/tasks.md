@@ -159,7 +159,7 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 
 All in `services/workflows/tests/test_k8s_client.py`.
 
-- [ ] 5.1 `test_get_workflow_status_raises_on_unverified_404`, parametrized over:
+- [x] 5.1 `test_get_workflow_status_raises_on_unverified_404`, parametrized over:
   - a body whose `.json()` raises (a new `_FakeResp` subclass);
   - `{}`;
   - a JSON list;
@@ -172,24 +172,28 @@ All in `services/workflows/tests/test_k8s_client.py`.
   Each case raises `K8sStatusError` with the generic message, never `AttributeError`, and the body
   appears only in the log.
 
-- [ ] 5.2 `test_get_workflow_status_returns_none_for_another_runs_label`, plus
+- [x] 5.2 `test_get_workflow_status_returns_none_for_another_runs_label`, plus
       `..._returns_phase_for_own_or_missing_label`.
-- [ ] 5.3 Replace the empty-body `test_get_workflow_status_returns_none_on_404` with
+- [x] 5.3 Replace the empty-body `test_get_workflow_status_returns_none_on_404` with
       `..._returns_none_on_verified_not_found`. This one is a guard.
-- [ ] 5.4 Rewrite the two `get_workflow_status` tests that monkeypatch `k8s_client.get_workflow` so
+- [x] 5.4 Rewrite the two `get_workflow_status` tests that monkeypatch `k8s_client.get_workflow` so
       they drive the HTTP fake instead.
-- [ ] 5.5 Guard: `test_get_workflow_still_returns_none_on_any_404`, with the same parametrization
+- [x] 5.5 Guard: `test_get_workflow_still_returns_none_on_any_404`, with the same parametrization
       as 5.1.
 
 **Red:** 5.1, 5.2. **Guard:** 5.3, 5.5. 5.4 is rewritten so it stays meaningful.
 
+Recorded red run: 14 failed, 165 passed (all 11 unverified-404 cases returned `None`; the
+three label tests had no `run_id` parameter). Green: the whole `services/workflows` suite,
+1,282 passed.
+
 ## 6. Green: `k8s_client`
 
-- [ ] 6.1 Add a private fetch shared by `get_workflow` and `get_workflow_status`, plus
+- [x] 6.1 Add a private fetch shared by `get_workflow` and `get_workflow_status`, plus
       `_is_verified_not_found(resp, name)`. Add the `run_id` parameter and the label check.
-- [ ] 6.2 Update the docstrings: the module docstring's TTL framing, `K8sStatusError` (no longer
+- [x] 6.2 Update the docstrings: the module docstring's TTL framing, `K8sStatusError` (no longer
       "non-404" only), `get_workflow_status`.
-- [ ] 6.3 Confirm §5 and `test_rnaseq_status_poller.py` are green.
+- [x] 6.3 Confirm §5 and `test_rnaseq_status_poller.py` are green.
 
 ## 7. Red: poller
 
