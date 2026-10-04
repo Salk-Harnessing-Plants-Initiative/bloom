@@ -237,7 +237,7 @@ worktree alone is a one-command undo.
       shell-shape tests in files this branch does not touch). NOT DONE, needs a live stack:
       `make prod-up` +
       `uv run --extra test pytest tests/integration/ -v`.
-  - **Covered:** CI's compose health check ran `tests/integration/` on the PR before it merged (2026-09-17).
+  - **Covered:** CI's compose health check ran `tests/integration/` on the PR before it merged (2026-09-17; job 105026103188, 1227 passed). bloomcli's `integration`-marked `test_cyl_ingest_integration.py` is excluded from CI and was not run.
 - [x] 8.4 DONE: `uvx ruff@0.9.9 check` clean on every changed file. `pre-commit run
     --all-files` still to confirm. Do **not** run
       `ruff-format` on `bloomcli/` — `.pre-commit-config.yaml` excludes it there.
@@ -259,7 +259,7 @@ worktree alone is a one-command undo.
 
 ## 9. Post-merge — the deployment tail (NOT done at merge)
 
-- [x] 9.1 **PARTIALLY CONFIRMED 2026-09-21 — behaviourally, not by direct query.** The served-request
+- [x] 9.1 **CONFIRMED, both halves, by 2026-10-04** (served request 2026-09-21, below; ACL 2026-10-04, in the note at the end). The served-request
       half is satisfied in the strongest available form: across six captured write-back logs spanning
       five workflows (`7wxm2`, `bxpmt`, `fkfkz`, `9s92h`, `p6lz2`, `hpdpf`), covering dozens of
       deliveries including genuine no-op re-deliveries where the gate must have been consulted,

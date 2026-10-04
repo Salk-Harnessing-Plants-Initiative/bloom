@@ -1,7 +1,7 @@
 # cyl-pipeline-ui Specification
 
 ## Purpose
-TBD - created by archiving change add-cyl-pipeline-ui. Update Purpose after archive.
+Defines how scientists start cylinder pipeline runs from Bloom and follow them live: the trigger proxy, the per-environment switch, the confirm dialog and the run views.
 ## Requirements
 ### Requirement: Trigger proxy `POST /api/cyl/pipeline` rejects cross-origin and unauthenticated calls before any other work
 The route handler SHALL apply these checks in order, before reading the body and before contacting upstream:

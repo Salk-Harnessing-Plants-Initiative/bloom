@@ -1,7 +1,7 @@
 # cyl-pipeline-dispatch Specification
 
 ## Purpose
-TBD - created by archiving change add-cyl-pipeline-dispatch. Update Purpose after archive.
+Defines the dispatch worker that claims queued cylinder pipeline batches and submits each as an Argo Workflow to the cluster, with per-environment credentials, stage paths and labels.
 ## Requirements
 ### Requirement: A standalone worker claims batches from the dispatch queue, not the trigger route
 

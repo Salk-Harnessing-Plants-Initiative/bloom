@@ -1,7 +1,7 @@
 # cyl-batch-ingest-result Specification
 
 ## Purpose
-TBD - created by archiving change add-cyl-batch-commands. Update Purpose after archive.
+Defines `bloomctl cyl batch-ingest-result`, which writes every result envelope a pipeline batch produced back to Bloom, isolating each envelope's failure and reporting re-deliveries as skipped.
 ## Requirements
 ### Requirement: Batch ingest-result command ingests every envelope in a directory
 

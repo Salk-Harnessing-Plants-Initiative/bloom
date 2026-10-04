@@ -240,7 +240,7 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
 - [x] 6.2 Run `bloommcp`'s full test suite; confirm zero changes needed. **Not yet run in this pass —
       Python-side contract is unchanged (no `bloommcp/` files touched), but the actual suite run is still
       outstanding.**
-  - **Ticked without a fresh run (user decision 2026-10-04):** no `bloommcp/` files changed, and bloommcp's tests ran in the PR's CI.
+  - **Waived (user decision 2026-10-04); the full suite was never run.** No `bloommcp/` files changed. CI ran only bloommcp's subset on #684 (`-m "not integration and not live_smoke"`, job 96884481361: 1374 passed, 33 deselected).
 - [x] 6.3 `openspec validate fix-cyl-scan-traits-latest-rollup --strict` passes.
 - [x] 6.4 Migration lint (`scripts/lint_migrations.sh origin/staging`) passes (3 new files, timestamps
       after the `20260807000000` base). `openspec validate --strict` repo-wide shows the same 9
@@ -262,7 +262,7 @@ EXECUTE ... TO service_role` only (not the four read roles — this is a mainten
       end-to-end against staging and confirm it's well under a second; post the result on bloom#637
       before archiving this change. Also benchmark the `source_id_`/`run_id_`-pinned branches at
       `experiment_id=1` scale (design.md D7's unresolved item) and record the result.
-  - **Ticked without a fresh timing (user decision 2026-10-04):** #637 is already closed.
+  - **Waived (user decision 2026-10-04); the timing was never taken.** #637 was closed without it, and D7's pinned-branch benchmark is unrecorded.
 
 ## 7. Docs + follow-up
 
@@ -1513,3 +1513,13 @@ claimed (found independently by two reviewers), plus real gaps in round 2's othe
       isolation to re-confirm no hidden order dependency; `openspec validate
       fix-cyl-scan-traits-latest-rollup --strict` re-confirmed. **Done — 26/26 passed; both mutating tests
       pass standalone; validation passes.**
+
+## 17. Not archived on 2026-10-04
+
+- [ ] 17.1 Before archiving, bring this change's `cyl-experiment-summary-rollup` and `cyl-trait-read`
+  deltas up to date with #858 (2026-09-21), which replaced the refresh this change specifies and
+  had no OpenSpec change of its own. Today the cache is refreshed by pg_cron as `postgres` on both
+  environments, recounting only experiments a trigger on `cyl_scan_latest_source` logged, plus a
+  weekly re-queue; the change-log table is locked to `postgres`. Also settle what
+  `n_traits_updated_at` promises: the nightly job sets it on every row, recounted or not. Tracked
+  with its author in the issue filed from PR #1046's review.
