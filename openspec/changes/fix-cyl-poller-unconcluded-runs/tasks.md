@@ -327,15 +327,15 @@ prettier 3.1.0 would rewrite all of them wholesale, so it was not applied.
 
 ## 10. Config and docs
 
-- [ ] 10.1 Pass `WORKFLOWS_K8S_TTL_SECONDS` to both `cyl-status-poller` and `rnaseq-status-poller`:
+- [x] 10.1 Pass `WORKFLOWS_K8S_TTL_SECONDS` to both `cyl-status-poller` and `rnaseq-status-poller`:
   - `${WORKFLOWS_K8S_TTL_SECONDS:-3600}` in dev, `${WORKFLOWS_K8S_TTL_SECONDS}` in prod. This keeps
     `test_the_poller_has_the_cyl_pollers_environment` green.
   - Update the "submission-only" comments in both compose files, and note that the NotFound
     tracker is kept per replica.
   - Leave `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` unset.
-- [ ] 10.2 Update the `.env.prod.defaults`, `.env.staging.defaults` and `.env.dev.example`
+- [x] 10.2 Update the `.env.prod.defaults`, `.env.staging.defaults` and `.env.dev.example`
       comments, which file the TTL under `cyl-pipeline-worker` only.
-- [ ] 10.3 Update `services/workflows/README.md`:
+- [x] 10.3 Update `services/workflows/README.md`:
   - the partial-sweep paragraph;
   - the "404 is permanent" / addendum-8 paragraph;
   - replace the "render unknown" counts note;
