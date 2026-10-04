@@ -654,9 +654,11 @@ The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
 already exist in `cyl_images` on the Bloom you're pointed at.
 
-Auth: uses your saved login profile, which must have write access
-(`bloom_writer` / `bloom_admin`). Non-interactive / scoped credentials for
-cluster/CI use are tracked separately (#398).
+Auth: uses your saved login profile, which must be allowed to run the write-back
+RPC (`bloom_writer` / `bloom_admin`, or `bloom_workflows` for the cluster
+pipeline). The pipeline's write-back pods don't run `bloomctl login`: they read
+`credentials.txt` from a mounted Secret. See `services/workflows/README.md`
+"Provisioning (per environment)" step 6. Other non-interactive use is #398.
 
 Examples:
 
