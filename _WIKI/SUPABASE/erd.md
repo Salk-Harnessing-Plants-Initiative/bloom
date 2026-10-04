@@ -112,6 +112,7 @@ erDiagram
 "public.scrna_embedding_points" }o--|| "public.scrna_cells" : "FOREIGN KEY (dataset_id, cell_id) REFERENCES scrna_cells(dataset_id, id) ON DELETE RESTRICT"
 "public.scrna_embedding_points" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_count_changes" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
+"public.cyl_pipeline_run_workflows" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
 
 "public.species" {
   bigint id
@@ -918,6 +919,7 @@ erDiagram
   timestamp_with_time_zone submitted_at
   timestamp_with_time_zone completed_at
   text error_message
+  timestamp_with_time_zone poller_concluded_at
 }
 "public.cyl_pipeline_run_scans" {
   bigint id
@@ -1094,5 +1096,11 @@ erDiagram
   text experiment_name
   integer wave_number
   bigint count
+}
+"public.cyl_pipeline_run_workflows" {
+  bigint run_id FK
+  text argo_workflow_name
+  text phase
+  timestamp_with_time_zone observed_at
 }
 ```

@@ -1081,6 +1081,52 @@ def test_writeback_and_rollup_connect_end_to_end(pg_conn):
     pg_conn.rollback()
 
 
+def test_a_concluded_run_keeps_its_first_status_and_counts(pg_conn):
+    """fix-cyl-poller-unconcluded-runs (bloom#1042): reconcile, write the run's
+    terminal status once, then a later write — as the old poller made when a GC'd
+    Succeeded batch dropped out of its rollup — changes nothing: the run stays
+    'partial' with the counts first written."""
+    with pg_conn.cursor() as cur:
+        scan_ok, imgs_ok = _seed_scan(cur)
+        scan_fail, _ = _seed_scan(cur)
+        wf = "wf-final"
+        run_id = _seed_run_scan_for_writeback(cur, scan_ok, wf)
+        cur.execute(
+            "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status) "
+            "VALUES (%s, %s, %s, 'queued')",
+            (run_id, scan_fail, wf),
+        )
+        cur.execute("UPDATE cyl_pipeline_runs SET status = 'running' WHERE id = %s", (run_id,))
+
+        _call(cur, _envelope(imgs_ok, idempotency_key="final-1"), argo_workflow_name=wf)
+        cur.execute(f"SELECT {FAIL_RPC}(%s, %s)", (wf, "no envelope produced"))
+        assert _run_scan_status(cur, wf, scan_ok)[0] == "written"
+        assert _run_scan_status(cur, wf, scan_fail)[0] == "failed"
+        cur.execute(
+            "SELECT "
+            "  count(*) FILTER (WHERE status IN ('written', 'reused')), "
+            "  count(*) FILTER (WHERE status = 'failed') "
+            "FROM cyl_pipeline_run_scans WHERE run_id = %s",
+            (run_id,),
+        )
+        done_count, failed_count = cur.fetchone()
+        assert (done_count, failed_count) == (1, 1)
+        cur.execute(
+            "SELECT update_cyl_pipeline_run_status(%s, 'partial', %s, %s)",
+            (run_id, done_count, failed_count),
+        )
+        cur.execute(
+            "SELECT update_cyl_pipeline_run_status(%s, 'failed', 0, 2)", (run_id,)
+        )
+        cur.execute(
+            "SELECT status, done_count, failed_count, poller_concluded_at IS NOT NULL "
+            "FROM cyl_pipeline_runs WHERE id = %s",
+            (run_id,),
+        )
+        assert cur.fetchone() == ("partial", 1, 1, True)
+    pg_conn.rollback()
+
+
 def test_redelivery_fallback_fixes_the_batch_level_counts_bloom875_measured(pg_conn):
     """/review-pr finding (blm3886): the new tests all assert a single row's
     status_update_matched, but bloom#875's symptom was measured as

@@ -242,6 +242,9 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
 
 ## 6. Post-merge rollout (blocks archive)
 
+Archive this change **before** `fix-cyl-poller-unconcluded-runs` (bloom#1042). Both MODIFY "A
+standalone poller periodically reconciles…", and that change's delta is written on top of this one's.
+
 - [ ] 6.1 Confirm that `docker-build-bloomcli` published `sha-<squash short>`, using
       `docker buildx imagetools inspect ghcr.io/salk-harnessing-plants-initiative/bloomctl:sha-<short>`.
   - If the build was cancelled by a later staging push (concurrency `cancel-in-progress`), use
@@ -270,6 +273,7 @@ All tests are in `services/workflows/tests/test_status_poller.py`.
       commit (`BUILD_SHA` or the image tag). Prod gets it at the next staging→main promotion.
 - [ ] 6.6 Evidence: the first run whose write-back step retried, or a run with a scan failing
       write-back in a multi-Workflow run, shows:
+
   - the `reconciliation deferred` stderr line in the write-back pod log;
   - a retried scan ending `'written'`, or a failed scan reading `'failed'` while sibling
     Workflows were still running.
