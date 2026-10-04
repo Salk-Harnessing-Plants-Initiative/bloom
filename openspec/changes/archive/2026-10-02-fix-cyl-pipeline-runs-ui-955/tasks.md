@@ -149,24 +149,76 @@
 
 ## 8. Staging check (after merge; recorded in the archive PR)
 
-- [ ] 8.1 Approve the Deploy run at the `staging` environment gate and wait for "Staging deployed successfully!".
+- [x] 8.1 Approve the Deploy run at the `staging` environment gate and wait for "Staging deployed successfully!".
   - Confirm that the deployed sha contains the merge commit: `git merge-base --is-ancestor <merge_sha> <deployed_sha>`.
   - A later merge may supersede this run, so don't expect the two shas to be equal.
-- [ ] 8.2 On `/app/cyl-pipeline-runs`:
+  - **2026-10-02:** #1006's own run 36960837578 (`1ab65e24`) was cancelled because a later run
+    superseded it. Run 36969184325 on `88cbcbf3` logged "Staging deployed successfully!" at
+    05:43:45Z, and `git merge-base --is-ancestor 1ab65e24 88cbcbf3` holds.
+- [x] 8.2 On `/app/cyl-pipeline-runs`:
   - the Run, Target, Experiments and State headings show;
   - runs 1 and 2, or any run with F = 0, have no "0 failed" link;
   - a run with failures still links. The same holds on an experiment page's runs panel.
-- [ ] 8.3 In a drill-down with scan ids ≥ 1000:
+- [x] 8.3 In a drill-down with scan ids ≥ 1000:
   - the Scan cell shows the full id, with no separator and no "…";
   - Wave shows no separator;
   - a failed or queued row with no source shows "—".
-- [ ] 8.4 Open the dialog on a one-scan selection. It shows "1 selected scan". If that scan already has results, it shows "This scan already has pipeline results…".
-- [ ] 8.5 In the archive PR, record the deployed sha and what you saw, tick 8.x, and then close #955 by hand. Don't archive before 8.x is recorded.
+- [x] 8.4 Open the dialog on a one-scan selection. It shows "1 selected scan". If that scan already has results, it shows "This scan already has pipeline results…".
+  **Re-checked and passed (2026-10-02, about 19:30Z, eberrigan, screenshot shared in the
+  session).** Staging was serving `26ca7b7c` (Deploy run 36997056580, which contains
+  `1ab65e24`). On the TEST-E2E accession page (`/app/phenotypes/2/12880747/12880747/12877043`),
+  only TEST-E2E-020 (scan 12894766, source 264) was selected, then "Run selected (1)". The
+  dialog read "Run the pipeline on 1 selected scan · 1 scan" and "This scan already has
+  pipeline results. The run will still be created and sent to the cluster, which skips scans
+  it has already processed with the same models and code." It was cancelled without starting
+  a run. The earlier, wrong-path attempt is recorded below.
+  - **8.2 and 8.3 passed; 8.4's first attempt used the wrong path (2026-10-02, about 06:20Z, eberrigan in the
+    browser on `https://staging.bloom.salk.edu:8443`).** Staging was serving `88cbcbf3` (run
+    36969184325); the next Deploy, 36972180555 for #1009, was still waiting at the gate. Targets
+    were picked from staging's data, read-only. eberrigan reported each item as passing. One
+    screenshot (the runs list's top rows) was shared in the session and is not attached.
+    - 8.2: the runs list headings read Run, Target, Experiments, State. Runs 19–22 read
+      "Finished · 1 succeeded" with no "0 failed" link, and Target reads "1 selected scan" /
+      "scan 12894761 · 1 scan" (both in the screenshot). Runs 1–8 (F = 0) have no failed link.
+      Runs 14 (F = 1) and 16 (F = 6) link. Experiment 12880747's runs panel matches.
+    - 8.3: run 16's drill-down (11 scans, ids 12894756–12894766, wave 9999). Scan ids show in
+      full with no separator, Wave reads 9999, and the six `failed` rows with no `source_id`
+      read "—".
+    - 8.4, **wrong path checked.** The dialog was opened, and cancelled, from scan 12894766's
+      **scan page**. That page titles it "Run the pipeline on scan <id> · 1 scan"
+      (`RunPipelineButton`; run 23's screenshot of scan 12894767 shows exactly that). Only the
+      accession page's selection ("Run selected (1)", `ScanSelection.tsx:81`) titles it
+      "1 selected scan". The "This scan already has pipeline results." line is target-independent
+      (`RunPipelineDialog.tsx:88`), and it was reported as shown. So "1 selected scan" in the
+      dialog is unverified. Re-check it from
+      `/app/phenotypes/2/12880747/12880747/12877043` by selecting scan 12894766 alone. (An
+      earlier version of this record said the scan page showed "1 selected scan"; corrected in
+      #1023's review.)
+- [x] 8.5 In the archive PR, record the deployed sha and what you saw, tick 8.x, and then close #955 by hand. Don't archive before 8.x is recorded.
+  **2026-10-02:** 8.1–8.3 recorded above (deployed `88cbcbf3`). With eberrigan's yes, #955 was
+  closed by hand with the evidence (issuecomment-5946760656). That comment repeats 8.4's
+  "1 selected scan" from the wrong path; 8.4 has since been re-checked on the right path
+  (above), so a short correction belongs on #955.
 
 ## 9. Archive-ordering hazard (`openspec validate --strict` cannot see it)
 
 - [x] 9.1 `fix-cyl-noop-redelivery-scan-resolution` (bloom#900; on staging via #1001, not yet archived) also MODIFIES `cyl-pipeline-ui` "Per-run drill-down at `/app/cyl-pipeline-runs/[runId]`". This change's block is raised onto that block: its one-line "Failed rows" and its no-op scenario are copied byte-identical, and the only line of theirs not kept is the "current in trait views" bullet this change rewrites. An HTML note above the block says so.
-- [ ] 9.2 Archive `fix-cyl-noop-redelivery-scan-resolution` before this change, or in the same PR with that change first. Then `diff` the archived drill-down requirement against this block's intent, and record the result here. If that change's block is revised before archiving, raise this block again first.
+- [x] 9.2 Archive `fix-cyl-noop-redelivery-scan-resolution` before this change, or in the same PR with that change first. Then `diff` the archived drill-down requirement against this block's intent, and record the result here. If that change's block is revised before archiving, raise this block again first.
+  **2026-10-02:** `fix-cyl-noop-redelivery-scan-resolution` is archived first, in the same PR
+  (`2026-10-02-fix-cyl-noop-redelivery-scan-resolution`). Its block was not revised after 9.3.
+  The live `openspec/specs/cyl-pipeline-ui/spec.md` drill-down block `diff`s against this
+  change's block as only this change's edits: the "current in trait views" bullet replaced,
+  then the plain-integer paragraph and seven scenarios added (32 new lines including the
+  replacement). Nothing to raise. No other unarchived change touches any of this change's four
+  requirements. After `openspec archive`, all four blocks in `openspec/specs/cyl-pipeline-ui/spec.md`
+  `diff` byte-identical to this change's delta. `isolate-cyl-pipeline-environments`' only
+  `cyl-pipeline-ui` requirement ("Starting pipeline runs can be switched off per environment") is
+  untouched by it. `openspec validate --all --strict` fails only the same nine pre-existing
+  changes (eight bloommcp, one langchain) that fail on `88cbcbf3`.
+  `openspec archive` carried this change's HTML note ("This block is raised onto …", the
+  `<!-- -->` above the delta's drill-down block) into the live spec. It landed above "Run display
+  state is derived from counts first". #1023's review found it; it was deleted from
+  `openspec/specs/cyl-pipeline-ui/spec.md`, so the live spec has no HTML notes.
 - [x] 9.3 Raised again (2026-10-01, bloom PR #1008, which revised the noop change's drill-down block
   after review: two-bullet "Failed rows" with a late-result note, a matched-result note, three
   scenarios). This block is now that block plus only this change's edits: the "current in trait

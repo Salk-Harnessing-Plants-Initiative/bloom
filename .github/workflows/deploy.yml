@@ -138,6 +138,7 @@ jobs:
           WORKFLOWS_K8S_TOKEN=${{ secrets.PROD_WORKFLOWS_K8S_TOKEN }}
           WORKFLOWS_K8S_CA_CERT=${{ secrets.PROD_WORKFLOWS_K8S_CA_CERT }}
           WORKFLOWS_K8S_API_URL=${{ secrets.PROD_WORKFLOWS_K8S_API_URL }}
+          WANDB_API_KEY=${{ secrets.PROD_WANDB_API_KEY }}
           DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
@@ -967,6 +968,39 @@ jobs:
             fi
           "
 
+      # bloom#1022: fail the deploy, but keep the new code, when any public id sequence is
+      # behind its data (a default-id insert would collide). This step MUST stay after
+      # "Rollback on failure": rollback reverts code, which can't fix a sequence. With no
+      # `if:`, an earlier failure skips it and rolls back as before. Read-only.
+      - name: Check id sequences are not behind (production)
+        timeout-minutes: 5
+        run: |
+          out=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+            docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
+              db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < scripts/sql/sequences_behind.sql
+          ") || {
+            echo '::error title=Sequence check could not run (production)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
+            exit 1
+          }
+          if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
+            n=$(printf '%s\n' "$out" | wc -l)
+            echo "::error title=Id sequence behind its data (production)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (production)::$(esc "$row")"
+            done
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
+            exit 1
+          fi
+          echo "No public id sequence is behind its data."
+
       - name: Cleanup
         if: always()
         run: rm -f ~/.ssh/deploy_key
@@ -1133,6 +1167,7 @@ jobs:
           WORKFLOWS_K8S_TOKEN=${{ secrets.STAGING_WORKFLOWS_K8S_TOKEN }}
           WORKFLOWS_K8S_CA_CERT=${{ secrets.STAGING_WORKFLOWS_K8S_CA_CERT }}
           WORKFLOWS_K8S_API_URL=${{ secrets.STAGING_WORKFLOWS_K8S_API_URL }}
+          WANDB_API_KEY=${{ secrets.STAGING_WANDB_API_KEY }}
           DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
@@ -1823,6 +1858,39 @@ jobs:
               exit 1
             fi
           "
+
+      # bloom#1022: fail the deploy, but keep the new code, when any public id sequence is
+      # behind its data (a default-id insert would collide). This step MUST stay after
+      # "Rollback on failure": rollback reverts code, which can't fix a sequence. With no
+      # `if:`, an earlier failure skips it and rolls back as before. Read-only.
+      - name: Check id sequences are not behind (staging)
+        timeout-minutes: 5
+        run: |
+          out=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
+              db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < scripts/sql/sequences_behind.sql
+          ") || {
+            echo '::error title=Sequence check could not run (staging)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
+            exit 1
+          }
+          if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
+            n=$(printf '%s\n' "$out" | wc -l)
+            echo "::error title=Id sequence behind its data (staging)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (staging)::$(esc "$row")"
+            done
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
+            exit 1
+          fi
+          echo "No public id sequence is behind its data."
 
       - name: Cleanup
         if: always()

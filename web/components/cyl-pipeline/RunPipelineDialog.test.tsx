@@ -23,6 +23,16 @@ import type { TriggerTarget } from "@/lib/cyl-pipeline/trigger-target";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 
+// The model-card read (bloom#971), controllable per test. Its own fetch is
+// mocked away, so `fetchSpy` below still sees only the trigger POST.
+const fetchModelCards = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/cyl-pipeline/model-cards", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/cyl-pipeline/model-cards")>()),
+  fetchModelCards,
+}));
+import { PRODUCTION_CARDS } from "@/lib/cyl-pipeline/__fixtures__/model-cards";
+const READ = { cards: PRODUCTION_CARDS, skipped: 0 };
+
 import { RunPipelineButton } from "./RunPipelineButton";
 import { RunPipelineDialog } from "./RunPipelineDialog";
 import { resetSubmissions } from "./submissions";
@@ -138,6 +148,8 @@ beforeEach(() => {
   supabaseMock.session = { access_token: "user-token", user: { id: ME } };
   fetchSpy.mockReset();
   vi.stubGlobal("fetch", fetchSpy);
+  fetchModelCards.mockReset();
+  fetchModelCards.mockResolvedValue(READ);
   onClose.mockReset();
   onStarted.mockReset();
 });
@@ -417,7 +429,7 @@ describe("resolved params", () => {
       expect(details).not.toBeNull();
       expect(details.open).toBe(false);
     }
-    expect(params.textContent).toContain("Parameters come from each scan's metadata; overrides aren't supported yet");
+    expect(params.textContent).toContain("Parameters come from each scan's metadata. Choosing models isn't supported yet");
     expect(within(params).getByRole("link", { name: /bloom#897/ }).getAttribute("href")).toBe(
       "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/897",
     );
@@ -807,5 +819,268 @@ describe("one submission per target, whatever happens to the dialog", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("model warnings (bloom#971)", () => {
+  const PAST_HEADING = (n: number) =>
+    n === 1
+      ? "1 scan is past its models' validated age and is predicted with the nearest models:"
+      : `${n} scans are past their models' validated age and are predicted with the nearest models:`;
+  const NO_MODEL_HEADING = (n: number) =>
+    n === 1
+      ? "1 scan has no production model for its species and age and will fail:"
+      : `${n} scans have no production model for their species and age and will fail:`;
+  const BLOCKER = "None of these scans has a production model for its species and age, so the pipeline can't produce results.";
+  const MUTED = "Couldn't check the models' age ranges.";
+  const lines = (testId: string) => [...screen.getByTestId(testId).querySelectorAll("li")].map((li) => li.textContent);
+  const heading = (testId: string) => screen.getByTestId(testId).querySelector("p")?.textContent;
+  const modelTestIds = () => ["past-window", "no-model", "past-window-unknown"].filter((id) => screen.queryByTestId(id));
+  const arabidopsis = (n: number, from: number, age: number) =>
+    someScans(n, from, { species_name: "arabidopsis", plant_age_days: age });
+
+  it("names past-window groups with the window's top, after the stage-in lines and before concurrent runs", async () => {
+    runs = [runRow(88, "2026-09-29T11:48:00+00:00", { status: "running" })];
+    members = new Set([88]);
+    scans = [
+      ...arabidopsis(60, 1, 21),
+      ...arabidopsis(30, 61, 28),
+      ...arabidopsis(120, 91, 14),
+      ...someScans(1, 211, { plant_age_days: null }),
+      ...arabidopsis(1, 212, 14),
+    ];
+    noImages = new Set([212]);
+    mount();
+    await settle();
+    expect(heading("past-window")).toBe(PAST_HEADING(90));
+    expect(lines("past-window")).toEqual([
+      "arabidopsis · day 21 — models validated up to day 14 (60)",
+      "arabidopsis · day 28 — models validated up to day 14 (30)",
+    ]);
+    const stageIn = screen.getByText(/will fail at stage-in — ask a Bloom admin/);
+    const noImagesLine = screen.getByText(/no images and will fail at stage-in/);
+    const block = screen.getByTestId("past-window");
+    const concurrent = screen.getByTestId("concurrent-runs");
+    const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(follows(stageIn, noImagesLine)).toBe(true);
+    expect(follows(noImagesLine, block)).toBe(true);
+    expect(follows(block, concurrent)).toBe(true);
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("lists groups in count order, not age order", async () => {
+    scans = [...arabidopsis(30, 1, 21), ...arabidopsis(60, 31, 28)];
+    mount();
+    await settle();
+    expect(lines("past-window")).toEqual([
+      "arabidopsis · day 28 — models validated up to day 14 (60)",
+      "arabidopsis · day 21 — models validated up to day 14 (30)",
+    ]);
+  });
+
+  it.each([
+    ["soybean", 1, 10, ["soybean · day 10 — models validated up to day 8 (1)"]],
+    ["rice", 5, 18, ["rice · day 18 — models validated up to day 10 (5)"]],
+  ])("names %s scans past their highest window", async (species_name, n, age, expected) => {
+    scans = someScans(n, 1, { species_name, plant_age_days: age });
+    mount();
+    await settle();
+    expect(heading("past-window")).toBe(PAST_HEADING(n));
+    expect(lines("past-window")).toEqual(expected);
+  });
+
+  it("warns about too-young scans in a supported species without blocking", async () => {
+    scans = [
+      ...someScans(100, 1, { species_name: "canola", plant_age_days: 7 }),
+      ...someScans(12, 101, { species_name: "canola", plant_age_days: 0 }),
+    ];
+    mount();
+    await settle();
+    expect(heading("no-model")).toBe(NO_MODEL_HEADING(12));
+    expect(lines("no-model")).toEqual(["canola · day 0 (12)"]);
+    expect(screen.queryByTestId("past-window")).toBeNull();
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("uses the singular no-model heading for one scan", async () => {
+    scans = [
+      ...someScans(3, 1, { species_name: "canola", plant_age_days: 7 }),
+      ...someScans(1, 4, { species_name: "canola", plant_age_days: 0 }),
+    ];
+    mount();
+    await settle();
+    expect(heading("no-model")).toBe(NO_MODEL_HEADING(1));
+  });
+
+  it("blocks a run where no scan has a model, but not when the cards can't be read", async () => {
+    scans = someScans(50, 1, { species_name: "sorghum", plant_age_days: 10 });
+    mount();
+    await settle();
+    expect(screen.getByTestId("blockers").textContent).toContain(BLOCKER);
+    expect(screen.queryByTestId("no-model")).toBeNull();
+    expect(confirmButton()!.disabled).toBe(true);
+    cleanup();
+
+    fetchModelCards.mockResolvedValue(null);
+    mount();
+    await settle();
+    expect(screen.queryByTestId("blockers")).toBeNull();
+    expect(screen.getByTestId("past-window-unknown").textContent).toBe(MUTED);
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("counts only scans with images", async () => {
+    scans = arabidopsis(4, 1, 28);
+    noImages = new Set([4]);
+    mount();
+    await settle();
+    expect(heading("past-window")).toBe(PAST_HEADING(3));
+    expect(dialogText()).toContain("1 scan has no images and will fail at stage-in");
+    cleanup();
+
+    scans = someScans(3, 1, { species_name: "sorghum", plant_age_days: 10 });
+    noImages = new Set([1, 2, 3]);
+    mount();
+    await settle();
+    expect(dialogText()).toContain("3 scans have no images and will fail at stage-in");
+    expect(modelTestIds()).toEqual([]);
+    expect(screen.queryByTestId("blockers")).toBeNull();
+  });
+
+  it.each([
+    ["fails", null],
+    ["is empty", { cards: [], skipped: 0 }],
+  ])("shows the muted line, no alert and an enabled confirm when the card read %s", async (_label, value) => {
+    fetchModelCards.mockResolvedValue(value);
+    scans = arabidopsis(5, 1, 28);
+    mount();
+    await settle();
+    expect(screen.getByTestId("past-window-unknown").textContent).toBe(MUTED);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("shows no muted line when no scan has valid metadata", async () => {
+    fetchModelCards.mockResolvedValue(null);
+    scans = someScans(3, 1, { plant_age_days: null });
+    mount();
+    await settle();
+    expect(modelTestIds()).toEqual([]);
+  });
+
+  it("keeps confirm disabled, with no model text, until the card read settles", async () => {
+    const gate = deferred<typeof READ>();
+    fetchModelCards.mockReturnValue(gate.promise);
+    scans = arabidopsis(5, 1, 28);
+    mount();
+    await settle();
+    expect(confirmButton()!.disabled).toBe(true);
+    expect(modelTestIds()).toEqual([]);
+    await act(async () => gate.resolve(READ));
+    await settle();
+    expect(confirmButton()!.disabled).toBe(false);
+    expect(modelTestIds()).toEqual(["past-window"]);
+  });
+
+  it("says nothing about models for scans inside their windows", async () => {
+    mount();
+    await settle();
+    expect(modelTestIds()).toEqual([]);
+  });
+
+  it.each([
+    ["past-window", () => arabidopsis(5, 1, 28)],
+    [
+      "no-model",
+      () => [
+        ...someScans(5, 1, { species_name: "canola", plant_age_days: 7 }),
+        ...someScans(2, 6, { species_name: "canola", plant_age_days: 0 }),
+      ],
+    ],
+    ["blocked", () => someScans(5, 1, { species_name: "sorghum", plant_age_days: 10 })],
+  ])("never uses a banned phrase in the %s texts", async (_label, make) => {
+    scans = make();
+    mount();
+    await settle();
+    expect(dialogText()).not.toMatch(/will run|will be skipped|reused/i);
+  });
+
+  it("still shows the failed state when a table fails, whatever the card read did", async () => {
+    fetchModelCards.mockResolvedValue(null);
+    failing.cyl_scan_latest_source = { message: "statement timeout", code: "57014" };
+    mount();
+    await settle();
+    expect(screen.getByRole("alert").textContent).toContain("statement timeout");
+    expect(confirmButton()!.disabled).toBe(true);
+  });
+});
+
+describe("model warnings while the card read is pending (bloom#971)", () => {
+  it("shows the counts before the card read settles", async () => {
+    fetchModelCards.mockReturnValue(deferred<typeof READ>().promise);
+    mount();
+    await settle();
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("40 scans");
+    expect(screen.queryByTestId("past-window-unknown")).toBeNull();
+    expect(confirmButton()!.disabled).toBe(true);
+  });
+});
+
+describe("model warnings after the PR #1028 review (bloom#971)", () => {
+  const BLOCKER = "None of these scans has a production model for its species and age, so the pipeline can't produce results.";
+  const ONE_BLOCKER = "This scan has no production model for its species and age, so the pipeline can't produce results.";
+  const modelTestIds = () => ["past-window", "no-model", "past-window-unknown"].filter((id) => screen.queryByTestId(id));
+
+  it("never blocks when cards were skipped, and shows the no-model warning instead", async () => {
+    fetchModelCards.mockResolvedValue({ cards: PRODUCTION_CARDS, skipped: 1 });
+    scans = someScans(50, 1, { species_name: "sorghum", plant_age_days: 10 });
+    mount();
+    await settle();
+    expect(screen.queryByTestId("blockers")).toBeNull();
+    expect(screen.getByTestId("no-model").querySelector("p")?.textContent).toBe(
+      "50 scans have no production model for their species and age and will fail:",
+    );
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("uses the singular blocker for one scan", async () => {
+    scans = someScans(1, 1, { species_name: "sorghum", plant_age_days: 10 });
+    mount();
+    await settle();
+    expect(screen.getByTestId("blockers").textContent).toContain(ONE_BLOCKER);
+    expect(screen.getByTestId("blockers").textContent).not.toContain(BLOCKER);
+  });
+
+  it("shows both warnings in a mixed target, no-model first, and doesn't block", async () => {
+    scans = [
+      ...someScans(10, 1, { species_name: "sorghum", plant_age_days: 10 }),
+      ...someScans(5, 11, { species_name: "arabidopsis", plant_age_days: 28 }),
+    ];
+    mount();
+    await settle();
+    const noModel = screen.getByTestId("no-model");
+    const pastWindow = screen.getByTestId("past-window");
+    expect(noModel.compareDocumentPosition(pastWindow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId("blockers")).toBeNull();
+    expect(confirmButton()!.disabled).toBe(false);
+  });
+
+  it("treats the first day of each window as covered", async () => {
+    scans = [
+      ...someScans(3, 1, { species_name: "canola", plant_age_days: 2 }),
+      ...someScans(3, 4, { species_name: "rice", plant_age_days: 6 }),
+    ];
+    mount();
+    await settle();
+    expect(modelTestIds()).toEqual([]);
+  });
+
+  it("shows the muted line if the card read rejects", async () => {
+    fetchModelCards.mockRejectedValue(new Error("boom"));
+    scans = someScans(5, 1, { species_name: "arabidopsis", plant_age_days: 28 });
+    mount();
+    await settle();
+    expect(screen.getByTestId("past-window-unknown")).not.toBeNull();
+    expect(confirmButton()!.disabled).toBe(false);
   });
 });
