@@ -604,9 +604,9 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
      only. `k8s_client.py` rejects any other key, such as `defaultMode`, and the
      batch fails.
    - The account gets the whole `bloom_workflows` role, shared with the
-     service's user: the grants above, write-back's, and on staging Cell Ranger's. A separate account gives
-     separate revocation, not narrower access. To rotate it, change the password
-     and update the Generic secret; each new pod reads the file fresh.
+     service's user: the grants above, write-back's and Cell Ranger's. A separate
+     account gives separate revocation, not narrower access. To rotate it, change
+     the password and update the Generic secret; each new pod reads the file fresh.
 7. For `GET /model-cards` (bloom#971): set the deploy secrets
    `PROD_/STAGING_WANDB_API_KEY`, ideally a wandb service-account key with read access
    to the `sleap-roots-models` registry. Only the `workflows` service gets it. It is
