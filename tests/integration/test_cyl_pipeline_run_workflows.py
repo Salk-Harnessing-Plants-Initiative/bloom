@@ -120,7 +120,8 @@ def _stored(cur, run_id, wf):
 
 def _row_state(cur, row_id):
     cur.execute(
-        "SELECT status, error_message FROM cyl_pipeline_run_scans WHERE id = %s", (row_id,)
+        "SELECT status, error_message FROM cyl_pipeline_run_scans WHERE id = %s",
+        (row_id,),
     )
     return cur.fetchone()
 
@@ -211,7 +212,9 @@ def _cleanup(conninfo, run_ids):
             (run_ids,),
         )
         scan_ids = cur.fetchone()[0] or []
-        cur.execute("DELETE FROM cyl_pipeline_run_scans WHERE run_id = ANY(%s)", (run_ids,))
+        cur.execute(
+            "DELETE FROM cyl_pipeline_run_scans WHERE run_id = ANY(%s)", (run_ids,)
+        )
         cur.execute("DELETE FROM cyl_pipeline_runs WHERE id = ANY(%s)", (run_ids,))
         cur.execute("DELETE FROM cyl_scans WHERE id = ANY(%s)", (scan_ids,))
 
@@ -230,11 +233,14 @@ def test_concurrent_record_phase_same_key_does_not_raise(pg_conn, pg_conninfo):
 
     def recorder(key):
         try:
-            with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:
+            with (
+                psycopg.connect(pg_conninfo, autocommit=True) as conn,
+                conn.cursor() as cur,
+            ):
                 cur.execute("SET ROLE bloom_workflows")
                 barrier.wait()
                 _record(cur, run_id, "wf-a", "Succeeded")
-        except Exception as exc:  # pragma: no cover - failure path only
+        except Exception as exc:  # noqa: BLE001 - reported to the test
             errors[key] = exc
 
     try:
@@ -244,7 +250,10 @@ def test_concurrent_record_phase_same_key_does_not_raise(pg_conn, pg_conninfo):
         for t in threads:
             t.join(timeout=15)
         assert not errors, f"concurrent record calls raised: {errors}"
-        with psycopg.connect(pg_conninfo, autocommit=True) as conn, conn.cursor() as cur:
+        with (
+            psycopg.connect(pg_conninfo, autocommit=True) as conn,
+            conn.cursor() as cur,
+        ):
             cur.execute(f"SELECT phase FROM {TABLE} WHERE run_id = %s", (run_id,))
             assert cur.fetchall() == [("Succeeded",)]
     finally:
@@ -287,19 +296,48 @@ FUNCTION_SIGS = (
 def test_run_workflows_privileges(schema):
     with schema.cursor() as cur:
         for sig in FUNCTION_SIGS:
-            for role in ("anon", "authenticated", "public", "bloom_user", "bloom_writer", "bloom_admin"):
-                cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig))
+            for role in (
+                "anon",
+                "authenticated",
+                "public",
+                "bloom_user",
+                "bloom_writer",
+                "bloom_admin",
+            ):
+                cur.execute(
+                    "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig)
+                )
                 assert cur.fetchone()[0] is False, f"{role} must NOT execute {sig}"
-            cur.execute("SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')", (sig,))
+            cur.execute(
+                "SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')",
+                (sig,),
+            )
             assert cur.fetchone()[0] is True, f"bloom_workflows must execute {sig}"
 
-        for role in ("anon", "authenticated", "bloom_user", "bloom_writer", "bloom_agent", "bloom_workflows"):
+        for role in (
+            "anon",
+            "authenticated",
+            "bloom_user",
+            "bloom_writer",
+            "bloom_agent",
+            "bloom_workflows",
+        ):
             for priv in ("INSERT", "UPDATE", "DELETE"):
-                cur.execute("SELECT has_table_privilege(%s, %s, %s)", (role, f"public.{TABLE}", priv))
-                assert cur.fetchone()[0] is False, f"{role} must not hold {priv} on {TABLE}"
-        cur.execute("SELECT has_table_privilege('anon', %s, 'SELECT')", (f"public.{TABLE}",))
+                cur.execute(
+                    "SELECT has_table_privilege(%s, %s, %s)",
+                    (role, f"public.{TABLE}", priv),
+                )
+                assert (
+                    cur.fetchone()[0] is False
+                ), f"{role} must not hold {priv} on {TABLE}"
+        cur.execute(
+            "SELECT has_table_privilege('anon', %s, 'SELECT')", (f"public.{TABLE}",)
+        )
         assert cur.fetchone()[0] is False, "anon must not read the table"
-        cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = %s::regclass", (f"public.{TABLE}",))
+        cur.execute(
+            "SELECT relrowsecurity FROM pg_class WHERE oid = %s::regclass",
+            (f"public.{TABLE}",),
+        )
         assert cur.fetchone()[0] is True, "RLS must be enabled"
 
         run_id = _seed_run(cur)
@@ -308,14 +346,18 @@ def test_run_workflows_privileges(schema):
         for role in ("bloom_workflows", "bloom_user", "bloom_agent"):
             cur.execute(f"SET LOCAL ROLE {role}")
             cur.execute(f"SELECT count(*) FROM {TABLE} WHERE run_id = %s", (run_id,))
-            assert cur.fetchone()[0] == 1, f"{role} must see the row through its SELECT policy"
+            assert (
+                cur.fetchone()[0] == 1
+            ), f"{role} must see the row through its SELECT policy"
             cur.execute("RESET ROLE")
 
 
 @pytest.mark.parametrize("fn", [RECORD_FN, CLOSE_FN])
 def test_run_workflow_functions_are_hardened(schema, fn):
     with schema.cursor() as cur:
-        cur.execute("SELECT prosecdef, proconfig FROM pg_proc WHERE proname = %s", (fn,))
+        cur.execute(
+            "SELECT prosecdef, proconfig FROM pg_proc WHERE proname = %s", (fn,)
+        )
         secdef, proconfig = cur.fetchone()
         assert secdef is True
         assert "search_path=pg_catalog, public" in (proconfig or [])
@@ -336,7 +378,9 @@ def test_run_workflows_migration_is_idempotent(pg_conn):
 
 
 def test_run_workflows_rollback_restores_the_previous_status_rpc(pg_conn):
-    assert MIGRATION is not None and ROLLBACK is not None, "migration/rollback not written yet"
+    assert (
+        MIGRATION is not None and ROLLBACK is not None
+    ), "migration/rollback not written yet"
     with pg_conn.cursor() as cur:
         cur.execute(_sql_body(MIGRATION))
         cur.execute(_sql_body(ROLLBACK))
@@ -356,7 +400,9 @@ def test_run_workflows_rollback_restores_the_previous_status_rpc(pg_conn):
         cur.execute(f"SELECT {UPDATE_FN}(%s, 'failed', NULL, NULL)", (run_id,))
         cur.execute("SELECT status FROM cyl_pipeline_runs WHERE id = %s", (run_id,))
         assert cur.fetchone()[0] == "failed"
-        cur.execute("SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')",
-                    (f"{UPDATE_FN}(bigint, text, integer, integer)",))
+        cur.execute(
+            "SELECT has_function_privilege('bloom_workflows', %s, 'EXECUTE')",
+            (f"{UPDATE_FN}(bigint, text, integer, integer)",),
+        )
         assert cur.fetchone()[0] is True
     pg_conn.rollback()
