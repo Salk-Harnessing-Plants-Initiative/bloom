@@ -735,7 +735,6 @@ export type Database = {
           failed_count: number
           id: number
           params: Json
-          poller_concluded_at: string | null
           requested_by: string | null
           reused_count: number
           scan_count: number
@@ -752,7 +751,6 @@ export type Database = {
           failed_count?: number
           id?: number
           params?: Json
-          poller_concluded_at?: string | null
           requested_by?: string | null
           reused_count?: number
           scan_count?: number
@@ -769,7 +767,6 @@ export type Database = {
           failed_count?: number
           id?: number
           params?: Json
-          poller_concluded_at?: string | null
           requested_by?: string | null
           reused_count?: number
           scan_count?: number

@@ -92,9 +92,14 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
   - Its header says to redeploy code that doesn't use these objects first.
   - It restores the `20260912111000` body of `update_cyl_pipeline_run_status`, drops both functions,
     the table and the column, then runs `NOTIFY pgrst`.
-- [x] 2.3 Hand-edit `web/lib/database.types.ts`: the new column (Row, Insert, Update), the new
-      table, and both functions' Args and Returns. Don't bulk-regenerate the file. The PR body
-      notes that the `packages/*` copies are left as they are.
+- [x] 2.3 Hand-edit `web/lib/database.types.ts`: the new table and both functions' Args and
+      Returns. Don't bulk-regenerate the file. The PR body notes that the `packages/*` copies are
+      left as they are.
+  - `poller_concluded_at` is **not** added to the `cyl_pipeline_runs` types here. `RunRow` is that
+    table's Row type, and three app files build full `RunRow` literals
+    (`components/cyl-pipeline/ExperimentRunsPanel.tsx`, `lib/cyl-pipeline/__fixtures__/rows.ts`,
+    `lib/cyl-pipeline/realtime-reducer.test.ts`), so the column breaks `tsc` until they change.
+    App files can't ride in a migration PR, so this moves to task 9.5.
 - [x] 2.4 Run `make erd`, or commit CI's artifact, so `_WIKI/SUPABASE/erd.md` is current.
 - [x] 2.5 Run `./scripts/lint_migrations.sh origin/staging` and then §1, against a fresh
       `make migrate-local`. All green.
@@ -276,7 +281,9 @@ the rest of 7.21, and 7.22.
     then green).
 - [ ] 9.4 Update the comments in `run-display.ts` (only dispatch stamps an early `completed_at`)
       and `realtime-reducer.ts` (a concluded `'partial'` run gets no more sweep updates).
-- [ ] 9.5 Confirm `cd web && npm run test:unit` is green.
+- [ ] 9.5 Add `poller_concluded_at` to the `cyl_pipeline_runs` Row, Insert and Update types in
+      `web/lib/database.types.ts`, and to the three `RunRow` literals named in task 2.3.
+- [ ] 9.6 Confirm `cd web && npm run test:unit` is green.
 
 ## 10. Config and docs
 
