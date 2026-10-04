@@ -106,9 +106,9 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 
 ## 3. Verification for PR A
 
-- [ ] 3.1 Run `openspec validate fix-cyl-poller-unconcluded-runs --strict`.
-- [ ] 3.2 Run `/pre-merge`, and `cd web && npm run build` (which type-checks the edited types).
-- [ ] 3.3 Fill in the PR body's **Schema changes** section:
+- [x] 3.1 Run `openspec validate fix-cyl-poller-unconcluded-runs --strict`.
+- [x] 3.2 Run `/pre-merge`, and `cd web && npm run build` (which type-checks the edited types).
+- [x] 3.3 Fill in the PR body's **Schema changes** section:
 
   - a mermaid `erDiagram` showing `cyl_pipeline_runs` and `cyl_pipeline_run_workflows`;
   - a constraints table listing the PK, FK and CHECK;
@@ -118,7 +118,7 @@ bloom_agent, bloom_admin, bloom_workflows`, then the SELECT grants and policies,
 
 - [x] 3.4 Add one line to `fix-cyl-writeback-retry-reconcile/tasks.md` §6 saying it must be
       archived before `fix-cyl-poller-unconcluded-runs`.
-- [ ] 3.5 In the PR body, note that the only text the poller requirement drops is the "exit gate
+- [x] 3.5 In the PR body, note that the only text the poller requirement drops is the "exit gate
       routes more runs into it" sentence in "`'complete'` does not imply…".
 
 ## 4. After PR A merges
