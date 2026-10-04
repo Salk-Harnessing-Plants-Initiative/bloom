@@ -1937,7 +1937,7 @@ class _Db(_FakeClient):
         self.handlers = {
             "close_cyl_pipeline_run_workflow_scans": self._close,
             "record_cyl_pipeline_workflow_phase": self._record,
-            "update_cyl_pipeline_run_status": lambda p: None,
+            "update_cyl_pipeline_run_status": self._update,
         }
 
     def rpc(self, name, params):
@@ -1955,8 +1955,25 @@ class _Db(_FakeClient):
                 and r["status"] == "queued"
             ):
                 r["status"] = "failed"
+                # Like the real RPC: updated_at = now().
+                r["updated_at"] = worker._utcnow().isoformat()
                 closed += 1
         return closed
+
+    def _update(self, p):
+        """Like the real RPC: a terminal write concludes the run, and a concluded
+        run is never written again."""
+        for r in self._tables.get("cyl_pipeline_runs", []):
+            if r["id"] != p["p_run_id"]:
+                continue
+            open_ = r["status"] in ("submitted", "running") or (
+                r["status"] == "partial" and not r.get("poller_concluded_at")
+            )
+            if not open_:
+                return
+            r["status"] = p["p_status"]
+            if p["p_status"] in ("complete", "failed", "partial"):
+                r["poller_concluded_at"] = worker._utcnow().isoformat()
 
     def _record(self, p):
         rows = self._tables["cyl_pipeline_run_workflows"]
@@ -2205,7 +2222,8 @@ def test_a_failed_lookup_resets_only_that_workflows_streak(monkeypatch, clock):
     it is unresolved that cycle."""
     db = _db([_wrow("wf-a"), _wrow("wf-b")])
     monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
-    _sweep_cycles(db, clock, 2)
+    # Short cycles, so neither reaches the grace period here.
+    _sweep_cycles(db, clock, 2, step=15)
     monkeypatch.setattr(
         worker, "get_workflow_status", _by_name({"wf-a": K8sStatusError("x")})
     )
@@ -2563,3 +2581,65 @@ def test_run_warns_at_startup_when_removal_is_disabled(monkeypatch):
     monkeypatch.setattr(worker, "_running", False)
     worker.run()
     assert warned == [1]
+
+
+def test_a_removed_workflow_records_its_phase_before_closing(monkeypatch, clock):
+    db = _db([_wrow("wf-a", "written"), _wrow("wf-a")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    _sweep_cycles(db, clock, 3)
+    names = [n for n, _ in db.rpcs if n != "update_cyl_pipeline_run_status"]
+    assert names == [
+        "record_cyl_pipeline_workflow_phase",
+        "close_cyl_pipeline_run_workflow_scans",
+    ]
+    assert db.calls("record_cyl_pipeline_workflow_phase") == [
+        {"p_run_id": 1, "p_argo_workflow_name": "wf-a", "p_phase": "Failed"}
+    ]
+    assert _writes(db) == [("failed", 1, 1)]
+
+
+def test_a_removal_sticks_after_its_close_out(monkeypatch, clock):
+    """The close-out stamps updated_at = now(), which would restart the TTL
+    guard if the removal weren't recorded (PR #1048 re-review): wf-a must stay
+    resolved while wf-b keeps running, even through a failed lookup of wf-a."""
+    db = _db([_wrow("wf-a"), _wrow("wf-b")])
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({"wf-b": "Running"}))
+    _sweep_cycles(db, clock, 3)
+    assert len(_closes(db)) == 1
+    monkeypatch.setattr(
+        worker,
+        "get_workflow_status",
+        _by_name({"wf-a": K8sStatusError("flaky"), "wf-b": "Running"}),
+    )
+    _sweep_cycles(db, clock, 2)
+    monkeypatch.setattr(
+        worker, "get_workflow_status", _by_name({"wf-b": "Succeeded"})
+    )
+    worker.sweep_once(db)
+    assert _writes(db)[-1] == ("partial", 0, 2), "concluded on wf-b's first terminal cycle"
+    assert len(_closes(db)) == 2, "wf-b's queued row closed by the backstop"
+
+
+def test_a_failed_removal_record_leaves_the_workflow_unresolved(monkeypatch, clock):
+    db = _db([_wrow("wf-a")])
+    db.handlers["record_cyl_pipeline_workflow_phase"] = RuntimeError("record failed")
+    monkeypatch.setattr(worker, "get_workflow_status", _by_name({}))
+    results = _sweep_cycles(db, clock, 3)
+    assert results[-1] is False
+    assert _closes(db) == [], "no close-out without the recorded phase"
+    assert _writes(db) == []
+    db.handlers["record_cyl_pipeline_workflow_phase"] = db._record
+    worker.sweep_once(db)
+    assert len(_closes(db)) == 1
+    assert _writes(db) == [("failed", 0, 1)]
+
+
+def test_a_failed_lookup_uses_the_stored_phase(monkeypatch, clock):
+    """A recorded terminal phase can't change, so a workflow whose lookup fails
+    isn't left unresolved when one exists (PR #1048 re-review)."""
+    db = _db([_wrow("wf-a", "written")], stored=[_stored("wf-a", "Succeeded")])
+    monkeypatch.setattr(
+        worker, "get_workflow_status", _by_name({"wf-a": K8sStatusError("500")})
+    )
+    assert worker.sweep_once(db) is False, "the failed lookup still marks the cycle"
+    assert _writes(db) == [("complete", 1, 0)]

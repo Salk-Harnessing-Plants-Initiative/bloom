@@ -361,6 +361,18 @@ prettier 3.1.0 would rewrite all of them wholesale, so it was not applied.
       boundaries and offsets, a flaky sibling, and the startup warning.
   - **Docs:** docstrings, README, env comments and the spec delta are updated to match.
 
+- [x] 10.5 PR #1048 re-review of bc9ee951 (behaviour probes and mutation testing):
+  - **Blocker found:** `cyl-status-poller` was never given `WORKFLOWS_K8S_ENV_LABEL` (code default
+    `dev`; staging confirmed unset), so the new environment check would have read every staging and
+    prod workflow as gone. It is now passed to both status pollers, and
+    `tests/unit/test_cyl_status_poller_container.py` pins it to the dispatcher's value.
+  - A removed workflow's row-derived phase is now recorded before its rows are closed. The
+    close-out stamps `updated_at`, which had restarted the TTL guard.
+  - A failed lookup now uses a stored phase when one exists.
+  - The run-17 simulation now concludes at a 1% per-lookup error rate (141–146 cycles); before the
+    fix it never did.
+  - Mutation testing: 12 of 13 mutants killed; the survivor has no behavioural effect.
+
 ## 11. Verification for PR B, then after merge
 
 - [x] 11.1 Run `openspec validate --strict`, then each of:

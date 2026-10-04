@@ -315,20 +315,23 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
     """One run's effective-phase list: 'Failed' for each scan whose dispatch
     itself failed (status='failed', argo_workflow_name IS NULL), plus the
     effective phase of each distinct argo_workflow_name among the run's scans:
-    the live phase, else (on a verified NotFound) the stored phase, else a
-    removed workflow's row-derived phase (fix-cyl-poller-unconcluded-runs).
+    the live phase, else (on a verified NotFound or a failed lookup) the
+    stored phase (fix-cyl-poller-unconcluded-runs). A removed workflow's
+    row-derived phase is recorded as its stored phase before its rows are
+    closed, so the removal sticks.
     Also returns any_unknown: True if any workflow is unresolved this cycle (a
     verified NotFound with no stored phase that is not yet removed, or a
-    lookup that raised), excluded from phases rather than guessed. sweep_once
-    uses any_unknown to withhold every terminal conclusion. A lookup that
-    raises K8sConfigError/K8sStatusError makes only that workflow unresolved
-    and resets only its NotFound streak, so one flaky lookup can't restart a
-    large run's removal clock; it marks the cycle unclean. Any other
+    lookup that raised with no stored phase), excluded from phases rather than
+    guessed. sweep_once uses any_unknown to withhold every terminal conclusion.
+    A lookup that raises K8sConfigError/K8sStatusError resets only that
+    workflow's NotFound streak and marks the cycle unclean; with a stored
+    phase the workflow uses it, otherwise it is unresolved this cycle. Any other
     exception (a DB read) propagates to the caller, which leaves the run
     unsettled and resets all of its streaks.
 
-    This function also writes: it records live terminal phases and closes
-    out removed workflows' 'queued' rows (then re-reads the rows).
+    This function also writes: it records live terminal phases and removed
+    workflows' phases, and closes out removed workflows' 'queued' rows (then
+    re-reads the rows).
 
     Also returns done_count/failed_count (bloom #716,
     fix-cyl-pipeline-run-scan-status): counted from the SAME `rows` fetch
@@ -377,7 +380,10 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
                 exc,
             )
             _not_found.reset((run_id, name))
-            errored.add(name)
+            # A recorded terminal phase can't change, so it stands in for the
+            # failed lookup; only a workflow with none is unresolved.
+            if name not in stored:
+                errored.add(name)
             clean = False
             continue
         if phase is None:
@@ -388,7 +394,6 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
         if phase in _TERMINAL_WORKFLOW_PHASES and stored.get(name) != phase:
             clean = _record_phase_safely(client, run_id, name, phase) and clean
 
-    removed: list[str] = []
     closed_any = False
     for name in gone:
         if name in stored:
@@ -397,16 +402,30 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
         count, first_seen = _not_found.observe((run_id, name))
         if not _is_removed(name, rows, count, first_seen):
             continue
-        if any(
-            r.get("argo_workflow_name") == name and r.get("status") == "queued"
-            for r in rows
-        ):
+        own_rows = [r for r in rows if r.get("argo_workflow_name") == name]
+        # Its queued rows are about to be closed, so they count as failures.
+        phase = (
+            "Succeeded"
+            if all(r.get("status") in ("written", "reused") for r in own_rows)
+            else "Failed"
+        )
+        # Record first: the close-out stamps updated_at = now(), which would
+        # restart the TTL guard, so the removal must not depend on it again.
+        recorded, ok = _record_removed_phase(client, run_id, name, phase)
+        clean = clean and ok
+        if not recorded:
+            continue
+        stored[name] = phase
+        _not_found.reset((run_id, name))
+        if any(r.get("status") == "queued" for r in own_rows):
             closed, ok = _close_removed_workflow(client, run_id, name)
             clean = clean and ok
             if closed is None:
+                # The stored phase settles it next cycle; this cycle it waits,
+                # so the run can't conclude with its rows still queued.
+                errored.add(name)
                 continue
             closed_any = True
-        removed.append(name)
     if closed_any:
         rows = _fetch_run_rows(client, run_id)
 
@@ -427,16 +446,6 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
             phase = live[name]
         elif name in stored:
             phase = stored[name]
-        elif name in removed:
-            phase = (
-                "Succeeded"
-                if all(
-                    r.get("status") in ("written", "reused")
-                    for r in rows
-                    if r.get("argo_workflow_name") == name
-                )
-                else "Failed"
-            )
         else:
             any_unknown = True
             continue
@@ -534,6 +543,35 @@ def _record_phase_safely(client, run_id, name: str, phase: str) -> bool:
         )
         return False
     return True
+
+
+def _record_removed_phase(
+    client, run_id, name: str, phase: str
+) -> tuple[bool, bool]:
+    """Record a removed workflow's row-derived phase. Returns (recorded, whether
+    the cycle stays clean). Unrecorded, the workflow stays unresolved this
+    cycle and the removal is retried next cycle."""
+    try:
+        _record_phase(client, run_id, name, phase)
+    except Exception as exc:
+        if isinstance(exc, APIError) and exc.code == _SIGNATURE_NOT_FOUND_CODE:
+            logger.info(
+                "status_poller: run %s removal of %s deferred — RPC signature not "
+                "yet migrated: %s",
+                run_id,
+                name,
+                exc,
+            )
+            return False, True
+        logger.warning(
+            "status_poller: run %s failed to record removed workflow %s's phase, "
+            "will retry: %s",
+            run_id,
+            name,
+            exc,
+        )
+        return False, False
+    return True, True
 
 
 def _is_removed(name: str, rows: list[dict], count: int, first_seen: float) -> bool:

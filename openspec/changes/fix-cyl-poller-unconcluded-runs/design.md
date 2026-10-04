@@ -105,9 +105,10 @@ accepted because:
 
 ### D4. A removed workflow's phase comes from its rows
 
-- After its `'queued'` rows are closed, a removed workflow counts as `Succeeded` only if every row
-  is `'written'` or `'reused'`. Nothing is stored, because those rows are final and recomputing
-  gives the same answer.
+- A removed workflow counts as `Succeeded` only if every row is `'written'` or `'reused'`. That
+  phase is recorded in `cyl_pipeline_run_workflows` **before** its `'queued'` rows are closed. The
+  close-out stamps the rows' `updated_at`, which would restart the TTL guard, and a later failed
+  lookup would make the workflow unresolved again (PR #1048 re-review). So a removal has to stick.
 - If the close-out fails, `PGRST202` included, the workflow stays unresolved for that cycle.
   Otherwise its leftover `'queued'` rows would read as `Failed` in a run that was about to become
   final.

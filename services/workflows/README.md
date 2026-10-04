@@ -465,9 +465,18 @@ Argo deletes a finished Workflow `WORKFLOWS_K8S_TTL_SECONDS` after it ends.
     ran) at least `WORKFLOWS_K8S_TTL_SECONDS` ago. Argo
     can't have deleted it sooner, so a wrong namespace can't fail a young run.
 
-  The poller then closes the workflow's `'queued'` rows with "the workflow was
-  removed before Bloom saw it finish…", and takes its phase from its rows:
-  `Succeeded` when all are `'written'`/`'reused'`, else `Failed`.
+  The poller then records the workflow's phase from its rows (`Succeeded` when
+  all are `'written'`/`'reused'`, else `Failed`) and closes its `'queued'` rows
+  with "the workflow was removed before Bloom saw it finish…". Recording first
+  makes the removal stick: the close-out stamps `updated_at`, which would
+  otherwise restart the TTL bound.
+- **Failed lookups.** A lookup that fails resets only that workflow's count. With
+  a stored phase the workflow uses it; without one it is unresolved for that
+  cycle.
+- **Environment.** `cyl-status-poller` must get the same
+  `WORKFLOWS_K8S_ENV_LABEL` as `cyl-pipeline-worker`. Its ownership check compares
+  the `environment` label, so with the code default (`dev`) every staging or prod
+  workflow would read as gone.
 - **Unresolved workflows.** A workflow that is neither stored nor removed is
   unresolved. While any workflow is unresolved, the poller writes no terminal
   status at all, neither `'complete'` nor `'failed'`/`'partial'`, and the

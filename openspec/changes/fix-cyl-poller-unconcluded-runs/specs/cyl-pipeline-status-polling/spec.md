@@ -96,11 +96,16 @@ also compute counts), read that run's stored phases from `cyl_pipeline_run_workf
    `record_cyl_pipeline_workflow_phase` when it is `Succeeded`, `Failed` or `Error` and differs from
    the stored phase (a failed record call marks the cycle unclean, except `PGRST202`, and does not
    change the effective phase);
-2. otherwise (a verified NotFound for this run), the stored phase if one exists;
-3. otherwise, if the workflow is **removed** (below) and its `'queued'` rows were closed out this
-   cycle, `Succeeded` when every one of its rows is then `'written'` or `'reused'` and `Failed`
-   otherwise;
-4. otherwise the workflow is **unresolved** this cycle and contributes no phase.
+2. otherwise (a verified NotFound for this run, or a lookup that raised), the stored phase if one
+   exists — a recorded terminal phase can't change;
+3. otherwise the workflow is **unresolved** this cycle and contributes no phase.
+
+A **removed** workflow (below) gets a stored phase: its row-derived phase (`Succeeded` when every one
+of its rows is `'written'` or `'reused'`, `Failed` otherwise, its `'queued'` rows counting as
+failures) is recorded through `record_cyl_pipeline_workflow_phase` **before** its rows are closed,
+because the close-out stamps the rows' `updated_at` and would otherwise restart the TTL bound below.
+If that record fails (including `PGRST202`) the workflow stays unresolved this cycle and its removal is
+retried next cycle.
 
 A workflow is **removed** when it has no stored phase and all three hold: the poller's lookups of it
 for this run have returned a verified NotFound on at least `3` consecutive cycles in which it was
@@ -113,15 +118,18 @@ runs, all before it ends, so garbage collection cannot have happened earlier.
 When `k8s_client.TTL_SECONDS` is not positive, no workflow is ever removed and the poller logs a
 warning at startup. The consecutive count is kept in the poller's memory per `(run_id,
 argo_workflow_name)`: any lookup of that pair that is not a verified NotFound resets it; a lookup
-that raises `K8sStatusError` or `K8sConfigError` makes only that workflow unresolved this cycle (and
-the cycle unclean), so one flaky lookup can't restart a whole run's removal clock; an exception
+that raises `K8sStatusError` or `K8sConfigError` resets only that pair and marks the cycle unclean
+(with no stored phase the workflow is unresolved this cycle), so one flaky lookup can't restart a
+whole run's removal clock; an exception
 reading the run's rows resets every pair of that run; a workflow with a stored phase keeps no count;
 and a pair not looked up in a cycle, including every pair when the candidate fetch itself fails, is
-dropped. To close out a removed workflow's `'queued'` rows the poller SHALL call
-`close_cyl_pipeline_run_workflow_scans` with the message "the workflow was removed before Bloom saw
-it finish; check whether a result file exists before re-running prediction" and derive the phase from
-a fresh read of its rows; if that call fails (including `PGRST202`), the workflow stays unresolved
-this cycle and the cycle is unclean unless the failure is `PGRST202`.
+dropped. Once its phase is recorded, the poller SHALL close out a removed workflow's `'queued'` rows
+with `close_cyl_pipeline_run_workflow_scans` and the message "the workflow was removed before Bloom
+saw it finish; check whether a result file exists before re-running prediction"; if that call fails
+(including `PGRST202`), the workflow waits this cycle (so the run can't conclude with its rows still
+queued), its recorded phase settles it from the next cycle, and the cycle is unclean unless the
+failure is `PGRST202`. The poller's `WORKFLOWS_K8S_ENV_LABEL` SHALL be the value the dispatcher
+stamps, since the ownership check in `get_workflow_status` compares it.
 
 It SHALL then compute the run's rollup status (see the
 rollup requirement below), compute `done_count` (the number of that run's scan rows with `status IN
@@ -273,6 +281,18 @@ matching `dispatch_worker.py`'s established conventions for both.
 - **WHEN** `"wf-a"` returns a verified NotFound on 2 cycles, then `get_workflow_status` raises
   `K8sStatusError` for it on one cycle, then it returns a verified NotFound again
 - **THEN** the count restarts at 1 and the grace period restarts from that later NotFound
+
+#### Scenario: A removal sticks after its close-out
+
+- **WHEN** `"wf-a"` is removed and its `'queued'` rows are closed (which stamps their `updated_at`),
+  and on later cycles its lookup raises while sibling `"wf-b"` is still `Running`
+- **THEN** `"wf-a"`'s recorded phase is used on those cycles, and the run concludes on the first cycle
+  `"wf-b"` is terminal
+
+#### Scenario: A failed lookup uses the stored phase
+
+- **WHEN** `"wf-a"` has stored phase `Succeeded` and its lookup raises `K8sStatusError` every cycle
+- **THEN** the run concludes from the stored phase, and the cycle is unclean
 
 #### Scenario: A flaky sibling lookup does not stop a removal
 
