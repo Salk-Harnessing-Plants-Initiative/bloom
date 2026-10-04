@@ -20,9 +20,17 @@ no `run_manifest.json` is present. Otherwise discovery SHALL be scoped, or SHALL
 "Discovery is scoped to a present RunManifest" requirement.
 
 After every discovered envelope has been processed (ingested, skipped, or reported failed), and only
-when the run identity is not `None`, the command SHALL call
+when the run identity is not `None` and no envelope file this invocation attempted to ingest is
+reported failed with `retriable: true`, the command SHALL call
 `fail_cyl_pipeline_run_scans_without_result` (capability `cyl-trait-writeback`) exactly once,
-passing the run identity and a fixed, descriptive `p_error_message`. That call closes out,
+passing the run identity and a fixed, descriptive `p_error_message`. A missing manifest-declared
+scan_key, a missing run manifest, and a non-retriable envelope failure SHALL NOT prevent the call.
+When an attempted envelope did fail retriably, an automated retry of the write-back step could still
+write that scan's result, so the command SHALL make no reconciliation call, SHALL add no
+reconciliation entry to the batch result, and SHALL write one line to stderr saying that
+reconciliation was deferred to the status poller and how many envelopes failed retriably; the status
+poller (capability `cyl-pipeline-status-polling`) closes out this workflow's still-`'queued'` rows
+once the workflow's Argo phase is terminal or the run's rollup concludes. That call closes out,
 as `'failed'`, any `cyl_pipeline_run_scans` row for this workflow name that no envelope in this
 batch resolved. That includes a scan whose prediction failed before producing any file at all,
 which this command cannot discover directly, since it can only see files that exist. The same single
@@ -36,7 +44,8 @@ manual/local batch runs unaffected.
 
 A single envelope's failure at any stage (read, validate, blob construction/upload, or the RPC call
 itself) SHALL be isolated into that envelope's own failed `ScanResult`. It SHALL never abort the rest
-of the batch or prevent the end-of-batch reconciliation call from running. A failure of the
+of the batch. When that failure is retriable, it defers the end-of-batch reconciliation call as
+described above; otherwise it does not affect that call. A failure of the
 reconciliation call itself SHALL likewise be isolated: it is reported as a synthetic failed
 `ScanResult` (rather than raised), so the batch's own summary/`--json` output and exit code still
 reflect it. On success, the number of scans the call closed out SHALL be logged.
@@ -71,8 +80,9 @@ so the real outcome is never hidden, but SHALL exit zero.
 #### Scenario: ARGO_WORKFLOW_NAME set reconciles unresolved scans after the batch
 
 - **WHEN** the command runs with `ARGO_WORKFLOW_NAME` set to `"wf-a"`, `run_manifest.wf-a.json`
-  resolves, and one scan dispatched under that workflow name has no corresponding
-  `{scan_key}.result.json` file anywhere in `envelopes_dir` (its prediction never produced a result)
+  resolves, every envelope the batch attempts ingests (or is skipped as a no-op), and one scan
+  dispatched under that workflow name has no corresponding `{scan_key}.result.json` file anywhere in
+  `envelopes_dir` (its prediction never produced a result)
 - **THEN** after every discovered envelope is processed, the command calls
   `fail_cyl_pipeline_run_scans_without_result` once with `"wf-a"`, which marks that scan's
   `cyl_pipeline_run_scans` row `'failed'`
@@ -86,17 +96,49 @@ so the real outcome is never hidden, but SHALL exit zero.
 
 #### Scenario: The reconciliation call happens exactly once regardless of batch size
 
-- **WHEN** `ARGO_WORKFLOW_NAME` is set, the run's manifest resolves, and the batch contains any
-  number of envelopes (including zero, when none of the manifest's declared files are present)
+- **WHEN** `ARGO_WORKFLOW_NAME` is set, the run's manifest resolves, no envelope the batch attempts
+  fails retriably, and the batch contains any number of envelopes (including zero, when none of the
+  manifest's declared files are present)
 - **THEN** `fail_cyl_pipeline_run_scans_without_result` is called exactly once, after all envelopes
   (if any) have been processed — never once per envelope
 
-#### Scenario: An unreadable envelope file does not abort the batch or skip reconciliation
+#### Scenario: An unreadable envelope file does not abort the batch
 
 - **WHEN** one envelope file in the batch cannot be read as UTF-8 text (e.g. truncated mid-write by
   an OOM-killed producer), and `ARGO_WORKFLOW_NAME` is set
-- **THEN** that envelope is reported as a failed `ScanResult`, every other envelope in the batch is
-  still ingested normally, and the end-of-batch reconciliation call still runs
+- **THEN** that envelope is reported as a failed, retriable `ScanResult`, every other envelope in the
+  batch is still ingested normally, and the command exits non-zero
+- **AND** because that failure is retriable, no reconciliation call is made; the status poller
+  closes out any row still `'queued'` once the workflow is terminal
+
+#### Scenario: A retriable envelope failure defers reconciliation to the status poller
+
+- **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, `run_manifest.wf-a.json` lists `scan_1` and `scan_2`,
+  `scan_1` ingests, `scan_2`'s ingest fails with `retriable: true` (e.g. a transient RPC or network
+  error), and a third scan dispatched under `"wf-a"` is not listed in the manifest
+- **THEN** the command makes no `fail_cyl_pipeline_run_scans_without_result` call and reports no
+  reconciliation entry, so the rows for `scan_2` and the third scan stay `'queued'`
+- **AND** it writes a stderr line saying reconciliation was deferred to the status poller because
+  `1` envelope failed retriably, and exits non-zero
+
+#### Scenario: A retry of the step marks written a scan an earlier attempt failed to ingest
+
+- **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, `run_manifest.wf-a.json` lists `scan_1` and `scan_2`,
+  a third scan dispatched under `"wf-a"` is not listed, and an earlier attempt of this write-back
+  step in the same Workflow wrote `scan_1` but failed retriably on `scan_2` (so it made no
+  reconciliation call), and this attempt now ingests `scan_2` and re-delivers `scan_1` as a no-op
+- **THEN** `scan_2`'s `cyl_pipeline_run_scans` row becomes `'written'` with
+  `status_update_matched: true`, `scan_1`'s stays `'written'`, the command makes its one
+  reconciliation call, which closes out only the third scan as `'failed'`, and the command exits
+  zero
+
+#### Scenario: Missing files and non-retriable failures do not defer reconciliation
+
+- **WHEN** `ARGO_WORKFLOW_NAME` is `"wf-a"`, and the batch's only failures are a manifest-declared
+  scan_key with no matching file and an envelope whose `status_update_matched` came back `false`
+  (`retriable: false`)
+- **THEN** the command still makes its one reconciliation call, writes no deferral line, and exits
+  non-zero because of the missing scan_key
 
 #### Scenario: A reconciliation-call failure is isolated, not a crash
 
@@ -205,9 +247,21 @@ batch output root. When given, for each envelope the command SHALL look up
 `predictions_dir/{scan_key}/{scan_key}.predictions.json` (the envelope's own `scan_key`) and, if
 present, construct + verify + upload its blobs via the same `load_predictions_manifest`/
 `build_pending_blobs`/`upload_pending_blobs` helpers `cyl ingest-result --predictions-dir` uses,
-merging the resulting blobs into that envelope before the RPC call. A missing manifest or a blob
+merging the resulting blobs into that envelope before the RPC call — unless that envelope's
+`idempotency_key` is already present in `cyl_trait_sources`, in which case the upload and the
+merge are both skipped (see below). A missing manifest or a blob
 upload failure for one envelope SHALL be recorded as that envelope's failure (no RPC call for
 it) and SHALL NOT prevent other envelopes in the batch from being processed.
+
+After constructing that envelope's blobs and before uploading them, the command SHALL check
+whether `cyl_trait_sources` already holds that envelope's `provenance.idempotency_key`; if it
+does, the command SHALL skip the upload and the blobs merge for that envelope and proceed to the
+RPC call, which reports the delivery as a no-op (see `cyl-ingest-cli`'s "An already-ingested
+envelope skips blob upload"). Because the check follows manifest loading and blob construction,
+a missing manifest remains that envelope's failure whether or not it was already ingested. The
+check SHALL fail open: an error reading `cyl_trait_sources` is treated as "not already ingested",
+MUST NOT be recorded as that envelope's failure, and SHALL be surfaced as a warning on that
+envelope's reported result rather than only in a log.
 
 #### Scenario: Blobs are uploaded per-scan from predict's nested output
 
@@ -223,6 +277,22 @@ it) and SHALL NOT prevent other envelopes in the batch from being processed.
   `{scan_key}.predictions.json` under it
 - **THEN** that envelope is reported `failed` with a message naming the missing manifest, no RPC
   call is made for it, and the other envelopes in the batch are still processed normally
+
+#### Scenario: An already-ingested envelope in the batch skips its upload
+
+- **WHEN** one envelope in the batch has an `idempotency_key` already present in
+  `cyl_trait_sources`, and its `.slp` files on disk differ byte-wise from those already stored
+- **THEN** that envelope's blobs are constructed but not uploaded and not merged, it is reported
+  `skipped` via the RPC's `was_noop=true`, the batch does not count it as a failure, and the
+  other envelopes are processed normally
+
+#### Scenario: One envelope's check failing does not fail that envelope
+
+- **WHEN** the `cyl_trait_sources` lookup raises for one envelope in the batch while succeeding
+  for the others
+- **THEN** that envelope falls through to construct-and-upload as it would without the check and
+  is reported on its own merits, its result carries a warning naming the degraded check, and the
+  remaining envelopes are unaffected
 
 ### Requirement: Machine-readable batch result output
 

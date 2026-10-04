@@ -480,8 +480,10 @@ counts will not reflect the data just written.
 #### Scenario: A late delivery after the scan was already marked failed does not resurrect it
 
 - **WHEN** the RPC is called with a valid envelope and a `p_argo_workflow_name` matching a
-  `cyl_pipeline_run_scans` row whose `status` is already `'failed'` (e.g.
-  `fail_cyl_pipeline_run_scans_without_result` already closed it out earlier in the same batch)
+  `cyl_pipeline_run_scans` row whose `status` is already `'failed'` (e.g. the
+  status poller closed it out with `fail_cyl_pipeline_run_scans_without_result` after its workflow
+  ended, and the envelope is then delivered under that workflow name by an `argo retry` of that
+  workflow or a manual `cyl ingest-result` run with that `ARGO_WORKFLOW_NAME`)
 - **THEN** the envelope's trait/source/blob rows are still written as usual (write-back itself is
   unaffected), but the `cyl_pipeline_run_scans` row's `status` remains `'failed'` — it is not
   overwritten to `'written'` — and the returned summary's `status_update_matched` is `false`
@@ -877,9 +879,12 @@ A row already `'written'`, `'reused'`, or `'failed'` for this workflow name is l
 function only closes out scans write-back never resolved either way. `EXECUTE` SHALL be revoked from
 `PUBLIC`, `anon`, and `authenticated`, and granted only to `bloom_workflows`, matching this program's
 established `SECURITY DEFINER` wrapper convention. `bloomctl cyl batch-ingest-result` SHALL call this
-function once, after ingesting every envelope discovered for the batch, passing the `ARGO_WORKFLOW_NAME`
-environment variable Argo sets on the write-back container — and SHALL skip the call entirely when that
-environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
+function at most once per invocation, after ingesting every envelope discovered for the batch, passing
+the `ARGO_WORKFLOW_NAME` environment variable Argo sets on the write-back container. It SHALL skip
+the call when an envelope it attempted failed retriably (capability `cyl-batch-ingest-result`);
+the status poller then makes an equivalent call, with its own `p_error_message`, once that workflow's
+Argo phase is terminal or the run's rollup concludes (capability `cyl-pipeline-status-polling`). `bloomctl` SHALL also skip
+the call entirely when that environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
 `cyl_pipeline_run_scans` rows (if any happen to exist) untouched.
 
 #### Scenario: A scan with no envelope is marked failed
@@ -916,4 +921,493 @@ environment variable is unset (a manual/local batch run with no pipeline-run con
   grantee, and `bloom_user`/`bloom_writer`/`bloom_admin` against this function's signature
 - **THEN** each reports `EXECUTE` as `false`
 - **AND** the same check for `bloom_workflows` reports `true`
+
+### Requirement: Trait source idempotency key is readable by the write-back identity
+
+`bloom_workflows` SHALL hold column-scoped `SELECT (idempotency_key)` on
+`public.cyl_trait_sources`, so that `bloomctl` can determine whether a delivery has already been
+ingested before uploading its blobs. Postgres requires `SELECT` on every column a query
+references, including those in a `WHERE` clause, so this grant is what permits filtering on
+`idempotency_key`; it exists to let that filter use the existing
+`cyl_trait_sources_idempotency_key_key` UNIQUE index rather than a `metadata->>` expression.
+
+This grant SHALL widen no information the role can already reach: `SELECT (id, metadata)` on the
+same table, together with the `workflows_read_cyl_trait_sources` RLS policy, is already granted
+(`20260730120000_create_cyl_pipeline_runs.sql:167-169` and `:172`), and the RPC stores `metadata`
+as the envelope's `provenance` object, which itself contains `idempotency_key`. The grant adds an
+indexed access path to a value the role can already read, not a new capability.
+
+The grant SHALL be additive only, and SHALL remain column-scoped. No `INSERT`, `UPDATE`, or
+`DELETE` privilege is added on `cyl_trait_sources`; no column-less `GRANT SELECT` on the table is
+introduced, since that would silently reach every column; and the execute-only posture on the
+write-back RPC (`20260720000000_grant_bloom_workflows_writeback_rpc.sql`) is unchanged.
+
+A paired rollback SHALL revoke only this column. A bare `REVOKE SELECT` would strip the
+pre-existing `(id, metadata)` grant that the dedup-preview read path depends on.
+
+#### Scenario: bloom_workflows can filter on the key
+
+- **WHEN** a session with `SET LOCAL ROLE bloom_workflows` selects `id` from
+  `cyl_trait_sources` filtered on `idempotency_key`
+- **THEN** the query succeeds, returning the matching row for a seeded key and zero rows for an
+  absent one
+
+#### Scenario: The grant confers no write access
+
+- **WHEN** `bloom_workflows` attempts an `INSERT`, `UPDATE`, or `DELETE` on
+  `cyl_trait_sources`
+- **THEN** the statement is refused, exactly as before this grant
+
+#### Scenario: Other columns remain ungranted
+
+- **WHEN** `bloom_workflows` selects a `cyl_trait_sources` column other than `id`,
+  `metadata`, or `idempotency_key`
+- **THEN** the statement is refused with a permission error
+
+#### Scenario: The rollback leaves the pre-existing grant intact
+
+- **WHEN** the paired rollback is applied
+- **THEN** `SELECT (idempotency_key)` is revoked from `bloom_workflows` while
+  `SELECT (id, metadata)` remains granted
+
+### Requirement: Trait source recipe and run columns
+
+`cyl_trait_sources` SHALL carry nullable `recipe_key text`, `recipe_key_version smallint`, `scan_id bigint`, `argo_workflow_name text` and `cyl_pipeline_run_id bigint` columns (together, the _recipe and run columns_), with `scan_id` referencing `cyl_scans(id)` and `cyl_pipeline_run_id` referencing `cyl_pipeline_runs(id)`, both `ON DELETE SET NULL`.
+
+**Named constraints.** The foreign keys SHALL be named `cyl_trait_sources_scan_id_fkey` and
+`cyl_trait_sources_cyl_pipeline_run_id_fkey`. Two CHECK constraints SHALL restrict the new
+columns:
+
+- `cyl_trait_sources_recipe_key_format_check`: `recipe_key` is NULL, matches `^[0-9a-f]{64}$`, or
+  matches `^legacy:[0-9]+$`;
+- `cyl_trait_sources_recipe_key_version_check`: `recipe_key_version` is NULL or `1`.
+
+**Indexes.** `cyl_trait_sources(recipe_key)`, `cyl_trait_sources(scan_id)` and
+`cyl_pipeline_run_scans(argo_workflow_name)` SHALL be indexed.
+
+**Access.** None of the recipe and run columns SHALL be readable by `bloom_workflows`. Its
+column-scoped `SELECT` on this table SHALL be exactly `(id, metadata, idempotency_key)`.
+
+#### Scenario: A malformed recipe_key is rejected
+
+- **WHEN** a row is written with `recipe_key` set to any of `'unattributed'`, `'legacy:'`,
+  `'legacy:-1'`, 64 uppercase hex characters, 63 lowercase hex characters, or a valid key followed
+  by a newline
+- **THEN** the write is rejected by `cyl_trait_sources_recipe_key_format_check`
+
+#### Scenario: Valid recipe_key forms are accepted
+
+- **WHEN** a row is written with `recipe_key` set to 64 lowercase hex characters, or to
+  `'legacy:12'`, with `recipe_key_version = 1`
+- **THEN** the write succeeds
+
+#### Scenario: A recipe_key_version other than 1 is rejected
+
+- **WHEN** a row is written with `recipe_key_version = 2`
+- **THEN** the write is rejected by `cyl_trait_sources_recipe_key_version_check`
+
+#### Scenario: Deleting a scan or run keeps the source
+
+- **WHEN** a scan whose trait rows have been deleted is itself deleted, or a `cyl_pipeline_runs`
+  row with no remaining `cyl_pipeline_run_scans` rows, referenced by a source, is deleted
+- **THEN** the delete succeeds, and the source row remains with `scan_id` (respectively
+  `cyl_pipeline_run_id`) set to NULL
+
+#### Scenario: bloom_workflows cannot read the new columns
+
+- **WHEN** a session assumes `bloom_workflows` and selects any of `recipe_key`,
+  `recipe_key_version`, `scan_id`, `argo_workflow_name` or `cyl_pipeline_run_id` from
+  `cyl_trait_sources`
+- **THEN** the query fails with insufficient privilege
+
+### Requirement: Recipe key v1 definition
+
+Bloom SHALL compute `recipe_key` v1 with `cyl_trait_recipe_key_v1(jsonb)`, defined as the lowercase hex sha256 of the UTF-8 text of `cyl_trait_recipe_payload_v1(jsonb)`.
+
+**The payload.** For an object argument, `cyl_trait_recipe_payload_v1` SHALL return a jsonb object
+with these keys:
+
+- `models`: one `[registry_id, version, weights_checksum]` array per element of
+  `predict_models`, taken with `->>` so that a missing field is JSON `null`.
+  - The arrays are ordered by their `jsonb::text` under `COLLATE "C"`, with duplicates kept.
+  - A non-array `predict_models` yields an empty list.
+- `predict_code_sha` and `traits_code_sha`, as text or JSON `null`.
+- `predict_output_params`, present only when it is a non-empty jsonb object.
+
+**What the key does not depend on.** It SHALL NOT depend on any other Provenance field. That
+includes `scan_key`, `inputs`, `params` (and so `param_hash`), `idempotency_key`,
+`contract_version`, `pipeline_run_id`, `worker_request_id`, `argo_workflow_uid`, `argo_node_id`,
+`produced_at`, `traits_sleap_roots_version`, both container digests, `predict_inference_config`,
+and each model's `root_type` and `sleap_nn_version`.
+
+**How the helpers behave.**
+
+- Both helpers SHALL be `IMMUTABLE` and owned by `postgres`.
+- Both SHALL return NULL for NULL or non-object input.
+- Neither SHALL raise for any jsonb input.
+
+**Access.** `EXECUTE` on both helpers SHALL be revoked from `PUBLIC` and `anon`, and granted to
+`bloom_agent`, `bloom_user`, `bloom_admin` and `authenticated`. `service_role` keeps the
+`EXECUTE` it holds through Supabase default privileges.
+
+#### Scenario: The key ignores fields outside the payload
+
+- **WHEN** two Provenance objects differ only in one field outside the payload, for each such
+  field in the list above
+- **THEN** `cyl_trait_recipe_key_v1` returns the same value for both
+
+#### Scenario: The key changes with any payload input
+
+- **WHEN** two Provenance objects differ in a model's `registry_id`, `version` or
+  `weights_checksum` (including `null` versus `""`), in either code sha, or in a non-empty
+  `predict_output_params`
+- **THEN** `cyl_trait_recipe_key_v1` returns different values
+
+#### Scenario: Model order and empty output params do not change the key
+
+- **WHEN** Provenance objects list the same models in different orders, or carry
+  `predict_output_params` as `null`, as `{}`, or not at all
+- **THEN** each of those groups yields a single `cyl_trait_recipe_key_v1` value
+
+#### Scenario: A model repeated for two root types is counted twice
+
+- **WHEN** one Provenance lists a model once, and another lists the same triple twice under two
+  `root_type` values
+- **THEN** the two keys differ
+
+#### Scenario: Odd shapes never raise
+
+- **WHEN** either helper is called with `'{}'`, with no `predict_models`, with `predict_models` as
+  `[]`, an object or a string, with a scalar entry in `predict_models`, with an entry missing
+  `weights_checksum`, or with `predict_output_params` as a string or an array
+- **THEN** each call returns without error, `cyl_trait_recipe_key_v1` returns 64 lowercase hex
+  characters, and it returns NULL for `NULL`, `'[]'` and `'"x"'`
+
+#### Scenario: The definition hashes to the key
+
+- **WHEN** `encode(sha256(convert_to(cyl_trait_recipe_payload_v1(m)::text, 'UTF8')), 'hex')` is
+  computed for any object `m`
+- **THEN** it equals `cyl_trait_recipe_key_v1(m)`
+
+#### Scenario: The key partitions Provenances as contracts identity does
+
+- **WHEN** the committed golden vectors, generated with sleap-roots-contracts `0.1.0a9`, are
+  hashed by `cyl_trait_recipe_key_v1`
+- **THEN** two vectors share a key exactly when their contracts idempotency payloads, with
+  `scan_key`, `images_checksum` and `param_hash` held equal, are equal. The only exceptions are
+  vector pairs marked as the documented divergence: an integer versus an integer-valued float
+  (`1` versus `1.0`), which contracts' `canonical_json` collapses and jsonb keeps distinct.
+
+### Requirement: Write-back stamps each new source with its recipe, scan, Workflow and run
+
+When a delivery creates a source, `insert_cyl_result_envelope(jsonb, text)` SHALL set that source's recipe and run columns in the same transaction.
+
+**The values:**
+
+- `recipe_key` is `cyl_trait_recipe_key_v1(provenance)`, and `recipe_key_version` is `1`.
+- `scan_id` is the scan resolved from `provenance.inputs.image_ids`.
+- `argo_workflow_name` is `p_argo_workflow_name`.
+- `cyl_pipeline_run_id` is the single distinct `run_id` among `cyl_pipeline_run_scans` rows whose
+  `argo_workflow_name` equals `p_argo_workflow_name`. It is NULL when `p_argo_workflow_name` is
+  NULL, when no such row exists, or when more than one distinct `run_id` matches. The lookup SHALL
+  NOT require a row for the resolved scan.
+
+**On a no-op re-delivery,** the RPC SHALL NOT change any of the recipe and run columns, whatever
+`p_argo_workflow_name` it receives. These columns are written once, by the delivery that creates
+the source or by the backfill. The provenance-immutability rule continues to cover `metadata`,
+`name` and `idempotency_key`.
+
+**Everything else is unchanged.** The RPC SHALL keep:
+
+- the `(jsonb, text)` signature, as its only overload;
+- its validation;
+- its return value, including `status_update_matched`;
+- its run-scan status updates, which on a no-op delivery include the fallback specified in
+  "Write-back RPC ingests a ResultEnvelope";
+- its `EXECUTE` grants: revoked from `PUBLIC`, `anon` and `authenticated`, and granted to
+  `bloom_writer`, `service_role`, `bloom_admin` and `bloom_workflows`.
+
+It SHALL NOT insert `cyl_pipeline_run_scans` rows.
+
+#### Scenario: A fresh delivery records its recipe and scan
+
+- **WHEN** a valid envelope is ingested for the first time
+- **THEN** its new source has `recipe_key` equal to `cyl_trait_recipe_key_v1(metadata)`,
+  `recipe_key_version = 1`, and `scan_id` equal to the `scan_id` the call returns
+
+#### Scenario: A Bloom-dispatched delivery records its Workflow and run
+
+- **WHEN** an envelope is ingested with `p_argo_workflow_name` set to Workflow `W`, and `W`
+  appears on `cyl_pipeline_run_scans` rows of exactly one run `R`
+- **THEN** the new source has `argo_workflow_name = W` and `cyl_pipeline_run_id = R`
+
+#### Scenario: An unrequested scan still records its run
+
+- **WHEN** an envelope for scan `S` is ingested under Workflow `W`, `W` belongs to run `R`, and `R`
+  has no run-scan row for `S`
+- **THEN** the new source has `cyl_pipeline_run_id = R`, the number of `cyl_pipeline_run_scans`
+  rows is unchanged, and `status_update_matched` is `false`
+
+#### Scenario: A hand-submitted delivery records only its Workflow
+
+- **WHEN** an envelope is ingested with `p_argo_workflow_name` set to `W`, and no
+  `cyl_pipeline_run_scans` row carries `W`
+- **THEN** the new source has `argo_workflow_name = W` and `cyl_pipeline_run_id` NULL
+
+#### Scenario: An ambiguous Workflow name records no run
+
+- **WHEN** `cyl_pipeline_run_scans` rows of two different runs both carry the ingesting
+  `p_argo_workflow_name`
+- **THEN** the new source has `cyl_pipeline_run_id` NULL
+
+#### Scenario: A delivery with no Workflow name records neither
+
+- **WHEN** an envelope is ingested with `p_argo_workflow_name` NULL
+- **THEN** the new source has `argo_workflow_name` and `cyl_pipeline_run_id` NULL, and its
+  `recipe_key` and `scan_id` set
+
+#### Scenario: A no-op re-delivery leaves the stamps alone
+
+- **WHEN** an already-ingested envelope is delivered again under a different
+  `p_argo_workflow_name`
+- **THEN** the existing source's recipe and run columns are unchanged
+
+#### Scenario: A failed delivery leaves no source
+
+- **WHEN** a delivery fails on an unresolvable `image_ids`, a non-scan-grain trait, or a
+  non-integer blob `file_size`
+- **THEN** the call raises, and no `cyl_trait_sources` row exists for its `idempotency_key`
+
+#### Scenario: The re-delivery fallback still works
+
+- **WHEN** an envelope first ingested under Workflow `wf-a` is re-delivered under `wf-b`, and
+  `wf-b` has a queued row for the same scan
+- **THEN** `status_update_matched` is `true` and the `wf-b` row is `'written'` with the original
+  `source_id`
+
+### Requirement: Existing trait sources are backfilled with recipe identity
+
+Bloom SHALL provide `cyl_backfill_trait_source_recipe_identity()`, which sets `recipe_key`, `recipe_key_version` and `scan_id` wherever they are NULL on `cyl_trait_sources`, and the recipe-identity and write-back migrations SHALL each call it.
+
+**What the backfill sets:**
+
+- `recipe_key` is `cyl_trait_recipe_key_v1(metadata)` when `metadata` is a jsonb object, and
+  `'legacy:' || id` otherwise (NULL or any non-object `metadata`).
+- `recipe_key_version` is `1` wherever `recipe_key` is set.
+- `scan_id` is set only for sources whose `metadata` is an object, and only when
+  `metadata->'inputs'->'image_ids'` meets all of these conditions:
+
+  - it is a non-empty array;
+  - every `jsonb_array_elements_text` value is non-NULL and matches `^[0-9]{1,18}$`;
+  - every element matches a `cyl_images` row with a non-NULL `scan_id`;
+  - those rows name exactly one distinct scan.
+
+  These are the write-back RPC's resolution conditions, except that a failure leaves NULL where
+  the RPC raises, and the RPC's `^[0-9]+$` is capped at 18 digits so the `::bigint` cast cannot
+  raise. The RPC also rejects a JSON `null` element: it counts as a requested id that matches no
+  image.
+
+**Failures leave NULL.** A source that fails the `scan_id` rule SHALL keep a NULL `scan_id`. The
+function SHALL report, with `RAISE NOTICE 'cyl recipe backfill: % object-metadata source(s) left
+without a scan_id'`, the number of object-`metadata` sources left with a NULL `scan_id` after it runs. It
+SHALL NOT raise.
+
+**What it leaves alone.** It SHALL NOT set `argo_workflow_name` or `cyl_pipeline_run_id`, SHALL
+NOT modify `metadata`, `name` or `idempotency_key`, and SHALL NOT read `cyl_scan_traits`.
+
+**Access.** It SHALL be owned by `postgres`, with `EXECUTE` revoked from `PUBLIC`, `anon`,
+`authenticated` and `service_role`.
+
+#### Scenario: Pipeline sources get a recipe and a scan
+
+- **WHEN** the backfill runs over a pipeline source whose `image_ids` resolve to one scan
+- **THEN** its `recipe_key` equals `cyl_trait_recipe_key_v1(metadata)`, its `recipe_key_version`
+  is 1, and its `scan_id` is that scan
+
+#### Scenario: Backfilled scan_id agrees with trait rows
+
+- **WHEN** a backfilled pipeline source's `cyl_scan_traits` rows were written by the write-back
+  RPC
+- **THEN** each of those rows has `scan_id` equal to the source's `scan_id`
+
+#### Scenario: Legacy sources get a pseudo-recipe
+
+- **WHEN** the backfill runs over a source whose `metadata` is NULL, or is a non-object such as
+  `'[]'` or JSON `null`
+- **THEN** its `recipe_key` is `legacy:<its id>`, its `recipe_key_version` is 1, and its `scan_id`
+  is NULL
+
+#### Scenario: Unresolvable image_ids leave scan_id NULL without failing
+
+- **WHEN** the backfill runs over sources whose `image_ids` are missing, not an array, contain
+  `"abc"`, match no image, or resolve to two scans
+- **THEN** it completes, those sources keep `scan_id` NULL, and its NOTICE reports that number
+
+#### Scenario: Run stamps are not invented
+
+- **WHEN** the backfill runs over any existing source
+- **THEN** that source's `argo_workflow_name` and `cyl_pipeline_run_id` remain NULL
+
+#### Scenario: A source written between the two migrations is backfilled
+
+- **WHEN** a source is created by the `20260928130000` RPC body after the recipe-identity migration
+  commits and before the write-back migration runs
+- **THEN** after the write-back migration, that source has its `recipe_key` and `scan_id` set
+
+#### Scenario: Re-running the backfill changes nothing
+
+- **WHEN** the backfill runs a second time
+- **THEN** no row's recipe and run columns change
+
+### Requirement: Recipe-identity migrations are re-runnable and have exact rollbacks
+
+The recipe-identity migration (`*_add_cyl_trait_recipe_key.sql`) and the write-back migration (`*_stamp_cyl_trait_source_recipe_and_run.sql`) SHALL be additive and forward-only, re-runnable as the newest migration, and paired with rollback scripts under `supabase/rollbacks/`.
+
+**The recipe-identity migration** SHALL set `lock_timeout` for its transaction, and SHALL end with
+`NOTIFY pgrst, 'reload schema'`.
+
+**The write-back rollback** SHALL restore `insert_cyl_result_envelope(jsonb, text)` to the
+`20260928130000` body with the `20260928130100` grants.
+
+**The recipe-identity rollback:**
+
+- SHALL raise without changing anything if the body of any live function other than the three it
+  drops still references `recipe_key`, `cyl_pipeline_run_id`, `cyl_trait_recipe_key_v1` or
+  `cyl_trait_recipe_payload_v1`;
+- otherwise SHALL drop the recipe and run columns with their constraints and indexes, the
+  `cyl_pipeline_run_scans_argo_workflow_name_idx` index, the two helpers, and the backfill
+  function.
+
+**Types.** The generated `database.types.ts` copies SHALL gain the recipe and run columns.
+
+#### Scenario: Re-applying the migration bodies is idempotent
+
+- **WHEN** each migration's SQL body is executed a second time over seeded data
+- **THEN** no error is raised, no backfilled value changes, and exactly one
+  `insert_cyl_result_envelope` overload exists, with two arguments
+
+#### Scenario: The write-back rollback restores a9 behavior and grants
+
+- **WHEN** the write-back rollback is applied after the forward migration
+- **THEN** a fresh delivery leaves all the recipe and run columns NULL, the cross-Workflow re-delivery
+  fallback still reports `status_update_matched = true`, and `EXECUTE` is held exactly as in
+  `20260928130100`
+
+#### Scenario: The recipe-identity rollback refuses to run out of order
+
+- **WHEN** the recipe-identity rollback is applied while the stamping body of
+  `insert_cyl_result_envelope` is live
+- **THEN** it raises, and every column and function remains
+
+### Requirement: cyl_scan_latest_source is maintained on every write
+
+Bloom SHALL maintain a `cyl_scan_latest_source` table (`scan_id BIGINT PRIMARY KEY REFERENCES
+cyl_scans(id) ON DELETE CASCADE`, `max_source_id BIGINT`) holding, for every scan that has at least one
+`cyl_scan_traits` row, that scan's current `max(source_id)` — the same value `cyl_scan_traits_source`'s
+`is_latest` column is defined against (see the `cyl-trait-read` capability). This table SHALL be kept
+correct by a trigger on `cyl_scan_traits` covering every write path that can change what "latest" means
+for a scan — inserts, updates, and deletes — regardless of whether the write came through the write-back
+RPC or `bloom_admin`'s break-glass direct-table access. An `UPDATE` that reassigns a row's `scan_id` to a
+different scan SHALL recompute `max_source_id` for BOTH the row's new scan and its former scan — not only
+the new one — since a row moving away from a scan can change that scan's own maximum just as much as a
+row arriving does. The maintaining write SHALL be serialized per `scan_id` (e.g. via an advisory lock
+scoped to `scan_id`; a cross-scan reassignment acquiring both scans' locks in a fixed, e.g. sorted, order
+to avoid deadlocking against another reassignment moving rows in the opposite direction) so that two
+concurrent writers delivering data for the same scan cannot leave `max_source_id` reflecting only one
+writer's data instead of the true combined maximum. Pre-existing rows SHALL be backfilled by a single aggregate query
+(`INSERT ... SELECT scan_id, max(source_id) ... GROUP BY scan_id`) run inside the same migration
+transaction that creates the table and trigger, with concurrent writers to `cyl_scan_traits` blocked
+(not silently missed) for the backfill's short duration so no scan can fall into a gap where neither the
+backfill nor a live trigger firing populates its row. Row-level security SHALL be enabled on this table
+with the same policy set as `cyl_scan_traits` itself (`bloom_admin` full access, `bloom_agent`/
+`bloom_user`/`authenticated` read-only, all permissive) — an unauthenticated (`anon`) caller SHALL NOT be
+able to read or write this table, regardless of any table-level grant Supabase applies by default to new
+tables.
+
+#### Scenario: A fresh insert sets max_source_id for a new scan
+
+- **WHEN** `insert_cyl_result_envelope` delivers the first-ever trait rows for a scan, all from one
+  source
+- **THEN** `cyl_scan_latest_source` gains a row for that scan with `max_source_id` equal to that source's
+  id
+
+#### Scenario: A rerun updates max_source_id to the new higher source
+
+- **WHEN** a scan already has a `cyl_scan_latest_source` row and a rerun delivers trait rows under a new,
+  higher `source_id`
+- **THEN** that scan's row is updated so `max_source_id` equals the new source's id
+
+#### Scenario: Deleting the current-latest rows promotes the next-highest source
+
+- **WHEN** the current-latest source's rows for a scan are deleted and an older source's rows remain
+- **THEN** that scan's `max_source_id` becomes the remaining older source's id
+
+#### Scenario: A direct break-glass write is also maintained
+
+- **WHEN** `bloom_admin` inserts, updates, or deletes `cyl_scan_traits` rows directly (bypassing the
+  write-back RPC)
+- **THEN** `cyl_scan_latest_source` is still maintained correctly for the affected scan
+
+#### Scenario: Reassigning a row's scan_id recomputes both the old and new scan
+
+- **WHEN** a row holding a scan's current `max_source_id` is `UPDATE`d to a different `scan_id` (e.g. a
+  `bloom_admin` correction of a mis-attributed trait row), and the former scan still has other rows
+  remaining
+- **THEN** the former scan's `max_source_id` falls back to the true maximum of its remaining rows (not
+  left stuck at the departed value), and the new scan's `max_source_id` reflects the true maximum across
+  its own existing rows plus the newly-arrived one
+
+#### Scenario: Concurrent writers to the same new scan converge to the true maximum
+
+- **WHEN** two concurrent transactions each deliver the first-ever trait rows for the same brand-new
+  `scan_id`, under different `source_id`s, with both transactions in flight before either commits
+- **THEN** after both commit, that scan's `cyl_scan_latest_source` row holds the higher of the two
+  `source_id`s — not whichever transaction happened to commit last with a value it computed before
+  seeing the other's data
+
+#### Scenario: Concurrent writers to an existing scan converge to the true maximum
+
+- **WHEN** two concurrent transactions each deliver a rerun's trait rows for the same existing scan_id,
+  under different, higher `source_id`s, with both transactions in flight before either commits
+- **THEN** after both commit, that scan's `cyl_scan_latest_source` row holds the higher of the two new
+  `source_id`s
+
+#### Scenario: Concurrent writers to different scans do not block each other
+
+- **WHEN** two concurrent transactions each write trait rows for two DIFFERENT, unrelated `scan_id`s,
+  with one transaction's write held open (uncommitted) while the other's runs
+- **THEN** the second transaction's write completes without waiting on the first — the advisory lock
+  serializing writes is scoped to each individual `scan_id`, not broadened to something coarser (a fixed
+  key, or the whole table) that would serialize unrelated scans against each other
+
+#### Scenario: The one-time backfill matches a live per-scan computation
+
+- **WHEN** the backfill runs against pre-existing `cyl_scan_traits` data
+- **THEN** every scan's resulting `max_source_id` equals a hand-computed `max(source_id)` for that scan's
+  rows
+
+#### Scenario: A write concurrent with the backfill migration is not lost
+
+- **WHEN** a write-back call attempts to insert `cyl_scan_traits` rows for a scan while the backfill
+  migration's transaction is still open
+- **THEN** that write is not silently missed — it either blocks until the migration transaction commits
+  and then proceeds (seeing the newly-created trigger, which maintains its scan's row correctly), or, if
+  it started before the migration and completed before the backfill's own read, is captured directly by
+  the backfill
+
+#### Scenario: An unauthenticated caller cannot read or write cyl_scan_latest_source
+
+- **WHEN** an `anon` (unauthenticated) caller selects from or writes to `cyl_scan_latest_source`
+- **THEN** a `SELECT` returns zero rows regardless of how much real data exists, and any
+  `INSERT`/`UPDATE`/`DELETE` is rejected by row-level security — even though Supabase's default privileges
+  grant `anon` a raw table-level `INSERT`/`UPDATE`/`DELETE` on this table, the same as any new
+  public-schema table
+
+#### Scenario: An unauthenticated caller cannot TRUNCATE cyl_scan_latest_source
+
+- **WHEN** an `anon` (unauthenticated) caller attempts `TRUNCATE public.cyl_scan_latest_source`
+- **THEN** the statement is rejected for lacking `TRUNCATE` privilege — row-level security does not govern
+  `TRUNCATE` at all (a Postgres limitation, not a policy gap), so this privilege must be revoked explicitly;
+  without it, `anon` could truncate this table despite already being correctly denied `INSERT` by RLS,
+  zeroing out `is_latest` for every scan system-wide via `cyl_scan_traits_source`'s join to this table
 
