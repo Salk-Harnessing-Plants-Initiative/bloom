@@ -454,13 +454,15 @@ Argo deletes a finished Workflow `WORKFLOWS_K8S_TTL_SECONDS` after it ends.
   can revive a finished workflow).
 - **What counts as "not found".** `get_workflow_status` returns `None` only
   for a verified NotFound: a Kubernetes `Status` with reason `NotFound` naming
-  that exact Workflow, or a live Workflow whose `pipeline-run-id` label names
+  that exact Workflow, or a live Workflow whose `pipeline-run-id` or
+  `environment` label names
   another run. Any other 404 is a lookup error.
 - **Removal.** A workflow that is gone and was never seen finishing counts as
   removed only when all three hold:
   - 3 consecutive verified NotFound lookups;
   - those lookups span `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` (default 600);
-  - its newest scan row is at least `WORKFLOWS_K8S_TTL_SECONDS` old. Argo
+  - its scan rows were last updated (at dispatch, or by write-back while it
+    ran) at least `WORKFLOWS_K8S_TTL_SECONDS` ago. Argo
     can't have deleted it sooner, so a wrong namespace can't fail a young run.
 
   The poller then closes the workflow's `'queued'` rows with "the workflow was
@@ -468,8 +470,11 @@ Argo deletes a finished Workflow `WORKFLOWS_K8S_TTL_SECONDS` after it ends.
   `Succeeded` when all are `'written'`/`'reused'`, else `Failed`.
 - **Unresolved workflows.** A workflow that is neither stored nor removed is
   unresolved. While any workflow is unresolved, the poller writes no terminal
-  status at all, neither `'complete'` nor `'failed'`/`'partial'`, and closes
-  no rows: a terminal write is final, and the removal rule bounds the wait.
+  status at all, neither `'complete'` nor `'failed'`/`'partial'`, and the
+  terminal backstop closes no rows: a terminal write is final, and the removal
+  rule bounds the wait. Rows of a removed workflow, and of a workflow with a
+  live or stored terminal phase in a still-running run, are still closed. A
+  lookup that fails makes only that workflow unresolved for the cycle.
   This replaces the earlier ungated backstop (`fix-cyl-pipeline-run-scan-status`
   Decision 6 addendum 8), which existed only because a garbage-collected
   sibling's 404 never cleared. Like `update_cyl_pipeline_run_status` below, the
@@ -647,7 +652,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_K8S_CA_CERT`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required                                                                                                                                           |
 | `WORKFLOWS_K8S_API_URL`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required                                                                                                                                                                     |
 | `WORKFLOWS_K8S_NAMESPACE`       | `runai-busch-lab`       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Single hardcoded namespace for v1 (not a credential — never eagerly required)                                                                                                                                                                             |
-| `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `ttlStrategy.secondsAfterCompletion` on every Workflow `cyl-pipeline-worker` submits, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required). `cyl-status-poller` reads the same value: it never treats a workflow as removed sooner than this after its scan rows were created. A value that isn't positive switches removal off, with a warning |
+| `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `ttlStrategy.secondsAfterCompletion` on every Workflow `cyl-pipeline-worker` submits, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required). `cyl-status-poller` reads the same value: it never treats a workflow as removed sooner than this after the workflow was dispatched. A value that isn't positive switches removal off, with a warning |
 | `WORKFLOWS_K8S_ENV_LABEL`       | `dev`                   | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required)                |
 | `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). This environment's stage root: the three stage volumes become `<root>/input`, `/predictions`, `/traits` (bloom#863). An absolute POSIX path; no default. Missing or invalid, every claimed batch fails "not configured" |
 | `WORKFLOWS_K8S_PIPELINE_SECRET_NAME` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). The Kubernetes Secret `bloom-credentials` mounts — this environment's own Supabase pipeline credential (bloom#863). No default. Missing or invalid, every claimed batch fails "not configured" |

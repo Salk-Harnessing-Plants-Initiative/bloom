@@ -1068,6 +1068,10 @@ def test_get_workflow_status_raises_on_unverified_404(monkeypatch, caplog, case)
         k8s_client.get_workflow_status("wf-a")
     assert str(exc.value) == "Argo Workflow status check failed"
     assert any("404" in r.getMessage() for r in caplog.records)
+    body = _UNVERIFIED_404S[case].text
+    if body:
+        assert any(body[:40] in r.getMessage() for r in caplog.records), "body logged"
+        assert body[:40] not in str(exc.value), "never in the error message"
 
 
 @pytest.mark.parametrize("case", sorted(_UNVERIFIED_404S))
@@ -1077,9 +1081,54 @@ def test_get_workflow_still_returns_none_on_any_404(monkeypatch, case):
     assert k8s_client.get_workflow("wf-a") is None
 
 
-def _workflow(phase, run_label=None):
+def _workflow(phase, run_label=None, env_label=None):
     labels = {} if run_label is None else {"pipeline-run-id": run_label}
+    if env_label is not None:
+        labels["environment"] = env_label
     return {"metadata": {"name": "wf-a", "labels": labels}, "status": {"phase": phase}}
+
+
+def test_get_workflow_status_returns_none_for_another_environments_workflow(
+    monkeypatch,
+):
+    """Prod and staging share a namespace and both number runs from 1, so the run
+    id alone can't tell their workflows apart (PR #1048 review)."""
+    other = "prod" if k8s_client.ENV_LABEL != "prod" else "staging"
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", "7", env_label=other)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) is None
+
+
+def test_get_workflow_status_accepts_its_own_environment(monkeypatch):
+    own = k8s_client.ENV_LABEL
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", "7", env_label=own)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Running"
+
+
+@pytest.mark.parametrize("metadata", [None, "x", {"labels": None}, {"labels": "x"}])
+def test_get_workflow_status_with_run_id_tolerates_odd_metadata(monkeypatch, metadata):
+    _serve(
+        monkeypatch,
+        _FakeResp(200, {"metadata": metadata, "status": {"phase": "Failed"}}),
+    )
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Failed"
+
+
+@pytest.mark.parametrize("phase", ["", "Unknown", "Skipped", None, 3])
+def test_get_workflow_status_refuses_an_unexpected_phase(monkeypatch, phase):
+    """A terminal conclusion built on an unknown phase would be final."""
+    _serve(monkeypatch, _FakeResp(200, {"status": {"phase": phase}}))
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow_status("wf-a")
+
+
+def test_get_workflow_status_reads_the_dispatchers_own_labels(monkeypatch):
+    """Round trip: the labels build_workflow_body stamps are the ones the
+    ownership check reads."""
+    body = k8s_client.build_workflow_body(run_id=7, batch_index=0, scan_ids=[1])
+    body["status"] = {"phase": "Succeeded"}
+    _serve(monkeypatch, _FakeResp(200, body))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Succeeded"
+    assert k8s_client.get_workflow_status("wf-a", run_id=8) is None
 
 
 def test_get_workflow_status_returns_none_for_another_runs_label(monkeypatch):

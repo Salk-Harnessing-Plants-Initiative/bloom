@@ -343,6 +343,24 @@ prettier 3.1.0 would rewrite all of them wholesale, so it was not applied.
   - a new `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` row;
   - the RNA-seq paragraph, which says the sleap-roots TTL doesn't apply.
 
+- [x] 10.4 PR #1048 review follow-ups:
+  - **Lookups and the TTL guard:**
+    - a lookup that raises makes only that workflow unresolved, rather than resetting the whole
+      run's streaks;
+    - the ownership check also compares the `environment` label;
+    - an unexpected Argo phase is a failed lookup;
+    - the TTL guard reads `updated_at` (dispatch time);
+    - the tracker is pruned when the candidate fetch fails, and keeps no count for a workflow with a
+      stored phase.
+  - **Tests:**
+    - the stale reconcile stub is fixed;
+    - recorders replace the swallowed `AssertionError` stubs;
+    - the fake `.select()` returns only the selected columns;
+    - new tests for: a stored phase beating removal, a removal while a sibling runs, a retry after
+      a failed close-out, a concluded run doing no lookups, two runs' ids, the grace and TTL
+      boundaries and offsets, a flaky sibling, and the startup warning.
+  - **Docs:** docstrings, README, env comments and the spec delta are updated to match.
+
 ## 11. Verification for PR B, then after merge
 
 - [x] 11.1 Run `openspec validate --strict`, then each of:
@@ -380,6 +398,16 @@ prettier 3.1.0 would rewrite all of them wholesale, so it was not applied.
       period; the rows are far older than the TTL);
     - all 1,515 rows are closed with the removed message;
     - run 17 is written `'failed'` with `done_count` 0 and `failed_count` 1,515, and is final.
+  - **Do run 17's results already exist? Checked read-only 2026-10-04 (PR #1048 review blocker):**
+    - All 1,515 rows were dispatched on 2026-09-30 between 18:38:16 and 18:38:25 UTC and never
+      updated after that (`attempts` 0).
+    - No `cyl_trait_sources` row carries `cyl_pipeline_run_id` 17 or any of its 61 workflow names.
+    - On the stage root (`/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc`):
+      none of the 61 workflow names has a run manifest in `input/`, `predictions/`, `traits/` or
+      the archive folders. `images-downloader` writes one on every invocation.
+    - Runs 18–23 (from 2026-09-30 19:01 UTC) completed normally.
+    - **Conclusion:** run 17's workflows never staged a scan, so no result exists to ingest.
+      Concluding it `'failed'` with every row closed is correct.
 
 - [ ] 11.3 After staging deploy, compare those runs with their actual status, counts and closed
       rows. Staging run 17 (task 3.6) must end concluded with no `'queued'` rows. Confirm a fresh run's workflows appear in `cyl_pipeline_run_workflows`. Record the

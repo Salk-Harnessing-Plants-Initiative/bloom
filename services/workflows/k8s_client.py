@@ -15,7 +15,7 @@ with safe defaults (`runai-busch-lab`, `3600`) — unlike the three credentials,
 neither is ever treated as "missing".
 TTL_SECONDS is stamped as each Workflow's ttlStrategy at dispatch, and the
 cylinder status poller reads the same value as the earliest a Workflow can have
-been garbage-collected after its scan rows were created (bloom#1042).
+been garbage-collected after it was dispatched (bloom#1042).
 
 WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT and WORKFLOWS_K8S_PIPELINE_SECRET_NAME are
 plain config too, but have no default (bloom#863): prod and staging share one
@@ -529,6 +529,9 @@ def _parse_workflow(resp: httpx.Response) -> dict:
     return workflow
 
 
+_WORKFLOW_PHASES = frozenset({"Pending", "Running", "Succeeded", "Failed", "Error"})
+
+
 def _is_verified_not_found(resp: httpx.Response, name: str) -> bool:
     """Whether a 404 is the Kubernetes API saying this exact Argo Workflow does
     not exist: a `Status` with reason NotFound whose details name it. A proxy's
@@ -609,11 +612,13 @@ def get_workflow_status(name: str, run_id: int | None = None) -> str | None:
 
     Returns None only when the Workflow is gone for this caller: a verified
     NotFound (see _is_verified_not_found), or, when run_id is given, a Workflow
-    whose `pipeline-run-id` label names another run (a garbage-collected
-    Workflow's generated name can be reused by a later dispatch; a Workflow with
-    no such label is treated as the run's own). Any other 404 is logged with its
-    body and raises K8sStatusError, as does any other failure, including a
-    Workflow with no phase (fix-cyl-poller-unconcluded-runs, bloom#1042)."""
+    whose `pipeline-run-id` label names another run or whose `environment`
+    label names another environment (a garbage-collected Workflow's generated
+    name can be reused by a later dispatch, from either environment; a missing
+    label doesn't count against it). Any other 404 is logged with its body and
+    raises K8sStatusError, as does any other failure, including a Workflow
+    with no phase or a phase outside Pending/Running/Succeeded/Failed/Error
+    (fix-cyl-poller-unconcluded-runs, bloom#1042)."""
     resp = _request_workflow(name)
     if resp.status_code == 404:
         if _is_verified_not_found(resp, name):
@@ -628,19 +633,35 @@ def get_workflow_status(name: str, run_id: int | None = None) -> str | None:
     if run_id is not None:
         metadata = workflow.get("metadata")
         labels = metadata.get("labels") if isinstance(metadata, dict) else None
-        owner = labels.get("pipeline-run-id") if isinstance(labels, dict) else None
-        if owner is not None and owner != str(run_id):
+        labels = labels if isinstance(labels, dict) else {}
+        owner = labels.get("pipeline-run-id")
+        environment = labels.get("environment")
+        # Prod and staging share a namespace and both number runs from 1, so a
+        # reused name is this run's only if the environment matches too.
+        if (owner is not None and owner != str(run_id)) or (
+            environment is not None and environment != ENV_LABEL
+        ):
             logger.warning(
-                "k8s_client: workflow %s belongs to run %s, not run %s",
+                "k8s_client: workflow %s belongs to run %s in %s, not run %s in %s",
                 name,
                 owner,
+                environment,
                 run_id,
+                ENV_LABEL,
             )
             return None
     try:
-        return workflow["status"]["phase"]
+        phase = workflow["status"]["phase"]
     except (KeyError, TypeError) as exc:
         logger.warning(
             "k8s_client: status check returned a Workflow without a phase: %s", exc
         )
         raise K8sStatusError("Argo Workflow status check failed") from exc
+    # Anything else (Argo's empty or "Unknown" phase) is not an outcome: a
+    # terminal conclusion built on it would be final, so it is a failed lookup.
+    if phase not in _WORKFLOW_PHASES:
+        logger.warning(
+            "k8s_client: workflow %s reported an unexpected phase %r", name, phase
+        )
+        raise K8sStatusError("Argo Workflow status check failed")
+    return phase

@@ -12,12 +12,12 @@ candidate run has scan rows to check, even when the computed status matches
 the run's already-known status, since `done_count`/`failed_count` can
 advance between cycles while the overall status does not (see design.md's
 Decision 3). Before writing a run's status whenever the computed conclusion
-is anything other than `'running'`, this poller also reconciles — via
-`fail_cyl_pipeline_run_scans_without_result` — any of that run's scans still
+is anything other than `'running'`, this poller also reconciles — via the
+run-scoped `close_cyl_pipeline_run_workflow_scans` — any of that run's scans still
 `'queued'`, since a run whose status write just went terminal will never be
 polled again to fix them otherwise (see design.md's Decision 6). While the
 run is still `'running'`, it also reconciles the `'queued'` scans of each workflow
-whose own Argo phase is Succeeded/Failed/Error, so they don't wait for the run's
+whose live or stored phase is Succeeded/Failed/Error, so they don't wait for the run's
 slowest workflow (fix-cyl-writeback-retry-reconcile, bloom #1034).
 Argo deletes a finished Workflow WORKFLOWS_K8S_TTL_SECONDS after it ends, so this
 poller records each workflow's terminal phase in `cyl_pipeline_run_workflows` and
@@ -51,7 +51,12 @@ from typing import NamedTuple
 
 from postgrest import APIError
 
-from k8s_client import TTL_SECONDS, get_workflow_status
+from k8s_client import (
+    TTL_SECONDS,
+    K8sConfigError,
+    K8sStatusError,
+    get_workflow_status,
+)
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
 
@@ -169,7 +174,7 @@ def _warn_if_removal_disabled() -> None:
     if TTL_SECONDS <= 0:
         logger.warning(
             "status_poller: WORKFLOWS_K8S_TTL_SECONDS=%s is not positive; workflows "
-            "that 404 before this poller sees them finish will never be removed",
+            "that are gone before this poller sees them finish will never be removed",
             TTL_SECONDS,
         )
 
@@ -309,15 +314,21 @@ class EffectivePhases(NamedTuple):
 def _fetch_effective_phases(client, run_id) -> EffectivePhases:
     """One run's effective-phase list: 'Failed' for each scan whose dispatch
     itself failed (status='failed', argo_workflow_name IS NULL), plus the
-    real Argo phase of each distinct argo_workflow_name among the run's
-    scans. Also returns any_unknown: True if any workflow this cycle
-    returned None (404) from get_workflow_status and was excluded from
-    phases rather than guessed. sweep_once uses any_unknown to withhold a
-    'complete' conclusion when the evidence is incomplete (found during
-    /review-pr round 1 — see design.md's "a partial 404 must not let the
-    rollup conclude 'complete'" decision). A K8sConfigError/K8sStatusError
-    from get_workflow_status propagates to the caller, which is responsible
-    for leaving this run unsettled and moving on to the next candidate.
+    effective phase of each distinct argo_workflow_name among the run's scans:
+    the live phase, else (on a verified NotFound) the stored phase, else a
+    removed workflow's row-derived phase (fix-cyl-poller-unconcluded-runs).
+    Also returns any_unknown: True if any workflow is unresolved this cycle (a
+    verified NotFound with no stored phase that is not yet removed, or a
+    lookup that raised), excluded from phases rather than guessed. sweep_once
+    uses any_unknown to withhold every terminal conclusion. A lookup that
+    raises K8sConfigError/K8sStatusError makes only that workflow unresolved
+    and resets only its NotFound streak, so one flaky lookup can't restart a
+    large run's removal clock; it marks the cycle unclean. Any other
+    exception (a DB read) propagates to the caller, which leaves the run
+    unsettled and resets all of its streaks.
+
+    This function also writes: it records live terminal phases and closes
+    out removed workflows' 'queued' rows (then re-reads the rows).
 
     Also returns done_count/failed_count (bloom #716,
     fix-cyl-pipeline-run-scan-status): counted from the SAME `rows` fetch
@@ -339,11 +350,11 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
     then deliberately leaves the workflow's rows to this poller, bloom #1034).
 
     Also returns settled_workflow_names (fix-cyl-writeback-retry-reconcile,
-    bloom #1034): the queued_workflow_names whose own phase this cycle is
-    Succeeded/Failed/Error, so they can write nothing more. A 404 is never
-    settled: a 404 can also come from a misconfigured namespace, API URL or CRD
-    while the workflow is still running, so those rows wait for the
-    terminal-rollup backstop."""
+    bloom #1034): the queued_workflow_names whose live or stored phase this
+    cycle is Succeeded/Failed/Error, so they can write nothing more. An
+    unresolved workflow is never settled: a NotFound inside the grace period
+    can also come from a misconfigured namespace while the workflow still
+    runs, so its rows wait for the removal rule."""
     rows = _fetch_run_rows(client, run_id)
     stored = _fetch_stored_phases(client, run_id)
     workflow_names = sorted(
@@ -353,8 +364,22 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
     clean = True
     live: dict[str, str] = {}
     gone: list[str] = []
+    errored: set[str] = set()
     for name in workflow_names:
-        phase = get_workflow_status(name, run_id=run_id)
+        try:
+            phase = get_workflow_status(name, run_id=run_id)
+        except (K8sConfigError, K8sStatusError) as exc:
+            logger.warning(
+                "status_poller: run %s lookup of %s failed, treating it as "
+                "unresolved this cycle: %s",
+                run_id,
+                name,
+                exc,
+            )
+            _not_found.reset((run_id, name))
+            errored.add(name)
+            clean = False
+            continue
         if phase is None:
             gone.append(name)
             continue
@@ -366,8 +391,11 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
     removed: list[str] = []
     closed_any = False
     for name in gone:
+        if name in stored:
+            _not_found.reset((run_id, name))
+            continue
         count, first_seen = _not_found.observe((run_id, name))
-        if name in stored or not _is_removed(name, rows, count, first_seen):
+        if not _is_removed(name, rows, count, first_seen):
             continue
         if any(
             r.get("argo_workflow_name") == name and r.get("status") == "queued"
@@ -392,6 +420,9 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
     any_unknown = False
     workflow_phases: dict[str, str] = {}
     for name in workflow_names:
+        if name in errored:
+            any_unknown = True
+            continue
         if name in live:
             phase = live[name]
         elif name in stored:
@@ -442,7 +473,7 @@ def _fetch_effective_phases(client, run_id) -> EffectivePhases:
 def _fetch_run_rows(client, run_id) -> list[dict]:
     return (
         client.table("cyl_pipeline_run_scans")
-        .select("argo_workflow_name, status, created_at")
+        .select("argo_workflow_name, status, updated_at")
         .eq("run_id", run_id)
         .execute()
         .data
@@ -508,9 +539,11 @@ def _record_phase_safely(client, run_id, name: str, phase: str) -> bool:
 def _is_removed(name: str, rows: list[dict], count: int, first_seen: float) -> bool:
     """A verified-NotFound workflow with no stored phase counts as removed once
     it has been NotFound on _NOT_FOUND_MIN_CYCLES consecutive lookups spanning
-    NOT_FOUND_GRACE_SECONDS, and its newest scan row is at least TTL_SECONDS old:
-    rows are created before dispatch, and Argo deletes a Workflow TTL after it
-    ends, so a NotFound sooner than that is not garbage collection."""
+    NOT_FOUND_GRACE_SECONDS, and the newest updated_at among its scan rows is
+    at least TTL_SECONDS old. A row's updated_at is stamped when the workflow
+    is dispatched (complete_cyl_pipeline_batch) and by write-back while it
+    runs, all before the workflow ends, and Argo deletes a Workflow TTL after
+    it ends, so a NotFound sooner than that is not garbage collection."""
     if TTL_SECONDS <= 0:
         return False
     if count < _NOT_FOUND_MIN_CYCLES:
@@ -518,7 +551,7 @@ def _is_removed(name: str, rows: list[dict], count: int, first_seen: float) -> b
     if _monotonic() - first_seen < NOT_FOUND_GRACE_SECONDS:
         return False
     stamps = [
-        _parse_timestamp(r.get("created_at"))
+        _parse_timestamp(r.get("updated_at"))
         for r in rows
         if r.get("argo_workflow_name") == name
     ]
@@ -720,6 +753,8 @@ def sweep_once(client) -> bool:
             "retry next cycle: %s",
             exc,
         )
+        # Nothing was looked up this cycle, so no NotFound streak carries over.
+        _not_found.prune()
         return False
 
     for run in candidates:
@@ -733,8 +768,10 @@ def sweep_once(client) -> bool:
                 run_id,
                 exc,
             )
-            # None of this run's workflows got a clean lookup this cycle, so no
-            # NotFound streak of its may carry over (fix-cyl-poller-unconcluded-runs).
+            # Reading the run failed, so none of its workflows was looked up
+            # cleanly this cycle and no NotFound streak of its may carry over
+            # (fix-cyl-poller-unconcluded-runs). A single failed lookup is
+            # handled per workflow in _fetch_effective_phases instead.
             _not_found.reset_run(run_id)
             ok = False
             continue

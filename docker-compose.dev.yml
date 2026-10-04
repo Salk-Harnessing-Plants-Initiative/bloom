@@ -186,7 +186,7 @@ services:
   # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
   # use of the K8s API (get, not create), so only TOKEN/CA_CERT/API_URL/
   # NAMESPACE are needed, plus TTL_SECONDS: the poller never treats a workflow
-  # as removed sooner than that after its scan rows were created, because Argo
+  # as removed sooner than that after the workflow was dispatched, because Argo
   # can't have garbage-collected it yet (bloom#1042). ENV_LABEL and the
   # PIPELINE_* pair are submission-only (build_workflow_body). Like the poll
   # interval below, WORKFLOWS_NOT_FOUND_GRACE_SECONDS is left to its code
