@@ -149,8 +149,7 @@ poller_concluded_at IS NULL)`. The row lock on that UPDATE makes concurrent term
 - **`NULL` does not mean open.** A run dispatch alone settled to `'failed'` is never a candidate
   and never gets `poller_concluded_at`.
 - **Refused writes are silent.** The RPC keeps its `VOID` signature, so until PR B the old poller
-  logs `run X -> partial` for writes the guard refuses. PR B re-reads the row rather than trusting
-  the call.
+  logs `run X -> partial` for writes the guard refuses. PR B never selects a concluded run, so it never makes a refused write.
 - **A retried workflow after conclusion.** `argo retry` on a concluded run's workflow updates its
   stored phase but never the run, whose rows the write-back guard keeps `'failed'`. Re-running
   means a new run.

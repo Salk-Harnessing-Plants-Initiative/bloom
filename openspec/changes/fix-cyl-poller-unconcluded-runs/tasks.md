@@ -213,45 +213,45 @@ Test hooks:
 
 Tests:
 
-- [ ] 7.1 `test_terminal_phase_is_recorded_once_and_used_after_gc`
-- [ ] 7.2 `test_record_phase_sends_the_real_rpc_shape` and
+- [x] 7.1 `test_terminal_phase_is_recorded_once_and_used_after_gc`
+- [x] 7.2 `test_record_phase_sends_the_real_rpc_shape` and
       `test_fetch_stored_phases_reads_only_this_runs_rows`
-- [ ] 7.3 `test_same_stored_phase_makes_no_record_call`, with a positive control in the same test:
+- [x] 7.3 `test_same_stored_phase_makes_no_record_call`, with a positive control in the same test:
       a different stored phase does make the call.
-- [ ] 7.4 `test_live_phase_wins_over_stored_phase`
-- [ ] 7.5 `test_gone_never_seen_workflow_is_removed_after_grace`. Assert:
+- [x] 7.4 `test_live_phase_wins_over_stored_phase`
+- [x] 7.5 `test_gone_never_seen_workflow_is_removed_after_grace`. Assert:
   - nothing is called on cycles 1–2, or before the grace period ends;
   - on removal, the close-out goes through `close_cyl_pipeline_run_workflow_scans` with this run id
     and the removed message;
   - the run is written `'failed'` with counts 2/1.
-- [ ] 7.6 `test_removed_workflow_with_all_rows_written_counts_succeeded` and
+- [x] 7.6 `test_removed_workflow_with_all_rows_written_counts_succeeded` and
       `test_removed_workflow_with_written_and_failed_rows_counts_failed`
-- [ ] 7.7 `test_not_found_too_soon_after_row_creation_is_never_removed` and
+- [x] 7.7 `test_not_found_too_soon_after_row_creation_is_never_removed` and
       `test_newest_created_at_governs_ttl_guard`, each with a positive control: the same setup with
       old rows is removed.
-- [ ] 7.8 `test_not_found_count_resets_on_any_other_result`: a live phase in between, and a run
+- [x] 7.8 `test_not_found_count_resets_on_any_other_result`: a live phase in between, and a run
       check error that resets every pair of that run. Positive control: three more cycles after
       the reset do remove it.
-- [ ] 7.9 `test_tracker_is_keyed_by_run_and_name` and `test_tracker_drops_pairs_not_looked_up`
-- [ ] 7.10 `test_removed_close_out_failure_leaves_workflow_unresolved`: parametrized over an error
+- [x] 7.9 `test_tracker_is_keyed_by_run_and_name` and `test_tracker_drops_pairs_not_looked_up`
+- [x] 7.10 `test_removed_close_out_failure_leaves_workflow_unresolved`: parametrized over an error
       (cycle unclean) and `PGRST202` (cycle clean). In both, no status is written.
-- [ ] 7.11 `test_terminal_conclusion_waits_for_an_unresolved_sibling`: no close-out and no write,
+- [x] 7.11 `test_terminal_conclusion_waits_for_an_unresolved_sibling`: no close-out and no write,
       then a conclusion once the sibling is removed.
-- [ ] 7.12 `test_unconcluded_partial_with_unresolved_workflow_is_not_turned_failed`
-- [ ] 7.13 `test_gcd_succeeded_sibling_keeps_partial_run_partial`, read through the real stored
+- [x] 7.12 `test_unconcluded_partial_with_unresolved_workflow_is_not_turned_failed`
+- [x] 7.13 `test_gcd_succeeded_sibling_keeps_partial_run_partial`, read through the real stored
       phase fetch.
-- [ ] 7.14 `test_failed_record_call_keeps_live_phase_and_marks_cycle_unclean` and
+- [x] 7.14 `test_failed_record_call_keeps_live_phase_and_marks_cycle_unclean` and
       `test_record_phase_pgrst202_is_quiet_and_clean`
-- [ ] 7.15 `test_poller_concluded_partial_is_not_a_candidate`, which replaces the assertion that
+- [x] 7.15 `test_poller_concluded_partial_is_not_a_candidate`, which replaces the assertion that
       every partial run is a candidate.
-- [ ] 7.16 `test_stored_phase_workflow_queued_rows_closed_while_running`
-- [ ] 7.17 `test_all_poller_close_outs_are_run_scoped`: the backstop and the running-run
+- [x] 7.16 `test_stored_phase_workflow_queued_rows_closed_while_running`
+- [x] 7.17 `test_all_poller_close_outs_are_run_scoped`: the backstop and the running-run
       close-out both call `close_cyl_pipeline_run_workflow_scans` with `p_run_id`.
-- [ ] 7.18 `test_created_at_parses_postgrest_timestamps`: `+00:00`, `Z`, 5-digit fractions.
-- [ ] 7.19 `test_grace_env_resolution` (malformed or non-positive values fall back with a warning)
+- [x] 7.18 `test_created_at_parses_postgrest_timestamps`: `+00:00`, `Z`, 5-digit fractions.
+- [x] 7.19 `test_grace_env_resolution` (malformed or non-positive values fall back with a warning)
       and `test_non_positive_ttl_disables_removal_with_a_warning`
-- [ ] 7.20 Guard: `test_dispatch_settled_partial_is_still_a_candidate`
-- [ ] 7.21 Update the tests that pin today's 404 behaviour so they describe an **unresolved**
+- [x] 7.20 Guard: `test_dispatch_settled_partial_is_still_a_candidate`
+- [x] 7.21 Update the tests that pin today's 404 behaviour so they describe an **unresolved**
       workflow, and so they expect the new withhold-every-conclusion rule:
   - `test_rollup_skips_a_404d_workflow_rather_than_guessing`
   - `test_a_404_alongside_an_observed_succeeded_sibling_is_flagged_as_unknown`
@@ -265,31 +265,37 @@ Tests:
   - `test_sweep_still_concludes_failed_or_partial_despite_an_unresolved_workflow` and
     `test_sweep_still_reconciles_partial_or_failed_despite_an_unresolved_sibling_workflow`. These
     two are **inverted**: rename them to `..._waits_...` and assert there is no write.
-- [ ] 7.22 Update every `_reconcile_unresolved_scans` stub (`_patch_sweep` and the inline lambdas)
+- [x] 7.22 Update every `_reconcile_unresolved_scans` stub (`_patch_sweep` and the inline lambdas)
       to the new signature `(client, run_id, name, message)`.
 
 **Red:** 7.1, 7.2, 7.4–7.19 and the two inverted tests in 7.21. **Guard:** 7.3's control, 7.20,
 the rest of 7.21, and 7.22.
 
+Recorded red run: 126 errors (the autouse fixture referenced the missing `_not_found`), then 9
+failures from the old stubs once it existed. The two inverted tests are
+`test_sweep_waits_to_conclude_failed_or_partial_while_a_workflow_is_unresolved` and
+`test_sweep_waits_to_reconcile_partial_or_failed_while_a_sibling_is_unresolved`. Raw
+`_fetch_effective_phases` stubs keep working: `EffectivePhases.clean` defaults to `True`.
+
 ## 8. Green: poller
 
-- [ ] 8.1 Add the grace resolver. Import `k8s_client.TTL_SECONDS`, and warn at startup if it is
+- [x] 8.1 Add the grace resolver. Import `k8s_client.TTL_SECONDS`, and warn at startup if it is
       ≤ 0.
-- [ ] 8.2 Add `_fetch_stored_phases` and `_record_phase`, and make the close-outs run-scoped. The
+- [x] 8.2 Add `_fetch_stored_phases` and `_record_phase`, and make the close-outs run-scoped. The
       messages become module constants `_BACKSTOP_MESSAGE` and `_REMOVED_MESSAGE`.
-- [ ] 8.3 Add the `_NotFoundTracker` with `(run_id, name)` keys, resets and pruning.
-- [ ] 8.4 Extend `_fetch_effective_phases`:
+- [x] 8.3 Add the `_NotFoundTracker` with `(run_id, name)` keys, resets and pruning.
+- [x] 8.4 Extend `_fetch_effective_phases`:
   - pass `run_id` to the lookups;
   - resolve each effective phase;
   - close out removed workflows;
   - include stored phases in the "settled" set;
   - make `any_unknown` mean "unresolved".
-- [ ] 8.5 In `sweep_once`, withhold every terminal conclusion while any workflow is unresolved
+- [x] 8.5 In `sweep_once`, withhold every terminal conclusion while any workflow is unresolved
       (design D5).
-- [ ] 8.6 In `_fetch_candidate_runs`, select `id, status, poller_concluded_at` and filter in code.
-- [ ] 8.7 Update the docstrings and comments: the module docstring, `_fetch_effective_phases`,
+- [x] 8.6 In `_fetch_candidate_runs`, select `id, status, poller_concluded_at` and filter in code.
+- [x] 8.7 Update the docstrings and comments: the module docstring, `_fetch_effective_phases`,
       `_reconcile_unresolved_scans`, and `sweep_once`'s addendum-8 block.
-- [ ] 8.8 Confirm §7 and the whole `services/workflows` suite are green.
+- [x] 8.8 Confirm §7 and the whole `services/workflows` suite are green.
 
 ## 9. UI: red, then green
 
