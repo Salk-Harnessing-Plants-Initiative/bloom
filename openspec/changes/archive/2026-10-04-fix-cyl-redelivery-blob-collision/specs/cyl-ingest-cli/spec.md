@@ -46,18 +46,10 @@ gate is reached (sleap-roots-pipeline#76).
 - **THEN** no upload is attempted, the constructed blobs are not merged into the envelope, the
   RPC is still called and returns `was_noop=true`, and the previously stored bytes are left
   untouched
-- **AND** the delivery is reported `skipped`, exiting zero — except where the RPC also reports
-  `status_update_matched=false`, which a re-delivery dispatched under a *different*
-  `ARGO_WORKFLOW_NAME` currently always does; that case is reported `failed` with
-  `retriable=false` by the `cyl-pipeline-run-scan-status` contract, and reconciling the two
-  contracts is tracked as bloom#875 (see `design.md` Risks)
-  <!-- RESOLVED — see fix-cyl-redelivery-status-fallback (bloom#875, PR #880, migration
-  20260917140000, live on staging 2026-09-18). "currently always does" is no longer true: the RPC
-  now falls back to a scan_id-keyed UPDATE when the source_id join matches nothing, so a
-  cross-workflow re-delivery reports status_update_matched=true. The normative text above is left
-  as written deliberately — it belongs to this change, not that one, and rewriting another
-  unarchived change's delta blind is the archive-ordering hazard that change's design.md warns
-  against. Supersede it properly when this change is next revisited or archived. -->
+- **AND** the delivery is reported `skipped`, exiting zero, unless the RPC also reports
+  `status_update_matched=false` (it matched no run-scan row for this workflow, even after the
+  fallback that resolves the scan from the source's own recorded scan); that case is reported as
+  described in "Cyl ingest command reads an envelope from a path or stdin"
 
 #### Scenario: A first delivery is unaffected
 
@@ -238,16 +230,6 @@ already-ingested check does not fire — and requires the recovery the collision
 - **THEN** the retry fails at the path collision rather than succeeding, because no source row
   exists for the already-ingested check to find
 
-<!-- 2026-09-21: this requirement's text was RAISED to match the current live spec, which already
-carries it. `fix-cyl-redelivery-status-fallback` archived first (bloom#875/#880) and its delta was
-written as a strict superset of this one's — adding the `status_update_matched` clause and a fourth
-scenario, "Re-delivery under a new ARGO_WORKFLOW_NAME is reported as a benign no-op". This block
-previously held the pre-#880 text (3 scenarios, no status_update_matched clause), so archiving this
-change as-is would have replaced the live block wholesale and silently dropped both.
-2026-10-01: RAISED again, to the byte-identical text of `fix-cyl-noop-redelivery-scan-resolution`'s
-MODIFIED block (bloom#900), which narrows the status_update_matched clause. Until that change
-deploys, this block describes behaviour that is not live yet, so this change must not archive
-before it (tasks.md 9.10). -->
 ### Requirement: Re-ingest is a benign, distinctly-reported no-op
 
 The command SHALL report the RPC's first-writer-wins no-op — `was_noop=true`, which the RPC
