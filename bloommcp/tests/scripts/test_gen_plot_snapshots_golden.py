@@ -160,3 +160,26 @@ def test_build_writes_new_baselines_without_needing_yes(tmp_path, monkeypatch):
     assert wrote is True
     for baseline_name, _tool_fn, _produced_name, _converged in gen._TOOLS:
         assert (fake_baselines / baseline_name).is_file()
+
+
+def test_resized_regeneration_reports_dimensions_instead_of_crashing(tmp_path):
+    """#748: `compare_images` RAISES on a size mismatch rather than scoring it, and
+    `_report_regeneration` runs for every baseline before `build()` copies anything — so an
+    unguarded call meant one deliberately resized render aborted the whole regeneration,
+    writing nothing, for all three baselines. RMS is undefined across a resize."""
+    from PIL import Image
+
+    target = tmp_path / "target.png"
+    target.write_bytes(_A_BASELINE.read_bytes())
+    produced = tmp_path / "produced.png"
+    with Image.open(_A_BASELINE) as image:
+        # Same content, taller canvas — exactly what adding a figure-level note does.
+        taller = Image.new(image.mode, (image.width, image.height + 200), "white")
+        taller.paste(image, (0, 0))
+        taller.save(produced)
+
+    msg = gen._report_regeneration(target, produced, Path("rel/path.png"))
+    assert "canvas size changed" in msg
+    assert "no RMS" in msg
+    with Image.open(target) as image:
+        assert f"{image.width}x{image.height}" in msg
