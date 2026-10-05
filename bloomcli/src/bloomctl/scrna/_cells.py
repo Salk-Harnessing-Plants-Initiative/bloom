@@ -10,7 +10,13 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from ._format import FLOAT32_MAX, MAX_DUPLICATE_POINT_SHARE
+from ._format import (
+    FLOAT32_MAX,
+    MAX_DUPLICATE_POINT_SHARE,
+    MissingDependency,
+    missing_dependency_message,
+)
+from ._text import listed, visible
 from ._writer import LoadError
 
 # Cluster colours, one per ordinal, so a cell type is the same colour for every user.
@@ -34,6 +40,7 @@ MAX_FACET_VALUE = 200
 MAX_FACETS_JSON = 1024
 MAX_GENOTYPE_NAME = 100
 MAX_CONSTRUCT = 200
+MAX_SAMPLE_NAME = 100  # scrna_cells_replicate_length
 
 # What a missing value looks like once something upstream has called astype(str) on it.
 # Stored as-is, each would become a real cell type in the legend, or a barcode naming no cell.
@@ -55,25 +62,65 @@ def read_cells(
     The coordinates are taken as given: they come out of the same file as the labels, in the
     row order anndata keeps, so nothing here can pair them up wrongly.
     """
-    import anndata
-    import numpy as np
+    try:
+        import anndata
+        import numpy as np
+    except ImportError as exc:
+        raise MissingDependency(missing_dependency_message()) from exc
 
-    adata = anndata.read_h5ad(path)
+    adata = _open(anndata, path)
+    try:
+        return _read(np, adata, path, annotation, sample_column, umap_key, expect_cells,
+                     source_column, genotype_column, facet_columns)
+    finally:
+        adata.file.close()
+
+
+# What anndata raises on a file it cannot read; anything else is a fault here.
+READ_FAILURES = (OSError, KeyError, IndexError, TypeError, ValueError, AttributeError,
+                 NotImplementedError)
+
+
+def _read_failures() -> tuple:
+    """What anndata raises on a file it cannot read, including its own registry error."""
+    try:
+        from anndata._io.specs.registry import IORegistryError
+    except ImportError:  # a private path, so another anndata may have moved it
+        return READ_FAILURES
+    return (*READ_FAILURES, IORegistryError)
+
+
+def _open(anndata, path: Path):
+    """The file with its expression matrix left on disk: only obs, obsm and the shape are read."""
+    try:
+        return anndata.read_h5ad(path, backed="r")
+    except _read_failures() as exc:
+        raise LoadError(
+            f"{path.name} could not be read by anndata: {visible(str(exc) or type(exc).__name__)}"
+            ". Re-saving it with a current anndata usually fixes this"
+        ) from exc
+
+
+def _read(np, adata, path: Path, annotation: str, sample_column: str, umap_key: str,
+          expect_cells: int | None, source_column: str | None, genotype_column: str | None,
+          facet_columns: tuple[str, ...]) -> dict:
     if adata.n_obs == 0:
         raise LoadError(f"{path.name} holds no cells")
     if umap_key not in adata.obsm:
         raise LoadError(
             f"{path.name} has no obsm[{umap_key!r}]; loading needs the UMAP, the explorer "
             f"plots stored coordinates and never computes them. Found: "
-            f"{sorted(adata.obsm) or 'nothing'}"
+            f"{listed(sorted(adata.obsm)) or 'nothing'}"
         )
     coords = _coordinates(np, adata.obsm[umap_key], umap_key)
 
-    for column in (annotation, sample_column, source_column, genotype_column):
+    named = (("--annotation", annotation), ("--sample-column", sample_column),
+             ("--source-column", source_column), ("--genotype-column", genotype_column))
+    for flag, column in named:
         if column and column not in adata.obs:
             raise LoadError(
-                f"{path.name} has no obs[{column!r}]. Found: "
-                f"{', '.join(sorted(adata.obs.columns))}"
+                f"{path.name} has no obs[{visible(column)!r}], the column {flag} names. Found: "
+                f"{listed(sorted(adata.obs.columns))}"
             )
     if expect_cells is not None and adata.n_obs != expect_cells:
         raise LoadError(f"expected {expect_cells} cells, the file holds {adata.n_obs}")
@@ -85,8 +132,13 @@ def read_cells(
     too_long = sorted({g for g in genotypes or () if len(g) > MAX_GENOTYPE_NAME})
     if too_long:
         raise LoadError(
-            f"genotype names longer than {MAX_GENOTYPE_NAME} characters: "
-            f"{', '.join(too_long[:3])}"
+            f"genotype names longer than {MAX_GENOTYPE_NAME} characters: {listed(too_long[:3])}"
+        )
+    long_samples = sorted({s for s in samples if len(s) > MAX_SAMPLE_NAME})
+    if long_samples:
+        raise LoadError(
+            f"sample names longer than {MAX_SAMPLE_NAME} characters in obs[{visible(sample_column)!r}]: "
+            f"{listed(long_samples[:3])}"
         )
     levels = sorted(set(labels))
     if len(levels) > len(PALETTE):
@@ -142,25 +194,28 @@ def read_facets(adata, columns: tuple[str, ...]) -> list[dict[str, str]]:
         raise LoadError(f"{len(columns)} label columns; a cell holds at most {MAX_FACETS}")
     per_column = {}
     for column in columns:
+        if not column.strip():
+            raise LoadError("a --facet column name is blank")
         if column not in adata.obs:
             raise LoadError(
-                f"no obs[{column!r}] to use as a label. Found: "
-                f"{', '.join(sorted(adata.obs.columns))}"
+                f"no obs[{visible(column)!r}] to use as a label. Found: "
+                f"{listed(sorted(adata.obs.columns))}"
             )
         if len(column) > MAX_FACET_KEY:
-            raise LoadError(f"label column {column!r} is longer than {MAX_FACET_KEY} characters")
+            raise LoadError(
+                f"label column {visible(column)!r} is longer than {MAX_FACET_KEY} characters")
         values = _text_column(adata, column)
         levels = sorted(set(values))
         if len(levels) > MAX_FACET_VALUES:
             raise LoadError(
-                f"obs[{column!r}] has {len(levels)} values, more than the {MAX_FACET_VALUES} a "
+                f"obs[{visible(column)!r}] has {len(levels)} values, more than the {MAX_FACET_VALUES} a "
                 "row of toggles can show; it looks like a measurement rather than a label"
             )
         long = [v for v in levels if len(v) > MAX_FACET_VALUE]
         if long:
             raise LoadError(
-                f"obs[{column!r}] has values longer than {MAX_FACET_VALUE} characters, e.g. "
-                f"{long[0][:40]!r}"
+                f"obs[{visible(column)!r}] has values longer than {MAX_FACET_VALUE} characters, "
+                f"e.g. {visible(long[0][:40])!r}"
             )
         per_column[column] = values
     facets = [{c: per_column[c][i] for c in columns} for i in range(adata.n_obs)]
@@ -201,14 +256,13 @@ def genotype_rows(
         )
     if control not in names:
         raise LoadError(
-            f"--control names {control!r}, which is not a genotype in this file: "
-            f"{', '.join(names)}"
+            f"--control names {visible(control)!r}, which is not a genotype in this file: "
+            f"{listed(names)}"
         )
     unknown = sorted(set(constructs) - set(names))
     if unknown:
         raise LoadError(
-            f"--construct names {', '.join(unknown)}, not a genotype in this file: "
-            f"{', '.join(names)}"
+            f"--construct names {listed(unknown)}, not a genotype in this file: {listed(names)}"
         )
     return [
         {"name": n, "is_control": n == control, "construct": constructs.get(n)}
@@ -258,12 +312,14 @@ def _text_column(adata, column: str) -> list[str]:
     values = adata.obs[column]
     missing = int(values.isna().sum())
     if missing:
-        raise LoadError(f"obs[{column!r}] has {missing} missing value(s); every cell needs one")
+        raise LoadError(
+            f"obs[{visible(column)!r}] has {missing} missing value(s); every cell needs one")
     text = [str(v) for v in values]
     blank = sum(1 for v in text if v.strip().lower() in NOT_A_VALUE)
     if blank:
         raise LoadError(
-            f"obs[{column!r}] has {blank} value(s) that are blank or read as a missing value; "
+            f"obs[{visible(column)!r}] has {blank} value(s) that are blank or read as a missing "
+            "value; "
             "every cell needs a name"
         )
     return text

@@ -559,6 +559,8 @@ Next it reads the cells, the way the load will:
 - every cell has a barcode, a type and a sample; a blank, or a value that reads as missing
   (`nan`, `None`, …), is refused rather than stored as a cell type
 - `--expect-cells N` refuses a file holding any other number of cells
+- sample names are at most 100 characters, the most the database holds
+- the file does not change while it is read; one re-saved part-way is refused
 
 Then it gzips the file, which also fingerprints it, and checks what needs that: the gzipped
 size is within 500 MB, and a file without `uns['normalization']` is one a dataset already
@@ -570,7 +572,9 @@ will do:
   rather than loaded as a second copy
 - **a load from this file that stopped**: continued from what is stored, given the same
   options it was started with
-- **finished from this file**: nothing to load — "already loaded"
+- **finished from this file**: nothing to load — "already loaded". Given a label option or an
+  `--annotation` the dataset was not loaded with, it is refused instead, pointing to
+  `--add-labels`, rather than reporting success and writing nothing
 - **finished from another file**, or a dataset that records no file: refused; replacing a
   loaded dataset is an admin task
 
@@ -608,6 +612,7 @@ myb41_transgene_load.h5ad
                  Phloem, Procambium, QC, Trichoblast, Trichoblast (elongation/maturation),
                  Unknown_1, Xylem
   samples        Col-0 2,442, pFACT 3,304, pHORST 2,937
+  units          log1p normalised counts
 Upload this file? Its dataset is already loaded [y/N]:
 ```
 
@@ -643,25 +648,33 @@ storage took. It does that once — a second expiry is not a token running out, 
 reported. A login that is refused outright is reported at once instead, since signing in
 again does nothing about a permission the account does not have.
 
-Once the file is stored, the cells are written: the dataset row, its cell-type catalogue
+Once the file is stored, the cells are written: the dataset row (recording the file's
+fingerprint, the load's options and how many cells the file holds), its cell-type catalogue
 (each type with its colour), and one row per cell with its UMAP position, type and sample.
-The dataset is marked finished last, after every cell is read back, so a dataset is never
-shown half loaded as if it were complete. Each write is one request sent once; if one fails
-the command says the file is stored and the load stopped, and running the same command
-again continues it. A write whose outcome is unknown (a timeout) may still be finishing on
-the server, so the next run waits that out first, saying how many seconds are left.
+The dataset is marked finished last, after every cell is read back, with the file's
+`uns['normalization']`; until then a dataset that records a file but no finish time is an
+unfinished load. The colour-bar units follow the normalization (`log1p normalised counts`,
+`log2(x+1) normalised counts`, …) unless `--expression-units` says otherwise.
+
+Each write is one request sent once; if one fails the command says the file is stored and
+the load stopped, and running the same command again continues it. A write whose outcome
+is unknown (a timeout, or Ctrl-C while it was being sent) may still be finishing on the
+server, so the next run waits that out first, about six minutes, saying how many seconds
+are left. Load a dataset from one terminal at a time.
 
 `--name`, `--species` and `--annotation` (the column of cell-type or cluster labels) are all
-a load needs; `--create` is added the first time, to register the dataset. Anything else the file records per cell can come along too.
-Each of these options names an `obs` column:
+a load needs; `--create` is added the first time, to register the dataset. A dataset name
+holds letters, digits, spaces, `.`, `_` and `-`. Anything else the file records per cell can
+come along too. Each of these options names an `obs` column:
 
 - `--genotype-column COLUMN` makes each of its values a genotype the cells point at.
   `--control GENOTYPE` names the control (it is never guessed), and `--construct
   GENOTYPE=NAME` (repeatable) the construct a line carries.
 - `--facet COLUMN` (repeatable) turns the column's values into filters on the map: a
   treatment, a timepoint, a batch, whether a transgene was detected. A column may have at
-  most 12 values of at most 200 characters, and a cell at most 32 such columns; a column with
-  more values, such as a count or a score, is refused as a measurement rather than a label.
+  most 12 values of at most 200 characters, a column name at most 64, and a load at most 32
+  such columns; a column with more values, such as a count or a score, is refused as a
+  measurement rather than a label.
 - `--source-column COLUMN` records, per cell type, where its label came from, such as the
   reference atlas it was transferred from.
 
@@ -673,7 +686,8 @@ bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
 ```
 
 On a dataset already loaded from this file, `--add-labels` with any of these adds them to its
-cells, which stay as they are.
+cells, which stay as they are. Labels it already has are kept: a new `--facet` joins them,
+and one of a column it already has replaces that column's values.
 
 **List** needs any login. It reports what the bucket holds — each object's fingerprint,
 its size in bytes, when it arrived, and the dataset recording that fingerprint, where one

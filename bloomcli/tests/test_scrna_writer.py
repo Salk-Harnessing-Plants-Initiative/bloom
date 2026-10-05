@@ -241,3 +241,32 @@ def test_update_can_narrow_by_a_list_of_values(tmp_path):
     assert [r["facets"] for r in client.tables["scrna_cells"]] == [
         None, {"t": "True"}, None, {"t": "True"}]
     assert client.log[-1][3] is False
+
+
+def test_an_interrupted_write_is_recorded_as_of_unknown_outcome(tmp_path):
+    w, _, marker = writer(tmp_path)
+
+    def send(client):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        w.write("insert cells 7", send)
+    assert marker.path.exists()
+
+
+def test_a_damaged_record_is_waited_out_from_when_it_was_written(tmp_path):
+    import os
+    import time
+
+    now = time.time()
+    marker = Marker(tmp_path / "m.json", wait_s=300, clock=lambda: now)
+    marker.path.write_text('{"at": 1')
+    os.utime(marker.path, (now - 100, now - 100))
+    with pytest.raises(LoadError, match="an earlier write.*200 seconds"):
+        marker.check()
+
+
+def test_the_record_is_readable_only_by_its_owner(tmp_path):
+    marker = Marker(tmp_path / "m.json")
+    marker.record("insert cells 1")
+    assert marker.path.stat().st_mode & 0o777 == 0o600

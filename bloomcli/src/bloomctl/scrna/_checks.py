@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import Counter
 
 from ._cells import PALETTE
+from ._text import listed, visible
 from ._writer import LoadError, Writer, dataset_name_ok, read_all
 
 # Options that label the cells, recorded with the dataset when labels are added.
@@ -25,14 +26,31 @@ LATER_TABLES = (
     ("scrna_de", "differential expression rows"),
 )
 
-ADMIN = "replacing a loaded dataset is an admin task"
+# The option each recorded load option came from, for messages.
+FLAGS = {
+    "annotation": "--annotation", "sample_column": "--sample-column", "umap_key": "--umap-key",
+    "expression_units": "--expression-units", "source_column": "--source-column",
+    "genotype_column": "--genotype-column", "control": "--control", "constructs": "--construct",
+    "facets": "--facet",
+}
+
+ADMIN = (
+    "Replacing a loaded dataset is an admin task: load this file as a new dataset with another "
+    "--name and --create, or ask a Bloom admin to replace it"
+)
 
 
-def check_registration(name: str, species_id: int, create: bool) -> None:
+def species_text(species_id: int, species: str | None) -> str:
+    return visible(species) if species else f"species {species_id}"
+
+
+def check_registration(
+    name: str, species_id: int, create: bool, species: str | None = None
+) -> None:
     if not create:
         raise LoadError(
-            f"no dataset named {name!r} for species {species_id}. Pass --create to register "
-            "a new one; without it a mistyped name would load a second copy"
+            f"no dataset named {name!r} for {species_text(species_id, species)}. Pass --create "
+            "to register a new one; without it a mistyped name would load a second copy"
         )
     if not dataset_name_ok(name):
         raise LoadError(
@@ -59,7 +77,7 @@ def check_resume(found: dict, source_checksum: str, options: dict) -> str:
     if not stored:
         raise LoadError(
             f"dataset {dataset_id} records no source file, so this load cannot tell whether "
-            f"it is the same one; {ADMIN}"
+            f"it is the same one. {ADMIN}"
         )
     if found.get("ingested_at"):
         if stored == source_checksum:
@@ -74,14 +92,52 @@ def check_resume(found: dict, source_checksum: str, options: dict) -> str:
             f"file's is {source_checksum}. Resume it with the same file"
         )
     started = (found.get("metadata") or {}).get("load_options") or {}
-    changed = [f"{k} was {started.get(k)!r}, now {options.get(k)!r}"
-               for k in OPTION_KEYS if started.get(k) != options.get(k)]
+    changed = [f"{FLAGS[k]} was {_shown(started.get(k))}, now {_shown(options.get(k))}"
+               for k in OPTION_KEYS if not _same(k, started.get(k), options.get(k))]
     if changed:
         raise LoadError(
             f"dataset {dataset_id} was started with other options: {'; '.join(changed)}. "
             "Resume it with the same options"
         )
     return "resumed"
+
+
+def check_nothing_to_add(found: dict, options: dict) -> None:
+    """A rerun on a dataset already loaded from this file has to ask for what it holds.
+
+    The same command again is "already loaded". A new --facet or another --annotation would
+    otherwise report that too and quietly write nothing.
+    """
+    dataset_id = found["id"]
+    metadata = found.get("metadata") or {}
+    started = metadata.get("load_options") or {}
+    new = [FLAGS[k] for k in LABEL_KEYS
+           if options.get(k) and not _same(k, started.get(k), options.get(k))]
+    if new:
+        raise LoadError(
+            f"dataset {dataset_id} is already loaded from this file, so {', '.join(new)} "
+            "would not be written. Pass --add-labels to add them to its cells"
+        )
+    stored = (metadata.get("load_options") or {}).get("annotation") or metadata.get(
+        "cell_type_column")
+    if stored and stored != options["annotation"]:
+        raise LoadError(
+            f"dataset {dataset_id} was loaded with --annotation {visible(stored)}, not "
+            f"{visible(options['annotation'])}. {ADMIN}"
+        )
+
+
+def check_catalogue(writer: Writer, dataset_id: int, cells: dict) -> bool:
+    """Whether the catalogue is already stored; a stored one that differs is refused."""
+    stored, wanted = stored_catalogue(writer, dataset_id), wanted_catalogue(cells)
+    if stored and stored != wanted:
+        def show(m):
+            return listed(f"{k}={v}" for k, v in sorted(m.items(), key=lambda kv: kv[1]))
+        raise LoadError(
+            f"dataset {dataset_id} holds the cell types {show(stored)}; the file has "
+            f"{show(wanted)}"
+        )
+    return bool(stored)
 
 
 def check_nothing_later(writer: Writer, dataset_id: int) -> None:
@@ -97,16 +153,19 @@ def check_nothing_later(writer: Writer, dataset_id: int) -> None:
 
 def check_labelled_dataset(
     writer: Writer, found: dict | None, name: str, species_id: int, cells: dict,
-    source_checksum: str,
+    source_checksum: str, species: str | None = None,
 ) -> None:
     """Labels go only on a finished dataset loaded from this file, holding these cells."""
     if found is None:
-        raise LoadError(f"no dataset named {name!r} for species {species_id}; load its "
-                        "cells first")
+        raise LoadError(f"no dataset named {name!r} for {species_text(species_id, species)}; "
+                        "load its cells first")
     dataset_id = found["id"]
     if not found.get("ingested_at"):
         raise LoadError(f"dataset {dataset_id}'s cells are not finished; finish loading them "
                         "before adding labels")
+    if not found.get("source_checksum"):
+        raise LoadError(f"dataset {dataset_id} records no source file, so labels from this file "
+                        f"cannot be paired to its cells. {ADMIN}")
     if found.get("source_checksum") != source_checksum:
         raise LoadError(
             f"dataset {dataset_id} was loaded from a file with checksum "
@@ -160,3 +219,20 @@ def check_numbers(dataset_id: int, numbers: list[int], n: int, *, complete: bool
             f"dataset {dataset_id} stores {'; '.join(problems)}. It is not finished; an admin "
             "has to look at it"
         )
+
+
+def _same(key: str, started, now) -> bool:
+    """Recorded and given options agree; the order --facet was given in does not matter."""
+    if key == "facets":
+        return sorted(started or []) == sorted(now or [])
+    return started == now
+
+
+def _shown(value) -> str:
+    if value is None or value == [] or value == {}:
+        return "not given"
+    if isinstance(value, list):
+        return listed(value)
+    if isinstance(value, dict):
+        return listed(f"{k}={v}" for k, v in value.items())
+    return visible(str(value))

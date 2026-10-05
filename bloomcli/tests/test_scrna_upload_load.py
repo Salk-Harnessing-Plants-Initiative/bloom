@@ -25,7 +25,7 @@ def _labelled(tmp_path, name="data.h5ad"):
     return write_h5ad(tmp_path / name, obs_columns={
         "cell_type": ["Cortex", "Xylem", "Cortex"], "sample": ["s1", "s2", "s2"],
         "genotype": ["Col-0", "pFACT", "pFACT"], "transgene": ["False", "True", "True"],
-        "source": ["shahan", "nuclei", "shahan"],
+        "source": ["shahan", "nuclei", "shahan"], "treat": ["a", "b", "a"],
     })
 
 
@@ -189,7 +189,7 @@ def test_labels_are_added_to_a_dataset_already_loaded_from_the_file(tmp_path, en
                   "--annotation", "cell_type", "--add-labels", "--facet", "transgene",
                   str(path))
     assert result.exit_code == 0, result.output
-    assert "labels added to its cells" in result.stderr
+    assert "labels will be added to its cells" in result.stderr
     assert "Added labels to dataset" in result.stdout
     assert [c["facets"]["transgene"] for c in _cells_of(env["client"])] == [
         "False", "True", "True"]

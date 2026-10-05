@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Any
 
 from ._format import Summary
+from ._text import visible
 
 # A long list wraps under its label rather than running off the terminal.
 LINE_WIDTH = 100
@@ -37,7 +38,8 @@ def describe(
 
 
 def describe_load(
-    cells: dict, dataset: str, genotypes: list[dict], facet_columns: tuple[str, ...]
+    cells: dict, dataset: str, genotypes: list[dict], facet_columns: tuple[str, ...], *,
+    units: str,
 ) -> list[str]:
     """What the load will write: the dataset, its cell types, samples, genotypes and labels."""
     samples = Counter(cells["samples"])
@@ -47,6 +49,7 @@ def describe_load(
         *_row("dataset", dataset),
         *_list_row("cell types", levels),
         *_list_row("samples", [f"{visible(s)} {n:,}" for s, n in sorted(samples.items())]),
+        *_row("units", visible(units)),
     ]
     if genotypes:
         lines += _list_row("genotypes", [_genotype_text(g) for g in genotypes])
@@ -61,13 +64,6 @@ def describe_load(
             for s, n in sorted(per_source.items())
         ], sep=";")
     return lines
-
-
-def visible(text: str) -> str:
-    """``text`` with every non-printable character written as its escape, e.g. ``\\x1b``."""
-    return "".join(
-        c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text
-    )
 
 
 def _row(label: str, value: str) -> list[str]:
@@ -96,16 +92,13 @@ def _wrap(names: list[str], width: int, sep: str = ",") -> list[str]:
 
 
 def _umap_text(summary: Summary) -> str:
-    if summary.umap_key:
-        return f"obsm['{visible(summary.umap_key)}']"
-    held = ", ".join(visible(key) for key in summary.obsm) or "nothing"
-    return f"none (obsm holds: {held})"
+    return f"obsm['{visible(summary.umap_key)}']" if summary.umap_key else "none"
 
 
 def _normalization_text(block: dict[str, Any] | None, recorded_on: dict[str, Any] | None) -> str:
     if block is None:
         if recorded_on is None:
-            return "none in the file"
+            return "none"
         dataset = visible(str(recorded_on.get("name") or "unnamed"))
         return f"none in the file; recorded on dataset {dataset} (id {recorded_on['id']})"
     parts = [visible(str(block["transform"])), visible(str(block["scaling"]))]

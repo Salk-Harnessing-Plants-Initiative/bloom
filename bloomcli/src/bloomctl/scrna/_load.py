@@ -12,18 +12,19 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from ._cells import PALETTE, genotype_rows
+from ._cells import MAX_FACETS, MAX_FACETS_JSON, PALETTE, genotype_rows
 from ._checks import (
     LABEL_KEYS,
+    check_catalogue,
     check_columns,
     check_labelled_dataset,
     check_nothing_later,
+    check_nothing_to_add,
     check_numbers,
     check_registration,
     check_resume,
-    stored_catalogue,
-    wanted_catalogue,
 )
+from ._text import visible
 from ._writer import LoadError, Writer, find_dataset, insert, read_all, update
 
 # Cells per insert request; each has to finish well inside the gateway's 60 s.
@@ -43,48 +44,61 @@ class Plan:
 
 def plan(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
-    options: dict, *, create: bool, add_labels: bool = False,
+    options: dict, *, create: bool, add_labels: bool = False, species: str | None = None,
 ) -> Plan:
-    """Decide what the load will do, refusing as the load would; writes nothing."""
+    """Decide what the load will do, refusing everything the load would; writes nothing."""
     name = _checked_name(name)
     check_columns(cells)
     found = find_dataset(writer, species_id, name)
     if add_labels:
-        check_labelled_dataset(writer, found, name, species_id, cells, source_checksum)
+        check_labelled_dataset(writer, found, name, species_id, cells, source_checksum, species)
         if cells.get("genotypes") is not None:
             _plan_genotypes(writer, found["id"], _genotypes(cells, options))
+        if cells.get("facets") is not None:
+            _merged_facets(writer, found["id"], cells)
         return Plan("add labels", found["id"])
     if found is None:
-        check_registration(name, species_id, create)
+        check_registration(name, species_id, create, species)
         return Plan("register", None)
     outcome = check_resume(found, source_checksum, options)
-    if outcome == "resumed":
-        check_nothing_later(writer, found["id"])
-        return Plan("resume", found["id"])
-    return Plan(outcome, found["id"])
+    if outcome == "already loaded":
+        check_nothing_to_add(found, options)
+        return Plan(outcome, found["id"])
+    dataset_id = found["id"]
+    check_nothing_later(writer, dataset_id)
+    check_catalogue(writer, dataset_id, cells)
+    if cells.get("genotypes") is not None:
+        _plan_genotypes(writer, dataset_id, _genotypes(cells, options))
+    check_numbers(dataset_id, _cell_numbers(writer, dataset_id), cells["n_cells"], complete=False)
+    return Plan("resume", dataset_id)
 
 
 def load(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
-    options: dict, *, create: bool = False,
+    options: dict, *, create: bool = False, species: str | None = None,
+    normalization: dict | None = None,
 ) -> tuple[int, int, str]:
     """Register or resume the dataset, write what is missing, then finish it.
 
-    Returns the dataset id, the number of cells stored, and "registered", "resumed" or
-    "already loaded".
+    The registration records how many cells the file holds, so a reader can say how far an
+    unfinished load got. ``normalization`` is recorded when the dataset is finished. Returns
+    the dataset id, the number of cells stored, and "registered", "resumed" or "already
+    loaded".
     """
     name = _checked_name(name)
     check_columns(cells)
     found = find_dataset(writer, species_id, name)
     if found is None:
-        check_registration(name, species_id, create)
+        check_registration(name, species_id, create, species)
         (found,) = insert(writer, "register the dataset", "scrna_datasets", [{
             "name": name, "species_id": species_id, "source_checksum": source_checksum,
-            "metadata": {"load_options": options}}], returning=True)
+            "metadata": {"load_options": options, "expected_cells": cells["n_cells"]}}],
+            returning=True)
         outcome = "registered"
     else:
         outcome = check_resume(found, source_checksum, options)
         if outcome == "already loaded":
+            check_nothing_to_add(found, options)
             return found["id"], found.get("n_cells") or 0, outcome
         check_nothing_later(writer, found["id"])
     dataset_id, n = found["id"], cells["n_cells"]
@@ -101,10 +115,13 @@ def load(
     _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have], genotype_ids)
     check_numbers(dataset_id, _cell_numbers(writer, dataset_id), n, complete=True)
 
+    metadata = {**_metadata(writer, dataset_id), "cell_type_column": options["annotation"]}
+    if normalization is not None:
+        metadata["normalization"] = normalization
     update(writer, "finish the dataset", "scrna_datasets", {
         "n_cells": n, "n_genes": cells["n_genes"],
         "expression_units": options["expression_units"],
-        "metadata": {**_metadata(writer, dataset_id), "cell_type_column": options["annotation"]},
+        "metadata": metadata,
         "ingested_at": datetime.now(UTC).isoformat(),
     }, eq={"id": dataset_id})
     return dataset_id, n, outcome
@@ -112,25 +129,27 @@ def load(
 
 def add_labels(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
-    options: dict,
+    options: dict, *, species: str | None = None,
 ) -> tuple[int, dict]:
     """Add genotypes, cell labels and cell-type sources to a dataset loaded from this file.
 
-    Its cells stay where they are. Everything is checked before anything is written, and
-    every write sets fixed values, so running it again changes nothing more.
+    Its cells stay where they are, and labels given before are kept: a new --facet joins
+    them, one of the same column replaces its values. Everything is checked before anything
+    is written, and every write sets fixed values, so running it again changes nothing more.
     """
     name = _checked_name(name)
     check_columns(cells)
     found = find_dataset(writer, species_id, name)
-    check_labelled_dataset(writer, found, name, species_id, cells, source_checksum)
+    check_labelled_dataset(writer, found, name, species_id, cells, source_checksum, species)
     dataset_id = found["id"]
     genotype_plan = None
     if cells.get("genotypes") is not None:
         genotype_plan = _plan_genotypes(writer, dataset_id, _genotypes(cells, options))
+    facets = _merged_facets(writer, dataset_id, cells) if cells.get("facets") is not None else None
 
     added = {"genotypes": 0, "cells": 0, "sources": 0}
     for level, source in sorted((cells.get("sources") or {}).items()):
-        update(writer, f"record where {level}'s label came from", "scrna_clusters",
+        update(writer, f"record where {visible(level)}'s label came from", "scrna_clusters",
                {"source": source.strip() or None},
                eq={"dataset_id": dataset_id, "cluster_id": level})
         added["sources"] += 1
@@ -139,10 +158,11 @@ def add_labels(
     if genotype_plan is not None:
         genotype_ids = _write_genotypes(writer, dataset_id, *genotype_plan)
         added["genotypes"] = len(genotype_ids)
-    if genotype_ids is not None or cells.get("facets") is not None:
+    if genotype_ids is not None or facets is not None:
+        labelled = {**cells, "facets": facets}
         groups: dict[str, list[int]] = defaultdict(list)
         for i in range(cells["n_cells"]):
-            groups[json.dumps(_cell_labels(cells, genotype_ids, i), sort_keys=True)].append(i)
+            groups[json.dumps(_cell_labels(labelled, genotype_ids, i), sort_keys=True)].append(i)
         for key, numbers in groups.items():
             for start in range(0, len(numbers), LABEL_BATCH):
                 chunk = numbers[start:start + LABEL_BATCH]
@@ -152,11 +172,38 @@ def add_labels(
         added["cells"] = cells["n_cells"]
 
     metadata = _metadata(writer, dataset_id)
-    load_options = {**(metadata.get("load_options") or {}),
-                    **{k: options.get(k) for k in LABEL_KEYS}}
+    load_options = _merged_options(metadata.get("load_options") or {}, options)
     update(writer, "record the label options", "scrna_datasets",
            {"metadata": {**metadata, "load_options": load_options}}, eq={"id": dataset_id})
     return dataset_id, added
+
+
+def _merged_options(recorded: dict, options: dict) -> dict:
+    """The recorded options with this run's labels added; options not given stay as they were."""
+    merged = dict(recorded)
+    if options.get("genotype_column"):
+        for key in ("genotype_column", "control", "constructs"):
+            merged[key] = options.get(key)
+    if options.get("source_column"):
+        merged["source_column"] = options["source_column"]
+    if options.get("facets"):
+        before = merged.get("facets") or []
+        merged["facets"] = [*before, *(f for f in options["facets"] if f not in before)]
+    return {k: merged.get(k) for k in dict.fromkeys([*recorded, *LABEL_KEYS])}
+
+
+def _merged_facets(writer: Writer, dataset_id: int, cells: dict) -> list[dict]:
+    """Each cell's stored labels with this file's added, refused if they no longer fit."""
+    stored = read_all(writer, "scrna_cells", "cell_number,facets",
+                      filters=[("eq", "dataset_id", dataset_id)], order="cell_number")
+    merged = [{**(row.get("facets") or {}), **new} for row, new in zip(stored, cells["facets"])]
+    if merged and len(merged[0]) > MAX_FACETS:
+        raise LoadError(f"cells would carry {len(merged[0])} label columns; at most {MAX_FACETS}")
+    for i, labels in enumerate(merged):
+        if len(json.dumps(labels)) > MAX_FACETS_JSON:
+            raise LoadError(f"cell {i}'s labels would come to more than {MAX_FACETS_JSON} "
+                            "characters with the ones it already has; add fewer columns")
+    return merged
 
 
 def catalogue_rows(dataset_id: int, cells: dict) -> list[dict]:
@@ -176,18 +223,8 @@ def _checked_name(name: str) -> str:
 
 
 def _write_catalogue(writer: Writer, dataset_id: int, cells: dict, resuming: bool) -> None:
-    wanted = wanted_catalogue(cells)
-    if resuming:
-        stored = stored_catalogue(writer, dataset_id)
-        if stored == wanted:
-            return
-        if stored:
-            def show(m):
-                return ", ".join(f"{k}={v}" for k, v in sorted(m.items(), key=lambda kv: kv[1]))
-            raise LoadError(
-                f"dataset {dataset_id} holds the cell types {show(stored)}; the file has "
-                f"{show(wanted)}"
-            )
+    if resuming and check_catalogue(writer, dataset_id, cells):
+        return
     insert(writer, "write the cell-type catalogue", "scrna_clusters",
            catalogue_rows(dataset_id, cells))
 
@@ -211,7 +248,7 @@ def _plan_genotypes(writer: Writer, dataset_id: int, rows: list[dict]) -> tuple[
         if have and (bool(have["is_control"]), have.get("construct")) != (
                 row["is_control"], row["construct"]):
             raise LoadError(
-                f"dataset {dataset_id} already records genotype {row['name']!r} as "
+                f"dataset {dataset_id} already records genotype {visible(row['name'])!r} as "
                 f"control={have['is_control']}, construct={have.get('construct')!r}; this "
                 f"load says control={row['is_control']}, construct={row['construct']!r}"
             )

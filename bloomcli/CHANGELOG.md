@@ -15,15 +15,18 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   **Scripts must now pass `--yes`**: without a terminal the command refuses rather than
   waiting for an answer. `--dry-run` signs in, runs every check including the size and the
   normalization record, and stops before sending (bloom #1053).
-- `scrna hdf5 upload` loads the dataset it stores: after the file, it registers or continues
+- `scrna hdf5 upload` loads the dataset it stores. After the file, it registers or continues
   the dataset named by `--name` within `--species` and writes its cell types and cells (with
   their UMAP positions), plus genotypes, labels and label sources when `--genotype-column`,
-  `--facet` and `--source-column` name them. `--name`, `--species` and `--annotation` are
-  required; `--create` registers a new dataset; `--add-labels` adds labels to one already
-  loaded from the file. A stopped load continues when the same command is run again.
-  bloomctl now depends on `anndata`.
-- `scrna hdf5 upload` refuses a file with no UMAP, since the explorer plots stored
-  coordinates; `--umap-key NAME` names one stored under another name.
+  `--facet` and `--source-column` name them. **`--name`, `--species` and `--annotation` are
+  now required**, so scripts that upload need them as well as `--yes`. `--create` registers
+  a new dataset. `--add-labels` adds labels to one already loaded from the file, keeping the
+  labels it has. The file's `uns['normalization']` is recorded with the dataset and sets the
+  colour-bar units unless `--expression-units` is given. A stopped or interrupted load
+  continues when the same command is run again. bloomctl now depends on `anndata`
+  (bloom #1057).
+- `scrna hdf5 upload --umap-key NAME` names a UMAP stored under another name than
+  `obsm['X_umap']` (bloom #1057).
 
 ## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
 

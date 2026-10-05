@@ -66,7 +66,8 @@ def test_a_first_load_registers_the_dataset_and_finishes_it_last(tmp_path):
     assert (n, outcome) == (4, "registered")
     (ds,) = client.tables["scrna_datasets"]
     assert ds["id"] == dataset_id and ds["source_checksum"] == "sha-1"
-    assert ds["metadata"] == {"load_options": OPTIONS, "cell_type_column": "ann"}
+    assert ds["metadata"] == {"load_options": OPTIONS, "cell_type_column": "ann",
+                              "expected_cells": 4}
     assert (ds["n_cells"], ds["n_genes"], ds["expression_units"]) == \
         (4, 100, "log1p normalised counts")
     assert ds["ingested_at"]
@@ -224,7 +225,7 @@ def test_a_resume_with_different_options_is_refused_naming_the_option(tmp_path):
     client = FakeClient()
     dataset(client)
     changed = {**OPTIONS, "sample_column": "replicate"}
-    with pytest.raises(LoadError, match=r"sample_column.*sample.*replicate"):
+    with pytest.raises(LoadError, match=r"--sample-column was sample, now replicate"):
         load(client, tmp_path, options=changed, create=False)
     assert writes(client) == []
 
@@ -466,3 +467,63 @@ def test_a_stored_genotype_that_disagrees_is_refused_at_planning(tmp_path):
                                          "is_control": True, "construct": None}]
     with pytest.raises(LoadError, match="pFACT"):
         plan(client, tmp_path, table=table, options=LABEL_OPTIONS, add_labels=True)
+
+
+# --------------------------------------------------------------------------- #
+# Guards that keep a dataset whole
+# --------------------------------------------------------------------------- #
+
+
+def test_labels_reach_every_cell_across_batches(tmp_path, monkeypatch):
+    monkeypatch.setattr(_load, "LABEL_BATCH", 1)
+    client = FakeClient()
+    _, table = finished_without_labels(client, tmp_path)
+    _load.add_labels(writer(client, tmp_path), "MYB41", 1, table, "sha-1", LABEL_OPTIONS)
+    rows = sorted(client.tables["scrna_cells"], key=lambda r: r["cell_number"])
+    assert [r["facets"]["transgene_pos"] for r in rows] == ["False", "True", "True", "False"]
+    assert all(r.get("genotype_id") for r in rows)
+
+
+def test_a_dataset_missing_a_cell_is_not_finished(tmp_path, monkeypatch):
+    real = _load._insert_cells
+
+    def drop_last(w, dataset_id, table, missing, genotype_ids=None):
+        real(w, dataset_id, table, missing[:-1], genotype_ids)
+
+    monkeypatch.setattr(_load, "_insert_cells", drop_last)
+    client = FakeClient()
+    with pytest.raises(LoadError, match="1 of 3 cells missing"):
+        load(client, tmp_path)
+    assert client.tables["scrna_datasets"][0].get("ingested_at") is None
+
+
+def test_labels_are_refused_when_the_stored_cell_types_differ(tmp_path):
+    client = FakeClient()
+    _, table = finished_without_labels(client, tmp_path)
+    for row in client.tables["scrna_clusters"]:
+        row["ordinal"] += 5
+    since = len(client.log)
+    with pytest.raises(LoadError, match="stored cell types differ"):
+        _load.add_labels(writer(client, tmp_path), "MYB41", 1, table, "sha-1", LABEL_OPTIONS)
+    assert writes(client, since) == []
+
+
+def test_adding_labels_records_only_the_options_given(tmp_path):
+    client = FakeClient()
+    _, table = finished_without_labels(client, tmp_path)
+    _load.add_labels(writer(client, tmp_path), "MYB41", 1, table, "sha-1", LABEL_OPTIONS)
+    only_sources = {**OPTIONS, "source_column": "nn_source"}
+    sources_table = {**table, "genotypes": None, "facets": None}
+    _load.add_labels(writer(client, tmp_path), "MYB41", 1, sources_table, "sha-1", only_sources)
+    recorded = client.tables["scrna_datasets"][0]["metadata"]["load_options"]
+    assert recorded["genotype_column"] == "sample" and recorded["control"] == "Col-0"
+    assert recorded["facets"] == ["transgene_pos"]
+    assert recorded["annotation"] == "ann"
+
+
+def test_a_resume_with_repeated_cells_is_refused_at_planning(tmp_path):
+    client = FakeClient({"scrna_cells": [{"dataset_id": 7, "cell_number": 0},
+                                         {"dataset_id": 7, "cell_number": 0}]})
+    dataset(client)
+    with pytest.raises(LoadError, match="repeated"):
+        plan(client, tmp_path, create=False)

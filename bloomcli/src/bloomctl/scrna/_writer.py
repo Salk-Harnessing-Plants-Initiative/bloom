@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+from ._text import visible
 
 # How long a write can keep running on the server after the client gave up: the statement
 # timeout applying to the writer's requests, plus a margin.
@@ -74,21 +77,35 @@ class Marker:
         self.path, self.wait_s, self.clock = Path(path), wait_s, clock
 
     def record(self, step: str) -> None:
+        """Written whole or not at all, readable only by this user."""
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.path.write_text(json.dumps({"at": self.clock(), "step": step}))
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"at": self.clock(), "step": step}))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
 
     def check(self) -> None:
-        """Refuse until a write that may still be running has certainly finished."""
+        """Refuse until a write that may still be running has certainly finished.
+
+        A record that cannot be read is dated by the file itself, so it is waited out too.
+        """
         if not self.path.exists():
             return
-        record = json.loads(self.path.read_text())
-        left = record["at"] + self.wait_s - self.clock()
+        try:
+            record = json.loads(self.path.read_text())
+            at, step = float(record["at"]), str(record["step"])
+        except (ValueError, KeyError, TypeError):
+            at, step = self.path.stat().st_mtime, "an earlier write"
+        left = at + self.wait_s - self.clock()
         if left > 0:
             raise LoadError(
-                f"'{record['step']}' may still be finishing on the server; wait "
+                f"'{visible(step)}' may still be finishing on the server; wait "
                 f"{math.ceil(left)} seconds, then run the same command again"
             )
         self.path.unlink()
+
+    def wait_text(self) -> str:
+        return f"about {math.ceil(self.wait_s / 60)} minutes"
 
 
 def marker_path(directory: Path, dataset_name: str) -> Path:
@@ -115,10 +132,17 @@ class Writer:
         return None
 
     def write(self, step: str, send: Callable[[Any], Any]) -> Any:
-        """Run send(client), one request, under the write rules."""
+        """Run send(client), one request, under the write rules.
+
+        Interrupted mid-request (Ctrl-C), the write may still commit on the server, so that
+        is recorded as an unknown outcome before the interrupt goes on.
+        """
         for attempt in (1, 2):
             try:
                 return send(self.client)
+            except KeyboardInterrupt:
+                self.marker.record(step)
+                raise
             except _api_errors() as exc:
                 kind = classify(exc)
                 if kind == "unauthorised" and attempt == 1:
@@ -126,7 +150,10 @@ class Writer:
                     continue
                 if kind == "unknown":
                     self.marker.record(step)
-                    raise LoadError(f"{step}: {exc}. Its outcome is unknown; {RERUN}") from None
+                    raise LoadError(
+                        f"{step}: {exc}. Its outcome is unknown, so it may still be finishing "
+                        f"on the server; wait {self.marker.wait_text()}, then {RERUN}"
+                    ) from None
                 raise LoadError(f"{step}: {exc}; {RERUN}") from None
         return None
 
