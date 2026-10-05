@@ -130,9 +130,8 @@ def _read(np, adata, path: Path, annotation: str, sample_column: str, umap_key: 
     sources = _text_column(adata, source_column) if source_column else None
     genotypes = _text_column(adata, genotype_column) if genotype_column else None
     if genotypes is not None:
-        _refuse_long_names(genotypes, MAX_GENOTYPE_NAME, "genotype", genotype_column,
-                           "--genotype-column")
-    _refuse_long_names(samples, MAX_SAMPLE_NAME, "sample", sample_column, "--sample-column")
+        _refuse_long_names(genotypes, MAX_GENOTYPE_NAME, "genotype")
+    _refuse_long_names(samples, MAX_SAMPLE_NAME, "sample")
     levels = sorted(set(labels))
     if len(levels) > len(PALETTE):
         raise LoadError(
@@ -181,18 +180,15 @@ def _coordinates(np, array, umap_key: str):
     return coords
 
 
-def _refuse_long_names(values: list[str], limit: int, noun: str, column: str, flag: str) -> None:
-    """Names the database cannot hold, refused with one shortened example and what to do."""
-    long = sorted({v for v in values if len(v) > limit}, key=len, reverse=True)
-    if not long:
+def _refuse_long_names(values: list[str], limit: int, noun: str) -> None:
+    """A name the database cannot hold, refused with the longest one shortened."""
+    longest = max(values, key=len, default="")
+    if len(longest) <= limit:
         return
-    example = long[0]
-    shown = visible(example[:40]) + ("…" if len(example) > 40 else "")
+    shown = visible(longest[:40]) + "…"
     raise LoadError(
-        f"{len(long)} {noun} name{'s' if len(long) > 1 else ''} in obs[{visible(column)!r}] "
-        f"{'are' if len(long) > 1 else 'is'} longer than {limit} characters, the most Bloom "
-        f"stores; the longest is {len(example)}: {shown!r}. Shorten them in the file, or name "
-        f"another column with {flag}"
+        f"{noun.capitalize()} name too long ({len(longest)} characters): {shown!r}. Limit {noun} names to "
+        f"{limit} characters in the file and upload again"
     )
 
 

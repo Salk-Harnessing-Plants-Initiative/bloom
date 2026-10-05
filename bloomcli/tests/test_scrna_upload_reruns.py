@@ -99,8 +99,8 @@ def test_sample_names_the_database_cannot_hold_are_refused_before_sending(tmp_pa
         "cell_type": ["A", "B", "A"], "sample": ["s" * 101, "s1", "s1"]})
     result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
-    assert "1 sample name in obs['sample'] is longer than 100 characters" in result.output
-    assert "Shorten them in the file, or name another column with --sample-column" in result.output
+    assert "Sample name too long (101 characters)" in result.output
+    assert "Limit sample names to 100 characters in the file and upload again" in result.output
     assert storage.requests == []
 
 
