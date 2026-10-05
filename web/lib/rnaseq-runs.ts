@@ -173,15 +173,24 @@ export function stepStates(run: RnaseqRun): Partial<Record<StepId, StepState>> {
   return states;
 }
 
+// Exits whose fixed sentence talks about the sample's own folder, which a folder run
+// doesn't have; the service's message names what it copied instead.
+const SAMPLE_FOLDER_EXITS = new Set([4, 7]);
+
 /** A sentence for how a failed run ended, or null. */
 export function failureSentence(run: RnaseqRun): string | null {
   if (run.status !== "failed") return null;
-  const sentences =
-    run.current_step === "fetch-sra"
-      ? FETCH_SRA_EXIT_SENTENCES
-      : run.current_step === "stage" && runFastqUrl(run)
-        ? { ...EXIT_SENTENCES, ...FOLDER_STAGE_EXIT_SENTENCES }
-        : EXIT_SENTENCES;
+  if (runFastqUrl(run)) {
+    // The service words a folder run's failures around its folder, e.g. naming the sample
+    // for exit 9; the fixed sentences are only a fallback when it left no message.
+    if (run.message && (run.current_step === "stage" || SAMPLE_FOLDER_EXITS.has(run.exit_code ?? -1))) {
+      return run.message;
+    }
+    if (run.current_step === "stage") {
+      return (run.exit_code != null && FOLDER_STAGE_EXIT_SENTENCES[run.exit_code]) || run.message;
+    }
+  }
+  const sentences = run.current_step === "fetch-sra" ? FETCH_SRA_EXIT_SENTENCES : EXIT_SENTENCES;
   if (run.exit_code != null && sentences[run.exit_code]) return sentences[run.exit_code];
   return run.message;
 }

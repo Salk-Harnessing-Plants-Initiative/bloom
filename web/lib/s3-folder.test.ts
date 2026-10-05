@@ -5,6 +5,7 @@ import {
   folderCheckErrorMessage,
   folderSummary,
   folderUrlProblem,
+  isFolderChangedRefusal,
   isFolderCheck,
   looksLikeFolder,
   normaliseFolderUrl,
@@ -30,7 +31,33 @@ describe("the folder URL", () => {
     expect(folderUrlProblem("")).toBeNull();
     expect(folderUrlProblem("s3://lab-data/run42")).toBeNull();
     expect(folderUrlProblem("lab-data/run42")).toBe("Enter an S3 folder, starting with s3://");
-    expect(folderUrlProblem("s3://lab-data/")).toMatch(/s3:\/\/bucket\/folder\//);
+    expect(folderUrlProblem("s3://lab-data/")).toBe(
+      "Give the folder inside the bucket, e.g. s3://bucket/folder/"
+    );
+  });
+
+  it("says which kind of URL was given instead of a folder", () => {
+    expect(folderUrlProblem("https://lab-data.s3.us-west-2.amazonaws.com/run42/")).toMatch(
+      /Use the s3:\/\/ form/
+    );
+    expect(folderUrlProblem("s3://lab-data/run42/col0_S1_L001_R1_001.fastq.gz")).toMatch(
+      /That's a file/
+    );
+    expect(folderUrlProblem("s3://lab-data/run+1/")).toMatch(/letters, digits and !_\.\*'\(\)-/);
+    expect(folderUrlProblem("s3://lab-data/date=2026-01-01/")).toMatch(/no spaces or other characters/);
+  });
+
+  it("takes a URL of exactly 1024 characters and refuses 1025", () => {
+    const head = "s3://lab-data/";
+    const ofLength = (n: number) => head + "a".repeat(n - head.length - 1) + "/";
+    expect(looksLikeFolder(ofLength(1024))).toBe(true);
+    expect(looksLikeFolder(ofLength(1025))).toBe(false);
+    expect(folderUrlProblem(ofLength(1025))).toMatch(/at most 1024 characters/);
+  });
+
+  it("refuses . and .. folder names", () => {
+    expect(looksLikeFolder("s3://lab-data/a/./b/")).toBe(false);
+    expect(looksLikeFolder("s3://lab-data/a/../b/")).toBe(false);
   });
 });
 
@@ -49,6 +76,19 @@ describe("the check", () => {
     expect(isFolderCheck({ ...check, files: [{ name: "x" }] })).toBe(false);
     expect(isFolderCheck({ ...check, lanes: ["1"] })).toBe(false);
     expect(isFolderCheck(null)).toBe(false);
+    for (const field of ["fastq_url", "sample", "file_count", "total_bytes"] as const) {
+      const { [field]: _dropped, ...rest } = check;
+      expect(isFolderCheck(rest)).toBe(false);
+    }
+    expect(isFolderCheck({ ...check, files: [{ name: "x", size: 1 }] })).toBe(false);
+  });
+
+  it("tells the folder-changed 409 from other refusals", () => {
+    const changed = "s3://lab-data/run42/ changed since it was checked; check it again, then start the run";
+    expect(isFolderChangedRefusal(409, changed)).toBe(true);
+    expect(isFolderChangedRefusal(409, "col0 against tair10 has already been processed (run 9).")).toBe(false);
+    expect(isFolderChangedRefusal(422, changed)).toBe(false);
+    expect(isFolderChangedRefusal(409, null)).toBe(false);
   });
 
   it("sums it up in one line", () => {

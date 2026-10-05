@@ -125,6 +125,61 @@ describe("forwarding", () => {
     expect((await res.json()).detail).toBe("The job service isn't available right now.");
   });
 
+  it("defaults to the in-cluster workflows host", async () => {
+    vi.unstubAllEnvs();
+    delete process.env.WORKFLOWS_URL;
+    await callRoute({ fastq_url: "s3://lab-data/run42/" });
+    expect(fetchSpy.mock.calls[0][0]).toBe("http://workflows:5100/scrna/cellranger/folder-check");
+    expect(fetchSpy.mock.calls[0][1].method).toBe("POST");
+  });
+
+  it("returns 401 for a session without a token", async () => {
+    mockedGetSession.mockResolvedValue({ access_token: "" } as never);
+    const res = await callRoute({ fastq_url: "s3://lab-data/run42/" });
+    expect(res.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 500, 503])("hides a %i detail", async (status) => {
+    fetchSpy.mockResolvedValue(upstream({ detail: "operator text" }, status));
+    const res = await callRoute({ fastq_url: "s3://lab-data/run42/" });
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ detail: null });
+  });
+
+  it("drops a blank 422 detail", async () => {
+    fetchSpy.mockResolvedValue(upstream({ detail: "   " }, 422));
+    const res = await callRoute({ fastq_url: "s3://lab-data/run42/" });
+    expect(await res.json()).toEqual({ detail: null });
+  });
+
+  it("answers a non-JSON 200 with 502 and says so", async () => {
+    fetchSpy.mockResolvedValue(upstream("<html>", 200));
+    const res = await callRoute({ fastq_url: "s3://lab-data/run42/" });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ detail: "Unexpected response from the job service." });
+  });
+
+  it("keeps a non-JSON error's status with no detail", async () => {
+    fetchSpy.mockResolvedValue(upstream("<html>", 503));
+    const res = await callRoute({ fastq_url: "s3://lab-data/run42/" });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ detail: null });
+  });
+
+  it("refuses a body over 256 KB with 413", async () => {
+    const res = await callRoute({ fastq_url: "s3://lab-data/run42/", pad: "x".repeat(300_000) });
+    expect(res.status).toBe(413);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("doesn't follow a redirect, and stops when the caller goes away or time runs out", async () => {
+    await callRoute({ fastq_url: "s3://lab-data/run42/" });
+    const init = fetchSpy.mock.calls[0][1];
+    expect(init.redirect).toBe("manual");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("refuses a success body it doesn't recognise", async () => {
     fetchSpy.mockResolvedValue(upstream({ sample: "col0" }));
     expect((await callRoute({ fastq_url: CHECK.fastq_url })).status).toBe(502);

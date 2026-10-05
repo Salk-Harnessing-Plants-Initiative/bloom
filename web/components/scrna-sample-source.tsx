@@ -146,8 +146,8 @@ export default function ScrnaSampleSource({
             </p>
           ) : (
             <p className="-mt-2 text-sm text-stone-500">
-              The name the sample is registered under once it&apos;s downloaded, so later
-              runs can use it.
+              The name the run and its results are saved under. It must not already be
+              used.
             </p>
           )}
         </div>

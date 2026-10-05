@@ -163,6 +163,44 @@ describe("the form", () => {
     expect(start.disabled).toBe(false);
   });
 
+  it("keeps Start run disabled without a passed check for the folder in the box", async () => {
+    let finishCheck: (r: Response) => void = () => {};
+    folderReply = () => new Promise<Response>((resolve) => (finishCheck = resolve));
+    openForm();
+    type("Reference genome", "tiny_ref");
+    type("Species", "1");
+    type("Dataset name", "Col-0 root tip");
+    const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    type("S3 folder URL", FOLDER_URL);
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some(([url]) => url === "/api/scrna/cellranger/folder-check")).toBe(true)
+    );
+    expect(start.disabled).toBe(true);
+    finishCheck(json({ detail: "No FASTQs directly in s3://lab-data/tinygex/" }, 422));
+    await screen.findByText("No FASTQs directly in s3://lab-data/tinygex/");
+    expect(start.disabled).toBe(true);
+  });
+
+  it("keeps Start run disabled when the check is for a different folder", async () => {
+    folderReply = async () => json({ ...FOLDER, fastq_url: "s3://lab-data/other/" }, 200);
+    openForm();
+    type("S3 folder URL", FOLDER_URL);
+    await screen.findByText(FOLDER_SUMMARY);
+    type("Reference genome", "tiny_ref");
+    type("Species", "1");
+    type("Dataset name", "Col-0 root tip");
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says a reference is still needed once the folder has passed", async () => {
+    openForm();
+    await enterFolder();
+    expect(screen.getByText("Choose a reference genome to start.")).toBeTruthy();
+    type("Reference genome", "tiny_ref");
+    expect(screen.queryByText("Choose a reference genome to start.")).toBeNull();
+  });
+
   it("lists the species it was given", () => {
     openForm();
     expect(screen.getByRole("option", { name: "Rice (Oryza sativa)" })).toBeTruthy();
@@ -294,8 +332,94 @@ describe("starting a run", () => {
     const before = checks();
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("changed since it was checked");
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The folder changed since it was checked, so it's being checked again. Review the files shown above, then start the run."
+    );
     await waitFor(() => expect(checks()).toBe(before + 1));
+  });
+
+  it("starts with the files from the check made after a folder change", async () => {
+    const newer = {
+      ...FOLDER,
+      lanes: [1, 2],
+      files: [
+        ...FOLDER.files,
+        { name: "tinygex_S1_L002_R1_001.fastq.gz", size: 5, etag: '"c"' },
+        { name: "tinygex_S1_L002_R2_001.fastq.gz", size: 5, etag: '"d"' },
+      ],
+      file_count: 4,
+      total_bytes: FOLDER.total_bytes + 10,
+    };
+    let starts = 0;
+    startReply = async () =>
+      ++starts === 1
+        ? json({ detail: "s3://lab-data/tinygex/ changed since it was checked; check it again, then start the run" }, 409)
+        : json({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" }, 201);
+    openForm();
+    await choose();
+    folderReply = async () => json(newer, 200);
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    await screen.findByText("tinygex · 2 lanes · 4 files · 4.4 GB");
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    await screen.findByRole("status");
+    const [, second] = startCalls()[1];
+    expect(JSON.parse(second.body).fastq_files).toEqual(newer.files);
+  });
+
+  it("doesn't check the folder again for a 409 that checking can't fix", async () => {
+    respond({ detail: "tinygex against tiny_ref has already been processed (run 9)." }, 409);
+    openForm();
+    await choose();
+    const checks = () =>
+      fetchSpy.mock.calls.filter(([url]) => url === "/api/scrna/cellranger/folder-check").length;
+    const before = checks();
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "tinygex against tiny_ref has already been processed (run 9)."
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(checks()).toBe(before);
+  });
+
+  it("doesn't check the folder again after a 422", async () => {
+    respond({ detail: "Reference 'tiny_ref' has no reference.json" }, 422);
+    openForm();
+    await choose();
+    const checks = () =>
+      fetchSpy.mock.calls.filter(([url]) => url === "/api/scrna/cellranger/folder-check").length;
+    const before = checks();
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    await screen.findByRole("alert");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(checks()).toBe(before);
+  });
+
+  it("focuses the reason a start was refused, and drops it once the folder is edited", async () => {
+    respond({ detail: "tinygex against tiny_ref has already been processed (run 9)." }, 409);
+    openForm();
+    await choose();
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    const alert = await screen.findByRole("alert");
+    expect(document.activeElement).toBe(alert);
+    type("S3 folder URL", "s3://lab-data/tinygex_rep2/");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("sends the checked URL, with its slash, when the box has none", async () => {
+    folderReply = async () => json(FOLDER, 200);
+    respond({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
+    openForm();
+    type("S3 folder URL", "s3://lab-data/tinygex");
+    await screen.findByText(FOLDER_SUMMARY);
+    type("Reference genome", "tiny_ref");
+    type("Species", "1");
+    type("Dataset name", "Col-0 root tip");
+    const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(false);
+    fireEvent.click(start);
+    await screen.findByRole("status");
+    const [[, init]] = startCalls();
+    expect(JSON.parse(init.body).fastq_url).toBe("s3://lab-data/tinygex/");
   });
 
   it("falls back to a fixed message when there's no detail", async () => {

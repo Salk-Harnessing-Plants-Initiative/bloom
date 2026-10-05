@@ -264,6 +264,49 @@ describe("failureSentence", () => {
     expect(failureSentence(folderCount)).toMatch(/Cell Ranger count failed/);
   });
 
+  it("gives a folder run's count exits 6 and 7 the count sentences, not the folder ones", () => {
+    const folder = { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" };
+    expect(
+      failureSentence(run({ status: "failed", exit_code: 6, current_step: "count", params: folder }))
+    ).toMatch(/can't be used as a Cell Ranger run id/);
+    expect(
+      failureSentence(run({ status: "failed", exit_code: 7, current_step: "count", params: folder }))
+    ).toMatch(/don't follow Illumina's naming/);
+  });
+
+  it("prefers the service's own message for a folder run's stage step", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 9,
+      current_step: "stage",
+      message: "The FASTQs in s3://lab-data/run42/ are named for another sample than the run's, col0",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toBe(failed.message);
+  });
+
+  it("doesn't borrow a count sentence for an unexpected stage exit of a folder run", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 3,
+      current_step: "stage",
+      message: "Step stage failed (exit 3)",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toBe("Step stage failed (exit 3)");
+  });
+
+  it("uses the service's message for a folder run's missing or misnamed FASTQs at count", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 4,
+      current_step: "count",
+      message: "No FASTQs were found on the shared disk after copying s3://lab-data/run42/",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toBe(failed.message);
+  });
+
   it("falls back to the run's message for another exit code", () => {
     expect(failureSentence(run({ status: "failed", exit_code: 137, message: "OOMKilled" }))).toBe(
       "OOMKilled"

@@ -117,6 +117,24 @@ describe("request checks", () => {
     [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref" }],
     [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref", fastq_files: "x" }],
     [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref", fastq_files: [1] }],
+    [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref", fastq_files: [null] }],
+    [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref", fastq_files: [[]] }],
+    [{ fastq_url: "s3://lab-data/run42/", reference: "tiny_ref", fastq_files: [{ name: "a" }] }],
+    [
+      {
+        fastq_url: "s3://lab-data/run42/",
+        reference: "tiny_ref",
+        fastq_files: [{ name: "a", size: "1", etag: '"e"' }],
+      },
+    ],
+    [
+      {
+        fastq_url: "s3://lab-data/run42/",
+        reference: "tiny_ref",
+        fastq_files: Array.from({ length: 97 }, (_, i) => ({ name: `f${i}`, size: 1, etag: '"e"' })),
+      },
+    ],
+    [{ fastq_url: null, sample: "col0", reference: "tiny_ref" }],
     [null],
   ])("refuses %j without calling upstream", async (body) => {
     const res = await callRoute(body);
@@ -151,6 +169,33 @@ describe("forwarding", () => {
       reference: "tiny_ref",
       metadata: { species_id: 1 },
     });
+  });
+
+  it("forwards only each file's name, size and ETag, for up to 96 files", async () => {
+    const files = Array.from({ length: 96 }, (_, i) => ({
+      name: `col0_S1_L${String(i + 1).padStart(3, "0")}_R1_001.fastq.gz`,
+      size: i,
+      etag: '"e"',
+      extra: "x".repeat(10),
+    }));
+    const res = await callRoute({ fastq_url: "s3://lab-data/run42/", fastq_files: files, reference: "tiny_ref" });
+    expect(res.status).toBe(201);
+    const sent = JSON.parse(fetchSpy.mock.calls[0][1].body).fastq_files;
+    expect(sent).toHaveLength(96);
+    expect(sent[0]).toEqual({ name: files[0].name, size: 0, etag: '"e"' });
+  });
+
+  it("refuses a body over 256 KB with 413, without calling upstream", async () => {
+    const res = await callRoute({ sample: "tinygex", reference: "tiny_ref", pad: "x".repeat(300_000) });
+    expect(res.status).toBe(413);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("doesn't follow a redirect, and stops when the caller goes away or time runs out", async () => {
+    await callRoute({ sample: "tinygex", reference: "tiny_ref" });
+    const init = fetchSpy.mock.calls[0][1];
+    expect(init.redirect).toBe("manual");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("posts only sample and reference with the user's token", async () => {
@@ -223,6 +268,35 @@ describe("forwarding", () => {
 });
 
 describe("upstream answers", () => {
+  it("treats a redirect as the service being unavailable", async () => {
+    fetchSpy.mockResolvedValue(new Response(null, { status: 302, headers: { location: "https://elsewhere.test/" } }));
+    const res = await callRoute({ sample: "tinygex", reference: "tiny_ref" });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ detail: "The job service isn't available right now." });
+  });
+
+  it("treats a reply cut off mid-body as the service being unavailable", async () => {
+    const broken = new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(new TypeError("terminated"));
+        },
+      }),
+      { status: 201 }
+    );
+    fetchSpy.mockResolvedValue(broken);
+    const res = await callRoute({ sample: "tinygex", reference: "tiny_ref" });
+    expect(res.status).toBe(502);
+  });
+
+  it("shortens a very long passed-through detail", async () => {
+    fetchSpy.mockResolvedValue(upstream({ detail: "a".repeat(5_000) }, 422));
+    const res = await callRoute({ sample: "tinygex", reference: "tiny_ref" });
+    const { detail } = await res.json();
+    expect(detail.length).toBe(501);
+    expect(detail.endsWith("…")).toBe(true);
+  });
+
   it("returns 502 without the internal host when upstream is unreachable", async () => {
     fetchSpy.mockRejectedValue(new TypeError("connect ECONNREFUSED workflows.test"));
     const res = await callRoute({ sample: "tinygex", reference: "tiny_ref" });

@@ -11,20 +11,16 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { isJsonMediaType, isSameOrigin } from "@/lib/cyl-pipeline/trigger-proxy";
 import { isFolderCheck } from "@/lib/s3-folder";
+import { forwardToWorkflows, readJsonBody } from "@/lib/scrna-workflows-proxy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// One S3 listing upstream; the form waits for it, so this stays short.
-const UPSTREAM_TIMEOUT_MS = 20_000;
+// One folder listing upstream, up to two S3 requests after a region redirect; the form
+// waits for it, so this only just outlasts the service's own S3 timeouts.
+const UPSTREAM_TIMEOUT_MS = 30_000;
 
 const DETAIL_PASSTHROUGH_STATUSES = new Set([422, 429]);
-
-function callerSafeDetail(status: number, parsed: unknown): string | null {
-  if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return null;
-  const detail = (parsed as { detail?: unknown } | null)?.detail;
-  return typeof detail === "string" && detail.trim() ? detail : null;
-}
 
 export async function POST(request: Request) {
   if (!isJsonMediaType(request.headers)) {
@@ -40,13 +36,9 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ detail: "The request body must be JSON." }, { status: 400 });
-  }
-  const { fastq_url } = (body ?? {}) as { fastq_url?: unknown };
+  const read = await readJsonBody(request);
+  if (!read.ok) return read.response;
+  const { fastq_url } = (read.body ?? {}) as { fastq_url?: unknown };
   if (typeof fastq_url !== "string" || !fastq_url.trim()) {
     return NextResponse.json({ detail: "Enter an S3 folder." }, { status: 400 });
   }
@@ -56,47 +48,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ detail: "Sign in to check a folder." }, { status: 401 });
   }
 
-  const workflowsUrl = process.env.WORKFLOWS_URL ?? "http://workflows:5100";
-
-  let upstream: Response;
-  try {
-    upstream = await fetch(`${workflowsUrl}/scrna/cellranger/folder-check`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ fastq_url }),
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-  } catch {
-    return NextResponse.json(
-      { detail: "The job service isn't available right now." },
-      { status: 502 }
-    );
-  }
-
-  const text = await upstream.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return NextResponse.json(
-      { detail: upstream.ok ? "Unexpected response from the job service." : null },
-      { status: upstream.ok ? 502 : upstream.status }
-    );
-  }
-  if (!upstream.ok) {
-    return NextResponse.json(
-      { detail: callerSafeDetail(upstream.status, parsed) },
-      { status: upstream.status }
-    );
-  }
-  if (!isFolderCheck(parsed)) {
-    return NextResponse.json(
-      { detail: "Unexpected response from the job service." },
-      { status: 502 }
-    );
-  }
-  return NextResponse.json(parsed, { status: 200 });
+  return forwardToWorkflows({
+    request,
+    path: "/scrna/cellranger/folder-check",
+    token: session.access_token,
+    payload: { fastq_url },
+    timeoutMs: UPSTREAM_TIMEOUT_MS,
+    passthrough: DETAIL_PASSTHROUGH_STATUSES,
+    isExpected: isFolderCheck,
+    okStatus: 200,
+  });
 }

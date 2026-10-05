@@ -1,32 +1,48 @@
 /**
  * Server-side proxy for starting a Cell Ranger run.
  *
- * Forwards `{sample or fastq_url and fastq_files, reference, metadata?, sra_runs?}` with the signed-in user's Supabase token to the
- * workflows service (`POST /scrna/cellranger/runs`, in-cluster at `workflows:5100`),
- * which checks the names, records the run and queues it. Proxying keeps the token out
- * of client JS. A request must be JSON (415 otherwise) and come from a Bloom page (403
- * otherwise), as for the cylinder pipeline trigger. Only 409, 422 and 429 details are passed
- * through: those say a name is taken, name the rule a value broke, or say to wait; other
- * upstream details are written for operators.
+ * Forwards `{sample or fastq_url and fastq_files, reference, metadata?, sra_runs?}` with the
+ * signed-in user's Supabase token to the workflows service (`POST /scrna/cellranger/runs`,
+ * in-cluster at `workflows:5100`), which checks the request, records the run and queues
+ * it. Proxying keeps the token out of client JS. A request must be JSON (415 otherwise),
+ * come from a Bloom page (403 otherwise) and be at most 256 KB (413 otherwise), as for the
+ * cylinder pipeline trigger. Only 409, 422 and 429 details are passed through: those say
+ * the folder changed since its check or the run already exists, name the rule a value
+ * broke, or say to wait; other upstream details are written for operators.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { isJsonMediaType, isSameOrigin } from "@/lib/cyl-pipeline/trigger-proxy";
 import { isStartedRun } from "@/lib/scrna-jobs";
+import { MAX_FOLDER_FILES, type FolderFile } from "@/lib/s3-folder";
+import { forwardToWorkflows, readJsonBody } from "@/lib/scrna-workflows-proxy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Queuing a run is one database call upstream, so this only has to outlast a slow gateway.
-const UPSTREAM_TIMEOUT_MS = 30_000;
+// A folder start lists the folder again (up to two S3 requests after a region redirect),
+// then makes one database call, so this outlasts the service's own S3 timeouts.
+const UPSTREAM_TIMEOUT_MS = 45_000;
 
 const DETAIL_PASSTHROUGH_STATUSES = new Set([409, 422, 429]);
 
-function callerSafeDetail(status: number, parsed: unknown): string | null {
-  if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return null;
-  const detail = (parsed as { detail?: unknown } | null)?.detail;
-  return typeof detail === "string" && detail.trim() ? detail : null;
+/** The files the folder check showed, keeping only their name, size and ETag, or null. */
+function shownFiles(value: unknown): FolderFile[] | null {
+  if (!Array.isArray(value) || value.length > MAX_FOLDER_FILES) return null;
+  const files: FolderFile[] = [];
+  for (const item of value) {
+    const f = item as Partial<FolderFile> | null;
+    if (
+      typeof f?.name !== "string" ||
+      typeof f.size !== "number" ||
+      typeof f.etag !== "string"
+    ) {
+      return null;
+    }
+    files.push({ name: f.name, size: f.size, etag: f.etag });
+  }
+  return files;
 }
 
 export async function POST(request: Request) {
@@ -44,16 +60,10 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { detail: "The request body must be JSON." },
-      { status: 400 }
-    );
-  }
-  const { sample, fastq_url, fastq_files, reference, metadata, sra_runs } = (body ?? {}) as {
+  const read = await readJsonBody(request);
+  if (!read.ok) return read.response;
+  const { sample, fastq_url, fastq_files, reference, metadata, sra_runs } = (read.body ??
+    {}) as {
     sample?: unknown;
     fastq_url?: unknown;
     fastq_files?: unknown;
@@ -64,13 +74,11 @@ export async function POST(request: Request) {
   // A run's reads come from an S3 folder (whose files name the sample) or a named sample.
   // A folder comes with the files its check showed; the service refuses it if they changed.
   const hasFolder = fastq_url !== undefined;
+  const files = hasFolder ? shownFiles(fastq_files) : null;
   if (
     typeof reference !== "string" ||
     (hasFolder
-      ? typeof fastq_url !== "string" ||
-        sample !== undefined ||
-        !Array.isArray(fastq_files) ||
-        !fastq_files.every((f) => f !== null && typeof f === "object")
+      ? typeof fastq_url !== "string" || sample !== undefined || files === null
       : typeof sample !== "string")
   ) {
     return NextResponse.json(
@@ -108,55 +116,19 @@ export async function POST(request: Request) {
     );
   }
 
-  // Read per request, so one image works in any environment and tests can vary it.
-  const workflowsUrl = process.env.WORKFLOWS_URL ?? "http://workflows:5100";
-
-  let upstream: Response;
-  try {
-    upstream = await fetch(`${workflowsUrl}/scrna/cellranger/runs`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...(hasFolder ? { fastq_url, fastq_files } : { sample }),
-        reference,
-        ...(metadata === undefined ? {} : { metadata }),
-        ...(sra_runs === undefined ? {} : { sra_runs }),
-      }),
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-  } catch {
-    // Unreachable or timed out; don't leak the internal host into the response.
-    return NextResponse.json(
-      { detail: "The job service isn't available right now." },
-      { status: 502 }
-    );
-  }
-
-  const text = await upstream.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return NextResponse.json(
-      { detail: upstream.ok ? "Unexpected response from the job service." : null },
-      { status: upstream.ok ? 502 : upstream.status }
-    );
-  }
-
-  if (!upstream.ok) {
-    return NextResponse.json(
-      { detail: callerSafeDetail(upstream.status, parsed) },
-      { status: upstream.status }
-    );
-  }
-  if (!isStartedRun(parsed)) {
-    return NextResponse.json(
-      { detail: "Unexpected response from the job service." },
-      { status: 502 }
-    );
-  }
-  return NextResponse.json(parsed, { status: 201 });
+  return forwardToWorkflows({
+    request,
+    path: "/scrna/cellranger/runs",
+    token: session.access_token,
+    payload: {
+      ...(hasFolder ? { fastq_url, fastq_files: files } : { sample }),
+      reference,
+      ...(metadata === undefined ? {} : { metadata }),
+      ...(sra_runs === undefined ? {} : { sra_runs }),
+    },
+    timeoutMs: UPSTREAM_TIMEOUT_MS,
+    passthrough: DETAIL_PASSTHROUGH_STATUSES,
+    isExpected: isStartedRun,
+    okStatus: 201,
+  });
 }
