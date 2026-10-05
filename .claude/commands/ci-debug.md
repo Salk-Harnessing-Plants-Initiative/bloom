@@ -18,7 +18,7 @@ Guide for debugging CI failures in Bloom (Next.js + FastAPI/LangGraph + FastMCP 
 | `build-and-audit` | npm CVE audit, TypeScript check, Next.js build | `npm ci`, `npm audit --audit-level=critical`, `npx tsc --noEmit`, `npm run build` |
 | `python-audit` | Python CVE scanning | `uv export --frozen --no-hashes` piped to `uvx pip-audit@2.10.0` per service (pinned per the `python-dependency-management` spec) |
 | `docker-build` | Build + Trivy scan Docker images | Build `bloom-web`, `langchain-agent`, `bloommcp`; Trivy CRITICAL gate |
-| `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run --extra test pytest tests/integration/` |
+| `compose-health-check` | Full stack integration tests | Start prod compose with `up --wait` (healthy within 300s, then no service restarting), `uv run --extra test pytest tests/integration/` |
 | `extract-pinned-images` | Extract pinned images for matrix scan | Grep `image:` from compose |
 | `scan-pinned-images` | CVE scan each pinned image (matrix) | Trivy per-image |
 | `pinned-images-summary` | Aggregate CVE report | Post combined table as PR comment |
@@ -142,7 +142,7 @@ trivy image bloom-web:latest --severity CRITICAL,HIGH
 1. Depends on `docker-build` completing successfully
 2. Generates `.env.ci` from GitHub secrets
 3. Starts the full prod compose stack
-4. Waits up to 180 seconds for all services to report healthy
+4. Starts the stack with `docker compose up --build --wait --wait-timeout 300` (services with a healthcheck must be healthy, the rest running, one-shots exit 0), then fails if any service is still restarting a few seconds later
 5. Runs `uv run --extra test pytest tests/integration/ -v --tb=short`
 6. Tears down with `docker compose down -v`
 

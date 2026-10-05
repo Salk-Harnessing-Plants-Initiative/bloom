@@ -231,6 +231,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 60s
     depends_on:
       - kong
       - bloommcp
@@ -285,6 +286,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 30s
     depends_on:
       - kong
       - db-prod
@@ -995,6 +997,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Its start script raises nofile to 100000, which cap_drop ALL forbids above the
+    # host's hard limit; Docker sets it here instead (GitHub runners sit lower).
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     networks:
       - supanet
     expose:
@@ -1084,6 +1092,7 @@ services:
       interval: 5s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
   # -------------------
   # ImgProxy
