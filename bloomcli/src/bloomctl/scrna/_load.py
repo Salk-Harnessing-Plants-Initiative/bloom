@@ -11,6 +11,7 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Callable
 
 from ._cells import MAX_FACETS, MAX_FACETS_JSON, PALETTE, genotype_rows
 from ._checks import (
@@ -76,7 +77,7 @@ def plan(
 def load(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
     options: dict, *, create: bool = False, species: str | None = None,
-    normalization: dict | None = None,
+    normalization: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[int, int, str]:
     """Register or resume the dataset, write what is missing, then finish it.
 
@@ -112,7 +113,8 @@ def load(
     numbers = _cell_numbers(writer, dataset_id) if outcome == "resumed" else []
     check_numbers(dataset_id, numbers, n, complete=False)
     have = set(numbers)
-    _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have], genotype_ids)
+    _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have], genotype_ids,
+                  on_progress)
     check_numbers(dataset_id, _cell_numbers(writer, dataset_id), n, complete=True)
 
     metadata = {**_metadata(writer, dataset_id), "cell_type_column": options["annotation"]}
@@ -130,6 +132,7 @@ def load(
 def add_labels(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
     options: dict, *, species: str | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[int, dict]:
     """Add genotypes, cell labels and cell-type sources to a dataset loaded from this file.
 
@@ -163,12 +166,16 @@ def add_labels(
         groups: dict[str, list[int]] = defaultdict(list)
         for i in range(cells["n_cells"]):
             groups[json.dumps(_cell_labels(labelled, genotype_ids, i), sort_keys=True)].append(i)
+        labelled_so_far = 0
         for key, numbers in groups.items():
             for start in range(0, len(numbers), LABEL_BATCH):
                 chunk = numbers[start:start + LABEL_BATCH]
                 update(writer, f"label cells {chunk[0]}–{chunk[-1]}", "scrna_cells",
                        json.loads(key), eq={"dataset_id": dataset_id},
                        in_={"cell_number": chunk})
+                labelled_so_far += len(chunk)
+                if on_progress:
+                    on_progress(labelled_so_far, cells["n_cells"])
         added["cells"] = cells["n_cells"]
 
     metadata = _metadata(writer, dataset_id)
@@ -281,7 +288,7 @@ def _cell_labels(cells: dict, genotype_ids: dict | None, i: int) -> dict:
 
 def _insert_cells(
     writer: Writer, dataset_id: int, cells: dict, missing: list[int],
-    genotype_ids: dict | None = None,
+    genotype_ids: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     for start in range(0, len(missing), CELL_BATCH):
         chunk = missing[start:start + CELL_BATCH]
@@ -291,6 +298,8 @@ def _insert_cells(
                  **_cell_labels(cells, genotype_ids, i)}
                 for i in chunk]
         insert(writer, f"insert cells {chunk[0]}–{chunk[-1]}", "scrna_cells", rows)
+        if on_progress:
+            on_progress(start + len(chunk), len(missing))
 
 
 def _metadata(writer: Writer, dataset_id: int) -> dict:

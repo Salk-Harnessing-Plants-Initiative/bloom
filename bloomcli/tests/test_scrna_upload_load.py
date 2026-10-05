@@ -224,3 +224,24 @@ def test_a_malformed_construct_is_a_usage_error(tmp_path, env):
 def test_an_unknown_outcome_record_lives_in_the_staging_folder(tmp_path):
     path = _writer.marker_path(tmp_path / "stage", "MYB41")
     assert path.parent == tmp_path / "stage"
+
+
+def test_the_upload_reports_the_bytes_storage_took(tmp_path, env, storage, monkeypatch):
+    from contextlib import contextmanager
+
+    from bloomctl.scrna import _progress
+
+    seen: dict[str, list] = {}
+
+    @contextmanager
+    def record(description, unit=_progress.BYTES):
+        seen[description.split()[0]] = steps = []
+        yield lambda done, total: steps.append((done, total))
+
+    monkeypatch.setattr(_progress, "track", record)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    assert _run("upload", "--yes", str(path)).exit_code == 0
+    size = len(next(iter(storage.objects.values())))
+    assert seen["Uploading"][-1] == (size, size)
+    assert seen["Preparing"][-1] == (path.stat().st_size,) * 2
+    assert seen["Writing"][-1] == (3, 3)

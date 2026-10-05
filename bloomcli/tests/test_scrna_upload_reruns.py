@@ -136,16 +136,30 @@ def test_a_file_that_changes_while_being_read_is_refused(tmp_path, env, storage,
 
 
 def test_a_file_anndata_cannot_read_is_named_in_the_refusal(tmp_path, env, storage, monkeypatch):
-    import anndata
+    from bloomctl.scrna import _cells
 
-    def unreadable(*_args, **_kwargs):
+    def unreadable(_node):
         raise KeyError("No read method registered")
 
-    monkeypatch.setattr(anndata, "read_h5ad", unreadable)
+    monkeypatch.setattr(_cells, "_read_elem", lambda: unreadable)
     result = _run("upload", "--yes", str(write_h5ad(tmp_path / "d.h5ad")))
     assert result.exit_code != 0
     assert "d.h5ad could not be read by anndata" in result.output
     assert "Nothing was sent." in result.output
+
+
+def test_reading_the_cells_leaves_the_matrix_and_layers_unread(tmp_path):
+    """Only obs, the UMAP and the shape are read, so memory does not grow with the data."""
+    import h5py
+
+    from bloomctl.scrna import _cells
+
+    path = write_h5ad(tmp_path / "d.h5ad")
+    with h5py.File(path, "r+") as f:
+        f["layers/counts"].attrs["encoding-type"] = "not-a-real-encoding"
+        f["X"].attrs["encoding-type"] = "not-a-real-encoding"
+    cells = _cells.read_cells(path, "cell_type", "sample", "X_umap")
+    assert (cells["n_cells"], cells["n_genes"]) == (3, 4)
 
 
 def test_file_text_in_a_refusal_is_shown_escaped(tmp_path, env, storage):

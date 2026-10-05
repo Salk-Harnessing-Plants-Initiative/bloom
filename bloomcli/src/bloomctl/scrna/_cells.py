@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ._format import (
     FLOAT32_MAX,
@@ -63,17 +65,41 @@ def read_cells(
     row order anndata keeps, so nothing here can pair them up wrongly.
     """
     try:
-        import anndata
+        import h5py
         import numpy as np
+        read_elem = _read_elem()
     except ImportError as exc:
         raise MissingDependency(missing_dependency_message()) from exc
 
-    adata = _open(anndata, path)
+    cells = _open(h5py, read_elem, path, umap_key)
+    return _read(np, cells, path, annotation, sample_column, umap_key, expect_cells,
+                 source_column, genotype_column, facet_columns)
+
+
+@dataclass(frozen=True)
+class _Cells:
+    """The parts of a file the load reads: the cell table, the UMAP and the gene count."""
+
+    obs: Any
+    obsm: dict  # every obsm name; only the UMAP's array is read
+    n_vars: int
+
+    @property
+    def n_obs(self) -> int:
+        return len(self.obs)
+
+    @property
+    def obs_names(self):
+        return self.obs.index
+
+
+def _read_elem():
+    """anndata's reader for one part of a file; it moved from experimental in 0.11."""
     try:
-        return _read(np, adata, path, annotation, sample_column, umap_key, expect_cells,
-                     source_column, genotype_column, facet_columns)
-    finally:
-        adata.file.close()
+        from anndata.io import read_elem
+    except ImportError:
+        from anndata.experimental import read_elem
+    return read_elem
 
 
 # What anndata raises on a file it cannot read; anything else is a fault here.
@@ -90,10 +116,15 @@ def _read_failures() -> tuple:
     return (*READ_FAILURES, IORegistryError)
 
 
-def _open(anndata, path: Path):
-    """The file with its expression matrix left on disk: only obs, obsm and the shape are read."""
+def _open(h5py, read_elem, path: Path, umap_key: str) -> _Cells:
+    """Only the cell table, the UMAP and the matrix's shape: no matrix or layer is read, so the
+    memory this needs does not grow with the expression data."""
     try:
-        return anndata.read_h5ad(path, backed="r")
+        with h5py.File(path, "r") as f:
+            obsm = {key: None for key in f["obsm"]} if "obsm" in f else {}
+            if umap_key in obsm:
+                obsm[umap_key] = read_elem(f["obsm"][umap_key])
+            return _Cells(read_elem(f["obs"]), obsm, _n_vars(f["X"]))
     except _read_failures() as exc:
         raise LoadError(
             f"{path.name} could not be read by anndata: {visible(str(exc) or type(exc).__name__)}"
@@ -101,7 +132,13 @@ def _open(anndata, path: Path):
         ) from exc
 
 
-def _read(np, adata, path: Path, annotation: str, sample_column: str, umap_key: str,
+def _n_vars(x) -> int:
+    """Genes, from the matrix's recorded shape rather than its values."""
+    shape = x.attrs["shape"] if "shape" in x.attrs else x.shape
+    return int(shape[1])
+
+
+def _read(np, adata: _Cells, path: Path, annotation: str, sample_column: str, umap_key: str,
           expect_cells: int | None, source_column: str | None, genotype_column: str | None,
           facet_columns: tuple[str, ...]) -> dict:
     if adata.n_obs == 0:

@@ -550,7 +550,9 @@ A file with no UMAP is refused: the explorer plots stored coordinates and never 
 them. A file with no `obsm['X_umap']` but another array with two columns and a row per cell
 is refused naming it; pass `--umap-key NAME` if that array is the UMAP.
 
-Next it reads the cells, the way the load will:
+Next it reads the cells, the way the load will. Only the cell table (`obs`), the UMAP and the
+matrix's shape are read — no expression matrix or layer — so the memory this takes does not
+grow with the size of the data:
 
 - `--annotation` names the obs column holding the cell-type or cluster label assigned to
   each cell — annotated types such as `Cortex`, or cluster ids such as Leiden's `0`, `1`, … —
@@ -657,6 +659,11 @@ The dataset is marked finished last, after every cell is read back, with the fil
 `uns['normalization']`; until then a dataset that records a file but no finish time is an
 unfinished load. The colour-bar units follow the normalization (`log1p normalised counts`,
 `log2(x+1) normalised counts`, …) unless `--expression-units` says otherwise.
+
+On a terminal, the slow steps — preparing (fingerprinting and gzipping) the file, uploading
+it, and writing the cells — each show a progress bar with how much is done, e.g.
+`Uploading my_dataset.h5ad ━━━━━━━━╺━━━━━━ 75.0/182.4 MB 41% 0:00:38`; a log or CI run gets
+only the result lines.
 
 Each write is one request sent once; if one fails the command says the file is stored and
 the load stopped, and running the same command again continues it. A write whose outcome

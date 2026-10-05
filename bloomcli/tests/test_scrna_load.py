@@ -487,8 +487,8 @@ def test_labels_reach_every_cell_across_batches(tmp_path, monkeypatch):
 def test_a_dataset_missing_a_cell_is_not_finished(tmp_path, monkeypatch):
     real = _load._insert_cells
 
-    def drop_last(w, dataset_id, table, missing, genotype_ids=None):
-        real(w, dataset_id, table, missing[:-1], genotype_ids)
+    def drop_last(w, dataset_id, table, missing, genotype_ids=None, on_progress=None):
+        real(w, dataset_id, table, missing[:-1], genotype_ids, on_progress)
 
     monkeypatch.setattr(_load, "_insert_cells", drop_last)
     client = FakeClient()

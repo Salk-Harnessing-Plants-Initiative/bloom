@@ -15,7 +15,9 @@ import httpx
 from . import _object, _session, _transfer
 
 
-def send_through_expiry(http, conn, profile: str, stage, staged, name: str) -> None:
+def send_through_expiry(
+    http, conn, profile: str, stage, staged, name: str, on_progress=None
+) -> None:
     """Send the file, signing in again if the session expires while it is in flight.
 
     A login lasts about an hour and a large file can take longer, so an expiry part-way is
@@ -24,12 +26,12 @@ def send_through_expiry(http, conn, profile: str, stage, staged, name: str) -> N
     One retry only -- a second expiry is not a token running out.
     """
     try:
-        _send(http, conn.endpoint, stage, staged, name)
+        _send(http, conn.endpoint, stage, staged, name, on_progress)
         return
     except _transfer.SessionExpired:
         pass
     try:
-        _send(http, _session.connect(profile).endpoint, stage, staged, name)
+        _send(http, _session.connect(profile).endpoint, stage, staged, name, on_progress)
     except _transfer.SessionExpired as exc:
         raise click.ClickException(
             f"{exc} Nothing was lost: what has been sent of {name} is kept, and the same "
@@ -109,13 +111,15 @@ def _settle(http, ep, stage: Path, staged: _object.Staged, name: str, *, sent: b
     )
 
 
-def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
+def _send(http, ep, stage: Path, staged: _object.Staged, name: str, on_progress=None) -> None:
     bucket, path = _object.BUCKET, _object.object_path(staged.fingerprint)
     held = 0  # bytes storage holds for this upload
 
-    def acknowledged(offset: int, _size: int) -> None:
+    def acknowledged(offset: int, size: int) -> None:
         nonlocal held
         held = offset
+        if on_progress:
+            on_progress(offset, size)
 
     try:
         already = _size_in_storage(http, ep, staged)
@@ -140,6 +144,7 @@ def _send(http, ep, stage: Path, staged: _object.Staged, name: str) -> None:
             )
             offset = 0
         held = offset
+        acknowledged(offset, staged.size)
         final = _transfer.send(
             http, ep, url, staged.gz_path, offset, staged.size, on_progress=acknowledged
         )

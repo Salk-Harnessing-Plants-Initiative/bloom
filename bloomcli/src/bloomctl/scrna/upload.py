@@ -21,6 +21,7 @@ from . import (
     _format,
     _load,
     _object,
+    _progress,
     _records,
     _send,
     _session,
@@ -96,7 +97,8 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
     )
     _refused_unsent(writer.marker.check)
 
-    staged = _object.stage(file, stage)
+    with _progress.track(f"Preparing {visible(file.name)}") as update:
+        staged = _object.stage(file, stage, on_progress=update)
     try:
         if _stamp(file) != read_from:
             raise click.ClickException(
@@ -124,8 +126,10 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
         _release(stage, staged)
         raise
 
-    with _transfer.open_client() as http:
-        _send.send_through_expiry(http, conn, profile, stage, staged, file.name)
+    uploading = _progress.track(f"Uploading {visible(file.name)}")
+    with _transfer.open_client() as http, uploading as update:
+        _send.send_through_expiry(http, conn, profile, stage, staged, file.name,
+                                  on_progress=update)
     _write(writer, opts, species_id, species, cells, staged.fingerprint, options, normalization)
 
 
@@ -234,14 +238,17 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
     """Load the cells, or add the labels, now that the file is stored."""
     name = opts["name"].strip()
     try:
-        with _interrupted_by_stop_signals():
+        step = "Labelling cells" if opts["add_labels"] else "Writing cells"
+        with _interrupted_by_stop_signals(), _progress.track(step, _progress.CELLS) as update:
             if opts["add_labels"]:
                 dataset_id, added = _load.add_labels(
-                    writer, name, species_id, cells, fingerprint, options, species=species)
+                    writer, name, species_id, cells, fingerprint, options, species=species,
+                    on_progress=update)
             else:
                 dataset_id, stored, outcome = _load.load(
                     writer, name, species_id, cells, fingerprint, options,
-                    create=opts["create"], species=species, normalization=normalization)
+                    create=opts["create"], species=species, normalization=normalization,
+                    on_progress=update)
     except _writer.LoadError as exc:
         raise click.ClickException(
             f"the file is stored, but loading it stopped: {visible(str(exc))}") from exc
