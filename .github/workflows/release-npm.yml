@@ -1,0 +1,242 @@
+name: release-npm
+
+# Publishes @salk-harnessing-plants-initiative/bloom-js or /bloom-fs to GitHub Packages.
+#
+# Trigger: a published GitHub Release tagged `bloom-js-vX.Y.Z` or `bloom-fs-vX.Y.Z`.
+# A workflow_dispatch run validates, builds and smoke-tests but never publishes.
+#
+# Channels: `X.Y.Z` from main -> dist-tag `latest`; `X.Y.Z-dev.N` from staging, marked
+# pre-release -> dist-tag `dev`. Packages are private; installs need a read:packages token.
+#
+# Only build-and-publish holds `packages: write`, and it runs no third-party code.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to dry-run"
+        required: true
+        type: choice
+        options:
+          - bloom-js
+          - bloom-fs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-npm
+  cancel-in-progress: false
+
+env:
+  SCOPE: "@salk-harnessing-plants-initiative"
+  REGISTRY: https://npm.pkg.github.com
+
+jobs:
+  validate-release:
+    name: Validate release
+    runs-on: ubuntu-latest
+    # Skips cleanly when the Release belongs to another package (bloomctl-, bloommcp-).
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloom-js-') || startsWith(github.event.release.tag_name, 'bloom-fs-')
+    outputs:
+      package: ${{ steps.pkg.outputs.package }}
+      dir: ${{ steps.pkg.outputs.dir }}
+      version: ${{ steps.version.outputs.version }}
+      dist_tag: ${{ steps.version.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0 # the channel check needs main and staging history
+
+      - name: Resolve package
+        id: pkg
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+        run: |
+          if [ "$EVENT" = "release" ]; then
+            case "$TAG" in
+              bloom-js-v*) PACKAGE=bloom-js ;;
+              bloom-fs-v*) PACKAGE=bloom-fs ;;
+              *) echo "::error::Release tag '$TAG' is not bloom-js-vX.Y.Z or bloom-fs-vX.Y.Z"; exit 1 ;;
+            esac
+          else
+            PACKAGE="$INPUT_PACKAGE"
+          fi
+          case "$PACKAGE" in
+            bloom-js|bloom-fs) ;;
+            *) echo "::error::Unknown package '$PACKAGE'"; exit 1 ;;
+          esac
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "dir=packages/$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "Releasing $PACKAGE"
+
+      - name: Read version from package.json
+        id: version
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            DIST_TAG=latest
+          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$ ]]; then
+            DIST_TAG=dev
+          else
+            echo "::error::Version '$VERSION' must be X.Y.Z (main) or X.Y.Z-dev.N (staging)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "version $VERSION, dist-tag $DIST_TAG"
+
+      - name: Validate tag matches version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PACKAGE: ${{ steps.pkg.outputs.package }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG_VERSION="${TAG#"$PACKAGE"-v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::Release tag ($TAG -> $TAG_VERSION) does not match packages/$PACKAGE/package.json version ($VERSION)"
+            exit 1
+          fi
+          echo "Tag $TAG matches version $VERSION"
+
+      # Stable comes only from main and dev only from staging, so a dev build can never
+      # reach `latest` and an untested commit can never ship as stable.
+      - name: Validate release channel
+        if: github.event_name == 'release'
+        env:
+          DIST_TAG: ${{ steps.version.outputs.dist_tag }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$DIST_TAG" = "latest" ]; then BRANCH=main; WANT_PRERELEASE=false; else BRANCH=staging; WANT_PRERELEASE=true; fi
+          if [ "$PRERELEASE" != "$WANT_PRERELEASE" ]; then
+            echo "::error::A $DIST_TAG version must be published with pre-release=$WANT_PRERELEASE on the GitHub Release"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH"; then
+            echo "::error::Release commit $SHA is not on $BRANCH; $DIST_TAG versions are cut from $BRANCH only"
+            exit 1
+          fi
+          echo "$DIST_TAG release from $BRANCH"
+
+      - name: Validate changelog entry exists
+        if: github.event_name == 'release'
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! grep -qF "## [$VERSION]" CHANGELOG.md; then
+            echo "::error::No changelog entry '## [$VERSION]' found in $PWD/CHANGELOG.md"
+            exit 1
+          fi
+          echo "Changelog entry found for $VERSION"
+
+  # Builds and proves the tarball without write access: npm ci, the build and the clean
+  # install all run third-party code. `packages: read` lets bloom-fs install bloom-js.
+  build-and-verify:
+    name: Build and verify
+    needs: validate-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      dist_tag: ${{ needs.validate-release.outputs.dist_tag }}
+    env:
+      PACKAGE: ${{ needs.validate-release.outputs.package }}
+      PKG_DIR: ${{ needs.validate-release.outputs.dir }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 24  # no dependency cache: a poisoned cache would ship in the tarball
+
+      - name: Install dependencies
+        run: npm ci
+
+      # bloom-fs compiles against bloom-js's dist, so bloom-js always builds first.
+      - name: Build
+        run: |
+          (cd packages/bloom-js && npx tsc --build)
+          (cd packages/bloom-fs && npx tsc --build)
+
+      - name: Pack
+        working-directory: ${{ env.PKG_DIR }}
+        run: |
+          mkdir release
+          npm pack --pack-destination release
+          sha256sum release/*.tgz > release.sha256
+          tar -tzf release/*.tgz | grep -qx "package/dist/index.js"
+          tar -tzf release/*.tgz | grep -qx "package/dist/index.d.ts"
+
+      # A clean project outside the workspace, so nothing resolves through the monorepo's
+      # hoisted node_modules. bloom-fs pulls bloom-js from GitHub Packages here, so the
+      # bloom-js version it needs must be published first.
+      - name: Verify the tarball installs and loads
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARBALL="$(ls "$PWD/$PKG_DIR"/release/*.tgz)"
+          cd "$(mktemp -d)"
+          printf '%s:registry=%s\n//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' "$SCOPE" "$REGISTRY" > .npmrc
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$TARBALL"
+          node -e '
+            const name = process.env.SCOPE + "/" + process.env.PACKAGE
+            const mod = require(name)
+            if (Object.keys(mod).length === 0) throw new Error(name + " exports nothing")
+            console.log(name, "loads with", Object.keys(mod).length, "exports")
+          '
+
+      - name: Verify the artifact is the one that was built
+        working-directory: ${{ env.PKG_DIR }}
+        run: sha256sum -c release.sha256
+
+      - name: Upload the verified artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: npm-tarball
+          path: |
+            ${{ env.PKG_DIR }}/release/
+            ${{ env.PKG_DIR }}/release.sha256
+          if-no-files-found: error
+
+  # Holds `packages: write` and only uploads the verified tarball.
+  build-and-publish:
+    name: Publish
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    environment: github-packages
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 24
+          registry-url: ${{ env.REGISTRY }}
+          scope: ${{ env.SCOPE }}
+
+      - name: Download the verified artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: npm-tarball
+          path: artifact/
+
+      - name: Verify the artifact matches what was built
+        working-directory: artifact
+        run: sha256sum -c release.sha256
+
+      - name: Publish to GitHub Packages
+        if: github.event_name == 'release'
+        working-directory: artifact
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIST_TAG: ${{ needs.build-and-verify.outputs.dist_tag }}
+        run: npm publish release/*.tgz --tag "$DIST_TAG"
