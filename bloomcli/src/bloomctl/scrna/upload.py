@@ -173,7 +173,9 @@ def _checked(file: Path, umap_key: str | None) -> _format.Summary:
     except _format.MissingDependency as exc:
         raise click.ClickException(str(exc)) from exc
     except _format.FormatError as exc:
-        raise click.ClickException(f"{file.name} does not meet Bloom's h5ad format: {exc}") from exc
+        raise click.ClickException(
+            f"{visible(file.name)} does not meet Bloom's h5ad format: {visible(str(exc))}"
+        ) from exc
     if summary.umap_key is None:
         held = ", ".join(visible(key) for key in summary.obsm) or "nothing"
         raise click.ClickException(
@@ -205,7 +207,7 @@ def _refused_unsent(call):
     try:
         return call()
     except _writer.LoadError as exc:
-        raise click.ClickException(f"{exc}. Nothing was sent.") from exc
+        raise click.ClickException(f"{visible(str(exc))}. Nothing was sent.") from exc
 
 
 def _dataset_text(plan: _load.Plan, opts: dict[str, Any], species: str) -> str:
@@ -241,7 +243,8 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
                     writer, name, species_id, cells, fingerprint, options,
                     create=opts["create"], species=species, normalization=normalization)
     except _writer.LoadError as exc:
-        raise click.ClickException(f"the file is stored, but loading it stopped: {exc}") from exc
+        raise click.ClickException(
+            f"the file is stored, but loading it stopped: {visible(str(exc))}") from exc
     except KeyboardInterrupt:
         raise click.ClickException(
             "interrupted: the file is stored and the load stopped. A write may still be "

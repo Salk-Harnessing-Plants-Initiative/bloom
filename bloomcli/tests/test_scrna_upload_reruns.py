@@ -246,3 +246,13 @@ def test_a_terminal_closed_mid_load_is_noted_like_ctrl_c(tmp_path, env, storage)
     assert signal.getsignal(signal.SIGTERM) is before, "the handler is put back"
     again = _run("upload", "--yes", str(write_h5ad(tmp_path / "d.h5ad")))
     assert "may still be finishing on the server; wait" in again.output
+
+
+def test_a_format_refusal_shows_file_names_escaped(tmp_path, env, storage):
+    """The structure check quotes obsm names; one carrying a control character is escaped."""
+    path = write_h5ad(tmp_path / "d.h5ad", obsm={"sp\x1b[2Jatial": (3, 2)})
+    result = CliRunner().invoke(cli, ["scrna", "hdf5", "upload", *LOAD_OPTIONS, "--yes",
+                                      str(path)], color=True)
+    assert result.exit_code != 0
+    assert "\x1b" not in result.output
+    assert "sp\\x1b[2Jatial" in result.output
