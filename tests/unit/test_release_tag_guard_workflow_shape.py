@@ -26,6 +26,7 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 GUARD = WORKFLOWS / "release-tag-guard.yml"
 RELEASE_BLOOMCLI = WORKFLOWS / "release-bloomcli.yml"
 RELEASE_BLOOMMCP = WORKFLOWS / "release-bloommcp.yml"
+RELEASE_NPM = WORKFLOWS / "release-npm.yml"
 
 # See test_check_kong_restart_delta_script.py's / test_deploy_kong_reload_on_config_change.py's
 # identical helper for why this is needed: `bash` can resolve to the WSL launcher shim rather
@@ -99,6 +100,8 @@ def _run_guard_script(tag: str) -> subprocess.CompletedProcess:
         "bloommcp-v0.1.0a1",
         "bloomctl-v1.0.0",
         "bloommcp-v1.0.0",
+        "bloom-js-v0.3.0",
+        "bloom-fs-v0.3.1-dev.0",
         # GitHub Actions' startsWith() (used by the real per-package guards)
         # is case-insensitive; this guard's bash `case` match must agree,
         # or it misreports a tag that actually matched a known package.
@@ -113,7 +116,7 @@ def test_known_package_tags_pass(tag):
 
 @pytest.mark.parametrize(
     "tag",
-    ["bloomcp-v0.1.0a1", "bloom-mcp-v0.1.0a1", "v1.0.0", "random-tag", ""],
+    ["bloomcp-v0.1.0a1", "bloom-mcp-v0.1.0a1", "bloomjs-v0.3.0", "v1.0.0", "random-tag", ""],
 )
 def test_unknown_prefix_tags_fail_loudly(tag):
     result = _run_guard_script(tag)
@@ -121,11 +124,11 @@ def test_unknown_prefix_tags_fail_loudly(tag):
     assert "::error::" in result.stdout
 
 
-def _release_workflow_prefix(path: Path) -> str:
+def _release_workflow_prefixes(path: Path) -> set[str]:
     condition = _load(path)["jobs"]["validate-release"].get("if", "")
-    match = re.search(r"startsWith\(github\.event\.release\.tag_name, '([^']+)'\)", condition)
-    assert match, f"could not find a startsWith(...) tag-prefix guard in {path.name}"
-    return match.group(1)
+    prefixes = re.findall(r"startsWith\(github\.event\.release\.tag_name, '([^']+)'\)", condition)
+    assert prefixes, f"could not find a startsWith(...) tag-prefix guard in {path.name}"
+    return set(prefixes)
 
 
 def _guard_known_prefixes() -> set[str]:
@@ -142,10 +145,11 @@ def test_guard_prefixes_match_every_release_workflows_own_guard():
     added or renamed and only its own release-*.yml is updated, this fails in
     CI immediately instead of the omission only surfacing once that package's
     release tag is actually cut in production."""
-    assert _guard_known_prefixes() == {
-        _release_workflow_prefix(RELEASE_BLOOMCLI),
-        _release_workflow_prefix(RELEASE_BLOOMMCP),
-    }
+    assert _guard_known_prefixes() == (
+        _release_workflow_prefixes(RELEASE_BLOOMCLI)
+        | _release_workflow_prefixes(RELEASE_BLOOMMCP)
+        | _release_workflow_prefixes(RELEASE_NPM)
+    )
 
 
 if __name__ == "__main__":

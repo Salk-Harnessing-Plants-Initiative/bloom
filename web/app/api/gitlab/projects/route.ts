@@ -4,7 +4,7 @@ import {
   getUser,
   createServiceRoleSupabaseClient,
 } from "@/lib/supabase/server";
-import { encryptToken, decryptToken } from "@salk-hpi/bloom-js";
+import { encryptToken, decryptToken } from "@salk-harnessing-plants-initiative/bloom-js";
 
 export async function GET(request: NextRequest) {
   const user = await getUser();

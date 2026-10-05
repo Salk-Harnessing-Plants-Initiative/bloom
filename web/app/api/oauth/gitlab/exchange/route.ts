@@ -4,7 +4,7 @@ import {
   getSession,
   createServiceRoleSupabaseClient,
 } from "@/lib/supabase/server";
-import { encryptToken } from "@salk-hpi/bloom-js";
+import { encryptToken } from "@salk-harnessing-plants-initiative/bloom-js";
 import crypto from "crypto";
 
 type GitlabTokenResponse = {
