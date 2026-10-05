@@ -142,22 +142,29 @@ def test_resolve_uses_the_dispatch_input_and_rejects_anything_else(tmp_path):
 
 # --- version, dist-tag, tag match, changelog --------------------------------
 
+def _read_version(tmp_path: Path, version: str):
+    """Run the version step with a stub `node` that prints `version`, so the test
+    checks the channel rule itself and doesn't need Node installed."""
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "node").write_text(f"#!/bin/sh\necho '{version}'\n")
+    (stub / "node").chmod(0o755)
+    script = _step("validate-release", "Read version from package.json")["run"]
+    return _run(script, tmp_path, cwd=tmp_path, PATH=f"{stub}{os.pathsep}{os.environ['PATH']}")
+
+
 @pytest.mark.parametrize(
     ("version", "dist_tag"), [("0.3.0", "latest"), ("1.10.2", "latest"), ("0.3.1-dev.0", "dev")]
 )
 def test_version_selects_the_channel(tmp_path, version, dist_tag):
-    (tmp_path / "package.json").write_text(json.dumps({"version": version}))
-    script = _step("validate-release", "Read version from package.json")["run"]
-    result, outputs = _run(script, tmp_path, cwd=tmp_path)
+    result, outputs = _read_version(tmp_path, version)
     assert result.returncode == 0, result.stdout
     assert outputs == {"version": version, "dist_tag": dist_tag}
 
 
 @pytest.mark.parametrize("version", ["0.3.0-rc.0", "0.3.0-dev", "0.3.0-dev.1.2", "0.3"])
 def test_other_prerelease_shapes_are_refused(tmp_path, version):
-    (tmp_path / "package.json").write_text(json.dumps({"version": version}))
-    script = _step("validate-release", "Read version from package.json")["run"]
-    result, outputs = _run(script, tmp_path, cwd=tmp_path)
+    result, outputs = _read_version(tmp_path, version)
     assert result.returncode == 1
     assert "::error::" in result.stdout
     assert outputs == {}
