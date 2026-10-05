@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   buildRunMetadata,
   datasetDetailsProblem,
@@ -12,6 +12,7 @@ import {
   type RnaseqSample,
   type StartedRun,
 } from "@/lib/scrna-jobs";
+import { isFolderChangedRefusal, normaliseFolderUrl, type FolderCheck } from "@/lib/s3-folder";
 import type { SpeciesOption } from "@/lib/species-options";
 import { newSampleNameProblem, parseSraRuns, sraRunUrl } from "@/lib/sra-runs";
 import ScrnaDataOrigin from "./scrna-data-origin";
@@ -49,8 +50,14 @@ export default function ScrnaJobSubmit({
   const [open, setOpen] = useState(false);
   // Species added from the form stay listed after it is closed and reopened.
   const [speciesOptions, setSpeciesOptions] = useState(species);
-  const [source, setSource] = useState<SampleSource>("registered");
-  const [sample, setSample] = useState("");
+  const [source, setSource] = useState<SampleSource>("folder");
+  const [folderUrl, setFolderUrl] = useState("");
+  // The passed check for the folder now entered; Start run waits for it.
+  const [folderCheck, setFolderCheck] = useState<FolderCheck | null>(null);
+  // Bumped when the service says the folder changed since its check, to check it again.
+  const [folderRecheck, setFolderRecheck] = useState(0);
+  // A refused start is focused, so a keyboard user lands on the reason.
+  const errorRef = useRef<HTMLParagraphElement>(null);
   const [sraText, setSraText] = useState("");
   // The new sample's name follows the first run ID until it's edited.
   const [newName, setNewName] = useState("");
@@ -75,6 +82,9 @@ export default function ScrnaJobSubmit({
   const [started, setStarted] = useState<StartedRun | null>(null);
 
   const submitting = status === "submitting";
+  useEffect(() => {
+    if (status === "error") errorRef.current?.focus();
+  }, [status]);
   const details = {
     speciesId,
     datasetName,
@@ -88,8 +98,8 @@ export default function ScrnaJobSubmit({
   const detailsProblem = datasetDetailsProblem(details);
   const sra = parseSraRuns(sraText);
   const sampleReady =
-    source === "registered"
-      ? Boolean(sample)
+    source === "folder"
+      ? folderCheck !== null && folderCheck.fastq_url === normaliseFolderUrl(folderUrl)
       : !sra.problem &&
         !newSampleNameProblem(
           newName.trim(),
@@ -106,7 +116,7 @@ export default function ScrnaJobSubmit({
       setOrigin("public");
       return;
     }
-    // Undo what the import filled in, so it isn't saved with a registered sample.
+    // Undo what the import filled in, so it isn't saved with a folder's run.
     if (originBeforeSra !== null) setOrigin(originBeforeSra);
     setOriginBeforeSra(null);
     if (!sourceEdited) setSourceUrl("");
@@ -138,8 +148,18 @@ export default function ScrnaJobSubmit({
   }
 
   // Ready for the next sample: the per-sample fields are cleared, the rest kept.
+  // A refusal is about the folder that was started, so it goes once the URL changes.
+  function changeFolderUrl(url: string) {
+    setFolderUrl(url);
+    if (status === "error") {
+      setStatus("idle");
+      setMessage("");
+    }
+  }
+
   function startAnother() {
-    setSample("");
+    setFolderUrl("");
+    setFolderCheck(null);
     setSraText("");
     setNewName("");
     setNameEdited(false);
@@ -162,6 +182,9 @@ export default function ScrnaJobSubmit({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!canSubmit) return;
+    // canSubmit already requires a passed check for a folder; this keeps the type honest.
+    const check = folderCheck;
+    if (source === "folder" && !check) return;
     setStatus("submitting");
     setMessage("");
     setStarted(null);
@@ -172,8 +195,13 @@ export default function ScrnaJobSubmit({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          source === "registered"
-            ? { sample, reference, metadata: buildRunMetadata(details) }
+          source === "folder"
+            ? {
+                fastq_url: check?.fastq_url,
+                fastq_files: check?.files,
+                reference,
+                metadata: buildRunMetadata(details),
+              }
             : {
                 sample: newName.trim(),
                 reference,
@@ -188,9 +216,18 @@ export default function ScrnaJobSubmit({
       return;
     }
 
-    const body = await response.json().catch(() => null);
+    const body: unknown = await response.json().catch(() => null);
     if (!response.ok) {
-      setMessage(startRunErrorMessage(response.status, body?.detail));
+      const detail = (body as { detail?: unknown } | null)?.detail;
+      if (source === "folder" && isFolderChangedRefusal(response.status, detail)) {
+        // Checking again is the fix, so the form does it and says so.
+        setMessage(
+          "The folder changed since it was checked, so it's being checked again. Review the files shown above, then start the run."
+        );
+        setFolderRecheck((n) => n + 1);
+      } else {
+        setMessage(startRunErrorMessage(response.status, detail));
+      }
       setStatus("error");
       return;
     }
@@ -247,9 +284,10 @@ export default function ScrnaJobSubmit({
             FASTQs: it aligns the reads to the chosen reference genome, calls cells
             from their barcodes, and counts UMIs per gene in each cell, then
             clusters the cells and computes a UMAP. The result is one AnnData file
-            (.h5ad) with the counts, clusters and UMAP. A sample can also be
-            imported from SRA: the run downloads it first and registers it for
-            later runs.
+            (.h5ad) with the counts, clusters and UMAP. The reads come from an S3
+            folder, which is checked as soon as you enter it, or are imported from
+            SRA. Reads from an S3 folder aren&apos;t copied into Bloom&apos;s storage;
+            only the results are saved.
           </p>
 
           <form onSubmit={submit} className="space-y-6">
@@ -267,8 +305,10 @@ export default function ScrnaJobSubmit({
                 source={source}
                 onSource={changeSource}
                 samples={samples}
-                sample={sample}
-                onSample={setSample}
+                folderUrl={folderUrl}
+                folderRecheck={folderRecheck}
+                onFolderUrl={changeFolderUrl}
+                onFolderChecked={setFolderCheck}
                 sraText={sraText}
                 onSraText={changeSraText}
                 newName={newName}
@@ -298,11 +338,10 @@ export default function ScrnaJobSubmit({
                 </select>
               </label>
 
-              {(source === "registered" && samples.length === 0) ||
-              references.length === 0 ? (
+              {references.length === 0 ? (
                 <p className="text-sm text-stone-500">
-                  Samples and references are added by a Bloom admin once their
-                  files are in storage.
+                  References are added by a Bloom admin once their files are in
+                  storage.
                 </p>
               ) : null}
             </fieldset>
@@ -384,9 +423,16 @@ export default function ScrnaJobSubmit({
                 {submitting ? "Starting…" : "Start run"}
               </button>
               {status === "error" ? (
-                <p role="alert" className="text-sm text-red-700">
+                <p
+                  ref={errorRef}
+                  tabIndex={-1}
+                  role="alert"
+                  className="text-sm text-red-700 [overflow-wrap:anywhere] focus:outline-none"
+                >
                   {message}
                 </p>
+              ) : sampleReady && !reference ? (
+                <p className="text-sm text-stone-500">Choose a reference genome to start.</p>
               ) : sampleReady && reference && detailsProblem ? (
                 <p className="text-sm text-stone-500">{detailsProblem}</p>
               ) : null}

@@ -1,32 +1,27 @@
 "use client";
 
-import { formatBytes, type RnaseqSample } from "@/lib/scrna-jobs";
+import type { FolderCheck } from "@/lib/s3-folder";
+import type { RnaseqSample } from "@/lib/scrna-jobs";
 import {
   MAX_SRA_RUNS,
   SRA_RUN_SELECTOR_URL,
   newSampleNameProblem,
   parseSraRuns,
 } from "@/lib/sra-runs";
+import ScrnaFolderSource from "./scrna-folder-source";
 
-export type SampleSource = "registered" | "sra";
+export type SampleSource = "folder" | "sra";
 
-function sampleLabel(sample: RnaseqSample): string {
-  const details = [
-    sample.fastq_count != null
-      ? `${sample.fastq_count} FASTQ${sample.fastq_count === 1 ? "" : "s"}`
-      : null,
-    formatBytes(sample.total_bytes),
-  ].filter(Boolean);
-  return details.length ? `${sample.name} (${details.join(", ")})` : sample.name;
-}
-
-// The sample a run counts: one already registered, or one imported from SRA under a new name.
+// Where a run's reads come from: an S3 folder of one sample's FASTQs, or SRA run IDs imported
+// under a new sample name. Registered names are still refused for an import.
 export default function ScrnaSampleSource({
   source,
   onSource,
   samples,
-  sample,
-  onSample,
+  folderUrl,
+  folderRecheck,
+  onFolderUrl,
+  onFolderChecked,
   sraText,
   onSraText,
   newName,
@@ -37,8 +32,10 @@ export default function ScrnaSampleSource({
   source: SampleSource;
   onSource: (source: SampleSource) => void;
   samples: RnaseqSample[];
-  sample: string;
-  onSample: (name: string) => void;
+  folderUrl: string;
+  folderRecheck?: number;
+  onFolderUrl: (url: string) => void;
+  onFolderChecked: (check: FolderCheck | null) => void;
   sraText: string;
   onSraText: (text: string) => void;
   newName: string;
@@ -55,17 +52,17 @@ export default function ScrnaSampleSource({
   return (
     <div className="space-y-4">
       <fieldset>
-        <legend className={labelClass}>Sample</legend>
+        <legend className={labelClass}>Reads</legend>
         <div className="mt-1 flex flex-wrap gap-x-6 gap-y-1 text-sm text-stone-700">
           <label className="flex items-center gap-2">
             <input
               type="radio"
               name="sample-source"
-              value="registered"
-              checked={source === "registered"}
-              onChange={() => onSource("registered")}
+              value="folder"
+              checked={source === "folder"}
+              onChange={() => onSource("folder")}
             />
-            A registered sample
+            S3 folder
           </label>
           <label className="flex items-center gap-2">
             <input
@@ -80,25 +77,15 @@ export default function ScrnaSampleSource({
         </div>
       </fieldset>
 
-      {source === "registered" ? (
-        <label className={labelClass}>
-          Registered sample
-          <select
-            className={fieldClass}
-            value={sample}
-            onChange={(e) => onSample(e.target.value)}
-            disabled={samples.length === 0}
-          >
-            <option value="">
-              {samples.length ? "Choose a sample" : "No samples registered yet"}
-            </option>
-            {samples.map((s) => (
-              <option key={s.name} value={s.name}>
-                {sampleLabel(s)}
-              </option>
-            ))}
-          </select>
-        </label>
+      {source === "folder" ? (
+        <ScrnaFolderSource
+          url={folderUrl}
+          recheck={folderRecheck}
+          onUrl={onFolderUrl}
+          onChecked={onFolderChecked}
+          fieldClass={fieldClass}
+          labelClass={labelClass}
+        />
       ) : (
         <div className="space-y-4 rounded-md border border-stone-200 bg-white p-4">
           <label className={labelClass}>
@@ -159,8 +146,8 @@ export default function ScrnaSampleSource({
             </p>
           ) : (
             <p className="-mt-2 text-sm text-stone-500">
-              The name the sample is registered under once it&apos;s downloaded, so later
-              runs can use it.
+              The name the run and its results are saved under. It must not already be
+              used.
             </p>
           )}
         </div>

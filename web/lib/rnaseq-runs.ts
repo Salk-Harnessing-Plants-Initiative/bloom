@@ -82,6 +82,16 @@ const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
   12: "The sample's folder already holds other FASTQs; choose another sample name.",
 };
 
+// The stage step of a run that reads an S3 folder (stage-fastqs).
+const FOLDER_STAGE_EXIT_SENTENCES: Record<number, string> = {
+  4: "The FASTQs in the S3 folder were removed after the run was started; start a new run once they're back.",
+  6: "The run's S3 folder or its recorded file list couldn't be used. This isn't something wrong with the folder; ask the Bloom admins.",
+  7: "The FASTQ file names in the S3 folder don't follow Illumina's naming (<name>_S1_L001_R1_001.fastq.gz), or a lane lacks R1 or R2.",
+  8: "The S3 folder changed after the run was started, so its reads weren't used; the Stage FASTQs step's log says which file. Start a new run on the folder as it is now.",
+  9: "The FASTQs in the S3 folder are named for another sample than the run's; the Stage FASTQs step's log names it.",
+  10: "The S3 folder couldn't be listed or copied; the Stage FASTQs step's log has S3's error. Check it's still public and its files aren't archived, then start the run again.",
+};
+
 function field(value: Json | null, key: string): unknown {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)[key]
@@ -126,6 +136,12 @@ export function runSraRuns(run: RnaseqRun): string[] {
   return Array.isArray(runs) ? runs.filter((r): r is string => typeof r === "string") : [];
 }
 
+/** The S3 folder the run reads its FASTQs from, or null. */
+export function runFastqUrl(run: RnaseqRun): string | null {
+  const url = field(run.params, "fastq_url");
+  return typeof url === "string" ? url : null;
+}
+
 /** The steps this run goes through: fetch-sra only when it imports from SRA. */
 export function runSteps(run: RnaseqRun): (typeof CELLRANGER_STEPS)[number][] {
   const imports = runSraRuns(run).length > 0;
@@ -157,9 +173,23 @@ export function stepStates(run: RnaseqRun): Partial<Record<StepId, StepState>> {
   return states;
 }
 
+// Exits whose fixed sentence talks about the sample's own folder, which a folder run
+// doesn't have; the service's message names what it copied instead.
+const SAMPLE_FOLDER_EXITS = new Set([4, 7]);
+
 /** A sentence for how a failed run ended, or null. */
 export function failureSentence(run: RnaseqRun): string | null {
   if (run.status !== "failed") return null;
+  if (runFastqUrl(run)) {
+    // The service words a folder run's failures around its folder, e.g. naming the sample
+    // for exit 9; the fixed sentences are only a fallback when it left no message.
+    if (run.message && (run.current_step === "stage" || SAMPLE_FOLDER_EXITS.has(run.exit_code ?? -1))) {
+      return run.message;
+    }
+    if (run.current_step === "stage") {
+      return (run.exit_code != null && FOLDER_STAGE_EXIT_SENTENCES[run.exit_code]) || run.message;
+    }
+  }
   const sentences = run.current_step === "fetch-sra" ? FETCH_SRA_EXIT_SENTENCES : EXIT_SENTENCES;
   if (run.exit_code != null && sentences[run.exit_code]) return sentences[run.exit_code];
   return run.message;
