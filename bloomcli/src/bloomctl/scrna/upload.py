@@ -7,7 +7,9 @@ so a dataset row never names a file storage does not hold; then the cells are wr
 
 from __future__ import annotations
 
+import signal
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -230,18 +232,14 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
     """Load the cells, or add the labels, now that the file is stored."""
     name = opts["name"].strip()
     try:
-        if opts["add_labels"]:
-            dataset_id, added = _load.add_labels(
-                writer, name, species_id, cells, fingerprint, options, species=species)
-            click.echo(
-                f"Added labels to dataset {dataset_id} ({name!r}): {added['genotypes']} "
-                f"genotypes, {added['cells']:,} cells labelled, {added['sources']} cell-type "
-                "sources"
-            )
-            return
-        dataset_id, stored, outcome = _load.load(
-            writer, name, species_id, cells, fingerprint, options, create=opts["create"],
-            species=species, normalization=normalization)
+        with _interrupted_by_stop_signals():
+            if opts["add_labels"]:
+                dataset_id, added = _load.add_labels(
+                    writer, name, species_id, cells, fingerprint, options, species=species)
+            else:
+                dataset_id, stored, outcome = _load.load(
+                    writer, name, species_id, cells, fingerprint, options,
+                    create=opts["create"], species=species, normalization=normalization)
     except _writer.LoadError as exc:
         raise click.ClickException(f"the file is stored, but loading it stopped: {exc}") from exc
     except KeyboardInterrupt:
@@ -250,11 +248,36 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
             f"finishing on the server, so wait {writer.marker.wait_text()}, then run the same "
             "command again to continue"
         ) from None
-    if outcome == "already loaded":
+    if opts["add_labels"]:
+        click.echo(
+            f"Added labels to dataset {dataset_id} ({name!r}): {added['genotypes']} "
+            f"genotypes, {added['cells']:,} cells labelled, {added['sources']} cell-type sources"
+        )
+    elif outcome == "already loaded":
         click.echo(f"Dataset {dataset_id} ({name!r}) is already loaded from this file: "
                    f"{stored:,} cells")
     else:
         click.echo(f"{outcome.capitalize()} dataset {dataset_id} ({name!r}): {stored:,} cells")
+
+
+# What closing the terminal or terminating the process sends; a hard kill cannot be caught.
+STOP_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGTERM", "SIGHUP") if hasattr(signal, name)
+)
+
+
+@contextmanager
+def _interrupted_by_stop_signals():
+    """While the load writes, a stop signal is handled as Ctrl-C, so it is noted before exiting."""
+    def interrupt(_signum, _frame):
+        raise KeyboardInterrupt
+
+    previous = {sig: signal.signal(sig, interrupt) for sig in STOP_SIGNALS}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def _release(stage: Path, staged: _object.Staged) -> None:

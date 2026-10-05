@@ -222,3 +222,27 @@ def test_a_declined_question_keeps_an_upload_waiting_to_be_resumed(tmp_path, env
     assert result.exit_code != 0
     assert _object.upload_recorded(tmp_path / "stage", staged.fingerprint)
     assert staged.gz_path.exists()
+
+
+def test_a_terminal_closed_mid_load_is_noted_like_ctrl_c(tmp_path, env, storage):
+    """SIGTERM or SIGHUP while cells are written: noted, then the command exits."""
+    import os
+    import signal
+
+    client = env["client"]
+    real = client._execute
+
+    def terminated_mid_insert(query):
+        result = real(query)  # the write reaches the server before the process is stopped
+        if query.op == "insert" and query.table == "scrna_cells":
+            os.kill(os.getpid(), signal.SIGTERM)
+        return result
+
+    client._execute = terminated_mid_insert
+    before = signal.getsignal(signal.SIGTERM)
+    stopped = _run("upload", "--yes", str(write_h5ad(tmp_path / "d.h5ad")))
+    assert stopped.exit_code != 0
+    assert "interrupted: the file is stored and the load stopped" in stopped.output
+    assert signal.getsignal(signal.SIGTERM) is before, "the handler is put back"
+    again = _run("upload", "--yes", str(write_h5ad(tmp_path / "d.h5ad")))
+    assert "may still be finishing on the server; wait" in again.output

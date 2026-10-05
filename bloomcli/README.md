@@ -660,7 +660,7 @@ unfinished load. The colour-bar units follow the normalization (`log1p normalise
 
 Each write is one request sent once; if one fails the command says the file is stored and
 the load stopped, and running the same command again continues it. A write whose outcome
-is unknown (a timeout, or Ctrl-C while it was being sent) may still be finishing on the
+is unknown (a timeout, or Ctrl-C or a closed terminal while it was being sent) may still be finishing on the
 server, so the next run waits that out first, about six minutes, saying how many seconds
 are left. Load a dataset from one terminal at a time.
 
