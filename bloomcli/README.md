@@ -572,8 +572,9 @@ Then it gzips the file, which also fingerprints it, and checks what needs that: 
 size is within 500 MB, and a file without `uns['normalization']` is one a dataset already
 records the normalization for. Last, it looks the dataset up by `--name` within `--species`
 (a common name, matched ignoring case and surrounding spaces) and decides what the load
-will do. Dataset names match ignoring case and surrounding spaces too, so `myb41` is the
-same name as `MYB41`:
+will do. Surrounding spaces are ignored in dataset names, and a name that differs from an existing
+dataset's only in capital letters is refused, asking for the exact name or a new one, so
+`myb41` cannot quietly stand in for, or sit beside, `MYB41`:
 
 - **no such dataset**: registered, but only with `--create`, so a mistyped name is refused
   rather than loaded as a second copy
