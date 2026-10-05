@@ -13,7 +13,12 @@ type State =
 export function logMessage(status: number, detail: unknown): string {
   if (typeof detail === "string" && detail.trim()) return detail;
   if (status === 401) return "Sign in to see logs.";
-  if (status === 503 || status === 502) return "Logs aren't available yet.";
+  // 503: this environment has no cluster access set up. 502: the cluster refused or failed
+  // the read. Neither goes away by waiting, so neither says "yet".
+  if (status === 503) return "Bloom can't read logs from the cluster here; ask the Bloom admins.";
+  if (status === 502) {
+    return "Couldn't read the log from the cluster. The run itself isn't affected; if this keeps happening, ask the Bloom admins.";
+  }
   return "Couldn't load this log. Try again shortly.";
 }
 
