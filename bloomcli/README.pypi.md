@@ -190,22 +190,24 @@ name of a dataset already in Bloom.
 ### Quickstart
 
 ```bash
-bloomctl scrna hdf5 upload my_dataset.h5ad         # needs write access
+bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
+  --species Arabidopsis --annotation cell_type --create   # needs write access
 bloomctl scrna hdf5 download "My dataset"          # by name, id, or --checksum
 bloomctl scrna hdf5 list                           # what storage holds
 bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored?
 ```
 
-- `upload` checks the file, shows what it holds, and asks before sending anything (`--yes`
-  skips the question; `--dry-run` runs every check and stops). If it's interrupted, run the
-  same command again and it resumes.
+- `upload` stores the file and loads its cells as a dataset. It checks everything first, shows
+  what the file holds and what the load will do, and asks (`--yes` skips the question;
+  `--dry-run` runs every check and stops). `--create` registers a new dataset; without it an
+  unknown name is refused. If it's interrupted, run the same command again and it resumes.
 - `download` writes the file only once its fingerprint matches.
 
 ### Single-cell commands
 
 | Command                    | What it does                                                                           |
 | -------------------------- | -------------------------------------------------------------------------------------- |
-| `scrna hdf5 upload <file>` | Store a dataset's `.h5ad`, after checking its structure *(needs write access)*          |
+| `scrna hdf5 upload <file>` | Store a dataset's `.h5ad` and load its cells, after checking both *(needs write access)* |
 | `scrna hdf5 download <ds>` | Fetch a dataset's `.h5ad` by name, id or `--checksum`, checked against its fingerprint |
 | `scrna hdf5 list [search]` | The dataset files storage holds; `--file` says whether a local file is stored          |
 

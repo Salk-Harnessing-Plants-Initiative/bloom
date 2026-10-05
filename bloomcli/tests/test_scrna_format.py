@@ -134,19 +134,12 @@ def test_a_file_whose_obsm_holds_no_coordinates_has_no_umap(tmp_path):
 
 def test_a_umap_under_another_name_names_the_way_out(tmp_path):
     path = write_h5ad(tmp_path / "f.h5ad", obsm={"spatial": (3, 2)})
-    _refused(path, "--umap-key spatial if that is the UMAP, or --no-umap")
+    _refused(path, r"obsm\['spatial'\] has two columns.*Pass --umap-key NAME")
 
 
-def test_no_umap_accepts_a_file_with_a_coordinate_shaped_array(tmp_path):
-    path = write_h5ad(tmp_path / "f.h5ad", obsm={"spatial": (3, 2)})
-    summary = fmt.check_structure(path, no_umap=True)
-    assert summary.umap_key is None
-    assert summary.obsm == ("spatial",)
-
-
-def test_no_umap_is_refused_for_a_file_that_has_one(tmp_path):
-    with pytest.raises(fmt.FormatError, match="--no-umap does not apply"):
-        fmt.check_structure(write_h5ad(tmp_path / "f.h5ad"), no_umap=True)
+def test_several_umap_shaped_arrays_are_each_named(tmp_path):
+    path = write_h5ad(tmp_path / "f.h5ad", obsm={"spatial": (3, 2), "X_tsne": (3, 2)})
+    _refused(path, r"obsm\['X_tsne'\], obsm\['spatial'\] each have two columns")
 
 
 def test_a_named_umap_the_file_does_not_hold_is_refused(tmp_path):
@@ -172,7 +165,8 @@ def test_the_obs_columns_are_reported_in_the_files_order(tmp_path):
 
 
 def test_an_obs_without_columns_reports_none(tmp_path):
-    assert fmt.check_structure(write_h5ad(tmp_path / "f.h5ad")).obs_columns == ()
+    path = write_h5ad(tmp_path / "f.h5ad", obs_columns=())
+    assert fmt.check_structure(path).obs_columns == ()
 
 
 def test_an_obsm_array_with_the_wrong_row_count_is_refused(tmp_path):
