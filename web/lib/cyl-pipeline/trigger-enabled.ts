@@ -15,6 +15,9 @@
 
 export const TRIGGER_ENABLED_ENV = "CYL_PIPELINE_TRIGGER_ENABLED";
 
+/** What a pipeline proxy answers (503) while starting runs is switched off. */
+export const TRIGGER_DISABLED_DETAIL = "Starting pipeline runs from Bloom is not enabled in this environment.";
+
 export function isPipelineTriggerEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return env[TRIGGER_ENABLED_ENV] === "true";
 }

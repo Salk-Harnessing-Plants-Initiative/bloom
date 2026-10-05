@@ -5,8 +5,10 @@
 -- /app/plate-phenotypes/[speciesId] page renders populated rows on dev.
 --
 -- Run with:
---   docker exec -i bloom_v2_dev-db-dev-1 psql -U supabase_admin -d postgres \
---     < scripts/seed_gravi_mock_data.sql
+--   make seed-gravi
+-- It feeds this file and then scripts/sql/advance_behind_sequences.sql to the dev DB:
+-- the inserts below supply explicit ids, which don't move their sequences, so the
+-- advance body moves any sequence they left behind (bloom#1022).
 --
 -- Idempotent: re-running updates / re-inserts conflict-free.
 -- ============================================================================

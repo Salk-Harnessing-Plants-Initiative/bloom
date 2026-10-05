@@ -148,8 +148,10 @@ def test_the_worker_carries_the_services_own_credentials(compose_file, worker):
     notices: the failure appears only when someone runs the command."""
     services = _services(compose_file)
     expected = dict(services["workflows"]["environment"])
-    # The workers serve no HTTP, so the one variable they legitimately drop.
+    # The workers serve no HTTP, so the variables they legitimately drop: CORS,
+    # and the wandb key that only GET /model-cards uses (bloom#971).
     expected.pop("WORKFLOWS_CORS_ORIGINS", None)
+    expected.pop("WANDB_API_KEY", None)
 
     assert services[worker]["environment"] == expected, (
         f"{worker}'s environment in {compose_file} has drifted from the "

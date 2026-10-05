@@ -271,11 +271,19 @@ source_id = <the existing source's id> AND status != 'failed'` — never re-reso
 from this delivery's own `image_ids`, which the "same key, different scan" rule reserves for the
 run of record alone. **When that update affects zero rows**, the RPC SHALL fall back to a second
 update scoped to `argo_workflow_name = p_argo_workflow_name AND scan_id = <scan_id> AND status !=
-'failed'`, where `<scan_id>` is looked up from any existing `cyl_pipeline_run_scans` row already
-carrying this source's id (stamped by that source's original successful delivery) — not from this
-delivery's own `image_ids` either. If no such row exists (this source was never delivered under
-any workflow name), the fallback SHALL NOT run and the update remains at zero rows. Either way,
-the no-op branch then returns without resolving a scan, without writing any trait, blob, or
+'failed' AND (source_id IS NULL OR source_id = <the existing source's id>)`, setting `status =
+'written'` and `source_id` to the existing source's id, where `<scan_id>` is the scan recorded on
+the existing source's own row: its `cyl_trait_sources.scan_id`, read by primary key (stamped by
+this RPC when it created the source, or by the recipe backfill from the source's stored
+`image_ids`). Only when that column is NULL SHALL the RPC look `<scan_id>` up instead from any
+existing `cyl_pipeline_run_scans` row already carrying this source's id. Neither lookup reads this
+delivery's own `image_ids`, and the RPC MUST NOT resolve `<scan_id>` by reading `cyl_scan_traits`
+or `cyl_scan_intermediates`. If neither lookup yields a scan, the fallback SHALL NOT run and the
+update remains at zero rows. Because the targeted update is scoped to this call's
+`argo_workflow_name`, a source whose scan this Workflow never dispatched still matches zero rows;
+and because it skips a row already carrying a different source's id, a no-op never replaces the
+source another delivery linked to that row. Either way, the no-op branch then returns without
+resolving a scan for its return value (`scan_id` stays null), without writing any trait, blob, or
 registry row.
 
 **On a non-no-op delivery** (the upsert wrote a new source row): the RPC proceeds to (5) resolve
@@ -283,12 +291,12 @@ the target scan from `provenance.inputs.image_ids`; (6) trait-name resolution an
 (7) blob writes; (8) when `p_argo_workflow_name` is non-null, an update of the matching
 `cyl_pipeline_run_scans` row, joining on `argo_workflow_name = p_argo_workflow_name AND scan_id =
 <the scan resolved in step 5> AND status != 'failed'`, setting `status = 'written'` and
-`source_id` to the new source's id. This is the only statement that ever writes `source_id` onto
-a `cyl_pipeline_run_scans` row, and it does so in the same statement that sets
-`status = 'written'` — so `source_id IS NOT NULL` on that table always implies `status =
-'written'`, which the no-op branch's fallback lookup above relies on. This RPC never writes
-`'reused'`, which stays reserved for the separate, unimplemented pre-dispatch skip-if-done
-mechanism `cyl_pipeline_run_scans`' own column comment documents.
+`source_id` to the new source's id. This update and the no-op fallback's targeted update are the
+only statements that write `source_id` onto a `cyl_pipeline_run_scans` row, and each sets it in
+the same statement that sets `status = 'written'` — so `source_id IS NOT NULL` on that table
+always implies `status = 'written'`. This RPC never writes `'reused'`, which stays reserved for a
+later phase in which the cluster-side skip-if-done check records a scan that needed no new work
+(capability `cyl-pipeline-runs`, "`cyl_pipeline_run_scans` table").
 
 Any validation or constraint failure SHALL abort the entire call, including every status update
 above, so that no partial source, trait, registry, blob, or run-scan-status row persists
@@ -375,30 +383,65 @@ counts will not reflect the data just written.
   `p_argo_workflow_name = "wf-b"`
 - **THEN** the call reports `was_noop: true`; the primary `(argo_workflow_name, source_id)`-keyed
   update matches zero rows under `"wf-b"` (its row's `source_id` is still `NULL`); the fallback
-  looks up the scan id from the `"wf-a"` row (the one already carrying this source's id) and
+  takes the scan id from the existing source's own `cyl_trait_sources.scan_id` and
   updates the `"wf-b"` row by `(argo_workflow_name = "wf-b", scan_id)`, setting its `status` to
   `'written'` and its `source_id` to the existing source's id; and the returned summary's
   `status_update_matched` is `true`
 
-#### Scenario: A no-op re-delivery under a workflow name that never existed reports no match
+#### Scenario: A no-op re-delivery of a source no run-scan row carries is marked written
 
 - **WHEN** an already-ingested envelope's source has never had any `cyl_pipeline_run_scans` row
-  stamped with its `source_id` (e.g. its only prior delivery omitted `p_argo_workflow_name`
-  entirely), and it is re-delivered with a `p_argo_workflow_name` that matches no row
-- **THEN** the call still reports `was_noop: true`, the fallback lookup finds no row to resolve a
-  scan id from and does not run, and the returned summary's `status_update_matched` is `false` —
-  unchanged from behavior before this change, since there was never a row for either update to
-  find
+  stamped with its `source_id` — its only prior delivery omitted `p_argo_workflow_name` (a manual
+  `cyl ingest-result`), or named a Workflow that has no `cyl_pipeline_run_scans` rows (a
+  hand-submitted `argo submit`) — and it is re-delivered with `p_argo_workflow_name = "wf-b"`,
+  whose `'queued'` row is for that source's recorded scan
+- **THEN** the call reports `was_noop: true`, the fallback takes the scan id from the source's own
+  `cyl_trait_sources.scan_id`, `"wf-b"`'s row becomes `'written'` with `source_id` set to the
+  existing source's id, no new source, trait or blob row is written, and the returned summary's
+  `status_update_matched` is `true`
+
+#### Scenario: The source's recorded scan governs over a carrying run-scan row
+
+- **WHEN** an already-ingested source's `cyl_trait_sources.scan_id` is scan S1, an existing
+  `cyl_pipeline_run_scans` row carrying its `source_id` names a different scan S2, and it is
+  re-delivered under a new `p_argo_workflow_name = "wf-b"` that has `'queued'` rows for both S1
+  and S2
+- **THEN** only `"wf-b"`'s S1 row becomes `'written'` with the existing source's id, `"wf-b"`'s S2
+  row is unchanged, and `status_update_matched` is `true`
+
+#### Scenario: A no-op does not replace another source already linked to this workflow's row
+
+- **WHEN** `"wf-b"`'s `cyl_pipeline_run_scans` row for scan S is already `'written'` with
+  `source_id` X (a fresh delivery under `"wf-b"`), and a different, already-ingested source Y whose
+  recorded scan is S is re-delivered under `"wf-b"`
+- **THEN** the call reports `was_noop: true`, the row stays `'written'` with `source_id` X, and
+  `status_update_matched` is `false`
+
+#### Scenario: The run-scan lookup is only a backup for a source with no recorded scan
+
+- **WHEN** an already-ingested source has `cyl_trait_sources.scan_id` NULL but an existing
+  `cyl_pipeline_run_scans` row carries its `source_id`, and it is re-delivered under a new
+  `p_argo_workflow_name` whose `'queued'` row is for that row's scan
+- **THEN** the fallback takes the scan id from the carrying row, the new Workflow's row becomes
+  `'written'` with the existing source's id, and `status_update_matched` is `true`
+
+#### Scenario: A no-op re-delivery with no recorded scan and no carrying row reports no match
+
+- **WHEN** an already-ingested source has `cyl_trait_sources.scan_id` NULL and no
+  `cyl_pipeline_run_scans` row carries its `source_id`, and it is re-delivered with a
+  `p_argo_workflow_name`
+- **THEN** the call still reports `was_noop: true`, the fallback finds no scan and does not run,
+  no `cyl_pipeline_run_scans` row changes, and the returned summary's `status_update_matched` is
+  `false`
 
 #### Scenario: A no-op re-delivery under a workflow that never dispatched THIS scan finds no match
 
-- **WHEN** an already-ingested envelope's source has an existing `cyl_pipeline_run_scans` row
-  stamped with its `source_id` (its original delivery did supply a workflow name), and it is
-  re-delivered with a `p_argo_workflow_name` for which no `cyl_pipeline_run_scans` row exists at
-  all for this scan (distinct from the previous scenario: here the fallback's scan-id lookup
-  succeeds, but its own targeted update finds no row to update under the new workflow name)
-- **THEN** the call still reports `was_noop: true`, the fallback resolves a scan id from the
-  existing row but its own update affects zero rows, and the returned summary's
+- **WHEN** an already-ingested envelope's source has a recorded scan (its
+  `cyl_trait_sources.scan_id`), and it is re-delivered with a `p_argo_workflow_name` for which no
+  `cyl_pipeline_run_scans` row exists at all for that scan (the fallback's scan-id lookup
+  succeeds, but its own targeted update finds no row to update under that workflow name)
+- **THEN** the call still reports `was_noop: true`, the fallback resolves the scan id but its own
+  update affects zero rows, no `cyl_pipeline_run_scans` row changes, and the returned summary's
   `status_update_matched` is `false` — a clean degrade, not an error
 
 #### Scenario: The fallback chains correctly across a third re-delivery
@@ -406,10 +449,10 @@ counts will not reflect the data just written.
 - **WHEN** a scan is delivered successfully under `"wf-a"`, re-delivered as a no-op under a new
   `"wf-b"` (triggering the fallback, which stamps `"wf-b"`'s row with this source's id), and then
   re-delivered again as a no-op under a third new `"wf-c"`
-- **THEN** `"wf-c"`'s fallback resolves a scan id from either of the two existing rows that now
-  carry this source's id (both are guaranteed to name the same scan, since the fallback never
-  re-derives scan id from a redelivery's own `image_ids`), and `"wf-c"`'s row is set to
-  `'written'` with the correct `source_id`, exactly as `"wf-b"`'s was
+- **THEN** `"wf-c"`'s fallback resolves the same scan id from the source's own
+  `cyl_trait_sources.scan_id` (the fallback never re-derives scan id from a redelivery's own
+  `image_ids`), and `"wf-c"`'s row is set to `'written'` with the correct `source_id`, exactly as
+  `"wf-b"`'s was
 
 #### Scenario: Omitting argo_workflow_name leaves cyl_pipeline_run_scans untouched
 
@@ -437,8 +480,10 @@ counts will not reflect the data just written.
 #### Scenario: A late delivery after the scan was already marked failed does not resurrect it
 
 - **WHEN** the RPC is called with a valid envelope and a `p_argo_workflow_name` matching a
-  `cyl_pipeline_run_scans` row whose `status` is already `'failed'` (e.g.
-  `fail_cyl_pipeline_run_scans_without_result` already closed it out earlier in the same batch)
+  `cyl_pipeline_run_scans` row whose `status` is already `'failed'` (e.g. the
+  status poller closed it out with `fail_cyl_pipeline_run_scans_without_result` after its workflow
+  ended, and the envelope is then delivered under that workflow name by an `argo retry` of that
+  workflow or a manual `cyl ingest-result` run with that `ARGO_WORKFLOW_NAME`)
 - **THEN** the envelope's trait/source/blob rows are still written as usual (write-back itself is
   unaffected), but the `cyl_pipeline_run_scans` row's `status` remains `'failed'` — it is not
   overwritten to `'written'` — and the returned summary's `status_update_matched` is `false`
@@ -448,7 +493,7 @@ counts will not reflect the data just written.
 - **WHEN** a scan is delivered successfully under `"wf-a"`, that row is then marked `'failed'`,
   and the same envelope is re-delivered as a no-op under a **new** `argo_workflow_name = "wf-b"`
   whose own `cyl_pipeline_run_scans` row is still `'queued'`
-- **THEN** the fallback resolves the scan id from the `"wf-a"` row as usual, but its own update —
+- **THEN** the fallback resolves the scan id as usual, but its own update —
   scoped to `"wf-b"`'s row by `scan_id` — is unaffected by `"wf-a"`'s `'failed'` status (a
   different row, matched on `argo_workflow_name = "wf-b"`) and still sets `"wf-b"`'s row to
   `'written'`; the guard only ever blocks resurrecting the row the update's own
@@ -460,7 +505,7 @@ counts will not reflect the data just written.
   is dispatched for the same scan under a **new** `argo_workflow_name = "wf-b"`, that `"wf-b"`
   row is itself marked `'failed'` (not `"wf-a"`'s), and the same envelope is then re-delivered as
   a no-op under `"wf-b"`
-- **THEN** the fallback still resolves the scan id from `"wf-a"`'s row, but its update — scoped
+- **THEN** the fallback still resolves the scan id, but its update — scoped
   to `"wf-b"`'s row by `scan_id` — matches zero rows because `"wf-b"`'s own row is `'failed'`;
   `"wf-b"`'s row stays `'failed'` with `source_id` unset, and the returned summary's
   `status_update_matched` is `false`
@@ -513,7 +558,8 @@ so a partial/failed delivery leaves nothing and a retry writes the full envelope
   governs) — and, if that different delivery also supplies a `p_argo_workflow_name` whose
   dispatched row is for the divergent scan, the fallback in "Write-back RPC ingests a
   ResultEnvelope" does not mark that row `'written'` either, since it resolves the scan id from
-  the run of record's own row, not from this delivery's claim
+  the existing source's own recorded scan (or, when that is NULL, a run-scan row carrying the
+  source), not from this delivery's claim
 
 ### Requirement: Write-back validates the idempotency key
 
@@ -833,9 +879,12 @@ A row already `'written'`, `'reused'`, or `'failed'` for this workflow name is l
 function only closes out scans write-back never resolved either way. `EXECUTE` SHALL be revoked from
 `PUBLIC`, `anon`, and `authenticated`, and granted only to `bloom_workflows`, matching this program's
 established `SECURITY DEFINER` wrapper convention. `bloomctl cyl batch-ingest-result` SHALL call this
-function once, after ingesting every envelope discovered for the batch, passing the `ARGO_WORKFLOW_NAME`
-environment variable Argo sets on the write-back container — and SHALL skip the call entirely when that
-environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
+function at most once per invocation, after ingesting every envelope discovered for the batch, passing
+the `ARGO_WORKFLOW_NAME` environment variable Argo sets on the write-back container. It SHALL skip
+the call when an envelope it attempted failed retriably (capability `cyl-batch-ingest-result`);
+the status poller then makes an equivalent call, with its own `p_error_message`, once that workflow's
+Argo phase is terminal or the run's rollup concludes (capability `cyl-pipeline-status-polling`). `bloomctl` SHALL also skip
+the call entirely when that environment variable is unset (a manual/local batch run with no pipeline-run context), leaving all
 `cyl_pipeline_run_scans` rows (if any happen to exist) untouched.
 
 #### Scenario: A scan with no envelope is marked failed
@@ -872,4 +921,381 @@ environment variable is unset (a manual/local batch run with no pipeline-run con
   grantee, and `bloom_user`/`bloom_writer`/`bloom_admin` against this function's signature
 - **THEN** each reports `EXECUTE` as `false`
 - **AND** the same check for `bloom_workflows` reports `true`
+
+### Requirement: Trait source idempotency key is readable by the write-back identity
+
+`bloom_workflows` SHALL hold column-scoped `SELECT (idempotency_key)` on
+`public.cyl_trait_sources`, so that `bloomctl` can determine whether a delivery has already been
+ingested before uploading its blobs. Postgres requires `SELECT` on every column a query
+references, including those in a `WHERE` clause, so this grant is what permits filtering on
+`idempotency_key`; it exists to let that filter use the existing
+`cyl_trait_sources_idempotency_key_key` UNIQUE index rather than a `metadata->>` expression.
+
+This grant SHALL widen no information the role can already reach: `SELECT (id, metadata)` on the
+same table, together with the `workflows_read_cyl_trait_sources` RLS policy, is already granted
+(`20260730120000_create_cyl_pipeline_runs.sql:167-169` and `:172`), and the RPC stores `metadata`
+as the envelope's `provenance` object, which itself contains `idempotency_key`. The grant adds an
+indexed access path to a value the role can already read, not a new capability.
+
+The grant SHALL be additive only, and SHALL remain column-scoped. No `INSERT`, `UPDATE`, or
+`DELETE` privilege is added on `cyl_trait_sources`; no column-less `GRANT SELECT` on the table is
+introduced, since that would silently reach every column; and the execute-only posture on the
+write-back RPC (`20260720000000_grant_bloom_workflows_writeback_rpc.sql`) is unchanged.
+
+A paired rollback SHALL revoke only this column. A bare `REVOKE SELECT` would strip the
+pre-existing `(id, metadata)` grant that the dedup-preview read path depends on.
+
+#### Scenario: bloom_workflows can filter on the key
+
+- **WHEN** a session with `SET LOCAL ROLE bloom_workflows` selects `id` from
+  `cyl_trait_sources` filtered on `idempotency_key`
+- **THEN** the query succeeds, returning the matching row for a seeded key and zero rows for an
+  absent one
+
+#### Scenario: The grant confers no write access
+
+- **WHEN** `bloom_workflows` attempts an `INSERT`, `UPDATE`, or `DELETE` on
+  `cyl_trait_sources`
+- **THEN** the statement is refused, exactly as before this grant
+
+#### Scenario: Other columns remain ungranted
+
+- **WHEN** `bloom_workflows` selects a `cyl_trait_sources` column other than `id`,
+  `metadata`, or `idempotency_key`
+- **THEN** the statement is refused with a permission error
+
+#### Scenario: The rollback leaves the pre-existing grant intact
+
+- **WHEN** the paired rollback is applied
+- **THEN** `SELECT (idempotency_key)` is revoked from `bloom_workflows` while
+  `SELECT (id, metadata)` remains granted
+
+### Requirement: Trait source recipe and run columns
+
+`cyl_trait_sources` SHALL carry nullable `recipe_key text`, `recipe_key_version smallint`, `scan_id bigint`, `argo_workflow_name text` and `cyl_pipeline_run_id bigint` columns (together, the _recipe and run columns_), with `scan_id` referencing `cyl_scans(id)` and `cyl_pipeline_run_id` referencing `cyl_pipeline_runs(id)`, both `ON DELETE SET NULL`.
+
+**Named constraints.** The foreign keys SHALL be named `cyl_trait_sources_scan_id_fkey` and
+`cyl_trait_sources_cyl_pipeline_run_id_fkey`. Two CHECK constraints SHALL restrict the new
+columns:
+
+- `cyl_trait_sources_recipe_key_format_check`: `recipe_key` is NULL, matches `^[0-9a-f]{64}$`, or
+  matches `^legacy:[0-9]+$`;
+- `cyl_trait_sources_recipe_key_version_check`: `recipe_key_version` is NULL or `1`.
+
+**Indexes.** `cyl_trait_sources(recipe_key)`, `cyl_trait_sources(scan_id)` and
+`cyl_pipeline_run_scans(argo_workflow_name)` SHALL be indexed.
+
+**Access.** None of the recipe and run columns SHALL be readable by `bloom_workflows`. Its
+column-scoped `SELECT` on this table SHALL be exactly `(id, metadata, idempotency_key)`.
+
+#### Scenario: A malformed recipe_key is rejected
+
+- **WHEN** a row is written with `recipe_key` set to any of `'unattributed'`, `'legacy:'`,
+  `'legacy:-1'`, 64 uppercase hex characters, 63 lowercase hex characters, or a valid key followed
+  by a newline
+- **THEN** the write is rejected by `cyl_trait_sources_recipe_key_format_check`
+
+#### Scenario: Valid recipe_key forms are accepted
+
+- **WHEN** a row is written with `recipe_key` set to 64 lowercase hex characters, or to
+  `'legacy:12'`, with `recipe_key_version = 1`
+- **THEN** the write succeeds
+
+#### Scenario: A recipe_key_version other than 1 is rejected
+
+- **WHEN** a row is written with `recipe_key_version = 2`
+- **THEN** the write is rejected by `cyl_trait_sources_recipe_key_version_check`
+
+#### Scenario: Deleting a scan or run keeps the source
+
+- **WHEN** a scan whose trait rows have been deleted is itself deleted, or a `cyl_pipeline_runs`
+  row with no remaining `cyl_pipeline_run_scans` rows, referenced by a source, is deleted
+- **THEN** the delete succeeds, and the source row remains with `scan_id` (respectively
+  `cyl_pipeline_run_id`) set to NULL
+
+#### Scenario: bloom_workflows cannot read the new columns
+
+- **WHEN** a session assumes `bloom_workflows` and selects any of `recipe_key`,
+  `recipe_key_version`, `scan_id`, `argo_workflow_name` or `cyl_pipeline_run_id` from
+  `cyl_trait_sources`
+- **THEN** the query fails with insufficient privilege
+
+### Requirement: Recipe key v1 definition
+
+Bloom SHALL compute `recipe_key` v1 with `cyl_trait_recipe_key_v1(jsonb)`, defined as the lowercase hex sha256 of the UTF-8 text of `cyl_trait_recipe_payload_v1(jsonb)`.
+
+**The payload.** For an object argument, `cyl_trait_recipe_payload_v1` SHALL return a jsonb object
+with these keys:
+
+- `models`: one `[registry_id, version, weights_checksum]` array per element of
+  `predict_models`, taken with `->>` so that a missing field is JSON `null`.
+  - The arrays are ordered by their `jsonb::text` under `COLLATE "C"`, with duplicates kept.
+  - A non-array `predict_models` yields an empty list.
+- `predict_code_sha` and `traits_code_sha`, as text or JSON `null`.
+- `predict_output_params`, present only when it is a non-empty jsonb object.
+
+**What the key does not depend on.** It SHALL NOT depend on any other Provenance field. That
+includes `scan_key`, `inputs`, `params` (and so `param_hash`), `idempotency_key`,
+`contract_version`, `pipeline_run_id`, `worker_request_id`, `argo_workflow_uid`, `argo_node_id`,
+`produced_at`, `traits_sleap_roots_version`, both container digests, `predict_inference_config`,
+and each model's `root_type` and `sleap_nn_version`.
+
+**How the helpers behave.**
+
+- Both helpers SHALL be `IMMUTABLE` and owned by `postgres`.
+- Both SHALL return NULL for NULL or non-object input.
+- Neither SHALL raise for any jsonb input.
+
+**Access.** `EXECUTE` on both helpers SHALL be revoked from `PUBLIC` and `anon`, and granted to
+`bloom_agent`, `bloom_user`, `bloom_admin` and `authenticated`. `service_role` keeps the
+`EXECUTE` it holds through Supabase default privileges.
+
+#### Scenario: The key ignores fields outside the payload
+
+- **WHEN** two Provenance objects differ only in one field outside the payload, for each such
+  field in the list above
+- **THEN** `cyl_trait_recipe_key_v1` returns the same value for both
+
+#### Scenario: The key changes with any payload input
+
+- **WHEN** two Provenance objects differ in a model's `registry_id`, `version` or
+  `weights_checksum` (including `null` versus `""`), in either code sha, or in a non-empty
+  `predict_output_params`
+- **THEN** `cyl_trait_recipe_key_v1` returns different values
+
+#### Scenario: Model order and empty output params do not change the key
+
+- **WHEN** Provenance objects list the same models in different orders, or carry
+  `predict_output_params` as `null`, as `{}`, or not at all
+- **THEN** each of those groups yields a single `cyl_trait_recipe_key_v1` value
+
+#### Scenario: A model repeated for two root types is counted twice
+
+- **WHEN** one Provenance lists a model once, and another lists the same triple twice under two
+  `root_type` values
+- **THEN** the two keys differ
+
+#### Scenario: Odd shapes never raise
+
+- **WHEN** either helper is called with `'{}'`, with no `predict_models`, with `predict_models` as
+  `[]`, an object or a string, with a scalar entry in `predict_models`, with an entry missing
+  `weights_checksum`, or with `predict_output_params` as a string or an array
+- **THEN** each call returns without error, `cyl_trait_recipe_key_v1` returns 64 lowercase hex
+  characters, and it returns NULL for `NULL`, `'[]'` and `'"x"'`
+
+#### Scenario: The definition hashes to the key
+
+- **WHEN** `encode(sha256(convert_to(cyl_trait_recipe_payload_v1(m)::text, 'UTF8')), 'hex')` is
+  computed for any object `m`
+- **THEN** it equals `cyl_trait_recipe_key_v1(m)`
+
+#### Scenario: The key partitions Provenances as contracts identity does
+
+- **WHEN** the committed golden vectors, generated with sleap-roots-contracts `0.1.0a9`, are
+  hashed by `cyl_trait_recipe_key_v1`
+- **THEN** two vectors share a key exactly when their contracts idempotency payloads, with
+  `scan_key`, `images_checksum` and `param_hash` held equal, are equal. The only exceptions are
+  vector pairs marked as the documented divergence: an integer versus an integer-valued float
+  (`1` versus `1.0`), which contracts' `canonical_json` collapses and jsonb keeps distinct.
+
+### Requirement: Write-back stamps each new source with its recipe, scan, Workflow and run
+
+When a delivery creates a source, `insert_cyl_result_envelope(jsonb, text)` SHALL set that source's recipe and run columns in the same transaction.
+
+**The values:**
+
+- `recipe_key` is `cyl_trait_recipe_key_v1(provenance)`, and `recipe_key_version` is `1`.
+- `scan_id` is the scan resolved from `provenance.inputs.image_ids`.
+- `argo_workflow_name` is `p_argo_workflow_name`.
+- `cyl_pipeline_run_id` is the single distinct `run_id` among `cyl_pipeline_run_scans` rows whose
+  `argo_workflow_name` equals `p_argo_workflow_name`. It is NULL when `p_argo_workflow_name` is
+  NULL, when no such row exists, or when more than one distinct `run_id` matches. The lookup SHALL
+  NOT require a row for the resolved scan.
+
+**On a no-op re-delivery,** the RPC SHALL NOT change any of the recipe and run columns, whatever
+`p_argo_workflow_name` it receives. These columns are written once, by the delivery that creates
+the source or by the backfill. The provenance-immutability rule continues to cover `metadata`,
+`name` and `idempotency_key`.
+
+**Everything else is unchanged.** The RPC SHALL keep:
+
+- the `(jsonb, text)` signature, as its only overload;
+- its validation;
+- its return value, including `status_update_matched`;
+- its run-scan status updates, which on a no-op delivery include the fallback specified in
+  "Write-back RPC ingests a ResultEnvelope";
+- its `EXECUTE` grants: revoked from `PUBLIC`, `anon` and `authenticated`, and granted to
+  `bloom_writer`, `service_role`, `bloom_admin` and `bloom_workflows`.
+
+It SHALL NOT insert `cyl_pipeline_run_scans` rows.
+
+#### Scenario: A fresh delivery records its recipe and scan
+
+- **WHEN** a valid envelope is ingested for the first time
+- **THEN** its new source has `recipe_key` equal to `cyl_trait_recipe_key_v1(metadata)`,
+  `recipe_key_version = 1`, and `scan_id` equal to the `scan_id` the call returns
+
+#### Scenario: A Bloom-dispatched delivery records its Workflow and run
+
+- **WHEN** an envelope is ingested with `p_argo_workflow_name` set to Workflow `W`, and `W`
+  appears on `cyl_pipeline_run_scans` rows of exactly one run `R`
+- **THEN** the new source has `argo_workflow_name = W` and `cyl_pipeline_run_id = R`
+
+#### Scenario: An unrequested scan still records its run
+
+- **WHEN** an envelope for scan `S` is ingested under Workflow `W`, `W` belongs to run `R`, and `R`
+  has no run-scan row for `S`
+- **THEN** the new source has `cyl_pipeline_run_id = R`, the number of `cyl_pipeline_run_scans`
+  rows is unchanged, and `status_update_matched` is `false`
+
+#### Scenario: A hand-submitted delivery records only its Workflow
+
+- **WHEN** an envelope is ingested with `p_argo_workflow_name` set to `W`, and no
+  `cyl_pipeline_run_scans` row carries `W`
+- **THEN** the new source has `argo_workflow_name = W` and `cyl_pipeline_run_id` NULL
+
+#### Scenario: An ambiguous Workflow name records no run
+
+- **WHEN** `cyl_pipeline_run_scans` rows of two different runs both carry the ingesting
+  `p_argo_workflow_name`
+- **THEN** the new source has `cyl_pipeline_run_id` NULL
+
+#### Scenario: A delivery with no Workflow name records neither
+
+- **WHEN** an envelope is ingested with `p_argo_workflow_name` NULL
+- **THEN** the new source has `argo_workflow_name` and `cyl_pipeline_run_id` NULL, and its
+  `recipe_key` and `scan_id` set
+
+#### Scenario: A no-op re-delivery leaves the stamps alone
+
+- **WHEN** an already-ingested envelope is delivered again under a different
+  `p_argo_workflow_name`
+- **THEN** the existing source's recipe and run columns are unchanged
+
+#### Scenario: A failed delivery leaves no source
+
+- **WHEN** a delivery fails on an unresolvable `image_ids`, a non-scan-grain trait, or a
+  non-integer blob `file_size`
+- **THEN** the call raises, and no `cyl_trait_sources` row exists for its `idempotency_key`
+
+#### Scenario: The re-delivery fallback still works
+
+- **WHEN** an envelope first ingested under Workflow `wf-a` is re-delivered under `wf-b`, and
+  `wf-b` has a queued row for the same scan
+- **THEN** `status_update_matched` is `true` and the `wf-b` row is `'written'` with the original
+  `source_id`
+
+### Requirement: Existing trait sources are backfilled with recipe identity
+
+Bloom SHALL provide `cyl_backfill_trait_source_recipe_identity()`, which sets `recipe_key`, `recipe_key_version` and `scan_id` wherever they are NULL on `cyl_trait_sources`, and the recipe-identity and write-back migrations SHALL each call it.
+
+**What the backfill sets:**
+
+- `recipe_key` is `cyl_trait_recipe_key_v1(metadata)` when `metadata` is a jsonb object, and
+  `'legacy:' || id` otherwise (NULL or any non-object `metadata`).
+- `recipe_key_version` is `1` wherever `recipe_key` is set.
+- `scan_id` is set only for sources whose `metadata` is an object, and only when
+  `metadata->'inputs'->'image_ids'` meets all of these conditions:
+
+  - it is a non-empty array;
+  - every `jsonb_array_elements_text` value is non-NULL and matches `^[0-9]{1,18}$`;
+  - every element matches a `cyl_images` row with a non-NULL `scan_id`;
+  - those rows name exactly one distinct scan.
+
+  These are the write-back RPC's resolution conditions, except that a failure leaves NULL where
+  the RPC raises, and the RPC's `^[0-9]+$` is capped at 18 digits so the `::bigint` cast cannot
+  raise. The RPC also rejects a JSON `null` element: it counts as a requested id that matches no
+  image.
+
+**Failures leave NULL.** A source that fails the `scan_id` rule SHALL keep a NULL `scan_id`. The
+function SHALL report, with `RAISE NOTICE 'cyl recipe backfill: % object-metadata source(s) left
+without a scan_id'`, the number of object-`metadata` sources left with a NULL `scan_id` after it runs. It
+SHALL NOT raise.
+
+**What it leaves alone.** It SHALL NOT set `argo_workflow_name` or `cyl_pipeline_run_id`, SHALL
+NOT modify `metadata`, `name` or `idempotency_key`, and SHALL NOT read `cyl_scan_traits`.
+
+**Access.** It SHALL be owned by `postgres`, with `EXECUTE` revoked from `PUBLIC`, `anon`,
+`authenticated` and `service_role`.
+
+#### Scenario: Pipeline sources get a recipe and a scan
+
+- **WHEN** the backfill runs over a pipeline source whose `image_ids` resolve to one scan
+- **THEN** its `recipe_key` equals `cyl_trait_recipe_key_v1(metadata)`, its `recipe_key_version`
+  is 1, and its `scan_id` is that scan
+
+#### Scenario: Backfilled scan_id agrees with trait rows
+
+- **WHEN** a backfilled pipeline source's `cyl_scan_traits` rows were written by the write-back
+  RPC
+- **THEN** each of those rows has `scan_id` equal to the source's `scan_id`
+
+#### Scenario: Legacy sources get a pseudo-recipe
+
+- **WHEN** the backfill runs over a source whose `metadata` is NULL, or is a non-object such as
+  `'[]'` or JSON `null`
+- **THEN** its `recipe_key` is `legacy:<its id>`, its `recipe_key_version` is 1, and its `scan_id`
+  is NULL
+
+#### Scenario: Unresolvable image_ids leave scan_id NULL without failing
+
+- **WHEN** the backfill runs over sources whose `image_ids` are missing, not an array, contain
+  `"abc"`, match no image, or resolve to two scans
+- **THEN** it completes, those sources keep `scan_id` NULL, and its NOTICE reports that number
+
+#### Scenario: Run stamps are not invented
+
+- **WHEN** the backfill runs over any existing source
+- **THEN** that source's `argo_workflow_name` and `cyl_pipeline_run_id` remain NULL
+
+#### Scenario: A source written between the two migrations is backfilled
+
+- **WHEN** a source is created by the `20260928130000` RPC body after the recipe-identity migration
+  commits and before the write-back migration runs
+- **THEN** after the write-back migration, that source has its `recipe_key` and `scan_id` set
+
+#### Scenario: Re-running the backfill changes nothing
+
+- **WHEN** the backfill runs a second time
+- **THEN** no row's recipe and run columns change
+
+### Requirement: Recipe-identity migrations are re-runnable and have exact rollbacks
+
+The recipe-identity migration (`*_add_cyl_trait_recipe_key.sql`) and the write-back migration (`*_stamp_cyl_trait_source_recipe_and_run.sql`) SHALL be additive and forward-only, re-runnable as the newest migration, and paired with rollback scripts under `supabase/rollbacks/`.
+
+**The recipe-identity migration** SHALL set `lock_timeout` for its transaction, and SHALL end with
+`NOTIFY pgrst, 'reload schema'`.
+
+**The write-back rollback** SHALL restore `insert_cyl_result_envelope(jsonb, text)` to the
+`20260928130000` body with the `20260928130100` grants.
+
+**The recipe-identity rollback:**
+
+- SHALL raise without changing anything if the body of any live function other than the three it
+  drops still references `recipe_key`, `cyl_pipeline_run_id`, `cyl_trait_recipe_key_v1` or
+  `cyl_trait_recipe_payload_v1`;
+- otherwise SHALL drop the recipe and run columns with their constraints and indexes, the
+  `cyl_pipeline_run_scans_argo_workflow_name_idx` index, the two helpers, and the backfill
+  function.
+
+**Types.** The generated `database.types.ts` copies SHALL gain the recipe and run columns.
+
+#### Scenario: Re-applying the migration bodies is idempotent
+
+- **WHEN** each migration's SQL body is executed a second time over seeded data
+- **THEN** no error is raised, no backfilled value changes, and exactly one
+  `insert_cyl_result_envelope` overload exists, with two arguments
+
+#### Scenario: The write-back rollback restores a9 behavior and grants
+
+- **WHEN** the write-back rollback is applied after the forward migration
+- **THEN** a fresh delivery leaves all the recipe and run columns NULL, the cross-Workflow re-delivery
+  fallback still reports `status_update_matched = true`, and `EXECUTE` is held exactly as in
+  `20260928130100`
+
+#### Scenario: The recipe-identity rollback refuses to run out of order
+
+- **WHEN** the recipe-identity rollback is applied while the stamping body of
+  `insert_cyl_result_envelope` is live
+- **THEN** it raises, and every column and function remains
 

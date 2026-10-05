@@ -1,6 +1,7 @@
 """Unit tests for the RNA-seq workflow types: the Cell Ranger workflow name and body,
 and checks that they still match the repo's Argo files and database functions."""
 
+import json
 import re
 from pathlib import Path
 
@@ -237,3 +238,47 @@ def test_every_registered_type_is_allowed_by_the_runs_table():
 
 def test_cellranger_is_the_one_registered_type():
     assert wfs.WORKFLOW_TYPES == {"scrna-cellranger": wfs.CELLRANGER}
+
+
+# --------------------------------------------------------------------------- #
+# An S3 folder run
+# --------------------------------------------------------------------------- #
+
+FOLDER_FILES = [
+    {"name": "col0_S1_L001_R1_001.fastq.gz", "size": 10, "etag": '"a"'},
+    {"name": "col0_S1_L001_R2_001.fastq.gz", "size": 32, "etag": '"b"'},
+]
+FOLDER_RUN = {
+    **RUN,
+    "params": {
+        "sample": "col0",
+        "reference": "tiny_ref",
+        "fastq_url": "s3://lab-data/run42/",
+        "fastq_files": FOLDER_FILES,
+    },
+    "run_key": "col0__tiny_ref__00000000-0000-0000-0000-000000000001",
+}
+
+
+def test_a_folder_run_passes_its_folder_and_files():
+    body = wfs.build_cellranger_body(FOLDER_RUN)
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert params["fastq-url"] == "s3://lab-data/run42/"
+    assert json.loads(params["fastq-files"]) == FOLDER_FILES
+    sample = _params(_task(body, "sample"))
+    assert sample["fastq-url"] == "{{workflow.parameters.fastq-url}}"
+    assert sample["fastq-files"] == "{{workflow.parameters.fastq-files}}"
+
+
+def test_a_folder_run_passes_only_inputs_the_template_declares():
+    template = _template("sample-pipeline")
+    declared = {p["name"] for p in template["inputs"]["parameters"]}
+    sample = _params(_task(wfs.build_cellranger_body(FOLDER_RUN), "sample"))
+    assert set(sample) <= declared
+    assert _required_inputs(template) <= set(sample)
+
+
+def test_a_run_without_a_folder_passes_no_folder():
+    body = wfs.build_cellranger_body(RUN)
+    names = {p["name"] for p in body["spec"]["arguments"]["parameters"]}
+    assert not names & {"fastq-url", "fastq-files"}

@@ -54,8 +54,9 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
 > Note on `v0.1.0a8` (skipped by Bloom's re-pins; documented for completeness): an **`$id`-only
 > structural no-op for the JSON Schema**. The change is predict-side and **BREAKING** on the Python
 > package side: `ModelCard` reshaped from flat `species`/`mode`/`age_min`/`age_max` to a non-empty
-> `selectors` tuple of the new `Selector` type (no tolerant read of the old shape). Bloom imports
-> neither `ModelCard` nor `Selector`.
+> `selectors` tuple of the new `Selector` type (no tolerant read of the old shape). Bloom's
+> `services/workflows` validates production model cards as `ModelCard` (with `Selector`) to serve
+> `GET /model-cards`; it needs `>=0.1.0a9`, because the `selectors` shape arrived in a8.
 
 > Note on `v0.1.0a7`: re-pinned from `v0.1.0a5` for Bloom change `repin-cyl-contract-a7` (bloom
 > #685) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched

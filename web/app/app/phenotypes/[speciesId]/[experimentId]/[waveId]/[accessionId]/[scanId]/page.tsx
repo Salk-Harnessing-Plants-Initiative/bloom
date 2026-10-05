@@ -13,6 +13,7 @@ import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
 import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
+import ScanTraitExportButton from "./ScanTraitExportButton";
 
 export default async function Image({
   params,
@@ -93,6 +94,11 @@ export default async function Image({
               label="Run this scan"
               title={`scan ${scan.id}`}
             />
+          </div>
+        )}
+        {scan && (
+          <div className="mb-4">
+            <ScanTraitExportButton scanId={scan.id} />
           </div>
         )}
         {scan && (

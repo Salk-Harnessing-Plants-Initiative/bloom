@@ -1,7 +1,7 @@
 # cyl-ingest-cli Specification
 
 ## Purpose
-TBD - created by archiving change add-cyl-ingest-cli. Update Purpose after archive.
+Defines `bloomctl cyl ingest-result`, which validates one result envelope and writes it through Bloom's write-back RPC, with optional blob construction and upload and distinct reporting of benign re-ingests.
 ## Requirements
 ### Requirement: Cyl ingest command reads an envelope from a path or stdin
 
@@ -19,12 +19,18 @@ resolve its run manifest and to reconcile, so a batch's manifest scope, per-scan
 reconciliation can never target different workflow names.
 The command SHALL accept a `--profile` option (defaulting like the other commands) and authenticate
 through the existing credentials profile. When `p_argo_workflow_name` was supplied and the RPC's
-returned `status_update_matched` is `false` — a delivery that wrote its trait/blob data correctly
-but whose per-scan status linkage was silently skipped by an already-permanent guard, because the
-matching `cyl_pipeline_run_scans` row was already `'failed'` — both this command and the shared
-per-envelope batch helper (`ingest_one_envelope`, used by `cyl batch-ingest-result`) SHALL report it
-as a failure rather than a plain success, explaining that the failure is already reflected in the
-run's `failed_count` and is not a new one.
+returned `status_update_matched` is `false`, both this command and the shared per-envelope batch
+helper (`ingest_one_envelope`, used by `cyl batch-ingest-result`) SHALL report it as a failure
+rather than a plain success, with a message that matches the RPC's `was_noop`:
+
+- `was_noop: false` — a delivery that wrote its trait/blob data correctly but whose per-scan status
+  linkage was skipped, either because no row matched this scan under this workflow or because the
+  matching `cyl_pipeline_run_scans` row was already `'failed'`. The message SHALL say the data was
+  written and SHALL NOT assert either cause as the only one.
+- `was_noop: true` — an already-ingested envelope that wrote nothing, and whose re-delivery could
+  not update this workflow's row for the source's scan. The message SHALL name the existing
+  `source_id`, SHALL say that nothing was written, and MUST NOT claim that any trait or blob data
+  was written by this delivery.
 
 #### Scenario: A status linkage mismatch is reported as a failure, not a silent success
 
@@ -33,6 +39,15 @@ run's `failed_count` and is not a new one.
   `false`
 - **THEN** the command still prints/emits the real, successful write outcome, but then reports a
   failure explaining the status-linkage mismatch, and exits non-zero
+
+#### Scenario: An unmatched no-op is reported as a failure that wrote nothing
+
+- **WHEN** the command runs with `ARGO_WORKFLOW_NAME` set and the RPC returns `was_noop: true`
+  with `status_update_matched: false`
+- **THEN** the command prints the "already ingested" outcome naming the `source_id`, then reports
+  a failure whose message names that `source_id`, says nothing was written and that this
+  workflow's run-scan row for the scan was not updated, contains neither "write-back succeeded"
+  nor any claim that trait or blob data was written, and exits non-zero
 
 #### Scenario: Ingest from a file path
 
@@ -111,14 +126,20 @@ through the contract model), so the producer's `provenance.idempotency_key` is p
 
 The command SHALL report the RPC's first-writer-wins no-op — `was_noop=true`, which the RPC
 returns without raising for an already-ingested envelope — as a success distinct from a real
-error, exiting zero. Re-ingesting the same envelope therefore MUST NOT be reported as a failure.
+error, exiting zero, except in the one case "Cyl ingest command reads an envelope from a path or
+stdin" reports as a failure (`ARGO_WORKFLOW_NAME` set and `status_update_matched: false`).
+Re-ingesting the same envelope MUST NOT otherwise be reported as a failure.
 This SHALL hold end to end, not only for the RPC's response: a re-delivery whose producer
 regenerated its artifacts MUST NOT fail at the blob-upload step before the RPC's gate is reached,
 and it MUST NOT be reported as a failure on account of the RPC's `status_update_matched` field
-regardless of which `ARGO_WORKFLOW_NAME` re-delivers it — a fresh pipeline run re-dispatching an
-already-ingested scan under a **new** workflow name is exactly as benign a no-op as one
-re-dispatched under the same workflow name, and the `cyl-trait-writeback` capability's fallback
-update is what makes that true at the RPC layer.
+whenever the RPC matched this workflow's run-scan row, whichever `ARGO_WORKFLOW_NAME` re-delivers
+it and however the source was first written (a Bloom-dispatched run, a hand-submitted Workflow, or
+a manual `cyl ingest-result`) — a fresh pipeline run re-dispatching an already-ingested scan under
+a **new** workflow name is exactly as benign a no-op as one re-dispatched under the same workflow
+name, and the `cyl-trait-writeback` capability's fallback update, which resolves the scan from the
+source's own recorded scan, is what makes that true at the RPC layer. A no-op for which the RPC
+still returns `status_update_matched: false` is reported as described in "Cyl ingest command
+reads an envelope from a path or stdin".
 
 #### Scenario: First ingest of an envelope
 
@@ -128,7 +149,8 @@ update is what makes that true at the RPC layer.
 
 #### Scenario: Re-ingest of the same envelope
 
-- **WHEN** the RPC returns `was_noop=true` (with a null `scan_id`, per `cyl-trait-writeback`)
+- **WHEN** the RPC returns `was_noop=true` (with a null `scan_id`, per `cyl-trait-writeback`) and
+  a `status_update_matched` that is not `false`
 - **THEN** the command prints an "already ingested" message (naming the `source_id`) that is
   visibly not an error, does not depend on `scan_id` being present, and exits zero
 
@@ -150,6 +172,15 @@ update is what makes that true at the RPC layer.
   command (and the shared per-envelope batch helper `ingest_one_envelope`, used by `cyl
   batch-ingest-result`) reports the delivery as a benign, distinctly-reported no-op and exits
   zero — not a failure, and not counted against the pipeline run's `failed_count`
+
+#### Scenario: Re-delivery of a source first written outside any Bloom run is a benign no-op
+
+- **WHEN** an envelope was first ingested by a manual `cyl ingest-result` (no `ARGO_WORKFLOW_NAME`)
+  or by a hand-submitted Workflow with no `cyl_pipeline_run_scans` rows, and a Bloom-dispatched run
+  later re-delivers it with its own `ARGO_WORKFLOW_NAME`, whose `'queued'` row is for that scan
+- **THEN** the RPC's fallback marks that row `'written'` and returns `status_update_matched: true`,
+  and the command (and `ingest_one_envelope`) reports the delivery as a benign, distinctly-reported
+  no-op and exits zero
 
 ### Requirement: RPC validation failures map to actionable messages
 
@@ -235,13 +266,16 @@ making no object-storage upload, when `--predictions-dir` is omitted. When
 `sleap_roots_contracts` v0.1.0a5+, using the envelope's
 `provenance.scan_key`), and for each `PredictionArtifact` SHALL construct a
 `BlobRef` (`kind="predictions_slp"`, `root_type`, `scan_key`, `checksum`,
-`file_size` copied from the artifact), upload the referenced `.slp` bytes to
-the `cyl-intermediates` storage bucket, and populate `s3_location` — before
-merging the result into the envelope's `blobs` array and calling the RPC. If
+`file_size` copied from the artifact), and — unless the envelope's
+`idempotency_key` is already present in `cyl_trait_sources`, in which case the upload and the
+merge are both skipped (see "An already-ingested envelope skips blob upload") — upload the
+referenced `.slp` bytes to the `cyl-intermediates` storage bucket, and populate `s3_location`,
+before merging the result into the envelope's `blobs` array and calling the RPC. If
 the incoming envelope already contains a `blobs` entry for the same
 `(root_type, scan_key)` as one `--predictions-dir` would construct, the command
 SHALL fail fast with an actionable error rather than silently overwriting or
-duplicating it.
+duplicating it — on every delivery, including a re-delivery, because construction precedes the
+already-ingested check.
 
 #### Scenario: No predictions-dir, envelope carrying blobs (pass-through, unchanged)
 
@@ -300,6 +334,13 @@ the artifact's declared `checksum`. On mismatch, the command SHALL fail fast
 (no upload, no RPC call) with an actionable error naming the file and both
 checksums.
 
+Verification is part of the upload step, so it does not run when the upload is skipped because
+the envelope's `idempotency_key` is already present in `cyl_trait_sources` (see "An
+already-ingested envelope skips blob upload"). That is intentional: on a re-delivery the local
+bytes are never stored, so their integrity is not a property the delivery can affect, and
+failing on them would reintroduce the non-idempotent re-delivery this capability exists to
+avoid.
+
 #### Scenario: Checksum matches
 
 - **WHEN** the on-disk `.slp`'s sha256 matches the manifest's declared
@@ -309,9 +350,16 @@ checksums.
 #### Scenario: Checksum mismatch
 
 - **WHEN** the on-disk `.slp`'s sha256 does not match the manifest's declared
-  checksum
+  checksum, and the envelope's `idempotency_key` is not present in `cyl_trait_sources`
 - **THEN** the command exits non-zero before uploading anything or calling the
   RPC, naming the file and both checksums
+
+#### Scenario: Checksum mismatch on an already-ingested envelope is not reached
+
+- **WHEN** the on-disk `.slp`'s sha256 does not match the manifest's declared checksum and the
+  envelope's `idempotency_key` is already present in `cyl_trait_sources`
+- **THEN** no verification is performed, no upload is attempted, and the delivery is reported as
+  the RPC's benign no-op
 
 ### Requirement: Blob upload is idempotent
 
@@ -323,6 +371,14 @@ path; if it exists and its checksum matches the artifact's declared checksum,
 the command SHALL skip the upload and reuse the existing object's location. If
 an object exists at that path with a different checksum, the command SHALL
 fail fast rather than overwrite it.
+
+This path-level collision check is reached only for a delivery whose `idempotency_key` is not
+already in `cyl_trait_sources`. A divergent-checksum collision therefore indicates bytes at that
+address belonging to no ingested source — for example a delivery that uploaded and then failed
+before reaching the RPC — which the command cannot distinguish from a referenced blob and MUST
+NOT overwrite. The error SHALL name both the conflicting path and an identity able to remove the
+object: the write-back identity itself holds no DELETE on the `cyl-intermediates` bucket, so
+recovery requires `bloom_admin`, `service_role`, or an operator acting directly on storage.
 
 #### Scenario: First upload
 
@@ -340,16 +396,20 @@ fail fast rather than overwrite it.
 #### Scenario: Path collision with different content
 
 - **WHEN** an object already exists at the derived path with a checksum that
-  does not match the artifact currently being uploaded
+  does not match the artifact currently being uploaded, and the envelope's
+  `idempotency_key` is not present in `cyl_trait_sources`
 - **THEN** the command fails fast with an actionable error identifying the
-  conflicting path, rather than overwriting the existing object
+  conflicting path and naming an identity able to remove it, rather than
+  overwriting the existing object
 
 ### Requirement: A failed blob upload aborts before the RPC call
 
 The command SHALL NOT call `insert_cyl_result_envelope` for an envelope being processed with `--predictions-dir` if any blob fails to upload or fails its
 checksum verification; it SHALL instead report which blob(s) failed and SHALL
-exit non-zero. The operator MAY re-run the same command; per the
-idempotent-upload requirement, already-succeeded blobs are skipped on retry.
+exit non-zero. The operator MAY re-run the same command; already-succeeded blobs whose bytes are
+unchanged are skipped on retry. If the producer regenerated its artifacts between attempts, the
+retry instead collides at the derived path — the failed delivery wrote no source row, so the
+already-ingested check does not fire — and requires the recovery the collision error names.
 
 #### Scenario: One blob upload fails
 
@@ -357,4 +417,98 @@ idempotent-upload requirement, already-succeeded blobs are skipped on retry.
   storage error)
 - **THEN** the command does not call the RPC, reports the failing blob(s), and
   exits non-zero, leaving already-uploaded blobs in place for a cheap retry
+
+#### Scenario: Retry after a failed upload whose artifacts were regenerated
+
+- **WHEN** a delivery failed after uploading some blobs and before the RPC call, and the
+  producer has since recomputed its `.slp` files at the same `idempotency_key`
+- **THEN** the retry fails at the path collision rather than succeeding, because no source row
+  exists for the already-ingested check to find
+
+### Requirement: An already-ingested envelope skips blob upload
+
+With `--predictions-dir` given, the command SHALL check whether `cyl_trait_sources` already
+holds the envelope's `provenance.idempotency_key` — after constructing the pending blobs, and
+before uploading any bytes. Where the key is already present, the RPC's first-writer-wins gate
+will discard this delivery's `blobs` array without writing it to the trait or blob tables (see
+`cyl-trait-writeback`), so the command SHALL skip the upload and SHALL NOT merge the constructed
+blobs into the envelope, proceeding directly to the RPC call.
+
+The check SHALL be performed after manifest loading and blob construction, so that every
+fail-fast guarantee those steps provide — a missing or malformed manifest, a missing `.slp` file,
+an `slp_path` resolving outside the predictions directory, a conflicting pre-existing `blobs`
+entry — continues to apply unchanged on every delivery, whether or not it is a re-delivery.
+
+The command SHALL still call `insert_cyl_result_envelope` on the skip path. The RPC is the
+only component that can detect a same-key-different-scan delivery, and the gate's read is
+non-transactional, so its answer is advisory: the RPC remains the authority on whether this
+delivery writes anything.
+
+Note for future readers: this call does **not** rescue a `cyl_pipeline_run_scans` row stranded
+at `queued`. `source_id` is written only by the RPC's non-no-op path, in the same statement
+that sets `status = 'written'`, so `source_id IS NOT NULL` implies the row is already written;
+the no-op branch's `source_id`-keyed UPDATE can therefore only re-touch a row that needs no
+rescue. An earlier draft of this requirement justified the call on that basis, which was
+wrong. The call is still required, for the reason above.
+
+The check SHALL fail open rather than fail the envelope: any error reading `cyl_trait_sources` —
+including a permission error when the column grant has not yet been applied, and including
+transport-level errors that are not `postgrest.APIError` — SHALL be treated as "not already
+ingested", so the command's behaviour is never worse than it was without the check. Because such
+a fallback silently restores the original defect, the command SHALL emit a warning identifying
+the degraded check and the likely-missing grant, at a level that is visible without the caller
+configuring logging.
+
+This requirement exists because the producer's `.slp` output is not byte-reproducible, so a
+recompute targets an occupied object address and the strict upload fails before the lenient RPC
+gate is reached (sleap-roots-pipeline#76).
+
+#### Scenario: Re-delivery after a recompute that produced different bytes
+
+- **WHEN** an envelope whose `idempotency_key` is already present in `cyl_trait_sources` is
+  delivered with `--predictions-dir` holding `.slp` files whose bytes differ from those already
+  stored at the derived object path
+- **THEN** no upload is attempted, the constructed blobs are not merged into the envelope, the
+  RPC is still called and returns `was_noop=true`, and the previously stored bytes are left
+  untouched
+- **AND** the delivery is reported `skipped`, exiting zero, unless the RPC also reports
+  `status_update_matched=false` (it matched no run-scan row for this workflow, even after the
+  fallback that resolves the scan from the source's own recorded scan); that case is reported as
+  described in "Cyl ingest command reads an envelope from a path or stdin"
+
+#### Scenario: A first delivery is unaffected
+
+- **WHEN** `--predictions-dir` is given and the envelope's `idempotency_key` is not present in
+  `cyl_trait_sources`
+- **THEN** blobs are constructed, verified, and uploaded exactly as before, and the RPC is
+  called with the merged `blobs` array
+
+#### Scenario: Pass-through mode performs no lookup
+
+- **WHEN** `--predictions-dir` is omitted
+- **THEN** no `cyl_trait_sources` lookup is performed and the envelope's `blobs` array is
+  forwarded to the RPC unchanged, exactly as before
+
+#### Scenario: A missing manifest still fails fast, even for an already-ingested envelope
+
+- **WHEN** `--predictions-dir` is given, the envelope's `idempotency_key` is already present in
+  `cyl_trait_sources`, and `<dir>/{scan_key}.predictions.json` does not exist
+- **THEN** the command still fails fast naming the expected path, because the check runs after
+  the manifest load, not before it
+
+#### Scenario: An empty or absent idempotency key fails before the check
+
+- **WHEN** `--predictions-dir` is given and the envelope's `provenance.idempotency_key` is empty
+  or absent
+- **THEN** the command fails with the existing actionable error and no `cyl_trait_sources`
+  lookup is issued
+
+#### Scenario: The check itself fails
+
+- **WHEN** reading `cyl_trait_sources` raises — a `postgrest.APIError` carrying a 42501 because
+  the `idempotency_key` column grant has not been applied, or a transport error such as
+  `httpx.ConnectError`
+- **THEN** the command proceeds to upload blobs as it would without the check, does not report
+  the envelope as failed on account of the check, **and** emits a warning naming the degraded
+  check and the likely-missing grant
 

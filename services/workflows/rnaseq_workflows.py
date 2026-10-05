@@ -8,6 +8,7 @@ type only says how to build the Argo Workflow for one claimed run, which carries
 """
 
 import hashlib
+import json
 import os
 import re
 from collections.abc import Callable
@@ -101,13 +102,22 @@ def build_cellranger_body(run: dict) -> dict:
     """One sample through the template: stage-reference, then sample-pipeline.
 
     A run with SRA run IDs also downloads them with fetch-sra, alongside stage-reference,
-    and the sample's steps wait for both."""
+    and the sample's steps wait for both. A run with an S3 folder passes the folder and
+    the files recorded from it, which the stage step copies."""
     sra_runs = run["params"].get("sra_runs")
+    fastq_url = run["params"].get("fastq_url")
     parameters = [
         {"name": "sample", "value": run["params"]["sample"]},
         {"name": "reference", "value": run["params"]["reference"]},
         {"name": "run-id", "value": run["run_key"]},
     ]
+    sample_inputs = {"sample": "sample", "reference": "reference", "run-id": "run-id"}
+    if fastq_url:
+        parameters += [
+            {"name": "fastq-url", "value": fastq_url},
+            {"name": "fastq-files", "value": json.dumps(run["params"]["fastq_files"])},
+        ]
+        sample_inputs |= {"fastq-url": "fastq-url", "fastq-files": "fastq-files"}
     tasks = [_task("stage-reference", "stage-reference", {"reference": "reference"})]
     if sra_runs:
         # fetch-sra reads the run IDs comma-separated, in lane order.
@@ -123,7 +133,7 @@ def build_cellranger_body(run: dict) -> dict:
         _task(
             "sample",
             "sample-pipeline",
-            {"sample": "sample", "reference": "reference", "run-id": "run-id"},
+            sample_inputs,
             depends="stage-reference && fetch-sra" if sra_runs else "stage-reference",
         )
     )

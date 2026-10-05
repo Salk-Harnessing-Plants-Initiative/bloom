@@ -1081,6 +1081,52 @@ def test_writeback_and_rollup_connect_end_to_end(pg_conn):
     pg_conn.rollback()
 
 
+def test_a_concluded_run_keeps_its_first_status_and_counts(pg_conn):
+    """fix-cyl-poller-unconcluded-runs (bloom#1042): reconcile, write the run's
+    terminal status once, then a later write — as the old poller made when a GC'd
+    Succeeded batch dropped out of its rollup — changes nothing: the run stays
+    'partial' with the counts first written."""
+    with pg_conn.cursor() as cur:
+        scan_ok, imgs_ok = _seed_scan(cur)
+        scan_fail, _ = _seed_scan(cur)
+        wf = "wf-final"
+        run_id = _seed_run_scan_for_writeback(cur, scan_ok, wf)
+        cur.execute(
+            "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status) "
+            "VALUES (%s, %s, %s, 'queued')",
+            (run_id, scan_fail, wf),
+        )
+        cur.execute("UPDATE cyl_pipeline_runs SET status = 'running' WHERE id = %s", (run_id,))
+
+        _call(cur, _envelope(imgs_ok, idempotency_key="final-1"), argo_workflow_name=wf)
+        cur.execute(f"SELECT {FAIL_RPC}(%s, %s)", (wf, "no envelope produced"))
+        assert _run_scan_status(cur, wf, scan_ok)[0] == "written"
+        assert _run_scan_status(cur, wf, scan_fail)[0] == "failed"
+        cur.execute(
+            "SELECT "
+            "  count(*) FILTER (WHERE status IN ('written', 'reused')), "
+            "  count(*) FILTER (WHERE status = 'failed') "
+            "FROM cyl_pipeline_run_scans WHERE run_id = %s",
+            (run_id,),
+        )
+        done_count, failed_count = cur.fetchone()
+        assert (done_count, failed_count) == (1, 1)
+        cur.execute(
+            "SELECT update_cyl_pipeline_run_status(%s, 'partial', %s, %s)",
+            (run_id, done_count, failed_count),
+        )
+        cur.execute(
+            "SELECT update_cyl_pipeline_run_status(%s, 'failed', 0, 2)", (run_id,)
+        )
+        cur.execute(
+            "SELECT status, done_count, failed_count, poller_concluded_at IS NOT NULL "
+            "FROM cyl_pipeline_runs WHERE id = %s",
+            (run_id,),
+        )
+        assert cur.fetchone() == ("partial", 1, 1, True)
+    pg_conn.rollback()
+
+
 def test_redelivery_fallback_fixes_the_batch_level_counts_bloom875_measured(pg_conn):
     """/review-pr finding (blm3886): the new tests all assert a single row's
     status_update_matched, but bloom#875's symptom was measured as
@@ -2149,3 +2195,54 @@ def test_rollback_1_refuses_while_stamping_body_is_live(pg_conn):
         with pytest.raises(psycopg.errors.RaiseException, match="insert_cyl_result_envelope"):
             cur.execute(sql_body(rollback(1)))
         cur.execute("ROLLBACK TO SAVEPOINT r1")
+
+
+# --------------------------------------------------------------------------- #
+# fix-cyl-writeback-retry-reconcile (bloom #1034): the DB contract bloomctl's
+# deferred reconciliation relies on. Contrast
+# test_late_delivery_after_already_failed_does_not_resurrect: there the row was
+# closed before the delivery, so the guard keeps it 'failed'. With no reconcile
+# between attempts, a retried delivery marks it 'written'.
+# --------------------------------------------------------------------------- #
+
+
+def test_retry_attempt_sequence_without_an_intervening_reconcile_ends_written(pg_conn):
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        (s1, imgs1), (s2, imgs2), (s3, _) = (_seed_scan(cur) for _ in range(3))
+        run_id = _seed_run_scan_for_writeback(cur, s1, wf)
+        for scan_id in (s2, s3):
+            cur.execute(
+                "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status)"
+                " VALUES (%s, %s, %s, 'queued')",
+                (run_id, scan_id, wf),
+            )
+        key1, key2 = f"retry-{uuid.uuid4().hex}", f"retry-{uuid.uuid4().hex}"
+
+        # Attempt 1: scan 1 is written; scan 2's delivery is rejected and rolled back.
+        first = _call(cur, _envelope(imgs1, idempotency_key=key1), argo_workflow_name=wf)
+        assert first["status_update_matched"] is True
+        with pg_conn.transaction():
+            with pytest.raises(psycopg.errors.RaiseException):
+                with pg_conn.transaction():
+                    _call(
+                        cur,
+                        _envelope(imgs2, contract_version="v0.0.0a0", idempotency_key=key2),
+                        argo_workflow_name=wf,
+                    )
+            assert _run_scan_status(cur, wf, s2) == ("queued", None)
+        # No reconciliation: bloomctl defers it because scan 2 failed retriably.
+
+        # Attempt 2 (Argo's retry, same workflow name): scan 1 is a no-op re-delivery.
+        again = _call(cur, _envelope(imgs1, idempotency_key=key1), argo_workflow_name=wf)
+        assert again["was_noop"] is True and again["status_update_matched"] is True
+        second = _call(cur, _envelope(imgs2, idempotency_key=key2), argo_workflow_name=wf)
+        assert second["was_noop"] is False and second["status_update_matched"] is True
+
+        cur.execute(f"SELECT {FAIL_RPC}(%s, 'no result produced')", (wf,))
+        assert cur.fetchone()[0] == 1  # only scan 3, which never had an envelope
+
+        assert _run_scan_status(cur, wf, s1)[0] == "written"
+        assert _run_scan_status(cur, wf, s2) == ("written", second["source_id"])
+        assert _run_scan_status(cur, wf, s3) == ("failed", None)
+    pg_conn.rollback()

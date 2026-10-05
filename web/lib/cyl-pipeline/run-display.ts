@@ -4,8 +4,10 @@
  * `status` alone misleads: a run can be `complete` with failures (#857),
  * `partial` isn't terminal, and runs freeze in `running`/`queued` (#706,
  * #710). Failed and written scan rows are final, so once D + F = N the run is
- * finished, whatever its status says. `completed_at` is ignored (dispatch and
- * every `partial` sweep stamp it) and `reused_count` is never shown.
+ * finished, whatever its status says. `completed_at` is ignored (dispatch
+ * stamps it before any pipeline outcome, and a run concluded `partial` before
+ * fix-cyl-poller-unconcluded-runs carries roughly that change's deploy time)
+ * and `reused_count` is never shown.
  */
 
 export const RUN_STATUSES = ["queued", "submitted", "running", "complete", "partial", "failed"] as const;

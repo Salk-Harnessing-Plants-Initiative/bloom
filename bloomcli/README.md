@@ -654,9 +654,11 @@ The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
 already exist in `cyl_images` on the Bloom you're pointed at.
 
-Auth: uses your saved login profile, which must have write access
-(`bloom_writer` / `bloom_admin`). Non-interactive / scoped credentials for
-cluster/CI use are tracked separately (#398).
+Auth: uses your saved login profile, which must be allowed to run the write-back
+RPC (`bloom_writer` / `bloom_admin`, or `bloom_workflows` for the cluster
+pipeline). The pipeline's write-back pods don't run `bloomctl login`: they read
+`credentials.txt` from a mounted Secret. See `services/workflows/README.md`
+"Provisioning (per environment)" step 6. Other non-interactive use is #398.
 
 Examples:
 
@@ -749,9 +751,17 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
   batch's summary/`--json` output and reflected in the exit code, alongside
   every real envelope's own outcome; a successful call logs how many scans it
-  closed out. An unreadable envelope file at any earlier stage (e.g. a
-  truncated file left by an OOM-killed producer) is isolated the same way and
-  never prevents this call from running.
+  closed out. **Exception (bloom #1034):** when an envelope the batch tried to
+  ingest failed retriably, the call is skipped and stderr says
+  `reconciliation deferred to the status poller: N envelope(s) failed
+  retriably`. Argo retries the write-back step in the same Workflow, and
+  closing those scans now would keep them `'failed'` even after the retry
+  ingests them. The status poller closes whatever is still `'queued'` once
+  the Workflow ends. A missing declared file, a missing run manifest and a
+  non-retriable failure don't count, since a retry can't change them. An
+  unreadable envelope file (e.g. a truncated file left by an OOM-killed
+  producer) is isolated without aborting the batch, and, being retriable,
+  defers the call too.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 

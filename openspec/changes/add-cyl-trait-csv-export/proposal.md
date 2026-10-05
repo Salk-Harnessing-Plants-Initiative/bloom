@@ -30,7 +30,7 @@ No migration and no new service. Every read runs as the signed-in user, through 
 ## Impact
 
 - **Specs:** new `cyl-trait-export`, with ADDED requirements only.
-  - The new spec cites functions whose requirements live in #976's unarchived `add-cyl-trait-recipe-key`, so this change archives after it.
+  - The new spec cites functions whose requirements live in #976's `add-cyl-trait-recipe-key` (archived 2026-10-04 in #1046), so this change archives after it.
   - No other active change touches this capability.
 - **Code (web only):**
   - new `web/lib/cyl-trait-export/`, `web/app/api/cyl/trait-export/` and `web/components/cyl-trait-export/`;
@@ -54,4 +54,6 @@ No migration and no new service. Every read runs as the signed-in user, through 
 - Token-authenticated API access.
 - Parameter-set filters (#897).
 - Moving `TraitExplorer` itself to recipe reads (design Open Questions).
+- Changing which recipe is the default. It stays the newest; the dialog names a recipe that covers more scans (design D8). Coverage-first is open on #865/#936; retiring a stale recipe is #1021.
+- A browser e2e suite (Playwright in Chromium, Firefox and WebKit) for the dialog (#1024). PR B is checked by hand in Chrome and Firefox; Safari is unchecked.
 - Downloading the matching predictions (`.slp`). Each pipeline-recipe row's `(scan_id, source_id)` is already their key in `cyl_scan_intermediates` (design D12).

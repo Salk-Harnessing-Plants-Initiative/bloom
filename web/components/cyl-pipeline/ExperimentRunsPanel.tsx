@@ -56,6 +56,7 @@ function startedRunRow(run: StartedRun): RunRow {
     target_level: target.target_level,
     target_id: target.target_level === "scan_ids" ? null : target.target_id,
     params: {},
+    poller_concluded_at: null,
     status: "queued",
     scan_count: run.scan_count,
     done_count: 0,
