@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ import click
 import httpx
 
 from ..credentials import DEFAULT_PROFILE
-from . import _format, _object, _session, _transfer
+from . import _format, _object, _session, _summary, _transfer
 
 MB = 1024 * 1024
 
@@ -24,47 +25,105 @@ MB = 1024 * 1024
     show_default=True,
     help="Credentials profile to use.",
 )
-def upload(file: Path, profile: str) -> None:
+@click.option("--umap-key", help="The obsm array holding the UMAP, when it is not X_umap.")
+@click.option(
+    "--no-umap",
+    is_flag=True,
+    help="Upload a file whose obsm holds a two-column array that is not a UMAP.",
+)
+@click.option(
+    "-y",
+    "--yes",
+    is_flag=True,
+    help="Upload without asking; needed when there is no terminal (scripts, CI).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Sign in and run every check, then stop before sending anything.",
+)
+def upload(
+    file: Path, profile: str, umap_key: str | None, no_umap: bool, yes: bool, dry_run: bool
+) -> None:
     """Upload a dataset's AnnData file (.h5ad), gzipped and named by its SHA-256.
 
-    Needs a writer or admin login. The file's structure is checked before anything is sent.
-    An interrupted upload resumes when the same command is run again.
+    Needs a writer or admin login. Every check runs first; then what the file holds is shown
+    on the terminal and the upload goes ahead once confirmed. An interrupted upload resumes
+    when the same command is run again.
     """
+    if umap_key is not None and no_umap:
+        raise click.UsageError("--umap-key and --no-umap cannot both be given.")
+    if not dry_run and not yes and not _interactive():
+        raise click.ClickException(
+            "there is no terminal to ask for confirmation in. Pass --yes to upload without "
+            "asking, or --dry-run to run the checks. Nothing was sent."
+        )
     conn = _session.connect(profile)
     if conn.role not in _session.WRITE_ROLES:
         raise click.ClickException(
             f"this login signs in as {conn.role or 'no role'}; uploading needs bloom_writer or "
             "bloom_admin. Nothing was read."
         )
-    try:
-        summary = _format.check_structure(file)
-    except _format.MissingDependency as exc:
-        raise click.ClickException(str(exc)) from exc
-    except _format.FormatError as exc:
-        raise click.ClickException(f"{file.name} does not meet Bloom's h5ad format: {exc}") from exc
+    summary = _checked(file, umap_key, no_umap)
 
     stage = _object.staging_dir()
     staged = _object.stage(file, stage)
     try:
-        if summary.normalization is None and not _normalization_on_record(
-            conn.client, staged.fingerprint, summary.layers
-        ):
-            raise click.ClickException(
-                f"{file.name} has no uns['normalization'] saying how X was made. Add one with "
-                "transform (log1p, log2p or none), scaling (library_size, none or other), and "
-                "target_sum for library_size or a description for other."
-            )
+        recorded_on = None
+        if summary.normalization is None:
+            recorded_on = _normalization_on_record(conn.client, staged.fingerprint, summary.layers)
+            if recorded_on is None:
+                raise click.ClickException(
+                    f"{file.name} has no uns['normalization'] saying how X was made. Add one "
+                    "with transform (log1p, log2p or none), scaling (library_size, none or "
+                    "other), and target_sum for library_size or a description for other."
+                )
         if staged.size > _object.MAX_OBJECT_BYTES:
             raise click.ClickException(
                 f"{file.name} gzips to {staged.size / MB:,.0f} MB; the limit is "
                 f"{_object.MAX_OBJECT_BYTES // MB} MB. Nothing was sent."
             )
     except click.ClickException:
-        _object.clear(stage, staged.fingerprint)
+        _release(stage, staged)
         raise
+
+    _show(summary, file.name, recorded_on)
+    if dry_run:
+        _release(stage, staged)
+        click.echo("Dry run — every check passed. Nothing was sent.")
+        return
+    if not yes and not click.confirm("Upload this file?", default=False, err=True):
+        _release(stage, staged)
+        click.echo("Nothing was sent.", err=True)
+        raise click.exceptions.Exit(1)
 
     with _transfer.open_client() as http:
         _send_through_expiry(http, conn, profile, stage, staged, file.name)
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _checked(file: Path, umap_key: str | None, no_umap: bool) -> _format.Summary:
+    try:
+        return _format.check_structure(file, umap_key=umap_key, no_umap=no_umap)
+    except _format.MissingDependency as exc:
+        raise click.ClickException(str(exc)) from exc
+    except _format.FormatError as exc:
+        raise click.ClickException(f"{file.name} does not meet Bloom's h5ad format: {exc}") from exc
+
+
+def _release(stage: Path, staged: _object.Staged) -> None:
+    """Drop the gzipped form, unless an earlier upload of it is waiting to be resumed."""
+    if not _object.upload_recorded(stage, staged.fingerprint):
+        _object.clear(stage, staged.fingerprint)
+
+
+def _show(summary: _format.Summary, name: str, recorded_on: dict[str, Any] | None) -> None:
+    """The summary goes to the terminal, beside the question, even when output is redirected."""
+    for line in _summary.describe(summary, name, recorded_on=recorded_on):
+        click.echo(line, err=True)
 
 
 def _send_through_expiry(http, conn, profile: str, stage, staged, name: str) -> None:
@@ -89,14 +148,14 @@ def _send_through_expiry(http, conn, profile: str, stage, staged, name: str) -> 
         ) from exc
 
 
-def _normalization_on_record(client: Any, fingerprint: str, layers) -> bool:
-    """Whether a dataset loaded from this exact file records how its X was made."""
+def _normalization_on_record(client: Any, fingerprint: str, layers) -> dict[str, Any] | None:
+    """The dataset loaded from this exact file that records how its X was made, if any."""
     from .._postgrest import queried
 
     rows = queried(
         "the datasets loaded from this file",
         lambda: client.table("scrna_datasets")
-        .select("id, metadata")
+        .select("id, name, metadata")
         .eq("source_checksum", fingerprint)
         .is_("deleted_at", "null")
         .execute()
@@ -105,8 +164,8 @@ def _normalization_on_record(client: Any, fingerprint: str, layers) -> bool:
     for row in rows:
         block = (row.get("metadata") or {}).get("normalization")
         if isinstance(block, dict) and _format.normalization_problem(block, layers=layers) is None:
-            return True
-    return False
+            return row
+    return None
 
 
 def _resumable(ep, saved) -> str | None:
