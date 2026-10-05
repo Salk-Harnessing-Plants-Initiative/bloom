@@ -25,7 +25,8 @@ DEFAULT_EXPRESSION_UNITS = "log1p normalised counts"
 @click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--name", required=True, help="The dataset's name in Bloom.")
 @click.option("--species", required=True, help="The species' common name, e.g. Arabidopsis.")
-@click.option("--annotation", required=True, help="The obs column holding each cell's type.")
+@click.option("--annotation", required=True,
+              help="The obs column holding each cell's cell-type or cluster label.")
 @click.option("--create", is_flag=True, help="Register a new dataset under --name.")
 @click.option("--sample-column", default="sample", show_default=True,
               help="The obs column naming each cell's sample.")

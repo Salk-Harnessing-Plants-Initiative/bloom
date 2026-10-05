@@ -552,8 +552,10 @@ is refused naming it; pass `--umap-key NAME` if that array is the UMAP.
 
 Next it reads the cells, the way the load will:
 
-- `--annotation` names the obs column holding each cell's type (at most 23 types, one colour
-  each), `--sample-column` (default `sample`) the one naming its sample
+- `--annotation` names the obs column holding the cell-type or cluster label assigned to
+  each cell — annotated types such as `Cortex`, or cluster ids such as Leiden's `0`, `1`, … —
+  which the map colours by (at most 23 labels, one colour each); `--sample-column` (default
+  `sample`) names the column holding each cell's sample
 - every cell has a barcode, a type and a sample; a blank, or a value that reads as missing
   (`nan`, `None`, …), is refused rather than stored as a cell type
 - `--expect-cells N` refuses a file holding any other number of cells
@@ -649,8 +651,8 @@ the command says the file is stored and the load stopped, and running the same c
 again continues it. A write whose outcome is unknown (a timeout) may still be finishing on
 the server, so the next run waits that out first, saying how many seconds are left.
 
-`--name`, `--species` and `--annotation` are all a load needs; `--create` is added the first
-time, to register the dataset. Anything else the file records per cell can come along too.
+`--name`, `--species` and `--annotation` (the column of cell-type or cluster labels) are all
+a load needs; `--create` is added the first time, to register the dataset. Anything else the file records per cell can come along too.
 Each of these options names an `obs` column:
 
 - `--genotype-column COLUMN` makes each of its values a genotype the cells point at.
