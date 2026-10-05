@@ -2,7 +2,7 @@
 
 `plan` makes the same decisions without writing, so the user is shown what will happen before
 being asked. A load that stops resumes from what is stored; a finished dataset is never
-replaced -- that is an admin task.
+replaced: loading the file again takes a new name.
 """
 
 from __future__ import annotations

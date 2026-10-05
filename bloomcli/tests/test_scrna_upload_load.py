@@ -127,7 +127,7 @@ def test_a_dataset_finished_from_another_file_is_refused_before_sending(tmp_path
                                  "source_checksum": "other", "ingested_at": "2026-01-01"}])
     result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
-    assert "admin task" in result.output
+    assert "give it a new name, e.g. --name 'MYB41_v2' --create" in result.output
     assert storage.requests == []
 
 

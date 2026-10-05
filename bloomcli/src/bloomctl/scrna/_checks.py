@@ -5,6 +5,7 @@ Each raises LoadError naming what is wrong; none writes.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from ._cells import PALETTE
@@ -34,10 +35,18 @@ FLAGS = {
     "facets": "--facet",
 }
 
-ADMIN = (
-    "Replacing a loaded dataset is an admin task: load this file as a new dataset with another "
-    "--name and --create, or ask a Bloom admin to replace it"
-)
+def taken(found: dict) -> str:
+    """What to do about a loaded dataset that already has this name: load under a new one."""
+    name = (found.get("name") or "").strip()
+    return (f"{visible(name)!r} is already loaded as dataset {found['id']}, and a loaded "
+            f"dataset is not replaced. To load this file, give it a new name, e.g. "
+            f"--name {visible(next_name(name))!r} --create")
+
+
+def next_name(name: str) -> str:
+    """The name with a version: MYB41 → MYB41_v2, MYB41_v2 → MYB41_v3."""
+    match = re.fullmatch(r"(.*)_v(\d+)", name)
+    return f"{match[1]}_v{int(match[2]) + 1}" if match else f"{name}_v2"
 
 
 def species_text(species_id: int, species: str | None) -> str:
@@ -77,14 +86,14 @@ def check_resume(found: dict, source_checksum: str, options: dict) -> str:
     if not stored:
         raise LoadError(
             f"dataset {dataset_id} records no source file, so this load cannot tell whether "
-            f"it is the same one. {ADMIN}"
+            f"it is the same one. {taken(found)}"
         )
     if found.get("ingested_at"):
         if stored == source_checksum:
             return "already loaded"
         raise LoadError(
             f"dataset {dataset_id} was loaded from a file with checksum {stored}; this "
-            f"file's is {source_checksum}. {ADMIN}"
+            f"file's is {source_checksum}. {taken(found)}"
         )
     if stored != source_checksum:
         raise LoadError(
@@ -123,7 +132,7 @@ def check_nothing_to_add(found: dict, options: dict) -> None:
     if stored and stored != options["annotation"]:
         raise LoadError(
             f"dataset {dataset_id} was loaded with --annotation {visible(stored)}, not "
-            f"{visible(options['annotation'])}. {ADMIN}"
+            f"{visible(options['annotation'])}. {taken(found)}"
         )
 
 
@@ -165,7 +174,7 @@ def check_labelled_dataset(
                         "before adding labels")
     if not found.get("source_checksum"):
         raise LoadError(f"dataset {dataset_id} records no source file, so labels from this file "
-                        f"cannot be paired to its cells. {ADMIN}")
+                        f"cannot be paired to its cells. {taken(found)}")
     if found.get("source_checksum") != source_checksum:
         raise LoadError(
             f"dataset {dataset_id} was loaded from a file with checksum "

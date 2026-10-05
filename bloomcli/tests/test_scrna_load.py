@@ -199,7 +199,7 @@ def test_a_dataset_finished_from_another_file_is_refused(tmp_path):
     client = FakeClient()
     load(client, tmp_path, checksum="sha-1")
     before = len(client.log)
-    with pytest.raises(LoadError, match="admin"):
+    with pytest.raises(LoadError, match="give it a new name"):
         load(client, tmp_path, checksum="sha-2", create=False)
     assert writes(client, before) == []
 
@@ -208,7 +208,7 @@ def test_a_dataset_finished_from_another_file_is_refused(tmp_path):
 def test_a_dataset_with_no_checksum_is_refused(tmp_path, ingested_at):
     client = FakeClient()
     dataset(client, source_checksum=None, ingested_at=ingested_at, metadata=None)
-    with pytest.raises(LoadError, match="admin"):
+    with pytest.raises(LoadError, match="give it a new name"):
         load(client, tmp_path, create=False)
     assert writes(client) == []
 
@@ -435,7 +435,7 @@ def test_a_finished_dataset_from_this_file_plans_nothing_to_load(tmp_path):
 def test_a_finished_dataset_from_another_file_is_refused_at_planning(tmp_path):
     client = FakeClient()
     dataset(client, ingested_at="2026-01-01T00:00:00Z")
-    with pytest.raises(LoadError, match="admin"):
+    with pytest.raises(LoadError, match="give it a new name"):
         plan(client, tmp_path, checksum="sha-2", create=False)
 
 
@@ -527,3 +527,34 @@ def test_a_resume_with_repeated_cells_is_refused_at_planning(tmp_path):
     dataset(client)
     with pytest.raises(LoadError, match="repeated"):
         plan(client, tmp_path, create=False)
+
+
+# --------------------------------------------------------------------------- #
+# A loaded dataset's name is taken
+# --------------------------------------------------------------------------- #
+
+
+def test_a_name_differing_only_in_case_is_the_same_dataset(tmp_path):
+    client = FakeClient()
+    dataset(client, ingested_at="2026-01-01T00:00:00Z")
+    assert plan(client, tmp_path, name="myb41 ", create=True) == _load.Plan("already loaded", 7)
+    with pytest.raises(LoadError, match="'MYB41' is already loaded as dataset 7"):
+        plan(client, tmp_path, name="myb41", checksum="sha-2", create=True)
+
+
+def test_another_file_under_a_loaded_name_is_offered_a_versioned_name(tmp_path):
+    client = FakeClient()
+    dataset(client, ingested_at="2026-01-01T00:00:00Z")
+    with pytest.raises(LoadError, match=r"--name 'MYB41_v2' --create"):
+        plan(client, tmp_path, checksum="sha-2", create=True)
+    assert writes(client) == []
+
+
+@pytest.mark.parametrize("name,suggested", [
+    ("MYB41", "MYB41_v2"), ("MYB41_v2", "MYB41_v3"), ("MYB41_v10", "MYB41_v11"),
+    ("run_v", "run_v_v2"),
+])
+def test_the_suggested_name_counts_up_a_version(name, suggested):
+    from bloomctl.scrna._checks import next_name
+
+    assert next_name(name) == suggested

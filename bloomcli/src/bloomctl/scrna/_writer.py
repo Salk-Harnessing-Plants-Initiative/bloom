@@ -216,11 +216,16 @@ def dataset_name_ok(name: str) -> bool:
 
 
 def pick_dataset(rows: list[dict], name: str) -> dict | None:
-    """The live dataset whose trimmed name matches, if exactly one does."""
+    """The live dataset with this name, if exactly one has it.
+
+    Names match ignoring case and surrounding spaces, so "MYB41" and "myb41 " are one name:
+    a loaded dataset's name cannot be taken again by a near copy.
+    """
     wanted = name.strip()
     live = [
         r for r in rows
-        if r.get("deleted_at") is None and (r.get("name") or "").strip() == wanted
+        if r.get("deleted_at") is None
+        and (r.get("name") or "").strip().casefold() == wanted.casefold()
     ]
     if len(live) > 1:
         ids = ", ".join(str(r["id"]) for r in live)

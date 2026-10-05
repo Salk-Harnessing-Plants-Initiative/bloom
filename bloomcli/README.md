@@ -566,7 +566,8 @@ Then it gzips the file, which also fingerprints it, and checks what needs that: 
 size is within 500 MB, and a file without `uns['normalization']` is one a dataset already
 records the normalization for. Last, it looks the dataset up by `--name` within `--species`
 (a common name, matched ignoring case and surrounding spaces) and decides what the load
-will do:
+will do. Dataset names match ignoring case and surrounding spaces too, so `myb41` is the
+same name as `MYB41`:
 
 - **no such dataset**: registered, but only with `--create`, so a mistyped name is refused
   rather than loaded as a second copy
@@ -575,8 +576,9 @@ will do:
 - **finished from this file**: nothing to load — "already loaded". Given a label option or an
   `--annotation` the dataset was not loaded with, it is refused instead, pointing to
   `--add-labels`, rather than reporting success and writing nothing
-- **finished from another file**, or a dataset that records no file: refused; replacing a
-  loaded dataset is an admin task
+- **finished from another file**, or a dataset that records no file: refused. A loaded
+  dataset is not replaced; the refusal suggests a new name to load the file under, such as
+  `MYB41_v2`
 
 Only once every check has passed does it show what the file holds and what the load will
 do, and ask. For the MYB41 file on staging, already loaded as dataset 14:
