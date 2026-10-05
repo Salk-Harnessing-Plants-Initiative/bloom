@@ -129,17 +129,10 @@ def _read(np, adata, path: Path, annotation: str, sample_column: str, umap_key: 
     samples = _text_column(adata, sample_column)
     sources = _text_column(adata, source_column) if source_column else None
     genotypes = _text_column(adata, genotype_column) if genotype_column else None
-    too_long = sorted({g for g in genotypes or () if len(g) > MAX_GENOTYPE_NAME})
-    if too_long:
-        raise LoadError(
-            f"genotype names longer than {MAX_GENOTYPE_NAME} characters: {listed(too_long[:3])}"
-        )
-    long_samples = sorted({s for s in samples if len(s) > MAX_SAMPLE_NAME})
-    if long_samples:
-        raise LoadError(
-            f"sample names longer than {MAX_SAMPLE_NAME} characters in obs[{visible(sample_column)!r}]: "
-            f"{listed(long_samples[:3])}"
-        )
+    if genotypes is not None:
+        _refuse_long_names(genotypes, MAX_GENOTYPE_NAME, "genotype", genotype_column,
+                           "--genotype-column")
+    _refuse_long_names(samples, MAX_SAMPLE_NAME, "sample", sample_column, "--sample-column")
     levels = sorted(set(labels))
     if len(levels) > len(PALETTE):
         raise LoadError(
@@ -188,6 +181,21 @@ def _coordinates(np, array, umap_key: str):
     return coords
 
 
+def _refuse_long_names(values: list[str], limit: int, noun: str, column: str, flag: str) -> None:
+    """Names the database cannot hold, refused with one shortened example and what to do."""
+    long = sorted({v for v in values if len(v) > limit}, key=len, reverse=True)
+    if not long:
+        return
+    example = long[0]
+    shown = visible(example[:40]) + ("…" if len(example) > 40 else "")
+    raise LoadError(
+        f"{len(long)} {noun} name{'s' if len(long) > 1 else ''} in obs[{visible(column)!r}] "
+        f"{'are' if len(long) > 1 else 'is'} longer than {limit} characters, the most Bloom "
+        f"stores; the longest is {len(example)}: {shown!r}. Shorten them in the file, or name "
+        f"another column with {flag}"
+    )
+
+
 def read_facets(adata, columns: tuple[str, ...]) -> list[dict[str, str]]:
     """Each cell's labels to filter the map by, as {column: value}."""
     if len(columns) > MAX_FACETS:
@@ -195,7 +203,10 @@ def read_facets(adata, columns: tuple[str, ...]) -> list[dict[str, str]]:
     per_column = {}
     for column in columns:
         if not column.strip():
-            raise LoadError("a --facet column name is blank")
+            raise LoadError(
+                "--facet was given a blank column name; give the name of an obs column, e.g. "
+                "--facet treatment"
+            )
         if column not in adata.obs:
             raise LoadError(
                 f"no obs[{visible(column)!r}] to use as a label. Found: "
