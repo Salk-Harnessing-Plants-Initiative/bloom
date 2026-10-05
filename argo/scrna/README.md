@@ -62,8 +62,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
@@ -128,14 +128,23 @@ Each step writes its `_SUCCESS` last and does nothing if it's already there, so 
 The image holds nothing licensed, but it's pushed private like the Cell Ranger one:
 
 ```bash
-docker buildx build --platform linux/amd64 \
-  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0 argo/scrna/analysis
-docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+docker buildx build --platform linux/amd64 --build-context scrna=argo/scrna \
+  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1 argo/scrna/analysis
+docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
 # tests (need scanpy), from the repo root:
 docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
-  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0 \
+  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1 \
   -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
 ```
+
+## Step logs
+
+Every step of the Cell Ranger template runs through `run-with-log` (`run_with_log.py`, in both images). It passes the step's output through to the pod's log as before, and keeps a copy in Bloom's `run-logs` bucket at `scrna/<workflow name>/<step>.log`, uploaded every 30 seconds while it grows and once more when the step ends, whether it succeeded or failed. The run page reads it from there, so a step's log outlives its pod.
+
+- It signs in with the `bloom-credentials` volume, mounted at `/etc/bloom/credentials.txt`: the environment's pipeline Secret, which the workflows service adds to every RNA-seq workflow. Without it (dev, or a hand-submitted run) the step runs and uploads nothing.
+- An upload never fails a step; the step's exit code is the command's own.
+- Logs over 45 MB keep their end. The bucket takes plain text up to 50 MB.
+- The folder grows with every run. Prune old runs' folders by hand, as an admin, from Studio.
 
 ## Scratch storage
 

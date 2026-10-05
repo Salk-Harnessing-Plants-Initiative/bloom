@@ -21,6 +21,10 @@ spec:
         value: '[]'
       - name: reference
         value: ""
+  # The steps mount it for run-with-log; empty here, so a hand-submitted run uploads no logs.
+  volumes:
+    - name: bloom-credentials
+      emptyDir: {}
   templates:
     - name: main
       dag:

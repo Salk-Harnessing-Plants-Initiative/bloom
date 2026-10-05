@@ -52,9 +52,11 @@ COPY cellranger/fastq-sample-prefix.sh /usr/local/bin/fastq-sample-prefix
 COPY cellranger/fetch-sra.sh /usr/local/bin/fetch-sra
 COPY cellranger/stage-fastqs.sh /usr/local/bin/stage-fastqs
 COPY cellranger/stage_fastqs_lib.py /usr/local/bin/stage-fastqs-lib
+# Every step runs through it, to keep its log in Bloom's run-logs bucket.
+COPY run_with_log.py /usr/local/bin/run-with-log
 COPY fastq_qc/run-qc.sh /usr/local/bin/run-qc
 COPY fastq_qc/fastq_qc.py /usr/local/bin/fastq-qc
 COPY fastq_qc/qc_report.py /usr/local/bin/qc-report
-RUN chmod +x /usr/local/bin/run-count /usr/local/bin/fastq-sample-prefix /usr/local/bin/fetch-sra /usr/local/bin/stage-fastqs /usr/local/bin/stage-fastqs-lib /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
+RUN chmod +x /usr/local/bin/run-count /usr/local/bin/fastq-sample-prefix /usr/local/bin/fetch-sra /usr/local/bin/stage-fastqs /usr/local/bin/stage-fastqs-lib /usr/local/bin/run-with-log /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
 
 WORKDIR /work
