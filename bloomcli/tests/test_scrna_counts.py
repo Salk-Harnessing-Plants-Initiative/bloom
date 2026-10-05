@@ -212,3 +212,14 @@ def test_an_expired_login_named_in_storages_message_signs_in_again(tmp_path):
     w = Writer(expired, lambda: renewed.append(1) or fresh, Marker(tmp_path / "m.json"))
     _counts._upload(w, "counts/MYB41_7_/G.json", b"{}")
     assert renewed == [1]
+
+
+@pytest.mark.parametrize("name", ["a/../../x", "..", "a/b", "."])
+def test_a_dataset_name_that_cannot_be_a_path_stops_before_any_object(tmp_path, name):
+    with pytest.raises(LoadError, match="cannot be part of a storage path; an admin has to"):
+        _counts.object_path(name, 7, "G")
+
+
+@pytest.mark.parametrize("name,folder", [("a\\b", "ab"), ("a%2Fb", "a2Fb")])
+def test_characters_the_cli_drops_leave_a_plain_folder(name, folder):
+    assert _counts.object_path(name, 7, "G") == f"counts/{folder}_7_/G.json"

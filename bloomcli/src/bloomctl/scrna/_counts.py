@@ -15,13 +15,16 @@ from typing import Callable
 
 from . import _genes
 from ._text import listed, visible
-from ._writer import LoadError, UnreadableReply, Writer, insert, read_all
+from ._writer import DOTS_ONLY, LoadError, UnreadableReply, Writer, insert, read_all
 
 BUCKET = "scrna"
 
 # The shape the bloom-js CLI writes: the id keeps datasets that share a name apart, the name
 # keeps a bucket listing readable. Readers follow the path each scrna_counts row records.
 COUNTS_PATH = "counts/{dataset}_{dataset_id}_/{gene}.json"
+
+# What each part of an object path may hold.
+SAFE_PART = re.compile(r"[A-Za-z0-9._-]+")
 
 # Genes registered per request.
 GENE_BATCH = 5000
@@ -39,8 +42,12 @@ def clean_dataset_name(name: str) -> str:
 
 
 def object_path(dataset_name: str, dataset_id: int, gene: str) -> str:
-    return COUNTS_PATH.format(dataset=clean_dataset_name(dataset_name), dataset_id=dataset_id,
-                              gene=gene)
+    """The gene's object, refused unless every part of the path is a plain name."""
+    folder = clean_dataset_name(dataset_name)
+    if not SAFE_PART.fullmatch(folder) or DOTS_ONLY.fullmatch(folder):
+        raise LoadError(f"dataset {dataset_id}'s name {visible(dataset_name)!r} cannot be part of "
+                        "a storage path; an admin has to rename it")
+    return COUNTS_PATH.format(dataset=folder, dataset_id=dataset_id, gene=gene)
 
 
 def missing(writer: Writer, dataset_id: int, names: list[str]) -> int:

@@ -5,12 +5,11 @@ Each raises LoadError naming what is wrong; none writes.
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 
 from ._cells import PALETTE
 from ._text import listed, visible
-from ._writer import LoadError, Writer, dataset_name_ok, read_all
+from ._writer import LoadError, Writer, dataset_name_ok, next_name, read_all
 
 # Options that label the cells, recorded with the dataset when labels are added.
 LABEL_KEYS = ("source_column", "genotype_column", "control", "constructs", "facets")
@@ -39,12 +38,6 @@ def taken(found: dict) -> str:
     return (f"{visible(name)!r} is already loaded as dataset {found['id']}, and a loaded "
             f"dataset is not replaced. To load this file, give it a new name, e.g. "
             f"--name {visible(next_name(name))!r} --create")
-
-
-def next_name(name: str) -> str:
-    """The name with a version: MYB41 → MYB41_v2, MYB41_v2 → MYB41_v3."""
-    match = re.fullmatch(r"(.*)_v(\d+)", name)
-    return f"{match[1]}_v{int(match[2]) + 1}" if match else f"{name}_v2"
 
 
 def species_text(species_id: int, species: str | None) -> str:

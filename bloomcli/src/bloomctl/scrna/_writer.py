@@ -235,8 +235,8 @@ def dataset_name_ok(name: str) -> bool:
 def pick_dataset(rows: list[dict], name: str) -> dict | None:
     """The live dataset with this name, if exactly one has it.
 
-    Names match ignoring case and surrounding spaces, so "MYB41" and "myb41 " are one name:
-    a loaded dataset's name cannot be taken again by a near copy.
+    Names are compared ignoring case, so a near copy cannot be registered; a name that
+    differs from the dataset's only in capitals is refused as a likely mistake.
     """
     wanted = name.strip()
     live = [
@@ -250,7 +250,21 @@ def pick_dataset(rows: list[dict], name: str) -> dict | None:
             f"{len(live)} datasets are named {wanted!r} (ids {ids}); cannot tell which to "
             "write to"
         )
+    if live and (live[0].get("name") or "").strip() != wanted:
+        stored = live[0]["name"].strip()
+        raise LoadError(
+            f"a dataset named {stored!r} already exists (id {live[0]['id']}), and {wanted!r} "
+            f"differs from it only in capital letters. To continue or add to that dataset, use "
+            f"--name {stored!r} exactly; to load this file as a new dataset, give it a new "
+            f"name, e.g. --name {next_name(wanted)!r} --create"
+        )
     return live[0] if live else None
+
+
+def next_name(name: str) -> str:
+    """The name with a version: MYB41 → MYB41_v2, MYB41_v2 → MYB41_v3."""
+    match = re.fullmatch(r"(.*)_v(\d+)", name)
+    return f"{match[1]}_v{int(match[2]) + 1}" if match else f"{name}_v2"
 
 
 def find_dataset(writer: Writer, species_id: int, name: str) -> dict | None:

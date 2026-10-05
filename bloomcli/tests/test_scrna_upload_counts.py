@@ -226,3 +226,18 @@ def test_a_file_that_cannot_be_read_during_the_counts_gives_a_plain_message(
     assert result.exit_code != 0
     assert "loading it stopped: d.h5ad could not be read: Unable to read data" in result.output
     assert not isinstance(result.exception, OSError)
+
+
+def test_a_resume_typed_in_other_capitals_is_refused_before_sending(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "d.h5ad")
+    env["client"].fail(lambda op, table, payload: op == "upload", httpx.ConnectError("refused"))
+    assert _run("upload", "--yes", str(path)).exit_code != 0
+    requests = len(storage.requests)
+    result = _run("upload", "--yes", "--name", "myb41", "--species", "Arabidopsis",
+                  "--annotation", "cell_type", str(path))
+    assert result.exit_code != 0
+    assert "differs from it only in capital letters" in result.output
+    assert "Nothing was sent." in result.output
+    assert len(storage.requests) == requests
+    folders = {p.split("/")[1] for p in _objects(env)}
+    assert len(folders) <= 1, "a dataset's objects stay in one folder"
