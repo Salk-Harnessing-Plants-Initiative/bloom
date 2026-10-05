@@ -251,7 +251,7 @@ def _dataset_text(plan: _load.Plan, opts: dict[str, Any], species: str) -> str:
         "already loaded": f"{name} (id {plan.dataset_id}) — already loaded from this file",
         "add labels": f"{name} (id {plan.dataset_id}) — labels will be added to its cells",
         "add counts": f"{name} (id {plan.dataset_id}) — loaded without its counts; they "
-                      "will be added",
+                      "will be added, and it shows as incomplete until they are",
     }[plan.outcome]
 
 

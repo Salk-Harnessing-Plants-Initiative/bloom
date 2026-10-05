@@ -71,6 +71,11 @@ def check_columns(cells: dict) -> None:
             raise LoadError(f"{key} holds {len(cells[key])} values for {n} cells")
 
 
+def counts_pending(found: dict) -> bool:
+    """A finished dataset taken back to unfinished while the counts it was missing are added."""
+    return bool((found.get("metadata") or {}).get("counts_pending"))
+
+
 def check_resume(found: dict, source_checksum: str, options: dict) -> str:
     """'resumed' or 'already loaded', or refuse."""
     dataset_id, stored = found["id"], found.get("source_checksum")
@@ -79,7 +84,7 @@ def check_resume(found: dict, source_checksum: str, options: dict) -> str:
             f"dataset {dataset_id} records no source file, so this load cannot tell whether "
             f"it is the same one. {taken(found)}"
         )
-    if found.get("ingested_at"):
+    if found.get("ingested_at") or counts_pending(found):
         if stored == source_checksum:
             return "already loaded"
         raise LoadError(

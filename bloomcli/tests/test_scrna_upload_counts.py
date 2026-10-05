@@ -3,7 +3,8 @@
 import json
 
 import httpx
-from scrna_fixtures import write_h5ad
+import pytest
+from scrna_fixtures import X, write_h5ad
 from test_scrna_cli import _run
 from test_scrna_upload_load import _writes
 
@@ -52,7 +53,7 @@ def test_a_dataset_finished_without_its_counts_gets_them(tmp_path, env, storage)
     path = write_h5ad(tmp_path / "d.h5ad")
     assert _run("upload", "--yes", str(path)).exit_code == 0
     client = env["client"]
-    finished_at = _dataset(env)["ingested_at"]
+    finished_at = _dataset(env)["ingested_at"] = "2026-01-01T00:00:00+00:00"
     client.tables["scrna_counts"].clear()
     client.tables["scrna_genes"].clear()
     client.objects.clear()
@@ -61,7 +62,9 @@ def test_a_dataset_finished_without_its_counts_gets_them(tmp_path, env, storage)
     assert "loaded without its counts; they will be added" in result.stderr
     assert "Added the counts dataset" in result.stdout
     assert len(client.tables["scrna_counts"]) == 4 and len(_objects(env)) == 4
-    assert _dataset(env)["ingested_at"] == finished_at, "a finished dataset stays as it was"
+    dataset = _dataset(env)
+    assert dataset["ingested_at"] and dataset["ingested_at"] != finished_at
+    assert "counts_pending" not in dataset["metadata"]
 
 
 def test_a_dataset_with_its_counts_is_already_loaded(tmp_path, env, storage):
@@ -241,3 +244,145 @@ def test_a_resume_typed_in_other_capitals_is_refused_before_sending(tmp_path, en
     assert len(storage.requests) == requests
     folders = {p.split("/")[1] for p in _objects(env)}
     assert len(folders) <= 1, "a dataset's objects stay in one folder"
+
+
+# --- resuming the counts, and adding them to a finished dataset ------------------------------
+
+
+def _expected_objects(dataset_id) -> dict[str, dict]:
+    return {f"counts/MYB41_{dataset_id}_/gene{j}.json":
+            {str(i): X[i, j] for i in range(X.shape[0]) if X[i, j]} for j in range(X.shape[1])}
+
+
+def _counts_sent(client, since=0) -> list[str]:
+    return [e[2].rsplit("/", 1)[1] for e in client.log[since:]
+            if e[0] == "upload" and e[2].startswith("counts/")]
+
+
+def _fail_on_gene(client, gene):
+    client.fail(lambda op, table, payload: op == "upload" and payload.endswith(f"/{gene}.json"),
+                httpx.ConnectError("refused"))
+
+
+def test_a_load_stopped_after_some_genes_are_recorded_resumes_with_the_rest(
+    tmp_path, env, storage, monkeypatch
+):
+    from bloomctl.scrna import _counts
+
+    monkeypatch.setattr(_counts, "RECORD_BATCH", 1)
+    path = write_h5ad(tmp_path / "d.h5ad")
+    client = env["client"]
+    _fail_on_gene(client, "gene2")
+    assert _run("upload", "--yes", str(path)).exit_code != 0
+    assert len(client.tables["scrna_counts"]) == 2, "gene0 and gene1 recorded before the stop"
+    before = len(client.log)
+    resumed = _run("upload", "--yes", str(path))
+    assert resumed.exit_code == 0, resumed.output
+    assert "continues a load that stopped" in resumed.stderr
+    assert _counts_sent(client, before) == ["gene2.json", "gene3.json"]
+    gene_ids = [r["gene_id"] for r in client.tables["scrna_counts"]]
+    assert len(gene_ids) == len(set(gene_ids)) == 4
+    assert len(client.tables["scrna_genes"]) == 4
+    assert _objects(env) == _expected_objects(_dataset(env)["id"])
+    assert _dataset(env)["ingested_at"]
+
+
+def _finished_without_counts(tmp_path, env):
+    path = write_h5ad(tmp_path / "d.h5ad")
+    assert _run("upload", "--yes", str(path)).exit_code == 0
+    client = env["client"]
+    client.tables["scrna_counts"].clear()
+    client.tables["scrna_genes"].clear()
+    client.objects.clear()
+    return path, client
+
+
+def test_adding_counts_shows_the_dataset_unfinished_until_they_are_all_there(
+    tmp_path, env, storage, monkeypatch
+):
+    from bloomctl.scrna import _counts
+
+    monkeypatch.setattr(_counts, "RECORD_BATCH", 1)
+    path, client = _finished_without_counts(tmp_path, env)
+    _fail_on_gene(client, "gene2")
+    stopped = _run("upload", "--yes", str(path))
+    assert stopped.exit_code != 0
+    dataset = _dataset(env)
+    assert dataset["ingested_at"] is None and dataset["source_checksum"], "shown as incomplete"
+    assert dataset["metadata"]["counts_pending"] is True
+    before = len(client.log)
+    again = _run("upload", "--yes", str(path))
+    assert again.exit_code == 0, again.output
+    assert "loaded without its counts; they will be added" in again.stderr
+    assert "Added the counts dataset" in again.stdout
+    assert _counts_sent(client, before) == ["gene2.json", "gene3.json"]
+    dataset = _dataset(env)
+    assert dataset["ingested_at"] and "counts_pending" not in dataset["metadata"]
+    assert dataset["metadata"]["normalization"], "the rest of the metadata is kept"
+    assert _objects(env) == _expected_objects(dataset["id"])
+
+
+def test_adding_counts_stopped_before_the_finish_is_finished_by_the_next_run(
+    tmp_path, env, storage
+):
+    path, client = _finished_without_counts(tmp_path, env)
+    client.fail(lambda op, table, payload: op == "update" and table == "scrna_datasets"
+                and payload.get("ingested_at"), httpx.ConnectError("refused"))
+    assert _run("upload", "--yes", str(path)).exit_code != 0
+    assert len(client.tables["scrna_counts"]) == 4 and _dataset(env)["ingested_at"] is None
+    before = len(client.log)
+    again = _run("upload", "--yes", str(path))
+    assert again.exit_code == 0, again.output
+    assert "Added the counts dataset" in again.stdout
+    assert _counts_sent(client, before) == []
+    assert _dataset(env)["ingested_at"] and "counts_pending" not in _dataset(env)["metadata"]
+
+
+def _swap_barcodes(client):
+    first, second = sorted(client.tables["scrna_cells"], key=lambda r: r["cell_number"])[:2]
+    first["barcode"], second["barcode"] = second["barcode"], first["barcode"]
+
+
+def _rename_barcode(client):
+    min(client.tables["scrna_cells"], key=lambda r: r["cell_number"])["barcode"] = "other"
+
+
+def _drop_last_cell(client):
+    last = max(client.tables["scrna_cells"], key=lambda r: r["cell_number"])
+    client.tables["scrna_cells"].remove(last)
+
+
+def _reorder_types(client):
+    for row in client.tables["scrna_clusters"]:
+        row["ordinal"] = -row["ordinal"] - 1
+
+
+@pytest.mark.parametrize("change,refusal", [
+    (_swap_barcodes, "does not hold these cells in this order: they first differ at cell 0"),
+    (_rename_barcode, "they first differ at cell 0"),
+    (_drop_last_cell, "they first differ at cell 2 (2 stored, 3 in the file)"),
+    (_reorder_types, "stored cell types differ from the file's"),
+], ids=["swapped", "renamed", "missing", "cell-types"])
+def test_counts_are_added_only_to_the_cells_of_this_file(
+    tmp_path, env, storage, change, refusal
+):
+    """Each object is keyed by the cell's position, so the stored cells must be this file's."""
+    path, client = _finished_without_counts(tmp_path, env)
+    change(client)
+    requests = len(storage.requests)
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code != 0
+    assert refusal in result.output and "Nothing was sent." in result.output
+    assert len(storage.requests) == requests and _objects(env) == {}
+    assert client.tables["scrna_counts"] == [] and _dataset(env)["ingested_at"]
+
+
+def test_the_cells_are_compared_in_cell_number_order(tmp_path, env, storage):
+    """Row ids need not follow the cells' positions; compared by cell_number, they match."""
+    path, client = _finished_without_counts(tmp_path, env)
+    cells = client.tables["scrna_cells"]
+    for row, new_id in zip(cells, sorted((r["id"] for r in cells), reverse=True)):
+        row["id"] = new_id
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code == 0, result.output
+    assert _objects(env) == _expected_objects(_dataset(env)["id"])

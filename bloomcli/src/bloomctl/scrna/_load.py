@@ -28,6 +28,7 @@ from ._checks import (
     check_registration,
     check_resume,
     check_same_cells,
+    counts_pending,
 )
 from ._text import visible
 from ._writer import LoadError, Writer, find_dataset, insert, read_all, update
@@ -69,7 +70,7 @@ def plan(
     outcome = check_resume(found, source_checksum, options)
     if outcome == "already loaded":
         check_nothing_to_add(found, options)
-        if counts is not None and _counts.missing(writer, found["id"], counts[1]):
+        if counts is not None and _counts_to_add(writer, found, counts):
             check_same_cells(writer, found["id"], cells)
             return Plan("add counts", found["id"])
         return Plan(outcome, found["id"])
@@ -97,11 +98,12 @@ def load(
     The registration records how many cells the file holds, so a reader can say how far an
     unfinished load got. The dataset is finished last, so finished means cells and counts are
     all there; ``normalization`` is recorded then. A dataset finished before counts were part
-    of the load gets the ones it is missing. ``track(description, unit)`` shows each step's
-    progress. ``unchanged`` raises if the file changed since it was checked; it runs before
-    the counts, after each block of them and before finishing, so nothing from a changed file
-    is written or finished. Returns the dataset id, the number of cells stored, and
-    "registered", "resumed", "counts added" or "already loaded".
+    of the load gets the ones it is missing, unfinished until they are all there.
+    ``track(description, unit)`` shows each step's progress. ``unchanged`` raises if the file
+    changed since it was checked; it runs before the counts, after each block of them and
+    before finishing, so nothing from a changed file is written or finished. Returns the
+    dataset id, the number of cells stored, and "registered", "resumed", "counts added" or
+    "already loaded".
     """
     name = _checked_name(name)
     check_columns(cells)
@@ -117,9 +119,9 @@ def load(
         outcome = check_resume(found, source_checksum, options)
         if outcome == "already loaded":
             check_nothing_to_add(found, options)
-            if counts is not None and _counts.missing(writer, found["id"], counts[1]):
+            if counts is not None and _counts_to_add(writer, found, counts):
                 check_same_cells(writer, found["id"], cells)
-                _write_counts(writer, found["id"], name, counts, track, unchanged)
+                _add_counts(writer, found, name, counts, track, unchanged)
                 outcome = "counts added"
             return found["id"], found.get("n_cells") or 0, outcome
         check_nothing_later(writer, found["id"])
@@ -246,6 +248,29 @@ def _write_counts(writer: Writer, dataset_id: int, name: str, counts, track, unc
     with _step(track, "Writing genes") as report:
         _counts.write(writer, dataset_id, name, path, names, on_progress=report,
                       unchanged=unchanged)
+
+
+def _counts_to_add(writer: Writer, found: dict, counts) -> bool:
+    return counts_pending(found) or bool(_counts.missing(writer, found["id"], counts[1]))
+
+
+def _add_counts(writer: Writer, found: dict, name: str, counts, track, unchanged) -> None:
+    """Unfinish a finished dataset, write the counts it is missing, then finish it again."""
+    dataset_id = found["id"]
+    if unchanged:
+        unchanged()
+    if not counts_pending(found):
+        update(writer, "mark the dataset unfinished", "scrna_datasets", {
+            "metadata": {**_metadata(writer, dataset_id), "counts_pending": True},
+            "ingested_at": None,
+        }, eq={"id": dataset_id})
+    _write_counts(writer, dataset_id, name, counts, track, unchanged)
+    if unchanged:
+        unchanged()
+    metadata = {k: v for k, v in _metadata(writer, dataset_id).items() if k != "counts_pending"}
+    update(writer, "finish the dataset", "scrna_datasets", {
+        "metadata": metadata, "ingested_at": datetime.now(UTC).isoformat(),
+    }, eq={"id": dataset_id})
 
 
 @contextmanager

@@ -670,7 +670,8 @@ an object path and unique.
 The dataset is marked finished last, after every cell is read back and every gene's counts
 are recorded, with the file's `uns['normalization']`; until then a dataset that records a
 file but no finish time is an unfinished load. A dataset finished before the counts were
-part of the upload gets the ones it is missing when the same command is run again.
+part of the upload gets the ones it is missing when the same command is run again; it is
+marked unfinished while they are written, and finished again once they are all there.
 `--expect-nonzero GENE=COUNT` (repeatable) refuses the file unless that gene is non-zero in
 exactly that many cells — a way to pin a gene whose count is known independently, such as a
 transgene's. The colour-bar units follow the normalization (`log1p normalised counts`,
