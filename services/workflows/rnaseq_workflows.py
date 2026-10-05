@@ -46,6 +46,9 @@ CELLRANGER_TEMPLATE = (
 STEP_SERVICE_ACCOUNT = "bloom-workflow"
 # The busch-lab Run:ai credential bloom-ghcr-pull.
 IMAGE_PULL_SECRET = "dockerregistry-bloom-ghcr-pull"
+# The volume steps mount to sign in to Bloom (bloomctl's credentials.txt): this
+# environment's pipeline Secret, the cylinder pipeline's too.
+BLOOM_CREDENTIALS_VOLUME = "bloom-credentials"
 
 _DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
@@ -96,6 +99,18 @@ def _task(
     if depends:
         task["depends"] = depends
     return task
+
+
+def _bloom_credentials_volume() -> dict:
+    """This environment's pipeline Secret, or an empty folder where none is configured
+    (dev), so a step that mounts it always starts. Optional, so a missing Secret doesn't
+    stop the pod either; a step without credentials just doesn't upload."""
+    if k8s_client.PIPELINE_SECRET_NAME:
+        return {
+            "name": BLOOM_CREDENTIALS_VOLUME,
+            "secret": {"secretName": k8s_client.PIPELINE_SECRET_NAME, "optional": True},
+        }
+    return {"name": BLOOM_CREDENTIALS_VOLUME, "emptyDir": {}}
 
 
 def build_cellranger_body(run: dict) -> dict:
@@ -159,6 +174,7 @@ def build_cellranger_body(run: dict) -> dict:
             "imagePullSecrets": [{"name": IMAGE_PULL_SECRET}],
             "ttlStrategy": {"secondsAfterCompletion": TTL_SECONDS},
             "arguments": {"parameters": parameters},
+            "volumes": [_bloom_credentials_volume()],
             "templates": [{"name": "main", "dag": {"tasks": tasks}}],
         },
     }

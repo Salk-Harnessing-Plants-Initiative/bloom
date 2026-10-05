@@ -282,3 +282,52 @@ def test_a_run_without_a_folder_passes_no_folder():
     body = wfs.build_cellranger_body(RUN)
     names = {p["name"] for p in body["spec"]["arguments"]["parameters"]}
     assert not names & {"fastq-url", "fastq-files"}
+
+
+# --------------------------------------------------------------------------- #
+# The Bloom credential the steps sign in with
+# --------------------------------------------------------------------------- #
+
+
+def test_a_run_gets_this_environments_pipeline_secret(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client,
+        "PIPELINE_SECRET_NAME",
+        "genericsecret-bloom-staging-pipeline-credentials",
+    )
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [
+        {
+            "name": "bloom-credentials",
+            "secret": {
+                "secretName": "genericsecret-bloom-staging-pipeline-credentials",
+                "optional": True,
+            },
+        }
+    ]
+
+
+def test_without_a_pipeline_secret_the_volume_is_an_empty_folder(monkeypatch):
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [{"name": "bloom-credentials", "emptyDir": {}}]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sample": "tinygex", "reference": "tiny_ref"},
+        {"sample": "col0", "reference": "tiny_ref", "sra_runs": ["SRR1"]},
+        {
+            "sample": "col0",
+            "reference": "tiny_ref",
+            "fastq_url": "s3://lab/run42/",
+            "fastq_files": [],
+        },
+    ],
+    ids=["registered", "sra", "folder"],
+)
+def test_every_kind_of_run_gets_the_volume(monkeypatch, params):
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", "a-secret")
+    spec = wfs.build_cellranger_body({**RUN, "params": params})["spec"]
+    assert [v["name"] for v in spec["volumes"]] == ["bloom-credentials"]
