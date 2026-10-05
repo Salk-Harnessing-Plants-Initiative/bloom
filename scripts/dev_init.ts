@@ -1,8 +1,8 @@
 import 'dotenv/config';
-import { processCSV } from "@salk-hpi/bloom-fs";
+import { processCSV } from "@salk-harnessing-plants-initiative/bloom-fs";
 import {
     SupabaseStore
-} from "@salk-hpi/bloom-js";
+} from "@salk-harnessing-plants-initiative/bloom-js";
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { mkdirp, outputFile } from 'fs-extra';
