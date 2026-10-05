@@ -8,6 +8,16 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Changed
+
+- `scrna hdf5 upload` shows what the file holds (cells, genes, UMAP, layers, normalization,
+  `obs` columns) and asks before sending it. **Scripts must now pass `--yes`**: without a
+  terminal the command refuses rather than waiting for an answer. `--dry-run` shows the
+  summary and sends nothing, with no login.
+- `scrna hdf5 upload` accepts a file with no UMAP. A file whose only coordinate-shaped `obsm`
+  array has another name is still refused; `--umap-key NAME` names it as the UMAP and
+  `--no-umap` uploads the file without one.
+
 ### Fixed
 
 - `cyl batch-ingest-result`: when an envelope fails retriably, the command no longer closes out

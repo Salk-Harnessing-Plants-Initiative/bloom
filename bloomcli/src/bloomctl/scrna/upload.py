@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ import click
 import httpx
 
 from ..credentials import DEFAULT_PROFILE
-from . import _format, _object, _session, _transfer
+from . import _format, _object, _session, _summary, _transfer
 
 MB = 1024 * 1024
 
@@ -24,24 +25,43 @@ MB = 1024 * 1024
     show_default=True,
     help="Credentials profile to use.",
 )
-def upload(file: Path, profile: str) -> None:
+@click.option("--umap-key", help="The obsm array holding the UMAP, when it is not X_umap.")
+@click.option("--no-umap", is_flag=True, help="The file has no UMAP; upload it without one.")
+@click.option("-y", "--yes", is_flag=True, help="Upload without asking for confirmation.")
+@click.option(
+    "--dry-run", is_flag=True, help="Check the file and show what it holds; send nothing."
+)
+def upload(
+    file: Path, profile: str, umap_key: str | None, no_umap: bool, yes: bool, dry_run: bool
+) -> None:
     """Upload a dataset's AnnData file (.h5ad), gzipped and named by its SHA-256.
 
-    Needs a writer or admin login. The file's structure is checked before anything is sent.
-    An interrupted upload resumes when the same command is run again.
+    Needs a writer or admin login. The file's structure is checked and what it holds is shown,
+    and the upload goes ahead once confirmed. An interrupted upload resumes when the same
+    command is run again.
     """
+    if umap_key and no_umap:
+        raise click.UsageError("--umap-key and --no-umap cannot both be given.")
+    if dry_run:
+        _show(_checked(file, umap_key, no_umap), file.name)
+        click.echo("Dry run — nothing was sent.")
+        return
+    if not yes and not _interactive():
+        raise click.ClickException(
+            "there is no terminal to ask for confirmation in. Pass --yes to upload without "
+            "asking, or --dry-run to see what the file holds. Nothing was sent."
+        )
     conn = _session.connect(profile)
     if conn.role not in _session.WRITE_ROLES:
         raise click.ClickException(
             f"this login signs in as {conn.role or 'no role'}; uploading needs bloom_writer or "
             "bloom_admin. Nothing was read."
         )
-    try:
-        summary = _format.check_structure(file)
-    except _format.MissingDependency as exc:
-        raise click.ClickException(str(exc)) from exc
-    except _format.FormatError as exc:
-        raise click.ClickException(f"{file.name} does not meet Bloom's h5ad format: {exc}") from exc
+    summary = _checked(file, umap_key, no_umap)
+    _show(summary, file.name)
+    if not yes and not click.confirm("Upload this file?", default=False):
+        click.echo("Nothing was sent.")
+        raise click.exceptions.Exit(1)
 
     stage = _object.staging_dir()
     staged = _object.stage(file, stage)
@@ -65,6 +85,24 @@ def upload(file: Path, profile: str) -> None:
 
     with _transfer.open_client() as http:
         _send_through_expiry(http, conn, profile, stage, staged, file.name)
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _checked(file: Path, umap_key: str | None, no_umap: bool) -> _format.Summary:
+    try:
+        return _format.check_structure(file, umap_key=umap_key, no_umap=no_umap)
+    except _format.MissingDependency as exc:
+        raise click.ClickException(str(exc)) from exc
+    except _format.FormatError as exc:
+        raise click.ClickException(f"{file.name} does not meet Bloom's h5ad format: {exc}") from exc
+
+
+def _show(summary: _format.Summary, name: str) -> None:
+    for line in _summary.describe(summary, name):
+        click.echo(line)
 
 
 def _send_through_expiry(http, conn, profile: str, stage, staged, name: str) -> None:

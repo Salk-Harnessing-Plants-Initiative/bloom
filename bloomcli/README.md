@@ -525,7 +525,7 @@ file's structure:
   be the index); the same for genes, in whatever form the species' annotation
   writes them
 - `X` holds only finite values
-- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates small
+- the UMAP, when there is one (`obsm['X_umap']`, or the array `--umap-key` names), has two columns and a row per cell, holds only finite coordinates small
   enough for the explorer to store, and does not pile more than a thousandth of the cells on
   a single point — an array allocated and never filled passes every other check and draws the
   whole dataset as one dot. These two limits are the loader's own, so a UMAP this accepts is a
@@ -541,6 +541,30 @@ file's structure:
   `other`), `target_sum` for `library_size`, a `description` for `other`, and
   optionally `counts_layer`. A file a dataset was loaded from before this existed
   is accepted without the block when that dataset records it.
+
+A file with no UMAP is accepted, and its cells will have no position on the map. A file
+with no `obsm['X_umap']` but another array with two columns and a row per cell is refused,
+so a UMAP saved under another name is not uploaded as "no UMAP": pass `--umap-key NAME` if
+that array is the UMAP, or `--no-umap` if the file has none.
+
+It then shows what the file holds — cells, genes, where the UMAP is, the layers, the
+normalization and the `obs` columns — and asks before sending:
+
+```text
+myb41_transgene_load.h5ad
+  cells          8,683
+  genes          27,656
+  UMAP           obsm['X_umap']
+  layers         counts
+  normalization  log1p, library_size, target_sum 10000
+  obs columns    barcode, sample, …, nn_label_plain, nn_source
+
+Upload this file? [y/N]
+```
+
+`--yes` uploads without asking; without a terminal to ask in, the command refuses unless
+`--yes` is given. `--dry-run` checks the file and shows the same summary with no login,
+sending nothing.
 
 It then gzips the file and sends it through storage's resumable upload. Because an object is
 named by the fingerprint of its contents, storage already holding that name means it holds

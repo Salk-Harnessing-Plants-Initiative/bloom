@@ -196,7 +196,8 @@ bloomctl scrna hdf5 list                           # what storage holds
 bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored?
 ```
 
-- `upload` checks the file's structure before sending anything. If it's interrupted, run the same
+- `upload` checks the file's structure, shows what it holds, and asks before sending anything
+  (`--yes` skips the question; `--dry-run` only shows it). If it's interrupted, run the same
   command again and it resumes.
 - `download` writes the file only once its fingerprint matches.
 
