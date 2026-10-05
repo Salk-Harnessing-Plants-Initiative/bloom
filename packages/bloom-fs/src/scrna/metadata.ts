@@ -1,7 +1,7 @@
 import path from 'path'
 import * as fs from 'fs'
-import { FileUploader } from '@salk-hpi/bloom-js/dist/types/file-uploader'
-import { DataStore } from '@salk-hpi/bloom-js/dist/types/data-store'
+import { FileUploader } from '@salk-harnessing-plants-initiative/bloom-js/dist/types/file-uploader'
+import { DataStore } from '@salk-harnessing-plants-initiative/bloom-js/dist/types/data-store'
 import { error } from 'console'
 import { Json } from '../types/database.types'
 
