@@ -4,9 +4,8 @@ import * as glob from 'glob'
 import * as fs from 'fs'
 import * as yaml from 'js-yaml'
 import Ajv from 'ajv'
-import { findConfigFile } from 'typescript'
-import { FileUploader } from '@salk-hpi/bloom-js/dist/types/file-uploader'
-import { DataStore } from '@salk-hpi/bloom-js/dist/types/data-store'
+import { FileUploader } from '@salk-harnessing-plants-initiative/bloom-js/dist/types/file-uploader'
+import { DataStore } from '@salk-harnessing-plants-initiative/bloom-js/dist/types/data-store'
 import * as uuid from 'uuid'
 import * as xlsx from 'xlsx'
 
@@ -202,7 +201,7 @@ export async function getImageMetadata(
 
 function findMetadataFile(dir: string) {
   // search for metadata file in dir or ancestor directories
-  let metadataFile = findConfigFile(dir, fs.existsSync, 'cyl-metadata.yml')
+  const metadataFile = findUp(dir, 'cyl-metadata.yml')
   if (!metadataFile) {
     console.error(
       'Error: Could not find cyl-metadata.yml file in directory or ancestor directories'
@@ -212,6 +211,17 @@ function findMetadataFile(dir: string) {
   const metadataRoot = path.dirname(metadataFile)
   const rootToTargetDir = path.relative(metadataRoot, dir)
   return { metadataFile, metadataRoot, rootToTargetDir }
+}
+
+function findUp(dir: string, fileName: string): string | undefined {
+  let current = path.resolve(dir)
+  while (true) {
+    const candidate = path.join(current, fileName)
+    if (fs.existsSync(candidate)) return candidate
+    const parent = path.dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
 }
 
 type ReplacementMap = { [key: string]: string }
