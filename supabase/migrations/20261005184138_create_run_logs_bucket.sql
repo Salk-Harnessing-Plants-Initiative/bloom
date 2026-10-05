@@ -1,5 +1,5 @@
 -- Storage bucket for RNA-seq step logs: each step uploads what it prints to
--- run-logs/rnaseq/<argo workflow name>/<step>.log while it runs, and the run page reads it.
+-- run-logs/scrna/<argo workflow name>/<step>.log while it runs, and the run page reads it.
 --
 -- The pipeline (bloom_workflows) writes; every signed-in user and the agent read; only
 -- bloom_admin deletes, so old runs' folders are pruned by hand. bloom_workflows also needs

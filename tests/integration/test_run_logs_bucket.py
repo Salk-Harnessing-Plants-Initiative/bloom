@@ -1,6 +1,6 @@
 """
 Integration tests for the `run-logs` Supabase Storage bucket, where each RNA-seq step uploads
-its log (`rnaseq/<argo workflow name>/<step>.log`) for the run page to read.
+its log (`scrna/<argo workflow name>/<step>.log`) for the run page to read.
 
 The pipeline (`bloom_workflows`) uploads and overwrites; `bloom_user` and `bloom_agent` read;
 only `bloom_admin` deletes. `bloom_writer` gets no policy of its own here, but keeps the
@@ -21,7 +21,7 @@ psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 BUCKET = "run-logs"
-LOG = "rnaseq/scrna-cellranger-staging-5-8b939a02/count.log"
+LOG = "scrna/scrna-cellranger-staging-5-8b939a02/count.log"
 
 
 def _seed_bucket(cur):
@@ -79,7 +79,7 @@ def test_users_and_the_agent_cannot_upload(pg_conn, role):
         _seed_bucket(cur)
         cur.execute(f"SET LOCAL ROLE {role}")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            _insert_object(cur, f"rnaseq/{role}/should-not-upload.log")
+            _insert_object(cur, f"scrna/{role}/should-not-upload.log")
     pg_conn.rollback()
 
 
