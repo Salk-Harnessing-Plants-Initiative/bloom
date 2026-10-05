@@ -1,103 +1,92 @@
 """
-Integration tests for `load()` in `scripts/ingest_scrnaseq.py`.
+Integration tests for the cells loader, `scripts/ingest_scrnaseq.py`, writing through
+the site's API as a writer account, the way it runs against staging.
 
-These drive the real write path against a real database. `load()` is one
-transaction over four statements whose order is forced by the schema — cells
-reference the cluster catalogue with ON DELETE RESTRICT, and two other tables
-cascade off it — so the parts pinned here are the ones whose failure mode is a
-dataset that loads without complaint and is wrong.
+No `.h5ad` is needed: the tests hand `load()` the dict `read_cells` returns. Writes
+through the API commit, so each test works under a species of its own, removed with
+everything under it afterwards.
 
-The most important is the order the cells come back in. A later change serves
-per-gene expression as a bare array indexed positionally against
-`scrna_cell_arrays`, which orders by `cell_number`. If that order or its base
-ever changes, every gene's expression paints onto the wrong cell, and nothing
-downstream can tell.
-
-No `.h5ad` is needed: the tests hand `load()` the dict that `read_cells` returns.
-
-LOCAL ONLY: every test rolls back, leaving the database untouched.
+The most important check is the order the cells come back in. Per-gene expression is
+served as a bare array indexed against `scrna_cell_arrays`, which orders by
+`cell_number`; if that order or its base changes, every gene paints onto the wrong
+cell and nothing downstream can tell.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-import uuid
-from pathlib import Path
-
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPT = REPO_ROOT / "scripts" / "ingest_scrnaseq.py"
+from tests.integration.scrna_loaders import load_script, losing, signer
+
+OPTIONS = {"annotation": "ann", "sample_column": "sample", "umap_key": "X_umap",
+           "source_column": None, "expression_units": "log1p normalised counts"}
 
 
 @pytest.fixture(scope="module")
 def ingest():
-    spec = importlib.util.spec_from_file_location("ingest_scrnaseq", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["ingest_scrnaseq"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script("ingest_scrnaseq")
 
 
-def cells(labels: list[str], samples: list[str] | None = None) -> dict:
-    """A cell table shaped like `read_cells` returns, with distinguishable
-    coordinates so a swap or a reversal is visible."""
+def cells(labels, samples=None) -> dict:
+    """Shaped like read_cells returns, with coordinates that show a swap."""
     n = len(labels)
-    return {
-        "n_cells": n,
-        "n_genes": 100,
-        "x": [float(i) for i in range(n)],
-        "y": [float(i) + 0.5 for i in range(n)],
-        "labels": labels,
-        "samples": samples or ["Col-0"] * n,
-        "levels": sorted(set(labels)),
-        "barcodes": [f"BC{i}" for i in range(n)],
-        "sources": {},
-    }
+    return {"n_cells": n, "n_genes": 100,
+            "x": [float(i) for i in range(n)], "y": [float(i) + 0.5 for i in range(n)],
+            "labels": list(labels), "samples": samples or ["Col-0"] * n,
+            "levels": sorted(set(labels)), "barcodes": [f"BC{i}" for i in range(n)],
+            "sources": {}}
 
 
-def species(cur) -> int:
-    tag = uuid.uuid4().hex[:10]
-    cur.execute(
-        "INSERT INTO species (common_name, genus, species) VALUES (%s, %s, %s) "
-        "RETURNING id",
-        (f"ingest-{tag}", f"Ingestus-{tag}", f"testis-{tag}"),
+@pytest.fixture
+def sign_in(ingest, scrna_accounts, scrna_api, tmp_path):
+    return signer(ingest.ingest_api, scrna_accounts, scrna_api, tmp_path / "marker.json")
+
+
+@pytest.fixture
+def db(pg_conninfo):
+    """A committed connection, to see what the API wrote and to set rows up."""
+    import psycopg
+
+    with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+        yield conn
+
+
+def load(ingest, writer, species_id, labels=("A", "B"), *, name="cells",
+         checksum="sha-1", options=None, create=True, table=None):
+    return ingest.load(writer, name, species_id, table or cells(labels), checksum,
+                       options or OPTIONS, create=create)
+
+
+def dataset_id_of(db, species_id, name="cells") -> int:
+    (found,) = db.execute("SELECT id FROM scrna_datasets WHERE species_id = %s "
+                          "AND btrim(name) = %s AND deleted_at IS NULL",
+                          (species_id, name)).fetchall()
+    return found[0]
+
+
+def unfinished(ingest, sign_in, db, species_id, labels=("A", "B"), *,
+               table="scrna_cells", name="cells") -> int:
+    """Start a load and lose the reply to one write, leaving the dataset unfinished."""
+    with pytest.raises(ingest.IngestError, match="outcome is unknown"):
+        load(ingest, sign_in(create_client=losing(table)), species_id, labels, name=name)
+    dataset_id = dataset_id_of(db, species_id, name)
+    assert db.execute("SELECT ingested_at FROM scrna_datasets WHERE id = %s",
+                      (dataset_id,)).fetchone()[0] is None
+    return dataset_id
+
+
+def snapshot(db, dataset_id):
+    """What a load left, without ids, names or timestamps."""
+    return (
+        db.execute("SELECT n_cells, n_genes, expression_units, metadata, "
+                   "source_checksum, ingested_at IS NOT NULL FROM scrna_datasets "
+                   "WHERE id = %s", (dataset_id,)).fetchone(),
+        db.execute("SELECT cluster_id, ordinal, name, color, source FROM scrna_clusters "
+                   "WHERE dataset_id = %s ORDER BY ordinal", (dataset_id,)).fetchall(),
+        db.execute("SELECT cell_number, barcode, x, y, cluster_id, replicate "
+                   "FROM scrna_cells WHERE dataset_id = %s ORDER BY cell_number, id",
+                   (dataset_id,)).fetchall(),
     )
-    return cur.fetchone()[0]
-
-
-def run(ingest, conn, name, species_id, table, checksum="sha", annotation="ann",
-        create=False):
-    """Replace an existing dataset's cells, returning its id and stored count.
-
-    Registering is `first(...)` below. The two are separate because `--create`
-    now refuses a name that already exists, the same way it refuses a name that
-    does not when the flag is absent.
-    """
-    dataset_id, stored, _created = ingest.load(
-        conn, name, species_id, table, checksum,
-        "log1p normalised counts", annotation, create=create,
-    )
-    return dataset_id, stored
-
-
-def register(ingest, conn, name, species_id, table, checksum="sha", annotation="ann"):
-    """Register a dataset and load its cells -- a first load, with --create."""
-    return run(ingest, conn, name, species_id, table, checksum, annotation,
-               create=True)
-
-
-def refuses(ingest, conn, match, *args, **kwargs):
-    """Assert the load is refused, without losing the rest of the test.
-
-    A refusal aborts the transaction it happened in, so the call goes inside a
-    savepoint -- otherwise checking what survived would find the test's own
-    setup rolled back too.
-    """
-    with pytest.raises(ingest.IngestError, match=match):
-        with conn.transaction():
-            run(ingest, conn, *args, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -105,542 +94,263 @@ def refuses(ingest, conn, match, *args, **kwargs):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_first_load_writes_the_three_tables(ingest, pg_conn):
-    labels = ["Xylem", "Cortex", "Phellem", "Cortex"]
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, stored = register(ingest, pg_conn, "first", sid, cells(labels))
-        assert stored == 4
-
-        cur.execute(
-            "SELECT cluster_id, ordinal, name, color FROM scrna_clusters "
-            "WHERE dataset_id = %s ORDER BY ordinal",
-            (dataset_id,),
-        )
-        catalogue = cur.fetchall()
-        # Ordinals contiguous from zero, in sorted label order, name mirroring
-        # id, and a distinct colour each -- a repeat draws two cell types
-        # identically in both the plot and the legend.
-        assert catalogue == [
-            ("Cortex", 0, "Cortex", ingest.PALETTE[0]),
-            ("Phellem", 1, "Phellem", ingest.PALETTE[1]),
-            ("Xylem", 2, "Xylem", ingest.PALETTE[2]),
-        ]
-
-        cur.execute(
-            "SELECT cell_number, barcode, x, y, cluster_id, replicate "
-            "FROM scrna_cells WHERE dataset_id = %s ORDER BY cell_number",
-            (dataset_id,),
-        )
-        assert cur.fetchall() == [
-            (0, "BC0", 0.0, 0.5, "Xylem", "Col-0"),
-            (1, "BC1", 1.0, 1.5, "Cortex", "Col-0"),
-            (2, "BC2", 2.0, 2.5, "Phellem", "Col-0"),
-            (3, "BC3", 3.0, 3.5, "Cortex", "Col-0"),
-        ]
-    pg_conn.rollback()
-
-
-def test_the_view_returns_the_cells_in_file_order(ingest, pg_conn):
-    """The one that protects per-gene expression. A later change indexes an
-    expression array positionally against this order, so a reversed or 1-based
-    `cell_number` would paint every gene onto the wrong cell."""
-    labels = ["Xylem", "Cortex", "Phellem", "Cortex"]
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "order", sid, cells(labels))
-        cur.execute("SELECT x, y, cluster_ordinal FROM scrna_cell_arrays(%s)",
-                    (dataset_id,))
-        # Xylem=2, Cortex=0, Phellem=1 by sorted order.
-        assert cur.fetchall() == [
-            (0.0, 0.5, 2), (1.0, 1.5, 0), (2.0, 2.5, 1), (3.0, 3.5, 0)
-        ]
-    pg_conn.rollback()
-
-
-def test_no_cell_is_left_without_a_cluster(ingest, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "orphans", sid,
-                            cells(["A", "B", "A", "C"]))
-        cur.execute(
-            "SELECT count(*) FROM scrna_cell_arrays(%s) WHERE cluster_ordinal = 255",
-            (dataset_id,),
-        )
-        assert cur.fetchone()[0] == 0
-    pg_conn.rollback()
-
-
-# --------------------------------------------------------------------------- #
-# Loading again
-# --------------------------------------------------------------------------- #
-
-
-def test_a_second_load_replaces_rather_than_accumulates(ingest, pg_conn):
-    """Cells reference the catalogue with ON DELETE RESTRICT, so the deletes have
-    to happen in the right order or a re-run cannot start."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        first, _ = register(ingest, pg_conn, "again", sid, cells(["A", "B"]), "sha-1")
-
-        table = cells(["A", "B"])
-        table["x"] = [90.0, 91.0]
-        second, stored = run(ingest, pg_conn, "again", sid, table, "sha-2")
-
-        assert second == first and stored == 2
-        cur.execute("SELECT count(*) FROM scrna_cells WHERE dataset_id = %s", (first,))
-        assert cur.fetchone()[0] == 2
-        cur.execute("SELECT x FROM scrna_cells WHERE dataset_id = %s "
-                    "ORDER BY cell_number", (first,))
-        assert [r[0] for r in cur.fetchall()] == [90.0, 91.0]
-        cur.execute("SELECT source_checksum FROM scrna_datasets WHERE id = %s", (first,))
-        assert cur.fetchone()[0] == "sha-2"
-    pg_conn.rollback()
-
-
-def test_a_changed_cell_type_set_leaves_nothing_behind(ingest, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "changed", sid, cells(["A", "B", "C"]))
-        run(ingest, pg_conn, "changed", sid, cells(["A", "D", "E"]))
-
-        cur.execute(
-            "SELECT cluster_id FROM scrna_clusters WHERE dataset_id = %s "
-            "ORDER BY ordinal", (dataset_id,),
-        )
-        assert [r[0] for r in cur.fetchall()] == ["A", "D", "E"]
-        cur.execute(
-            "SELECT count(*) FROM scrna_cell_arrays(%s) WHERE cluster_ordinal = 255",
-            (dataset_id,),
-        )
-        assert cur.fetchone()[0] == 0
-    pg_conn.rollback()
-
-
-# --------------------------------------------------------------------------- #
-# Refusals, and that they leave nothing behind
-# --------------------------------------------------------------------------- #
-
-
-def test_a_count_mismatch_refuses_and_keeps_the_previous_load(ingest, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "count", sid, cells(["A", "B"]), "sha-1")
-
-        broken = cells(["A", "B"])
-        broken["n_cells"] = 3          # what the file claimed
-        refuses(ingest, pg_conn, "wrote 2 cells", "count", sid, broken, "sha-2")
-
-        cur.execute("SELECT source_checksum, n_cells FROM scrna_datasets "
-                    "WHERE id = %s", (dataset_id,))
-        assert cur.fetchone() == ("sha-1", 2)
-    pg_conn.rollback()
-
-
-def test_ragged_columns_refuse(ingest, pg_conn):
-    """zip() would silently truncate; the count check is what notices."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        table = cells(["A", "B", "C"])
-        table["labels"] = ["A", "B"]
-        table["levels"] = ["A", "B"]
-        refuses(ingest, pg_conn, "wrote 2 cells", "ragged", sid, table,
-                create=True)
-    pg_conn.rollback()
-
-
-def test_per_cluster_statistics_block_a_reload(ingest, pg_conn):
-    """They cascade off the catalogue, and nothing here rebuilds them."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "stats", sid, cells(["A", "B"]))
-        cur.execute(
-            "INSERT INTO scrna_cluster_stats (dataset_id, cluster_id, cell_count, pct) "
-            "VALUES (%s, 'A', 1, 50.0)", (dataset_id,),
-        )
-        refuses(ingest, pg_conn, "per-cluster statistic", "stats", sid,
-                cells(["A", "B"]))
-        cur.execute("SELECT count(*) FROM scrna_cluster_stats WHERE dataset_id = %s",
-                    (dataset_id,))
-        assert cur.fetchone()[0] == 1, "the statistics must survive the refusal"
-    pg_conn.rollback()
-
-
-def test_the_neighbour_graph_blocks_a_reload(ingest, pg_conn):
-    """It cascades off the catalogue too. Guarding only the statistics let a
-    reload delete this silently."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "neigh", sid, cells(["A", "B"]))
-        cur.execute(
-            "INSERT INTO scrna_cluster_neighbors "
-            "(dataset_id, cluster_id, neighbor_cluster_id, rank, similarity) "
-            "VALUES (%s, 'A', 'B', 1, 0.5)", (dataset_id,),
-        )
-        refuses(ingest, pg_conn, "neighbour row", "neigh", sid, cells(["A", "B"]))
-        cur.execute(
-            "SELECT count(*) FROM scrna_cluster_neighbors WHERE dataset_id = %s",
-            (dataset_id,),
-        )
-        assert cur.fetchone()[0] == 1, "the neighbour graph must survive"
-    pg_conn.rollback()
-
-
-def test_existing_gene_expression_blocks_a_reload(ingest, pg_conn):
-    """Expression is served as an array indexed by cell_number, so renumbering
-    the cells would paint every gene onto different ones."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "counts", sid, cells(["A", "B"]))
-        cur.execute(
-            "INSERT INTO scrna_genes (dataset_id, gene_number, gene_name) "
-            "VALUES (%s, 0, 'AT1G01010') RETURNING id", (dataset_id,),
-        )
-        cur.execute(
-            "INSERT INTO scrna_counts (dataset_id, gene_id, counts_object_path) "
-            "VALUES (%s, %s, 'scrna/counts/x/AT1G01010.json')",
-            (dataset_id, cur.fetchone()[0]),
-        )
-        refuses(ingest, pg_conn, "per-gene expression", "counts", sid,
-                cells(["A", "B"]))
-        cur.execute("SELECT count(*) FROM scrna_counts WHERE dataset_id = %s",
-                    (dataset_id,))
-        assert cur.fetchone()[0] == 1
-    pg_conn.rollback()
-
-
-def test_two_datasets_with_one_name_refuse(ingest, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        cur.execute("INSERT INTO scrna_datasets (name, species_id) VALUES ('dup', %s)",
-                    (sid,))
-        cur.execute("INSERT INTO scrna_datasets (name, species_id) VALUES ('dup', %s)",
-                    (sid,))
-        refuses(ingest, pg_conn, "cannot tell which", "dup", sid, cells(["A", "B"]))
-    pg_conn.rollback()
-
-
-def test_a_soft_deleted_dataset_is_not_resurrected(ingest, pg_conn):
-    """Its rows would be invisible to every reader, so a load into it would
-    appear to succeed and show nothing."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        cur.execute(
-            "INSERT INTO scrna_datasets (name, species_id, deleted_at) "
-            "VALUES ('gone', %s, now()) RETURNING id", (sid,),
-        )
-        buried = cur.fetchone()[0]
-        fresh, _ = register(ingest, pg_conn, "gone", sid, cells(["A", "B"]))
-        assert fresh != buried
-        cur.execute("SELECT n_cells FROM scrna_datasets WHERE id = %s", (buried,))
-        assert cur.fetchone()[0] is None
-    pg_conn.rollback()
-
-
-def test_the_cell_type_column_is_recorded_without_touching_the_genome_annotation(
-    ingest, pg_conn
+def test_a_first_load_registers_the_dataset_and_finishes_it(
+    ingest, sign_in, db, scrna_species, scrna_accounts
 ):
-    """Which obs column the cell types came from has to be recorded, because the
-    differential expression results name cell types and must match. It goes in
-    `metadata`: `annotation` means the genome annotation, is written by the
-    uploader and is on screen beside `assembly`."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        cur.execute(
-            "INSERT INTO scrna_datasets (name, species_id, annotation, metadata) "
-            "VALUES ('ann', %s, 'Araport11', '{\"strain\": \"Col-0\"}'::jsonb) "
-            "RETURNING id", (sid,),
-        )
-        existing = cur.fetchone()[0]
-        dataset_id, _ = run(ingest, pg_conn, "ann", sid, cells(["A", "B"]),
-                            annotation="nn_label_plain")
-        assert dataset_id == existing
-        cur.execute(
-            "SELECT annotation, metadata FROM scrna_datasets WHERE id = %s",
-            (dataset_id,),
-        )
-        annotation, metadata = cur.fetchone()
-        assert annotation == "Araport11", "the genome annotation must survive"
-        assert metadata["cell_type_column"] == "nn_label_plain"
-        assert metadata["strain"] == "Col-0", "other metadata must survive"
-    pg_conn.rollback()
+    labels = ("Xylem", "Cortex", "Phellem", "Cortex")
+    dataset_id, stored, outcome = load(ingest, sign_in(), scrna_species, labels)
+    assert (stored, outcome) == (4, "registered")
+
+    row = db.execute("SELECT source_checksum, metadata, n_cells, n_genes, "
+                     "expression_units, ingested_at, created_by FROM scrna_datasets "
+                     "WHERE id = %s", (dataset_id,)).fetchone()
+    checksum, metadata, n_cells, n_genes, units, ingested_at, created_by = row
+    assert checksum == "sha-1"
+    assert metadata == {"load_options": OPTIONS, "cell_type_column": "ann"}
+    assert (n_cells, n_genes, units) == (4, 100, "log1p normalised counts")
+    assert ingested_at is not None
+    assert str(created_by) == scrna_accounts["writer"]["id"]
+
+    # Ordinals from zero in sorted label order, and a distinct colour each.
+    assert db.execute("SELECT cluster_id, ordinal, name, color FROM scrna_clusters "
+                      "WHERE dataset_id = %s ORDER BY ordinal", (dataset_id,)).fetchall() == [
+        ("Cortex", 0, "Cortex", ingest.PALETTE[0]),
+        ("Phellem", 1, "Phellem", ingest.PALETTE[1]),
+        ("Xylem", 2, "Xylem", ingest.PALETTE[2]),
+    ]
+    assert snapshot(db, dataset_id)[2] == [
+        (0, "BC0", 0.0, 0.5, "Xylem", "Col-0"),
+        (1, "BC1", 1.0, 1.5, "Cortex", "Col-0"),
+        (2, "BC2", 2.0, 2.5, "Phellem", "Col-0"),
+        (3, "BC3", 3.0, 3.5, "Cortex", "Col-0"),
+    ]
 
 
-def test_differential_expression_blocks_a_reload(ingest, pg_conn):
-    """DE rows name cell types and have no foreign key to the catalogue, so a
-    reload on a different annotation leaves them naming types that do not
-    exist -- nothing errors and nothing cascades."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "de", sid, cells(["A", "B"]))
-        cur.execute(
-            "INSERT INTO scrna_de (dataset_id, cluster_id, file_path) "
-            "VALUES (%s, 'A', 'de/A.tsv')", (dataset_id,),
-        )
-        refuses(ingest, pg_conn, "differential expression", "de", sid,
-                cells(["A", "B"]))
-        cur.execute("SELECT count(*) FROM scrna_de WHERE dataset_id = %s",
-                    (dataset_id,))
-        assert cur.fetchone()[0] == 1
-    pg_conn.rollback()
+def test_the_view_returns_the_cells_in_file_order(ingest, sign_in, db, scrna_species):
+    dataset_id, _, _ = load(ingest, sign_in(), scrna_species,
+                            ("Xylem", "Cortex", "Phellem", "Cortex"))
+    # Xylem=2, Cortex=0, Phellem=1 by sorted order.
+    assert db.execute("SELECT x, y, cluster_ordinal FROM scrna_cell_arrays(%s)",
+                      (dataset_id,)).fetchall() == [
+        (0.0, 0.5, 2), (1.0, 1.5, 0), (2.0, 2.5, 1), (3.0, 3.5, 0)]
 
 
-def test_a_reload_keeps_hand_edited_names_colours_and_sources(ingest, pg_conn):
-    """A cluster's name, colour and label source are edited after a load -- the
-    backfill seeds them and says to fix the biology in Studio -- and none can be
-    rebuilt from the file. A surviving cell type keeps all three; a new one
-    takes a colour no surviving type is using, and no source.
-
-    `source` has no flag and no value in the file, so the reload is the only
-    thing that can destroy it, and a load that drops it looks exactly like one
-    that never had it."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "curated", sid, cells(["A", "C"]))
-        cur.execute(
-            "UPDATE scrna_clusters SET name = 'Phellem (periderm layer 2)', "
-            "color = '#112233', source = 'Shahan 2022 root atlas' "
-            "WHERE dataset_id = %s AND cluster_id = 'C'",
-            (dataset_id,),
-        )
-        # 'B' is new and sorts before 'C', so without carry-forward C's colour
-        # would shift to whatever its new ordinal points at.
-        run(ingest, pg_conn, "curated", sid, cells(["A", "B", "C"]))
-
-        cur.execute(
-            "SELECT cluster_id, name, color, source FROM scrna_clusters "
-            "WHERE dataset_id = %s ORDER BY cluster_id", (dataset_id,),
-        )
-        rows = cur.fetchall()
-        assert rows[2] == ("C", "Phellem (periderm layer 2)", "#112233",
-                           "Shahan 2022 root atlas")
-        assert rows[0] == ("A", "A", ingest.PALETTE[0], None), \
-            "unedited types keep theirs"
-        assert rows[1][3] is None, "a new cell type has no source to carry"
-        colours = [c for _, _, c, _ in rows]
-        assert len(set(colours)) == 3, f"a colour was reused: {colours}"
-    pg_conn.rollback()
+def test_no_cell_is_left_without_a_cell_type(ingest, sign_in, db, scrna_species):
+    dataset_id, _, _ = load(ingest, sign_in(), scrna_species, ("A", "B", "A", "C"))
+    assert db.execute("SELECT count(*) FROM scrna_cell_arrays(%s) "
+                      "WHERE cluster_ordinal = 255", (dataset_id,)).fetchone()[0] == 0
 
 
-def test_a_refusal_commits_nothing(ingest, pg_conn):
-    """`load()` must never commit: the caller's context manager is what makes
-    the whole load one transaction. Nothing asserted this, so a stray commit
-    inside `load()` would make a refusal destructive and stay invisible."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "nocommit", sid, cells(["A", "B"]))
-        cur.execute(
-            "INSERT INTO scrna_genes (dataset_id, gene_number, gene_name) "
-            "VALUES (%s, 0, 'AT1G01010') RETURNING id", (dataset_id,),
-        )
-        cur.execute(
-            "INSERT INTO scrna_counts (dataset_id, gene_id, counts_object_path) "
-            "VALUES (%s, %s, 'scrna/counts/x/AT1G01010.json')",
-            (dataset_id, cur.fetchone()[0]),
-        )
-        refuses(ingest, pg_conn, "per-gene expression", "nocommit", sid,
-                cells(["A", "B"]))
-
-    pg_conn.rollback()
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM scrna_datasets WHERE id = %s",
-                    (dataset_id,))
-        assert cur.fetchone()[0] == 0, "the load committed something"
-        cur.execute("SELECT count(*) FROM scrna_cells WHERE dataset_id = %s",
-                    (dataset_id,))
-        assert cur.fetchone()[0] == 0
-
-
-def test_a_curated_colour_in_lower_case_still_reserves_its_slot(ingest, pg_conn):
-    """Hex case is not meaning. A surviving type holding '#e15759' must stop a
-    new type being handed '#E15759'. This repo's own colour backfill writes
-    lower case and 16 of the 23 palette entries differ from it only in case, so
-    comparing raw strings hands out a duplicate -- the exact defect a 24-type
-    load is refused to avoid.
-
-    Two new cell types, so the spare list has to reach the curated colour."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "case", sid, cells(["A", "C"]))
-        cur.execute(
-            "UPDATE scrna_clusters SET color = %s "
-            "WHERE dataset_id = %s AND cluster_id = 'C'",
-            (ingest.PALETTE[2].lower(), dataset_id),
-        )
-        run(ingest, pg_conn, "case", sid, cells(["A", "B", "C", "D"]))
-
-        cur.execute("SELECT cluster_id, color FROM scrna_clusters "
-                    "WHERE dataset_id = %s ORDER BY cluster_id", (dataset_id,))
-        rows = cur.fetchall()
-        assert dict(rows)["C"] == ingest.PALETTE[2].lower(), "curation must survive"
-        colours = [c.lower() for _, c in rows]
-        assert len(set(colours)) == 4, f"two cell types share a colour: {rows}"
-    pg_conn.rollback()
-
-
-def test_a_vanished_cell_type_does_not_hold_on_to_its_colour(ingest, pg_conn):
-    """Only surviving types keep theirs. Counting departed ones would shrink the
-    spare list until a full-width catalogue could not be coloured at all."""
-    n = len(ingest.PALETTE)
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        first = [f"old{i}" for i in range(n)]
-        dataset_id, _ = register(ingest, pg_conn, "swap", sid, cells(first))
-        run(ingest, pg_conn, "swap", sid, cells([f"new{i}" for i in range(n)]))
-        cur.execute("SELECT color FROM scrna_clusters WHERE dataset_id = %s",
-                    (dataset_id,))
-        colours = [c for (c,) in cur.fetchall()]
-        assert len(colours) == n
-        assert len(set(colours)) == n, "a colour was reused"
-    pg_conn.rollback()
-
-
-def test_a_blank_curated_name_or_colour_falls_back(ingest, pg_conn):
-    """Spaces are not a name and not a colour. The file's own labels are refused
-    when blank, so blank values arriving from the database get the same
-    treatment rather than becoming an empty legend entry or an unpaintable
-    swatch."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, _ = register(ingest, pg_conn, "blank", sid, cells(["A", "B"]))
-        cur.execute(
-            "UPDATE scrna_clusters SET name = '   ', color = '  ' "
-            "WHERE dataset_id = %s AND cluster_id = 'A'", (dataset_id,),
-        )
-        run(ingest, pg_conn, "blank", sid, cells(["A", "B"]))
-        cur.execute("SELECT name, color FROM scrna_clusters WHERE dataset_id = %s "
-                    "AND cluster_id = 'A'", (dataset_id,))
-        name, color = cur.fetchone()
-        assert name == "A"
-        assert color in ingest.PALETTE, color
-    pg_conn.rollback()
+def test_an_admin_account_can_load(ingest, sign_in, scrna_species):
+    _, stored, outcome = load(ingest, sign_in("admin"), scrna_species)
+    assert (stored, outcome) == (2, "registered")
 
 
 # --------------------------------------------------------------------------- #
-# Registering a dataset is deliberate, so a typo cannot fork one
+# Resuming
 # --------------------------------------------------------------------------- #
-#
-# Creating on a lookup miss is how a mistyped name forks a dataset: the load
-# succeeds, reports what a replace reports, and the next run with the name
-# spelled right finds two and refuses from then on. Count files are keyed by
-# dataset name, so the copies would share a storage namespace as well.
 
 
-def test_an_unknown_dataset_name_is_refused_without_create(ingest, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        refuses(ingest, pg_conn, "Pass --create", "brand new", sid,
-                cells(["A", "B"]), create=False)
+@pytest.mark.parametrize("create", [True, False])
+def test_a_stopped_load_resumes_to_the_same_rows(
+    ingest, sign_in, db, scrna_species, monkeypatch, create
+):
+    monkeypatch.setattr(ingest, "CELL_BATCH", 2)
+    labels = ("A", "B", "A", "B", "C")
+    whole, _, _ = load(ingest, sign_in(), scrna_species, labels, name="whole")
 
-        cur.execute(
-            "SELECT count(*) FROM scrna_datasets WHERE name = %s AND species_id = %s",
-            ("brand new", sid),
-        )
-        assert cur.fetchone()[0] == 0, "the refusal must not have registered it"
-    pg_conn.rollback()
+    with pytest.raises(ingest.IngestError, match="re-run the same command"):
+        load(ingest, sign_in(create_client=losing("scrna_cells", 2)), scrna_species,
+             labels, name="part")
+    part = dataset_id_of(db, scrna_species, "part")
+    assert db.execute("SELECT count(*) FROM scrna_cells WHERE dataset_id = %s",
+                      (part,)).fetchone()[0] == 4, "the lost batch had committed"
 
-
-def test_create_registers_the_dataset_and_says_so(ingest, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        dataset_id, stored, created = ingest.load(
-            pg_conn, "fresh", sid, cells(["A", "B"]), "sha",
-            "log1p normalised counts", "ann", create=True,
-        )
-        assert created is True
-        assert stored == 2
-    pg_conn.rollback()
+    again, stored, outcome = load(ingest, sign_in(), scrna_species, labels,
+                                  name="part", create=create)
+    assert (again, stored, outcome) == (part, 5, "resumed")
+    assert snapshot(db, part) == snapshot(db, whole)
 
 
-def test_a_reload_reports_that_it_replaced_rather_than_created(ingest, pg_conn):
-    """The two cases print the same sentence otherwise, and which one happened
-    is exactly what an operator needs to see after a mistyped name."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        first, _ = register(ingest, pg_conn, "twice", sid, cells(["A", "B"]))
-        again, _, created = ingest.load(
-            pg_conn, "twice", sid, cells(["A", "B"]), "sha-2",
-            "log1p normalised counts", "ann", create=False,
-        )
-        assert created is False
-        assert again == first, "a reload must stay on the same dataset"
-    pg_conn.rollback()
+def test_the_same_file_after_finishing_is_already_loaded(ingest, sign_in, db,
+                                                         scrna_species):
+    first, _, _ = load(ingest, sign_in(), scrna_species)
+    before = snapshot(db, first)
+    again, stored, outcome = load(ingest, sign_in(), scrna_species, create=False)
+    assert (again, stored, outcome) == (first, 2, "already loaded")
+    assert snapshot(db, first) == before
 
 
-def test_a_reload_needs_no_create_flag(ingest, pg_conn):
-    """--create guards registration only. Requiring it on every run would train
-    an operator to pass it always, which is the same as not having it."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        first, _ = register(ingest, pg_conn, "existing", sid, cells(["A", "B"]))
-        again, _ = run(ingest, pg_conn, "existing", sid, cells(["A", "C"]),
-                       "sha-2", create=False)
-        assert again == first
-    pg_conn.rollback()
+def test_a_padded_name_finds_the_dataset_it_meant(ingest, sign_in, db, scrna_species):
+    first, _, _ = load(ingest, sign_in(), scrna_species, name="padded")
+    again, _, _ = load(ingest, sign_in(), scrna_species, name="  padded  ", create=False)
+    assert again == first
+    assert db.execute("SELECT count(*) FROM scrna_datasets WHERE species_id = %s",
+                      (scrna_species,)).fetchone()[0] == 1
 
 
-def test_a_padded_name_finds_the_dataset_it_meant(ingest, pg_conn):
-    """A trailing space from a paste or a shell is the commonest route into a
-    forked dataset, so the name is trimmed before the lookup."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        first, _ = register(ingest, pg_conn, "padded", sid, cells(["A", "B"]))
-        again, _ = run(ingest, pg_conn, "  padded  ", sid, cells(["A", "B"]),
-                       "sha-2")
-        assert again == first, "whitespace must not register a second copy"
+def test_a_name_stored_with_padding_is_still_found(ingest, sign_in, db, scrna_species):
+    from psycopg.types.json import Jsonb
 
-        cur.execute(
-            "SELECT count(*) FROM scrna_datasets WHERE species_id = %s", (sid,)
-        )
-        assert cur.fetchone()[0] == 1
-    pg_conn.rollback()
+    (existing,) = db.execute(
+        "INSERT INTO scrna_datasets (name, species_id, source_checksum, metadata) "
+        "VALUES ('legacy padded ', %s, 'sha-1', %s) RETURNING id",
+        (scrna_species, Jsonb({"load_options": OPTIONS})),
+    ).fetchone()
+    again, _, outcome = load(ingest, sign_in(), scrna_species, name="legacy padded",
+                             create=False)
+    assert (again, outcome) == (existing, "resumed")
 
 
-def test_a_blank_dataset_name_is_refused(ingest, pg_conn):
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        refuses(ingest, pg_conn, "name is blank", "   ", sid, cells(["A", "B"]))
-    pg_conn.rollback()
+def test_the_cell_type_column_is_recorded_without_touching_other_metadata(
+    ingest, sign_in, db, scrna_species
+):
+    """`annotation` is the genome annotation, written by the uploader; the cell-type
+    column goes in `metadata`, beside whatever else is there."""
+    dataset_id = unfinished(ingest, sign_in, db, scrna_species)
+    db.execute("UPDATE scrna_datasets SET annotation = 'Araport11', "
+               "metadata = metadata || '{\"strain\": \"Col-0\"}' WHERE id = %s",
+               (dataset_id,))
+    load(ingest, sign_in(), scrna_species, create=False)
+    annotation, metadata = db.execute("SELECT annotation, metadata FROM scrna_datasets "
+                                      "WHERE id = %s", (dataset_id,)).fetchone()
+    assert annotation == "Araport11"
+    assert metadata == {"load_options": OPTIONS, "strain": "Col-0",
+                        "cell_type_column": "ann"}
 
 
-def test_create_refuses_a_name_that_already_exists(ingest, pg_conn):
-    """`--create` asserts the dataset is new, the way createdb does. Letting it
-    fall through to a replace means an operator who pastes an existing name
-    while meaning to register deletes that dataset's cells and its curated
-    cluster names instead."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        existing, _ = register(ingest, pg_conn, "taken", sid, cells(["A", "B"]))
-        refuses(ingest, pg_conn, "already named", "taken", sid,
-                cells(["C", "D"]), create=True)
-
-        cur.execute(
-            "SELECT cluster_id FROM scrna_clusters WHERE dataset_id = %s "
-            "ORDER BY ordinal", (existing,),
-        )
-        assert [r[0] for r in cur.fetchall()] == ["A", "B"], (
-            "the refusal must leave the existing catalogue alone"
-        )
-    pg_conn.rollback()
+# --------------------------------------------------------------------------- #
+# Refusals, and that they leave the dataset as it was
+# --------------------------------------------------------------------------- #
 
 
-def test_a_name_stored_with_padding_before_the_trim_is_still_found(ingest, pg_conn):
-    """Rows registered before the name was trimmed here can carry padding. An
-    exact-match lookup would miss them and offer to register a second copy —
-    which is the fork this whole flag exists to prevent."""
-    with pg_conn.cursor() as cur:
-        sid = species(cur)
-        cur.execute(
-            "INSERT INTO scrna_datasets (name, species_id) VALUES (%s, %s) "
-            "RETURNING id", ("legacy padded ", sid),
-        )
-        existing = cur.fetchone()[0]
+def test_a_resume_from_another_file_is_refused(ingest, sign_in, db, scrna_species):
+    dataset_id = unfinished(ingest, sign_in, db, scrna_species)
+    before = snapshot(db, dataset_id)
+    with pytest.raises(ingest.IngestError, match="sha-1.*sha-2"):
+        load(ingest, sign_in(), scrna_species, checksum="sha-2")
+    assert snapshot(db, dataset_id) == before
 
-        again, _ = run(ingest, pg_conn, "legacy padded", sid, cells(["A", "B"]))
-        assert again == existing, "the padded row must be found, not forked"
 
-        cur.execute(
-            "SELECT count(*) FROM scrna_datasets WHERE species_id = %s", (sid,)
-        )
-        assert cur.fetchone()[0] == 1
-    pg_conn.rollback()
+def test_a_resume_with_other_options_is_refused(ingest, sign_in, db, scrna_species):
+    dataset_id = unfinished(ingest, sign_in, db, scrna_species)
+    before = snapshot(db, dataset_id)
+    with pytest.raises(ingest.IngestError, match="umap_key was 'X_umap', now 'X_tsne'"):
+        load(ingest, sign_in(), scrna_species, options={**OPTIONS, "umap_key": "X_tsne"})
+    assert snapshot(db, dataset_id) == before
+
+
+def test_a_stored_catalogue_that_differs_from_the_file_is_refused(
+    ingest, sign_in, db, scrna_species
+):
+    dataset_id = unfinished(ingest, sign_in, db, scrna_species, table="scrna_clusters")
+    with pytest.raises(ingest.IngestError, match="cell types"):
+        load(ingest, sign_in(), scrna_species, ("A", "C"))
+    assert [c for (c,) in db.execute("SELECT cluster_id FROM scrna_clusters WHERE "
+                                     "dataset_id = %s ORDER BY ordinal", (dataset_id,))
+            ] == ["A", "B"]
+
+
+@pytest.mark.parametrize("create", [True, False])
+def test_a_dataset_finished_from_another_file_is_refused(
+    ingest, sign_in, db, scrna_species, create
+):
+    first, _, _ = load(ingest, sign_in(), scrna_species)
+    before = snapshot(db, first)
+    with pytest.raises(ingest.IngestError, match="admin"):
+        load(ingest, sign_in(), scrna_species, ("C", "D"), checksum="sha-2",
+             create=create)
+    assert snapshot(db, first) == before
+
+
+def test_a_dataset_with_no_checksum_is_refused(ingest, sign_in, db, scrna_species):
+    db.execute("INSERT INTO scrna_datasets (name, species_id) VALUES ('cells', %s)",
+               (scrna_species,))
+    with pytest.raises(ingest.IngestError, match="admin"):
+        load(ingest, sign_in(), scrna_species)
+
+
+def add_later_row(db, table: str, dataset_id: int) -> None:
+    if table == "scrna_cluster_stats":
+        db.execute("INSERT INTO scrna_cluster_stats (dataset_id, cluster_id, cell_count, "
+                   "pct) VALUES (%s, 'A', 1, 50.0)", (dataset_id,))
+    elif table == "scrna_cluster_neighbors":
+        db.execute("INSERT INTO scrna_cluster_neighbors (dataset_id, cluster_id, "
+                   "neighbor_cluster_id, rank, similarity) VALUES (%s, 'A', 'B', 1, 0.5)",
+                   (dataset_id,))
+    elif table == "scrna_counts":
+        (gene_id,) = db.execute("INSERT INTO scrna_genes (dataset_id, gene_number, "
+                                "gene_name) VALUES (%s, 0, 'AT1G01010') RETURNING id",
+                                (dataset_id,)).fetchone()
+        db.execute("INSERT INTO scrna_counts (dataset_id, gene_id, counts_object_path) "
+                   "VALUES (%s, %s, 'counts/x/AT1G01010.json')", (dataset_id, gene_id))
+    else:
+        db.execute("INSERT INTO scrna_de (dataset_id, cluster_id, file_path) "
+                   "VALUES (%s, 'A', 'de/A.tsv')", (dataset_id,))
+
+
+@pytest.mark.parametrize("table,named", [
+    ("scrna_cluster_stats", "per-cluster statistics"),
+    ("scrna_cluster_neighbors", "neighbour rows"),
+    ("scrna_counts", "per-gene expression"),
+    ("scrna_de", "differential expression"),
+])
+def test_later_rows_on_an_unfinished_dataset_are_refused(
+    ingest, sign_in, db, scrna_species, table, named
+):
+    dataset_id = unfinished(ingest, sign_in, db, scrna_species)
+    add_later_row(db, table, dataset_id)
+    with pytest.raises(ingest.IngestError, match=named):
+        load(ingest, sign_in(), scrna_species)
+    assert db.execute(f"SELECT count(*) FROM {table} WHERE dataset_id = %s",
+                      (dataset_id,)).fetchone()[0] == 1, "the rows must survive"
+
+
+def test_repeated_cell_numbers_stop_it_before_finishing(ingest, sign_in, db,
+                                                        scrna_species):
+    dataset_id = unfinished(ingest, sign_in, db, scrna_species)
+    db.execute("INSERT INTO scrna_cells (dataset_id, cell_number, barcode, x, y, "
+               "cluster_id, replicate) VALUES (%s, 0, 'BC0', 0, 0.5, 'A', 'Col-0')",
+               (dataset_id,))
+    with pytest.raises(ingest.IngestError, match="repeated"):
+        load(ingest, sign_in(), scrna_species)
+    assert db.execute("SELECT ingested_at FROM scrna_datasets WHERE id = %s",
+                      (dataset_id,)).fetchone()[0] is None
+
+
+def test_an_unknown_name_without_create_is_refused(ingest, sign_in, db, scrna_species):
+    with pytest.raises(ingest.IngestError, match="--create"):
+        load(ingest, sign_in(), scrna_species, name="brand new", create=False)
+    assert db.execute("SELECT count(*) FROM scrna_datasets WHERE species_id = %s",
+                      (scrna_species,)).fetchone()[0] == 0
+
+
+def test_a_name_the_counts_path_cannot_hold_is_refused(ingest, sign_in, db,
+                                                       scrna_species):
+    with pytest.raises(ingest.IngestError, match="storage path"):
+        load(ingest, sign_in(), scrna_species, name="a/b")
+    assert db.execute("SELECT count(*) FROM scrna_datasets WHERE species_id = %s",
+                      (scrna_species,)).fetchone()[0] == 0
+
+
+def test_a_blank_name_is_refused(ingest, sign_in, scrna_species):
+    with pytest.raises(ingest.IngestError, match="blank"):
+        load(ingest, sign_in(), scrna_species, name="   ")
+
+
+def test_two_datasets_with_one_name_are_refused(ingest, sign_in, db, scrna_species):
+    for _ in range(2):
+        db.execute("INSERT INTO scrna_datasets (name, species_id) VALUES ('dup', %s)",
+                   (scrna_species,))
+    with pytest.raises(ingest.IngestError, match="cannot tell which"):
+        load(ingest, sign_in(), scrna_species, name="dup")
+
+
+def test_a_soft_deleted_dataset_is_not_resurrected(ingest, sign_in, db, scrna_species):
+    (buried,) = db.execute("INSERT INTO scrna_datasets (name, species_id, deleted_at) "
+                           "VALUES ('gone', %s, now()) RETURNING id",
+                           (scrna_species,)).fetchone()
+    fresh, _, outcome = load(ingest, sign_in(), scrna_species, name="gone")
+    assert outcome == "registered" and fresh != buried
+    assert db.execute("SELECT n_cells FROM scrna_datasets WHERE id = %s",
+                      (buried,)).fetchone()[0] is None
