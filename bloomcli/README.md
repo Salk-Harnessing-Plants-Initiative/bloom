@@ -103,8 +103,8 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
 - **[write]** `bloomctl scrna hdf5 upload <file.h5ad>` — store a single-cell dataset's
-  AnnData file, gzipped and named by its SHA-256, after checking its structure
-  (see below).
+  AnnData file, gzipped and named by its SHA-256, after checking it and showing what it
+  holds; asks before sending (`--yes` in scripts, `--dry-run` to check only). See below.
 - **[read]** `bloomctl scrna hdf5 download <dataset>` — fetch a dataset's AnnData file,
   by name, id or `--checksum`, checked against its fingerprint (see below).
 - **[read]** `bloomctl scrna hdf5 list [search]` — the dataset files storage holds, each
@@ -542,13 +542,15 @@ file's structure:
   optionally `counts_layer`. A file a dataset was loaded from before this existed
   is accepted without the block when that dataset records it.
 
-A file with no UMAP is accepted, and its cells will have no position on the map. A file
-with no `obsm['X_umap']` but another array with two columns and a row per cell is refused,
-so a UMAP saved under another name is not uploaded as "no UMAP": pass `--umap-key NAME` if
-that array is the UMAP, or `--no-umap` if the file has none.
+A file with no UMAP is accepted. A file with no `obsm['X_umap']` but another array with
+two columns and a row per cell is refused, so a UMAP saved under another name is not
+uploaded as "no UMAP": pass `--umap-key NAME` if that array is the UMAP, or `--no-umap` if
+the file has none.
 
-It then shows what the file holds — cells, genes, where the UMAP is, the layers, the
-normalization and the `obs` columns — and asks before sending:
+Next it gzips the file, which also fingerprints it, and checks the two things that need
+that: the gzipped size is within 500 MB, and a file without `uns['normalization']` is one a
+dataset already records the normalization for. Only once every check has passed does it
+show what the file holds and ask before sending. For the MYB41 file:
 
 ```text
 myb41_transgene_load.h5ad
@@ -556,17 +558,36 @@ myb41_transgene_load.h5ad
   genes          27,656
   UMAP           obsm['X_umap']
   layers         counts
-  normalization  log1p, library_size, target_sum 10000
-  obs columns    barcode, sample, …, nn_label_plain, nn_source
-
-Upload this file? [y/N]
+  normalization  none in the file; recorded on dataset MYB41 transgene (id 14)
+  obs columns    barcode, sample, n_genes_by_counts, total_counts, total_counts_organellar,
+                 pct_counts_organellar, is_cell, dev_label, saturn_Celltype, saturn_Celltype_knn,
+                 saturn_Celltype_conf, saturn_Celltype_agree, saturn_celltype_fine,
+                 saturn_celltype_fine_knn, saturn_celltype_fine_conf, saturn_celltype_fine_agree,
+                 saturn_time_celltype, saturn_time_celltype_knn, saturn_time_celltype_conf,
+                 saturn_time_celltype_agree, saturn_timezone, saturn_timezone_knn,
+                 saturn_timezone_conf, saturn_timezone_agree, transgene_umi, transgene_pos,
+                 saturn_nuc_Celltype, saturn_nuc_Celltype_knn, saturn_nuc_Celltype_conf,
+                 saturn_nuc_Celltype_agree, singler, singler_score, sr_Atrichoblast (elongation),
+                 sr_Atrichoblast (mature), sr_Cortex (elongation_maturation), sr_Cortex (maturation),
+                 sr_Cortex maturation, sr_Cortex_Atrichoblast (maturation),
+                 sr_Endodermis (elongation_maturation), sr_LRC, sr_Meristem, sr_Pericycle,
+                 sr_Pericycle_endodermis (elongation), sr_Periderm_endodermis, sr_Phellem,
+                 sr_Phellogen, sr_Phloem, sr_QC, sr_Trichoblast (elongation_maturation),
+                 sr_Trichoblast (mature), sr_Unknown_1, sr_Xylem, nn_label, nn_label_plain,
+                 nn_source, nn_conf, nn_pct_shahan
+Upload this file? [y/N]:
 ```
 
-`--yes` uploads without asking; without a terminal to ask in, the command refuses unless
-`--yes` is given. `--dry-run` checks the file and shows the same summary with no login,
-sending nothing.
+The summary and the question are written to the terminal (stderr), so they still appear
+when the output is redirected to a file. Every name read from the file is shown with its
+control characters escaped (`\x1b`, `\n`), so the file cannot alter the summary being
+confirmed. Pressing Enter answers no.
 
-It then gzips the file and sends it through storage's resumable upload. Because an object is
+`--yes` uploads without asking; without a terminal to ask in, the command refuses unless
+`--yes` is given. `--dry-run` signs in and runs every check, including the size and the
+normalization record, shows the summary, and stops before sending anything.
+
+Once confirmed, it sends the gzipped file through storage's resumable upload. Because an object is
 named by the fingerprint of its contents, storage already holding that name means it holds
 this very file, byte for byte: the command says so and sends nothing. If the connection
 drops, run the same command again: the gzipped copy and what identifies the upload wait in

@@ -191,6 +191,11 @@ def forget_upload(directory: Path, fingerprint: str) -> None:
     _upload_path(directory, fingerprint).unlink(missing_ok=True)
 
 
+def upload_recorded(directory: Path, fingerprint: str) -> bool:
+    """Whether an earlier run left an upload of this fingerprint to resume."""
+    return _upload_path(directory, fingerprint).exists()
+
+
 def clear(directory: Path, fingerprint: str) -> None:
     """Forget an upload: its gzipped form, what identified it, and its address."""
     for path in (

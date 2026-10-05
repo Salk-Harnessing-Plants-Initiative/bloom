@@ -10,22 +10,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Changed
 
-- `scrna hdf5 upload` shows what the file holds (cells, genes, UMAP, layers, normalization,
-  `obs` columns) and asks before sending it. **Scripts must now pass `--yes`**: without a
-  terminal the command refuses rather than waiting for an answer. `--dry-run` shows the
-  summary and sends nothing, with no login.
+- `scrna hdf5 upload` runs every check first, then shows what the file holds (cells, genes,
+  UMAP, layers, normalization, `obs` columns) on the terminal and asks before sending it.
+  **Scripts must now pass `--yes`**: without a terminal the command refuses rather than
+  waiting for an answer. `--dry-run` signs in, runs every check including the size and the
+  normalization record, and stops before sending (bloom #1053).
 - `scrna hdf5 upload` accepts a file with no UMAP. A file whose only coordinate-shaped `obsm`
   array has another name is still refused; `--umap-key NAME` names it as the UMAP and
-  `--no-umap` uploads the file without one.
-
-### Fixed
-
-- `cyl batch-ingest-result`: when an envelope fails retriably, the command no longer closes out
-  this workflow's still-`queued` scans as `failed`. A scan that Argo's retry of the write-back
-  step then ingests now ends `written` instead of staying `failed` with its data written. Those
-  scans are left to the status poller, which closes any still `queued` once the Workflow ends,
-  and stderr says so. Takes effect once the write-back template's bloomctl pin is bumped
-  (bloom #1034).
+  `--no-umap` uploads the file without one (bloom #1053).
 
 ## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
 

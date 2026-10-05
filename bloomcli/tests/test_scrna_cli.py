@@ -155,13 +155,140 @@ def test_yes_shows_the_summary_without_asking(tmp_path, env, storage):
     assert "Upload this file?" not in result.output
 
 
-def test_a_dry_run_needs_no_login_and_sends_nothing(tmp_path, env, storage, monkeypatch):
-    monkeypatch.setattr(_session, "connect", lambda _p: pytest.fail("it signed in"))
+def test_a_dry_run_signs_in_runs_every_check_and_sends_nothing(tmp_path, env, storage):
     result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code == 0, result.output
-    assert "cells          3" in result.output
-    assert "Dry run — nothing was sent." in result.output
+    assert "cells          3" in result.stderr
+    assert "Dry run — every check passed. Nothing was sent." in result.output
+    assert "Upload this file?" not in result.output
     assert storage.requests == []
+    assert not list((tmp_path / "stage").iterdir())
+
+
+def test_a_dry_run_needs_a_writer_login(tmp_path, env, monkeypatch):
+    env["role"] = "bloom_user"
+    monkeypatch.setattr(_format, "check_structure", lambda *_, **__: pytest.fail("the file was read"))
+    result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code != 0
+    assert "bloom_writer or bloom_admin" in result.output
+
+
+def test_a_dry_run_refuses_a_file_with_no_normalization_on_record(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad", normalization=None)
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code != 0
+    assert "has no uns['normalization']" in result.output
+    assert "every check passed" not in result.output
+    assert storage.requests == []
+
+
+def test_a_dry_run_names_the_dataset_that_records_the_normalization(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad", normalization=None)
+    env["client"] = FakeClient([{
+        "id": 14, "name": "MYB41 transgene",
+        "source_checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "metadata": {"normalization": NORMALIZATION},
+    }])
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code == 0, result.output
+    assert "none in the file; recorded on dataset MYB41 transgene (id 14)" in result.stderr
+    assert storage.requests == []
+
+
+def test_a_dry_run_refuses_a_file_over_the_size_limit(tmp_path, env, storage, monkeypatch):
+    monkeypatch.setattr(_object, "MAX_OBJECT_BYTES", 10)
+    result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code != 0
+    assert "the limit is" in result.output
+    assert "every check passed" not in result.output
+
+
+def test_a_dry_run_keeps_an_upload_waiting_to_be_resumed(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad")
+    staged = _object.stage(path, tmp_path / "stage")
+    _object.save_upload(tmp_path / "stage", staged.fingerprint, "abc", staged.size, "http://api.test")
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code == 0, result.output
+    assert _object.upload_recorded(tmp_path / "stage", staged.fingerprint)
+    assert staged.gz_path.exists()
+
+
+def test_a_dry_run_needs_no_terminal_and_ignores_yes(tmp_path, env, storage, monkeypatch):
+    monkeypatch.setattr(upload_module, "_interactive", lambda: False)
+    result = _run("upload", "--dry-run", "-y", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code == 0, result.output
+    assert storage.requests == []
+
+
+def test_the_question_comes_after_a_normalization_refusal_not_before(
+    tmp_path, env, storage, monkeypatch
+):
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad", normalization=None)
+    result = CliRunner().invoke(cli, ["scrna", "hdf5", "upload", str(path)], input="y\n")
+    assert result.exit_code != 0
+    assert "has no uns['normalization']" in result.output
+    assert "Upload this file?" not in result.output
+
+
+def test_the_question_comes_after_a_size_refusal_not_before(tmp_path, env, storage, monkeypatch):
+    _at_a_terminal(monkeypatch)
+    monkeypatch.setattr(_object, "MAX_OBJECT_BYTES", 10)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = CliRunner().invoke(cli, ["scrna", "hdf5", "upload", str(path)], input="y\n")
+    assert result.exit_code != 0
+    assert "the limit is" in result.output
+    assert "Upload this file?" not in result.output
+
+
+def test_the_summary_and_question_go_to_the_terminal_not_stdout(
+    tmp_path, env, storage, monkeypatch
+):
+    """`upload f.h5ad > log` must still show the question where the user can answer it."""
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = CliRunner().invoke(cli, ["scrna", "hdf5", "upload", str(path)], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "cells          3" in result.stderr
+    assert "Upload this file?" in result.stderr
+    assert "cells" not in result.stdout
+    assert "Upload this file?" not in result.stdout
+    assert "Uploaded data.h5ad" in result.stdout
+
+
+def test_pressing_enter_declines(tmp_path, env, storage, monkeypatch):
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = CliRunner().invoke(cli, ["scrna", "hdf5", "upload", str(path)], input="\n")
+    assert result.exit_code != 0
+    assert "Nothing was sent." in result.output
+    assert storage.requests == []
+
+
+def test_the_real_terminal_check_refuses_without_yes(tmp_path, env, storage):
+    """CliRunner's stdin is not a terminal, so the unpatched check must refuse."""
+    result = CliRunner().invoke(cli, ["scrna", "hdf5", "upload", str(write_h5ad(tmp_path / "d.h5ad"))])
+    assert result.exit_code != 0
+    assert "Pass --yes" in result.output
+    assert storage.requests == []
+
+
+def test_control_characters_in_the_file_are_shown_escaped(tmp_path, env, storage):
+    spoof = "cell_type\x1b[4A\r\x1b[2K  UMAP           obsm['X_umap']"
+    path = write_h5ad(
+        tmp_path / "data.h5ad",
+        obsm={"X_pca": (3, 5)},
+        obs_columns=(spoof,),
+        normalization={**NORMALIZATION, "scaling": "other", "description": "scran\nfaked line"},
+    )
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.stderr
+    assert "\r" not in result.stderr
+    assert "cell_type\\x1b[4A\\r\\x1b[2K" in result.stderr
+    assert "scran\\nfaked line" in result.stderr
+    assert "\nfaked line" not in result.stderr
+    assert "UMAP           none (obsm holds: X_pca)" in result.stderr
 
 
 def test_a_dry_run_still_refuses_a_broken_file(tmp_path, env):
@@ -175,7 +302,7 @@ def test_a_file_without_a_umap_is_uploaded_and_says_so(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad", obsm={"X_pca": (3, 50)})
     result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
-    assert "none — cells will have no position on the map (obsm holds: X_pca)" in result.output
+    assert "UMAP           none (obsm holds: X_pca)" in result.output
     assert _stored(storage, path) == path.read_bytes()
 
 

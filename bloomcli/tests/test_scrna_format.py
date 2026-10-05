@@ -154,6 +154,14 @@ def test_a_named_umap_the_file_does_not_hold_is_refused(tmp_path):
         fmt.check_structure(write_h5ad(tmp_path / "f.h5ad"), umap_key="umap")
 
 
+def test_x_umap_is_used_when_another_array_has_its_shape_too(tmp_path):
+    """Real files carry X_umap beside X_tsne or spatial; that is not a renamed UMAP."""
+    path = write_h5ad(tmp_path / "f.h5ad", obsm={"X_umap": (3, 2), "X_tsne": (3, 2)})
+    summary = fmt.check_structure(path)
+    assert summary.umap_key == "X_umap"
+    assert summary.obsm == ("X_tsne", "X_umap")
+
+
 def test_the_summary_names_where_the_umap_is(tmp_path):
     assert fmt.check_structure(write_h5ad(tmp_path / "f.h5ad")).umap_key == "X_umap"
 

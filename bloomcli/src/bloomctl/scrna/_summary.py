@@ -10,21 +10,34 @@ from ._format import Summary
 LINE_WIDTH = 100
 
 
-def describe(summary: Summary, name: str) -> list[str]:
-    """One line per part of the file, under the file's name."""
+def describe(
+    summary: Summary, name: str, *, recorded_on: dict[str, Any] | None = None
+) -> list[str]:
+    """One line per part of the file, under the file's name.
+
+    Every string from the file is shown with its control characters escaped, so a name in the
+    file cannot move the cursor or start a line of its own in the summary the user confirms.
+    """
     rows = [
         ("cells", f"{summary.n_cells:,}"),
         ("genes", f"{summary.n_genes:,}"),
-        ("UMAP", _umap(summary)),
-        ("layers", ", ".join(sorted(summary.layers)) or "none"),
-        ("normalization", _normalization(summary.normalization)),
+        ("UMAP", _umap_text(summary)),
+        ("layers", ", ".join(visible(layer) for layer in sorted(summary.layers)) or "none"),
+        ("normalization", _normalization_text(summary.normalization, recorded_on)),
     ]
     width = max(len(label) for label, _ in rows + [("obs columns", "")])
-    lines = [name, *(f"  {label.ljust(width)}  {value}" for label, value in rows)]
-    columns = _wrap(list(summary.obs_columns), LINE_WIDTH - width - 4) or ["none"]
+    lines = [visible(name), *(f"  {label.ljust(width)}  {value}" for label, value in rows)]
+    columns = _wrap([visible(c) for c in summary.obs_columns], LINE_WIDTH - width - 4) or ["none"]
     lines.append(f"  {'obs columns'.ljust(width)}  {columns[0]}")
     lines.extend(" " * (width + 4) + more for more in columns[1:])
     return lines
+
+
+def visible(text: str) -> str:
+    """``text`` with every non-printable character written as its escape, e.g. ``\\x1b``."""
+    return "".join(
+        c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text
+    )
 
 
 def _wrap(names: list[str], width: int) -> list[str]:
@@ -40,21 +53,24 @@ def _wrap(names: list[str], width: int) -> list[str]:
     return lines
 
 
-def _umap(summary: Summary) -> str:
+def _umap_text(summary: Summary) -> str:
     if summary.umap_key:
-        return f"obsm['{summary.umap_key}']"
-    held = ", ".join(summary.obsm) or "nothing"
-    return f"none — cells will have no position on the map (obsm holds: {held})"
+        return f"obsm['{visible(summary.umap_key)}']"
+    held = ", ".join(visible(key) for key in summary.obsm) or "nothing"
+    return f"none (obsm holds: {held})"
 
 
-def _normalization(block: dict[str, Any] | None) -> str:
+def _normalization_text(block: dict[str, Any] | None, recorded_on: dict[str, Any] | None) -> str:
     if block is None:
-        return "none in the file — accepted only if a dataset loaded from it records one"
-    parts = [str(block["transform"]), str(block["scaling"])]
+        if recorded_on is None:
+            return "none in the file"
+        dataset = visible(str(recorded_on.get("name") or "unnamed"))
+        return f"none in the file; recorded on dataset {dataset} (id {recorded_on['id']})"
+    parts = [visible(str(block["transform"])), visible(str(block["scaling"]))]
     if block["scaling"] == "library_size":
         parts.append(f"target_sum {block['target_sum']:g}")
     if block.get("description"):
-        parts.append(str(block["description"]))
+        parts.append(visible(str(block["description"])))
     if block.get("counts_layer"):
-        parts.append(f"raw counts in layers['{block['counts_layer']}']")
+        parts.append(f"raw counts in layers['{visible(str(block['counts_layer']))}']")
     return ", ".join(parts)
