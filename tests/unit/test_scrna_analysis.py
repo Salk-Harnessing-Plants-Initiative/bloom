@@ -168,6 +168,38 @@ def test_the_file_records_its_steps_settings_and_versions(run_dir):
     assert summary["steps"] == ["preprocess", "cluster"]
 
 
+def test_every_cell_carries_the_runs_sample(run_dir):
+    # bloomctl scrna hdf5 upload reads each cell's sample from obs['sample'] (bloom 1060).
+    pipeline(run_dir)
+    adata = final(run_dir)
+    assert set(adata.obs["sample"]) == {"root_tip"}
+    assert adata.obs["sample"].notna().all()
+    assert adata.obs["sample"].dtype.name == "category"
+    summary = json.loads((run_dir / "h5ad/summary.json").read_text())
+    assert "sample" in summary["obs"]
+
+
+def test_a_file_built_before_the_sample_column_is_rebuilt(run_dir, capsys):
+    pipeline(run_dir)
+    marker = run_dir / "h5ad/_SUCCESS"
+    old = json.loads(marker.read_text())
+    marker.write_text(json.dumps({"steps": old["steps"]}) + "\n")  # the old record
+    capsys.readouterr()
+    main(["build-h5ad", "--root", str(run_dir), "--sample", "root_tip"])
+    assert "Built" in capsys.readouterr().out
+    assert json.loads(marker.read_text())["sample"] == "root_tip"
+
+
+def test_an_analysis_cant_write_its_own_sample_column(run_dir):
+    pipeline(run_dir)
+    add_part(
+        run_dir,
+        "annotate",
+        obs={"sample": np.array(["other"] * N_GROUPS * CELLS_PER_GROUP)},
+    )
+    assert main(["build-h5ad", "--root", str(run_dir), "--sample", "root_tip"]) == 15
+
+
 def test_the_variable_gene_count_defaults_to_2000_capped_at_the_genes_there_are(
     run_dir,
 ):
