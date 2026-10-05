@@ -81,14 +81,13 @@ def _text(value: Any) -> str | None:
     return str(value)
 
 
-def check_structure(
-    path: Path, *, umap_key: str | None = None, no_umap: bool = False
-) -> Summary:
+def check_structure(path: Path, *, umap_key: str | None = None) -> Summary:
     """Check ``path`` against the format; raise :class:`FormatError` naming the first problem.
 
     A missing `uns['normalization']` is reported, not refused: whether it is allowed depends
     on a dataset loaded from this exact file, which the caller looks up. A missing UMAP is
-    reported too, unless ``umap_key`` names one or another array looks like one.
+    reported too (``umap_key`` None); a named one that is missing, or a UMAP-shaped array
+    under another name, is refused.
     """
     h5py, np = _modules()
     try:
@@ -127,7 +126,7 @@ def check_structure(
                     raise FormatError(problem)
         with _reading("obsm"):
             obsm = tuple(sorted(f["obsm"])) if "obsm" in f else ()
-            found = _find_umap(h5py, f, n_cells, umap_key, no_umap)
+            found = _find_umap(h5py, f, n_cells, umap_key)
         if found:
             with _reading(f"obsm['{found}']"):
                 _umap(h5py, np, f, n_cells, found)
@@ -325,7 +324,7 @@ def _column_order(np, obs) -> tuple[str, ...]:
     return tuple(_text(v) for v in np.atleast_1d(order) if _text(v))
 
 
-def _find_umap(h5py, f, n_cells: int, umap_key: str | None, no_umap: bool) -> str | None:
+def _find_umap(h5py, f, n_cells: int, umap_key: str | None) -> str | None:
     """Which obsm array holds the UMAP, or None for a file that has none.
 
     A named key must be there. Without one, an array shaped like coordinates under another
@@ -334,8 +333,6 @@ def _find_umap(h5py, f, n_cells: int, umap_key: str | None, no_umap: bool) -> st
     key = umap_key or UMAP_KEY
     arrays = f["obsm"] if "obsm" in f else None
     if arrays is not None and key in arrays:
-        if no_umap:
-            raise FormatError(f"the file has obsm['{key}'], so --no-umap does not apply")
         return key
     if umap_key:
         return key  # _umap refuses it, naming what obsm does hold
@@ -343,11 +340,12 @@ def _find_umap(h5py, f, n_cells: int, umap_key: str | None, no_umap: bool) -> st
         name for name, node in (arrays.items() if arrays is not None else ())
         if isinstance(node, h5py.Dataset) and tuple(node.shape) == (n_cells, 2)
     )
-    if lookalikes and not no_umap:
+    if lookalikes:
         names = ", ".join(f"obsm['{name}']" for name in lookalikes)
+        verb = "has" if len(lookalikes) == 1 else "each have"
         raise FormatError(
-            f"no obsm['{UMAP_KEY}'], but {names} has two columns and one row per cell. Pass "
-            f"--umap-key {lookalikes[0]} if that is the UMAP, or --no-umap if the file has none"
+            f"no obsm['{UMAP_KEY}'], but {names} {verb} two columns and one row per cell. "
+            "Pass --umap-key NAME to name the one that is the UMAP"
         )
     return None
 

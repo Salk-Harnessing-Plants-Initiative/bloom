@@ -15,9 +15,15 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   **Scripts must now pass `--yes`**: without a terminal the command refuses rather than
   waiting for an answer. `--dry-run` signs in, runs every check including the size and the
   normalization record, and stops before sending (bloom #1053).
-- `scrna hdf5 upload` accepts a file with no UMAP. A file whose only coordinate-shaped `obsm`
-  array has another name is still refused; `--umap-key NAME` names it as the UMAP and
-  `--no-umap` uploads the file without one (bloom #1053).
+- `scrna hdf5 upload` loads the dataset it stores: after the file, it registers or continues
+  the dataset named by `--name` within `--species` and writes its cell types and cells (with
+  their UMAP positions), plus genotypes, labels and label sources when `--genotype-column`,
+  `--facet` and `--source-column` name them. `--name`, `--species` and `--annotation` are
+  required; `--create` registers a new dataset; `--add-labels` adds labels to one already
+  loaded from the file. A stopped load continues when the same command is run again.
+  bloomctl now depends on `anndata`.
+- `scrna hdf5 upload` refuses a file with no UMAP, since the explorer plots stored
+  coordinates; `--umap-key NAME` names one stored under another name.
 
 ## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
 

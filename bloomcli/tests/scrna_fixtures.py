@@ -55,12 +55,14 @@ def _index(group, values, style: str, blanks) -> None:
 
 
 def _frame(f, key: str, ids, style: str, blanks, columns=()) -> None:
+    """``columns`` names text columns holding the ids, or maps each name to its values."""
+    values = columns if isinstance(columns, dict) else {c: ids for c in columns}
     group = f.create_group(key)
     _attrs(group, "dataframe")
-    group.attrs.create("column-order", list(columns), dtype=STR)
+    group.attrs.create("column-order", list(values), dtype=STR)
     _index(group, ids, style, blanks)
-    for column in columns:
-        _attrs(group.create_dataset(column, data=np.array(ids, dtype=object), dtype=STR),
+    for column, data in values.items():
+        _attrs(group.create_dataset(column, data=np.array(data, dtype=object), dtype=STR),
                "string-array")
 
 
@@ -108,7 +110,7 @@ def write_h5ad(
     sparse: bool = True,
     anndata: bool = True,
     with_x: bool = True,
-    obs_columns=(),
+    obs_columns=("cell_type", "sample"),
 ) -> Path:
     """Write a three-cell, four-gene file that meets the format unless told otherwise.
 
