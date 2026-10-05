@@ -562,7 +562,11 @@ grow with the size of the data:
   (`nan`, `None`, …), is refused rather than stored as a cell type
 - `--expect-cells N` refuses a file holding any other number of cells
 - sample names are at most 100 characters, the most the database holds
-- the file does not change while it is read; one re-saved part-way is refused
+- the file does not change while it is read; one re-saved part-way is refused. The same check
+  runs again while the gene counts are read, after the file is stored: if the file changes
+  then, the load stops with nothing from the changed file written, and either the original
+  file is put back and the same command continues it, or the new file is uploaded as a new
+  dataset with another `--name` and `--create`
 
 Then it gzips the file, which also fingerprints it, and checks what needs that: the gzipped
 size is within 500 MB, and a file without `uns['normalization']` is one a dataset already

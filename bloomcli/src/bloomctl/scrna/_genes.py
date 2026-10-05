@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from ._text import listed, visible
 from ._writer import DOTS_ONLY, LoadError
@@ -91,14 +91,16 @@ def check_expectations(path: Path, names: list[str], expectations: dict[str, int
 
 
 def gene_values(
-    path: Path, names: list[str], *, only: list[int] | None = None
+    path: Path, names: list[str], *, only: list[int] | None = None,
+    after_block: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, dict[str, float]]]:
     """Each gene's value in every cell that has one, keyed by the cell's position as text.
 
     Single-cell expression is mostly zeros, so only non-zero cells are kept and an absent
     key reads as zero. The key is `scrna_cells.cell_number`: 0-based, in file order. A value
     that is not finite is refused naming the gene, since the explorer cannot colour by it
-    and JSON cannot spell it.
+    and JSON cannot spell it. ``after_block`` runs once each block is read and before any of
+    it is handed on, so a check that the file has not changed covers every value given out.
     """
     import h5py
     import numpy as np
@@ -108,7 +110,10 @@ def gene_values(
     with h5py.File(path, "r") as f:
         matrix = f["X"]
         for block in _blocks(h5py, np, matrix, columns, len(names)):
-            for column, cells, values in _read_block(h5py, np, matrix, block):
+            read = list(_read_block(h5py, np, matrix, block))
+            if after_block:
+                after_block()
+            for column, cells, values in read:
                 if not np.isfinite(values).all():
                     raise LoadError(
                         f"{visible(names[column])} holds a value that is not finite (NaN or "

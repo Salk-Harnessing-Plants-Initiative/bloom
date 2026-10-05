@@ -55,16 +55,20 @@ def missing(writer: Writer, dataset_id: int, names: list[str]) -> int:
 def write(
     writer: Writer, dataset_id: int, dataset_name: str, path: Path, names: list[str],
     on_progress: Callable[[int, int], None] | None = None,
+    unchanged: Callable[[], None] | None = None,
 ) -> int:
     """Register the genes, then write every gene's object and row not already recorded.
 
-    Returns how many genes were written. Afterwards every gene in the file is recorded once.
+    ``unchanged`` is checked after each block of genes is read, before its objects are
+    written. Returns how many genes were written. Afterwards every gene in the file is
+    recorded once.
     """
     ids = _register(writer, dataset_id, names)
     done = _recorded(writer, dataset_id, ids)
     todo = [i for i, gene in enumerate(names) if gene not in done]
     pending: list[dict] = []
-    for count, (column, values) in enumerate(_genes.gene_values(path, names, only=todo), 1):
+    for count, (column, values) in enumerate(_genes.gene_values(
+            path, names, only=todo, after_block=unchanged), 1):
         gene = names[column]
         object_at = object_path(dataset_name, dataset_id, gene)
         _upload(writer, object_at, json.dumps(values).encode())

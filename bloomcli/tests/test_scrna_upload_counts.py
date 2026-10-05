@@ -108,3 +108,93 @@ def test_the_counts_follow_the_stored_file(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "d.h5ad")
     assert _run("upload", "--yes", str(path)).exit_code == 0
     assert _dataset(env)["source_checksum"] == _object.fingerprint_of(path)
+
+
+# --- a file that changes while it is being uploaded ------------------------------------------
+
+
+def _rewrite(path, factor):
+    """Re-save the file with every expression value scaled, as a re-export would."""
+    import os
+
+    import h5py
+
+    with h5py.File(path, "r+") as f:
+        f["X/data"][...] = f["X/data"][...] * factor
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+
+def test_a_file_changed_after_it_is_stored_stops_before_any_counts(tmp_path, env, storage,
+                                                                   monkeypatch):
+    from bloomctl.scrna import _send
+
+    path = write_h5ad(tmp_path / "d.h5ad")
+    real = _send.send_through_expiry
+
+    def send_then_change(*args, **kwargs):
+        real(*args, **kwargs)
+        _rewrite(path, 100)
+
+    monkeypatch.setattr(_send, "send_through_expiry", send_then_change)
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code != 0
+    assert "d.h5ad changed while it was being uploaded" in result.output
+    assert "Put the original file back" in result.output
+    assert _objects(env) == {} and env["client"].tables.get("scrna_counts", []) == []
+    assert _dataset(env).get("ingested_at") is None
+
+
+def test_a_file_changed_during_the_counts_stops_and_keeps_only_the_originals_values(
+    tmp_path, env, storage, monkeypatch
+):
+    from bloomctl.scrna import _genes
+
+    monkeypatch.setattr(_genes, "BLOCK_VALUES", 1)
+    path = write_h5ad(tmp_path / "d.h5ad")
+    original = {f"gene{j}": v for j, v in _genes.gene_values(path, _genes.read_names(path))}
+    blocks = []
+    real_read = _genes._read_block
+
+    def change_after_two_blocks(*args):
+        # The loader holds the file open, so the re-save is simulated by its new time.
+        import os
+
+        blocks.append(1)
+        if len(blocks) == 3:
+            stat = path.stat()
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        return real_read(*args)
+
+    monkeypatch.setattr(_genes, "_read_block", change_after_two_blocks)
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code != 0
+    assert "changed while it was being uploaded" in result.output
+    stored = {p.rsplit("/", 1)[1][:-5]: v for p, v in _objects(env).items()}
+    assert stored == {g: original[g] for g in ("gene0", "gene1")}, "nothing read after the change"
+    assert _dataset(env).get("ingested_at") is None
+
+
+def test_the_original_file_put_back_finishes_the_load(tmp_path, env, storage, monkeypatch):
+    import shutil
+
+    from bloomctl.scrna import _send
+
+    path = write_h5ad(tmp_path / "d.h5ad")
+    kept = tmp_path / "original.h5ad"
+    shutil.copy2(path, kept)
+    real = _send.send_through_expiry
+    changed = []
+
+    def send_then_change_once(*args, **kwargs):
+        real(*args, **kwargs)
+        if not changed:
+            changed.append(1)
+            _rewrite(path, 100)
+
+    monkeypatch.setattr(_send, "send_through_expiry", send_then_change_once)
+    assert _run("upload", "--yes", str(path)).exit_code != 0
+    shutil.copy2(kept, path)
+    resumed = _run("upload", "--yes", str(path))
+    assert resumed.exit_code == 0, resumed.output
+    assert _dataset(env)["ingested_at"] and len(env["client"].tables["scrna_counts"]) == 4

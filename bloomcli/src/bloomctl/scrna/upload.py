@@ -138,7 +138,7 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
         _send.send_through_expiry(http, conn, profile, stage, staged, file.name,
                                   on_progress=update)
     _write(writer, opts, species_id, species, cells, staged.fingerprint, options, normalization,
-           None if genes is None else (file, genes))
+           None if genes is None else (file, genes), _unchanged_since(file, read_from))
 
 
 def _options(opts: dict[str, Any]) -> dict[str, Any]:
@@ -172,6 +172,19 @@ def _options(opts: dict[str, Any]) -> dict[str, Any]:
 
 def _interactive() -> bool:
     return sys.stdin.isatty()
+
+
+def _unchanged_since(file: Path, read_from: tuple[int, int]):
+    """A check that the file is still the one that was read and stored, refusing if not."""
+    def check() -> None:
+        if _stamp(file) != read_from:
+            raise _writer.LoadError(
+                f"{file.name} changed while it was being uploaded, so nothing from the changed "
+                "file was written. Put the original file back and run the same command again "
+                "to continue, or upload the new file as a new dataset with another --name and "
+                "--create"
+            )
+    return check
 
 
 def _stamp(file: Path) -> tuple[int, int]:
@@ -254,7 +267,7 @@ def _question(plan: _load.Plan, name: str) -> str:
 
 
 def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint: str,
-           options, normalization: dict | None, counts) -> None:
+           options, normalization: dict | None, counts, unchanged) -> None:
     """Load the cells and counts, or add the labels, now that the file is stored."""
     name = opts["name"].strip()
     try:
@@ -268,7 +281,7 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
                 dataset_id, stored, outcome = _load.load(
                     writer, name, species_id, cells, fingerprint, options,
                     create=opts["create"], species=species, normalization=normalization,
-                    counts=counts, track=_progress.track)
+                    counts=counts, track=_progress.track, unchanged=unchanged)
     except _writer.LoadError as exc:
         raise click.ClickException(
             f"the file is stored, but loading it stopped: {visible(str(exc))}") from exc

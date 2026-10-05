@@ -89,6 +89,7 @@ def load(
     options: dict, *, create: bool = False, species: str | None = None,
     normalization: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
     counts: tuple[Path, list[str]] | None = None, track=None,
+    unchanged: Callable[[], None] | None = None,
 ) -> tuple[int, int, str]:
     """Register or resume the dataset, write its cells and, given ``counts`` (the file and its
     gene names), every gene's counts; then finish it.
@@ -97,8 +98,10 @@ def load(
     unfinished load got. The dataset is finished last, so finished means cells and counts are
     all there; ``normalization`` is recorded then. A dataset finished before counts were part
     of the load gets the ones it is missing. ``track(description, unit)`` shows each step's
-    progress. Returns the dataset id, the number of cells stored, and "registered", "resumed",
-    "counts added" or "already loaded".
+    progress. ``unchanged`` raises if the file changed since it was checked; it runs before
+    the counts, after each block of them and before finishing, so nothing from a changed file
+    is written or finished. Returns the dataset id, the number of cells stored, and
+    "registered", "resumed", "counts added" or "already loaded".
     """
     name = _checked_name(name)
     check_columns(cells)
@@ -116,7 +119,7 @@ def load(
             check_nothing_to_add(found, options)
             if counts is not None and _counts.missing(writer, found["id"], counts[1]):
                 check_same_cells(writer, found["id"], cells)
-                _write_counts(writer, found["id"], name, counts, track)
+                _write_counts(writer, found["id"], name, counts, track, unchanged)
                 outcome = "counts added"
             return found["id"], found.get("n_cells") or 0, outcome
         check_nothing_later(writer, found["id"])
@@ -136,7 +139,9 @@ def load(
                       genotype_ids, report or on_progress)
     check_numbers(dataset_id, _cell_numbers(writer, dataset_id), n, complete=True)
     if counts is not None:
-        _write_counts(writer, dataset_id, name, counts, track)
+        _write_counts(writer, dataset_id, name, counts, track, unchanged)
+    if unchanged:
+        unchanged()
 
     metadata = {**_metadata(writer, dataset_id), "cell_type_column": options["annotation"]}
     if normalization is not None:
@@ -234,10 +239,13 @@ def _merged_facets(writer: Writer, dataset_id: int, cells: dict) -> list[dict]:
     return merged
 
 
-def _write_counts(writer: Writer, dataset_id: int, name: str, counts, track) -> None:
+def _write_counts(writer: Writer, dataset_id: int, name: str, counts, track, unchanged) -> None:
     path, names = counts
+    if unchanged:
+        unchanged()
     with _step(track, "Writing genes") as report:
-        _counts.write(writer, dataset_id, name, path, names, on_progress=report)
+        _counts.write(writer, dataset_id, name, path, names, on_progress=report,
+                      unchanged=unchanged)
 
 
 @contextmanager
