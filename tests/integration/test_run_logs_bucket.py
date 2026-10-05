@@ -5,13 +5,19 @@ its log (`scrna/<argo workflow name>/<step>.log`) for the run page to read.
 The pipeline (`bloom_workflows`) uploads and overwrites; `bloom_user` and `bloom_agent` read;
 only `bloom_admin` deletes. `bloom_writer` gets no policy of its own here, but keeps the
 blanket storage.objects INSERT/UPDATE it has on every bucket (20260519130000), so it can
-write but not delete.
+write but not delete; that is accepted, and pinned below.
 
 LOCAL ONLY: `pg_conn` connects as `supabase_admin` (BYPASSRLS) and every test rolls back.
-Tests seed the bucket row themselves so an object row's foreign key holds whether or not
-the migration has been applied, which lets them fail red on the policies alone.
+Tests that write objects seed the bucket row themselves, so an object row's foreign key
+holds whether or not the migration has been applied and they fail red on the policies alone.
+The bucket-settings test reads the migration's own row.
+
+Storage's `protect_objects_delete` trigger refuses every direct DELETE unless
+`storage.allow_delete_query` is set (storage-api sets it on each request), so the delete
+tests set it to reach the grants and policies.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -22,6 +28,21 @@ psycopg = pytest.importorskip("psycopg")
 REPO_ROOT = Path(__file__).parent.parent.parent
 BUCKET = "run-logs"
 LOG = "scrna/scrna-cellranger-staging-5-8b939a02/count.log"
+
+# The statement storage-api v1.48.14 runs as the caller's role for an upload with upsert
+# (the same one test_gravi_plate_video_write.py pins); each 30 s log upload is one of these.
+_STORAGE_UPSERT = """
+    INSERT INTO storage.objects
+      (name, owner, owner_id, bucket_id, metadata, user_metadata, version)
+    VALUES (%s, NULL, NULL, %s, %s, %s, %s)
+    ON CONFLICT (name, bucket_id) DO UPDATE
+      SET metadata = EXCLUDED.metadata,
+          user_metadata = EXCLUDED.user_metadata,
+          version = EXCLUDED.version,
+          owner = EXCLUDED.owner,
+          owner_id = EXCLUDED.owner_id
+    RETURNING *
+"""
 
 
 def _seed_bucket(cur):
@@ -39,37 +60,85 @@ def _insert_object(cur, name: str):
     return cur.fetchone()[0]
 
 
-def test_the_bucket_is_private(pg_conn):
+def _upsert(cur, name: str, version: str):
+    cur.execute(
+        _STORAGE_UPSERT,
+        (name, BUCKET, json.dumps({"size": len(version)}), json.dumps({}), version),
+    )
+
+
+def test_the_roles_under_test_do_not_bypass_rls(pg_conn):
+    # Otherwise every "cannot" test below would pass for the wrong reason.
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT public FROM storage.buckets WHERE id = %s", (BUCKET,))
-        assert cur.fetchone() == (False,)
+        cur.execute(
+            "SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname IN "
+            "('bloom_user', 'bloom_agent', 'bloom_writer', 'bloom_workflows', 'anon', 'authenticated')"
+        )
+        assert not any(bypass for _role, bypass in cur.fetchall())
     pg_conn.rollback()
 
 
-def test_the_pipeline_can_upload_read_back_and_overwrite(pg_conn):
+def test_the_bucket_is_private_text_only_and_capped(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT public, file_size_limit, allowed_mime_types FROM storage.buckets WHERE id = %s",
+            (BUCKET,),
+        )
+        assert cur.fetchone() == (False, 52428800, ["text/plain"])
+    pg_conn.rollback()
+
+
+def test_the_pipeline_can_upload_and_overwrite_as_storage_does(pg_conn):
     with pg_conn.cursor() as cur:
         _seed_bucket(cur)
         cur.execute("SET LOCAL ROLE bloom_workflows")
-        oid = _insert_object(cur, LOG)
-        cur.execute("SELECT name FROM storage.objects WHERE id = %s", (oid,))
-        assert cur.fetchone() == (LOG,), "bloom_workflows can't read back its upload"
-        # Each periodic upload overwrites the same object; its name doesn't change.
+        _upsert(cur, LOG, "first")
+        _upsert(cur, LOG, "second")
         cur.execute(
-            "UPDATE storage.objects SET metadata = %s::jsonb WHERE id = %s",
-            ('{"size": 2048}', oid),
+            "SELECT version FROM storage.objects WHERE bucket_id = %s AND name = %s",
+            (BUCKET, LOG),
         )
-        assert cur.rowcount == 1, "bloom_workflows can't overwrite its upload"
+        assert cur.fetchall() == [("second",)], (
+            "the second upload didn't replace the first"
+        )
+    pg_conn.rollback()
+
+
+def test_a_writer_can_upload_through_its_policy_on_every_bucket(pg_conn):
+    # Accepted: writers' blanket INSERT/UPDATE reaches this bucket too.
+    with pg_conn.cursor() as cur:
+        _seed_bucket(cur)
+        cur.execute("SET LOCAL ROLE bloom_writer")
+        _upsert(cur, LOG, "from-a-writer")
+        assert cur.rowcount == 1
     pg_conn.rollback()
 
 
 @pytest.mark.parametrize("role", ["bloom_user", "bloom_agent"])
 def test_users_and_the_agent_can_read(pg_conn, role):
+    # The agent also reads through its blanket policy, so only the policy-set test pins
+    # agent_read_run_logs itself.
     with pg_conn.cursor() as cur:
         _seed_bucket(cur)
         oid = _insert_object(cur, LOG)  # as supabase_admin
         cur.execute(f"SET LOCAL ROLE {role}")
         cur.execute("SELECT name FROM storage.objects WHERE id = %s", (oid,))
         assert cur.fetchone() == (LOG,), f"{role} can't read a run log"
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("role", ["anon", "authenticated"])
+def test_no_one_signed_out_or_without_a_bloom_role_can_read(pg_conn, role):
+    with pg_conn.cursor() as cur:
+        _seed_bucket(cur)
+        oid = _insert_object(cur, LOG)  # as supabase_admin
+        cur.execute(f"SET LOCAL ROLE {role}")
+        try:
+            cur.execute("SELECT name FROM storage.objects WHERE id = %s", (oid,))
+        except psycopg.errors.InsufficientPrivilege:
+            pg_conn.rollback()
+            return
+        assert cur.fetchone() is None, f"{role} can read a run log"
     pg_conn.rollback()
 
 
@@ -87,11 +156,12 @@ def test_users_and_the_agent_cannot_upload(pg_conn, role):
     "role", ["bloom_user", "bloom_agent", "bloom_writer", "bloom_workflows"]
 )
 def test_no_one_but_an_admin_can_delete(pg_conn, role):
-    """A role without a DELETE grant raises; bloom_writer has the table grant but no
-    DELETE policy, so RLS filters its delete to zero rows. Either way the log survives."""
+    """A role without a DELETE grant raises; a role with the grant but no DELETE policy is
+    filtered to zero rows. Either way the log survives."""
     with pg_conn.cursor() as cur:
         _seed_bucket(cur)
         oid = _insert_object(cur, LOG)  # as supabase_admin
+        cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
         cur.execute(f"SET LOCAL ROLE {role}")
         try:
             cur.execute("DELETE FROM storage.objects WHERE id = %s", (oid,))
@@ -103,10 +173,11 @@ def test_no_one_but_an_admin_can_delete(pg_conn, role):
 
 
 def test_an_admin_can_prune_old_logs(pg_conn):
+    # The admin's blanket policy also allows this, so only the policy-set test pins
+    # admin_all_run_logs itself.
     with pg_conn.cursor() as cur:
         _seed_bucket(cur)
         cur.execute("SET LOCAL ROLE bloom_admin")
-        # Storage's guard against direct deletes; the Storage API sets the same.
         cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
         oid = _insert_object(cur, LOG)
         cur.execute("DELETE FROM storage.objects WHERE id = %s", (oid,))

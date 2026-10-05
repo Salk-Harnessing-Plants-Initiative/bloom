@@ -7,12 +7,16 @@
 --
 -- bloom_admin, bloom_agent and bloom_writer already reach this bucket through their blanket
 -- storage.objects policies (20260506000001, 20260519130000); the explicit admin and agent
--- policies below keep the bucket's access readable in one place. bloom_writer gets none:
--- nothing here needs writers to upload logs.
+-- policies below keep the bucket's access readable in one place. bloom_writer gets none
+-- here, but its blanket INSERT/UPDATE lets it upload and overwrite logs too; that is accepted.
 
-INSERT INTO storage.buckets (id, name, public)
-  VALUES ('run-logs', 'run-logs', false)
-    ON CONFLICT (id) DO NOTHING;
+-- Plain-text logs of at most 50 MB. A bucket made by hand before this runs is brought in line.
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+  VALUES ('run-logs', 'run-logs', false, 52428800, ARRAY['text/plain'])
+    ON CONFLICT (id) DO UPDATE
+      SET public = false,
+          file_size_limit = EXCLUDED.file_size_limit,
+          allowed_mime_types = EXCLUDED.allowed_mime_types;
 
 -- bloom_admin: full access, including deleting old logs
 DROP POLICY IF EXISTS admin_all_run_logs ON storage.objects;
