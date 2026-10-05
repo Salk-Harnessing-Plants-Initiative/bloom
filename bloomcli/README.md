@@ -510,8 +510,8 @@ finds its file with no lookup table, and the same file uploaded twice is one
 object.
 
 ```bash
-bloomctl scrna hdf5 upload myb41_transgene_load.h5ad --name "MYB41 transgene" \
-  --species Arabidopsis --annotation nn_label_plain -p staging          # store and load
+bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
+  --species Arabidopsis --annotation cell_type --create -p staging    # store and load
 bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
 bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id
 bloomctl scrna hdf5 download --checksum 82278a…a54f -p staging       # by fingerprint
@@ -649,21 +649,29 @@ the command says the file is stored and the load stopped, and running the same c
 again continues it. A write whose outcome is unknown (a timeout) may still be finishing on
 the server, so the next run waits that out first, saying how many seconds are left.
 
-Genotypes and labels the map can filter on come from more obs columns:
+`--name`, `--species` and `--annotation` are all a load needs; `--create` is added the first
+time, to register the dataset. Anything else the file records per cell can come along too.
+Each of these options names an `obs` column:
+
+- `--genotype-column COLUMN` makes each of its values a genotype the cells point at.
+  `--control GENOTYPE` names the control (it is never guessed), and `--construct
+  GENOTYPE=NAME` (repeatable) the construct a line carries.
+- `--facet COLUMN` (repeatable) turns the column's values into filters on the map: a
+  treatment, a timepoint, a batch, whether a transgene was detected. A column may have at
+  most 12 values of at most 200 characters, and a cell at most 32 such columns; a column with
+  more values, such as a count or a score, is refused as a measurement rather than a label.
+- `--source-column COLUMN` records, per cell type, where its label came from, such as the
+  reference atlas it was transferred from.
 
 ```bash
-bloomctl scrna hdf5 upload myb41_transgene_load.h5ad --name "MYB41 transgene" \
-  --species Arabidopsis --annotation nn_label_plain \
-  --genotype-column sample --control Col-0 --construct pFACT=pFACT:MYB41 \
-  --facet transgene_pos --source-column nn_source -p staging
+bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
+  --species Arabidopsis --annotation cell_type --create \
+  --genotype-column genotype --control Col-0 --construct line1=35S:GENE \
+  --facet treatment --facet timepoint --source-column label_source -p staging
 ```
 
-`--genotype-column` makes each of its values a genotype the cells point at, with
-`--control` naming the control (never guessed) and `--construct GENOTYPE=NAME` the construct
-a line carries. `--facet COLUMN` (repeatable) labels each cell for filtering; a column with
-more than 12 values is refused as a measurement rather than a label. `--source-column`
-records, per cell type, where its label came from. On a dataset already loaded from this
-file, `--add-labels` with these options adds them to its cells, which stay as they are.
+On a dataset already loaded from this file, `--add-labels` with any of these adds them to its
+cells, which stay as they are.
 
 **List** needs any login. It reports what the bucket holds — each object's fingerprint,
 its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
