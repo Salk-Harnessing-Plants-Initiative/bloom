@@ -28,18 +28,13 @@ def _bash() -> str | None:
     if bash is None:
         return None
     version = subprocess.run(
-        [bash, "-c", "echo ${BASH_VERSINFO[0]}"],
-        capture_output=True,
-        text=True,
-        check=True,
+        [bash, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True, check=True
     ).stdout.strip()
     return bash if int(version) >= 4 else None
 
 
 BASH = _bash()
-pytestmark = pytest.mark.skipif(
-    BASH is None, reason="needs bash 4+ (the pipeline image has it)"
-)
+pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash 4+ (the pipeline image has it)")
 
 STUBS = {
     "prefetch": """#!/usr/bin/env bash
@@ -119,9 +114,7 @@ def env(tmp_path):
     s3.mkdir()
     barcodes = tmp_path / "barcodes"
     barcodes.mkdir()
-    (barcodes / "737K-august-2016.txt").write_text(
-        "AAACCCAAGAAACACT\nAAACCCAAGAAACCAT\n"
-    )
+    (barcodes / "737K-august-2016.txt").write_text("AAACCCAAGAAACACT\nAAACCCAAGAAACCAT\n")
     return {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "FAKE_S3": str(s3),
@@ -137,9 +130,7 @@ def fetch(env, sample, runs, barcoded=None, **layouts):
     """barcoded: {accession: position of the read that carries 10x barcodes}."""
     run_env = {**env, "SAMPLE": sample, "SRA_RUNS": runs}
     run_env.update({f"FAKE_LAYOUT_{acc}": layout for acc, layout in layouts.items()})
-    run_env.update(
-        {f"FAKE_BARCODED_{acc}": str(i) for acc, i in (barcoded or {}).items()}
-    )
+    run_env.update({f"FAKE_BARCODED_{acc}": str(i) for acc, i in (barcoded or {}).items()})
     return subprocess.run(
         [BASH, str(SCRIPT)], capture_output=True, text=True, env=run_env, check=False
     )
@@ -164,9 +155,7 @@ def uploads(env):
 
 def outputs(env):
     out = Path(env["OUTPUT_DIR"])
-    return int((out / "fastq_count").read_text()), int(
-        (out / "total_bytes").read_text()
-    )
+    return int((out / "fastq_count").read_text()), int((out / "total_bytes").read_text())
 
 
 # --------------------------------------------------------------------------- #
@@ -202,9 +191,7 @@ def test_two_index_reads_become_i1_and_i2(env):
 
 
 def test_each_run_becomes_a_lane_in_the_order_given(env):
-    result = fetch(
-        env, "s", "SRR1000002, SRR1000001", SRR1000001="28,91", SRR1000002="26,98"
-    )
+    result = fetch(env, "s", "SRR1000002, SRR1000001", SRR1000001="28,91", SRR1000002="26,98")
     assert result.returncode == 0, result.stderr
     assert read_length(env, "s", "s_S1_L001_R2_001.fastq.gz") == 98  # SRR1000002
     assert read_length(env, "s", "s_S1_L002_R2_001.fastq.gz") == 91  # SRR1000001
@@ -238,15 +225,7 @@ def test_the_counts_and_marker_are_written_last(env):
         ("28,91,18", "18-bp read"),
         ("28,91,8,8,8", "more than two index reads"),
     ],
-    ids=[
-        "cdna-only",
-        "barcode-only",
-        "bulk-paired",
-        "no-cdna",
-        "three-long",
-        "odd-length",
-        "three-index",
-    ],
+    ids=["cdna-only", "barcode-only", "bulk-paired", "no-cdna", "three-long", "odd-length", "three-index"],
 )
 def test_reads_that_arent_10x_are_refused_and_nothing_uploaded(env, layout, message):
     result = fetch(env, "s", "SRR1000001", SRR1000001=layout)
@@ -312,15 +291,7 @@ def test_a_folder_holding_other_fastqs_is_refused_untouched(env):
         ("S1.rep1", "SRR1000001"),
         ("a__b", "SRR1000001"),
     ],
-    ids=[
-        "study",
-        "too-short",
-        "twice",
-        "ten-runs",
-        "empty",
-        "dotted-name",
-        "double-underscore",
-    ],
+    ids=["study", "too-short", "twice", "ten-runs", "empty", "dotted-name", "double-underscore"],
 )
 def test_bad_inputs_are_refused_before_any_download(env, sample, runs):
     result = fetch(env, sample, runs)
@@ -329,27 +300,19 @@ def test_bad_inputs_are_refused_before_any_download(env, sample, runs):
 
 
 def test_err_and_drr_accessions_are_accepted(env):
-    result = fetch(
-        env, "s", "ERR1000001 DRR1000002", ERR1000001="28,91", DRR1000002="28,91"
-    )
+    result = fetch(env, "s", "ERR1000001 DRR1000002", ERR1000001="28,91", DRR1000002="28,91")
     assert result.returncode == 0, result.stderr
 
 
 def test_the_image_installs_it_and_the_template_runs_it():
     dockerfile = (CELLRANGER.parent / "Dockerfile").read_text()
     assert "COPY cellranger/fetch-sra.sh /usr/local/bin/fetch-sra" in dockerfile
-    assert (
-        "/usr/local/bin/fetch-sra"
-        in dockerfile.split("RUN chmod +x", 1)[1].split("\n")[0]
-    )
+    assert "/usr/local/bin/fetch-sra" in dockerfile.split("RUN chmod +x", 1)[1].split("\n")[0]
     assert "for tool in prefetch fasterq-dump vdb-config; do ln -s" in dockerfile
     assert "apt-get install -y --no-install-recommends pigz" in dockerfile
     template = (CELLRANGER / "cellranger-count-template.yaml").read_text()
     step = template.split("- name: fetch-sra\n", 1)[1].split("\n    - name: ", 1)[0]
-    assert (
-        'command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]'
-        in step
-    )
+    assert 'command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]' in step
     tags = set(re.findall(r"cellranger:(\S+)", template))
     assert len(tags) == 1, f"the template uses more than one image: {tags}"
 
@@ -370,15 +333,11 @@ def test_the_image_installs_it_and_the_template_runs_it():
     ids=["2x150-barcode-second", "2x150-barcode-first", "30bp-r1", "r1-longer-than-r2"],
 )
 def test_an_untrimmed_r1_is_found_by_its_barcodes(env, layout, barcoded, r1, r2):
-    result = fetch(
-        env, "s", "SRR1000001", barcoded={"SRR1000001": barcoded}, SRR1000001=layout
-    )
+    result = fetch(env, "s", "SRR1000001", barcoded={"SRR1000001": barcoded}, SRR1000001=layout)
     assert result.returncode == 0, result.stderr
     assert read_length(env, "s", "s_S1_L001_R1_001.fastq.gz") == r1
     assert read_length(env, "s", "s_S1_L001_R2_001.fastq.gz") == r2
-    with gzip.open(
-        Path(env["FAKE_S3"]) / "bucket/raw_reads/s/s_S1_L001_R1_001.fastq.gz", "rt"
-    ) as f:
+    with gzip.open(Path(env["FAKE_S3"]) / "bucket/raw_reads/s/s_S1_L001_R1_001.fastq.gz", "rt") as f:
         f.readline()
         assert f.readline().startswith("AAACCCAAGAAACACT")
 
@@ -391,17 +350,10 @@ def test_a_trimmed_r1_needs_no_barcode_check(env):
 
 def test_two_long_reads_both_with_barcodes_are_refused(env, tmp_path):
     # Both reads carry list barcodes: the fake writes the same barcode into each when asked twice.
-    run_env = {
-        **env,
-        "SAMPLE": "s",
-        "SRA_RUNS": "SRR1000001",
-        "FAKE_LAYOUT_SRR1000001": "150,150",
-    }
+    run_env = {**env, "SAMPLE": "s", "SRA_RUNS": "SRR1000001", "FAKE_LAYOUT_SRR1000001": "150,150"}
     list_file = Path(env["BARCODE_DIR"]) / "737K-august-2016.txt"
     list_file.write_text(list_file.read_text() + "CCCCCCCCCCCCCCCC\n")
-    result = subprocess.run(
-        [BASH, str(SCRIPT)], capture_output=True, text=True, env=run_env, check=False
-    )
+    result = subprocess.run([BASH, str(SCRIPT)], capture_output=True, text=True, env=run_env, check=False)
     assert result.returncode == 11
     assert "can't tell which is the 10x barcode read" in result.stderr
 
@@ -415,15 +367,8 @@ def test_a_20bp_long_read_is_refused(env):
 def test_without_include_technical_the_barcode_read_would_be_lost(env, tmp_path):
     patched = tmp_path / "no-technical.sh"
     patched.write_text(SCRIPT.read_text().replace(" --include-technical", ""))
-    run_env = {
-        **env,
-        "SAMPLE": "s",
-        "SRA_RUNS": "SRR1000001",
-        "FAKE_LAYOUT_SRR1000001": "28,91,8",
-    }
-    result = subprocess.run(
-        [BASH, str(patched)], capture_output=True, text=True, env=run_env, check=False
-    )
+    run_env = {**env, "SAMPLE": "s", "SRA_RUNS": "SRR1000001", "FAKE_LAYOUT_SRR1000001": "28,91,8"}
+    result = subprocess.run([BASH, str(patched)], capture_output=True, text=True, env=run_env, check=False)
     assert result.returncode == 11
 
 
@@ -434,20 +379,14 @@ def test_without_include_technical_the_barcode_read_would_be_lost(env, tmp_path)
 
 def test_a_folder_that_cant_be_listed_is_left_untouched(env):
     assert fetch(env, "s", "SRR1000001", SRR1000001="28,91").returncode == 0
-    before = {
-        p.name: p.read_bytes()
-        for p in (Path(env["FAKE_S3"]) / "bucket/raw_reads/s").iterdir()
-    }
+    before = {p.name: p.read_bytes() for p in (Path(env["FAKE_S3"]) / "bucket/raw_reads/s").iterdir()}
     (Path(env["FAKE_S3"]) / ".uploads").unlink()
     env["FAKE_LS_FAIL"] = "1"
     result = fetch(env, "s", "SRR1000009", SRR1000009="26,98")
     assert result.returncode == 10
     assert "couldn't check" in result.stderr and "AccessDenied" in result.stderr
     assert uploads(env) == []
-    after = {
-        p.name: p.read_bytes()
-        for p in (Path(env["FAKE_S3"]) / "bucket/raw_reads/s").iterdir()
-    }
+    after = {p.name: p.read_bytes() for p in (Path(env["FAKE_S3"]) / "bucket/raw_reads/s").iterdir()}
     assert after == before
 
 
@@ -488,12 +427,7 @@ def test_a_failed_conversion_fails_with_10_and_uploads_nothing(env):
 
 @pytest.mark.parametrize(
     "runs",
-    [
-        "SRR1000001\nSRR1000002",
-        "SRR1000001\r\nSRR1000002\n",
-        "SRR1000001,\tSRR1000002",
-        " SRR1000001 , SRR1000002 ",
-    ],
+    ["SRR1000001\nSRR1000002", "SRR1000001\r\nSRR1000002\n", "SRR1000001,\tSRR1000002", " SRR1000001 , SRR1000002 "],
     ids=["newline", "windows-newline", "comma-tab", "padded"],
 )
 def test_pasted_lists_keep_every_run(env, runs):
@@ -513,16 +447,9 @@ def test_nine_runs_make_lanes_1_to_9(env):
 
 @pytest.mark.parametrize("missing", ["SAMPLE", "SRA_RUNS"])
 def test_a_missing_sample_or_run_list_is_refused_with_6(env, missing):
-    run_env = {
-        **env,
-        "SAMPLE": "s",
-        "SRA_RUNS": "SRR1000001",
-        "FAKE_LAYOUT_SRR1000001": "28,91",
-    }
+    run_env = {**env, "SAMPLE": "s", "SRA_RUNS": "SRR1000001", "FAKE_LAYOUT_SRR1000001": "28,91"}
     run_env[missing] = ""
-    result = subprocess.run(
-        [BASH, str(SCRIPT)], capture_output=True, text=True, env=run_env, check=False
-    )
+    result = subprocess.run([BASH, str(SCRIPT)], capture_output=True, text=True, env=run_env, check=False)
     assert result.returncode == 6
 
 
@@ -553,9 +480,7 @@ def test_files_left_in_the_work_folder_are_not_uploaded(env):
 def test_a_name_check_failure_fails_with_7_and_uploads_nothing(env):
     bin_dir = Path(env["PATH"].split(":", 1)[0])
     (bin_dir / "fastq-sample-prefix").unlink()
-    (bin_dir / "fastq-sample-prefix").write_text(
-        "#!/usr/bin/env bash\necho misnamed >&2\nexit 7\n"
-    )
+    (bin_dir / "fastq-sample-prefix").write_text("#!/usr/bin/env bash\necho misnamed >&2\nexit 7\n")
     (bin_dir / "fastq-sample-prefix").chmod(0o755)
     result = fetch(env, "s", "SRR1000001", SRR1000001="28,91")
     assert result.returncode == 7
