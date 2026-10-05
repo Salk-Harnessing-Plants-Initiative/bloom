@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -49,8 +50,9 @@ def read_names(path: Path) -> list[str]:
 
     from ._format import _index
 
-    with h5py.File(path, "r") as f:
-        names = [strip_release(str(v)) for v in _index(h5py, f["var"])]
+    with _readable(path):
+        with h5py.File(path, "r") as f:
+            names = [strip_release(str(v)) for v in _index(h5py, f["var"])]
     if not names:
         raise LoadError(f"{path.name} holds no genes")
     blank = sum(1 for g in names if not g.strip())
@@ -107,7 +109,7 @@ def gene_values(
 
     # In file order, so each block is a run of ascending columns.
     columns = list(range(len(names))) if only is None else sorted(set(only))
-    with h5py.File(path, "r") as f:
+    with _readable(path), h5py.File(path, "r") as f:
         matrix = f["X"]
         for block in _blocks(h5py, np, matrix, columns, len(names)):
             read = list(_read_block(h5py, np, matrix, block))
@@ -120,6 +122,19 @@ def gene_values(
                         "infinite)"
                     )
                 yield column, {str(int(c)): float(v) for c, v in zip(cells, values) if v != 0}
+
+
+@contextmanager
+def _readable(path: Path):
+    """What reading the file raises becomes a refusal naming it, not a traceback."""
+    from ._format import READ_FAILURES
+
+    try:
+        yield
+    except READ_FAILURES as exc:
+        raise LoadError(
+            f"{visible(path.name)} could not be read: {visible(str(exc) or type(exc).__name__)}"
+        ) from exc
 
 
 def _blocks(h5py, np, matrix, columns: list[int], n_genes: int) -> Iterator[list[int]]:

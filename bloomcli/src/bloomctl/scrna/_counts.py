@@ -15,7 +15,7 @@ from typing import Callable
 
 from . import _genes
 from ._text import listed, visible
-from ._writer import LoadError, Writer, insert, read_all
+from ._writer import LoadError, UnreadableReply, Writer, insert, read_all
 
 BUCKET = "scrna"
 
@@ -147,9 +147,17 @@ def _recorded(writer: Writer, dataset_id: int, ids: dict[str, int]) -> set[str]:
 def _upload(writer: Writer, path: str, payload: bytes) -> None:
     """One gene's values, replacing what is there, so a re-run repairs a stopped upload. The
     storage handle is taken from the current client on each request."""
-    writer.write(f"upload {path}", lambda client: client.storage.from_(BUCKET).upload(
-        path=path, file=payload,
-        file_options={"content-type": "application/json", "upsert": "true"}))
+    def send(client):
+        try:
+            return client.storage.from_(BUCKET).upload(
+                path=path, file=payload,
+                file_options={"content-type": "application/json", "upsert": "true"})
+        except (ValueError, KeyError, AttributeError) as exc:
+            # The storage library fails this way on a reply it cannot parse, e.g. an error page.
+            raise UnreadableReply(
+                "the storage server answered with an error page instead of a reply") from exc
+
+    writer.write(f"upload {path}", send)
 
 
 def _record(writer: Writer, rows: list[dict]) -> None:

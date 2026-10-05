@@ -198,3 +198,31 @@ def test_the_original_file_put_back_finishes_the_load(tmp_path, env, storage, mo
     resumed = _run("upload", "--yes", str(path))
     assert resumed.exit_code == 0, resumed.output
     assert _dataset(env)["ingested_at"] and len(env["client"].tables["scrna_counts"]) == 4
+
+
+def test_a_storage_error_page_during_the_counts_gives_a_plain_message(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "d.h5ad")
+    env["client"].fail(lambda op, table, payload: op == "upload",
+                       ValueError("Expecting value: line 1 column 1 (char 0)"))
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code != 0
+    assert "the file is stored, but loading it stopped" in result.output
+    assert "the storage server answered with an error page instead of a reply" in result.output
+    assert "Traceback" not in result.output
+    again = _run("upload", "--yes", str(path))
+    assert "may still be finishing on the server; wait" in again.output
+
+
+def test_a_file_that_cannot_be_read_during_the_counts_gives_a_plain_message(
+    tmp_path, env, storage, monkeypatch
+):
+    from bloomctl.scrna import _genes
+
+    def truncated(*_args):
+        raise OSError("Unable to read data (truncated file)")
+
+    monkeypatch.setattr(_genes, "_read_block", truncated)
+    result = _run("upload", "--yes", str(write_h5ad(tmp_path / "d.h5ad")))
+    assert result.exit_code != 0
+    assert "loading it stopped: d.h5ad could not be read: Unable to read data" in result.output
+    assert not isinstance(result.exception, OSError)

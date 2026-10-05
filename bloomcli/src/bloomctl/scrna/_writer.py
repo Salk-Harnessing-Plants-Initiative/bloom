@@ -41,13 +41,21 @@ class LoadError(RuntimeError):
     """Something about the file, the options or the dataset makes this unsafe to write."""
 
 
+class UnreadableReply(RuntimeError):
+    """A server error whose reply could not be read, such as a gateway's error page."""
+
+
+# What storage says, in its message, about a login that has run out.
+EXPIRED_MESSAGES = ("jwt expired", "invalid jwt", "bad_jwt", "token is expired")
+
+
 def _api_errors() -> tuple:
     """The exceptions a request can raise; anything else is a fault here and propagates."""
     import httpx
     from postgrest.exceptions import APIError
     from storage3.exceptions import StorageApiError
 
-    return (httpx.HTTPError, APIError, StorageApiError)
+    return (httpx.HTTPError, APIError, StorageApiError, UnreadableReply)
 
 
 def classify(exc: BaseException) -> str:
@@ -66,9 +74,11 @@ def classify(exc: BaseException) -> str:
         return "unknown" if isinstance(exc.code, int) and exc.code >= 500 else "failed"
     if isinstance(exc, StorageApiError):
         status = int(exc.status) if str(exc.status).isdigit() else 0
-        if exc.code == "InvalidJWT" or status == 401:
+        expired = any(m in str(exc.message).lower() for m in EXPIRED_MESSAGES)
+        if exc.code == "InvalidJWT" or status == 401 or expired:
             return "unauthorised"
         return "unknown" if status >= 500 else "failed"
+    # Anything else, an unreadable reply included, may or may not have been stored.
     return "unknown"
 
 

@@ -171,3 +171,44 @@ def test_a_value_that_is_not_finite_stops_before_its_object(tmp_path):
     with pytest.raises(LoadError, match="AT1G00003 holds a value that is not finite"):
         write(client, tmp_path, write_h5ad(tmp_path / "nan.h5ad", matrix=matrix))
     assert "counts/MYB41_transgene_7_/AT1G00003.json" not in objects(client)
+
+
+# --- storage replies the storage library cannot read ---------------------------------------
+
+
+def _storage_client(status, body, ctype="application/json"):
+    """A client whose storage is the real storage3 client, answering every request so."""
+    from storage3 import SyncStorageClient
+
+    def reply(_request):
+        return httpx.Response(status, content=body, headers={"content-type": ctype})
+
+    storage = SyncStorageClient("http://s.test/storage/v1/", {"Authorization": "Bearer t"},
+                                http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    return type("Client", (), {"storage": storage})()
+
+
+@pytest.mark.parametrize("status,body,ctype", [
+    (502, b"<html>Bad Gateway</html>", "text/html"),
+    (504, b'{"message": "The upstream server is timing out"}', "application/json"),
+], ids=["gateway-html-502", "gateway-504"])
+def test_an_unreadable_storage_reply_is_an_unknown_outcome_not_a_traceback(
+    tmp_path, status, body, ctype
+):
+    marker = Marker(tmp_path / "m.json", wait_s=300)
+    w = Writer(_storage_client(status, body, ctype), lambda: None, marker)
+    with pytest.raises(LoadError) as exc:
+        _counts._upload(w, "counts/MYB41_7_/G.json", b"{}")
+    assert "the storage server answered with an error page instead of a reply" in str(exc.value)
+    assert "outcome is unknown" in str(exc.value)
+    assert marker.path.exists(), "the next run waits it out"
+
+
+def test_an_expired_login_named_in_storages_message_signs_in_again(tmp_path):
+    expired = _storage_client(
+        403, b'{"statusCode": "403", "error": "Unauthorized", "message": "jwt expired"}')
+    fresh = _storage_client(200, b'{"Key": "scrna/counts/MYB41_7_/G.json"}')
+    renewed = []
+    w = Writer(expired, lambda: renewed.append(1) or fresh, Marker(tmp_path / "m.json"))
+    _counts._upload(w, "counts/MYB41_7_/G.json", b"{}")
+    assert renewed == [1]
