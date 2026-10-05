@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Callable
 
+from . import _counts
 from ._cells import MAX_FACETS, MAX_FACETS_JSON, PALETTE, genotype_rows
 from ._checks import (
     LABEL_KEYS,
@@ -24,6 +27,7 @@ from ._checks import (
     check_numbers,
     check_registration,
     check_resume,
+    check_same_cells,
 )
 from ._text import visible
 from ._writer import LoadError, Writer, find_dataset, insert, read_all, update
@@ -46,6 +50,7 @@ class Plan:
 def plan(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
     options: dict, *, create: bool, add_labels: bool = False, species: str | None = None,
+    counts: tuple[Path, list[str]] | None = None,
 ) -> Plan:
     """Decide what the load will do, refusing everything the load would; writes nothing."""
     name = _checked_name(name)
@@ -64,10 +69,15 @@ def plan(
     outcome = check_resume(found, source_checksum, options)
     if outcome == "already loaded":
         check_nothing_to_add(found, options)
+        if counts is not None and _counts.missing(writer, found["id"], counts[1]):
+            check_same_cells(writer, found["id"], cells)
+            return Plan("add counts", found["id"])
         return Plan(outcome, found["id"])
     dataset_id = found["id"]
     check_nothing_later(writer, dataset_id)
     check_catalogue(writer, dataset_id, cells)
+    if counts is not None:
+        _counts.missing(writer, dataset_id, counts[1])
     if cells.get("genotypes") is not None:
         _plan_genotypes(writer, dataset_id, _genotypes(cells, options))
     check_numbers(dataset_id, _cell_numbers(writer, dataset_id), cells["n_cells"], complete=False)
@@ -78,13 +88,17 @@ def load(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
     options: dict, *, create: bool = False, species: str | None = None,
     normalization: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
+    counts: tuple[Path, list[str]] | None = None, track=None,
 ) -> tuple[int, int, str]:
-    """Register or resume the dataset, write what is missing, then finish it.
+    """Register or resume the dataset, write its cells and, given ``counts`` (the file and its
+    gene names), every gene's counts; then finish it.
 
     The registration records how many cells the file holds, so a reader can say how far an
-    unfinished load got. ``normalization`` is recorded when the dataset is finished. Returns
-    the dataset id, the number of cells stored, and "registered", "resumed" or "already
-    loaded".
+    unfinished load got. The dataset is finished last, so finished means cells and counts are
+    all there; ``normalization`` is recorded then. A dataset finished before counts were part
+    of the load gets the ones it is missing. ``track(description, unit)`` shows each step's
+    progress. Returns the dataset id, the number of cells stored, and "registered", "resumed",
+    "counts added" or "already loaded".
     """
     name = _checked_name(name)
     check_columns(cells)
@@ -100,6 +114,10 @@ def load(
         outcome = check_resume(found, source_checksum, options)
         if outcome == "already loaded":
             check_nothing_to_add(found, options)
+            if counts is not None and _counts.missing(writer, found["id"], counts[1]):
+                check_same_cells(writer, found["id"], cells)
+                _write_counts(writer, found["id"], name, counts, track)
+                outcome = "counts added"
             return found["id"], found.get("n_cells") or 0, outcome
         check_nothing_later(writer, found["id"])
     dataset_id, n = found["id"], cells["n_cells"]
@@ -113,9 +131,12 @@ def load(
     numbers = _cell_numbers(writer, dataset_id) if outcome == "resumed" else []
     check_numbers(dataset_id, numbers, n, complete=False)
     have = set(numbers)
-    _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have], genotype_ids,
-                  on_progress)
+    with _step(track, "Writing cells") as report:
+        _insert_cells(writer, dataset_id, cells, [i for i in range(n) if i not in have],
+                      genotype_ids, report or on_progress)
     check_numbers(dataset_id, _cell_numbers(writer, dataset_id), n, complete=True)
+    if counts is not None:
+        _write_counts(writer, dataset_id, name, counts, track)
 
     metadata = {**_metadata(writer, dataset_id), "cell_type_column": options["annotation"]}
     if normalization is not None:
@@ -211,6 +232,22 @@ def _merged_facets(writer: Writer, dataset_id: int, cells: dict) -> list[dict]:
             raise LoadError(f"cell {i}'s labels would come to more than {MAX_FACETS_JSON} "
                             "characters with the ones it already has; add fewer columns")
     return merged
+
+
+def _write_counts(writer: Writer, dataset_id: int, name: str, counts, track) -> None:
+    path, names = counts
+    with _step(track, "Writing genes") as report:
+        _counts.write(writer, dataset_id, name, path, names, on_progress=report)
+
+
+@contextmanager
+def _step(track, description: str):
+    """One step's progress, when the caller shows progress."""
+    if track is None:
+        yield None
+        return
+    with track(description, "count") as report:
+        yield report
 
 
 def catalogue_rows(dataset_id: int, cells: dict) -> list[dict]:

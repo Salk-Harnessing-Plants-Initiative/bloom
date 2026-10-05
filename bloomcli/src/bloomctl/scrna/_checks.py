@@ -18,12 +18,10 @@ LABEL_KEYS = ("source_column", "genotype_column", "control", "constructs", "face
 # The options a resumed load must share with the load it continues.
 OPTION_KEYS = ("annotation", "sample_column", "umap_key", "expression_units", *LABEL_KEYS)
 
-# Rows written after the cells. On a dataset whose cells are unfinished they mean something
-# went wrong.
+# Rows written once a dataset is finished. On an unfinished one they mean something went wrong.
 LATER_TABLES = (
     ("scrna_cluster_stats", "per-cluster statistics"),
     ("scrna_cluster_neighbors", "neighbour rows"),
-    ("scrna_counts", "per-gene expression rows"),
     ("scrna_de", "differential expression rows"),
 )
 

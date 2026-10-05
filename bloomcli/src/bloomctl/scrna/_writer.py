@@ -45,14 +45,16 @@ def _api_errors() -> tuple:
     """The exceptions a request can raise; anything else is a fault here and propagates."""
     import httpx
     from postgrest.exceptions import APIError
+    from storage3.exceptions import StorageApiError
 
-    return (httpx.HTTPError, APIError)
+    return (httpx.HTTPError, APIError, StorageApiError)
 
 
 def classify(exc: BaseException) -> str:
     """'unauthorised' (never ran), 'failed' (did not commit) or 'unknown' (may have)."""
     import httpx
     from postgrest.exceptions import APIError
+    from storage3.exceptions import StorageApiError
 
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         return "failed"
@@ -62,6 +64,11 @@ def classify(exc: BaseException) -> str:
         if exc.code in UNAUTHORISED_CODES:
             return "unauthorised"
         return "unknown" if isinstance(exc.code, int) and exc.code >= 500 else "failed"
+    if isinstance(exc, StorageApiError):
+        status = int(exc.status) if str(exc.status).isdigit() else 0
+        if exc.code == "InvalidJWT" or status == 401:
+            return "unauthorised"
+        return "unknown" if status >= 500 else "failed"
     return "unknown"
 
 

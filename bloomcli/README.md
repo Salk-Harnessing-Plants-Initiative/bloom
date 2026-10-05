@@ -655,9 +655,20 @@ again does nothing about a permission the account does not have.
 Once the file is stored, the cells are written: the dataset row (recording the file's
 fingerprint, the load's options and how many cells the file holds), its cell-type catalogue
 (each type with its colour), and one row per cell with its UMAP position, type and sample.
-The dataset is marked finished last, after every cell is read back, with the file's
-`uns['normalization']`; until then a dataset that records a file but no finish time is an
-unfinished load. The colour-bar units follow the normalization (`log1p normalised counts`,
+Then each gene's counts: a row per gene, numbered by its position in the file, and one object
+per gene under `counts/<name>_<dataset id>_/<gene>.json` holding its value in every cell that
+has one, keyed by the cell's position. The matrix is read a block of genes at a time, so the
+memory this takes stays bounded whatever the file's size; a value that is not finite is
+refused, naming the gene. Gene names lose an `.Araport11.N` suffix, and have to be usable in
+an object path and unique.
+
+The dataset is marked finished last, after every cell is read back and every gene's counts
+are recorded, with the file's `uns['normalization']`; until then a dataset that records a
+file but no finish time is an unfinished load. A dataset finished before the counts were
+part of the upload gets the ones it is missing when the same command is run again.
+`--expect-nonzero GENE=COUNT` (repeatable) refuses the file unless that gene is non-zero in
+exactly that many cells — a way to pin a gene whose count is known independently, such as a
+transgene's. The colour-bar units follow the normalization (`log1p normalised counts`,
 `log2(x+1) normalised counts`, …) unless `--expression-units` says otherwise.
 
 On a terminal, the slow steps — preparing (fingerprinting and gzipping) the file, uploading

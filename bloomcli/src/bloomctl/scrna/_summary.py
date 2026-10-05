@@ -39,7 +39,7 @@ def describe(
 
 def describe_load(
     cells: dict, dataset: str, genotypes: list[dict], facet_columns: tuple[str, ...], *,
-    units: str,
+    units: str, checked: dict[str, int] | None = None,
 ) -> list[str]:
     """What the load will write: the dataset, its cell types, samples, genotypes and labels."""
     samples = Counter(cells["samples"])
@@ -57,6 +57,9 @@ def describe_load(
         counts = Counter(f[column] for f in cells["facets"])
         values = ", ".join(f"{visible(v)} {n:,}" for v, n in sorted(counts.items()))
         lines += _row("labels" if i == 0 else "", f"{visible(column)}: {values}")
+    if checked:
+        lines += _list_row("checked", [f"{visible(g)} non-zero in {n:,} cells"
+                                       for g, n in sorted(checked.items())])
     if cells.get("sources"):
         per_source = Counter(cells["sources"].values())
         lines += _list_row("label sources", [

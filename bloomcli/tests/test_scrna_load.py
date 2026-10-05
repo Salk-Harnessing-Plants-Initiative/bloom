@@ -242,7 +242,7 @@ def test_a_stored_catalogue_that_differs_from_the_file_is_refused(tmp_path):
 
 @pytest.mark.parametrize("table,named", [
     ("scrna_cluster_stats", "statistic"), ("scrna_cluster_neighbors", "neighbour"),
-    ("scrna_counts", "expression"), ("scrna_de", "differential expression"),
+    ("scrna_de", "differential expression"),
 ])
 def test_results_on_the_dataset_stop_the_cells_loader(tmp_path, table, named):
     client = FakeClient({table: [{"id": 1, "dataset_id": 7}]})
@@ -440,9 +440,9 @@ def test_a_finished_dataset_from_another_file_is_refused_at_planning(tmp_path):
 
 
 def test_results_on_an_unfinished_dataset_are_refused_at_planning(tmp_path):
-    client = FakeClient({"scrna_counts": [{"id": 1, "dataset_id": 7}]})
+    client = FakeClient({"scrna_de": [{"id": 1, "dataset_id": 7}]})
     dataset(client)
-    with pytest.raises(LoadError, match="expression"):
+    with pytest.raises(LoadError, match="differential expression"):
         plan(client, tmp_path, create=False)
 
 

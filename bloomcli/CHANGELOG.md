@@ -25,6 +25,10 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   colour-bar units unless `--expression-units` is given. A stopped or interrupted load
   continues when the same command is run again. bloomctl now depends on `anndata`
   (bloom #1057).
+- `scrna hdf5 upload` writes each gene's counts after the cells: a row per gene and one object
+  per gene under `counts/<name>_<dataset id>_/`, read from the matrix a block of genes at a
+  time. The dataset is finished only once the counts are in, and one finished without them
+  gets them on the next run. `--expect-nonzero GENE=COUNT` pins a gene's non-zero cell count.
 - `scrna hdf5 upload --umap-key NAME` names a UMAP stored under another name than
   `obsm['X_umap']` (bloom #1057).
 
