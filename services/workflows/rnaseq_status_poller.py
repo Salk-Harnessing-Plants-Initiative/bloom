@@ -4,8 +4,8 @@ RNA-seq status poller.
 Every WORKFLOWS_STATUS_POLL_SECONDS, reads the Argo Workflow of each submitted or running
 rnaseq_runs row, turns it into the run's status with the reader for its workflow type in
 rnaseq_workflows, and records it with update_rnaseq_run_status, which only moves a run
-forward and writes nothing for an unchanged report. A Workflow that no longer exists
-fails its run. A run that imports its sample from SRA has the sample registered with
+forward and writes nothing for an unchanged report. A Workflow the cluster says no
+longer exists fails its run; any other failed read leaves the run for the next poll. A run that imports its sample from SRA has the sample registered with
 register_rnaseq_sample once its fetch-sra step succeeds. Runs as the bloom_workflows app
 user; one poller per environment.
 

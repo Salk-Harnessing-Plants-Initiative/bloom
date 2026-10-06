@@ -556,14 +556,21 @@ def _is_verified_not_found(resp: httpx.Response, name: str) -> bool:
 
 def get_workflow(name: str) -> dict | None:
     """GET a single Workflow by name and return it whole (metadata, spec and status).
-    Returns None on any 404: the Workflow no longer exists, most often because its
-    ttlStrategy cleaned it up. Raises K8sStatusError for any other non-2xx response,
-    a network-level failure or an unparseable body, with a fixed, generic message;
-    the real detail is logged server-side only. The cylinder status poller uses
-    get_workflow_status instead, which only trusts a verified NotFound."""
+    Returns None only on a verified NotFound (see _is_verified_not_found): the Workflow
+    no longer exists, most often because its ttlStrategy cleaned it up. Any other 404
+    (a proxy's page, a missing CRD, a wrong path) is logged with its body and raises
+    K8sStatusError, as does any other non-2xx response, a network-level failure or an
+    unparseable body, with a fixed, generic message."""
     resp = _request_workflow(name)
     if resp.status_code == 404:
-        return None
+        if _is_verified_not_found(resp, name):
+            return None
+        logger.warning(
+            "k8s_client: workflow read got a 404 that does not name workflow %s: %s",
+            name,
+            resp.text[:500],
+        )
+        raise K8sStatusError("Argo Workflow status check failed")
     return _parse_workflow(resp)
 
 
