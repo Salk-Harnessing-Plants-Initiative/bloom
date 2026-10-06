@@ -13,7 +13,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PR_CHECKS = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
-NEEDS = ("h5py", "numpy")
+NEEDS = ("h5py", "numpy", "anndata")
 
 
 def _project() -> dict:

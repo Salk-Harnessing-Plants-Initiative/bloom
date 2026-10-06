@@ -102,9 +102,10 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
-- **[write]** `bloomctl scrna hdf5 upload <file.h5ad>` — store a single-cell dataset's
-  AnnData file, gzipped and named by its SHA-256, after checking its structure
-  (see below).
+- **[write]** `bloomctl scrna hdf5 upload <file.h5ad> --name … --species … --annotation …`
+  — store a single-cell dataset's AnnData file, gzipped and named by its SHA-256, and load
+  its cells into Bloom, after checking both and showing what will happen; asks first
+  (`--yes` in scripts, `--dry-run` to check only). See below.
 - **[read]** `bloomctl scrna hdf5 download <dataset>` — fetch a dataset's AnnData file,
   by name, id or `--checksum`, checked against its fingerprint (see below).
 - **[read]** `bloomctl scrna hdf5 list [search]` — the dataset files storage holds, each
@@ -509,7 +510,8 @@ finds its file with no lookup table, and the same file uploaded twice is one
 object.
 
 ```bash
-bloomctl scrna hdf5 upload myb41_transgene_load.h5ad -p staging
+bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
+  --species Arabidopsis --annotation cell_type --create -p staging    # store and load
 bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
 bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id
 bloomctl scrna hdf5 download --checksum 82278a…a54f -p staging       # by fingerprint
@@ -518,14 +520,16 @@ bloomctl scrna hdf5 list myb41 -p staging                            # by datase
 bloomctl scrna hdf5 list --file myb41_transgene_load.h5ad -p staging # is this one stored?
 ```
 
-**Upload** needs a writer or admin login. Before sending anything it checks the
-file's structure:
+**Upload** stores the file and loads the dataset from it — its cells and each gene's counts —
+so the explorer can show them and colour them by any gene. It needs a writer or admin login.
+Before sending anything it checks the file's structure:
 
 - every cell has an ID and none repeats (a barcode shared across samples cannot
   be the index); the same for genes, in whatever form the species' annotation
   writes them
 - `X` holds only finite values
-- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates small
+- the UMAP (`obsm['X_umap']`, or the array `--umap-key` names) is there, has two columns
+  and a row per cell, holds only finite coordinates small
   enough for the explorer to store, and does not pile more than a thousandth of the cells on
   a single point — an array allocated and never filled passes every other check and draws the
   whole dataset as one dot. These two limits are the loader's own, so a UMAP this accepts is a
@@ -542,7 +546,109 @@ file's structure:
   optionally `counts_layer`. A file a dataset was loaded from before this existed
   is accepted without the block when that dataset records it.
 
-It then gzips the file and sends it through storage's resumable upload. Because an object is
+A file with no UMAP is refused: the explorer plots stored coordinates and never computes
+them. A file with no `obsm['X_umap']` but another array with two columns and a row per cell
+is refused naming it; pass `--umap-key NAME` if that array is the UMAP.
+
+Next it reads the cells and the gene names, the way the load will. Only the cell table
+(`obs`), the UMAP, the gene table (`var`) and the matrix's shape are read — no expression
+matrix or layer, except the genes `--expect-nonzero` names — so the memory this takes does
+not grow with the size of the data:
+
+- `--annotation` names the obs column holding the cell-type or cluster label assigned to
+  each cell — annotated types such as `Cortex`, or cluster ids such as Leiden's `0`, `1`, … —
+  which the map colours by (at most 23 labels, one colour each); `--sample-column` (default
+  `sample`) names the column holding each cell's sample
+- every cell has a barcode, a type and a sample; a blank, or a value that reads as missing
+  (`nan`, `None`, …), is refused rather than stored as a cell type
+- `--expect-cells N` refuses a file holding any other number of cells
+- sample names are at most 100 characters, the most the database holds
+- gene names lose an `.Araport11.N` suffix, and then have to be unique and usable in an
+  object path (no `/`, no `..`)
+- `--expect-nonzero GENE=COUNT` (repeatable) refuses the file unless that gene is non-zero in
+  exactly that many cells — a way to pin a gene whose count is known independently, such as
+  a transgene's
+- the file does not change while it is read; one re-saved part-way is refused. The same check
+  runs again while the gene counts are read, after the file is stored: if the file changes
+  then, the load stops with nothing from the changed file written, and either the original
+  file is put back and the same command continues it, or the new file is uploaded as a new
+  dataset with another `--name` and `--create`
+
+Then it gzips the file, which also fingerprints it, and checks what needs that: the gzipped
+size is within 500 MB, and a file without `uns['normalization']` is one a dataset already
+records the normalization for. Last, it looks the dataset up by `--name` within `--species`
+(a common name, matched ignoring case and surrounding spaces) and decides what the load
+will do. Surrounding spaces are ignored in dataset names, and a name that differs from an existing
+dataset's only in capital letters is refused, asking for the exact name or a new one, so
+`myb41` cannot quietly stand in for, or sit beside, `MYB41`:
+
+- **no such dataset**: registered, but only with `--create`, so a mistyped name is refused
+  rather than loaded as a second copy
+- **a load from this file that stopped**: continued from what is stored, given the same
+  options it was started with
+- **finished from this file without its gene counts** (loaded before the upload wrote them):
+  the stored cells have to be this file's, in its order, and then the missing counts are
+  added
+- **finished from this file**: nothing to load — "already loaded". Given a label option or an
+  `--annotation` the dataset was not loaded with, it is refused instead, pointing to
+  `--add-labels`, rather than reporting success and writing nothing
+- **finished from another file**, or a dataset that records no file: refused. A loaded
+  dataset is not replaced; the refusal suggests a new name to load the file under, such as
+  `MYB41_v2`
+
+Only once every check has passed does it show what the file holds and what the load will
+do, and ask. For the MYB41 file on staging, already loaded as dataset 14:
+
+```text
+myb41_transgene_load.h5ad
+  cells          8,683
+  genes          27,656
+  UMAP           obsm['X_umap']
+  layers         counts
+  normalization  none in the file; recorded on dataset MYB41 transgene (id 14)
+  obs columns    barcode, sample, n_genes_by_counts, total_counts, total_counts_organellar,
+                 pct_counts_organellar, is_cell, dev_label, saturn_Celltype, saturn_Celltype_knn,
+                 saturn_Celltype_conf, saturn_Celltype_agree, saturn_celltype_fine,
+                 saturn_celltype_fine_knn, saturn_celltype_fine_conf, saturn_celltype_fine_agree,
+                 saturn_time_celltype, saturn_time_celltype_knn, saturn_time_celltype_conf,
+                 saturn_time_celltype_agree, saturn_timezone, saturn_timezone_knn,
+                 saturn_timezone_conf, saturn_timezone_agree, transgene_umi, transgene_pos,
+                 saturn_nuc_Celltype, saturn_nuc_Celltype_knn, saturn_nuc_Celltype_conf,
+                 saturn_nuc_Celltype_agree, singler, singler_score, sr_Atrichoblast (elongation),
+                 sr_Atrichoblast (mature), sr_Cortex (elongation_maturation),
+                 sr_Cortex (maturation), sr_Cortex maturation, sr_Cortex_Atrichoblast (maturation),
+                 sr_Endodermis (elongation_maturation), sr_LRC, sr_Meristem, sr_Pericycle,
+                 sr_Pericycle_endodermis (elongation), sr_Periderm_endodermis, sr_Phellem,
+                 sr_Phellogen, sr_Phloem, sr_QC, sr_Trichoblast (elongation_maturation),
+                 sr_Trichoblast (mature), sr_Unknown_1, sr_Xylem, nn_label, nn_label_plain,
+                 nn_source, nn_conf, nn_pct_shahan
+  dataset        MYB41 transgene (id 14) — already loaded from this file
+  cell types     23: Atrichoblast, Atrichoblast (elongation), Atrichoblast (mature), Columella,
+                 Cortex, Cortex (elongation/maturation), Cortex (maturation), Cortex maturation,
+                 Cortex/Atrichoblast (maturation), Endodermis (elongation/maturation), LRC,
+                 Lateral Root Cap, Meristem, Pericycle, Pericycle/endodermis (elongation), Phellem,
+                 Phloem, Procambium, QC, Trichoblast, Trichoblast (elongation/maturation),
+                 Unknown_1, Xylem
+  samples        Col-0 2,442, pFACT 3,304, pHORST 2,937
+  units          log1p normalised counts
+Upload this file? Its dataset is already loaded [y/N]:
+```
+
+For a new dataset the dataset line reads `— new, registered by this upload`, a `gene counts`
+line says how many genes' counts will be written and where (`27,656 genes, one object each
+under scrna/counts/My_dataset_<new id>_/`), and the question is
+`Upload this file and load its cells into '<name>'?`.
+
+The summary and the question are written to the terminal (stderr), so they still appear
+when the output is redirected to a file. Every name read from the file is shown with its
+control characters escaped (`\x1b`, `\n`), so the file cannot alter the summary being
+confirmed. Pressing Enter answers no.
+
+`--yes` goes ahead without asking; without a terminal to ask in, the command refuses unless
+`--yes` is given. `--dry-run` signs in and runs every check, shows the summary, and stops
+before sending or writing anything.
+
+Once confirmed, it sends the gzipped file through storage's resumable upload. Because an object is
 named by the fingerprint of its contents, storage already holding that name means it holds
 this very file, byte for byte: the command says so and sends nothing. If the connection
 drops, run the same command again: the gzipped copy and what identifies the upload wait in
@@ -562,6 +668,60 @@ storage took. It does that once — a second expiry is not a token running out, 
 reported. A login that is refused outright is reported at once instead, since signing in
 again does nothing about a permission the account does not have.
 
+Once the file is stored, the cells are written: the dataset row (recording the file's
+fingerprint, the load's options and how many cells the file holds), its cell-type catalogue
+(each type with its colour), and one row per cell with its UMAP position, type and sample.
+Then each gene's counts: a row per gene, numbered by its position in the file, and one object
+per gene under `counts/<name>_<dataset id>_/<gene>.json` holding its value in every cell that
+has one, keyed by the cell's position. The matrix is read a block of genes at a time, so the
+memory this takes stays bounded whatever the file's size.
+
+The dataset is marked finished last, after every cell is read back and every gene's counts
+are recorded, with the file's `uns['normalization']`; until then a dataset that records a
+file but no finish time is an unfinished load. A dataset finished before the counts were
+part of the upload gets the ones it is missing when the same command is run again; it is
+marked unfinished while they are written, and finished again once they are all there. The
+colour-bar units follow the normalization (`log1p normalised counts`,
+`log2(x+1) normalised counts`, …) unless `--expression-units` says otherwise.
+
+On a terminal, the slow steps — preparing (fingerprinting and gzipping) the file, uploading
+it, writing the cells and writing the genes — each show a progress bar with how much is
+done, e.g. `Uploading my_dataset.h5ad ━━━━━━━━╺━━━━━━ 75.0/182.4 MB 41% 0:00:38`; a log or CI run gets
+only the result lines.
+
+Each write is one request sent once; if one fails the command says the file is stored and
+the load stopped, and running the same command again continues it. A write whose outcome
+is unknown (a timeout, or Ctrl-C or a closed terminal while it was being sent) may still be finishing on the
+server, so the next run waits that out first, about six minutes, saying how many seconds
+are left. Load a dataset from one terminal at a time.
+
+`--name`, `--species` and `--annotation` (the column of cell-type or cluster labels) are all
+a load needs; `--create` is added the first time, to register the dataset. A dataset name
+holds letters, digits, spaces, `.`, `_` and `-`. Anything else the file records per cell can
+come along too. Each of these options names an `obs` column:
+
+- `--genotype-column COLUMN` makes each of its values a genotype the cells point at.
+  `--control GENOTYPE` names the control (it is never guessed), and `--construct
+  GENOTYPE=NAME` (repeatable) the construct a line carries.
+- `--facet COLUMN` (repeatable) turns the column's values into filters on the map: a
+  treatment, a timepoint, a batch, whether a transgene was detected. A column may have at
+  most 12 values of at most 200 characters, a column name at most 64, and a load at most 32
+  such columns; a column with more values, such as a count or a score, is refused as a
+  measurement rather than a label.
+- `--source-column COLUMN` records, per cell type, where its label came from, such as the
+  reference atlas it was transferred from.
+
+```bash
+bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
+  --species Arabidopsis --annotation cell_type --create \
+  --genotype-column genotype --control Col-0 --construct line1=35S:GENE \
+  --facet treatment --facet timepoint --source-column label_source -p staging
+```
+
+On a dataset already loaded from this file, `--add-labels` with any of these adds them to its
+cells, which stay as they are. Labels it already has are kept: a new `--facet` joins them,
+and one of a column it already has replaces that column's values.
+
 **List** needs any login. It reports what the bucket holds — each object's fingerprint,
 its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
 does; an object can be stored before any dataset points at it, so an unnamed row is
@@ -575,6 +735,7 @@ all 64 characters.
 its SHA-256 as it goes, and moves the file into place only when the fingerprint
 matches; a mismatch leaves nothing behind. A file already at the destination with
 the right fingerprint is left alone, and a different one is never overwritten.
+
 
 ## Access & roles
 
