@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -313,6 +314,23 @@ def test_the_credentials_file_is_read_as_bloomctl_writes_it(tmp_path, text, comp
         }
     else:
         assert values is None
+
+
+def test_a_process_left_holding_the_output_doesnt_keep_the_step_running(
+    bloom, credentials
+):
+    # The command exits with 4 but leaves a process that holds its output open for 30 s.
+    command = _py(
+        "import subprocess, sys; subprocess.Popen(['sleep', '30']); "
+        "print('done', flush=True); sys.exit(4)"
+    )
+    started = time.monotonic()
+    result = _run(command, credentials)
+    assert result.returncode == 4
+    assert time.monotonic() - started < 20, (
+        "the wrapper waited for the leftover process"
+    )
+    assert bloom.uploads[-1]["body"] == "done\n"
 
 
 # --------------------------------------------------------------------------- #

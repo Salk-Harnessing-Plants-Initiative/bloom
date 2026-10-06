@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -39,6 +40,11 @@ HTTP_TIMEOUT_SECONDS = 20
 # Sign in again this long before the token expires.
 TOKEN_MARGIN_SECONDS = 120
 CHUNK_BYTES = 64 * 1024
+# How often the read loop checks whether the command has exited.
+POLL_SECONDS = 0.5
+# After the command exits, output still on its way is read for this long. A process it left
+# behind can hold the output open forever, so the wrapper doesn't wait for that.
+DRAIN_SECONDS = 5.0
 # The last upload, when the command has ended, is tried this many times.
 FINAL_ATTEMPTS = 3
 FINAL_RETRY_SECONDS = 2.0
@@ -247,6 +253,30 @@ class LogSync:
         _note("the end of the log wasn't uploaded")
 
 
+def _copy_output(child: subprocess.Popen, out, log) -> None:
+    """Copy the command's output to the pod's output and the log until the command has exited
+    and its output is read, or DRAIN_SECONDS after it exited."""
+    fd = child.stdout.fileno()
+    drain_until = None
+    while True:
+        now = time.monotonic()
+        if drain_until is None and child.poll() is not None:
+            drain_until = now + DRAIN_SECONDS
+        if drain_until is not None and now >= drain_until:
+            return
+        wait = POLL_SECONDS if drain_until is None else drain_until - now
+        ready, _, _ = select.select([fd], [], [], wait)
+        if not ready:
+            continue
+        chunk = os.read(fd, CHUNK_BYTES)
+        if not chunk:
+            return
+        out.write(chunk)
+        out.flush()
+        log.write(chunk)
+        log.flush()
+
+
 def _keep_earlier_attempts(uploader: Uploader, log) -> None:
     """Start the log with what earlier attempts of this step uploaded, so a retry adds to it."""
     try:
@@ -316,15 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda signum, _frame: child.send_signal(signum))
 
-    out = sys.stdout.buffer
-    while True:
-        chunk = os.read(child.stdout.fileno(), CHUNK_BYTES)
-        if not chunk:
-            break
-        out.write(chunk)
-        out.flush()
-        log.write(chunk)
-        log.flush()
+    _copy_output(child, sys.stdout.buffer, log)
     code = child.wait()
     log.close()
 
