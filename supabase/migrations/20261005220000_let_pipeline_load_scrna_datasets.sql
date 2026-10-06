@@ -36,11 +36,6 @@ DROP TRIGGER IF EXISTS set_created_by_scrna_datasets ON public.scrna_datasets;
 CREATE TRIGGER set_created_by_scrna_datasets BEFORE INSERT ON public.scrna_datasets
   FOR EACH ROW EXECUTE FUNCTION public.set_created_by_as_owner();
 
--- Datasets are created by bloomctl, as a writer or the pipeline, never by a signed-in user.
--- bloom_user's insert only ever failed on the old trigger's auth.uid(); take it away.
-DROP POLICY IF EXISTS user_insert_scrna_datasets ON public.scrna_datasets;
-REVOKE INSERT ON public.scrna_datasets FROM bloom_user;
-
 -- 2. Which datasets the pipeline may write -------------------------------------------------
 
 -- True for a live dataset the caller created and has not finished. Runs as its owner, because

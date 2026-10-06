@@ -287,15 +287,6 @@ def test_the_trigger_still_sets_created_by_for_a_writer(cur, scientist, species)
     assert _create(cur, species)[1] == scientist
 
 
-def test_a_signed_in_user_cant_create_a_dataset(cur):
-    cur.execute("SELECT has_table_privilege('bloom_user', 'public.scrna_datasets', 'INSERT')")
-    assert cur.fetchone()[0] is False
-    cur.execute("SELECT count(*) FROM pg_policies WHERE schemaname = 'public' "
-                "AND tablename = 'scrna_datasets' AND 'bloom_user' = ANY(roles) "
-                "AND cmd IN ('INSERT', 'ALL')")
-    assert cur.fetchone()[0] == 0
-
-
 @pytest.mark.parametrize("path", ["h5ad/" + "b" * 64 + ".h5ad.gz",
                                   "counts/Root atlas_1_/AT1G01010.json"])
 def test_the_pipeline_stores_the_file_and_counts_as_storage_does(cur, path):
