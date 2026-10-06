@@ -46,6 +46,14 @@ local_path() { echo "${FAKE_S3}/${1#s3://}"; }
 # Every call is logged with whether it was signed.
 signed=yes; for a in "$@"; do [ "$a" = --no-sign-request ] && signed=no; done
 echo "$1 $2 signed=${signed}" >> "${FAKE_S3}/.calls"
+# A private folder: only a call signed with the key FAKE_PRIVATE names gets in.
+if [ -n "${FAKE_PRIVATE:-}" ]; then
+  echo "$1 $2 key=${AWS_ACCESS_KEY_ID:-none} secret=${AWS_SECRET_ACCESS_KEY:-none}" >> "${FAKE_S3}/.keys"
+  if [ "${signed}" = no ] || [ "${AWS_ACCESS_KEY_ID:-}" != "${FAKE_PRIVATE}" ]; then
+    echo "An error occurred (AccessDenied) when calling the $2 operation: Access Denied" >&2
+    exit 254
+  fi
+fi
 if [ "$1" = s3api ] && [ "$2" = head-object ]; then
   while [ $# -gt 0 ]; do
     case "$1" in --bucket) bucket="$2" ;; --key) key="$2" ;; --if-match) want="$2" ;; esac
@@ -61,6 +69,7 @@ if [ "$1" = s3api ] && [ "$2" = head-object ]; then
 fi
 if [ "$1" = s3api ]; then
   [ -z "${FAKE_LIST_FAIL:-}" ] || { echo "An error occurred (AccessDenied)" >&2; exit 255; }
+  [ -z "${FAKE_LIST_UNREACHABLE:-}" ] || { echo "Could not connect to the endpoint URL" >&2; exit 255; }
   while [ $# -gt 0 ]; do
     case "$1" in --bucket) bucket="$2" ;; --prefix) prefix="$2" ;; --delimiter) delim="$2" ;; --max-keys) max="$2" ;; esac
     shift
@@ -523,6 +532,24 @@ def test_the_stage_step_hands_the_folder_to_the_script():
     env = {e["name"]: e.get("value") for e in _template("stage-sample")["container"]["env"]}
     assert env["FASTQ_URL"] == "{{inputs.parameters.fastq-url}}"
     assert env["FASTQ_FILES"] == "{{inputs.parameters.fastq-files}}"
+
+
+def test_the_stage_step_gets_the_readers_keys_only_if_they_exist():
+    env = {e["name"]: e for e in _template("stage-sample")["container"]["env"]}
+    for name, key in (
+        ("READER_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
+        ("READER_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
+    ):
+        ref = env[name]["valueFrom"]["secretKeyRef"]
+        assert ref == {"name": "genericsecret-bloom-fastq-reader", "key": key, "optional": True}
+
+
+def test_only_the_stage_step_gets_the_readers_keys():
+    for template in yaml.safe_load(TEMPLATE.read_text())["spec"]["templates"]:
+        if template["name"] == "stage-sample":
+            continue
+        names = {e["name"] for e in (template.get("container") or {}).get("env", [])}
+        assert not names & {"READER_AWS_ACCESS_KEY_ID", "READER_AWS_SECRET_ACCESS_KEY"}, template["name"]
 
 
 def test_the_stage_step_doesnt_retry_failures_a_retry_cant_fix():

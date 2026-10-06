@@ -6,6 +6,9 @@
 # nothing is written to S3. If the folder holds no FASTQ yet, it waits up to WAIT_SECONDS in
 # case an upload is still finishing. A file added, removed, resized or replaced since the
 # run was started fails the step, so the run never uses other reads than it was started on.
+# The folder is read anonymously; if that listing is refused and READER_AWS_ACCESS_KEY_ID and
+# READER_AWS_SECRET_ACCESS_KEY are set, it's read as Bloom's read-only reader, for a folder a
+# scientist shared with it. The pipeline's own key never reads a scientist's folder.
 # Without FASTQ_URL, the reads come from s3://<bucket>/raw_reads/<sample>/ as before.
 #
 # The run's folder (RUN_DIR) is named by its run key, which a new run can reuse after a failed
@@ -15,7 +18,8 @@
 # writes it earlier in this same run.
 #
 # Env: SAMPLE, DEST_DIR, RUN_DIR (default: DEST_DIR's grandparent), and either FASTQ_URL with
-#      FASTQ_FILES, or BUCKET. WAIT_SECONDS and POLL_SECONDS tune the wait.
+#      FASTQ_FILES (and optionally READER_AWS_ACCESS_KEY_ID, READER_AWS_SECRET_ACCESS_KEY), or
+#      BUCKET. WAIT_SECONDS and POLL_SECONDS tune the wait.
 # Exit codes: 0 copied, 4 no FASTQs, 6 bad input, 7 misnamed FASTQs (fastq-sample-prefix),
 #      8 the folder changed since the run was started (or while it was being copied),
 #      9 the recorded FASTQs are named for another sample, 10 S3 couldn't be listed or read.
@@ -107,12 +111,29 @@ elif [ "${rc}" -ne 0 ]; then
   exit "${EXIT_BAD_INPUT}"
 fi
 
+# How the folder is read: anonymously, as the start API checked it, or as Bloom's reader once an
+# anonymous listing is refused. The pipeline's own key (AWS_*) is never used for it.
+read_as=anonymous
+folder_aws() {
+  if [ "${read_as}" = reader ]; then
+    env -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID="${READER_AWS_ACCESS_KEY_ID}" \
+      AWS_SECRET_ACCESS_KEY="${READER_AWS_SECRET_ACCESS_KEY}" aws "$@"
+  else
+    aws "$@" --no-sign-request
+  fi
+}
+
 list_err="$(mktemp)"
 deadline=$(( $(date +%s) + WAIT_SECONDS ))
 while :; do
-  # Unsigned, as the start API checked it: the folder is public, and Bloom's own key reads no more.
-  if ! listing="$(aws s3api list-objects-v2 --no-sign-request --bucket "${bucket}" --prefix "${prefix_path}" \
+  if ! listing="$(folder_aws s3api list-objects-v2 --bucket "${bucket}" --prefix "${prefix_path}" \
       --delimiter / --max-keys 1000 --no-paginate --output json 2>"${list_err}")"; then
+    if [ "${read_as}" = anonymous ] && [ -n "${READER_AWS_ACCESS_KEY_ID:-}" ] \
+        && [ -n "${READER_AWS_SECRET_ACCESS_KEY:-}" ] && grep -qE 'AccessDenied|\(403\)' "${list_err}"; then
+      read_as=reader
+      echo "${FASTQ_URL} isn't public; reading it as Bloom's reader"
+      continue
+    fi
     echo "ERROR: couldn't list ${FASTQ_URL}: $(head -c 300 "${list_err}")" >&2
     exit "${EXIT_TRANSFER_FAILED}"
   fi
@@ -142,7 +163,7 @@ done
 copied=0
 while IFS=$'\t' read -r name size etag; do
   dest="${DEST_DIR}/${name}"
-  aws s3 cp --only-show-errors --no-sign-request "${FASTQ_URL}${name}" "${dest}" \
+  folder_aws s3 cp --only-show-errors "${FASTQ_URL}${name}" "${dest}" \
     || exit "${EXIT_TRANSFER_FAILED}"
   got="$(stat -c %s "${dest}")"
   if [ "${got}" != "${size}" ]; then
@@ -150,7 +171,7 @@ while IFS=$'\t' read -r name size etag; do
     echo "ERROR: ${name} copied as ${got} bytes, not the ${size} recorded; it changed while it was being copied" >&2
     exit "${EXIT_FOLDER_CHANGED}"
   fi
-  if ! err="$(aws s3api head-object --no-sign-request --bucket "${bucket}" --key "${prefix_path}${name}" \
+  if ! err="$(folder_aws s3api head-object --bucket "${bucket}" --key "${prefix_path}${name}" \
       --if-match "${etag}" 2>&1 >/dev/null)"; then
     rm -f -- "${dest}"
     if [[ "${err}" == *"412"* || "${err}" == *"Precondition"* ]]; then
@@ -162,7 +183,7 @@ while IFS=$'\t' read -r name size etag; do
   fi
   copied=$((copied + 1))
 done < <(FASTQ_FILES="${FASTQ_FILES}" stage-fastqs-lib rows)
-echo "Copied ${copied} FASTQs from ${FASTQ_URL}, each checked against the recorded size and ETag"
+echo "Copied ${copied} FASTQs from ${FASTQ_URL} (read ${read_as}), each checked against the recorded size and ETag"
 
 prefix="$(fastq-sample-prefix "${DEST_DIR}")" || exit "${EXIT_BAD_FASTQ_NAMES}"
 echo "FASTQ prefix: ${prefix}"
