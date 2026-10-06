@@ -1,5 +1,9 @@
 import Link from "next/link";
 import Illustration from "@/components/illustration";
+import {
+  IncompleteUploadNotice,
+  isIncompleteUpload,
+} from "@/components/expression-upload-status";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 type Props = {
@@ -15,7 +19,7 @@ async function fetchBannerData(datasetId: number) {
   const { data: dataset } = await supabase
     .from("scrna_datasets")
     .select(
-      "id, name, n_cells, assembly, annotation, strain, metadata, species_id, species(common_name, genus, species, illustration_path), people:scientist_id(name)",
+      "id, name, n_cells, assembly, annotation, strain, metadata, species_id, source_checksum, ingested_at, species(common_name, genus, species, illustration_path), people:scientist_id(name)",
     )
     .eq("id", datasetId)
     .single();
@@ -54,7 +58,7 @@ async function fetchBannerData(datasetId: number) {
   }
   const clusters = clusterIds.size || null;
 
-  return { dataset, species, scientist, siblings, clusters };
+  return { dataset, species, scientist, siblings, clusters, incomplete: isIncompleteUpload(dataset) };
 }
 
 function formatCount(n: number | null | undefined): string {
@@ -80,7 +84,7 @@ export default async function ExpressionDatasetBanner({ datasetId, speciesId }: 
   const data = await fetchBannerData(datasetId);
   if (!data) return null;
 
-  const { dataset, species, scientist, siblings, clusters } = data;
+  const { dataset, species, scientist, siblings, clusters, incomplete } = data;
   const assemblyAnnotation =
     dataset.assembly || dataset.annotation
       ? `${dataset.assembly ?? "—"} / ${dataset.annotation ?? "—"}`
@@ -90,6 +94,7 @@ export default async function ExpressionDatasetBanner({ datasetId, speciesId }: 
     <section
       className="mb-8 p-6 rounded-xl border border-lime-200 bg-gradient-to-br from-lime-50 via-lime-50/40 to-white shadow-xl shadow-lime-300/35"
     >
+      {incomplete ? <IncompleteUploadNotice /> : null}
       <div className="flex items-start gap-6">
         <div className="shrink-0 w-14 h-14 flex items-center justify-center">
           <Illustration
