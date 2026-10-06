@@ -289,7 +289,7 @@ For Cell Ranger, the reader (`rnaseq_status.py`) works from the Workflow's `stat
 
 Once an SRA import's `fetch-sra` step has succeeded, and the run is recorded as running or succeeded, the poller registers the sample with `register_rnaseq_sample`, passing the step's `fastq-count` and `total-bytes` outputs. It does this once per run; the function is idempotent, so a restarted poller repeating it is harmless. A name that conflicts (23505) is logged once and not retried; other errors are retried on the next poll.
 
-A Workflow that no longer exists fails its run with "The workflow was removed before its result was recorded". One run's error is logged and the sweep goes on; missing K8s settings stop the sweep until they are fixed. The reader is tested against real Workflows from `runai-busch-lab` (`tests/fixtures/argo/`).
+A Workflow that no longer exists fails its run with "The workflow was removed before its result was recorded", but only when the cluster's answer is a NotFound naming that Workflow. Any other 404 (a proxy's page, a missing Argo CRD, a wrong API path) logs `k8s_client: workflow read got a 404 that does not name workflow …` and leaves the run as it is until a later poll can read it: a run stuck at "running" with that line in the log points at `WORKFLOWS_K8S_API_URL`, the namespace, or the Argo install. One run's error is logged and the sweep goes on; missing K8s settings stop the sweep until they are fixed. The reader is tested against real Workflows from `runai-busch-lab` (`tests/fixtures/argo/`).
 
 ### Pipeline dispatch worker
 
