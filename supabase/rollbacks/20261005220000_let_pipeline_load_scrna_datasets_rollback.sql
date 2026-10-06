@@ -8,11 +8,12 @@
 BEGIN;
 
 DO $$
+DECLARE
+  n INTEGER;
 BEGIN
-  IF EXISTS (SELECT 1 FROM public.rnaseq_runs WHERE current_step = 'load-dataset') THEN
-    RAISE EXCEPTION
-      'a run is at its load-dataset step — refusing to roll back. '
-      'Wait for it to finish or fail, then re-run this rollback.';
+  SELECT count(*) INTO n FROM public.rnaseq_runs WHERE current_step = 'load-dataset';
+  IF n > 0 THEN
+    RAISE EXCEPTION '% run(s) report load-dataset; clear current_step on them first', n;
   END IF;
 END
 $$;

@@ -66,8 +66,8 @@ GRANT EXECUTE ON FUNCTION public.workflows_may_load_scrna_dataset(BIGINT) TO blo
 GRANT SELECT ON public.species, public.scrna_cluster_stats, public.scrna_cluster_neighbors,
   public.scrna_de TO bloom_workflows;
 
--- Only the columns the load writes, so the pipeline cannot set a dataset's owner, name,
--- species or finish time when creating it, nor change who it belongs to later.
+-- Only the columns the load writes, so the pipeline cannot set a dataset's owner or finish
+-- time when creating it, nor later change its name, species or owner.
 GRANT SELECT ON public.scrna_datasets TO bloom_workflows;
 GRANT INSERT (name, species_id, source_checksum, metadata) ON public.scrna_datasets
   TO bloom_workflows;
@@ -77,7 +77,7 @@ GRANT UPDATE (n_cells, n_genes, expression_units, metadata, ingested_at) ON publ
 GRANT SELECT, INSERT ON public.scrna_clusters, public.scrna_genotypes, public.scrna_cells,
   public.scrna_genes, public.scrna_counts TO bloom_workflows;
 
--- scrna_cells' CHECK calls it with the writer's privileges.
+-- scrna_cells' CHECK calls it with the inserting role's privileges.
 GRANT EXECUTE ON FUNCTION public.scrna_facets_are_flat_text(JSONB) TO bloom_workflows;
 
 -- 4. Row policies --------------------------------------------------------------------------
@@ -224,6 +224,11 @@ BEGIN
   END IF;
   IF v_run.workflow_type <> 'scrna-cellranger' THEN
     RAISE EXCEPTION 'run % is not a Cell Ranger run', p_run_id USING ERRCODE = '22023';
+  END IF;
+  IF v_run.status = 'failed' THEN
+    RAISE EXCEPTION
+      'run % failed; contact the Bloom team to remove its incomplete dataset, then start the run again',
+      p_run_id USING ERRCODE = '55000';
   END IF;
   IF v_run.status NOT IN ('running', 'succeeded') THEN
     RAISE EXCEPTION 'run % is %, so its load has not succeeded', p_run_id, v_run.status
