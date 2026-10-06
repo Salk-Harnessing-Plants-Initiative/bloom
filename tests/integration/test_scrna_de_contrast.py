@@ -66,6 +66,8 @@ EXPECTED_PRIVILEGES = {
     # and correcting one is loading it again. bloom_admin keeps it for a
     # developer repairing the database deliberately.
     "bloom_writer": {"SELECT", "INSERT"},
+    # The pipeline reads it to check a resumed load built nothing later on the dataset.
+    "bloom_workflows": {"SELECT"},
 }
 
 
@@ -485,6 +487,8 @@ def test_privileges_match_an_untouched_sibling_apart_from_the_one_revoke(pg_conn
         expected = {
             role: privs - {"UPDATE", "DELETE"}
             if role in ("bloom_writer", "authenticated", "anon", "service_role")
+            # The pipeline writes a dataset's cells and only reads its results.
+            else privs - {"INSERT"} if role == "bloom_workflows"
             else privs
             for role, privs in _table_privileges(cur, SIBLING).items()
         }
