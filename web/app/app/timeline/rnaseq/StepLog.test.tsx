@@ -67,8 +67,12 @@ describe("StepLog", () => {
 
 describe("logMessage", () => {
   it.each([
-    [503, null, "Logs aren't available yet."],
-    [502, null, "Logs aren't available yet."],
+    [503, null, "Bloom can't read logs from the cluster here; ask the Bloom admins."],
+    [
+      502,
+      null,
+      "Couldn't read the log from the cluster. The run itself isn't affected; if this keeps happening, ask the Bloom admins.",
+    ],
     [401, null, "Sign in to see logs."],
     [500, null, "Couldn't load this log. Try again shortly."],
     [409, "Step count hasn't started running yet", "Step count hasn't started running yet"],
