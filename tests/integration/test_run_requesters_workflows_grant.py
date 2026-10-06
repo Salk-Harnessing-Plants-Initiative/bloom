@@ -10,6 +10,7 @@ checked with has_function_privilege, not by calling as a denied role.
 import pytest
 
 from tests.integration.test_rnaseq_runs import _find_one, _sql_body
+from tests.integration.test_timeline_hub_reads import _requesters, _run, _user
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -36,6 +37,18 @@ def _may_call(cur, role):
                          + [(r, False) for r in NOT_CALLERS])
 def test_the_poller_may_look_up_requesters_and_nobody_else_gains(cur, role, allowed):
     assert _may_call(cur, role) is allowed
+
+
+def test_the_poller_gets_the_email_of_whoever_started_each_run(cur):
+    # The run-finished email's lookup, as the poller makes it.
+    alice, alice_email = _user(cur)
+    bob, bob_email = _user(cur)
+    first = _run(cur, alice)
+    second = _run(cur, bob, "root_rep1")
+    assert _requesters(cur, "bloom_workflows", [first, second]) == sorted(
+        [(first, alice_email), (second, bob_email)]
+    )
+    assert _requesters(cur, "bloom_workflows", [first]) == [(first, alice_email)]
 
 
 def test_the_poller_reads_no_user_accounts_directly(cur):
