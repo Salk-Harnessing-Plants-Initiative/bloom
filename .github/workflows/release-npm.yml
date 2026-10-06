@@ -198,6 +198,13 @@ jobs:
         working-directory: ${{ env.PKG_DIR }}
         run: sha256sum -c release.sha256
 
+      # The publish job's own command as a dry run, so a manual run checks it too.
+      - name: Dry-run the publish command
+        working-directory: ${{ env.PKG_DIR }}
+        env:
+          DIST_TAG: ${{ needs.validate-release.outputs.dist_tag }}
+        run: npm publish ./release/*.tgz --dry-run --tag "$DIST_TAG"
+
       - name: Upload the verified artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
@@ -211,6 +218,7 @@ jobs:
   build-and-publish:
     name: Publish
     needs: build-and-verify
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     environment: github-packages
     permissions:
@@ -239,4 +247,4 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DIST_TAG: ${{ needs.build-and-verify.outputs.dist_tag }}
-        run: npm publish release/*.tgz --tag "$DIST_TAG"
+        run: npm publish ./release/*.tgz --tag "$DIST_TAG"
