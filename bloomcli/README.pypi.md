@@ -197,17 +197,23 @@ bloomctl scrna hdf5 list                           # what storage holds
 bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored?
 ```
 
-- `upload` stores the file and loads its cells as a dataset. It checks everything first, shows
-  what the file holds and what the load will do, and asks (`--yes` skips the question;
-  `--dry-run` runs every check and stops). `--create` registers a new dataset; without it an
-  unknown name is refused. If it's interrupted, run the same command again and it resumes.
+- `upload` stores the file and loads it as a dataset: its cells, with their UMAP positions, and
+  each gene's counts, so the explorer can colour the map by any gene. It checks everything
+  first, shows what the file holds and what the load will do, and asks (`--yes` skips the
+  question; `--dry-run` runs every check and stops). `--create` registers a new dataset;
+  without it an unknown name is refused. If it's interrupted, run the same command again and
+  it resumes.
+- The file needs a UMAP in `obsm['X_umap']` (or name it with `--umap-key`), a sample per cell
+  in `obs['sample']` (or name the column with `--sample-column`), and an `uns['normalization']`
+  block saying how `X` was made, e.g. `transform: log1p`, `scaling: library_size`,
+  `target_sum: 10000`.
 - `download` writes the file only once its fingerprint matches.
 
 ### Single-cell commands
 
 | Command                    | What it does                                                                           |
 | -------------------------- | -------------------------------------------------------------------------------------- |
-| `scrna hdf5 upload <file>` | Store a dataset's `.h5ad` and load its cells, after checking both *(needs write access)* |
+| `scrna hdf5 upload <file>` | Store a dataset's `.h5ad` and load its cells and gene counts, after checking both *(needs write access)* |
 | `scrna hdf5 download <ds>` | Fetch a dataset's `.h5ad` by name, id or `--checksum`, checked against its fingerprint |
 | `scrna hdf5 list [search]` | The dataset files storage holds; `--file` says whether a local file is stored          |
 
