@@ -28,7 +28,7 @@
     "@mui/material": "^7.3.4",
     "@mui/system": "^7.3.3",
     "@mui/x-data-grid": "^8.17.0",
-    "@salk-hpi/bloom-js": "file:../packages/bloom-js",
+    "@salk-harnessing-plants-initiative/bloom-js": "file:../packages/bloom-js",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "latest",
     "@types/d3": "^7.4.3",

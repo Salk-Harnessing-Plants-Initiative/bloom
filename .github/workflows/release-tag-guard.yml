@@ -15,10 +15,11 @@ name: release-tag-guard
 # signal in the Release's checks — when the tag matches none of the
 # monorepo's known package prefixes.
 #
-# Keep KNOWN_PREFIXES in sync with release-bloomcli.yml's `bloomctl-` guard
-# and release-bloommcp.yml's `bloommcp-` guard — a regression test
+# Keep KNOWN_PREFIXES in sync with release-bloomcli.yml's `bloomctl-` guard,
+# release-bloommcp.yml's `bloommcp-` guard and release-npm.yml's `bloom-js-` /
+# `bloom-fs-` guards — a regression test
 # (tests/unit/test_release_tag_guard_workflow_shape.py) cross-checks all
-# three files so an omission here fails CI instead of just failing loudly
+# four files so an omission here fails CI instead of just failing loudly
 # in production the first time it's exercised.
 #
 # `shopt -s nocasematch` before the `case` match: GitHub Actions'
@@ -45,7 +46,7 @@ jobs:
       - name: Verify the release tag is claimed by a release workflow
         run: |
           shopt -s nocasematch
-          for prefix in bloomctl- bloommcp-; do
+          for prefix in bloomctl- bloommcp- bloom-js- bloom-fs-; do
             case "$TAG" in
               "$prefix"*)
                 echo "Tag '$TAG' matches the $prefix release workflow."
@@ -53,5 +54,5 @@ jobs:
                 ;;
             esac
           done
-          echo "::error::Release tag '$TAG' matches no known package prefix (bloomctl-, bloommcp-) — release-bloomcli.yml and release-bloommcp.yml both skipped this Release, and nothing was published anywhere. Re-tag the release with one of the known prefixes and re-publish."
+          echo "::error::Release tag '$TAG' matches no known package prefix (bloomctl-, bloommcp-, bloom-js-, bloom-fs-) — every release workflow skipped this Release, and nothing was published anywhere. Re-tag the release with one of the known prefixes and re-publish."
           exit 1
