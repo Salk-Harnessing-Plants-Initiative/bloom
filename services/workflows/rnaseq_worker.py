@@ -214,10 +214,9 @@ def _warn_if_pipeline_secret_invalid():
     """A set but invalid Secret name becomes an empty folder, so steps upload nothing."""
     if os.environ.get(_PIPELINE_SECRET_ENV) and not k8s_client.PIPELINE_SECRET_NAME:
         logger.warning(
-            "rnaseq_worker: %s %s; workflows get an empty bloom-credentials folder, "
-            "so their steps won't upload logs",
-            _PIPELINE_SECRET_ENV,
-            k8s_client.PIPELINE_SECRET_NAME_INVALID,
+            "rnaseq_worker: WORKFLOWS_K8S_PIPELINE_SECRET_NAME is not a valid Kubernetes "
+            "object name; workflows get an empty bloom-credentials folder, so their steps "
+            "won't upload logs"
         )
 
 

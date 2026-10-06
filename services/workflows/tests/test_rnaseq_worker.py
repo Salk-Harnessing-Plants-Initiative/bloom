@@ -318,11 +318,6 @@ def test_a_stop_signal_while_waiting_to_connect_exits_cleanly(monkeypatch):
 def test_a_set_but_invalid_secret_name_warns_at_startup(monkeypatch, caplog):
     monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", "Bloom-Secret ")
     monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
-    monkeypatch.setattr(
-        k8s_client,
-        "PIPELINE_SECRET_NAME_INVALID",
-        "is not a valid Kubernetes object name",
-    )
     with caplog.at_level(logging.WARNING, logger="rnaseq_worker"):
         worker._warn_if_pipeline_secret_invalid()
     assert "is not a valid Kubernetes object name" in caplog.text
