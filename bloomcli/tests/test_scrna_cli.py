@@ -61,6 +61,15 @@ def test_a_writer_uploads_a_file(tmp_path, env, storage):
     assert not list((tmp_path / "stage").iterdir())
 
 
+def test_the_pipelines_account_uploads_a_file(tmp_path, env, storage):
+    # A Cell Ranger run loads its dataset as bloom_workflows.
+    env["role"] = "bloom_workflows"
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code == 0, result.output
+    assert _stored(storage, path) == path.read_bytes()
+
+
 def _at_a_terminal(monkeypatch):
     monkeypatch.setattr(upload_module, "_interactive", lambda: True)
 
@@ -118,7 +127,7 @@ def test_a_dry_run_needs_a_writer_login(tmp_path, env, monkeypatch):
     monkeypatch.setattr(_format, "check_structure", lambda *_, **__: pytest.fail("the file was read"))
     result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
-    assert "bloom_writer or bloom_admin" in result.output
+    assert "bloom_writer, bloom_admin or bloom_workflows" in result.output
 
 
 def test_a_dry_run_refuses_a_file_with_no_normalization_on_record(tmp_path, env, storage):
@@ -278,7 +287,7 @@ def test_a_reader_cannot_upload_and_nothing_is_read(tmp_path, env, monkeypatch):
     monkeypatch.setattr(_format, "check_structure", lambda *_, **__: pytest.fail("the file was read"))
     result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
-    assert "bloom_writer or bloom_admin" in result.output
+    assert "bloom_writer, bloom_admin or bloom_workflows" in result.output
 
 
 def test_a_file_that_does_not_meet_the_format_is_refused_before_sending(tmp_path, env, storage):

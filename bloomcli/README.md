@@ -521,7 +521,7 @@ bloomctl scrna hdf5 list --file myb41_transgene_load.h5ad -p staging # is this o
 ```
 
 **Upload** stores the file and loads the dataset from it — its cells and each gene's counts —
-so the explorer can show them and colour them by any gene. It needs a writer or admin login.
+so the explorer can show them and colour them by any gene. It needs a writer or admin login, or the pipeline's (`bloom_workflows`).
 Before sending anything it checks the file's structure:
 
 - every cell has an ID and none repeats (a barcode shared across samples cannot
