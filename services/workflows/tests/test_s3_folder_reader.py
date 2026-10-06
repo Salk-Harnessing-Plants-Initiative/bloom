@@ -1,6 +1,6 @@
-"""Unit tests for reading a folder a scientist shared with Bloom's read-only reader: the folder
+"""Unit tests for reading a folder a scientist shared with Bloom's AWS user: the folder
 check lists anonymously first, and only when that's refused and the reader is configured does
-it list again, signed as the reader (against a fake S3)."""
+it list again, signed as that user (against a fake S3)."""
 
 import httpx
 import pytest
@@ -90,7 +90,7 @@ def test_a_public_folder_never_uses_the_reader(reader):
 def test_a_folder_not_shared_says_to_make_it_public_or_share_it(reader):
     err = _refusal(URL, _client(lambda r: httpx.Response(403)))
     assert err.status_code == 422
-    assert "make the folder public, or share it with Bloom's reader" in err.detail
+    assert "make the folder public, or share it with Bloom's AWS user" in err.detail
     assert SECRET not in err.detail and KEY_ID not in err.detail
 
 

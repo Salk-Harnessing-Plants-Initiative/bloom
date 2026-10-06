@@ -321,20 +321,6 @@ spec:
               secretKeyRef:
                 name: genericsecret-bloomv2-s3
                 key: AWS_SECRET_ACCESS_KEY
-          # Bloom's read-only reader, for a folder a scientist shared with it; absent, only
-          # folders anyone can read work.
-          - name: READER_AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloom-fastq-reader
-                key: AWS_ACCESS_KEY_ID
-                optional: true
-          - name: READER_AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloom-fastq-reader
-                key: AWS_SECRET_ACCESS_KEY
-                optional: true
         resources:
           requests: {cpu: "2", memory: 4Gi}
           limits: {cpu: "2", memory: 4Gi}

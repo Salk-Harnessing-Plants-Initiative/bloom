@@ -53,7 +53,7 @@ def build(run: dict, status, to: str) -> EmailMessage:
     if params.get("fastq_url"):
         lines += [
             "",
-            f"If you shared {params['fastq_url']} with Bloom's reader so this run could read "
+            f"If you shared {params['fastq_url']} with Bloom's AWS user so this run could read "
             "it, you can remove that access now.",
         ]
     message = EmailMessage()

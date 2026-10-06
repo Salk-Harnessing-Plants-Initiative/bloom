@@ -1,8 +1,8 @@
 """
 Check an S3 folder of FASTQs before a Cell Ranger run is started on it.
 
-The folder is listed anonymously; when that's refused and Bloom's read-only reader is
-configured, it's listed again signed as the reader, for a folder a scientist shared with it.
+The folder is listed anonymously; when that's refused and Bloom's AWS user is configured, it's
+listed again signed as that user, for a folder a scientist shared with it.
 Otherwise it must be public. It must hold one sample's
 FASTQs directly inside it, named the Illumina way (`<sample>_S<n>_L<lane>_<R1|R2|I1|I2>_001
 .fastq[.gz]`) with an R1 and an R2 in every lane. Other files and subfolders are ignored.
@@ -24,7 +24,7 @@ from botocore.awsrequest import AWSRequest
 from botocore.credentials import Credentials
 from fastapi import HTTPException
 
-# Bloom's read-only reader (bloom-fastq-reader), for a folder a scientist shared with it. Unset,
+# Bloom's AWS user (bloomv2-workflows-job), for a folder a scientist shared with it. Unset,
 # only folders anyone can read work. Never logged.
 READER_KEY_ID = os.environ.get("WORKFLOWS_S3_READER_ACCESS_KEY_ID") or None
 READER_SECRET = os.environ.get("WORKFLOWS_S3_READER_SECRET_ACCESS_KEY") or None
@@ -105,7 +105,7 @@ def reader_configured() -> bool:
 
 
 def _reader_headers(url: str, region: str) -> dict[str, str]:
-    """A GET of `url` signed as Bloom's reader (AWS Signature V4)."""
+    """A GET of `url` signed as Bloom's AWS user (AWS Signature V4)."""
     request = AWSRequest(method="GET", url=url)
     S3SigV4Auth(Credentials(READER_KEY_ID, READER_SECRET), "s3", region).add_auth(
         request
@@ -124,7 +124,7 @@ def _fetch(
     signed: bool,
     region: str | None = None,
 ) -> tuple[httpx.Response, str | None]:
-    """One listing, anonymous or as the reader, following S3's redirect to the bucket's own
+    """One listing, anonymous or as Bloom's AWS user, following S3's redirect to the bucket's own
     region once. Returns the response and the bucket's region, when S3 named it."""
     host = S3_HOST if region is None else f"https://s3.{region}.amazonaws.com"
     resp = _get(
@@ -146,8 +146,8 @@ def _fetch(
 
 
 def _list(bucket: str, prefix: str, client: httpx.Client) -> ET.Element:
-    """The folder's listing: anonymous first, then as Bloom's reader if that's refused and the
-    reader is configured."""
+    """The folder's listing: anonymous first, then as Bloom's AWS user if that's refused and the
+    user's key is configured."""
     resp, region = _fetch(bucket, prefix, client, signed=False)
     if resp.status_code in (401, 403) and reader_configured():
         resp, _ = _fetch(bucket, prefix, client, signed=True, region=region)
@@ -159,7 +159,7 @@ def _list(bucket: str, prefix: str, client: httpx.Client) -> ET.Element:
         if reader_configured():
             raise _refuse(
                 f"Bloom can't read s3://{bucket}/{prefix}; make the folder public, or share it "
-                "with Bloom's reader (the ? next to the folder field says how)"
+                "with Bloom's AWS user (the ? next to the folder field says how)"
             )
         raise _refuse(
             f"Bloom can't read s3://{bucket}/{prefix}; the folder must be public "

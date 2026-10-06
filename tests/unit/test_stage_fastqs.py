@@ -534,24 +534,6 @@ def test_the_stage_step_hands_the_folder_to_the_script():
     assert env["FASTQ_FILES"] == "{{inputs.parameters.fastq-files}}"
 
 
-def test_the_stage_step_gets_the_readers_keys_only_if_they_exist():
-    env = {e["name"]: e for e in _template("stage-sample")["container"]["env"]}
-    for name, key in (
-        ("READER_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
-        ("READER_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
-    ):
-        ref = env[name]["valueFrom"]["secretKeyRef"]
-        assert ref == {"name": "genericsecret-bloom-fastq-reader", "key": key, "optional": True}
-
-
-def test_only_the_stage_step_gets_the_readers_keys():
-    for template in yaml.safe_load(TEMPLATE.read_text())["spec"]["templates"]:
-        if template["name"] == "stage-sample":
-            continue
-        names = {e["name"] for e in (template.get("container") or {}).get("env", [])}
-        assert not names & {"READER_AWS_ACCESS_KEY_ID", "READER_AWS_SECRET_ACCESS_KEY"}, template["name"]
-
-
 def test_the_stage_step_doesnt_retry_failures_a_retry_cant_fix():
     rule = _template("stage-sample")["retryStrategy"]["expression"]
     for code in (4, 6, 7, 8, 9):

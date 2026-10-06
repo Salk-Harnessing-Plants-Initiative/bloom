@@ -33,7 +33,7 @@ export default function ScrnaFolderSource({
 }: {
   url: string;
   recheck?: number;
-  // Bloom's read-only AWS user; with it, the help offers sharing a private folder.
+  // Bloom's AWS user; with it, the help offers sharing a private folder.
   readerArn?: string | null;
   onUrl: (url: string) => void;
   onChecked: (check: FolderCheck | null) => void;
@@ -169,8 +169,8 @@ export default function ScrnaFolderSource({
             </li>
             {readerArn ? (
               <li>
-                A private folder: give Bloom&apos;s reader permission to list and read the
-                folder, then paste the path. Bloom&apos;s reader is{" "}
+                A private folder: give Bloom&apos;s AWS user permission to list and read the
+                folder, then paste the path. Bloom&apos;s AWS user is{" "}
                 <code className="[overflow-wrap:anywhere]">{readerArn}</code>. Remove the
                 permission when the run is done; Bloom emails you when it finishes.
               </li>

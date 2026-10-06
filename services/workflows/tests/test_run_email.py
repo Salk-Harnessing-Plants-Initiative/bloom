@@ -102,7 +102,7 @@ def test_a_finished_run_says_so_with_its_message_and_page(relay):
 
 def test_a_folder_run_reminds_the_scientist_to_remove_blooms_access(relay):
     body = run_email.build(FOLDER_RUN, DONE, "alice@salk.edu").get_content()
-    assert "If you shared s3://lab-private/col0/ with Bloom's reader" in body
+    assert "If you shared s3://lab-private/col0/ with Bloom's AWS user" in body
     assert "you can remove that access now" in body
 
 

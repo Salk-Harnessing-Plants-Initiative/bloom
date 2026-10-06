@@ -6,9 +6,8 @@
 # nothing is written to S3. If the folder holds no FASTQ yet, it waits up to WAIT_SECONDS in
 # case an upload is still finishing. A file added, removed, resized or replaced since the
 # run was started fails the step, so the run never uses other reads than it was started on.
-# The folder is read anonymously; if that listing is refused and READER_AWS_ACCESS_KEY_ID and
-# READER_AWS_SECRET_ACCESS_KEY are set, it's read as Bloom's read-only reader, for a folder a
-# scientist shared with it. The pipeline's own key never reads a scientist's folder.
+# The folder is read anonymously; if that listing is refused, it's read signed as Bloom's AWS
+# user (bloomv2-workflows-job, AWS_ACCESS_KEY_ID), for a folder a scientist shared with it.
 # Without FASTQ_URL, the reads come from s3://<bucket>/raw_reads/<sample>/ as before.
 #
 # The run's folder (RUN_DIR) is named by its run key, which a new run can reuse after a failed
@@ -18,8 +17,8 @@
 # writes it earlier in this same run.
 #
 # Env: SAMPLE, DEST_DIR, RUN_DIR (default: DEST_DIR's grandparent), and either FASTQ_URL with
-#      FASTQ_FILES (and optionally READER_AWS_ACCESS_KEY_ID, READER_AWS_SECRET_ACCESS_KEY), or
-#      BUCKET. WAIT_SECONDS and POLL_SECONDS tune the wait.
+#      FASTQ_FILES, or BUCKET. WAIT_SECONDS and POLL_SECONDS tune the wait. AWS_* sign the
+#      reads of raw_reads/ and of a shared folder.
 # Exit codes: 0 copied, 4 no FASTQs, 6 bad input, 7 misnamed FASTQs (fastq-sample-prefix),
 #      8 the folder changed since the run was started (or while it was being copied),
 #      9 the recorded FASTQs are named for another sample, 10 S3 couldn't be listed or read.
@@ -111,13 +110,12 @@ elif [ "${rc}" -ne 0 ]; then
   exit "${EXIT_BAD_INPUT}"
 fi
 
-# How the folder is read: anonymously, as the start API checked it, or as Bloom's reader once an
-# anonymous listing is refused. The pipeline's own key (AWS_*) is never used for it.
+# How the folder is read: anonymously, as the start API checked it, or signed as Bloom's AWS
+# user once an anonymous listing is refused (a folder its owner shared with that user).
 read_as=anonymous
 folder_aws() {
-  if [ "${read_as}" = reader ]; then
-    env -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID="${READER_AWS_ACCESS_KEY_ID}" \
-      AWS_SECRET_ACCESS_KEY="${READER_AWS_SECRET_ACCESS_KEY}" aws "$@"
+  if [ "${read_as}" = signed ]; then
+    aws "$@"
   else
     aws "$@" --no-sign-request
   fi
@@ -128,10 +126,10 @@ deadline=$(( $(date +%s) + WAIT_SECONDS ))
 while :; do
   if ! listing="$(folder_aws s3api list-objects-v2 --bucket "${bucket}" --prefix "${prefix_path}" \
       --delimiter / --max-keys 1000 --no-paginate --output json 2>"${list_err}")"; then
-    if [ "${read_as}" = anonymous ] && [ -n "${READER_AWS_ACCESS_KEY_ID:-}" ] \
-        && [ -n "${READER_AWS_SECRET_ACCESS_KEY:-}" ] && grep -qE 'AccessDenied|\(403\)' "${list_err}"; then
-      read_as=reader
-      echo "${FASTQ_URL} isn't public; reading it as Bloom's reader"
+    if [ "${read_as}" = anonymous ] && [ -n "${AWS_ACCESS_KEY_ID:-}" ] \
+        && grep -qE 'AccessDenied|\(403\)' "${list_err}"; then
+      read_as=signed
+      echo "${FASTQ_URL} isn't public; reading it as Bloom's AWS user"
       continue
     fi
     echo "ERROR: couldn't list ${FASTQ_URL}: $(head -c 300 "${list_err}")" >&2

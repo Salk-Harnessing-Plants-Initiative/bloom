@@ -253,11 +253,11 @@ describe("the accepted layout", () => {
     expect(screen.queryByText(/A private folder/)).toBeNull();
   });
 
-  it("offers sharing a private folder with Bloom's reader, by its ARN", () => {
-    const arn = "arn:aws:iam::123456789012:user/bloom-fastq-reader";
+  it("offers sharing a private folder with Bloom's AWS user, by its ARN", () => {
+    const arn = "arn:aws:iam::865381831093:user/bloomv2-workflows-job";
     render(<Harness readerArn={arn} />);
     fireEvent.click(screen.getByRole("button", { name: "What the folder must contain" }));
-    expect(screen.getByText(/A private folder: give Bloom's reader permission/)).toBeTruthy();
+    expect(screen.getByText(/A private folder: give Bloom's AWS user permission/)).toBeTruthy();
     expect(screen.getByText(arn)).toBeTruthy();
     expect(screen.getByText(/Remove the permission when the run is done/)).toBeTruthy();
   });
