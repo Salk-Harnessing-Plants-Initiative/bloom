@@ -139,13 +139,15 @@ docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
 
 ## Step logs
 
-Every step of the Cell Ranger template runs through `run-with-log` (`run_with_log.py`, in both images). It passes the step's output through to the pod's log as before, and keeps a copy in Bloom's `run-logs` bucket at `scrna/<workflow name>/<step>.log`, uploaded every 30 seconds while it grows and once more when the step ends, whether it succeeded or failed. The run page reads it from there, so a step's log outlives its pod.
+Every step of the Cell Ranger template runs through `run-with-log` (`run_with_log.py`, in both images). It passes the step's output through to the pod's log as before, and keeps a copy in Bloom's `run-logs` bucket at `scrna/<workflow name>/<step>.log`, uploaded every 30 seconds while it grows (`RUN_LOG_INTERVAL` changes that) and once more when the step's command ends, whether it succeeded or failed. The run page reads it from there, so a step's log outlives its pod.
 
 - It signs in with the `bloom-credentials` volume, mounted at `/etc/bloom/credentials.txt`: the environment's pipeline Secret, which the workflows service adds to every RNA-seq workflow. Without it (dev, or a hand-submitted run) the step runs and uploads nothing.
 - An upload never fails a step; the step's exit code is the command's own.
 - A retried step adds to its log rather than replacing it: the new attempt starts with what the earlier ones uploaded, under a `--- run-with-log: retried at … ---` line.
+- A container killed outright gets no last upload: out of memory, or a stopped run that outlasts Kubernetes' 30-second grace. The stored log then ends up to 30 seconds early; the pod's own log has the rest until Argo deletes the workflow, 24 hours after it finishes.
+- It signs in over https only, and follows no redirect; a `BLOOM_API_URL` that isn't https means no uploads.
 - Logs over 45 MB keep their end. The bucket takes plain text up to 50 MB.
-- The folder grows with every run. Prune old runs' folders by hand, as an admin, from Studio.
+- The bucket grows with every run. To prune, sign in to Studio as an admin and delete old runs' folders under `run-logs/scrna/<workflow name>/`.
 
 ## Scratch storage
 
