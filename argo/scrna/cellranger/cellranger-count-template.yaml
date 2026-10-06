@@ -129,8 +129,8 @@ spec:
         # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
-        command: [bash, -c]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/stage-reference.log", --, bash, -c]
         args:
           - |
             set -euo pipefail
@@ -183,6 +183,10 @@ spec:
           requests: {cpu: "2", memory: 4Gi}
           limits: {cpu: "2", memory: 4Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -216,8 +220,8 @@ spec:
         # unusable reads (11) and a taken folder (12) will not fix themselves
         expression: "asInt(lastRetry.exitCode) == 10"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
-        command: [fetch-sra]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
@@ -245,6 +249,10 @@ spec:
           requests: {cpu: "8", memory: 16Gi}
           limits: {cpu: "8", memory: 16Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -278,8 +286,8 @@ spec:
         # 9 (FASTQs for another sample) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
-        command: [bash, -c]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/stage.log", --, bash, -c]
         args:
           - |
             set -euo pipefail
@@ -317,6 +325,10 @@ spec:
           requests: {cpu: "2", memory: 4Gi}
           limits: {cpu: "2", memory: 4Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -337,8 +349,8 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
-        command: [run-qc]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/qc.log", --, run-qc]
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
@@ -358,6 +370,10 @@ spec:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -397,8 +413,8 @@ spec:
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
-        command: [run-count]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/count.log", --, run-count]
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
@@ -419,6 +435,10 @@ spec:
           - name: REF_DIR
             value: "/shared/ref/{{inputs.parameters.reference}}"
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
           - name: work
@@ -440,8 +460,8 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
-        command: [bash, -c]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
             set -euo pipefail
@@ -458,6 +478,10 @@ spec:
           requests: {cpu: "0.5", memory: 512Mi}
           limits: {cpu: "0.5", memory: 512Mi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -480,14 +504,18 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
-        command: [scrna-analysis]
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/preprocess.log", --, scrna-analysis]
         args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
         resources:
           requests: {cpu: "4", memory: 16Gi}
           limits: {cpu: "4", memory: 16Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -509,14 +537,18 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
-        command: [scrna-analysis]
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/cluster.log", --, scrna-analysis]
         args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -539,9 +571,9 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.0
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
-        command: [scrna-analysis]
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/build-h5ad.log", --, scrna-analysis]
         args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}", "--publish", "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"]
         env:
           - name: AWS_DEFAULT_REGION
@@ -560,6 +592,10 @@ spec:
           requests: {cpu: "4", memory: 16Gi}
           limits: {cpu: "4", memory: 16Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -573,7 +609,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-10
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
         command: [bash, -c]
         args:
           - |
