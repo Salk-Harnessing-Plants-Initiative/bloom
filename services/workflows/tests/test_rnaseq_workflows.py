@@ -29,6 +29,7 @@ RUN = {
 def _k8s_config(monkeypatch):
     monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
     monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
 
 
 def _yaml(name: str) -> dict:
@@ -282,3 +283,73 @@ def test_a_run_without_a_folder_passes_no_folder():
     body = wfs.build_cellranger_body(RUN)
     names = {p["name"] for p in body["spec"]["arguments"]["parameters"]}
     assert not names & {"fastq-url", "fastq-files"}
+
+
+# --------------------------------------------------------------------------- #
+# The Bloom credential the steps sign in with
+# --------------------------------------------------------------------------- #
+
+
+def test_a_run_gets_this_environments_pipeline_secret(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client,
+        "PIPELINE_SECRET_NAME",
+        "genericsecret-bloom-staging-pipeline-credentials",
+    )
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [
+        {
+            "name": "bloom-credentials",
+            "secret": {
+                "secretName": "genericsecret-bloom-staging-pipeline-credentials",
+                "optional": True,
+            },
+        }
+    ]
+
+
+def test_without_a_pipeline_secret_the_volume_is_an_empty_folder(monkeypatch):
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [{"name": "bloom-credentials", "emptyDir": {}}]
+
+
+@pytest.mark.parametrize(
+    "raw, volume",
+    [
+        (None, {"emptyDir": {}}),
+        ("Bloom-Secret ", {"emptyDir": {}}),
+        ("bloom-secret", {"secret": {"secretName": "bloom-secret", "optional": True}}),
+    ],
+    ids=["unset", "invalid", "valid"],
+)
+def test_the_volume_follows_the_secret_setting(monkeypatch, raw, volume):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raw)
+    name, _why = k8s_client._resolve_pipeline_secret_name()
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", name)
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [{"name": "bloom-credentials", **volume}]
+
+
+def test_every_volume_a_template_step_mounts_is_defined():
+    """A mount the template doesn't define must come from the body, or every run fails
+    at that step."""
+    body = {v["name"] for v in wfs.build_cellranger_body(RUN)["spec"]["volumes"]}
+    for template in _yaml("cellranger-count-template.yaml")["spec"]["templates"]:
+        own = {v["name"] for v in template.get("volumes", [])}
+        mounts = {
+            m["name"] for m in template.get("container", {}).get("volumeMounts", [])
+        }
+        assert mounts - own <= body, template["name"]
+
+
+def test_the_hand_submitted_workflow_defines_no_volume_the_body_lacks():
+    repo = {
+        v["name"]
+        for v in _yaml("cellranger-count-workflow.yaml")["spec"].get("volumes", [])
+    }
+    body = {v["name"] for v in wfs.build_cellranger_body(RUN)["spec"]["volumes"]}
+    assert repo <= body
