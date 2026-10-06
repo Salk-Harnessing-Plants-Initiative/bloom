@@ -4,10 +4,11 @@ RNA-seq status poller.
 Every WORKFLOWS_STATUS_POLL_SECONDS, reads the Argo Workflow of each submitted or running
 rnaseq_runs row, turns it into the run's status with the reader for its workflow type in
 rnaseq_workflows, and records it with update_rnaseq_run_status, which only moves a run
-forward and writes nothing for an unchanged report. A Workflow the cluster says no
-longer exists fails its run; any other failed read leaves the run for the next poll. A run that imports its sample from SRA has the sample registered with
-register_rnaseq_sample once its fetch-sra step succeeds. Runs as the bloom_workflows app
-user; one poller per environment.
+forward and writes nothing for an unchanged report. A Workflow the cluster says no longer
+exists fails its run; any other failed read leaves the run for the next poll. A run that
+imports its sample from SRA has the sample registered with register_rnaseq_sample once its
+fetch-sra step succeeds. When a run finishes, its requester is emailed (run_email). Runs as
+the bloom_workflows app user; one poller per environment.
 
 Deploy: a container off the workflows image with `command: python rnaseq_status_poller.py`.
 """
@@ -20,6 +21,7 @@ import time
 from k8s_client import K8sConfigError, get_workflow
 from postgrest import APIError
 
+import run_email
 from rnaseq_status import RunStatus, sra_download
 from rnaseq_workflows import WORKFLOW_TYPES
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
@@ -164,6 +166,9 @@ def poll_run(client, run: dict) -> bool:
     changed = _record(client, run["id"], status)
     if workflow is not None:
         _register_sample(client, run, workflow, status)
+    # notify() skips a run still going, and a finished run changes only once, so one email.
+    if changed:
+        run_email.notify(client, run, status)
     if changed:
         logger.info(
             "rnaseq_status_poller: run %s is %s at %s",
