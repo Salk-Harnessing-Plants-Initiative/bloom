@@ -9,8 +9,9 @@ grows, and once more when the command ends. Exits with the command's exit code. 
 fail the step: a failed upload is noted on stderr and tried again at the next interval.
 
 Signs in to Bloom with bloomctl's credentials file (BLOOM_API_URL, BLOOM_ANON_KEY,
-BLOOM_EMAIL, BLOOM_PASSWORD) at BLOOM_CREDENTIALS (/etc/bloom/credentials.txt). Without it,
-the command runs and nothing is uploaded. The token and password are never printed.
+BLOOM_EMAIL, BLOOM_PASSWORD) at BLOOM_CREDENTIALS (/etc/bloom/credentials.txt), over https
+only, and follows no redirect. Without it, the command runs and nothing is uploaded. The token
+and password are never printed.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ CHUNK_BYTES = 64 * 1024
 # The last upload, when the command has ended, is tried this many times.
 FINAL_ATTEMPTS = 3
 FINAL_RETRY_SECONDS = 2.0
+# Plain http only to this machine (tests); anywhere else the password would cross in clear.
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def _note(message: str) -> None:
@@ -65,6 +68,26 @@ def read_credentials(path: str) -> dict[str, str] | None:
     return {k: values[k] for k in keys}
 
 
+def is_safe_api_url(url: str) -> bool:
+    """True for an https URL, or http to this machine."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https":
+        return bool(parts.hostname)
+    return parts.scheme == "http" and parts.hostname in LOCAL_HOSTS
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, which would carry the token to wherever it points."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, "redirect refused", headers, fp
+        )
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 class Uploader:
     """Uploads one log file to run-logs, signing in when needed."""
 
@@ -79,7 +102,7 @@ class Uploader:
 
     def _request(self, url: str, body: bytes, headers: dict[str, str]) -> bytes:
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return response.read()
 
     def _sign_in(self) -> None:
@@ -207,10 +230,13 @@ def main(argv: list[str] | None = None) -> int:
     credentials = read_credentials(
         os.environ.get("BLOOM_CREDENTIALS", DEFAULT_CREDENTIALS)
     )
-    uploader = Uploader(credentials, args.path) if credentials else None
-    if uploader is None:
+    uploader = None
+    if credentials is None:
         _note("no Bloom credentials, so the log isn't uploaded")
+    elif not is_safe_api_url(credentials["BLOOM_API_URL"]):
+        _note("BLOOM_API_URL isn't https, so the log isn't uploaded")
     else:
+        uploader = Uploader(credentials, args.path)
         _note(f"the log is kept at {BUCKET}/{args.path}")
 
     interval = float(os.environ.get("RUN_LOG_INTERVAL", DEFAULT_INTERVAL_SECONDS))

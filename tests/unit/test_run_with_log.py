@@ -26,6 +26,8 @@ class FakeBloom:
         self.uploads: list[dict] = []
         self.upload_status = 200
         self.reject_next_upload = False
+        self.redirect_uploads = False
+        self.redirected: list[dict] = []
         bloom = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -41,7 +43,15 @@ class FakeBloom:
                         "expires_in": 3600,
                     }
                     return self._send(200, json.dumps(reply).encode())
+                if self.path.startswith("/elsewhere"):
+                    return self._elsewhere()
                 if self.path.startswith("/storage/v1/object/run-logs/"):
+                    if bloom.redirect_uploads:
+                        self.send_response(302)
+                        self.send_header("Location", f"{bloom.url}/elsewhere")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return None
                     if bloom.reject_next_upload:
                         bloom.reject_next_upload = False
                         return self._send(403, b'{"error":"jwt expired"}')
@@ -58,6 +68,15 @@ class FakeBloom:
                     )
                     return self._send(200, b'{"Key":"ok"}')
                 return self._send(404, b"{}")
+
+            def do_GET(self):
+                if self.path.startswith("/elsewhere"):
+                    return self._elsewhere()
+                return self._send(404, b"{}")
+
+            def _elsewhere(self):
+                bloom.redirected.append({k.lower(): v for k, v in self.headers.items()})
+                return self._send(200, b"{}")
 
             def _send(self, status, body):
                 self.send_response(status)
@@ -184,6 +203,42 @@ def test_without_credentials_the_step_runs_and_nothing_is_uploaded(tmp_path, blo
     assert result.stdout == "fine\n"
     assert "no Bloom credentials" in result.stderr
     assert bloom.sign_ins == 0 and bloom.uploads == []
+
+
+def test_a_bloom_url_that_isnt_https_is_never_signed_in_to(tmp_path, bloom):
+    path = tmp_path / "credentials.txt"
+    path.write_text(
+        "BLOOM_API_URL=http://bloom.example.org/api\n"
+        "BLOOM_ANON_KEY=fake-anon-key\n"
+        "BLOOM_EMAIL=pipeline@bloom.test\n"
+        f"BLOOM_PASSWORD={PASSWORD}\n"
+    )
+    result = _run(_py("import sys; print('fine'); sys.exit(3)"), path)
+    assert result.returncode == 3
+    assert "BLOOM_API_URL isn't https" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "url, safe",
+    [
+        ("https://bloom.salk.edu/api", True),
+        ("http://bloom.salk.edu/api", False),
+        ("http://127.0.0.1:8000", True),
+        ("http://localhost:8000", True),
+        ("ftp://bloom.salk.edu", False),
+        ("https://", False),
+    ],
+)
+def test_only_https_or_this_machine_is_signed_in_to(url, safe):
+    assert _module().is_safe_api_url(url) is safe
+
+
+def test_a_redirect_is_not_followed_with_the_token(bloom, credentials):
+    bloom.redirect_uploads = True
+    result = _run(_py("print('fine')"), credentials, timeout=90)
+    assert result.returncode == 0
+    assert bloom.redirected == [], "the upload followed a redirect"
+    assert "HTTP 302" in result.stderr
 
 
 def test_a_command_that_cant_start_exits_127_and_says_why(bloom, credentials):
