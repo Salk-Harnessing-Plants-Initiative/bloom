@@ -48,6 +48,9 @@ export default async function AllSpecies() {
           references={references}
           species={sortedSpeciesOptions(speciesList)}
           startedBy={user?.email ?? null}
+          // Bloom's read-only AWS user, for a folder a scientist shares with it; unset, the
+          // form offers public folders only.
+          readerArn={process.env.SCRNA_FOLDER_READER_ARN || null}
         />
       </div>
 
