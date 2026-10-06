@@ -143,6 +143,7 @@ Every step of the Cell Ranger template runs through `run-with-log` (`run_with_lo
 
 - It signs in with the `bloom-credentials` volume, mounted at `/etc/bloom/credentials.txt`: the environment's pipeline Secret, which the workflows service adds to every RNA-seq workflow. Without it (dev, or a hand-submitted run) the step runs and uploads nothing.
 - An upload never fails a step; the step's exit code is the command's own.
+- A retried step adds to its log rather than replacing it: the new attempt starts with what the earlier ones uploaded, under a `--- run-with-log: retried at … ---` line.
 - Logs over 45 MB keep their end. The bucket takes plain text up to 50 MB.
 - The folder grows with every run. Prune old runs' folders by hand, as an admin, from Studio.
 

@@ -5,8 +5,9 @@ Usage: run-with-log --path scrna/<workflow name>/<step>.log -- <command> [args..
 
 Runs the command, passes everything it prints through to the pod's own output, saves a copy,
 and uploads that copy to the `run-logs` bucket every RUN_LOG_INTERVAL seconds (30) while it
-grows, and once more when the command ends. Exits with the command's exit code. Uploads never
-fail the step: a failed upload is noted on stderr and tried again at the next interval.
+grows, and once more when the command ends. A retried step adds to the earlier attempts' log,
+under a marker line. Exits with the command's exit code. Uploads never fail the step: a failed
+upload is noted on stderr and tried again at the next interval.
 
 Signs in to Bloom with bloomctl's credentials file (BLOOM_API_URL, BLOOM_ANON_KEY,
 BLOOM_EMAIL, BLOOM_PASSWORD) at BLOOM_CREDENTIALS (/etc/bloom/credentials.txt), over https
@@ -100,8 +101,14 @@ class Uploader:
         self.token: str | None = None
         self.token_expires = 0.0
 
-    def _request(self, url: str, body: bytes, headers: dict[str, str]) -> bytes:
-        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    def _request(
+        self,
+        url: str,
+        body: bytes | None,
+        headers: dict[str, str],
+        method: str = "POST",
+    ) -> bytes:
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
         with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return response.read()
 
@@ -117,34 +124,60 @@ class Uploader:
         self.token = reply["access_token"]
         self.token_expires = time.time() + float(reply.get("expires_in", 3600))
 
-    def upload(self, data: bytes) -> None:
-        """Upload `data` in place of the stored log. Raises on failure."""
+    def _signed_in(
+        self, method: str, url: str, body: bytes | None, headers: dict
+    ) -> bytes:
+        """A request with the token, signing in first when needed and once more if refused."""
         if (
             self.token is None
             or time.time() > self.token_expires - TOKEN_MARGIN_SECONDS
         ):
             self._sign_in()
-        url = f"{self.api}/storage/v1/object/{BUCKET}/{urllib.parse.quote(self.object_path)}"
         try:
-            self._send(url, data)
+            return self._request(url, body, self._auth(headers), method)
         except urllib.error.HTTPError as exc:
             if exc.code not in (401, 403):
                 raise
             # The token may have been revoked or expired early: sign in once more.
             self._sign_in()
-            self._send(url, data)
+            return self._request(url, body, self._auth(headers), method)
 
-    def _send(self, url: str, data: bytes) -> None:
-        self._request(
-            url,
+    def _auth(self, headers: dict[str, str]) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "apikey": self.anon_key,
+            **headers,
+        }
+
+    def _object_url(self, prefix: str = "") -> str:
+        path = urllib.parse.quote(self.object_path)
+        return f"{self.api}/storage/v1/object/{prefix}{BUCKET}/{path}"
+
+    def upload(self, data: bytes) -> None:
+        """Upload `data` in place of the stored log. Raises on failure."""
+        self._signed_in(
+            "POST",
+            self._object_url(),
             data,
-            {
-                "Authorization": f"Bearer {self.token}",
-                "apikey": self.anon_key,
-                "Content-Type": "text/plain",
-                "x-upsert": "true",
-            },
+            {"Content-Type": "text/plain", "x-upsert": "true"},
         )
+
+    def download(self) -> bytes | None:
+        """The stored log, or None if there is none yet. Raises on any other failure."""
+        try:
+            return self._signed_in("GET", self._object_url("authenticated/"), None, {})
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404 or (exc.code == 400 and _says_not_found(exc)):
+                return None
+            raise
+
+
+def _says_not_found(exc: urllib.error.HTTPError) -> bool:
+    """Older Storage answers a missing object with 400 and "not_found" in the body."""
+    try:
+        return b"not_found" in exc.read().lower().replace(b" ", b"_")
+    except OSError:
+        return False
 
 
 def _describe(exc: BaseException) -> str:
@@ -214,6 +247,25 @@ class LogSync:
         _note("the end of the log wasn't uploaded")
 
 
+def _keep_earlier_attempts(uploader: Uploader, log) -> None:
+    """Start the log with what earlier attempts of this step uploaded, so a retry adds to it."""
+    try:
+        earlier = uploader.download()
+    except Exception as exc:  # noqa: BLE001 - a missing history must never fail the step
+        _note(
+            f"couldn't read earlier attempts' log ({_describe(exc)}); starting a new one"
+        )
+        return
+    if not earlier:
+        return
+    when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    log.write(earlier.rstrip(b"\n") + b"\n")
+    log.write(
+        f"--- run-with-log: retried at {when}; earlier attempts above ---\n".encode()
+    )
+    log.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="run-with-log", description=__doc__.split("\n")[0]
@@ -241,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
 
     interval = float(os.environ.get("RUN_LOG_INTERVAL", DEFAULT_INTERVAL_SECONDS))
     log = tempfile.NamedTemporaryFile(prefix="run-log-", suffix=".log", delete=False)
+    if uploader is not None:
+        _keep_earlier_attempts(uploader, log)
     sync = LogSync(uploader, log.name, interval)
     timer = threading.Thread(target=sync.run, daemon=True)
     timer.start()

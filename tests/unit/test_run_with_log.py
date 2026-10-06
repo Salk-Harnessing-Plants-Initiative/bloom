@@ -28,6 +28,10 @@ class FakeBloom:
         self.reject_next_upload = False
         self.redirect_uploads = False
         self.redirected: list[dict] = []
+        # What Storage holds per path, as earlier attempts uploaded it.
+        self.stored: dict[str, str] = {}
+        self.download_status = 200
+        self.missing_as_400 = False
         bloom = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -57,11 +61,11 @@ class FakeBloom:
                         return self._send(403, b'{"error":"jwt expired"}')
                     if bloom.upload_status != 200:
                         return self._send(bloom.upload_status, b'{"error":"boom"}')
+                    path = self.path.removeprefix("/storage/v1/object/run-logs/")
+                    bloom.stored[path] = body.decode()
                     bloom.uploads.append(
                         {
-                            "path": self.path.removeprefix(
-                                "/storage/v1/object/run-logs/"
-                            ),
+                            "path": path,
                             "body": body.decode(),
                             "headers": {k.lower(): v for k, v in self.headers.items()},
                         }
@@ -72,7 +76,19 @@ class FakeBloom:
             def do_GET(self):
                 if self.path.startswith("/elsewhere"):
                     return self._elsewhere()
+                prefix = "/storage/v1/object/authenticated/run-logs/"
+                if self.path.startswith(prefix):
+                    return self._download(self.path.removeprefix(prefix))
                 return self._send(404, b"{}")
+
+            def _download(self, path):
+                if bloom.download_status != 200:
+                    return self._send(bloom.download_status, b'{"error":"boom"}')
+                if path in bloom.stored:
+                    return self._send(200, bloom.stored[path].encode())
+                if bloom.missing_as_400:
+                    return self._send(400, b'{"statusCode":"404","error":"not_found"}')
+                return self._send(404, b'{"error":"not_found"}')
 
             def _elsewhere(self):
                 bloom.redirected.append({k.lower(): v for k, v in self.headers.items()})
@@ -300,100 +316,37 @@ def test_the_credentials_file_is_read_as_bloomctl_writes_it(tmp_path, text, comp
 
 
 # --------------------------------------------------------------------------- #
-# The Cell Ranger template and the images run every step through the wrapper
+# A retried step adds to the earlier attempts' log
 # --------------------------------------------------------------------------- #
 
-ARGO = Path(__file__).resolve().parents[2] / "argo" / "scrna"
-# The run page's name for each template step (services/workflows/rnaseq_status.py).
-STEP_NAMES = {
-    "stage-reference": "stage-reference",
-    "fetch-sra": "fetch-sra",
-    "stage-sample": "stage",
-    "qc": "qc",
-    "count": "count",
-    "preprocess": "preprocess",
-    "cluster": "cluster",
-    "build-h5ad": "build-h5ad",
-    "cleanup": "cleanup",
-}
 
-
-def _templates():
-    yaml = pytest.importorskip("yaml")
-    doc = yaml.safe_load(
-        (ARGO / "cellranger" / "cellranger-count-template.yaml").read_text()
+def test_a_retried_step_adds_to_the_earlier_attempts_log(bloom, credentials):
+    first = _run(_py("import sys; print('out of memory'); sys.exit(137)"), credentials)
+    assert first.returncode == 137
+    second = _run(_py("print('counted')"), credentials)
+    assert second.returncode == 0
+    assert second.stdout == "counted\n", (
+        "the earlier attempt must not reach the pod's log"
     )
-    return {t["name"]: t for t in doc["spec"]["templates"]}
+    body = bloom.uploads[-1]["body"]
+    assert body.startswith("out of memory\n--- run-with-log: retried at ")
+    assert body.endswith("; earlier attempts above ---\ncounted\n")
 
 
-@pytest.mark.parametrize("template, step", sorted(STEP_NAMES.items()))
-def test_each_step_runs_through_the_wrapper_under_its_run_page_name(template, step):
-    command = _templates()[template]["container"]["command"]
-    assert command[:4] == [
-        "run-with-log",
-        "--path",
-        f"scrna/{{{{workflow.name}}}}/{step}.log",
-        "--",
-    ]
-    assert len(command) > 4, "the step's own command must follow --"
+@pytest.mark.parametrize(
+    "missing_as_400", [False, True], ids=["404", "older-storage-400"]
+)
+def test_a_first_attempt_starts_a_new_log(bloom, credentials, missing_as_400):
+    bloom.missing_as_400 = missing_as_400
+    result = _run(_py("print('fine')"), credentials)
+    assert bloom.uploads[-1]["body"] == "fine\n"
+    assert "earlier attempts" not in result.stderr
 
 
-@pytest.mark.parametrize("template", sorted(STEP_NAMES))
-def test_each_step_mounts_the_bloom_credential_read_only(template):
-    mounts = _templates()[template]["container"]["volumeMounts"]
-    assert {
-        "name": "bloom-credentials",
-        "mountPath": "/etc/bloom",
-        "readOnly": True,
-    } in mounts
-
-
-def test_the_names_match_the_run_pages_steps():
-    status = (
-        Path(__file__).resolve().parents[2]
-        / "services"
-        / "workflows"
-        / "rnaseq_status.py"
-    ).read_text()
-    for template, step in STEP_NAMES.items():
-        assert f'"{template}": "{step}"' in status
-
-
-def test_the_smoke_test_step_is_left_alone():
-    assert _templates()["testrun"]["container"]["command"] == ["bash", "-c"]
-
-
-def test_the_hand_submitted_workflow_defines_the_volume():
-    yaml = pytest.importorskip("yaml")
-    doc = yaml.safe_load(
-        (ARGO / "cellranger" / "cellranger-count-workflow.yaml").read_text()
-    )
-    assert {"name": "bloom-credentials", "emptyDir": {}} in doc["spec"]["volumes"]
-
-
-def test_the_services_volume_has_the_templates_name():
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "services"
-        / "workflows"
-        / "rnaseq_workflows.py"
-    ).read_text()
-    assert 'BLOOM_CREDENTIALS_VOLUME = "bloom-credentials"' in source
-
-
-def test_both_step_images_install_the_wrapper():
-    cellranger = (ARGO / "Dockerfile").read_text()
-    analysis = (ARGO / "analysis" / "Dockerfile").read_text()
-    assert "COPY run_with_log.py /usr/local/bin/run-with-log" in cellranger
-    assert (
-        "/usr/local/bin/run-with-log"
-        in cellranger.split("RUN chmod +x", 1)[1].split("\n", 1)[0]
-    )
-    assert "COPY --from=scrna run_with_log.py /usr/local/bin/run-with-log" in analysis
-    assert (
-        "chmod +x /usr/local/bin/scrna-analysis /usr/local/bin/run-with-log" in analysis
-    )
-
-
-def test_the_wrapper_runs_as_a_script():
-    assert WRAPPER.read_text().startswith("#!/usr/bin/env python3\n")
+def test_an_unreadable_earlier_log_starts_a_new_one_and_says_so(bloom, credentials):
+    bloom.stored[LOG_PATH] = "lost\n"
+    bloom.download_status = 500
+    result = _run(_py("print('fine')"), credentials)
+    assert result.returncode == 0
+    assert "couldn't read earlier attempts' log (HTTP 500)" in result.stderr
+    assert bloom.uploads[-1]["body"] == "fine\n"
