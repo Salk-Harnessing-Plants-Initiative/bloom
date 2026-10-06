@@ -2,82 +2,32 @@
 
 import gzip
 import hashlib
+import importlib
 import json
 import re
 
 import httpx
 import pytest
 from click.testing import CliRunner
+from scrna_fake_db import database as FakeClient
 from scrna_fixtures import gzipped, write_h5ad
-from test_scrna_transfer import FakeStorage
 
 from bloomctl.cli import cli
 from bloomctl.scrna import _format, _object, _session, _transfer
 
 NORMALIZATION = {"transform": "log1p", "scaling": "library_size", "target_sum": 10000}
+upload_module = importlib.import_module("bloomctl.scrna.upload")
 
 
-class _Query:
-    def __init__(self, rows, asked=None):
-        self.rows = rows
-        self.asked = asked if asked is not None else []
-
-    def select(self, _columns):
-        return self
-
-    def eq(self, column, value):
-        return _Query([r for r in self.rows if str(r.get(column)) == str(value)], self.asked)
-
-    def is_(self, column, value):
-        assert value == "null"
-        return _Query([r for r in self.rows if r.get(column) is None], self.asked)
-
-    def in_(self, column, values):
-        self.asked.append(list(values))  # what each request filtered on, to size the URL
-        return _Query([r for r in self.rows if r.get(column) in values], self.asked)
-
-    def execute(self):
-        return type("R", (), {"data": self.rows})()
+# What every upload in these tests names, unless a test names something else.
+LOAD_OPTIONS = ("--name", "MYB41", "--species", "Arabidopsis", "--annotation", "cell_type",
+                "--create")
 
 
-class FakeClient:
-    def __init__(self, datasets=()):
-        self.datasets = [dict({"deleted_at": None, "metadata": {}}, **d) for d in datasets]
-        self.asked: list[list] = []
-
-    def table(self, name):
-        assert name == "scrna_datasets"
-        return _Query(self.datasets, self.asked)
-
-
-@pytest.fixture
-def storage():
-    return FakeStorage()
-
-
-@pytest.fixture
-def env(monkeypatch, tmp_path, storage):
-    """A writer session, fake storage, and a resume cache under tmp_path."""
-    state = {"role": "bloom_writer", "client": FakeClient()}
-    monkeypatch.setattr(
-        _session, "connect",
-        lambda profile: _session.Connection(
-            client=state["client"],
-            endpoint=_transfer.Endpoint("http://api.test", "anon", "tok"),
-            role=state["role"],
-        ),
-    )
-    monkeypatch.setattr(
-        _transfer, "open_client",
-        lambda: httpx.Client(transport=httpx.MockTransport(storage.handle)),
-    )
-    monkeypatch.setattr(_object, "staging_dir", lambda: tmp_path / "stage")
-    monkeypatch.setattr(_transfer, "CHUNK_BYTES", 1024)
-    return state
-
-
-def _run(*args):
-    return CliRunner().invoke(cli, ["scrna", "hdf5", *args])
+def _run(*args, **kwargs):
+    if args and args[0] == "upload" and "--name" not in args:
+        args = ("upload", *LOAD_OPTIONS, *args[1:])
+    return CliRunner().invoke(cli, ["scrna", "hdf5", *args], **kwargs)
 
 
 def _commands_it_names_must_exist(output: str) -> None:
@@ -103,7 +53,7 @@ def _stored(storage, path):
 def test_a_writer_uploads_a_file(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad")
     fingerprint = hashlib.sha256(path.read_bytes()).hexdigest()
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert fingerprint in result.output
     assert f"scrna/h5ad/{fingerprint}.h5ad.gz" in result.output
@@ -111,17 +61,229 @@ def test_a_writer_uploads_a_file(tmp_path, env, storage):
     assert not list((tmp_path / "stage").iterdir())
 
 
+def _at_a_terminal(monkeypatch):
+    monkeypatch.setattr(upload_module, "_interactive", lambda: True)
+
+
+def test_the_file_is_described_and_sent_once_confirmed(tmp_path, env, storage, monkeypatch):
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad", obs_columns=("sample", "cell_type"))
+    result = _run("upload", str(path), input="y\n")
+    assert result.exit_code == 0, result.output
+    for line in ("cells          3", "genes          4", "obsm['X_umap']", "layers         counts",
+                 "log1p, library_size, target_sum 10000", "sample, cell_type"):
+        assert line in result.output
+    assert result.output.index("Upload this file and load") < result.output.index("Uploaded data.h5ad")
+    assert _stored(storage, path) == path.read_bytes()
+
+
+def test_declining_sends_nothing(tmp_path, env, storage, monkeypatch):
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("upload", str(path), input="n\n")
+    assert result.exit_code != 0
+    assert "Nothing was sent." in result.output
+    assert storage.requests == []
+    assert not (tmp_path / "stage").exists() or not list((tmp_path / "stage").iterdir())
+
+
+def test_without_a_terminal_it_refuses_before_signing_in(tmp_path, env, storage, monkeypatch):
+    monkeypatch.setattr(upload_module, "_interactive", lambda: False)
+    monkeypatch.setattr(_session, "connect", lambda _p: pytest.fail("it signed in"))
+    result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code != 0
+    assert "Pass --yes" in result.output
+    assert storage.requests == []
+
+
+def test_yes_shows_the_summary_without_asking(tmp_path, env, storage):
+    result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code == 0, result.output
+    assert "cells          3" in result.output
+    assert "Upload this file and load" not in result.output
+
+
+def test_a_dry_run_signs_in_runs_every_check_and_sends_nothing(tmp_path, env, storage):
+    result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code == 0, result.output
+    assert "cells          3" in result.stderr
+    assert "Dry run — every check passed. Nothing was sent or written." in result.output
+    assert "Upload this file and load" not in result.output
+    assert storage.requests == []
+    assert not list((tmp_path / "stage").iterdir())
+
+
+def test_a_dry_run_needs_a_writer_login(tmp_path, env, monkeypatch):
+    env["role"] = "bloom_user"
+    monkeypatch.setattr(_format, "check_structure", lambda *_, **__: pytest.fail("the file was read"))
+    result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code != 0
+    assert "bloom_writer or bloom_admin" in result.output
+
+
+def test_a_dry_run_refuses_a_file_with_no_normalization_on_record(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad", normalization=None)
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code != 0
+    assert "has no uns['normalization']" in result.output
+    assert "every check passed" not in result.output
+    assert storage.requests == []
+
+
+def test_a_dry_run_names_the_dataset_that_records_the_normalization(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad", normalization=None)
+    env["client"] = FakeClient([{
+        "id": 14, "name": "MYB41 transgene",
+        "source_checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "metadata": {"normalization": NORMALIZATION},
+    }])
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code == 0, result.output
+    assert "none in the file; recorded on dataset MYB41 transgene (id 14)" in result.stderr
+    assert storage.requests == []
+
+
+def test_a_dry_run_refuses_a_file_over_the_size_limit(tmp_path, env, storage, monkeypatch):
+    monkeypatch.setattr(_object, "MAX_OBJECT_BYTES", 10)
+    result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code != 0
+    assert "the limit is" in result.output
+    assert "every check passed" not in result.output
+
+
+def test_a_dry_run_keeps_an_upload_waiting_to_be_resumed(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad")
+    staged = _object.stage(path, tmp_path / "stage")
+    _object.save_upload(tmp_path / "stage", staged.fingerprint, "abc", staged.size, "http://api.test")
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code == 0, result.output
+    assert _object.upload_recorded(tmp_path / "stage", staged.fingerprint)
+    assert staged.gz_path.exists()
+
+
+def test_a_dry_run_needs_no_terminal_and_ignores_yes(tmp_path, env, storage, monkeypatch):
+    monkeypatch.setattr(upload_module, "_interactive", lambda: False)
+    result = _run("upload", "--dry-run", "-y", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code == 0, result.output
+    assert storage.requests == []
+
+
+def test_the_question_comes_after_a_normalization_refusal_not_before(
+    tmp_path, env, storage, monkeypatch
+):
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad", normalization=None)
+    result = _run("upload", str(path), input="y\n")
+    assert result.exit_code != 0
+    assert "has no uns['normalization']" in result.output
+    assert "Upload this file and load" not in result.output
+
+
+def test_the_question_comes_after_a_size_refusal_not_before(tmp_path, env, storage, monkeypatch):
+    _at_a_terminal(monkeypatch)
+    monkeypatch.setattr(_object, "MAX_OBJECT_BYTES", 10)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("upload", str(path), input="y\n")
+    assert result.exit_code != 0
+    assert "the limit is" in result.output
+    assert "Upload this file and load" not in result.output
+
+
+def test_the_summary_and_question_go_to_the_terminal_not_stdout(
+    tmp_path, env, storage, monkeypatch
+):
+    """`upload f.h5ad > log` must still show the question where the user can answer it."""
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("upload", str(path), input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "cells          3" in result.stderr
+    assert "Upload this file and load" in result.stderr
+    assert "cells          3" not in result.stdout
+    assert "Upload this file and load" not in result.stdout
+    assert "Uploaded data.h5ad" in result.stdout
+
+
+def test_pressing_enter_declines(tmp_path, env, storage, monkeypatch):
+    _at_a_terminal(monkeypatch)
+    path = write_h5ad(tmp_path / "data.h5ad")
+    result = _run("upload", str(path), input="\n")
+    assert result.exit_code != 0
+    assert "Nothing was sent." in result.output
+    assert storage.requests == []
+
+
+def test_the_real_terminal_check_refuses_without_yes(tmp_path, env, storage):
+    """CliRunner's stdin is not a terminal, so the unpatched check must refuse."""
+    result = _run("upload", str(write_h5ad(tmp_path / "d.h5ad")))
+    assert result.exit_code != 0
+    assert "Pass --yes" in result.output
+    assert storage.requests == []
+
+
+def test_control_characters_in_the_file_are_shown_escaped(tmp_path, env, storage):
+    spoof = "cell_type\x1b[4A\r\x1b[2K  UMAP           obsm['X_umap']"
+    path = write_h5ad(
+        tmp_path / "data.h5ad",
+        obs_columns=(spoof, "cell_type", "sample"),
+        normalization={**NORMALIZATION, "scaling": "other", "description": "scran\nfaked line"},
+    )
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.stderr
+    assert "\r" not in result.stderr
+    assert "cell_type\\x1b[4A\\r\\x1b[2K" in result.stderr
+    assert "scran\\nfaked line" in result.stderr
+    assert "\nfaked line" not in result.stderr
+    assert "UMAP           obsm['X_umap']" in result.stderr
+
+
+def test_a_dry_run_still_refuses_a_broken_file(tmp_path, env):
+    path = write_h5ad(tmp_path / "data.h5ad", obs_ids=["a", "a", "c"])
+    result = _run("upload", "--dry-run", str(path))
+    assert result.exit_code != 0
+    assert "'a' appears more than once" in result.output
+
+
+def test_a_file_without_a_umap_is_refused_before_anything_is_sent(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad", obsm={"X_pca": (3, 50)})
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code != 0
+    assert "has no UMAP (obsm holds: X_pca); loading needs one" in result.output
+    assert storage.requests == []
+    assert env["client"].tables["scrna_datasets"] == []
+
+
+def test_a_umap_under_another_name_is_refused_until_named(tmp_path, env, storage):
+    path = write_h5ad(tmp_path / "data.h5ad", obsm={"spatial": (3, 2)})
+    refused = _run("upload", "--yes", str(path))
+    assert refused.exit_code != 0
+    assert "Pass --umap-key NAME" in refused.output
+    assert storage.requests == []
+    named = _run("upload", "--yes", "--umap-key", "spatial", str(path))
+    assert named.exit_code == 0, named.output
+    assert "obsm['spatial']" in named.stderr
+    (row,) = env["client"].tables["scrna_datasets"]
+    assert row["metadata"]["load_options"]["umap_key"] == "spatial"
+
+
+def test_no_umap_is_no_longer_an_option(tmp_path, env, storage):
+    result = _run("upload", "--yes", "--no-umap", str(write_h5ad(tmp_path / "data.h5ad")))
+    assert result.exit_code == 2
+    assert "No such option" in result.output
+
+
 def test_a_reader_cannot_upload_and_nothing_is_read(tmp_path, env, monkeypatch):
     env["role"] = "bloom_user"
-    monkeypatch.setattr(_format, "check_structure", lambda *_: pytest.fail("the file was read"))
-    result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
+    monkeypatch.setattr(_format, "check_structure", lambda *_, **__: pytest.fail("the file was read"))
+    result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
     assert "bloom_writer or bloom_admin" in result.output
 
 
 def test_a_file_that_does_not_meet_the_format_is_refused_before_sending(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad", obs_ids=["a", "a", "c"])
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
     assert "does not meet Bloom's h5ad format" in result.output
     assert "'a' appears more than once" in result.output
@@ -129,20 +291,20 @@ def test_a_file_that_does_not_meet_the_format_is_refused_before_sending(tmp_path
 
 
 def test_a_missing_h5py_reaches_the_user_with_the_reinstall_command(tmp_path, env, monkeypatch):
-    def missing(_path):
+    def missing(_path, **_):
         raise _format.MissingDependency(_format.missing_dependency_message())
 
     monkeypatch.setattr(_format, "check_structure", missing)
-    result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
+    result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
     assert "uv tool install --reinstall" in result.output
 
 
 def test_the_same_file_twice_is_one_object(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad")
-    assert _run("upload", str(path)).exit_code == 0
+    assert _run("upload", "--yes", str(path)).exit_code == 0
     creates = len(storage.uploads)
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert "Already uploaded" in result.output
     assert len(storage.uploads) == creates
@@ -151,15 +313,15 @@ def test_the_same_file_twice_is_one_object(tmp_path, env, storage):
 
 def test_a_file_that_landed_first_from_another_upload_is_reported_stored(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad")
-    assert _run("upload", str(path)).exit_code == 0
-    result = _run("upload", str(path))
+    assert _run("upload", "--yes", str(path)).exit_code == 0
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert "Already uploaded" in result.output
 
 
 def test_a_missing_normalization_is_refused_for_a_new_file(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad", normalization=None)
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
     assert "uns['normalization']" in result.output
     assert "transform" in result.output and "scaling" in result.output
@@ -174,7 +336,7 @@ def test_a_file_a_dataset_was_loaded_from_is_accepted_by_its_record(tmp_path, en
         "id": 14, "name": "MYB41 transgene", "source_checksum": fingerprint,
         "metadata": {"normalization": NORMALIZATION},
     }])
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert _stored(storage, path) == path.read_bytes()
 
@@ -185,12 +347,12 @@ def test_a_dataset_record_without_normalization_does_not_exempt_the_file(tmp_pat
         "id": 14, "name": "MYB41 transgene",
         "source_checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
     }])
-    assert _run("upload", str(path)).exit_code != 0
+    assert _run("upload", "--yes", str(path)).exit_code != 0
 
 
 def test_a_file_too_large_is_refused_before_sending(tmp_path, env, storage, monkeypatch):
     monkeypatch.setattr(_object, "MAX_OBJECT_BYTES", 10)
-    result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
+    result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
     assert "limit" in result.output
     assert not storage.uploads
@@ -201,12 +363,12 @@ def test_an_interrupted_upload_resumes_on_the_next_run(tmp_path, env, storage, m
     monkeypatch.setattr(_transfer, "CHUNK_BYTES", 64)
     path = write_h5ad(tmp_path / "data.h5ad")
     storage.drop_after = 2
-    first = _run("upload", str(path))
+    first = _run("upload", "--yes", str(path))
     assert first.exit_code != 0
     assert "Run the same command again" in first.output
     assert list((tmp_path / "stage").glob("*.h5ad.gz"))
     storage.drop_after = None
-    second = _run("upload", str(path))
+    second = _run("upload", "--yes", str(path))
     assert second.exit_code == 0, second.output
     assert len(storage.uploads) == 1
     assert _stored(storage, path) == path.read_bytes()
@@ -222,7 +384,7 @@ def test_storage_refusing_to_start_says_nothing_was_sent(tmp_path, env, storage,
         return real(request)
 
     monkeypatch.setattr(storage, "handle", refuse_creates)
-    result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
+    result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
     assert "Nothing was sent" in result.output
     assert "already sent" not in result.output
@@ -232,7 +394,7 @@ def test_bytes_taken_but_no_object_stored_is_not_success(tmp_path, env, storage)
     """Storage can accept every byte and still fail to finalise the object."""
     storage.finalise = False
     path = write_h5ad(tmp_path / "data.h5ad")
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
     assert "not stored" in result.output
     assert "Uploaded" not in result.output
@@ -243,8 +405,8 @@ def test_an_upload_already_at_full_length_is_confirmed_not_assumed(tmp_path, env
     """A resumed upload the server already holds in full, with no object behind it."""
     storage.finalise = False
     path = write_h5ad(tmp_path / "data.h5ad")
-    assert _run("upload", str(path)).exit_code != 0   # leaves a full-length upload behind
-    second = _run("upload", str(path))
+    assert _run("upload", "--yes", str(path)).exit_code != 0   # leaves a full-length upload behind
+    second = _run("upload", "--yes", str(path))
     assert second.exit_code != 0
     assert "Uploaded" not in second.output
 
@@ -255,7 +417,7 @@ def test_an_upload_recorded_for_other_bytes_is_not_resumed(tmp_path, env, storag
     stage = tmp_path / "stage"
     _object.stage(path, stage)
     _object.save_upload(stage, fingerprint, "u-stale", 999_999, "http://api.test")
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert not any("u-stale" in str(r.url) for r in storage.requests)
     assert _stored(storage, path) == path.read_bytes()
@@ -268,7 +430,7 @@ def test_an_upload_recorded_for_another_server_is_not_resumed(tmp_path, env, sto
     stage = tmp_path / "stage"
     staged = _object.stage(path, stage)
     _object.save_upload(stage, fingerprint, "u-elsewhere", staged.size, "http://other.test")
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert not any("u-elsewhere" in str(r.url) for r in storage.requests)
 
@@ -279,7 +441,7 @@ def test_a_staged_copy_that_is_not_the_file_is_rebuilt(tmp_path, env, storage):
     stage = tmp_path / "stage"
     staged = _object.stage(path, stage)
     staged.gz_path.write_bytes(gzipped(b"not the file at all"))
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert _stored(storage, path) == path.read_bytes()
 
@@ -412,7 +574,7 @@ def test_a_destination_that_cannot_be_written_is_a_clear_error(tmp_path, env, st
 
 def test_an_expired_session_does_not_start_a_second_upload(tmp_path, env, storage):
     storage.expired = True
-    result = _run("upload", str(write_h5ad(tmp_path / "data.h5ad")))
+    result = _run("upload", "--yes", str(write_h5ad(tmp_path / "data.h5ad")))
     assert result.exit_code != 0
     assert "log in" in result.output or "sign in" in result.output
     assert not storage.uploads
@@ -428,12 +590,12 @@ def test_a_finalisation_failure_does_not_wedge_the_file(tmp_path, env, storage):
     """the record used to survive at full length, so every later run repeated the failure."""
     storage.finalise = False
     path = write_h5ad(tmp_path / "data.h5ad")
-    assert _run("upload", str(path)).exit_code != 0
+    assert _run("upload", "--yes", str(path)).exit_code != 0
     assert not list((tmp_path / "stage").glob("*.upload")), "the stuck upload was kept"
     assert list((tmp_path / "stage").glob("*.h5ad.gz")), "the resumable copy was thrown away"
 
     storage.finalise = True
-    again = _run("upload", str(path))
+    again = _run("upload", "--yes", str(path))
     assert again.exit_code == 0, again.output
     assert "Uploaded" in again.output
 
@@ -443,7 +605,7 @@ def test_a_duplicate_that_cannot_be_read_back_is_not_called_uploaded(tmp_path, e
     path = write_h5ad(tmp_path / "data.h5ad")
     storage.hide_objects = True          # nothing is readable
     storage.duplicate_creates = True     # but storage says the name is taken
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0, result.output
     assert "Already uploaded" not in result.output and "Uploaded" not in result.output
     assert list((tmp_path / "stage").glob("*.h5ad.gz")), "the only copy was deleted"
@@ -453,7 +615,7 @@ def test_a_blip_confirming_the_object_is_retried(tmp_path, env, storage):
     """one failed confirmation reported a stored object as an upload that had stopped."""
     storage.fail_reads = 1
     path = write_h5ad(tmp_path / "data.h5ad")
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert "Uploaded" in result.output
 
@@ -461,7 +623,7 @@ def test_a_blip_confirming_the_object_is_retried(tmp_path, env, storage):
 def test_a_destination_that_is_a_directory_is_refused_cleanly(tmp_path, env, storage, monkeypatch):
     """The name the download would write to is already a directory, so nothing can be saved."""
     path = write_h5ad(tmp_path / "data.h5ad")
-    assert _run("upload", str(path)).exit_code == 0
+    assert _run("upload", "--yes", str(path)).exit_code == 0
     fingerprint = _object.fingerprint_of(path)
     monkeypatch.chdir(tmp_path)
     (tmp_path / f"{fingerprint}.h5ad").mkdir()          # what the default name would write to
@@ -476,7 +638,7 @@ def test_an_empty_object_is_not_reported_as_uploaded(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "data.h5ad")
     fingerprint = _object.fingerprint_of(path)
     storage.empty_objects.add(f"scrna/h5ad/{fingerprint}.h5ad.gz")
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0, result.output
     assert "Already uploaded" not in result.output and "Uploaded" not in result.output
     assert list((tmp_path / "stage").glob("*.h5ad.gz")), "the only copy was deleted"
@@ -492,7 +654,7 @@ def test_a_name_taken_by_something_unreadable_does_not_claim_bytes_were_sent(tmp
     path = write_h5ad(tmp_path / "data.h5ad")
     storage.hide_objects = True
     storage.duplicate_creates = True
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
     assert "took every byte" not in result.output
     assert "Nothing was sent" in result.output
@@ -504,7 +666,7 @@ def test_an_upload_storage_cannot_account_for_is_kept_not_dropped(tmp_path, env,
     monkeypatch.setattr(_transfer, "CHUNK_BYTES", 64)
     path = write_h5ad(tmp_path / "data.h5ad")
     storage.list_status = 503        # both confirmation attempts fail
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
     assert "could not be asked" in result.output
     assert list((tmp_path / "stage").glob("*.upload")), "the resumable upload was forgotten"
@@ -516,7 +678,7 @@ def test_an_expired_session_mid_upload_is_not_an_internal_error(tmp_path, env, s
     monkeypatch.setattr(_transfer, "CHUNK_BYTES", 64)
     path = write_h5ad(tmp_path / "data.h5ad")
     storage.expired = True
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
     assert "log in again" in result.output
     assert not isinstance(result.exception, _transfer.SessionExpired), "escaped as an internal error"
@@ -541,7 +703,7 @@ def test_a_session_that_expires_mid_upload_is_renewed_not_failed(tmp_path, env, 
         return signing_in(profile)
 
     monkeypatch.setattr(_session, "connect", connect)
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert "Uploaded" in result.output
     assert len(logins) == 2, "the expired session was not renewed"
@@ -558,7 +720,7 @@ def test_a_session_that_expires_twice_is_not_retried_forever(tmp_path, env, stor
     monkeypatch.setattr(
         _session, "connect", lambda profile: (logins.append(profile), signing_in(profile))[1]
     )
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code != 0
     assert len(logins) == 2, "one retry, not a loop"
     assert "once you are logged in" in result.output
@@ -576,7 +738,7 @@ def test_a_record_naming_an_unusable_upload_is_forgotten(tmp_path, env, storage)
     (stage / f"{fingerprint}.upload").write_text(
         json.dumps({"id": "../../auth/v1/token", "size": gz.size, "api_url": "http://api.test"})
     )
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert "Uploaded" in result.output
 
@@ -584,9 +746,9 @@ def test_a_record_naming_an_unusable_upload_is_forgotten(tmp_path, env, storage)
 def test_a_file_that_appears_between_the_check_and_the_create_is_reported_stored(tmp_path, env, storage):
     """Another writer lands the same content first; storage refuses the name and it is there."""
     path = write_h5ad(tmp_path / "data.h5ad")
-    assert _run("upload", str(path)).exit_code == 0
+    assert _run("upload", "--yes", str(path)).exit_code == 0
     storage.hide_reads = 1          # the pre-flight misses it, as a race would
-    result = _run("upload", str(path))
+    result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert "Already uploaded" in result.output
     assert not list((tmp_path / "stage").glob("*")), "the staged copy was kept for nothing"
@@ -596,7 +758,7 @@ def test_a_file_that_appears_between_the_check_and_the_create_is_reported_stored
 def test_a_session_that_expires_mid_download_is_renewed_not_failed(tmp_path, env, storage, monkeypatch):
     """The same hour-long login, and a download of the same size; nothing about it differs."""
     path = write_h5ad(tmp_path / "data.h5ad")
-    assert _run("upload", str(path)).exit_code == 0
+    assert _run("upload", "--yes", str(path)).exit_code == 0
     env["client"] = FakeClient(
         [{"id": 3, "name": "Periderm atlas", "source_checksum": _object.fingerprint_of(path)}]
     )
@@ -621,16 +783,22 @@ def test_a_session_that_expires_mid_download_is_renewed_not_failed(tmp_path, env
 # --- list ---------------------------------------------------------------------
 
 
-def _upload(tmp_path, name="data.h5ad", **kwargs):
-    """Put one file in fake storage and return its path and fingerprint."""
+def _upload(env, tmp_path, name="data.h5ad", **kwargs):
+    """Put one file in fake storage and return its path and fingerprint.
+
+    The upload also loads a dataset; it is dropped, so each listing starts from a file that
+    is stored and not yet named by any dataset.
+    """
     path = write_h5ad(tmp_path / name, **kwargs)
-    assert _run("upload", str(path)).exit_code == 0
+    result = _run("upload", "--yes", str(path))
+    assert result.exit_code == 0, result.output
+    env["client"] = FakeClient()
     return path, _object.fingerprint_of(path)
 
 
 def test_a_stored_file_is_listed_with_its_size(tmp_path, env, storage):
     """The question the command exists for: what is in the bucket, and how big is it."""
-    path, fingerprint = _upload(tmp_path)
+    path, fingerprint = _upload(env, tmp_path)
     stored = len(storage.objects[f"scrna/{_object.object_path(fingerprint)}"])
     result = _run("list", "--output", "csv")
     assert result.exit_code == 0, result.output
@@ -640,8 +808,8 @@ def test_a_stored_file_is_listed_with_its_size(tmp_path, env, storage):
 
 def test_the_newest_upload_is_listed_first(tmp_path, env, storage):
     """Someone checking a load that just ran should not have to hunt for it down the table."""
-    _, first = _upload(tmp_path, "a.h5ad")
-    _, second = _upload(tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
+    _, first = _upload(env, tmp_path, "a.h5ad")
+    _, second = _upload(env, tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
     storage.created_at[f"scrna/{_object.object_path(first)}"] = "2026-09-01T09:00:00.000Z"
     storage.created_at[f"scrna/{_object.object_path(second)}"] = "2026-09-24T09:00:00.000Z"
     result = _run("list", "--output", "json")
@@ -651,7 +819,7 @@ def test_the_newest_upload_is_listed_first(tmp_path, env, storage):
 
 def test_each_object_says_when_it_arrived(tmp_path, env, storage):
     """A blank column passes every other assertion while telling the reader nothing."""
-    _, fingerprint = _upload(tmp_path)
+    _, fingerprint = _upload(env, tmp_path)
     storage.created_at[f"scrna/{_object.object_path(fingerprint)}"] = "2026-09-24T21:35:49.000Z"
     result = _run("list", "--output", "json")
     assert result.exit_code == 0, result.output
@@ -661,7 +829,7 @@ def test_each_object_says_when_it_arrived(tmp_path, env, storage):
 
 def test_an_object_no_dataset_points_at_is_still_listed(tmp_path, env, storage):
     """A file is uploaded before its dataset row exists; the listing must not hide it."""
-    _upload(tmp_path)
+    _upload(env, tmp_path)
     result = _run("list")
     assert result.exit_code == 0, result.output
     assert "—" in result.output, "an object with no dataset row should read as unnamed"
@@ -669,7 +837,7 @@ def test_an_object_no_dataset_points_at_is_still_listed(tmp_path, env, storage):
 
 def test_a_listed_object_is_named_by_the_dataset_that_points_at_it(tmp_path, env, storage):
     """Once a dataset records the fingerprint, the listing says which dataset it is."""
-    _, fingerprint = _upload(tmp_path)
+    _, fingerprint = _upload(env, tmp_path)
     env["client"] = FakeClient([{"id": 7, "name": "Periderm atlas", "source_checksum": fingerprint}])
     result = _run("list")
     assert result.exit_code == 0, result.output
@@ -678,8 +846,8 @@ def test_a_listed_object_is_named_by_the_dataset_that_points_at_it(tmp_path, env
 
 def test_a_search_keeps_only_what_matches_the_fingerprint(tmp_path, env, storage):
     """Searching by fingerprint is how a fingerprint printed by upload is looked up again."""
-    _, first = _upload(tmp_path, "a.h5ad")
-    _, second = _upload(tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
+    _, first = _upload(env, tmp_path, "a.h5ad")
+    _, second = _upload(env, tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
     assert first != second
     result = _run("list", first[:10], "--output", "json")
     assert result.exit_code == 0, result.output
@@ -688,8 +856,8 @@ def test_a_search_keeps_only_what_matches_the_fingerprint(tmp_path, env, storage
 
 def test_a_search_matches_a_dataset_name_too(tmp_path, env, storage):
     """A scientist knows the dataset's name, not its SHA-256."""
-    _, first = _upload(tmp_path, "a.h5ad")
-    _, second = _upload(tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
+    _, first = _upload(env, tmp_path, "a.h5ad")
+    _, second = _upload(env, tmp_path, "b.h5ad", obs_ids=["x1", "x2", "x3"])
     assert first != second
     env["client"] = FakeClient([{"id": 7, "name": "Periderm atlas", "source_checksum": first}])
     result = _run("list", "periderm", "--output", "json")
@@ -699,7 +867,7 @@ def test_a_search_matches_a_dataset_name_too(tmp_path, env, storage):
 
 def test_a_search_that_matches_nothing_says_so(tmp_path, env, storage):
     """An empty table would read as "the bucket is empty", which is a different answer."""
-    _upload(tmp_path)
+    _upload(env, tmp_path)
     result = _run("list", "nosuchthing")
     assert result.exit_code == 0, result.output
     assert "No stored dataset file matches" in result.output
@@ -713,7 +881,7 @@ def test_an_empty_bucket_says_it_holds_nothing(env, storage):
 
 def test_a_local_file_already_stored_is_found_by_its_fingerprint(tmp_path, env, storage):
     """--file answers "did my upload land?" without the user handling a hash at all."""
-    path, fingerprint = _upload(tmp_path)
+    path, fingerprint = _upload(env, tmp_path)
     result = _run("list", "--file", str(path), "--output", "json")
     assert result.exit_code == 0, result.output
     assert [r["fingerprint"] for r in json.loads(result.output)] == [fingerprint]
@@ -722,7 +890,7 @@ def test_a_local_file_already_stored_is_found_by_its_fingerprint(tmp_path, env, 
 def test_a_stored_file_is_found_however_many_others_are_in_the_bucket(tmp_path, env, storage, monkeypatch):
     """--file asks about one name. Scanning the folder instead would answer "not stored" for a
     file that is there, as soon as the bucket outgrew the page it read."""
-    path, fingerprint = _upload(tmp_path)
+    path, fingerprint = _upload(env, tmp_path)
     for index in range(50):
         storage.objects[f"scrna/{_object.FOLDER}/{index:064x}{_object.SUFFIX}"] = b"x"
     monkeypatch.setattr(_transfer, "LIST_PAGE", 2)
@@ -753,7 +921,7 @@ def test_more_objects_than_one_page_are_all_listed(tmp_path, env, storage, monke
     """Storage pages its listing; a command that reads one page under-reports the bucket."""
     monkeypatch.setattr(_transfer, "LIST_PAGE", 2)
     for index in range(5):
-        _upload(tmp_path, f"f{index}.h5ad", obs_ids=[f"c{index}a", "c2", "c3"])
+        _upload(env, tmp_path, f"f{index}.h5ad", obs_ids=[f"c{index}a", "c2", "c3"])
     result = _run("list", "--output", "json")
     assert result.exit_code == 0, result.output
     assert len(json.loads(result.output)) == 5
@@ -763,7 +931,7 @@ def test_a_limit_stops_the_listing_there(tmp_path, env, storage, monkeypatch):
     """The listing is bounded, so a bucket that grows can never hang the command."""
     monkeypatch.setattr(_transfer, "LIST_PAGE", 2)
     for index in range(5):
-        _upload(tmp_path, f"f{index}.h5ad", obs_ids=[f"c{index}a", "c2", "c3"])
+        _upload(env, tmp_path, f"f{index}.h5ad", obs_ids=[f"c{index}a", "c2", "c3"])
     result = _run("list", "--limit", "3", "--output", "json")
     assert result.exit_code == 0, result.output
     assert len(json.loads(result.output)) == 3
@@ -771,7 +939,7 @@ def test_a_limit_stops_the_listing_there(tmp_path, env, storage, monkeypatch):
 
 def test_something_that_is_not_a_dataset_file_is_left_out(tmp_path, env, storage):
     """The folder is not guaranteed to hold only h5ad objects; a stray one must not crash it."""
-    _upload(tmp_path)
+    _upload(env, tmp_path)
     storage.objects[f"scrna/{_object.FOLDER}/notes.txt"] = b"stray"
     result = _run("list", "--output", "json")
     assert result.exit_code == 0, result.output
@@ -812,3 +980,20 @@ def test_a_storage_that_will_not_answer_says_that_much(env, storage):
     assert result.exit_code != 0
     assert "could not be asked" in result.output
     assert "holds no dataset files" not in result.output
+
+
+def test_a_long_list_of_obs_columns_wraps_between_names(tmp_path, env):
+    columns = ("cell_type", "sample", *(f"sr_Cortex (stage {i})" for i in range(12)))
+    result = _run("upload", "--dry-run", str(write_h5ad(tmp_path / "d.h5ad", obs_columns=columns)))
+    assert result.exit_code == 0, result.output
+    out = result.stderr.splitlines()
+    first = next(i for i, line in enumerate(out) if line.lstrip().startswith("obs columns"))
+    lines = [out[first]]
+    for line in out[first + 1:]:
+        if not line.startswith(" " * 17):
+            break
+        lines.append(line)
+    assert len(lines) > 1
+    assert all(len(line) <= 100 for line in lines)
+    joined = " ".join(line.strip() for line in lines).removeprefix("obs columns").strip()
+    assert joined.split(", ") == list(columns)

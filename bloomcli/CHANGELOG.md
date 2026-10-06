@@ -8,14 +8,32 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
-### Fixed
+## [0.1.0a9] - 2026-10-05 — single-cell upload loads the dataset
 
-- `cyl batch-ingest-result`: when an envelope fails retriably, the command no longer closes out
-  this workflow's still-`queued` scans as `failed`. A scan that Argo's retry of the write-back
-  step then ingests now ends `written` instead of staying `failed` with its data written. Those
-  scans are left to the status poller, which closes any still `queued` once the Workflow ends,
-  and stderr says so. Takes effect once the write-back template's bloomctl pin is bumped
-  (bloom #1034).
+### Changed
+
+- `scrna hdf5 upload` runs every check first, then shows what the file holds (cells, genes,
+  UMAP, layers, normalization, `obs` columns) on the terminal and asks before sending it.
+  **Scripts must now pass `--yes`**: without a terminal the command refuses rather than
+  waiting for an answer. `--dry-run` signs in, runs every check including the size and the
+  normalization record, and stops before sending (bloom #1053).
+- `scrna hdf5 upload` loads the dataset it stores. After the file, it registers or continues
+  the dataset named by `--name` within `--species` and writes its cell types and cells (with
+  their UMAP positions), plus genotypes, labels and label sources when `--genotype-column`,
+  `--facet` and `--source-column` name them. **`--name`, `--species` and `--annotation` are
+  now required**, so scripts that upload need them as well as `--yes`. `--create` registers
+  a new dataset. `--add-labels` adds labels to one already loaded from the file, keeping the
+  labels it has. The file's `uns['normalization']` is recorded with the dataset and sets the
+  colour-bar units unless `--expression-units` is given. A stopped or interrupted load
+  continues when the same command is run again. bloomctl now depends on `anndata`
+  (bloom #1057).
+- `scrna hdf5 upload` writes each gene's counts after the cells: a row per gene and one object
+  per gene under `counts/<name>_<dataset id>_/`, read from the matrix a block of genes at a
+  time. The dataset is finished only once the counts are in, and one finished without them
+  gets them on the next run, showing as unfinished until they are all in.
+  `--expect-nonzero GENE=COUNT` pins a gene's non-zero cell count (bloom #1061).
+- `scrna hdf5 upload --umap-key NAME` names a UMAP stored under another name than
+  `obsm['X_umap']` (bloom #1057).
 
 ## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
 

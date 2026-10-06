@@ -5,7 +5,8 @@ gzipped as it is and named by the SHA-256 of the uncompressed file. The bucket h
 kinds of object besides — per-gene counts, above all — so the file commands are grouped
 under the form they act on:
 
-  hdf5 upload    — a writer puts a file there, after checking its structure
+  hdf5 upload    — a writer puts a file there and loads its cells and gene counts, after
+                   checking both
   hdf5 download  — anyone signed in gets a dataset's file back, checked against its fingerprint
   hdf5 list      — what is stored, with each object's size and the dataset it belongs to
 """
