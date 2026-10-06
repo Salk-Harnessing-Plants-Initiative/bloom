@@ -312,7 +312,7 @@ def test_the_image_installs_it_and_the_template_runs_it():
     assert "apt-get install -y --no-install-recommends pigz" in dockerfile
     template = (CELLRANGER / "cellranger-count-template.yaml").read_text()
     step = template.split("- name: fetch-sra\n", 1)[1].split("\n    - name: ", 1)[0]
-    assert "command: [fetch-sra]" in step
+    assert 'command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]' in step
     tags = set(re.findall(r"cellranger:(\S+)", template))
     assert len(tags) == 1, f"the template uses more than one image: {tags}"
 
