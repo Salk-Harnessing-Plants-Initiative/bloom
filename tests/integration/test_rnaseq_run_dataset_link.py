@@ -147,5 +147,7 @@ def test_the_rollback_takes_the_pipelines_access_back(cur, pipeline, scientist, 
     cur.execute("SELECT tgfoid::regproc::text FROM pg_trigger "
                 "WHERE tgname = 'set_created_by_scrna_datasets'")
     assert cur.fetchone()[0] == "set_created_by"
+    cur.execute("SELECT has_table_privilege('bloom_user', 'public.scrna_datasets', 'INSERT')")
+    assert cur.fetchone()[0] is True, "the rollback didn't give bloom_user its insert back"
     cur.execute("SELECT count(*) FROM public.scrna_datasets WHERE id = %s", (dataset_id,))
     assert cur.fetchone()[0] == 1, "the rollback removed a loaded dataset"

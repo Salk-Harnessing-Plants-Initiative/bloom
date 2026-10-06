@@ -1,7 +1,8 @@
 -- Rollback for 20261005220000_let_pipeline_load_scrna_datasets.sql
 -- Manual break-glass only; nothing runs it automatically. Takes back the pipeline's access to
 -- scRNA datasets, drops the run's link to its dataset and the link function, and puts
--- scrna_datasets' created_by trigger back on set_created_by(). Datasets already loaded stay.
+-- scrna_datasets' created_by trigger back on set_created_by(), with bloom_user's insert rule.
+-- Datasets already loaded stay.
 --
 -- Refuses while a run still reports load-dataset, which the earlier step check doesn't allow.
 
@@ -62,5 +63,10 @@ DROP TRIGGER IF EXISTS set_created_by_scrna_datasets ON public.scrna_datasets;
 CREATE TRIGGER set_created_by_scrna_datasets BEFORE INSERT ON public.scrna_datasets
   FOR EACH ROW EXECUTE FUNCTION public.set_created_by();
 DROP FUNCTION IF EXISTS public.set_created_by_as_owner();
+
+GRANT INSERT ON public.scrna_datasets TO bloom_user;
+DROP POLICY IF EXISTS user_insert_scrna_datasets ON public.scrna_datasets;
+CREATE POLICY user_insert_scrna_datasets ON public.scrna_datasets
+  FOR INSERT TO bloom_user WITH CHECK (true);
 
 COMMIT;
