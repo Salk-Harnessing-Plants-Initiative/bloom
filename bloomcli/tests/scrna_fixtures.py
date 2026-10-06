@@ -54,10 +54,16 @@ def _index(group, values, style: str, blanks) -> None:
     _attrs(node.create_dataset("values", data=data, dtype=STR), "string-array")
 
 
-def _frame(f, key: str, ids, style: str, blanks) -> None:
+def _frame(f, key: str, ids, style: str, blanks, columns=()) -> None:
+    """``columns`` names text columns holding the ids, or maps each name to its values."""
+    values = columns if isinstance(columns, dict) else {c: ids for c in columns}
     group = f.create_group(key)
     _attrs(group, "dataframe")
+    group.attrs.create("column-order", list(values), dtype=STR)
     _index(group, ids, style, blanks)
+    for column, data in values.items():
+        _attrs(group.create_dataset(column, data=np.array(data, dtype=object), dtype=STR),
+               "string-array")
 
 
 def _matrix(parent, key: str, values, sparse: bool) -> None:
@@ -104,6 +110,7 @@ def write_h5ad(
     sparse: bool = True,
     anndata: bool = True,
     with_x: bool = True,
+    obs_columns=("cell_type", "sample"),
 ) -> Path:
     """Write a three-cell, four-gene file that meets the format unless told otherwise.
 
@@ -122,7 +129,7 @@ def write_h5ad(
             _attrs(f, "anndata", "0.1.0")
         if with_x:
             _matrix(f, "X", x, sparse)
-        _frame(f, "obs", obs_ids, index_style, obs_blanks)
+        _frame(f, "obs", obs_ids, index_style, obs_blanks, obs_columns)
         _frame(f, "var", var_ids, index_style, var_blanks)
         arrays = _dict(f, "obsm")
         for name, shape in obsm.items():

@@ -59,6 +59,9 @@ class Summary:
     n_genes: int
     normalization: dict[str, Any] | None
     layers: frozenset[str]
+    umap_key: str | None = None  # where the coordinates are, None when the file has none
+    obs_columns: tuple[str, ...] = ()
+    obsm: tuple[str, ...] = ()
 
 
 def _modules():
@@ -78,11 +81,13 @@ def _text(value: Any) -> str | None:
     return str(value)
 
 
-def check_structure(path: Path, *, umap_key: str = UMAP_KEY) -> Summary:
+def check_structure(path: Path, *, umap_key: str | None = None) -> Summary:
     """Check ``path`` against the format; raise :class:`FormatError` naming the first problem.
 
     A missing `uns['normalization']` is reported, not refused: whether it is allowed depends
-    on a dataset loaded from this exact file, which the caller looks up.
+    on a dataset loaded from this exact file, which the caller looks up. A missing UMAP is
+    reported too (``umap_key`` None); a named one that is missing, or a UMAP-shaped array
+    under another name, is refused.
     """
     h5py, np = _modules()
     try:
@@ -108,6 +113,7 @@ def check_structure(path: Path, *, umap_key: str = UMAP_KEY) -> Summary:
             _scan(h5py, np, f["X"], "X")
         with _reading("obs"):
             _ids(h5py, f, "obs", "cell", n_cells, "rows")
+            obs_columns = _column_order(np, f["obs"])
         with _reading("var"):
             _ids(h5py, f, "var", "gene", n_genes, "columns")
         with _reading("layers"):
@@ -118,8 +124,12 @@ def check_structure(path: Path, *, umap_key: str = UMAP_KEY) -> Summary:
                 problem = normalization_problem(normalization, layers=layers)
                 if problem:
                     raise FormatError(problem)
-        with _reading(f"obsm['{umap_key}']"):
-            _umap(h5py, np, f, n_cells, umap_key)
+        with _reading("obsm"):
+            obsm = tuple(sorted(f["obsm"])) if "obsm" in f else ()
+            found = _find_umap(h5py, f, n_cells, umap_key)
+        if found:
+            with _reading(f"obsm['{found}']"):
+                _umap(h5py, np, f, n_cells, found)
         if "counts" in layers:
             with _reading("layers['counts']"):
                 shape = _shape(h5py, f["layers/counts"], "layers['counts']")
@@ -128,7 +138,7 @@ def check_structure(path: Path, *, umap_key: str = UMAP_KEY) -> Summary:
                         f"layers['counts'] is {shape[0]} x {shape[1]}; X is {n_cells} x {n_genes}"
                     )
                 _scan(h5py, np, f["layers/counts"], "layers['counts']", non_negative=True)
-    return Summary(n_cells, n_genes, normalization, layers)
+    return Summary(n_cells, n_genes, normalization, layers, found, obs_columns, obsm)
 
 
 # What a malformed file makes h5py and numpy raise. Anything else -- MemoryError, a bug in
@@ -304,6 +314,40 @@ def _fields(h5py, f, path: str) -> dict[str, Any] | None:
             value = value.item()
         out[key] = value
     return out
+
+
+def _column_order(np, obs) -> tuple[str, ...]:
+    """The obs columns, in the order AnnData records them."""
+    order = obs.attrs.get("column-order")
+    if order is None:
+        return ()
+    return tuple(_text(v) for v in np.atleast_1d(order) if _text(v))
+
+
+def _find_umap(h5py, f, n_cells: int, umap_key: str | None) -> str | None:
+    """Which obsm array holds the UMAP, or None for a file that has none.
+
+    A named key must be there. Without one, an array shaped like coordinates under another
+    name is refused rather than passed as "no UMAP", so a renamed UMAP is not silently lost.
+    """
+    key = umap_key or UMAP_KEY
+    arrays = f["obsm"] if "obsm" in f else None
+    if arrays is not None and key in arrays:
+        return key
+    if umap_key:
+        return key  # _umap refuses it, naming what obsm does hold
+    lookalikes = sorted(
+        name for name, node in (arrays.items() if arrays is not None else ())
+        if isinstance(node, h5py.Dataset) and tuple(node.shape) == (n_cells, 2)
+    )
+    if lookalikes:
+        names = ", ".join(f"obsm['{name}']" for name in lookalikes)
+        verb = "has" if len(lookalikes) == 1 else "each have"
+        raise FormatError(
+            f"no obsm['{UMAP_KEY}'], but {names} {verb} two columns and one row per cell. "
+            "Pass --umap-key NAME to name the one that is the UMAP"
+        )
+    return None
 
 
 def _umap(h5py, np, f, n_cells: int, umap_key: str = UMAP_KEY) -> None:

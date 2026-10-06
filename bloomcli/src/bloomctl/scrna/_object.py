@@ -8,7 +8,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 from uuid import uuid4
 
 BUCKET = "scrna"
@@ -116,7 +116,9 @@ def _is_the_form_it_claims(directory: Path, fingerprint: str) -> bool:
     return _digest_of(gz_path) == record.get("gz_sha256")
 
 
-def stage(src: Path, directory: Path) -> Staged:
+def stage(
+    src: Path, directory: Path, on_progress: Callable[[int, int], None] | None = None
+) -> Staged:
     """Fingerprint ``src`` and gzip it in the same pass, keeping the gzipped form in ``directory``.
 
     A form kept from an interrupted run is reused when it is still exactly what was written for
@@ -128,12 +130,16 @@ def stage(src: Path, directory: Path) -> Staged:
     os.chmod(directory, 0o700)
     tmp = directory / f".stage-{uuid4().hex}.tmp"
     digest = hashlib.sha256()
+    total, done = src.stat().st_size, 0
     try:
         with src.open("rb") as fh, tmp.open("wb") as raw:
             with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz:
                 for block in iter(lambda: fh.read(READ_BYTES), b""):
                     digest.update(block)
                     gz.write(block)
+                    done += len(block)
+                    if on_progress:
+                        on_progress(done, total)
         fingerprint = digest.hexdigest()
         kept = _gz_path(directory, fingerprint)
         if _is_the_form_it_claims(directory, fingerprint):
@@ -189,6 +195,11 @@ def forget_upload(directory: Path, fingerprint: str) -> None:
     the protocol will not re-finalise it -- so keeping its record repeats that failure forever.
     """
     _upload_path(directory, fingerprint).unlink(missing_ok=True)
+
+
+def upload_recorded(directory: Path, fingerprint: str) -> bool:
+    """Whether an earlier run left an upload of this fingerprint to resume."""
+    return _upload_path(directory, fingerprint).exists()
 
 
 def clear(directory: Path, fingerprint: str) -> None:

@@ -119,6 +119,56 @@ def test_a_file_whose_umap_is_not_named_x_umap_is_refused(tmp_path):
     _refused(write_h5ad(tmp_path / "f.h5ad", obsm={"spatial": (3, 2)}), r"obsm\['X_umap'\]")
 
 
+def test_a_file_with_no_obsm_has_no_umap(tmp_path):
+    summary = fmt.check_structure(write_h5ad(tmp_path / "f.h5ad", obsm={}))
+    assert summary.umap_key is None
+    assert summary.obsm == ()
+
+
+def test_a_file_whose_obsm_holds_no_coordinates_has_no_umap(tmp_path):
+    """A PCA is not a map; nothing in obsm has the shape of one."""
+    summary = fmt.check_structure(write_h5ad(tmp_path / "f.h5ad", obsm={"X_pca": (3, 50)}))
+    assert summary.umap_key is None
+    assert summary.obsm == ("X_pca",)
+
+
+def test_a_umap_under_another_name_names_the_way_out(tmp_path):
+    path = write_h5ad(tmp_path / "f.h5ad", obsm={"spatial": (3, 2)})
+    _refused(path, r"obsm\['spatial'\] has two columns.*Pass --umap-key NAME")
+
+
+def test_several_umap_shaped_arrays_are_each_named(tmp_path):
+    path = write_h5ad(tmp_path / "f.h5ad", obsm={"spatial": (3, 2), "X_tsne": (3, 2)})
+    _refused(path, r"obsm\['X_tsne'\], obsm\['spatial'\] each have two columns")
+
+
+def test_a_named_umap_the_file_does_not_hold_is_refused(tmp_path):
+    with pytest.raises(fmt.FormatError, match=r"obsm\['umap'\].*obsm holds: X_umap"):
+        fmt.check_structure(write_h5ad(tmp_path / "f.h5ad"), umap_key="umap")
+
+
+def test_x_umap_is_used_when_another_array_has_its_shape_too(tmp_path):
+    """Real files carry X_umap beside X_tsne or spatial; that is not a renamed UMAP."""
+    path = write_h5ad(tmp_path / "f.h5ad", obsm={"X_umap": (3, 2), "X_tsne": (3, 2)})
+    summary = fmt.check_structure(path)
+    assert summary.umap_key == "X_umap"
+    assert summary.obsm == ("X_tsne", "X_umap")
+
+
+def test_the_summary_names_where_the_umap_is(tmp_path):
+    assert fmt.check_structure(write_h5ad(tmp_path / "f.h5ad")).umap_key == "X_umap"
+
+
+def test_the_obs_columns_are_reported_in_the_files_order(tmp_path):
+    path = write_h5ad(tmp_path / "f.h5ad", obs_columns=("sample", "cell_type", "batch"))
+    assert fmt.check_structure(path).obs_columns == ("sample", "cell_type", "batch")
+
+
+def test_an_obs_without_columns_reports_none(tmp_path):
+    path = write_h5ad(tmp_path / "f.h5ad", obs_columns=())
+    assert fmt.check_structure(path).obs_columns == ()
+
+
 def test_an_obsm_array_with_the_wrong_row_count_is_refused(tmp_path):
     _refused(write_h5ad(tmp_path / "f.h5ad", obsm={"X_umap": (2, 2)}), r"obsm\['X_umap'\]")
 
