@@ -2,8 +2,11 @@
 submit, and complete or fail, with a fake Supabase client and a fake submission (no
 database or cluster)."""
 
+import logging
+
 import pytest
 
+import k8s_client
 import rnaseq_worker as worker
 from k8s_client import K8sAlreadyExistsError, K8sConfigError, K8sSubmissionError
 from rnaseq_workflows import WorkflowType
@@ -310,3 +313,39 @@ def test_a_stop_signal_while_waiting_to_connect_exits_cleanly(monkeypatch):
     monkeypatch.setattr(worker, "app_client", _connect)
     monkeypatch.setattr(worker.time, "sleep", lambda s: None)
     assert worker._connect_with_retry() is None
+
+
+def test_a_set_but_invalid_secret_name_warns_at_startup(monkeypatch, caplog):
+    monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", "Bloom-Secret ")
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
+    monkeypatch.setattr(
+        k8s_client,
+        "PIPELINE_SECRET_NAME_INVALID",
+        "is not a valid Kubernetes object name",
+    )
+    with caplog.at_level(logging.WARNING, logger="rnaseq_worker"):
+        worker._warn_if_pipeline_secret_invalid()
+    assert "is not a valid Kubernetes object name" in caplog.text
+
+
+@pytest.mark.parametrize("raw, name", [(None, None), ("bloom-secret", "bloom-secret")])
+def test_an_unset_or_valid_secret_name_does_not_warn(monkeypatch, caplog, raw, name):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raw)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", name)
+    with caplog.at_level(logging.WARNING, logger="rnaseq_worker"):
+        worker._warn_if_pipeline_secret_invalid()
+    assert caplog.text == ""
+
+
+def test_the_secret_name_is_checked_when_the_worker_starts(monkeypatch):
+    checked = []
+    monkeypatch.setattr(
+        worker, "_warn_if_pipeline_secret_invalid", lambda: checked.append(True)
+    )
+    monkeypatch.setattr(worker, "_connect_with_retry", lambda: None)
+    monkeypatch.setattr(worker.signal, "signal", lambda *a: None)
+    worker.run()
+    assert checked == [True]

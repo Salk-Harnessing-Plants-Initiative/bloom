@@ -12,6 +12,8 @@ Env:
     WORKFLOWS_WORKER_POLL_SECONDS  idle sleep when the queue is empty (default 5)
     WORKFLOWS_DISPATCH_VT_SECONDS  seconds a claimed run is hidden (default 60)
     WORKFLOWS_DISPATCH_MAX_READS   deliveries before a run is failed (default 5)
+    WORKFLOWS_K8S_PIPELINE_SECRET_NAME  Secret added to every workflow as the optional
+                                   bloom-credentials volume; unset gives an empty folder
 """
 
 import logging
@@ -19,6 +21,7 @@ import os
 import signal
 import time
 
+import k8s_client
 from k8s_client import (
     K8sAlreadyExistsError,
     K8sConfigError,
@@ -36,6 +39,8 @@ POLL_INTERVAL = float(os.environ.get("WORKFLOWS_WORKER_POLL_SECONDS", "5"))
 
 # Shown to users in the run's message; the detail is only in this service's log.
 SUBMISSION_FAILED = "Argo Workflow submission failed"
+
+_PIPELINE_SECRET_ENV = "WORKFLOWS_K8S_PIPELINE_SECRET_NAME"
 
 _running = True
 
@@ -205,7 +210,19 @@ def _connect_with_retry():
     return client
 
 
+def _warn_if_pipeline_secret_invalid():
+    """A set but invalid Secret name becomes an empty folder, so steps upload nothing."""
+    if os.environ.get(_PIPELINE_SECRET_ENV) and not k8s_client.PIPELINE_SECRET_NAME:
+        logger.warning(
+            "rnaseq_worker: %s %s; workflows get an empty bloom-credentials folder, "
+            "so their steps won't upload logs",
+            _PIPELINE_SECRET_ENV,
+            k8s_client.PIPELINE_SECRET_NAME_INVALID,
+        )
+
+
 def run():
+    _warn_if_pipeline_secret_invalid()
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     client = _connect_with_retry()
