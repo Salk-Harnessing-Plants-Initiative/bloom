@@ -1,7 +1,9 @@
 """
 Check an S3 folder of FASTQs before a Cell Ranger run is started on it.
 
-The folder is listed once, unsigned, so it must be public. It must hold one sample's
+The folder is listed anonymously; when that's refused and Bloom's read-only reader is
+configured, it's listed again signed as the reader, for a folder a scientist shared with it.
+Otherwise it must be public. It must hold one sample's
 FASTQs directly inside it, named the Illumina way (`<sample>_S<n>_L<lane>_<R1|R2|I1|I2>_001
 .fastq[.gz]`) with an R1 and an R2 in every lane. Other files and subfolders are ignored.
 The result names the sample and lists each file's name, size and ETag, which the run
@@ -11,12 +13,21 @@ Only the bucket and folder of the URL reach the request, and always on AWS's own
 address, so a URL can't make this service call another host.
 """
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
 
 import httpx
+from botocore.auth import S3SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.credentials import Credentials
 from fastapi import HTTPException
+
+# Bloom's read-only reader (bloom-fastq-reader), for a folder a scientist shared with it. Unset,
+# only folders anyone can read work. Never logged.
+READER_KEY_ID = os.environ.get("WORKFLOWS_S3_READER_ACCESS_KEY_ID") or None
+READER_SECRET = os.environ.get("WORKFLOWS_S3_READER_SECRET_ACCESS_KEY") or None
 
 # The same rules the database checks.
 URL_RULE = re.compile(
@@ -47,6 +58,8 @@ UNDETERMINED = "Undetermined"
 NAME_EXAMPLE = "col0_S1_L001_R1_001.fastq.gz"
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 S3_HOST = "https://s3.amazonaws.com"
+# The region a request to S3_HOST is signed for, until S3 names the bucket's own.
+DEFAULT_REGION = "us-east-1"
 # What S3 sends in x-amz-bucket-region, e.g. us-west-2 or ap-southeast-1.
 REGION_RULE = re.compile(r"^[a-z]{2}(?:-[a-z]+)+-[0-9]$")
 IP_LIKE = re.compile(r"^[0-9]+(?:\.[0-9]+){3}$")
@@ -87,23 +100,67 @@ def _list_url(host: str, bucket: str, prefix: str) -> str:
     )
 
 
-def _list(bucket: str, prefix: str, client: httpx.Client) -> ET.Element:
-    """The folder's listing. Follows S3's redirect to the bucket's own region once."""
-    resp = client.get(_list_url(S3_HOST, bucket, prefix))
-    region = resp.headers.get("x-amz-bucket-region")
-    if resp.status_code in (301, 307, 400) and region:
-        if not REGION_RULE.fullmatch(region):
-            raise HTTPException(
-                status_code=502, detail=f"S3 named an unknown region for {bucket}"
-            )
-        resp = client.get(
-            _list_url(f"https://s3.{region}.amazonaws.com", bucket, prefix)
+def reader_configured() -> bool:
+    return bool(READER_KEY_ID and READER_SECRET)
+
+
+def _reader_headers(url: str, region: str) -> dict[str, str]:
+    """A GET of `url` signed as Bloom's reader (AWS Signature V4)."""
+    request = AWSRequest(method="GET", url=url)
+    S3SigV4Auth(Credentials(READER_KEY_ID, READER_SECRET), "s3", region).add_auth(
+        request
+    )
+    return dict(request.headers.items())
+
+
+def _get(client: httpx.Client, url: str, signed: bool, region: str) -> httpx.Response:
+    return client.get(url, headers=_reader_headers(url, region) if signed else None)
+
+
+def _fetch(
+    bucket: str,
+    prefix: str,
+    client: httpx.Client,
+    signed: bool,
+    region: str | None = None,
+) -> tuple[httpx.Response, str | None]:
+    """One listing, anonymous or as the reader, following S3's redirect to the bucket's own
+    region once. Returns the response and the bucket's region, when S3 named it."""
+    host = S3_HOST if region is None else f"https://s3.{region}.amazonaws.com"
+    resp = _get(
+        client, _list_url(host, bucket, prefix), signed, region or DEFAULT_REGION
+    )
+    named = resp.headers.get("x-amz-bucket-region")
+    if named and not REGION_RULE.fullmatch(named):
+        raise HTTPException(
+            status_code=502, detail=f"S3 named an unknown region for {bucket}"
         )
+    if resp.status_code in (301, 307, 400) and named and named != region:
+        resp = _get(
+            client,
+            _list_url(f"https://s3.{named}.amazonaws.com", bucket, prefix),
+            signed,
+            named,
+        )
+    return resp, named or region
+
+
+def _list(bucket: str, prefix: str, client: httpx.Client) -> ET.Element:
+    """The folder's listing: anonymous first, then as Bloom's reader if that's refused and the
+    reader is configured."""
+    resp, region = _fetch(bucket, prefix, client, signed=False)
+    if resp.status_code in (401, 403) and reader_configured():
+        resp, _ = _fetch(bucket, prefix, client, signed=True, region=region)
     if resp.status_code == 400 and b"InvalidBucketName" in resp.content:
         raise _refuse(f"{bucket} isn't a valid S3 bucket name")
     if resp.status_code == 404:
         raise _refuse(f"Bucket {bucket} doesn't exist")
     if resp.status_code in (401, 403):
+        if reader_configured():
+            raise _refuse(
+                f"Bloom can't read s3://{bucket}/{prefix}; make the folder public, or share it "
+                "with Bloom's reader (the ? next to the folder field says how)"
+            )
         raise _refuse(
             f"Bloom can't read s3://{bucket}/{prefix}; the folder must be public "
             "(anyone can list it and read its files)"
