@@ -66,6 +66,8 @@ EXPECTED_PRIVILEGES = {
     # and correcting one is loading it again. bloom_admin keeps it for a
     # developer repairing the database deliberately.
     "bloom_writer": {"SELECT", "INSERT"},
+    # The pipeline reads it to check a resumed load built nothing later on the dataset.
+    "bloom_workflows": {"SELECT"},
 }
 
 
@@ -475,16 +477,18 @@ def _table_privileges(cur, table: str) -> dict[str, set[str]]:
 
 def test_privileges_match_an_untouched_sibling_apart_from_the_one_revoke(pg_conn):
     """This migration grants nothing, so any difference from a sibling would mean
-    it re-granted something -- except the one difference put there on purpose.
+    it re-granted something -- except the two differences put there on purpose.
 
     20260911000000 revoked UPDATE from the roles a person arrives as, because a
-    submitted result is not edited. Subtracting exactly that from the sibling and
-    requiring the rest to match still catches a stray regrant, which is what this
-    test is for."""
+    submitted result is not edited. 20261005220000 lets the pipeline insert cells
+    but only read results. Subtracting exactly those from the sibling and requiring
+    the rest to match still catches a stray regrant, which is what this test is for."""
     with pg_conn.cursor() as cur:
         expected = {
             role: privs - {"UPDATE", "DELETE"}
             if role in ("bloom_writer", "authenticated", "anon", "service_role")
+            # The pipeline writes a dataset's cells and only reads its results.
+            else privs - {"INSERT"} if role == "bloom_workflows"
             else privs
             for role, privs in _table_privileges(cur, SIBLING).items()
         }

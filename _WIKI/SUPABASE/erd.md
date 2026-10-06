@@ -112,6 +112,7 @@ erDiagram
 "public.scrna_embedding_points" }o--|| "public.scrna_cells" : "FOREIGN KEY (dataset_id, cell_id) REFERENCES scrna_cells(dataset_id, id) ON DELETE RESTRICT"
 "public.scrna_embedding_points" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_count_changes" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
+"public.rnaseq_runs" |o--o| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id) ON DELETE SET NULL"
 "public.cyl_pipeline_run_workflows" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
 
 "public.species" {
@@ -1073,6 +1074,7 @@ erDiagram
   text workflow_type
   jsonb params
   jsonb metadata
+  bigint dataset_id FK
 }
 "public.rnaseq_samples" {
   bigint id

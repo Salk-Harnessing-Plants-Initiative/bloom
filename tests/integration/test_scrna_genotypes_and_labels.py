@@ -746,6 +746,10 @@ def test_the_policy_set_is_exactly_what_the_migration_declares(pg_conn):
                 ("INSERT", "PERMISSIVE", ["bloom_writer"]),
             "writer_update_scrna_genotypes":
                 ("UPDATE", "PERMISSIVE", ["bloom_writer"]),
+            "workflows_select_scrna_genotypes":
+                ("SELECT", "PERMISSIVE", ["bloom_workflows"]),
+            "workflows_insert_scrna_genotypes":
+                ("INSERT", "PERMISSIVE", ["bloom_workflows"]),
         }
 
 
