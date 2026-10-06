@@ -24,6 +24,9 @@ RELEASE = WORKFLOWS / "release-npm.yml"
 VERSION = WORKFLOWS / "version-npm.yml"
 PACKAGES = ("bloom-js", "bloom-fs")
 SCOPE = "@salk-harnessing-plants-initiative"
+# The publish job's command; the tarball path must start with ./ or npm reads it as a GitHub repo.
+PUBLISH = 'npm publish ./release/*.tgz --tag "$DIST_TAG"'
+DRY_RUN = PUBLISH.replace(" --tag", " --dry-run --tag")
 
 _GIT_BASH_CANDIDATES = [
     r"C:\Program Files\Git\bin\bash.exe",
@@ -302,8 +305,43 @@ def test_publish_goes_to_github_packages_only_on_a_release():
     publish = [s for s in steps if "npm publish" in str(s.get("run", ""))]
     assert len(publish) == 1
     assert publish[0]["if"] == "github.event_name == 'release'"
-    assert publish[0]["run"] == 'npm publish release/*.tgz --tag "$DIST_TAG"'
+    assert publish[0]["run"] == PUBLISH
     assert publish[0]["env"]["NODE_AUTH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
+
+def test_the_publish_job_starts_only_for_a_release():
+    assert _jobs()["build-and-publish"]["if"] == "github.event_name == 'release'"
+
+
+def test_the_build_job_dry_runs_the_publish_command():
+    step = _step("build-and-verify", "Dry-run the publish command")
+    assert step["run"] == DRY_RUN
+    assert "NODE_AUTH_TOKEN" not in step.get("env", {})
+
+
+@pytest.mark.skipif(shutil.which("npm") is None, reason="needs npm")
+def test_the_publish_command_reads_the_tarball_as_a_file(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    manifest = {
+        "name": f"{SCOPE}/demo",
+        "version": "0.0.1",
+        "publishConfig": {"registry": "https://npm.pkg.github.com"},
+    }
+    (pkg / "package.json").write_text(json.dumps(manifest))
+    (tmp_path / "release").mkdir()
+    pack = ["npm", "pack", "--pack-destination", "../release"]
+    subprocess.run(pack, cwd=pkg, check=True, capture_output=True)
+    result = subprocess.run(
+        [BASH, "-c", DRY_RUN],
+        cwd=tmp_path,
+        env={**os.environ, "DIST_TAG": "latest"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"+ {SCOPE}/demo@0.0.1" in result.stdout
 
 
 def test_release_builds_do_not_use_a_dependency_cache():
