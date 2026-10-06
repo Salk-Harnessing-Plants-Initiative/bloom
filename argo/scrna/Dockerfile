@@ -7,6 +7,8 @@ FROM --platform=linux/amd64 debian:bookworm-slim
 
 ARG CELLRANGER_VERSION=10.1.0
 ENV CELLRANGER_HOME=/opt/cellranger-${CELLRANGER_VERSION}
+# The Python tools print each line at once, so run-with-log keeps the log in order.
+ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip procps python3 perl openjdk-17-jre-headless \
