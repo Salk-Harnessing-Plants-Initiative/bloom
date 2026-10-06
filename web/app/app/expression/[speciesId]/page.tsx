@@ -1,6 +1,10 @@
 import Link from "next/link";
 import Illustration from "@/components/illustration";
 import {
+  IncompleteUploadBadge,
+  isIncompleteUpload,
+} from "@/components/expression-upload-status";
+import {
   createServerSupabaseClient,
   getUser,
 } from "@/lib/supabase/server";
@@ -99,8 +103,11 @@ export default async function Species({
                   <Illustration path={species.illustration_path} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-xl text-lime-700 group-hover:underline break-words">
-                    {ds.name}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xl text-lime-700 group-hover:underline break-words">
+                      {ds.name}
+                    </span>
+                    {isIncompleteUpload(ds) && <IncompleteUploadBadge />}
                   </div>
                   {secondary && (
                     <div className="text-sm italic text-neutral-600">

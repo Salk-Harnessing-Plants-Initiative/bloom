@@ -33,6 +33,8 @@ dependencies = [
     # `scrna hdf5 upload` reads the file's HDF5 to check its structure.
     "h5py>=3.10",
     "numpy>=1.26",
+    # `scrna hdf5 upload` reads the cells' labels and coordinates to load the dataset.
+    "anndata>=0.10",
 ]
 
 [project.urls]
