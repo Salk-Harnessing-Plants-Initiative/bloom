@@ -23,6 +23,8 @@ def _objects(env) -> dict[str, dict]:
 def test_an_upload_writes_every_genes_counts_and_finishes_last(tmp_path, env, storage):
     result = _run("upload", "--yes", str(write_h5ad(tmp_path / "d.h5ad")))
     assert result.exit_code == 0, result.output
+    assert "gene counts    4 genes, one object each under scrna/counts/MYB41_<new id>_/" in (
+        result.stderr)
     dataset = _dataset(env)
     prefix = f"counts/MYB41_{dataset['id']}_/"
     assert sorted(_objects(env)) == [f"{prefix}gene{i}.json" for i in range(4)]
@@ -60,7 +62,9 @@ def test_a_dataset_finished_without_its_counts_gets_them(tmp_path, env, storage)
     result = _run("upload", "--yes", str(path))
     assert result.exit_code == 0, result.output
     assert "loaded without its counts; they will be added" in result.stderr
-    assert "Added the counts dataset" in result.stdout
+    assert f"4 genes, one object each under scrna/counts/MYB41_{_dataset(env)['id']}_/" in (
+        result.stderr)
+    assert "Added the counts of 4 genes to dataset" in result.stdout
     assert len(client.tables["scrna_counts"]) == 4 and len(_objects(env)) == 4
     dataset = _dataset(env)
     assert dataset["ingested_at"] and dataset["ingested_at"] != finished_at
@@ -73,6 +77,7 @@ def test_a_dataset_with_its_counts_is_already_loaded(tmp_path, env, storage):
     before = len(_writes(env["client"]))
     again = _run("upload", "--yes", str(path))
     assert "is already loaded from this file" in again.stdout
+    assert "gene counts" not in again.stderr
     assert len(_writes(env["client"])) == before
 
 
@@ -314,7 +319,7 @@ def test_adding_counts_shows_the_dataset_unfinished_until_they_are_all_there(
     again = _run("upload", "--yes", str(path))
     assert again.exit_code == 0, again.output
     assert "loaded without its counts; they will be added" in again.stderr
-    assert "Added the counts dataset" in again.stdout
+    assert "Added the counts of 2 genes to dataset" in again.stdout
     assert _counts_sent(client, before) == ["gene2.json", "gene3.json"]
     dataset = _dataset(env)
     assert dataset["ingested_at"] and "counts_pending" not in dataset["metadata"]
@@ -333,7 +338,8 @@ def test_adding_counts_stopped_before_the_finish_is_finished_by_the_next_run(
     before = len(client.log)
     again = _run("upload", "--yes", str(path))
     assert again.exit_code == 0, again.output
-    assert "Added the counts dataset" in again.stdout
+    assert "gene counts    all stored; the dataset will be finished" in again.stderr
+    assert "every gene's counts are stored" in again.stdout
     assert _counts_sent(client, before) == []
     assert _dataset(env)["ingested_at"] and "counts_pending" not in _dataset(env)["metadata"]
 

@@ -1,4 +1,4 @@
-"""`bloomctl scrna hdf5 upload`: store a dataset's h5ad under its fingerprint, then load its cells.
+"""`bloomctl scrna hdf5 upload`: store a dataset's h5ad under its fingerprint, then load it.
 
 Every check runs before the question: the file's structure, its cells and labels, the size,
 the normalization record, and what the load will do to the dataset. The file is stored first,
@@ -18,6 +18,7 @@ import click
 from ..credentials import DEFAULT_PROFILE
 from . import (
     _cells,
+    _counts,
     _format,
     _genes,
     _load,
@@ -71,7 +72,7 @@ from ._text import visible
 @click.option("--dry-run", is_flag=True,
               help="Sign in and run every check, then stop before sending or writing anything.")
 def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> None:
-    """Store a dataset's AnnData file (.h5ad) and load its cells into Bloom.
+    """Store a dataset's AnnData file (.h5ad) and load its cells and gene counts into Bloom.
 
     Needs a writer or admin login. Every check runs first; then what the file holds and what
     the load will do are shown on the terminal, and it goes ahead once confirmed. A stopped
@@ -122,7 +123,8 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
         _show(_summary.describe_load(cells, _dataset_text(plan, opts, species), genotypes,
                                      tuple(options["facets"] or ()),
                                      units=options["expression_units"],
-                                     checked=_genes.parse_expectations(opts["expect_nonzero"])))
+                                     checked=_genes.parse_expectations(opts["expect_nonzero"]),
+                                     counts=_counts_text(plan, opts)))
         if dry_run:
             click.echo("Dry run — every check passed. Nothing was sent or written.")
             raise click.exceptions.Exit(0)
@@ -138,7 +140,8 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
         _send.send_through_expiry(http, conn, profile, stage, staged, file.name,
                                   on_progress=update)
     _write(writer, opts, species_id, species, cells, staged.fingerprint, options, normalization,
-           None if genes is None else (file, genes), _unchanged_since(file, read_from))
+           None if genes is None else (file, genes), _unchanged_since(file, read_from),
+           plan.genes)
 
 
 def _options(opts: dict[str, Any]) -> dict[str, Any]:
@@ -255,6 +258,18 @@ def _dataset_text(plan: _load.Plan, opts: dict[str, Any], species: str) -> str:
     }[plan.outcome]
 
 
+def _counts_text(plan: _load.Plan, opts: dict[str, Any]) -> str | None:
+    """How many genes' counts the load writes, and where."""
+    if plan.outcome in ("already loaded", "add labels"):
+        return None
+    if not plan.genes:
+        return "all stored; the dataset will be finished"
+    folder = _counts.clean_dataset_name(opts["name"])
+    dataset_id = plan.dataset_id or "<new id>"
+    return (f"{plan.genes:,} gene{'' if plan.genes == 1 else 's'}, one object each under "
+            f"scrna/counts/{visible(folder)}_{dataset_id}_/")
+
+
 def _question(plan: _load.Plan, name: str) -> str:
     name = visible(name.strip())
     if plan.outcome == "already loaded":
@@ -267,7 +282,7 @@ def _question(plan: _load.Plan, name: str) -> str:
 
 
 def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint: str,
-           options, normalization: dict | None, counts, unchanged) -> None:
+           options, normalization: dict | None, counts, unchanged, genes: int) -> None:
     """Load the cells and counts, or add the labels, now that the file is stored."""
     name = opts["name"].strip()
     try:
@@ -300,7 +315,9 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
         click.echo(f"Dataset {dataset_id} ({name!r}) is already loaded from this file: "
                    f"{stored:,} cells")
     elif outcome == "counts added":
-        click.echo(f"Added the counts dataset {dataset_id} ({name!r}) was missing")
+        click.echo(f"Added the counts of {genes:,} gene{'' if genes == 1 else 's'} to dataset "
+                   f"{dataset_id} ({name!r}), which was missing them" if genes else
+                   f"Finished dataset {dataset_id} ({name!r}): every gene's counts are stored")
     else:
         click.echo(f"{outcome.capitalize()} dataset {dataset_id} ({name!r}): {stored:,} cells")
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
@@ -42,10 +42,12 @@ LABEL_BATCH = 500
 
 @dataclass(frozen=True)
 class Plan:
-    """What a load will do: 'register', 'resume', 'already loaded' or 'add labels'."""
+    """What a load will do: 'register', 'resume', 'already loaded', 'add labels' or 'add counts',
+    and how many genes' counts it will write."""
 
     outcome: str
     dataset_id: int | None
+    genes: int = field(default=0, compare=False)
 
 
 def plan(
@@ -66,23 +68,22 @@ def plan(
         return Plan("add labels", found["id"])
     if found is None:
         check_registration(name, species_id, create, species)
-        return Plan("register", None)
+        return Plan("register", None, len(counts[1]) if counts is not None else 0)
     outcome = check_resume(found, source_checksum, options)
     if outcome == "already loaded":
         check_nothing_to_add(found, options)
         if counts is not None and _counts_to_add(writer, found, counts):
             check_same_cells(writer, found["id"], cells)
-            return Plan("add counts", found["id"])
+            return Plan("add counts", found["id"], _counts.missing(writer, found["id"], counts[1]))
         return Plan(outcome, found["id"])
     dataset_id = found["id"]
     check_nothing_later(writer, dataset_id)
     check_catalogue(writer, dataset_id, cells)
-    if counts is not None:
-        _counts.missing(writer, dataset_id, counts[1])
+    genes = _counts.missing(writer, dataset_id, counts[1]) if counts is not None else 0
     if cells.get("genotypes") is not None:
         _plan_genotypes(writer, dataset_id, _genotypes(cells, options))
     check_numbers(dataset_id, _cell_numbers(writer, dataset_id), cells["n_cells"], complete=False)
-    return Plan("resume", dataset_id)
+    return Plan("resume", dataset_id, genes)
 
 
 def load(
