@@ -148,6 +148,9 @@ services:
       # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
       # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).
       CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
+      # Bloom's read-only AWS user, shown on the scRNA job form so a scientist can share a
+      # private folder with it; empty, the form offers public folders only.
+      SCRNA_FOLDER_READER_ARN: ${SCRNA_FOLDER_READER_ARN}
       # Read by web/lib/config/validate-on-boot.ts in production via the
       # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
       # boot fails if unset. Format:
@@ -278,6 +281,10 @@ services:
       # Reads the production model cards from the wandb registry for GET /model-cards
       # (bloom#971). Only this service gets it; the six other containers built from its image don't.
       WANDB_API_KEY: ${WANDB_API_KEY}
+      # Bloom's AWS user (bloomv2-workflows-job, the pipeline's), so the folder check can read a folder
+      # a scientist shared with it. Unset, only folders anyone can read work.
+      WORKFLOWS_S3_READER_ACCESS_KEY_ID: ${WORKFLOWS_S3_READER_ACCESS_KEY_ID}
+      WORKFLOWS_S3_READER_SECRET_ACCESS_KEY: ${WORKFLOWS_S3_READER_SECRET_ACCESS_KEY}
     networks:
       - supanet
     healthcheck:
@@ -498,6 +505,13 @@ services:
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
       WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+      # The run-finished email, through Salk's relay, as GoTrue's sign-in emails; SITE_URL
+      # makes its link to the run page.
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
+      SITE_URL: ${SITE_URL}
     networks:
       - supanet
     depends_on:
