@@ -1075,10 +1075,20 @@ def test_get_workflow_status_raises_on_unverified_404(monkeypatch, caplog, case)
 
 
 @pytest.mark.parametrize("case", sorted(_UNVERIFIED_404S))
-def test_get_workflow_still_returns_none_on_any_404(monkeypatch, case):
-    """The RNA-seq poller and the log readers keep today's behaviour."""
+def test_get_workflow_raises_on_unverified_404(monkeypatch, caplog, case):
+    """The RNA-seq poller fails a run as removed only when its Workflow is really gone;
+    any other 404 is a failed read, tried again at the next poll (bloom#1049)."""
     _serve(monkeypatch, _UNVERIFIED_404S[case])
-    assert k8s_client.get_workflow("wf-a") is None
+    with (
+        caplog.at_level("WARNING", logger="k8s_client"),
+        pytest.raises(K8sStatusError) as exc,
+    ):
+        k8s_client.get_workflow("wf-a")
+    assert str(exc.value) == "Argo Workflow status check failed"
+    assert any("404" in r.getMessage() for r in caplog.records)
+    body = _UNVERIFIED_404S[case].text
+    if body:
+        assert body[:40] not in str(exc.value), "never in the error message"
 
 
 def _workflow(phase, run_label=None, env_label=None):
@@ -1233,11 +1243,7 @@ def test_get_workflow_returns_the_whole_workflow(monkeypatch):
 
 
 def test_get_workflow_returns_none_when_the_workflow_is_gone(monkeypatch):
-    monkeypatch.setattr(
-        k8s_client.httpx,
-        "Client",
-        lambda *a, **k: _FakeClient(resp=_FakeResp(404, {}, text="not found")),
-    )
+    _serve(monkeypatch, _FakeResp(404, _not_found("wf-1")))
     assert k8s_client.get_workflow("wf-1") is None
 
 
