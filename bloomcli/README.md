@@ -520,9 +520,9 @@ bloomctl scrna hdf5 list myb41 -p staging                            # by datase
 bloomctl scrna hdf5 list --file myb41_transgene_load.h5ad -p staging # is this one stored?
 ```
 
-**Upload** stores the file and loads the dataset's cells from it, so the explorer can show
-them. It needs a writer or admin login. Before sending anything it checks the file's
-structure:
+**Upload** stores the file and loads the dataset from it — its cells and each gene's counts —
+so the explorer can show them and colour them by any gene. It needs a writer or admin login.
+Before sending anything it checks the file's structure:
 
 - every cell has an ID and none repeats (a barcode shared across samples cannot
   be the index); the same for genes, in whatever form the species' annotation
@@ -550,9 +550,10 @@ A file with no UMAP is refused: the explorer plots stored coordinates and never 
 them. A file with no `obsm['X_umap']` but another array with two columns and a row per cell
 is refused naming it; pass `--umap-key NAME` if that array is the UMAP.
 
-Next it reads the cells, the way the load will. Only the cell table (`obs`), the UMAP and the
-matrix's shape are read — no expression matrix or layer — so the memory this takes does not
-grow with the size of the data:
+Next it reads the cells and the gene names, the way the load will. Only the cell table
+(`obs`), the UMAP, the gene table (`var`) and the matrix's shape are read — no expression
+matrix or layer, except the genes `--expect-nonzero` names — so the memory this takes does
+not grow with the size of the data:
 
 - `--annotation` names the obs column holding the cell-type or cluster label assigned to
   each cell — annotated types such as `Cortex`, or cluster ids such as Leiden's `0`, `1`, … —
@@ -562,19 +563,32 @@ grow with the size of the data:
   (`nan`, `None`, …), is refused rather than stored as a cell type
 - `--expect-cells N` refuses a file holding any other number of cells
 - sample names are at most 100 characters, the most the database holds
-- the file does not change while it is read; one re-saved part-way is refused
+- gene names lose an `.Araport11.N` suffix, and then have to be unique and usable in an
+  object path (no `/`, no `..`)
+- `--expect-nonzero GENE=COUNT` (repeatable) refuses the file unless that gene is non-zero in
+  exactly that many cells — a way to pin a gene whose count is known independently, such as
+  a transgene's
+- the file does not change while it is read; one re-saved part-way is refused. The same check
+  runs again while the gene counts are read, after the file is stored: if the file changes
+  then, the load stops with nothing from the changed file written, and either the original
+  file is put back and the same command continues it, or the new file is uploaded as a new
+  dataset with another `--name` and `--create`
 
 Then it gzips the file, which also fingerprints it, and checks what needs that: the gzipped
 size is within 500 MB, and a file without `uns['normalization']` is one a dataset already
 records the normalization for. Last, it looks the dataset up by `--name` within `--species`
 (a common name, matched ignoring case and surrounding spaces) and decides what the load
-will do. Dataset names match ignoring case and surrounding spaces too, so `myb41` is the
-same name as `MYB41`:
+will do. Surrounding spaces are ignored in dataset names, and a name that differs from an existing
+dataset's only in capital letters is refused, asking for the exact name or a new one, so
+`myb41` cannot quietly stand in for, or sit beside, `MYB41`:
 
 - **no such dataset**: registered, but only with `--create`, so a mistyped name is refused
   rather than loaded as a second copy
 - **a load from this file that stopped**: continued from what is stored, given the same
   options it was started with
+- **finished from this file without its gene counts** (loaded before the upload wrote them):
+  the stored cells have to be this file's, in its order, and then the missing counts are
+  added
 - **finished from this file**: nothing to load — "already loaded". Given a label option or an
   `--annotation` the dataset was not loaded with, it is refused instead, pointing to
   `--add-labels`, rather than reporting success and writing nothing
@@ -620,8 +634,10 @@ myb41_transgene_load.h5ad
 Upload this file? Its dataset is already loaded [y/N]:
 ```
 
-For a new dataset the dataset line reads `— new, registered by this upload` and the question
-is `Upload this file and load its cells into '<name>'?`.
+For a new dataset the dataset line reads `— new, registered by this upload`, a `gene counts`
+line says how many genes' counts will be written and where (`27,656 genes, one object each
+under scrna/counts/My_dataset_<new id>_/`), and the question is
+`Upload this file and load its cells into '<name>'?`.
 
 The summary and the question are written to the terminal (stderr), so they still appear
 when the output is redirected to a file. Every name read from the file is shown with its
@@ -655,14 +671,22 @@ again does nothing about a permission the account does not have.
 Once the file is stored, the cells are written: the dataset row (recording the file's
 fingerprint, the load's options and how many cells the file holds), its cell-type catalogue
 (each type with its colour), and one row per cell with its UMAP position, type and sample.
-The dataset is marked finished last, after every cell is read back, with the file's
-`uns['normalization']`; until then a dataset that records a file but no finish time is an
-unfinished load. The colour-bar units follow the normalization (`log1p normalised counts`,
+Then each gene's counts: a row per gene, numbered by its position in the file, and one object
+per gene under `counts/<name>_<dataset id>_/<gene>.json` holding its value in every cell that
+has one, keyed by the cell's position. The matrix is read a block of genes at a time, so the
+memory this takes stays bounded whatever the file's size.
+
+The dataset is marked finished last, after every cell is read back and every gene's counts
+are recorded, with the file's `uns['normalization']`; until then a dataset that records a
+file but no finish time is an unfinished load. A dataset finished before the counts were
+part of the upload gets the ones it is missing when the same command is run again; it is
+marked unfinished while they are written, and finished again once they are all there. The
+colour-bar units follow the normalization (`log1p normalised counts`,
 `log2(x+1) normalised counts`, …) unless `--expression-units` says otherwise.
 
 On a terminal, the slow steps — preparing (fingerprinting and gzipping) the file, uploading
-it, and writing the cells — each show a progress bar with how much is done, e.g.
-`Uploading my_dataset.h5ad ━━━━━━━━╺━━━━━━ 75.0/182.4 MB 41% 0:00:38`; a log or CI run gets
+it, writing the cells and writing the genes — each show a progress bar with how much is
+done, e.g. `Uploading my_dataset.h5ad ━━━━━━━━╺━━━━━━ 75.0/182.4 MB 41% 0:00:38`; a log or CI run gets
 only the result lines.
 
 Each write is one request sent once; if one fails the command says the file is stored and

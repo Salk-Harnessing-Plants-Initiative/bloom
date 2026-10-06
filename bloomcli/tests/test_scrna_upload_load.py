@@ -235,13 +235,14 @@ def test_the_upload_reports_the_bytes_storage_took(tmp_path, env, storage, monke
 
     @contextmanager
     def record(description, unit=_progress.BYTES):
-        seen[description.split()[0]] = steps = []
+        seen[" ".join(description.split()[:2])] = steps = []
         yield lambda done, total: steps.append((done, total))
 
     monkeypatch.setattr(_progress, "track", record)
     path = write_h5ad(tmp_path / "data.h5ad")
     assert _run("upload", "--yes", str(path)).exit_code == 0
     size = len(next(iter(storage.objects.values())))
-    assert seen["Uploading"][-1] == (size, size)
-    assert seen["Preparing"][-1] == (path.stat().st_size,) * 2
-    assert seen["Writing"][-1] == (3, 3)
+    assert seen["Uploading data.h5ad"][-1] == (size, size)
+    assert seen["Preparing data.h5ad"][-1] == (path.stat().st_size,) * 2
+    assert seen["Writing cells"][-1] == (3, 3)
+    assert seen["Writing genes"][-1] == (4, 4)

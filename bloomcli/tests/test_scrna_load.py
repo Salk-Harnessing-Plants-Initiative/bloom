@@ -242,7 +242,7 @@ def test_a_stored_catalogue_that_differs_from_the_file_is_refused(tmp_path):
 
 @pytest.mark.parametrize("table,named", [
     ("scrna_cluster_stats", "statistic"), ("scrna_cluster_neighbors", "neighbour"),
-    ("scrna_counts", "expression"), ("scrna_de", "differential expression"),
+    ("scrna_de", "differential expression"),
 ])
 def test_results_on_the_dataset_stop_the_cells_loader(tmp_path, table, named):
     client = FakeClient({table: [{"id": 1, "dataset_id": 7}]})
@@ -440,9 +440,9 @@ def test_a_finished_dataset_from_another_file_is_refused_at_planning(tmp_path):
 
 
 def test_results_on_an_unfinished_dataset_are_refused_at_planning(tmp_path):
-    client = FakeClient({"scrna_counts": [{"id": 1, "dataset_id": 7}]})
+    client = FakeClient({"scrna_de": [{"id": 1, "dataset_id": 7}]})
     dataset(client)
-    with pytest.raises(LoadError, match="expression"):
+    with pytest.raises(LoadError, match="differential expression"):
         plan(client, tmp_path, create=False)
 
 
@@ -534,12 +534,21 @@ def test_a_resume_with_repeated_cells_is_refused_at_planning(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_name_differing_only_in_case_is_the_same_dataset(tmp_path):
+def test_a_name_differing_only_in_case_asks_for_the_exact_name_or_a_new_one(tmp_path):
     client = FakeClient()
     dataset(client, ingested_at="2026-01-01T00:00:00Z")
-    assert plan(client, tmp_path, name="myb41 ", create=True) == _load.Plan("already loaded", 7)
-    with pytest.raises(LoadError, match="'MYB41' is already loaded as dataset 7"):
-        plan(client, tmp_path, name="myb41", checksum="sha-2", create=True)
+    with pytest.raises(LoadError) as exc:
+        plan(client, tmp_path, name="myb41", create=True)
+    assert "a dataset named 'MYB41' already exists (id 7)" in str(exc.value)
+    assert "use --name 'MYB41' exactly" in str(exc.value)
+    assert "--name 'myb41_v2' --create" in str(exc.value)
+    assert writes(client) == []
+
+
+def test_the_exact_name_with_spaces_around_it_is_still_the_same_dataset(tmp_path):
+    client = FakeClient()
+    dataset(client, ingested_at="2026-01-01T00:00:00Z")
+    assert plan(client, tmp_path, name="  MYB41 ", create=True) == _load.Plan("already loaded", 7)
 
 
 def test_another_file_under_a_loaded_name_is_offered_a_versioned_name(tmp_path):

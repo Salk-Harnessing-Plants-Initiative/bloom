@@ -1,4 +1,4 @@
-"""`bloomctl scrna hdf5 upload`: store a dataset's h5ad under its fingerprint, then load its cells.
+"""`bloomctl scrna hdf5 upload`: store a dataset's h5ad under its fingerprint, then load it.
 
 Every check runs before the question: the file's structure, its cells and labels, the size,
 the normalization record, and what the load will do to the dataset. The file is stored first,
@@ -18,7 +18,9 @@ import click
 from ..credentials import DEFAULT_PROFILE
 from . import (
     _cells,
+    _counts,
     _format,
+    _genes,
     _load,
     _object,
     _progress,
@@ -55,6 +57,9 @@ from ._text import visible
               help="The construct a transgenic line carries; repeatable.")
 @click.option("--facet", multiple=True, metavar="COLUMN",
               help="An obs column of labels to filter the map by; repeatable.")
+@click.option("--expect-nonzero", multiple=True, metavar="GENE=COUNT",
+              help="Refuse unless this gene is non-zero in exactly this many cells, e.g. a "
+                   "transgene's; repeatable.")
 @click.option("--source-column", metavar="COLUMN",
               help="The obs column naming where each cell's label came from.")
 @click.option("--add-labels", is_flag=True,
@@ -67,7 +72,7 @@ from ._text import visible
 @click.option("--dry-run", is_flag=True,
               help="Sign in and run every check, then stop before sending or writing anything.")
 def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> None:
-    """Store a dataset's AnnData file (.h5ad) and load its cells into Bloom.
+    """Store a dataset's AnnData file (.h5ad) and load its cells and gene counts into Bloom.
 
     Needs a writer or admin login. Every check runs first; then what the file holds and what
     the load will do are shown on the terminal, and it goes ahead once confirmed. A stopped
@@ -89,6 +94,7 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
     read_from = _stamp(file)
     summary = _checked(file, opts["umap_key"])
     cells, genotypes = _refused_unsent(lambda: _read(file, options, opts))
+    genes = None if opts["add_labels"] else _refused_unsent(lambda: _genes_of(file, opts))
     species_id, species = _records.species(conn.client, opts["species"])
     stage = _object.staging_dir()
     writer = _writer.Writer(
@@ -111,11 +117,14 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
             options["expression_units"] or _records.units_for(normalization))
         plan = _refused_unsent(lambda: _load.plan(
             writer, opts["name"], species_id, cells, staged.fingerprint, options,
-            create=opts["create"], add_labels=opts["add_labels"], species=species))
+            create=opts["create"], add_labels=opts["add_labels"], species=species,
+            counts=None if genes is None else (file, genes)))
         _show(_summary.describe(summary, file.name, recorded_on=recorded_on))
         _show(_summary.describe_load(cells, _dataset_text(plan, opts, species), genotypes,
                                      tuple(options["facets"] or ()),
-                                     units=options["expression_units"]))
+                                     units=options["expression_units"],
+                                     checked=_genes.parse_expectations(opts["expect_nonzero"]),
+                                     counts=_counts_text(plan, opts)))
         if dry_run:
             click.echo("Dry run — every check passed. Nothing was sent or written.")
             raise click.exceptions.Exit(0)
@@ -130,7 +139,9 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
     with _transfer.open_client() as http, uploading as update:
         _send.send_through_expiry(http, conn, profile, stage, staged, file.name,
                                   on_progress=update)
-    _write(writer, opts, species_id, species, cells, staged.fingerprint, options, normalization)
+    _write(writer, opts, species_id, species, cells, staged.fingerprint, options, normalization,
+           None if genes is None else (file, genes), _unchanged_since(file, read_from),
+           plan.genes)
 
 
 def _options(opts: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +158,7 @@ def _options(opts: dict[str, Any]) -> dict[str, Any]:
         raise click.UsageError("--add-labels adds to a loaded dataset; it cannot --create one.")
     try:
         constructs = _cells.parse_constructs(opts["construct"])
+        _genes.parse_expectations(opts["expect_nonzero"])
     except _writer.LoadError as exc:
         raise click.UsageError(str(exc)) from exc
     return {
@@ -163,6 +175,19 @@ def _options(opts: dict[str, Any]) -> dict[str, Any]:
 
 def _interactive() -> bool:
     return sys.stdin.isatty()
+
+
+def _unchanged_since(file: Path, read_from: tuple[int, int]):
+    """A check that the file is still the one that was read and stored, refusing if not."""
+    def check() -> None:
+        if _stamp(file) != read_from:
+            raise _writer.LoadError(
+                f"{file.name} changed while it was being uploaded, so nothing from the changed "
+                "file was written. Put the original file back and run the same command again "
+                "to continue, or upload the new file as a new dataset with another --name and "
+                "--create"
+            )
+    return check
 
 
 def _stamp(file: Path) -> tuple[int, int]:
@@ -214,6 +239,13 @@ def _refused_unsent(call):
         raise click.ClickException(f"{visible(str(exc))}. Nothing was sent.") from exc
 
 
+def _genes_of(file: Path, opts: dict[str, Any]) -> list[str]:
+    """The file's gene names, with any --expect-nonzero checked against its counts."""
+    names = _genes.read_names(file)
+    _genes.check_expectations(file, names, _genes.parse_expectations(opts["expect_nonzero"]))
+    return names
+
+
 def _dataset_text(plan: _load.Plan, opts: dict[str, Any], species: str) -> str:
     name = visible(opts["name"].strip())
     return {
@@ -221,7 +253,21 @@ def _dataset_text(plan: _load.Plan, opts: dict[str, Any], species: str) -> str:
         "resume": f"{name} (id {plan.dataset_id}) — continues a load that stopped",
         "already loaded": f"{name} (id {plan.dataset_id}) — already loaded from this file",
         "add labels": f"{name} (id {plan.dataset_id}) — labels will be added to its cells",
+        "add counts": f"{name} (id {plan.dataset_id}) — loaded without its counts; they "
+                      "will be added, and it shows as incomplete until they are",
     }[plan.outcome]
+
+
+def _counts_text(plan: _load.Plan, opts: dict[str, Any]) -> str | None:
+    """How many genes' counts the load writes, and where."""
+    if plan.outcome in ("already loaded", "add labels"):
+        return None
+    if not plan.genes:
+        return "all stored; the dataset will be finished"
+    folder = _counts.clean_dataset_name(opts["name"])
+    dataset_id = plan.dataset_id or "<new id>"
+    return (f"{plan.genes:,} gene{'' if plan.genes == 1 else 's'}, one object each under "
+            f"scrna/counts/{visible(folder)}_{dataset_id}_/")
 
 
 def _question(plan: _load.Plan, name: str) -> str:
@@ -230,25 +276,27 @@ def _question(plan: _load.Plan, name: str) -> str:
         return "Upload this file? Its dataset is already loaded"
     if plan.outcome == "add labels":
         return f"Upload this file and add these labels to '{name}'?"
+    if plan.outcome == "add counts":
+        return f"Upload this file and add its counts to '{name}'?"
     return f"Upload this file and load its cells into '{name}'?"
 
 
 def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint: str,
-           options, normalization: dict | None) -> None:
-    """Load the cells, or add the labels, now that the file is stored."""
+           options, normalization: dict | None, counts, unchanged, genes: int) -> None:
+    """Load the cells and counts, or add the labels, now that the file is stored."""
     name = opts["name"].strip()
     try:
-        step = "Labelling cells" if opts["add_labels"] else "Writing cells"
-        with _interrupted_by_stop_signals(), _progress.track(step, _progress.CELLS) as update:
+        with _interrupted_by_stop_signals():
             if opts["add_labels"]:
-                dataset_id, added = _load.add_labels(
-                    writer, name, species_id, cells, fingerprint, options, species=species,
-                    on_progress=update)
+                with _progress.track("Labelling cells", _progress.CELLS) as update:
+                    dataset_id, added = _load.add_labels(
+                        writer, name, species_id, cells, fingerprint, options, species=species,
+                        on_progress=update)
             else:
                 dataset_id, stored, outcome = _load.load(
                     writer, name, species_id, cells, fingerprint, options,
                     create=opts["create"], species=species, normalization=normalization,
-                    on_progress=update)
+                    counts=counts, track=_progress.track, unchanged=unchanged)
     except _writer.LoadError as exc:
         raise click.ClickException(
             f"the file is stored, but loading it stopped: {visible(str(exc))}") from exc
@@ -266,6 +314,10 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
     elif outcome == "already loaded":
         click.echo(f"Dataset {dataset_id} ({name!r}) is already loaded from this file: "
                    f"{stored:,} cells")
+    elif outcome == "counts added":
+        click.echo(f"Added the counts of {genes:,} gene{'' if genes == 1 else 's'} to dataset "
+                   f"{dataset_id} ({name!r}), which was missing them" if genes else
+                   f"Finished dataset {dataset_id} ({name!r}): every gene's counts are stored")
     else:
         click.echo(f"{outcome.capitalize()} dataset {dataset_id} ({name!r}): {stored:,} cells")
 

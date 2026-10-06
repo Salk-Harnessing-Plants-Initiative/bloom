@@ -5,12 +5,11 @@ Each raises LoadError naming what is wrong; none writes.
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 
 from ._cells import PALETTE
 from ._text import listed, visible
-from ._writer import LoadError, Writer, dataset_name_ok, read_all
+from ._writer import LoadError, Writer, dataset_name_ok, next_name, read_all
 
 # Options that label the cells, recorded with the dataset when labels are added.
 LABEL_KEYS = ("source_column", "genotype_column", "control", "constructs", "facets")
@@ -18,12 +17,10 @@ LABEL_KEYS = ("source_column", "genotype_column", "control", "constructs", "face
 # The options a resumed load must share with the load it continues.
 OPTION_KEYS = ("annotation", "sample_column", "umap_key", "expression_units", *LABEL_KEYS)
 
-# Rows written after the cells. On a dataset whose cells are unfinished they mean something
-# went wrong.
+# Rows written once a dataset is finished. On an unfinished one they mean something went wrong.
 LATER_TABLES = (
     ("scrna_cluster_stats", "per-cluster statistics"),
     ("scrna_cluster_neighbors", "neighbour rows"),
-    ("scrna_counts", "per-gene expression rows"),
     ("scrna_de", "differential expression rows"),
 )
 
@@ -41,12 +38,6 @@ def taken(found: dict) -> str:
     return (f"{visible(name)!r} is already loaded as dataset {found['id']}, and a loaded "
             f"dataset is not replaced. To load this file, give it a new name, e.g. "
             f"--name {visible(next_name(name))!r} --create")
-
-
-def next_name(name: str) -> str:
-    """The name with a version: MYB41 → MYB41_v2, MYB41_v2 → MYB41_v3."""
-    match = re.fullmatch(r"(.*)_v(\d+)", name)
-    return f"{match[1]}_v{int(match[2]) + 1}" if match else f"{name}_v2"
 
 
 def species_text(species_id: int, species: str | None) -> str:
@@ -80,6 +71,11 @@ def check_columns(cells: dict) -> None:
             raise LoadError(f"{key} holds {len(cells[key])} values for {n} cells")
 
 
+def counts_pending(found: dict) -> bool:
+    """A finished dataset taken back to unfinished while the counts it was missing are added."""
+    return bool((found.get("metadata") or {}).get("counts_pending"))
+
+
 def check_resume(found: dict, source_checksum: str, options: dict) -> str:
     """'resumed' or 'already loaded', or refuse."""
     dataset_id, stored = found["id"], found.get("source_checksum")
@@ -88,7 +84,7 @@ def check_resume(found: dict, source_checksum: str, options: dict) -> str:
             f"dataset {dataset_id} records no source file, so this load cannot tell whether "
             f"it is the same one. {taken(found)}"
         )
-    if found.get("ingested_at"):
+    if found.get("ingested_at") or counts_pending(found):
         if stored == source_checksum:
             return "already loaded"
         raise LoadError(

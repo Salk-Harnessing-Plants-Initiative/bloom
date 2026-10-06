@@ -1,7 +1,7 @@
 """An in-memory stand-in for the parts of the supabase client the scrna commands use.
 
-PostgREST select/insert/update with eq, is_, in_, order, limit and range. Any request can be
-made to fail, before or after it commits.
+PostgREST select/insert/update with eq, is_, in_, order, limit and range, and Storage upload.
+Any request can be made to fail, before or after it commits.
 """
 
 from __future__ import annotations
@@ -69,6 +69,29 @@ class Query:
         return self.client._execute(self)
 
 
+class Bucket:
+    def __init__(self, client, name):
+        self.client, self.name = client, name
+
+    def upload(self, path, file, file_options=None):
+        fault = self.client._take_fault("upload", self.name, path)
+        if fault and not fault["commit"]:
+            raise fault["error"]
+        self.client.objects[(self.name, path)] = (bytes(file), dict(file_options or {}))
+        self.client.log.append(("upload", self.name, path, None))
+        if fault:
+            raise fault["error"]
+        return {"path": path}
+
+
+class Storage:
+    def __init__(self, client):
+        self.client = client
+
+    def from_(self, bucket):
+        return Bucket(self.client, bucket)
+
+
 class FakeClient:
     """Tables are lists of dicts; inserted rows get an increasing `id`."""
 
@@ -79,6 +102,7 @@ class FakeClient:
         self.faults: list = []
         self._ids = itertools.count(1000)
         self.asked: list[list] = []  # every in_ filter's values, to size the URL
+        self.storage = Storage(self)
 
     def table(self, name):
         return Query(self, name)
