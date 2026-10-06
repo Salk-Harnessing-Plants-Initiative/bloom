@@ -8,6 +8,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a9] - 2026-10-05 — single-cell upload loads the dataset
+
 ### Changed
 
 - `scrna hdf5 upload` runs every check first, then shows what the file holds (cells, genes,
