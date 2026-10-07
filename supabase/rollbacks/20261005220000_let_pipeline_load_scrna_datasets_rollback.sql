@@ -19,6 +19,8 @@ END
 $$;
 
 DROP FUNCTION IF EXISTS public.link_rnaseq_run_dataset(BIGINT);
+-- Its replacement, from 20261007000000, if that wasn't rolled back first.
+DROP FUNCTION IF EXISTS public.link_rnaseq_run_dataset(BIGINT, BIGINT);
 
 ALTER TABLE public.rnaseq_runs DROP CONSTRAINT IF EXISTS rnaseq_runs_current_step_check;
 ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_current_step_check CHECK (

@@ -45,13 +45,7 @@
     "id": "scrna-cellranger-dev-900001-a5d34435-2425514970",
     "name": "scrna-cellranger-dev-900001-a5d34435.sample.stage(0)",
     "outputs": {
-     "exitCode": "0",
-     "parameters": [
-      {
-       "name": "done",
-       "value": "false"
-      }
-     ]
+     "exitCode": "0"
     },
     "phase": "Succeeded",
     "startedAt": "2026-09-29T01:02:38Z",
@@ -153,13 +147,7 @@
     "id": "scrna-cellranger-dev-900001-a5d34435-4249322407",
     "name": "scrna-cellranger-dev-900001-a5d34435.sample.stage",
     "outputs": {
-     "exitCode": "0",
-     "parameters": [
-      {
-       "name": "done",
-       "value": "false"
-      }
-     ]
+     "exitCode": "0"
     },
     "phase": "Succeeded",
     "startedAt": "2026-09-29T01:02:38Z",
