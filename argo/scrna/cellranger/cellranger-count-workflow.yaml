@@ -1,5 +1,6 @@
-# argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
-#   -p samples='["sample_a","sample_b"]' -p reference=tair10_araport11
+# A Cell Ranger run started by hand, loaded into prod's Bloom: each sample becomes a dataset
+# named after it, under `species` (a species' common name). argo/scrna/README.md has the command,
+# and the staging variant.
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
@@ -21,10 +22,14 @@ spec:
         value: '[]'
       - name: reference
         value: ""
-  # The steps mount it for run-with-log; empty here, so a hand-submitted run uploads no logs.
+      # Required: the species every sample's dataset is loaded under.
+      - name: species
+  # The pipeline's Bloom login: load-dataset loads with it and run-with-log uploads the logs.
   volumes:
     - name: bloom-credentials
-      emptyDir: {}
+      secret:
+        secretName: genericsecret-bloom-prod-pipeline-credentials
+        optional: true
   templates:
     - name: main
       dag:
@@ -51,3 +56,7 @@ spec:
                   value: "{{workflow.parameters.reference}}"
                 - name: run-id
                   value: "{{item}}"
+                - name: dataset-name
+                  value: "{{item}}"
+                - name: species-name
+                  value: "{{workflow.parameters.species}}"

@@ -39,6 +39,8 @@ POLL_INTERVAL = float(os.environ.get("WORKFLOWS_WORKER_POLL_SECONDS", "5"))
 
 # Shown to users in the run's message; the detail is only in this service's log.
 SUBMISSION_FAILED = "Argo Workflow submission failed"
+RUNS_TABLE = "rnaseq_runs"
+SPECIES_TABLE = "species"
 
 _PIPELINE_SECRET_ENV = "WORKFLOWS_K8S_PIPELINE_SECRET_NAME"
 
@@ -112,6 +114,39 @@ def _fail_logged(client, run: dict, message: str) -> None:
         )
 
 
+def _dataset(client, run: dict) -> dict | None:
+    """The dataset the run loads into Bloom when it finishes: the form's dataset name and the
+    species' common name, as bloomctl takes them. None when the run names no dataset."""
+    rows = (
+        client.table(RUNS_TABLE)
+        .select("metadata")
+        .eq("id", run["run_id"])
+        .execute()
+        .data
+        or []
+    )
+    metadata = (rows[0].get("metadata") if rows else None) or {}
+    name, species_id = metadata.get("dataset_name"), metadata.get("species_id")
+    if not isinstance(name, str) or not name.strip() or type(species_id) is not int:
+        return None
+    species = (
+        client.table(SPECIES_TABLE)
+        .select("common_name")
+        .eq("id", species_id)
+        .execute()
+        .data
+        or []
+    )
+    if not species:
+        logger.warning(
+            "rnaseq_worker: run %s names species %s, which doesn't exist; it won't be loaded",
+            run["run_id"],
+            species_id,
+        )
+        return None
+    return {"name": name.strip(), "species": species[0]["common_name"]}
+
+
 def process_one(client) -> bool:
     """Claim and dispatch one run. Returns True if a run was claimed."""
     try:
@@ -136,6 +171,17 @@ def process_one(client) -> bool:
         )
         return True
     logger.info("rnaseq_worker: claimed %s run %s", wf.name, run_id)
+
+    try:
+        run = {**run, "dataset": _dataset(client, run)}
+    except Exception as exc:
+        # A database blip, not a bad run: it comes back when its message is visible again.
+        logger.warning(
+            "rnaseq_worker: couldn't read run %s's dataset, leaving it queued: %s",
+            run_id,
+            exc,
+        )
+        return True
 
     try:
         body = wf.build_body(run)

@@ -158,9 +158,10 @@ def test_every_pipeline_script_parses(script):
     assert result.returncode == 0, result.stderr
 
 
-# Only these steps touch S3: the first reference download, the SRA import, staging a registered
-# sample's reads, and the final .h5ad upload. Every other step works on the shared folder.
-S3_STEPS = {"stage-reference", "fetch-sra", "stage-sample", "build-h5ad"}
+# Only these steps touch S3, and only to read: the first reference download, the SRA import, and
+# staging a registered sample's reads. Every other step works on the shared folder, and the
+# result leaves through load-dataset, into Bloom.
+S3_STEPS = {"stage-reference", "fetch-sra", "stage-sample"}
 
 
 def test_only_the_steps_that_touch_s3_hold_s3_keys():

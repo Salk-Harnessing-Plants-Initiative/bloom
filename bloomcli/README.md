@@ -521,7 +521,7 @@ bloomctl scrna hdf5 list --file myb41_transgene_load.h5ad -p staging # is this o
 ```
 
 **Upload** stores the file and loads the dataset from it — its cells and each gene's counts —
-so the explorer can show them and colour them by any gene. It needs a writer or admin login.
+so the explorer can show them and colour them by any gene. It needs a writer or admin login, or the pipeline's (`bloom_workflows`).
 Before sending anything it checks the file's structure:
 
 - every cell has an ID and none repeats (a barcode shared across samples cannot
@@ -721,6 +721,11 @@ bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
 On a dataset already loaded from this file, `--add-labels` with any of these adds them to its
 cells, which stay as they are. Labels it already has are kept: a new `--facet` joins them,
 and one of a column it already has replaces that column's values.
+
+`--run-id ID` is for the RNA-seq pipeline, which loads each Cell Ranger run's result signed in
+as `bloom_workflows`. It records the run on the dataset it creates, so the run can be linked to
+it, and refuses to continue a dataset another run, or a person, started. An upload without it
+works as before.
 
 **List** needs any login. It reports what the bucket holds — each object's fingerprint,
 its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
