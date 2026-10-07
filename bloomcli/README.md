@@ -722,6 +722,11 @@ On a dataset already loaded from this file, `--add-labels` with any of these add
 cells, which stay as they are. Labels it already has are kept: a new `--facet` joins them,
 and one of a column it already has replaces that column's values.
 
+`--run-id ID` is for the RNA-seq pipeline, which loads each Cell Ranger run's result signed in
+as `bloom_workflows`. It records the run on the dataset it creates, so the run can be linked to
+it, and refuses to continue a dataset another run, or a person, started. An upload without it
+works as before.
+
 **List** needs any login. It reports what the bucket holds — each object's fingerprint,
 its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
 does; an object can be stored before any dataset points at it, so an unnamed row is

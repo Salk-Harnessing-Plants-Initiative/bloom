@@ -24,6 +24,9 @@ LATER_TABLES = (
     ("scrna_de", "differential expression rows"),
 )
 
+# Where a dataset records the RNA-seq run that loads it (--run-id), so the run is linked to it.
+RUN_ID_KEY = "rnaseq_run_id"
+
 # The option each recorded load option came from, for messages.
 FLAGS = {
     "annotation": "--annotation", "sample_column": "--sample-column", "umap_key": "--umap-key",
@@ -241,3 +244,16 @@ def _shown(value) -> str:
     if isinstance(value, dict):
         return listed(f"{k}={v}" for k, v in value.items())
     return visible(str(value))
+
+
+def check_run(found: dict, run_id: int | None) -> None:
+    """For a load made for an RNA-seq run, refuse a dataset another run, or a person, started."""
+    if run_id is None:
+        return
+    recorded = (found.get("metadata") or {}).get(RUN_ID_KEY)
+    if recorded != run_id:
+        started = f"for run {recorded}" if recorded is not None else "outside a run"
+        raise LoadError(
+            f"dataset {found['id']} ({visible(found.get('name') or '')!r}) was started {started}, "
+            f"not run {run_id}. {taken(found)}"
+        )

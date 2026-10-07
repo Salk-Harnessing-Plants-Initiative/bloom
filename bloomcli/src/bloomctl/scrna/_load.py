@@ -19,6 +19,7 @@ from . import _counts
 from ._cells import MAX_FACETS, MAX_FACETS_JSON, PALETTE, genotype_rows
 from ._checks import (
     LABEL_KEYS,
+    RUN_ID_KEY,
     check_catalogue,
     check_columns,
     check_labelled_dataset,
@@ -27,6 +28,7 @@ from ._checks import (
     check_numbers,
     check_registration,
     check_resume,
+    check_run,
     check_same_cells,
     counts_pending,
 )
@@ -53,7 +55,7 @@ class Plan:
 def plan(
     writer: Writer, name: str, species_id: int, cells: dict, source_checksum: str,
     options: dict, *, create: bool, add_labels: bool = False, species: str | None = None,
-    counts: tuple[Path, list[str]] | None = None,
+    counts: tuple[Path, list[str]] | None = None, run_id: int | None = None,
 ) -> Plan:
     """Decide what the load will do, refusing everything the load would; writes nothing."""
     name = _checked_name(name)
@@ -69,6 +71,7 @@ def plan(
     if found is None:
         check_registration(name, species_id, create, species)
         return Plan("register", None, len(counts[1]) if counts is not None else 0)
+    check_run(found, run_id)
     outcome = check_resume(found, source_checksum, options)
     if outcome == "already loaded":
         check_nothing_to_add(found, options)
@@ -91,7 +94,7 @@ def load(
     options: dict, *, create: bool = False, species: str | None = None,
     normalization: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
     counts: tuple[Path, list[str]] | None = None, track=None,
-    unchanged: Callable[[], None] | None = None,
+    unchanged: Callable[[], None] | None = None, run_id: int | None = None,
 ) -> tuple[int, int, str]:
     """Register or resume the dataset, write its cells and, given ``counts`` (the file and its
     gene names), every gene's counts; then finish it.
@@ -104,19 +107,23 @@ def load(
     changed since it was checked; it runs before the counts, after each block of them and
     before finishing, so nothing from a changed file is written or finished. Returns the
     dataset id, the number of cells stored, and "registered", "resumed", "counts added" or
-    "already loaded".
+    "already loaded". ``run_id`` is the RNA-seq run the load is for: recorded on a new dataset,
+    and required of one it continues.
     """
     name = _checked_name(name)
     check_columns(cells)
     found = find_dataset(writer, species_id, name)
     if found is None:
         check_registration(name, species_id, create, species)
+        metadata = {"load_options": options, "expected_cells": cells["n_cells"]}
+        if run_id is not None:
+            metadata[RUN_ID_KEY] = run_id
         (found,) = insert(writer, "register the dataset", "scrna_datasets", [{
             "name": name, "species_id": species_id, "source_checksum": source_checksum,
-            "metadata": {"load_options": options, "expected_cells": cells["n_cells"]}}],
-            returning=True)
+            "metadata": metadata}], returning=True)
         outcome = "registered"
     else:
+        check_run(found, run_id)
         outcome = check_resume(found, source_checksum, options)
         if outcome == "already loaded":
             check_nothing_to_add(found, options)
