@@ -3,8 +3,9 @@
 -- link_rnaseq_run_dataset now takes the id of the dataset the run's load-dataset step created,
 -- rather than finding one by the name typed on the run's form. The load step may load under a
 -- versioned name (Root atlas_v2) when the typed one is taken, and a name never says which run
--- loaded a dataset; the id does. The function still links only a finished dataset the pipeline
--- loaded, of the run's species, that no other run has.
+-- loaded a dataset. The load step records the run on the dataset as it creates it
+-- (metadata.rnaseq_run_id), and the function links only a finished dataset the pipeline loaded
+-- for that run, of the run's species, that no other run has.
 --
 -- Replaces the one-argument function, so there is still one link function.
 -- Forward-only; rollback in supabase/rollbacks/.
@@ -15,7 +16,7 @@ DROP FUNCTION IF EXISTS public.link_rnaseq_run_dataset(BIGINT);
 
 -- Called by the status poller once a run's load-dataset step succeeds, with the dataset that
 -- step reports. Records it on the run, copies the form's source details into it, and gives it
--- to the scientist who asked for the run. Linking again returns the run's dataset.
+-- to the scientist who asked for the run. Linking again with the same dataset returns it.
 CREATE OR REPLACE FUNCTION public.link_rnaseq_run_dataset(p_run_id BIGINT, p_dataset_id BIGINT)
 RETURNS BIGINT
 LANGUAGE plpgsql
@@ -37,8 +38,12 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'no run %', p_run_id USING ERRCODE = 'P0002';
   END IF;
-  IF v_run.dataset_id IS NOT NULL THEN
+  IF v_run.dataset_id = p_dataset_id THEN
     RETURN v_run.dataset_id;
+  END IF;
+  IF v_run.dataset_id IS NOT NULL THEN
+    RAISE EXCEPTION 'run % is already linked to dataset %', p_run_id, v_run.dataset_id
+      USING ERRCODE = '23505';
   END IF;
   IF v_run.workflow_type <> 'scrna-cellranger' THEN
     RAISE EXCEPTION 'run % is not a Cell Ranger run', p_run_id USING ERRCODE = '22023';
@@ -63,8 +68,18 @@ BEGIN
     RAISE EXCEPTION 'dataset % is not of run %''s species', v_dataset.id, p_run_id
       USING ERRCODE = '22023';
   END IF;
+  IF (v_dataset.metadata ->> 'rnaseq_run_id') IS DISTINCT FROM p_run_id::TEXT THEN
+    RAISE EXCEPTION 'dataset % was not loaded for run %', v_dataset.id, p_run_id
+      USING ERRCODE = '42501';
+  END IF;
   IF v_dataset.ingested_at IS NULL THEN
     RAISE EXCEPTION 'dataset % is not finished loading', v_dataset.id USING ERRCODE = '55000';
+  END IF;
+  -- Before the owner check: a dataset another run took is no longer the pipeline's.
+  SELECT id INTO v_linked FROM public.rnaseq_runs WHERE dataset_id = v_dataset.id;
+  IF FOUND THEN
+    RAISE EXCEPTION 'dataset % is already linked to run %', v_dataset.id, v_linked
+      USING ERRCODE = '23505';
   END IF;
   IF NOT EXISTS (
     SELECT 1 FROM auth.users u
@@ -73,11 +88,6 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'dataset % was not loaded by the pipeline', v_dataset.id
       USING ERRCODE = '42501';
-  END IF;
-  SELECT id INTO v_linked FROM public.rnaseq_runs WHERE dataset_id = v_dataset.id;
-  IF FOUND THEN
-    RAISE EXCEPTION 'dataset % is already linked to run %', v_dataset.id, v_linked
-      USING ERRCODE = '23505';
   END IF;
 
   v_source := jsonb_strip_nulls(jsonb_build_object(
@@ -108,5 +118,8 @@ GRANT EXECUTE ON FUNCTION public.link_rnaseq_run_dataset(BIGINT, BIGINT) TO bloo
 COMMENT ON COLUMN public.rnaseq_runs.dataset_id IS
   'The scRNA dataset the run loaded, set by link_rnaseq_run_dataset with the dataset its '
   'load-dataset step reports.';
+
+-- PostgREST serves RPCs from a cached schema; the poller calls the new signature.
+NOTIFY pgrst, 'reload schema';
 
 COMMIT;

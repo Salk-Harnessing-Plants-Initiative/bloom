@@ -1,6 +1,7 @@
 -- Rollback for 20261007000000_link_rnaseq_run_by_dataset_id.sql
 -- Manual break-glass only; nothing runs it automatically. Puts back the link function that
--- finds the run's dataset by the name on its form. Links already made stay.
+-- finds the run's dataset by the name on its form. Links already made stay. The status poller
+-- must go back to calling it with the run id alone.
 
 BEGIN;
 
@@ -111,5 +112,7 @@ GRANT EXECUTE ON FUNCTION public.link_rnaseq_run_dataset(BIGINT) TO bloom_workfl
 COMMENT ON COLUMN public.rnaseq_runs.dataset_id IS
   'The scRNA dataset the run loaded, set by link_rnaseq_run_dataset once its load-dataset '
   'step succeeds.';
+
+NOTIFY pgrst, 'reload schema';
 
 COMMIT;

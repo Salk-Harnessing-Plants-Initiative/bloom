@@ -53,12 +53,16 @@ def refused(cur, sql, params=(), error=psycopg.errors.InsufficientPrivilege, mat
         cur.execute("ROLLBACK TO SAVEPOINT refused")
 
 
-def create(cur, species_id, name="Root atlas"):
-    """The load's first write, as the signed-in account: (id, created_by)."""
+def create(cur, species_id, name="Root atlas", run_id=None):
+    """The load's first write, as the signed-in account, recording the run it loads for:
+    (id, created_by)."""
+    metadata = {"expected_cells": 1}
+    if run_id is not None:
+        metadata["rnaseq_run_id"] = run_id
     cur.execute(
         "INSERT INTO public.scrna_datasets (name, species_id, source_checksum, metadata) "
         "VALUES (%s, %s, %s, %s) RETURNING id, created_by::text",
-        (name, species_id, "a" * 64, Jsonb({"expected_cells": 1})),
+        (name, species_id, "a" * 64, Jsonb(metadata)),
     )
     return cur.fetchone()
 
@@ -103,10 +107,10 @@ def finish(cur, dataset_id):
     return cur.rowcount
 
 
-def loaded(cur, pipeline, species_id, name="Root atlas"):
-    """A dataset the pipeline loaded and finished; back as supabase_admin."""
+def loaded(cur, pipeline, species_id, name="Root atlas", run_id=None):
+    """A dataset the pipeline loaded and finished, for `run_id`; back as supabase_admin."""
     sign_in(cur, pipeline)
-    dataset_id, _ = create(cur, species_id, name)
+    dataset_id, _ = create(cur, species_id, name, run_id)
     fill(cur, dataset_id)
     assert finish(cur, dataset_id) == 1
     cur.execute("RESET ROLE")
