@@ -147,7 +147,8 @@ def _register_sample(client, run: dict, workflow: dict, status: RunStatus) -> No
 def _link_dataset(client, run: dict, workflow: dict) -> None:
     """Links a run to the dataset its load-dataset step loaded, gives the dataset the form's
     details and hands it to the scientist. Called before the run's status is recorded, so a
-    failed call leaves the run active and it is tried again at the next poll."""
+    failed call leaves the run active and it is tried again at the next poll, and once more
+    after a final status is recorded, for a run that finished before it was seen running."""
     if run["id"] in _linked or not dataset_loaded(workflow):
         return
     try:
@@ -200,6 +201,8 @@ def poll_run(client, run: dict) -> bool:
     if workflow is not None:
         _link_dataset(client, run, workflow)
     changed = _record(client, run["id"], status)
+    if workflow is not None and status.status not in ACTIVE_STATUSES:
+        _link_dataset(client, run, workflow)
     if workflow is not None:
         _register_sample(client, run, workflow, status)
     if changed:

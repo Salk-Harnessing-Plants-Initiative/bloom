@@ -226,9 +226,17 @@ def sra_download(workflow: dict) -> tuple[int, int] | None:
 
 
 def dataset_loaded(workflow: dict) -> bool:
-    """Whether the load-dataset step has succeeded, so the run's dataset is in Bloom."""
+    """Whether the run named a dataset and its load-dataset step has succeeded, so the
+    dataset is in Bloom. A run naming none succeeds the step without loading anything."""
+    parameters = ((workflow.get("spec") or {}).get("arguments") or {}).get(
+        "parameters"
+    ) or []
+    named = any(
+        p.get("name") == "dataset-name" and (p.get("value") or "").strip()
+        for p in parameters
+    )
     node = _step_pods(workflow).get("load-dataset")
-    return bool(node) and node.get("phase") == "Succeeded"
+    return named and bool(node) and node.get("phase") == "Succeeded"
 
 
 def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:

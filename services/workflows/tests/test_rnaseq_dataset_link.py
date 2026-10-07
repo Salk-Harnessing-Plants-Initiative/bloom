@@ -20,8 +20,11 @@ RUN = {
 }
 
 
-def _workflow(phase="Running", load=None, load_exit=None, after=None):
-    """A Workflow whose build-h5ad succeeded, with load-dataset in `load`'s phase."""
+def _workflow(
+    phase="Running", load=None, load_exit=None, after=None, dataset_name="Root atlas"
+):
+    """A Workflow naming `dataset_name` whose build-h5ad succeeded, with load-dataset in
+    `load`'s phase."""
     nodes = {
         "wf-7-1": {
             "id": "wf-7-1",
@@ -53,27 +56,36 @@ def _workflow(phase="Running", load=None, load_exit=None, after=None):
             "startedAt": "2026-10-06T10:41:00Z",
             "finishedAt": "2026-10-06T10:42:00Z",
         }
-    return {"metadata": {"name": "wf-7"}, "status": {"phase": phase, "nodes": nodes}}
+    return {
+        "metadata": {"name": "wf-7"},
+        "spec": {
+            "arguments": {
+                "parameters": [{"name": "dataset-name", "value": dataset_name}]
+            }
+        },
+        "status": {"phase": phase, "nodes": nodes},
+    }
 
 
 class FakeClient:
-    """Records RPCs; the link answers with `link` (a dataset id) or raises it."""
+    """Records RPCs; the link answers with `link` (a dataset id) or raises it. A list
+    gives one answer per call, the last repeated."""
 
     def __init__(self, link=42):
-        self.link = link
+        self.answers = link if isinstance(link, list) else [link]
         self.rpcs = []
 
     def rpc(self, name, params):
         self.rpcs.append(name)
-        client = self
+        answer = True
+        if name == poller.LINK_FN:
+            answer = self.answers[0] if len(self.answers) == 1 else self.answers.pop(0)
 
         class _Call:
             def execute(self):
-                if name == poller.LINK_FN and isinstance(client.link, Exception):
-                    raise client.link
-                return type(
-                    "R", (), {"data": client.link if name == poller.LINK_FN else True}
-                )()
+                if isinstance(answer, Exception):
+                    raise answer
+                return type("R", (), {"data": answer})()
 
         return _Call()
 
@@ -155,6 +167,38 @@ def test_a_run_that_failed_after_its_load_is_still_linked(monkeypatch):
         monkeypatch, _workflow("Failed", load="Succeeded", after="Failed"), FakeClient()
     )
     assert rpcs[:2] == [poller.LINK_FN, poller.UPDATE_FN]
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+def test_a_run_naming_no_dataset_is_not_linked(monkeypatch, caplog, name):
+    client = FakeClient()
+    with caplog.at_level("ERROR", logger="rnaseq_status_poller"):
+        _poll(
+            monkeypatch,
+            _workflow(
+                "Succeeded", load="Succeeded", after="Succeeded", dataset_name=name
+            ),
+            client,
+        )
+    assert poller.LINK_FN not in client.rpcs
+    assert caplog.text == ""
+
+
+def test_a_run_first_seen_finished_is_linked_after_its_status_is_recorded(monkeypatch):
+    not_yet = APIError({"code": "55000", "message": "run 7 is submitted"})
+    client = FakeClient(link=[not_yet, 42])
+    rpcs = _poll(
+        monkeypatch,
+        _workflow("Succeeded", load="Succeeded", after="Succeeded"),
+        client,
+    )
+    assert rpcs[:3] == [poller.LINK_FN, poller.UPDATE_FN, poller.LINK_FN]
+    assert 7 in poller._linked
+
+
+def test_a_running_run_is_linked_once_per_pass(monkeypatch):
+    rpcs = _poll(monkeypatch, _workflow(load="Succeeded"), FakeClient())
+    assert rpcs.count(poller.LINK_FN) == 1
 
 
 def test_not_yet_is_tried_again_at_the_next_poll(monkeypatch):
