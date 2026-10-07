@@ -1,4 +1,4 @@
--- Rollback for 20261006150000_let_workflows_look_up_run_requesters.sql
+-- Rollback for 20261007120000_let_workflows_look_up_run_requesters.sql
 -- Manual break-glass only; nothing runs it automatically. Takes back bloom_workflows' call on
 -- rnaseq_run_requesters; signed-in scientists, writers and admins keep theirs.
 
