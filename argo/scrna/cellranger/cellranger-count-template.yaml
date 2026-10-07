@@ -27,6 +27,12 @@ spec:
             value: ""
           - name: fastq-files
             value: ""
+          # The dataset to load the result into Bloom as, and its species' common name (from the
+          # run's form); empty loads nothing.
+          - name: dataset-name
+            value: ""
+          - name: species-name
+            value: ""
           - name: cores
             value: "16"
           - name: memory
@@ -79,7 +85,7 @@ spec:
                   value: "{{inputs.parameters.mem-gb}}"
           - name: cleanup
             template: cleanup
-            depends: build-h5ad
+            depends: load-dataset
             when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
@@ -115,6 +121,20 @@ spec:
                   value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+          - name: load-dataset
+            template: load-dataset
+            depends: build-h5ad
+            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: dataset-name
+                  value: "{{inputs.parameters.dataset-name}}"
+                - name: species-name
+                  value: "{{inputs.parameters.species-name}}"
 
     # Once per workflow: stage the reference at /shared/ref/<reference>/, or reuse it if already there.
     - name: stage-reference
@@ -504,7 +524,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/preprocess.log", --, scrna-analysis]
         args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
@@ -537,7 +557,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cluster.log", --, scrna-analysis]
         args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
@@ -571,7 +591,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-h5ad.log", --, scrna-analysis]
         args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}", "--publish", "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"]
@@ -593,6 +613,52 @@ spec:
           limits: {cpu: "4", memory: 16Gi}
         volumeMounts:
           # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Loads the final .h5ad into Bloom as the run's dataset, with bloomctl signed in as the
+    # pipeline (argo/scrna/analysis/load-dataset.sh). A run naming no dataset loads nothing.
+    - name: load-dataset
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+          - name: dataset-name
+          - name: species-name
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      # One gene's counts file at a time: about 30,000 uploads for a typical run.
+      activeDeadlineSeconds: 21600
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # A retry resumes the load. 2 (usage), 6 (bad input) and 16 (no credentials) won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) != 2 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 16"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/load-dataset.log", --, load-dataset]
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: DATASET_NAME
+            value: "{{inputs.parameters.dataset-name}}"
+          - name: SPECIES_NAME
+            value: "{{inputs.parameters.species-name}}"
+        resources:
+          requests: {cpu: "2", memory: 8Gi}
+          limits: {cpu: "2", memory: 8Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt: run-with-log uploads the log, and bloomctl loads the dataset
           - name: bloom-credentials
             mountPath: /etc/bloom
             readOnly: true
