@@ -4,10 +4,11 @@ RNA-seq status poller.
 Every WORKFLOWS_STATUS_POLL_SECONDS, reads the Argo Workflow of each submitted or running
 rnaseq_runs row, turns it into the run's status with the reader for its workflow type in
 rnaseq_workflows, and records it with update_rnaseq_run_status, which only moves a run
-forward and writes nothing for an unchanged report. A Workflow the cluster says no
-longer exists fails its run; any other failed read leaves the run for the next poll. A run that imports its sample from SRA has the sample registered with
-register_rnaseq_sample once its fetch-sra step succeeds. Runs as the bloom_workflows app
-user; one poller per environment.
+forward and writes nothing for an unchanged report. A Workflow the cluster says no longer
+exists fails its run; any other failed read leaves the run for the next poll. A run that
+imports its sample from SRA has the sample registered with register_rnaseq_sample once its
+fetch-sra step succeeds. A run is linked to the dataset it loaded once its load-dataset
+step succeeds. Runs as the bloom_workflows app user; one poller per environment.
 
 Deploy: a container off the workflows image with `command: python rnaseq_status_poller.py`.
 """
@@ -20,7 +21,7 @@ import time
 from k8s_client import K8sConfigError, get_workflow
 from postgrest import APIError
 
-from rnaseq_status import RunStatus, sra_download
+from rnaseq_status import RunStatus, dataset_loaded, sra_download
 from rnaseq_workflows import WORKFLOW_TYPES
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 RUNS_TABLE = "rnaseq_runs"
 UPDATE_FN = "update_rnaseq_run_status"
 REGISTER_FN = "register_rnaseq_sample"
+LINK_FN = "link_rnaseq_run_dataset"
+# The function refused to link for now: the run isn't recorded as running yet.
+LINK_NOT_YET = "55000"
 # Statuses the poller still has to follow; later ones never change.
 ACTIVE_STATUSES = ("submitted", "running")
 # Recorded when the Workflow is gone before the poller saw it finish.
@@ -54,6 +58,8 @@ _running = True
 # SRA runs whose sample this process has registered; the function is idempotent, so a
 # restart that forgets them only repeats a harmless call.
 _registered: set[int] = set()
+# Runs already linked to their dataset, or whose link was refused for good.
+_linked: set[int] = set()
 
 
 def app_client():
@@ -138,6 +144,36 @@ def _register_sample(client, run: dict, workflow: dict, status: RunStatus) -> No
     )
 
 
+def _link_dataset(client, run: dict, workflow: dict) -> None:
+    """Links a run to the dataset its load-dataset step loaded, gives the dataset the form's
+    details and hands it to the scientist. Called before the run's status is recorded, so a
+    failed call leaves the run active and it is tried again at the next poll."""
+    if run["id"] in _linked or not dataset_loaded(workflow):
+        return
+    try:
+        dataset_id = client.rpc(LINK_FN, {"p_run_id": run["id"]}).execute().data
+    except APIError as exc:
+        if exc.code == LINK_NOT_YET:
+            logger.info(
+                "rnaseq_status_poller: run %s's dataset isn't linked yet: %s",
+                run["id"],
+                exc.message,
+            )
+            return
+        # Not one this run can fix by waiting (no such dataset, another run's): say so once.
+        _linked.add(run["id"])
+        logger.error(
+            "rnaseq_status_poller: run %s was not linked to its dataset: %s",
+            run["id"],
+            exc.message,
+        )
+        return
+    _linked.add(run["id"])
+    logger.info(
+        "rnaseq_status_poller: run %s is linked to dataset %s", run["id"], dataset_id
+    )
+
+
 def poll_run(client, run: dict) -> bool:
     """Reads one run's Workflow and records its status. Returns True if the run changed."""
     wf_type = WORKFLOW_TYPES.get(run["workflow_type"])
@@ -161,6 +197,8 @@ def poll_run(client, run: dict) -> bool:
         if status is None:
             return False
 
+    if workflow is not None:
+        _link_dataset(client, run, workflow)
     changed = _record(client, run["id"], status)
     if workflow is not None:
         _register_sample(client, run, workflow, status)

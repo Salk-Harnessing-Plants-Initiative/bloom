@@ -111,7 +111,7 @@ Cell Ranger itself runs with `--chemistry auto`. After each count, `run-count` c
 
 ## Analysis after the count
 
-Three steps follow `count`, each its own pod, from the `scrna-analysis` image. They pass their files through the run's own shared folder, `/shared/runs/<run-id>/`, so runs going at the same time never touch each other's files, and nothing between steps is downloaded from S3. The count step leaves its matrix and metrics there too. Only the final file is uploaded:
+Three analysis steps follow `count`, then `load-dataset`, each its own pod, from the `scrna-analysis` image. They pass their files through the run's own shared folder, `/shared/runs/<run-id>/`, so runs going at the same time never touch each other's files, and nothing between steps is downloaded from S3. The count step leaves its matrix and metrics there too. Only the final file is uploaded:
 
 | Step | Reads | Writes (in `/shared/runs/<run-id>/`) |
 |---|---|---|
@@ -123,17 +123,19 @@ The final file has the barcodes as `obs_names`, gene IDs as `var_names` (Cell Ra
 
 **Adding an analysis.** Write a module that reads the base and returns `steps.part_of(base, "<name>", obs=…, obsm=…, params=…)`: a file with no matrix, holding only its own `obs` columns, `obsm` arrays and `uns['<name>']`. Then add a template and a DAG task after `preprocess`, and add the task to `build-h5ad`'s `depends`. `build-h5ad` merges parts in name order. It fails with exit 15, writing nothing, if a part's cells aren't the base's or it reuses a key that's already taken.
 
-Each step writes its `_SUCCESS` last and does nothing if it's already there, so a retry redoes only what's missing. `build-h5ad` rebuilds when the set of finished parts has changed. `cleanup` runs after `build-h5ad`, so the folder is kept after a failure. Exit 13 means fewer than 50 cells passed the filters, and exit 14 means the count matrix is missing; neither is retried.
+Each step writes its `_SUCCESS` last and does nothing if it's already there, so a retry redoes only what's missing. `build-h5ad` rebuilds when the set of finished parts has changed. `cleanup` runs after `load-dataset`, so the folder is kept after a failure. Exit 13 means fewer than 50 cells passed the filters, and exit 14 means the count matrix is missing; neither is retried.
+
+**load-dataset** then loads `h5ad/<sample>.h5ad` into Bloom as the run's dataset: `bloomctl scrna hdf5 upload <file> --name <dataset-name> --species <species-name> --annotation leiden --create --yes` (`analysis/load-dataset.sh`, with `bloomctl` pinned in `analysis/requirements.txt`). The worker passes the dataset name and the species' common name from the run's form; a run naming no dataset loads nothing. It signs in with `/etc/bloom/credentials.txt` (the pipeline's `bloom_workflows` login), copied into the pod's own `/tmp`, and fails with exit 16 without it. bloomctl's resume state is `/shared/runs/<run-id>/bloomctl-uploads/`, so a retry (up to 2) continues the load; exit 2, 6 and 16 aren't retried. It uploads one counts file per gene, so a run takes tens of minutes; the step allows 6 hours. When it succeeds, the status poller links the run to its dataset and gives the dataset to the scientist (`link_rnaseq_run_dataset`).
 
 The image holds nothing licensed, but it's pushed private like the Cell Ranger one:
 
 ```bash
 docker buildx build --platform linux/amd64 --build-context scrna=argo/scrna \
-  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1 argo/scrna/analysis
-docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1
+  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2 argo/scrna/analysis
+docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
 # tests (need scanpy), from the repo root:
 docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
-  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.1 \
+  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2 \
   -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
 ```
 

@@ -25,6 +25,7 @@ CELLRANGER_STEPS = {
     "preprocess": "preprocess",
     "cluster": "cluster",
     "build-h5ad": "build-h5ad",
+    "load-dataset": "load-dataset",
     "cleanup": "cleanup",
 }
 _STEP_ORDER = {step: i for i, step in enumerate(CELLRANGER_STEPS.values())}
@@ -48,6 +49,8 @@ EXIT_SRA_FOLDER_TAKEN = 12
 EXIT_TOO_FEW_CELLS = 13
 EXIT_NO_MATRIX = 14
 EXIT_PARTS_DONT_FIT = 15
+# load-dataset (argo/scrna/analysis/load-dataset.sh): the pipeline has no Bloom credentials.
+EXIT_NO_CREDENTIALS = 16
 
 _ANALYSIS_MESSAGES = {
     EXIT_TOO_FEW_CELLS: "Fewer than 50 cells passed the filters, too few to cluster",
@@ -161,8 +164,19 @@ def _fastqs(params: dict) -> str:
     return f"The FASTQs in raw_reads/{params.get('sample')}/"
 
 
+def _load_message(exit_code: int | None) -> str:
+    if exit_code == EXIT_NO_CREDENTIALS:
+        return (
+            "The pipeline has no Bloom credentials, so the dataset wasn't loaded; ask the "
+            "Bloom admins"
+        )
+    return "Loading the dataset into Bloom failed; the load-dataset step's log says why"
+
+
 def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     params = run.get("params") or {}
+    if step == "load-dataset":
+        return _load_message(exit_code)
     if step == "stage" and params.get("fastq_url"):
         message = _folder_message(exit_code, params)
         if message:
@@ -209,6 +223,12 @@ def sra_download(workflow: dict) -> tuple[int, int] | None:
         return int(_output(node, "fastq-count")), int(_output(node, "total-bytes"))
     except (TypeError, ValueError):
         return None
+
+
+def dataset_loaded(workflow: dict) -> bool:
+    """Whether the load-dataset step has succeeded, so the run's dataset is in Bloom."""
+    node = _step_pods(workflow).get("load-dataset")
+    return bool(node) and node.get("phase") == "Succeeded"
 
 
 def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:

@@ -19,6 +19,7 @@ STEP_NAMES = {
     "preprocess": "preprocess",
     "cluster": "cluster",
     "build-h5ad": "build-h5ad",
+    "load-dataset": "load-dataset",
     "cleanup": "cleanup",
 }
 
