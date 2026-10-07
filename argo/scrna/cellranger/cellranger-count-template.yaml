@@ -14,8 +14,8 @@ metadata:
 spec:
   templates:
     # One sample: stage -> qc -> count -> preprocess -> analyses -> build-h5ad -> load-dataset ->
-    # cleanup, all in /shared/runs/<run-id>/ so runs never share files. Only build-h5ad uploads: the
-    # final .h5ad to runs_output/<run-id>/h5ad/. If that file is already there, skips to load-dataset.
+    # cleanup, all in /shared/runs/<run-id>/ so runs never share files. The result leaves the
+    # cluster only through load-dataset, into Bloom.
     - name: sample-pipeline
       inputs:
         parameters:
@@ -58,7 +58,6 @@ spec:
           - name: qc
             template: qc
             depends: stage
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
                 - name: sample
@@ -68,7 +67,6 @@ spec:
           - name: count
             template: count
             depends: qc
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
                 - name: sample
@@ -93,7 +91,6 @@ spec:
           - name: preprocess
             template: preprocess
             depends: count
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
                 - name: run-id
@@ -105,7 +102,6 @@ spec:
           - name: cluster
             template: cluster
             depends: preprocess
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
                 - name: run-id
@@ -113,14 +109,12 @@ spec:
           - name: build-h5ad
             template: build-h5ad
             depends: cluster
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
                 - name: sample
                   value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
-          # Runs even when the sample was already built, so starting a run again retries its load.
           - name: load-dataset
             template: load-dataset
             depends: build-h5ad
@@ -281,7 +275,7 @@ spec:
             type: Directory
 
     # Create /shared/runs/<run-id>/ and copy the reads there, from the run's S3 folder or
-    # raw_reads/<sample>/; outputs done=true if the run already finished.
+    # raw_reads/<sample>/.
     - name: stage-sample
       inputs:
         parameters:
@@ -291,11 +285,6 @@ spec:
             value: ""
           - name: fastq-files
             value: ""
-      outputs:
-        parameters:
-          - name: done
-            valueFrom:
-              path: /tmp/done
       schedulerName: runai-scheduler
       priorityClassName: high
       retryStrategy:
@@ -310,15 +299,9 @@ spec:
         args:
           - |
             set -euo pipefail
-            if aws s3 ls "s3://bloomv2-workflows/runs_output/${RUN_ID}/h5ad/_SUCCESS" >/dev/null 2>&1; then
-              echo "Already done: runs_output/${RUN_ID}/h5ad/_SUCCESS exists, nothing to do."
-              echo true > /tmp/done
-              exit 0
-            fi
             # Fails here, before QC, if a file isn't Illumina-named, a lane lacks R1 or R2, or
             # the run's S3 folder changed since the run was started.
             RUN_DIR="/shared/runs/${RUN_ID}" DEST_DIR="/shared/runs/${RUN_ID}/fastq/${SAMPLE}" stage-fastqs
-            echo false > /tmp/done
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
@@ -356,7 +339,7 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # QC on the staged reads (run-qc's download finds them already there); uploads runs_output/<run-id>/qc/.
+    # QC on the staged reads (run-qc's download finds them already there); the report stays in the run's folder.
     - name: qc
       inputs:
         parameters:
@@ -471,7 +454,7 @@ spec:
           emptyDir:
             sizeLimit: 500Gi
 
-    # Delete /shared/runs/<run-id>/ once the run has finished; results and raw reads stay in S3.
+    # Delete /shared/runs/<run-id>/ once its result is in Bloom; the raw reads stay where they came from.
     - name: cleanup
       inputs:
         parameters:
@@ -576,7 +559,7 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # Base + every finished part -> h5ad/<sample>.h5ad and summary.json, copied to runs_output/<run-id>/h5ad/ in S3.
+    # Base + every finished part -> h5ad/<sample>.h5ad and summary.json, in the run's folder.
     - name: build-h5ad
       inputs:
         parameters:
@@ -593,20 +576,7 @@ spec:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-h5ad.log", --, scrna-analysis]
-        args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}", "--publish", "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"]
-        env:
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
+        args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}"]
         resources:
           requests: {cpu: "4", memory: 16Gi}
           limits: {cpu: "4", memory: 16Gi}
@@ -657,21 +627,6 @@ spec:
             value: "{{inputs.parameters.dataset-name}}"
           - name: SPECIES_NAME
             value: "{{inputs.parameters.species-name}}"
-          # Where build-h5ad published the .h5ad, for a run whose shared folder no longer has it.
-          - name: RESULTS_URL
-            value: "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests: {cpu: "2", memory: 8Gi}
           limits: {cpu: "2", memory: 8Gi}

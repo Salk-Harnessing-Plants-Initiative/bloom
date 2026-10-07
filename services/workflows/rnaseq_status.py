@@ -9,8 +9,6 @@ Workflow name, the step's template and the numeric end of its node id, joined by
 
 from dataclasses import dataclass, field
 
-# Output folder for a run's results; the pipeline uploads the final .h5ad to <run_key>/h5ad/.
-RESULTS_PREFIX = "s3://bloomv2-workflows/runs_output"
 # The cluster's shared folder, where a run's files stay after a failure.
 SHARED_RUNS = "/hpi/hpi_dev/users/bfernando/scrna/runs"
 
@@ -249,7 +247,6 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
     running = [s for s, n in pods.items() if n.get("phase") in _RUNNING_PHASES]
     started = sorted(pods, key=_STEP_ORDER.__getitem__)
     current = (running or started or [None])[-1]
-    results = f"{RESULTS_PREFIX}/{run.get('run_key')}/h5ad/"
 
     if phase in _FAILED_PHASES:
         failed = [s for s, n in pods.items() if n.get("phase") in _FAILED_PHASES]
@@ -268,26 +265,12 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
         )
 
     if phase == "Succeeded":
-        already_done = _output(pods.get("stage", {}), "done") == "true"
-        if already_done and (run.get("params") or {}).get("fastq_url"):
-            # A folder run only starts on a key whose earlier runs failed, so results already
-            # there came from other reads and aren't this run's.
-            return RunStatus(
-                "failed",
-                "stage",
-                step_pods,
-                None,
-                f"{results} already held results from an earlier run on this sample and "
-                "reference, so these reads weren't processed; ask the Bloom admins to remove "
-                "them, then start the run again",
-            )
-        if already_done:
-            return RunStatus(
-                "skipped", current, step_pods, 0, f"Already done: results in {results}"
-            )
-        return RunStatus(
-            "succeeded", current, step_pods, 0, f"Finished: results in {results}"
+        message = (
+            "Finished: loaded into Bloom"
+            if dataset_loaded(workflow)
+            else "Finished; the run named no dataset, so nothing was loaded into Bloom"
         )
+        return RunStatus("succeeded", current, step_pods, 0, message)
 
     if current is None:
         return None
