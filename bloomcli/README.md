@@ -41,11 +41,14 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 ## Commands
 
 `login` is flat; assay-specific commands are grouped by data type (`cyl`,
-`plate`, `scrna`). Each command is tagged **[read]** or **[write]** — see
+`genome`, `plate`, `scrna`). Each command is tagged **[read]** or **[write]** — see
 [Access & roles](#access--roles).
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
+- **[write]** `bloomctl genome upload <name> --fasta … --gtf …` — store a reference
+  genome's FASTA and GTF as its next version, for the Cell Ranger workflow. See
+  [below](#bloomctl-genome-upload).
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
   or single scan (metadata `scans.csv` + per-frame images). Select the experiment
   by `--experiment-id N`, `--scan-id N`, or `--experiment-name "<text>"` (a
@@ -742,6 +745,39 @@ matches; a mismatch leaves nothing behind. A file already at the destination wit
 the right fingerprint is left alone, and a different one is never overwritten.
 
 
+## `bloomctl genome upload`
+
+Reference genomes for the Cell Ranger workflow are kept in Bloom with numbered
+versions. Each version is one gzipped FASTA and one gzipped GTF in the
+`genome-references` bucket, at `<genome>/v<N>/genome.fa.gz` and
+`<genome>/v<N>/genes.gtf.gz`, with their SHA-256 and size recorded. A version's
+files never change once uploaded; a different FASTA or GTF is a new version.
+
+```bash
+# A new genome: --species (the common name) is required.
+bloomctl genome upload tair10_araport11 \
+  --fasta TAIR10.fa --gtf Araport11.gtf --species Arabidopsis \
+  --assembly TAIR10 --annotation Araport11 \
+  --source-url https://www.arabidopsis.org/ -p staging
+# → tair10_araport11 v1: ready
+
+# The next version of the same genome.
+bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_2024.gtf.gz -p staging
+# → tair10_araport11 v2: ready
+```
+
+- The files can be plain or gzipped. A plain file is gzipped into a temporary
+  folder first; the original is never changed. A gzipped file is read to the end
+  to check it is intact, then sent as it is.
+- Before anything is sent, the FASTA must start with a `>` line, the GTF's first
+  record must have 9 tab-separated columns, and each gzipped file must be at most
+  500 MB.
+- The upload is described on the terminal and goes ahead once confirmed; `--yes`
+  skips the question.
+- If the upload stops part-way, the version is marked abandoned and is never
+  offered for a run. Run the same command again to upload it as a new version.
+- Needs a writer login (`bloom_writer`).
+
 ## Access & roles
 
 Commands run **as the logged-in user** — every query and mutation is RLS-enforced
@@ -751,7 +787,7 @@ profile maps to determines what works:
 | Command tag                                                                                    | Required role                         | Intended user                                                                             |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
 | **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
-| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`, `genome upload`)                        | `bloom_writer` / `bloom_admin` (`genome upload`: `bloom_writer` only)        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
