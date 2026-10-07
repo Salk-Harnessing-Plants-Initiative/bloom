@@ -6,8 +6,10 @@ fake Workflows; no database or cluster."""
 import pytest
 from postgrest import APIError
 
+import k8s_client
 import rnaseq_status
 import rnaseq_status_poller as poller
+import rnaseq_workflows as wfs
 from rnaseq_status import read_cellranger_status
 
 RUN = {
@@ -23,8 +25,8 @@ RUN = {
 def _workflow(
     phase="Running", load=None, load_exit=None, after=None, dataset_name="Root atlas"
 ):
-    """A Workflow naming `dataset_name` whose build-h5ad succeeded, with load-dataset in
-    `load`'s phase."""
+    """A Workflow naming `dataset_name` (None: no dataset-name argument, as the worker
+    builds it) whose build-h5ad succeeded, with load-dataset in `load`'s phase."""
     nodes = {
         "wf-7-1": {
             "id": "wf-7-1",
@@ -56,13 +58,12 @@ def _workflow(
             "startedAt": "2026-10-06T10:41:00Z",
             "finishedAt": "2026-10-06T10:42:00Z",
         }
+    parameters = [{"name": "sample", "value": "col0"}]
+    if dataset_name is not None:
+        parameters.append({"name": "dataset-name", "value": dataset_name})
     return {
         "metadata": {"name": "wf-7"},
-        "spec": {
-            "arguments": {
-                "parameters": [{"name": "dataset-name", "value": dataset_name}]
-            }
-        },
+        "spec": {"arguments": {"parameters": parameters}},
         "status": {"phase": phase, "nodes": nodes},
     }
 
@@ -169,7 +170,7 @@ def test_a_run_that_failed_after_its_load_is_still_linked(monkeypatch):
     assert rpcs[:2] == [poller.LINK_FN, poller.UPDATE_FN]
 
 
-@pytest.mark.parametrize("name", ["", "   "])
+@pytest.mark.parametrize("name", [None, "", "   "])
 def test_a_run_naming_no_dataset_is_not_linked(monkeypatch, caplog, name):
     client = FakeClient()
     with caplog.at_level("ERROR", logger="rnaseq_status_poller"):
@@ -197,8 +198,31 @@ def test_a_run_first_seen_finished_is_linked_after_its_status_is_recorded(monkey
 
 
 def test_a_running_run_is_linked_once_per_pass(monkeypatch):
-    rpcs = _poll(monkeypatch, _workflow(load="Succeeded"), FakeClient())
+    # "Not yet" keeps the run unlinked, so only the running-or-final check limits the calls.
+    not_yet = APIError({"code": "55000", "message": "run 7 is submitted"})
+    rpcs = _poll(monkeypatch, _workflow(load="Succeeded"), FakeClient(link=not_yet))
     assert rpcs.count(poller.LINK_FN) == 1
+
+
+@pytest.mark.parametrize(
+    "dataset, loaded",
+    [({"name": "Root atlas", "species": "Arabidopsis"}, True), (None, False)],
+)
+def test_a_load_counts_only_for_a_workflow_the_worker_built_with_a_dataset(
+    monkeypatch, dataset, loaded
+):
+    monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    run = {
+        "run_id": 7,
+        "workflow_type": "scrna-cellranger",
+        "params": {"sample": "col0", "reference": "tair10"},
+        "run_key": "col0__tair10__u",
+        "dataset": dataset,
+    }
+    workflow = wfs.build_cellranger_body(run)
+    workflow["status"] = _workflow(load="Succeeded")["status"]
+    assert rnaseq_status.dataset_loaded(workflow) is loaded
 
 
 def test_not_yet_is_tried_again_at_the_next_poll(monkeypatch):
