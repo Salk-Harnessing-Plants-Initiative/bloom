@@ -92,18 +92,19 @@ describe("stepStates", () => {
       preprocess: "waiting",
       cluster: "waiting",
       "build-h5ad": "waiting",
+      "load-dataset": "waiting",
       cleanup: "waiting",
     });
   });
 
   it("marks every step waiting before the first report", () => {
     expect(Object.values(stepStates(run({ status: "queued", current_step: null })))).toEqual(
-      Array(8).fill("waiting")
+      Array(9).fill("waiting")
     );
   });
 
   const ALL_PODS = Object.fromEntries(
-    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "build-h5ad", "cleanup"].map(
+    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "build-h5ad", "load-dataset", "cleanup"].map(
       (step, i) => [step, `p${i}`]
     )
   );
@@ -111,7 +112,7 @@ describe("stepStates", () => {
   it("marks every step done when the run succeeded", () => {
     expect(
       Object.values(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: ALL_PODS })))
-    ).toEqual(Array(8).fill("done"));
+    ).toEqual(Array(9).fill("done"));
   });
 
   it("marks steps a finished run never had as not run", () => {
@@ -121,6 +122,7 @@ describe("stepStates", () => {
       preprocess: "not-run",
       cluster: "not-run",
       "build-h5ad": "not-run",
+      "load-dataset": "done",
       cleanup: "done",
     });
   });
@@ -134,13 +136,14 @@ describe("stepStates", () => {
       preprocess: "not-run",
       cluster: "not-run",
       "build-h5ad": "not-run",
+      "load-dataset": "not-run",
       cleanup: "not-run",
     });
   });
 
   it("marks nothing failed when a run failed before starting", () => {
     expect(Object.values(stepStates(run({ status: "failed", current_step: null })))).toEqual(
-      Array(8).fill("not-run")
+      Array(9).fill("not-run")
     );
   });
 
@@ -156,6 +159,7 @@ describe("stepStates", () => {
       preprocess: "skipped",
       cluster: "skipped",
       "build-h5ad": "skipped",
+      "load-dataset": "skipped",
       cleanup: "skipped",
     });
   });
@@ -198,6 +202,7 @@ describe("runSteps and runSraRuns", () => {
       "preprocess",
       "cluster",
       "build-h5ad",
+      "load-dataset",
       "cleanup",
     ]);
     expect(runSraRuns(run())).toEqual([]);

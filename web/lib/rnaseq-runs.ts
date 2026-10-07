@@ -46,6 +46,7 @@ export const CELLRANGER_STEPS = [
   { id: "preprocess", label: "Filter and normalise" },
   { id: "cluster", label: "Cluster and UMAP" },
   { id: "build-h5ad", label: "Build the .h5ad" },
+  { id: "load-dataset", label: "Load into Bloom" },
   { id: "cleanup", label: "Clean up" },
 ] as const;
 
@@ -62,7 +63,7 @@ export const STATUS_LABELS: Record<RunStatus, string> = {
 };
 
 // The pipeline's own exit codes: argo/scrna/cellranger/ (run-count, fetch-sra) and
-// argo/scrna/analysis/ (preprocess, cluster, build-h5ad).
+// argo/scrna/analysis/ (preprocess, cluster, build-h5ad, load-dataset).
 const EXIT_SENTENCES: Record<number, string> = {
   3: "The reference genome folder, or its reference.json, wasn't found.",
   4: "No FASTQ files were found in the sample's folder.",
@@ -72,6 +73,7 @@ const EXIT_SENTENCES: Record<number, string> = {
   13: "Fewer than 50 cells passed the filters, too few to cluster.",
   14: "Cell Ranger's count matrix wasn't found for the analysis steps.",
   15: "An analysis step's results didn't fit with the others; its log has the details.",
+  16: "The pipeline has no Bloom credentials, so the dataset wasn't loaded; ask the Bloom admins.",
 };
 // fetch-sra reuses some codes with its own meaning.
 const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
