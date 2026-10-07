@@ -62,6 +62,10 @@ from ._text import visible
                    "transgene's; repeatable.")
 @click.option("--source-column", metavar="COLUMN",
               help="The obs column naming where each cell's label came from.")
+@click.option("--run-id", type=click.IntRange(min=1), metavar="ID",
+              help="The RNA-seq run this load is for, recorded on the dataset so the run is "
+                   "linked to it; a dataset started for another run is refused. Set by the "
+                   "pipeline.")
 @click.option("--add-labels", is_flag=True,
               help="Add genotypes, labels and sources to a dataset already loaded from this "
                    "file, keeping those it has; not with --create.")
@@ -118,7 +122,7 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
         plan = _refused_unsent(lambda: _load.plan(
             writer, opts["name"], species_id, cells, staged.fingerprint, options,
             create=opts["create"], add_labels=opts["add_labels"], species=species,
-            counts=None if genes is None else (file, genes)))
+            counts=None if genes is None else (file, genes), run_id=opts["run_id"]))
         _show(_summary.describe(summary, file.name, recorded_on=recorded_on))
         _show(_summary.describe_load(cells, _dataset_text(plan, opts, species), genotypes,
                                      tuple(options["facets"] or ()),
@@ -156,6 +160,8 @@ def _options(opts: dict[str, Any]) -> dict[str, Any]:
         )
     if opts["add_labels"] and opts["create"]:
         raise click.UsageError("--add-labels adds to a loaded dataset; it cannot --create one.")
+    if opts["add_labels"] and opts["run_id"]:
+        raise click.UsageError("--run-id is for loading a run's dataset, not --add-labels.")
     try:
         constructs = _cells.parse_constructs(opts["construct"])
         _genes.parse_expectations(opts["expect_nonzero"])
@@ -296,7 +302,8 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
                 dataset_id, stored, outcome = _load.load(
                     writer, name, species_id, cells, fingerprint, options,
                     create=opts["create"], species=species, normalization=normalization,
-                    counts=counts, track=_progress.track, unchanged=unchanged)
+                    counts=counts, track=_progress.track, unchanged=unchanged,
+                    run_id=opts["run_id"])
     except _writer.LoadError as exc:
         raise click.ClickException(
             f"the file is stored, but loading it stopped: {visible(str(exc))}") from exc

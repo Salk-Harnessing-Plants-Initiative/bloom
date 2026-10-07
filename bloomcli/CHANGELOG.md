@@ -8,6 +8,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a11] - 2026-10-07 — each dataset knows the run that generated it
+
+### Added
+
+- `scrna hdf5 upload --run-id ID` records the RNA-seq run a dataset is loaded for, so the
+  pipeline can link the run to its own dataset, and refuses to continue a dataset another run
+  or a person started. Uploads without it are unchanged.
+
 ## [0.1.0a10] - 2026-10-06 — the pipeline can load its datasets
 
 ### Changed
