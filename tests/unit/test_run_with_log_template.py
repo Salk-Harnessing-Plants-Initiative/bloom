@@ -69,12 +69,18 @@ def test_the_smoke_test_step_is_left_alone():
     assert _templates()["testrun"]["container"]["command"] == ["bash", "-c"]
 
 
-def test_the_hand_submitted_workflow_defines_the_volume():
+def test_the_hand_submitted_workflow_mounts_prods_pipeline_login():
     yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load(
         (ARGO / "cellranger" / "cellranger-count-workflow.yaml").read_text()
     )
-    assert {"name": "bloom-credentials", "emptyDir": {}} in doc["spec"]["volumes"]
+    assert {
+        "name": "bloom-credentials",
+        "secret": {
+            "secretName": "genericsecret-bloom-prod-pipeline-credentials",
+            "optional": True,
+        },
+    } in doc["spec"]["volumes"]
 
 
 def test_the_services_volume_has_the_templates_name():

@@ -15,11 +15,12 @@ argo/scrna/
 │   └── fastq-qc-workflow.yaml  QC only, for a list of samples: a quick look before counting
 ├── analysis/                   after count: scanpy steps, in their own image
 │   ├── Dockerfile              scrna-analysis image: Python, scanpy, leidenalg
-│   └── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, build-h5ad
+│   ├── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, build-h5ad
+│   └── load-dataset.sh         installed as load-dataset: loads the final .h5ad into Bloom with bloomctl
 └── cellranger/                 then: cellranger count
-    ├── run-count.sh            installed as run-count: one sample from S3 through cellranger count and back
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (stage → qc → count → cleanup, then preprocess → cluster → build-h5ad), stage-reference, testrun
-    ├── cellranger-count-workflow.yaml   stage the reference once, then the sample pipeline for a list of samples in parallel
+    ├── run-count.sh            installed as run-count: cellranger count on one sample's staged reads
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (stage → qc → count → preprocess → cluster → build-h5ad → load-dataset → cleanup), stage-reference, testrun
+    ├── cellranger-count-workflow.yaml   a run started by hand: the reference once, then the sample pipeline for a list of samples, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 ```
 
@@ -94,15 +95,16 @@ sed 's/^  name: cellranger-count-template$/  name: cellranger-count-template-sta
 #   kubectl apply -n runai-busch-lab -f argo/scrna/cellranger/cellranger-count-template.yaml
 argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p samples='["sample_a","sample_b"]' --watch
 argo submit argo/scrna/cellranger/cellranger-testrun-workflow.yaml -n runai-busch-lab --watch
+# A Cell Ranger run by hand, loaded into Bloom (the staging variant is in _WIKI/ARGO/README.md):
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
-  -p samples='["sample_a","sample_b"]' -p reference=tair10_araport11 --watch
+  -p samples='["sample_a","sample_b"]' -p reference=tair10_araport11 -p species=Arabidopsis --watch
 ```
 
 Steps run under `priorityClassName: high` (non-preemptible) and retry up to twice.
 
 ## QC and chemistry
 
-The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once the analysis steps have finished. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count, and uploads the report to `runs_output/<run-id>/qc/`. The report holds:
+The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once **load-dataset** has loaded the result into Bloom. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count, and uploads the report to `runs_output/<run-id>/qc/`. The report holds:
 
 - `fastq_stats.tsv`: reads and min/mean/max length for every FASTQ.
 - `qc_summary.json`: total read pairs, R1/R2 lengths, the FASTQ prefix to pass as `--sample`, the chemistry guess and each barcode list's score.

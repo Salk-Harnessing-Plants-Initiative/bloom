@@ -168,6 +168,7 @@ def test_a_run_that_failed_after_its_load_is_still_linked(monkeypatch):
         monkeypatch, _workflow("Failed", load="Succeeded", after="Failed"), FakeClient()
     )
     assert rpcs[:2] == [poller.LINK_FN, poller.UPDATE_FN]
+    assert rpcs.count(poller.LINK_FN) == 1, "a linked run isn't linked again"
 
 
 @pytest.mark.parametrize("name", [None, "", "   "])

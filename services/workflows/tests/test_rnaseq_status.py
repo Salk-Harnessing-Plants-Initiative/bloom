@@ -59,7 +59,24 @@ def test_a_counting_workflow_is_running_at_count_with_each_started_pod():
     assert (status.exit_code, status.message) == (None, None)
 
 
-def test_a_succeeded_workflow_finishes_and_says_whether_it_loaded_a_dataset():
+def _with_load(workflow: dict, dataset_name: str | None) -> dict:
+    """The Workflow as the current template runs it: a succeeded load-dataset step, and the
+    dataset-name argument the worker passes only for a run naming a dataset."""
+    if dataset_name is not None:
+        workflow.setdefault("spec", {})["arguments"] = {
+            "parameters": [{"name": "dataset-name", "value": dataset_name}]
+        }
+    workflow["status"]["nodes"]["load"] = {
+        "id": "load",
+        "type": "Pod",
+        "templateName": "load-dataset",
+        "phase": "Succeeded",
+        "startedAt": "2026-09-29T01:20:00Z",
+    }
+    return workflow
+
+
+def test_a_succeeded_workflow_finishes_at_cleanup():
     status = st.read_cellranger_status(_load("succeeded"), RUN)
     assert (status.status, status.current_step, status.exit_code) == (
         "succeeded",
@@ -73,21 +90,18 @@ def test_a_succeeded_workflow_finishes_and_says_whether_it_loaded_a_dataset():
         "count",
         "cleanup",
     }
-    assert status.message == (
-        "Finished; the run named no dataset, so nothing was loaded into Bloom"
-    )
-    loaded = _load("succeeded")
-    loaded.setdefault("spec", {})["arguments"] = {
-        "parameters": [{"name": "dataset-name", "value": "Root atlas"}]
-    }
-    loaded["status"]["nodes"]["load"] = {
-        "id": "load",
-        "type": "Pod",
-        "templateName": "load-dataset",
-        "phase": "Succeeded",
-        "startedAt": "2026-10-06T10:00:00Z",
-    }
-    assert st.read_cellranger_status(loaded, RUN).message == "Finished: loaded into Bloom"
+
+
+@pytest.mark.parametrize(
+    "dataset_name, message",
+    [
+        ("Root atlas", "Finished: loaded into Bloom"),
+        (None, "Finished; the run named no dataset, so nothing was loaded into Bloom"),
+    ],
+)
+def test_a_succeeded_run_says_whether_it_loaded_a_dataset(dataset_name, message):
+    workflow = _with_load(_load("succeeded"), dataset_name)
+    assert st.read_cellranger_status(workflow, RUN).message == message
 
 
 def test_a_missing_reference_fails_at_stage_reference_with_exit_3():

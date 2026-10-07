@@ -362,7 +362,7 @@ spec:
             value: "4"
           - name: WORK_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}"
-          # The report stays in the run's folder; only the final .h5ad goes to S3.
+          # The report stays in the run's folder.
           - name: UPLOAD_REPORT
             value: "false"
           # The stage step has already copied the reads here.
