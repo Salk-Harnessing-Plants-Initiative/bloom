@@ -8,6 +8,19 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `scrna hdf5 upload --run-id ID` records the RNA-seq run a dataset is loaded for, so the
+  pipeline can link the run to its own dataset, and refuses to continue a dataset another run
+  or a person started. Uploads without it are unchanged.
+
+## [0.1.0a10] - 2026-10-06 — the pipeline can load its datasets
+
+### Changed
+
+- `scrna hdf5 upload` also accepts the pipeline's login (`bloom_workflows`), so a Cell Ranger
+  run can load its own dataset.
+
 ## [0.1.0a9] - 2026-10-05 — single-cell upload loads the dataset
 
 ### Changed

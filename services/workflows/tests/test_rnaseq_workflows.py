@@ -353,3 +353,36 @@ def test_the_hand_submitted_workflow_defines_no_volume_the_body_lacks():
     }
     body = {v["name"] for v in wfs.build_cellranger_body(RUN)["spec"]["volumes"]}
     assert repo <= body
+
+
+# --------------------------------------------------------------------------- #
+# The dataset the run loads
+# --------------------------------------------------------------------------- #
+
+
+def test_a_run_naming_a_dataset_passes_it_to_the_sample_pipeline():
+    run = {**RUN, "dataset": {"name": "Root atlas", "species": "Arabidopsis"}}
+    body = wfs.build_cellranger_body(run)
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert (
+        params["dataset-name"] == "Root atlas"
+        and params["species-name"] == "Arabidopsis"
+    )
+    passed = _params(_task(body, "sample"))
+    assert passed["dataset-name"] == "{{workflow.parameters.dataset-name}}"
+    assert passed["species-name"] == "{{workflow.parameters.species-name}}"
+
+
+@pytest.mark.parametrize("dataset", [None, {}], ids=["none", "empty"])
+def test_a_run_without_a_dataset_passes_none(dataset):
+    body = wfs.build_cellranger_body({**RUN, "dataset": dataset})
+    names = {p["name"] for p in body["spec"]["arguments"]["parameters"]}
+    assert not names & {"dataset-name", "species-name"}
+
+
+def test_the_dataset_inputs_are_ones_the_sample_pipeline_declares_with_an_empty_default():
+    declared = {
+        p["name"]: p.get("value")
+        for p in _template("sample-pipeline")["inputs"]["parameters"]
+    }
+    assert declared["dataset-name"] == "" and declared["species-name"] == ""

@@ -299,7 +299,7 @@ def test_an_sra_import_on_another_reference_is_another_key(cur):
 
 
 def test_a_registered_sample_can_still_be_run_again(cur):
-    """Same name, same reads: the second run is skipped by the pipeline, as before."""
+    """Same name, same reads: the second run runs again and loads its own dataset."""
     _mark(cur, _registered(cur), "succeeded")
     assert _registered(cur) > 0
 

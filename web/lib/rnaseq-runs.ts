@@ -46,6 +46,7 @@ export const CELLRANGER_STEPS = [
   { id: "preprocess", label: "Filter and normalise" },
   { id: "cluster", label: "Cluster and UMAP" },
   { id: "build-h5ad", label: "Build the .h5ad" },
+  { id: "load-dataset", label: "Load into Bloom" },
   { id: "cleanup", label: "Clean up" },
 ] as const;
 
@@ -72,6 +73,11 @@ const EXIT_SENTENCES: Record<number, string> = {
   13: "Fewer than 50 cells passed the filters, too few to cluster.",
   14: "Cell Ranger's count matrix wasn't found for the analysis steps.",
   15: "An analysis step's results didn't fit with the others; its log has the details.",
+};
+// load-dataset (argo/scrna/analysis/load-dataset.sh) reuses 6 with its own meaning.
+const LOAD_DATASET_EXIT_SENTENCES: Record<number, string> = {
+  6: "The run's final .h5ad wasn't found, so there was nothing to load into Bloom; ask the Bloom admins.",
+  16: "The pipeline has no Bloom credentials, so the dataset wasn't loaded; ask the Bloom admins.",
 };
 // fetch-sra reuses some codes with its own meaning.
 const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
@@ -190,7 +196,12 @@ export function failureSentence(run: RnaseqRun): string | null {
       return (run.exit_code != null && FOLDER_STAGE_EXIT_SENTENCES[run.exit_code]) || run.message;
     }
   }
-  const sentences = run.current_step === "fetch-sra" ? FETCH_SRA_EXIT_SENTENCES : EXIT_SENTENCES;
+  const sentences =
+    run.current_step === "fetch-sra"
+      ? FETCH_SRA_EXIT_SENTENCES
+      : run.current_step === "load-dataset"
+        ? LOAD_DATASET_EXIT_SENTENCES
+        : EXIT_SENTENCES;
   if (run.exit_code != null && sentences[run.exit_code]) return sentences[run.exit_code];
   return run.message;
 }
