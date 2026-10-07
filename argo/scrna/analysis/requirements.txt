@@ -4,3 +4,5 @@ leidenalg==0.12.0
 igraph==1.0.0
 h5py==3.16.0
 boto3==1.43.105
+# The load-dataset step loads the run's .h5ad into Bloom with it (needs the bloom_workflows login).
+bloomctl==0.1.0a10

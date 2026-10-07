@@ -29,13 +29,42 @@ class _Result:
 
 class FakeClient:
     """Records RPC calls. Claim returns the next queued result; complete and fail
-    return `changed`."""
+    return `changed`. Table reads return `tables[name]`, filtered by eq (none by default)."""
 
-    def __init__(self, claims=(), fail_on=(), changed=True):
+    def __init__(self, claims=(), fail_on=(), changed=True, tables=None):
         self.claims = list(claims)
         self.fail_on = set(fail_on)
         self.changed = changed
+        self.tables = tables or {}
         self.calls = []
+
+    def table(self, name):
+        client = self
+
+        class _Query:
+            def __init__(self):
+                self.filters = {}
+
+            def select(self, _cols):
+                return self
+
+            def eq(self, col, value):
+                self.filters[col] = value
+                return self
+
+            def execute(self):
+                if name in client.fail_on:
+                    raise RuntimeError(f"{name} unavailable")
+                rows = client.tables.get(name, [])
+                return _Result(
+                    [
+                        r
+                        for r in rows
+                        if all(r.get(k) == v for k, v in self.filters.items())
+                    ]
+                )
+
+        return _Query()
 
     def rpc(self, name, params):
         self.calls.append((name, params))
@@ -144,7 +173,7 @@ def test_a_claimed_run_is_submitted_and_recorded(types, submitted):
 
 def test_the_body_is_built_by_the_runs_workflow_type(types, submitted):
     worker.process_one(FakeClient(claims=[[RUN]]))
-    assert types == [RUN]
+    assert types == [{**RUN, "dataset": None}]
 
 
 def test_a_run_of_an_unhandled_type_is_failed_without_submitting(types, submitted):
@@ -344,3 +373,66 @@ def test_the_secret_name_is_checked_when_the_worker_starts(monkeypatch):
     monkeypatch.setattr(worker.signal, "signal", lambda *a: None)
     worker.run()
     assert checked == [True]
+
+
+# --------------------------------------------------------------------------- #
+# The dataset a run loads into Bloom
+# --------------------------------------------------------------------------- #
+
+
+def _with_metadata(metadata, species=({"id": 3, "common_name": "Arabidopsis"},)):
+    return {
+        "rnaseq_runs": [{"id": RUN["run_id"], "metadata": metadata}],
+        "species": list(species),
+    }
+
+
+def test_a_run_naming_a_dataset_passes_its_name_and_species(types, submitted):
+    tables = _with_metadata({"dataset_name": "  Root atlas ", "species_id": 3})
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["dataset"] == {"name": "Root atlas", "species": "Arabidopsis"}
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {},
+        {"dataset_name": "", "species_id": 3},
+        {"dataset_name": "Root atlas"},
+        {"dataset_name": "Root atlas", "species_id": "3"},
+        {"dataset_name": "Root atlas", "species_id": True},
+    ],
+    ids=[
+        "no-metadata",
+        "empty",
+        "blank-name",
+        "no-species",
+        "species-as-text",
+        "species-as-bool",
+    ],
+)
+def test_a_run_without_a_usable_dataset_is_submitted_without_one(
+    types, submitted, metadata
+):
+    worker.process_one(FakeClient(claims=[[RUN]], tables=_with_metadata(metadata)))
+    assert types[0]["dataset"] is None
+    assert submitted, "the run is still submitted, just not loaded"
+
+
+def test_a_species_that_doesnt_exist_is_submitted_without_a_dataset(
+    types, submitted, caplog
+):
+    tables = _with_metadata({"dataset_name": "Root atlas", "species_id": 99})
+    with caplog.at_level(logging.WARNING, logger="rnaseq_worker"):
+        worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["dataset"] is None and "won't be loaded" in caplog.text
+
+
+@pytest.mark.parametrize("table", ["rnaseq_runs", "species"])
+def test_a_failed_lookup_leaves_the_run_queued(types, submitted, table):
+    tables = _with_metadata({"dataset_name": "Root atlas", "species_id": 3})
+    client = FakeClient(claims=[[RUN]], tables=tables, fail_on={table})
+    assert worker.process_one(client) is True
+    assert submitted == [] and types == []
+    assert COMPLETE not in client.names() and FAIL not in client.names()

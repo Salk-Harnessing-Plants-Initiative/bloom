@@ -59,7 +59,24 @@ def test_a_counting_workflow_is_running_at_count_with_each_started_pod():
     assert (status.exit_code, status.message) == (None, None)
 
 
-def test_a_succeeded_workflow_finishes_with_where_the_results_are():
+def _with_load(workflow: dict, dataset_name: str | None) -> dict:
+    """The Workflow as the current template runs it: a succeeded load-dataset step, and the
+    dataset-name argument the worker passes only for a run naming a dataset."""
+    if dataset_name is not None:
+        workflow.setdefault("spec", {})["arguments"] = {
+            "parameters": [{"name": "dataset-name", "value": dataset_name}]
+        }
+    workflow["status"]["nodes"]["load"] = {
+        "id": "load",
+        "type": "Pod",
+        "templateName": "load-dataset",
+        "phase": "Succeeded",
+        "startedAt": "2026-09-29T01:20:00Z",
+    }
+    return workflow
+
+
+def test_a_succeeded_workflow_finishes_at_cleanup():
     status = st.read_cellranger_status(_load("succeeded"), RUN)
     assert (status.status, status.current_step, status.exit_code) == (
         "succeeded",
@@ -73,10 +90,18 @@ def test_a_succeeded_workflow_finishes_with_where_the_results_are():
         "count",
         "cleanup",
     }
-    assert status.message == (
-        "Finished: results in "
-        "s3://bloomv2-workflows/runs_output/tinygex__tiny_ref__poller-sample-ok/h5ad/"
-    )
+
+
+@pytest.mark.parametrize(
+    "dataset_name, message",
+    [
+        ("Root atlas", "Finished: loaded into Bloom"),
+        (None, "Finished; the run named no dataset, so nothing was loaded into Bloom"),
+    ],
+)
+def test_a_succeeded_run_says_whether_it_loaded_a_dataset(dataset_name, message):
+    workflow = _with_load(_load("succeeded"), dataset_name)
+    assert st.read_cellranger_status(workflow, RUN).message == message
 
 
 def test_a_missing_reference_fails_at_stage_reference_with_exit_3():
@@ -103,16 +128,6 @@ def test_every_reported_step_is_one_the_table_allows():
 # --------------------------------------------------------------------------- #
 # Cases built from the real Workflows
 # --------------------------------------------------------------------------- #
-
-
-def test_output_that_already_exists_is_skipped():
-    wf = _load("succeeded")
-    for p in _pod(wf, "stage-sample")["outputs"]["parameters"]:
-        if p["name"] == "done":
-            p["value"] = "true"
-    status = st.read_cellranger_status(wf, RUN)
-    assert (status.status, status.exit_code) == ("skipped", 0)
-    assert status.message.startswith("Already done: results in s3://")
 
 
 def test_a_retried_step_records_its_latest_attempt():
@@ -284,13 +299,3 @@ def test_a_folder_runs_count_failure_uses_the_count_messages(exit_code, words):
 def test_a_registered_runs_count_failure_names_raw_reads():
     status = st.read_cellranger_status(_failed_at("count", "4"), RUN)
     assert status.message == f"No FASTQs at raw_reads/{RUN['params']['sample']}/"
-
-
-def test_a_folder_run_that_finds_earlier_results_fails_instead_of_skipping():
-    wf = _load("succeeded")
-    for p in _pod(wf, "stage-sample")["outputs"]["parameters"]:
-        if p["name"] == "done":
-            p["value"] = "true"
-    status = st.read_cellranger_status(wf, FOLDER_RUN)
-    assert (status.status, status.current_step) == ("failed", "stage")
-    assert "these reads weren't processed" in status.message

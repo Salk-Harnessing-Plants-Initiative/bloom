@@ -119,8 +119,8 @@ def test_a_running_run_moves_to_the_next_step(cur):
 @pytest.mark.parametrize(
     "status, exit_code, message",
     [
-        ("succeeded", 0, "Results in runs_output/k/"),
-        ("skipped", 0, "Already done"),
+        ("succeeded", 0, "Finished: loaded into Bloom"),
+        ("skipped", 0, "Skipped"),
         ("failed", 3, "No Cell Ranger reference"),
     ],
 )
