@@ -1,10 +1,10 @@
 """
 Integration tests for link_rnaseq_run_dataset, which the status poller calls once a Cell
-Ranger run's load-dataset step succeeds: it links the run to the dataset the pipeline loaded
-under the run's species and name, copies the form's details into it and gives it to the
-scientist who asked for the run; it refuses an unfinished dataset, one the pipeline didn't
-load, one already linked, a run that hasn't run or has failed, and an ambiguous name. Also: the
-migration runs again, and the rollback takes the pipeline's access back.
+Ranger run's load-dataset step succeeds, with the dataset that step reports: it links the run
+to that dataset, copies the form's details into it and gives it to the scientist who asked for
+the run; it refuses a dataset that is unfinished, removed, of another species, not loaded by
+the pipeline or already linked, and a run that hasn't run or has failed. Also: the migrations
+run again, and the rollbacks put the name lookup back and take the pipeline's access back.
 
 LOCAL ONLY: `pg_conn` connects as `supabase_admin` (BYPASSRLS) and every test rolls back.
 """
@@ -18,6 +18,9 @@ psycopg = pytest.importorskip("psycopg")
 
 MIGRATION = _find_one("migrations", "*_let_pipeline_load_scrna_datasets.sql")
 ROLLBACK = _find_one("rollbacks", "*_let_pipeline_load_scrna_datasets_rollback.sql")
+BY_ID_MIGRATION = _find_one("migrations", "*_link_rnaseq_run_by_dataset_id.sql")
+BY_ID_ROLLBACK = _find_one("rollbacks", "*_link_rnaseq_run_by_dataset_id_rollback.sql")
+NAME_LINK = "public.link_rnaseq_run_dataset(bigint)"
 
 
 @pytest.fixture
@@ -60,7 +63,7 @@ def test_a_run_is_linked_and_its_dataset_handed_to_the_scientist(cur, pipeline, 
                       source_url="https://example.org/gse1", attributes={"tissue": "root"})
     # The poller may sign in as another pipeline account than the one that loaded.
     poller = load.user(cur, workflows=True)
-    assert load.link(cur, poller, run_id) == dataset_id
+    assert load.link(cur, poller, run_id, dataset_id) == dataset_id
     cur.execute("SELECT dataset_id FROM public.rnaseq_runs WHERE id = %s", (run_id,))
     assert cur.fetchone()[0] == dataset_id
     cur.execute("SELECT url, metadata, created_by::text FROM public.scrna_datasets "
@@ -80,20 +83,22 @@ def test_a_run_is_linked_and_its_dataset_handed_to_the_scientist(cur, pipeline, 
     assert load.finish(cur, dataset_id) == 0, "the pipeline can still write the scientist's dataset"
 
 
-def test_linking_again_returns_the_same_dataset(cur, pipeline, scientist, species):
+def test_linking_again_returns_the_runs_dataset(cur, pipeline, scientist, species):
     dataset_id = load.loaded(cur, pipeline, species)
+    later = load.loaded(cur, pipeline, species, name="Root atlas_v2")
     run_id = load.run(cur, scientist, species)
-    assert load.link(cur, pipeline, run_id) == load.link(cur, pipeline, run_id) == dataset_id
+    assert load.link(cur, pipeline, run_id, dataset_id) == dataset_id
+    assert load.link(cur, pipeline, run_id, later) == dataset_id
 
 
-def test_the_dataset_is_found_by_the_runs_species_and_trimmed_name(cur, pipeline, scientist,
-                                                                   species):
-    other_species = load.species(cur)
-    load.loaded(cur, pipeline, other_species)
-    _remove(cur, load.loaded(cur, pipeline, species))
-    live = load.loaded(cur, pipeline, species)
-    run_id = load.run(cur, scientist, species, name="  Root atlas ")
-    assert load.link(cur, pipeline, run_id) == live
+def test_the_reported_dataset_is_linked_whatever_the_form_named(cur, pipeline, scientist,
+                                                                species):
+    taken = load.loaded(cur, pipeline, species)
+    versioned = load.loaded(cur, pipeline, species, name="Root atlas_v2")
+    run_id = load.run(cur, scientist, species, name="Root atlas")
+    assert load.link(cur, pipeline, run_id, versioned) == versioned
+    cur.execute("SELECT created_by::text FROM public.scrna_datasets WHERE id = %s", (taken,))
+    assert cur.fetchone()[0] == pipeline, "the dataset under the typed name was left alone"
 
 
 def test_deleting_a_dataset_keeps_its_run(cur):
@@ -105,18 +110,21 @@ def test_deleting_a_dataset_keeps_its_run(cur):
 @pytest.mark.parametrize("case, error, match", [
     ("unfinished", psycopg.errors.ObjectNotInPrerequisiteState, "not finished"),
     ("missing", psycopg.errors.NoDataFound, "no dataset"),
+    ("removed", psycopg.errors.NoDataFound, "no dataset"),
+    ("other species", psycopg.errors.InvalidParameterValue, "not of run"),
     ("not the pipeline's", psycopg.errors.InsufficientPrivilege, "not loaded by the pipeline"),
     ("queued run", psycopg.errors.ObjectNotInPrerequisiteState, "has not succeeded"),
-    ("failed run", psycopg.errors.ObjectNotInPrerequisiteState, "contact the Bloom team"),
+    ("failed run", psycopg.errors.ObjectNotInPrerequisiteState, "has not succeeded"),
     ("already linked", psycopg.errors.UniqueViolation, "already linked to run"),
-    ("two live", psycopg.errors.CardinalityViolation, "2 datasets are named"),
+    ("no dataset id", psycopg.errors.InvalidParameterValue, "dataset id are required"),
 ])
 def test_a_run_isnt_linked_to_the_wrong_dataset(cur, pipeline, scientist, species, case, error,
                                                 match):
     status = {"queued run": "queued", "failed run": "failed"}.get(case, "running")
+    dataset_id = None
     if case == "unfinished":
         load.sign_in(cur, pipeline)
-        load.create(cur, species)
+        dataset_id, _ = load.create(cur, species)
         cur.execute("RESET ROLE")
     elif case == "not the pipeline's":
         load.sign_in(cur, scientist, role="bloom_writer")
@@ -124,18 +132,28 @@ def test_a_run_isnt_linked_to_the_wrong_dataset(cur, pipeline, scientist, specie
         cur.execute("RESET ROLE")
         cur.execute("UPDATE public.scrna_datasets SET ingested_at = now() WHERE id = %s",
                     (dataset_id,))
-    elif case != "missing":
+    elif case == "missing":
+        cur.execute("SELECT coalesce(max(id), 0) + 1000 FROM public.scrna_datasets")
+        dataset_id = cur.fetchone()[0]
+    elif case == "other species":
+        dataset_id = load.loaded(cur, pipeline, load.species(cur))
+    elif case != "no dataset id":
         dataset_id = load.loaded(cur, pipeline, species)
-        if case == "two live":
-            load.loaded(cur, pipeline, species)
+        if case == "removed":
+            _remove(cur, dataset_id)
         if case == "already linked":
             other = load.run(cur, scientist, species, sample="root2")
             cur.execute("UPDATE public.rnaseq_runs SET dataset_id = %s WHERE id = %s",
                         (dataset_id, other))
     run_id = load.run(cur, scientist, species, status=status)
     load.sign_in(cur, pipeline)
-    load.refused(cur, "SELECT public.link_rnaseq_run_dataset(%s)", (run_id,), error=error,
-                 match=match)
+    load.refused(cur, "SELECT public.link_rnaseq_run_dataset(%s, %s)", (run_id, dataset_id),
+                 error=error, match=match)
+
+
+def test_the_name_lookup_is_gone(cur):
+    cur.execute("SELECT to_regprocedure(%s)", (NAME_LINK,))
+    assert cur.fetchone()[0] is None, "there is one link function"
 
 
 # --------------------------------------------------------------------------- #
@@ -143,16 +161,36 @@ def test_a_run_isnt_linked_to_the_wrong_dataset(cur, pipeline, scientist, specie
 # --------------------------------------------------------------------------- #
 
 
-def test_the_migration_can_be_run_again(cur, pipeline, scientist, species):
+def test_the_migrations_can_be_run_again(cur, pipeline, scientist, species):
     cur.execute(_sql_body(MIGRATION))
+    cur.execute(_sql_body(BY_ID_MIGRATION))
+    cur.execute(_sql_body(BY_ID_MIGRATION))
+    cur.execute("SELECT to_regprocedure(%s)", (NAME_LINK,))
+    assert cur.fetchone()[0] is None
     dataset_id = load.loaded(cur, pipeline, species)
-    assert load.link(cur, pipeline, load.run(cur, scientist, species)) == dataset_id
+    run_id = load.run(cur, scientist, species)
+    assert load.link(cur, pipeline, run_id, dataset_id) == dataset_id
 
 
-def test_the_rollback_takes_the_pipelines_access_back(cur, pipeline, species):
+def test_the_by_id_rollback_puts_the_name_lookup_back(cur, pipeline, scientist, species):
     dataset_id = load.loaded(cur, pipeline, species)
+    run_id = load.run(cur, scientist, species)
+    cur.execute(_sql_body(BY_ID_ROLLBACK))
+    cur.execute("SELECT to_regprocedure(%s)", (load.LINK,))
+    assert cur.fetchone()[0] is None
+    for role, allowed in (("bloom_workflows", True), ("bloom_user", False), ("anon", False)):
+        cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, NAME_LINK))
+        assert cur.fetchone()[0] is allowed, role
+    load.sign_in(cur, pipeline)
+    cur.execute("SELECT public.link_rnaseq_run_dataset(%s)", (run_id,))
+    assert cur.fetchone()[0] == dataset_id
+
+
+def test_the_rollbacks_take_the_pipelines_access_back(cur, pipeline, species):
+    dataset_id = load.loaded(cur, pipeline, species)
+    cur.execute(_sql_body(BY_ID_ROLLBACK))
     cur.execute(_sql_body(ROLLBACK))
-    for fn in (load.LINK, load.MAY_LOAD, "public.set_created_by_as_owner()"):
+    for fn in (load.LINK, NAME_LINK, load.MAY_LOAD, "public.set_created_by_as_owner()"):
         cur.execute("SELECT to_regprocedure(%s)", (fn,))
         assert cur.fetchone()[0] is None, fn
     for table in ("scrna_datasets", *load.CHILD_TABLES, *load.READ_ONLY_TABLES):
