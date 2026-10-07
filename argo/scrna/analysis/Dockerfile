@@ -21,7 +21,8 @@ ENV PYTHONPATH=/opt/scrna-analysis
 COPY --from=scrna run_with_log.py /usr/local/bin/run-with-log
 COPY load-dataset.sh /usr/local/bin/load-dataset
 RUN printf '#!/bin/sh\nexec python -m bloom_scrna_analysis "$@"\n' > /usr/local/bin/scrna-analysis \
- && chmod +x /usr/local/bin/scrna-analysis /usr/local/bin/run-with-log /usr/local/bin/load-dataset \
+ && printf '#!/bin/sh\nexec python -m bloom_scrna_analysis.fetch "$@"\n' > /usr/local/bin/fetch-published \
+ && chmod +x /usr/local/bin/scrna-analysis /usr/local/bin/run-with-log /usr/local/bin/load-dataset /usr/local/bin/fetch-published \
  && scrna-analysis --help >/dev/null
 
 # Runs as root like the Cell Ranger steps, which create the run's folder on the share.

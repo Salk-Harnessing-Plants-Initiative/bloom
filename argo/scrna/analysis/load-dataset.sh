@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Load a run's final .h5ad into Bloom as a dataset, with bloomctl, signed in as the pipeline.
 #
-# Env: SAMPLE, RUN_ID, DATASET_NAME, SPECIES_NAME (the species' common name), and bloomctl's
+# Env: SAMPLE, RUN_ID, DATASET_NAME, SPECIES_NAME (the species' common name), RESULTS_URL (the
+# run's S3 folder, for a run whose shared folder no longer has the .h5ad), and bloomctl's
 # credentials file at BLOOM_CREDENTIALS (default /etc/bloom/credentials.txt).
 # A run that names no dataset (DATASET_NAME empty) loads nothing, and the step succeeds.
 # The credentials are copied into the pod's own /tmp, never onto the shared disk. bloomctl's
 # resume state (~/.bloom/scrna-uploads) is the run's folder on the shared disk, so a retried
 # step continues the load; cleanup removes it with the rest of the run's folder.
-# Exit codes: 0 loaded or nothing to load, 6 bad input or no .h5ad, 16 no credentials,
+# Exit codes: 0 loaded or nothing to load, 6 bad input or no .h5ad here or in S3, 16 no credentials,
 #      otherwise bloomctl's own (1 a refused or failed load, 2 a usage error).
 set -euo pipefail
 
@@ -29,6 +30,15 @@ if [ ! -s "${credentials}" ]; then
   exit "${EXIT_NO_CREDENTIALS}"
 fi
 h5ad="${SHARED_RUNS}/${RUN_ID}/h5ad/${SAMPLE}.h5ad"
+# An earlier run built it and its folder is gone: fetch the published copy.
+if [ ! -f "${h5ad}" ] && [ -n "${RESULTS_URL:-}" ]; then
+  echo "Fetching ${RESULTS_URL}/h5ad/${SAMPLE}.h5ad"
+  fetch-published "${RESULTS_URL}" "h5ad/${SAMPLE}.h5ad" "${h5ad}" || {
+    rc=$?
+    [ "${rc}" -eq "${EXIT_BAD_INPUT}" ] && echo "ERROR: no final .h5ad in ${RESULTS_URL}/h5ad/" >&2
+    exit "${rc}"
+  }
+fi
 if [ ! -f "${h5ad}" ]; then
   echo "ERROR: no final .h5ad at ${h5ad}" >&2
   exit "${EXIT_BAD_INPUT}"

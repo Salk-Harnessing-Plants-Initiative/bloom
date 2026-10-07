@@ -5,6 +5,7 @@ no dataset, and fails clearly without credentials. Also: the template and the an
 run it."""
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -30,6 +31,13 @@ FAKE_BLOOMCTL = r"""#!/usr/bin/env bash
 exit "${FAKE_EXIT:-0}"
 """
 
+# Copies FAKE_PUBLISHED to dest as the published file, or exits 6 when it isn't set.
+FAKE_FETCH = r"""#!/usr/bin/env bash
+echo "$@" > "${FAKE_FETCH_OUT}"
+[ -n "${FAKE_PUBLISHED:-}" ] || exit 6
+mkdir -p "$(dirname "$3")" && cp "${FAKE_PUBLISHED}" "$3"
+"""
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -38,6 +46,9 @@ def env(tmp_path):
     fake = bin_dir / "bloomctl"
     fake.write_text(FAKE_BLOOMCTL)
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    fetch = bin_dir / "fetch-published"
+    fetch.write_text(FAKE_FETCH)
+    fetch.chmod(fetch.stat().st_mode | stat.S_IEXEC)
     shared = tmp_path / "shared" / "runs"
     run = shared / "col0__tair10__u"
     (run / "h5ad").mkdir(parents=True)
@@ -54,6 +65,8 @@ def env(tmp_path):
         "DATASET_NAME": "Root atlas",
         "SPECIES_NAME": "Arabidopsis",
         "FAKE_OUT": str(tmp_path / "bloomctl.out"),
+        "FAKE_FETCH_OUT": str(tmp_path / "fetch.out"),
+        "RESULTS_URL": "s3://bloomv2-workflows/runs_output/col0__tair10__u",
     }
 
 
@@ -124,9 +137,31 @@ def test_a_missing_input_fails_with_6(env, missing):
     assert result.returncode == 6 and "required" in result.stderr
 
 
-def test_a_run_with_no_final_h5ad_fails_with_6(env):
+def test_a_run_with_no_final_h5ad_here_or_in_s3_fails_with_6(env):
     result = _run(env, SAMPLE="other")
     assert result.returncode == 6 and "no final .h5ad" in result.stderr
+    assert _bloomctl(env) == {}
+
+
+def test_a_run_whose_folder_is_gone_loads_the_published_h5ad(env, tmp_path):
+    shutil.rmtree(Path(env["SHARED_RUNS"]) / env["RUN_ID"])
+    published = tmp_path / "published.h5ad"
+    published.write_bytes(b"published h5ad")
+    result = _run(env, FAKE_PUBLISHED=str(published))
+    assert result.returncode == 0, result.stderr
+    h5ad = Path(env["SHARED_RUNS"]) / env["RUN_ID"] / "h5ad" / "col0.h5ad"
+    assert Path(env["FAKE_FETCH_OUT"]).read_text().split() == [
+        env["RESULTS_URL"],
+        "h5ad/col0.h5ad",
+        str(h5ad),
+    ]
+    assert h5ad.read_bytes() == b"published h5ad"
+    assert f"[{h5ad}]" in _bloomctl(env)["args"]
+
+
+def test_a_run_with_its_h5ad_still_on_the_shared_disk_fetches_nothing(env):
+    assert _run(env).returncode == 0
+    assert not Path(env["FAKE_FETCH_OUT"]).exists()
 
 
 def test_bloomctls_exit_code_is_the_steps(env):
@@ -146,6 +181,10 @@ def test_the_sample_pipeline_loads_after_build_h5ad_and_cleans_up_after_the_load
     tasks = {t["name"]: t for t in _templates()["sample-pipeline"]["dag"]["tasks"]}
     assert tasks["load-dataset"]["depends"] == "build-h5ad"
     assert tasks["cleanup"]["depends"] == "load-dataset"
+    # A run started again on an already-built sample still loads it, then cleans up.
+    assert "when" not in tasks["load-dataset"]
+    assert "when" not in tasks["cleanup"]
+    assert "when" in tasks["build-h5ad"]
     passed = {p["name"]: p["value"] for p in tasks["load-dataset"]["arguments"]["parameters"]}
     assert passed["dataset-name"] == "{{inputs.parameters.dataset-name}}"
     assert passed["species-name"] == "{{inputs.parameters.species-name}}"
@@ -156,13 +195,20 @@ def test_the_load_step_runs_the_script_in_the_analysis_image():
     container = step["container"]
     assert container["image"].startswith("ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:")
     assert container["command"][-1] == "load-dataset"
-    env = {e["name"]: e["value"] for e in container["env"]}
-    assert env == {
+    env = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+    assert {
+        k: env[k] for k in ("SAMPLE", "RUN_ID", "DATASET_NAME", "SPECIES_NAME")
+    } == {
         "SAMPLE": "{{inputs.parameters.sample}}",
         "RUN_ID": "{{inputs.parameters.run-id}}",
         "DATASET_NAME": "{{inputs.parameters.dataset-name}}",
         "SPECIES_NAME": "{{inputs.parameters.species-name}}",
     }
+    assert env["RESULTS_URL"] == (
+        "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"
+    )
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        assert env[key]["secretKeyRef"]["name"] == "genericsecret-bloomv2-s3"
     assert step["activeDeadlineSeconds"] >= 3600
 
 
@@ -170,6 +216,12 @@ def test_the_load_step_doesnt_retry_failures_a_retry_cant_fix():
     rule = _templates()["load-dataset"]["retryStrategy"]["expression"]
     for code in (2, 6, 16):
         assert f"asInt(lastRetry.exitCode) != {code}" in rule
+
+
+def test_the_load_step_waits_out_bloomctls_unknown_write_hold_before_retrying():
+    # bloomctl refuses to resume for 330 s after a write it couldn't confirm.
+    backoff = _templates()["load-dataset"]["retryStrategy"]["backoff"]
+    assert backoff == {"duration": "6m", "factor": 1}
 
 
 def test_every_analysis_step_uses_the_same_image():
@@ -184,6 +236,8 @@ def test_every_analysis_step_uses_the_same_image():
 def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     dockerfile = (ARGO / "analysis" / "Dockerfile").read_text()
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
+    assert "bloom_scrna_analysis.fetch" in dockerfile
+    assert "/usr/local/bin/fetch-published" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
     assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a10"]

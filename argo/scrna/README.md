@@ -33,7 +33,7 @@ Bucket `bloomv2-workflows` (us-west-2):
 | `reference_genome/<reference>/` | read. A `cellranger mkref` output folder |
 | `runs_output/<run-id>/` | write. From the count workflow, only `h5ad/<sample>.h5ad`, `summary.json` and a `_SUCCESS` marker (written last), by build-h5ad; `qc/` from the QC-only workflow |
 
-A run whose `runs_output/<run-id>/h5ad/_SUCCESS` already exists skips every step, and `run-count` exits straight away if the run's folder already holds its `outs/_SUCCESS`. Nothing else from the count workflow reaches S3: Cell Ranger runs without a BAM, and its web summary, raw matrix and QC report are deleted with the run's folder. Its metrics go into the final file. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
+A run whose `runs_output/<run-id>/h5ad/_SUCCESS` already exists skips every step up to `load-dataset`, and `run-count` exits straight away if the run's folder already holds its `outs/_SUCCESS`. Nothing else from the count workflow reaches S3: Cell Ranger runs without a BAM, and its web summary, raw matrix and QC report are deleted with the run's folder. Its metrics go into the final file. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
 
 The FASTQs' prefix is read from their names by `fastq-sample-prefix` and passed to Cell Ranger as `--sample`, so files keep the names the sequencer or core gave them (e.g. `L007-259_S1_L002_R1_001.fastq.gz` under `raw_reads/root_rep1/`). Several prefixes in one folder are counted together as one sample. A `.fastq.gz` or `.fastq` not named that way, or a lane without both R1 and R2, fails the stage step with exit 7 and a message listing the files, before QC and count run. Setting `FASTQ_SAMPLE` overrides the detected prefix.
 
@@ -87,6 +87,11 @@ argo template create argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-l
 # image goes to staging's copy first, and to prod's when staging is promoted:
 sed 's/^  name: cellranger-count-template$/  name: cellranger-count-template-staging/' \
   argo/scrna/cellranger/cellranger-count-template.yaml | kubectl apply -n runai-busch-lab -f -
+# Apply a template before deploying the workflows service that uses it: a template without
+# load-dataset's inputs ignores the dataset name, and the run loads nothing. Promoting to prod
+# also needs the pipeline's database rights migrated on prod and prod's pipeline Secret
+# signing in as bloom_workflows, then:
+#   kubectl apply -n runai-busch-lab -f argo/scrna/cellranger/cellranger-count-template.yaml
 argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p samples='["sample_a","sample_b"]' --watch
 argo submit argo/scrna/cellranger/cellranger-testrun-workflow.yaml -n runai-busch-lab --watch
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
@@ -97,7 +102,7 @@ Steps run under `priorityClassName: high` (non-preemptible) and retry up to twic
 
 ## QC and chemistry
 
-The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once the analysis steps have finished. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. A run whose final file is already in S3 skips them all. Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count, and uploads the report to `runs_output/<run-id>/qc/`. The report holds:
+The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once the analysis steps have finished. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. A run whose final file is already in S3 skips straight to `load-dataset` and `cleanup`. Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count, and uploads the report to `runs_output/<run-id>/qc/`. The report holds:
 
 - `fastq_stats.tsv`: reads and min/mean/max length for every FASTQ.
 - `qc_summary.json`: total read pairs, R1/R2 lengths, the FASTQ prefix to pass as `--sample`, the chemistry guess and each barcode list's score.
@@ -111,7 +116,7 @@ Cell Ranger itself runs with `--chemistry auto`. After each count, `run-count` c
 
 ## Analysis after the count
 
-Three analysis steps follow `count`, then `load-dataset`, each its own pod, from the `scrna-analysis` image. They pass their files through the run's own shared folder, `/shared/runs/<run-id>/`, so runs going at the same time never touch each other's files, and nothing between steps is downloaded from S3. The count step leaves its matrix and metrics there too. Only the final file is uploaded:
+Three analysis steps follow `count`, then `load-dataset`, each its own pod, from the `scrna-analysis` image. They pass their files through the run's own shared folder, `/shared/runs/<run-id>/`, so runs going at the same time never touch each other's files, and nothing between steps is downloaded from S3. The count step leaves its matrix and metrics there too. Only the final file goes to S3:
 
 | Step | Reads | Writes (in `/shared/runs/<run-id>/`) |
 |---|---|---|
@@ -123,9 +128,9 @@ The final file has the barcodes as `obs_names`, gene IDs as `var_names` (Cell Ra
 
 **Adding an analysis.** Write a module that reads the base and returns `steps.part_of(base, "<name>", obs=…, obsm=…, params=…)`: a file with no matrix, holding only its own `obs` columns, `obsm` arrays and `uns['<name>']`. Then add a template and a DAG task after `preprocess`, and add the task to `build-h5ad`'s `depends`. `build-h5ad` merges parts in name order. It fails with exit 15, writing nothing, if a part's cells aren't the base's or it reuses a key that's already taken.
 
-Each step writes its `_SUCCESS` last and does nothing if it's already there, so a retry redoes only what's missing. `build-h5ad` rebuilds when the set of finished parts has changed. `cleanup` runs after `load-dataset`, so the folder is kept after a failure. Exit 13 means fewer than 50 cells passed the filters, and exit 14 means the count matrix is missing; neither is retried.
+Each analysis step writes its `_SUCCESS` last and does nothing if it's already there, so a retry redoes only what's missing. `build-h5ad` rebuilds when the set of finished parts has changed. `cleanup` runs after `load-dataset`, so the folder is kept after a failure. Exit 13 means fewer than 50 cells passed the filters, and exit 14 means the count matrix is missing; neither is retried.
 
-**load-dataset** then loads `h5ad/<sample>.h5ad` into Bloom as the run's dataset: `bloomctl scrna hdf5 upload <file> --name <dataset-name> --species <species-name> --annotation leiden --create --yes` (`analysis/load-dataset.sh`, with `bloomctl` pinned in `analysis/requirements.txt`). The worker passes the dataset name and the species' common name from the run's form; a run naming no dataset loads nothing. It signs in with `/etc/bloom/credentials.txt` (the pipeline's `bloom_workflows` login), copied into the pod's own `/tmp`, and fails with exit 16 without it. bloomctl's resume state is `/shared/runs/<run-id>/bloomctl-uploads/`, so a retry (up to 2) continues the load; exit 2, 6 and 16 aren't retried. It uploads one counts file per gene, so a run takes tens of minutes; the step allows 6 hours. When it succeeds, the status poller links the run to its dataset and gives the dataset to the scientist (`link_rnaseq_run_dataset`).
+**load-dataset** then loads `h5ad/<sample>.h5ad` into Bloom as the run's dataset: `bloomctl scrna hdf5 upload <file> --name <dataset-name> --species <species-name> --annotation leiden --create --yes` (`analysis/load-dataset.sh`, with `bloomctl` pinned in `analysis/requirements.txt`). The worker passes the dataset name and the species' common name from the run's form; a run naming no dataset loads nothing. It signs in with `/etc/bloom/credentials.txt` (the pipeline's `bloom_workflows` login), copied into the pod's own `/tmp`, and fails with exit 16 without it. bloomctl's resume state is `/shared/runs/<run-id>/bloomctl-uploads/`, so a retry (up to 2, 6 minutes apart, past bloomctl's 330-second hold after a write it couldn't confirm) continues the load; exit 2, 6 and 16 aren't retried. It runs even when the sample was already built, so starting a run again after a failed load retries the load without re-running Cell Ranger; if the run's folder is gone, it fetches the `.h5ad` from `runs_output/<run-id>/h5ad/` first (`fetch-published`), and exits 6 if it isn't there. It uploads one counts file per gene, so a run takes tens of minutes; the step allows 6 hours. When it succeeds, the status poller links the run to its dataset and gives the dataset to the scientist (`link_rnaseq_run_dataset`).
 
 The image holds nothing licensed, but it's pushed private like the Cell Ranger one:
 

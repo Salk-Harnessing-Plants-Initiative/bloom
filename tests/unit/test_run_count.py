@@ -159,8 +159,9 @@ def test_every_pipeline_script_parses(script):
 
 
 # Only these steps touch S3: the first reference download, the SRA import, staging a registered
-# sample's reads, and the final .h5ad upload. Every other step works on the shared folder.
-S3_STEPS = {"stage-reference", "fetch-sra", "stage-sample", "build-h5ad"}
+# sample's reads, the final .h5ad upload, and fetching it back to load a run whose folder is gone.
+# Every other step works on the shared folder.
+S3_STEPS = {"stage-reference", "fetch-sra", "stage-sample", "build-h5ad", "load-dataset"}
 
 
 def test_only_the_steps_that_touch_s3_hold_s3_keys():

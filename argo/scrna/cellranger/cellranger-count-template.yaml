@@ -13,9 +13,9 @@ metadata:
     project: busch-lab
 spec:
   templates:
-    # One sample: stage -> qc -> count -> preprocess -> analyses -> build-h5ad -> cleanup, all in
-    # /shared/runs/<run-id>/ so runs never share files. Only build-h5ad uploads: the final .h5ad to
-    # runs_output/<run-id>/h5ad/. Skips everything if that file is already there.
+    # One sample: stage -> qc -> count -> preprocess -> analyses -> build-h5ad -> load-dataset ->
+    # cleanup, all in /shared/runs/<run-id>/ so runs never share files. Only build-h5ad uploads: the
+    # final .h5ad to runs_output/<run-id>/h5ad/. If that file is already there, skips to load-dataset.
     - name: sample-pipeline
       inputs:
         parameters:
@@ -86,7 +86,6 @@ spec:
           - name: cleanup
             template: cleanup
             depends: load-dataset
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
                 - name: run-id
@@ -121,10 +120,10 @@ spec:
                   value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+          # Runs even when the sample was already built, so starting a run again retries its load.
           - name: load-dataset
             template: load-dataset
             depends: build-h5ad
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
             arguments:
               parameters:
                 - name: sample
@@ -640,6 +639,10 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
+        # bloomctl refuses to resume for 330 s after a write it couldn't confirm.
+        backoff:
+          duration: "6m"
+          factor: 1
         # A retry resumes the load. 2 (usage), 6 (bad input) and 16 (no credentials) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) != 2 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 16"
       container:
@@ -654,6 +657,21 @@ spec:
             value: "{{inputs.parameters.dataset-name}}"
           - name: SPECIES_NAME
             value: "{{inputs.parameters.species-name}}"
+          # Where build-h5ad published the .h5ad, for a run whose shared folder no longer has it.
+          - name: RESULTS_URL
+            value: "s3://bloomv2-workflows/runs_output/{{inputs.parameters.run-id}}"
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests: {cpu: "2", memory: 8Gi}
           limits: {cpu: "2", memory: 8Gi}
