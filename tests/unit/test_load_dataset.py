@@ -146,6 +146,8 @@ def test_the_sample_pipeline_loads_after_build_h5ad_and_cleans_up_after_the_load
     tasks = {t["name"]: t for t in _templates()["sample-pipeline"]["dag"]["tasks"]}
     assert tasks["load-dataset"]["depends"] == "build-h5ad"
     assert tasks["cleanup"]["depends"] == "load-dataset"
+    # Nothing is skipped: the result leaves the cluster only through the load.
+    assert not [name for name, task in tasks.items() if "when" in task]
     passed = {p["name"]: p["value"] for p in tasks["load-dataset"]["arguments"]["parameters"]}
     assert passed["dataset-name"] == "{{inputs.parameters.dataset-name}}"
     assert passed["species-name"] == "{{inputs.parameters.species-name}}"
@@ -170,6 +172,12 @@ def test_the_load_step_doesnt_retry_failures_a_retry_cant_fix():
     rule = _templates()["load-dataset"]["retryStrategy"]["expression"]
     for code in (2, 6, 16):
         assert f"asInt(lastRetry.exitCode) != {code}" in rule
+
+
+def test_the_load_step_waits_out_bloomctls_unknown_write_hold_before_retrying():
+    # bloomctl refuses to resume for 330 s after a write it couldn't confirm.
+    backoff = _templates()["load-dataset"]["retryStrategy"]["backoff"]
+    assert backoff == {"duration": "6m", "factor": 1}
 
 
 def test_every_analysis_step_uses_the_same_image():

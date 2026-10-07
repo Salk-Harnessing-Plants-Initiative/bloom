@@ -21,7 +21,10 @@ _WIKI/
 │   ├── trait-recipes.md Trait recipes, recipe-aware reads, export sidecar v1.
 │   ├── trait-recipes.export.schema.json   Export sidecar v1 JSON Schema.
 │   └── trait-recipes.export.example.json  An illustrative sidecar.
-└── BLOOMMCP/
-    └── README.md        bloommcp MCP server: architecture, tool surface,
-                         auth, Supabase integration, dev gotchas.
+├── BLOOMMCP/
+│   └── README.md        bloommcp MCP server: architecture, tool surface,
+│                        auth, Supabase integration, dev gotchas.
+└── ARGO/
+    └── README.md        Argo workflows on Run:ai: how an RNA-seq run starts,
+                         where its result goes, starting one by hand.
 ```

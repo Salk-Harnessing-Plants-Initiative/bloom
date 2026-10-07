@@ -148,7 +148,10 @@ def test_a_real_finished_workflow_is_recorded_with_its_message(workflows):
     poller.sweep_once(client)
     params = client.rpcs[0][1]
     assert (params["p_status"], params["p_exit_code"]) == ("succeeded", 0)
-    assert params["p_message"].startswith("Finished: results in s3://")
+    # The captured Workflow names no dataset.
+    assert params["p_message"] == (
+        "Finished; the run named no dataset, so nothing was loaded into Bloom"
+    )
 
 
 def test_a_workflow_that_is_gone_fails_the_run(workflows):

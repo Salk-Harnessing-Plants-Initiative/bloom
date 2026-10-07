@@ -240,6 +240,24 @@ describe("failureSentence", () => {
   });
 
   it.each([
+    [6, /final \.h5ad wasn't found/],
+    [16, /no Bloom credentials/],
+  ])("explains exit %i from loading the dataset", (code, sentence) => {
+    const failed = run({ status: "failed", exit_code: code, current_step: "load-dataset" });
+    expect(failureSentence(failed)).toMatch(sentence);
+  });
+
+  it("gives the service's message for a load bloomctl refused", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 1,
+      current_step: "load-dataset",
+      message: "Loading the dataset into Bloom failed; the load-dataset step's log says why",
+    });
+    expect(failureSentence(failed)).toMatch(/load-dataset step's log says why/);
+  });
+
+  it.each([
     [4, /were removed after the run was started/],
     [6, /recorded file list couldn't be used/],
     [7, /in the S3 folder don't follow/],
