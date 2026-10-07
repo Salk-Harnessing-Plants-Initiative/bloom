@@ -1,10 +1,11 @@
--- 20261006172356_create_genome_references.sql
+-- 20261007041700_create_genome_references.sql
 --
 -- Reference genomes for the Cell Ranger workflow, stored in Bloom with numbered versions.
 -- A genome belongs to a species; each version holds one gzipped FASTA and one gzipped GTF in
 -- the genome-references bucket, with their SHA-256 and size. A writer starts a version,
 -- uploads both files, and finishes it, which makes the version ready for Cell Ranger runs.
--- A version's files and checksums never change once it is finished.
+-- A version's files and checksums never change once it is finished. A run records the genome
+-- version it used in rnaseq_runs.genome_version_id.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -75,7 +76,29 @@ CREATE TABLE IF NOT EXISTS public.genome_reference_versions (
     )
 );
 
--- 3. What may change ------------------------------------------------------------------------
+-- 3. The genome version a run used ---------------------------------------------------------
+
+-- Empty for runs started before genome versions; a version used by a run cannot be deleted.
+ALTER TABLE public.rnaseq_runs ADD COLUMN IF NOT EXISTS genome_version_id BIGINT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.rnaseq_runs'::regclass
+      AND conname = 'rnaseq_runs_genome_version_id_fkey'
+  ) THEN
+    ALTER TABLE public.rnaseq_runs
+      ADD CONSTRAINT rnaseq_runs_genome_version_id_fkey
+      FOREIGN KEY (genome_version_id) REFERENCES public.genome_reference_versions (id);
+  END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS rnaseq_runs_genome_version_id_idx
+    ON public.rnaseq_runs (genome_version_id);
+
+-- 4. What may change ------------------------------------------------------------------------
 
 -- A genome's name and species are fixed: its versions' paths are built from the name.
 CREATE OR REPLACE FUNCTION public.genome_references_keep_identity()
@@ -151,7 +174,7 @@ CREATE TRIGGER genome_reference_versions_guard
     BEFORE UPDATE ON public.genome_reference_versions
     FOR EACH ROW EXECUTE FUNCTION public.genome_reference_versions_guard();
 
--- 4. Upload functions ------------------------------------------------------------------------
+-- 5. Upload functions ------------------------------------------------------------------------
 
 -- Starts the next version of a genome for the signed-in user, creating the genome when it is
 -- new (p_species_id is then required). For an existing genome, a species or description given
@@ -350,7 +373,7 @@ BEGIN
 END;
 $$;
 
--- 5. Access to the tables and functions ------------------------------------------------------
+-- 6. Access to the tables and functions ------------------------------------------------------
 
 ALTER TABLE public.genome_references ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.genome_reference_versions ENABLE ROW LEVEL SECURITY;
@@ -409,7 +432,7 @@ GRANT EXECUTE ON FUNCTION public.finish_genome_version(BIGINT, TEXT, BIGINT, TEX
     TO bloom_writer;
 GRANT EXECUTE ON FUNCTION public.abandon_genome_version(BIGINT) TO bloom_writer;
 
--- 6. The genome-references bucket ------------------------------------------------------------
+-- 7. The genome-references bucket ------------------------------------------------------------
 
 -- Gzipped FASTA and GTF files of at most 500 MB, Storage's own per-object limit.
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)

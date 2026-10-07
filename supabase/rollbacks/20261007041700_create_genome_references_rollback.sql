@@ -1,6 +1,6 @@
--- Rollback for 20261006172356_create_genome_references.sql
--- Manual break-glass only; nothing runs it automatically. Drops the genome tables, functions,
--- triggers, bucket policies and bucket.
+-- Rollback for 20261007041700_create_genome_references.sql
+-- Manual break-glass only; nothing runs it automatically. Drops rnaseq_runs.genome_version_id,
+-- the genome tables, functions, triggers, bucket policies and bucket.
 --
 -- Refuses while the bucket holds any object: storage.objects.bucket_id references the bucket
 -- with no cascade, and the files must be deleted through the Storage API first so their bytes
@@ -33,6 +33,10 @@ DROP FUNCTION IF EXISTS public.start_genome_version(TEXT, BIGINT, TEXT, TEXT, TE
 DROP FUNCTION IF EXISTS public.finish_genome_version(BIGINT, TEXT, BIGINT, TEXT, BIGINT);
 DROP FUNCTION IF EXISTS public.abandon_genome_version(BIGINT);
 DROP FUNCTION IF EXISTS public._genome_object_bytes(TEXT);
+
+DROP INDEX IF EXISTS public.rnaseq_runs_genome_version_id_idx;
+ALTER TABLE public.rnaseq_runs DROP CONSTRAINT IF EXISTS rnaseq_runs_genome_version_id_fkey;
+ALTER TABLE public.rnaseq_runs DROP COLUMN IF EXISTS genome_version_id;
 
 DROP TABLE IF EXISTS public.genome_reference_versions;
 DROP TABLE IF EXISTS public.genome_references;

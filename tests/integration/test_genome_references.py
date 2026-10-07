@@ -402,7 +402,11 @@ def test_abandoning_someone_elses_upload_is_refused(cur, species_id):
 
 @pytest.mark.parametrize(
     "assignment",
-    ["fasta_sha256 = repeat('c', 64)", "gtf_bytes = 51", "ready_at = now()"],
+    [
+        "fasta_sha256 = repeat('c', 64)",
+        "gtf_bytes = 51",
+        "ready_at = now() - interval '1 day'",
+    ],
 )
 def test_a_finished_versions_files_cannot_change(cur, species_id, assignment):
     version_id = _uploaded(cur, species_id)[0]
@@ -471,6 +475,81 @@ def test_a_genomes_description_can_be_edited(cur, species_id):
         "UPDATE genome_references SET description = 'Col-0' WHERE name = 'tair10_araport11'"
     )
     assert cur.rowcount == 1
+
+
+# --------------------------------------------------------------------------- #
+# The genome version a run used
+# --------------------------------------------------------------------------- #
+
+
+def _add_run(cur, genome_version_id=None):
+    params = {"sample": "S1", "reference": "tair10_araport11"}
+    cur.execute(
+        "INSERT INTO rnaseq_runs (workflow_type, params, run_key, requested_by, "
+        "genome_version_id) VALUES ('scrna-cellranger', %s, %s, %s, %s) RETURNING id",
+        (
+            json.dumps(params),
+            f"S1__tair10_araport11__{WRITER}",
+            WRITER,
+            genome_version_id,
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def test_a_run_records_the_genome_version_it_used(cur, species_id):
+    version_id = _uploaded(cur, species_id)[0]
+    _finish(cur, version_id)
+    run_id = _add_run(cur, version_id)
+    cur.execute(
+        "SELECT g.name, v.version FROM rnaseq_runs r "
+        "JOIN genome_reference_versions v ON v.id = r.genome_version_id "
+        "JOIN genome_references g ON g.id = v.genome_id WHERE r.id = %s",
+        (run_id,),
+    )
+    assert cur.fetchone() == ("tair10_araport11", 1)
+
+
+def test_a_run_without_a_genome_version_is_allowed(cur):
+    run_id = _add_run(cur)
+    cur.execute("SELECT genome_version_id FROM rnaseq_runs WHERE id = %s", (run_id,))
+    assert cur.fetchone()[0] is None
+
+
+def test_a_run_cannot_name_a_genome_version_that_does_not_exist(cur):
+    _refused(
+        cur,
+        "INSERT INTO rnaseq_runs (workflow_type, params, run_key, requested_by, "
+        "genome_version_id) VALUES ('scrna-cellranger', %s, %s, %s, -1)",
+        (
+            json.dumps({"sample": "S1", "reference": "tair10_araport11"}),
+            f"S1__tair10_araport11__{WRITER}",
+            WRITER,
+        ),
+        psycopg.errors.ForeignKeyViolation,
+    )
+
+
+def test_a_genome_version_used_by_a_run_cannot_be_deleted(cur, species_id):
+    version_id = _uploaded(cur, species_id)[0]
+    _finish(cur, version_id)
+    _add_run(cur, version_id)
+    _refused(
+        cur,
+        "DELETE FROM genome_reference_versions WHERE id = %s",
+        (version_id,),
+        psycopg.errors.ForeignKeyViolation,
+    )
+
+
+def test_the_run_column_is_readable_by_the_run_readers(cur):
+    for role in ("bloom_user", "bloom_agent", "bloom_workflows"):
+        cur.execute(
+            "SELECT has_column_privilege(%s, 'public.rnaseq_runs', 'genome_version_id', "
+            "'SELECT')",
+            (role,),
+        )
+        assert cur.fetchone()[0] is True, role
 
 
 # --------------------------------------------------------------------------- #
@@ -656,6 +735,11 @@ def test_the_rollback_removes_everything(cur, species_id):
         cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
         assert cur.fetchone()[0] is None
     cur.execute("SELECT count(*) FROM storage.buckets WHERE id = %s", (BUCKET,))
+    assert cur.fetchone()[0] == 0
+    cur.execute(
+        "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = 'rnaseq_runs' AND column_name = 'genome_version_id'"
+    )
     assert cur.fetchone()[0] == 0
     cur.execute(
         "SELECT count(*) FROM pg_policies WHERE schemaname = 'storage' "
