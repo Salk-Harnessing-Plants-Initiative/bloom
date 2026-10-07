@@ -1,7 +1,7 @@
 """
 Integration tests for genome references: numbered, write-once versions of a genome's FASTA and
-GTF, the start / finish / abandon functions bloomctl calls, the genome-mkref build run that
-makes a version ready or failed, the genome-references bucket's rules, and the rollback.
+GTF, the start / finish / abandon functions bloomctl calls, the genome-references bucket's rules,
+and the rollback.
 
 Each test applies the migration inside its own transaction and rolls it back, so the database
 is left unchanged. Roles are exercised with SET LOCAL ROLE and a request.jwt.claims sub, the
@@ -103,9 +103,9 @@ def _finish(cur, version_id, fasta_bytes=100, gtf_bytes=50, user=WRITER):
         "SELECT public.finish_genome_version(%s, %s, %s, %s, %s)",
         (version_id, SHA_A, fasta_bytes, SHA_B, gtf_bytes),
     )
-    run_id = cur.fetchone()[0]
+    version = cur.fetchone()[0]
     _admin(cur)
-    return run_id
+    return version
 
 
 def _uploaded(cur, species_id, user=WRITER):
@@ -118,8 +118,7 @@ def _uploaded(cur, species_id, user=WRITER):
 
 def _status(cur, version_id):
     cur.execute(
-        "SELECT status, ready_at, failure_reason, build_run_id "
-        "FROM public.genome_reference_versions WHERE id = %s",
+        "SELECT status, ready_at FROM public.genome_reference_versions WHERE id = %s",
         (version_id,),
     )
     return cur.fetchone()
@@ -269,34 +268,16 @@ def test_starting_without_signing_in_is_refused(cur, species_id):
 # --------------------------------------------------------------------------- #
 
 
-def test_finishing_queues_one_build_and_records_the_files(cur, species_id):
+def test_finishing_makes_the_version_ready_and_records_the_files(cur, species_id):
     version_id = _uploaded(cur, species_id)[0]
-    run_id = _finish(cur, version_id)
+    assert _finish(cur, version_id) == 1
 
     cur.execute(
-        "SELECT status, fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, build_run_id "
+        "SELECT status, fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, ready_at IS NOT NULL "
         "FROM genome_reference_versions WHERE id = %s",
         (version_id,),
     )
-    assert cur.fetchone() == ("building", SHA_A, 100, SHA_B, 50, run_id)
-
-    cur.execute(
-        "SELECT workflow_type, status, params, run_key, requested_by::text "
-        "FROM rnaseq_runs WHERE id = %s",
-        (run_id,),
-    )
-    assert cur.fetchone() == (
-        "genome-mkref",
-        "queued",
-        {"genome": "tair10_araport11", "version": 1, "version_id": version_id},
-        "tair10_araport11.v1",
-        WRITER,
-    )
-    cur.execute(
-        "SELECT count(*) FROM pgmq.q_rnaseq_dispatch WHERE message ->> 'run_id' = %s",
-        (str(run_id),),
-    )
-    assert cur.fetchone()[0] == 1
+    assert cur.fetchone() == ("ready", SHA_A, 100, SHA_B, 50, True)
 
 
 def test_finishing_twice_is_refused(cur, species_id):
@@ -337,8 +318,7 @@ def test_finishing_with_a_wrong_size_is_refused(cur, species_id):
         match="is 100 bytes in storage, not 101",
     )
     _admin(cur)
-    cur.execute("SELECT count(*) FROM rnaseq_runs WHERE workflow_type = 'genome-mkref'")
-    assert cur.fetchone()[0] == 0
+    assert _status(cur, version_id)[0] == "uploading"
 
 
 @pytest.mark.parametrize("sha", ["A" * 64, "a" * 63, "g" * 64, None])
@@ -422,7 +402,7 @@ def test_abandoning_someone_elses_upload_is_refused(cur, species_id):
 
 @pytest.mark.parametrize(
     "assignment",
-    ["fasta_sha256 = repeat('c', 64)", "gtf_bytes = 51", "build_run_id = NULL"],
+    ["fasta_sha256 = repeat('c', 64)", "gtf_bytes = 51", "ready_at = now()"],
 )
 def test_a_finished_versions_files_cannot_change(cur, species_id, assignment):
     version_id = _uploaded(cur, species_id)[0]
@@ -456,16 +436,16 @@ def test_a_versions_identity_and_sources_never_change(cur, species_id, assignmen
 
 @pytest.mark.parametrize(
     "old, new",
-    [("building", "uploading"), ("ready", "building"), ("failed", "ready")],
+    [("ready", "uploading"), ("ready", "abandoned"), ("abandoned", "uploading")],
 )
 def test_status_never_goes_backward(cur, species_id, old, new):
     version_id = _uploaded(cur, species_id)[0]
-    run_id = _finish(cur, version_id)
-    if old != "building":
-        cur.execute(
-            "UPDATE rnaseq_runs SET status = %s, message = 'mkref failed' WHERE id = %s",
-            ("succeeded" if old == "ready" else "failed", run_id),
-        )
+    if old == "ready":
+        _finish(cur, version_id)
+    else:
+        _as(cur, "bloom_writer", WRITER)
+        cur.execute("SELECT public.abandon_genome_version(%s)", (version_id,))
+        _admin(cur)
     assert _status(cur, version_id)[0] == old
     _refused(
         cur,
@@ -491,96 +471,6 @@ def test_a_genomes_description_can_be_edited(cur, species_id):
         "UPDATE genome_references SET description = 'Col-0' WHERE name = 'tair10_araport11'"
     )
     assert cur.rowcount == 1
-
-
-# --------------------------------------------------------------------------- #
-# The build's outcome
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("outcome", ["succeeded", "skipped"])
-def test_a_finished_build_makes_the_version_ready(cur, species_id, outcome):
-    version_id = _uploaded(cur, species_id)[0]
-    run_id = _finish(cur, version_id)
-    cur.execute("UPDATE rnaseq_runs SET status = %s WHERE id = %s", (outcome, run_id))
-    status, ready_at, failure_reason, _ = _status(cur, version_id)
-    assert (status, failure_reason) == ("ready", None)
-    assert ready_at is not None
-
-
-def test_a_failed_build_fails_the_version_with_the_runs_message(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    run_id = _finish(cur, version_id)
-    cur.execute(
-        "UPDATE rnaseq_runs SET status = 'failed', message = 'cellranger mkref failed' "
-        "WHERE id = %s",
-        (run_id,),
-    )
-    assert _status(cur, version_id)[:3] == ("failed", None, "cellranger mkref failed")
-
-
-def test_a_build_failed_by_the_worker_fails_the_version(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    run_id = _finish(cur, version_id)
-    cur.execute(
-        "SELECT msg_id FROM pgmq.q_rnaseq_dispatch WHERE message ->> 'run_id' = %s",
-        (str(run_id),),
-    )
-    msg_id = cur.fetchone()[0]
-    _as(cur, "bloom_workflows")
-    cur.execute(
-        "SELECT public.fail_rnaseq_run(%s, %s, 'unknown workflow type genome-mkref')",
-        (run_id, msg_id),
-    )
-    _admin(cur)
-    assert _status(cur, version_id)[0] == "failed"
-
-
-def test_a_running_build_leaves_the_version_building(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    run_id = _finish(cur, version_id)
-    cur.execute(
-        "UPDATE rnaseq_runs SET status = 'running', current_step = 'build-reference' "
-        "WHERE id = %s",
-        (run_id,),
-    )
-    assert _status(cur, version_id)[0] == "building"
-
-
-# --------------------------------------------------------------------------- #
-# genome-mkref run rows
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "params, run_key",
-    [
-        ({"genome": "g", "version": 1}, "g.v1"),
-        ({"genome": "g", "version": 1, "version_id": 1, "x": 1}, "g.v1"),
-        ({"genome": "g", "version": "1", "version_id": 1}, "g.v1"),
-        ({"genome": "g", "version": 0, "version_id": 1}, "g.v0"),
-        ({"genome": "a__b", "version": 1, "version_id": 1}, "a__b.v1"),
-        ({"genome": "g", "version": 1, "version_id": 1}, "g.v2"),
-    ],
-)
-def test_a_malformed_build_run_is_refused(cur, params, run_key):
-    _refused(
-        cur,
-        "INSERT INTO rnaseq_runs (workflow_type, params, run_key, requested_by) "
-        "VALUES ('genome-mkref', %s, %s, %s)",
-        (json.dumps(params), run_key, WRITER),
-        psycopg.errors.CheckViolation,
-    )
-
-
-def test_a_cellranger_step_is_not_a_build_step(cur):
-    _refused(
-        cur,
-        "INSERT INTO rnaseq_runs (workflow_type, params, run_key, requested_by, current_step) "
-        "VALUES ('genome-mkref', %s, 'g.v1', %s, 'count')",
-        (json.dumps({"genome": "g", "version": 1, "version_id": 1}), WRITER),
-        psycopg.errors.CheckViolation,
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -742,7 +632,7 @@ def test_only_writers_can_call_the_upload_functions(cur, function):
 
 @pytest.mark.parametrize(
     "function",
-    ["public._genome_object_bytes(text)", "public.finish_genome_reference_build()"],
+    ["public._genome_object_bytes(text)"],
 )
 def test_internal_functions_are_not_callable(cur, function):
     for role in ("bloom_writer", "bloom_user", "anon", "authenticated"):
@@ -757,7 +647,7 @@ def test_internal_functions_are_not_callable(cur, function):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_rollback_removes_everything_and_restores_the_run_checks(cur, species_id):
+def test_the_rollback_removes_everything(cur, species_id):
     version_id = _start(cur, species=species_id)[0]
     assert version_id
     cur.execute(_sql_body(ROLLBACK))
@@ -772,13 +662,6 @@ def test_the_rollback_removes_everything_and_restores_the_run_checks(cur, specie
         "AND policyname LIKE '%%genome%%'"
     )
     assert cur.fetchone()[0] == 0
-    _refused(
-        cur,
-        "INSERT INTO rnaseq_runs (workflow_type, params, run_key, requested_by) "
-        "VALUES ('genome-mkref', %s, 'g.v1', %s)",
-        (json.dumps({"genome": "g", "version": 1, "version_id": 1}), WRITER),
-        psycopg.errors.CheckViolation,
-    )
 
 
 def test_the_rollback_refuses_while_the_bucket_holds_files(cur, species_id):

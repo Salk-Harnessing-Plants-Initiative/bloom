@@ -3,8 +3,7 @@
 -- Reference genomes for the Cell Ranger workflow, stored in Bloom with numbered versions.
 -- A genome belongs to a species; each version holds one gzipped FASTA and one gzipped GTF in
 -- the genome-references bucket, with their SHA-256 and size. A writer starts a version,
--- uploads both files, and finishes it; finishing queues a genome-mkref run that builds the
--- Cell Ranger reference, and that run's outcome makes the version ready or failed.
+-- uploads both files, and finishes it, which makes the version ready for Cell Ranger runs.
 -- A version's files and checksums never change once it is finished.
 -- Forward-only; rollback in supabase/rollbacks/.
 
@@ -38,7 +37,7 @@ CREATE TABLE IF NOT EXISTS public.genome_reference_versions (
         CONSTRAINT genome_reference_versions_version_check CHECK (version >= 1),
     status TEXT NOT NULL DEFAULT 'uploading'
         CONSTRAINT genome_reference_versions_status_check
-        CHECK (status IN ('uploading', 'building', 'ready', 'failed', 'abandoned')),
+        CHECK (status IN ('uploading', 'ready', 'abandoned')),
     -- Object names in the genome-references bucket.
     fasta_path TEXT NOT NULL,
     gtf_path TEXT NOT NULL,
@@ -62,27 +61,18 @@ CREATE TABLE IF NOT EXISTS public.genome_reference_versions (
         CONSTRAINT genome_reference_versions_source_url_check CHECK (length(source_url) <= 2048),
     notes TEXT
         CONSTRAINT genome_reference_versions_notes_check CHECK (length(notes) <= 4000),
-    -- The genome-mkref run that builds this version.
-    build_run_id BIGINT
-        CONSTRAINT genome_reference_versions_build_run_id_fkey REFERENCES public.rnaseq_runs (id),
-    failure_reason TEXT,
     created_by UUID NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ready_at TIMESTAMPTZ,
     CONSTRAINT genome_reference_versions_genome_version_key UNIQUE (genome_id, version),
-    CONSTRAINT genome_reference_versions_build_run_id_key UNIQUE (build_run_id),
-    -- A finished upload has both checksums and sizes and a build run; an unfinished one has none.
+    -- A ready version has both checksums and sizes; an unfinished one has none.
     CONSTRAINT genome_reference_versions_finished_check CHECK (
-        CASE WHEN status IN ('uploading', 'abandoned') THEN
-            num_nonnulls(fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, build_run_id) = 0
+        CASE WHEN status = 'ready' THEN
+            num_nulls(fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, ready_at) = 0
         ELSE
-            num_nulls(fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, build_run_id) = 0
+            num_nonnulls(fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, ready_at) = 0
         END
-    ),
-    CONSTRAINT genome_reference_versions_ready_at_check
-        CHECK ((ready_at IS NOT NULL) = (status = 'ready')),
-    CONSTRAINT genome_reference_versions_failure_reason_check
-        CHECK ((failure_reason IS NOT NULL) = (status = 'failed'))
+    )
 );
 
 -- 3. What may change ------------------------------------------------------------------------
@@ -111,9 +101,8 @@ CREATE TRIGGER genome_references_keep_identity
     BEFORE UPDATE ON public.genome_references
     FOR EACH ROW EXECUTE FUNCTION public.genome_references_keep_identity();
 
--- A version's identity and source fields never change. Its checksums, sizes and build run are
--- set once, when the upload is finished. Status only moves forward:
--- uploading -> building | abandoned, building -> ready | failed.
+-- A version's identity and source fields never change. Its checksums and sizes are set once,
+-- when the upload is finished. Status only moves forward: uploading -> ready | abandoned.
 CREATE OR REPLACE FUNCTION public.genome_reference_versions_guard()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -140,25 +129,16 @@ BEGIN
         OR NEW.fasta_bytes IS DISTINCT FROM OLD.fasta_bytes
         OR NEW.gtf_sha256 IS DISTINCT FROM OLD.gtf_sha256
         OR NEW.gtf_bytes IS DISTINCT FROM OLD.gtf_bytes
-        OR NEW.build_run_id IS DISTINCT FROM OLD.build_run_id
+        OR NEW.ready_at IS DISTINCT FROM OLD.ready_at
     ) THEN
         RAISE EXCEPTION 'genome version % is %; its files cannot change', OLD.id, OLD.status
             USING ERRCODE = '55000';
     END IF;
 
     IF NEW.status IS DISTINCT FROM OLD.status AND (OLD.status, NEW.status) NOT IN (
-        ('uploading', 'building'), ('uploading', 'abandoned'),
-        ('building', 'ready'), ('building', 'failed')
+        ('uploading', 'ready'), ('uploading', 'abandoned')
     ) THEN
         RAISE EXCEPTION 'genome version % cannot go from % to %', OLD.id, OLD.status, NEW.status
-            USING ERRCODE = '55000';
-    END IF;
-
-    IF NEW.status = OLD.status AND (
-        NEW.ready_at IS DISTINCT FROM OLD.ready_at
-        OR NEW.failure_reason IS DISTINCT FROM OLD.failure_reason
-    ) THEN
-        RAISE EXCEPTION 'genome version % is already %', OLD.id, OLD.status
             USING ERRCODE = '55000';
     END IF;
 
@@ -171,76 +151,7 @@ CREATE TRIGGER genome_reference_versions_guard
     BEFORE UPDATE ON public.genome_reference_versions
     FOR EACH ROW EXECUTE FUNCTION public.genome_reference_versions_guard();
 
--- 4. genome-mkref runs -----------------------------------------------------------------------
-
-ALTER TABLE public.rnaseq_runs DROP CONSTRAINT IF EXISTS rnaseq_runs_workflow_type_check;
-ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_workflow_type_check
-    CHECK (workflow_type IN ('scrna-cellranger', 'genome-mkref'));
-
--- A build's inputs: exactly the genome, the version number and the version's id.
-ALTER TABLE public.rnaseq_runs DROP CONSTRAINT IF EXISTS rnaseq_runs_genome_mkref_check;
-ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_genome_mkref_check CHECK (
-    workflow_type <> 'genome-mkref' OR coalesce(
-        jsonb_typeof(params) = 'object'
-        AND params - 'genome' - 'version' - 'version_id' = '{}'::jsonb
-        AND jsonb_typeof(params -> 'genome') = 'string'
-        AND params ->> 'genome' ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
-        AND params ->> 'genome' !~ '__'
-        AND jsonb_typeof(params -> 'version') = 'number'
-        AND params ->> 'version' ~ '^[1-9][0-9]{0,8}$'
-        AND jsonb_typeof(params -> 'version_id') = 'number'
-        AND params ->> 'version_id' ~ '^[1-9][0-9]{0,17}$'
-        AND run_key = (params ->> 'genome') || '.v' || (params ->> 'version'),
-        false
-    )
-);
-
--- Cell Ranger's steps as before; a build reports its one step.
-ALTER TABLE public.rnaseq_runs DROP CONSTRAINT IF EXISTS rnaseq_runs_current_step_check;
-ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_current_step_check CHECK (
-    current_step IS NULL
-    OR (workflow_type = 'scrna-cellranger'
-        AND current_step IN ('fetch-sra', 'stage-reference', 'stage', 'qc', 'count',
-                             'preprocess', 'cluster', 'build-h5ad', 'load-dataset', 'cleanup'))
-    OR (workflow_type = 'genome-mkref' AND current_step = 'build-reference')
-);
-
--- A finished build makes its version ready (succeeded, or skipped because the build already
--- existed) or failed, with the run's message as the reason.
-CREATE OR REPLACE FUNCTION public.finish_genome_reference_build()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-    IF NEW.status IN ('succeeded', 'skipped') THEN
-        UPDATE public.genome_reference_versions
-        SET status = 'ready', ready_at = now()
-        WHERE build_run_id = NEW.id AND status = 'building';
-    ELSIF NEW.status = 'failed' THEN
-        UPDATE public.genome_reference_versions
-        SET status = 'failed',
-            failure_reason = coalesce(nullif(btrim(NEW.message), ''), 'the build failed')
-        WHERE build_run_id = NEW.id AND status = 'building';
-    END IF;
-    RETURN NULL;
-END;
-$$;
-
-REVOKE EXECUTE ON FUNCTION public.finish_genome_reference_build()
-    FROM PUBLIC, anon, authenticated;
-
-DROP TRIGGER IF EXISTS finish_genome_reference_build ON public.rnaseq_runs;
-CREATE TRIGGER finish_genome_reference_build
-    AFTER UPDATE OF status ON public.rnaseq_runs
-    FOR EACH ROW
-    WHEN (NEW.workflow_type = 'genome-mkref'
-          AND NEW.status IS DISTINCT FROM OLD.status
-          AND NEW.status IN ('succeeded', 'skipped', 'failed'))
-    EXECUTE FUNCTION public.finish_genome_reference_build();
-
--- 5. Upload functions ------------------------------------------------------------------------
+-- 4. Upload functions ------------------------------------------------------------------------
 
 -- Starts the next version of a genome for the signed-in user, creating the genome when it is
 -- new (p_species_id is then required). For an existing genome, a species or description given
@@ -331,24 +242,22 @@ AS $$
 $$;
 
 -- Finishes the signed-in user's upload: both objects must be stored with exactly the stated
--- sizes. Records the checksums, queues the genome-mkref build, and returns the build's run id.
+-- sizes. Records the checksums and makes the version ready; returns its version number.
 CREATE OR REPLACE FUNCTION public.finish_genome_version(
     p_version_id BIGINT,
     p_fasta_sha256 TEXT,
     p_fasta_bytes BIGINT,
     p_gtf_sha256 TEXT,
     p_gtf_bytes BIGINT
-) RETURNS BIGINT
+) RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pgmq
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_user UUID := auth.uid();
     v_row public.genome_reference_versions%ROWTYPE;
-    v_genome TEXT;
     v_stored BIGINT;
-    v_run_id BIGINT;
 BEGIN
     IF v_user IS NULL THEN
         RAISE EXCEPTION 'sign in to upload a genome' USING ERRCODE = '42501';
@@ -391,29 +300,16 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
 
-    SELECT g.name INTO v_genome FROM public.genome_references g WHERE g.id = v_row.genome_id;
-
-    INSERT INTO public.rnaseq_runs (workflow_type, params, run_key, requested_by)
-    VALUES (
-        'genome-mkref',
-        jsonb_build_object('genome', v_genome, 'version', v_row.version, 'version_id', v_row.id),
-        v_genome || '.v' || v_row.version,
-        v_user
-    )
-    RETURNING id INTO v_run_id;
-
-    PERFORM pgmq.send('rnaseq_dispatch', jsonb_build_object('run_id', v_run_id));
-
     UPDATE public.genome_reference_versions
-    SET status = 'building',
+    SET status = 'ready',
         fasta_sha256 = p_fasta_sha256,
         fasta_bytes = p_fasta_bytes,
         gtf_sha256 = p_gtf_sha256,
         gtf_bytes = p_gtf_bytes,
-        build_run_id = v_run_id
+        ready_at = now()
     WHERE id = v_row.id;
 
-    RETURN v_run_id;
+    RETURN v_row.version;
 END;
 $$;
 
@@ -454,7 +350,7 @@ BEGIN
 END;
 $$;
 
--- 6. Access to the tables and functions ------------------------------------------------------
+-- 5. Access to the tables and functions ------------------------------------------------------
 
 ALTER TABLE public.genome_references ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.genome_reference_versions ENABLE ROW LEVEL SECURITY;
@@ -513,7 +409,7 @@ GRANT EXECUTE ON FUNCTION public.finish_genome_version(BIGINT, TEXT, BIGINT, TEX
     TO bloom_writer;
 GRANT EXECUTE ON FUNCTION public.abandon_genome_version(BIGINT) TO bloom_writer;
 
--- 7. The genome-references bucket ------------------------------------------------------------
+-- 6. The genome-references bucket ------------------------------------------------------------
 
 -- Gzipped FASTA and GTF files of at most 500 MB, Storage's own per-object limit.
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
