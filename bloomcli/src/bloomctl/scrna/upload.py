@@ -74,7 +74,7 @@ from ._text import visible
 def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> None:
     """Store a dataset's AnnData file (.h5ad) and load its cells and gene counts into Bloom.
 
-    Needs a writer or admin login. Every check runs first; then what the file holds and what
+    Needs a writer, admin or pipeline login. Every check runs first; then what the file holds and what
     the load will do are shown on the terminal, and it goes ahead once confirmed. A stopped
     upload or load continues when the same command is run again. Load a dataset from one
     terminal at a time.
@@ -88,8 +88,8 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
     conn = _session.connect(profile)
     if conn.role not in _session.WRITE_ROLES:
         raise click.ClickException(
-            f"this login signs in as {conn.role or 'no role'}; uploading needs bloom_writer or "
-            "bloom_admin. Nothing was read."
+            f"this login signs in as {conn.role or 'no role'}; uploading needs bloom_writer, "
+            "bloom_admin or bloom_workflows. Nothing was read."
         )
     read_from = _stamp(file)
     summary = _checked(file, opts["umap_key"])
