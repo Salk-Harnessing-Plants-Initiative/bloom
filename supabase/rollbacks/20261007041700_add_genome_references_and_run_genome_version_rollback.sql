@@ -1,4 +1,4 @@
--- Rollback for 20261007041700_create_genome_references.sql
+-- Rollback for 20261007041700_add_genome_references_and_run_genome_version.sql
 -- Manual break-glass only; nothing runs it automatically. Drops rnaseq_runs.genome_version_id,
 -- the genome tables, functions, triggers, bucket policies and bucket.
 --

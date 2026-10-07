@@ -17,8 +17,12 @@ from tests.integration.test_rnaseq_runs import _find_one, _sql_body
 
 psycopg = pytest.importorskip("psycopg")
 
-MIGRATION = _find_one("migrations", "*_create_genome_references.sql")
-ROLLBACK = _find_one("rollbacks", "*_create_genome_references_rollback.sql")
+MIGRATION = _find_one(
+    "migrations", "*_add_genome_references_and_run_genome_version.sql"
+)
+ROLLBACK = _find_one(
+    "rollbacks", "*_add_genome_references_and_run_genome_version_rollback.sql"
+)
 BUCKET = "genome-references"
 TABLES = ("genome_references", "genome_reference_versions")
 

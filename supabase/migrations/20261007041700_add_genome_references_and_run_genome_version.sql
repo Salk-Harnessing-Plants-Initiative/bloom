@@ -1,4 +1,4 @@
--- 20261007041700_create_genome_references.sql
+-- 20261007041700_add_genome_references_and_run_genome_version.sql
 --
 -- Reference genomes for the Cell Ranger workflow, stored in Bloom with numbered versions.
 -- A genome belongs to a species; each version holds one gzipped FASTA and one gzipped GTF in
