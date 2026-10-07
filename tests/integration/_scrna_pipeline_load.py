@@ -9,7 +9,7 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 Jsonb = psycopg.types.json.Jsonb
 
-LINK = "public.link_rnaseq_run_dataset(bigint)"
+LINK = "public.link_rnaseq_run_dataset(bigint, bigint)"
 MAY_LOAD = "public.workflows_may_load_scrna_dataset(bigint)"
 CHILD_TABLES = ["scrna_clusters", "scrna_genotypes", "scrna_cells", "scrna_genes", "scrna_counts"]
 READ_ONLY_TABLES = ["species", "scrna_cluster_stats", "scrna_cluster_neighbors", "scrna_de"]
@@ -53,12 +53,16 @@ def refused(cur, sql, params=(), error=psycopg.errors.InsufficientPrivilege, mat
         cur.execute("ROLLBACK TO SAVEPOINT refused")
 
 
-def create(cur, species_id, name="Root atlas"):
-    """The load's first write, as the signed-in account: (id, created_by)."""
+def create(cur, species_id, name="Root atlas", run_id=None):
+    """The load's first write, as the signed-in account, recording the run it loads for:
+    (id, created_by)."""
+    metadata = {"expected_cells": 1}
+    if run_id is not None:
+        metadata["rnaseq_run_id"] = run_id
     cur.execute(
         "INSERT INTO public.scrna_datasets (name, species_id, source_checksum, metadata) "
         "VALUES (%s, %s, %s, %s) RETURNING id, created_by::text",
-        (name, species_id, "a" * 64, Jsonb({"expected_cells": 1})),
+        (name, species_id, "a" * 64, Jsonb(metadata)),
     )
     return cur.fetchone()
 
@@ -103,10 +107,10 @@ def finish(cur, dataset_id):
     return cur.rowcount
 
 
-def loaded(cur, pipeline, species_id, name="Root atlas"):
-    """A dataset the pipeline loaded and finished; back as supabase_admin."""
+def loaded(cur, pipeline, species_id, name="Root atlas", run_id=None):
+    """A dataset the pipeline loaded and finished, for `run_id`; back as supabase_admin."""
     sign_in(cur, pipeline)
-    dataset_id, _ = create(cur, species_id, name)
+    dataset_id, _ = create(cur, species_id, name, run_id)
     fill(cur, dataset_id)
     assert finish(cur, dataset_id) == 1
     cur.execute("RESET ROLE")
@@ -126,10 +130,10 @@ def run(cur, scientist, species_id, name="Root atlas", status="running", sample=
     return cur.fetchone()[0]
 
 
-def link(cur, account, run_id):
+def link(cur, account, run_id, dataset_id):
     """link_rnaseq_run_dataset as a pipeline account; back as supabase_admin."""
     sign_in(cur, account)
-    cur.execute("SELECT public.link_rnaseq_run_dataset(%s)", (run_id,))
+    cur.execute("SELECT public.link_rnaseq_run_dataset(%s, %s)", (run_id, dataset_id))
     value = cur.fetchone()[0]
     cur.execute("RESET ROLE")
     return value
