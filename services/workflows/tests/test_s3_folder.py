@@ -96,7 +96,7 @@ def test_a_bad_url_is_refused(url):
 def test_the_folder_is_listed_once_one_level_deep_on_aws():
     client, seen = _serving([R1, R2])
     s3_folder.check_folder("s3://lab-data/run42/", client)
-    assert len(seen) == 1
+    assert len(seen) == 2, "one listing, then one file's first byte"
     url = urlparse(str(seen[0].url))
     assert (url.scheme, url.netloc, url.path) == (
         "https",
@@ -110,6 +110,9 @@ def test_the_folder_is_listed_once_one_level_deep_on_aws():
         "prefix": ["run42/"],
     }
     assert "authorization" not in seen[0].headers
+    read = seen[1]
+    assert read.url.path == "/lab-data/run42/col0_S1_L001_R1_001.fastq.gz"
+    assert read.headers["range"] == "bytes=0-0" and "authorization" not in read.headers
 
 
 def test_a_bucket_in_another_region_is_followed_once():
@@ -125,7 +128,11 @@ def test_a_bucket_in_another_region_is_followed_once():
         s3_folder.check_folder("s3://lab-data/run42/", _client(handler))["sample"]
         == "col0"
     )
-    assert seen == ["s3.amazonaws.com", "s3.eu-west-1.amazonaws.com"]
+    assert seen == [
+        "s3.amazonaws.com",
+        "s3.eu-west-1.amazonaws.com",
+        "s3.eu-west-1.amazonaws.com",
+    ], "listed once more in its region, then a file read there"
 
 
 @pytest.mark.parametrize(
@@ -391,7 +398,11 @@ def test_each_kind_of_region_redirect_is_followed(status):
         return httpx.Response(200, text=_listing("run42/", [R1, R2]))
 
     s3_folder.check_folder("s3://lab-data/run42/", _client(handler))
-    assert seen == ["s3.amazonaws.com", "s3.us-west-2.amazonaws.com"]
+    assert seen == [
+        "s3.amazonaws.com",
+        "s3.us-west-2.amazonaws.com",
+        "s3.us-west-2.amazonaws.com",
+    ]
 
 
 def test_a_second_redirect_is_not_followed():

@@ -57,6 +57,8 @@ ARCHIVED = {"GLACIER", "DEEP_ARCHIVE"}
 UNDETERMINED = "Undetermined"
 NAME_EXAMPLE = "col0_S1_L001_R1_001.fastq.gz"
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
+# Reading one byte proves a file can be read without downloading it.
+FIRST_BYTE = "bytes=0-0"
 S3_HOST = "https://s3.amazonaws.com"
 # The region a request to S3_HOST is signed for, until S3 names the bucket's own.
 DEFAULT_REGION = "us-east-1"
@@ -104,17 +106,27 @@ def reader_configured() -> bool:
     return bool(READER_KEY_ID and READER_SECRET)
 
 
-def _reader_headers(url: str, region: str) -> dict[str, str]:
+def _reader_headers(
+    url: str, region: str, headers: dict[str, str] | None = None
+) -> dict[str, str]:
     """A GET of `url` signed as Bloom's AWS user (AWS Signature V4)."""
-    request = AWSRequest(method="GET", url=url)
+    request = AWSRequest(method="GET", url=url, headers=headers)
     S3SigV4Auth(Credentials(READER_KEY_ID, READER_SECRET), "s3", region).add_auth(
         request
     )
     return dict(request.headers.items())
 
 
-def _get(client: httpx.Client, url: str, signed: bool, region: str) -> httpx.Response:
-    return client.get(url, headers=_reader_headers(url, region) if signed else None)
+def _get(
+    client: httpx.Client,
+    url: str,
+    signed: bool,
+    region: str,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
+    if signed:
+        return client.get(url, headers=_reader_headers(url, region, headers))
+    return client.get(url, headers=headers)
 
 
 def _fetch(
@@ -145,12 +157,17 @@ def _fetch(
     return resp, named or region
 
 
-def _list(bucket: str, prefix: str, client: httpx.Client) -> ET.Element:
+def _list(
+    bucket: str, prefix: str, client: httpx.Client
+) -> tuple[ET.Element, bool, str | None]:
     """The folder's listing: anonymous first, then as Bloom's AWS user if that's refused and the
-    user's key is configured."""
+    user's key is configured. Returns it, whether it was signed, and the bucket's region."""
+    signed = False
     resp, region = _fetch(bucket, prefix, client, signed=False)
     if resp.status_code in (401, 403) and reader_configured():
-        resp, _ = _fetch(bucket, prefix, client, signed=True, region=region)
+        signed = True
+        resp, named = _fetch(bucket, prefix, client, signed=True, region=region)
+        region = named or region
     if resp.status_code == 400 and b"InvalidBucketName" in resp.content:
         raise _refuse(f"{bucket} isn't a valid S3 bucket name")
     if resp.status_code == 404:
@@ -171,22 +188,55 @@ def _list(bucket: str, prefix: str, client: httpx.Client) -> ET.Element:
             detail=f"S3 answered {resp.status_code} when listing the folder",
         )
     try:
-        return ET.fromstring(resp.content)
+        return ET.fromstring(resp.content), signed, region
     except ET.ParseError as exc:
         raise HTTPException(
             status_code=502, detail="S3 sent a listing Bloom can't read"
         ) from exc
 
 
+def _check_readable(
+    bucket: str,
+    key: str,
+    client: httpx.Client,
+    signed: bool,
+    region: str | None,
+) -> None:
+    """Refuse a folder whose files Bloom can list but not read, by reading one file's first
+    byte the way the listing was read (the stage step reads them the same way)."""
+    host = S3_HOST if region is None else f"https://s3.{region}.amazonaws.com"
+    url = f"{host}/{quote(bucket)}/{quote(key, safe='/')}"
+    resp = _get(client, url, signed, region or DEFAULT_REGION, {"Range": FIRST_BYTE})
+    if resp.status_code in (200, 206):
+        return
+    if resp.status_code in (401, 403):
+        if signed:
+            raise _refuse(
+                f"Bloom can list s3://{bucket}/{key.rsplit('/', 1)[0]}/ but not read its files; "
+                "give Bloom's AWS user s3:GetObject on the folder too, and kms:Decrypt on its "
+                "key if the bucket is encrypted with a KMS key"
+            )
+        raise _refuse(
+            "Anyone can list this folder but not read its files; make the files public too, "
+            "or make the folder private and share it with Bloom's AWS user (list and read)"
+        )
+    raise HTTPException(
+        status_code=502, detail=f"S3 answered {resp.status_code} when reading a FASTQ"
+    )
+
+
 def check_folder(url, client: httpx.Client | None = None) -> dict:
     """The folder's sample, lanes and FASTQs, or a 422 saying what's wrong with it."""
     bucket, prefix, url = normalise_url(url)
+    if client is None:
+        with httpx.Client(timeout=TIMEOUT) as own:
+            return _checked(bucket, prefix, url, own)
+    return _checked(bucket, prefix, url, client)
+
+
+def _checked(bucket: str, prefix: str, url: str, client: httpx.Client) -> dict:
     try:
-        if client is None:
-            with httpx.Client(timeout=TIMEOUT) as own:
-                root = _list(bucket, prefix, own)
-        else:
-            root = _list(bucket, prefix, client)
+        root, signed, region = _list(bucket, prefix, client)
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=502, detail=f"Couldn't reach S3: {exc}"
@@ -300,6 +350,12 @@ def check_folder(url, client: httpx.Client | None = None) -> dict:
         )
 
     files.sort(key=lambda f: f["name"])
+    try:
+        _check_readable(bucket, prefix + files[0]["name"], client, signed, region)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Couldn't reach S3: {exc}"
+        ) from exc
     return {
         "fastq_url": url,
         "sample": sample,

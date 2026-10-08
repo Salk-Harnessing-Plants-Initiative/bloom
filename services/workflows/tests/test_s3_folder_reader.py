@@ -47,7 +47,7 @@ def _scope(request) -> str:
 def test_a_shared_private_folder_is_read_as_the_reader(reader):
     seen = []
     assert s3_folder.check_folder(URL, _private(seen))["sample"] == "col0"
-    assert len(seen) == 2
+    assert len(seen) == 3, "anonymous listing, signed listing, signed read of one file"
     assert "authorization" not in seen[0].headers, "the first listing must be anonymous"
     scope = _scope(seen[1])
     assert scope.startswith(f"{KEY_ID}/") and scope.endswith(
@@ -55,6 +55,9 @@ def test_a_shared_private_folder_is_read_as_the_reader(reader):
     )
     assert seen[1].headers["x-amz-date"] and seen[1].headers["x-amz-content-sha256"]
     assert seen[1].url == seen[0].url, "the signed retry lists the same folder"
+    assert seen[2].url.path.endswith("/col0_S1_L001_R1_001.fastq.gz")
+    assert _scope(seen[2]).startswith(f"{KEY_ID}/"), "a shared folder's file is read signed"
+    assert "range" in seen[2].headers["authorization"].split("SignedHeaders=", 1)[1]
 
 
 def test_the_signed_listing_goes_to_the_region_s3_named(reader):
@@ -72,6 +75,7 @@ def test_a_signed_listing_in_the_wrong_region_is_signed_again_for_the_right_one(
         "s3.amazonaws.com",
         "s3.amazonaws.com",
         "s3.ap-southeast-2.amazonaws.com",
+        "s3.ap-southeast-2.amazonaws.com",
     ]
     assert _scope(seen[2]).endswith("/ap-southeast-2/s3/aws4_request")
 
@@ -84,7 +88,8 @@ def test_a_public_folder_never_uses_the_reader(reader):
         return httpx.Response(200, text=_listing("run42/", [R1, R2]))
 
     s3_folder.check_folder(URL, _client(handler))
-    assert len(seen) == 1 and "authorization" not in seen[0].headers
+    assert len(seen) == 2
+    assert all("authorization" not in r.headers for r in seen)
 
 
 def test_a_folder_not_shared_says_to_make_it_public_or_share_it(reader):
@@ -114,3 +119,49 @@ def test_the_secret_never_reaches_the_request(reader):
     for request in seen:
         assert SECRET not in str(request.url)
         assert all(SECRET not in value for value in request.headers.values())
+
+
+# --------------------------------------------------------------------------- #
+# Reading a file, not only listing the folder
+# --------------------------------------------------------------------------- #
+
+
+def _listed_not_read(seen, signed_listing):
+    """A folder whose listing is served (signed or anonymous) and whose files are refused."""
+
+    def handler(request):
+        seen.append(request)
+        signed = "authorization" in request.headers
+        if "list-type" in str(request.url):
+            if signed_listing and not signed:
+                return httpx.Response(403)
+            return httpx.Response(200, text=_listing("run42/", [R1, R2]))
+        return httpx.Response(403)
+
+    return _client(handler)
+
+
+def test_a_shared_folder_bloom_can_list_but_not_read_is_refused_naming_both_grants(reader):
+    seen = []
+    err = _refusal(URL, _listed_not_read(seen, signed_listing=True))
+    assert err.status_code == 422
+    assert "s3:GetObject" in err.detail and "kms:Decrypt" in err.detail
+    assert SECRET not in err.detail and KEY_ID not in err.detail
+
+
+def test_a_public_listing_with_private_files_is_refused(reader):
+    seen = []
+    err = _refusal(URL, _listed_not_read(seen, signed_listing=False))
+    assert err.status_code == 422
+    assert "Anyone can list this folder but not read its files" in err.detail
+    assert all("authorization" not in r.headers for r in seen), "read the way it listed"
+
+
+def test_a_read_s3_answers_oddly_is_a_502(reader):
+    def handler(request):
+        if "list-type" in str(request.url):
+            return httpx.Response(200, text=_listing("run42/", [R1, R2]))
+        return httpx.Response(500)
+
+    err = _refusal(URL, _client(handler))
+    assert err.status_code == 502 and "reading a FASTQ" in err.detail

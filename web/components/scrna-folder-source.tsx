@@ -170,7 +170,8 @@ export default function ScrnaFolderSource({
             {readerArn ? (
               <li>
                 A private folder: give Bloom&apos;s AWS user permission to list and read the
-                folder, then paste the path. Bloom&apos;s AWS user is{" "}
+                folder (s3:ListBucket and s3:GetObject, plus kms:Decrypt for a KMS-encrypted
+                bucket), then paste the path. Bloom&apos;s AWS user is{" "}
                 <code className="[overflow-wrap:anywhere]">{readerArn}</code>. Remove the
                 permission when the run is done; Bloom emails you when it finishes.
               </li>
