@@ -21,7 +21,7 @@ import time
 from k8s_client import K8sConfigError, get_workflow
 from postgrest import APIError
 
-from rnaseq_status import RunStatus, dataset_loaded, sra_download
+from rnaseq_status import RunStatus, loaded_dataset, sra_download
 from rnaseq_workflows import WORKFLOW_TYPES
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
@@ -145,14 +145,17 @@ def _register_sample(client, run: dict, workflow: dict, status: RunStatus) -> No
 
 
 def _link_dataset(client, run: dict, workflow: dict) -> None:
-    """Links a run to the dataset its load-dataset step loaded, gives the dataset the form's
-    details and hands it to the scientist. Called before the run's status is recorded, so a
+    """Links a run to the dataset its load-dataset step loaded and reported, gives the
+    dataset the form's details and hands it to the scientist. Called before the run's status is recorded, so a
     failed call leaves the run active and it is tried again at the next poll, and once more
     after a final status is recorded, for a run that finished before it was seen running."""
-    if run["id"] in _linked or not dataset_loaded(workflow):
+    dataset_id = loaded_dataset(workflow)
+    if run["id"] in _linked or dataset_id is None:
         return
     try:
-        dataset_id = client.rpc(LINK_FN, {"p_run_id": run["id"]}).execute().data
+        client.rpc(
+            LINK_FN, {"p_run_id": run["id"], "p_dataset_id": dataset_id}
+        ).execute()
     except APIError as exc:
         if exc.code == LINK_NOT_YET:
             logger.info(

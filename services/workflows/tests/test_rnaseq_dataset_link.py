@@ -22,11 +22,20 @@ RUN = {
 }
 
 
+DATASET_ID = 57
+
+
 def _workflow(
-    phase="Running", load=None, load_exit=None, after=None, dataset_name="Root atlas"
+    phase="Running",
+    load=None,
+    load_exit=None,
+    after=None,
+    dataset_name="Root atlas",
+    dataset_id=DATASET_ID,
 ):
     """A Workflow naming `dataset_name` (None: no dataset-name argument, as the worker
-    builds it) whose build-h5ad succeeded, with load-dataset in `load`'s phase."""
+    builds it) whose build-h5ad succeeded, with load-dataset in `load`'s phase; a succeeded
+    load reports `dataset_id` (None: reports nothing, as a run started by hand)."""
     nodes = {
         "wf-7-1": {
             "id": "wf-7-1",
@@ -48,6 +57,12 @@ def _workflow(
         }
         if load_exit is not None:
             node["outputs"] = {"exitCode": str(load_exit)}
+        if load == "Succeeded":
+            reported = "" if dataset_id is None else str(dataset_id)
+            node["outputs"] = {
+                "exitCode": "0",
+                "parameters": [{"name": "dataset-id", "value": reported}],
+            }
         nodes["wf-7-2"] = node
     if after:
         nodes["wf-7-3"] = {
@@ -75,9 +90,12 @@ class FakeClient:
     def __init__(self, link=42):
         self.answers = link if isinstance(link, list) else [link]
         self.rpcs = []
+        self.link_params = []
 
     def rpc(self, name, params):
         self.rpcs.append(name)
+        if name == poller.LINK_FN:
+            self.link_params.append(params)
         answer = True
         if name == poller.LINK_FN:
             answer = self.answers[0] if len(self.answers) == 1 else self.answers.pop(0)
@@ -146,8 +164,19 @@ def test_a_failed_load_says_what_happened(exit_code, words):
 
 
 def test_a_loaded_dataset_is_linked_before_the_status_is_recorded(monkeypatch):
-    rpcs = _poll(monkeypatch, _workflow(load="Succeeded"), FakeClient())
+    client = FakeClient()
+    rpcs = _poll(monkeypatch, _workflow(load="Succeeded"), client)
     assert rpcs[:2] == [poller.LINK_FN, poller.UPDATE_FN]
+    assert client.link_params == [{"p_run_id": 7, "p_dataset_id": DATASET_ID}]
+
+
+@pytest.mark.parametrize("reported", [None, "", "not-a-number"])
+def test_a_load_that_reports_no_dataset_is_not_linked(monkeypatch, reported):
+    workflow = _workflow(load="Succeeded", dataset_id=reported)
+    client = FakeClient()
+    rpcs = _poll(monkeypatch, workflow, client)
+    assert poller.LINK_FN not in rpcs
+    assert rnaseq_status.dataset_loaded(workflow), "the run still says it loaded"
 
 
 @pytest.mark.parametrize("load", [None, "Running", "Failed"])

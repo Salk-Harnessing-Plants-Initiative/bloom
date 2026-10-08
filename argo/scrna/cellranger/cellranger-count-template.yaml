@@ -33,6 +33,10 @@ spec:
             value: ""
           - name: species-name
             value: ""
+          # The run's rnaseq_runs id, tagged on the dataset so the run is linked to it; empty for
+          # a run started by hand.
+          - name: bloom-run-id
+            value: ""
           - name: cores
             value: "16"
           - name: memory
@@ -128,6 +132,8 @@ spec:
                   value: "{{inputs.parameters.dataset-name}}"
                 - name: species-name
                   value: "{{inputs.parameters.species-name}}"
+                - name: bloom-run-id
+                  value: "{{inputs.parameters.bloom-run-id}}"
 
     # Once per workflow: stage the reference at /shared/ref/<reference>/, or reuse it if already there.
     - name: stage-reference
@@ -602,6 +608,14 @@ spec:
           - name: run-id
           - name: dataset-name
           - name: species-name
+          - name: bloom-run-id
+      # The dataset the step loaded, which the status poller links the run to.
+      outputs:
+        parameters:
+          - name: dataset-id
+            valueFrom:
+              path: /tmp/outputs/dataset-id
+              default: ""
       schedulerName: runai-scheduler
       priorityClassName: high
       # One gene's counts file at a time: about 30,000 uploads for a typical run.
@@ -627,6 +641,10 @@ spec:
             value: "{{inputs.parameters.dataset-name}}"
           - name: SPECIES_NAME
             value: "{{inputs.parameters.species-name}}"
+          - name: BLOOM_RUN_ID
+            value: "{{inputs.parameters.bloom-run-id}}"
+          - name: OUTPUT_DIR
+            value: /tmp/outputs
         resources:
           requests: {cpu: "2", memory: 8Gi}
           limits: {cpu: "2", memory: 8Gi}
