@@ -8,6 +8,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `genome upload NAME --fasta FILE --gtf FILE` stores a reference genome's FASTA and GTF in
+  Bloom as the genome's next version, for the Cell Ranger workflow. Both files are checked and
+  gzipped before anything is sent, and a version whose upload stops part-way is abandoned.
+
 ## [0.1.0a11] - 2026-10-07 — each dataset knows the run that generated it
 
 ### Added
