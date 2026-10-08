@@ -388,6 +388,74 @@ export type Database = {
           },
         ]
       }
+      cyl_experiment_trait_count_changes: {
+        Row: {
+          created_at: string
+          experiment_id: number
+          id: number
+        }
+        Insert: {
+          created_at?: string
+          experiment_id: number
+          id?: number
+        }
+        Update: {
+          created_at?: string
+          experiment_id?: number
+          id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_experiment_trait_count_changes_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_count_changes_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_count_changes_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_count_changes_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plants_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_count_changes_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_count_changes_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_trait_by_experiment_wave"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_experiment_trait_count_changes_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "recent_experiments_by_cyl_scanner"
+            referencedColumns: ["experiment_id"]
+          },
+        ]
+      }
       cyl_experiment_trait_counts: {
         Row: {
           experiment_id: number
@@ -1858,6 +1926,160 @@ export type Database = {
           },
         ]
       }
+      genome_reference_versions: {
+        Row: {
+          annotation: string | null
+          assembly: string | null
+          created_at: string
+          created_by: string
+          fasta_bytes: number | null
+          fasta_path: string
+          fasta_sha256: string | null
+          genome_id: number
+          gtf_bytes: number | null
+          gtf_path: string
+          gtf_sha256: string | null
+          id: number
+          notes: string | null
+          ready_at: string | null
+          source_url: string | null
+          status: string
+          version: number
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+        }
+        Insert: {
+          annotation?: string | null
+          assembly?: string | null
+          created_at?: string
+          created_by: string
+          fasta_bytes?: number | null
+          fasta_path: string
+          fasta_sha256?: string | null
+          genome_id: number
+          gtf_bytes?: number | null
+          gtf_path: string
+          gtf_sha256?: string | null
+          id?: number
+          notes?: string | null
+          ready_at?: string | null
+          source_url?: string | null
+          status?: string
+          version: number
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+        }
+        Update: {
+          annotation?: string | null
+          assembly?: string | null
+          created_at?: string
+          created_by?: string
+          fasta_bytes?: number | null
+          fasta_path?: string
+          fasta_sha256?: string | null
+          genome_id?: number
+          gtf_bytes?: number | null
+          gtf_path?: string
+          gtf_sha256?: string | null
+          id?: number
+          notes?: string | null
+          ready_at?: string | null
+          source_url?: string | null
+          status?: string
+          version?: number
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "genome_reference_versions_genome_id_fkey"
+            columns: ["genome_id"]
+            isOneToOne: false
+            referencedRelation: "genome_references"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      genome_references: {
+        Row: {
+          created_at: string
+          created_by: string
+          description: string | null
+          id: number
+          name: string
+          next_version: number
+          species_id: number
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          description?: string | null
+          id?: number
+          name: string
+          next_version?: number
+          species_id: number
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          description?: string | null
+          id?: number
+          name?: string
+          next_version?: number
+          species_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "genome_references_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_accession_sample_counts"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "genome_references_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "genome_references_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plants_extended"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "genome_references_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "genome_references_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "recent_experiments_by_cyl_scanner"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "genome_references_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "recent_phenotypes_by_plate_scanner"
+            referencedColumns: ["species_id"]
+          },
+          {
+            foreignKeyName: "genome_references_species_id_fkey"
+            columns: ["species_id"]
+            isOneToOne: false
+            referencedRelation: "species"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       gravi_experiments: {
         Row: {
           accession_id: number | null
@@ -3072,7 +3294,9 @@ export type Database = {
           completed_at: string | null
           created_at: string
           current_step: string | null
+          dataset_id: number | null
           exit_code: number | null
+          genome_version_id: number | null
           id: number
           message: string | null
           metadata: Json | null
@@ -3090,7 +3314,9 @@ export type Database = {
           completed_at?: string | null
           created_at?: string
           current_step?: string | null
+          dataset_id?: number | null
           exit_code?: number | null
+          genome_version_id?: number | null
           id?: number
           message?: string | null
           metadata?: Json | null
@@ -3108,7 +3334,9 @@ export type Database = {
           completed_at?: string | null
           created_at?: string
           current_step?: string | null
+          dataset_id?: number | null
           exit_code?: number | null
+          genome_version_id?: number | null
           id?: number
           message?: string | null
           metadata?: Json | null
@@ -3121,7 +3349,22 @@ export type Database = {
           updated_at?: string
           workflow_type?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "rnaseq_runs_dataset_id_fkey"
+            columns: ["dataset_id"]
+            isOneToOne: true
+            referencedRelation: "scrna_datasets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "rnaseq_runs_genome_version_id_fkey"
+            columns: ["genome_version_id"]
+            isOneToOne: false
+            referencedRelation: "genome_reference_versions"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       rnaseq_samples: {
         Row: {
@@ -4607,6 +4850,10 @@ export type Database = {
       }
     }
     Functions: {
+      _check_rnaseq_message: {
+        Args: { p_msg_id: number; p_run_id: number }
+        Returns: undefined
+      }
       _cyl_trait_recipe_presence: {
         Args: { experiment_ids_: number[]; scan_ids_: number[] }
         Returns: {
@@ -4618,9 +4865,14 @@ export type Database = {
           source_id: number
         }[]
       }
+      _genome_object_bytes: { Args: { p_name: string }; Returns: number }
       _settle_cyl_pipeline_run: {
         Args: { p_run_id: number }
         Returns: undefined
+      }
+      abandon_genome_version: {
+        Args: { p_version_id: number }
+        Returns: boolean
       }
       add_species: {
         Args: { p_common_name: string; p_genus: string; p_species: string }
@@ -4661,6 +4913,16 @@ export type Database = {
           scan_ids: number[]
         }[]
       }
+      claim_rnaseq_run: {
+        Args: { p_max_reads?: number; p_vt?: number }
+        Returns: {
+          msg_id: number
+          params: Json
+          run_id: number
+          run_key: string
+          workflow_type: string
+        }[]
+      }
       close_cyl_pipeline_run_workflow_scans: {
         Args: {
           p_argo_workflow_name: string
@@ -4693,6 +4955,14 @@ export type Database = {
           p_scan_ids: number[]
         }
         Returns: undefined
+      }
+      complete_rnaseq_run: {
+        Args: {
+          p_argo_workflow_name: string
+          p_msg_id: number
+          p_run_id: number
+        }
+        Returns: boolean
       }
       compute_cyl_experiment_summary_counts_live: {
         Args: { experiment_id_: number; run_id_: string; source_id_: number }
@@ -4789,6 +5059,25 @@ export type Database = {
         }
         Returns: undefined
       }
+      fail_cyl_pipeline_run_scans_without_result: {
+        Args: { p_argo_workflow_name: string; p_error_message?: string }
+        Returns: number
+      }
+      fail_rnaseq_run: {
+        Args: { p_message: string; p_msg_id: number; p_run_id: number }
+        Returns: boolean
+      }
+      finish_genome_version: {
+        Args: {
+          p_fasta_bytes: number
+          p_fasta_sha256: string
+          p_gtf_bytes: number
+          p_gtf_sha256: string
+          p_version_id: number
+        }
+        Returns: number
+      }
+      genome_name_ok: { Args: { p_name: string }; Returns: boolean }
       get_experiment_summary_counts: {
         Args: { experiment_id_?: number; run_id_?: string; source_id_?: number }
         Returns: {
@@ -4889,7 +5178,10 @@ export type Database = {
         }[]
       }
       insert_cyl_qc_codes: { Args: { qc_codes: Json }; Returns: undefined }
-      insert_cyl_result_envelope: { Args: { envelope: Json }; Returns: Json }
+      insert_cyl_result_envelope: {
+        Args: { envelope: Json; p_argo_workflow_name?: string }
+        Returns: Json
+      }
       insert_gravi_image: {
         Args: {
           accession_name?: string
@@ -5029,6 +5321,10 @@ export type Database = {
           uid: string
         }[]
       }
+      link_rnaseq_run_dataset: {
+        Args: { p_dataset_id: number; p_run_id: number }
+        Returns: number
+      }
       list_experiment_trait_sources: {
         Args: { experiment_id_: number }
         Returns: {
@@ -5049,12 +5345,20 @@ export type Database = {
           recipe_kind: string
         }[]
       }
+      mark_all_cyl_experiment_trait_count_changes: {
+        Args: never
+        Returns: undefined
+      }
       record_bloommcp_usage: {
         Args: { p_action: string; p_identity: string }
         Returns: undefined
       }
       record_cyl_pipeline_workflow_phase: {
-        Args: { p_argo_workflow_name: string; p_phase: string; p_run_id: number }
+        Args: {
+          p_argo_workflow_name: string
+          p_phase: string
+          p_run_id: number
+        }
         Returns: boolean
       }
       record_cyl_scan_video: {
@@ -5075,7 +5379,27 @@ export type Database = {
         }
         Returns: undefined
       }
+      refresh_changed_cyl_experiment_trait_counts: {
+        Args: never
+        Returns: undefined
+      }
       refresh_cyl_experiment_trait_counts: { Args: never; Returns: undefined }
+      register_rnaseq_sample: {
+        Args: { p_fastq_count: number; p_run_id: number; p_total_bytes: number }
+        Returns: number
+      }
+      request_scrna_cellranger_run: {
+        Args: {
+          p_fastq_files?: Json
+          p_fastq_url?: string
+          p_metadata?: Json
+          p_reference: string
+          p_requested_by: string
+          p_sample: string
+          p_sra_runs?: string[]
+        }
+        Returns: number
+      }
       rnaseq_run_requesters: {
         Args: { p_run_ids: number[] }
         Returns: {
@@ -5148,9 +5472,46 @@ export type Database = {
         Args: { target_id: number; target_table: string }
         Returns: undefined
       }
+      start_genome_version: {
+        Args: {
+          p_annotation?: string
+          p_assembly?: string
+          p_description?: string
+          p_genome: string
+          p_notes?: string
+          p_source_url?: string
+          p_species_id?: number
+        }
+        Returns: {
+          fasta_path: string
+          gtf_path: string
+          version: number
+          version_id: number
+        }[]
+      }
       update_cyl_pipeline_run_status: {
-        Args: { p_run_id: number; p_status: string }
+        Args: {
+          p_done_count?: number
+          p_failed_count?: number
+          p_run_id: number
+          p_status: string
+        }
         Returns: undefined
+      }
+      update_rnaseq_run_status: {
+        Args: {
+          p_current_step: string
+          p_exit_code: number
+          p_message: string
+          p_run_id: number
+          p_status: string
+          p_step_pods: Json
+        }
+        Returns: boolean
+      }
+      workflows_may_load_scrna_dataset: {
+        Args: { p_dataset_id: number }
+        Returns: boolean
       }
     }
     Enums: {
