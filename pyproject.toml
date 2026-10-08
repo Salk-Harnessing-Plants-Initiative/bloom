@@ -19,6 +19,9 @@ test = [
     # required by tests/unit/test_ingest_scrnaseq.py — the ingest script reads
     # .h5ad files, and the tests build real ones to exercise its refusals.
     "anndata>=0.10,<0.13",
+    # required by tests/unit/test_load_dataset_run_id.py — it imports bloomctl's own
+    # next_name from bloomcli/src, and bloomctl's package imports click.
+    "click>=8.1",
     # required by tests/unit/test_ci_workflow_uv_conventions.py — parses
     # .github/workflows/*.{yml,yaml} via yaml.safe_load to enforce uv conventions.
     "pyyaml>=6",

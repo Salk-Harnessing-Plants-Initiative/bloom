@@ -54,6 +54,7 @@ def env(tmp_path):
         "DATASET_NAME": "Root atlas",
         "SPECIES_NAME": "Arabidopsis",
         "FAKE_OUT": str(tmp_path / "bloomctl.out"),
+        "OUTPUT_DIR": str(tmp_path / "outputs"),
     }
 
 
@@ -150,6 +151,7 @@ def test_the_sample_pipeline_loads_after_build_h5ad_and_cleans_up_after_the_load
     assert not [name for name, task in tasks.items() if "when" in task]
     passed = {p["name"]: p["value"] for p in tasks["load-dataset"]["arguments"]["parameters"]}
     assert passed["dataset-name"] == "{{inputs.parameters.dataset-name}}"
+    assert passed["bloom-run-id"] == "{{inputs.parameters.bloom-run-id}}"
     assert passed["species-name"] == "{{inputs.parameters.species-name}}"
 
 
@@ -164,7 +166,12 @@ def test_the_load_step_runs_the_script_in_the_analysis_image():
         "RUN_ID": "{{inputs.parameters.run-id}}",
         "DATASET_NAME": "{{inputs.parameters.dataset-name}}",
         "SPECIES_NAME": "{{inputs.parameters.species-name}}",
+        "BLOOM_RUN_ID": "{{inputs.parameters.bloom-run-id}}",
+        "OUTPUT_DIR": "/tmp/outputs",
     }
+    (output,) = step["outputs"]["parameters"]
+    assert output["name"] == "dataset-id"
+    assert output["valueFrom"] == {"path": "/tmp/outputs/dataset-id", "default": ""}
     assert step["activeDeadlineSeconds"] >= 3600
 
 
@@ -194,4 +201,4 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a10"]
+    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a11"]

@@ -1,131 +1,66 @@
 """
 Integration tests for genome references: numbered, write-once versions of a genome's FASTA and
-GTF, the start / finish / abandon functions bloomctl calls, the genome-references bucket's rules,
-and the rollback.
-
-Each test applies the migration inside its own transaction and rolls it back, so the database
-is left unchanged. Roles are exercised with SET LOCAL ROLE and a request.jwt.claims sub, the
-way PostgREST and Storage call in.
+GTF, and the start / finish / abandon functions bloomctl calls. What may change afterwards is in
+test_genome_reference_rules.py; bucket access, the run link, grants and the rollbacks are in
+test_genome_reference_access.py.
 """
-
-import json
-import uuid
 
 import pytest
 
-from tests.integration.test_rnaseq_runs import _find_one, _sql_body
+from tests.integration.genome_reference_helpers import (
+    OTHER_WRITER,
+    SHA_A,
+    SHA_B,
+    WRITER,
+    abandon,
+    add_species,
+    apply_migrations,
+    as_admin,
+    as_role,
+    finish,
+    new_genome_name,
+    put_object,
+    ready,
+    refused,
+    start,
+    status,
+    uploaded,
+)
 
 psycopg = pytest.importorskip("psycopg")
-
-MIGRATION = _find_one(
-    "migrations", "*_add_genome_references_and_run_genome_version.sql"
-)
-ROLLBACK = _find_one(
-    "rollbacks", "*_add_genome_references_and_run_genome_version_rollback.sql"
-)
-BUCKET = "genome-references"
-TABLES = ("genome_references", "genome_reference_versions")
-
-WRITER = str(uuid.uuid4())
-OTHER_WRITER = str(uuid.uuid4())
-SHA_A = "a" * 64
-SHA_B = "b" * 64
-
-GOOD_NAMES = ["tair10_araport11", "TAIR10.araport11", "GRCh38-2024-A", "g" * 64]
-BAD_NAMES = [".hidden", "g" * 65, "a__b", "a/b", "has space", "../etc", ""]
 
 
 @pytest.fixture
 def cur(pg_conn):
     with pg_conn.cursor() as c:
-        for table in reversed(TABLES):
-            c.execute(f"DROP TABLE IF EXISTS public.{table} CASCADE")
-        c.execute(_sql_body(MIGRATION))
+        apply_migrations(c)
         yield c
     pg_conn.rollback()
 
 
 @pytest.fixture
 def species_id(cur):
+    return add_species(cur)
+
+
+@pytest.fixture
+def genome():
+    """A genome name no other test or real upload uses."""
+    return new_genome_name()
+
+GOOD_NAMES = ["tair10_araport11", "tair10.araport11", "grch38-2024-a", "g" * 64, "v2", "a.v"]
+BAD_NAMES = [
+    "TAIR10", "Tair10", ".hidden", "g" * 65, "a__b", "a/b", "has space", "../etc", "",
+    "tair10.v2", "tair10.v10",
+]
+FINISH_SQL = "SELECT public.finish_genome_version(%s, %s, %s, %s, %s)"
+
+
+def _withdraw(cur, version_id, reason="wrong GTF"):
     cur.execute(
-        "INSERT INTO public.species (genus, species, common_name) "
-        "VALUES ('Testgenus', 'genomeus', %s) RETURNING id",
-        (f"genome-test-{uuid.uuid4()}",),
+        "UPDATE genome_reference_versions SET status = 'withdrawn', withdrawn_reason = %s "
+        "WHERE id = %s", (reason, version_id),
     )
-    return cur.fetchone()[0]
-
-
-def _as(cur, role, user=None):
-    """Act as `role`, signed in as `user` (no sub when None)."""
-    cur.execute(f"SET LOCAL ROLE {role}")
-    claims = {"role": role, **({"sub": user} if user else {})}
-    cur.execute(
-        "SELECT set_config('request.jwt.claims', %s, true)", (json.dumps(claims),)
-    )
-
-
-def _admin(cur):
-    cur.execute("RESET ROLE")
-    cur.execute("SELECT set_config('request.jwt.claims', '', true)")
-
-
-def _refused(cur, sql, params, error, match=None):
-    cur.execute("SAVEPOINT refused")
-    try:
-        with pytest.raises(error, match=match):
-            cur.execute(sql, params)
-    finally:
-        cur.execute("ROLLBACK TO SAVEPOINT refused")
-
-
-def _start(cur, genome="tair10_araport11", species=None, user=WRITER, **extra):
-    _as(cur, "bloom_writer", user)
-    args = {"p_genome": genome, "p_species_id": species, **extra}
-    cur.execute(
-        "SELECT * FROM public.start_genome_version("
-        + ", ".join(f"{k} => %({k})s" for k in args)
-        + ")",
-        args,
-    )
-    row = cur.fetchone()
-    _admin(cur)
-    return row
-
-
-def _put_object(cur, name, size, role="bloom_writer", user=WRITER):
-    _as(cur, role, user)
-    cur.execute(
-        "INSERT INTO storage.objects (bucket_id, name, metadata) VALUES (%s, %s, %s)",
-        (BUCKET, name, json.dumps({"size": size, "mimetype": "application/gzip"})),
-    )
-    _admin(cur)
-
-
-def _finish(cur, version_id, fasta_bytes=100, gtf_bytes=50, user=WRITER):
-    _as(cur, "bloom_writer", user)
-    cur.execute(
-        "SELECT public.finish_genome_version(%s, %s, %s, %s, %s)",
-        (version_id, SHA_A, fasta_bytes, SHA_B, gtf_bytes),
-    )
-    version = cur.fetchone()[0]
-    _admin(cur)
-    return version
-
-
-def _uploaded(cur, species_id, user=WRITER):
-    """A started version with both files stored: (version_id, version, fasta_path, gtf_path)."""
-    row = _start(cur, species=species_id, user=user)
-    _put_object(cur, row[2], 100, user=user)
-    _put_object(cur, row[3], 50, user=user)
-    return row
-
-
-def _status(cur, version_id):
-    cur.execute(
-        "SELECT status, ready_at FROM public.genome_reference_versions WHERE id = %s",
-        (version_id,),
-    )
-    return cur.fetchone()
 
 
 # --------------------------------------------------------------------------- #
@@ -133,14 +68,12 @@ def _status(cur, version_id):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_new_genome_gets_version_1_with_its_paths(cur, species_id):
-    version_id, version, fasta_path, gtf_path = _start(
-        cur, species=species_id, p_assembly="TAIR10", p_annotation="Araport11"
+def test_a_new_genome_gets_version_1_with_its_paths(cur, species_id, genome):
+    version_id, version, fasta_path, gtf_path = start(
+        cur, genome, species=species_id, p_assembly="TAIR10", p_annotation="Araport11"
     )
     assert (version, fasta_path, gtf_path) == (
-        1,
-        "tair10_araport11/v1/genome.fa.gz",
-        "tair10_araport11/v1/genes.gtf.gz",
+        1, f"{genome}/v1/genome.fa.gz", f"{genome}/v1/genes.gtf.gz",
     )
     cur.execute(
         "SELECT g.species_id, g.created_by::text, v.status, v.assembly, v.annotation, "
@@ -148,612 +81,260 @@ def test_a_new_genome_gets_version_1_with_its_paths(cur, species_id):
         "JOIN genome_references g ON g.id = v.genome_id WHERE v.id = %s",
         (version_id,),
     )
-    assert cur.fetchone() == (
-        species_id,
-        WRITER,
-        "uploading",
-        "TAIR10",
-        "Araport11",
-        WRITER,
+    assert cur.fetchone() == (species_id, WRITER, "uploading", "TAIR10", "Araport11", WRITER)
+
+
+def test_the_next_upload_of_a_genome_is_version_2(cur, species_id, genome):
+    start(cur, genome, species=species_id)
+    assert start(cur, genome)[1] == 2
+
+
+def test_the_same_species_and_description_may_be_given_again(cur, species_id, genome):
+    start(cur, genome, species=species_id, p_description="Col-0")
+    assert start(cur, genome, species=species_id, p_description="Col-0")[1] == 2
+
+
+def test_a_deleted_versions_number_is_not_reused(cur, species_id, genome):
+    version_id = start(cur, genome, species=species_id)[0]
+    abandon(cur, version_id)
+    cur.execute("DELETE FROM genome_reference_versions WHERE id = %s", (version_id,))
+    assert start(cur, genome)[1:] == (
+        2, f"{genome}/v2/genome.fa.gz", f"{genome}/v2/genes.gtf.gz",
     )
 
 
-def test_the_next_upload_of_a_genome_is_version_2(cur, species_id):
-    _start(cur, species=species_id)
-    assert _start(cur)[1] == 2
+def test_a_directly_inserted_version_is_numbered_and_placed_like_any_other(
+    cur, species_id, genome
+):
+    start(cur, genome, species=species_id)
+    cur.execute(
+        "INSERT INTO genome_reference_versions (genome_id, version, fasta_path, gtf_path, "
+        "created_by) SELECT id, 1, 'elsewhere', 'elsewhere', %s FROM genome_references "
+        "WHERE name = %s RETURNING version, fasta_path, gtf_path, status",
+        (WRITER, genome),
+    )
+    assert cur.fetchone() == (
+        2, f"{genome}/v2/genome.fa.gz", f"{genome}/v2/genes.gtf.gz", "uploading",
+    )
 
 
-def test_the_same_species_may_be_given_again(cur, species_id):
-    _start(cur, species=species_id)
-    assert _start(cur, species=species_id)[1] == 2
-
-
-def test_numbering_continues_past_an_abandoned_version(cur, species_id):
-    version_id = _start(cur, species=species_id)[0]
-    _as(cur, "bloom_writer", WRITER)
-    cur.execute("SELECT public.abandon_genome_version(%s)", (version_id,))
-    _admin(cur)
-    assert _start(cur)[1] == 2
-
-
-def test_a_version_number_is_used_once_per_genome(cur, species_id):
-    version_id = _start(cur, species=species_id)[0]
-    _refused(
+def test_a_version_cannot_be_inserted_as_ready(cur, species_id, genome):
+    start(cur, genome, species=species_id)
+    refused(
         cur,
         "INSERT INTO genome_reference_versions (genome_id, version, fasta_path, gtf_path, "
-        "created_by) SELECT genome_id, 1, 'x', 'y', %s FROM genome_reference_versions "
-        "WHERE id = %s",
-        (WRITER, version_id),
-        psycopg.errors.UniqueViolation,
+        "status, fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, ready_at, created_by) "
+        "SELECT id, 9, 'x', 'y', 'ready', %s, 1, %s, 1, now(), %s FROM genome_references "
+        "WHERE name = %s",
+        (SHA_A, SHA_B, WRITER, genome),
+        psycopg.errors.ObjectNotInPrerequisiteState,
     )
 
 
 @pytest.mark.parametrize("name", GOOD_NAMES)
 def test_a_good_genome_name_is_accepted(cur, species_id, name):
-    assert _start(cur, genome=name, species=species_id)[1] == 1
+    assert start(cur, name, species=species_id)[1] == 1
 
 
 @pytest.mark.parametrize("name", BAD_NAMES)
 def test_a_bad_genome_name_is_refused(cur, species_id, name):
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT * FROM public.start_genome_version(%s, %s)",
-        (name, species_id),
-        psycopg.errors.InvalidParameterValue,
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, "SELECT * FROM public.start_genome_version(%s, %s)", (name, species_id),
+        psycopg.errors.InvalidParameterValue, match="lowercase",
     )
 
 
-def test_a_new_genome_needs_a_species(cur):
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT * FROM public.start_genome_version('tair10_araport11')",
-        None,
-        psycopg.errors.InvalidParameterValue,
-        match="give its species",
+@pytest.mark.parametrize("name", ["TAIR10", "tair10.v2", "a__b"])
+def test_the_table_refuses_a_bad_name_too(cur, species_id, name):
+    refused(
+        cur, "INSERT INTO genome_references (name, species_id, created_by) VALUES (%s, %s, %s)",
+        (name, species_id, WRITER), psycopg.errors.CheckViolation,
     )
 
 
-def test_an_unknown_species_is_refused(cur):
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT * FROM public.start_genome_version('tair10_araport11', -1)",
-        None,
-        psycopg.errors.InvalidParameterValue,
-        match="no species",
+def test_a_new_genome_needs_a_species(cur, genome):
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, "SELECT * FROM public.start_genome_version(%s)", (genome,),
+        psycopg.errors.InvalidParameterValue, match="give its species",
     )
 
 
-def test_a_different_species_for_an_existing_genome_is_refused(cur, species_id):
-    _start(cur, species=species_id)
-    cur.execute(
-        "INSERT INTO public.species (genus, species, common_name) "
-        "VALUES ('Othergenus', 'other', %s) RETURNING id",
-        (f"genome-test-{uuid.uuid4()}",),
-    )
-    other = cur.fetchone()[0]
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT * FROM public.start_genome_version('tair10_araport11', %s)",
-        (other,),
-        psycopg.errors.InvalidParameterValue,
-        match="belongs to species",
+@pytest.mark.parametrize("deleted", [False, True])
+def test_an_unknown_or_deleted_species_is_refused(cur, genome, deleted):
+    species = add_species(cur) if deleted else -1
+    if deleted:
+        cur.execute("UPDATE species SET deleted_at = now() WHERE id = %s", (species,))
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, "SELECT * FROM public.start_genome_version(%s, %s)", (genome, species),
+        psycopg.errors.InvalidParameterValue, match="no species",
     )
 
 
-def test_a_different_description_for_an_existing_genome_is_refused(cur, species_id):
-    _start(cur, species=species_id, p_description="Col-0")
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT * FROM public.start_genome_version('tair10_araport11', "
-        "p_description => 'something else')",
-        None,
-        psycopg.errors.InvalidParameterValue,
-        match="different description",
+def test_a_different_species_for_an_existing_genome_is_refused(cur, species_id, genome):
+    start(cur, genome, species=species_id)
+    other = add_species(cur)
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, "SELECT * FROM public.start_genome_version(%s, %s)", (genome, other),
+        psycopg.errors.InvalidParameterValue, match="belongs to species",
     )
 
 
-def test_starting_without_signing_in_is_refused(cur, species_id):
-    _as(cur, "bloom_writer", None)
-    _refused(
-        cur,
-        "SELECT * FROM public.start_genome_version('tair10_araport11', %s)",
-        (species_id,),
-        psycopg.errors.InsufficientPrivilege,
+def test_a_different_description_names_the_stored_one(cur, species_id, genome):
+    start(cur, genome, species=species_id, p_description="Col-0")
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, "SELECT * FROM public.start_genome_version(%s, p_description => 'other')",
+        (genome,), psycopg.errors.InvalidParameterValue,
+        match="already has the description 'Col-0'",
     )
+
+
+@pytest.mark.parametrize("call", ["start", "finish", "abandon"])
+def test_each_upload_function_needs_a_signed_in_user(cur, species_id, genome, call):
+    version_id = uploaded(cur, genome, species_id)[0]
+    sql = {
+        "start": ("SELECT * FROM public.start_genome_version(%s, %s)", (genome, species_id)),
+        "finish": (FINISH_SQL, (version_id, SHA_A, 100, SHA_B, 50)),
+        "abandon": ("SELECT public.abandon_genome_version(%s)", (version_id,)),
+    }[call]
+    as_role(cur, "bloom_writer", None)
+    refused(cur, *sql, psycopg.errors.InsufficientPrivilege, match="sign in")
 
 
 # --------------------------------------------------------------------------- #
-# Finishing an upload
+# Finishing and abandoning
 # --------------------------------------------------------------------------- #
 
 
-def test_finishing_makes_the_version_ready_and_records_the_files(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    assert _finish(cur, version_id) == 1
-
+def test_finishing_makes_the_version_ready_and_records_the_files(cur, species_id, genome):
+    version_id = uploaded(cur, genome, species_id)[0]
+    assert finish(cur, version_id) == 1
     cur.execute(
         "SELECT status, fasta_sha256, fasta_bytes, gtf_sha256, gtf_bytes, ready_at IS NOT NULL "
-        "FROM genome_reference_versions WHERE id = %s",
-        (version_id,),
+        "FROM genome_reference_versions WHERE id = %s", (version_id,),
     )
     assert cur.fetchone() == ("ready", SHA_A, 100, SHA_B, 50, True)
 
 
-def test_finishing_twice_is_refused(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    _finish(cur, version_id)
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT public.finish_genome_version(%s, %s, 100, %s, 50)",
-        (version_id, SHA_A, SHA_B),
+def test_finishing_twice_is_refused(cur, species_id, genome):
+    version_id = ready(cur, genome, species_id)[0]
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, FINISH_SQL, (version_id, SHA_A, 100, SHA_B, 50),
         psycopg.errors.ObjectNotInPrerequisiteState,
     )
 
 
-def test_finishing_with_a_file_missing_names_it(cur, species_id):
-    version_id, _, fasta_path, _ = _start(cur, species=species_id)
-    _put_object(cur, fasta_path, 100)
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT public.finish_genome_version(%s, %s, 100, %s, 50)",
-        (version_id, SHA_A, SHA_B),
-        psycopg.errors.InvalidParameterValue,
-        match="genes.gtf.gz has not been uploaded",
-    )
-    _admin(cur)
-    assert _status(cur, version_id)[0] == "uploading"
-
-
-def test_finishing_with_a_wrong_size_is_refused(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT public.finish_genome_version(%s, %s, 101, %s, 50)",
-        (version_id, SHA_A, SHA_B),
-        psycopg.errors.InvalidParameterValue,
-        match="is 100 bytes in storage, not 101",
-    )
-    _admin(cur)
-    assert _status(cur, version_id)[0] == "uploading"
-
-
-@pytest.mark.parametrize("sha", ["A" * 64, "a" * 63, "g" * 64, None])
-def test_a_malformed_checksum_is_refused(cur, species_id, sha):
-    version_id = _uploaded(cur, species_id)[0]
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT public.finish_genome_version(%s, %s, 100, %s, 50)",
-        (version_id, sha, SHA_B),
-        psycopg.errors.InvalidParameterValue,
-    )
-
-
-def test_finishing_someone_elses_upload_is_refused(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    _as(cur, "bloom_writer", OTHER_WRITER)
-    _refused(
-        cur,
-        "SELECT public.finish_genome_version(%s, %s, 100, %s, 50)",
-        (version_id, SHA_A, SHA_B),
-        psycopg.errors.InsufficientPrivilege,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Abandoning an upload
-# --------------------------------------------------------------------------- #
-
-
-def test_the_creator_can_abandon_an_upload_once(cur, species_id):
-    version_id = _start(cur, species=species_id)[0]
-    _as(cur, "bloom_writer", WRITER)
-    cur.execute("SELECT public.abandon_genome_version(%s)", (version_id,))
-    assert cur.fetchone()[0] is True
-    cur.execute("SELECT public.abandon_genome_version(%s)", (version_id,))
-    assert cur.fetchone()[0] is False
-    _admin(cur)
-    assert _status(cur, version_id)[0] == "abandoned"
-
-
-def test_an_abandoned_upload_cannot_be_finished(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    _as(cur, "bloom_writer", WRITER)
-    cur.execute("SELECT public.abandon_genome_version(%s)", (version_id,))
-    _refused(
-        cur,
-        "SELECT public.finish_genome_version(%s, %s, 100, %s, 50)",
-        (version_id, SHA_A, SHA_B),
-        psycopg.errors.ObjectNotInPrerequisiteState,
-    )
-
-
-def test_a_finished_upload_cannot_be_abandoned(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    _finish(cur, version_id)
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "SELECT public.abandon_genome_version(%s)",
-        (version_id,),
-        psycopg.errors.ObjectNotInPrerequisiteState,
-    )
-
-
-def test_abandoning_someone_elses_upload_is_refused(cur, species_id):
-    version_id = _start(cur, species=species_id)[0]
-    _as(cur, "bloom_writer", OTHER_WRITER)
-    _refused(
-        cur,
-        "SELECT public.abandon_genome_version(%s)",
-        (version_id,),
-        psycopg.errors.InsufficientPrivilege,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# What may change (checked as the superuser, which RLS and grants don't stop)
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "assignment",
-    [
-        "fasta_sha256 = repeat('c', 64)",
-        "gtf_bytes = 51",
-        "ready_at = now() - interval '1 day'",
-    ],
-)
-def test_a_finished_versions_files_cannot_change(cur, species_id, assignment):
-    version_id = _uploaded(cur, species_id)[0]
-    _finish(cur, version_id)
-    _refused(
-        cur,
-        f"UPDATE genome_reference_versions SET {assignment} WHERE id = %s",
-        (version_id,),
-        psycopg.errors.ObjectNotInPrerequisiteState,
-    )
-
-
-@pytest.mark.parametrize(
-    "assignment",
-    [
-        "version = 9",
-        "fasta_path = 'elsewhere.fa.gz'",
-        "assembly = 'other'",
-        "notes = 'x'",
-    ],
-)
-def test_a_versions_identity_and_sources_never_change(cur, species_id, assignment):
-    version_id = _start(cur, species=species_id)[0]
-    _refused(
-        cur,
-        f"UPDATE genome_reference_versions SET {assignment} WHERE id = %s",
-        (version_id,),
-        psycopg.errors.ObjectNotInPrerequisiteState,
-    )
-
-
-@pytest.mark.parametrize(
-    "old, new",
-    [("ready", "uploading"), ("ready", "abandoned"), ("abandoned", "uploading")],
-)
-def test_status_never_goes_backward(cur, species_id, old, new):
-    version_id = _uploaded(cur, species_id)[0]
-    if old == "ready":
-        _finish(cur, version_id)
+@pytest.mark.parametrize("missing", ["genome.fa.gz", "genes.gtf.gz"])
+def test_finishing_with_a_file_missing_names_it(cur, species_id, genome, missing):
+    version_id, _, fasta_path, gtf_path = start(cur, genome, species=species_id)
+    if missing == "genes.gtf.gz":
+        put_object(cur, fasta_path, 100)
     else:
-        _as(cur, "bloom_writer", WRITER)
-        cur.execute("SELECT public.abandon_genome_version(%s)", (version_id,))
-        _admin(cur)
-    assert _status(cur, version_id)[0] == old
-    _refused(
-        cur,
-        "UPDATE genome_reference_versions SET status = %s WHERE id = %s",
-        (new, version_id),
+        put_object(cur, gtf_path, 50)
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, FINISH_SQL, (version_id, SHA_A, 100, SHA_B, 50),
+        psycopg.errors.InvalidParameterValue, match=f"{missing} has not been uploaded",
+    )
+    as_admin(cur)
+    assert status(cur, version_id) == "uploading"
+
+
+def test_files_at_the_right_paths_in_another_bucket_do_not_count(cur, species_id, genome):
+    version_id, _, fasta_path, gtf_path = start(cur, genome, species=species_id)
+    put_object(cur, fasta_path, 100, bucket="images")
+    put_object(cur, gtf_path, 50, bucket="images")
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, FINISH_SQL, (version_id, SHA_A, 100, SHA_B, 50),
+        psycopg.errors.InvalidParameterValue, match="has not been uploaded",
+    )
+
+
+@pytest.mark.parametrize(
+    "sizes, message",
+    [((101, 50), "is 100 bytes in storage, not 101"), ((100, 49), "is 50 bytes in storage, not 49")],
+)
+def test_finishing_with_a_wrong_size_is_refused(cur, species_id, genome, sizes, message):
+    version_id = uploaded(cur, genome, species_id)[0]
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, FINISH_SQL, (version_id, SHA_A, sizes[0], SHA_B, sizes[1]),
+        psycopg.errors.InvalidParameterValue, match=message,
+    )
+    as_admin(cur)
+    assert status(cur, version_id) == "uploading"
+
+
+@pytest.mark.parametrize("which", ["fasta", "gtf"])
+@pytest.mark.parametrize("sha", ["A" * 64, "a" * 63, "g" * 64, None])
+def test_a_malformed_checksum_is_refused(cur, species_id, genome, which, sha):
+    version_id = uploaded(cur, genome, species_id)[0]
+    shas = (sha, SHA_B) if which == "fasta" else (SHA_A, sha)
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, FINISH_SQL, (version_id, shas[0], 100, shas[1], 50),
+        psycopg.errors.InvalidParameterValue, match="checksums",
+    )
+
+
+@pytest.mark.parametrize("sizes", [(0, 50), (100, -1), (None, 50)])
+def test_a_size_that_is_not_positive_is_refused(cur, species_id, genome, sizes):
+    version_id = uploaded(cur, genome, species_id)[0]
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, FINISH_SQL, (version_id, SHA_A, sizes[0], SHA_B, sizes[1]),
+        psycopg.errors.InvalidParameterValue, match="sizes must be positive",
+    )
+
+
+@pytest.mark.parametrize("call", ["finish", "abandon"])
+def test_an_unknown_version_is_refused(cur, call):
+    as_role(cur, "bloom_writer", WRITER)
+    sql = (
+        (FINISH_SQL, (-1, SHA_A, 1, SHA_B, 1)) if call == "finish"
+        else ("SELECT public.abandon_genome_version(-1)", None)
+    )
+    refused(cur, *sql, psycopg.errors.InvalidParameterValue, match="no genome version")
+
+
+@pytest.mark.parametrize("call", ["finish", "abandon"])
+def test_someone_elses_upload_cannot_be_finished_or_abandoned(cur, species_id, genome, call):
+    version_id = uploaded(cur, genome, species_id)[0]
+    as_role(cur, "bloom_writer", OTHER_WRITER)
+    sql = (
+        (FINISH_SQL, (version_id, SHA_A, 100, SHA_B, 50)) if call == "finish"
+        else ("SELECT public.abandon_genome_version(%s)", (version_id,))
+    )
+    refused(cur, *sql, psycopg.errors.InsufficientPrivilege, match="someone else")
+
+
+def test_the_creator_can_abandon_an_upload_once(cur, species_id, genome):
+    version_id = start(cur, genome, species=species_id)[0]
+    assert abandon(cur, version_id) is True
+    assert abandon(cur, version_id) is False
+    assert status(cur, version_id) == "abandoned"
+
+
+def test_an_abandoned_upload_cannot_be_finished(cur, species_id, genome):
+    version_id = uploaded(cur, genome, species_id)[0]
+    abandon(cur, version_id)
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, FINISH_SQL, (version_id, SHA_A, 100, SHA_B, 50),
         psycopg.errors.ObjectNotInPrerequisiteState,
     )
 
 
-def test_a_genomes_name_and_species_never_change(cur, species_id):
-    _start(cur, species=species_id)
-    _refused(
-        cur,
-        "UPDATE genome_references SET name = 'renamed' WHERE name = 'tair10_araport11'",
-        None,
+def test_a_ready_version_cannot_be_abandoned(cur, species_id, genome):
+    version_id = ready(cur, genome, species_id)[0]
+    as_role(cur, "bloom_writer", WRITER)
+    refused(
+        cur, "SELECT public.abandon_genome_version(%s)", (version_id,),
         psycopg.errors.ObjectNotInPrerequisiteState,
-    )
-
-
-def test_a_genomes_description_can_be_edited(cur, species_id):
-    _start(cur, species=species_id)
-    cur.execute(
-        "UPDATE genome_references SET description = 'Col-0' WHERE name = 'tair10_araport11'"
-    )
-    assert cur.rowcount == 1
-
-
-# --------------------------------------------------------------------------- #
-# The genome version a run used
-# --------------------------------------------------------------------------- #
-
-
-def _add_run(cur, genome_version_id=None):
-    params = {"sample": "S1", "reference": "tair10_araport11"}
-    cur.execute(
-        "INSERT INTO rnaseq_runs (workflow_type, params, run_key, requested_by, "
-        "genome_version_id) VALUES ('scrna-cellranger', %s, %s, %s, %s) RETURNING id",
-        (
-            json.dumps(params),
-            f"S1__tair10_araport11__{WRITER}",
-            WRITER,
-            genome_version_id,
-        ),
-    )
-    return cur.fetchone()[0]
-
-
-def test_a_run_records_the_genome_version_it_used(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    _finish(cur, version_id)
-    run_id = _add_run(cur, version_id)
-    cur.execute(
-        "SELECT g.name, v.version FROM rnaseq_runs r "
-        "JOIN genome_reference_versions v ON v.id = r.genome_version_id "
-        "JOIN genome_references g ON g.id = v.genome_id WHERE r.id = %s",
-        (run_id,),
-    )
-    assert cur.fetchone() == ("tair10_araport11", 1)
-
-
-def test_a_run_without_a_genome_version_is_allowed(cur):
-    run_id = _add_run(cur)
-    cur.execute("SELECT genome_version_id FROM rnaseq_runs WHERE id = %s", (run_id,))
-    assert cur.fetchone()[0] is None
-
-
-def test_a_run_cannot_name_a_genome_version_that_does_not_exist(cur):
-    _refused(
-        cur,
-        "INSERT INTO rnaseq_runs (workflow_type, params, run_key, requested_by, "
-        "genome_version_id) VALUES ('scrna-cellranger', %s, %s, %s, -1)",
-        (
-            json.dumps({"sample": "S1", "reference": "tair10_araport11"}),
-            f"S1__tair10_araport11__{WRITER}",
-            WRITER,
-        ),
-        psycopg.errors.ForeignKeyViolation,
-    )
-
-
-def test_a_genome_version_used_by_a_run_cannot_be_deleted(cur, species_id):
-    version_id = _uploaded(cur, species_id)[0]
-    _finish(cur, version_id)
-    _add_run(cur, version_id)
-    _refused(
-        cur,
-        "DELETE FROM genome_reference_versions WHERE id = %s",
-        (version_id,),
-        psycopg.errors.ForeignKeyViolation,
-    )
-
-
-def test_the_run_column_is_readable_by_the_run_readers(cur):
-    for role in ("bloom_user", "bloom_agent", "bloom_workflows"):
-        cur.execute(
-            "SELECT has_column_privilege(%s, 'public.rnaseq_runs', 'genome_version_id', "
-            "'SELECT')",
-            (role,),
-        )
-        assert cur.fetchone()[0] is True, role
-
-
-# --------------------------------------------------------------------------- #
-# The genome-references bucket
-# --------------------------------------------------------------------------- #
-
-
-def test_a_writer_can_upload_its_own_unfinished_versions_files(cur, species_id):
-    _, _, fasta_path, gtf_path = _uploaded(cur, species_id)
-    cur.execute(
-        "SELECT name FROM storage.objects WHERE bucket_id = %s ORDER BY name", (BUCKET,)
-    )
-    assert [r[0] for r in cur.fetchall()] == sorted([fasta_path, gtf_path])
-
-
-def test_a_writer_cannot_upload_another_path_in_the_bucket(cur, species_id):
-    _start(cur, species=species_id)
-    _as(cur, "bloom_writer", WRITER)
-    _refused(
-        cur,
-        "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, 'tair10_araport11/v1/x.gz')",
-        (BUCKET,),
-        psycopg.errors.InsufficientPrivilege,
-    )
-
-
-def test_a_writer_cannot_upload_to_someone_elses_version(cur, species_id):
-    _, _, fasta_path, _ = _start(cur, species=species_id)
-    _as(cur, "bloom_writer", OTHER_WRITER)
-    _refused(
-        cur,
-        "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
-        (BUCKET, fasta_path),
-        psycopg.errors.InsufficientPrivilege,
-    )
-
-
-def test_a_writer_cannot_add_files_once_a_version_is_abandoned(cur, species_id):
-    version_id, _, fasta_path, _ = _start(cur, species=species_id)
-    _as(cur, "bloom_writer", WRITER)
-    cur.execute("SELECT public.abandon_genome_version(%s)", (version_id,))
-    _refused(
-        cur,
-        "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, %s)",
-        (BUCKET, fasta_path),
-        psycopg.errors.InsufficientPrivilege,
-    )
-
-
-def test_a_writer_cannot_overwrite_a_stored_genome_file(cur, species_id):
-    _, _, fasta_path, _ = _uploaded(cur, species_id)
-    _as(cur, "bloom_writer", WRITER)
-    cur.execute(
-        "UPDATE storage.objects SET metadata = '{\"size\": 1}' "
-        "WHERE bucket_id = %s AND name = %s",
-        (BUCKET, fasta_path),
-    )
-    assert cur.rowcount == 0
-
-
-@pytest.mark.parametrize("role", ["bloom_user", "bloom_agent", "bloom_workflows"])
-def test_readers_can_read_but_not_write_the_bucket(cur, species_id, role):
-    _, _, fasta_path, _ = _uploaded(cur, species_id)
-    _as(cur, role, WRITER)
-    cur.execute(
-        "SELECT count(*) FROM storage.objects WHERE bucket_id = %s AND name = %s",
-        (BUCKET, fasta_path),
-    )
-    assert cur.fetchone()[0] == 1
-    _refused(
-        cur,
-        "INSERT INTO storage.objects (bucket_id, name) VALUES (%s, 'tair10_araport11/v1/y.gz')",
-        (BUCKET,),
-        psycopg.errors.InsufficientPrivilege,
-    )
-
-
-def test_a_writers_access_to_other_buckets_is_unchanged(cur):
-    _as(cur, "bloom_writer", WRITER)
-    cur.execute(
-        "INSERT INTO storage.objects (bucket_id, name) VALUES ('images', %s) RETURNING id",
-        (f"genome-test/{uuid.uuid4()}.png",),
-    )
-    object_id = cur.fetchone()[0]
-    cur.execute(
-        "UPDATE storage.objects SET metadata = '{\"size\": 1}' WHERE id = %s",
-        (object_id,),
-    )
-    assert cur.rowcount == 1
-
-
-def test_the_bucket_is_private_gzip_only_and_500_mb(cur):
-    cur.execute(
-        "SELECT public, file_size_limit, allowed_mime_types FROM storage.buckets WHERE id = %s",
-        (BUCKET,),
-    )
-    assert cur.fetchone() == (False, 524288000, ["application/gzip"])
-
-
-# --------------------------------------------------------------------------- #
-# Grants
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("table", TABLES)
-@pytest.mark.parametrize(
-    "role", ["bloom_user", "bloom_agent", "bloom_workflows", "bloom_writer"]
-)
-def test_readers_have_select_only(cur, table, role):
-    cur.execute(
-        "SELECT has_table_privilege(%s, %s, 'SELECT'), "
-        "has_table_privilege(%s, %s, 'INSERT, UPDATE, DELETE, TRUNCATE')",
-        (role, f"public.{table}", role, f"public.{table}"),
-    )
-    assert cur.fetchone() == (True, False)
-
-
-@pytest.mark.parametrize("table", TABLES)
-@pytest.mark.parametrize("role", ["anon", "authenticated"])
-def test_anon_and_authenticated_have_no_table_access(cur, table, role):
-    cur.execute(
-        "SELECT has_table_privilege(%s, %s, 'SELECT, INSERT, UPDATE, DELETE')",
-        (role, f"public.{table}"),
-    )
-    assert cur.fetchone()[0] is False
-
-
-FUNCTIONS = [
-    "public.start_genome_version(text, bigint, text, text, text, text, text)",
-    "public.finish_genome_version(bigint, text, bigint, text, bigint)",
-    "public.abandon_genome_version(bigint)",
-]
-
-
-@pytest.mark.parametrize("function", FUNCTIONS)
-def test_only_writers_can_call_the_upload_functions(cur, function):
-    allowed = {}
-    for role in (
-        "bloom_writer",
-        "bloom_user",
-        "bloom_agent",
-        "bloom_workflows",
-        "anon",
-        "authenticated",
-    ):
-        cur.execute(
-            "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, function)
-        )
-        allowed[role] = cur.fetchone()[0]
-    assert allowed == {
-        "bloom_writer": True,
-        "bloom_user": False,
-        "bloom_agent": False,
-        "bloom_workflows": False,
-        "anon": False,
-        "authenticated": False,
-    }
-
-
-@pytest.mark.parametrize(
-    "function",
-    ["public._genome_object_bytes(text)"],
-)
-def test_internal_functions_are_not_callable(cur, function):
-    for role in ("bloom_writer", "bloom_user", "anon", "authenticated"):
-        cur.execute(
-            "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, function)
-        )
-        assert cur.fetchone()[0] is False, role
-
-
-# --------------------------------------------------------------------------- #
-# Rollback
-# --------------------------------------------------------------------------- #
-
-
-def test_the_rollback_removes_everything(cur, species_id):
-    version_id = _start(cur, species=species_id)[0]
-    assert version_id
-    cur.execute(_sql_body(ROLLBACK))
-
-    for table in TABLES:
-        cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
-        assert cur.fetchone()[0] is None
-    cur.execute("SELECT count(*) FROM storage.buckets WHERE id = %s", (BUCKET,))
-    assert cur.fetchone()[0] == 0
-    cur.execute(
-        "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' "
-        "AND table_name = 'rnaseq_runs' AND column_name = 'genome_version_id'"
-    )
-    assert cur.fetchone()[0] == 0
-    cur.execute(
-        "SELECT count(*) FROM pg_policies WHERE schemaname = 'storage' "
-        "AND policyname LIKE '%%genome%%'"
-    )
-    assert cur.fetchone()[0] == 0
-
-
-def test_the_rollback_refuses_while_the_bucket_holds_files(cur, species_id):
-    _uploaded(cur, species_id)
-    _refused(
-        cur, _sql_body(ROLLBACK), None, psycopg.errors.RaiseException, match="non-empty"
     )
