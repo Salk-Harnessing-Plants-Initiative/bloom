@@ -18,9 +18,9 @@ Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative)
 Releases are still pre-releases (`0.1.0aN`), so install by **asking for the version by name**:
 
 ```bash
-uv tool install "bloomctl==0.1.0a5"    # isolated CLI tool (recommended)
-uvx bloomctl@0.1.0a5 --help            # one-off, no install
-pip install "bloomctl==0.1.0a5"        # into the active environment
+uv tool install "bloomctl==0.1.0a11"   # isolated CLI tool (recommended)
+uvx bloomctl@0.1.0a11 --help           # one-off, no install
+pip install "bloomctl==0.1.0a11"       # into the active environment
 ```
 
 Check it worked:
