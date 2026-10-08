@@ -1,8 +1,8 @@
 """
 Integration tests for migration 20261008230000_add_scrna_cluster_cell_types.
 
-The migration adds `scrna_cluster_cell_types`: one predicted cell type per cluster, with an
-optional source and the share of the cluster's cells that carry it.
+The migration adds `scrna_cluster_cell_types`: the predicted cell types of each cluster, each
+with an optional source and the share of the cluster's cells that carry it.
 
 LOCAL ONLY: `pg_conn` connects to 127.0.0.1 on POSTGRES_HOST_PORT and mutates nothing --
 every test rolls back. It connects as `supabase_admin`, which is BYPASSRLS, so access checks
@@ -110,13 +110,38 @@ def test_source_and_fraction_may_be_left_out(pg_conn):
     pg_conn.rollback()
 
 
-def test_a_cluster_has_one_predicted_cell_type(pg_conn):
+def test_a_cluster_may_have_several_cell_types(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur)
+        predict(cur, ds, "0", "Columella", fraction=0.7)
+        predict(cur, ds, "0", "Lateral root cap", fraction=0.3)
+        cur.execute(
+            "SELECT cell_type FROM scrna_cluster_cell_types "
+            "WHERE dataset_id = %s AND cluster_id = '0' ORDER BY fraction DESC", (ds,),
+        )
+        assert [r[0] for r in cur.fetchall()] == ["Columella", "Lateral root cap"]
+    pg_conn.rollback()
+
+
+def test_a_cluster_names_each_cell_type_once(pg_conn):
+    with pg_conn.cursor() as cur:
+        ds = dataset(cur)
+        predict(cur, ds, "0", "Columella", source="nuclei atlas")
+        with pytest.raises(psycopg.errors.UniqueViolation) as err:
+            predict(cur, ds, "0", "Columella", source="protoplast atlas")
+    assert err.value.diag.constraint_name == "scrna_cluster_cell_types_pkey"
+    pg_conn.rollback()
+
+
+def test_two_clusters_may_share_a_cell_type(pg_conn):
     with pg_conn.cursor() as cur:
         ds = dataset(cur)
         predict(cur, ds, "0", "Columella")
-        with pytest.raises(psycopg.errors.UniqueViolation) as err:
-            predict(cur, ds, "0", "Phellem")
-    assert err.value.diag.constraint_name == "scrna_cluster_cell_types_pkey"
+        predict(cur, ds, "1", "Columella")
+        cur.execute(
+            "SELECT count(*) FROM scrna_cluster_cell_types WHERE dataset_id = %s", (ds,)
+        )
+        assert cur.fetchone()[0] == 2
     pg_conn.rollback()
 
 

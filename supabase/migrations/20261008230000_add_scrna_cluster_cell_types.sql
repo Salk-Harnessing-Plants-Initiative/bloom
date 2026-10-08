@@ -1,9 +1,10 @@
 -- 20261008230000_add_scrna_cluster_cell_types.sql
 --
--- The predicted cell type of each cluster in a single-cell dataset. A dataset loaded by cluster
+-- The predicted cell types of each cluster in a single-cell dataset. A dataset loaded by cluster
 -- number keeps its clusters as "0", "1", "2" in scrna_clusters; this table names what each one
--- is predicted to be, where the prediction came from, and the share of the cluster's cells that
--- carry it. One row per cluster. A dataset with no rows here is shown as it is today.
+-- is predicted to be, where each prediction came from, and the share of the cluster's cells that
+-- carry it. A cluster may have several cell types, each once. A dataset with no rows here is
+-- shown as it is today.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -33,9 +34,9 @@ BEGIN
      AND conrelid = 'public.scrna_cluster_cell_types'::regclass;
   IF existing IS NULL THEN
     ALTER TABLE public.scrna_cluster_cell_types
-      ADD CONSTRAINT scrna_cluster_cell_types_pkey PRIMARY KEY (dataset_id, cluster_id);
-  ELSIF existing <> 'PRIMARY KEY (dataset_id, cluster_id)' THEN
-    RAISE EXCEPTION 'scrna_cluster_cell_types_pkey is %, expected PRIMARY KEY (dataset_id, cluster_id)', existing;
+      ADD CONSTRAINT scrna_cluster_cell_types_pkey PRIMARY KEY (dataset_id, cluster_id, cell_type);
+  ELSIF existing <> 'PRIMARY KEY (dataset_id, cluster_id, cell_type)' THEN
+    RAISE EXCEPTION 'scrna_cluster_cell_types_pkey is %, expected PRIMARY KEY (dataset_id, cluster_id, cell_type)', existing;
   END IF;
 END $$;
 
@@ -73,7 +74,8 @@ ALTER TABLE public.scrna_cluster_cell_types
     CHECK (fraction IS NULL OR (fraction > 0 AND fraction <= 1));
 
 COMMENT ON TABLE public.scrna_cluster_cell_types IS
-  'The predicted cell type of each cluster in a single-cell dataset, one row per cluster. '
+  'The predicted cell types of each cluster in a single-cell dataset, one row per cluster and '
+  'cell type. '
   'Readable by anyone who can see the dataset, including anonymous visitors.';
 COMMENT ON COLUMN public.scrna_cluster_cell_types.source IS
   'Where the prediction came from -- a reference atlas, a paper or a method. NULL when not given.';
