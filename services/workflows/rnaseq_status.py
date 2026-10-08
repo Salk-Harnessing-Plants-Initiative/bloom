@@ -230,11 +230,22 @@ def dataset_loaded(workflow: dict) -> bool:
         "parameters"
     ) or []
     named = any(
-        p.get("name") == "dataset-name" and (p.get("value") or "").strip()
+        p.get("name") == "dataset-name" and str(p.get("value") or "").strip()
         for p in parameters
     )
     node = _step_pods(workflow).get("load-dataset")
     return named and bool(node) and node.get("phase") == "Succeeded"
+
+
+def loaded_dataset(workflow: dict) -> int | None:
+    """The id of the dataset the load-dataset step loaded and reported, once it has; None
+    otherwise, including for a run started by hand, which reports none."""
+    if not dataset_loaded(workflow):
+        return None
+    try:
+        return int(_output(_step_pods(workflow)["load-dataset"], "dataset-id") or "")
+    except ValueError:
+        return None
 
 
 def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
