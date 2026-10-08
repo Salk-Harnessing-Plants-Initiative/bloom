@@ -12,9 +12,12 @@ from __future__ import annotations
 from bloom_mcp.server import _startup_banner
 
 
-def test_neither_configured_is_dev_mode():
+def test_neither_configured_names_the_opt_out_that_allowed_it():
+    """`validate_auth()` refuses to boot in this state, so reaching the banner at all
+    means someone set `BLOOMMCP_ALLOW_NO_AUTH`. Naming it beats "dev mode", which read
+    like a harmless default on a deploy that had merely lost its key."""
     assert _startup_banner(api_key=None, oauth_configured=False) == (
-        "Bloom MCP Server starting without authentication (dev mode)"
+        "Bloom MCP Server starting WITHOUT authentication (BLOOMMCP_ALLOW_NO_AUTH)"
     )
 
 
