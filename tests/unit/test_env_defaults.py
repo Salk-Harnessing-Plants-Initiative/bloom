@@ -61,6 +61,8 @@ SENSITIVE_INVENTORY = {
     # openspec/changes/add-cyl-pipeline-dispatch/design.md).
     "WORKFLOWS_K8S_TOKEN",
     "WANDB_API_KEY",
+    "WORKFLOWS_S3_READER_ACCESS_KEY_ID",
+    "WORKFLOWS_S3_READER_SECRET_ACCESS_KEY",
     "WORKFLOWS_K8S_CA_CERT",
     "WORKFLOWS_K8S_API_URL",
 }

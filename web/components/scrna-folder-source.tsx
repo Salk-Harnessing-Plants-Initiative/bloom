@@ -25,6 +25,7 @@ type CheckState =
 export default function ScrnaFolderSource({
   url,
   recheck = 0,
+  readerArn = null,
   onUrl,
   onChecked,
   fieldClass,
@@ -32,6 +33,8 @@ export default function ScrnaFolderSource({
 }: {
   url: string;
   recheck?: number;
+  // Bloom's AWS user; with it, the help offers sharing a private folder.
+  readerArn?: string | null;
   onUrl: (url: string) => void;
   onChecked: (check: FolderCheck | null) => void;
   fieldClass: string;
@@ -156,7 +159,23 @@ export default function ScrnaFolderSource({
               run&apos;s name.
             </li>
             <li>R1 and R2 for every lane; I1 and I2 are optional.</li>
-            <li>A public folder, so Bloom has access to the files.</li>
+          </ul>
+          <p className="mt-2 font-medium text-stone-700">Giving Bloom the reads</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            <li>
+              A public folder: upload the reads to a public bucket, such as{" "}
+              <code>salk-tm-pub</code>, or a bucket readable from the Salk network, and paste
+              the path. A public bucket is open to anyone on the internet.
+            </li>
+            {readerArn ? (
+              <li>
+                A private folder: give Bloom&apos;s AWS user permission to list and read the
+                folder (s3:ListBucket and s3:GetObject, plus kms:Decrypt for a KMS-encrypted
+                bucket), then paste the path. Bloom&apos;s AWS user is{" "}
+                <code className="[overflow-wrap:anywhere]">{readerArn}</code>. Remove the
+                permission when the run is done; Bloom emails you when it finishes.
+              </li>
+            ) : null}
           </ul>
           <p className="mt-2 font-medium text-stone-700">For example</p>
           <pre className="mt-1 overflow-x-auto rounded bg-stone-50 p-2 text-xs">
