@@ -47,7 +47,7 @@ export default function ScrnaJobSubmit({
   species: SpeciesOption[];
   // The signed-in user's email, shown on the confirmation.
   startedBy: string | null;
-  // Bloom's read-only AWS user, which a private folder can be shared with.
+  // Bloom's AWS user (bloomv2-workflows-job), which a private folder can be shared with.
   readerArn?: string | null;
 }) {
   const [open, setOpen] = useState(false);

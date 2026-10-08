@@ -28,7 +28,7 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       # Starting cylinder pipeline runs from Bloom (web/lib/cyl-pipeline/trigger-enabled.ts).
       CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
-      # Bloom's read-only AWS user, shown on the scRNA job form (optional).
+      # Bloom's AWS user (bloomv2-workflows-job), shown on the scRNA job form (optional).
       SCRNA_FOLDER_READER_ARN: ${SCRNA_FOLDER_READER_ARN:-}
     volumes:
       - ./web:/app/web
@@ -114,7 +114,7 @@ services:
       # Optional in dev: without it GET /model-cards answers 503 and the pipeline
       # confirm dialog shows "Couldn't check the models' age ranges." (bloom#971).
       WANDB_API_KEY: ${WANDB_API_KEY:-}
-      # Bloom's read-only AWS user, for a folder a scientist shared with it (optional).
+      # Bloom's AWS user (bloomv2-workflows-job), for a folder a scientist shared with it (optional).
       WORKFLOWS_S3_READER_ACCESS_KEY_ID: ${WORKFLOWS_S3_READER_ACCESS_KEY_ID:-}
       WORKFLOWS_S3_READER_SECRET_ACCESS_KEY: ${WORKFLOWS_S3_READER_SECRET_ACCESS_KEY:-}
     volumes:

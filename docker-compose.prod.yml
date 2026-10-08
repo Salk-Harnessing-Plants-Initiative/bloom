@@ -148,7 +148,7 @@ services:
       # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
       # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).
       CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
-      # Bloom's read-only AWS user, shown on the scRNA job form so a scientist can share a
+      # Bloom's AWS user (bloomv2-workflows-job), shown on the scRNA job form so a scientist can share a
       # private folder with it; empty, the form offers public folders only.
       SCRNA_FOLDER_READER_ARN: ${SCRNA_FOLDER_READER_ARN}
       # Read by web/lib/config/validate-on-boot.ts in production via the
