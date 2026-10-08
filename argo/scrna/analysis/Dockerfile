@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt /opt/scrna-analysis/requirements.txt
 RUN pip install -r /opt/scrna-analysis/requirements.txt \
  && python -c "import scanpy, leidenalg, igraph, boto3" \
- && bloomctl scrna hdf5 upload --help >/dev/null
+ && bloomctl scrna hdf5 upload --help | grep -q -- --run-id
 
 COPY bloom_scrna_analysis /opt/scrna-analysis/bloom_scrna_analysis
 ENV PYTHONPATH=/opt/scrna-analysis
@@ -21,8 +21,10 @@ ENV PYTHONPATH=/opt/scrna-analysis
 COPY --from=scrna run_with_log.py /usr/local/bin/run-with-log
 COPY load-dataset.sh /usr/local/bin/load-dataset
 RUN printf '#!/bin/sh\nexec python -m bloom_scrna_analysis "$@"\n' > /usr/local/bin/scrna-analysis \
+ && printf '#!/bin/sh\nexec python -m bloom_scrna_analysis.bloom_dataset "$@"\n' > /usr/local/bin/bloom-dataset \
  && chmod +x /usr/local/bin/scrna-analysis /usr/local/bin/run-with-log /usr/local/bin/load-dataset \
- && scrna-analysis --help >/dev/null
+    /usr/local/bin/bloom-dataset \
+ && scrna-analysis --help >/dev/null && bloom-dataset --help >/dev/null
 
 # Runs as root like the Cell Ranger steps, which create the run's folder on the share.
 ENTRYPOINT ["scrna-analysis"]

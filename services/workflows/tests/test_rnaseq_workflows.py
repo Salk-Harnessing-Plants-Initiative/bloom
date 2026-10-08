@@ -368,16 +368,18 @@ def test_a_run_naming_a_dataset_passes_it_to_the_sample_pipeline():
         params["dataset-name"] == "Root atlas"
         and params["species-name"] == "Arabidopsis"
     )
+    assert params["bloom-run-id"] == str(RUN["run_id"]), "the dataset is tagged with it"
     passed = _params(_task(body, "sample"))
     assert passed["dataset-name"] == "{{workflow.parameters.dataset-name}}"
     assert passed["species-name"] == "{{workflow.parameters.species-name}}"
+    assert passed["bloom-run-id"] == "{{workflow.parameters.bloom-run-id}}"
 
 
 @pytest.mark.parametrize("dataset", [None, {}], ids=["none", "empty"])
 def test_a_run_without_a_dataset_passes_none(dataset):
     body = wfs.build_cellranger_body({**RUN, "dataset": dataset})
     names = {p["name"] for p in body["spec"]["arguments"]["parameters"]}
-    assert not names & {"dataset-name", "species-name"}
+    assert not names & {"dataset-name", "species-name", "bloom-run-id"}
 
 
 def test_the_dataset_inputs_are_ones_the_sample_pipeline_declares_with_an_empty_default():
@@ -386,3 +388,4 @@ def test_the_dataset_inputs_are_ones_the_sample_pipeline_declares_with_an_empty_
         for p in _template("sample-pipeline")["inputs"]["parameters"]
     }
     assert declared["dataset-name"] == "" and declared["species-name"] == ""
+    assert declared["bloom-run-id"] == "", "a run started by hand has no run id"

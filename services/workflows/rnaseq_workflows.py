@@ -120,7 +120,8 @@ def build_cellranger_body(run: dict) -> dict:
     A run with SRA run IDs also downloads them with fetch-sra, alongside stage-reference,
     and the sample's steps wait for both. A run with an S3 folder passes the folder and
     the files recorded from it, which the stage step copies. A run naming a dataset passes
-    its name and species, which the load-dataset step loads the result into Bloom under."""
+    its name and species, which the load-dataset step loads the result into Bloom under, and
+    the run's id, which the step tags the dataset with so the run is linked to it."""
     sra_runs = run["params"].get("sra_runs")
     fastq_url = run["params"].get("fastq_url")
     parameters = [
@@ -140,10 +141,12 @@ def build_cellranger_body(run: dict) -> dict:
         parameters += [
             {"name": "dataset-name", "value": dataset["name"]},
             {"name": "species-name", "value": dataset["species"]},
+            {"name": "bloom-run-id", "value": str(run["run_id"])},
         ]
         sample_inputs |= {
             "dataset-name": "dataset-name",
             "species-name": "species-name",
+            "bloom-run-id": "bloom-run-id",
         }
     tasks = [_task("stage-reference", "stage-reference", {"reference": "reference"})]
     if sra_runs:
