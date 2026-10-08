@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import importlib
 
+import httpx
 import pytest
 from click.testing import CliRunner
 from postgrest import APIError
@@ -43,9 +44,12 @@ class GenomeDB:
     def __init__(self, storage, genomes=()):
         self.storage = storage
         self.base = FakeClient({"species": SPECIES, "genome_references": list(genomes)})
-        self.versions: list[dict] = []
+        # The same dicts the status lookup reads, so a status change shows in both.
+        self.versions: list[dict] = self.base.tables.setdefault("genome_reference_versions", [])
         self.calls: list[str] = []
         self.refuse: dict[str, str] = {}
+        # Commit the finish, then fail as though its answer was lost on the way back.
+        self.lose_finish_answer = False
 
     def table(self, name):
         return self.base.table(name)
@@ -69,8 +73,10 @@ class GenomeDB:
                       "species_id": p_species_id}
             self.base.tables["genome_references"].append(genome)
         number = 1 + sum(v["genome_id"] == genome["id"] for v in self.versions)
+        version_id = 100 + len(self.versions)
         version = {
-            "version_id": 100 + len(self.versions), "version": number, "genome_id": genome["id"],
+            "id": version_id, "version_id": version_id, "version": number,
+            "genome_id": genome["id"],
             "fasta_path": f"{p_genome}/v{number}/genome.fa.gz",
             "gtf_path": f"{p_genome}/v{number}/genes.gtf.gz",
             "status": "uploading", "sources": sources,
@@ -87,10 +93,14 @@ class GenomeDB:
             if stored is None or len(stored) != size:
                 raise APIError({"message": f"{path} has not been uploaded", "code": "22023"})
         version.update(status="ready", fasta_sha256=p_fasta_sha256, gtf_sha256=p_gtf_sha256)
+        if self.lose_finish_answer:
+            raise httpx.ReadTimeout("the answer was lost")
         return version["version"]
 
     def abandon_genome_version(self, p_version_id):
         version = next(v for v in self.versions if v["version_id"] == p_version_id)
+        if version["status"] != "uploading":
+            raise APIError({"message": f"is {version['status']}, not uploading", "code": "55000"})
         version["status"] = "abandoned"
         return True
 
@@ -231,7 +241,9 @@ def test_a_different_species_for_an_existing_genome_is_refused(env, storage, fil
     assert db.calls == []
 
 
-@pytest.mark.parametrize("name", ["a__b", "-lead", "has space", "g" * 65, "../etc"])
+@pytest.mark.parametrize(
+    "name", ["a__b", "-lead", "has space", "g" * 65, "../etc", "TAIR10", "Tair10", "tair10.v2"]
+)
 def test_a_bad_genome_name_is_refused(env, files, monkeypatch, name):
     monkeypatch.setattr(_session, "connect", lambda _p: pytest.fail("it signed in"))
     result = _upload(files, "--species", "Arabidopsis", "--yes", name=name)
@@ -293,6 +305,23 @@ def test_an_upload_that_fails_abandons_the_version(db, storage, files):
     assert "finish_genome_version" not in db.calls
 
 
+def test_a_finish_whose_answer_was_lost_is_reported_ready(db, storage, files):
+    db.lose_finish_answer = True
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "tair10_araport11 v1: ready"
+    assert db.versions[0]["status"] == "ready"
+    assert "abandoned" not in result.stderr and "uploading" not in result.stderr
+
+
+def test_a_version_that_cannot_be_abandoned_reports_its_real_status(db, storage, files):
+    storage.drop_after = 0
+    db.refuse["abandon_genome_version"] = "no"
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code != 0
+    assert "could not be marked abandoned; it is uploading" in result.stderr
+
+
 def test_a_refused_finish_abandons_the_version(db, storage, files):
     db.refuse["finish_genome_version"] = "genome.fa.gz is 10 bytes in storage, not 11"
     result = _upload(files, "--species", "Arabidopsis", "--yes")
@@ -308,14 +337,6 @@ def test_a_refused_start_sends_nothing(db, storage, files):
     assert "Could not start the upload" in result.output
     assert storage.requests == []
     assert "abandon_genome_version" not in db.calls
-
-
-def test_a_version_that_cannot_be_abandoned_is_reported(db, storage, files):
-    storage.drop_after = 0
-    db.refuse["abandon_genome_version"] = "no"
-    result = _upload(files, "--species", "Arabidopsis", "--yes")
-    assert result.exit_code != 0
-    assert "could not be marked abandoned" in result.stderr
 
 
 def test_a_session_that_runs_out_mid_upload_signs_in_again_and_resumes(

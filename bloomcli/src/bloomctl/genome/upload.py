@@ -80,8 +80,10 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
                 conn = _send(http, conn, profile, started["gtf_path"], gtf_file, gtf.name)
             version = _finish(conn.client, started["version_id"], fasta_file, gtf_file)
         except BaseException:
-            _abandon(conn.client, name, started)
-            raise
+            if _abandon(conn.client, name, started) != "ready":
+                raise
+            # The finish went through even though its answer was lost.
+            version = started["version"]
     click.echo(f"{name} v{version}: ready")
 
 
@@ -213,18 +215,36 @@ def _finish(client: Any, version_id: int, fasta_file, gtf_file) -> int:
     return _rpc("finish the upload", lambda: client.rpc("finish_genome_version", args).execute())
 
 
-def _abandon(client: Any, name: str, started: dict) -> None:
-    """Mark the version abandoned so it is never offered for a run, and say so."""
+def _abandon(client: Any, name: str, started: dict) -> str | None:
+    """Mark the version abandoned so it is never offered for a run, and say what it now is.
+
+    Returns the version's status: "abandoned", or what Bloom holds when abandoning is refused,
+    e.g. "ready" when a finish committed but its answer was lost.
+    """
     label = f"{visible(name)} v{started['version']}"
     try:
         client.rpc("abandon_genome_version", {"p_version_id": started["version_id"]}).execute()
     except Exception:  # noqa: BLE001 - the original failure is the one to report
-        click.echo(
-            f"{label} was not finished and could not be marked abandoned; it stays "
-            "'uploading' and is never offered for a run.", err=True,
-        )
-        return
+        state = _status_of(client, started["version_id"])
+        if state != "ready":
+            click.echo(
+                f"{label} could not be marked abandoned; it is "
+                f"{state or 'in a state Bloom could not report'}, and only a ready version is "
+                "offered for runs.", err=True,
+            )
+        return state
     click.echo(
         f"{label} was abandoned; run the same command again to upload it as a new version.",
         err=True,
     )
+    return "abandoned"
+
+
+def _status_of(client: Any, version_id: int) -> str | None:
+    """The version's status in Bloom, or None when it cannot be read."""
+    try:
+        rows = client.table("genome_reference_versions").select("status").eq(
+            "id", version_id).execute().data
+    except Exception:  # noqa: BLE001 - only used to explain an earlier failure
+        return None
+    return rows[0]["status"] if rows else None

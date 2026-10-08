@@ -766,6 +766,9 @@ bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_202
 # → tair10_araport11 v2: ready
 ```
 
+- The genome name is 1 to 64 lowercase letters, digits, `.`, `_` or `-`, starting with a
+  letter or digit, with no `__` and not ending in `.v` and a number (that is how a version is
+  written). It can never be changed.
 - The files can be plain or gzipped. A plain file is gzipped into a temporary
   folder first; the original is never changed. A gzipped file is read to the end
   to check it is intact, then sent as it is.

@@ -19,9 +19,10 @@ from pathlib import Path
 MAX_OBJECT_BYTES = 500 * 1024 * 1024
 
 # The database's rule for a genome name; it is also a folder name in storage and on the cluster.
-NAME_RULE = re.compile(r"^(?!.*__)[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+NAME_RULE = re.compile(r"^(?!.*__)(?!.*\.v[0-9]+$)[a-z0-9][a-z0-9._-]{0,63}$")
 NAME_HELP = (
-    "1 to 64 letters, digits, '.', '_' or '-', starting with a letter or digit, with no '__'"
+    "1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit, "
+    "with no '__' and not ending in '.v' and a number"
 )
 
 GZIP_MAGIC = b"\x1f\x8b"
