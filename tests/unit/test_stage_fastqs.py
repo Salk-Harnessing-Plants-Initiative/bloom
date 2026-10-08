@@ -46,6 +46,14 @@ local_path() { echo "${FAKE_S3}/${1#s3://}"; }
 # Every call is logged with whether it was signed.
 signed=yes; for a in "$@"; do [ "$a" = --no-sign-request ] && signed=no; done
 echo "$1 $2 signed=${signed}" >> "${FAKE_S3}/.calls"
+# A private folder: only a call signed with the key FAKE_PRIVATE names gets in.
+if [ -n "${FAKE_PRIVATE:-}" ]; then
+  echo "$1 $2 key=${AWS_ACCESS_KEY_ID:-none} secret=${AWS_SECRET_ACCESS_KEY:-none}" >> "${FAKE_S3}/.keys"
+  if [ "${signed}" = no ] || [ "${AWS_ACCESS_KEY_ID:-}" != "${FAKE_PRIVATE}" ]; then
+    echo "An error occurred (AccessDenied) when calling the $2 operation: Access Denied" >&2
+    exit 254
+  fi
+fi
 if [ "$1" = s3api ] && [ "$2" = head-object ]; then
   while [ $# -gt 0 ]; do
     case "$1" in --bucket) bucket="$2" ;; --key) key="$2" ;; --if-match) want="$2" ;; esac
@@ -61,6 +69,7 @@ if [ "$1" = s3api ] && [ "$2" = head-object ]; then
 fi
 if [ "$1" = s3api ]; then
   [ -z "${FAKE_LIST_FAIL:-}" ] || { echo "An error occurred (AccessDenied)" >&2; exit 255; }
+  [ -z "${FAKE_LIST_UNREACHABLE:-}" ] || { echo "Could not connect to the endpoint URL" >&2; exit 255; }
   while [ $# -gt 0 ]; do
     case "$1" in --bucket) bucket="$2" ;; --prefix) prefix="$2" ;; --delimiter) delim="$2" ;; --max-keys) max="$2" ;; esac
     shift

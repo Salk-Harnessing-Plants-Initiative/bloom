@@ -40,12 +40,15 @@ export default function ScrnaJobSubmit({
   references,
   species,
   startedBy,
+  readerArn = null,
 }: {
   samples: RnaseqSample[];
   references: RnaseqReference[];
   species: SpeciesOption[];
   // The signed-in user's email, shown on the confirmation.
   startedBy: string | null;
+  // Bloom's AWS user (bloomv2-workflows-job), which a private folder can be shared with.
+  readerArn?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   // Species added from the form stay listed after it is closed and reopened.
@@ -307,6 +310,7 @@ export default function ScrnaJobSubmit({
                 samples={samples}
                 folderUrl={folderUrl}
                 folderRecheck={folderRecheck}
+                readerArn={readerArn}
                 onFolderUrl={changeFolderUrl}
                 onFolderChecked={setFolderCheck}
                 sraText={sraText}

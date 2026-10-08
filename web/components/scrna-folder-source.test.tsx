@@ -2,7 +2,8 @@
 /**
  * The S3 folder field: it checks the folder once the URL is one, says it is checking,
  * shows what it found or why the folder can't be used, ignores a reply for a URL that has
- * since changed, and explains the accepted layout behind its "?".
+ * since changed, and explains the accepted layout, and how to give Bloom the reads, behind
+ * its "?".
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,12 +45,13 @@ function json(body: unknown, status = 200) {
 let fetchSpy: ReturnType<typeof vi.fn>;
 let checked: (FolderCheck | null)[];
 
-function Harness() {
+function Harness({ readerArn = null }: { readerArn?: string | null }) {
   const [url, setUrl] = useState("");
   const [, setCheck] = useState<FolderCheck | null>(null);
   return (
     <ScrnaFolderSource
       url={url}
+      readerArn={readerArn}
       onUrl={setUrl}
       onChecked={(c) => {
         checked.push(c);
@@ -240,6 +242,24 @@ describe("the accepted layout", () => {
     expect(screen.getByText(/col0_root_rep1_S1_L001_R1_001\.fastq\.gz/)).toBeTruthy();
     fireEvent.click(help);
     expect(screen.queryByText(/R1 and R2 for every lane/)).toBeNull();
+  });
+
+  it("offers a public folder, and no private one while Bloom has no reader", () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "What the folder must contain" }));
+    expect(screen.getByText(/A public folder: upload the reads/)).toBeTruthy();
+    expect(screen.getByText("salk-tm-pub")).toBeTruthy();
+    expect(screen.getByText(/open to anyone on the internet/)).toBeTruthy();
+    expect(screen.queryByText(/A private folder/)).toBeNull();
+  });
+
+  it("offers sharing a private folder with Bloom's AWS user, by its ARN", () => {
+    const arn = "arn:aws:iam::865381831093:user/bloomv2-workflows-job";
+    render(<Harness readerArn={arn} />);
+    fireEvent.click(screen.getByRole("button", { name: "What the folder must contain" }));
+    expect(screen.getByText(/A private folder: give Bloom's AWS user permission/)).toBeTruthy();
+    expect(screen.getByText(arn)).toBeTruthy();
+    expect(screen.getByText(/Remove the permission when the run is done/)).toBeTruthy();
   });
 });
 
