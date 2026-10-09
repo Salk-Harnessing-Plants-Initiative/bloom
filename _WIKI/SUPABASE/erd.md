@@ -117,7 +117,6 @@ erDiagram
 "public.cyl_pipeline_run_workflows" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
 "public.genome_references" }o--|| "public.species" : "FOREIGN KEY (species_id) REFERENCES species(id)"
 "public.genome_reference_versions" }o--|| "public.genome_references" : "FOREIGN KEY (genome_id) REFERENCES genome_references(id)"
-"public.scrna_cluster_cell_types" }o--|| "public.scrna_clusters" : "FOREIGN KEY (dataset_id, cluster_id) REFERENCES scrna_clusters(dataset_id, cluster_id) ON UPDATE CASCADE ON DELETE CASCADE"
 
 "public.species" {
   bigint id
@@ -1139,13 +1138,5 @@ erDiagram
   timestamp_with_time_zone ready_at
   text withdrawn_reason
   timestamp_with_time_zone withdrawn_at
-}
-"public.scrna_cluster_cell_types" {
-  bigint dataset_id FK
-  text cluster_id FK
-  text cell_type
-  text source
-  real fraction
-  timestamp_with_time_zone created_at
 }
 ```

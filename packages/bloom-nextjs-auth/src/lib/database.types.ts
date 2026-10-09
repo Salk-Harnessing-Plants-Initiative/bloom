@@ -3460,41 +3460,6 @@ export type Database = {
           },
         ]
       }
-      scrna_cluster_cell_types: {
-        Row: {
-          cell_type: string
-          cluster_id: string
-          created_at: string
-          dataset_id: number
-          fraction: number | null
-          source: string | null
-        }
-        Insert: {
-          cell_type: string
-          cluster_id: string
-          created_at?: string
-          dataset_id: number
-          fraction?: number | null
-          source?: string | null
-        }
-        Update: {
-          cell_type?: string
-          cluster_id?: string
-          created_at?: string
-          dataset_id?: number
-          fraction?: number | null
-          source?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "scrna_cluster_cell_types_cluster_fkey"
-            columns: ["dataset_id", "cluster_id"]
-            isOneToOne: false
-            referencedRelation: "scrna_clusters"
-            referencedColumns: ["dataset_id", "cluster_id"]
-          },
-        ]
-      }
       scrna_cluster_neighbors: {
         Row: {
           cluster_id: string
