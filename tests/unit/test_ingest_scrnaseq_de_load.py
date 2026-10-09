@@ -69,9 +69,9 @@ def writer(de, client, tmp_path):
 
 
 def load(de, client, tmp_path, summary=SUMMARY, groups=GROUPS, method="seurat-wilcoxon",
-         params_hash="hash-1"):
+         params_hash="hash-1", **kwargs):
     return de.load(writer(de, client, tmp_path), "MYB41", 1, method, PARAMS, params_hash,
-                   summary, groups)
+                   summary, groups, **kwargs)
 
 
 def writes(client, since=0):
@@ -122,6 +122,13 @@ def test_every_comparison_carries_its_gene_count(de, tmp_path):
         "dataset_id": 7, "run_id": run_id, "group1": "pFACT", "group2": "Col-0",
         "n_group1": 10, "n_group2": 20, "group_kind": "genotype",
         "method": "seurat-wilcoxon", "params_hash": "hash-1"}
+
+
+def test_comparisons_can_name_cell_types_instead_of_genotypes(de, tmp_path):
+    """One cell type against the rest is a cluster comparison, not a genotype one."""
+    client = client_with()
+    load(de, client, tmp_path, group_kind="cluster")
+    assert {r["group_kind"] for r in client.tables["scrna_de"]} == {"cluster"}
 
 
 def test_gene_rows_name_their_comparison_and_gene(de, tmp_path):

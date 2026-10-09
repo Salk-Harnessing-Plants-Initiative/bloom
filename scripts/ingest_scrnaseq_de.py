@@ -60,8 +60,8 @@ FRACTION_MARGIN = 1e-9
 # How far a percentage times its group size may sit from a whole number of cells.
 WHOLE_CELL_MARGIN = 1e-6
 
-# The export compares genotypes within a cell type.
-GROUP_KIND = "genotype"
+# What a comparison's two groups name: genotypes within a cell type, or cell types.
+GROUP_KINDS = ("genotype", "cluster")
 
 # Gene rows per insert request. An analysis is roughly 675k rows.
 GENE_BATCH = 10_000
@@ -87,6 +87,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--method", required=True,
                    help="the test that produced the results, e.g. "
                         "seurat-wilcoxon; recorded on the analysis")
+    p.add_argument("--group-kind", choices=GROUP_KINDS, default="genotype",
+                   help="what group1 and group2 name: genotypes within a cell type "
+                        "(the default), or cell types, as in one cell type against the rest")
     p.add_argument("--notes", type=Path,
                    help="a JSON object of notes recorded with the analysis, such as "
                         "how its cells were chosen; written when it is first recorded")
@@ -456,11 +459,11 @@ def _json_number(value: float | None):
 
 
 def comparison_row(dataset_id: int, run_id: int, method: str, params_hash: str,
-                   e: dict, n_genes: int) -> dict:
+                   group_kind: str, e: dict, n_genes: int) -> dict:
     return {"dataset_id": dataset_id, "run_id": run_id, "cluster_id": e["celltype"],
             "contrast": e["contrast"], "group1": e["group1"], "group2": e["group2"],
             "n_group1": e["n_group1"], "n_group2": e["n_group2"],
-            "group_kind": GROUP_KIND, "method": method, "params_hash": params_hash,
+            "group_kind": group_kind, "method": method, "params_hash": params_hash,
             "tested": e["tested"], "n_genes_tested": n_genes}
 
 
@@ -483,7 +486,8 @@ def _stored(writer, run_id: int) -> tuple[dict, dict]:
 
 def load(writer, name: str, species_id: int, method: str, params: dict,
          params_hash: str, summary: list[dict],
-         groups: dict[tuple[str, str], list[dict]]) -> tuple[int, int, int, str]:
+         groups: dict[tuple[str, str], list[dict]],
+         group_kind: str = "genotype") -> tuple[int, int, int, str]:
     """Record the analysis, or continue the one these files already started.
 
     Returns the run id, the comparisons and gene rows written, and "loaded",
@@ -510,7 +514,7 @@ def load(writer, name: str, species_id: int, method: str, params: dict,
     if new:
         written = ingest_api.insert(
             writer, f"write {len(new)} comparisons", "scrna_de",
-            [comparison_row(dataset_id, run["id"], method, params_hash, e,
+            [comparison_row(dataset_id, run["id"], method, params_hash, group_kind, e,
                             len(groups.get((e["celltype"], e["contrast"]), [])))
              for e in new], returning=True)
         existing = {**existing, **{(r["cluster_id"], r["contrast"]): r["id"]
@@ -578,7 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         session = ingest_api.sign_in(api_url, anon_key, args.email, password)
         run_id, comparisons, genes, outcome = load(
             ingest_api.Writer(session, marker), args.dataset_name, args.species_id,
-            args.method, params, params_hash, summary, read["groups"])
+            args.method, params, params_hash, summary, read["groups"], args.group_kind)
     except IngestError as exc:
         print(f"refusing to ingest: {exc}", file=sys.stderr)
         return 1

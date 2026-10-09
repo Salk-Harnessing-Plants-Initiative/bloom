@@ -423,9 +423,9 @@ def test_main_hands_load_the_analysis_and_says_what_happened(
     seen = {}
 
     def recorder(writer, name, species_id, method, params, params_hash, summary,
-                 groups):
+                 groups, group_kind):
         seen.update(name=name, method=method, params=params, hash=params_hash,
-                    comparisons=len(summary))
+                    comparisons=len(summary), group_kind=group_kind)
         return result
     monkeypatch.setattr(de, "load", recorder)
     s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
@@ -433,7 +433,29 @@ def test_main_hands_load_the_analysis_and_says_what_happened(
     assert code == 0 and said in capsys.readouterr().out
     params, params_hash = de.fingerprint(s, r)
     assert seen == {"name": "d", "method": "seurat-wilcoxon", "params": params,
-                    "hash": params_hash, "comparisons": 1}
+                    "hash": params_hash, "comparisons": 1, "group_kind": "genotype"}
+
+
+def test_main_passes_the_group_kind_it_was_given(de, tmp_path, monkeypatch):
+    _signed_in(de, monkeypatch)
+    seen = {}
+
+    def recorder(*args):
+        seen["kind"] = args[-1]
+        return (5, 1, 3, "loaded")
+    monkeypatch.setattr(de, "load", recorder)
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    assert de.main(argv(s, r, "--server", "https://x", "--email", "me@salk.edu",
+                        "--group-kind", "cluster")) == 0
+    assert seen == {"kind": "cluster"}
+
+
+def test_an_unknown_group_kind_is_refused(de, tmp_path):
+    """The schema accepts only genotype and cluster, so anything else stops before reading."""
+    s, r = files(tmp_path, [summary_row()], DEFAULT_RESULTS)
+    with pytest.raises(SystemExit) as exc:
+        de.main(argv(s, r, "--group-kind", "transgene"))
+    assert exc.value.code == 2
 
 
 def test_the_wait_is_checked_before_signing_in(de, tmp_path, monkeypatch, capsys):
@@ -461,7 +483,7 @@ def test_notes_are_stored_with_the_analysis_without_changing_its_fingerprint(
     seen = {}
 
     def recorder(writer, name, species_id, method, params, params_hash, summary,
-                 groups):
+                 groups, group_kind):
         seen.update(params=params, hash=params_hash)
         return (5, 1, 3, "loaded")
     monkeypatch.setattr(de, "load", recorder)
