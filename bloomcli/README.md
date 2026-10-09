@@ -49,6 +49,9 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[write]** `bloomctl genome upload <name> --fasta … --gtf …` — store a reference
   genome's FASTA and GTF as its next version, for the Cell Ranger workflow. See
   [below](#bloomctl-genome-upload).
+- **[read]** `bloomctl genome list` / `bloomctl genome download <name>[.vN]` — see which
+  genomes and versions Bloom holds, and fetch a ready version's FASTA and GTF, checked
+  against Bloom's record. See [below](#bloomctl-genome-list-and-download).
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
   or single scan (metadata `scans.csv` + per-frame images). Select the experiment
   by `--experiment-id N`, `--scan-id N`, or `--experiment-name "<text>"` (a
@@ -781,6 +784,30 @@ bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_202
   offered for a run. Run the same command again to upload it as a new version.
 - Needs a writer login (`bloom_writer`).
 
+## `bloomctl genome list` and `download`
+
+```bash
+bloomctl genome list -p staging                  # every genome, version and status
+bloomctl genome download tair10_araport11 --to ref/ -p staging       # newest ready version
+bloomctl genome download tair10_araport11.v1 --to ref/ -p staging    # a named version
+# For building a Cell Ranger reference (what the workflow runs):
+bloomctl genome download tair10_araport11 --to ref/ --unzip --version-file ref/VERSION
+```
+
+- A version is **ready** once its upload finished. `uploading`, `abandoned` (the upload
+  failed) and `withdrawn` (pulled by an admin, with a reason) versions are listed but never
+  downloaded; asking for one says which it is.
+- `download` writes `genome.fa.gz` and `genes.gtf.gz`, or `genome.fa` and `genes.gtf` with
+  `--unzip`. Each file is streamed to a hidden name and checked against the SHA-256 and size
+  Bloom recorded at upload before it is moved into place; `--unzip` unzips only a checked file.
+  A mismatch saves nothing.
+- Run it again and a file already in place with the right content is kept, so only what is
+  missing is fetched; a different file there is never overwritten.
+- It prints the exact version fetched (`tair10_araport11 v2`); `--version-file` also writes
+  `tair10_araport11.v2` to a file.
+- `list --output json` (or `csv`) gives one record per version.
+- Any login can run both, including the pipeline's (`bloom_workflows`).
+
 ## Access & roles
 
 Commands run **as the logged-in user** — every query and mutation is RLS-enforced
@@ -789,7 +816,7 @@ profile maps to determines what works:
 
 | Command tag                                                                                    | Required role                         | Intended user                                                                             |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
+| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`, `genome list`, `genome download`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
 | **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`, `genome upload`)                        | `bloom_writer` / `bloom_admin` (`genome upload`: `bloom_writer` only)        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the

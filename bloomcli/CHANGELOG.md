@@ -13,6 +13,13 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - `genome upload NAME --fasta FILE --gtf FILE` stores a reference genome's FASTA and GTF in
   Bloom as the genome's next version, for the Cell Ranger workflow. Both files are checked and
   gzipped before anything is sent, and a version whose upload stops part-way is abandoned.
+- `genome list` shows every reference genome with its species and versions, and each
+  version's status (`ready`, `uploading`, `abandoned`, `withdrawn`); `--output json|csv` gives
+  one record per version.
+- `genome download NAME[.vN]` fetches a ready version's FASTA and GTF (the newest ready one by
+  default), checked against the SHA-256 and size Bloom recorded; `--unzip` writes them unzipped
+  for `cellranger mkref`, and `--version-file` records the exact version. A file already in
+  place is kept, and a different one is never overwritten.
 
 ## [0.1.0a11] - 2026-10-07 — each dataset knows the run that generated it
 
