@@ -11,6 +11,7 @@ import { ExpressionGenesByCellType } from "@/components/expression-genes-by-cell
 // import ExpressionCorrelation from "@/components/expression-correlation-page";
 // import ExpressonDownloadFiles from "@/components/expression-download-files";
 import { ExpressionThemeProvider } from "@/components/expression-theme-provider";
+import type { DeFocus } from "@/components/expression-lib/de-types";
 
 type Tab = "umap" | "genes" | "de"; // | "correlation" | "download";
 
@@ -30,6 +31,12 @@ export function ExpressionCockpit({
   const open = (next: Tab) => {
     setTab(next);
     setOpened((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+  };
+  // The comparison the UMAP tab last asked the DE tab to show.
+  const [deFocus, setDeFocus] = useState<DeFocus | null>(null);
+  const showDe = (target: DeFocus) => {
+    setDeFocus({ clusterId: target.clusterId, contrast: target.contrast });
+    open("de");
   };
 
   return (
@@ -63,7 +70,7 @@ export function ExpressionCockpit({
       <div className="p-5 bg-stone-50 min-h-[640px]">
         {opened.has("umap") && (
           <div hidden={tab !== "umap"}>
-            <ExpressionView datasetId={datasetId} datasetName={datasetName} />
+            <ExpressionView datasetId={datasetId} datasetName={datasetName} onShowDe={showDe} />
           </div>
         )}
         {opened.has("genes") && (
@@ -73,7 +80,7 @@ export function ExpressionCockpit({
         )}
         {opened.has("de") && (
           <div hidden={tab !== "de"}>
-            <DifferentialExpressionAnalysis file_id={datasetId} />
+            <DifferentialExpressionAnalysis file_id={datasetId} focus={deFocus} />
           </div>
         )}
         {/*

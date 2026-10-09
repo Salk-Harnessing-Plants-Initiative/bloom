@@ -19,6 +19,7 @@ import Panel, {
   csvFileName,
   csvHeaders,
   directionLabel,
+  entryFor,
   incompleteLoad,
   notEvidenceNote,
   testedLabel,
@@ -518,5 +519,25 @@ describe("countSignificant", () => {
   it("counts an infinite fold change in its direction", () => {
     expect(countSignificant([{ p_val_adj: 0.001, avg_log2FC: Infinity }], 0.05, 0.5))
       .toEqual({ up: 1, down: 0, total: 1 });
+  });
+});
+
+describe("entryFor", () => {
+  const entry = (id: number, cluster_id: string, contrast: string | null) =>
+    ({ id, cluster_id, contrast, group1: cluster_id, group2: "rest", n_group1: 1,
+       n_group2: 1, n_genes_tested: 1, tested: true });
+  const entries = [entry(1, "c1", "vs_rest"), entry(2, "c14", "vs_rest_pFACT"),
+    entry(3, "c14", "vs_rest")];
+
+  it("picks the cell type's named comparison", () => {
+    expect(entryFor(entries, { clusterId: "c14", contrast: "vs_rest" })?.id).toBe(3);
+  });
+
+  it("falls back to the cell type's first comparison when that one is missing", () => {
+    expect(entryFor(entries, { clusterId: "c14", contrast: "gone" })?.id).toBe(2);
+  });
+
+  it("finds nothing for a cell type the analysis does not have", () => {
+    expect(entryFor(entries, { clusterId: "c99", contrast: null })).toBeNull();
   });
 });

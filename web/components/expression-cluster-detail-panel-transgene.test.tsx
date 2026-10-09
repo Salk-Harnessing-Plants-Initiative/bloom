@@ -4,6 +4,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 
 vi.mock("./expression-lib/cluster-markers", () => ({
   fetchClusterStats: vi.fn(async () => null),
+  findOneVsRest: vi.fn(async () => null),
+  fetchDeMarkers: vi.fn(),
 }));
 
 import { ExpressionClusterDetailPanel } from "./expression-cluster-detail-panel";

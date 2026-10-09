@@ -99,3 +99,86 @@ export async function fetchClusterMarkers(
   if (error) throw new Error(`fetchClusterMarkers failed: ${error.message}`);
   return new Map((data ?? []).map((row) => [row.cluster_id, parseMarkers(row.markers)]));
 }
+
+/** What the other side of a one-vs-rest comparison is called. */
+export const REST_GROUP = "rest";
+
+/** How many markers the panel lists. */
+export const TOP_MARKERS = 25;
+
+/** A marker is up in its cluster and below this FDR. */
+export const MARKER_FDR_CUT = 0.05;
+
+/** A cluster's one-vs-rest comparison in the dataset's latest analysis. */
+export type OneVsRest = { deId: number; contrast: string | null };
+
+/** The latest analysis's comparison of this cluster against the rest; when there are
+ *  several (e.g. one per library), the one over the most cells. Null when there is none. */
+export async function findOneVsRest(
+  datasetId: number,
+  clusterId: string,
+): Promise<OneVsRest | null> {
+  const supabase = createClientSupabaseClient();
+  const { data: runs, error: runError } = await supabase
+    .from("scrna_de_runs")
+    .select("id")
+    .eq("dataset_id", datasetId)
+    .eq("status", "complete")
+    .order("completed_at", { ascending: false })
+    .limit(1);
+  if (runError) throw new Error(`findOneVsRest failed: ${runError.message}`);
+  const runId = runs?.[0]?.id;
+  if (runId == null) return null;
+
+  const { data, error } = await supabase
+    .from("scrna_de")
+    .select("id, contrast, n_group1, n_group2")
+    .eq("run_id", runId)
+    .eq("cluster_id", clusterId)
+    .eq("group_kind", "cluster")
+    .eq("group1", clusterId)
+    .eq("group2", REST_GROUP)
+    .eq("tested", true);
+  if (error) throw new Error(`findOneVsRest failed: ${error.message}`);
+  const cells = (r: { n_group1: number | null; n_group2: number | null }) =>
+    (r.n_group1 ?? 0) + (r.n_group2 ?? 0);
+  const best = [...(data ?? [])].sort((a, b) => cells(b) - cells(a))[0];
+  return best ? { deId: best.id, contrast: best.contrast } : null;
+}
+
+/** A comparison's top markers, strongest first, and how many genes are markers at all:
+ *  higher in the cluster, below the FDR cut. */
+export async function fetchDeMarkers(deId: number): Promise<ClusterMarkers> {
+  const supabase = createClientSupabaseClient();
+  const [top, count] = await Promise.all([
+    supabase
+      .from("scrna_de_genes")
+      .select("log2fc, fdr, pct_1, pct_2, scrna_genes!inner(gene_name)")
+      .eq("de_id", deId)
+      .gt("log2fc", 0)
+      .lt("fdr", MARKER_FDR_CUT)
+      .order("fdr", { ascending: true })
+      .order("log2fc", { ascending: false })
+      .limit(TOP_MARKERS),
+    supabase
+      .from("scrna_de_genes")
+      .select("id", { count: "exact", head: true })
+      .eq("de_id", deId)
+      .gt("log2fc", 0)
+      .lt("fdr", MARKER_FDR_CUT),
+  ]);
+  if (top.error) throw new Error(`fetchDeMarkers failed: ${top.error.message}`);
+  if (count.error) throw new Error(`fetchDeMarkers failed: ${count.error.message}`);
+  type Row = { log2fc: number | null; fdr: number; pct_1: number | null; pct_2: number | null;
+    scrna_genes: { gene_name: string } | null };
+  return {
+    top: ((top.data ?? []) as unknown as Row[]).map((r) => ({
+      gene: r.scrna_genes?.gene_name ?? "",
+      log2fc: r.log2fc ?? 0,
+      q: r.fdr,
+      pct_1: r.pct_1 ?? 0,
+      pct_2: r.pct_2 ?? 0,
+    })),
+    n_significant: count.count ?? 0,
+  };
+}

@@ -69,3 +69,6 @@ export function formatFoldChange(value: number, digits: number): string {
   if (Number.isNaN(value)) return "";
   return value > 0 ? "+∞" : "−∞";
 }
+
+/** A comparison to open in the DE tab: a cell type and, when it has several, which one. */
+export type DeFocus = { clusterId: string; contrast: string | null };

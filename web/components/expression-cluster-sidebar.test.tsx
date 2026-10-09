@@ -9,6 +9,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 
 import { ExpressionClusterSidebar } from "./expression-cluster-sidebar";
 import type { Database } from "@/lib/database.types";
+import type { PredictedSource } from "@/components/expression-lib/cell-type-labels";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
@@ -21,10 +22,11 @@ function cluster(ordinal: number, name: string, source: string | null): Cluster 
   } as unknown as Cluster;
 }
 
-function renderSidebar(clusters: Cluster[]) {
+function renderSidebar(clusters: Cluster[], predicted?: Map<number, PredictedSource[]>) {
   render(
     <ExpressionClusterSidebar
       clusters={clusters}
+      predicted={predicted}
       hiddenOrdinals={new Set()}
       onVisibilityChange={() => {}}
       onSolo={() => {}}
@@ -48,5 +50,25 @@ describe("ExpressionClusterSidebar label sources", () => {
     renderSidebar([cluster(0, "Xylem", null), cluster(1, "Phloem", "   ")]);
     expect(screen.queryByText(/^from /)).toBeNull();
     expect(screen.getByText("Xylem")).toBeTruthy();
+  });
+});
+
+describe("ExpressionClusterSidebar predicted cell types", () => {
+  it("lists each source's labels under the cluster", () => {
+    renderSidebar([cluster(0, "C14", null)], new Map([[0, [
+      { key: "curated_cell_type", labels: [{ label: "Young phellem", share: 1 }] },
+      { key: "shahan_atlas", labels: [
+        { label: "Columella", share: 0.79 }, { label: "Lateral Root Cap", share: 0.18 },
+      ] },
+    ]]]));
+    expect(screen.getByText("Predicted cell types")).toBeTruthy();
+    expect(screen.getByText("Curated cell type: Young phellem")).toBeTruthy();
+    expect(screen.getByText("Shahan atlas: Columella 79%, Lateral Root Cap 18%")).toBeTruthy();
+  });
+
+  it("shows no section for a cluster without predictions", () => {
+    renderSidebar([cluster(0, "Xylem", "shahan")], new Map());
+    expect(screen.queryByText("Predicted cell types")).toBeNull();
+    expect(screen.getByText("from shahan")).toBeTruthy();
   });
 });

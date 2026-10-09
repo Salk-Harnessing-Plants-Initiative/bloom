@@ -34,6 +34,7 @@ import {
   type AnalysisRun,
   type Client,
   type DeEntry,
+  type DeFocus,
 } from "./expression-lib/de-types";
 
 type GeneData = {
@@ -290,7 +291,23 @@ export function directionLabel(entry: DeEntry): string {
     `${entry.group2}; a negative one is higher in ${entry.group2}.`;
 }
 
-export default function DifferentialExpressionAnalysis({ file_id }: { file_id: number }) {
+/** The entry a focus names: its cell type, and its comparison when it gives one. */
+export function entryFor(entries: readonly DeEntry[], focus: DeFocus): DeEntry | null {
+  return (
+    entries.find((e) => e.cluster_id === focus.clusterId && e.contrast === focus.contrast) ??
+    entries.find((e) => e.cluster_id === focus.clusterId) ??
+    null
+  );
+}
+
+export default function DifferentialExpressionAnalysis({
+  file_id,
+  focus = null,
+}: {
+  file_id: number;
+  /** A comparison to select, e.g. from the UMAP tab's "Get the full list". */
+  focus?: DeFocus | null;
+}) {
   const [run, setRun] = useState<AnalysisRun | null>(null);
   const [clusterList, setClusterList] = useState<DeEntry[]>([]);
   const [selectedCluster, setSelectedCluster] = useState<DeEntry | null>(null);
@@ -330,6 +347,17 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
       cancelled = true;
     };
   }, [file_id]);
+
+  // Select the comparison another tab asked for, once the list is here.
+  useEffect(() => {
+    if (!focus || clusterList.length === 0) return;
+    const entry = entryFor(clusterList, focus);
+    if (entry) {
+      setOnlySignificant(false);
+      setSelectedCluster(entry);
+      comparisonRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [focus, clusterList]);
 
   // The selected comparison's gene results.
   useEffect(() => {
@@ -705,14 +733,14 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
     };
   }, [chartData, selectedCluster, fdrCut, lfcCut, chartWidth]);
 
-  /** Download the table as it stands, filtered or not, as CSV. */
-  const downloadCSV = () => {
+  /** Download rows as CSV: the table as it stands by default, or every gene tested. */
+  const downloadCSV = (rows: readonly GeneData[] = tableRows) => {
     if (!chartData) return;
 
     const fields = ['gene', 'avg_log2FC', 'p_val', 'p_val_adj', 'pct.1', 'pct.2'] as const;
     const csvContent = [
       csvHeaders(selectedCluster).join(','),
-      ...tableRows.map(row => fields.map(f => row[f]).join(','))
+      ...rows.map(row => fields.map(f => row[f]).join(','))
     ].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv' });
@@ -922,11 +950,19 @@ export default function DifferentialExpressionAnalysis({ file_id }: { file_id: n
                 variant="outlined"
                 size="small"
               />
-              <Tooltip title="Download the table as CSV">
-                <IconButton onClick={downloadCSV} size="small">
+              <Tooltip title="Download the table as it stands, filtered or not, as CSV">
+                <IconButton onClick={() => downloadCSV()} size="small">
                   <FileDownloadIcon />
                 </IconButton>
               </Tooltip>
+              <Button
+                onClick={() => downloadCSV(chartData)}
+                size="small"
+                variant="outlined"
+                startIcon={<FileDownloadIcon />}
+              >
+                Full list ({chartData.length.toLocaleString()} genes)
+              </Button>
             </>
           )}
 
