@@ -17,6 +17,8 @@ export type DeEntry = {
   n_group2: number | null;
   n_genes_tested: number | null;
   tested: boolean | null;
+  /** The analysis the comparison belongs to, when the tab shows several. */
+  run_id?: number;
 };
 
 /** The analysis the comparisons belong to: a row of scrna_de_runs. */

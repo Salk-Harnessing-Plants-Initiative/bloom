@@ -2,11 +2,7 @@
 
 import type { Database } from "@/lib/database.types";
 import type { TransgeneCount } from "@/components/expression-lib/transgene";
-import {
-  formatShares,
-  sourceName,
-  type PredictedSource,
-} from "@/components/expression-lib/cell-type-labels";
+import { sourceName, type PredictedSource } from "@/components/expression-lib/cell-type-labels";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
@@ -122,12 +118,12 @@ export function ExpressionClusterSidebar({
                     </span>
                   )}
                   {predictions && predictions.length > 0 && (
-                    <span className="mt-0.5 flex flex-col text-[11px] text-stone-400">
-                      <span className="text-[10px] uppercase tracking-wider">
-                        Predicted cell types
-                      </span>
+                    <span
+                      className="mt-0.5 flex flex-col text-[11px] text-stone-400"
+                      aria-label="Predicted cell types"
+                    >
                       {predictions.map((p) => {
-                        const line = `${sourceName(p.key)}: ${formatShares(p.labels)}`;
+                        const line = `${p.label} (${sourceName(p.key)})`;
                         return (
                           <span key={p.key} className="truncate" title={line}>
                             {line}

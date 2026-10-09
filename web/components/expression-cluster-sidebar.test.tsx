@@ -54,21 +54,19 @@ describe("ExpressionClusterSidebar label sources", () => {
 });
 
 describe("ExpressionClusterSidebar predicted cell types", () => {
-  it("lists each source's labels under the cluster", () => {
+  it("lists one cell type per source, the source in brackets", () => {
     renderSidebar([cluster(0, "C14", null)], new Map([[0, [
-      { key: "curated_cell_type", labels: [{ label: "Young phellem", share: 1 }] },
-      { key: "shahan_atlas", labels: [
-        { label: "Columella", share: 0.79 }, { label: "Lateral Root Cap", share: 0.18 },
-      ] },
+      { key: "curated", label: "Young phellem" },
+      { key: "shahan_atlas", label: "Columella" },
     ]]]));
-    expect(screen.getByText("Predicted cell types")).toBeTruthy();
-    expect(screen.getByText("Curated cell type: Young phellem")).toBeTruthy();
-    expect(screen.getByText("Shahan atlas: Columella 79%, Lateral Root Cap 18%")).toBeTruthy();
+    expect(screen.getByText("Young phellem (Curated)")).toBeTruthy();
+    expect(screen.getByText("Columella (Shahan atlas)")).toBeTruthy();
+    expect(screen.queryByText(/%/)).toBeNull();
   });
 
-  it("shows no section for a cluster without predictions", () => {
+  it("shows nothing extra for a cluster without predictions", () => {
     renderSidebar([cluster(0, "Xylem", "shahan")], new Map());
-    expect(screen.queryByText("Predicted cell types")).toBeNull();
+    expect(screen.queryByLabelText("Predicted cell types")).toBeNull();
     expect(screen.getByText("from shahan")).toBeTruthy();
   });
 });

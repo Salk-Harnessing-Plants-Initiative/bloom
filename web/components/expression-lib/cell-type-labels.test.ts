@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   cellTypeLabelKeys,
-  formatShares,
   predictedCellTypes,
   sourceName,
 } from "./cell-type-labels";
@@ -34,31 +33,26 @@ describe("cellTypeLabelKeys", () => {
 });
 
 describe("predictedCellTypes", () => {
-  it("gives each source's commonest labels with their share of the cluster", () => {
+  it("gives the label most of the cluster's cells carry from each source", () => {
     const input = cells(0, [
       ...Array(7).fill({ atlas: "Columella" }),
       ...Array(2).fill({ atlas: "Lateral root cap" }),
       { atlas: "Xylem" },
     ]);
     expect(predictedCellTypes(input, ["atlas"]).get(0)).toEqual([
-      { key: "atlas", labels: [
-        { label: "Columella", share: 0.7 },
-        { label: "Lateral root cap", share: 0.2 },
-      ] },
+      { key: "atlas", label: "Columella" },
     ]);
   });
 
-  it("leaves out labels under a tenth of the cluster", () => {
-    const input = cells(0, [...Array(19).fill({ atlas: "Columella" }), { atlas: "Xylem" }]);
-    expect(predictedCellTypes(input, ["atlas"]).get(0)?.[0].labels.map((l) => l.label)).toEqual([
-      "Columella",
-    ]);
+  it("breaks a tie by name, so the label does not change between loads", () => {
+    const input = cells(0, [{ atlas: "Xylem" }, { atlas: "Cortex" }]);
+    expect(predictedCellTypes(input, ["atlas"]).get(0)?.[0].label).toBe("Cortex");
   });
 
-  it("counts shares out of every cell in the cluster, labelled or not", () => {
-    const input = [...cells(0, [{ atlas: "Columella" }]), { cluster_ordinal: 0, facets: null }];
-    expect(predictedCellTypes(input, ["atlas"]).get(0)?.[0].labels).toEqual([
-      { label: "Columella", share: 0.5 },
+  it("skips a source none of the cluster's cells has a label from", () => {
+    const input = [...cells(0, [{ curated: "Phellem" }]), { cluster_ordinal: 0, facets: null }];
+    expect(predictedCellTypes(input, ["curated", "atlas"]).get(0)).toEqual([
+      { key: "curated", label: "Phellem" },
     ]);
   });
 
@@ -69,7 +63,7 @@ describe("predictedCellTypes", () => {
     ];
     const out = predictedCellTypes(input, ["curated", "atlas"]);
     expect(out.get(0)?.map((s) => s.key)).toEqual(["curated", "atlas"]);
-    expect(out.get(1)?.[0].labels[0].label).toBe("Xylem");
+    expect(out.get(1)?.[0].label).toBe("Xylem");
   });
 
   it("is empty when the dataset marks no cell types", () => {
@@ -77,14 +71,9 @@ describe("predictedCellTypes", () => {
   });
 });
 
-describe("formatShares and sourceName", () => {
-  it("writes shares as whole percentages and drops it when every cell agrees", () => {
-    expect(formatShares([{ label: "Columella", share: 0.794 }, { label: "LRC", share: 0.18 }]))
-      .toBe("Columella 79%, LRC 18%");
-    expect(formatShares([{ label: "Young phellem", share: 1 }])).toBe("Young phellem");
-  });
-
+describe("sourceName", () => {
   it("turns a label key into words", () => {
     expect(sourceName("periderm_atlas")).toBe("Periderm atlas");
+    expect(sourceName("curated")).toBe("Curated");
   });
 });

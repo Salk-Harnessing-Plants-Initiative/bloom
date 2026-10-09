@@ -148,6 +148,42 @@ export async function fetchLatestRun(supabase: Client, datasetId: number): Promi
   return (data?.[0] as AnalysisRun | undefined) ?? null;
 }
 
+/** The dataset's completed analyses, newest first. */
+export async function fetchCompleteRuns(supabase: Client, datasetId: number): Promise<AnalysisRun[]> {
+  const { data, error } = await supabase
+    .from("scrna_de_runs")
+    .select("id, method, params, completed_at")
+    .eq("dataset_id", datasetId)
+    .eq("status", "complete")
+    .order("completed_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as AnalysisRun[];
+}
+
+/** Every analysis's comparisons, each tagged with its analysis. A comparison two
+ *  analyses both hold is taken from the newer, as a re-upload replaces the old. */
+export async function fetchAllComparisons(
+  supabase: Client,
+  runs: readonly AnalysisRun[],
+): Promise<DeEntry[]> {
+  const perRun = await Promise.all(runs.map((r) => fetchComparisons(supabase, r.id)));
+  const seen = new Set<string>();
+  const out: DeEntry[] = [];
+  runs.forEach((r, i) => {
+    for (const entry of perRun[i]) {
+      const key = `${entry.cluster_id ?? ""}\u0000${entry.contrast ?? ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...entry, run_id: r.id });
+    }
+  });
+  return out.sort(
+    (a, b) =>
+      (a.cluster_id ?? "").localeCompare(b.cluster_id ?? "") ||
+      (a.contrast ?? "").localeCompare(b.contrast ?? ""),
+  );
+}
+
 /** An analysis's comparisons, by cell type and then contrast. */
 export async function fetchComparisons(supabase: Client, runId: number): Promise<DeEntry[]> {
   const { data, error } = await supabase
@@ -308,9 +344,11 @@ export default function DifferentialExpressionAnalysis({
   /** A comparison to select, e.g. from the UMAP tab's "Get the full list". */
   focus?: DeFocus | null;
 }) {
-  const [run, setRun] = useState<AnalysisRun | null>(null);
+  const [runs, setRuns] = useState<AnalysisRun[]>([]);
   const [clusterList, setClusterList] = useState<DeEntry[]>([]);
   const [selectedCluster, setSelectedCluster] = useState<DeEntry | null>(null);
+  // The analysis the selected comparison came from.
+  const run = runs.find((r) => r.id === selectedCluster?.run_id) ?? runs[0] ?? null;
   const [chartData, setChartData] = useState<GeneData[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
@@ -331,10 +369,10 @@ export default function DifferentialExpressionAnalysis({
       setLoading(true);
       setLoadError(null);
       try {
-        const latest = await fetchLatestRun(supabase, file_id);
-        const rows = latest ? await fetchComparisons(supabase, latest.id) : [];
+        const complete = await fetchCompleteRuns(supabase, file_id);
+        const rows = await fetchAllComparisons(supabase, complete);
         if (cancelled) return;
-        setRun(latest);
+        setRuns(complete);
         setClusterList(rows);
         setSelectedCluster(rows.find((row) => row.tested !== false) ?? rows[0] ?? null);
       } catch (err) {
