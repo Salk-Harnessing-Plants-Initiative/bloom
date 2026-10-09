@@ -10,12 +10,20 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { ExpressionClusterDetailPanel } from "@/components/expression-cluster-detail-panel";
 
 const fetchClusterStats = vi.hoisted(() => vi.fn());
-vi.mock("@/components/expression-lib/cluster-markers", () => ({ fetchClusterStats }));
+const findOneVsRest = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<{ deId: number; contrast: string | null } | null>>(
+    async () => null,
+  ),
+);
+const fetchDeMarkers = vi.hoisted(() => vi.fn());
+vi.mock("@/components/expression-lib/cluster-markers", () => ({
+  fetchClusterStats, findOneVsRest, fetchDeMarkers,
+}));
 
 const STATS = {
   dataset_id: 1,
@@ -39,6 +47,8 @@ function panel(clusterId = "Phellem") {
 afterEach(() => {
   cleanup();
   fetchClusterStats.mockReset();
+  findOneVsRest.mockReset().mockResolvedValue(null);
+  fetchDeMarkers.mockReset();
 });
 
 describe("ExpressionClusterDetailPanel", () => {
@@ -128,5 +138,65 @@ describe("ExpressionClusterDetailPanel", () => {
     expect(screen.queryByText(/164 cells/)).toBeNull();
     expect(screen.getByText("Loading…")).toBeTruthy();
     release(STATS);
+  });
+});
+
+describe("ExpressionClusterDetailPanel without stored markers", () => {
+  const DE = { deId: 9, contrast: "vs_rest" };
+  const DE_MARKERS = {
+    top: [{ gene: "AT5G09530", log2fc: 5.46, q: 3e-86, pct_1: 0.78, pct_2: 0.15 }],
+    n_significant: 282,
+  };
+
+  it("lists the top of the cluster's one-vs-rest analysis instead", async () => {
+    fetchClusterStats.mockResolvedValue(null);
+    findOneVsRest.mockResolvedValue(DE);
+    fetchDeMarkers.mockResolvedValue(DE_MARKERS);
+    render(
+      <ExpressionClusterDetailPanel
+        datasetId={1} clusterId="c14" clusterName="C14" clusterColor="#000" cellCount={371}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("AT5G09530")).toBeTruthy());
+    expect(fetchDeMarkers).toHaveBeenCalledWith(9);
+    expect(screen.getByText("282")).toBeTruthy();
+    expect(screen.getByText(/371 cells/)).toBeTruthy();
+  });
+
+  it("opens the full list for that comparison", async () => {
+    fetchClusterStats.mockResolvedValue(null);
+    findOneVsRest.mockResolvedValue(DE);
+    fetchDeMarkers.mockResolvedValue(DE_MARKERS);
+    const onShowFullList = vi.fn();
+    render(
+      <ExpressionClusterDetailPanel
+        datasetId={1} clusterId="c14" clusterName="C14" clusterColor="#000"
+        onShowFullList={onShowFullList}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Get the full list/ }));
+    expect(onShowFullList).toHaveBeenCalledWith({ deId: 9, contrast: "vs_rest", clusterId: "c14" });
+  });
+
+  it("offers no full list when the cluster has no one-vs-rest analysis", async () => {
+    fetchClusterStats.mockResolvedValue(null);
+    render(
+      <ExpressionClusterDetailPanel
+        datasetId={1} clusterId="c14" clusterName="C14" clusterColor="#000"
+        onShowFullList={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/No markers stored for this cell type/)).toBeTruthy(),
+    );
+    expect(screen.queryByRole("button", { name: /Get the full list/ })).toBeNull();
+  });
+
+  it("keeps stored markers rather than asking the analysis", async () => {
+    fetchClusterStats.mockResolvedValue(STATS);
+    findOneVsRest.mockResolvedValue(DE);
+    render(panel());
+    await waitFor(() => expect(screen.getByText("AT5G09530")).toBeTruthy());
+    expect(fetchDeMarkers).not.toHaveBeenCalled();
   });
 });
