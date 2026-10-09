@@ -103,7 +103,7 @@ def _gzip_to(source: Path, dest: Path) -> None:
             shutil.copyfileobj(src, gz, READ_BYTES)
 
 
-def _digest(path: Path) -> str:
+def sha256_of(path: Path) -> str:
     sha = hashlib.sha256()
     with path.open("rb") as fh:
         for block in iter(lambda: fh.read(READ_BYTES), b""):
@@ -127,4 +127,4 @@ def prepare(source: Path, workdir: Path, stored_name: str) -> Prepared:
         )
     if size == 0:
         raise FileProblem(f"{source.name} is empty")
-    return Prepared(path=path, sha256=_digest(path), size=size)
+    return Prepared(path=path, sha256=sha256_of(path), size=size)
