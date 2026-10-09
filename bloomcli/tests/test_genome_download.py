@@ -210,21 +210,6 @@ def test_an_unzip_that_stops_part_way_leaves_nothing(genome, storage, tmp_path):
 # --- the workflow's contract -----------------------------------------------------------------
 
 
-def test_version_only_names_the_version_and_downloads_nothing(genome, storage, tmp_path):
-    version_file = tmp_path / "VERSION"
-    result = _run("tair10_araport11", "--version-only", "--to", str(tmp_path / "ref"),
-                  "--version-file", str(version_file))
-    assert result.exit_code == 0, result.output
-    assert result.stdout == "tair10_araport11.v2\n"
-    assert version_file.read_text() == "tair10_araport11.v2\n"
-    assert _reads(storage) == [] and not (tmp_path / "ref").exists()
-
-
-def test_version_only_refuses_what_download_refuses(genome, tmp_path):
-    result = _run("tair10_araport11.v3", "--version-only")
-    assert result.exit_code == 3 and "still uploading" in result.output
-
-
 def test_a_storage_error_is_worth_retrying_so_exits_1(genome, storage, tmp_path):
     storage.object_status = 503
     result = _run("tair10_araport11", "--to", str(tmp_path))

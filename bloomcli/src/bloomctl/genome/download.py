@@ -53,12 +53,9 @@ class Unavailable(click.ClickException):
               help="Write genome.fa and genes.gtf, unzipped once checked, instead of the .gz files.")
 @click.option("--version-file", type=click.Path(dir_okay=False, path_type=Path),
               help="Also write the exact version (NAME.vN) to this file.")
-@click.option("--version-only", is_flag=True,
-              help="Only say which version GENOME means (NAME.vN); download nothing.")
 @click.option("-p", "--profile", default=DEFAULT_PROFILE, show_default=True,
               help="Credentials profile to use.")
-def download(genome: str, to: Path, unzip: bool, version_file: Path | None, version_only: bool,
-             profile: str) -> None:
+def download(genome: str, to: Path, unzip: bool, version_file: Path | None, profile: str) -> None:
     """Download a genome version's FASTA and GTF, checked against Bloom's record.
 
     GENOME is a genome's name, for its newest ready version, or NAME.vN for version N. Only a
@@ -77,9 +74,6 @@ def download(genome: str, to: Path, unzip: bool, version_file: Path | None, vers
     version = _version(conn.client, name, named["version"])
     exact = f"{name}.v{version['version']}"
     label = f"{name} v{version['version']}"
-    if version_only:
-        _say_version(exact, version_file)
-        return
     try:
         to.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
