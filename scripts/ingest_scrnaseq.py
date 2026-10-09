@@ -163,6 +163,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--add-labels", action="store_true",
                    help="add the genotypes, labels and cell-type sources to a dataset "
                         "already loaded from this file, leaving its cells as they are")
+    p.add_argument("--relabel", action="store_true",
+                   help="with --add-labels, take the labels from a rebuilt file rather than "
+                        "the one the dataset was loaded from; refused unless its cells, in "
+                        "order, and their cell types are the dataset's")
     p.add_argument("--umap-key", default="X_umap")
     p.add_argument(
         "--expect-cells",
@@ -722,7 +726,7 @@ def _check_same_cells(writer, dataset_id: int, cells: dict) -> None:
 
 
 def add_labels(writer, name: str, species_id: int, cells: dict, source_checksum: str,
-               options: dict) -> tuple[int, dict]:
+               options: dict, relabel: bool = False) -> tuple[int, dict]:
     """Add genotypes, cell labels and cell-type sources to a dataset already loaded
     from this file, leaving its cells where they are.
 
@@ -740,11 +744,11 @@ def add_labels(writer, name: str, species_id: int, cells: dict, source_checksum:
     if not found.get("ingested_at"):
         raise IngestError(f"dataset {dataset_id}'s cells are not finished; finish loading "
                           f"them before adding labels")
-    if found.get("source_checksum") != source_checksum:
+    if found.get("source_checksum") != source_checksum and not relabel:
         raise IngestError(f"dataset {dataset_id} was loaded from a file with checksum "
                           f"{found.get('source_checksum')}; this file's is {source_checksum}. "
                           f"Labels are paired to cells by position, so they have to come "
-                          f"from the same file")
+                          f"from the same file, or from a rebuilt one with --relabel")
     _check_same_cells(writer, dataset_id, cells)
     plan = None
     if cells.get("genotypes") is not None:
@@ -832,6 +836,9 @@ def main(argv: list[str] | None = None) -> int:
                "genotype_column": args.genotype_column, "control": args.control,
                "constructs": constructs or None, "facets": list(args.facet) or None,
                "cell_type_labels": list(args.cell_type_label) or None}
+    if args.relabel and not args.add_labels:
+        print("refusing to ingest: --relabel only goes with --add-labels", file=sys.stderr)
+        return 1
     if args.add_labels and not (args.source_column or args.genotype_column or args.facet
                                 or args.cell_type_label):
         print("refusing to ingest: --add-labels needs --source-column, --genotype-column, "
@@ -846,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.add_labels:
             dataset_id, added = add_labels(
                 ingest_api.Writer(session, marker), args.dataset_name, args.species_id,
-                cells, checksum(args.h5ad), options,
+                cells, checksum(args.h5ad), options, relabel=args.relabel,
             )
             print(f"added labels to dataset {dataset_id} ({args.dataset_name.strip()!r}): "
                   f"{added['genotypes']} genotypes, {added['cells']} cells labelled, "

@@ -437,3 +437,26 @@ def test_added_labels_list_the_cell_type_labels_and_keep_other_metadata(ingest, 
     assert ds["metadata"]["cell_type_labels"] == ["atlas"]
     assert ds["metadata"]["load_options"]["cell_type_labels"] == ["atlas"]
     assert ds["metadata"]["cell_type_column"] == "ann"
+
+
+def test_relabel_takes_labels_from_a_rebuilt_file_with_the_same_cells(ingest, tmp_path):
+    client = FakeClient()
+    finished_without_labels(ingest, client, tmp_path)
+    _, added = ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, labelled(),
+                                 "sha-2", LABEL_OPTIONS, relabel=True)
+    assert added["cells"] == 4
+    rows = sorted(client.tables["scrna_cells"], key=lambda r: r["cell_number"])
+    assert [r["facets"]["transgene_pos"] for r in rows] == ["False", "True", "True", "False"]
+    (ds,) = client.tables["scrna_datasets"]
+    assert ds["source_checksum"] == "sha-1", "the cells still come from the first file"
+
+
+def test_relabel_still_refuses_a_file_whose_cells_differ(ingest, tmp_path):
+    client = FakeClient()
+    _, table = finished_without_labels(ingest, client, tmp_path)
+    table["barcodes"] = list(reversed(table["barcodes"]))
+    since = len(client.log)
+    with pytest.raises(ingest.IngestError, match="does not hold these cells in this order"):
+        ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table, "sha-2",
+                          LABEL_OPTIONS, relabel=True)
+    assert writes(client, since) == []

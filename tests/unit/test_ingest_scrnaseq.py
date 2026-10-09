@@ -799,3 +799,12 @@ def test_a_column_cannot_be_both_a_toggle_and_a_cell_type_label(ingest, tmp_path
                         "--cell-type-label", "saturn_timezone", "--dry-run"])
     assert code == 1
     assert "both --facet and --cell-type-label" in capsys.readouterr().err
+
+
+def test_relabel_needs_add_labels(ingest, tmp_path, capsys):
+    path = write_h5ad(tmp_path / "relabel.h5ad", extra_obs=LABELLED_OBS)
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "t", "--species-id", "1",
+                        "--annotation", "nn_label_plain", "--facet", "transgene_pos",
+                        "--relabel", "--email", "me@salk.edu"])
+    assert code == 1
+    assert "--relabel only goes with --add-labels" in capsys.readouterr().err
