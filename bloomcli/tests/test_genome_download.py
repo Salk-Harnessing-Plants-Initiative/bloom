@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from scrna_fake_db import FakeClient
 
 from bloomctl.cli import cli
+from bloomctl.scrna import _session
 
 FASTA = b">Chr1\nACGTACGTNNACGT\n>Chr2\nGGCC\n"
 GTF = b"Chr1\tAraport11\tgene\t1\t10\t.\t+\t.\tgene_id \"AT1G01010\";\n"
@@ -62,7 +63,7 @@ def test_the_newest_ready_version_is_downloaded_by_default(genome, storage, tmp_
     assert result.exit_code == 0, result.output
     assert (tmp_path / "genome.fa.gz").read_bytes() == FASTA_GZ
     assert (tmp_path / "genes.gtf.gz").read_bytes() == GTF_GZ
-    assert "tair10_araport11 v2" in result.stdout
+    assert result.stdout == "tair10_araport11.v2\n"
     assert all("/v2/" in r.url.path for r in _reads(storage)), "never the uploading v3"
 
 
@@ -70,7 +71,7 @@ def test_a_named_ready_version_is_downloaded(genome, storage, tmp_path):
     genome[0]["status"] = "ready"
     result = _run("tair10_araport11.v1", "--to", str(tmp_path))
     assert result.exit_code == 0, result.output
-    assert "tair10_araport11 v1" in result.stdout
+    assert result.stdout == "tair10_araport11.v1\n"
 
 
 @pytest.mark.parametrize("named, words", [
@@ -79,7 +80,7 @@ def test_a_named_ready_version_is_downloaded(genome, storage, tmp_path):
 ])
 def test_a_version_that_isnt_ready_is_refused_and_nothing_written(genome, tmp_path, named, words):
     result = _run(named, "--to", str(tmp_path))
-    assert result.exit_code == 1
+    assert result.exit_code == 3
     assert words in result.output
     assert list(tmp_path.iterdir()) == []
 
@@ -87,23 +88,23 @@ def test_a_version_that_isnt_ready_is_refused_and_nothing_written(genome, tmp_pa
 def test_an_abandoned_version_is_refused(genome, tmp_path):
     genome[2]["status"] = "abandoned"
     result = _run("tair10_araport11.v3", "--to", str(tmp_path))
-    assert result.exit_code == 1 and "v3's upload failed" in result.output
+    assert result.exit_code == 3 and "v3's upload failed" in result.output
 
 
 def test_a_version_that_doesnt_exist_is_refused(genome, tmp_path):
     result = _run("tair10_araport11.v9", "--to", str(tmp_path))
-    assert result.exit_code == 1 and "has no v9" in result.output
+    assert result.exit_code == 3 and "has no v9" in result.output
 
 
 def test_an_unknown_genome_is_refused(genome, tmp_path):
     result = _run("rice_v7", "--to", str(tmp_path))
-    assert result.exit_code == 1 and "No genome is named 'rice_v7'" in result.output
+    assert result.exit_code == 3 and "No genome is named 'rice_v7'" in result.output
 
 
 def test_a_genome_with_no_ready_version_is_refused(genome, tmp_path):
     genome[1]["status"] = "abandoned"
     result = _run("tair10_araport11", "--to", str(tmp_path))
-    assert result.exit_code == 1 and "has no ready version" in result.output
+    assert result.exit_code == 3 and "has no ready version" in result.output
     assert list(tmp_path.iterdir()) == []
 
 
@@ -118,7 +119,7 @@ def test_a_name_bloom_cannot_hold_is_a_usage_error(genome, bad):
 def test_a_file_that_doesnt_match_bloom_is_removed_and_fails(genome, storage, tmp_path):
     storage.objects["genome-references/tair10_araport11/v2/genes.gtf.gz"] = gzip.compress(b"x")
     result = _run("tair10_araport11", "--to", str(tmp_path))
-    assert result.exit_code == 1
+    assert result.exit_code == 3
     assert "genes.gtf.gz" in result.output and "doesn't match" in result.output
     assert not (tmp_path / "genes.gtf.gz").exists()
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")], "no partial left"
@@ -127,7 +128,7 @@ def test_a_file_that_doesnt_match_bloom_is_removed_and_fails(genome, storage, tm
 def test_a_file_missing_from_storage_says_so(genome, storage, tmp_path):
     del storage.objects["genome-references/tair10_araport11/v2/genome.fa.gz"]
     result = _run("tair10_araport11", "--to", str(tmp_path))
-    assert result.exit_code == 1 and "isn't stored" in result.output
+    assert result.exit_code == 3 and "isn't stored" in result.output
     assert not (tmp_path / "genome.fa.gz").exists()
 
 
@@ -145,7 +146,7 @@ def test_unzip_writes_the_plain_files_after_the_check(genome, tmp_path):
 def test_unzip_of_a_mismatched_file_writes_nothing(genome, storage, tmp_path):
     storage.objects["genome-references/tair10_araport11/v2/genome.fa.gz"] = gzip.compress(b">x\n")
     result = _run("tair10_araport11", "--to", str(tmp_path), "--unzip")
-    assert result.exit_code == 1
+    assert result.exit_code == 3
     assert not (tmp_path / "genome.fa").exists()
 
 
@@ -171,7 +172,7 @@ def test_an_unzipped_retry_downloads_nothing(genome, storage, tmp_path):
 def test_a_different_file_at_the_destination_is_never_overwritten(genome, tmp_path, unzip, name):
     (tmp_path / name).write_bytes(b"someone else's file")
     result = _run("tair10_araport11", "--to", str(tmp_path), *(["--unzip"] if unzip else []))
-    assert result.exit_code == 1 and name in result.output
+    assert result.exit_code == 3 and name in result.output
     assert (tmp_path / name).read_bytes() == b"someone else's file"
 
 
@@ -201,6 +202,93 @@ def test_an_unzip_that_stops_part_way_leaves_nothing(genome, storage, tmp_path):
     storage.objects["genome-references/tair10_araport11/v2/genome.fa.gz"] = cut
     genome[1].update(fasta_sha256=_sha(cut), fasta_bytes=len(cut))
     result = _run("tair10_araport11", "--to", str(tmp_path), "--unzip")
-    assert result.exit_code == 1 and "is not a whole gzipped file" in result.output
+    assert result.exit_code == 3 and "is not a whole gzipped file" in result.output
     assert not (tmp_path / "genome.fa").exists()
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".genome")], "no partial left"
+
+
+# --- the workflow's contract -----------------------------------------------------------------
+
+
+def test_version_only_names_the_version_and_downloads_nothing(genome, storage, tmp_path):
+    version_file = tmp_path / "VERSION"
+    result = _run("tair10_araport11", "--version-only", "--to", str(tmp_path / "ref"),
+                  "--version-file", str(version_file))
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tair10_araport11.v2\n"
+    assert version_file.read_text() == "tair10_araport11.v2\n"
+    assert _reads(storage) == [] and not (tmp_path / "ref").exists()
+
+
+def test_version_only_refuses_what_download_refuses(genome, tmp_path):
+    result = _run("tair10_araport11.v3", "--version-only")
+    assert result.exit_code == 3 and "still uploading" in result.output
+
+
+def test_a_storage_error_is_worth_retrying_so_exits_1(genome, storage, tmp_path):
+    storage.object_status = 503
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 1
+    assert "Run the same command again" in result.output
+
+
+def test_the_newest_of_several_ready_versions_is_chosen(genome, storage, tmp_path):
+    genome[0]["status"] = "ready"
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tair10_araport11.v2\n"
+    assert all("/v2/" in r.url.path for r in _reads(storage))
+
+
+def _same_size_other(data: bytes) -> bytes:
+    """The same number of bytes, one of them different."""
+    return data[:-1] + bytes([data[-1] ^ 0xFF])
+
+
+def test_a_same_size_file_with_other_content_is_caught_by_its_checksum(genome, storage, tmp_path):
+    other = _same_size_other(GTF_GZ)
+    storage.objects["genome-references/tair10_araport11/v2/genes.gtf.gz"] = other
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 3 and "doesn't match" in result.output
+    assert not (tmp_path / "genes.gtf.gz").exists()
+
+
+def test_a_same_size_file_already_in_place_is_refused_not_kept(genome, tmp_path):
+    (tmp_path / "genes.gtf.gz").write_bytes(_same_size_other(GTF_GZ))
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 3 and "holds a different file" in result.output
+
+
+def test_an_unzipped_file_changed_after_download_is_refused(genome, tmp_path):
+    assert _run("tair10_araport11", "--to", str(tmp_path), "--unzip").exit_code == 0
+    (tmp_path / "genome.fa").write_bytes(b">edited\nACGT\n")
+    result = _run("tair10_araport11", "--to", str(tmp_path), "--unzip")
+    assert result.exit_code == 3 and "genome.fa" in result.output
+    assert (tmp_path / "genome.fa").read_bytes() == b">edited\nACGT\n"
+
+
+def test_a_directory_in_the_files_place_is_refused(genome, tmp_path):
+    (tmp_path / "genes.gtf.gz").mkdir()
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 3 and "holds a different file" in result.output
+
+
+def test_an_expired_session_signs_in_again_and_both_files_use_the_new_one(
+    genome, storage, tmp_path, monkeypatch
+):
+    storage.expired = True
+    signed_in = []
+    original = _session.connect
+
+    def connect(profile):
+        signed_in.append(profile)
+        if len(signed_in) > 1:
+            storage.expired = False  # the new token is accepted
+        return original(profile)
+
+    monkeypatch.setattr(_session, "connect", connect)
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert len(signed_in) == 2, "the first sign-in, then once more after the expiry"
+    assert (tmp_path / "genome.fa.gz").read_bytes() == FASTA_GZ
+    assert (tmp_path / "genes.gtf.gz").read_bytes() == GTF_GZ

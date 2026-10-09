@@ -34,6 +34,15 @@ FILES = (("fasta", "genome.fa"), ("gtf", "genes.gtf"))
 VERSION_COLUMNS = ("id, version, status, withdrawn_reason, fasta_path, fasta_sha256, "
                    "fasta_bytes, gtf_path, gtf_sha256, gtf_bytes")
 READY = "ready"
+# Exit codes: 0 done; 3 not available or doesn't match (asking again won't help); 1 anything
+# else, such as a network or storage error (worth retrying); 2 a usage error.
+EXIT_UNAVAILABLE = 3
+
+
+class Unavailable(click.ClickException):
+    """A refusal that asking again won't fix: no such version, not ready, or not Bloom's file."""
+
+    exit_code = EXIT_UNAVAILABLE
 
 
 @click.command(name="download")
@@ -43,15 +52,22 @@ READY = "ready"
 @click.option("--unzip", is_flag=True,
               help="Write genome.fa and genes.gtf, unzipped once checked, instead of the .gz files.")
 @click.option("--version-file", type=click.Path(dir_okay=False, path_type=Path),
-              help="Also write the exact version fetched (NAME.vN) to this file.")
+              help="Also write the exact version (NAME.vN) to this file.")
+@click.option("--version-only", is_flag=True,
+              help="Only say which version GENOME means (NAME.vN); download nothing.")
 @click.option("-p", "--profile", default=DEFAULT_PROFILE, show_default=True,
               help="Credentials profile to use.")
-def download(genome: str, to: Path, unzip: bool, version_file: Path | None, profile: str) -> None:
+def download(genome: str, to: Path, unzip: bool, version_file: Path | None, version_only: bool,
+             profile: str) -> None:
     """Download a genome version's FASTA and GTF, checked against Bloom's record.
 
     GENOME is a genome's name, for its newest ready version, or NAME.vN for version N. Only a
     ready version (its upload finished) is downloaded. The files are genome.fa.gz and
-    genes.gtf.gz, or genome.fa and genes.gtf with --unzip.
+    genes.gtf.gz, or genome.fa and genes.gtf with --unzip. The exact version, NAME.vN, is the
+    only line printed to stdout.
+
+    Exits 3 when the version isn't available or a file doesn't match Bloom's record, which
+    asking again won't fix, and 1 for anything else, such as a network error.
     """
     named = NAMED.fullmatch(genome)
     if named is None or not _files.NAME_RULE.match(named["name"]):
@@ -59,7 +75,11 @@ def download(genome: str, to: Path, unzip: bool, version_file: Path | None, prof
     name = named["name"]
     conn = _session.connect(profile)
     version = _version(conn.client, name, named["version"])
+    exact = f"{name}.v{version['version']}"
     label = f"{name} v{version['version']}"
+    if version_only:
+        _say_version(exact, version_file)
+        return
     try:
         to.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -67,10 +87,23 @@ def download(genome: str, to: Path, unzip: bool, version_file: Path | None, prof
     with _transfer.open_client() as http:
         for kind, plain in FILES:
             conn = _fetch(http, conn, profile, label, version, kind, plain, to, unzip)
-    click.echo(label)
-    if version_file is not None:
+    _say_version(exact, version_file)
+
+
+def _say_version(exact: str, version_file: Path | None) -> None:
+    """Print NAME.vN, and write it to the version file when one is asked for."""
+    click.echo(exact)
+    if version_file is None:
+        return
+    try:
         version_file.parent.mkdir(parents=True, exist_ok=True)
-        version_file.write_text(f"{name}.v{version['version']}\n")
+        tmp = version_file.with_name(f".{version_file.name}.{uuid4().hex}.tmp")
+        tmp.write_text(f"{exact}\n")
+        os.replace(tmp, version_file)
+    except OSError as exc:
+        raise click.ClickException(
+            f"could not write {version_file}: {exc.strerror or exc}."
+        ) from exc
 
 
 def _version(client: Any, name: str, wanted: str | None) -> dict[str, Any]:
@@ -83,7 +116,7 @@ def _version(client: Any, name: str, wanted: str | None) -> dict[str, Any]:
         .execute().data,
     ) or []
     if not genomes:
-        raise click.ClickException(
+        raise Unavailable(
             f"No genome is named {name!r}; `bloomctl genome list` shows what Bloom holds."
         )
     versions = queried(
@@ -94,16 +127,16 @@ def _version(client: Any, name: str, wanted: str | None) -> dict[str, Any]:
     if wanted is None:
         ready = [v for v in versions if v["status"] == READY]
         if not ready:
-            raise click.ClickException(
+            raise Unavailable(
                 f"{name} has no ready version yet; `bloomctl genome list` shows its versions."
             )
         return max(ready, key=lambda v: v["version"])
     version = next((v for v in versions if v["version"] == int(wanted)), None)
     if version is None:
-        raise click.ClickException(f"{name} has no v{wanted}.")
+        raise Unavailable(f"{name} has no v{wanted}.")
     if version["status"] != READY:
-        raise click.ClickException(f"{_not_ready(name, version)}; only a ready version is "
-                                   "downloaded. Nothing was written.")
+        raise Unavailable(f"{_not_ready(name, version)}; only a ready version is downloaded. "
+                          "Nothing was written.")
     return version
 
 
@@ -125,37 +158,40 @@ def _fetch(http, conn, profile: str, label: str, version: dict[str, Any], kind: 
     expected = (version[f"{kind}_sha256"], version[f"{kind}_bytes"])
     if final.exists():
         if _already(final, unzip, expected):
-            click.echo(f"{final} is already {label}'s {stored}; kept.", err=True)
+            what = f"{stored}, unzipped" if unzip else stored
+            click.echo(f"{final} already holds {label}'s {what}; kept.", err=True)
             return conn
-        raise click.ClickException(
+        raise Unavailable(
             f"{final} already exists and holds a different file; nothing was overwritten."
         )
     tmp = to / f".{stored}.{uuid4().hex}.tmp"
     try:
         conn, got = _fetch_through_expiry(http, conn, profile, version[f"{kind}_path"], tmp)
         if got != expected:
-            raise click.ClickException(
+            raise Unavailable(
                 f"{label}'s {stored} doesn't match Bloom's record (SHA-256 {got[0]}, {got[1]} "
-                f"bytes; expected {expected[0]}, {expected[1]} bytes). Nothing was saved."
+                f"bytes; expected {expected[0]}, {expected[1]} bytes); it was not saved."
             )
         if unzip:
             _unzip_into_place(tmp, final, expected[0])
         else:
             os.replace(tmp, final)
     except _transfer.NotStored as exc:
-        raise click.ClickException(
+        raise Unavailable(
             f"{label}'s {stored} isn't stored at {BUCKET}/{version[f'{kind}_path']}."
         ) from exc
+    except _transfer.Forbidden as exc:
+        raise Unavailable(f"{exc} {stored} was not saved.") from exc
     except _transfer.SessionExpired as exc:
-        raise click.ClickException(f"{exc} Nothing was saved.") from exc
+        raise click.ClickException(f"{exc} {stored} was not saved.") from exc
     except (_transfer.TransferError, httpx.HTTPError) as exc:
         raise click.ClickException(
-            f"the download stopped: {visible(str(exc) or type(exc).__name__)}. Nothing was saved; "
-            "run it again."
+            f"the download of {stored} stopped: {visible(str(exc) or type(exc).__name__)}; it was "
+            "not saved. Run the same command again: files already in place are kept."
         ) from exc
     except OSError as exc:
         raise click.ClickException(
-            f"could not write {final}: {exc.strerror or exc}. Nothing was saved."
+            f"could not write {final}: {exc.strerror or exc}; it was not saved."
         ) from exc
     finally:
         tmp.unlink(missing_ok=True)
@@ -180,14 +216,16 @@ def _record_of(final: Path) -> Path:
 def _already(final: Path, unzip: bool, expected: tuple[str, int]) -> bool:
     """Whether the file in place is this version's: the stored bytes themselves, or, unzipped,
     the file this command made from them."""
-    if not unzip:
-        return final.stat().st_size == expected[1] and _files.sha256_of(final) == expected[0]
     try:
+        if not final.is_file():
+            return False
+        if not unzip:
+            return final.stat().st_size == expected[1] and _files.sha256_of(final) == expected[0]
         record = json.loads(_record_of(final).read_text())
-    except (OSError, ValueError):
+        return (record.get("source_sha256") == expected[0]
+                and record.get("sha256") == _files.sha256_of(final))
+    except (OSError, ValueError):  # unreadable, or no record: not one this command made
         return False
-    return (record.get("source_sha256") == expected[0]
-            and record.get("sha256") == _files.sha256_of(final))
 
 
 def _unzip_into_place(checked: Path, final: Path, source_sha256: str) -> None:
@@ -201,9 +239,8 @@ def _unzip_into_place(checked: Path, final: Path, source_sha256: str) -> None:
                     digest.update(block)
                     dst.write(block)
         except (EOFError, zlib.error, gzip.BadGzipFile) as exc:
-            raise click.ClickException(
-                f"{checked.name.split('.tmp')[0].lstrip('.')} is not a whole gzipped file: {exc}. "
-                "Nothing was saved."
+            raise Unavailable(
+                f"{final.name}.gz is not a whole gzipped file: {exc}; {final.name} was not saved."
             ) from exc
         _record_of(final).write_text(
             json.dumps({"source_sha256": source_sha256, "sha256": digest.hexdigest()}) + "\n"
