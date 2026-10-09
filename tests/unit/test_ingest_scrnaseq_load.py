@@ -406,3 +406,34 @@ def test_a_stored_genotype_that_disagrees_is_refused(ingest, tmp_path):
         ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, table, "sha-1",
                           LABEL_OPTIONS)
     assert writes(client, since) == []
+
+
+CELL_TYPE_OPTIONS = {**LABEL_OPTIONS, "cell_type_labels": ["atlas"]}
+
+
+def test_a_first_load_lists_the_cell_type_labels_on_the_dataset(ingest, tmp_path):
+    client = FakeClient()
+    ingest.load(writer(ingest, client, tmp_path), "MYB41", 1, labelled(), "sha-1",
+                CELL_TYPE_OPTIONS, create=True)
+    (ds,) = client.tables["scrna_datasets"]
+    assert ds["metadata"]["cell_type_labels"] == ["atlas"]
+    assert ds["metadata"]["cell_type_column"] == "ann"
+
+
+def test_a_load_without_cell_type_labels_lists_none(ingest, tmp_path):
+    client = FakeClient()
+    ingest.load(writer(ingest, client, tmp_path), "MYB41", 1, labelled(), "sha-1",
+                LABEL_OPTIONS, create=True)
+    (ds,) = client.tables["scrna_datasets"]
+    assert "cell_type_labels" not in ds["metadata"]
+
+
+def test_added_labels_list_the_cell_type_labels_and_keep_other_metadata(ingest, tmp_path):
+    client = FakeClient()
+    finished_without_labels(ingest, client, tmp_path)
+    ingest.add_labels(writer(ingest, client, tmp_path), "MYB41", 1, labelled(), "sha-1",
+                      CELL_TYPE_OPTIONS)
+    (ds,) = client.tables["scrna_datasets"]
+    assert ds["metadata"]["cell_type_labels"] == ["atlas"]
+    assert ds["metadata"]["load_options"]["cell_type_labels"] == ["atlas"]
+    assert ds["metadata"]["cell_type_column"] == "ann"

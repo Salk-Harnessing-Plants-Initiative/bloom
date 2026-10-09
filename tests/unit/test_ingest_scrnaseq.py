@@ -767,3 +767,35 @@ def test_the_dry_run_names_the_labels_and_genotypes(ingest, tmp_path, capsys):
     assert code == 0
     assert "label transgene_pos: False 4, True 2" in out
     assert "genotypes: Col-0 (control), pFACT, pHORST" in out
+
+
+def test_a_cell_type_label_may_name_more_values_than_a_toggle_row(ingest, tmp_path):
+    """Summarised per cell type, never drawn as toggles, so 14 values is fine."""
+    path = write_h5ad(tmp_path / "atlas.h5ad", n_cells=14,
+                      labels=["Phellem", "Cortex"] * 7,
+                      samples=["Col-0", "pFACT"] * 7,
+                      extra_obs={"atlas": [f"type{i}" for i in range(14)]})
+    cells = ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                              cell_type_columns=("atlas",))
+    assert [f["atlas"] for f in cells["facets"]] == [f"type{i}" for i in range(14)]
+
+
+def test_a_cell_type_label_with_too_many_values_is_refused(ingest, tmp_path):
+    n = ingest.MAX_CELL_TYPE_VALUES + 2
+    path = write_h5ad(tmp_path / "toomany.h5ad", n_cells=n,
+                      labels=["Phellem", "Cortex"] * (n // 2),
+                      samples=["Col-0", "pFACT"] * (n // 2),
+                      extra_obs={"atlas": [f"type{i}" for i in range(n)]})
+    with pytest.raises(ingest.IngestError, match=f"{n} values, more than "
+                                                 f"{ingest.MAX_CELL_TYPE_VALUES} cell types"):
+        ingest.read_cells(path, "nn_label_plain", "sample", "X_umap", None,
+                          cell_type_columns=("atlas",))
+
+
+def test_a_column_cannot_be_both_a_toggle_and_a_cell_type_label(ingest, tmp_path, capsys):
+    path = write_h5ad(tmp_path / "both.h5ad", extra_obs=LABELLED_OBS)
+    code = ingest.main(["--h5ad", str(path), "--dataset-name", "t", "--species-id", "1",
+                        "--annotation", "nn_label_plain", "--facet", "saturn_timezone",
+                        "--cell-type-label", "saturn_timezone", "--dry-run"])
+    assert code == 1
+    assert "both --facet and --cell-type-label" in capsys.readouterr().err

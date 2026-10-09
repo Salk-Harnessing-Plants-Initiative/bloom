@@ -70,7 +70,8 @@ PALETTE = [
 CELL_BATCH = 5000
 
 # Options that label the cells, recorded with the dataset when labels are added.
-LABEL_KEYS = ("source_column", "genotype_column", "control", "constructs", "facets")
+LABEL_KEYS = ("source_column", "genotype_column", "control", "constructs", "facets",
+              "cell_type_labels")
 
 # The options a resumed load must share with the load it continues.
 OPTION_KEYS = ("annotation", "sample_column", "umap_key", "expression_units",
@@ -79,6 +80,9 @@ OPTION_KEYS = ("annotation", "sample_column", "umap_key", "expression_units",
 # A label becomes a row of toggles, so it has to be a handful of values. More is a
 # measurement, and would reach the browser as hundreds of buttons.
 MAX_FACET_VALUES = 12
+# A cell-type label is summarised per cell type, never drawn as toggles, so it may
+# name more cell types than a toggle row holds.
+MAX_CELL_TYPE_VALUES = 100
 
 # The database's limits on a cell's labels (scrna_facets_are_flat_text) and on a
 # genotype (scrna_genotypes_lengths).
@@ -151,6 +155,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--facet", action="append", default=[], metavar="COLUMN",
                    help="an obs column of labels to filter the map by, such as "
                         "transgene status. A few short values only; repeatable")
+    p.add_argument("--cell-type-label", action="append", default=[], metavar="COLUMN",
+                   help="an obs column of predicted cell types, such as an atlas's label "
+                        "for each cell. Stored with the cell's labels and listed on the "
+                        "dataset, which shows it per cell type rather than as toggles; "
+                        "repeatable")
     p.add_argument("--add-labels", action="store_true",
                    help="add the genotypes, labels and cell-type sources to a dataset "
                         "already loaded from this file, leaving its cells as they are")
@@ -193,6 +202,7 @@ def read_cells(
     source_column: str | None = None,
     genotype_column: str | None = None,
     facet_columns: tuple[str, ...] = (),
+    cell_type_columns: tuple[str, ...] = (),
 ) -> dict:
     """Pull everything the explorer needs out of the file, or refuse.
 
@@ -312,11 +322,13 @@ def read_cells(
         "barcodes": barcodes,
         "sources": label_sources(labels, sources) if sources else {},
         "genotypes": genotypes,
-        "facets": read_facets(adata, facet_columns) if facet_columns else None,
+        "facets": (read_facets(adata, facet_columns + cell_type_columns, cell_type_columns)
+                   if facet_columns or cell_type_columns else None),
     }
 
 
-def read_facets(adata, columns: tuple[str, ...]) -> list[dict[str, str]]:
+def read_facets(adata, columns: tuple[str, ...],
+                cell_type_columns: tuple[str, ...] = ()) -> list[dict[str, str]]:
     """Each cell's labels to filter the map by, as {column: value}.
 
     Refused rather than truncated when a column has too many values: a label is a
@@ -333,7 +345,12 @@ def read_facets(adata, columns: tuple[str, ...]) -> list[dict[str, str]]:
             raise IngestError(f"label column {column!r} is longer than {MAX_FACET_KEY} characters")
         values = _text_column(adata, column)
         levels = sorted(set(values))
-        if len(levels) > MAX_FACET_VALUES:
+        if column in cell_type_columns:
+            if len(levels) > MAX_CELL_TYPE_VALUES:
+                raise IngestError(f"obs[{column!r}] has {len(levels)} values, more than "
+                                  f"{MAX_CELL_TYPE_VALUES} cell types; it looks like a "
+                                  f"measurement rather than a label")
+        elif len(levels) > MAX_FACET_VALUES:
             raise IngestError(f"obs[{column!r}] has {len(levels)} values, more than the "
                               f"{MAX_FACET_VALUES} a row of toggles can show; it looks like "
                               f"a measurement rather than a label")
@@ -677,7 +694,9 @@ def load(writer, name: str, species_id: int, cells: dict, source_checksum: str,
         "n_cells": n, "n_genes": cells["n_genes"],
         "expression_units": options["expression_units"],
         "metadata": {**(current.get("metadata") or {}),
-                     "cell_type_column": options["annotation"]},
+                     "cell_type_column": options["annotation"],
+                     **({"cell_type_labels": options["cell_type_labels"]}
+                        if options.get("cell_type_labels") else {})},
         "ingested_at": datetime.now(UTC).isoformat(),
     }, eq={"id": dataset_id})
     return dataset_id, n, outcome
@@ -761,6 +780,8 @@ def add_labels(writer, name: str, species_id: int, cells: dict, source_checksum:
     metadata = current.get("metadata") or {}
     load_options = {**(metadata.get("load_options") or {}),
                     **{k: options.get(k) for k in LABEL_KEYS}}
+    if options.get("cell_type_labels"):
+        metadata = {**metadata, "cell_type_labels": options["cell_type_labels"]}
     ingest_api.update(writer, "record the label options", "scrna_datasets",
                       {"metadata": {**metadata, "load_options": load_options}},
                       eq={"id": dataset_id})
@@ -771,13 +792,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     try:
+        both = sorted(set(args.facet) & set(args.cell_type_label))
+        if both:
+            raise IngestError(f"{', '.join(both)} given as both --facet and "
+                              f"--cell-type-label; a column is one or the other")
         if args.control and not args.genotype_column:
             raise IngestError("--control names a genotype, so it needs --genotype-column")
         constructs = parse_constructs(args.construct)
         cells = read_cells(
             args.h5ad, args.annotation, args.sample_column,
             args.umap_key, args.expect_cells, args.source_column,
-            args.genotype_column, tuple(args.facet),
+            args.genotype_column, tuple(args.facet), tuple(args.cell_type_label),
         )
         genotypes = (genotype_rows(cells["genotypes"], args.control, constructs)
                      if cells["genotypes"] is not None else [])
@@ -805,10 +830,12 @@ def main(argv: list[str] | None = None) -> int:
                "umap_key": args.umap_key, "source_column": args.source_column,
                "expression_units": args.expression_units,
                "genotype_column": args.genotype_column, "control": args.control,
-               "constructs": constructs or None, "facets": list(args.facet) or None}
-    if args.add_labels and not (args.source_column or args.genotype_column or args.facet):
-        print("refusing to ingest: --add-labels needs --source-column, --genotype-column "
-              "or --facet to add", file=sys.stderr)
+               "constructs": constructs or None, "facets": list(args.facet) or None,
+               "cell_type_labels": list(args.cell_type_label) or None}
+    if args.add_labels and not (args.source_column or args.genotype_column or args.facet
+                                or args.cell_type_label):
+        print("refusing to ingest: --add-labels needs --source-column, --genotype-column, "
+              "--facet or --cell-type-label to add", file=sys.stderr)
         return 1
     marker = ingest_api.Marker(ingest_api.marker_path(args.h5ad, args.dataset_name))
     try:
