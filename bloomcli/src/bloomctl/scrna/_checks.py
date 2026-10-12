@@ -148,15 +148,36 @@ def check_catalogue(writer: Writer, dataset_id: int, cells: dict) -> bool:
     return bool(stored)
 
 
-def check_nothing_later(writer: Writer, dataset_id: int) -> None:
-    found = [what for table, what in LATER_TABLES if writer.read(
-        lambda c, table=table: c.table(table).select("dataset_id")
-        .eq("dataset_id", dataset_id).limit(1).execute().data)]
+def check_nothing_later(writer: Writer, dataset_id: int, de_hash: str | None = None) -> None:
+    """Refuse to continue a load whose dataset already holds rows a load never writes. A load
+    with DE (`de_hash`, its run's params_hash) writes DE rows and cluster statistics itself,
+    so its own run's rows, and the statistics, are allowed."""
+    own = _own_de_runs(writer, dataset_id, de_hash) if de_hash else None
+    found = [what for table, what in LATER_TABLES if _later_rows(writer, table, dataset_id, own)]
     if found:
         raise LoadError(
             f"dataset {dataset_id} has unfinished cells but already has "
             f"{' and '.join(found)}; an admin has to look at it"
         )
+
+
+def _own_de_runs(writer: Writer, dataset_id: int, de_hash: str) -> list[int]:
+    return [r["id"] for r in writer.read(
+        lambda c: c.table("scrna_de_runs").select("id").eq("dataset_id", dataset_id)
+        .eq("params_hash", de_hash).execute().data)]
+
+
+def _later_rows(writer: Writer, table: str, dataset_id: int, own: list[int] | None) -> bool:
+    """Whether `table` has rows for the dataset that the load (with DE runs `own`) didn't write."""
+    if own is not None and table == "scrna_cluster_stats":
+        return False
+    if own is not None and table == "scrna_de":
+        # A dataset has one comparison per cluster at most per run, so all of them are read.
+        rows = writer.read(lambda c: c.table(table).select("run_id")
+                           .eq("dataset_id", dataset_id).execute().data)
+        return any(r.get("run_id") not in own for r in rows)
+    return bool(writer.read(lambda c: c.table(table).select("dataset_id")
+                            .eq("dataset_id", dataset_id).limit(1).execute().data))
 
 
 def check_labelled_dataset(
