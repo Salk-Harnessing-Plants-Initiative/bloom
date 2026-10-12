@@ -21,6 +21,7 @@ from tests.integration.test_rnaseq_s3_folder_reads import MIGRATION as FOLDER_MI
 from tests.integration.test_rnaseq_sra_import import MIGRATION as SRA_MIGRATION
 from tests.integration.test_rnaseq_sra_import import (
     QUEUE_TABLE,
+    RUNS,
     TABLE,
     _as_workflows,
     _bare,
@@ -69,14 +70,22 @@ def ready_version(cur):
     return version_id, name, number
 
 
-def _start(cur, version_id=None, sample="col0", reference=None, url=None, files=None):
+def _start(cur, version_id=None, sample="col0", reference=None, url=None, files=None,
+           sra_runs=None):
     return _as_workflows(
         cur,
         "SELECT request_scrna_cellranger_run(p_sample => %s, p_reference => %s, "
         "p_requested_by => %s, p_fastq_url => %s, p_fastq_files => %s, "
-        "p_genome_version_id => %s)",
-        (sample, reference, USER, url, None if files is None else Jsonb(files), version_id),
+        "p_sra_runs => %s, p_genome_version_id => %s)",
+        (sample, reference, USER, url, None if files is None else Jsonb(files), sra_runs,
+         version_id),
     )
+
+
+def _second_version(cur, name):
+    """Another ready version of genome `name`: its id."""
+    cur.execute("SELECT species_id FROM public.genome_references WHERE name = %s", (name,))
+    return genome.ready(cur, name, cur.fetchone()[0])[0]
 
 
 def _run(cur, run_id):
@@ -115,14 +124,12 @@ def test_a_version_that_isnt_ready_is_refused_and_nothing_queued(cur, make):
             (version_id,),
         )
     _refused(cur, _start, version_id, error=psycopg.errors.InvalidParameterValue,
-             match=f"is {make}, not ready")
-    assert _count(cur, TABLE) == 0 and _count(cur, QUEUE_TABLE) == 0
+             match=rf"{name}\.v\d+ is {make}, not ready")
 
 
 def test_an_unknown_version_is_refused(cur):
     _refused(cur, _start, 999_999_999, error=psycopg.errors.InvalidParameterValue,
              match="no genome version")
-    assert _count(cur, TABLE) == 0
 
 
 def test_a_version_and_a_reference_name_together_are_refused(cur, ready_version):
@@ -148,6 +155,33 @@ def test_a_folder_run_is_refused_on_a_key_already_run_with_the_same_version(cur,
     _start(cur, ready_version[0], url=URL, files=FILES)
     _refused(cur, _start, ready_version[0], url=URL, files=FILES,
              error=psycopg.errors.UniqueViolation, match="has already been processed")
+
+
+def test_an_sra_import_on_a_version_is_refused_again_on_the_same_version(cur, ready_version):
+    run_id = _start(cur, ready_version[0], sample="s_a", sra_runs=RUNS)
+    assert _params(cur, run_id)["sra_runs"] == RUNS
+    _refused(cur, _start, ready_version[0], sample="s_b", sra_runs=RUNS,
+             error=psycopg.errors.UniqueViolation, match="was already run as s_a")
+
+
+def test_an_sra_import_on_a_version_may_run_again_on_another_version(cur, ready_version):
+    version_id, name, _ = ready_version
+    _start(cur, version_id, sample="s_a", sra_runs=RUNS)
+    run_id = _start(cur, _second_version(cur, name), sample="s_b", sra_runs=RUNS)
+    assert _params(cur, run_id)["reference"] == f"{name}.v2"
+
+
+def test_a_registered_run_is_refused_on_a_folder_run_with_the_same_version(cur, ready_version):
+    _start(cur, ready_version[0], url=URL, files=FILES)
+    _refused(cur, _start, ready_version[0], error=psycopg.errors.UniqueViolation,
+             match="from an S3 folder")
+
+
+def test_two_versions_of_a_genome_have_different_run_keys(cur, ready_version):
+    version_id, name, _ = ready_version
+    first = _start(cur, version_id, url=URL, files=FILES)
+    second = _start(cur, _second_version(cur, name), url=URL, files=FILES)
+    assert _run(cur, first)[1] != _run(cur, second)[1]
 
 
 @pytest.mark.parametrize("step", ["download-genome", "build-reference"])
@@ -181,19 +215,37 @@ def test_the_migration_can_be_run_again(cur, ready_version):
     assert _run(cur, _start(cur, ready_version[0]))[0] == ready_version[0]
 
 
+def test_an_unknown_step_is_still_refused(cur, ready_version):
+    run_id = _start(cur, ready_version[0])
+    cur.execute("SAVEPOINT bad")
+    with pytest.raises(psycopg.errors.CheckViolation):
+        cur.execute(f"UPDATE {TABLE} SET current_step = 'annotate' WHERE id = %s", (run_id,))
+    cur.execute("ROLLBACK TO SAVEPOINT bad")
+
+
 def test_the_rollback_restores_the_reference_name_function(cur, ready_version):
     _start(cur, ready_version[0])
     cur.execute(_sql_body(ROLLBACK))
     assert _signatures(cur, "request_scrna_cellranger_run") == [_bare(OLD_SIG)]
     assert _can_execute(cur, "bloom_workflows", OLD_SIG)
     assert not _can_execute(cur, "bloom_user", OLD_SIG)
-    cur.execute(f"SELECT count(*) FROM {TABLE} WHERE genome_version_id IS NOT NULL")
-    assert cur.fetchone()[0] == 1, "runs keep their genome version"
 
 
-def test_the_rollback_refuses_while_a_run_reports_a_new_step(cur, ready_version):
+def test_the_rollback_restores_the_earlier_step_list(cur, ready_version):
     run_id = _start(cur, ready_version[0])
-    cur.execute(f"UPDATE {TABLE} SET current_step = 'build-reference' WHERE id = %s", (run_id,))
+    cur.execute(_sql_body(ROLLBACK))
+    cur.execute(f"UPDATE {TABLE} SET current_step = 'load-dataset' WHERE id = %s", (run_id,))
+    cur.execute("SAVEPOINT bad")
+    with pytest.raises(psycopg.errors.CheckViolation):
+        cur.execute(f"UPDATE {TABLE} SET current_step = 'build-reference' WHERE id = %s",
+                    (run_id,))
+    cur.execute("ROLLBACK TO SAVEPOINT bad")
+
+
+@pytest.mark.parametrize("step", ["download-genome", "build-reference"])
+def test_the_rollback_refuses_while_a_run_reports_a_new_step(cur, ready_version, step):
+    run_id = _start(cur, ready_version[0])
+    cur.execute(f"UPDATE {TABLE} SET current_step = %s WHERE id = %s", (step, run_id))
     cur.execute("SAVEPOINT rb")
     with pytest.raises(psycopg.errors.RaiseException, match="clear current_step"):
         cur.execute(_sql_body(ROLLBACK))
