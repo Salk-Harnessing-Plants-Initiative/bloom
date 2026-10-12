@@ -70,6 +70,7 @@ def _bucket(cur, bucket="scrna"):
 @pytest.mark.parametrize("table, writes", [
     ("scrna_datasets", (True, True)),
     *((t, (True, False)) for t in load.CHILD_TABLES),
+    *((t, (True, False)) for t in load.DE_TABLES),
     *((t, (False, False)) for t in load.READ_ONLY_TABLES),
 ])
 def test_the_pipeline_reads_writes_only_what_the_load_does_and_never_deletes(cur, table, writes):
@@ -82,7 +83,9 @@ def test_the_pipeline_reads_writes_only_what_the_load_does_and_never_deletes(cur
     assert cur.fetchone() == (True, *writes, False, False)
 
 
-@pytest.mark.parametrize("table", ["scrna_datasets", *load.CHILD_TABLES, *load.READ_ONLY_TABLES])
+@pytest.mark.parametrize(
+    "table", ["scrna_datasets", *load.CHILD_TABLES, *load.DE_TABLES, *load.READ_ONLY_TABLES]
+)
 def test_the_pipeline_reads_every_row_through_its_own_rule(cur, table):
     # has_table_privilege ignores row rules; without this rule the reads return nothing.
     cur.execute("SELECT cmd, roles::text, qual FROM pg_policies WHERE schemaname = 'public' "
