@@ -29,11 +29,15 @@ class _Result:
 
 class FakeClient:
     """Records RPC calls. Claim returns the next queued result; complete and fail
-    return `changed`. Table reads return `tables[name]`, filtered by eq (none by default)."""
+    return `changed`. Table reads return `tables[name]`, filtered by eq (none by default).
+    A read whose selected columns contain one of `fail_select` raises."""
 
-    def __init__(self, claims=(), fail_on=(), changed=True, tables=None):
+    def __init__(
+        self, claims=(), fail_on=(), changed=True, tables=None, fail_select=()
+    ):
         self.claims = list(claims)
         self.fail_on = set(fail_on)
+        self.fail_select = tuple(fail_select)
         self.changed = changed
         self.tables = tables or {}
         self.calls = []
@@ -44,8 +48,10 @@ class FakeClient:
         class _Query:
             def __init__(self):
                 self.filters = {}
+                self.cols = ""
 
-            def select(self, _cols):
+            def select(self, cols):
+                self.cols = cols
                 return self
 
             def eq(self, col, value):
@@ -53,7 +59,9 @@ class FakeClient:
                 return self
 
             def execute(self):
-                if name in client.fail_on:
+                if name in client.fail_on or any(
+                    part in self.cols for part in client.fail_select
+                ):
                     raise RuntimeError(f"{name} unavailable")
                 rows = client.tables.get(name, [])
                 return _Result(
@@ -173,7 +181,7 @@ def test_a_claimed_run_is_submitted_and_recorded(types, submitted):
 
 def test_the_body_is_built_by_the_runs_workflow_type(types, submitted):
     worker.process_one(FakeClient(claims=[[RUN]]))
-    assert types == [{**RUN, "dataset": None}]
+    assert types == [{**RUN, "dataset": None, "genome": None}]
 
 
 def test_a_run_of_an_unhandled_type_is_failed_without_submitting(types, submitted):
@@ -436,3 +444,100 @@ def test_a_failed_lookup_leaves_the_run_queued(types, submitted, table):
     assert worker.process_one(client) is True
     assert submitted == [] and types == []
     assert COMPLETE not in client.names() and FAIL not in client.names()
+
+
+# --------------------------------------------------------------------------- #
+# The genome version a run builds its reference from
+# --------------------------------------------------------------------------- #
+
+
+def _with_genome(version):
+    return {
+        "rnaseq_runs": [{"id": RUN["run_id"], "genome_reference_versions": version}]
+    }
+
+
+def test_a_run_passes_its_recorded_genome_version(types, submitted):
+    tables = _with_genome(
+        {"version": 2, "genome_references": {"name": "athaliana_col0"}}
+    )
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["genome"] == "athaliana_col0.v2"
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        {},
+        {"version": 2},
+        {"version": "2", "genome_references": {"name": "g"}},
+        {"version": 2, "genome_references": None},
+    ],
+    ids=["none", "empty", "no-genome", "version-as-text", "genome-missing"],
+)
+def test_a_run_without_a_usable_genome_version_passes_none(types, submitted, version):
+    worker.process_one(FakeClient(claims=[[RUN]], tables=_with_genome(version)))
+    assert types[0]["genome"] is None
+
+
+def test_a_run_that_cant_be_built_is_failed_with_its_reason(monkeypatch, submitted):
+    def _build(run):
+        raise worker.UnrunnableRun("no genome version from Bloom")
+
+    monkeypatch.setattr(
+        worker,
+        "WORKFLOW_TYPES",
+        {"scrna-cellranger": WorkflowType("scrna-cellranger", _build, _no_status)},
+    )
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert submitted == []
+    assert client.calls[1][0] == FAIL
+    assert client.calls[1][1]["p_message"] == "no genome version from Bloom"
+
+
+def test_a_failed_genome_lookup_leaves_the_run_queued(types, submitted):
+    client = FakeClient(claims=[[RUN]], fail_select={"genome_reference_versions"})
+    assert worker.process_one(client) is True
+    assert submitted == [] and types == []
+    assert COMPLETE not in client.names() and FAIL not in client.names()
+
+
+def test_a_run_without_a_genome_version_is_failed_by_the_real_builder(
+    monkeypatch, submitted
+):
+    import rnaseq_workflows
+
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
+    monkeypatch.setattr(worker, "WORKFLOW_TYPES", rnaseq_workflows.WORKFLOW_TYPES)
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert submitted == []
+    assert client.calls[1] == (
+        FAIL,
+        {
+            "p_run_id": RUN["run_id"],
+            "p_msg_id": RUN["msg_id"],
+            "p_message": rnaseq_workflows.NO_GENOME_VERSION,
+        },
+    )
+
+
+def test_a_run_with_a_genome_version_is_submitted_by_the_real_builder(
+    monkeypatch, submitted
+):
+    import rnaseq_workflows
+
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
+    monkeypatch.setattr(worker, "WORKFLOW_TYPES", rnaseq_workflows.WORKFLOW_TYPES)
+    tables = _with_genome(
+        {"version": 2, "genome_references": {"name": "athaliana_col0"}}
+    )
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    params = {
+        p["name"]: p["value"] for p in submitted[0]["spec"]["arguments"]["parameters"]
+    }
+    assert params["reference"] == "athaliana_col0.v2"

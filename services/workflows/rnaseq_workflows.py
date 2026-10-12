@@ -4,7 +4,9 @@ RNA-seq workflow types the rnaseq worker dispatches to Argo.
 Every type's runs share the rnaseq_runs table and the rnaseq_dispatch queue, so the
 worker claims, completes and fails them with the same three database functions. A
 type only says how to build the Argo Workflow for one claimed run, which carries
-`run_id`, `workflow_type`, `params`, `run_key` and `msg_id`.
+`run_id`, `workflow_type`, `params`, `run_key` and `msg_id`, and what the worker looked up
+for it (`dataset`, `genome`). A run that can't be built raises UnrunnableRun, and the
+worker fails it with that message.
 """
 
 import hashlib
@@ -23,6 +25,10 @@ from rnaseq_status import RunStatus, read_cellranger_status
 CLAIM_FN = "claim_rnaseq_run"
 COMPLETE_FN = "complete_rnaseq_run"
 FAIL_FN = "fail_rnaseq_run"
+
+
+class UnrunnableRun(Exception):
+    """A claimed run that can never be built; its message is shown on the run's page."""
 
 
 @dataclass(frozen=True)
@@ -114,19 +120,32 @@ def _bloom_credentials_volume() -> dict:
     return {"name": BLOOM_CREDENTIALS_VOLUME, "emptyDir": {}}
 
 
-def build_cellranger_body(run: dict) -> dict:
-    """One sample through the template: stage-reference, then sample-pipeline.
+# Shown on the page of a run started without a genome version from Bloom.
+NO_GENOME_VERSION = (
+    "This run has no genome version from Bloom, which runs now build their reference from; "
+    "start it again and choose a genome"
+)
 
-    A run with SRA run IDs also downloads them with fetch-sra, alongside stage-reference,
-    and the sample's steps wait for both. A run with an S3 folder passes the folder and
-    the files recorded from it, which the stage step copies. A run naming a dataset passes
-    its name and species, which the load-dataset step loads the result into Bloom under, and
-    the run's id, which the step tags the dataset with so the run is linked to it."""
+
+def build_cellranger_body(run: dict) -> dict:
+    """One sample through the template's sample-pipeline, which downloads the run's genome
+    version from Bloom and builds its reference alongside getting and staging the reads.
+
+    `genome` is the run's recorded genome version as <genome>.v<N>; a run without one can't
+    be built. A run with SRA run IDs passes them, and the pipeline downloads them with
+    fetch-sra before staging, alongside the genome steps. A run with an S3
+    folder passes the folder and the files recorded from it, which the stage step copies. A
+    run naming a dataset passes its name and species, which the load-dataset step loads the
+    result into Bloom under, and the run's id, which the step tags the dataset with so the
+    run is linked to it."""
+    genome = run.get("genome")
+    if not genome:
+        raise UnrunnableRun(NO_GENOME_VERSION)
     sra_runs = run["params"].get("sra_runs")
     fastq_url = run["params"].get("fastq_url")
     parameters = [
         {"name": "sample", "value": run["params"]["sample"]},
-        {"name": "reference", "value": run["params"]["reference"]},
+        {"name": "reference", "value": genome},
         {"name": "run-id", "value": run["run_key"]},
     ]
     sample_inputs = {"sample": "sample", "reference": "reference", "run-id": "run-id"}
@@ -148,25 +167,11 @@ def build_cellranger_body(run: dict) -> dict:
             "species-name": "species-name",
             "bloom-run-id": "bloom-run-id",
         }
-    tasks = [_task("stage-reference", "stage-reference", {"reference": "reference"})]
     if sra_runs:
         # fetch-sra reads the run IDs comma-separated, in lane order.
         parameters.append({"name": "sra-runs", "value": ",".join(sra_runs)})
-        tasks.append(
-            _task(
-                "fetch-sra",
-                "fetch-sra",
-                {"sample": "sample", "sra-runs": "sra-runs", "run-id": "run-id"},
-            )
-        )
-    tasks.append(
-        _task(
-            "sample",
-            "sample-pipeline",
-            sample_inputs,
-            depends="stage-reference && fetch-sra" if sra_runs else "stage-reference",
-        )
-    )
+        sample_inputs |= {"sra-runs": "sra-runs"}
+    tasks = [_task("sample", "sample-pipeline", sample_inputs)]
     return {
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",

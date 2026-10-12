@@ -11,13 +11,15 @@ vi.mock("@/lib/s3-folder", async (importOriginal) => ({
 }));
 
 import ScrnaJobSubmit from "./scrna-job-submit";
-import type { RnaseqReference, RnaseqSample } from "@/lib/scrna-jobs";
+import type { GenomeVersionOption, RnaseqSample } from "@/lib/scrna-jobs";
 import type { SpeciesOption } from "@/lib/species-options";
 
 const SAMPLES: RnaseqSample[] = [
   { name: "tinygex", source: "s3", fastq_count: 6, total_bytes: 12_000_000 },
 ];
-const REFERENCES: RnaseqReference[] = [{ name: "tiny_ref", description: null }];
+const GENOME_VERSIONS: GenomeVersionOption[] = [
+  { id: 3, genome: "tiny_ref", version: 1, assembly: null, annotation: null },
+];
 const SPECIES: SpeciesOption[] = [{ id: 1, label: "Arabidopsis thaliana" }];
 
 let fetchSpy: ReturnType<typeof vi.fn>;
@@ -26,7 +28,7 @@ function openForm() {
   render(
     <ScrnaJobSubmit
       samples={SAMPLES}
-      references={REFERENCES}
+      genomeVersions={GENOME_VERSIONS}
       species={SPECIES}
       startedBy="scientist@salk.edu"
     />,
@@ -40,7 +42,7 @@ function type(label: string, value: string) {
 }
 
 function fillTheRest() {
-  type("Reference genome", "tiny_ref");
+  type("Reference genome", "3");
   type("Species", "1");
   type("Dataset name", "Root tip sc_71");
 }
@@ -81,7 +83,8 @@ beforeEach(() => {
       JSON.stringify({
         run_id: 7,
         sample: "root_tip_sc71",
-        reference: "tiny_ref",
+        genome_version_id: 3,
+        reference: "tiny_ref.v1",
         run_key: "k",
       }),
       {
@@ -183,7 +186,7 @@ describe("importing from SRA", () => {
     expect((await screen.findByRole("status")).textContent).toContain("Run 7 queued");
     const body = JSON.parse(startCalls()[0][1].body);
     expect(body.sample).toBe("root_tip_sc71");
-    expect(body.reference).toBe("tiny_ref");
+    expect(body.genome_version_id).toBe(3);
     expect(body.sra_runs).toEqual(["SRR28503598", "SRR28503597"]);
     expect(body.metadata.origin).toBe("public");
     expect(body.metadata.source_url).toBe("https://www.ncbi.nlm.nih.gov/sra/SRR28503598");

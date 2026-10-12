@@ -56,10 +56,13 @@ export default function RnaseqRunView({
   initialRun,
   startedBy,
   speciesLabel,
+  genomeLabel = null,
 }: {
   initialRun: RnaseqRun;
   startedBy: string | null;
   speciesLabel: string | null;
+  // The genome version with its assembly and annotation; null shows the reference name.
+  genomeLabel?: string | null;
 }) {
   const live = useLiveSync<RnaseqRun>({
     topic: `rnaseq-run-${initialRun.id}`,
@@ -91,7 +94,7 @@ export default function RnaseqRunView({
         <h2 className="text-xl font-serif italic">Run {run.id}</h2>
         <StatusBadge status={run.status} />
         <span className="text-stone-700">
-          {runSample(run) ?? "—"} against {runReference(run) ?? "—"}
+          {runSample(run) ?? "—"} against {genomeLabel ?? runReference(run) ?? "—"}
         </span>
       </div>
       {fastqUrl ? (

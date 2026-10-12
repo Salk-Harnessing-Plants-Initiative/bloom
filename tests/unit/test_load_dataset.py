@@ -147,8 +147,8 @@ def test_the_sample_pipeline_loads_after_build_h5ad_and_cleans_up_after_the_load
     tasks = {t["name"]: t for t in _templates()["sample-pipeline"]["dag"]["tasks"]}
     assert tasks["load-dataset"]["depends"] == "build-h5ad"
     assert tasks["cleanup"]["depends"] == "load-dataset"
-    # Nothing is skipped: the result leaves the cluster only through the load.
-    assert not [name for name, task in tasks.items() if "when" in task]
+    # Only fetch-sra is skipped (a run without SRA IDs); the result leaves only through the load.
+    assert [name for name, task in tasks.items() if "when" in task] == ["fetch-sra"]
     passed = {p["name"]: p["value"] for p in tasks["load-dataset"]["arguments"]["parameters"]}
     assert passed["dataset-name"] == "{{inputs.parameters.dataset-name}}"
     assert passed["bloom-run-id"] == "{{inputs.parameters.bloom-run-id}}"
@@ -191,7 +191,7 @@ def test_every_analysis_step_uses_the_same_image():
     images = {
         t["container"]["image"]
         for name, t in _templates().items()
-        if name in ("preprocess", "cluster", "build-h5ad", "load-dataset")
+        if name in ("download-genome", "preprocess", "cluster", "build-h5ad", "load-dataset")
     }
     assert len(images) == 1
 
@@ -201,4 +201,4 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a11"]
+    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a12"]

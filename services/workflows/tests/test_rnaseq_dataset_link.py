@@ -246,9 +246,10 @@ def test_a_load_counts_only_for_a_workflow_the_worker_built_with_a_dataset(
     run = {
         "run_id": 7,
         "workflow_type": "scrna-cellranger",
-        "params": {"sample": "col0", "reference": "tair10"},
-        "run_key": "col0__tair10__u",
+        "params": {"sample": "col0", "reference": "tair10.v1"},
+        "run_key": "col0__tair10.v1__u",
         "dataset": dataset,
+        "genome": "tair10.v1",
     }
     workflow = wfs.build_cellranger_body(run)
     workflow["status"] = _workflow(load="Succeeded")["status"]

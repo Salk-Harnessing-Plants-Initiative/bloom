@@ -52,7 +52,7 @@ in Bloom's species list).
 
 ```bash
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
-  -p samples='["col0","col1"]' -p reference=tair10_araport11 -p species=Arabidopsis --watch
+  -p samples='["col0","col1"]' -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
 ```
 
 **Into staging's Bloom** (staging's template and staging's pipeline login):
@@ -62,11 +62,13 @@ sed -e 's/name: cellranger-count-template$/name: cellranger-count-template-stagi
     -e 's/bloom-prod-pipeline-credentials/bloom-staging-pipeline-credentials/' \
   argo/scrna/cellranger/cellranger-count-workflow.yaml > /tmp/cellranger-count-staging.yaml
 argo submit /tmp/cellranger-count-staging.yaml -n runai-busch-lab \
-  -p samples='["col0","col1"]' -p reference=tair10_araport11 -p species=Arabidopsis --watch
+  -p samples='["col0","col1"]' -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
 ```
 
 - `samples` are folders under `raw_reads/` in S3, one 10x library each.
-- `reference` is a folder under `reference_genome/` in S3.
+- `reference` is a ready genome version in that environment's Bloom, written `<genome>.v<N>`
+  (`bloomctl genome list` shows them). Each sample downloads it and builds its own Cell Ranger
+  reference.
 - `species` is required; without it Argo refuses the submission.
 
 A run started by hand differs from one started from the form:

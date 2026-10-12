@@ -27,7 +27,8 @@ class _Result:
 
 
 class FakeClient:
-    """Records RPCs; `errors` maps an RPC name to the APIError it raises."""
+    """Records RPCs; `errors` maps an RPC name to the APIError it raises. Any table read
+    returns genome version 3, tiny_ref v1."""
 
     def __init__(self, result=7, errors=None):
         self.result = result
@@ -46,6 +47,21 @@ class FakeClient:
 
         return _Call()
 
+    def table(self, _name):
+        class _Query:
+            def select(self, _cols):
+                return self
+
+            def eq(self, _col, _value):
+                return self
+
+            def execute(self):
+                return _Result(
+                    [{"version": 1, "genome_references": {"name": "tiny_ref"}}]
+                )
+
+        return _Query()
+
 
 # --------------------------------------------------------------------------- #
 # The start API
@@ -61,7 +77,7 @@ def db(monkeypatch):
 
 def _start(**body):
     return scrna_cellranger.trigger_run(
-        {"sample": "root_tip", "reference": "tiny_ref", **body}, USER
+        {"sample": "root_tip", "genome_version_id": 3, **body}, USER
     )
 
 
@@ -141,8 +157,13 @@ def test_any_other_database_error_is_not_hidden(db):
 
 RUN = {
     "run_id": 42,
-    "run_key": f"root_tip__tiny_ref__{USER}",
-    "params": {"sample": "root_tip", "reference": "tiny_ref", "sra_runs": RUNS},
+    "run_key": f"root_tip__athaliana_col0.v2__{USER}",
+    "params": {
+        "sample": "root_tip",
+        "reference": "athaliana_col0.v2",
+        "sra_runs": RUNS,
+    },
+    "genome": "athaliana_col0.v2",
 }
 
 
@@ -156,52 +177,78 @@ def _tasks(body):
     return {t["name"]: t for t in body["spec"]["templates"][0]["dag"]["tasks"]}
 
 
-def test_an_import_downloads_alongside_the_reference_and_the_sample_waits_for_both(k8s):
+def test_an_import_is_one_sample_pipeline_given_its_run_ids(k8s):
     body = rnaseq_workflows.build_cellranger_body(RUN)
     tasks = _tasks(body)
-    assert list(tasks) == ["stage-reference", "fetch-sra", "sample"]
-    assert "depends" not in tasks["fetch-sra"]
-    assert tasks["sample"]["depends"] == "stage-reference && fetch-sra"
-    assert tasks["fetch-sra"]["templateRef"] == {
-        "name": rnaseq_workflows.CELLRANGER_TEMPLATE,
-        "template": "fetch-sra",
-    }
+    assert list(tasks) == ["sample"] and "depends" not in tasks["sample"]
+    args = {p["name"]: p["value"] for p in tasks["sample"]["arguments"]["parameters"]}
+    assert args["sra-runs"] == "{{workflow.parameters.sra-runs}}"
 
 
-def test_fetch_sra_gets_the_run_ids_comma_separated_in_lane_order(k8s):
+def test_the_run_ids_are_passed_comma_separated_in_lane_order(k8s):
     body = rnaseq_workflows.build_cellranger_body(RUN)
     params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
     assert params["sra-runs"] == "SRR28503597,SRR28503598"
-    args = {
-        p["name"]: p["value"]
-        for p in _tasks(body)["fetch-sra"]["arguments"]["parameters"]
-    }
-    assert args == {
-        "sample": "{{workflow.parameters.sample}}",
-        "sra-runs": "{{workflow.parameters.sra-runs}}",
-        "run-id": "{{workflow.parameters.run-id}}",
-    }
 
 
-def test_fetch_sras_arguments_are_exactly_the_templates_inputs(k8s):
+def _pipeline_tasks():
     import yaml
 
     template = yaml.safe_load(TEMPLATE_FILE.read_text())
+    pipeline = next(
+        t for t in template["spec"]["templates"] if t["name"] == "sample-pipeline"
+    )
+    return {t["name"]: t for t in pipeline["dag"]["tasks"]}, template
+
+
+def test_fetch_sra_runs_inside_the_pipeline_only_for_an_import():
+    tasks, _ = _pipeline_tasks()
+    assert tasks["fetch-sra"]["when"] == "'{{inputs.parameters.sra-runs}}' != ''"
+    assert "depends" not in tasks["fetch-sra"]
+
+
+def test_the_reads_wait_for_fetch_sra_while_the_genome_steps_dont():
+    tasks, _ = _pipeline_tasks()
+    assert tasks["stage"]["depends"] == "fetch-sra", "a skipped fetch-sra lets it start"
+    assert "depends" not in tasks["download-genome"]
+    assert tasks["count"]["depends"] == "qc && build-reference"
+
+
+def test_fetch_sras_arguments_are_exactly_the_templates_inputs():
+    tasks, template = _pipeline_tasks()
     fetch = next(t for t in template["spec"]["templates"] if t["name"] == "fetch-sra")
     inputs = {p["name"] for p in fetch["inputs"]["parameters"]}
-    body = rnaseq_workflows.build_cellranger_body(RUN)
-    given = {p["name"] for p in _tasks(body)["fetch-sra"]["arguments"]["parameters"]}
-    assert given == inputs
+    args = {
+        p["name"]: p["value"] for p in tasks["fetch-sra"]["arguments"]["parameters"]
+    }
+    assert set(args) == inputs
+    assert args == {
+        "sample": "{{inputs.parameters.sample}}",
+        "sra-runs": "{{inputs.parameters.sra-runs}}",
+        "run-id": "{{inputs.parameters.run-id}}",
+    }
+
+
+def test_the_pipeline_declares_the_run_ids_empty_by_default():
+    _, template = _pipeline_tasks()
+    pipeline = next(
+        t for t in template["spec"]["templates"] if t["name"] == "sample-pipeline"
+    )
+    declared = {p["name"]: p.get("value") for p in pipeline["inputs"]["parameters"]}
+    assert declared["sra-runs"] == ""
 
 
 def test_a_run_without_run_ids_has_no_download(k8s):
-    run = {**RUN, "params": {"sample": "root_tip", "reference": "tiny_ref"}}
+    run = {**RUN, "params": {"sample": "root_tip", "reference": "athaliana_col0.v2"}}
     body = rnaseq_workflows.build_cellranger_body(run)
-    assert list(_tasks(body)) == ["stage-reference", "sample"]
-    assert _tasks(body)["sample"]["depends"] == "stage-reference"
+    assert list(_tasks(body)) == ["sample"]
+    assert "depends" not in _tasks(body)["sample"]
     assert "sra-runs" not in {
         p["name"] for p in body["spec"]["arguments"]["parameters"]
     }
+    assert "sra-runs" not in {
+        p["name"] for p in _tasks(body)["sample"]["arguments"]["parameters"]
+    }, "the pipeline's empty default skips fetch-sra"
 
 
 # --------------------------------------------------------------------------- #
@@ -241,7 +288,6 @@ DOWNLOADED = {"fastq-count": "6", "total-bytes": "11902105823"}
 def test_an_import_reports_fetch_sra_while_it_runs():
     wf = _workflow(
         "Running",
-        _node("stage-reference", "Succeeded", "2026-09-30T01:00:00Z", 1),
         _node("fetch-sra", "Running", "2026-09-30T01:00:01Z", 2),
     )
     status = st.read_cellranger_status(wf, RUN)

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { parseId } from "@/lib/route-params";
-import { fetchRequesters, fetchRun, runSpeciesId } from "@/lib/rnaseq-runs";
+import { fetchGenomeLabel, fetchRequesters, fetchRun, runSpeciesId } from "@/lib/rnaseq-runs";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import TimelineHub from "../../TimelineHub";
 import RnaseqRunView from "../RnaseqRunView";
@@ -30,9 +30,10 @@ export default async function RnaseqRunPage({ params }: { params: Promise<{ runI
   }
   if (!run) notFound();
 
-  const [requesters, speciesLabels] = await Promise.all([
+  const [requesters, speciesLabels, genomeLabel] = await Promise.all([
     fetchRequesters(supabase, [run.id]),
     speciesLabelMap(supabase),
+    fetchGenomeLabel(supabase, run),
   ]);
   const speciesId = runSpeciesId(run);
   return (
@@ -43,6 +44,7 @@ export default async function RnaseqRunPage({ params }: { params: Promise<{ runI
           initialRun={run}
           startedBy={requesters.get(run.id) ?? null}
           speciesLabel={speciesId != null ? (speciesLabels[speciesId] ?? null) : null}
+          genomeLabel={genomeLabel}
         />
       </TimelineHub>
     </div>

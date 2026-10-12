@@ -8,7 +8,8 @@ import {
   startRunErrorMessage,
   type AttributeRow,
   type DataOrigin,
-  type RnaseqReference,
+  genomeVersionLabel,
+  type GenomeVersionOption,
   type RnaseqSample,
   type StartedRun,
 } from "@/lib/scrna-jobs";
@@ -29,21 +30,16 @@ const labelClass = "block text-sm font-medium text-stone-700";
 const groupHeadingClass =
   "mb-3 text-xs uppercase tracking-widest text-stone-500";
 
-function referenceLabel(reference: RnaseqReference): string {
-  return reference.description
-    ? `${reference.name} — ${reference.description}`
-    : reference.name;
-}
-
 export default function ScrnaJobSubmit({
   samples,
-  references,
+  genomeVersions,
   species,
   startedBy,
   readerArn = null,
 }: {
   samples: RnaseqSample[];
-  references: RnaseqReference[];
+  // Ready genome versions, which the run builds its reference from.
+  genomeVersions: GenomeVersionOption[];
   species: SpeciesOption[];
   // The signed-in user's email, shown on the confirmation.
   startedBy: string | null;
@@ -65,7 +61,7 @@ export default function ScrnaJobSubmit({
   // The new sample's name follows the first run ID until it's edited.
   const [newName, setNewName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
-  const [reference, setReference] = useState("");
+  const [genomeVersionId, setGenomeVersionId] = useState<number | null>(null);
   const [speciesId, setSpeciesId] = useState<number | null>(null);
   const [datasetName, setDatasetName] = useState("");
   const [accession, setAccession] = useState("");
@@ -108,7 +104,8 @@ export default function ScrnaJobSubmit({
           newName.trim(),
           samples.map((s) => s.name)
         );
-  const canSubmit = sampleReady && Boolean(reference) && !detailsProblem && !submitting;
+  const canSubmit =
+    sampleReady && genomeVersionId !== null && !detailsProblem && !submitting;
 
   function changeSource(next: SampleSource) {
     if (next === source) return;
@@ -202,12 +199,12 @@ export default function ScrnaJobSubmit({
             ? {
                 fastq_url: check?.fastq_url,
                 fastq_files: check?.files,
-                reference,
+                genome_version_id: genomeVersionId,
                 metadata: buildRunMetadata(details),
               }
             : {
                 sample: newName.trim(),
-                reference,
+                genome_version_id: genomeVersionId,
                 metadata: buildRunMetadata(details),
                 sra_runs: sra.runs,
               }
@@ -325,27 +322,29 @@ export default function ScrnaJobSubmit({
                 Reference genome
                 <select
                   className={fieldClass}
-                  value={reference}
-                  onChange={(e) => setReference(e.target.value)}
-                  disabled={references.length === 0}
+                  value={genomeVersionId ?? ""}
+                  onChange={(e) =>
+                    setGenomeVersionId(e.target.value ? Number(e.target.value) : null)
+                  }
+                  disabled={genomeVersions.length === 0}
                 >
                   <option value="">
-                    {references.length
-                      ? "Choose a reference"
-                      : "No references registered yet"}
+                    {genomeVersions.length
+                      ? "Choose a genome version"
+                      : "No reference genomes are ready yet"}
                   </option>
-                  {references.map((r) => (
-                    <option key={r.name} value={r.name}>
-                      {referenceLabel(r)}
+                  {genomeVersions.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {genomeVersionLabel(g)}
                     </option>
                   ))}
                 </select>
               </label>
 
-              {references.length === 0 ? (
+              {genomeVersions.length === 0 ? (
                 <p className="text-sm text-stone-500">
-                  References are added by a Bloom admin once their files are in
-                  storage.
+                  Genomes are added to Bloom with <code>bloomctl genome upload</code>; a
+                  run can start once one is ready.
                 </p>
               ) : null}
             </fieldset>
@@ -435,9 +434,9 @@ export default function ScrnaJobSubmit({
                 >
                   {message}
                 </p>
-              ) : sampleReady && !reference ? (
-                <p className="text-sm text-stone-500">Choose a reference genome to start.</p>
-              ) : sampleReady && reference && detailsProblem ? (
+              ) : sampleReady && genomeVersionId === null ? (
+                <p className="text-sm text-stone-500">Choose a genome version to start.</p>
+              ) : sampleReady && genomeVersionId !== null && detailsProblem ? (
                 <p className="text-sm text-stone-500">{detailsProblem}</p>
               ) : null}
             </div>

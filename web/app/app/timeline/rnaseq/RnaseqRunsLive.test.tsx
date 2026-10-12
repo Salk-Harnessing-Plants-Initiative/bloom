@@ -33,6 +33,7 @@ function run(id: number, overrides: Partial<RnaseqRun> = {}): RnaseqRun {
     created_at: "2026-09-30T00:03:00Z",
     submitted_at: null,
     completed_at: null,
+    genome_version_id: null,
     ...overrides,
   };
 }

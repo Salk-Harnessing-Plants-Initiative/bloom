@@ -29,7 +29,13 @@ from k8s_client import (
     submit_workflow,
 )
 from pipeline_queue import MAX_READS, VISIBILITY_TIMEOUT
-from rnaseq_workflows import CLAIM_FN, COMPLETE_FN, FAIL_FN, WORKFLOW_TYPES
+from rnaseq_workflows import (
+    CLAIM_FN,
+    COMPLETE_FN,
+    FAIL_FN,
+    WORKFLOW_TYPES,
+    UnrunnableRun,
+)
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
 
@@ -147,6 +153,24 @@ def _dataset(client, run: dict) -> dict | None:
     return {"name": name.strip(), "species": species[0]["common_name"]}
 
 
+def _genome(client, run: dict) -> str | None:
+    """The run's recorded genome version as <genome>.v<N>, the name bloomctl downloads, read
+    from the version itself rather than the run's reference name. None when it has none."""
+    rows = (
+        client.table(RUNS_TABLE)
+        .select("genome_reference_versions(version, genome_references(name))")
+        .eq("id", run["run_id"])
+        .execute()
+        .data
+        or []
+    )
+    version = (rows[0].get("genome_reference_versions") if rows else None) or {}
+    name = (version.get("genome_references") or {}).get("name")
+    if not name or type(version.get("version")) is not int:
+        return None
+    return f"{name}.v{version['version']}"
+
+
 def process_one(client) -> bool:
     """Claim and dispatch one run. Returns True if a run was claimed."""
     try:
@@ -173,11 +197,11 @@ def process_one(client) -> bool:
     logger.info("rnaseq_worker: claimed %s run %s", wf.name, run_id)
 
     try:
-        run = {**run, "dataset": _dataset(client, run)}
+        run = {**run, "dataset": _dataset(client, run), "genome": _genome(client, run)}
     except Exception as exc:
         # A database blip, not a bad run: it comes back when its message is visible again.
         logger.warning(
-            "rnaseq_worker: couldn't read run %s's dataset, leaving it queued: %s",
+            "rnaseq_worker: couldn't read run %s's dataset or genome, leaving it queued: %s",
             run_id,
             exc,
         )
@@ -186,6 +210,10 @@ def process_one(client) -> bool:
     try:
         body = wf.build_body(run)
         workflow_name = submit_workflow(body)
+    except UnrunnableRun as exc:
+        logger.warning("rnaseq_worker: %s run %s can't run: %s", wf.name, run_id, exc)
+        _fail_logged(client, run, str(exc))
+        return True
     except K8sConfigError as exc:
         # A deploy mistake, not a bad run: leave it to come back once fixed.
         logger.error(

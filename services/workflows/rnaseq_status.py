@@ -12,13 +12,16 @@ from dataclasses import dataclass, field
 # The cluster's shared folder, where a run's files stay after a failure.
 SHARED_RUNS = "/hpi/hpi_dev/users/bfernando/scrna/runs"
 
-# Cell Ranger's pipeline steps by template name, in the order they run; fetch-sra runs only
-# for a run that imports its sample from SRA.
+# Cell Ranger's pipeline steps by template name, in the order the run page shows them
+# (web/lib/rnaseq-runs.ts; a test keeps the two the same); fetch-sra runs only for a run that
+# imports its sample from SRA. The genome steps run alongside the reads' steps and usually
+# finish last, so they come just before count.
 CELLRANGER_STEPS = {
     "fetch-sra": "fetch-sra",
-    "stage-reference": "stage-reference",
     "stage-sample": "stage",
     "qc": "qc",
+    "download-genome": "download-genome",
+    "build-reference": "build-reference",
     "count": "count",
     "preprocess": "preprocess",
     "cluster": "cluster",
@@ -27,6 +30,8 @@ CELLRANGER_STEPS = {
     "cleanup": "cleanup",
 }
 _STEP_ORDER = {step: i for i, step in enumerate(CELLRANGER_STEPS.values())}
+# Steps the template no longer has, which runs started before still list.
+RETIRED_CELLRANGER_STEPS = ("stage-reference",)
 
 # Exit codes set by the pipeline scripts in argo/scrna/cellranger/.
 EXIT_NO_REFERENCE = 3
@@ -47,8 +52,12 @@ EXIT_SRA_FOLDER_TAKEN = 12
 EXIT_TOO_FEW_CELLS = 13
 EXIT_NO_MATRIX = 14
 EXIT_PARTS_DONT_FIT = 15
-# load-dataset (argo/scrna/analysis/load-dataset.sh): the pipeline has no Bloom credentials.
+# load-dataset and download-genome (argo/scrna/analysis/): the pipeline has no Bloom credentials.
 EXIT_NO_CREDENTIALS = 16
+# build-reference: cellranger mkref failed on the downloaded genome.
+EXIT_REFERENCE_BUILD_FAILED = 17
+# download-genome: bloomctl couldn't reach Bloom or its storage, after the step's retries.
+EXIT_DOWNLOAD_FAILED = 1
 
 _ANALYSIS_MESSAGES = {
     EXIT_TOO_FEW_CELLS: "Fewer than 50 cells passed the filters, too few to cluster",
@@ -162,6 +171,46 @@ def _fastqs(params: dict) -> str:
     return f"The FASTQs in raw_reads/{params.get('sample')}/"
 
 
+def _genome_message(step: str, exit_code: int | None, params: dict) -> str | None:
+    genome = params.get("reference")
+    if step == "download-genome":
+        return {
+            EXIT_BAD_SAMPLE_NAME: (
+                f"The run's genome {genome} or its folder couldn't be used; this isn't something "
+                "wrong with the genome, so ask the Bloom admins"
+            ),
+            EXIT_NO_REFERENCE: (
+                f"Genome {genome} isn't available in Bloom, or a downloaded file doesn't match "
+                "Bloom's record; the download-genome step's log says which"
+            ),
+            EXIT_DOWNLOAD_FAILED: (
+                f"Couldn't download genome {genome} from Bloom; start the run again, and ask the "
+                "Bloom admins if it fails again"
+            ),
+            EXIT_NO_CREDENTIALS: (
+                "The pipeline has no Bloom credentials, so the genome couldn't be downloaded; "
+                "ask the Bloom admins"
+            ),
+        }.get(exit_code)
+    if step == "build-reference":
+        if exit_code == EXIT_BAD_SAMPLE_NAME:
+            return (
+                f"The run's genome {genome} or its folder couldn't be used; this isn't something "
+                "wrong with the genome, so ask the Bloom admins"
+            )
+        if exit_code == EXIT_REFERENCE_BUILD_FAILED:
+            return (
+                f"Cell Ranger couldn't build a reference from genome {genome}; the "
+                "build-reference step's log has Cell Ranger's error"
+            )
+        if exit_code == EXIT_NO_REFERENCE:
+            return (
+                f"The files of genome {genome} weren't found on the shared disk to build from; "
+                "start the run again, and ask the Bloom admins if it fails again"
+            )
+    return None
+
+
 def _load_message(exit_code: int | None) -> str:
     if exit_code == EXIT_NO_CREDENTIALS:
         return (
@@ -175,6 +224,11 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     params = run.get("params") or {}
     if step == "load-dataset":
         return _load_message(exit_code)
+    if step in ("download-genome", "build-reference"):
+        message = _genome_message(step, exit_code, params)
+        if message:
+            return message
+        return _step_failed(step, exit_code)
     if step == "stage" and params.get("fastq_url"):
         message = _folder_message(exit_code, params)
         if message:
@@ -186,7 +240,7 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     if exit_code in _ANALYSIS_MESSAGES:
         return _ANALYSIS_MESSAGES[exit_code].format(step=step)
     if exit_code == EXIT_NO_REFERENCE:
-        return f"No reference at reference_genome/{params.get('reference')}/"
+        return f"No Cell Ranger reference for {params.get('reference')} was found to count against"
     if exit_code == EXIT_NO_FASTQS:
         if params.get("fastq_url"):
             return f"No FASTQs were found on the shared disk after copying {params['fastq_url']}"
@@ -207,6 +261,10 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
             "<name>_S1_L001_R1_001.fastq.gz, with an R1 and an R2 for every lane; "
             f"the {step} step's log lists the files"
         )
+    return _step_failed(step, exit_code)
+
+
+def _step_failed(step: str, exit_code: int | None) -> str:
     if exit_code is None:
         return f"Step {step} failed"
     return f"Step {step} failed (exit {exit_code})"
@@ -255,8 +313,9 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
     pods = _step_pods(workflow)
     step_pods = {step: _pod_name(name, node) for step, node in pods.items()}
 
-    running = [s for s, n in pods.items() if n.get("phase") in _RUNNING_PHASES]
+    # By step order, so steps running side by side always give the same current step.
     started = sorted(pods, key=_STEP_ORDER.__getitem__)
+    running = [s for s in started if pods[s].get("phase") in _RUNNING_PHASES]
     current = (running or started or [None])[-1]
 
     if phase in _FAILED_PHASES:

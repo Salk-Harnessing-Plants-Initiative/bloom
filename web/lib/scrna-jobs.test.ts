@@ -4,6 +4,8 @@ import {
   buildRunMetadata,
   datasetDetailsProblem,
   formatBytes,
+  genomeVersionLabel,
+  genomeVersionOptions,
   isStartedRun,
   startRunErrorMessage,
   type DatasetDetails,
@@ -142,15 +144,16 @@ describe("buildRunMetadata", () => {
 describe("isStartedRun", () => {
   it("accepts the service's answer", () => {
     expect(
-      isStartedRun({ run_id: 1, sample: "s", reference: "r", run_key: "k" })
+      isStartedRun({ run_id: 1, sample: "s", genome_version_id: 3, reference: "r.v1", run_key: "k" })
     ).toBe(true);
   });
 
   it.each([
     [null],
     ["ok"],
-    [{ run_id: "1", sample: "s", reference: "r", run_key: "k" }],
-    [{ run_id: 1, sample: "s", reference: "r" }],
+    [{ run_id: "1", sample: "s", genome_version_id: 3, reference: "r.v1", run_key: "k" }],
+    [{ run_id: 1, sample: "s", genome_version_id: 3, reference: "r.v1" }],
+    [{ run_id: 1, sample: "s", reference: "r.v1", run_key: "k" }],
   ])("refuses %j", (value) => {
     expect(isStartedRun(value)).toBe(false);
   });
@@ -166,7 +169,7 @@ describe("startRunErrorMessage", () => {
   it.each([
     [401, "Sign in to start a job."],
     [409, "That sample name is taken or still being imported. Choose another name."],
-    [422, "The sample or reference name isn't valid."],
+    [422, "The sample name or the genome version can't be used."],
     [429, "Too many requests. Wait a minute and try again."],
     [503, "The job service isn't available right now."],
     [500, "Couldn't start the job. Try again shortly."],
@@ -187,5 +190,41 @@ describe("formatBytes", () => {
     [2_500_000_000_000_000, "2500.0 TB"],
   ])("formats %s as %s", (bytes, expected) => {
     expect(formatBytes(bytes)).toBe(expected);
+  });
+});
+
+describe("genome versions on the form", () => {
+  const row = (id: number, name: string | null, version: number, assembly: string | null = null) => ({
+    id,
+    version,
+    assembly,
+    annotation: assembly ? "Araport11" : null,
+    genome_references: name ? { name } : null,
+  });
+
+  it("lists each genome's versions newest first, genomes by name", () => {
+    const options = genomeVersionOptions([
+      row(1, "tomato", 1),
+      row(2, "athaliana_col0", 1),
+      row(3, "athaliana_col0", 2),
+    ]);
+    expect(options.map((o) => [o.genome, o.version])).toEqual([
+      ["athaliana_col0", 2],
+      ["athaliana_col0", 1],
+      ["tomato", 1],
+    ]);
+  });
+
+  it("leaves out a row whose genome can't be read", () => {
+    expect(genomeVersionOptions([row(1, null, 1)])).toEqual([]);
+  });
+
+  it("names a version with its assembly and annotation when recorded", () => {
+    const [withDetail, plain] = genomeVersionOptions([
+      row(1, "athaliana_col0", 2, "TAIR10"),
+      row(2, "athaliana_col0", 1),
+    ]);
+    expect(genomeVersionLabel(withDetail)).toBe("athaliana_col0 v2 — TAIR10 / Araport11");
+    expect(genomeVersionLabel(plain)).toBe("athaliana_col0 v1");
   });
 });
