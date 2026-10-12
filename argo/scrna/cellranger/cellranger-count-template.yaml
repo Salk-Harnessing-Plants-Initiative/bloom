@@ -13,8 +13,8 @@ metadata:
     project: busch-lab
 spec:
   templates:
-    # One sample: download-genome -> build-reference alongside stage -> qc, then count ->
-    # preprocess -> analyses -> build-h5ad -> load-dataset -> cleanup, all in
+    # One sample: download-genome -> build-reference alongside [fetch-sra ->] stage -> qc, then
+    # count -> preprocess -> analyses -> build-h5ad -> load-dataset -> cleanup, all in
     # /shared/runs/<run-id>/ so runs never share files. The reference is built from the run's
     # genome version in Bloom every run. The result leaves the cluster only through
     # load-dataset, into Bloom.
@@ -25,6 +25,10 @@ spec:
           # The genome version in Bloom, as <genome>.v<N>; also the built reference's name.
           - name: reference
           - name: run-id
+          # SRA run IDs, comma-separated in lane order, for a run that imports its sample from SRA;
+          # empty skips fetch-sra.
+          - name: sra-runs
+            value: ""
           # An S3 folder run reads exactly these files from the folder; empty reads raw_reads/<sample>/.
           - name: fastq-url
             value: ""
@@ -80,8 +84,21 @@ spec:
                   value: "{{inputs.parameters.ref-memory}}"
                 - name: mem-gb
                   value: "{{inputs.parameters.ref-mem-gb}}"
+          - name: fetch-sra
+            template: fetch-sra
+            when: "'{{inputs.parameters.sra-runs}}' != ''"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: sra-runs
+                  value: "{{inputs.parameters.sra-runs}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          # Waits for fetch-sra, or goes straight on when it was skipped.
           - name: stage
             template: stage-sample
+            depends: fetch-sra
             arguments:
               parameters:
                 - name: sample
@@ -301,7 +318,8 @@ spec:
             sizeLimit: 100Gi
 
     # For a run that imports its sample from SRA: download the runs into raw_reads/<sample>/ as
-    # Illumina-named FASTQs, before the sample's steps. Outputs the folder's FASTQ count and size.
+    # Illumina-named FASTQs, before stage and alongside the genome steps. Outputs the folder's
+    # FASTQ count and size.
     - name: fetch-sra
       inputs:
         parameters:

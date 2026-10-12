@@ -20,7 +20,7 @@ argo/scrna/
 │   └── load-dataset.sh         installed as load-dataset: loads the final .h5ad into Bloom with bloomctl
 └── cellranger/                 then: cellranger count
     ├── run-count.sh            installed as run-count: cellranger count on one sample's staged reads
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside stage → qc, then count → preprocess → cluster → build-h5ad → load-dataset → cleanup), testrun
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside [fetch-sra →] stage → qc, then count → preprocess → cluster → build-h5ad → load-dataset → cleanup), testrun
     ├── cellranger-count-workflow.yaml   a run started by hand: the sample pipeline for a list of samples on one genome version, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 ```
@@ -122,7 +122,7 @@ Each run's reference is a genome version stored in Bloom (`bloomctl genome uploa
 
 - **download-genome** (`analysis/download-genome.sh`, in the `scrna-analysis` image) runs `bloomctl genome download <genome>.v<N> --unzip` into `/shared/runs/<run-id>/genome/`, signed in as the pipeline like `load-dataset`. Each file is checked against the SHA-256 and size Bloom recorded, and `VERSION` records the exact version. Exit 3 (the version isn't available, or a file doesn't match) and 6 (bad input) aren't retried, nor is 16 (no credentials); exit 1 (a network or storage error) is, up to twice.
 - **build-reference** (the Cell Ranger image) runs `cellranger mkref` on those files on the pod's own disk, then moves the reference into `/shared/runs/<run-id>/ref/<genome>.v<N>/` in one rename, so a half-built reference never looks done. Its cores and memory are the sample pipeline's `ref-cores`, `ref-memory` and `ref-mem-gb` (8, 32Gi and 28 by default, sized for Arabidopsis). It exits 3 without the downloaded files and 17 when mkref fails, with Cell Ranger's error in its log; it's retried once, except for 3.
-- Both run alongside **stage** and **qc**, and **count** waits for both. **cleanup** deletes the genome and the reference with the run's folder.
+- Both run alongside getting the reads (**fetch-sra** for an SRA import, then **stage** and **qc**), and **count** waits for both. `fetch-sra` runs inside the sample pipeline only when it's given SRA run IDs, so an import's genome build overlaps its download. **cleanup** deletes the genome and the reference with the run's folder.
 
 ## Analysis after the count
 

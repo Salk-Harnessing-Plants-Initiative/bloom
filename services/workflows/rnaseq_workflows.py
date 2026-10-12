@@ -129,10 +129,11 @@ NO_GENOME_VERSION = (
 
 def build_cellranger_body(run: dict) -> dict:
     """One sample through the template's sample-pipeline, which downloads the run's genome
-    version from Bloom and builds its reference alongside staging the reads.
+    version from Bloom and builds its reference alongside getting and staging the reads.
 
     `genome` is the run's recorded genome version as <genome>.v<N>; a run without one can't
-    be built. A run with SRA run IDs first downloads them with fetch-sra. A run with an S3
+    be built. A run with SRA run IDs passes them, and the pipeline downloads them with
+    fetch-sra before staging, alongside the genome steps. A run with an S3
     folder passes the folder and the files recorded from it, which the stage step copies. A
     run naming a dataset passes its name and species, which the load-dataset step loads the
     result into Bloom under, and the run's id, which the step tags the dataset with so the
@@ -166,25 +167,11 @@ def build_cellranger_body(run: dict) -> dict:
             "species-name": "species-name",
             "bloom-run-id": "bloom-run-id",
         }
-    tasks = []
     if sra_runs:
         # fetch-sra reads the run IDs comma-separated, in lane order.
         parameters.append({"name": "sra-runs", "value": ",".join(sra_runs)})
-        tasks.append(
-            _task(
-                "fetch-sra",
-                "fetch-sra",
-                {"sample": "sample", "sra-runs": "sra-runs", "run-id": "run-id"},
-            )
-        )
-    tasks.append(
-        _task(
-            "sample",
-            "sample-pipeline",
-            sample_inputs,
-            depends="fetch-sra" if sra_runs else None,
-        )
-    )
+        sample_inputs |= {"sra-runs": "sra-runs"}
+    tasks = [_task("sample", "sample-pipeline", sample_inputs)]
     return {
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",
