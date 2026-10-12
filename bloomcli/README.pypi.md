@@ -9,7 +9,8 @@ Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative)
 | Download cylinder scans and images           | **3. Cylinder experiments**    |
 | Download plate (GraviScan) images            | **4. Plate experiments**       |
 | Upload or download single-cell `.h5ad` files | **5. Single-cell data**        |
-| Run bloomctl inside a pipeline               | **6. Pipelines and containers** |
+| Store or fetch a reference genome            | **6. Reference genomes**       |
+| Run bloomctl inside a pipeline               | **7. Pipelines and containers** |
 
 ---
 
@@ -219,7 +220,54 @@ bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored
 
 ---
 
-## 6. Pipelines and containers
+## 6. Reference genomes
+
+Reference genomes for the Cell Ranger workflow are kept in Bloom with numbered versions. Each
+version is one FASTA and one GTF, with their SHA-256 and size recorded. A version's files never
+change; a different FASTA or GTF is a new version.
+
+In the examples below, **`tair10_araport11`** is the genome's name.
+
+### Quickstart
+
+```bash
+# Store a new genome (needs write access); --species is required the first time
+bloomctl genome upload tair10_araport11 --fasta TAIR10.fa --gtf Araport11.gtf \
+  --species Arabidopsis --assembly TAIR10 --annotation Araport11
+# → tair10_araport11 v1: ready
+
+bloomctl genome list                                         # every genome, version and status
+bloomctl genome download tair10_araport11 --to ref/          # newest ready version
+bloomctl genome download tair10_araport11.v1 --to ref/ --unzip   # a named version, unzipped
+```
+
+- **Names.** 1 to 64 lowercase letters, digits, `.`, `_` or `-`, with no `__`. A name can't
+  end in `.v` and a number, because that is how a version is written (`tair10_araport11.v1`).
+  A name never changes.
+- **Upload** takes plain or gzipped files and checks them before sending anything. It shows
+  what it will store and asks first (`--yes` skips the question). Uploading the same genome
+  again makes its next version. If an upload stops part-way, that version is marked abandoned
+  and never used; run the command again.
+- **Status.** Only `ready` versions can be downloaded. `uploading`, `abandoned` and `withdrawn`
+  versions are listed, and asking for one says which it is.
+- **Download** checks each file against Bloom's record before saving it. `--unzip` writes
+  `genome.fa` and `genes.gtf`, ready for `cellranger mkref`. Running it again keeps files that
+  are already correct, and never overwrites a different file.
+- **Exit codes** for `download`: `0` done; `3` the version isn't available or a file doesn't
+  match Bloom's record (running again won't help); `1` a network or storage error (worth
+  retrying); `2` a usage error.
+
+### Genome commands
+
+| Command                          | What it does                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| `genome upload <name>`           | Store a FASTA and GTF as the genome's next version *(needs write access)*    |
+| `genome list`                    | Every genome with its species, versions and each version's status            |
+| `genome download <name>[.vN]`    | Fetch a ready version's files, checked; `--unzip`, `--version-file` to record the version |
+
+---
+
+## 7. Pipelines and containers
 
 These commands are for automated pipelines (stage-in and write-back), not everyday use:
 
