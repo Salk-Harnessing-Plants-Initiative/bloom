@@ -37,10 +37,18 @@ const RUN: RnaseqRun = {
   created_at: "2026-09-30T00:03:00Z",
   submitted_at: "2026-09-30T00:03:54Z",
   completed_at: null,
+  genome_version_id: null,
 };
 
-function renderView(run: RnaseqRun = RUN) {
-  render(<RnaseqRunView initialRun={run} startedBy="bfernando@salk.edu" speciesLabel="Arabidopsis (Arabidopsis thaliana)" />);
+function renderView(run: RnaseqRun = RUN, genomeLabel: string | null = null) {
+  render(
+    <RnaseqRunView
+      initialRun={run}
+      startedBy="bfernando@salk.edu"
+      speciesLabel="Arabidopsis (Arabidopsis thaliana)"
+      genomeLabel={genomeLabel}
+    />
+  );
 }
 
 function step(label: string) {
@@ -118,5 +126,20 @@ describe("RnaseqRunView", () => {
   it("explains a skipped run", () => {
     renderView({ ...RUN, status: "skipped", current_step: "stage" });
     expect(screen.getByText(/results for this sample and reference already existed/)).toBeTruthy();
+  });
+});
+
+describe("the genome a run used", () => {
+  it("names a run's genome version with its assembly and annotation", () => {
+    renderView(
+      { ...RUN, params: { sample: "tinygex", reference: "athaliana_col0.v2" }, genome_version_id: 3 },
+      "athaliana_col0 v2 — TAIR10 / Araport11"
+    );
+    expect(screen.getByText("tinygex against athaliana_col0 v2 — TAIR10 / Araport11")).toBeTruthy();
+  });
+
+  it("shows the reference name for a run without a genome version", () => {
+    renderView(RUN, null);
+    expect(screen.getByText("tinygex against tiny_ref")).toBeTruthy();
   });
 });

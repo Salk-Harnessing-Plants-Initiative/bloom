@@ -5,6 +5,7 @@ import {
   runFastqUrl,
   runSraRuns,
   runSteps,
+  fetchGenomeLabel,
   fetchRequesters,
   isFinished,
   runAttributes,
@@ -39,6 +40,7 @@ function run(overrides: Partial<RnaseqRun> = {}): RnaseqRun {
     created_at: "2026-09-30T00:03:00Z",
     submitted_at: "2026-09-30T00:03:54Z",
     completed_at: null,
+    genome_version_id: null,
     ...overrides,
   };
 }
@@ -453,5 +455,48 @@ describe("a run started before genomes came from Bloom", () => {
       expect(ids).not.toContain("download-genome");
       expect(ids).not.toContain("build-reference");
     }
+  });
+});
+
+describe("fetchGenomeLabel", () => {
+  function client(result: { data: unknown; error: unknown }, seen: unknown[] = []) {
+    const query = {
+      select: (cols: string) => (seen.push(cols), query),
+      eq: (col: string, value: unknown) => (seen.push([col, value]), query),
+      maybeSingle: async () => result,
+    };
+    return { from: (table: string) => (seen.push(table), query) };
+  }
+
+  it("names the run's version with its assembly and annotation", async () => {
+    const seen: unknown[] = [];
+    const row = {
+      id: 3,
+      version: 2,
+      assembly: "TAIR10",
+      annotation: "Araport11",
+      genome_references: { name: "athaliana_col0" },
+    };
+    const label = await fetchGenomeLabel(
+      client({ data: row, error: null }, seen) as never,
+      run({ genome_version_id: 3 })
+    );
+    expect(label).toBe("athaliana_col0 v2 — TAIR10 / Araport11");
+    expect(seen).toContainEqual("genome_reference_versions");
+    expect(seen).toContainEqual(["id", 3]);
+  });
+
+  it("asks nothing for a run without a genome version", async () => {
+    const throwing = {
+      from: () => {
+        throw new Error("should not be called");
+      },
+    };
+    expect(await fetchGenomeLabel(throwing as never, run())).toBeNull();
+  });
+
+  it("returns null when the version can't be read", async () => {
+    const failing = client({ data: null, error: { message: "denied" } });
+    expect(await fetchGenomeLabel(failing as never, run({ genome_version_id: 3 }))).toBeNull();
   });
 });

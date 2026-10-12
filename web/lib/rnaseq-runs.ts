@@ -6,6 +6,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
+import {
+  genomeVersionLabel,
+  genomeVersionOptions,
+  type ReadyVersionRow,
+} from "@/lib/scrna-jobs";
 
 type RunRow = Database["public"]["Tables"]["rnaseq_runs"]["Row"];
 
@@ -25,13 +30,15 @@ export type RnaseqRun = Pick<
   | "created_at"
   | "submitted_at"
   | "completed_at"
+  | "genome_version_id"
 >;
 
 export type RunStatus = "queued" | "submitted" | "running" | "succeeded" | "skipped" | "failed";
 
 export const RUN_COLUMNS =
   "id, workflow_type, status, current_step, params, metadata, requested_by, " +
-  "argo_workflow_name, step_pods, exit_code, message, created_at, submitted_at, completed_at";
+  "argo_workflow_name, step_pods, exit_code, message, created_at, submitted_at, completed_at, " +
+  "genome_version_id";
 
 // How many runs the list shows at first.
 export const RUNS_PAGE_SIZE = 50;
@@ -258,6 +265,23 @@ export async function fetchRun(
     .maybeSingle();
   if (error) throw new Error(error.message);
   return (data as unknown as RnaseqRun | null) ?? null;
+}
+
+/** The run's genome version as the form names it, e.g. "athaliana_col0 v2 — TAIR10 / Araport11";
+ * null for a run started before genomes came from Bloom, or when it can't be read. */
+export async function fetchGenomeLabel(
+  supabase: SupabaseClient<Database>,
+  run: RnaseqRun
+): Promise<string | null> {
+  if (run.genome_version_id == null) return null;
+  const { data, error } = await supabase
+    .from("genome_reference_versions")
+    .select("id, version, assembly, annotation, genome_references(name)")
+    .eq("id", run.genome_version_id)
+    .maybeSingle();
+  if (error || !data) return null;
+  const [option] = genomeVersionOptions([data as unknown as ReadyVersionRow]);
+  return option ? genomeVersionLabel(option) : null;
 }
 
 /** Who started each run, by email; runs whose starter can't be read are left out. */
