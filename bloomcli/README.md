@@ -800,11 +800,14 @@ bloomctl genome download tair10_araport11 --to ref/ --unzip --version-file ref/V
 - `download` writes `genome.fa.gz` and `genes.gtf.gz`, or `genome.fa` and `genes.gtf` with
   `--unzip`. Each file is streamed to a hidden name and checked against the SHA-256 and size
   Bloom recorded at upload before it is moved into place; `--unzip` unzips only a checked file.
-  A mismatch saves nothing.
+  A file that doesn't match is not saved; files already checked stay in place.
 - Run it again and a file already in place with the right content is kept, so only what is
   missing is fetched; a different file there is never overwritten.
-- It prints the exact version fetched (`tair10_araport11 v2`); `--version-file` also writes
-  `tair10_araport11.v2` to a file.
+- The only line on stdout is the exact version, as `tair10_araport11.v2` (the form the command
+  takes); `--version-file` also writes it to a file.
+- Exit codes: `0` done; `3` the version isn't available (unknown, not ready) or a file doesn't
+  match Bloom's record, which running again won't fix; `1` anything else, such as a network or
+  storage error, worth retrying; `2` a usage error.
 - `list --output json` (or `csv`) gives one record per version.
 - Any login can run both, including the pipeline's (`bloom_workflows`).
 

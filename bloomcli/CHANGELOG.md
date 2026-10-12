@@ -19,7 +19,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - `genome download NAME[.vN]` fetches a ready version's FASTA and GTF (the newest ready one by
   default), checked against the SHA-256 and size Bloom recorded; `--unzip` writes them unzipped
   for `cellranger mkref`, and `--version-file` records the exact version. A file already in
-  place is kept, and a different one is never overwritten.
+  place is kept, and a different one is never overwritten. It prints the version as `NAME.vN`,
+  and exits `3` when the version isn't available or a file doesn't match (not worth retrying)
+  and `1` for other failures.
 
 ## [0.1.0a11] - 2026-10-07 — each dataset knows the run that generated it
 
