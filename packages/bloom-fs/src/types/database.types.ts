@@ -5392,6 +5392,7 @@ export type Database = {
         Args: {
           p_fastq_files?: Json
           p_fastq_url?: string
+          p_genome_version_id?: number
           p_metadata?: Json
           p_reference: string
           p_requested_by: string
