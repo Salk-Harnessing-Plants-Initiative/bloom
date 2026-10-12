@@ -2,8 +2,9 @@
 # After changes: kubectl replace -f argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
 #
 # Every step mounts the same NFS folder at /shared:
-#   /shared/runs/<run-id>/    one sample's reads, genome, Cell Ranger reference and results,
-#                             deleted after success
+#   /shared/runs/<run-id>/         one sample's reads and results, deleted after success
+#   /shared/runs/<run-id>.genome/  its genome and Cell Ranger reference, deleted with it; next to
+#                                  the run's folder, which stage clears of an earlier run's files
 # The share does not support symlinks, so Cell Ranger's working folder is the count pod's own /work.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -186,7 +187,7 @@ spec:
                   value: "{{inputs.parameters.bloom-run-id}}"
 
     # The run's genome version from Bloom, checked against Bloom's record, into
-    # /shared/runs/<run-id>/genome/ as genome.fa and genes.gtf (argo/scrna/analysis/download-genome.sh).
+    # /shared/runs/<run-id>.genome/genome/ as genome.fa and genes.gtf (argo/scrna/analysis/download-genome.sh).
     - name: download-genome
       inputs:
         parameters:
@@ -225,7 +226,7 @@ spec:
             type: Directory
 
     # cellranger mkref on the downloaded genome, built on the pod's own disk and moved into
-    # /shared/runs/<run-id>/ref/<genome>/ in one rename, so a half-built reference never looks done.
+    # /shared/runs/<run-id>.genome/ref/<genome>/ in one rename, so a half-built reference never looks done.
     - name: build-reference
       inputs:
         parameters:
@@ -263,8 +264,8 @@ spec:
             case "${RUN_ID}" in
               ""|.|..|*/*) echo "ERROR: bad run id '${RUN_ID}'"; exit 6 ;;
             esac
-            src="/shared/runs/${RUN_ID}/genome"
-            ref="/shared/runs/${RUN_ID}/ref/${GENOME}"
+            src="/shared/runs/${RUN_ID}.genome/genome"
+            ref="/shared/runs/${RUN_ID}.genome/ref/${GENOME}"
             if [ -f "${ref}/reference.json" ]; then
               echo "Reference ${GENOME} already built at ${ref}; nothing to do."
               exit 0
@@ -284,7 +285,7 @@ spec:
               exit 17
             fi
             # Named for this workflow, so two runs on one run key never fill the same folder.
-            tmp="/shared/runs/${RUN_ID}/ref/.partial-${GENOME}-${WORKFLOW_NAME}"
+            tmp="/shared/runs/${RUN_ID}.genome/ref/.partial-${GENOME}-${WORKFLOW_NAME}"
             rm -rf -- "${tmp}"
             mkdir -p "$(dirname "${ref}")"
             cp -r -- "/work/${GENOME}" "${tmp}"
@@ -548,7 +549,7 @@ spec:
           - name: FASTQ_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}/fastq/{{inputs.parameters.sample}}"
           - name: REF_DIR
-            value: "/shared/runs/{{inputs.parameters.run-id}}/ref/{{inputs.parameters.reference}}"
+            value: "/shared/runs/{{inputs.parameters.run-id}}.genome/ref/{{inputs.parameters.reference}}"
         volumeMounts:
           # bloomctl's credentials.txt, for run-with-log to upload the step's log
           - name: bloom-credentials
@@ -567,7 +568,8 @@ spec:
           emptyDir:
             sizeLimit: 500Gi
 
-    # Delete /shared/runs/<run-id>/ once its result is in Bloom; the raw reads stay where they came from.
+    # Delete /shared/runs/<run-id>/ and <run-id>.genome/ once its result is in Bloom; the raw reads
+    # stay where they came from.
     - name: cleanup
       inputs:
         parameters:
@@ -583,9 +585,11 @@ spec:
             case "${RUN_ID}" in
               ""|.|..|*/*) echo "refusing to delete: bad run id '${RUN_ID}'"; exit 1 ;;
             esac
-            target="/shared/runs/${RUN_ID}"
-            if [ -d "${target}" ]; then rm -rf -- "${target}"; fi
-            echo "removed ${target}"
+            # The run's folder and its genome folder next to it.
+            for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome"; do
+              if [ -d "${target}" ]; then rm -rf -- "${target}"; fi
+              echo "removed ${target}"
+            done
         env:
           - name: RUN_ID
             value: "{{inputs.parameters.run-id}}"

@@ -38,7 +38,8 @@ echo index > "${genome}/star/SA"
 def _script(shared: Path, work: Path) -> str:
     templates = yaml.safe_load(TEMPLATE.read_text())["spec"]["templates"]
     script = next(t for t in templates if t["name"] == "build-reference")["container"]["args"][0]
-    return script.replace("/shared/runs", str(shared)).replace("/work", str(work))
+    # /work first, so a temporary path that happens to contain it isn't rewritten.
+    return script.replace("/work", str(work)).replace("/shared/runs", str(shared))
 
 
 @pytest.fixture
@@ -49,7 +50,7 @@ def env(tmp_path):
     fake.write_text(FAKE_CELLRANGER)
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     shared, work = tmp_path / "shared" / "runs", tmp_path / "work"
-    genome = shared / RUN_ID / "genome"
+    genome = shared / f"{RUN_ID}.genome" / "genome"
     genome.mkdir(parents=True)
     (genome / "genome.fa").write_text(">chr1\nACGT\n")
     (genome / "genes.gtf").write_text("chr1\tx\texon\t1\t4\t.\t+\t.\tgene_id \"g\";\n")
@@ -80,7 +81,7 @@ def _run(env, **extra):
 
 
 def _ref(env) -> Path:
-    return env["shared"] / RUN_ID / "ref" / GENOME
+    return env["shared"] / f"{RUN_ID}.genome" / "ref" / GENOME
 
 
 def test_the_reference_is_built_from_the_downloaded_genome(env):
@@ -88,7 +89,7 @@ def test_the_reference_is_built_from_the_downloaded_genome(env):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (_ref(env) / "reference.json").is_file()
     assert (_ref(env) / "star" / "SA").read_text() == "index\n"
-    genome = env["shared"] / RUN_ID / "genome"
+    genome = env["shared"] / f"{RUN_ID}.genome" / "genome"
     assert env["out"].read_text().splitlines() == [
         "mkref",
         f"--genome={GENOME}",
@@ -101,7 +102,7 @@ def test_the_reference_is_built_from_the_downloaded_genome(env):
 
 def test_nothing_partial_is_left_beside_the_reference(env):
     _run(env)
-    assert [p.name for p in (env["shared"] / RUN_ID / "ref").iterdir()] == [GENOME]
+    assert [p.name for p in (env["shared"] / f"{RUN_ID}.genome" / "ref").iterdir()] == [GENOME]
 
 
 def test_a_finished_reference_is_kept_without_running_mkref(env):
@@ -125,7 +126,7 @@ def test_a_half_built_reference_and_an_old_partial_folder_are_replaced(env):
 
 
 def test_another_runs_partial_folder_is_left_alone(env):
-    other = env["shared"] / RUN_ID / "ref" / f".partial-{GENOME}-wf-2"
+    other = env["shared"] / f"{RUN_ID}.genome" / "ref" / f".partial-{GENOME}-wf-2"
     other.mkdir(parents=True)
     (other / "half").write_text("x")
     assert _run(env).returncode == 0
@@ -134,7 +135,7 @@ def test_another_runs_partial_folder_is_left_alone(env):
 
 def test_the_partial_folder_is_named_for_the_workflow(env):
     # Two runs on one run key share the run's folder; each builds in its own partial folder.
-    assert 'tmp="/shared/runs/${RUN_ID}/ref/.partial-${GENOME}-${WORKFLOW_NAME}"' in (
+    assert 'tmp="/shared/runs/${RUN_ID}.genome/ref/.partial-${GENOME}-${WORKFLOW_NAME}"' in (
         next(
             t
             for t in yaml.safe_load(TEMPLATE.read_text())["spec"]["templates"]
@@ -145,14 +146,14 @@ def test_the_partial_folder_is_named_for_the_workflow(env):
 
 @pytest.mark.parametrize("missing", ["genome.fa", "genes.gtf"])
 def test_a_missing_genome_file_fails_with_3(env, missing):
-    (env["shared"] / RUN_ID / "genome" / missing).unlink()
+    (env["shared"] / f"{RUN_ID}.genome" / "genome" / missing).unlink()
     result = _run(env)
     assert result.returncode == 3 and f"no downloaded {missing}" in result.stdout
     assert not env["out"].exists()
 
 
 def test_an_empty_genome_file_fails_with_3(env):
-    (env["shared"] / RUN_ID / "genome" / "genes.gtf").write_text("")
+    (env["shared"] / f"{RUN_ID}.genome" / "genome" / "genes.gtf").write_text("")
     assert _run(env).returncode == 3
 
 
@@ -205,3 +206,31 @@ def test_mkref_is_given_less_memory_than_the_pod_has():
         p["name"]: p.get("value") for p in templates["sample-pipeline"]["inputs"]["parameters"]
     }
     assert int(declared["ref-mem-gb"]) < int(declared["ref-memory"].removesuffix("Gi"))
+
+
+def _cleanup(shared: Path, run_id: str):
+    templates = yaml.safe_load(TEMPLATE.read_text())["spec"]["templates"]
+    script = next(t for t in templates if t["name"] == "cleanup")["container"]["args"][0]
+    return subprocess.run(
+        ["bash", "-c", script.replace("/shared/runs", str(shared))],
+        env={"PATH": os.environ["PATH"], "RUN_ID": run_id},
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_cleanup_deletes_the_runs_folder_and_its_genome_folder(tmp_path):
+    shared = tmp_path / "runs"
+    for folder in (RUN_ID, f"{RUN_ID}.genome/ref/{GENOME}", "other_run.genome"):
+        (shared / folder).mkdir(parents=True)
+    result = _cleanup(shared, RUN_ID)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(p.name for p in shared.iterdir()) == ["other_run.genome"]
+
+
+@pytest.mark.parametrize("run_id", ["", ".", "..", "a/b"])
+def test_cleanup_refuses_a_bad_run_id(tmp_path, run_id):
+    shared = tmp_path / "runs"
+    (shared / "keep").mkdir(parents=True)
+    assert _cleanup(shared, run_id).returncode == 1
+    assert (shared / "keep").exists()

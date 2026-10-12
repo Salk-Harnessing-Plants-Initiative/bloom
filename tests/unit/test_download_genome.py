@@ -76,7 +76,7 @@ def _templates():
 def test_the_version_is_downloaded_unzipped_into_the_runs_folder(env):
     result = _run(env)
     assert result.returncode == 0, result.stderr
-    dest = Path(env["SHARED_RUNS"]) / RUN_ID / "genome"
+    dest = Path(env["SHARED_RUNS"]) / f"{RUN_ID}.genome" / "genome"
     assert _bloomctl(env)["args"] == (
         f"[genome] [download] [athaliana_col0.v2] [--to] [{dest}] [--unzip] "
         f"[--version-file] [{dest}/VERSION]"
@@ -147,10 +147,10 @@ def test_the_download_and_build_get_the_runs_genome_and_folder():
         assert params["run-id"] == "{{inputs.parameters.run-id}}"
 
 
-def test_count_reads_the_reference_built_in_the_runs_folder():
+def test_count_reads_the_reference_built_in_the_runs_genome_folder():
     env = {e["name"]: e["value"] for e in _templates()["count"]["container"]["env"]}
     assert env["REF_DIR"] == (
-        "/shared/runs/{{inputs.parameters.run-id}}/ref/{{inputs.parameters.reference}}"
+        "/shared/runs/{{inputs.parameters.run-id}}.genome/ref/{{inputs.parameters.reference}}"
     )
 
 
@@ -211,3 +211,19 @@ def test_the_analysis_image_installs_the_download_script():
     assert "COPY download-genome.sh /usr/local/bin/download-genome" in dockerfile
     assert "/usr/local/bin/download-genome" in dockerfile.split("chmod +x", 1)[1].split("RUN")[0]
     assert "bloomctl genome download --help" in dockerfile
+
+
+def test_the_genome_and_reference_live_next_to_the_runs_folder_not_in_it():
+    """stage clears the run's folder of an earlier run's files, so nothing it needs may be there."""
+    text = TEMPLATE.read_text()
+    script = (ARGO / "analysis" / "download-genome.sh").read_text()
+    assert 'dest="${SHARED_RUNS}/${RUN_ID}.genome/genome"' in script
+    build = _templates()["build-reference"]["container"]["args"][0]
+    assert 'src="/shared/runs/${RUN_ID}.genome/genome"' in build
+    assert 'ref="/shared/runs/${RUN_ID}.genome/ref/${GENOME}"' in build
+    assert "/shared/runs/${RUN_ID}/genome" not in text and "/shared/runs/${RUN_ID}/ref" not in text
+
+
+def test_cleanup_deletes_the_genome_folder_with_the_runs():
+    cleanup = _templates()["cleanup"]["container"]["args"][0]
+    assert 'for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome"; do' in cleanup

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Download a run's genome version from Bloom with bloomctl, signed in as the pipeline, for
-# cellranger mkref: SHARED_RUNS/RUN_ID/genome/genome.fa and genes.gtf, each checked against the
-# SHA-256 and size Bloom recorded, and VERSION with the exact version.
+# cellranger mkref: SHARED_RUNS/RUN_ID.genome/genome/genome.fa and genes.gtf, each checked against
+# the SHA-256 and size Bloom recorded, and VERSION with the exact version. The genome folder sits
+# next to the run's folder, which the stage step clears of an earlier run's files.
 #
 # Env: GENOME (<genome>.v<N>), RUN_ID (the run's folder), and bloomctl's credentials file at
 # BLOOM_CREDENTIALS (default /etc/bloom/credentials.txt). The credentials are copied into the
@@ -35,7 +36,7 @@ export HOME
 mkdir -p "${HOME}/.bloom"
 install -m 600 "${credentials}" "${HOME}/.bloom/credentials.txt"
 
-dest="${SHARED_RUNS}/${RUN_ID}/genome"
+dest="${SHARED_RUNS}/${RUN_ID}.genome/genome"
 mkdir -p "${dest}"
 echo "Downloading ${GENOME} from Bloom into ${dest}"
 exec bloomctl genome download "${GENOME}" --to "${dest}" --unzip --version-file "${dest}/VERSION"

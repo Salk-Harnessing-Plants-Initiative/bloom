@@ -460,6 +460,16 @@ def test_this_runs_sra_download_is_kept(env):
     assert (_run_dir(env) / "sra/SRR1.sra").exists()
 
 
+def test_the_runs_genome_folder_next_to_it_is_left_alone(env):
+    # download-genome and build-reference write <run>.genome/ while the reads are fetched.
+    _leave_a_failed_run(env)
+    genome = _run_dir(env).parent / (_run_dir(env).name + ".genome")
+    (genome / "ref/athaliana_col0.v2").mkdir(parents=True)
+    (genome / "ref/athaliana_col0.v2/reference.json").write_text("{}")
+    assert _run(_folder(env, R1, R2)).returncode == 0
+    assert (genome / "ref/athaliana_col0.v2/reference.json").exists()
+
+
 def test_raw_reads_runs_set_aside_another_runs_folder_too(env):
     raw = "s3://bloomv2-workflows/raw_reads/col0/"
     _put(env, raw, R1)
