@@ -21,6 +21,8 @@ MIGRATION = _find_one("migrations", "*_let_pipeline_load_scrna_datasets.sql")
 ROLLBACK = _find_one("rollbacks", "*_let_pipeline_load_scrna_datasets_rollback.sql")
 BY_ID_MIGRATION = _find_one("migrations", "*_link_rnaseq_run_by_dataset_id.sql")
 BY_ID_ROLLBACK = _find_one("rollbacks", "*_link_rnaseq_run_by_dataset_id_rollback.sql")
+# The later DE rights use the same rule function, so they are rolled back first.
+DE_ROLLBACK = _find_one("rollbacks", "*_let_pipeline_load_default_de_rollback.sql")
 NAME_LINK = "public.link_rnaseq_run_dataset(bigint)"
 
 
@@ -245,6 +247,7 @@ def test_the_by_id_rollback_puts_the_name_lookup_back(cur, pipeline, scientist, 
 @pytest.mark.parametrize("by_id_first", [True, False])
 def test_the_rollbacks_take_the_pipelines_access_back(cur, pipeline, species, by_id_first):
     dataset_id = load.loaded(cur, pipeline, species)
+    cur.execute(_sql_body(DE_ROLLBACK))
     if by_id_first:
         cur.execute(_sql_body(BY_ID_ROLLBACK))
     cur.execute(_sql_body(ROLLBACK))
