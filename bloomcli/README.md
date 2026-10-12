@@ -790,8 +790,8 @@ bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_202
 bloomctl genome list -p staging                  # every genome, version and status
 bloomctl genome download tair10_araport11 --to ref/ -p staging       # newest ready version
 bloomctl genome download tair10_araport11.v1 --to ref/ -p staging    # a named version
-# For building a Cell Ranger reference (what the workflow runs):
-bloomctl genome download tair10_araport11 --to ref/ --unzip --version-file ref/VERSION
+# For building a Cell Ranger reference (what the workflow runs, with the exact version):
+bloomctl genome download tair10_araport11.v2 --to ref/ --unzip --version-file ref/VERSION
 ```
 
 - A version is **ready** once its upload finished. `uploading`, `abandoned` (the upload
