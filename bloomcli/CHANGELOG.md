@@ -8,6 +8,8 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a13] - 2026-10-12 — each cluster's differential expression
+
 ### Added
 
 - `scrna hdf5 upload --de-key KEY` loads a one-vs-rest differential expression from the file's
