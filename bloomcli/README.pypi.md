@@ -241,21 +241,11 @@ bloomctl genome download tair10_araport11 --to ref/          # newest ready vers
 bloomctl genome download tair10_araport11.v1 --to ref/ --unzip   # a named version, unzipped
 ```
 
-- **Names.** 1 to 64 lowercase letters, digits, `.`, `_` or `-`, with no `__`. A name can't
-  end in `.v` and a number, because that is how a version is written (`tair10_araport11.v1`).
-  A name never changes.
-- **Upload** takes plain or gzipped files and checks them before sending anything. It shows
-  what it will store and asks first (`--yes` skips the question). Uploading the same genome
-  again makes its next version. If an upload stops part-way, that version is marked abandoned
-  and never used; run the command again.
-- **Status.** Only `ready` versions can be downloaded. `uploading`, `abandoned` and `withdrawn`
-  versions are listed, and asking for one says which it is.
-- **Download** checks each file against Bloom's record before saving it. `--unzip` writes
-  `genome.fa` and `genes.gtf`, ready for `cellranger mkref`. Running it again keeps files that
-  are already correct, and never overwrites a different file.
-- **Exit codes** for `download`: `0` done; `3` the version isn't available or a file doesn't
-  match Bloom's record (running again won't help); `1` a network or storage error (worth
-  retrying); `2` a usage error.
+- **Names:** lowercase letters, digits, `.`, `_`, `-`; can't end in `.vN`.
+- **Upload** checks the files first; uploading again makes the next version.
+- **Only `ready` versions** can be downloaded.
+- **Download** checks each file against Bloom's record; `--unzip` gives `genome.fa` and `genes.gtf`.
+- **Exit codes:** `3` not available or doesn't match (don't retry); `1` network error (retry).
 
 ### Genome commands
 
