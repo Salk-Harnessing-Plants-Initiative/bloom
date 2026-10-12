@@ -733,6 +733,25 @@ as `bloom_workflows`. It records the run on the dataset it creates, so the run c
 it, and refuses to continue a dataset another run, or a person, started. An upload without it
 works as before.
 
+`--de-key KEY` loads a differential expression stored in the file with the dataset: each
+`--annotation` cluster against the rest, as scanpy's `sc.tl.rank_genes_groups(adata,
+groupby=<annotation>, reference="rest")` stores it in `uns[KEY]` (with `pts=True`, each gene's
+share of expressing cells is kept too). It becomes:
+
+- one DE run;
+- a comparison per cluster (`<cluster>_vs_rest`);
+- every tested gene's fold change, p-value and FDR;
+- each cluster's size, centre and top 25 up-regulated markers (FDR < 0.05), shown on the
+  expression page's cluster panel and Genes tab.
+
+Notes:
+
+- A result against a chosen cluster, or grouped by another column, is refused before
+  anything is sent.
+- The DE is written after the counts and before the dataset is finished, so a stopped load
+  continues it.
+- The Cell Ranger pipeline passes `--de-key de`.
+
 **List** needs any login. It reports what the bucket holds — each object's fingerprint,
 its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
 does; an object can be stored before any dataset points at it, so an unnamed row is
