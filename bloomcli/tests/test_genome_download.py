@@ -1,15 +1,17 @@
 """bloomctl genome download — a version's FASTA and GTF, checked against Bloom's record, against
 fake storage and a fake database."""
 
+import dataclasses
 import gzip
 import hashlib
 
+import httpx
 import pytest
 from click.testing import CliRunner
 from scrna_fake_db import FakeClient
 
 from bloomctl.cli import cli
-from bloomctl.scrna import _session
+from bloomctl.scrna import _session, _transfer
 
 FASTA = b">Chr1\nACGTACGTNNACGT\n>Chr2\nGGCC\n"
 GTF = b"Chr1\tAraport11\tgene\t1\t10\t.\t+\t.\tgene_id \"AT1G01010\";\n"
@@ -261,19 +263,60 @@ def test_a_directory_in_the_files_place_is_refused(genome, tmp_path):
 def test_an_expired_session_signs_in_again_and_both_files_use_the_new_one(
     genome, storage, tmp_path, monkeypatch
 ):
-    storage.expired = True
+    """The first token expires at the first read; every later read must carry the new one."""
+    expired = httpx.Response(400, json={"statusCode": "400", "error": "InvalidJWT",
+                                        "message": "jwt expired"})
+
+    def handle(request):
+        reading = "/object/authenticated/" in request.url.path
+        if reading and request.headers["authorization"] == "Bearer tok":
+            storage.requests.append(request)
+            return expired
+        return storage.handle(request)
+
+    monkeypatch.setattr(_transfer, "open_client",
+                        lambda: httpx.Client(transport=httpx.MockTransport(handle)))
     signed_in = []
-    original = _session.connect
+    first = _session.connect
 
     def connect(profile):
         signed_in.append(profile)
-        if len(signed_in) > 1:
-            storage.expired = False  # the new token is accepted
-        return original(profile)
+        conn = first(profile)
+        if len(signed_in) == 1:
+            return conn
+        return dataclasses.replace(conn, endpoint=conn.endpoint._replace(token="tok2"))
 
     monkeypatch.setattr(_session, "connect", connect)
     result = _run("tair10_araport11", "--to", str(tmp_path))
     assert result.exit_code == 0, result.output
     assert len(signed_in) == 2, "the first sign-in, then once more after the expiry"
+    tokens = [r.headers["authorization"] for r in _reads(storage)]
+    assert tokens[0] == "Bearer tok"
+    assert tokens[1:] and all(t == "Bearer tok2" for t in tokens[1:]), tokens
     assert (tmp_path / "genome.fa.gz").read_bytes() == FASTA_GZ
     assert (tmp_path / "genes.gtf.gz").read_bytes() == GTF_GZ
+
+
+def test_a_login_storage_refuses_exits_3(genome, storage, tmp_path):
+    storage.object_status = 403
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 3 and "not allowed" in result.output
+
+
+def test_a_network_error_exits_1(genome, tmp_path, monkeypatch):
+    def unreachable(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(_transfer, "open_client",
+                        lambda: httpx.Client(transport=httpx.MockTransport(unreachable)))
+    result = _run("tair10_araport11", "--to", str(tmp_path))
+    assert result.exit_code == 1 and "Run the same command again" in result.output
+
+
+def test_the_real_entry_point_keeps_exit_3(genome, tmp_path):
+    """bloomctl's own entry point must not turn a refusal back into 1."""
+    from bloomctl import errors
+
+    with pytest.raises(SystemExit) as exited:
+        errors.main(["genome", "download", "tair10_araport11.v3", "--to", str(tmp_path)])
+    assert exited.value.code == 3
