@@ -15,7 +15,8 @@ COPY requirements.txt /opt/scrna-analysis/requirements.txt
 RUN pip install -r /opt/scrna-analysis/requirements.txt \
  && python -c "import scanpy, leidenalg, igraph, boto3" \
  && bloomctl scrna hdf5 upload --help | grep -q -- --run-id \
- && bloomctl genome download --help | grep -q -- --version-file
+ && bloomctl genome download --help | grep -q -- --version-file \
+ && bloomctl scrna hdf5 upload --help | grep -q -- --de-key
 
 COPY bloom_scrna_analysis /opt/scrna-analysis/bloom_scrna_analysis
 ENV PYTHONPATH=/opt/scrna-analysis

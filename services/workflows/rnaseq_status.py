@@ -25,6 +25,7 @@ CELLRANGER_STEPS = {
     "count": "count",
     "preprocess": "preprocess",
     "cluster": "cluster",
+    "de": "de",
     "build-h5ad": "build-h5ad",
     "load-dataset": "load-dataset",
     "cleanup": "cleanup",

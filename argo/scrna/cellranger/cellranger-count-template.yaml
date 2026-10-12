@@ -15,7 +15,7 @@ metadata:
 spec:
   templates:
     # One sample: download-genome -> build-reference alongside [fetch-sra ->] stage -> qc, then
-    # count -> preprocess -> analyses -> build-h5ad -> load-dataset -> cleanup, all in
+    # count -> preprocess -> cluster -> de -> build-h5ad -> load-dataset -> cleanup, all in
     # /shared/runs/<run-id>/ so runs never share files. The reference is built from the run's
     # genome version in Bloom every run. The result leaves the cluster only through
     # load-dataset, into Bloom.
@@ -161,9 +161,17 @@ spec:
               parameters:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+          # Each cluster against the rest, on the cluster step's labels.
+          - name: de
+            template: de
+            depends: cluster
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
           - name: build-h5ad
             template: build-h5ad
-            depends: cluster
+            depends: cluster && de
             arguments:
               parameters:
                 - name: sample
@@ -202,7 +210,7 @@ spec:
         # doesn't match Bloom's record), 6 (bad input) and 16 (no credentials) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4
         command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
         env:
           - name: GENOME
@@ -623,7 +631,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/preprocess.log", --, scrna-analysis]
         args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
@@ -656,13 +664,47 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cluster.log", --, scrna-analysis]
         args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base + cluster labels -> analysis/de/part.h5ad: each cluster against the rest (scanpy's
+    # rank_genes_groups, Wilcoxon, pts), which load-dataset loads as the dataset's DE.
+    - name: de
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/de.log", --, scrna-analysis]
+        args: [de, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
         volumeMounts:
           # bloomctl's credentials.txt, for run-with-log to upload the step's log
           - name: bloom-credentials
@@ -690,7 +732,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-h5ad.log", --, scrna-analysis]
         args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}"]
@@ -741,7 +783,7 @@ spec:
         # A retry resumes the load. 2 (usage), 6 (bad input) and 16 (no credentials) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) != 2 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 16"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4
         command: [run-with-log, --path, "scrna/{{workflow.name}}/load-dataset.log", --, load-dataset]
         env:
           - name: SAMPLE

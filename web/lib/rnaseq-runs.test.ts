@@ -93,6 +93,7 @@ describe("stepStates", () => {
       count: "waiting",
       preprocess: "waiting",
       cluster: "waiting",
+      de: "waiting",
       "build-h5ad": "waiting",
       "load-dataset": "waiting",
       cleanup: "waiting",
@@ -101,12 +102,12 @@ describe("stepStates", () => {
 
   it("marks every step waiting before the first report", () => {
     expect(Object.values(stepStates(run({ status: "queued", current_step: null })))).toEqual(
-      Array(9).fill("waiting")
+      Array(10).fill("waiting")
     );
   });
 
   const ALL_PODS = Object.fromEntries(
-    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "build-h5ad", "load-dataset", "cleanup"].map(
+    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "de", "build-h5ad", "load-dataset", "cleanup"].map(
       (step, i) => [step, `p${i}`]
     )
   );
@@ -114,15 +115,16 @@ describe("stepStates", () => {
   it("marks every step done when the run succeeded", () => {
     expect(
       Object.values(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: ALL_PODS })))
-    ).toEqual(Array(9).fill("done"));
+    ).toEqual(Array(10).fill("done"));
   });
 
   it("marks steps a finished run never had as not run", () => {
-    const { preprocess: _p, cluster: _c, "build-h5ad": _b, ...before } = ALL_PODS;
+    const { preprocess: _p, cluster: _c, de: _d, "build-h5ad": _b, ...before } = ALL_PODS;
     expect(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: before }))).toMatchObject({
       count: "done",
       preprocess: "not-run",
       cluster: "not-run",
+      de: "not-run",
       "build-h5ad": "not-run",
       "load-dataset": "done",
       cleanup: "done",
@@ -137,6 +139,7 @@ describe("stepStates", () => {
       count: "failed",
       preprocess: "not-run",
       cluster: "not-run",
+      de: "not-run",
       "build-h5ad": "not-run",
       "load-dataset": "not-run",
       cleanup: "not-run",
@@ -145,7 +148,7 @@ describe("stepStates", () => {
 
   it("marks nothing failed when a run failed before starting", () => {
     expect(Object.values(stepStates(run({ status: "failed", current_step: null })))).toEqual(
-      Array(9).fill("not-run")
+      Array(10).fill("not-run")
     );
   });
 
@@ -160,6 +163,7 @@ describe("stepStates", () => {
       count: "skipped",
       preprocess: "skipped",
       cluster: "skipped",
+      de: "skipped",
       "build-h5ad": "skipped",
       "load-dataset": "skipped",
       cleanup: "skipped",
@@ -203,6 +207,7 @@ describe("runSteps and runSraRuns", () => {
       "count",
       "preprocess",
       "cluster",
+      "de",
       "build-h5ad",
       "load-dataset",
       "cleanup",
@@ -412,6 +417,7 @@ describe("a run on a genome version from Bloom", () => {
       "count",
       "preprocess",
       "cluster",
+      "de",
       "build-h5ad",
       "load-dataset",
       "cleanup",

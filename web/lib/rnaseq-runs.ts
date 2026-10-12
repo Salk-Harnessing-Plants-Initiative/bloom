@@ -59,6 +59,7 @@ export const CELLRANGER_STEPS = [
   { id: "count", label: "Cell Ranger count" },
   { id: "preprocess", label: "Filter and normalise" },
   { id: "cluster", label: "Cluster and UMAP" },
+  { id: "de", label: "Differential expression" },
   { id: "build-h5ad", label: "Build the .h5ad" },
   { id: "load-dataset", label: "Load into Bloom" },
   { id: "cleanup", label: "Clean up" },
