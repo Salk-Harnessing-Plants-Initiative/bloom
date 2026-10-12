@@ -8,7 +8,12 @@ import {
 import Mixpanel from "mixpanel";
 
 import type { SpeciesWithRNADatasets } from "@/lib/custom.types";
-import type { RnaseqReference, RnaseqSample } from "@/lib/scrna-jobs";
+import {
+  genomeVersionOptions,
+  type GenomeVersionOption,
+  type ReadyVersionRow,
+  type RnaseqSample,
+} from "@/lib/scrna-jobs";
 import { sortedSpeciesOptions } from "@/lib/species-options";
 
 export default async function AllSpecies() {
@@ -23,7 +28,7 @@ export default async function AllSpecies() {
     url: "/app/expression",
   });
 
-  const [speciesList, { samples, references }] = await Promise.all([
+  const [speciesList, { samples, genomeVersions }] = await Promise.all([
     getSpeciesList(),
     getJobChoices(),
   ]);
@@ -45,7 +50,7 @@ export default async function AllSpecies() {
       <div className="mb-8">
         <ScrnaJobSubmit
           samples={samples}
-          references={references}
+          genomeVersions={genomeVersions}
           species={sortedSpeciesOptions(speciesList)}
           startedBy={user?.email ?? null}
           // Bloom's AWS user (bloomv2-workflows-job), for a folder a scientist shares with it; unset, the
@@ -136,23 +141,27 @@ async function getSpeciesList(): Promise<SpeciesWithRNADatasets[]> {
   return (data ?? []) as SpeciesWithRNADatasets[];
 }
 
-// The samples and references a scRNA job can be started with; empty lists if they can't be read.
+// The samples and ready genome versions a scRNA job can be started with; empty lists if they
+// can't be read. The versions come from the same tables `bloomctl genome list` reads.
 async function getJobChoices(): Promise<{
   samples: RnaseqSample[];
-  references: RnaseqReference[];
+  genomeVersions: GenomeVersionOption[];
 }> {
   const supabase = await createServerSupabaseClient();
 
-  const [samples, references] = await Promise.all([
+  const [samples, versions] = await Promise.all([
     supabase
       .from("rnaseq_samples")
       .select("name, source, fastq_count, total_bytes")
       .order("name"),
-    supabase.from("rnaseq_references").select("name, description").order("name"),
+    supabase
+      .from("genome_reference_versions")
+      .select("id, version, assembly, annotation, genome_references(name)")
+      .eq("status", "ready"),
   ]);
 
   return {
     samples: samples.data ?? [],
-    references: references.data ?? [],
+    genomeVersions: genomeVersionOptions((versions.data ?? []) as ReadyVersionRow[]),
   };
 }

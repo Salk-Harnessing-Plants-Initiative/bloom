@@ -123,19 +123,18 @@ def test_an_unknown_step_is_refused_before_any_lookup(monkeypatch, step):
     status, detail = _status(7, step)
     assert status == 422
     assert (
-        "fetch-sra, download-genome, build-reference, stage, qc, count, preprocess, "
-        "cluster, build-h5ad, load-dataset, cleanup, stage-reference"
-        in detail
+        "fetch-sra, stage, qc, download-genome, build-reference, count, preprocess, "
+        "cluster, build-h5ad, load-dataset, cleanup, stage-reference" in detail
     )
 
 
 def test_every_cellranger_step_can_be_asked_for():
     assert logs.STEPS == (
         "fetch-sra",
-        "download-genome",
-        "build-reference",
         "stage",
         "qc",
+        "download-genome",
+        "build-reference",
         "count",
         "preprocess",
         "cluster",

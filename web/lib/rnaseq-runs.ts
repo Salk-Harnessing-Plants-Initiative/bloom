@@ -36,12 +36,19 @@ export const RUN_COLUMNS =
 // How many runs the list shows at first.
 export const RUNS_PAGE_SIZE = 50;
 
-/** Cell Ranger's steps in the order they run, as the poller reports them. */
+/**
+ * Cell Ranger's steps in the order the poller ranks them (services/workflows/rnaseq_status.py's
+ * CELLRANGER_STEPS; a test keeps the two the same). The genome steps run alongside the reads'
+ * steps and usually finish last, so they come just before count. stage-reference is the step
+ * runs started before genomes came from Bloom have instead of the two genome steps.
+ */
 export const CELLRANGER_STEPS = [
   { id: "fetch-sra", label: "Download from SRA" },
   { id: "stage-reference", label: "Stage reference" },
   { id: "stage", label: "Stage FASTQs" },
   { id: "qc", label: "FastQC" },
+  { id: "download-genome", label: "Download genome" },
+  { id: "build-reference", label: "Build reference" },
   { id: "count", label: "Cell Ranger count" },
   { id: "preprocess", label: "Filter and normalise" },
   { id: "cluster", label: "Cluster and UMAP" },
@@ -65,7 +72,7 @@ export const STATUS_LABELS: Record<RunStatus, string> = {
 // The pipeline's own exit codes: argo/scrna/cellranger/ (run-count, fetch-sra) and
 // argo/scrna/analysis/ (preprocess, cluster, build-h5ad).
 const EXIT_SENTENCES: Record<number, string> = {
-  3: "The reference genome folder, or its reference.json, wasn't found.",
+  3: "The Cell Ranger reference wasn't found to count against.",
   4: "No FASTQ files were found in the sample's folder.",
   5: "Cell Ranger count failed; its log has the details.",
   6: "The sample name can't be used as a Cell Ranger run id.",
@@ -74,6 +81,8 @@ const EXIT_SENTENCES: Record<number, string> = {
   14: "Cell Ranger's count matrix wasn't found for the analysis steps.",
   15: "An analysis step's results didn't fit with the others; its log has the details.",
 };
+// The genome steps' exits mean something else at each, so the service's message is shown.
+const MESSAGE_STEPS: ReadonlySet<string> = new Set(["download-genome", "build-reference"]);
 // load-dataset (argo/scrna/analysis/load-dataset.sh) reuses 6 with its own meaning.
 const LOAD_DATASET_EXIT_SENTENCES: Record<number, string> = {
   6: "The run's final .h5ad wasn't found, so there was nothing to load into Bloom; ask the Bloom admins.",
@@ -148,10 +157,25 @@ export function runFastqUrl(run: RnaseqRun): string | null {
   return typeof url === "string" ? url : null;
 }
 
-/** The steps this run goes through: fetch-sra only when it imports from SRA. */
+// Steps the pipeline no longer has, and the steps that replaced them.
+const RETIRED_STEPS: ReadonlySet<StepId> = new Set(["stage-reference"]);
+const GENOME_STEPS: ReadonlySet<StepId> = new Set(["download-genome", "build-reference"]);
+
+/** Whether the run started before genomes came from Bloom, so it staged its reference instead. */
+function stagedItsReference(run: RnaseqRun): boolean {
+  return run.current_step === "stage-reference" || Boolean(field(run.step_pods, "stage-reference"));
+}
+
+/** The steps this run goes through: fetch-sra only when it imports from SRA, and the genome
+ * steps, or stage-reference for an earlier run. */
 export function runSteps(run: RnaseqRun): (typeof CELLRANGER_STEPS)[number][] {
   const imports = runSraRuns(run).length > 0;
-  return CELLRANGER_STEPS.filter((step) => step.id !== "fetch-sra" || imports);
+  const staged = stagedItsReference(run);
+  return CELLRANGER_STEPS.filter(
+    (step) =>
+      (step.id !== "fetch-sra" || imports) &&
+      (staged ? !GENOME_STEPS.has(step.id) : !RETIRED_STEPS.has(step.id))
+  );
 }
 
 /** Whether a step has a pod, and so a log that can be asked for. */
@@ -186,6 +210,7 @@ const SAMPLE_FOLDER_EXITS = new Set([4, 7]);
 /** A sentence for how a failed run ended, or null. */
 export function failureSentence(run: RnaseqRun): string | null {
   if (run.status !== "failed") return null;
+  if (run.current_step && MESSAGE_STEPS.has(run.current_step) && run.message) return run.message;
   if (runFastqUrl(run)) {
     // The service words a folder run's failures around its folder, e.g. naming the sample
     // for exit 9; the fixed sentences are only a fallback when it left no message.

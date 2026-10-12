@@ -216,7 +216,7 @@ describe("runSteps and runSraRuns", () => {
 
 describe("failureSentence", () => {
   it.each([
-    [3, /reference\.json/],
+    [3, /Cell Ranger reference wasn't found/],
     [4, /No FASTQ files/],
     [5, /Cell Ranger count failed/],
     [6, /run id/],
@@ -388,5 +388,70 @@ describe("runFastqUrl", () => {
     expect(runFastqUrl(run({ params: { sample: "s", reference: "r", fastq_url: url } }))).toBe(url);
     expect(runFastqUrl(run())).toBeNull();
     expect(runFastqUrl(run({ params: null }))).toBeNull();
+  });
+});
+
+describe("a run on a genome version from Bloom", () => {
+  const genomeRun = (overrides: Partial<RnaseqRun> = {}) =>
+    run({
+      params: { sample: "col0", reference: "athaliana_col0.v2" },
+      step_pods: { stage: "p1", qc: "p2", "download-genome": "p3", "build-reference": "p4" },
+      current_step: "build-reference",
+      ...overrides,
+    });
+
+  it("goes through the genome steps, not stage-reference", () => {
+    const ids = runSteps(genomeRun()).map((s) => s.id);
+    expect(ids).toEqual([
+      "stage",
+      "qc",
+      "download-genome",
+      "build-reference",
+      "count",
+      "preprocess",
+      "cluster",
+      "build-h5ad",
+      "load-dataset",
+      "cleanup",
+    ]);
+  });
+
+  it("shows the reads' steps done while the reference is still building", () => {
+    const states = stepStates(genomeRun());
+    expect(states.stage).toBe("done");
+    expect(states.qc).toBe("done");
+    expect(states["download-genome"]).toBe("done");
+    expect(states["build-reference"]).toBe("running");
+    expect(states.count).toBe("waiting");
+  });
+
+  it("shows a queued run's genome steps too, before any pod", () => {
+    const ids = runSteps(genomeRun({ step_pods: {}, current_step: null, status: "queued" })).map(
+      (s) => s.id
+    );
+    expect(ids).toContain("download-genome");
+    expect(ids).not.toContain("stage-reference");
+  });
+
+  it.each([
+    ["download-genome", 3],
+    ["download-genome", 6],
+    ["build-reference", 17],
+    ["build-reference", 3],
+  ])("shows the service's message when %s fails with exit %i", (step, code) => {
+    const message = "Genome athaliana_col0.v2 isn't available in Bloom";
+    const r = genomeRun({ status: "failed", current_step: step, exit_code: code, message });
+    expect(failureSentence(r)).toBe(message);
+  });
+});
+
+describe("a run started before genomes came from Bloom", () => {
+  it("keeps its stage-reference step, by its pod or its current step", () => {
+    for (const r of [run(), run({ step_pods: {}, current_step: "stage-reference" })]) {
+      const ids = runSteps(r).map((s) => s.id);
+      expect(ids).toContain("stage-reference");
+      expect(ids).not.toContain("download-genome");
+      expect(ids).not.toContain("build-reference");
+    }
   });
 });

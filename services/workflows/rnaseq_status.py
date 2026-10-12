@@ -12,14 +12,16 @@ from dataclasses import dataclass, field
 # The cluster's shared folder, where a run's files stay after a failure.
 SHARED_RUNS = "/hpi/hpi_dev/users/bfernando/scrna/runs"
 
-# Cell Ranger's pipeline steps by template name, in the order they run; fetch-sra runs only
-# for a run that imports its sample from SRA.
+# Cell Ranger's pipeline steps by template name, in the order the run page shows them
+# (web/lib/rnaseq-runs.ts; a test keeps the two the same); fetch-sra runs only for a run that
+# imports its sample from SRA. The genome steps run alongside the reads' steps and usually
+# finish last, so they come just before count.
 CELLRANGER_STEPS = {
     "fetch-sra": "fetch-sra",
-    "download-genome": "download-genome",
-    "build-reference": "build-reference",
     "stage-sample": "stage",
     "qc": "qc",
+    "download-genome": "download-genome",
+    "build-reference": "build-reference",
     "count": "count",
     "preprocess": "preprocess",
     "cluster": "cluster",
@@ -303,8 +305,9 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
     pods = _step_pods(workflow)
     step_pods = {step: _pod_name(name, node) for step, node in pods.items()}
 
-    running = [s for s, n in pods.items() if n.get("phase") in _RUNNING_PHASES]
+    # By step order, so steps running side by side always give the same current step.
     started = sorted(pods, key=_STEP_ORDER.__getitem__)
+    running = [s for s in started if pods[s].get("phase") in _RUNNING_PHASES]
     current = (running or started or [None])[-1]
 
     if phase in _FAILED_PHASES:

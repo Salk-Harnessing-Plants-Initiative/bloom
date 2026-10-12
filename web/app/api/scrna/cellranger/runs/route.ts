@@ -1,7 +1,7 @@
 /**
  * Server-side proxy for starting a Cell Ranger run.
  *
- * Forwards `{sample or fastq_url and fastq_files, reference, metadata?, sra_runs?}` with the
+ * Forwards `{sample or fastq_url and fastq_files, genome_version_id, metadata?, sra_runs?}` with the
  * signed-in user's Supabase token to the workflows service (`POST /scrna/cellranger/runs`,
  * in-cluster at `workflows:5100`), which checks the request, records the run and queues
  * it. Proxying keeps the token out of client JS. A request must be JSON (415 otherwise),
@@ -62,12 +62,12 @@ export async function POST(request: Request) {
 
   const read = await readJsonBody(request);
   if (!read.ok) return read.response;
-  const { sample, fastq_url, fastq_files, reference, metadata, sra_runs } = (read.body ??
+  const { sample, fastq_url, fastq_files, genome_version_id, metadata, sra_runs } = (read.body ??
     {}) as {
     sample?: unknown;
     fastq_url?: unknown;
     fastq_files?: unknown;
-    reference?: unknown;
+    genome_version_id?: unknown;
     metadata?: unknown;
     sra_runs?: unknown;
   };
@@ -76,13 +76,14 @@ export async function POST(request: Request) {
   const hasFolder = fastq_url !== undefined;
   const files = hasFolder ? shownFiles(fastq_files) : null;
   if (
-    typeof reference !== "string" ||
+    !Number.isSafeInteger(genome_version_id) ||
+    (genome_version_id as number) < 1 ||
     (hasFolder
       ? typeof fastq_url !== "string" || sample !== undefined || files === null
       : typeof sample !== "string")
   ) {
     return NextResponse.json(
-      { detail: "Choose the reads (an S3 folder or a sample) and a reference." },
+      { detail: "Choose the reads (an S3 folder or a sample) and a genome version." },
       { status: 400 }
     );
   }
@@ -122,7 +123,7 @@ export async function POST(request: Request) {
     token: session.access_token,
     payload: {
       ...(hasFolder ? { fastq_url, fastq_files: files } : { sample }),
-      reference,
+      genome_version_id,
       ...(metadata === undefined ? {} : { metadata }),
       ...(sra_runs === undefined ? {} : { sra_runs }),
     },

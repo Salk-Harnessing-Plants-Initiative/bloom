@@ -389,13 +389,31 @@ def test_a_failed_genome_step_says_why(template, exit_code, message):
     assert status.step_pods[template] == f"{WF}-{template}-2222222222"
 
 
-def test_the_genome_steps_run_before_staging_in_the_step_order():
+def test_the_genome_steps_come_after_the_reads_and_just_before_count():
     steps = list(st.CELLRANGER_STEPS.values())
-    assert (
-        steps.index("download-genome")
-        < steps.index("build-reference")
-        < steps.index("count")
-    )
+    assert steps.index("qc") < steps.index("download-genome")
+    assert steps.index("build-reference") + 1 == steps.index("count")
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
+def test_steps_running_side_by_side_report_the_later_one_whatever_the_node_order(
+    reverse,
+):
+    wf = _load("counting")
+    count = _pod(wf, "count")
+    nodes = []
+    for template, n in (("qc", "1"), ("build-reference", "2")):
+        node = copy.deepcopy(count)
+        node.pop("templateRef", None)
+        node["templateName"] = template
+        node["id"] = f"{WF}-900000000{n}"
+        node["phase"] = "Running"
+        node["startedAt"] = "2099-01-01T00:00:00Z"
+        nodes.append(node)
+    ordered = list(reversed(nodes)) if reverse else nodes
+    wf["status"]["nodes"] = {n["id"]: n for n in ordered}
+    wf["status"]["phase"] = "Running"
+    assert st.read_cellranger_status(wf, RUN).current_step == "build-reference"
 
 
 def test_a_retired_step_is_no_longer_a_template_step():

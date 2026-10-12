@@ -21,16 +21,16 @@ vi.mock("@/lib/species-options", async (importOriginal) => ({
 
 import ScrnaJobSubmit from "./scrna-job-submit";
 import { addSpecies } from "@/lib/species-options";
-import type { RnaseqReference, RnaseqSample } from "@/lib/scrna-jobs";
+import type { GenomeVersionOption, RnaseqSample } from "@/lib/scrna-jobs";
 import type { SpeciesOption } from "@/lib/species-options";
 
 const SAMPLES: RnaseqSample[] = [
   { name: "tinygex", source: "s3", fastq_count: 4, total_bytes: 31_400_000_000 },
   { name: "root_rep2", source: "sra", fastq_count: null, total_bytes: null },
 ];
-const REFERENCES: RnaseqReference[] = [
-  { name: "tiny_ref", description: "Arabidopsis TAIR10" },
-  { name: "GRCh38", description: null },
+const GENOME_VERSIONS: GenomeVersionOption[] = [
+  { id: 3, genome: "tiny_ref", version: 1, assembly: "TAIR10", annotation: "Araport11" },
+  { id: 4, genome: "grch38", version: 2, assembly: null, annotation: null },
 ];
 
 const SPECIES: SpeciesOption[] = [
@@ -73,11 +73,11 @@ function startCalls() {
   return fetchSpy.mock.calls.filter(([url]) => url === "/api/scrna/cellranger/runs");
 }
 
-function openForm(samples = SAMPLES, references = REFERENCES) {
+function openForm(samples = SAMPLES, genomeVersions = GENOME_VERSIONS) {
   render(
     <ScrnaJobSubmit
       samples={samples}
-      references={references}
+      genomeVersions={genomeVersions}
       species={SPECIES}
       startedBy="scientist@salk.edu"
     />
@@ -94,9 +94,9 @@ async function enterFolder(url = FOLDER_URL) {
   await screen.findByText(FOLDER_SUMMARY);
 }
 
-async function choose(reference = "tiny_ref") {
+async function choose(genomeVersion = "3") {
   await enterFolder();
-  type("Reference genome", reference);
+  type("Reference genome", genomeVersion);
   type("Species", "1");
   type("Dataset name", "Col-0 root tip");
 }
@@ -118,7 +118,7 @@ afterEach(() => {
 describe("the form", () => {
   it("starts closed and opens from the button", () => {
     render(
-      <ScrnaJobSubmit samples={SAMPLES} references={REFERENCES} species={SPECIES} startedBy={null} />
+      <ScrnaJobSubmit samples={SAMPLES} genomeVersions={GENOME_VERSIONS} species={SPECIES} startedBy={null} />
     );
     expect(screen.queryByLabelText("S3 folder URL")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
@@ -133,10 +133,10 @@ describe("the form", () => {
     expect(screen.queryByLabelText("Registered sample")).toBeNull();
   });
 
-  it("lists references with their description", () => {
+  it("lists ready genome versions with their assembly and annotation", () => {
     openForm();
-    expect(screen.getByRole("option", { name: "tiny_ref — Arabidopsis TAIR10" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "GRCh38" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "tiny_ref v1 — TAIR10 / Araport11" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "grch38 v2" })).toBeTruthy();
   });
 
   it("offers Cell Ranger count as the only job type", () => {
@@ -151,7 +151,7 @@ describe("the form", () => {
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     await enterFolder();
-    type("Reference genome", "tiny_ref");
+    type("Reference genome", "3");
     expect(start.disabled).toBe(true);
     expect(screen.getByText("Choose a species.")).toBeTruthy();
     type("Species", "1");
@@ -167,7 +167,7 @@ describe("the form", () => {
     let finishCheck: (r: Response) => void = () => {};
     folderReply = () => new Promise<Response>((resolve) => (finishCheck = resolve));
     openForm();
-    type("Reference genome", "tiny_ref");
+    type("Reference genome", "3");
     type("Species", "1");
     type("Dataset name", "Col-0 root tip");
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
@@ -187,18 +187,18 @@ describe("the form", () => {
     openForm();
     type("S3 folder URL", FOLDER_URL);
     await screen.findByText(FOLDER_SUMMARY);
-    type("Reference genome", "tiny_ref");
+    type("Reference genome", "3");
     type("Species", "1");
     type("Dataset name", "Col-0 root tip");
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("says a reference is still needed once the folder has passed", async () => {
+  it("says a genome version is still needed once the folder has passed", async () => {
     openForm();
     await enterFolder();
-    expect(screen.getByText("Choose a reference genome to start.")).toBeTruthy();
-    type("Reference genome", "tiny_ref");
-    expect(screen.queryByText("Choose a reference genome to start.")).toBeNull();
+    expect(screen.getByText("Choose a genome version to start.")).toBeTruthy();
+    type("Reference genome", "3");
+    expect(screen.queryByText("Choose a genome version to start.")).toBeNull();
   });
 
   it("lists the species it was given", () => {
@@ -223,15 +223,16 @@ describe("the form", () => {
     expect(start.disabled).toBe(false);
   });
 
-  it("says who adds references when none are registered", () => {
+  it("says how genomes are added when none is ready", () => {
     openForm(SAMPLES, []);
-    expect(screen.getByText(/References are added by a Bloom admin/)).toBeTruthy();
+    expect(screen.getByRole("option", { name: "No reference genomes are ready yet" })).toBeTruthy();
+    expect(screen.getByText(/genome upload/)).toBeTruthy();
   });
 });
 
 describe("starting a run", () => {
   it("posts the chosen names with the dataset details and shows the queued run", async () => {
-    respond({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
+    respond({ run_id: 12, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" });
     openForm();
     await choose();
     type(/Accession or genotype/, " Col-0 ");
@@ -245,13 +246,13 @@ describe("starting a run", () => {
     const status = await screen.findByRole("status");
     expect(status.textContent).toContain("Run 12 queued");
     expect(status.textContent).toContain(
-      "tinygex against tiny_ref · Col-0 root tip (Arabidopsis (Arabidopsis thaliana))"
+      "tinygex against tiny_ref.v1 · Col-0 root tip (Arabidopsis (Arabidopsis thaliana))"
     );
     const [[, init]] = startCalls();
     expect(JSON.parse(init.body)).toEqual({
       fastq_url: FOLDER_URL,
       fastq_files: FOLDER.files,
-      reference: "tiny_ref",
+      genome_version_id: 3,
       metadata: {
         species_id: 1,
         dataset_name: "Col-0 root tip",
@@ -263,7 +264,7 @@ describe("starting a run", () => {
   });
 
   it("asks for a public dataset's source link and sends it with the citation", async () => {
-    respond({ run_id: 13, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
+    respond({ run_id: 13, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" });
     openForm();
     await choose();
     expect(screen.queryByLabelText("Source link")).toBeNull();
@@ -292,7 +293,7 @@ describe("starting a run", () => {
   });
 
   it("defaults to HPI and drops the source when switched back", async () => {
-    respond({ run_id: 14, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
+    respond({ run_id: 14, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" });
     openForm();
     await choose();
     expect((screen.getByLabelText("HPI") as HTMLInputElement).checked).toBe(true);
@@ -354,7 +355,7 @@ describe("starting a run", () => {
     startReply = async () =>
       ++starts === 1
         ? json({ detail: "s3://lab-data/tinygex/ changed since it was checked; check it again, then start the run" }, 409)
-        : json({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" }, 201);
+        : json({ run_id: 12, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" }, 201);
     openForm();
     await choose();
     folderReply = async () => json(newer, 200);
@@ -407,11 +408,11 @@ describe("starting a run", () => {
 
   it("sends the checked URL, with its slash, when the box has none", async () => {
     folderReply = async () => json(FOLDER, 200);
-    respond({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
+    respond({ run_id: 12, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" });
     openForm();
     type("S3 folder URL", "s3://lab-data/tinygex");
     await screen.findByText(FOLDER_SUMMARY);
-    type("Reference genome", "tiny_ref");
+    type("Reference genome", "3");
     type("Species", "1");
     type("Dataset name", "Col-0 root tip");
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
@@ -467,14 +468,14 @@ describe("starting a run", () => {
     fireEvent.click(start);
     expect(startCalls()).toHaveLength(1);
 
-    finish(new Response(JSON.stringify({ run_id: 1, sample: "tinygex", reference: "tiny_ref", run_key: "k" }), { status: 201 }));
+    finish(new Response(JSON.stringify({ run_id: 1, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" }), { status: 201 }));
     await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
   });
 });
 
 describe("after a run is queued", () => {
   async function queueRun() {
-    respond({ run_id: 12, sample: "tinygex", reference: "tiny_ref", run_key: "k" });
+    respond({ run_id: 12, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" });
     openForm();
     await choose();
     type(/Accession or genotype/, "Col-0");
@@ -502,7 +503,7 @@ describe("after a run is queued", () => {
 
     expect((screen.getByLabelText("S3 folder URL") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Dataset name") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
+    expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("3");
     expect((screen.getByLabelText("Species") as HTMLSelectElement).value).toBe("1");
     expect((screen.getByLabelText(/Accession or genotype/) as HTMLInputElement).value).toBe("Col-0");
     expect((screen.getByLabelText("Public dataset") as HTMLInputElement).checked).toBe(true);
@@ -520,7 +521,7 @@ describe("after a run is queued", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
     expect(screen.queryByRole("button", { name: "Start another run" })).toBeNull();
     expect((screen.getByLabelText("S3 folder URL") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("tiny_ref");
+    expect((screen.getByLabelText("Reference genome") as HTMLSelectElement).value).toBe("3");
   });
 });
 
