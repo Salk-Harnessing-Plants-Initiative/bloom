@@ -11,8 +11,9 @@ WRAPPER = Path(__file__).resolve().parents[2] / "argo" / "scrna" / "run_with_log
 ARGO = Path(__file__).resolve().parents[2] / "argo" / "scrna"
 # The run page's name for each template step (services/workflows/rnaseq_status.py).
 STEP_NAMES = {
-    "stage-reference": "stage-reference",
     "fetch-sra": "fetch-sra",
+    "download-genome": "download-genome",
+    "build-reference": "build-reference",
     "stage-sample": "stage",
     "qc": "qc",
     "count": "count",

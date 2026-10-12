@@ -138,7 +138,7 @@ def test_a_real_counting_workflow_is_recorded_as_running_at_count(workflows):
     assert name == "update_rnaseq_run_status"
     assert params["p_run_id"] == 7
     assert (params["p_status"], params["p_current_step"]) == ("running", "count")
-    assert set(params["p_step_pods"]) == {"stage-reference", "stage", "qc", "count"}
+    assert set(params["p_step_pods"]) == {"download-genome", "stage", "qc", "count"}
     assert (params["p_exit_code"], params["p_message"]) == (None, None)
 
 

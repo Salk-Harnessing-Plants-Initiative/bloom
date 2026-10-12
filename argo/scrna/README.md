@@ -16,11 +16,12 @@ argo/scrna/
 ├── analysis/                   after count: scanpy steps, in their own image
 │   ├── Dockerfile              scrna-analysis image: Python, scanpy, leidenalg
 │   ├── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, build-h5ad
+│   ├── download-genome.sh      installed as download-genome: fetches the run's genome version from Bloom with bloomctl
 │   └── load-dataset.sh         installed as load-dataset: loads the final .h5ad into Bloom with bloomctl
 └── cellranger/                 then: cellranger count
     ├── run-count.sh            installed as run-count: cellranger count on one sample's staged reads
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (stage → qc → count → preprocess → cluster → build-h5ad → load-dataset → cleanup), stage-reference, testrun
-    ├── cellranger-count-workflow.yaml   a run started by hand: the reference once, then the sample pipeline for a list of samples, each loaded into Bloom
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside stage → qc, then count → preprocess → cluster → build-h5ad → load-dataset → cleanup), testrun
+    ├── cellranger-count-workflow.yaml   a run started by hand: the sample pipeline for a list of samples on one genome version, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 ```
 
@@ -31,7 +32,6 @@ Bucket `bloomv2-workflows` (us-west-2):
 | Prefix | Job access |
 |---|---|
 | `raw_reads/<sample>/` | read. FASTQs in Illumina naming, `<prefix>_S<n>_L<lane>_R1_001.fastq.gz` (barcode and UMI) and `…_R2_001.fastq.gz` (cDNA) for every lane, compressed or plain `.fastq`; `I1`/`I2` optional. The prefix is everything before `_S<n>_L<lane>_…` and can differ from the folder name |
-| `reference_genome/<reference>/` | read. A `cellranger mkref` output folder |
 | `runs_output/<run-id>/` | write, by the QC-only workflow only (`qc/`). The count workflow writes no results to S3; its result goes into Bloom |
 
 `run-count` exits straight away if the run's folder already holds its `outs/_SUCCESS`. Nothing from the count workflow reaches S3: Cell Ranger runs without a BAM, and its web summary, raw matrix and QC report are deleted with the run's folder. Its metrics go into the final file. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
@@ -97,14 +97,14 @@ argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p sam
 argo submit argo/scrna/cellranger/cellranger-testrun-workflow.yaml -n runai-busch-lab --watch
 # A Cell Ranger run by hand, loaded into Bloom (the staging variant is in _WIKI/ARGO/README.md):
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
-  -p samples='["sample_a","sample_b"]' -p reference=tair10_araport11 -p species=Arabidopsis --watch
+  -p samples='["sample_a","sample_b"]' -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
 ```
 
 Steps run under `priorityClassName: high` (non-preemptible) and retry up to twice.
 
 ## QC and chemistry
 
-The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once **load-dataset** has loaded the result into Bloom. The reference is downloaded once per workflow into `…/scrna/ref/<reference>/` and kept. Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count, and uploads the report to `runs_output/<run-id>/qc/`. The report holds:
+The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once **load-dataset** has loaded the result into Bloom. The reference is built in every run, in the same folder (below). Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count, and uploads the report to `runs_output/<run-id>/qc/`. The report holds:
 
 - `fastq_stats.tsv`: reads and min/mean/max length for every FASTQ.
 - `qc_summary.json`: total read pairs, R1/R2 lengths, the FASTQ prefix to pass as `--sample`, the chemistry guess and each barcode list's score.
@@ -115,6 +115,14 @@ The count workflow runs each sample as a chain of pods that share one NFS folder
 The guess checks the first 16 bases of R1 against each 10x barcode whitelist bundled with Cell Ranger (the table in `fastq_qc.py` comes from Cell Ranger's `chemistry_defs.json`) and picks the list with the most exact matches: `3M-february-2018` is 3' v3/v3.1, `3M-3pgex-may-2023` is 3' v4, `3M-5pgex-jan-2023` is 5' v3, and `737K-august-2016` is 3' v2 or 5' v1/v2 (the whitelist cannot tell those two apart). QC fails if R1 is shorter than the barcode plus UMI (28 bp for v3 and later), if a lane's R1 and R2 read counts differ, or if no barcode list matches half the reads.
 
 Cell Ranger itself runs with `--chemistry auto`. After each count, `run-count` compares the chemistry Cell Ranger picked with the same guess and writes the result to `qc_summary.json` (`cellranger_chemistry.matches_guess`), which ends up in the final file's `uns['qc_summary']`; a mismatch is logged as a warning and does not fail the run.
+
+## The reference, from Bloom
+
+Each run's reference is a genome version stored in Bloom (`bloomctl genome upload`), recorded on the run when it starts, and passed to the sample pipeline as `reference`, written `<genome>.v<N>`. Nothing is read from S3 and nothing is kept between runs:
+
+- **download-genome** (`analysis/download-genome.sh`, in the `scrna-analysis` image) runs `bloomctl genome download <genome>.v<N> --unzip` into `/shared/runs/<run-id>/genome/`, signed in as the pipeline like `load-dataset`. Each file is checked against the SHA-256 and size Bloom recorded, and `VERSION` records the exact version. Exit 3 (the version isn't available, or a file doesn't match) and 6 (bad input) aren't retried, nor is 16 (no credentials); exit 1 (a network or storage error) is, up to twice.
+- **build-reference** (the Cell Ranger image) runs `cellranger mkref` on those files on the pod's own disk, then moves the reference into `/shared/runs/<run-id>/ref/<genome>.v<N>/` in one rename, so a half-built reference never looks done. Its cores and memory are the sample pipeline's `ref-cores`, `ref-memory` and `ref-mem-gb` (8, 32Gi and 28 by default, sized for Arabidopsis). It exits 3 without the downloaded files and 17 when mkref fails, with Cell Ranger's error in its log; it's retried once, except for 3.
+- Both run alongside **stage** and **qc**, and **count** waits for both. **cleanup** deletes the genome and the reference with the run's folder.
 
 ## Analysis after the count
 
@@ -138,11 +146,11 @@ The image holds nothing licensed, but it's pushed private like the Cell Ranger o
 
 ```bash
 docker buildx build --platform linux/amd64 --build-context scrna=argo/scrna \
-  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2 argo/scrna/analysis
-docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
+  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3 argo/scrna/analysis
+docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
 # tests (need scanpy), from the repo root:
 docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
-  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2 \
+  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3 \
   -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
 ```
 

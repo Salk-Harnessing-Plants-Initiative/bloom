@@ -2,11 +2,13 @@
 Cell Ranger trigger: validate a run request and create the run with
 `request_scrna_cellranger_run`.
 
-A run is one sample and one reference. Its FASTQs come from one place: an S3 folder
+A run is one sample and one genome version from Bloom (`genome_version_id`), which the
+run records and builds its Cell Ranger reference from; the database refuses a version that
+isn't ready. Its FASTQs come from one place: an S3 folder
 (`fastq_url`, checked here and recorded with each file's size and ETag, the sample named
 from the files; `fastq_files` is the list the form showed, and the run is refused if the
 folder no longer matches it), SRA run IDs, or a registered sample's folder under raw_reads/. The
-pipeline checks that the reference and the FASTQs exist and fails the run if not.
+pipeline checks that the FASTQs exist and fails the run if not.
 An optional `metadata` object (the dataset's species, name, conditions) is stored on the
 run as given, for loading the results later. Optional `sra_runs` (1 to 9 SRA run IDs, one
 lane each) import the sample from SRA under the new name `sample`; the run downloads them
@@ -26,11 +28,9 @@ from supabase_client import app_client
 # check, which names a folder's sample from its files.
 SAMPLE_RULE = s3_folder.SAMPLE_RULE
 SAMPLE_HELP = s3_folder.SAMPLE_HELP
-REFERENCE_RULE = re.compile(r"^(?!.*__)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
-REFERENCE_HELP = (
-    "letters, digits, '.', '_' or '-', starting with a letter or digit, "
-    "with no '__' (at most 100)"
-)
+GENOME_VERSION_HELP = "the id of a ready genome version (a whole number above 0)"
+# A version's genome name and number, which the run's reference becomes as <genome>.v<N>.
+GENOME_VERSIONS_TABLE = "genome_reference_versions"
 
 # The runs table shared by every RNA-seq workflow type; this module serves Cell Ranger rows.
 RUNS_TABLE = "rnaseq_runs"
@@ -81,16 +81,36 @@ def _validate_sra_runs(runs) -> list[str] | None:
     return runs
 
 
-def _validate_reference(body: dict) -> str:
-    reference = body.get("reference")
-    if not _valid_name(reference, REFERENCE_RULE):
+def _validate_genome_version(body: dict) -> int:
+    if "reference" in body:
         raise HTTPException(
-            status_code=422, detail=f"reference must be a name of {REFERENCE_HELP}"
+            status_code=422,
+            detail="choose a genome version (genome_version_id); reference names aren't taken",
         )
-    return reference
+    version_id = body.get("genome_version_id")
+    if type(version_id) is not int or version_id < 1:
+        raise HTTPException(
+            status_code=422, detail=f"genome_version_id must be {GENOME_VERSION_HELP}"
+        )
+    return version_id
 
 
-def _validate_request(body) -> tuple[str, str, dict | None, list[str] | None]:
+def _genome_reference(client, version_id: int) -> str:
+    """The version as <genome>.v<N>, the reference name the database gives the run."""
+    rows = (
+        client.table(GENOME_VERSIONS_TABLE)
+        .select("version, genome_references(name)")
+        .eq("id", version_id)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise HTTPException(status_code=422, detail=f"no genome version {version_id}")
+    return f"{rows[0]['genome_references']['name']}.v{rows[0]['version']}"
+
+
+def _validate_request(body) -> tuple[str, int, dict | None, list[str] | None]:
     if not isinstance(body, dict):
         raise HTTPException(
             status_code=422, detail="request body must be a JSON object"
@@ -102,7 +122,7 @@ def _validate_request(body) -> tuple[str, str, dict | None, list[str] | None]:
         )
     return (
         sample,
-        _validate_reference(body),
+        _validate_genome_version(body),
         _validate_metadata(body.get("metadata")),
         _validate_sra_runs(body.get("sra_runs")),
     )
@@ -153,14 +173,22 @@ def trigger_run(body, user_id: str) -> dict:
                 detail="give an S3 folder or a sample, not both; a folder's sample comes from its files",
             )
         # The cheap checks first, so a typo doesn't wait on S3.
-        _validate_reference(body)
+        _validate_genome_version(body)
         _validate_metadata(body.get("metadata"))
         # Listed again here: the folder may have changed since the form checked it.
         folder = _check_folder_for_start(body)
         body = {**body, "sample": folder["sample"]}
-    sample, reference, metadata, sra_runs = _validate_request(body)
+    sample, version_id, metadata, sra_runs = _validate_request(body)
 
-    args = {"p_sample": sample, "p_reference": reference, "p_requested_by": user_id}
+    client = app_client()
+    reference = _genome_reference(client, version_id)
+    # p_reference has no default, so it's sent as null for the function to be found.
+    args = {
+        "p_sample": sample,
+        "p_reference": None,
+        "p_requested_by": user_id,
+        "p_genome_version_id": version_id,
+    }
     if metadata is not None:
         args["p_metadata"] = metadata
     if sra_runs is not None:
@@ -169,7 +197,6 @@ def trigger_run(body, user_id: str) -> dict:
         args["p_fastq_url"] = folder["fastq_url"]
         args["p_fastq_files"] = folder["files"]
 
-    client = app_client()
     try:
         run_id = client.rpc(REQUEST_FN, args).execute().data
     except APIError as exc:
@@ -181,6 +208,7 @@ def trigger_run(body, user_id: str) -> dict:
     started = {
         "run_id": run_id,
         "sample": sample,
+        "genome_version_id": version_id,
         "reference": reference,
         "run_key": f"{sample}__{reference}__{user_id}",
     }

@@ -173,7 +173,7 @@ def test_a_claimed_run_is_submitted_and_recorded(types, submitted):
 
 def test_the_body_is_built_by_the_runs_workflow_type(types, submitted):
     worker.process_one(FakeClient(claims=[[RUN]]))
-    assert types == [{**RUN, "dataset": None}]
+    assert types == [{**RUN, "dataset": None, "genome": None}]
 
 
 def test_a_run_of_an_unhandled_type_is_failed_without_submitting(types, submitted):
@@ -436,3 +436,54 @@ def test_a_failed_lookup_leaves_the_run_queued(types, submitted, table):
     assert worker.process_one(client) is True
     assert submitted == [] and types == []
     assert COMPLETE not in client.names() and FAIL not in client.names()
+
+
+# --------------------------------------------------------------------------- #
+# The genome version a run builds its reference from
+# --------------------------------------------------------------------------- #
+
+
+def _with_genome(version):
+    return {
+        "rnaseq_runs": [{"id": RUN["run_id"], "genome_reference_versions": version}]
+    }
+
+
+def test_a_run_passes_its_recorded_genome_version(types, submitted):
+    tables = _with_genome(
+        {"version": 2, "genome_references": {"name": "athaliana_col0"}}
+    )
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["genome"] == "athaliana_col0.v2"
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        {},
+        {"version": 2},
+        {"version": "2", "genome_references": {"name": "g"}},
+        {"version": 2, "genome_references": None},
+    ],
+    ids=["none", "empty", "no-genome", "version-as-text", "genome-missing"],
+)
+def test_a_run_without_a_usable_genome_version_passes_none(types, submitted, version):
+    worker.process_one(FakeClient(claims=[[RUN]], tables=_with_genome(version)))
+    assert types[0]["genome"] is None
+
+
+def test_a_run_that_cant_be_built_is_failed_with_its_reason(monkeypatch, submitted):
+    def _build(run):
+        raise worker.UnrunnableRun("no genome version from Bloom")
+
+    monkeypatch.setattr(
+        worker,
+        "WORKFLOW_TYPES",
+        {"scrna-cellranger": WorkflowType("scrna-cellranger", _build, _no_status)},
+    )
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert submitted == []
+    assert client.calls[1][0] == FAIL
+    assert client.calls[1][1]["p_message"] == "no genome version from Bloom"

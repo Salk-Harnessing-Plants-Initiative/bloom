@@ -191,7 +191,7 @@ def test_every_analysis_step_uses_the_same_image():
     images = {
         t["container"]["image"]
         for name, t in _templates().items()
-        if name in ("preprocess", "cluster", "build-h5ad", "load-dataset")
+        if name in ("download-genome", "preprocess", "cluster", "build-h5ad", "load-dataset")
     }
     assert len(images) == 1
 
@@ -201,4 +201,4 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a11"]
+    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a12"]

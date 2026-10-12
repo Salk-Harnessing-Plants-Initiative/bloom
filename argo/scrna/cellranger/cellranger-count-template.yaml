@@ -2,8 +2,8 @@
 # After changes: kubectl replace -f argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
 #
 # Every step mounts the same NFS folder at /shared:
-#   /shared/ref/<reference>/  references, downloaded once and kept
-#   /shared/runs/<run-id>/    one sample's reads and QC files, deleted after success
+#   /shared/runs/<run-id>/    one sample's reads, genome, Cell Ranger reference and results,
+#                             deleted after success
 # The share does not support symlinks, so Cell Ranger's working folder is the count pod's own /work.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -13,13 +13,16 @@ metadata:
     project: busch-lab
 spec:
   templates:
-    # One sample: stage -> qc -> count -> preprocess -> analyses -> build-h5ad -> load-dataset ->
-    # cleanup, all in /shared/runs/<run-id>/ so runs never share files. The result leaves the
-    # cluster only through load-dataset, into Bloom.
+    # One sample: download-genome -> build-reference alongside stage -> qc, then count ->
+    # preprocess -> analyses -> build-h5ad -> load-dataset -> cleanup, all in
+    # /shared/runs/<run-id>/ so runs never share files. The reference is built from the run's
+    # genome version in Bloom every run. The result leaves the cluster only through
+    # load-dataset, into Bloom.
     - name: sample-pipeline
       inputs:
         parameters:
           - name: sample
+          # The genome version in Bloom, as <genome>.v<N>; also the built reference's name.
           - name: reference
           - name: run-id
           # An S3 folder run reads exactly these files from the folder; empty reads raw_reads/<sample>/.
@@ -45,8 +48,38 @@ spec:
             value: "60"
           - name: n-top-genes
             value: "2000"
+          # cellranger mkref's resources, sized for Arabidopsis; a larger genome passes more.
+          - name: ref-cores
+            value: "8"
+          - name: ref-memory
+            value: "32Gi"
+          - name: ref-mem-gb
+            value: "28"
       dag:
         tasks:
+          - name: download-genome
+            template: download-genome
+            arguments:
+              parameters:
+                - name: genome
+                  value: "{{inputs.parameters.reference}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: build-reference
+            template: build-reference
+            depends: download-genome
+            arguments:
+              parameters:
+                - name: genome
+                  value: "{{inputs.parameters.reference}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: cores
+                  value: "{{inputs.parameters.ref-cores}}"
+                - name: memory
+                  value: "{{inputs.parameters.ref-memory}}"
+                - name: mem-gb
+                  value: "{{inputs.parameters.ref-mem-gb}}"
           - name: stage
             template: stage-sample
             arguments:
@@ -70,7 +103,7 @@ spec:
                   value: "{{inputs.parameters.run-id}}"
           - name: count
             template: count
-            depends: qc
+            depends: qc && build-reference
             arguments:
               parameters:
                 - name: sample
@@ -135,74 +168,34 @@ spec:
                 - name: bloom-run-id
                   value: "{{inputs.parameters.bloom-run-id}}"
 
-    # Once per workflow: stage the reference at /shared/ref/<reference>/, or reuse it if already there.
-    - name: stage-reference
+    # The run's genome version from Bloom, checked against Bloom's record, into
+    # /shared/runs/<run-id>/genome/ as genome.fa and genes.gtf (argo/scrna/analysis/download-genome.sh).
+    - name: download-genome
       inputs:
         parameters:
-          - name: reference
+          - name: genome
+          - name: run-id
       schedulerName: runai-scheduler
       priorityClassName: high
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
+        # Only 1 (a network or storage error) may be a blip; 3 (not available, or a file
+        # doesn't match Bloom's record), 6 (bad input) and 16 (no credentials) won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
-        command: [run-with-log, --path, "scrna/{{workflow.name}}/stage-reference.log", --, bash, -c]
-        args:
-          - |
-            set -euo pipefail
-            case "${REFERENCE}" in
-              ""|.|..|*/*) echo "ERROR: bad reference name '${REFERENCE}'"; exit 3 ;;
-            esac
-            ref="/shared/ref/${REFERENCE}"
-            # References never change once uploaded, so a staged copy is reused as-is.
-            if [ -f "${ref}/reference.json" ]; then
-              echo "Reference ${REFERENCE} already staged at ${ref}; nothing to download."
-              exit 0
-            fi
-            tmp="/shared/ref/.partial-${REFERENCE}-${WORKFLOW_NAME}"
-            rm -rf -- "${tmp}"
-            mkdir -p "${tmp}"
-            aws s3 sync "s3://bloomv2-workflows/reference_genome/${REFERENCE}/" "${tmp}/"
-            # sync from a missing prefix copies nothing and still exits 0
-            if [ ! -f "${tmp}/reference.json" ]; then
-              echo "ERROR: no Cell Ranger reference at s3://bloomv2-workflows/reference_genome/${REFERENCE}/ (expected reference.json)"
-              rm -rf -- "${tmp}"
-              exit 3
-            fi
-            # Publish with one rename so a half-copied reference never looks complete.
-            if [ -f "${ref}/reference.json" ]; then
-              echo "Reference ${REFERENCE} was staged by another run meanwhile; keeping that copy."
-              rm -rf -- "${tmp}"
-            else
-              rm -rf -- "${ref}"
-              mv -- "${tmp}" "${ref}"
-              echo "Reference ${REFERENCE} staged at ${ref}"
-            fi
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
         env:
-          - name: REFERENCE
-            value: "{{inputs.parameters.reference}}"
-          - name: WORKFLOW_NAME
-            value: "{{workflow.name}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
+          - name: GENOME
+            value: "{{inputs.parameters.genome}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
         resources:
-          requests: {cpu: "2", memory: 4Gi}
-          limits: {cpu: "2", memory: 4Gi}
+          requests: {cpu: "1", memory: 2Gi}
+          limits: {cpu: "1", memory: 2Gi}
         volumeMounts:
-          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          # bloomctl's credentials.txt: run-with-log uploads the log, and bloomctl downloads the genome
           - name: bloom-credentials
             mountPath: /etc/bloom
             readOnly: true
@@ -214,8 +207,101 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
+    # cellranger mkref on the downloaded genome, built on the pod's own disk and moved into
+    # /shared/runs/<run-id>/ref/<genome>/ in one rename, so a half-built reference never looks done.
+    - name: build-reference
+      inputs:
+        parameters:
+          - name: genome
+          - name: run-id
+          - name: cores
+          - name: memory
+          - name: mem-gb
+      schedulerName: runai-scheduler
+      podSpecPatch: |
+        containers:
+          - name: main
+            resources:
+              requests:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
+              limits:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        # exit 3 (no downloaded genome) won't fix itself on a retry
+        expression: "asInt(lastRetry.exitCode) != 3"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/build-reference.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            case "${GENOME}" in
+              ""|.|..|*/*) echo "ERROR: bad genome name '${GENOME}'"; exit 3 ;;
+            esac
+            case "${RUN_ID}" in
+              ""|.|..|*/*) echo "ERROR: bad run id '${RUN_ID}'"; exit 3 ;;
+            esac
+            src="/shared/runs/${RUN_ID}/genome"
+            ref="/shared/runs/${RUN_ID}/ref/${GENOME}"
+            if [ -f "${ref}/reference.json" ]; then
+              echo "Reference ${GENOME} already built at ${ref}; nothing to do."
+              exit 0
+            fi
+            for f in genome.fa genes.gtf; do
+              if [ ! -s "${src}/${f}" ]; then
+                echo "ERROR: no downloaded ${f} at ${src}"
+                exit 3
+              fi
+            done
+            cd /work
+            rm -rf -- "${GENOME}"
+            cellranger --version
+            if ! cellranger mkref --genome="${GENOME}" --fasta="${src}/genome.fa" \
+                --genes="${src}/genes.gtf" --nthreads="${CORES}" --memgb="${MEM_GB}"; then
+              echo "ERROR: cellranger mkref couldn't build a reference from ${GENOME}"
+              exit 17
+            fi
+            tmp="/shared/runs/${RUN_ID}/ref/.partial-${GENOME}"
+            rm -rf -- "${tmp}"
+            mkdir -p "$(dirname "${ref}")"
+            cp -r -- "/work/${GENOME}" "${tmp}"
+            rm -rf -- "${ref}"
+            mv -- "${tmp}" "${ref}"
+            echo "Reference ${GENOME} built at ${ref}"
+        env:
+          - name: GENOME
+            value: "{{inputs.parameters.genome}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: CORES
+            value: "{{inputs.parameters.cores}}"
+          - name: MEM_GB
+            value: "{{inputs.parameters.mem-gb}}"
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+          - name: work
+            mountPath: /work
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+        - name: work
+          emptyDir:
+            sizeLimit: 100Gi
+
     # For a run that imports its sample from SRA: download the runs into raw_reads/<sample>/ as
-    # Illumina-named FASTQs, next to stage-reference. Outputs the folder's FASTQ count and size.
+    # Illumina-named FASTQs, before the sample's steps. Outputs the folder's FASTQ count and size.
     - name: fetch-sra
       inputs:
         parameters:
@@ -390,7 +476,7 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # cellranger count on the staged reads and shared reference; working files on the pod's own disk.
+    # cellranger count on the staged reads and the run's built reference; working files on the pod's own disk.
     - name: count
       inputs:
         parameters:
@@ -417,7 +503,7 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference), 4 (no FASTQs), 6 (unusable sample name) and 7 (misnamed FASTQs)
+        # exit 3 (no built reference), 4 (no FASTQs), 6 (unusable sample name) and 7 (misnamed FASTQs)
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
@@ -441,7 +527,7 @@ spec:
           - name: FASTQ_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}/fastq/{{inputs.parameters.sample}}"
           - name: REF_DIR
-            value: "/shared/ref/{{inputs.parameters.reference}}"
+            value: "/shared/runs/{{inputs.parameters.run-id}}/ref/{{inputs.parameters.reference}}"
         volumeMounts:
           # bloomctl's credentials.txt, for run-with-log to upload the step's log
           - name: bloom-credentials
@@ -512,7 +598,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/preprocess.log", --, scrna-analysis]
         args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
@@ -545,7 +631,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cluster.log", --, scrna-analysis]
         args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
@@ -579,7 +665,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-h5ad.log", --, scrna-analysis]
         args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}"]
@@ -630,7 +716,7 @@ spec:
         # A retry resumes the load. 2 (usage), 6 (bad input) and 16 (no credentials) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) != 2 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 16"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.2
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
         command: [run-with-log, --path, "scrna/{{workflow.name}}/load-dataset.log", --, load-dataset]
         env:
           - name: SAMPLE

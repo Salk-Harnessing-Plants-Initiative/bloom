@@ -10,6 +10,13 @@ from fastapi.testclient import TestClient
 import scrna_cellranger
 
 USER = "00000000-0000-0000-0000-000000000001"
+# A ready genome version the requests start on: tiny_ref v1, id 3.
+VERSION_ID = 3
+GENOME_VERSION = {
+    "id": VERSION_ID,
+    "version": 1,
+    "genome_references": {"name": "tiny_ref"},
+}
 
 
 class _Result:
@@ -61,7 +68,7 @@ class FakeSupabase:
 
 @pytest.fixture
 def db(monkeypatch):
-    fake = FakeSupabase()
+    fake = FakeSupabase(tables={"genome_reference_versions": [GENOME_VERSION]})
     monkeypatch.setattr(scrna_cellranger, "app_client", lambda: fake)
     return fake
 
@@ -78,25 +85,27 @@ def db(monkeypatch):
         [],
         "x",
         {},
-        {"reference": "tiny_ref"},
+        {"genome_version_id": 3},
         {"sample": "root_a"},
-        {"sample": "", "reference": "tiny_ref"},
-        {"sample": "../x", "reference": "tiny_ref"},
-        {"sample": "a/b", "reference": "tiny_ref"},
-        {"sample": ".hidden", "reference": "tiny_ref"},
-        {"sample": 123, "reference": "tiny_ref"},
-        {"sample": ["root_a"], "reference": "tiny_ref"},
-        {"sample": "x" * 101, "reference": "tiny_ref"},
-        {"sample": "a__b", "reference": "tiny_ref"},
-        {"sample": "tinygex\n", "reference": "tiny_ref"},
-        {"sample": "S1.rep1", "reference": "tiny_ref"},
-        {"sample": "x" * 65, "reference": "tiny_ref"},
-        {"sample": "-rep1", "reference": "tiny_ref"},
-        {"sample": "root_a", "reference": "../etc"},
-        {"sample": "root_a", "reference": "a/b"},
-        {"sample": "root_a", "reference": 5},
-        {"sample": "root_a", "reference": "b__c"},
-        {"sample": "root_a", "reference": "tiny_ref\n"},
+        {"sample": "", "genome_version_id": VERSION_ID},
+        {"sample": "../x", "genome_version_id": VERSION_ID},
+        {"sample": "a/b", "genome_version_id": VERSION_ID},
+        {"sample": ".hidden", "genome_version_id": VERSION_ID},
+        {"sample": 123, "genome_version_id": VERSION_ID},
+        {"sample": ["root_a"], "genome_version_id": VERSION_ID},
+        {"sample": "x" * 101, "genome_version_id": VERSION_ID},
+        {"sample": "a__b", "genome_version_id": VERSION_ID},
+        {"sample": "tinygex\n", "genome_version_id": VERSION_ID},
+        {"sample": "S1.rep1", "genome_version_id": VERSION_ID},
+        {"sample": "x" * 65, "genome_version_id": VERSION_ID},
+        {"sample": "-rep1", "genome_version_id": VERSION_ID},
+        {"sample": "root_a", "genome_version_id": 0},
+        {"sample": "root_a", "genome_version_id": -1},
+        {"sample": "root_a", "genome_version_id": "3"},
+        {"sample": "root_a", "genome_version_id": 3.0},
+        {"sample": "root_a", "genome_version_id": True},
+        {"sample": "root_a", "genome_version_id": None},
+        {"sample": "root_a", "genome_version_id": 3, "reference": "tiny_ref"},
     ],
 )
 def test_invalid_requests_are_rejected_before_the_database(body, monkeypatch):
@@ -108,21 +117,58 @@ def test_invalid_requests_are_rejected_before_the_database(body, monkeypatch):
     assert exc.value.status_code == 422
 
 
-@pytest.mark.parametrize(
-    "sample, reference",
-    [
-        ("x" * 64, "tiny_ref"),
-        ("Col0_root_rep1", "tair10_araport11"),
-        ("rep1-", "tiny_ref"),
-        ("rep1_", "tiny_ref"),
-        ("tinygex", "tair10.araport11"),
-        ("tinygex", "r" * 100),
-    ],
-)
-def test_names_cellranger_can_use_are_accepted(db, sample, reference):
-    scrna_cellranger.trigger_run({"sample": sample, "reference": reference}, USER)
+@pytest.mark.parametrize("sample", ["x" * 64, "Col0_root_rep1", "rep1-", "rep1_"])
+def test_names_cellranger_can_use_are_accepted(db, sample):
+    scrna_cellranger.trigger_run(
+        {"sample": sample, "genome_version_id": VERSION_ID}, USER
+    )
     assert db.rpc_calls[0][1]["p_sample"] == sample
-    assert db.rpc_calls[0][1]["p_reference"] == reference
+
+
+def test_a_reference_name_is_refused_with_a_pointer_to_genome_versions(monkeypatch):
+    monkeypatch.setattr(
+        scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
+    )
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"sample": "root_a", "reference": "tiny_ref"}, USER
+        )
+    assert exc.value.status_code == 422 and "genome_version_id" in exc.value.detail
+
+
+def test_an_unknown_genome_version_is_422_and_nothing_is_started(db):
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"sample": "root_a", "genome_version_id": 99}, USER
+        )
+    assert (exc.value.status_code, exc.value.detail) == (422, "no genome version 99")
+    assert db.rpc_calls == []
+
+
+def test_a_version_that_isnt_ready_is_refused_by_the_database_as_422(db):
+    from postgrest import APIError
+
+    def _refuse(name, params):
+        class _Call:
+            def execute(self):
+                raise APIError(
+                    {
+                        "code": "22023",
+                        "message": "genome tiny_ref.v1 is withdrawn, not ready",
+                    }
+                )
+
+        return _Call()
+
+    db.rpc = _refuse
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"sample": "root_a", "genome_version_id": VERSION_ID}, USER
+        )
+    assert (exc.value.status_code, exc.value.detail) == (
+        422,
+        "genome tiny_ref.v1 is withdrawn, not ready",
+    )
 
 
 def test_a_dotted_sample_is_refused_with_the_sample_rule(monkeypatch):
@@ -144,30 +190,38 @@ def test_a_dotted_sample_is_refused_with_the_sample_rule(monkeypatch):
 
 def test_a_valid_request_calls_the_request_function_once(db):
     out = scrna_cellranger.trigger_run(
-        {"sample": "root_b", "reference": "tiny_ref"}, USER
+        {"sample": "root_b", "genome_version_id": VERSION_ID}, USER
     )
     assert db.rpc_calls == [
         (
             "request_scrna_cellranger_run",
-            {"p_sample": "root_b", "p_reference": "tiny_ref", "p_requested_by": USER},
+            {
+                "p_sample": "root_b",
+                "p_reference": None,
+                "p_genome_version_id": VERSION_ID,
+                "p_requested_by": USER,
+            },
         )
     ]
     assert out == {
         "run_id": 7,
         "sample": "root_b",
-        "reference": "tiny_ref",
-        "run_key": f"root_b__tiny_ref__{USER}",
+        "genome_version_id": VERSION_ID,
+        "reference": "tiny_ref.v1",
+        "run_key": f"root_b__tiny_ref.v1__{USER}",
     }
 
 
 def test_metadata_is_passed_to_the_request_function(db):
     metadata = {"species_id": 2, "dataset_name": "Root atlas", "tissue": "root"}
     scrna_cellranger.trigger_run(
-        {"sample": "root_b", "reference": "tiny_ref", "metadata": metadata}, USER
+        {"sample": "root_b", "genome_version_id": VERSION_ID, "metadata": metadata},
+        USER,
     )
     assert db.rpc_calls[0][1] == {
         "p_sample": "root_b",
-        "p_reference": "tiny_ref",
+        "p_reference": None,
+        "p_genome_version_id": VERSION_ID,
         "p_requested_by": USER,
         "p_metadata": metadata,
     }
@@ -175,7 +229,7 @@ def test_metadata_is_passed_to_the_request_function(db):
 
 def test_null_metadata_is_left_out_of_the_call(db):
     scrna_cellranger.trigger_run(
-        {"sample": "root_b", "reference": "tiny_ref", "metadata": None}, USER
+        {"sample": "root_b", "genome_version_id": VERSION_ID, "metadata": None}, USER
     )
     assert "p_metadata" not in db.rpc_calls[0][1]
 
@@ -187,7 +241,8 @@ def test_metadata_that_is_not_an_object_is_422(metadata, monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"sample": "root_b", "reference": "tiny_ref", "metadata": metadata}, USER
+            {"sample": "root_b", "genome_version_id": VERSION_ID, "metadata": metadata},
+            USER,
         )
     assert exc.value.status_code == 422
     assert exc.value.detail == "metadata must be a JSON object"
@@ -200,7 +255,8 @@ def test_metadata_over_the_size_limit_is_422(monkeypatch):
     too_big = {"notes": "x" * scrna_cellranger.METADATA_MAX_BYTES}
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"sample": "root_b", "reference": "tiny_ref", "metadata": too_big}, USER
+            {"sample": "root_b", "genome_version_id": VERSION_ID, "metadata": too_big},
+            USER,
         )
     assert exc.value.status_code == 422
     assert exc.value.detail == "metadata must be at most 64 KB"
@@ -210,7 +266,8 @@ def test_metadata_at_the_size_limit_is_accepted(db):
     # {"notes": "..."} is 13 bytes around the value.
     at_limit = {"notes": "x" * (scrna_cellranger.METADATA_MAX_BYTES - 13)}
     scrna_cellranger.trigger_run(
-        {"sample": "root_b", "reference": "tiny_ref", "metadata": at_limit}, USER
+        {"sample": "root_b", "genome_version_id": VERSION_ID, "metadata": at_limit},
+        USER,
     )
     assert db.rpc_calls[0][1]["p_metadata"] == at_limit
 
@@ -294,10 +351,11 @@ def test_routes_require_auth(monkeypatch):
 
 def test_start_run_returns_201(app_as_user, db):
     resp = app_as_user.post(
-        "/scrna/cellranger/runs", json={"sample": "root_a", "reference": "tiny_ref"}
+        "/scrna/cellranger/runs",
+        json={"sample": "root_a", "genome_version_id": VERSION_ID},
     )
     assert resp.status_code == 201
-    assert resp.json()["run_key"] == f"root_a__tiny_ref__{USER}"
+    assert resp.json()["run_key"] == f"root_a__tiny_ref.v1__{USER}"
 
 
 def test_start_run_validation_error_is_422(app_as_user, db):
@@ -312,7 +370,7 @@ def test_start_run_is_rate_limited_before_any_work(app_as_user, db, monkeypatch)
     import auth
 
     monkeypatch.setattr(auth, "RATE_LIMIT", 1)
-    body = {"sample": "root_a", "reference": "tiny_ref"}
+    body = {"sample": "root_a", "genome_version_id": VERSION_ID}
     assert app_as_user.post("/scrna/cellranger/runs", json=body).status_code == 201
     resp = app_as_user.post("/scrna/cellranger/runs", json=body)
     assert resp.status_code == 429
@@ -342,7 +400,6 @@ def _latest_db_rule(name: str) -> str:
     "name, rule",
     [
         ("sample", scrna_cellranger.SAMPLE_RULE),
-        ("reference", scrna_cellranger.REFERENCE_RULE),
     ],
 )
 def test_the_api_rule_is_the_databases_rule(name, rule):
@@ -386,7 +443,7 @@ def test_a_folder_run_is_checked_and_named_from_its_files(db, folder):
     started = scrna_cellranger.trigger_run(
         {
             "fastq_url": "s3://lab-data/run42",
-            "reference": "tiny_ref",
+            "genome_version_id": VERSION_ID,
             "fastq_files": SHOWN,
         },
         USER,
@@ -397,7 +454,8 @@ def test_a_folder_run_is_checked_and_named_from_its_files(db, folder):
             "request_scrna_cellranger_run",
             {
                 "p_sample": "col0",
-                "p_reference": "tiny_ref",
+                "p_reference": None,
+                "p_genome_version_id": VERSION_ID,
                 "p_requested_by": USER,
                 "p_fastq_url": "s3://lab-data/run42/",
                 "p_fastq_files": FOLDER["files"],
@@ -405,7 +463,7 @@ def test_a_folder_run_is_checked_and_named_from_its_files(db, folder):
         )
     ]
     assert started["sample"] == "col0"
-    assert started["run_key"] == f"col0__tiny_ref__{USER}"
+    assert started["run_key"] == f"col0__tiny_ref.v1__{USER}"
     assert {
         k: started[k]
         for k in ("fastq_url", "lanes", "files", "file_count", "total_bytes")
@@ -422,7 +480,7 @@ def test_a_folder_run_keeps_its_metadata(db, folder):
     scrna_cellranger.trigger_run(
         {
             "fastq_url": "s3://lab-data/run42/",
-            "reference": "tiny_ref",
+            "genome_version_id": VERSION_ID,
             "metadata": {"k": "v"},
             "fastq_files": SHOWN,
         },
@@ -435,7 +493,7 @@ def test_the_files_shown_may_come_in_any_order(db, folder):
     scrna_cellranger.trigger_run(
         {
             "fastq_url": "s3://lab-data/run42/",
-            "reference": "tiny_ref",
+            "genome_version_id": VERSION_ID,
             "fastq_files": list(reversed(SHOWN)),
         },
         USER,
@@ -458,7 +516,7 @@ def test_a_folder_that_changed_since_its_check_is_refused(db, folder, shown):
         scrna_cellranger.trigger_run(
             {
                 "fastq_url": "s3://lab-data/run42/",
-                "reference": "tiny_ref",
+                "genome_version_id": VERSION_ID,
                 "fastq_files": shown,
             },
             USER,
@@ -471,7 +529,7 @@ def test_a_folder_that_changed_since_its_check_is_refused(db, folder, shown):
     "shown", [None, "x", [1, 2]], ids=["missing", "string", "not-objects"]
 )
 def test_a_folder_run_needs_the_files_it_was_shown(db, folder, shown):
-    body = {"fastq_url": "s3://lab-data/run42/", "reference": "tiny_ref"}
+    body = {"fastq_url": "s3://lab-data/run42/", "genome_version_id": VERSION_ID}
     if shown is not None:
         body["fastq_files"] = shown
     with pytest.raises(HTTPException) as exc:
@@ -490,7 +548,11 @@ def test_a_folder_run_needs_the_files_it_was_shown(db, folder, shown):
 def test_a_folder_with_another_source_is_refused(db, folder, extra, words):
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"fastq_url": "s3://lab-data/run42/", "reference": "tiny_ref", **extra},
+            {
+                "fastq_url": "s3://lab-data/run42/",
+                "genome_version_id": VERSION_ID,
+                **extra,
+            },
             USER,
         )
     assert exc.value.status_code == 422 and words in exc.value.detail
@@ -501,7 +563,7 @@ def test_a_null_sample_or_sra_runs_beside_a_folder_counts_as_absent(db, folder):
     scrna_cellranger.trigger_run(
         {
             "fastq_url": "s3://lab-data/run42/",
-            "reference": "tiny_ref",
+            "genome_version_id": VERSION_ID,
             "fastq_files": SHOWN,
             "sample": None,
             "sra_runs": None,
@@ -513,7 +575,7 @@ def test_a_null_sample_or_sra_runs_beside_a_folder_counts_as_absent(db, folder):
 
 def test_a_null_folder_beside_a_sample_counts_as_absent(db, folder):
     scrna_cellranger.trigger_run(
-        {"sample": "col0", "reference": "tiny_ref", "fastq_url": None}, USER
+        {"sample": "col0", "genome_version_id": VERSION_ID, "fastq_url": None}, USER
     )
     assert folder == []
     assert "p_fastq_url" not in db.rpc_calls[0][1]
@@ -521,7 +583,7 @@ def test_a_null_folder_beside_a_sample_counts_as_absent(db, folder):
 
 @pytest.mark.parametrize(
     "extra",
-    [{"reference": "../x"}, {"reference": "tiny_ref", "metadata": "x"}],
+    [{"reference": "../x"}, {"genome_version_id": VERSION_ID, "metadata": "x"}],
     ids=["bad-reference", "bad-metadata"],
 )
 def test_bad_fields_are_refused_before_the_folder_is_listed(db, folder, extra):
@@ -544,7 +606,7 @@ def test_a_refused_folder_queues_nothing(db, monkeypatch):
         scrna_cellranger.trigger_run(
             {
                 "fastq_url": "s3://lab-data/run42/",
-                "reference": "tiny_ref",
+                "genome_version_id": VERSION_ID,
                 "fastq_files": SHOWN,
             },
             USER,
@@ -603,7 +665,7 @@ def test_checking_folders_doesnt_use_up_the_start_limit(
     assert refused.status_code == 429 and "(3/" in refused.json()["detail"]
     start = {
         "fastq_url": "s3://lab-data/run42/",
-        "reference": "tiny_ref",
+        "genome_version_id": VERSION_ID,
         "fastq_files": SHOWN,
     }
     assert app_as_user.post("/scrna/cellranger/runs", json=start).status_code == 201

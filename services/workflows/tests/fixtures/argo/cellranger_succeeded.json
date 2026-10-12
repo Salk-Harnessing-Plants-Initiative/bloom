@@ -57,10 +57,10 @@
     "children": [
      "scrna-cellranger-dev-900001-a5d34435-3880791564"
     ],
-    "displayName": "stage-reference",
+    "displayName": "download-genome",
     "finishedAt": "2026-09-29T01:02:38Z",
     "id": "scrna-cellranger-dev-900001-a5d34435-2501179773",
-    "name": "scrna-cellranger-dev-900001-a5d34435.stage-reference",
+    "name": "scrna-cellranger-dev-900001-a5d34435.download-genome",
     "outputs": {
      "exitCode": "0"
     },
@@ -68,7 +68,7 @@
     "startedAt": "2026-09-29T01:02:16Z",
     "templateRef": {
      "name": "cellranger-count-template",
-     "template": "stage-reference"
+     "template": "download-genome"
     },
     "type": "Retry"
    },
@@ -125,10 +125,10 @@
     "children": [
      "scrna-cellranger-dev-900001-a5d34435-2653368231"
     ],
-    "displayName": "stage-reference(0)",
+    "displayName": "download-genome(0)",
     "finishedAt": "2026-09-29T01:02:26Z",
     "id": "scrna-cellranger-dev-900001-a5d34435-3880791564",
-    "name": "scrna-cellranger-dev-900001-a5d34435.stage-reference(0)",
+    "name": "scrna-cellranger-dev-900001-a5d34435.download-genome(0)",
     "outputs": {
      "exitCode": "0"
     },
@@ -136,7 +136,7 @@
     "startedAt": "2026-09-29T01:02:16Z",
     "templateRef": {
      "name": "cellranger-count-template",
-     "template": "stage-reference"
+     "template": "download-genome"
     },
     "type": "Pod"
    },
