@@ -249,8 +249,8 @@ spec:
       retryStrategy:
         limit: 1
         retryPolicy: Always
-        # exit 3 (no downloaded genome) won't fix itself on a retry
-        expression: "asInt(lastRetry.exitCode) != 3"
+        # 3 (no downloaded genome), 6 (bad input) and 17 (mkref refused the files) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 17"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-reference.log", --, bash, -c]
@@ -258,10 +258,10 @@ spec:
           - |
             set -euo pipefail
             case "${GENOME}" in
-              ""|.|..|*/*) echo "ERROR: bad genome name '${GENOME}'"; exit 3 ;;
+              ""|.|..|*/*) echo "ERROR: bad genome name '${GENOME}'"; exit 6 ;;
             esac
             case "${RUN_ID}" in
-              ""|.|..|*/*) echo "ERROR: bad run id '${RUN_ID}'"; exit 3 ;;
+              ""|.|..|*/*) echo "ERROR: bad run id '${RUN_ID}'"; exit 6 ;;
             esac
             src="/shared/runs/${RUN_ID}/genome"
             ref="/shared/runs/${RUN_ID}/ref/${GENOME}"
@@ -283,7 +283,8 @@ spec:
               echo "ERROR: cellranger mkref couldn't build a reference from ${GENOME}"
               exit 17
             fi
-            tmp="/shared/runs/${RUN_ID}/ref/.partial-${GENOME}"
+            # Named for this workflow, so two runs on one run key never fill the same folder.
+            tmp="/shared/runs/${RUN_ID}/ref/.partial-${GENOME}-${WORKFLOW_NAME}"
             rm -rf -- "${tmp}"
             mkdir -p "$(dirname "${ref}")"
             cp -r -- "/work/${GENOME}" "${tmp}"
@@ -299,6 +300,8 @@ spec:
             value: "{{inputs.parameters.cores}}"
           - name: MEM_GB
             value: "{{inputs.parameters.mem-gb}}"
+          - name: WORKFLOW_NAME
+            value: "{{workflow.name}}"
         volumeMounts:
           # bloomctl's credentials.txt, for run-with-log to upload the step's log
           - name: bloom-credentials

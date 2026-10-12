@@ -193,13 +193,21 @@ def _genome_message(step: str, exit_code: int | None, params: dict) -> str | Non
             ),
         }.get(exit_code)
     if step == "build-reference":
+        if exit_code == EXIT_BAD_SAMPLE_NAME:
+            return (
+                f"The run's genome {genome} or its folder couldn't be used; this isn't something "
+                "wrong with the genome, so ask the Bloom admins"
+            )
         if exit_code == EXIT_REFERENCE_BUILD_FAILED:
             return (
                 f"Cell Ranger couldn't build a reference from genome {genome}; the "
                 "build-reference step's log has Cell Ranger's error"
             )
         if exit_code == EXIT_NO_REFERENCE:
-            return f"The files of genome {genome} weren't found on the shared disk to build from"
+            return (
+                f"The files of genome {genome} weren't found on the shared disk to build from; "
+                "start the run again, and ask the Bloom admins if it fails again"
+            )
     return None
 
 

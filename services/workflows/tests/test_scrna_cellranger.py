@@ -105,6 +105,7 @@ def db(monkeypatch):
         {"sample": "root_a", "genome_version_id": 3.0},
         {"sample": "root_a", "genome_version_id": True},
         {"sample": "root_a", "genome_version_id": None},
+        {"sample": "root_a", "genome_version_id": 2**63},
         {"sample": "root_a", "genome_version_id": 3, "reference": "tiny_ref"},
     ],
 )
@@ -131,9 +132,30 @@ def test_a_reference_name_is_refused_with_a_pointer_to_genome_versions(monkeypat
     )
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"sample": "root_a", "reference": "tiny_ref"}, USER
+            {"sample": "root_a", "genome_version_id": 3, "reference": "tiny_ref"}, USER
         )
-    assert exc.value.status_code == 422 and "genome_version_id" in exc.value.detail
+    assert exc.value.status_code == 422
+    assert "reference names aren't taken" in exc.value.detail
+
+
+def test_the_largest_id_the_database_holds_is_accepted(db):
+    db.tables["genome_reference_versions"].append(
+        {"id": 2**63 - 1, "version": 1, "genome_references": {"name": "big"}}
+    )
+    started = scrna_cellranger.trigger_run(
+        {"sample": "root_a", "genome_version_id": 2**63 - 1}, USER
+    )
+    assert started["reference"] == "big.v1"
+
+
+def test_a_version_whose_genome_cant_be_read_is_422_and_nothing_is_started(db):
+    db.tables["genome_reference_versions"].append(
+        {"id": 5, "version": 1, "genome_references": None}
+    )
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run({"sample": "root_a", "genome_version_id": 5}, USER)
+    assert (exc.value.status_code, exc.value.detail) == (422, "no genome version 5")
+    assert db.rpc_calls == []
 
 
 def test_an_unknown_genome_version_is_422_and_nothing_is_started(db):

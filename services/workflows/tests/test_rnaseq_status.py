@@ -1,5 +1,8 @@
 """Unit tests for reading a Cell Ranger run's status from its Argo Workflow. The
-fixtures are real Workflows from runai-busch-lab, trimmed to the fields read."""
+fixtures are real Workflows from runai-busch-lab, trimmed to the fields read, recorded
+before references came from Bloom: their reference step, once stage-reference, is renamed
+download-genome, and they have no build-reference. The status reader goes by each pod's
+template, not where it sits in the DAG. `_genome_workflow` builds the current shape by hand."""
 
 import copy
 import json
@@ -371,7 +374,14 @@ def _failed_at_new_step(template: str, exit_code: str) -> dict:
         (
             "build-reference",
             "3",
-            "The files of genome athaliana_col0.v2 weren't found on the shared disk to build from",
+            "The files of genome athaliana_col0.v2 weren't found on the shared disk to build "
+            "from; start the run again, and ask the Bloom admins if it fails again",
+        ),
+        (
+            "build-reference",
+            "6",
+            "The run's genome athaliana_col0.v2 or its folder couldn't be used; this isn't "
+            "something wrong with the genome, so ask the Bloom admins",
         ),
         ("build-reference", "137", "Step build-reference failed (exit 137)"),
     ],
@@ -418,3 +428,41 @@ def test_steps_running_side_by_side_report_the_later_one_whatever_the_node_order
 
 def test_a_retired_step_is_no_longer_a_template_step():
     assert not set(st.RETIRED_CELLRANGER_STEPS) & set(st.CELLRANGER_STEPS.values())
+
+
+def _genome_workflow(phases: dict[str, str]) -> dict:
+    """A hand-built Workflow of today's shape: every step a Pod under the sample pipeline."""
+    nodes = {}
+    for i, (template, phase) in enumerate(phases.items()):
+        node_id = f"{WF}-80000000{i}"
+        nodes[node_id] = {
+            "id": node_id,
+            "name": f"{WF}.sample.{template}",
+            "type": "Pod",
+            "templateName": template,
+            "boundaryID": f"{WF}-700000000",
+            "phase": phase,
+            "startedAt": f"2099-01-01T00:0{i}:00Z",
+            "finishedAt": None if phase == "Running" else f"2099-01-01T00:0{i}:30Z",
+        }
+    return {"metadata": {"name": WF}, "status": {"phase": "Running", "nodes": nodes}}
+
+
+def test_a_run_building_its_reference_after_its_reads_reports_the_build():
+    wf = _genome_workflow(
+        {
+            "download-genome": "Succeeded",
+            "stage-sample": "Succeeded",
+            "qc": "Succeeded",
+            "build-reference": "Running",
+        }
+    )
+    status = st.read_cellranger_status(wf, GENOME_RUN)
+    assert (status.status, status.current_step) == ("running", "build-reference")
+    assert set(status.step_pods) == {
+        "download-genome",
+        "stage",
+        "qc",
+        "build-reference",
+    }
+    assert status.step_pods["build-reference"] == f"{WF}-build-reference-800000003"

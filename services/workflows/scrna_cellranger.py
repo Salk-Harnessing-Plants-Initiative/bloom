@@ -29,6 +29,8 @@ from supabase_client import app_client
 SAMPLE_RULE = s3_folder.SAMPLE_RULE
 SAMPLE_HELP = s3_folder.SAMPLE_HELP
 GENOME_VERSION_HELP = "the id of a ready genome version (a whole number above 0)"
+# The largest id the database's BIGINT holds; a larger one is refused here, not as a 500.
+MAX_GENOME_VERSION_ID = 2**63 - 1
 # A version's genome name and number, which the run's reference becomes as <genome>.v<N>.
 GENOME_VERSIONS_TABLE = "genome_reference_versions"
 
@@ -88,7 +90,7 @@ def _validate_genome_version(body: dict) -> int:
             detail="choose a genome version (genome_version_id); reference names aren't taken",
         )
     version_id = body.get("genome_version_id")
-    if type(version_id) is not int or version_id < 1:
+    if type(version_id) is not int or not 1 <= version_id <= MAX_GENOME_VERSION_ID:
         raise HTTPException(
             status_code=422, detail=f"genome_version_id must be {GENOME_VERSION_HELP}"
         )
@@ -105,9 +107,10 @@ def _genome_reference(client, version_id: int) -> str:
         .data
         or []
     )
-    if not rows:
+    genome = (rows[0].get("genome_references") or {}).get("name") if rows else None
+    if not genome:
         raise HTTPException(status_code=422, detail=f"no genome version {version_id}")
-    return f"{rows[0]['genome_references']['name']}.v{rows[0]['version']}"
+    return f"{genome}.v{rows[0]['version']}"
 
 
 def _validate_request(body) -> tuple[str, int, dict | None, list[str] | None]:

@@ -15,7 +15,7 @@ readonly EXIT_BAD_INPUT=6
 readonly EXIT_NO_CREDENTIALS=16
 readonly SHARED_RUNS="${SHARED_RUNS:-/shared/runs}"
 # A genome name (lowercase, at most 64) and its version number, as the run records it.
-readonly GENOME_VERSION_RULE='^[a-z0-9][a-z0-9._-]{0,63}\.v[0-9]+$'
+readonly GENOME_VERSION_RULE='^[a-z0-9][a-z0-9._-]{0,63}\.v[1-9][0-9]*$'
 credentials="${BLOOM_CREDENTIALS:-/etc/bloom/credentials.txt}"
 
 if [[ ! "${GENOME:-}" =~ ${GENOME_VERSION_RULE} ]]; then

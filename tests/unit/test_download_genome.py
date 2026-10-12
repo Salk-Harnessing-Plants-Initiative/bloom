@@ -94,8 +94,10 @@ def test_the_credentials_stay_off_the_shared_disk(env):
 
 @pytest.mark.parametrize(
     "genome",
-    ["", "athaliana_col0", "Athaliana.v2", "athaliana_col0.v", "../x.v1", "a/b.v1", "x.v1 "],
-    ids=["empty", "no-version", "uppercase", "no-number", "dotdot", "slash", "space"],
+    ["", "athaliana_col0", "Athaliana.v2", "athaliana_col0.v", "../x.v1", "a/b.v1", "x.v1 ",
+     "x.v0", "x.v01"],
+    ids=["empty", "no-version", "uppercase", "no-number", "dotdot", "slash", "space",
+         "version-0", "leading-zero"],
 )
 def test_a_genome_that_isnt_a_version_fails_with_6(env, genome):
     result = _run(env, GENOME=genome)
@@ -163,18 +165,28 @@ def test_the_download_runs_the_script_in_the_analysis_image():
     }
 
 
-def test_only_a_network_error_retries_the_download():
-    assert (
-        _templates()["download-genome"]["retryStrategy"]["expression"]
-        == "asInt(lastRetry.exitCode) == 1"
-    )
+def test_only_a_network_error_retries_the_download_twice():
+    strategy = _templates()["download-genome"]["retryStrategy"]
+    assert strategy["expression"] == "asInt(lastRetry.exitCode) == 1"
+    assert strategy["limit"] == 2
+
+
+def test_the_files_bloomctl_writes_are_the_ones_the_build_reads():
+    # bloomctl genome download --unzip writes these names (bloomctl/genome/download.py).
+    download = (
+        Path(__file__).resolve().parents[2] / "bloomcli" / "src" / "bloomctl" / "genome" / "download.py"
+    ).read_text()
+    script = _templates()["build-reference"]["container"]["args"][0]
+    for name in ("genome.fa", "genes.gtf"):
+        assert f'"{name}"' in download
+        assert name in script
 
 
 def test_the_build_runs_mkref_in_the_cellranger_image_and_isnt_retried_without_a_genome():
     step = _templates()["build-reference"]
     assert step["container"]["image"] == _templates()["count"]["container"]["image"]
     assert "cellranger mkref" in step["container"]["args"][0]
-    assert step["retryStrategy"]["expression"] == "asInt(lastRetry.exitCode) != 3"
+    assert "asInt(lastRetry.exitCode) != 3" in step["retryStrategy"]["expression"]
 
 
 def test_the_build_takes_its_resources_from_parameters_with_defaults():
