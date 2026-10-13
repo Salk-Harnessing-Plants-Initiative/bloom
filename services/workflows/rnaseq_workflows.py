@@ -125,6 +125,11 @@ NO_GENOME_VERSION = (
     "This run has no genome version from Bloom, which runs now build their reference from; "
     "start it again and choose a genome"
 )
+# Shown on the page of a run started on a registered sample's name alone, which the pipeline no
+# longer reads.
+NO_READ_SOURCE = (
+    "This run names no S3 folder or SRA run IDs to read from; start it again with one"
+)
 
 
 def build_cellranger_body(run: dict) -> dict:
@@ -132,9 +137,10 @@ def build_cellranger_body(run: dict) -> dict:
     version from Bloom and builds its reference alongside getting and staging the reads.
 
     `genome` is the run's recorded genome version as <genome>.v<N>; a run without one can't
-    be built. A run with SRA run IDs passes them, and the pipeline downloads them with
-    fetch-sra before staging, alongside the genome steps. A run with an S3
-    folder passes the folder and the files recorded from it, which the stage step copies. A
+    be built. A run with SRA run IDs passes them, and the pipeline's fetch-sra step downloads
+    them into the run's folder, alongside the genome steps. A run with an S3 folder passes the
+    folder and the files recorded from it, which the stage step copies; a run with neither
+    can't be built. A
     run naming a dataset passes its name and species, which the load-dataset step loads the
     result into Bloom under, and the run's id, which the step tags the dataset with so the
     run is linked to it."""
@@ -143,6 +149,8 @@ def build_cellranger_body(run: dict) -> dict:
         raise UnrunnableRun(NO_GENOME_VERSION)
     sra_runs = run["params"].get("sra_runs")
     fastq_url = run["params"].get("fastq_url")
+    if not sra_runs and not fastq_url:
+        raise UnrunnableRun(NO_READ_SOURCE)
     parameters = [
         {"name": "sample", "value": run["params"]["sample"]},
         {"name": "reference", "value": genome},

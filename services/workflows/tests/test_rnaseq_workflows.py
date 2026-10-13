@@ -19,7 +19,11 @@ MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
 RUN = {
     "run_id": 7,
     "workflow_type": "scrna-cellranger",
-    "params": {"sample": "tinygex", "reference": "tiny_ref.v1"},
+    "params": {
+        "sample": "tinygex",
+        "reference": "tiny_ref.v1",
+        "sra_runs": ["SRR28503597"],
+    },
     "run_key": "tinygex__tiny_ref.v1__00000000-0000-0000-0000-000000000001",
     "msg_id": 12,
     "genome": "tiny_ref.v1",
@@ -111,6 +115,7 @@ def test_the_run_is_passed_as_workflow_parameters():
         "sample": "tinygex",
         "reference": "tiny_ref.v1",
         "run-id": RUN["run_key"],
+        "sra-runs": "SRR28503597",
     }
 
 
@@ -119,6 +124,25 @@ def test_the_reference_is_the_runs_recorded_genome_version_not_its_reference_nam
     spec = wfs.build_cellranger_body(run)["spec"]
     params = {p["name"]: p["value"] for p in spec["arguments"]["parameters"]}
     assert params["reference"] == "tiny_ref.v1"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sample": "tinygex", "reference": "tiny_ref.v1"},
+        {
+            "sample": "tinygex",
+            "reference": "tiny_ref.v1",
+            "sra_runs": [],
+            "fastq_url": "",
+        },
+    ],
+    ids=["no-source", "empty-source"],
+)
+def test_a_run_without_a_folder_or_sra_ids_cant_be_built(params):
+    # Started on a registered sample's name alone, which the pipeline no longer reads.
+    with pytest.raises(wfs.UnrunnableRun, match="names no S3 folder or SRA run IDs"):
+        wfs.build_cellranger_body({**RUN, "params": params})
 
 
 @pytest.mark.parametrize("genome", [None, ""], ids=["none", "empty"])
@@ -164,7 +188,7 @@ def test_the_ttl_setting_falls_back_to_24_hours(monkeypatch, raw, expected):
     assert wfs._resolve_ttl_seconds() == expected
 
 
-def test_a_run_without_sra_ids_is_just_the_sample_pipeline():
+def test_an_sra_run_is_just_the_sample_pipeline():
     tasks = wfs.build_cellranger_body(RUN)["spec"]["templates"][0]["dag"]["tasks"]
     assert [t["name"] for t in tasks] == ["sample"] and "depends" not in tasks[0]
 
@@ -223,10 +247,12 @@ def test_each_environment_names_its_own_template(monkeypatch, value, expected):
 
 
 @pytest.mark.parametrize("step", ["sample"])
-def test_each_step_passes_exactly_the_templates_required_inputs(step):
+def test_each_step_passes_exactly_the_templates_required_inputs_and_the_runs_source(
+    step,
+):
     task = _task(wfs.build_cellranger_body(RUN), step)
     template = _template(task["templateRef"]["template"])
-    assert set(_params(task)) == _required_inputs(template)
+    assert set(_params(task)) == _required_inputs(template) | {"sra-runs"}
 
 
 # --------------------------------------------------------------------------- #

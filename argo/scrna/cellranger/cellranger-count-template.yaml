@@ -30,7 +30,7 @@ spec:
           # empty skips fetch-sra.
           - name: sra-runs
             value: ""
-          # An S3 folder run reads exactly these files from the folder; empty reads raw_reads/<sample>/.
+          # An S3 folder run reads exactly these files from the folder; a run gives this or sra-runs.
           - name: fastq-url
             value: ""
           - name: fastq-files
@@ -96,10 +96,11 @@ spec:
                   value: "{{inputs.parameters.sra-runs}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
-          # Waits for fetch-sra, or goes straight on when it was skipped.
+          # Exactly one of fetch-sra and stage runs, chosen by sra-runs: a run with SRA run IDs
+          # downloads them, any other is staged from its S3 folder (and refused without one).
           - name: stage
             template: stage-sample
-            depends: fetch-sra
+            when: "'{{inputs.parameters.sra-runs}}' == ''"
             arguments:
               parameters:
                 - name: sample
@@ -110,9 +111,10 @@ spec:
                   value: "{{inputs.parameters.fastq-url}}"
                 - name: fastq-files
                   value: "{{inputs.parameters.fastq-files}}"
+          # After whichever of fetch-sra and stage ran; a skipped task counts as done.
           - name: qc
             template: qc
-            depends: stage
+            depends: fetch-sra && stage
             arguments:
               parameters:
                 - name: sample
@@ -261,7 +263,7 @@ spec:
         # 3 (no downloaded genome), 6 (bad input) and 17 (mkref refused the files) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 17"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-reference.log", --, bash, -c]
         args:
           - |
@@ -329,57 +331,36 @@ spec:
           emptyDir:
             sizeLimit: 100Gi
 
-    # For a run that imports its sample from SRA: download the runs into raw_reads/<sample>/ as
-    # Illumina-named FASTQs, before stage and alongside the genome steps. Outputs the folder's
-    # FASTQ count and size.
+    # For a run that imports its sample from SRA: download the runs into the run's folder
+    # (fastq/<sample>/) as Illumina-named .fastq.gz files, alongside the genome steps. ENA's
+    # files when usable, otherwise converted from SRA; nothing uncompressed is written.
     - name: fetch-sra
       inputs:
         parameters:
           - name: sample
           - name: sra-runs
           - name: run-id
-      outputs:
-        parameters:
-          - name: fastq-count
-            valueFrom:
-              path: /tmp/outputs/fastq_count
-          - name: total-bytes
-            valueFrom:
-              path: /tmp/outputs/total_bytes
       schedulerName: runai-scheduler
       priorityClassName: high
       retryStrategy:
         limit: 1
         retryPolicy: Always
-        # only a failed download (10) may be a blip; bad input (6), misnamed files (7),
-        # unusable reads (11) and a taken folder (12) will not fix themselves
+        # only a failed download (10) may be a blip; bad input (6), misnamed files (7) and
+        # unusable reads (11) will not fix themselves
         expression: "asInt(lastRetry.exitCode) == 10"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
           - name: SRA_RUNS
             value: "{{inputs.parameters.sra-runs}}"
-          - name: WORK_DIR
-            value: "/shared/runs/{{inputs.parameters.run-id}}/sra"
+          # The reads go to RUN_DIR/fastq/<sample>/; nothing is written to S3.
+          - name: RUN_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}"
           - name: THREADS
             value: "8"
-          - name: OUTPUT_DIR
-            value: /tmp/outputs
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests: {cpu: "8", memory: 16Gi}
           limits: {cpu: "8", memory: 16Gi}
@@ -396,8 +377,7 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # Create /shared/runs/<run-id>/ and copy the reads there, from the run's S3 folder or
-    # raw_reads/<sample>/.
+    # Create /shared/runs/<run-id>/ and copy an S3 folder run's reads there.
     - name: stage-sample
       inputs:
         parameters:
@@ -416,7 +396,7 @@ spec:
         # 9 (FASTQs for another sample) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/stage.log", --, bash, -c]
         args:
           - |
@@ -461,7 +441,7 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # QC on the staged reads (run-qc's download finds them already there); the report stays in the run's folder.
+    # QC on the reads fetch-sra or stage put in the run's folder; the report stays there too.
     - name: qc
       inputs:
         parameters:
@@ -473,7 +453,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/qc.log", --, run-qc]
         env:
           - name: SAMPLE
@@ -484,12 +464,6 @@ spec:
             value: "4"
           - name: WORK_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}"
-          # The report stays in the run's folder.
-          - name: UPLOAD_REPORT
-            value: "false"
-          # The stage step has already copied the reads here.
-          - name: DOWNLOAD_READS
-            value: "false"
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
@@ -537,7 +511,7 @@ spec:
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/count.log", --, run-count]
         env:
           - name: SAMPLE
@@ -585,7 +559,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
@@ -819,7 +793,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
         command: [bash, -c]
         args:
           - |

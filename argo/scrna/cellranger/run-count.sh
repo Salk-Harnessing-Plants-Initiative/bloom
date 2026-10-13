@@ -13,7 +13,7 @@ readonly EXIT_CELLRANGER_FAILED=5
 readonly EXIT_BAD_SAMPLE_NAME=6
 readonly EXIT_BAD_FASTQ_NAMES=7
 
-: "${SAMPLE:?set SAMPLE (folder under raw_reads/)}"
+: "${SAMPLE:?set SAMPLE (the sample, its folder under fastq/)}"
 : "${REFERENCE:?set REFERENCE (folder under reference_genome/)}"
 RUN_ID="${RUN_ID:-$SAMPLE}"
 # The FASTQs' name prefix for --sample; read from the file names unless set.

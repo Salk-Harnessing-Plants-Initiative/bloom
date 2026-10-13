@@ -1,5 +1,5 @@
-"""Tests for argo/scrna/cellranger/stage-fastqs.sh, which copies a run's FASTQs onto the
-shared disk, from the run's S3 folder or from raw_reads/<sample>/.
+"""Tests for argo/scrna/cellranger/stage-fastqs.sh, which copies an S3 folder run's FASTQs
+onto the shared disk. (An SRA run's reads are downloaded by fetch-sra instead.)
 
 aws is replaced by a stand-in on PATH that keeps "S3" in a local folder: `s3api
 list-objects-v2` lists it with each file's size and an ETag made from its contents, and `s3
@@ -137,6 +137,7 @@ def env(tmp_path):
     aws.chmod(aws.stat().st_mode | stat.S_IEXEC)
     (bin_dir / "fastq-sample-prefix").symlink_to(CELLRANGER / "fastq-sample-prefix.sh")
     (bin_dir / "stage-fastqs-lib").symlink_to(CELLRANGER / "stage_fastqs_lib.py")
+    (bin_dir / "claim-run-dir").symlink_to(CELLRANGER / "claim-run-dir.sh")
     s3 = tmp_path / "s3"
     s3.mkdir()
     return {
@@ -452,12 +453,15 @@ def test_a_folder_without_a_record_of_its_inputs_is_set_aside(env):
     assert _staged(env) == [R1, R2]
 
 
-def test_this_runs_sra_download_is_kept(env):
+def test_an_earlier_runs_sra_download_is_set_aside_too(env):
+    # fetch-sra no longer runs before stage in the same run, so sra/ is only ever another run's.
     _leave_a_failed_run(env)
     (_run_dir(env) / "sra").mkdir()
-    (_run_dir(env) / "sra/SRR1.sra").write_text("downloading")
+    (_run_dir(env) / "sra/SRR1.sra").write_text("old")
     assert _run(_folder(env, R1, R2)).returncode == 0
-    assert (_run_dir(env) / "sra/SRR1.sra").exists()
+    assert not (_run_dir(env) / "sra").exists()
+    [aside] = _run_dir(env).parent.glob(_run_dir(env).name + ".failed-*")
+    assert (aside / "sra/SRR1.sra").exists()
 
 
 def test_the_runs_genome_folder_next_to_it_is_left_alone(env):
@@ -470,37 +474,17 @@ def test_the_runs_genome_folder_next_to_it_is_left_alone(env):
     assert (genome / "ref/athaliana_col0.v2/reference.json").exists()
 
 
-def test_raw_reads_runs_set_aside_another_runs_folder_too(env):
-    raw = "s3://bloomv2-workflows/raw_reads/col0/"
-    _put(env, raw, R1)
-    _put(env, raw, R2)
-    _leave_a_failed_run(env)
-    assert _run(env).returncode == 0
-    assert _staged(env) == [R1, R2]
-    assert not (_run_dir(env) / "outs").exists()
-
-
 # --------------------------------------------------------------------------- #
-# raw_reads/<sample>/
+# Only folder runs
 # --------------------------------------------------------------------------- #
 
 
-def test_without_a_folder_it_reads_raw_reads(env):
-    raw = "s3://bloomv2-workflows/raw_reads/col0/"
-    _put(env, raw, R1)
-    _put(env, raw, R2)
+def test_without_a_folder_it_refuses_with_6_and_reads_nothing(env):
     result = _run(env)
-    assert result.returncode == 0, result.stderr
-    assert _copies(env) == [f"sync {raw}"]
-    assert _staged(env) == [R1, R2]
-    # Bloom's own bucket is read with Bloom's key.
-    assert _calls(env) == ["s3 sync signed=yes"]
-
-
-def test_an_empty_raw_reads_folder_exits_4(env):
-    result = _run(env)
-    assert result.returncode == 4
-    assert "raw_reads/col0/" in result.stderr
+    assert result.returncode == 6
+    assert "FASTQ_URL" in result.stderr
+    assert _calls(env) == []
+    assert not _run_dir(env).exists()
 
 
 def test_sample_and_dest_are_required(env):
@@ -533,6 +517,7 @@ def test_the_sample_pipeline_passes_the_folder_to_the_stage_step():
     optional = {p["name"]: p.get("value") for p in pipeline["inputs"]["parameters"]}
     assert optional["fastq-url"] == "" and optional["fastq-files"] == ""
     stage = next(t for t in pipeline["dag"]["tasks"] if t["name"] == "stage")
+    assert stage["when"] == "'{{inputs.parameters.sra-runs}}' == ''"
     passed = {p["name"]: p["value"] for p in stage["arguments"]["parameters"]}
     assert passed["fastq-url"] == "{{inputs.parameters.fastq-url}}"
     assert passed["fastq-files"] == "{{inputs.parameters.fastq-files}}"

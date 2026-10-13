@@ -171,7 +171,6 @@ def test_the_poller_emails_only_on_the_update_that_finished_the_run(
         poller, "get_workflow", lambda name: {"metadata": {"name": name}}
     )
     monkeypatch.setattr(poller, "_record", lambda client, run_id, status: changed)
-    monkeypatch.setattr(poller, "_register_sample", lambda *a: None)
     monkeypatch.setitem(
         poller.WORKFLOW_TYPES,
         "scrna-cellranger",

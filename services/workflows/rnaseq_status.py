@@ -48,7 +48,6 @@ EXIT_OTHER_SAMPLE = 9
 # fetch-sra and stage-fastqs: a download or copy failed.
 EXIT_TRANSFER_FAILED = 10
 EXIT_SRA_READS_UNUSABLE = 11
-EXIT_SRA_FOLDER_TAKEN = 12
 # The analysis steps (argo/scrna/analysis/bloom_scrna_analysis/steps.py).
 EXIT_TOO_FEW_CELLS = 13
 EXIT_NO_MATRIX = 14
@@ -121,15 +120,12 @@ def _fetch_sra_message(exit_code: int | None, params: dict) -> str | None:
         EXIT_BAD_SAMPLE_NAME: f"Sample {sample} or SRA run IDs {runs} can't be used",
         EXIT_BAD_FASTQ_NAMES: f"The FASTQs downloaded for {sample} couldn't be named the Illumina way",
         EXIT_TRANSFER_FAILED: (
-            f"Couldn't download {runs} from SRA, or couldn't check raw_reads/{sample}/ in "
-            "storage; start the run again, and check the run IDs are public if it fails again"
+            f"Couldn't download {runs} from ENA or SRA; start the run again, and check the "
+            "run IDs are public if it fails again"
         ),
         EXIT_SRA_READS_UNUSABLE: (
             f"The reads of an SRA run in {runs} don't look like 10x gene-expression reads; "
             "the fetch-sra log says which run and why"
-        ),
-        EXIT_SRA_FOLDER_TAKEN: (
-            f"raw_reads/{sample}/ already holds other FASTQs; choose another sample name"
         ),
     }.get(exit_code)
 
@@ -169,7 +165,7 @@ def _fastqs(params: dict) -> str:
     """The run's FASTQs, by where they came from, for the messages any step can give."""
     if params.get("fastq_url"):
         return f"The FASTQs copied from {params['fastq_url']}"
-    return f"The FASTQs in raw_reads/{params.get('sample')}/"
+    return f"The FASTQs downloaded for {', '.join(params.get('sra_runs') or [])}"
 
 
 def _genome_message(step: str, exit_code: int | None, params: dict) -> str | None:
@@ -245,7 +241,7 @@ def _failure_message(step: str, exit_code: int | None, run: dict) -> str:
     if exit_code == EXIT_NO_FASTQS:
         if params.get("fastq_url"):
             return f"No FASTQs were found on the shared disk after copying {params['fastq_url']}"
-        return f"No FASTQs at raw_reads/{params.get('sample')}/"
+        return f"No FASTQs were found on the shared disk for {params.get('sample')}"
     if exit_code == EXIT_CELLRANGER_FAILED:
         return (
             "Cell Ranger failed; its log is at "
@@ -269,17 +265,6 @@ def _step_failed(step: str, exit_code: int | None) -> str:
     if exit_code is None:
         return f"Step {step} failed"
     return f"Step {step} failed (exit {exit_code})"
-
-
-def sra_download(workflow: dict) -> tuple[int, int] | None:
-    """The FASTQ count and total bytes fetch-sra reported, once it has succeeded."""
-    node = _step_pods(workflow).get("fetch-sra")
-    if not node or node.get("phase") != "Succeeded":
-        return None
-    try:
-        return int(_output(node, "fastq-count")), int(_output(node, "total-bytes"))
-    except (TypeError, ValueError):
-        return None
 
 
 def dataset_loaded(workflow: dict) -> bool:

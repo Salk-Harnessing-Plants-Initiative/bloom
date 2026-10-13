@@ -14,7 +14,11 @@ from rnaseq_workflows import WorkflowType
 RUN = {
     "run_id": 7,
     "workflow_type": "scrna-cellranger",
-    "params": {"sample": "tinygex", "reference": "tiny_ref"},
+    "params": {
+        "sample": "tinygex",
+        "reference": "tiny_ref",
+        "sra_runs": ["SRR28503597"],
+    },
     "run_key": "tinygex__tiny_ref__u",
     "msg_id": 12,
 }

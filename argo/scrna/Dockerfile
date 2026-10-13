@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Cell Ranger, FastQC, sra-tools and the AWS CLI for Run:ai jobs.
+# Cell Ranger, FastQC, sra-tools and the AWS CLI (S3 folder runs) for Run:ai jobs.
 # Private image only: the 10x licence forbids redistribution.
 # Build: docker buildx build --platform linux/amd64 --build-context cellranger=<dir with the tarball> -t <tag> argo/scrna
 # already on the repos GHRC
@@ -35,7 +35,8 @@ RUN --mount=type=bind,from=cellranger,source=cellranger-${CELLRANGER_VERSION}.ta
  && ln -s /opt/cellranger-${CELLRANGER_VERSION}/cellranger /usr/local/bin/cellranger \
  && cellranger --version
 
-# SRA downloads for runs that import their sample: NCBI's own release (Debian's is years old), and pigz.
+# SRA downloads for runs that import their sample: NCBI's own release (Debian's is years old), and
+# pigz to compress fastq-dump's stream as it goes.
 ARG SRATOOLKIT_VERSION=3.4.1
 ARG SRATOOLKIT_SHA256=b950362c054765a4184af41947f022f040e94e964862017c0ecb0b0273db3596
 RUN apt-get update \
@@ -45,20 +46,21 @@ RUN apt-get update \
  && echo "${SRATOOLKIT_SHA256}  /tmp/sra.tgz" | sha256sum -c - \
  && tar -xzf /tmp/sra.tgz -C /opt \
  && rm /tmp/sra.tgz \
- && for tool in prefetch fasterq-dump vdb-config; do ln -s /opt/sratoolkit.${SRATOOLKIT_VERSION}-ubuntu64/bin/${tool} /usr/local/bin/${tool}; done \
+ && for tool in prefetch fastq-dump vdb-config; do ln -s /opt/sratoolkit.${SRATOOLKIT_VERSION}-ubuntu64/bin/${tool} /usr/local/bin/${tool}; done \
  && vdb-config --restore-defaults >/dev/null \
- && fasterq-dump --version
+ && fastq-dump --version
 
 COPY cellranger/run-count.sh /usr/local/bin/run-count
 COPY cellranger/fastq-sample-prefix.sh /usr/local/bin/fastq-sample-prefix
 COPY cellranger/fetch-sra.sh /usr/local/bin/fetch-sra
 COPY cellranger/stage-fastqs.sh /usr/local/bin/stage-fastqs
+COPY cellranger/claim-run-dir.sh /usr/local/bin/claim-run-dir
 COPY cellranger/stage_fastqs_lib.py /usr/local/bin/stage-fastqs-lib
 # Every step runs through it, to keep its log in Bloom's run-logs bucket.
 COPY run_with_log.py /usr/local/bin/run-with-log
 COPY fastq_qc/run-qc.sh /usr/local/bin/run-qc
 COPY fastq_qc/fastq_qc.py /usr/local/bin/fastq-qc
 COPY fastq_qc/qc_report.py /usr/local/bin/qc-report
-RUN chmod +x /usr/local/bin/run-count /usr/local/bin/fastq-sample-prefix /usr/local/bin/fetch-sra /usr/local/bin/stage-fastqs /usr/local/bin/stage-fastqs-lib /usr/local/bin/run-with-log /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
+RUN chmod +x /usr/local/bin/run-count /usr/local/bin/fastq-sample-prefix /usr/local/bin/fetch-sra /usr/local/bin/stage-fastqs /usr/local/bin/claim-run-dir /usr/local/bin/stage-fastqs-lib /usr/local/bin/run-with-log /usr/local/bin/run-qc /usr/local/bin/fastq-qc /usr/local/bin/qc-report
 
 WORKDIR /work

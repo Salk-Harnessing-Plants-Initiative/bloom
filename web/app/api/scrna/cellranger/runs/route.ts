@@ -1,7 +1,7 @@
 /**
  * Server-side proxy for starting a Cell Ranger run.
  *
- * Forwards `{sample or fastq_url and fastq_files, genome_version_id, metadata?, sra_runs?}` with the
+ * Forwards `{sample and sra_runs, or fastq_url and fastq_files; genome_version_id; metadata?}` with the
  * signed-in user's Supabase token to the workflows service (`POST /scrna/cellranger/runs`,
  * in-cluster at `workflows:5100`), which checks the request, records the run and queues
  * it. Proxying keeps the token out of client JS. A request must be JSON (415 otherwise),
@@ -71,8 +71,9 @@ export async function POST(request: Request) {
     metadata?: unknown;
     sra_runs?: unknown;
   };
-  // A run's reads come from an S3 folder (whose files name the sample) or a named sample.
-  // A folder comes with the files its check showed; the service refuses it if they changed.
+  // A run's reads come from an S3 folder (whose files name the sample) or SRA run IDs imported
+  // under a new sample name. A folder comes with the files its check showed; the service
+  // refuses it if they changed.
   const hasFolder = fastq_url !== undefined;
   const files = hasFolder ? shownFiles(fastq_files) : null;
   if (
@@ -80,10 +81,10 @@ export async function POST(request: Request) {
     (genome_version_id as number) < 1 ||
     (hasFolder
       ? typeof fastq_url !== "string" || sample !== undefined || files === null
-      : typeof sample !== "string")
+      : typeof sample !== "string" || sra_runs === undefined)
   ) {
     return NextResponse.json(
-      { detail: "Choose the reads (an S3 folder or a sample) and a genome version." },
+      { detail: "Choose the reads (an S3 folder or SRA run IDs) and a genome version." },
       { status: 400 }
     );
   }
