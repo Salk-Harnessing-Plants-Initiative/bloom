@@ -6,7 +6,6 @@ import {
   runSraRuns,
   runSteps,
   fetchGenomeLabel,
-  fetchRequesters,
   isFinished,
   runAttributes,
   runDatasetName,
@@ -390,30 +389,6 @@ describe("upsertRun", () => {
   it("drops a run the filter rejects", () => {
     const list = [run({ id: 2 }), run({ id: 1 })];
     expect(upsertRun(list, run({ id: 1 }), () => false).map((r) => r.id)).toEqual([2]);
-  });
-});
-
-describe("fetchRequesters", () => {
-  it("maps run ids to emails", async () => {
-    const client = {
-      rpc: async (fn: string, args: unknown) => {
-        expect(fn).toBe("rnaseq_run_requesters");
-        expect(args).toEqual({ p_run_ids: [1, 2] });
-        return { data: [{ run_id: 1, email: "a@salk.edu" }], error: null };
-      },
-    };
-    expect(await fetchRequesters(client as never, [1, 2])).toEqual(new Map([[1, "a@salk.edu"]]));
-  });
-
-  it("asks nothing for no runs, and returns nothing on an error", async () => {
-    const client = {
-      rpc: async () => {
-        throw new Error("should not be called");
-      },
-    };
-    expect(await fetchRequesters(client as never, [])).toEqual(new Map());
-    const failing = { rpc: async () => ({ data: null, error: { message: "denied" } }) };
-    expect(await fetchRequesters(failing as never, [1])).toEqual(new Map());
   });
 });
 

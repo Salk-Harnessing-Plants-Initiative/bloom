@@ -44,7 +44,7 @@ function renderView(run: RnaseqRun = RUN, genomeLabel: string | null = null) {
   render(
     <RnaseqRunView
       initialRun={run}
-      startedBy="bfernando@salk.edu"
+      startedBy="another member · 4965b3af"
       speciesLabel="Arabidopsis (Arabidopsis thaliana)"
       genomeLabel={genomeLabel}
     />
@@ -66,7 +66,7 @@ describe("RnaseqRunView", () => {
     expect(step("FastQC").getByRole("button", { name: "View log" })).toBeTruthy();
     expect(step("Cell Ranger count").queryByRole("button", { name: "View log" })).toBeNull();
     expect(screen.getByRole("link", { name: "← All RNA-seq runs" }).getAttribute("href")).toBe(
-      "/app/timeline?panel=rnaseq"
+      "/app/rnaseq-runs"
     );
   });
 
@@ -90,7 +90,8 @@ describe("RnaseqRunView", () => {
     expect(screen.getByText("Arabidopsis (Arabidopsis thaliana)")).toBeTruthy();
     expect(screen.getByText("Public dataset · https://doi.org/10.1016/x · Shahan et al. 2022")).toBeTruthy();
     expect(screen.getByText("root")).toBeTruthy();
-    expect(screen.getByText("bfernando@salk.edu")).toBeTruthy();
+    expect(screen.getByText("another member · 4965b3af")).toBeTruthy();
+    expect(screen.queryByText(/@/)).toBeNull();
     expect(screen.getByText("scrna-cellranger-staging-1-7ef9275d")).toBeTruthy();
     // The source link is shown as text, never made a link.
     expect(screen.queryByRole("link", { name: /doi\.org/ })).toBeNull();

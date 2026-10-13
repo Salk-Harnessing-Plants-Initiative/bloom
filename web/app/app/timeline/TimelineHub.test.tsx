@@ -18,9 +18,10 @@ function header(label: string) {
 
 describe("TimelineHub", () => {
   it("opens the panel from the URL with its content", () => {
-    render(<TimelineHub open="rnaseq"><p>Runs list</p></TimelineHub>);
-    expect(header("RNA-seq runs").getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Runs list")).toBeTruthy();
+    render(<TimelineHub open="plate"><p>Plate batches</p></TimelineHub>);
+    expect(header("Plate scanner usage tracking").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Plate batches")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /RNA-seq/ })).toBeNull();
   });
 
   it("goes to another panel's URL when its header is clicked", () => {

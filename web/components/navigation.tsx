@@ -11,7 +11,7 @@ export function isCurrent(href: string, pathname: string, panel: string | null, 
   if (!pathname.startsWith(path)) return false
   if (!query) return true
   const wanted = new URLSearchParams(query).get('panel')
-  // A panel's own pages (e.g. /app/timeline/rnaseq/12) belong to that panel.
+  // A panel's own pages (/app/timeline/<panel>/...) belong to that panel.
   const fromPath = pathname.slice(path.length).split('/')[1] || null
   return (panel ?? fromPath ?? defaultPanel ?? null) === wanted
 }

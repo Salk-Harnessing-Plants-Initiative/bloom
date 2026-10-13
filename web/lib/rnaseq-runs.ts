@@ -286,17 +286,6 @@ export async function fetchGenomeLabel(
   return option ? genomeVersionLabel(option) : null;
 }
 
-/** Who started each run, by email; runs whose starter can't be read are left out. */
-export async function fetchRequesters(
-  supabase: SupabaseClient<Database>,
-  runIds: number[]
-): Promise<Map<number, string>> {
-  if (runIds.length === 0) return new Map();
-  const { data, error } = await supabase.rpc("rnaseq_run_requesters", { p_run_ids: runIds });
-  if (error || !data) return new Map();
-  return new Map(data.map((r) => [r.run_id, r.email]));
-}
-
 /** A list with one run added or replaced, newest first, and runs `accept` rejects left out. */
 export function upsertRun(
   runs: RnaseqRun[],

@@ -489,7 +489,7 @@ describe("after a run is queued", () => {
     await queueRun();
     expect(screen.getByText("Started by scientist@salk.edu")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View run" }).getAttribute("href")).toBe(
-      "/app/timeline/rnaseq/12"
+      "/app/rnaseq-runs/12"
     );
     expect(screen.getByText(/saved with the run/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start run" })).toBeNull();

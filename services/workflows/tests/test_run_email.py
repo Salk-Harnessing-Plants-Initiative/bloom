@@ -96,7 +96,7 @@ def test_a_finished_run_says_so_with_its_message_and_page(relay):
     assert message["From"] == "Bloom <noreply@bloom.salk.edu>"
     assert "Your Cell Ranger run on col0 (reference tair10) finished." in body
     assert "Finished: results in s3://bloomv2-workflows/x/" in body
-    assert "See the run: https://bloom.salk.edu/app/timeline/rnaseq/42" in body
+    assert "See the run: https://bloom.salk.edu/app/rnaseq-runs/42" in body
     assert "remove that access" not in body
 
 

@@ -5,6 +5,14 @@ import {
   isIncompleteUpload,
 } from "@/components/expression-upload-status";
 import {
+  DatasetOriginFilter,
+  DatasetOriginPill,
+  ORIGIN_LABELS,
+  datasetOrigin,
+  fetchRunOrigins,
+  originFilter,
+} from "@/components/expression-dataset-origin";
+import {
   createServerSupabaseClient,
   getUser,
 } from "@/lib/supabase/server";
@@ -14,10 +22,13 @@ import type { SpeciesWithRNADatasetsAndPeople } from "@/lib/custom.types";
 
 export default async function Species({
   params,
+  searchParams,
 }: {
   params: Promise<{ speciesId: number }>;
+  searchParams: Promise<{ origin?: string | string[] }>;
 }) {
   const { speciesId } = await params;
+  const shown = originFilter((await searchParams).origin);
   const species = await getSpeciesWithDatasets(speciesId);
 
   const user = await getUser();
@@ -38,6 +49,12 @@ export default async function Species({
   const datasets = (species.scrna_datasets ?? []).filter(
     (d) => d.name !== "NULL_DATASET" && d.kind !== "reference",
   );
+  // A dataset still loading, or never linked to its run, has its origin only on the run.
+  const runOrigins = await fetchRunOrigins(await createServerSupabaseClient(), datasets);
+  const originOf = (d: (typeof datasets)[number]) => datasetOrigin(d, runOrigins);
+  const counts = { hpi: 0, public: 0 };
+  datasets.forEach((d) => counts[originOf(d)]++);
+  const listed = shown ? datasets.filter((d) => originOf(d) === shown) : datasets;
 
   return (
     <div>
@@ -75,17 +92,30 @@ export default async function Species({
       </div>
 
       {/* Dataset list — same row pattern as /app/expression */}
-      <div className="text-xs uppercase tracking-widest text-stone-500 mb-3">
-        Datasets
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div className="text-xs uppercase tracking-widest text-stone-500">
+          Datasets
+        </div>
+        {datasets.length > 0 && (
+          <DatasetOriginFilter
+            basePath={`/app/expression/${species.id}`}
+            current={shown}
+            counts={counts}
+          />
+        )}
       </div>
 
       {datasets.length === 0 ? (
         <div className="text-sm text-stone-500 italic">
           No datasets yet for this species.
         </div>
+      ) : listed.length === 0 ? (
+        <div className="text-sm text-stone-500 italic">
+          No {shown ? ORIGIN_LABELS[shown] : ""} datasets for this species.
+        </div>
       ) : (
         <div className="divide-y divide-stone-200 border-y border-stone-200">
-          {datasets.map((ds) => {
+          {listed.map((ds) => {
             const secondary = [
               ds.assembly,
               ds.annotation,
@@ -107,6 +137,7 @@ export default async function Species({
                     <span className="text-xl text-lime-700 group-hover:underline break-words">
                       {ds.name}
                     </span>
+                    <DatasetOriginPill origin={originOf(ds)} />
                     {isIncompleteUpload(ds) && <IncompleteUploadBadge />}
                   </div>
                   {secondary && (
