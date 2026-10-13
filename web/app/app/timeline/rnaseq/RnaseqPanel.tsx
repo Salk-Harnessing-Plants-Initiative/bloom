@@ -1,5 +1,5 @@
 import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
-import { fetchRequesters, fetchRuns, type RnaseqRun } from "@/lib/rnaseq-runs";
+import { fetchRuns, type RnaseqRun } from "@/lib/rnaseq-runs";
 import { speciesLabelMap } from "./species-labels";
 import RnaseqRunsLive from "./RnaseqRunsLive";
 
@@ -13,10 +13,7 @@ export default async function RnaseqPanel() {
   } catch {
     failed = true;
   }
-  const [requesters, speciesLabels] = await Promise.all([
-    fetchRequesters(supabase, runs.map((r) => r.id)),
-    speciesLabelMap(supabase),
-  ]);
+  const speciesLabels = await speciesLabelMap(supabase);
   return (
     <div>
       <h2 className="mb-2 text-xl font-serif italic">RNA-seq runs</h2>
@@ -30,7 +27,6 @@ export default async function RnaseqPanel() {
       ) : (
         <RnaseqRunsLive
           initialRuns={runs}
-          initialRequesters={Object.fromEntries(requesters)}
           speciesLabels={speciesLabels}
           currentUserId={user?.id ?? null}
         />

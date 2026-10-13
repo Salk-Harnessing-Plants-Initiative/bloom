@@ -5,10 +5,10 @@ import { useRef, useState } from "react";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Change } from "@/lib/cyl-pipeline/realtime-reducer";
+import { requesterText } from "@/lib/cyl-pipeline/run-text";
 import { useLiveSync } from "@/lib/cyl-pipeline/use-live-sync";
 import {
   CELLRANGER_STEPS,
-  fetchRequesters,
   fetchRuns,
   isFinished,
   runDatasetName,
@@ -42,33 +42,17 @@ function stepLabel(step: string | null): string | null {
 /** RNA-seq runs, newest first, kept current by Realtime. */
 export default function RnaseqRunsLive({
   initialRuns,
-  initialRequesters,
   speciesLabels,
   currentUserId,
 }: {
   initialRuns: RnaseqRun[];
-  initialRequesters: Record<number, string>;
   speciesLabels: Record<number, string>;
   currentUserId: string | null;
 }) {
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [mineOnly, setMineOnly] = useState(false);
   const mine = useRef(false);
-  const [requesters, setRequesters] = useState(
-    () => new Map(Object.entries(initialRequesters).map(([id, email]) => [Number(id), email]))
-  );
-  // Runs whose starter was looked up; each is asked for at most once.
-  const looked = useRef(new Set(initialRuns.map((r) => r.id)));
-
   const accept = (run: RnaseqRun) => !mine.current || run.requested_by === currentUserId;
-
-  async function loadRequesters(ids: number[]) {
-    const fresh = ids.filter((id) => !looked.current.has(id));
-    if (fresh.length === 0) return;
-    fresh.forEach((id) => looked.current.add(id));
-    const found = await fetchRequesters(createClientSupabaseClient(), fresh);
-    setRequesters((prev) => new Map([...prev, ...found]));
-  }
 
   const live = useLiveSync<RnaseqRun[]>({
     topic: "rnaseq-runs",
@@ -77,22 +61,15 @@ export default function RnaseqRunsLive({
       { table: "rnaseq_runs", event: "UPDATE" },
     ],
     initial: initialRuns,
-    snapshot: async () => {
-      const runs = await fetchRuns(createClientSupabaseClient(), {
+    snapshot: () =>
+      fetchRuns(createClientSupabaseClient(), {
         requestedBy: mine.current ? currentUserId : null,
-      });
-      await loadRequesters(runs.map((r) => r.id));
-      return runs;
-    },
+      }),
     apply: (runs, change) => {
       const row = (change as Change<RnaseqRun>).new;
       if (typeof row.id !== "number") return runs;
       const held = runs.find((r) => r.id === row.id);
       return upsertRun(runs, { ...(held ?? {}), ...row } as RnaseqRun, accept);
-    },
-    onEvent: (change) => {
-      const id = (change as Change<RnaseqRun>).new.id;
-      if (typeof id === "number") void loadRequesters([id]);
     },
   });
 
@@ -168,7 +145,7 @@ export default function RnaseqRunsLive({
                     {step ? <span className="text-xs text-stone-500">{step}</span> : null}
                   </span>
                   <span className="w-48 shrink-0 truncate text-sm text-stone-500">
-                    {requesters.get(run.id) ?? "—"}
+                    {requesterText(run.requested_by, currentUserId)}
                   </span>
                   <span className="w-28 shrink-0 text-right text-sm tabular-nums text-stone-500">
                     {when(run.created_at)}

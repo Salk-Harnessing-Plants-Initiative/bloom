@@ -48,11 +48,10 @@ describe("Navigation", () => {
     renderAt("/app");
     const hrefs = screen.getAllByRole("link").map((a) => a.getAttribute("href"));
     const at = hrefs.indexOf("/app/timeline");
-    expect(hrefs.slice(at, at + 4)).toEqual([
+    expect(hrefs.slice(at, at + 3)).toEqual([
       "/app/timeline",
       "/app/timeline?panel=cylinder",
       "/app/timeline?panel=plate",
-      "/app/timeline?panel=rnaseq",
     ]);
   });
 
@@ -66,9 +65,14 @@ describe("Navigation", () => {
     expect(current()).toEqual(["Cylinder scanner usage"]);
   });
 
-  it("marks RNA-seq runs on a run's page", () => {
+  it("marks only RNA-seq Pipeline Runs on a run's page, not Timeline too", () => {
     renderAt("/app/timeline/rnaseq/12");
-    expect(current()).toEqual(["RNA-seq runs"]);
+    expect(current()).toEqual(["RNA-seq\nPipeline Runs"]);
+  });
+
+  it("marks only RNA-seq Pipeline Runs with the RNA-seq panel open", () => {
+    renderAt("/app/timeline", "panel=rnaseq");
+    expect(current()).toEqual(["RNA-seq\nPipeline Runs"]);
   });
 
   it("marks an ordinary page as before", () => {

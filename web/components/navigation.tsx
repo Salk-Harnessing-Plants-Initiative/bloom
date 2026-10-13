@@ -45,6 +45,14 @@ function ItemLink({ item, active, small }: { item: NavItem; active: boolean; sma
 export function Navigation({ sections }: { sections: NavSection[] }) {
   const pathname = usePathname()
   const panel = useSearchParams().get('panel')
+  // A top-level link to one of a page's panels (e.g. RNA-seq runs in Tools) claims that page, so
+  // the page's own link (Timeline) isn't marked as well.
+  const claimed = new Set(
+    sections
+      .flatMap((s) => s.items)
+      .filter((i) => i.href.includes('?') && isCurrent(i.href, pathname, panel))
+      .map((i) => i.href.split('?')[0])
+  )
 
   return (
     <nav className="select-none text-stone-700">
@@ -71,7 +79,8 @@ export function Navigation({ sections }: { sections: NavSection[] }) {
               const children = item.children ?? []
               const firstPanel = children[0] ? new URLSearchParams(children[0].href.split('?')[1] ?? '').get('panel') ?? undefined : undefined
               const childActive = children.map((c) => isCurrent(c.href, pathname, panel, firstPanel))
-              const active = isCurrent(item.href, pathname, panel) && !childActive.some(Boolean)
+              const active =
+                isCurrent(item.href, pathname, panel) && !childActive.some(Boolean) && !claimed.has(item.href)
               return (
                 <li key={item.name}>
                   <ItemLink item={item} active={active} />

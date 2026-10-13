@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import { parseId } from "@/lib/route-params";
-import { fetchGenomeLabel, fetchRequesters, fetchRun, runSpeciesId } from "@/lib/rnaseq-runs";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { requesterText } from "@/lib/cyl-pipeline/run-text";
+import { fetchGenomeLabel, fetchRun, runSpeciesId } from "@/lib/rnaseq-runs";
+import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
 import TimelineHub from "../../TimelineHub";
 import RnaseqRunView from "../RnaseqRunView";
 import { speciesLabelMap } from "../species-labels";
@@ -12,7 +13,7 @@ export default async function RnaseqRunPage({ params }: { params: Promise<{ runI
   const id = parseId(runId);
   if (id === null) notFound();
 
-  const supabase = await createServerSupabaseClient();
+  const [supabase, user] = await Promise.all([createServerSupabaseClient(), getUser()]);
   let run;
   try {
     run = await fetchRun(supabase, id);
@@ -30,8 +31,7 @@ export default async function RnaseqRunPage({ params }: { params: Promise<{ runI
   }
   if (!run) notFound();
 
-  const [requesters, speciesLabels, genomeLabel] = await Promise.all([
-    fetchRequesters(supabase, [run.id]),
+  const [speciesLabels, genomeLabel] = await Promise.all([
     speciesLabelMap(supabase),
     fetchGenomeLabel(supabase, run),
   ]);
@@ -42,7 +42,7 @@ export default async function RnaseqRunPage({ params }: { params: Promise<{ runI
       <TimelineHub open="rnaseq">
         <RnaseqRunView
           initialRun={run}
-          startedBy={requesters.get(run.id) ?? null}
+          startedBy={requesterText(run.requested_by, user?.id ?? null)}
           speciesLabel={speciesId != null ? (speciesLabels[speciesId] ?? null) : null}
           genomeLabel={genomeLabel}
         />
