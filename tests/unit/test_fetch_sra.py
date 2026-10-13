@@ -40,14 +40,14 @@ BASH = _bash()
 pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash 4+ (the pipeline image has it)")
 
 
-def _records(acc: str, layout: str, barcoded: int | None, read: int) -> str:
-    """20 reads of one read position, as fastq-dump --split-spot would name them."""
+def _records(acc: str, layout: str, barcoded: int | None, read: int, header) -> str:
+    """20 reads of one read position; header(spot) is each record's first line."""
     length = int(layout.split(",")[read - 1])
     if read == barcoded:
         seq = BARCODE + "A" * (length - len(BARCODE))
     else:
         seq = "C" * length
-    return "".join(f"@{acc}.{n}.{read}\n{seq}\n+\n{seq}\n" for n in range(1, 21))
+    return "".join(f"{header(n)}\n{seq}\n+\n{seq}\n" for n in range(1, 21))
 
 
 STUBS = {
@@ -58,12 +58,22 @@ while [ $# -gt 0 ]; do [ "$1" = --output-directory ] && out="$2"; shift; done
 case " ${FAKE_MISSING:-} " in *" ${acc} "*) echo "not found" >&2; exit 3 ;; esac
 mkdir -p "${out}/${acc}" && echo "sra" > "${out}/${acc}/${acc}.sra"
 """,
+    # Names each record from --defline-seq, as the real tool does; its default otherwise. The run's
+    # records are stored with "<acc> <spot> <read> <length>" as their first line.
     "fastq-dump": """#!/usr/bin/env bash
+fmt='@$ac.$si $sn length=$rl'
+args=("$@")
+for i in "${!args[@]}"; do [ "${args[$i]}" = --defline-seq ] && fmt="${args[$((i + 1))]}"; done
 for last; do :; done
 acc="${last##*/}"
 echo "fastq-dump ${acc} $*" >> "${FAKE_LOG}"
 case " ${FAKE_DUMP_FAIL:-} " in *" ${acc} "*) echo "fastq-dump failed" >&2; exit 3 ;; esac
-cat "${FAKE_SRA}/${acc}.fastq"
+awk -v fmt="${fmt}" 'NR % 4 == 1 {
+    h = fmt
+    gsub(/[$]ac/, $1, h); gsub(/[$]si/, $2, h); gsub(/[$]ri/, $3, h)
+    gsub(/[$]sn/, $1 "." $2, h); gsub(/[$]rl/, $4, h)
+    print h; next
+  } { print }' "${FAKE_SRA}/${acc}.fastq"
 """,
     "pigz": """#!/usr/bin/env bash
 gzip -c
@@ -125,8 +135,9 @@ def env(tmp_path):
 
 def on_sra(env, acc, layout, barcoded=None):
     """What fastq-dump --split-spot gives for the run: its reads interleaved per spot."""
-    reads = [_records(acc, layout, barcoded, r).splitlines(keepends=True) for r in
-             range(1, len(layout.split(",")) + 1)]
+    lengths = layout.split(",")
+    reads = [_records(acc, layout, barcoded, r, lambda n, r=r: f"{acc} {n} {r} {lengths[r - 1]}")
+             .splitlines(keepends=True) for r in range(1, len(lengths) + 1)]
     spots = ["".join(r[i:i + 4]) for i in range(0, len(reads[0]), 4) for r in reads]
     (Path(env["FAKE_SRA"]) / f"{acc}.fastq").write_text("".join(spots))
 
@@ -136,7 +147,9 @@ def on_ena(env, acc, layout, barcoded=None, reads=None):
     urls, md5s = [], []
     for r in reads or range(1, len(layout.split(",")) + 1):
         name = f"{acc}_{r}.fastq.gz"
-        data = gzip.compress(_records(acc, layout, barcoded, r).encode())
+        # ENA names a spot's reads alike, e.g. "@SRR1.5 5/1" and "@SRR1.5 5/2".
+        records = _records(acc, layout, barcoded, r, lambda n, r=r: f"@{acc}.{n} {n}/{r}")
+        data = gzip.compress(records.encode())
         (Path(env["FAKE_ENA"]) / name).write_bytes(data)
         urls.append(f"ftp.ena.test/vol1/fastq/{acc}/{name}")
         md5s.append(hashlib.md5(data).hexdigest())
@@ -161,6 +174,12 @@ def fastqs(env, sample="s"):
 def calls(env):
     log = Path(env["FAKE_LOG"])
     return log.read_text().splitlines() if log.exists() else []
+
+
+def read_names(path):
+    """Each record's name: its first line up to the first space, as Cell Ranger compares them."""
+    with gzip.open(path, "rt") as f:
+        return [line.split()[0] for i, line in enumerate(f) if i % 4 == 0]
 
 
 def first_read(path):
@@ -191,6 +210,35 @@ def test_the_reads_are_streamed_through_compression_and_nothing_uncompressed_is_
     assert not list(Path(env["RUN_DIR"]).parent.rglob("*.fastq"))
     assert not (Path(env["RUN_DIR"]) / "sra").exists(), "the .sra is removed once converted"
     assert not list(dest(env).glob(".part-*"))
+
+
+@pytest.mark.parametrize("source", [on_sra, on_ena], ids=["sra", "ena"])
+def test_a_spots_reads_have_the_same_name_in_every_file(env, source):
+    source(env, "SRR1000001", "8,28,91")
+    assert fetch(env, "s", "SRR1000001").returncode == 0
+    names = [read_names(dest(env) / f"s_S1_L001_{read}_001.fastq.gz") for read in ("I1", "R1", "R2")]
+    assert names[0] == names[1] == names[2]
+    assert names[1][:2] == ["@SRR1000001.1", "@SRR1000001.2"]
+
+
+def test_sra_records_keep_their_read_number_out_of_the_name(env):
+    on_sra(env, "SRR1000001", "28,91")
+    assert fetch(env, "s", "SRR1000001").returncode == 0
+    dump = next(c for c in calls(env) if c.startswith("fastq-dump"))
+    assert "--defline-seq @$ac.$si $ri" in dump
+    with gzip.open(dest(env) / "s_S1_L001_R2_001.fastq.gz", "rt") as f:
+        assert f.readline() == "@SRR1000001.1\n"
+
+
+def test_records_not_named_as_asked_fail_with_10_and_leave_no_fastq(env):
+    # fastq-dump's own default names ("@acc.spot acc.spot length=n") can't be split by read.
+    on_sra(env, "SRR1000001", "28,91")
+    stub = Path(env["PATH"].split(":")[0]) / "fastq-dump"
+    stub.write_text(stub.read_text().replace('&& fmt="${args[$((i + 1))]}"', "&& :"))
+    result = fetch(env, "s", "SRR1000001")
+    assert result.returncode == 10
+    assert "bad record name" in result.stderr
+    assert fastqs(env) == []
 
 
 def test_reads_are_assigned_by_length_whatever_order_sra_wrote_them(env):

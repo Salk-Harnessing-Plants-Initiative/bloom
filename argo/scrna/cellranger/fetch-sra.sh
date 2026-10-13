@@ -253,14 +253,17 @@ from_sra() {
     echo "ERROR: couldn't download ${acc} from SRA (unknown, withdrawn or not public?)" >&2
     exit "${EXIT_TRANSFER_FAILED}"
   fi
-  # Technical reads (the 10x barcode read) are kept; each record is named <acc>.<spot>.<read>.
-  if ! fastq-dump --split-spot --stdout --defline-seq '@$ac.$si.$ri' --defline-qual '+' \
+  # Technical reads (the 10x barcode read) are kept. Each record comes as "@<acc>.<spot> <read>":
+  # the read number picks its file, and only "@<acc>.<spot>" is written, so a spot's reads share
+  # one name across R1, R2 and the index reads, as Cell Ranger requires.
+  if ! fastq-dump --split-spot --stdout --defline-seq '@$ac.$si $ri' --defline-qual '+' \
       "${sra_dir}/${acc}" \
     | awk -v dir="${part}" -v threads="${THREADS}" '
         NR % 4 == 1 {
-          n = split(substr($1, 2), name, ".")
-          if (n != 3 || name[3] !~ /^[0-9]+$/) { print "bad record name: " $1 > "/dev/stderr"; exit 1 }
-          cmd = "pigz -p " threads " > " dir "/read-" name[3] ".fastq.gz"
+          if (NF != 2 || $1 !~ /^@/ || $2 !~ /^[0-9]+$/) { print "bad record name: " $0 > "/dev/stderr"; exit 1 }
+          cmd = "pigz -p " threads " > " dir "/read-" $2 ".fastq.gz"
+          print $1 | cmd
+          next
         }
         { print | cmd }'; then
     echo "ERROR: couldn't convert ${acc} to FASTQ" >&2
