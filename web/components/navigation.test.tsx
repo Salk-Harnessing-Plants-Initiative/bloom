@@ -65,13 +65,11 @@ describe("Navigation", () => {
     expect(current()).toEqual(["Cylinder scanner usage"]);
   });
 
-  it("marks only RNA-seq Pipeline Runs on a run's page, not Timeline too", () => {
-    renderAt("/app/timeline/rnaseq/12");
+  it("marks RNA-seq Pipeline Runs on its list and on a run's page", () => {
+    renderAt("/app/rnaseq-runs");
     expect(current()).toEqual(["RNA-seq\nPipeline Runs"]);
-  });
-
-  it("marks only RNA-seq Pipeline Runs with the RNA-seq panel open", () => {
-    renderAt("/app/timeline", "panel=rnaseq");
+    cleanup();
+    renderAt("/app/rnaseq-runs/12");
     expect(current()).toEqual(["RNA-seq\nPipeline Runs"]);
   });
 

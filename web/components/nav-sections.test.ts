@@ -14,11 +14,14 @@ describe("navSections", () => {
   it("lists RNA-seq Pipeline Runs in Tools right below Cylinder Pipeline Runs, and not under Timeline", () => {
     const tools = navSections.find((s) => s.heading === "Tools")!.items.map((i) => i.href);
     const at = tools.indexOf("/app/cyl-pipeline-runs");
-    expect(tools[at + 1]).toBe("/app/timeline?panel=rnaseq");
-    const rnaseq = navSections.flatMap((s) => s.items).find((i) => i.href === "/app/timeline?panel=rnaseq");
+    expect(tools[at + 1]).toBe("/app/rnaseq-runs");
+    const rnaseq = navSections.flatMap((s) => s.items).find((i) => i.href === "/app/rnaseq-runs");
     expect(rnaseq?.name).toBe("RNA-seq\nPipeline Runs");
     const timeline = navSections.flatMap((s) => s.items).find((i) => i.name === "Timeline");
-    expect(timeline?.children?.map((c) => c.href)).not.toContain("/app/timeline?panel=rnaseq");
+    expect(timeline?.children?.map((c) => c.href)).toEqual([
+      "/app/timeline?panel=cylinder",
+      "/app/timeline?panel=plate",
+    ]);
   });
 
   it("has no bare Pipeline runs entry, which wouldn't say which pipeline", () => {
@@ -27,7 +30,7 @@ describe("navSections", () => {
   });
 
   it("keeps every other entry as it was", () => {
-    const runs = new Set(["/app/cyl-pipeline-runs", "/app/timeline?panel=rnaseq"]);
+    const runs = new Set(["/app/cyl-pipeline-runs", "/app/rnaseq-runs"]);
     const withoutRuns = navSections.map((s) => ({ ...s, items: s.items.filter((i) => !runs.has(i.href)) }));
     expect(withoutRuns).toEqual([
       { heading: null, items: [{ name: "Home", href: "/app" }] },

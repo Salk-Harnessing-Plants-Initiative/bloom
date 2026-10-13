@@ -127,7 +127,7 @@ export default function RnaseqRunsLive({
             return (
               <li key={run.id}>
                 <Link
-                  href={`/app/timeline/rnaseq/${run.id}`}
+                  href={`/app/rnaseq-runs/${run.id}`}
                   className="-mx-2 flex flex-wrap items-center gap-x-6 gap-y-1 rounded-sm px-2 py-3 hover:bg-stone-50"
                 >
                   <span className="w-14 shrink-0 text-sm tabular-nums text-stone-500">#{run.id}</span>

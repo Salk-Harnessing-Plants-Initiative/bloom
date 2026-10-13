@@ -2,7 +2,6 @@
 export const PANELS = [
   { id: "cylinder", label: "Cylinder scanner usage tracking" },
   { id: "plate", label: "Plate scanner usage tracking" },
-  { id: "rnaseq", label: "RNA-seq runs" },
 ] as const;
 
 export type PanelId = (typeof PANELS)[number]["id"];

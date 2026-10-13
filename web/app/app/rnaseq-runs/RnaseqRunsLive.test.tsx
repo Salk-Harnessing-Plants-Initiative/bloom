@@ -56,8 +56,8 @@ describe("RnaseqRunsLive", () => {
     renderList();
     const links = screen.getAllByRole("link");
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
-      "/app/timeline/rnaseq/2",
-      "/app/timeline/rnaseq/1",
+      "/app/rnaseq-runs/2",
+      "/app/rnaseq-runs/1",
     ]);
     const running = within(links[1]);
     expect(running.getByText("sample1 · tiny_ref")).toBeTruthy();
@@ -101,7 +101,7 @@ describe("RnaseqRunsLive", () => {
     renderList();
     emit(run(3, { status: "queued", current_step: null }), "INSERT");
     const first = screen.getAllByRole("link")[0];
-    expect(first.getAttribute("href")).toBe("/app/timeline/rnaseq/3");
+    expect(first.getAttribute("href")).toBe("/app/rnaseq-runs/3");
     expect(within(first).getByText("another member · 4965b3af")).toBeTruthy();
   });
 

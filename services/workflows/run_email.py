@@ -35,7 +35,7 @@ OUTCOMES = {
 
 
 def run_page(run_id) -> str:
-    return f"{SITE_URL}/app/timeline/rnaseq/{run_id}"
+    return f"{SITE_URL}/app/rnaseq-runs/{run_id}"
 
 
 def build(run: dict, status, to: str) -> EmailMessage:

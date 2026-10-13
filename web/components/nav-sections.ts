@@ -33,7 +33,7 @@ export const navSections: NavSection[] = [
       { name: "OrthoVec", href: "/app/embedtree" },
       // Named for its pipeline: each pipeline has runs of its own.
       { name: "Cylinder\nPipeline Runs", href: "/app/cyl-pipeline-runs" },
-      { name: "RNA-seq\nPipeline Runs", href: "/app/timeline?panel=rnaseq" },
+      { name: "RNA-seq\nPipeline Runs", href: "/app/rnaseq-runs" },
     ],
   },
   {

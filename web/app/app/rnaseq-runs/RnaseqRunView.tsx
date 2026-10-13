@@ -59,7 +59,8 @@ export default function RnaseqRunView({
   genomeLabel = null,
 }: {
   initialRun: RnaseqRun;
-  startedBy: string | null;
+  // "you", or another member's short id (requesterText).
+  startedBy: string;
   speciesLabel: string | null;
   // The genome version with its assembly and annotation; null shows the reference name.
   genomeLabel?: string | null;
@@ -84,7 +85,7 @@ export default function RnaseqRunView({
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
-        <Link href="/app/timeline?panel=rnaseq" className="text-sm text-lime-700 underline-offset-4 hover:underline">
+        <Link href="/app/rnaseq-runs" className="text-sm text-lime-700 underline-offset-4 hover:underline">
           ← All RNA-seq runs
         </Link>
         <LiveIndicator state={live.connection} onRefresh={live.refresh} />
@@ -167,7 +168,7 @@ export default function RnaseqRunView({
             {value || "—"}
           </Detail>
         ))}
-        <Detail label="Started by">{startedBy ?? "—"}</Detail>
+        <Detail label="Started by">{startedBy}</Detail>
         <Detail label="Queued">{when(run.created_at)}</Detail>
         <Detail label="Submitted">{when(run.submitted_at)}</Detail>
         <Detail label="Finished">{when(run.completed_at)}</Detail>
