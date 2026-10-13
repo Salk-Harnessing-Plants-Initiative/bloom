@@ -154,3 +154,14 @@ def test_the_id_is_the_runs_dataset_under_that_name():
 def test_no_dataset_for_the_run_is_a_lookup_error():
     with pytest.raises(LookupError, match="for run 42"):
         bloom_dataset.dataset_id([_row(1, "Root atlas", run=41)], "Root atlas", 42)
+
+
+def test_a_run_from_bloom_loads_its_de_result_with_it(env):
+    import h5py
+
+    h5ad = Path(env["SHARED_RUNS"]) / env["RUN_ID"] / "h5ad" / "col0.h5ad"
+    h5ad.unlink()
+    with h5py.File(h5ad, "w") as f:
+        f.create_group("uns/de/names")
+    assert _run(env).returncode == 0
+    assert _bloomctl_args(env).endswith(" [--run-id] [42] [--de-key] [de]")

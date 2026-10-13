@@ -7,6 +7,7 @@
 # A run that names no dataset (DATASET_NAME empty) loads nothing, and the step succeeds.
 # A run from Bloom loads under DATASET_NAME, or N_v2, N_v3, ... when it's taken, tagged with
 # BLOOM_RUN_ID, and writes the dataset's id to OUTPUT_DIR/dataset-id for the status poller.
+# The de step's result in uns['de'], when it has one, loads with it (--de-key de).
 # The credentials are copied into the pod's own /tmp, never onto the shared disk. bloomctl's
 # resume state (~/.bloom/scrna-uploads) is the run's folder on the shared disk, so a retried
 # step continues the load; cleanup removes it with the rest of the run's folder.
@@ -49,17 +50,25 @@ mkdir -p "${state}"
 chmod 700 "${state}"
 ln -s "${state}" "${HOME}/.bloom/scrna-uploads"
 
+# The de step's result, when it had clusters to compare, loads as the dataset's DE.
+de_args=()
+if python -c 'import h5py, sys; f = h5py.File(sys.argv[1], "r"); sys.exit(0 if "names" in f.get("uns/de", {}) else 1)' "${h5ad}"; then
+  de_args=(--de-key de)
+else
+  echo "The file has no differential expression to load (fewer than two clusters)"
+fi
+
 if [ -z "${BLOOM_RUN_ID:-}" ]; then
   echo "Loading ${h5ad} into Bloom as '${DATASET_NAME}' (${SPECIES_NAME})"
   exec bloomctl scrna hdf5 upload "${h5ad}" --name "${DATASET_NAME}" --species "${SPECIES_NAME}" \
-    --annotation leiden --create --yes
+    --annotation leiden --create --yes ${de_args[@]+"${de_args[@]}"}
 fi
 
 name="$(bloom-dataset pick --name "${DATASET_NAME}" --species "${SPECIES_NAME}" --run-id "${BLOOM_RUN_ID}")"
 [ "${name}" = "${DATASET_NAME}" ] || echo "'${DATASET_NAME}' is taken, so this run loads as '${name}'"
 echo "Loading ${h5ad} into Bloom as '${name}' (${SPECIES_NAME}) for run ${BLOOM_RUN_ID}"
 bloomctl scrna hdf5 upload "${h5ad}" --name "${name}" --species "${SPECIES_NAME}" \
-  --annotation leiden --create --yes --run-id "${BLOOM_RUN_ID}"
+  --annotation leiden --create --yes --run-id "${BLOOM_RUN_ID}" ${de_args[@]+"${de_args[@]}"}
 bloom-dataset id --name "${name}" --species "${SPECIES_NAME}" --run-id "${BLOOM_RUN_ID}" \
   > "${OUTPUT_DIR}/dataset-id"
 echo "Loaded as dataset $(cat "${OUTPUT_DIR}/dataset-id")"

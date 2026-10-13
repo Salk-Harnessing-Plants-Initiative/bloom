@@ -15,12 +15,12 @@ argo/scrna/
 │   └── fastq-qc-workflow.yaml  QC only, for a list of samples: a quick look before counting
 ├── analysis/                   after count: scanpy steps, in their own image
 │   ├── Dockerfile              scrna-analysis image: Python, scanpy, leidenalg
-│   ├── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, build-h5ad
+│   ├── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, de, build-h5ad
 │   ├── download-genome.sh      installed as download-genome: fetches the run's genome version from Bloom with bloomctl
 │   └── load-dataset.sh         installed as load-dataset: loads the final .h5ad into Bloom with bloomctl
 └── cellranger/                 then: cellranger count
     ├── run-count.sh            installed as run-count: cellranger count on one sample's staged reads
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside [fetch-sra →] stage → qc, then count → preprocess → cluster → build-h5ad → load-dataset → cleanup), testrun
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside [fetch-sra →] stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → cleanup), testrun
     ├── cellranger-count-workflow.yaml   a run started by hand: the sample pipeline for a list of samples on one genome version, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 ```
@@ -126,12 +126,13 @@ Each run's reference is a genome version stored in Bloom (`bloomctl genome uploa
 
 ## Analysis after the count
 
-Three analysis steps follow `count`, then `load-dataset`, each its own pod, from the `scrna-analysis` image. They pass their files through the run's own shared folder, `/shared/runs/<run-id>/`, so runs going at the same time never touch each other's files, and nothing between steps is downloaded from S3. The count step leaves its matrix and metrics there too. The final file leaves the cluster only through `load-dataset`, into Bloom:
+Four analysis steps follow `count`, then `load-dataset`, each its own pod, from the `scrna-analysis` image. They pass their files through the run's own shared folder, `/shared/runs/<run-id>/`, so runs going at the same time never touch each other's files, and nothing between steps is downloaded from S3. The count step leaves its matrix and metrics there too. The final file leaves the cluster only through `load-dataset`, into Bloom:
 
 | Step | Reads | Writes (in `/shared/runs/<run-id>/`) |
 |---|---|---|
 | **preprocess** | `outs/filtered_feature_bc_matrix.h5`, and Cell Ranger's `metrics_summary.csv` and `qc_summary.json` when count kept them | `analysis/preprocess/base.h5ad`: cells with ≥ 200 genes, genes in ≥ 3 cells; raw counts in `layers['counts']`, `normalize_total` (10,000) + `log1p` in `X`; the variable genes (`n-top-genes`, default 2000) and the PCA |
 | **cluster** | the base's PCA | `analysis/cluster/part.h5ad`: Leiden clusters (`obs['leiden']`, resolution 1.0) and the UMAP (`obsm['X_umap']`) |
+| **de** | the base's `X` and the cluster labels | `analysis/de/part.h5ad`: each Leiden cluster against the rest (`uns['de']`, scanpy's `rank_genes_groups`: Wilcoxon, Benjamini–Hochberg, every gene, `pts`). A cluster of one cell is left out; with fewer than two clusters to compare, `uns['de']` is empty and there's no DE |
 | **build-h5ad** | the base and every finished part | `h5ad/<sample>.h5ad`, `summary.json` and `_SUCCESS` |
 
 The final file has the barcodes as `obs_names`, gene IDs as `var_names` (Cell Ranger's names in `var['gene_symbols']`), Cell Ranger's metrics in `uns['cellranger_metrics']` (cells, reads per cell, mapping rates, as Cell Ranger wrote them), the chemistry check in `uns['qc_summary']`, the steps, settings and package versions in `uns['bloom_pipeline']`, and the run's sample name on every cell in `obs['sample']`, the column `bloomctl scrna hdf5 upload` reads each cell's sample from. It passes `bloomctl scrna hdf5 upload`'s structure check, so it loads with no extra flags.
@@ -140,17 +141,17 @@ The final file has the barcodes as `obs_names`, gene IDs as `var_names` (Cell Ra
 
 Each analysis step writes its `_SUCCESS` last and does nothing if it's already there, so a retry redoes only what's missing. `build-h5ad` rebuilds when the set of finished parts has changed. `cleanup` runs after `load-dataset`, so the folder is kept after a failure. Exit 13 means fewer than 50 cells passed the filters, and exit 14 means the count matrix is missing; neither is retried.
 
-**load-dataset** then loads `h5ad/<sample>.h5ad` into Bloom as the run's dataset: `bloomctl scrna hdf5 upload <file> --name <dataset-name> --species <species-name> --annotation leiden --create --yes` (`analysis/load-dataset.sh`, with `bloomctl` pinned in `analysis/requirements.txt`). The worker passes the dataset name and the species' common name from the run's form, and the run's id (`bloom-run-id`); a run naming no dataset loads nothing. For a run from Bloom, `bloom-dataset pick` (`analysis/bloom_scrna_analysis/bloom_dataset.py`) chooses the name: the one this run already loaded under, else the typed name, else the first free `<name>_v2`, `<name>_v3`, …, so a run never loads into another's dataset and a retry continues its own. bloomctl tags the dataset with the run (`--run-id`), and `bloom-dataset id` writes its id to the step's `dataset-id` output, which the status poller links the run to. A run started by hand has no run id: it loads under the name as given, untagged, and reports nothing. It signs in with `/etc/bloom/credentials.txt` (the pipeline's `bloom_workflows` login), copied into the pod's own `/tmp`, and fails with exit 16 without it. bloomctl's resume state is `/shared/runs/<run-id>/bloomctl-uploads/`, so a retry (up to 2, 6 minutes apart, past bloomctl's 330-second hold after a write it couldn't confirm) continues the load; exit 2, 6 and 16 aren't retried. It uploads one counts file per gene, so a run takes tens of minutes; the step allows 6 hours. When it succeeds, the status poller links the run to its dataset and gives the dataset to the scientist (`link_rnaseq_run_dataset`).
+**load-dataset** then loads `h5ad/<sample>.h5ad` into Bloom as the run's dataset: `bloomctl scrna hdf5 upload <file> --name <dataset-name> --species <species-name> --annotation leiden --create --yes` (`analysis/load-dataset.sh`, with `bloomctl` pinned in `analysis/requirements.txt`). When the file holds the de step's result, it adds `--de-key de`, so the dataset loads with its differential expression: each cluster's comparison with the rest, every tested gene, and each cluster's statistics and top markers, which fill the expression page's cluster panel and Genes tab. The worker passes the dataset name and the species' common name from the run's form, and the run's id (`bloom-run-id`); a run naming no dataset loads nothing. For a run from Bloom, `bloom-dataset pick` (`analysis/bloom_scrna_analysis/bloom_dataset.py`) chooses the name: the one this run already loaded under, else the typed name, else the first free `<name>_v2`, `<name>_v3`, …, so a run never loads into another's dataset and a retry continues its own. bloomctl tags the dataset with the run (`--run-id`), and `bloom-dataset id` writes its id to the step's `dataset-id` output, which the status poller links the run to. A run started by hand has no run id: it loads under the name as given, untagged, and reports nothing. It signs in with `/etc/bloom/credentials.txt` (the pipeline's `bloom_workflows` login), copied into the pod's own `/tmp`, and fails with exit 16 without it. bloomctl's resume state is `/shared/runs/<run-id>/bloomctl-uploads/`, so a retry (up to 2, 6 minutes apart, past bloomctl's 330-second hold after a write it couldn't confirm) continues the load; exit 2, 6 and 16 aren't retried. It uploads one counts file per gene, so a run takes tens of minutes; the step allows 6 hours. When it succeeds, the status poller links the run to its dataset and gives the dataset to the scientist (`link_rnaseq_run_dataset`).
 
 The image holds nothing licensed, but it's pushed private like the Cell Ranger one:
 
 ```bash
 docker buildx build --platform linux/amd64 --build-context scrna=argo/scrna \
-  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3 argo/scrna/analysis
-docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3
+  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4 argo/scrna/analysis
+docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4
 # tests (need scanpy), from the repo root:
 docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
-  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.3 \
+  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.4 \
   -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
 ```
 

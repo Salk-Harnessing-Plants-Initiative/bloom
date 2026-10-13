@@ -191,7 +191,7 @@ def test_every_analysis_step_uses_the_same_image():
     images = {
         t["container"]["image"]
         for name, t in _templates().items()
-        if name in ("download-genome", "preprocess", "cluster", "build-h5ad", "load-dataset")
+        if name in ("download-genome", "preprocess", "cluster", "de", "build-h5ad", "load-dataset")
     }
     assert len(images) == 1
 
@@ -201,4 +201,37 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a12"]
+    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a13"]
+
+
+def _with_de_result(env):
+    """Make the run's .h5ad an HDF5 file holding uns/de/names, as the de step leaves it."""
+    _hdf5(env, ["uns/de/names"])
+
+
+def test_a_file_with_a_de_result_loads_it(env):
+    _with_de_result(env)
+    assert _run(env).returncode == 0
+    assert _bloomctl(env)["args"].endswith("[--de-key] [de]")
+
+
+def _hdf5(env, groups=()):
+    """Make the run's .h5ad a real HDF5 file holding these groups."""
+    import h5py
+
+    path = Path(env["SHARED_RUNS"]) / env["RUN_ID"] / "h5ad" / "col0.h5ad"
+    path.unlink()
+    with h5py.File(path, "w") as f:
+        for group in groups:
+            f.create_group(group)
+
+
+@pytest.mark.parametrize("groups", [["uns"], ["uns/de"]], ids=["no-de", "empty-de"])
+def test_a_file_without_a_de_result_loads_without_it_and_says_so(env, groups):
+    # An empty uns/de is what the de step writes with fewer than two clusters.
+    _hdf5(env, groups)
+    result = _run(env)
+    assert result.returncode == 0
+    assert "--de-key" not in _bloomctl(env)["args"]
+    assert "no differential expression to load" in result.stdout
+
