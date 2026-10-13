@@ -325,12 +325,14 @@ from_sra() {
   mkdir -p "${sra_dir}"
   if ! watched "Downloading ${acc} from SRA" "${sra_dir}/${acc}" \
       prefetch "${acc}" --max-size u --output-directory "${sra_dir}"; then
-    rm -rf -- "${part}" "${sra_dir:?}/${acc}"
+    # A killed process can still hold a file open on the share; the next try clears what's left.
+    rm -rf -- "${part}" "${sra_dir:?}/${acc}" || true
     echo "ERROR: couldn't download ${acc} from SRA (unknown, withdrawn or not public?)" >&2
     exit "${EXIT_TRANSFER_FAILED}"
   fi
   if ! watched "Converting ${acc}" "${part}" convert "${acc}" "${part}"; then
-    rm -rf -- "${part}" "${sra_dir:?}/${acc}"
+    # A killed process can still hold a file open on the share; the next try clears what's left.
+    rm -rf -- "${part}" "${sra_dir:?}/${acc}" || true
     echo "ERROR: couldn't convert ${acc} to FASTQ" >&2
     exit "${EXIT_TRANSFER_FAILED}"
   fi

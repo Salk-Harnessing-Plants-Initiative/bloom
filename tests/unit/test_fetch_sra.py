@@ -17,6 +17,7 @@ import re
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -58,9 +59,17 @@ while [ $# -gt 0 ]; do [ "$1" = --output-directory ] && out="$2"; shift; done
 case " ${FAKE_MISSING:-} " in *" ${acc} "*) echo "not found" >&2; exit 3 ;; esac
 mkdir -p "${out}/${acc}"
 # A download that stops making progress, or one that grows for a few seconds.
-[ -z "${FAKE_PREFETCH_HANG:-}" ] || { echo "part" > "${out}/${acc}/${acc}.sra.tmp"; exec sleep 60; }
+# A hanging download leaves a child running, recorded in FAKE_PIDS, so the test can see it's stopped.
+if [ -n "${FAKE_PREFETCH_HANG:-}" ]; then
+  echo "part" > "${out}/${acc}/${acc}.sra.tmp"
+  sleep 60 & echo $! > "${FAKE_PIDS}/prefetch"; wait
+fi
+# A slow download grows in bursts with pauses between them.
 if [ -n "${FAKE_PREFETCH_SLOW:-}" ]; then
-  for i in 1 2 3; do head -c 8192 /dev/zero >> "${out}/${acc}/${acc}.sra.tmp"; sleep 1; done
+  for i in 1 2 3 4; do
+    head -c 8192 /dev/zero >> "${out}/${acc}/${acc}.sra.tmp"
+    [ "${i}" = 4 ] || sleep "${FAKE_PREFETCH_SLOW}"
+  done
 fi
 echo "sra" > "${out}/${acc}/${acc}.sra"
 """,
@@ -74,12 +83,21 @@ for last; do :; done
 acc="${last##*/}"
 echo "fastq-dump ${acc} $*" >> "${FAKE_LOG}"
 case " ${FAKE_DUMP_FAIL:-} " in *" ${acc} "*) echo "fastq-dump failed" >&2; exit 3 ;; esac
-awk -v fmt="${fmt}" 'NR % 4 == 1 {
-    h = fmt
-    gsub(/[$]ac/, $1, h); gsub(/[$]si/, $2, h); gsub(/[$]ri/, $3, h)
-    gsub(/[$]sn/, $1 "." $2, h); gsub(/[$]rl/, $4, h)
-    print h; next
-  } { print }' "${FAKE_SRA}/${acc}.fastq"
+records() {
+  awk -v fmt="${fmt}" 'NR % 4 == 1 {
+      h = fmt
+      gsub(/[$]ac/, $1, h); gsub(/[$]si/, $2, h); gsub(/[$]ri/, $3, h)
+      gsub(/[$]sn/, $1 "." $2, h); gsub(/[$]rl/, $4, h)
+      print h; next
+    } { print }' "${FAKE_SRA}/${acc}.fastq"
+}
+# A conversion that hangs after its first records, its child recorded in FAKE_PIDS.
+if [ -n "${FAKE_DUMP_HANG:-}" ]; then
+  records | head -n 8
+  sleep 60 & echo $! > "${FAKE_PIDS}/fastq-dump"; wait
+  exit 0
+fi
+records
 """,
     # FAKE_PIGZ_FAIL: takes everything, then fails as on a full disk.
     "pigz": """#!/usr/bin/env bash
@@ -105,6 +123,11 @@ case "${url}" in
     [ -f "${file}" ] || { echo "curl: (22) 404" >&2; exit 22; }
     if [ -n "${out}" ]; then
       case " ${FAKE_CORRUPT:-} " in *" ${url##*/} "*) echo junk > "${out}"; exit 0 ;; esac
+      if [ -n "${FAKE_ENA_HANG:-}" ]; then
+        head -c 100 "${file}" > "${out}"
+        sleep 60 & echo $! > "${FAKE_PIDS}/curl"; wait
+        exit 0
+      fi
       cp "${file}" "${out}"
     else
       cat "${file}"
@@ -125,7 +148,7 @@ def env(tmp_path):
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
     (bin_dir / "fastq-sample-prefix").symlink_to(CELLRANGER / "fastq-sample-prefix.sh")
     (bin_dir / "claim-run-dir").symlink_to(CELLRANGER / "claim-run-dir.sh")
-    for name in ("sra", "ena", "barcodes"):
+    for name in ("sra", "ena", "barcodes", "pids"):
         (tmp_path / name).mkdir()
     (tmp_path / "barcodes/737K-august-2016.txt").write_text(f"{BARCODE}\nAAACCCAAGAAACCAT\n")
     return {
@@ -138,6 +161,7 @@ def env(tmp_path):
         "FAKE_LOG": str(tmp_path / "calls.log"),
         "FAKE_SRA": str(tmp_path / "sra"),
         "FAKE_ENA": str(tmp_path / "ena"),
+        "FAKE_PIDS": str(tmp_path / "pids"),
     }
 
 
@@ -164,11 +188,23 @@ def on_ena(env, acc, layout, barcoded=None, reads=None):
     (Path(env["FAKE_ENA"]) / f"{acc}.row").write_text(f"{acc}\t{';'.join(urls)}\t{';'.join(md5s)}\n")
 
 
+# Longer than any test needs, shorter than a hanging stand-in's sleep: a step that doesn't stop
+# what it started fails the test instead of just slowing it.
+FETCH_TIMEOUT = 30
+
+
 def fetch(env, sample, runs):
     return subprocess.run(
         [BASH, str(SCRIPT)], capture_output=True, text=True, check=False,
-        env={**env, "SAMPLE": sample, "SRA_RUNS": runs},
+        env={**env, "SAMPLE": sample, "SRA_RUNS": runs}, timeout=FETCH_TIMEOUT,
     )
+
+
+def stopped(env, name):
+    """Whether the child a hanging stand-in left running (recorded in FAKE_PIDS) is gone."""
+    pid = (Path(env["FAKE_PIDS"]) / name).read_text().strip()
+    stat = Path(f"/proc/{pid}/stat")
+    return not stat.exists() or stat.read_text().split(")")[1].split()[0] == "Z"
 
 
 def dest(env, sample="s"):
@@ -182,7 +218,9 @@ def fastqs(env, sample="s"):
 def nothing_left(env):
     """No FASTQ anywhere in the run's folder, no part folder and no .sra."""
     run_dir = Path(env["RUN_DIR"])
+    sra = run_dir / "sra"
     return (not list(run_dir.rglob("*.fastq.gz")) and not list(run_dir.rglob(".part-*"))
+            and not (sra.exists() and any(sra.iterdir()))
             and not list(run_dir.rglob("*.sra")))
 
 
@@ -315,22 +353,54 @@ def test_a_file_pigz_couldnt_finish_fails_the_step_with_10_and_says_so(env):
     assert not (dest(env) / ".L001").exists(), "the lane isn't recorded as done"
 
 
+STALLS = {"POLL_SECONDS": "1", "STALL_SECONDS": "2"}
+
+
 def test_a_download_that_stops_growing_is_stopped_and_fails_with_10(env):
     on_sra(env, "SRR1000001", "28,91")
-    env.update(FAKE_PREFETCH_HANG="1", POLL_SECONDS="1", STALL_SECONDS="2")
+    env.update(FAKE_PREFETCH_HANG="1", **STALLS)
+    started = time.monotonic()
     result = fetch(env, "s", "SRR1000001")
     assert result.returncode == 10
     assert "Downloading SRR1000001 from SRA stalled" in result.stderr
     assert "hasn't grown for 2s, so it was stopped" in result.stderr
+    assert time.monotonic() - started < 15, "the stalled download wasn't stopped"
+    assert stopped(env, "prefetch"), "a process the download started is still running"
     assert nothing_left(env)
 
 
-def test_a_long_download_logs_its_progress(env):
+def test_a_conversion_that_stops_growing_is_stopped_with_everything_it_started(env):
     on_sra(env, "SRR1000001", "28,91")
-    env.update(FAKE_PREFETCH_SLOW="1", POLL_SECONDS="1", STALL_SECONDS="5")
+    env.update(FAKE_DUMP_HANG="1", **STALLS)
+    result = fetch(env, "s", "SRR1000001")
+    assert result.returncode == 10
+    assert "Converting SRR1000001 stalled" in result.stderr
+    assert "couldn't convert SRR1000001 to FASTQ" in result.stderr
+    assert stopped(env, "fastq-dump"), "fastq-dump's child is still running"
+    assert nothing_left(env)
+
+
+def test_an_ena_download_that_stops_growing_falls_back_to_sra(env):
+    on_ena(env, "SRR1000001", "28,91")
+    on_sra(env, "SRR1000001", "28,91")
+    env.update(FAKE_ENA_HANG="1", **STALLS)
     result = fetch(env, "s", "SRR1000001")
     assert result.returncode == 0, result.stderr
-    assert re.search(r"Downloading SRR1000001 from SRA: \d+ KB after 0 min", result.stdout)
+    assert "stalled" in result.stderr
+    assert "converting SRR1000001 from SRA" in result.stdout
+    assert stopped(env, "curl")
+    assert len(first_read(dest(env) / "s_S1_L001_R2_001.fastq.gz")) == 91
+
+
+def test_a_download_that_keeps_growing_in_bursts_is_not_stopped(env):
+    # Each 2.5 s pause holds one or two polls without growth; only growth resetting the count
+    # keeps three pauses from adding up to STALL_SECONDS.
+    on_sra(env, "SRR1000001", "28,91")
+    env.update(FAKE_PREFETCH_SLOW="2.5", POLL_SECONDS="1", STALL_SECONDS="3")
+    result = fetch(env, "s", "SRR1000001")
+    assert result.returncode == 0, result.stderr
+    sizes = [int(kb) for kb in re.findall(r"Downloading SRR1000001 from SRA: (\d+) KB", result.stdout)]
+    assert len(sizes) >= 2 and sizes == sorted(sizes) and sizes[-1] > sizes[0]
 
 
 # --------------------------------------------------------------------------- #
