@@ -16,6 +16,7 @@ import pytest
 pytest.importorskip("scanpy")
 
 import anndata as ad
+import pandas as pd
 import h5py
 import scipy.sparse as sp
 
@@ -619,3 +620,48 @@ def test_fewer_than_two_comparable_clusters_give_no_result(run_dir, labels):
     if labels == "one-and-a-singleton":
         values[-1] = "1"
     assert dict(de.compute_part(base, values).uns["de"]) == {}
+
+
+def test_exactly_one_comparable_cluster_gives_no_result(run_dir):
+    # Cluster 0 can be compared (two cells outside it); the two singletons can't.
+    base = _base(run_dir)
+    values = np.array(["0"] * (base.n_obs - 2) + ["1", "2"])
+    assert de.testable(pd.Series(values)) == ["0"]
+    assert dict(de.compute_part(base, values).uns["de"]) == {}
+
+
+def test_fold_changes_are_scanpys_on_the_normalised_data(run_dir):
+    # The planted markers are 20x background; on log-normalised data scanpy reports about
+    # 5-6. Raw counts would give far more, so this catches the wrong matrix.
+    pipeline(run_dir)
+    adata = final(run_dir)
+    for cluster in adata.uns["de"]["names"].dtype.names:
+        assert 3 < adata.uns["de"]["logfoldchanges"][cluster][0] < 8
+
+
+def _bloomctl_de():
+    """bloomctl's DE reader, loaded without its CLI (which needs the network libraries)."""
+    import importlib
+    import types
+
+    package = types.ModuleType("bloomctl_scrna_for_test")
+    package.__path__ = [str(REPO / "bloomcli/src/bloomctl/scrna")]
+    sys.modules[package.__name__] = package
+    return importlib.import_module(f"{package.__name__}._de")
+
+
+def test_bloomctl_reads_the_pipelines_de_as_it_loads_it(run_dir):
+    _de = _bloomctl_de()
+    pipeline(run_dir)
+    path = run_dir / "h5ad/root_tip.h5ad"
+    adata = final(run_dir)
+    cells = {"labels": [str(v) for v in adata.obs["leiden"]], "n_cells": adata.n_obs,
+             "x": [0.0] * adata.n_obs, "y": [0.0] * adata.n_obs}
+    result = _de.read(path, "de", "leiden", cells)
+    assert len(result.comparisons) == adata.obs["leiden"].nunique()
+    for comparison in result.comparisons:
+        assert len(comparison.genes) == adata.n_vars
+        assert comparison.n_group1 + comparison.n_group2 == adata.n_obs
+        assert all(g["pct_1"] is not None and g["pct_2"] is not None for g in comparison.genes)
+        markers = _de.markers(comparison, result.symbols)
+        assert markers["n_significant"] > 0 and markers["top"][0]["symbol"]

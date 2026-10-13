@@ -206,12 +206,7 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
 
 def _with_de_result(env):
     """Make the run's .h5ad an HDF5 file holding uns/de/names, as the de step leaves it."""
-    import h5py
-
-    path = Path(env["SHARED_RUNS"]) / env["RUN_ID"] / "h5ad" / "col0.h5ad"
-    path.unlink()
-    with h5py.File(path, "w") as f:
-        f.create_group("uns/de/names")
+    _hdf5(env, ["uns/de/names"])
 
 
 def test_a_file_with_a_de_result_loads_it(env):
@@ -220,7 +215,21 @@ def test_a_file_with_a_de_result_loads_it(env):
     assert _bloomctl(env)["args"].endswith("[--de-key] [de]")
 
 
-def test_a_file_without_a_de_result_loads_without_it_and_says_so(env):
+def _hdf5(env, groups=()):
+    """Make the run's .h5ad a real HDF5 file holding these groups."""
+    import h5py
+
+    path = Path(env["SHARED_RUNS"]) / env["RUN_ID"] / "h5ad" / "col0.h5ad"
+    path.unlink()
+    with h5py.File(path, "w") as f:
+        for group in groups:
+            f.create_group(group)
+
+
+@pytest.mark.parametrize("groups", [["uns"], ["uns/de"]], ids=["no-de", "empty-de"])
+def test_a_file_without_a_de_result_loads_without_it_and_says_so(env, groups):
+    # An empty uns/de is what the de step writes with fewer than two clusters.
+    _hdf5(env, groups)
     result = _run(env)
     assert result.returncode == 0
     assert "--de-key" not in _bloomctl(env)["args"]
