@@ -183,6 +183,25 @@ describe("stepStates", () => {
     });
   });
 
+  it("leaves out staging, which an SRA import's reads skip", () => {
+    const imported = run({
+      params: { sample: "root_tip", reference: "tiny_ref", sra_runs: ["SRR28503597"] },
+      current_step: "count",
+      step_pods: { "fetch-sra": "wf-fetch-1", qc: "wf-qc-2", count: "wf-count-3" },
+    });
+    expect(runSteps(imported).map((s) => s.id)).not.toContain("stage");
+    expect(stepStates(imported)).not.toHaveProperty("stage");
+  });
+
+  it("keeps staging for an earlier SRA import that staged its reads", () => {
+    const earlier = run({
+      params: { sample: "root_tip", reference: "tiny_ref", sra_runs: ["SRR28503597"] },
+      current_step: "count",
+      step_pods: { "fetch-sra": "wf-fetch-1", stage: "wf-stage-2" },
+    });
+    expect(stepStates(earlier)).toMatchObject({ stage: "done", count: "running" });
+  });
+
   it("marks the download done once the run has moved on", () => {
     const imported = run({
       params: { sample: "root_tip", reference: "tiny_ref", sra_runs: ["SRR28503597"] },
@@ -238,12 +257,21 @@ describe("failureSentence", () => {
   it.each([
     [6, /SRA run IDs can't be used/],
     [7, /couldn't be named the Illumina way/],
-    [10, /couldn't be downloaded from SRA/],
+    [10, /couldn't be downloaded from ENA or SRA/],
     [11, /don't look like 10x gene-expression reads/],
-    [12, /already holds other FASTQs/],
   ])("explains exit %i from the SRA download", (code, sentence) => {
     const failed = run({ status: "failed", exit_code: code, current_step: "fetch-sra" });
     expect(failureSentence(failed)).toMatch(sentence);
+  });
+
+  it("has no sentence for the retired exit 12 from the SRA download", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 12,
+      current_step: "fetch-sra",
+      message: "Step fetch-sra failed (exit 12)",
+    });
+    expect(failureSentence(failed)).toBe("Step fetch-sra failed (exit 12)");
   });
 
   it.each([

@@ -517,7 +517,7 @@ def test_the_sample_pipeline_passes_the_folder_to_the_stage_step():
     optional = {p["name"]: p.get("value") for p in pipeline["inputs"]["parameters"]}
     assert optional["fastq-url"] == "" and optional["fastq-files"] == ""
     stage = next(t for t in pipeline["dag"]["tasks"] if t["name"] == "stage")
-    assert stage["when"] == "'{{inputs.parameters.fastq-url}}' != ''"
+    assert stage["when"] == "'{{inputs.parameters.sra-runs}}' == ''"
     passed = {p["name"]: p["value"] for p in stage["arguments"]["parameters"]}
     assert passed["fastq-url"] == "{{inputs.parameters.fastq-url}}"
     assert passed["fastq-files"] == "{{inputs.parameters.fastq-files}}"

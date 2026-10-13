@@ -56,6 +56,10 @@ DEST_DIR="${DEST_DIR:-${RUN_DIR}/fastq/${SAMPLE}}"
 THREADS="${THREADS:-8}"
 BARCODE_DIR="${BARCODE_DIR:-${CELLRANGER_HOME:-/opt/cellranger}/lib/python/cellranger/barcodes}"
 ENA_API="${ENA_API:-https://www.ebi.ac.uk/ena/portal/api/filereport}"
+# A download or conversion is logged every POLL_SECONDS, and stopped once its output hasn't grown
+# for STALL_SECONDS.
+POLL_SECONDS="${POLL_SECONDS:-60}"
+STALL_SECONDS="${STALL_SECONDS:-1800}"
 
 if [[ ! "${SAMPLE}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ || "${SAMPLE}" == *__* ]]; then
   echo "ERROR: sample '${SAMPLE}' must be letters, digits, '_' or '-', at most 64, with no '__'" >&2
@@ -83,7 +87,10 @@ for acc in "${runs[@]}"; do
   seen["${acc}"]=1
 done
 
-claim-run-dir "${RUN_DIR}" "sra ${runs[*]}" || exit "${EXIT_BAD_INPUT}"
+if ! claim-run-dir "${RUN_DIR}" "sra ${runs[*]}"; then
+  echo "ERROR: couldn't prepare the run's folder ${RUN_DIR} on the shared disk; the lines above say why" >&2
+  exit "${EXIT_BAD_INPUT}"
+fi
 mkdir -p "${DEST_DIR}"
 if [ "$(cat "${DEST_DIR}/${MARKER}" 2>/dev/null)" = "$(printf '%s\n' "${runs[@]}")" ]; then
   echo "Already downloaded: ${DEST_DIR}/ holds ${runs[*]}"
@@ -91,6 +98,43 @@ if [ "$(cat "${DEST_DIR}/${MARKER}" 2>/dev/null)" = "$(printf '%s\n' "${runs[@]}
 fi
 # Where prefetch keeps each run's .sra while it is converted; removed once the run is done.
 sra_dir="${RUN_DIR}/sra"
+
+# Stops a process and everything it started.
+kill_tree() {
+  local child
+  for child in $(cat /proc/"$1"/task/*/children 2>/dev/null); do kill_tree "${child}"; done
+  kill "$1" 2>/dev/null || true
+}
+
+# Runs a command in the background while watching `path` grow: logs its size every POLL_SECONDS,
+# and stops it once the size hasn't changed for STALL_SECONDS. Takes a label, the path and the
+# command; returns the command's status, or 1 if it stalled.
+watched() {
+  local label="$1" path="$2" pid size last="" start="${SECONDS}" next="${POLL_SECONDS}" still=0
+  shift 2
+  "$@" &
+  pid=$!
+  while kill -0 "${pid}" 2>/dev/null; do
+    sleep 0.2
+    [ $((SECONDS - start)) -ge "${next}" ] || continue
+    next=$((next + POLL_SECONDS))
+    size="$(du -sk "${path}" 2>/dev/null | cut -f1)"
+    if [ "${size:-0}" != "${last}" ]; then
+      echo "${label}: ${size:-0} KB after $(((SECONDS - start) / 60)) min"
+      last="${size:-0}"
+      still=0
+    else
+      still=$((still + POLL_SECONDS))
+      if [ "${still}" -ge "${STALL_SECONDS}" ]; then
+        kill_tree "${pid}"
+        wait "${pid}" 2>/dev/null || true
+        echo "ERROR: ${label} stalled: ${path} hasn't grown for ${still}s, so it was stopped" >&2
+        return 1
+      fi
+    fi
+  done
+  wait "${pid}"
+}
 
 # A FASTQ's first reads, from a .fastq.gz file or URL, as plain text on stdout.
 first_reads() {
@@ -185,10 +229,10 @@ assign_roles() {
   for sampled in "${index[@]}"; do n=$((n + 1)); role["${sampled}"]="I${n}"; done
 }
 
-# Downloads a run from ENA as lane `lane` into `part`. Returns 1, having written nothing final,
+# Downloads a run from ENA into `part`. Returns 1, having written nothing final,
 # when ENA doesn't have usable files for it or a download doesn't check out.
 from_ena() {
-  local acc="$1" lane="$2" part="$3" report header row urls_col md5_col i url sampled got
+  local acc="$1" part="$2" report header row urls_col md5_col i url sampled got
   local -a urls=() md5s=() samples=()
   local -A url_of=() md5_of=()
   if ! report="$(curl -fsS --max-time "${ENA_TIMEOUT}" \
@@ -229,7 +273,8 @@ from_ena() {
   for sampled in "${samples[@]}"; do
     url="${url_of[${sampled}]}"
     echo "Downloading ${url} as ${role[${sampled}]}..."
-    if ! curl -fsS --retry 3 -o "${part}/${role[${sampled}]}.fastq.gz" "${url}"; then
+    if ! watched "Downloading ${url##*/}" "${part}/${role[${sampled}]}.fastq.gz" \
+        curl -fsS --retry 3 -o "${part}/${role[${sampled}]}.fastq.gz" "${url}"; then
       echo "Couldn't download ${url}; converting ${acc} from SRA"
       return 1
     fi
@@ -241,31 +286,51 @@ from_ena() {
   done
 }
 
-# Converts a run from SRA as lane `lane` into `part`: each read is compressed as it streams, so
-# nothing uncompressed is written. Exits 10 or 11 on failure.
+# Streams a run's .sra into one compressed file per read in `part`: fastq-dump's records come as
+# "@<acc>.<spot> <read>"; the read number picks the file, and only "@<acc>.<spot>" is written, so a
+# spot's reads share one name across R1, R2 and the index reads, as Cell Ranger requires. Each
+# pigz is closed and checked, so a file it couldn't finish fails the step.
+convert() {
+  local acc="$1" part="$2"
+  fastq-dump --split-spot --stdout --defline-seq '@$ac.$si $ri' --defline-qual '+' \
+      "${sra_dir}/${acc}" \
+    | awk -v dir="${part}" -v threads="${THREADS}" '
+        NR % 4 == 1 {
+          if (NF != 2 || $1 !~ /^@/ || $2 !~ /^[0-9]+$/) { print "bad record name: " $0 > "/dev/stderr"; failed = 1; exit }
+          cmd = "pigz -p " threads " > " dir "/read-" $2 ".fastq.gz"
+          read_of[cmd] = $2
+          print $1 | cmd
+          next
+        }
+        { print | cmd }
+        END {
+          for (c in read_of) {
+            status = close(c)
+            if (status != 0) {
+              print "ERROR: couldn'"'"'t write read " read_of[c] " (pigz exit " status "); is the shared disk full?" > "/dev/stderr"
+              failed = 1
+            }
+          }
+          exit failed
+        }'
+}
+
+# Converts a run from SRA into `part`: each read is compressed as it streams, so nothing
+# uncompressed is written. On failure it removes what it wrote and exits 10 or 11.
 from_sra() {
   local acc="$1" part="$2" fastq sampled
   local -a samples=()
   local -A fastq_of=()
   rm -rf "${sra_dir:?}/${acc}"
   mkdir -p "${sra_dir}"
-  if ! prefetch "${acc}" --max-size u --output-directory "${sra_dir}"; then
+  if ! watched "Downloading ${acc} from SRA" "${sra_dir}/${acc}" \
+      prefetch "${acc}" --max-size u --output-directory "${sra_dir}"; then
+    rm -rf -- "${part}" "${sra_dir:?}/${acc}"
     echo "ERROR: couldn't download ${acc} from SRA (unknown, withdrawn or not public?)" >&2
     exit "${EXIT_TRANSFER_FAILED}"
   fi
-  # Technical reads (the 10x barcode read) are kept. Each record comes as "@<acc>.<spot> <read>":
-  # the read number picks its file, and only "@<acc>.<spot>" is written, so a spot's reads share
-  # one name across R1, R2 and the index reads, as Cell Ranger requires.
-  if ! fastq-dump --split-spot --stdout --defline-seq '@$ac.$si $ri' --defline-qual '+' \
-      "${sra_dir}/${acc}" \
-    | awk -v dir="${part}" -v threads="${THREADS}" '
-        NR % 4 == 1 {
-          if (NF != 2 || $1 !~ /^@/ || $2 !~ /^[0-9]+$/) { print "bad record name: " $0 > "/dev/stderr"; exit 1 }
-          cmd = "pigz -p " threads " > " dir "/read-" $2 ".fastq.gz"
-          print $1 | cmd
-          next
-        }
-        { print | cmd }'; then
+  if ! watched "Converting ${acc}" "${part}" convert "${acc}" "${part}"; then
+    rm -rf -- "${part}" "${sra_dir:?}/${acc}"
     echo "ERROR: couldn't convert ${acc} to FASTQ" >&2
     exit "${EXIT_TRANSFER_FAILED}"
   fi
@@ -279,6 +344,7 @@ from_sra() {
   done
   shopt -u nullglob
   if ! assign_roles "${acc}" "${samples[@]}"; then
+    rm -rf -- "${part}"
     echo "ERROR: ${why}" >&2
     exit "${EXIT_READS_UNUSABLE}"
   fi
@@ -300,7 +366,7 @@ for acc in "${runs[@]}"; do
   rm -rf -- "${part}"
   mkdir -p "${part}"
   echo "Downloading ${acc} (lane L00${lane})..."
-  if ! from_ena "${acc}" "${lane}" "${part}"; then
+  if ! from_ena "${acc}" "${part}"; then
     rm -rf -- "${part}"
     mkdir -p "${part}"
     from_sra "${acc}" "${part}"

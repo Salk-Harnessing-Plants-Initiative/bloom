@@ -100,9 +100,8 @@ const LOAD_DATASET_EXIT_SENTENCES: Record<number, string> = {
 const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
   6: "The sample name or the SRA run IDs can't be used.",
   7: "The downloaded FASTQs couldn't be named the Illumina way.",
-  10: "A run couldn't be downloaded from SRA, or storage couldn't be checked. Start the run again; if it fails again, check the run IDs are public.",
+  10: "A run couldn't be downloaded from ENA or SRA; the Download from SRA step's log says why. Start the run again; if it fails again, check the run IDs are public.",
   11: "An SRA run's reads don't look like 10x gene-expression reads; the Download from SRA step's log says which run and why.",
-  12: "The sample's folder already holds other FASTQs; choose another sample name.",
 };
 
 // The stage step of a run that reads an S3 folder (stage-fastqs).
@@ -174,14 +173,16 @@ function stagedItsReference(run: RnaseqRun): boolean {
   return run.current_step === "stage-reference" || Boolean(field(run.step_pods, "stage-reference"));
 }
 
-/** The steps this run goes through: fetch-sra only when it imports from SRA, and the genome
- * steps, or stage-reference for an earlier run. */
+/** The steps this run goes through: fetch-sra when it imports from SRA, stage otherwise (or when
+ * an earlier SRA run staged its reads), and the genome steps, or stage-reference for an earlier run. */
 export function runSteps(run: RnaseqRun): (typeof CELLRANGER_STEPS)[number][] {
   const imports = runSraRuns(run).length > 0;
   const staged = stagedItsReference(run);
+  const stages = !imports || stepStarted(run, "stage");
   return CELLRANGER_STEPS.filter(
     (step) =>
       (step.id !== "fetch-sra" || imports) &&
+      (step.id !== "stage" || stages) &&
       (staged ? !GENOME_STEPS.has(step.id) : !RETIRED_STEPS.has(step.id))
   );
 }

@@ -215,7 +215,7 @@ def test_fetch_sra_runs_inside_the_pipeline_only_for_an_import():
 def test_the_reads_come_from_fetch_sra_or_stage_alongside_the_genome_steps():
     tasks, _ = _pipeline_tasks()
     assert tasks["fetch-sra"]["when"] == "'{{inputs.parameters.sra-runs}}' != ''"
-    assert tasks["stage"]["when"] == "'{{inputs.parameters.fastq-url}}' != ''"
+    assert tasks["stage"]["when"] == "'{{inputs.parameters.sra-runs}}' == ''"
     assert "depends" not in tasks["stage"] and "depends" not in tasks["fetch-sra"]
     # A skipped task counts as done, so qc follows whichever of the two ran.
     assert tasks["qc"]["depends"] == "fetch-sra && stage"

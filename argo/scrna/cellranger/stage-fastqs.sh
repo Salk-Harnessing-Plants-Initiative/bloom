@@ -37,13 +37,16 @@ WAIT_SECONDS="${WAIT_SECONDS:-600}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 
 if [ -z "${SAMPLE}" ] || [ -z "${DEST_DIR}" ] || [ -z "${FASTQ_URL}" ]; then
-  echo "ERROR: SAMPLE, DEST_DIR and FASTQ_URL are required" >&2
+  echo "ERROR: SAMPLE, DEST_DIR and FASTQ_URL are required: a run reads an S3 folder or SRA run IDs" >&2
   exit "${EXIT_BAD_INPUT}"
 fi
 
 # What this run's folder is built from, as one line.
 inputs="$(FASTQ_URL="${FASTQ_URL}" FASTQ_FILES="${FASTQ_FILES}" stage-fastqs-lib fingerprint)"
-claim-run-dir "${RUN_DIR}" "${inputs}" || exit "${EXIT_BAD_INPUT}"
+if ! claim-run-dir "${RUN_DIR}" "${inputs}"; then
+  echo "ERROR: couldn't prepare the run's folder ${RUN_DIR} on the shared disk; the lines above say why" >&2
+  exit "${EXIT_BAD_INPUT}"
+fi
 mkdir -p "${DEST_DIR}"
 
 bucket=""

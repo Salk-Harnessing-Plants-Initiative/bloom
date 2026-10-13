@@ -56,7 +56,13 @@ echo "prefetch $1" >> "${FAKE_LOG}"
 acc="$1"; shift
 while [ $# -gt 0 ]; do [ "$1" = --output-directory ] && out="$2"; shift; done
 case " ${FAKE_MISSING:-} " in *" ${acc} "*) echo "not found" >&2; exit 3 ;; esac
-mkdir -p "${out}/${acc}" && echo "sra" > "${out}/${acc}/${acc}.sra"
+mkdir -p "${out}/${acc}"
+# A download that stops making progress, or one that grows for a few seconds.
+[ -z "${FAKE_PREFETCH_HANG:-}" ] || { echo "part" > "${out}/${acc}/${acc}.sra.tmp"; exec sleep 60; }
+if [ -n "${FAKE_PREFETCH_SLOW:-}" ]; then
+  for i in 1 2 3; do head -c 8192 /dev/zero >> "${out}/${acc}/${acc}.sra.tmp"; sleep 1; done
+fi
+echo "sra" > "${out}/${acc}/${acc}.sra"
 """,
     # Names each record from --defline-seq, as the real tool does; its default otherwise. The run's
     # records are stored with "<acc> <spot> <read> <length>" as their first line.
@@ -75,7 +81,9 @@ awk -v fmt="${fmt}" 'NR % 4 == 1 {
     print h; next
   } { print }' "${FAKE_SRA}/${acc}.fastq"
 """,
+    # FAKE_PIGZ_FAIL: takes everything, then fails as on a full disk.
     "pigz": """#!/usr/bin/env bash
+[ -z "${FAKE_PIGZ_FAIL:-}" ] || { cat > /dev/null; exit 1; }
 gzip -c
 """,
     "curl": """#!/usr/bin/env bash
@@ -169,6 +177,13 @@ def dest(env, sample="s"):
 
 def fastqs(env, sample="s"):
     return sorted(p.name for p in dest(env, sample).glob("*.fastq.gz"))
+
+
+def nothing_left(env):
+    """No FASTQ anywhere in the run's folder, no part folder and no .sra."""
+    run_dir = Path(env["RUN_DIR"])
+    return (not list(run_dir.rglob("*.fastq.gz")) and not list(run_dir.rglob(".part-*"))
+            and not list(run_dir.rglob("*.sra")))
 
 
 def calls(env):
@@ -270,7 +285,7 @@ def test_reads_that_arent_10x_fail_with_11_and_leave_no_fastq(env, layout, messa
     result = fetch(env, "s", "SRR1000001")
     assert result.returncode == 11
     assert message in result.stderr
-    assert fastqs(env) == []
+    assert nothing_left(env)
 
 
 def test_two_long_reads_both_with_barcodes_are_refused(env, tmp_path):
@@ -287,7 +302,35 @@ def test_a_run_that_cant_be_downloaded_or_converted_fails_with_10(env, fail):
     env[fail] = "SRR1000001"
     result = fetch(env, "s", "SRR1000001")
     assert result.returncode == 10
-    assert fastqs(env) == []
+    assert nothing_left(env)
+
+
+def test_a_file_pigz_couldnt_finish_fails_the_step_with_10_and_says_so(env):
+    on_sra(env, "SRR1000001", "28,91")
+    env["FAKE_PIGZ_FAIL"] = "1"
+    result = fetch(env, "s", "SRR1000001")
+    assert result.returncode == 10
+    assert "couldn't write read 1 (pigz exit 1); is the shared disk full?" in result.stderr
+    assert nothing_left(env)
+    assert not (dest(env) / ".L001").exists(), "the lane isn't recorded as done"
+
+
+def test_a_download_that_stops_growing_is_stopped_and_fails_with_10(env):
+    on_sra(env, "SRR1000001", "28,91")
+    env.update(FAKE_PREFETCH_HANG="1", POLL_SECONDS="1", STALL_SECONDS="2")
+    result = fetch(env, "s", "SRR1000001")
+    assert result.returncode == 10
+    assert "Downloading SRR1000001 from SRA stalled" in result.stderr
+    assert "hasn't grown for 2s, so it was stopped" in result.stderr
+    assert nothing_left(env)
+
+
+def test_a_long_download_logs_its_progress(env):
+    on_sra(env, "SRR1000001", "28,91")
+    env.update(FAKE_PREFETCH_SLOW="1", POLL_SECONDS="1", STALL_SECONDS="5")
+    result = fetch(env, "s", "SRR1000001")
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"Downloading SRR1000001 from SRA: \d+ KB after 0 min", result.stdout)
 
 
 # --------------------------------------------------------------------------- #
@@ -311,6 +354,20 @@ def test_enas_untrimmed_r1_is_found_by_its_barcodes(env):
     assert first_read(dest(env) / "s_S1_L001_R1_001.fastq.gz").startswith(BARCODE)
 
 
+def test_enas_columns_are_read_by_name_not_position(env):
+    on_ena(env, "SRR1000001", "28,91")
+    row = Path(env["FAKE_ENA"]) / "SRR1000001.row"
+    acc, urls, md5s = row.read_text().rstrip("\n").split("\t")
+    row.write_text(f"{md5s}\t{acc}\t{urls}\n")
+    stub = Path(env["PATH"].split(":")[0]) / "curl"
+    stub.write_text(stub.read_text().replace(
+        "printf 'run_accession\\tfastq_ftp\\tfastq_md5\\n'",
+        "printf 'fastq_md5\\trun_accession\\tfastq_ftp\\n'"))
+    result = fetch(env, "s", "SRR1000001")
+    assert result.returncode == 0, result.stderr
+    assert not any(c.startswith("prefetch") for c in calls(env)), result.stdout
+
+
 @pytest.mark.parametrize(
     "setup, said",
     [
@@ -320,8 +377,10 @@ def test_enas_untrimmed_r1_is_found_by_its_barcodes(env):
             env, "SRR1000001", "28,91"), "doesn't match ENA's MD5"),
         (lambda env: env.update(FAKE_ENA_DOWN="1"), "ENA couldn't be asked"),
         (lambda env: None, "ENA has no FASTQs"),
+        (lambda env: (Path(env["FAKE_ENA"]) / "SRR1000001.row").write_text("SRR1000001\t\t\n"),
+         "ENA has 0 FASTQ(s)"),
     ],
-    ids=["one-file", "no-barcode-read", "md5-mismatch", "unreachable", "not-on-ena"],
+    ids=["one-file", "no-barcode-read", "md5-mismatch", "unreachable", "not-on-ena", "bam-only"],
 )
 def test_otherwise_the_run_is_converted_from_sra(env, setup, said):
     on_sra(env, "SRR1000001", "28,91")
@@ -415,6 +474,19 @@ def test_the_image_installs_it_with_fastq_dump_and_claim_run_dir():
     assert "COPY cellranger/fetch-sra.sh /usr/local/bin/fetch-sra" in dockerfile
     assert "COPY cellranger/claim-run-dir.sh /usr/local/bin/claim-run-dir" in dockerfile
     assert re.search(r"for tool in [^;]*\bfastq-dump\b", dockerfile)
+
+
+def test_exactly_one_of_fetch_sra_and_stage_runs_chosen_by_the_run_ids():
+    import yaml
+
+    for path, ref in [(CELLRANGER / "cellranger-count-template.yaml", "inputs"),
+                      (CELLRANGER.parent / "fastq_qc/fastq-qc-workflow.yaml", "workflow")]:
+        doc = yaml.safe_load(path.read_text())
+        dag = next(t["dag"] for t in doc["spec"]["templates"] if "dag" in t
+                   and any(task["name"] == "stage" for task in t["dag"]["tasks"]))
+        when = {t["name"]: t.get("when") for t in dag["tasks"]}
+        assert when["fetch-sra"] == f"'{{{{{ref}.parameters.sra-runs}}}}' != ''", path
+        assert when["stage"] == f"'{{{{{ref}.parameters.sra-runs}}}}' == ''", path
 
 
 def test_the_template_runs_it_into_the_runs_folder_without_s3_keys():

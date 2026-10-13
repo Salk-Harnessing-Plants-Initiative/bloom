@@ -96,10 +96,11 @@ spec:
                   value: "{{inputs.parameters.sra-runs}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
-          # An S3 folder run's reads; an SRA run's are downloaded by fetch-sra instead.
+          # Exactly one of fetch-sra and stage runs, chosen by sra-runs: a run with SRA run IDs
+          # downloads them, any other is staged from its S3 folder (and refused without one).
           - name: stage
             template: stage-sample
-            when: "'{{inputs.parameters.fastq-url}}' != ''"
+            when: "'{{inputs.parameters.sra-runs}}' == ''"
             arguments:
               parameters:
                 - name: sample

@@ -3,8 +3,9 @@
 #     -p sra-runs=SRR28503597,SRR28503598
 #   argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p sample=col0 \
 #     -p fastq-url=s3://bucket/folder/ -p fastq-files='[{"name": ..., "size": ..., "etag": ...}]'
-# The reads are fetched into /shared/runs/qc-<workflow name>/ with the run template's own steps,
-# QC'd there, then deleted; the report stays in qc/ beside them. Nothing goes to S3.
+# The reads are fetched into /shared/runs/qc-<workflow name>/ with the run template's own steps and
+# QC'd there; the report stays in qc/. However the workflow ends, its reads and .sra are deleted.
+# Nothing goes to S3.
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
@@ -14,6 +15,7 @@ metadata:
     project: busch-lab
 spec:
   entrypoint: main
+  onExit: delete-reads
   serviceAccountName: bloom-workflow
   imagePullSecrets:
     - name: dockerregistry-bloom-ghcr-pull   # from the busch-lab Run:ai credential bloom-ghcr-pull
@@ -55,7 +57,7 @@ spec:
             templateRef:
               name: cellranger-count-template
               template: stage-sample
-            when: "'{{workflow.parameters.fastq-url}}' != ''"
+            when: "'{{workflow.parameters.sra-runs}}' == ''"
             arguments:
               parameters:
                 - name: sample
@@ -77,11 +79,6 @@ spec:
                   value: "{{workflow.parameters.sample}}"
                 - name: run-id
                   value: "qc-{{workflow.name}}"
-          # Whatever QC found; the report is kept.
-          - name: delete-reads
-            template: delete-reads
-            depends: qc.Succeeded || qc.Failed
-
     - name: delete-reads
       schedulerName: runai-scheduler
       priorityClassName: high
