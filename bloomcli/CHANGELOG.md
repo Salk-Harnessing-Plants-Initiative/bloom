@@ -8,6 +8,17 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a13] - 2026-10-12 — each cluster's differential expression
+
+### Added
+
+- `scrna hdf5 upload --de-key KEY` loads a one-vs-rest differential expression from the file's
+  `uns[KEY]` (scanpy's `rank_genes_groups`, each `--annotation` cluster against the rest) with
+  the dataset: one DE run, a comparison per cluster, every tested gene, and each cluster's
+  size, centre and top markers, so the expression page's cluster panel and Genes tab are
+  filled. It is refused unless it compares the annotation's clusters with the rest; a stopped
+  load continues it. The pipeline passes `--de-key de`.
+
 ## [0.1.0a12] - 2026-10-12 — reference genomes: upload, list and download
 
 ### Added

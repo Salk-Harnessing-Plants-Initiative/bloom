@@ -19,9 +19,9 @@ Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative)
 Releases are still pre-releases (`0.1.0aN`), so install by **asking for the version by name**:
 
 ```bash
-uv tool install "bloomctl==0.1.0a12"   # isolated CLI tool (recommended)
-uvx bloomctl@0.1.0a12 --help           # one-off, no install
-pip install "bloomctl==0.1.0a12"       # into the active environment
+uv tool install "bloomctl==0.1.0a13"   # isolated CLI tool (recommended)
+uvx bloomctl@0.1.0a13 --help           # one-off, no install
+pip install "bloomctl==0.1.0a13"       # into the active environment
 ```
 
 Check it worked:
@@ -208,6 +208,9 @@ bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored
   in `obs['sample']` (or name the column with `--sample-column`), and an `uns['normalization']`
   block saying how `X` was made, e.g. `transform: log1p`, `scaling: library_size`,
   `target_sum: 10000`.
+- `--de-key KEY` also loads a one-vs-rest differential expression from `uns[KEY]` (scanpy's
+  `rank_genes_groups`, each `--annotation` cluster against the rest), which fills each
+  cluster's marker genes in the explorer.
 - `download` writes the file only once its fingerprint matches.
 
 ### Single-cell commands

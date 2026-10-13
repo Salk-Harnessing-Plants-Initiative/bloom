@@ -19,6 +19,7 @@ from ..credentials import DEFAULT_PROFILE
 from . import (
     _cells,
     _counts,
+    _de,
     _format,
     _genes,
     _load,
@@ -66,6 +67,10 @@ from ._text import visible
               help="The RNA-seq run this load is for, recorded on the dataset so the run is "
                    "linked to it; a dataset started for another run is refused. Set by the "
                    "pipeline.")
+@click.option("--de-key", metavar="KEY",
+              help="The uns key holding a one-vs-rest differential expression (scanpy's "
+                   "rank_genes_groups, each --annotation cluster against the rest), loaded with "
+                   "the dataset: each cluster's marker genes and statistics. Set by the pipeline.")
 @click.option("--add-labels", is_flag=True,
               help="Add genotypes, labels and sources to a dataset already loaded from this "
                    "file, keeping those it has; not with --create.")
@@ -99,6 +104,8 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
     summary = _checked(file, opts["umap_key"])
     cells, genotypes = _refused_unsent(lambda: _read(file, options, opts))
     genes = None if opts["add_labels"] else _refused_unsent(lambda: _genes_of(file, opts))
+    de = (_refused_unsent(lambda: _de.read(file, opts["de_key"], options["annotation"], cells))
+          if opts["de_key"] else None)
     species_id, species = _records.species(conn.client, opts["species"])
     stage = _object.staging_dir()
     writer = _writer.Writer(
@@ -122,13 +129,15 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
         plan = _refused_unsent(lambda: _load.plan(
             writer, opts["name"], species_id, cells, staged.fingerprint, options,
             create=opts["create"], add_labels=opts["add_labels"], species=species,
-            counts=None if genes is None else (file, genes), run_id=opts["run_id"]))
+            counts=None if genes is None else (file, genes), run_id=opts["run_id"], de=de))
         _show(_summary.describe(summary, file.name, recorded_on=recorded_on))
         _show(_summary.describe_load(cells, _dataset_text(plan, opts, species), genotypes,
                                      tuple(options["facets"] or ()),
                                      units=options["expression_units"],
                                      checked=_genes.parse_expectations(opts["expect_nonzero"]),
                                      counts=_counts_text(plan, opts)))
+        if de is not None and plan.outcome in ("register", "resume"):
+            _show([f"Differential expression: {_de.describe(de)}"])
         if dry_run:
             click.echo("Dry run — every check passed. Nothing was sent or written.")
             raise click.exceptions.Exit(0)
@@ -145,7 +154,7 @@ def upload(file: Path, profile: str, yes: bool, dry_run: bool, **opts: Any) -> N
                                   on_progress=update)
     _write(writer, opts, species_id, species, cells, staged.fingerprint, options, normalization,
            None if genes is None else (file, genes), _unchanged_since(file, read_from),
-           plan.genes)
+           plan.genes, de)
 
 
 def _options(opts: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +171,9 @@ def _options(opts: dict[str, Any]) -> dict[str, Any]:
         raise click.UsageError("--add-labels adds to a loaded dataset; it cannot --create one.")
     if opts["add_labels"] and opts["run_id"]:
         raise click.UsageError("--run-id is for loading a run's dataset, not --add-labels.")
+    if opts["add_labels"] and opts["de_key"]:
+        raise click.UsageError("--de-key loads differential expression with a dataset's cells, "
+                               "not with --add-labels.")
     try:
         constructs = _cells.parse_constructs(opts["construct"])
         _genes.parse_expectations(opts["expect_nonzero"])
@@ -288,7 +300,8 @@ def _question(plan: _load.Plan, name: str) -> str:
 
 
 def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint: str,
-           options, normalization: dict | None, counts, unchanged, genes: int) -> None:
+           options, normalization: dict | None, counts, unchanged, genes: int,
+           de: _de.Result | None = None) -> None:
     """Load the cells and counts, or add the labels, now that the file is stored."""
     name = opts["name"].strip()
     try:
@@ -303,7 +316,7 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
                     writer, name, species_id, cells, fingerprint, options,
                     create=opts["create"], species=species, normalization=normalization,
                     counts=counts, track=_progress.track, unchanged=unchanged,
-                    run_id=opts["run_id"])
+                    run_id=opts["run_id"], de=de)
     except _writer.LoadError as exc:
         raise click.ClickException(
             f"the file is stored, but loading it stopped: {visible(str(exc))}") from exc

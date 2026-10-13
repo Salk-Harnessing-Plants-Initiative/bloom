@@ -12,7 +12,9 @@ Jsonb = psycopg.types.json.Jsonb
 LINK = "public.link_rnaseq_run_dataset(bigint, bigint)"
 MAY_LOAD = "public.workflows_may_load_scrna_dataset(bigint)"
 CHILD_TABLES = ["scrna_clusters", "scrna_genotypes", "scrna_cells", "scrna_genes", "scrna_counts"]
-READ_ONLY_TABLES = ["species", "scrna_cluster_stats", "scrna_cluster_neighbors", "scrna_de"]
+# The default differential expression and cluster statistics the load adds (20261012230000).
+DE_TABLES = ["scrna_de_runs", "scrna_de", "scrna_de_genes", "scrna_cluster_stats"]
+READ_ONLY_TABLES = ["species", "scrna_cluster_neighbors"]
 
 
 def user(cur, workflows=False):
@@ -94,6 +96,39 @@ def fill(cur, dataset_id):
         "INSERT INTO public.scrna_counts (dataset_id, gene_id, counts_object_path) "
         "VALUES (%s, %s, 'counts/any_1_/AT1G01010.json')",
         (dataset_id, gene),
+    )
+
+
+def add_de(cur, dataset_id):
+    """The load's DE writes, as the signed-in account: one run, cluster 0 against the rest, one
+    gene, and cluster 0's statistics. Needs fill()'s cluster and gene."""
+    cur.execute(
+        "INSERT INTO public.scrna_de_runs (dataset_id, source, status, method, params_hash, "
+        "completed_at) VALUES (%s, 'batch', 'complete', 'scanpy-wilcoxon-one-vs-rest', %s, now()) "
+        "RETURNING id",
+        (dataset_id, "b" * 64),
+    )
+    run_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO public.scrna_de (dataset_id, run_id, cluster_id, contrast, group1, group2, "
+        "group_kind, method, params_hash, tested, n_genes_tested) "
+        "VALUES (%s, %s, '0', '0_vs_rest', '0', 'rest', 'cluster', "
+        "'scanpy-wilcoxon-one-vs-rest', %s, true, 1) RETURNING id",
+        (dataset_id, run_id, "b" * 64),
+    )
+    de_id = cur.fetchone()[0]
+    cur.execute("SELECT id FROM public.scrna_genes WHERE dataset_id = %s", (dataset_id,))
+    gene = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO public.scrna_de_genes (de_id, dataset_id, gene_id, log2fc, pvalue, fdr, "
+        "pct_1, pct_2) VALUES (%s, %s, %s, 2.5, 0.001, 0.01, 0.9, 0.1)",
+        (de_id, dataset_id, gene),
+    )
+    cur.execute(
+        "INSERT INTO public.scrna_cluster_stats (dataset_id, cluster_id, cell_count, pct, markers) "
+        "VALUES (%s, '0', 1, 100, %s)",
+        (dataset_id, Jsonb({"top": [{"gene": "AT1G01010", "log2fc": 2.5, "q": 0.01}],
+                           "n_significant": 1})),
     )
 
 
