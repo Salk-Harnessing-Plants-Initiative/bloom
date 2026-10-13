@@ -1,6 +1,6 @@
 """Unit tests for importing a Cell Ranger run's sample from SRA: the start API's sra_runs and
 the database's refusals, fetch-sra in the Workflow body, the new steps and exit messages in
-the status reader, and the poller registering the sample. No database or cluster."""
+the status reader, and the poller registering nothing. No database or cluster."""
 
 from pathlib import Path
 
@@ -89,10 +89,15 @@ def test_run_ids_are_passed_to_the_database_in_order(db):
     assert started["sra_runs"] == ["SRR28503598", "SRR28503597"]
 
 
-def test_a_run_without_run_ids_sends_none(db):
-    started = _start()
-    assert "p_sra_runs" not in db.rpcs[0][1]
-    assert "sra_runs" not in started
+def test_a_sample_name_alone_is_refused_before_the_database(db):
+    with pytest.raises(HTTPException) as refused:
+        _start()
+    assert refused.value.status_code == 422
+    assert (
+        refused.value.detail
+        == "give an S3 folder or SRA run IDs to read the sample from"
+    )
+    assert db.rpcs == []
 
 
 @pytest.mark.parametrize(
@@ -148,7 +153,7 @@ def test_any_other_database_error_is_not_hidden(db):
         {"code": "42501", "message": "denied"}
     )
     with pytest.raises(APIError):
-        _start()
+        _start(sra_runs=RUNS)
 
 
 # --------------------------------------------------------------------------- #
@@ -207,9 +212,13 @@ def test_fetch_sra_runs_inside_the_pipeline_only_for_an_import():
     assert "depends" not in tasks["fetch-sra"]
 
 
-def test_the_reads_wait_for_fetch_sra_while_the_genome_steps_dont():
+def test_the_reads_come_from_fetch_sra_or_stage_alongside_the_genome_steps():
     tasks, _ = _pipeline_tasks()
-    assert tasks["stage"]["depends"] == "fetch-sra", "a skipped fetch-sra lets it start"
+    assert tasks["fetch-sra"]["when"] == "'{{inputs.parameters.sra-runs}}' != ''"
+    assert tasks["stage"]["when"] == "'{{inputs.parameters.fastq-url}}' != ''"
+    assert "depends" not in tasks["stage"] and "depends" not in tasks["fetch-sra"]
+    # A skipped task counts as done, so qc follows whichever of the two ran.
+    assert tasks["qc"]["depends"] == "fetch-sra && stage"
     assert "depends" not in tasks["download-genome"]
     assert tasks["count"]["depends"] == "qc && build-reference"
 
@@ -238,8 +247,17 @@ def test_the_pipeline_declares_the_run_ids_empty_by_default():
     assert declared["sra-runs"] == ""
 
 
-def test_a_run_without_run_ids_has_no_download(k8s):
-    run = {**RUN, "params": {"sample": "root_tip", "reference": "athaliana_col0.v2"}}
+def test_a_folder_run_has_no_download(k8s):
+    files = [{"name": "root_tip_S1_L001_R1_001.fastq.gz", "size": 1, "etag": '"e"'}]
+    run = {
+        **RUN,
+        "params": {
+            "sample": "root_tip",
+            "reference": "athaliana_col0.v2",
+            "fastq_url": "s3://lab-data/run42/",
+            "fastq_files": files,
+        },
+    }
     body = rnaseq_workflows.build_cellranger_body(run)
     assert list(_tasks(body)) == ["sample"]
     assert "depends" not in _tasks(body)["sample"]
@@ -282,9 +300,6 @@ def _workflow(phase, *nodes):
     }
 
 
-DOWNLOADED = {"fastq-count": "6", "total-bytes": "11902105823"}
-
-
 def test_an_import_reports_fetch_sra_while_it_runs():
     wf = _workflow(
         "Running",
@@ -306,9 +321,8 @@ def test_the_analysis_steps_are_reported(step):
     [
         (6, "or SRA run IDs SRR28503597, SRR28503598 can't be used"),
         (7, "couldn't be named the Illumina way"),
-        (10, "Couldn't download SRR28503597, SRR28503598 from SRA"),
+        (10, "Couldn't download SRR28503597, SRR28503598 from ENA or SRA"),
         (11, "don't look like 10x gene-expression reads"),
-        (12, "raw_reads/root_tip/ already holds other FASTQs"),
     ],
 )
 def test_a_failed_download_says_why(code, text):
@@ -350,27 +364,17 @@ def test_count_exits_keep_their_meaning_outside_the_download():
     )
 
 
-def test_the_download_reports_its_counts_once_it_succeeds():
-    running = _workflow(
-        "Running", _node("fetch-sra", "Running", "2026-09-30T01:00:00Z", 2)
-    )
-    done = _workflow(
-        "Running",
-        _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2, outputs=DOWNLOADED),
-    )
-    assert st.sra_download(running) is None
-    assert st.sra_download(done) == (6, 11_902_105_823)
-
-
-def test_a_download_without_its_counts_reports_none():
+def test_the_retired_folder_taken_exit_has_no_message_of_its_own():
     wf = _workflow(
-        "Running", _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2)
+        "Failed", _node("fetch-sra", "Failed", "2026-09-30T01:00:01Z", 2, exit_code=12)
     )
-    assert st.sra_download(wf) is None
+    assert (
+        st.read_cellranger_status(wf, RUN).message == "Step fetch-sra failed (exit 12)"
+    )
 
 
 # --------------------------------------------------------------------------- #
-# The poller registering the sample
+# The poller registers nothing
 # --------------------------------------------------------------------------- #
 
 ROW = {
@@ -381,93 +385,15 @@ ROW = {
     "status": "running",
     "argo_workflow_name": WF,
 }
-AFTER_DOWNLOAD = _workflow(
-    "Running",
-    _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2, outputs=DOWNLOADED),
-    _node("count", "Running", "2026-09-30T01:40:00Z", 5),
-)
 
 
-@pytest.fixture(autouse=True)
-def _fresh_poller():
-    poller._registered.clear()
-    yield
-    poller._registered.clear()
-
-
-def _poll(monkeypatch, workflow, row=ROW, client=None):
-    client = client or FakeClient(result=True)
-    monkeypatch.setattr(poller, "get_workflow", lambda name: workflow)
-    poller.poll_run(client, row)
-    return client
-
-
-def _registrations(client):
-    return [params for name, params in client.rpcs if name == "register_rnaseq_sample"]
-
-
-def test_the_sample_is_registered_once_the_download_succeeds(monkeypatch):
-    client = _poll(monkeypatch, AFTER_DOWNLOAD)
-    assert [name for name, _ in client.rpcs] == [
-        "update_rnaseq_run_status",
-        "register_rnaseq_sample",
-    ]
-    assert _registrations(client) == [
-        {"p_run_id": 42, "p_fastq_count": 6, "p_total_bytes": 11_902_105_823}
-    ]
-
-
-def test_it_is_registered_only_once_by_this_poller(monkeypatch):
-    client = _poll(monkeypatch, AFTER_DOWNLOAD)
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    assert len(_registrations(client)) == 1
-
-
-def test_nothing_is_registered_while_the_download_runs(monkeypatch):
-    wf = _workflow("Running", _node("fetch-sra", "Running", "2026-09-30T01:00:00Z", 2))
-    assert _registrations(_poll(monkeypatch, wf)) == []
-
-
-def test_a_failed_run_registers_nothing(monkeypatch):
+def test_a_finished_download_registers_no_sample(monkeypatch):
     wf = _workflow(
-        "Failed",
-        _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2, outputs=DOWNLOADED),
-        _node("count", "Failed", "2026-09-30T01:40:00Z", 5, exit_code=5),
+        "Running",
+        _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2),
+        _node("count", "Running", "2026-09-30T01:40:00Z", 5),
     )
-    assert _registrations(_poll(monkeypatch, wf)) == []
-
-
-def test_a_run_without_run_ids_registers_nothing(monkeypatch):
-    row = {**ROW, "params": {"sample": "tinygex", "reference": "tiny_ref"}}
-    assert _registrations(_poll(monkeypatch, AFTER_DOWNLOAD, row=row)) == []
-
-
-def test_a_taken_name_is_logged_once_and_not_retried(monkeypatch, caplog):
-    client = FakeClient(
-        result=True,
-        errors={
-            "register_rnaseq_sample": APIError(
-                {"code": "23505", "message": "already registered"}
-            )
-        },
-    )
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    assert len(_registrations(client)) == 1
-    assert "was not registered: already registered" in caplog.text
-
-
-def test_another_registration_error_is_retried_on_the_next_poll(monkeypatch):
-    client = FakeClient(
-        result=True,
-        errors={
-            "register_rnaseq_sample": APIError(
-                {"code": "08006", "message": "connection lost"}
-            )
-        },
-    )
-    with pytest.raises(APIError):
-        _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    del client.errors["register_rnaseq_sample"]
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    assert len(_registrations(client)) == 2
+    client = FakeClient(result=True)
+    monkeypatch.setattr(poller, "get_workflow", lambda name: wf)
+    poller.poll_run(client, ROW)
+    assert [name for name, _ in client.rpcs] == ["update_rnaseq_run_status"]

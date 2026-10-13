@@ -24,6 +24,7 @@ def env(tmp_path):
     aws.chmod(aws.stat().st_mode | stat.S_IEXEC)
     (bin_dir / "fastq-sample-prefix").symlink_to(stage.CELLRANGER / "fastq-sample-prefix.sh")
     (bin_dir / "stage-fastqs-lib").symlink_to(stage.CELLRANGER / "stage_fastqs_lib.py")
+    (bin_dir / "claim-run-dir").symlink_to(stage.CELLRANGER / "claim-run-dir.sh")
     s3 = tmp_path / "s3"
     s3.mkdir()
     return {

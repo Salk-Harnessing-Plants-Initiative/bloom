@@ -1,18 +1,17 @@
 # scRNA: Cell Ranger on Run:ai
 
-Runs `cellranger count` on 10x reads stored in S3, as Argo workflows in the `runai-busch-lab` namespace.
+Runs `cellranger count` on 10x reads from an S3 folder or from SRA, as Argo workflows in the `runai-busch-lab` namespace.
 
 ## Files
 
 ```
 argo/scrna/
-├── Dockerfile                  one image for both steps: Cell Ranger, FastQC, AWS CLI, Python, run-count, run-qc
+├── Dockerfile                  one image for the read and count steps: Cell Ranger, FastQC, sra-tools, AWS CLI, Python, run-count, run-qc
 ├── fastq_qc/                   run first: check the FASTQs and guess the chemistry
 │   ├── fastq_qc.py             installed as fastq-qc
 │   ├── qc_report.py            installed as qc-report: writes README.md for the QC folder
-│   ├── run-qc.sh               installed as run-qc: downloads one sample, runs fastq-qc and FastQC; the QC-only workflow uploads the report
-│   ├── fastq-qc-template.yaml  WorkflowTemplate with the fastq-qc step
-│   └── fastq-qc-workflow.yaml  QC only, for a list of samples: a quick look before counting
+│   ├── run-qc.sh               installed as run-qc: runs fastq-qc and FastQC on reads already in the run's folder
+│   └── fastq-qc-workflow.yaml  QC only, for one sample: a quick look before counting, with the Cell Ranger template's steps
 ├── analysis/                   after count: scanpy steps, in their own image
 │   ├── Dockerfile              scrna-analysis image: Python, scanpy, leidenalg
 │   ├── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, de, build-h5ad
@@ -20,41 +19,38 @@ argo/scrna/
 │   └── load-dataset.sh         installed as load-dataset: loads the final .h5ad into Bloom with bloomctl
 └── cellranger/                 then: cellranger count
     ├── run-count.sh            installed as run-count: cellranger count on one sample's staged reads
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside [fetch-sra →] stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → cleanup), testrun
+    ├── fetch-sra.sh            installed as fetch-sra: an SRA run's reads into the run's folder, from ENA or SRA
+    ├── stage-fastqs.sh         installed as stage-fastqs: an S3 folder run's reads into the run's folder
+    ├── claim-run-dir.sh        installed as claim-run-dir: makes the run's folder this run's own before either writes to it
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside fetch-sra or stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → cleanup), testrun
     ├── cellranger-count-workflow.yaml   a run started by hand: the sample pipeline for a list of samples on one genome version, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 ```
 
 ## S3 layout
 
-Bucket `bloomv2-workflows` (us-west-2):
-
-| Prefix | Job access |
-|---|---|
-| `raw_reads/<sample>/` | read. FASTQs in Illumina naming, `<prefix>_S<n>_L<lane>_R1_001.fastq.gz` (barcode and UMI) and `…_R2_001.fastq.gz` (cDNA) for every lane, compressed or plain `.fastq`; `I1`/`I2` optional. The prefix is everything before `_S<n>_L<lane>_…` and can differ from the folder name |
-| `runs_output/<run-id>/` | write, by the QC-only workflow only (`qc/`). The count workflow writes no results to S3; its result goes into Bloom |
+Nothing in the pipeline writes to S3, and it reads only one thing there: an S3 folder run's FASTQs, from the scientist's own folder (below). SRA reads come from ENA or SRA, the genome from Bloom, and the result goes into Bloom. FASTQs are in Illumina naming, `<prefix>_S<n>_L<lane>_R1_001.fastq.gz` (barcode and UMI) and `…_R2_001.fastq.gz` (cDNA) for every lane, compressed or plain `.fastq`; `I1`/`I2` optional. The prefix is everything before `_S<n>_L<lane>_…` and can differ from the sample name.
 
 `run-count` exits straight away if the run's folder already holds its `outs/_SUCCESS`. Nothing from the count workflow reaches S3: Cell Ranger runs without a BAM, and its web summary, raw matrix and QC report are deleted with the run's folder. Its metrics go into the final file. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
 
-The FASTQs' prefix is read from their names by `fastq-sample-prefix` and passed to Cell Ranger as `--sample`, so files keep the names the sequencer or core gave them (e.g. `L007-259_S1_L002_R1_001.fastq.gz` under `raw_reads/root_rep1/`). Several prefixes in one folder are counted together as one sample. A `.fastq.gz` or `.fastq` not named that way, or a lane without both R1 and R2, fails the stage step with exit 7 and a message listing the files, before QC and count run. Setting `FASTQ_SAMPLE` overrides the detected prefix.
+The FASTQs' prefix is read from their names by `fastq-sample-prefix` and passed to Cell Ranger as `--sample`, so files keep the names the sequencer or core gave them (e.g. `L007-259_S1_L002_R1_001.fastq.gz` in a folder for `root_rep1`). Several prefixes in one folder are counted together as one sample. A `.fastq.gz` or `.fastq` not named that way, or a lane without both R1 and R2, fails the stage step with exit 7 and a message listing the files, before QC and count run. Setting `FASTQ_SAMPLE` overrides the detected prefix.
 
-A run can instead read its FASTQs from any S3 folder, given as the sample pipeline's `fastq-url` (`s3://<bucket>/<folder>/`) with `fastq-files`, the JSON list of each file's name, size and ETag recorded when the run was started. The stage step (`stage-fastqs` in the image):
+A run reads its FASTQs from an S3 folder, given as the sample pipeline's `fastq-url` (`s3://<bucket>/<folder>/`) with `fastq-files`, the JSON list of each file's name, size and ETag recorded when the run was started. The stage step (`stage-fastqs` in the image):
 - lists the folder anonymously, as the start API checked it. If that's refused (a private folder shared with Bloom), it lists, copies and checks every file signed with the step's `AWS_*` key instead: `bloomv2-workflows-job`, whose policy reads another account's bucket only where its owner granted it. It then compares the listing with `fastq-files`. Only `.fastq`/`.fastq.gz` files directly in the folder count. Other files and subfolders are left alone;
 - waits up to 10 minutes, checking every 30 s, while the folder holds no FASTQ or only some of the files, in case an upload is still finishing; The start API saw the whole folder when the run was started, so in practice the wait covers a folder deleted and re-uploaded in the meantime. A file re-uploaded with different contents has a new ETag and fails at once, and a deleted file only fails once the wait is over. The JSON handling (comparing the listing, checking the file list) is `stage-fastqs-lib` (`stage_fastqs_lib.py`) in the image;
 - fails with exit 8, before copying anything, if a file was added, resized or replaced (its ETag differs) since the run was started, or one is still missing after the wait. It fails with exit 9, also before copying, if the recorded FASTQs are named for another sample;
 - copies exactly those files onto `/shared/runs/<run-id>/fastq/<sample>/` and writes nothing to S3. Cleanup deletes them with the run's folder. Each copy is then checked: it must have the recorded size, and the object the recorded ETag (`head-object --if-match`). A file replaced while it was being copied fails with exit 8, and its copy is removed.
 
-The run's folder is named by its run key, which a new run can reuse after a failed one. So the stage step records what the folder was built from in `/shared/runs/<run-id>/.inputs`, whatever the source. A retry on the same inputs keeps the folder and resumes. Otherwise the old FASTQs are deleted and the rest of the folder, its logs and Cell Ranger's errors, is moved to `/shared/runs/<run-id>.failed-<time>/` for debugging, so none of an earlier run's reads or results are taken for this run's. `sra/`, which fetch-sra writes earlier in the same run, stays.
+The run's folder is named by its run key, which a new run can reuse after a failed one. So whichever step gets the reads (stage or fetch-sra) first claims the folder with `claim-run-dir`, which records what it was built from in `/shared/runs/<run-id>/.inputs`. A retry on the same inputs keeps the folder and resumes. Otherwise the old FASTQs are deleted and the rest of the folder, its logs and Cell Ranger's errors, is moved to `/shared/runs/<run-id>.failed-<time>/` for debugging, so none of an earlier run's reads or results are taken for this run's.
 
-A folder still empty after the wait fails with exit 4. A malformed `fastq-url` or `fastq-files` fails with exit 6, and a listing or copy that fails (a network or permission error) with exit 10, which is retried. Without `fastq-url`, the step reads `raw_reads/<sample>/` as above.
+A folder still empty after the wait fails with exit 4. A malformed `fastq-url` or `fastq-files` fails with exit 6, and a listing or copy that fails (a network or permission error) with exit 10, which is retried. The step runs only for a folder run; without `fastq-url` it refuses with exit 6.
 
-A run can also import its sample from SRA. The template's `fetch-sra` step (`fetch-sra` in the image) takes 1 to 9 run accessions, separated by commas, spaces or newlines, and:
-- downloads each run accession with `prefetch` and `fasterq-dump --split-files --include-technical`, so 10x's barcode read, which SRA stores as a technical read, is kept;
-- tells the reads apart by length: 6–12 bp is I1 then I2; of the two longer reads, a 26–28 bp one is R1 and the other R2. If both are longer than 28 bp (R1 left untrimmed, e.g. a 2×150 run), R1 is the one whose first 16 bases are on a 10x barcode list in the image, for at least half of 4,000 sampled reads;
-- writes them to `raw_reads/<sample>/` as `<sample>_S1_L00<n>_<read>_001.fastq.gz`, one lane per run in the order given, and writes a `.sra-runs` marker last;
-- outputs the folder's FASTQ count and total bytes.
+A run can instead import its sample from SRA. The template's `fetch-sra` step (`fetch-sra` in the image) takes 1 to 9 run accessions, separated by commas, spaces or newlines, and downloads them straight into the run's folder, `/shared/runs/<run-id>/fastq/<sample>/`, as `<sample>_S1_L00<n>_<read>_001.fastq.gz`, one lane per run in the order given. Nothing is written to S3, the step holds no AWS key, and no uncompressed FASTQ is written anywhere. For each run it:
+- asks ENA for the run's `.fastq.gz` files. If there are at least two, it reads the first 4,000 reads of each (without downloading the rest) to tell them apart, downloads them, and checks each against ENA's MD5;
+- otherwise, or if ENA can't be reached, its files aren't one 10x library's, or a download doesn't check out, converts the run from SRA: `prefetch` downloads the `.sra` (compressed) into the run's folder, and `fastq-dump --split-spot --stdout` streams it, technical reads included (10x's barcode read is one), split by read and compressed by `pigz` as it goes. The `.sra` is deleted once the run is done;
+- tells the reads apart by length: 6–12 bp is I1 then I2; of the two longer reads, a 26–28 bp one is R1 and the other R2. If both are longer than 28 bp (R1 left untrimmed, e.g. a 2×150 run), R1 is the one whose first 16 bases are on a 10x barcode list in the image, for at least half of 4,000 sampled reads.
 
-A folder whose marker lists the same runs is left as it is, so a retry doesn't download again. A folder holding other FASTQs is refused (exit 12). A run without a barcode read or a cDNA read, e.g. one submitted only as a BAM, fails with exit 11. A run that can't be downloaded, or an S3 folder that can't be checked (a network or permission error), fails with exit 10 and is retried once; nothing is uploaded, so the run can simply be started again. Uncompressed FASTQs are about 7 times the size of the compressed ones, so one 12 GB run needs about 90 GB of scratch space under `/shared/runs/<run-id>/sra/` while it converts.
+Each finished lane is recorded, so a retry downloads only the lanes still missing, and a `.sra-runs` marker, written last, makes a retry of a finished download do nothing. A run without a barcode read or a cDNA read, e.g. one submitted only as a BAM, fails with exit 11. A run that can't be downloaded or converted fails with exit 10 and is retried once. Cleanup deletes the reads with the run's folder; a failed run keeps them, so starting it again resumes.
 
 ## The image
 
@@ -63,8 +59,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-11
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
@@ -72,7 +68,7 @@ gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq
 
 - The shared `argo-user` kubeconfig for `runai-busch-lab`, and the `argo` CLI.
 - Two Run:ai credentials with **Project scope: busch-lab**, created in the Run:ai console:
-  - Generic secret `bloomv2-s3` with keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (becomes the Kubernetes secret `genericsecret-bloomv2-s3`).
+  - Generic secret `bloomv2-s3` with keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (becomes the Kubernetes secret `genericsecret-bloomv2-s3`). Only the stage step uses it, to read a folder a scientist shared with Bloom.
   - Docker registry credential `bloom-ghcr-pull` for `ghcr.io` with a `read:packages` token (becomes the Kubernetes secret `dockerregistry-bloom-ghcr-pull`, used in `imagePullSecrets` in the workflow files).
 
 ## Running
@@ -80,7 +76,6 @@ gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq
 ```bash
 export KUBECONFIG=~/.kube/kubeconfig-runai-busch-lab-argo-user.yaml
 argo template create argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
-argo template create argo/scrna/fastq_qc/fastq-qc-template.yaml -n runai-busch-lab
 # after editing a template: kubectl replace -f <template file> -n runai-busch-lab
 # Prod and staging share runai-busch-lab, so each runs its own copy of the Cell Ranger template,
 # named by WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE in .env.*.defaults: prod's is
@@ -93,18 +88,19 @@ sed 's/^  name: cellranger-count-template$/  name: cellranger-count-template-sta
 # also needs the pipeline's database rights migrated on prod and prod's pipeline Secret
 # signing in as bloom_workflows, then:
 #   kubectl apply -n runai-busch-lab -f argo/scrna/cellranger/cellranger-count-template.yaml
-argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p samples='["sample_a","sample_b"]' --watch
+argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p sample=root_tip -p sra-runs=SRR28503597 --watch
 argo submit argo/scrna/cellranger/cellranger-testrun-workflow.yaml -n runai-busch-lab --watch
 # A Cell Ranger run by hand, loaded into Bloom (the staging variant is in _WIKI/ARGO/README.md):
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
-  -p samples='["sample_a","sample_b"]' -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
+  -p samples='[{"sample": "root_tip", "sra_runs": "SRR28503597", "fastq_url": "", "fastq_files": ""}]' \
+  -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
 ```
 
 Steps run under `priorityClassName: high` (non-preemptible) and retry up to twice.
 
 ## QC and chemistry
 
-The count workflow runs each sample as a chain of pods that share one NFS folder: **stage** downloads the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once **load-dataset** has loaded the result into Bloom. The reference is built in every run, in the same folder (below). Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count, and uploads the report to `runs_output/<run-id>/qc/`. The report holds:
+The count workflow runs each sample as a chain of pods that share one NFS folder: **fetch-sra** or **stage** puts the reads into `/hpi/hpi_dev/users/bfernando/scrna/runs/<run-id>/`, **qc** checks them there, **count** runs Cell Ranger on those reads (its working files stay on the count pod's own disk, because the share does not support symlinks), and **cleanup** deletes the folder once **load-dataset** has loaded the result into Bloom. The reference is built in every run, in the same folder (below). Within a run, the QC report stays in `/shared/runs/<run-id>/qc/<run-id>/`. The QC-only workflow runs QC alone, for a look at the reads before committing to a count: it gets one sample's reads with the same fetch-sra or stage step into `/shared/runs/qc-<workflow name>/`, then deletes them and keeps the report in `qc/` there. Nothing goes to S3. The report holds:
 
 - `fastq_stats.tsv`: reads and min/mean/max length for every FASTQ.
 - `qc_summary.json`: total read pairs, R1/R2 lengths, the FASTQ prefix to pass as `--sample`, the chemistry guess and each barcode list's score.
@@ -122,7 +118,7 @@ Each run's reference is a genome version stored in Bloom (`bloomctl genome uploa
 
 - **download-genome** (`analysis/download-genome.sh`, in the `scrna-analysis` image) runs `bloomctl genome download <genome>.v<N> --unzip` into `/shared/runs/<run-id>.genome/genome/`, signed in as the pipeline like `load-dataset`. Each file is checked against the SHA-256 and size Bloom recorded, and `VERSION` records the exact version. Exit 3 (the version isn't available, or a file doesn't match) and 6 (bad input) aren't retried, nor is 16 (no credentials); exit 1 (a network or storage error) is, up to twice.
 - **build-reference** (the Cell Ranger image) runs `cellranger mkref` on those files on the pod's own disk, then moves the reference into `/shared/runs/<run-id>.genome/ref/<genome>.v<N>/` in one rename, from a temporary folder named for the workflow, so a half-built reference never looks done and two runs on one run key never fill the same folder. Its cores and memory are the sample pipeline's `ref-cores`, `ref-memory` and `ref-mem-gb` (8, 32Gi and 28 by default, sized for Arabidopsis). It exits 3 without the downloaded files, 6 for a bad genome name or run id, and 17 when mkref fails, with Cell Ranger's error in its log. It's retried once, but not for 3, 6 or 17, which a retry can't fix.
-- Both run alongside getting the reads (**fetch-sra** for an SRA import, then **stage** and **qc**), and **count** waits for both. `fetch-sra` runs inside the sample pipeline only when it's given SRA run IDs, so an import's genome build overlaps its download. Both write to `/shared/runs/<run-id>.genome/`, next to the run's folder rather than in it, because **stage** clears the run's folder of an earlier run's files when it starts. **cleanup** deletes that folder with the run's. A failed run keeps both, so starting it again reuses the checked genome and the built reference: the run key includes the version, and a version never changes.
+- Both run alongside getting the reads (**fetch-sra** for an SRA import or **stage** for a folder, then **qc**), and **count** waits for both, so an import's genome build overlaps its download. Both write to `/shared/runs/<run-id>.genome/`, next to the run's folder rather than in it, because **fetch-sra** and **stage** clear the run's folder of an earlier run's files when it starts. **cleanup** deletes that folder with the run's. A failed run keeps both, so starting it again reuses the checked genome and the built reference: the run key includes the version, and a version never changes.
 
 ## Analysis after the count
 

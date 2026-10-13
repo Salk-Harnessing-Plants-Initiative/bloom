@@ -7,12 +7,12 @@ run records and builds its Cell Ranger reference from; the database refuses a ve
 isn't ready. Its FASTQs come from one place: an S3 folder
 (`fastq_url`, checked here and recorded with each file's size and ETag, the sample named
 from the files; `fastq_files` is the list the form showed, and the run is refused if the
-folder no longer matches it), SRA run IDs, or a registered sample's folder under raw_reads/. The
-pipeline checks that the FASTQs exist and fails the run if not.
+folder no longer matches it) or SRA run IDs; a sample name alone is refused. The pipeline
+checks that the FASTQs exist and fails the run if not.
 An optional `metadata` object (the dataset's species, name, conditions) is stored on the
 run as given, for loading the results later. Optional `sra_runs` (1 to 9 SRA run IDs, one
 lane each) import the sample from SRA under the new name `sample`; the run downloads them
-first and registers the sample once the download succeeds.
+into its own folder on the cluster.
 """
 
 import json
@@ -182,6 +182,11 @@ def trigger_run(body, user_id: str) -> dict:
         folder = _check_folder_for_start(body)
         body = {**body, "sample": folder["sample"]}
     sample, version_id, metadata, sra_runs = _validate_request(body)
+    if folder is None and sra_runs is None:
+        raise HTTPException(
+            status_code=422,
+            detail="give an S3 folder or SRA run IDs to read the sample from",
+        )
 
     client = app_client()
     reference = _genome_reference(client, version_id)

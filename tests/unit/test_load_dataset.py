@@ -147,8 +147,8 @@ def test_the_sample_pipeline_loads_after_build_h5ad_and_cleans_up_after_the_load
     tasks = {t["name"]: t for t in _templates()["sample-pipeline"]["dag"]["tasks"]}
     assert tasks["load-dataset"]["depends"] == "build-h5ad"
     assert tasks["cleanup"]["depends"] == "load-dataset"
-    # Only fetch-sra is skipped (a run without SRA IDs); the result leaves only through the load.
-    assert [name for name, task in tasks.items() if "when" in task] == ["fetch-sra"]
+    # Only the read source not used is skipped; the result leaves only through the load.
+    assert [name for name, task in tasks.items() if "when" in task] == ["fetch-sra", "stage"]
     passed = {p["name"]: p["value"] for p in tasks["load-dataset"]["arguments"]["parameters"]}
     assert passed["dataset-name"] == "{{inputs.parameters.dataset-name}}"
     assert passed["bloom-run-id"] == "{{inputs.parameters.bloom-run-id}}"

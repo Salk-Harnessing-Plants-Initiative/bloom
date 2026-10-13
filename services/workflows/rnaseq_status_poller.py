@@ -5,10 +5,8 @@ Every WORKFLOWS_STATUS_POLL_SECONDS, reads the Argo Workflow of each submitted o
 rnaseq_runs row, turns it into the run's status with the reader for its workflow type in
 rnaseq_workflows, and records it with update_rnaseq_run_status, which only moves a run
 forward and writes nothing for an unchanged report. A Workflow the cluster says no longer
-exists fails its run; any other failed read leaves the run for the next poll. A run that
-imports its sample from SRA has the sample registered with register_rnaseq_sample once its
-fetch-sra step succeeds. A run is linked to the dataset it loaded once its load-dataset
-step succeeds. When a run finishes, its requester is emailed (run_email). Runs as the
+exists fails its run; any other failed read leaves the run for the next poll. A run is
+linked to the dataset it loaded once its load-dataset step succeeds. When a run finishes, its requester is emailed (run_email). Runs as the
 bloom_workflows app user; one poller per environment.
 
 Deploy: a container off the workflows image with `command: python rnaseq_status_poller.py`.
@@ -23,7 +21,7 @@ from k8s_client import K8sConfigError, get_workflow
 from postgrest import APIError
 
 import run_email
-from rnaseq_status import RunStatus, loaded_dataset, sra_download
+from rnaseq_status import RunStatus, loaded_dataset
 from rnaseq_workflows import WORKFLOW_TYPES
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
@@ -32,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 RUNS_TABLE = "rnaseq_runs"
 UPDATE_FN = "update_rnaseq_run_status"
-REGISTER_FN = "register_rnaseq_sample"
 LINK_FN = "link_rnaseq_run_dataset"
 # The function refused to link for now: the run isn't recorded as running yet.
 LINK_NOT_YET = "55000"
@@ -57,9 +54,6 @@ def _resolve_poll_interval() -> float:
 POLL_INTERVAL = _resolve_poll_interval()
 
 _running = True
-# SRA runs whose sample this process has registered; the function is idempotent, so a
-# restart that forgets them only repeats a harmless call.
-_registered: set[int] = set()
 # Runs already linked to their dataset, or whose link was refused for good.
 _linked: set[int] = set()
 
@@ -103,46 +97,6 @@ def _record(client, run_id, status: RunStatus) -> bool:
         )
         .execute()
         .data
-    )
-
-
-def _register_sample(client, run: dict, workflow: dict, status: RunStatus) -> None:
-    """Registers an SRA run's sample once its download has succeeded."""
-    if run["id"] in _registered or not (run.get("params") or {}).get("sra_runs"):
-        return
-    if status.status not in ("running", "succeeded"):
-        return
-    download = sra_download(workflow)
-    if download is None:
-        return
-    fastq_count, total_bytes = download
-    try:
-        client.rpc(
-            REGISTER_FN,
-            {
-                "p_run_id": run["id"],
-                "p_fastq_count": fastq_count,
-                "p_total_bytes": total_bytes,
-            },
-        ).execute()
-    except APIError as exc:
-        # A conflicting name is a data problem, not a blip: say so once and stop trying.
-        if exc.code == "23505":
-            _registered.add(run["id"])
-            logger.error(
-                "rnaseq_status_poller: run %s's sample was not registered: %s",
-                run["id"],
-                exc.message,
-            )
-            return
-        raise
-    _registered.add(run["id"])
-    logger.info(
-        "rnaseq_status_poller: run %s registered sample %s (%s FASTQs, %s bytes)",
-        run["id"],
-        run["params"].get("sample"),
-        fastq_count,
-        total_bytes,
     )
 
 
@@ -208,8 +162,6 @@ def poll_run(client, run: dict) -> bool:
     changed = _record(client, run["id"], status)
     if workflow is not None and status.status not in ACTIVE_STATUSES:
         _link_dataset(client, run, workflow)
-    if workflow is not None:
-        _register_sample(client, run, workflow, status)
     # notify() skips a run still going, and a finished run changes only once, so one email.
     if changed:
         run_email.notify(client, run, status)

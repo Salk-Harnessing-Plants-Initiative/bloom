@@ -1,6 +1,10 @@
 # A Cell Ranger run started by hand, loaded into prod's Bloom: each sample becomes a dataset
 # named after it, under `species` (a species' common name), and builds its reference from
 # `reference`, a genome version in Bloom written <genome>.v<N> (bloomctl genome list shows them).
+# Each sample gives its reads as SRA run IDs or an S3 folder, with the other left empty:
+#   {"sample": "root_tip", "sra_runs": "SRR28503597,SRR28503598", "fastq_url": "", "fastq_files": ""}
+#   {"sample": "col0", "sra_runs": "", "fastq_url": "s3://bucket/folder/",
+#    "fastq_files": "[{\"name\": \"col0_S1_L001_R1_001.fastq.gz\", \"size\": 123, \"etag\": \"...\"}, ...]"}
 # argo/scrna/README.md has the command, and the staging variant.
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
@@ -44,12 +48,18 @@ spec:
             arguments:
               parameters:
                 - name: sample
-                  value: "{{item}}"
+                  value: "{{item.sample}}"
                 - name: reference
                   value: "{{workflow.parameters.reference}}"
                 - name: run-id
-                  value: "{{item}}"
+                  value: "{{item.sample}}"
+                - name: sra-runs
+                  value: "{{item.sra_runs}}"
+                - name: fastq-url
+                  value: "{{item.fastq_url}}"
+                - name: fastq-files
+                  value: "{{item.fastq_files}}"
                 - name: dataset-name
-                  value: "{{item}}"
+                  value: "{{item.sample}}"
                 - name: species-name
                   value: "{{workflow.parameters.species}}"

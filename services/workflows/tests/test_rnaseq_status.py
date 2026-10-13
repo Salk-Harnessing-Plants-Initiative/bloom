@@ -15,7 +15,11 @@ import rnaseq_status as st
 FIXTURES = Path(__file__).parent / "fixtures" / "argo"
 WF = "scrna-cellranger-dev-900001-a5d34435"
 RUN = {
-    "params": {"sample": "tinygex", "reference": "tiny_ref"},
+    "params": {
+        "sample": "tinygex",
+        "reference": "tiny_ref",
+        "sra_runs": ["SRR28503597"],
+    },
     "run_key": "tinygex__tiny_ref__poller-sample-ok",
 }
 NO_REF_RUN = {
@@ -163,7 +167,12 @@ def _failed_at(template: str, exit_code: str | None) -> dict:
 @pytest.mark.parametrize(
     "template, step, exit_code, message",
     [
-        ("stage-sample", "stage", "4", "No FASTQs at raw_reads/tinygex/"),
+        (
+            "stage-sample",
+            "stage",
+            "4",
+            "No FASTQs were found on the shared disk for tinygex",
+        ),
         (
             "count",
             "count",
@@ -188,7 +197,7 @@ def _failed_at(template: str, exit_code: str | None) -> dict:
             "stage-sample",
             "stage",
             "7",
-            "The FASTQs in raw_reads/tinygex/ must be named like "
+            "The FASTQs downloaded for SRR28503597 must be named like "
             "<name>_S1_L001_R1_001.fastq.gz, with an R1 and an R2 for every lane; "
             "the stage step's log lists the files",
         ),
@@ -306,9 +315,9 @@ def test_a_folder_runs_count_failure_uses_the_count_messages(exit_code, words):
     assert "raw_reads/" not in status.message
 
 
-def test_a_registered_runs_count_failure_names_raw_reads():
+def test_an_sra_runs_count_failure_names_its_sample_not_raw_reads():
     status = st.read_cellranger_status(_failed_at("count", "4"), RUN)
-    assert status.message == f"No FASTQs at raw_reads/{RUN['params']['sample']}/"
+    assert status.message == "No FASTQs were found on the shared disk for tinygex"
 
 
 # --------------------------------------------------------------------------- #

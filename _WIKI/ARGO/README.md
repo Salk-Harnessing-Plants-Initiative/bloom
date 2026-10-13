@@ -52,7 +52,8 @@ in Bloom's species list).
 
 ```bash
 argo submit argo/scrna/cellranger/cellranger-count-workflow.yaml -n runai-busch-lab \
-  -p samples='["col0","col1"]' -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
+  -p samples='[{"sample": "root_tip", "sra_runs": "SRR28503597,SRR28503598", "fastq_url": "", "fastq_files": ""}]' \
+  -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
 ```
 
 **Into staging's Bloom** (staging's template and staging's pipeline login):
@@ -62,10 +63,13 @@ sed -e 's/name: cellranger-count-template$/name: cellranger-count-template-stagi
     -e 's/bloom-prod-pipeline-credentials/bloom-staging-pipeline-credentials/' \
   argo/scrna/cellranger/cellranger-count-workflow.yaml > /tmp/cellranger-count-staging.yaml
 argo submit /tmp/cellranger-count-staging.yaml -n runai-busch-lab \
-  -p samples='["col0","col1"]' -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
+  -p samples='[{"sample": "root_tip", "sra_runs": "SRR28503597,SRR28503598", "fastq_url": "", "fastq_files": ""}]' \
+  -p reference=athaliana_col0.v2 -p species=Arabidopsis --watch
 ```
 
-- `samples` are folders under `raw_reads/` in S3, one 10x library each.
+- `samples` is one entry per 10x library: its name, and either its SRA run IDs (comma-separated,
+  one lane each) or an S3 folder with the folder check's file list (`fastq_files`, as JSON),
+  leaving the other empty. The workflow file's header shows both.
 - `reference` is a ready genome version in that environment's Bloom, written `<genome>.v<N>`
   (`bloomctl genome list` shows them). Each sample downloads it and builds its own Cell Ranger
   reference.

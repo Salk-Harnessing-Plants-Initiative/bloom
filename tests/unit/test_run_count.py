@@ -158,10 +158,10 @@ def test_every_pipeline_script_parses(script):
     assert result.returncode == 0, result.stderr
 
 
-# Only these steps touch S3, and only to read: the SRA import, and staging a registered sample's
-# or an S3 folder's reads. The genome comes from Bloom, every other step works on the shared
-# folder, and the result leaves through load-dataset, into Bloom.
-S3_STEPS = {"fetch-sra", "stage-sample"}
+# Only staging an S3 folder's reads touches S3, and only to read. SRA reads come from ENA or
+# SRA, the genome from Bloom, every other step works on the shared folder, and the result leaves
+# through load-dataset, into Bloom.
+S3_STEPS = {"stage-sample"}
 
 
 def test_only_the_steps_that_touch_s3_hold_s3_keys():
