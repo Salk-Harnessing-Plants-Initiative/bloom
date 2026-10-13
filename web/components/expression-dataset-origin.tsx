@@ -1,30 +1,79 @@
 import Link from "next/link";
-import type { Json } from "@/lib/database.types";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database, Json } from "@/lib/database.types";
+import type { DataOrigin } from "@/lib/scrna-jobs";
 
-// Where a dataset's data came from: HPI's own, or a public dataset.
-export type DatasetOrigin = "hpi" | "public";
+// The short label of each origin the job form offers; a new origin needs one here.
+export const ORIGIN_LABELS: Record<DataOrigin, string> = { hpi: "HPI", public: "Public" };
 
-export const ORIGIN_LABELS: Record<DatasetOrigin, string> = { hpi: "HPI", public: "Public" };
+function isOrigin(value: unknown): value is DataOrigin {
+  return typeof value === "string" && Object.hasOwn(ORIGIN_LABELS, value);
+}
 
-/** A dataset's origin: "public" when its run marked it so, otherwise HPI's own, including every
- * dataset loaded before origins were recorded (metadata.source.origin, set by the pipeline). */
-export function datasetOrigin(dataset: { metadata: Json | null }): DatasetOrigin {
-  const metadata = dataset.metadata;
-  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
-    const source = metadata.source;
-    if (source && typeof source === "object" && !Array.isArray(source) && source.origin === "public") {
-      return "public";
-    }
+type WithMetadata = { metadata: Json | null };
+
+function field(value: Json | null | undefined, key: string): Json | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value[key] : undefined;
+}
+
+function asOrigin(value: Json | undefined): DataOrigin | null {
+  return isOrigin(value) ? value : null;
+}
+
+/** The origin recorded on a dataset (metadata.source.origin), set once its run is linked. */
+function recordedOrigin(dataset: WithMetadata): DataOrigin | null {
+  return asOrigin(field(field(dataset.metadata, "source"), "origin"));
+}
+
+/** The RNA-seq run a pipeline dataset was loaded for (metadata.rnaseq_run_id), recorded from
+ * the start of its load. */
+export function datasetRunId(dataset: WithMetadata): number | null {
+  const id = field(dataset.metadata, "rnaseq_run_id");
+  return typeof id === "number" && Number.isSafeInteger(id) ? id : null;
+}
+
+/** A dataset's origin: as recorded on it; otherwise as its run's form gave it, while the dataset
+ * is still loading or wasn't linked to its run; otherwise HPI's own, including every dataset
+ * loaded before origins were recorded. */
+export function datasetOrigin(
+  dataset: WithMetadata,
+  runOrigins: ReadonlyMap<number, DataOrigin> = new Map(),
+): DataOrigin {
+  const runId = datasetRunId(dataset);
+  return recordedOrigin(dataset) ?? (runId != null ? runOrigins.get(runId) : undefined) ?? "hpi";
+}
+
+/** The form origin of each run whose dataset has none recorded yet; empty if they can't be read,
+ * so those datasets fall back to HPI. */
+export async function fetchRunOrigins(
+  supabase: SupabaseClient<Database>,
+  datasets: WithMetadata[],
+): Promise<Map<number, DataOrigin>> {
+  const ids = [
+    ...new Set(
+      datasets
+        .filter((d) => recordedOrigin(d) === null)
+        .map(datasetRunId)
+        .filter((id): id is number => id !== null),
+    ),
+  ];
+  if (ids.length === 0) return new Map();
+  const { data, error } = await supabase.from("rnaseq_runs").select("id, metadata").in("id", ids);
+  if (error || !data) return new Map();
+  const origins = new Map<number, DataOrigin>();
+  for (const run of data) {
+    const origin = asOrigin(field(run.metadata, "origin"));
+    if (origin) origins.set(run.id, origin);
   }
-  return "hpi";
+  return origins;
 }
 
 /** The `?origin=` filter, or null for all datasets. */
-export function originFilter(value: string | string[] | undefined): DatasetOrigin | null {
-  return value === "hpi" || value === "public" ? value : null;
+export function originFilter(value: string | string[] | undefined): DataOrigin | null {
+  return isOrigin(value) ? value : null;
 }
 
-export function DatasetOriginPill({ origin }: { origin: DatasetOrigin }) {
+export function DatasetOriginPill({ origin }: { origin: DataOrigin }) {
   const style =
     origin === "public"
       ? "border-sky-300 bg-sky-50 text-sky-800"
@@ -43,10 +92,10 @@ export function DatasetOriginFilter({
   counts,
 }: {
   basePath: string;
-  current: DatasetOrigin | null;
-  counts: Record<DatasetOrigin, number>;
+  current: DataOrigin | null;
+  counts: Record<DataOrigin, number>;
 }) {
-  const choices: [DatasetOrigin | null, string, number][] = [
+  const choices: [DataOrigin | null, string, number][] = [
     [null, "All", counts.hpi + counts.public],
     ["hpi", ORIGIN_LABELS.hpi, counts.hpi],
     ["public", ORIGIN_LABELS.public, counts.public],

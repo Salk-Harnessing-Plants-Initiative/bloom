@@ -7,7 +7,9 @@ import {
 import {
   DatasetOriginFilter,
   DatasetOriginPill,
+  ORIGIN_LABELS,
   datasetOrigin,
+  fetchRunOrigins,
   originFilter,
 } from "@/components/expression-dataset-origin";
 import {
@@ -23,10 +25,10 @@ export default async function Species({
   searchParams,
 }: {
   params: Promise<{ speciesId: number }>;
-  searchParams?: Promise<{ origin?: string | string[] }>;
+  searchParams: Promise<{ origin?: string | string[] }>;
 }) {
   const { speciesId } = await params;
-  const shown = originFilter((await searchParams)?.origin);
+  const shown = originFilter((await searchParams).origin);
   const species = await getSpeciesWithDatasets(speciesId);
 
   const user = await getUser();
@@ -47,9 +49,12 @@ export default async function Species({
   const datasets = (species.scrna_datasets ?? []).filter(
     (d) => d.name !== "NULL_DATASET" && d.kind !== "reference",
   );
+  // A dataset still loading, or never linked to its run, has its origin only on the run.
+  const runOrigins = await fetchRunOrigins(await createServerSupabaseClient(), datasets);
+  const originOf = (d: (typeof datasets)[number]) => datasetOrigin(d, runOrigins);
   const counts = { hpi: 0, public: 0 };
-  datasets.forEach((d) => counts[datasetOrigin(d)]++);
-  const listed = shown ? datasets.filter((d) => datasetOrigin(d) === shown) : datasets;
+  datasets.forEach((d) => counts[originOf(d)]++);
+  const listed = shown ? datasets.filter((d) => originOf(d) === shown) : datasets;
 
   return (
     <div>
@@ -106,7 +111,7 @@ export default async function Species({
         </div>
       ) : listed.length === 0 ? (
         <div className="text-sm text-stone-500 italic">
-          No {shown === "public" ? "public" : "HPI"} datasets for this species.
+          No {shown ? ORIGIN_LABELS[shown] : ""} datasets for this species.
         </div>
       ) : (
         <div className="divide-y divide-stone-200 border-y border-stone-200">
@@ -132,7 +137,7 @@ export default async function Species({
                     <span className="text-xl text-lime-700 group-hover:underline break-words">
                       {ds.name}
                     </span>
-                    <DatasetOriginPill origin={datasetOrigin(ds)} />
+                    <DatasetOriginPill origin={originOf(ds)} />
                     {isIncompleteUpload(ds) && <IncompleteUploadBadge />}
                   </div>
                   {secondary && (
