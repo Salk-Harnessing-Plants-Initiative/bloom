@@ -5,7 +5,9 @@ import {
   runFastqUrl,
   runSraRuns,
   runSteps,
+  fetchDatasetName,
   fetchGenomeLabel,
+  fetchRun,
   isFinished,
   runAttributes,
   runDatasetHref,
@@ -472,6 +474,55 @@ describe("a run started before genomes came from Bloom", () => {
       expect(ids).not.toContain("download-genome");
       expect(ids).not.toContain("build-reference");
     }
+  });
+});
+
+describe("fetchRun", () => {
+  it("asks for the run's dataset id, so a finished run's page links its dataset", async () => {
+    const seen: string[] = [];
+    const query = {
+      select: (cols: string) => (seen.push(cols), query),
+      eq: () => query,
+      maybeSingle: async () => ({ data: run({ dataset_id: 24 }), error: null }),
+    };
+    const fetched = await fetchRun({ from: () => query } as never, 1);
+    expect(seen[0].split(",").map((c) => c.trim())).toContain("dataset_id");
+    expect(fetched?.dataset_id).toBe(24);
+  });
+});
+
+describe("fetchDatasetName", () => {
+  function client(result: { data: unknown; error: unknown }, seen: unknown[] = []) {
+    const query = {
+      select: (cols: string) => (seen.push(cols), query),
+      eq: (col: string, value: unknown) => (seen.push([col, value]), query),
+      maybeSingle: async () => result,
+    };
+    return { from: (table: string) => (seen.push(table), query) };
+  }
+
+  it("reads the name the dataset was loaded under", async () => {
+    const seen: unknown[] = [];
+    const name = await fetchDatasetName(
+      client({ data: { name: "Root atlas_v2" }, error: null }, seen) as never,
+      run({ dataset_id: 24 })
+    );
+    expect(name).toBe("Root atlas_v2");
+    expect(seen).toEqual(["scrna_datasets", "name", ["id", 24]]);
+  });
+
+  it("asks nothing for a run not yet linked to a dataset", async () => {
+    const throwing = {
+      from: () => {
+        throw new Error("should not be called");
+      },
+    };
+    expect(await fetchDatasetName(throwing as never, run())).toBeNull();
+  });
+
+  it("returns null when the dataset can't be read", async () => {
+    const failing = client({ data: null, error: { message: "denied" } });
+    expect(await fetchDatasetName(failing as never, run({ dataset_id: 24 }))).toBeNull();
   });
 });
 

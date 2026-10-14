@@ -62,6 +62,7 @@ export default function RnaseqRunView({
   speciesLabel,
   genomeLabel = null,
   reportHref = null,
+  loadedDatasetName = null,
 }: {
   initialRun: RnaseqRun;
   // "you", or another member's short id (requesterText).
@@ -71,6 +72,8 @@ export default function RnaseqRunView({
   genomeLabel?: string | null;
   // The run's Cell Ranger report page, once the run has stored one.
   reportHref?: string | null;
+  // The name the dataset was loaded under, once the run is linked to it.
+  loadedDatasetName?: string | null;
 }) {
   const live = useLiveSync<RnaseqRun>({
     topic: `rnaseq-run-${initialRun.id}`,
@@ -80,6 +83,7 @@ export default function RnaseqRunView({
     apply: (run, change) => ({ ...run, ...(change as Change<RnaseqRun>).new }),
   });
   const run = live.view;
+  const datasetHref = runDatasetHref(run);
   const router = useRouter();
   const finished = isFinished(run.status);
   const wasFinished = useRef(finished);
@@ -168,11 +172,11 @@ export default function RnaseqRunView({
       <h3 className="mb-2 text-xs uppercase tracking-widest text-stone-500">Details</h3>
       <dl className="max-w-3xl">
         <Detail label="Dataset">
-          {runDatasetName(run) ?? "—"}
-          {runDatasetHref(run) ? (
+          {(datasetHref && loadedDatasetName) || runDatasetName(run) || "—"}
+          {datasetHref ? (
             <>
               {" · "}
-              <Link href={runDatasetHref(run)!} className="text-lime-700 underline-offset-4 hover:underline">
+              <Link href={datasetHref} className="text-lime-700 underline-offset-4 hover:underline">
                 Explore the dataset
               </Link>
             </>

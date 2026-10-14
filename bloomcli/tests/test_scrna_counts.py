@@ -292,3 +292,17 @@ def test_an_interrupt_during_the_uploads_is_waited_out_by_the_next_run(tmp_path,
                       write_h5ad(tmp_path / "f.h5ad"), _genes.read_names(tmp_path / "f.h5ad"))
     assert marker.path.exists(), "an upload in flight may still land"
     assert client.tables["scrna_counts"] == []
+
+
+def test_a_failed_upload_still_records_every_gene_that_was_stored(tmp_path, monkeypatch):
+    monkeypatch.setattr(_counts, "UPLOAD_WORKERS", 4)
+    monkeypatch.setattr(_counts, "RECORD_BATCH", 500)
+    client = FakeClient()
+    client.fail(lambda op, table, payload: op == "upload" and payload.endswith("AT1G00002.json"),
+                httpx.ConnectError("refused"))
+    with pytest.raises(LoadError, match="run the same command again"):
+        write(client, tmp_path)
+    recorded = sorted(r["counts_object_path"].rsplit("/", 1)[1] for r in client.tables["scrna_counts"])
+    stored = sorted(path.rsplit("/", 1)[1] for path in objects(client))
+    assert "AT1G00002.json" not in recorded
+    assert recorded == stored, "every stored gene is recorded, so the rerun redoes only the failed one"

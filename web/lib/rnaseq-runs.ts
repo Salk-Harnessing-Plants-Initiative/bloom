@@ -293,6 +293,18 @@ export async function fetchGenomeLabel(
   return option ? genomeVersionLabel(option) : null;
 }
 
+/** The name the run's dataset was loaded under, which may differ from the name on the form
+ * (e.g. Root atlas_v2 when Root atlas was taken); null before the run is linked to it or when
+ * it can't be read. */
+export async function fetchDatasetName(
+  supabase: SupabaseClient<Database>,
+  run: RnaseqRun
+): Promise<string | null> {
+  if (run.dataset_id == null) return null;
+  const { data, error } = await supabase.from("scrna_datasets").select("name").eq("id", run.dataset_id).maybeSingle();
+  return error || !data ? null : data.name;
+}
+
 /** A list with one run added or replaced, newest first, and runs `accept` rejects left out. */
 export function upsertRun(
   runs: RnaseqRun[],

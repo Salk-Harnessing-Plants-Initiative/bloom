@@ -12,7 +12,7 @@ import re
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from . import _genes
 from ._text import listed, visible
@@ -33,9 +33,9 @@ GENE_BATCH = 5000
 # Genes recorded per request; each object is uploaded on its own and a row follows it.
 RECORD_BATCH = 500
 
-# Gene objects uploaded at once. Storage records each object through its own pool of 20
-# database connections, shared with every image and report the website serves, and refuses a
-# request that waits 3 s for one; 8 keeps most of the pool free.
+# Gene objects uploaded at once by one load. Storage records each object through its own pool
+# of 20 database connections, shared with every image and report the website serves, and
+# refuses a request that waits 3 s for one; 8 per load, so loads running together add up.
 UPLOAD_WORKERS = 8
 
 # Genes read ahead of the uploads, per worker: enough to keep every worker busy without
@@ -87,12 +87,20 @@ def write(
     pending: list[dict] = []
     uploading: dict[Future, tuple[str, str]] = {}
     stored = 0
+    failed: Exception | None = None
 
-    def collect(finished) -> None:
-        nonlocal pending, stored
+    def collect(finished: Iterable[Future]) -> None:
+        nonlocal pending, stored, failed
         for future in finished:
             gene, object_at = uploading.pop(future)
-            future.result()  # a failed upload stops the load here
+            if future.cancelled():
+                continue
+            error = future.exception()
+            if error is not None:
+                if not isinstance(error, Exception):
+                    raise error  # an interrupt stops at once
+                failed = failed or error
+                continue
             pending.append({"dataset_id": dataset_id, "gene_id": ids[gene],
                             "counts_object_path": object_at})
             stored += 1
@@ -111,6 +119,12 @@ def write(
             uploading[upload] = (gene, object_at)
             if len(uploading) >= UPLOAD_WORKERS * READ_AHEAD:
                 collect(wait(uploading, return_when=FIRST_COMPLETED).done)
+            if failed:
+                break
+        # After a failed upload, queued ones are dropped and running ones finish.
+        if failed:
+            for future in uploading:
+                future.cancel()
         while uploading:
             collect(wait(uploading, return_when=FIRST_COMPLETED).done)
     except KeyboardInterrupt:
@@ -118,10 +132,12 @@ def write(
         writer.record_unknown("upload gene counts")
         raise
     finally:
-        # Whatever stopped the load, queued uploads are dropped and running ones finish.
         pool.shutdown(wait=True, cancel_futures=True)
+    # Every stored gene is recorded, even when another upload failed, so a rerun redoes less.
     if pending:
         _record(writer, pending)
+    if failed:
+        raise failed
     recorded = _recorded(writer, dataset_id, ids)
     if len(recorded) != len(names):
         raise LoadError(f"dataset {dataset_id} records counts for {len(recorded):,} of "

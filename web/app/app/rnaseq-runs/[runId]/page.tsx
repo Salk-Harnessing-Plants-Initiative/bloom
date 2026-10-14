@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { parseId } from "@/lib/route-params";
 import { requesterText } from "@/lib/cyl-pipeline/run-text";
 import { WEB_SUMMARY, reportHref, storedReports } from "@/lib/rnaseq-reports";
-import { fetchGenomeLabel, fetchRun, runSpeciesId } from "@/lib/rnaseq-runs";
+import { fetchDatasetName, fetchGenomeLabel, fetchRun, runSpeciesId } from "@/lib/rnaseq-runs";
 import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
 import RnaseqRunView from "../RnaseqRunView";
 import { speciesLabelMap } from "../species-labels";
@@ -26,10 +26,11 @@ export default async function RnaseqRunPage({ params }: { params: Promise<{ runI
   }
   if (!run) notFound();
 
-  const [speciesLabels, genomeLabel, reports] = await Promise.all([
+  const [speciesLabels, genomeLabel, reports, datasetName] = await Promise.all([
     speciesLabelMap(supabase),
     fetchGenomeLabel(supabase, run),
     storedReports(supabase, run.id),
+    fetchDatasetName(supabase, run),
   ]);
   const speciesId = runSpeciesId(run);
   return (
@@ -39,6 +40,7 @@ export default async function RnaseqRunPage({ params }: { params: Promise<{ runI
       speciesLabel={speciesId != null ? (speciesLabels[speciesId] ?? null) : null}
       genomeLabel={genomeLabel}
       reportHref={reports.has(WEB_SUMMARY) ? reportHref(run.id) : null}
+      loadedDatasetName={datasetName}
     />
   );
 }
