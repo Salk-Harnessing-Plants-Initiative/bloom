@@ -674,7 +674,9 @@ jobs:
               echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
               exit 1
             fi
-            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes'
+            # --include-all: staging sets the order, so a promotion can bring a migration
+            # dated before one an earlier promotion already applied to prod.
+            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes --include-all'
           " || {
             echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
