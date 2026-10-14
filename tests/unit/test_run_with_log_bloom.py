@@ -141,3 +141,63 @@ def test_an_unreadable_earlier_log_starts_a_new_one_and_says_so(bloom, credentia
     assert result.returncode == 0
     assert "couldn't read earlier attempts' log (HTTP 500)" in result.stderr
     assert bloom.uploads[-1]["body"] == "fine\n"
+
+
+# --------------------------------------------------------------------------- #
+# --put: one file, such as a run's Cell Ranger report
+# --------------------------------------------------------------------------- #
+
+REPORT = "reports/8/web_summary.html"
+
+
+def _put(tmp_path, credentials, *extra, content=b"<html>report</html>"):
+    import os
+    import subprocess
+    import sys
+
+    report = tmp_path / "web_summary.html"
+    if content is not None:
+        report.write_bytes(content)
+    return subprocess.run(
+        [sys.executable, str(fb.WRAPPER), "--put", str(report), "--bucket", "scrna",
+         "--path", REPORT, "--content-type", "text/html", *extra],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "BLOOM_CREDENTIALS": str(credentials)},
+    )
+
+
+def test_put_uploads_the_file_to_the_bucket_and_path_given(tmp_path, bloom, credentials):
+    result = _put(tmp_path, credentials)
+    assert result.returncode == 0, result.stderr
+    (upload,) = bloom.uploads
+    assert (upload["bucket"], upload["path"], upload["body"]) == ("scrna", REPORT, "<html>report</html>")
+    assert upload["headers"]["content-type"] == "text/html"
+    assert upload["headers"]["x-upsert"] == "true", "a retried run replaces its report"
+    assert "is kept at scrna/reports/8/web_summary.html" in result.stderr
+
+
+def test_put_never_fails_the_step_when_bloom_refuses(tmp_path, bloom, credentials):
+    bloom.upload_status = 403
+    result = _put(tmp_path, credentials)
+    assert result.returncode == 0
+    assert "couldn't upload" in result.stderr and "HTTP 403" in result.stderr
+
+
+def test_put_never_fails_the_step_for_a_missing_file(tmp_path, bloom, credentials):
+    result = _put(tmp_path, credentials, content=None)
+    assert result.returncode == 0
+    assert "isn't uploaded" in result.stderr
+    assert bloom.uploads == []
+
+
+def test_put_without_credentials_uploads_nothing(tmp_path, bloom):
+    result = _put(tmp_path, tmp_path / "missing-credentials.txt")
+    assert result.returncode == 0
+    assert "no Bloom credentials" in result.stderr
+    assert bloom.uploads == []
+
+
+def test_put_and_a_command_together_are_refused(tmp_path, credentials):
+    result = _put(tmp_path, credentials, "--", "true")
+    assert result.returncode == 2
+    assert "not both" in result.stderr

@@ -77,7 +77,12 @@ def db(monkeypatch):
 
 def _start(**body):
     return scrna_cellranger.trigger_run(
-        {"sample": "root_tip", "genome_version_id": 3, **body}, USER
+        {
+            "sample": "root_tip",
+            "genome_version_id": 3,
+            "metadata": {"dataset_name": "Root tip", "species_id": 2},
+            **body,
+        }, USER
     )
 
 
@@ -134,12 +139,21 @@ def test_bad_run_ids_are_refused_before_the_database(db, sra_runs):
 
 
 @pytest.mark.parametrize(
-    "code, status",
-    [("23505", 409), ("55000", 409), ("22023", 422)],
-    ids=["name-taken", "still-importing", "bad-value"],
+    "code, status, message",
+    [
+        ("23505", 409, "root_tip against athaliana_col0.v2 already has run 7. Choose another "
+         "sample name, or another reference"),
+        ("23505", 409, "SRR28503597, SRR28503598 against athaliana_col0.v2 was already run as "
+         "root_tip (run 7); its results are on that run's page. To run these reads again, "
+         "choose another reference"),
+        # Only the function before 20261013230000 raises this.
+        ("55000", 409, "sample root_tip is still being imported from SRA; start the run once "
+         "it is registered"),
+        ("22023", 422, "give 1 to 9 distinct SRA run IDs like SRR12046049"),
+    ],
+    ids=["live-run-on-the-key", "already-run-as", "still-importing-before-the-migration", "bad-value"],
 )
-def test_the_databases_refusals_become_clear_http_errors(db, code, status):
-    message = "sample root_tip is still being imported from SRA; start the run once it is registered"
+def test_the_databases_refusals_become_clear_http_errors(db, code, status, message):
     db.errors["request_scrna_cellranger_run"] = APIError(
         {"code": code, "message": message}
     )

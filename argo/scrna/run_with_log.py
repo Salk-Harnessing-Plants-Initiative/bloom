@@ -2,12 +2,16 @@
 """run-with-log: run a pipeline step and keep its log in Bloom's storage.
 
 Usage: run-with-log --path scrna/<workflow name>/<step>.log -- <command> [args...]
+       run-with-log --put <file> --bucket <bucket> --path <object> [--content-type <type>]
 
 Runs the command, passes everything it prints through to the pod's own output, saves a copy,
 and uploads that copy to the `run-logs` bucket every RUN_LOG_INTERVAL seconds (30) while it
 grows, and once more when the command ends. A retried step adds to the earlier attempts' log,
 under a marker line. Exits with the command's exit code. Uploads never fail the step: a failed
 upload is noted on stderr and tried again at the next interval.
+
+With --put, it uploads one file instead (a run's Cell Ranger report), replacing what is stored
+there, and exits 0 whether or not that worked, noting a failure on stderr.
 
 Signs in to Bloom with bloomctl's credentials file (BLOOM_API_URL, BLOOM_ANON_KEY,
 BLOOM_EMAIL, BLOOM_PASSWORD) at BLOOM_CREDENTIALS (/etc/bloom/credentials.txt), over https
@@ -96,14 +100,22 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 class Uploader:
-    """Uploads one log file to run-logs, signing in when needed."""
+    """Uploads one file to a bucket (run-logs unless told otherwise), signing in when needed."""
 
-    def __init__(self, credentials: dict[str, str], object_path: str):
+    def __init__(
+        self,
+        credentials: dict[str, str],
+        object_path: str,
+        bucket: str = BUCKET,
+        content_type: str = "text/plain",
+    ):
         self.api = credentials["BLOOM_API_URL"].rstrip("/")
         self.anon_key = credentials["BLOOM_ANON_KEY"]
         self.email = credentials["BLOOM_EMAIL"]
         self.password = credentials["BLOOM_PASSWORD"]
         self.object_path = object_path
+        self.bucket = bucket
+        self.content_type = content_type
         self.token: str | None = None
         self.token_expires = 0.0
 
@@ -157,7 +169,7 @@ class Uploader:
 
     def _object_url(self, prefix: str = "") -> str:
         path = urllib.parse.quote(self.object_path)
-        return f"{self.api}/storage/v1/object/{prefix}{BUCKET}/{path}"
+        return f"{self.api}/storage/v1/object/{prefix}{self.bucket}/{path}"
 
     def upload(self, data: bytes) -> None:
         """Upload `data` in place of the stored log. Raises on failure."""
@@ -165,7 +177,7 @@ class Uploader:
             "POST",
             self._object_url(),
             data,
-            {"Content-Type": "text/plain", "x-upsert": "true"},
+            {"Content-Type": self.content_type, "x-upsert": "true"},
         )
 
     def download(self) -> bytes | None:
@@ -296,29 +308,65 @@ def _keep_earlier_attempts(uploader: Uploader, log) -> None:
     log.flush()
 
 
+def _uploader(path: str, bucket: str, content_type: str, what: str) -> Uploader | None:
+    """A signed-in uploader for `path`, or None (noted) without usable credentials."""
+    credentials = read_credentials(os.environ.get("BLOOM_CREDENTIALS", DEFAULT_CREDENTIALS))
+    if credentials is None:
+        _note(f"no Bloom credentials, so {what} isn't uploaded")
+        return None
+    if not is_safe_api_url(credentials["BLOOM_API_URL"]):
+        _note(f"BLOOM_API_URL isn't https, so {what} isn't uploaded")
+        return None
+    return Uploader(credentials, path, bucket, content_type)
+
+
+def put(file: str, path: str, bucket: str, content_type: str) -> int:
+    """Uploads one file in place of what is stored at bucket/path; always returns 0."""
+    try:
+        with open(file, "rb") as f:
+            data = f.read()
+    except OSError as exc:
+        _note(f"can't read {file} ({exc.strerror}), so it isn't uploaded")
+        return 0
+    uploader = _uploader(path, bucket, content_type, file)
+    if uploader is None:
+        return 0
+    for attempt in range(FINAL_ATTEMPTS):
+        try:
+            uploader.upload(data)
+        except (OSError, ValueError, KeyError) as exc:
+            if attempt == FINAL_ATTEMPTS - 1:
+                _note(f"couldn't upload {file} to {bucket}/{path} ({_describe(exc)})")
+                return 0
+            time.sleep(FINAL_RETRY_SECONDS)
+        else:
+            _note(f"{file} is kept at {bucket}/{path}")
+            return 0
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="run-with-log", description=__doc__.split("\n")[0]
     )
     parser.add_argument(
-        "--path", required=True, help="where in run-logs to keep the log"
+        "--path", required=True, help="where in run-logs to keep the log, or in --bucket for --put"
     )
+    parser.add_argument("--put", metavar="FILE", help="upload this one file instead of running a command")
+    parser.add_argument("--bucket", default=BUCKET, help="the bucket for --put")
+    parser.add_argument("--content-type", default="text/plain", help="the file's type for --put")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if args.put:
+        if command:
+            parser.error("give --put or a command, not both")
+        return put(args.put, args.path, args.bucket, args.content_type)
     if not command:
         parser.error("give the command to run after --")
 
-    credentials = read_credentials(
-        os.environ.get("BLOOM_CREDENTIALS", DEFAULT_CREDENTIALS)
-    )
-    uploader = None
-    if credentials is None:
-        _note("no Bloom credentials, so the log isn't uploaded")
-    elif not is_safe_api_url(credentials["BLOOM_API_URL"]):
-        _note("BLOOM_API_URL isn't https, so the log isn't uploaded")
-    else:
-        uploader = Uploader(credentials, args.path)
+    uploader = _uploader(args.path, BUCKET, "text/plain", "the log")
+    if uploader is not None:
         _note(f"the log is kept at {BUCKET}/{args.path}")
 
     interval = float(os.environ.get("RUN_LOG_INTERVAL", DEFAULT_INTERVAL_SECONDS))
