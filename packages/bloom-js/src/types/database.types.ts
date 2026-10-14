@@ -5384,10 +5384,6 @@ export type Database = {
         Returns: undefined
       }
       refresh_cyl_experiment_trait_counts: { Args: never; Returns: undefined }
-      register_rnaseq_sample: {
-        Args: { p_fastq_count: number; p_run_id: number; p_total_bytes: number }
-        Returns: number
-      }
       request_scrna_cellranger_run: {
         Args: {
           p_fastq_files?: Json
