@@ -238,13 +238,13 @@ def test_a_failed_upload_doesnt_fail_the_count(env):
 
 
 @pytest.mark.parametrize("run_id, workflow", [("", ""), ("../8", ""), ("", "Bad/Name")])
-def test_without_a_usable_key_the_report_stays_on_the_share(env, run_id, workflow):
+def test_without_a_usable_key_the_report_is_not_uploaded(env, run_id, workflow):
     env.update(BLOOM_RUN_ID=run_id, WORKFLOW_NAME=workflow)
     result = count(env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (Path(env["RESULTS_DIR"]) / "reports/web_summary.html").exists()
     assert puts(env) == []
-    assert "it stays in" in result.stdout
+    assert "it is not stored in Bloom" in result.stdout
 
 
 def test_the_count_step_passes_the_runs_bloom_id_and_workflow_name():

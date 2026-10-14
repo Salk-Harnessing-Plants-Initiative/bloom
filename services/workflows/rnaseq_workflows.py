@@ -163,17 +163,19 @@ def build_cellranger_body(run: dict) -> dict:
             {"name": "fastq-files", "value": json.dumps(run["params"]["fastq_files"])},
         ]
         sample_inputs |= {"fastq-url": "fastq-url", "fastq-files": "fastq-files"}
+    # Every run from Bloom passes its id: its reports are stored under it, and its dataset, if
+    # it loads one, is tagged with it.
+    parameters.append({"name": "bloom-run-id", "value": str(run["run_id"])})
+    sample_inputs |= {"bloom-run-id": "bloom-run-id"}
     dataset = run.get("dataset")
     if dataset:
         parameters += [
             {"name": "dataset-name", "value": dataset["name"]},
             {"name": "species-name", "value": dataset["species"]},
-            {"name": "bloom-run-id", "value": str(run["run_id"])},
         ]
         sample_inputs |= {
             "dataset-name": "dataset-name",
             "species-name": "species-name",
-            "bloom-run-id": "bloom-run-id",
         }
     if sra_runs:
         # fetch-sra reads the run IDs comma-separated, in lane order.

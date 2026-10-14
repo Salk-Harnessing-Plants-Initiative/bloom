@@ -77,7 +77,12 @@ def db(monkeypatch):
 
 def _start(**body):
     return scrna_cellranger.trigger_run(
-        {"sample": "root_tip", "genome_version_id": 3, **body}, USER
+        {
+            "sample": "root_tip",
+            "genome_version_id": 3,
+            "metadata": {"dataset_name": "Root tip", "species_id": 2},
+            **body,
+        }, USER
     )
 
 

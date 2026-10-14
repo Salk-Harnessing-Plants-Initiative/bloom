@@ -28,7 +28,7 @@ FASTQ_DIR="${FASTQ_DIR:-${WORK_DIR}/fastq/${SAMPLE}}"
 RESULTS_DIR="${RESULTS_DIR:?set RESULTS_DIR (the run folder on the share)}"
 # Kept for the analysis steps: the matrix, Cell Ranger's metrics and the chemistry check.
 KEEP=(filtered_feature_bc_matrix.h5 metrics_summary.csv qc/qc_summary.json)
-# Cell Ranger's report and metrics, kept in the run's reports/ and stored in Bloom's scrna bucket
+# Cell Ranger's report and metrics, stored in Bloom's scrna bucket
 # at reports/<run's Bloom id, or the workflow's name for a run started by hand>/.
 REPORTS=(web_summary.html:text/html metrics_summary.csv:text/csv)
 REPORT_KEY_RULE='^[a-z0-9][a-z0-9.-]{0,252}$'
@@ -117,7 +117,7 @@ for entry in "${REPORTS[@]}"; do
     run-with-log --put "${RESULTS_DIR}/reports/${name}" --bucket scrna \
       --path "reports/${report_key}/${name}" --content-type "${entry#*:}" || true
   else
-    echo "WARNING: no run id or workflow name to store ${name} under; it stays in ${RESULTS_DIR}/reports/"
+    echo "WARNING: no run id or workflow name to store ${name} under; it is not stored in Bloom"
   fi
 done
 
