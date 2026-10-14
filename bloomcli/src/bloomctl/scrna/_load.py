@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import _counts, _de
-from ._cells import MAX_FACETS, MAX_FACETS_JSON, PALETTE, genotype_rows
+from ._cells import MAX_FACETS, MAX_FACETS_JSON, cluster_colours, genotype_rows
 from ._checks import (
     LABEL_KEYS,
     RUN_ID_KEY,
@@ -298,10 +298,11 @@ def _step(track, description: str):
 
 
 def catalogue_rows(dataset_id: int, cells: dict) -> list[dict]:
-    """One cell type per label, sorted: ordinal is the index, colour the palette."""
+    """One cell type per label, sorted: ordinal is the index, each with its own colour."""
     sources = cells.get("sources") or {}
+    colours = cluster_colours(len(cells["levels"]))
     return [{"dataset_id": dataset_id, "cluster_id": level, "ordinal": i,
-             "name": level, "color": PALETTE[i],
+             "name": level, "color": colours[i],
              "source": (sources.get(level) or "").strip() or None}
             for i, level in enumerate(cells["levels"])]
 

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from collections import Counter
 
-from ._cells import PALETTE
 from ._text import listed, visible
 from ._writer import LoadError, Writer, dataset_name_ok, next_name, read_all
 
@@ -63,11 +62,6 @@ def check_registration(
 
 
 def check_columns(cells: dict) -> None:
-    if len(cells["levels"]) > len(PALETTE):
-        raise LoadError(
-            f"{len(cells['levels'])} cell types and {len(PALETTE)} colours to tell them apart; "
-            "two would be drawn identically"
-        )
     n = cells["n_cells"]
     for key in ("x", "y", "labels", "samples", "barcodes", "genotypes", "facets"):
         if cells.get(key) is not None and len(cells[key]) != n:

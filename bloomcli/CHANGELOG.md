@@ -8,6 +8,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a14] - 2026-10-13 — any number of clusters
+
+### Changed
+
+- `scrna hdf5 upload` no longer refuses a file whose `--annotation` has more than 23 labels.
+  The first 23 keep their colours, and each further one gets a generated colour of its own,
+  the same every time, so a pipeline run's finer Leiden clustering loads.
+
 ## [0.1.0a13] - 2026-10-12 — each cluster's differential expression
 
 ### Added

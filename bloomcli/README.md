@@ -563,8 +563,8 @@ not grow with the size of the data:
 
 - `--annotation` names the obs column holding the cell-type or cluster label assigned to
   each cell — annotated types such as `Cortex`, or cluster ids such as Leiden's `0`, `1`, … —
-  which the map colours by (at most 23 labels, one colour each); `--sample-column` (default
-  `sample`) names the column holding each cell's sample
+  which the map colours by (one colour each: 23 set colours, then generated ones for more
+  labels); `--sample-column` (default `sample`) names the column holding each cell's sample
 - every cell has a barcode, a type and a sample; a blank, or a value that reads as missing
   (`nan`, `None`, …), is refused rather than stored as a cell type
 - `--expect-cells N` refuses a file holding any other number of cells
