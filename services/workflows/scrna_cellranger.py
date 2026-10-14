@@ -9,8 +9,8 @@ isn't ready. Its FASTQs come from one place: an S3 folder
 from the files; `fastq_files` is the list the form showed, and the run is refused if the
 folder no longer matches it) or SRA run IDs; a sample name alone is refused. The pipeline
 checks that the FASTQs exist and fails the run if not.
-An optional `metadata` object (the dataset's species, name, conditions) is stored on the
-run as given, for loading the results later. Optional `sra_runs` (1 to 9 SRA run IDs, one
+A `metadata` object (the dataset's name and species, which every run needs, and its
+conditions) is stored on the run as given, for loading the results later. Optional `sra_runs` (1 to 9 SRA run IDs, one
 lane each) import the sample from SRA under the new name `sample`; the run downloads them
 into its own folder on the cluster.
 """
@@ -41,14 +41,20 @@ REQUEST_FN = "request_scrna_cellranger_run"
 
 # The database refuses a larger metadata object; checking here gives a readable 422.
 METADATA_MAX_BYTES = 65536
+NO_DATASET = (
+    "metadata needs a dataset_name and a species_id: every run loads its result into Bloom "
+    "as a dataset"
+)
 
 # NCBI (SRR), ENA (ERR) and DDBJ (DRR) run IDs; one lane each, named L001-L009.
 SRA_RUN_RULE = re.compile(r"^[SED]RR[0-9]{6,10}$")
 MAX_SRA_RUNS = 9
 SRA_RUNS_HELP = f"1 to {MAX_SRA_RUNS} distinct SRA run IDs like SRR12046049"
 
-# What the request function's refusals mean for the caller: a bad value, or a name that
-# is taken or still being imported.
+# What the request function's refusals mean for the caller: a bad value (22023), or a run
+# that would repeat one (23505): its run key already has a live run, or the scientist already
+# ran these SRA runs on this genome under another name. 55000 ("still being imported") comes
+# only from the function before 20261013230000, until that migration is applied.
 _REFUSAL_STATUS = {"22023": 422, "23505": 409, "55000": 409}
 
 
@@ -56,11 +62,20 @@ def _valid_name(value, rule: re.Pattern) -> bool:
     return isinstance(value, str) and bool(rule.fullmatch(value))
 
 
-def _validate_metadata(metadata) -> dict | None:
+def _validate_metadata(metadata) -> dict:
+    """The run's form details; a run needs a dataset name and a species to load its result."""
     if metadata is None:
-        return None
+        raise HTTPException(status_code=422, detail=NO_DATASET)
     if not isinstance(metadata, dict):
         raise HTTPException(status_code=422, detail="metadata must be a JSON object")
+    name, species_id = metadata.get("dataset_name"), metadata.get("species_id")
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or type(species_id) is not int
+        or species_id < 1
+    ):
+        raise HTTPException(status_code=422, detail=NO_DATASET)
     size = len(json.dumps(metadata, ensure_ascii=False).encode())
     if size > METADATA_MAX_BYTES:
         raise HTTPException(
@@ -196,9 +211,8 @@ def trigger_run(body, user_id: str) -> dict:
         "p_reference": None,
         "p_requested_by": user_id,
         "p_genome_version_id": version_id,
+        "p_metadata": metadata,
     }
-    if metadata is not None:
-        args["p_metadata"] = metadata
     if sra_runs is not None:
         args["p_sra_runs"] = sra_runs
     if folder is not None:

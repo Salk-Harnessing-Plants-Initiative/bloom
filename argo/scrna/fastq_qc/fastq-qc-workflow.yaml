@@ -83,7 +83,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [bash, -c]
         args:
           - rm -rf -- "/shared/runs/qc-{{workflow.name}}/fastq" "/shared/runs/qc-{{workflow.name}}/sra"

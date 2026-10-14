@@ -1,6 +1,7 @@
 """Unit tests for the Cell Ranger trigger: request validation, the database call,
 run reads and the routes."""
 
+import json
 import re
 
 import pytest
@@ -14,6 +15,7 @@ USER = "00000000-0000-0000-0000-000000000001"
 VERSION_ID = 3
 # A run's reads: one SRA run imported under the sample's name.
 RUNS = ["SRR28503597"]
+META = {"dataset_name": "Root atlas", "species_id": 2}
 GENOME_VERSION = {
     "id": VERSION_ID,
     "version": 1,
@@ -89,18 +91,78 @@ def db(monkeypatch):
         {},
         {"genome_version_id": 3},
         {"sra_runs": RUNS, "sample": "root_a"},
-        {"sra_runs": RUNS, "sample": "", "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "../x", "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "a/b", "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": ".hidden", "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": 123, "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": ["root_a"], "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "x" * 101, "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "a__b", "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "tinygex\n", "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "S1.rep1", "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "x" * 65, "genome_version_id": VERSION_ID},
-        {"sra_runs": RUNS, "sample": "-rep1", "genome_version_id": VERSION_ID},
+        {
+            "sra_runs": RUNS,
+            "sample": "",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "../x",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "a/b",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": ".hidden",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": 123,
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": ["root_a"],
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "x" * 101,
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "a__b",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "tinygex\n",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "S1.rep1",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "x" * 65,
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        {
+            "sra_runs": RUNS,
+            "sample": "-rep1",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
         {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": 0},
         {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": -1},
         {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": "3"},
@@ -128,7 +190,13 @@ def test_invalid_requests_are_rejected_before_the_database(body, monkeypatch):
 @pytest.mark.parametrize("sample", ["x" * 64, "Col0_root_rep1", "rep1-", "rep1_"])
 def test_names_cellranger_can_use_are_accepted(db, sample):
     scrna_cellranger.trigger_run(
-        {"sra_runs": RUNS, "sample": sample, "genome_version_id": VERSION_ID}, USER
+        {
+            "sra_runs": RUNS,
+            "sample": sample,
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        USER,
     )
     assert db.rpc_calls[0][1]["p_sample"] == sample
 
@@ -156,7 +224,13 @@ def test_the_largest_id_the_database_holds_is_accepted(db):
         {"id": 2**63 - 1, "version": 1, "genome_references": {"name": "big"}}
     )
     started = scrna_cellranger.trigger_run(
-        {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": 2**63 - 1}, USER
+        {
+            "sra_runs": RUNS,
+            "sample": "root_a",
+            "genome_version_id": 2**63 - 1,
+            "metadata": META,
+        },
+        USER,
     )
     assert started["reference"] == "big.v1"
 
@@ -167,7 +241,13 @@ def test_a_version_whose_genome_cant_be_read_is_422_and_nothing_is_started(db):
     )
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": 5}, USER
+            {
+                "sra_runs": RUNS,
+                "sample": "root_a",
+                "genome_version_id": 5,
+                "metadata": META,
+            },
+            USER,
         )
     assert (exc.value.status_code, exc.value.detail) == (422, "no genome version 5")
     assert db.rpc_calls == []
@@ -176,7 +256,13 @@ def test_a_version_whose_genome_cant_be_read_is_422_and_nothing_is_started(db):
 def test_an_unknown_genome_version_is_422_and_nothing_is_started(db):
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": 99}, USER
+            {
+                "sra_runs": RUNS,
+                "sample": "root_a",
+                "genome_version_id": 99,
+                "metadata": META,
+            },
+            USER,
         )
     assert (exc.value.status_code, exc.value.detail) == (422, "no genome version 99")
     assert db.rpc_calls == []
@@ -200,7 +286,12 @@ def test_a_version_that_isnt_ready_is_refused_by_the_database_as_422(db):
     db.rpc = _refuse
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": VERSION_ID},
+            {
+                "sra_runs": RUNS,
+                "sample": "root_a",
+                "genome_version_id": VERSION_ID,
+                "metadata": META,
+            },
             USER,
         )
     assert (exc.value.status_code, exc.value.detail) == (
@@ -215,7 +306,8 @@ def test_a_sample_name_alone_is_refused_before_the_database(monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
-            {"sample": "root_a", "genome_version_id": VERSION_ID}, USER
+            {"sample": "root_a", "genome_version_id": VERSION_ID, "metadata": META},
+            USER,
         )
     assert (exc.value.status_code, exc.value.detail) == (
         422,
@@ -244,7 +336,13 @@ def test_a_dotted_sample_is_refused_with_the_sample_rule(monkeypatch):
 
 def test_a_valid_request_calls_the_request_function_once(db):
     out = scrna_cellranger.trigger_run(
-        {"sra_runs": RUNS, "sample": "root_b", "genome_version_id": VERSION_ID}, USER
+        {
+            "sra_runs": RUNS,
+            "sample": "root_b",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
+        USER,
     )
     assert db.rpc_calls == [
         (
@@ -254,6 +352,7 @@ def test_a_valid_request_calls_the_request_function_once(db):
                 "p_reference": None,
                 "p_genome_version_id": VERSION_ID,
                 "p_requested_by": USER,
+                "p_metadata": META,
                 "p_sra_runs": RUNS,
             },
         )
@@ -289,17 +388,44 @@ def test_metadata_is_passed_to_the_request_function(db):
     }
 
 
-def test_null_metadata_is_left_out_of_the_call(db):
-    scrna_cellranger.trigger_run(
-        {
-            "sra_runs": RUNS,
-            "sample": "root_b",
-            "genome_version_id": VERSION_ID,
-            "metadata": None,
-        },
-        USER,
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {},
+        {"species_id": 2},
+        {"dataset_name": "Root atlas"},
+        {"dataset_name": " ", "species_id": 2},
+        {"dataset_name": 5, "species_id": 2},
+        {"dataset_name": "Root atlas", "species_id": "2"},
+        {"dataset_name": "Root atlas", "species_id": True},
+        {"dataset_name": "Root atlas", "species_id": 0},
+    ],
+    ids=[
+        "none",
+        "empty",
+        "no-name",
+        "no-species",
+        "blank-name",
+        "name-not-text",
+        "species-as-text",
+        "species-as-bool",
+        "species-zero",
+    ],
+)
+def test_a_run_without_a_dataset_name_and_species_is_422(metadata, monkeypatch):
+    monkeypatch.setattr(
+        scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
     )
-    assert "p_metadata" not in db.rpc_calls[0][1]
+    body = {"sra_runs": RUNS, "sample": "root_b", "genome_version_id": VERSION_ID}
+    if metadata is not None:
+        body["metadata"] = metadata
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(body, USER)
+    assert (exc.value.status_code, exc.value.detail) == (
+        422,
+        scrna_cellranger.NO_DATASET,
+    )
 
 
 @pytest.mark.parametrize("metadata", [[], "root", 5, True, [{"tissue": "root"}]])
@@ -325,7 +451,7 @@ def test_metadata_over_the_size_limit_is_422(monkeypatch):
     monkeypatch.setattr(
         scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
     )
-    too_big = {"notes": "x" * scrna_cellranger.METADATA_MAX_BYTES}
+    too_big = {**META, "notes": "x" * scrna_cellranger.METADATA_MAX_BYTES}
     with pytest.raises(HTTPException) as exc:
         scrna_cellranger.trigger_run(
             {
@@ -341,8 +467,10 @@ def test_metadata_over_the_size_limit_is_422(monkeypatch):
 
 
 def test_metadata_at_the_size_limit_is_accepted(db):
-    # {"notes": "..."} is 13 bytes around the value.
-    at_limit = {"notes": "x" * (scrna_cellranger.METADATA_MAX_BYTES - 13)}
+    at_limit = {**META, "notes": ""}
+    at_limit["notes"] = "x" * (
+        scrna_cellranger.METADATA_MAX_BYTES - len(json.dumps(at_limit).encode())
+    )
     scrna_cellranger.trigger_run(
         {
             "sra_runs": RUNS,
@@ -435,7 +563,12 @@ def test_routes_require_auth(monkeypatch):
 def test_start_run_returns_201(app_as_user, db):
     resp = app_as_user.post(
         "/scrna/cellranger/runs",
-        json={"sra_runs": RUNS, "sample": "root_a", "genome_version_id": VERSION_ID},
+        json={
+            "sra_runs": RUNS,
+            "sample": "root_a",
+            "genome_version_id": VERSION_ID,
+            "metadata": META,
+        },
     )
     assert resp.status_code == 201
     assert resp.json()["run_key"] == f"root_a__tiny_ref.v1__{USER}"
@@ -454,7 +587,12 @@ def test_start_run_is_rate_limited_before_any_work(app_as_user, db, monkeypatch)
     import auth
 
     monkeypatch.setattr(auth, "RATE_LIMIT", 1)
-    body = {"sra_runs": RUNS, "sample": "root_a", "genome_version_id": VERSION_ID}
+    body = {
+        "sra_runs": RUNS,
+        "sample": "root_a",
+        "genome_version_id": VERSION_ID,
+        "metadata": META,
+    }
     assert app_as_user.post("/scrna/cellranger/runs", json=body).status_code == 201
     resp = app_as_user.post("/scrna/cellranger/runs", json=body)
     assert resp.status_code == 429
@@ -528,6 +666,7 @@ def test_a_folder_run_is_checked_and_named_from_its_files(db, folder):
         {
             "fastq_url": "s3://lab-data/run42",
             "genome_version_id": VERSION_ID,
+            "metadata": META,
             "fastq_files": SHOWN,
         },
         USER,
@@ -541,6 +680,7 @@ def test_a_folder_run_is_checked_and_named_from_its_files(db, folder):
                 "p_reference": None,
                 "p_genome_version_id": VERSION_ID,
                 "p_requested_by": USER,
+                "p_metadata": META,
                 "p_fastq_url": "s3://lab-data/run42/",
                 "p_fastq_files": FOLDER["files"],
             },
@@ -565,12 +705,12 @@ def test_a_folder_run_keeps_its_metadata(db, folder):
         {
             "fastq_url": "s3://lab-data/run42/",
             "genome_version_id": VERSION_ID,
-            "metadata": {"k": "v"},
+            "metadata": {**META, "k": "v"},
             "fastq_files": SHOWN,
         },
         USER,
     )
-    assert db.rpc_calls[0][1]["p_metadata"] == {"k": "v"}
+    assert db.rpc_calls[0][1]["p_metadata"] == {**META, "k": "v"}
 
 
 def test_the_files_shown_may_come_in_any_order(db, folder):
@@ -578,6 +718,7 @@ def test_the_files_shown_may_come_in_any_order(db, folder):
         {
             "fastq_url": "s3://lab-data/run42/",
             "genome_version_id": VERSION_ID,
+            "metadata": META,
             "fastq_files": list(reversed(SHOWN)),
         },
         USER,
@@ -601,6 +742,7 @@ def test_a_folder_that_changed_since_its_check_is_refused(db, folder, shown):
             {
                 "fastq_url": "s3://lab-data/run42/",
                 "genome_version_id": VERSION_ID,
+                "metadata": META,
                 "fastq_files": shown,
             },
             USER,
@@ -613,7 +755,11 @@ def test_a_folder_that_changed_since_its_check_is_refused(db, folder, shown):
     "shown", [None, "x", [1, 2]], ids=["missing", "string", "not-objects"]
 )
 def test_a_folder_run_needs_the_files_it_was_shown(db, folder, shown):
-    body = {"fastq_url": "s3://lab-data/run42/", "genome_version_id": VERSION_ID}
+    body = {
+        "fastq_url": "s3://lab-data/run42/",
+        "genome_version_id": VERSION_ID,
+        "metadata": META,
+    }
     if shown is not None:
         body["fastq_files"] = shown
     with pytest.raises(HTTPException) as exc:
@@ -635,6 +781,7 @@ def test_a_folder_with_another_source_is_refused(db, folder, extra, words):
             {
                 "fastq_url": "s3://lab-data/run42/",
                 "genome_version_id": VERSION_ID,
+                "metadata": META,
                 **extra,
             },
             USER,
@@ -648,6 +795,7 @@ def test_a_null_sample_or_sra_runs_beside_a_folder_counts_as_absent(db, folder):
         {
             "fastq_url": "s3://lab-data/run42/",
             "genome_version_id": VERSION_ID,
+            "metadata": META,
             "fastq_files": SHOWN,
             "sample": None,
             "sra_runs": None,
@@ -662,6 +810,7 @@ def test_a_null_folder_beside_a_sample_counts_as_absent(db, folder):
         {
             "sample": "col0",
             "genome_version_id": VERSION_ID,
+            "metadata": META,
             "fastq_url": None,
             "sra_runs": RUNS,
         },
@@ -697,6 +846,7 @@ def test_a_refused_folder_queues_nothing(db, monkeypatch):
             {
                 "fastq_url": "s3://lab-data/run42/",
                 "genome_version_id": VERSION_ID,
+                "metadata": META,
                 "fastq_files": SHOWN,
             },
             USER,
@@ -756,6 +906,7 @@ def test_checking_folders_doesnt_use_up_the_start_limit(
     start = {
         "fastq_url": "s3://lab-data/run42/",
         "genome_version_id": VERSION_ID,
+        "metadata": META,
         "fastq_files": SHOWN,
     }
     assert app_as_user.post("/scrna/cellranger/runs", json=start).status_code == 201

@@ -116,6 +116,7 @@ def test_the_run_is_passed_as_workflow_parameters():
         "reference": "tiny_ref.v1",
         "run-id": RUN["run_key"],
         "sra-runs": "SRR28503597",
+        "bloom-run-id": "7",
     }
 
 
@@ -252,7 +253,10 @@ def test_each_step_passes_exactly_the_templates_required_inputs_and_the_runs_sou
 ):
     task = _task(wfs.build_cellranger_body(RUN), step)
     template = _template(task["templateRef"]["template"])
-    assert set(_params(task)) == _required_inputs(template) | {"sra-runs"}
+    assert set(_params(task)) == _required_inputs(template) | {
+        "sra-runs",
+        "bloom-run-id",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -416,10 +420,11 @@ def test_a_run_naming_a_dataset_passes_it_to_the_sample_pipeline():
 
 
 @pytest.mark.parametrize("dataset", [None, {}], ids=["none", "empty"])
-def test_a_run_without_a_dataset_passes_none(dataset):
+def test_a_run_without_a_dataset_passes_only_its_run_id(dataset):
     body = wfs.build_cellranger_body({**RUN, "dataset": dataset})
-    names = {p["name"] for p in body["spec"]["arguments"]["parameters"]}
-    assert not names & {"dataset-name", "species-name", "bloom-run-id"}
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert not params.keys() & {"dataset-name", "species-name"}
+    assert params["bloom-run-id"] == "7", "its reports are stored under it"
 
 
 def test_the_dataset_inputs_are_ones_the_sample_pipeline_declares_with_an_empty_default():
