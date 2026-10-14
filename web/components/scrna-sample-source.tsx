@@ -1,7 +1,6 @@
 "use client";
 
 import type { FolderCheck } from "@/lib/s3-folder";
-import type { RnaseqSample } from "@/lib/scrna-jobs";
 import {
   MAX_SRA_RUNS,
   SRA_RUN_SELECTOR_URL,
@@ -13,11 +12,10 @@ import ScrnaFolderSource from "./scrna-folder-source";
 export type SampleSource = "folder" | "sra";
 
 // Where a run's reads come from: an S3 folder of one sample's FASTQs, or SRA run IDs imported
-// under a new sample name. Registered names are still refused for an import.
+// under a new sample name.
 export default function ScrnaSampleSource({
   source,
   onSource,
-  samples,
   folderUrl,
   folderRecheck,
   readerArn = null,
@@ -32,7 +30,6 @@ export default function ScrnaSampleSource({
 }: {
   source: SampleSource;
   onSource: (source: SampleSource) => void;
-  samples: RnaseqSample[];
   folderUrl: string;
   folderRecheck?: number;
   readerArn?: string | null;
@@ -46,10 +43,7 @@ export default function ScrnaSampleSource({
   labelClass: string;
 }) {
   const parsed = parseSraRuns(sraText);
-  const nameProblem = newSampleNameProblem(
-    newName.trim(),
-    samples.map((s) => s.name),
-  );
+  const nameProblem = newSampleNameProblem(newName.trim());
 
   return (
     <div className="space-y-4">

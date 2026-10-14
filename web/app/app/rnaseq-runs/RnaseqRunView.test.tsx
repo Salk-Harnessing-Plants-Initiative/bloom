@@ -8,12 +8,17 @@ vi.mock("@/lib/cyl-pipeline/use-live-sync", async () => ({
   useLiveSync: (await import("./live-sync-mock")).useLiveSyncMock,
 }));
 vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
+const router = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
 
 import RnaseqRunView from "./RnaseqRunView";
 import { emit } from "./live-sync-mock";
 import type { RnaseqRun } from "@/lib/rnaseq-runs";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  router.refresh.mockClear();
+});
 
 const RUN: RnaseqRun = {
   id: 1,
@@ -142,5 +147,40 @@ describe("the genome a run used", () => {
   it("shows the reference name for a run without a genome version", () => {
     renderView(RUN, null);
     expect(screen.getByText("tinygex against tiny_ref")).toBeTruthy();
+  });
+
+  it("links the run's Cell Ranger report when there is one", () => {
+    render(
+      <RnaseqRunView
+        initialRun={RUN}
+        startedBy="you"
+        speciesLabel={null}
+        reportHref="/app/rnaseq-runs/1/report"
+      />
+    );
+    expect(screen.getByRole("link", { name: "Open the report" }).getAttribute("href")).toBe(
+      "/app/rnaseq-runs/1/report"
+    );
+  });
+
+  it("says the report isn't ready while the run is going", () => {
+    renderView();
+    expect(screen.getByText("Not ready yet")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open the report" })).toBeNull();
+  });
+
+  it("says no report was stored for a finished run without one", () => {
+    renderView({ ...RUN, status: "succeeded", completed_at: "2026-09-30T02:00:00Z" });
+    expect(screen.getByText("Not stored for this run")).toBeTruthy();
+    expect(router.refresh).not.toHaveBeenCalled();
+  });
+
+  it("looks for the report again once the open run finishes", () => {
+    renderView();
+    expect(router.refresh).not.toHaveBeenCalled();
+    emit({ ...RUN, status: "succeeded", completed_at: "2026-09-30T02:00:00Z" });
+    expect(router.refresh).toHaveBeenCalledTimes(1);
+    emit({ ...RUN, status: "succeeded", message: "Finished: loaded into Bloom" });
+    expect(router.refresh).toHaveBeenCalledTimes(1);
   });
 });
