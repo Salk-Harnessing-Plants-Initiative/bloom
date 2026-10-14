@@ -264,6 +264,10 @@ def _counts_sent(client, since=0) -> list[str]:
             if e[0] == "upload" and e[2].startswith("counts/")]
 
 
+def _recorded_files(client) -> set[str]:
+    return {r["counts_object_path"].rsplit("/", 1)[1] for r in client.tables["scrna_counts"]}
+
+
 def _fail_on_gene(client, gene):
     client.fail(lambda op, table, payload: op == "upload" and payload.endswith(f"/{gene}.json"),
                 httpx.ConnectError("refused"))
@@ -279,12 +283,15 @@ def test_a_load_stopped_after_some_genes_are_recorded_resumes_with_the_rest(
     client = env["client"]
     _fail_on_gene(client, "gene2")
     assert _run("upload", "--yes", str(path)).exit_code != 0
-    assert len(client.tables["scrna_counts"]) == 2, "gene0 and gene1 recorded before the stop"
+    # Uploads run side by side, so which others finished first varies; gene2 never did.
+    recorded = _recorded_files(client)
+    assert "gene2.json" not in recorded
     before = len(client.log)
     resumed = _run("upload", "--yes", str(path))
     assert resumed.exit_code == 0, resumed.output
     assert "continues a load that stopped" in resumed.stderr
-    assert _counts_sent(client, before) == ["gene2.json", "gene3.json"]
+    assert sorted(_counts_sent(client, before)) == sorted(
+        {f"gene{i}.json" for i in range(4)} - recorded), "only the genes not yet recorded"
     gene_ids = [r["gene_id"] for r in client.tables["scrna_counts"]]
     assert len(gene_ids) == len(set(gene_ids)) == 4
     assert len(client.tables["scrna_genes"]) == 4
@@ -315,12 +322,15 @@ def test_adding_counts_shows_the_dataset_unfinished_until_they_are_all_there(
     dataset = _dataset(env)
     assert dataset["ingested_at"] is None and dataset["source_checksum"], "shown as incomplete"
     assert dataset["metadata"]["counts_pending"] is True
+    missing = sorted({f"gene{i}.json" for i in range(4)} - _recorded_files(client))
+    assert "gene2.json" in missing
     before = len(client.log)
     again = _run("upload", "--yes", str(path))
     assert again.exit_code == 0, again.output
     assert "loaded without its counts; they will be added" in again.stderr
-    assert "Added the counts of 2 genes to dataset" in again.stdout
-    assert _counts_sent(client, before) == ["gene2.json", "gene3.json"]
+    genes = "1 gene" if len(missing) == 1 else f"{len(missing)} genes"
+    assert f"Added the counts of {genes} to dataset" in again.stdout
+    assert sorted(_counts_sent(client, before)) == missing
     dataset = _dataset(env)
     assert dataset["ingested_at"] and "counts_pending" not in dataset["metadata"]
     assert dataset["metadata"]["normalization"], "the rest of the metadata is kept"

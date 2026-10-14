@@ -270,3 +270,27 @@ def test_the_record_is_readable_only_by_its_owner(tmp_path):
     marker = Marker(tmp_path / "m.json")
     marker.record("insert cells 1")
     assert marker.path.stat().st_mode & 0o777 == 0o600
+
+
+def test_writes_refused_together_from_several_threads_sign_in_once(tmp_path):
+    import threading
+
+    w, renewals, _ = writer(tmp_path)
+    expired = w.client
+    both_refused = threading.Barrier(2)
+
+    def send(client):
+        if client is expired:
+            both_refused.wait(timeout=5)
+            raise unauthorised()
+        return "sent"
+
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(w.write("upload", send)))
+               for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == ["sent", "sent"]
+    assert renewals == [1], "one fresh sign-in serves both"

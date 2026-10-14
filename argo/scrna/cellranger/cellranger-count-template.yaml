@@ -754,7 +754,7 @@ spec:
               default: ""
       schedulerName: runai-scheduler
       priorityClassName: high
-      # One gene's counts file at a time: about 30,000 uploads for a typical run.
+      # About 30,000 gene counts files for a typical run, uploaded 8 at a time.
       activeDeadlineSeconds: 21600
       retryStrategy:
         limit: 2

@@ -31,6 +31,7 @@ export type RnaseqRun = Pick<
   | "submitted_at"
   | "completed_at"
   | "genome_version_id"
+  | "dataset_id"
 >;
 
 export type RunStatus = "queued" | "submitted" | "running" | "succeeded" | "skipped" | "failed";
@@ -38,7 +39,7 @@ export type RunStatus = "queued" | "submitted" | "running" | "succeeded" | "skip
 export const RUN_COLUMNS =
   "id, workflow_type, status, current_step, params, metadata, requested_by, " +
   "argo_workflow_name, step_pods, exit_code, message, created_at, submitted_at, completed_at, " +
-  "genome_version_id";
+  "genome_version_id, dataset_id";
 
 // How many runs the list shows at first.
 export const RUNS_PAGE_SIZE = 50;
@@ -139,6 +140,12 @@ export function runDatasetName(run: RnaseqRun): string | null {
 export function runSpeciesId(run: RnaseqRun): number | null {
   const id = field(run.metadata, "species_id");
   return typeof id === "number" ? id : null;
+}
+
+/** The expression page of the dataset the run loaded, once the load has linked it. */
+export function runDatasetHref(run: RnaseqRun): string | null {
+  const speciesId = runSpeciesId(run);
+  return run.dataset_id != null && speciesId != null ? `/app/expression/${speciesId}/${run.dataset_id}` : null;
 }
 
 /** The run's free "Other details" rows, as name/value pairs. */
@@ -284,6 +291,18 @@ export async function fetchGenomeLabel(
   if (error || !data) return null;
   const [option] = genomeVersionOptions([data as unknown as ReadyVersionRow]);
   return option ? genomeVersionLabel(option) : null;
+}
+
+/** The name the run's dataset was loaded under, which may differ from the name on the form
+ * (e.g. Root atlas_v2 when Root atlas was taken); null before the run is linked to it or when
+ * it can't be read. */
+export async function fetchDatasetName(
+  supabase: SupabaseClient<Database>,
+  run: RnaseqRun
+): Promise<string | null> {
+  if (run.dataset_id == null) return null;
+  const { data, error } = await supabase.from("scrna_datasets").select("name").eq("id", run.dataset_id).maybeSingle();
+  return error || !data ? null : data.name;
 }
 
 /** A list with one run added or replaced, newest first, and runs `accept` rejects left out. */

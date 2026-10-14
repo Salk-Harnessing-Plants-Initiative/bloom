@@ -43,6 +43,7 @@ const RUN: RnaseqRun = {
   submitted_at: "2026-09-30T00:03:54Z",
   completed_at: null,
   genome_version_id: null,
+  dataset_id: null,
 };
 
 function renderView(run: RnaseqRun = RUN, genomeLabel: string | null = null) {
@@ -100,6 +101,39 @@ describe("RnaseqRunView", () => {
     expect(screen.getByText("scrna-cellranger-staging-1-7ef9275d")).toBeTruthy();
     // The source link is shown as text, never made a link.
     expect(screen.queryByRole("link", { name: /doi\.org/ })).toBeNull();
+  });
+
+  it("shows the name the dataset was loaded under, not only the one typed on the form", () => {
+    render(
+      <RnaseqRunView
+        initialRun={{ ...RUN, status: "succeeded", dataset_id: 24 }}
+        startedBy="you"
+        speciesLabel={null}
+        loadedDatasetName="TEST tinygex pipeline check_v2"
+      />
+    );
+    expect(screen.getByText(/TEST tinygex pipeline check_v2/)).toBeTruthy();
+    expect(screen.queryByText(/TEST tinygex pipeline check ·/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Explore the dataset" }).getAttribute("href")).toBe(
+      "/app/expression/1/24"
+    );
+  });
+
+  it("keeps the typed name when the loaded name couldn't be read", () => {
+    render(
+      <RnaseqRunView initialRun={{ ...RUN, status: "succeeded", dataset_id: 24 }} startedBy="you" speciesLabel={null} />
+    );
+    expect(screen.getByText(/TEST tinygex pipeline check/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Explore the dataset" })).toBeTruthy();
+  });
+
+  it("links the loaded dataset once the run is linked to it, without a reload", () => {
+    renderView();
+    expect(screen.queryByRole("link", { name: "Explore the dataset" })).toBeNull();
+    emit({ id: 1, status: "succeeded", dataset_id: 24 });
+    expect(screen.getByRole("link", { name: "Explore the dataset" }).getAttribute("href")).toBe(
+      "/app/expression/1/24"
+    );
   });
 
   it("follows the run as the poller reports it", () => {

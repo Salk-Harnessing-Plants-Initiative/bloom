@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   user: null as { id: string } | null,
   run: null as unknown,
   reports: new Set<string>(),
+  datasetName: null as string | null,
 }));
 vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: async () => ({}),
@@ -17,6 +18,7 @@ vi.mock("@/lib/rnaseq-runs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/rnaseq-runs")>()),
   fetchRun: async () => state.run,
   fetchGenomeLabel: async () => null,
+  fetchDatasetName: async () => state.datasetName,
 }));
 vi.mock("../species-labels", () => ({ speciesLabelMap: async () => ({}) }));
 vi.mock("@/lib/rnaseq-reports", async (importOriginal) => ({
@@ -24,10 +26,19 @@ vi.mock("@/lib/rnaseq-reports", async (importOriginal) => ({
   storedReports: async () => state.reports,
 }));
 vi.mock("../RnaseqRunView", () => ({
-  default: ({ startedBy, reportHref }: { startedBy: string; reportHref: string | null }) => (
+  default: ({
+    startedBy,
+    reportHref,
+    loadedDatasetName,
+  }: {
+    startedBy: string;
+    reportHref: string | null;
+    loadedDatasetName: string | null;
+  }) => (
     <>
       <p>Started by {startedBy}</p>
       <p>Report: {reportHref ?? "none"}</p>
+      <p>Loaded as: {loadedDatasetName ?? "none"}</p>
     </>
   ),
 }));
@@ -70,6 +81,13 @@ describe("an RNA-seq run's page", () => {
     state.reports = new Set(["web_summary.html", "metrics_summary.csv"]);
     await show("me", "me");
     expect(screen.getByText("Report: /app/rnaseq-runs/8/report")).toBeTruthy();
+  });
+
+  it("passes on the name the run's dataset was loaded under", async () => {
+    state.datasetName = "Root atlas_v2";
+    await show("me", "me");
+    expect(screen.getByText("Loaded as: Root atlas_v2")).toBeTruthy();
+    state.datasetName = null;
   });
 
   it("links no report when the run stored none, or only its metrics", async () => {
