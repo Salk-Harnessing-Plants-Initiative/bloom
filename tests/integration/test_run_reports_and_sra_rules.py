@@ -262,6 +262,12 @@ def test_the_same_reads_may_run_again_once_their_run_failed(cur, version):
     assert _import(cur, version, sample="root_tip_again")
 
 
+def test_the_same_reads_may_run_on_another_genome_under_another_name(cur, version, other_version):
+    # The same reads against another genome are a new analysis, not a repeat.
+    _import(cur, version)
+    assert _import(cur, other_version, sample="root_tip_again")
+
+
 def test_another_scientist_may_run_the_same_reads(cur, version):
     _import(cur, version)
     assert _import(cur, version, user=OTHER_USER)
