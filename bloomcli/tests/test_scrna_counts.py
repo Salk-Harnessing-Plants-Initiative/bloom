@@ -223,3 +223,72 @@ def test_a_dataset_name_that_cannot_be_a_path_stops_before_any_object(tmp_path, 
 @pytest.mark.parametrize("name,folder", [("a\\b", "ab"), ("a%2Fb", "a2Fb")])
 def test_characters_the_cli_drops_leave_a_plain_folder(name, folder):
     assert _counts.object_path(name, 7, "G") == f"counts/{folder}_7_/G.json"
+
+
+# --- several uploads at once ---------------------------------------------------
+
+
+def _timed_uploads(monkeypatch, delay=0.02):
+    """Wraps each upload to note how many run together; returns that tally."""
+    import threading
+    import time
+
+    tally = {"now": 0, "most": 0}
+    lock = threading.Lock()
+    upload = _counts._upload
+
+    def timed(writer, path, payload):
+        with lock:
+            tally["now"] += 1
+            tally["most"] = max(tally["most"], tally["now"])
+        try:
+            time.sleep(delay)
+            return upload(writer, path, payload)
+        finally:
+            with lock:
+                tally["now"] -= 1
+
+    monkeypatch.setattr(_counts, "_upload", timed)
+    return tally
+
+
+def test_uploads_run_together_but_never_more_than_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(_counts, "UPLOAD_WORKERS", 2)
+    tally = _timed_uploads(monkeypatch)
+    client = FakeClient()
+    assert write(client, tmp_path) == 5
+    assert tally["most"] == 2
+    assert len(client.tables["scrna_counts"]) == 5 and len(objects(client)) == 5
+
+
+def test_the_limit_leaves_most_of_storages_database_pool_free():
+    # Storage's pool holds 20 connections, shared with everything the website serves.
+    assert 1 < _counts.UPLOAD_WORKERS <= 8
+
+
+def test_a_failed_upload_stops_new_uploads_and_records_no_row_for_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(_counts, "UPLOAD_WORKERS", 1)
+    monkeypatch.setattr(_counts, "READ_AHEAD", 1)
+    client = FakeClient()
+    client.fail(lambda op, table, payload: op == "upload" and payload.endswith("AT1G00001.json"),
+                httpx.ConnectError("refused"))
+    with pytest.raises(LoadError, match="run the same command again"):
+        write(client, tmp_path)
+    sent = [e[2].rsplit("/", 1)[1] for e in client.log if e[0] == "upload"]
+    assert sent == ["AT1G00000.json"], "no gene after the refused one is sent"
+    assert all(not r["counts_object_path"].endswith("AT1G00001.json")
+               for r in client.tables["scrna_counts"])
+
+
+def test_an_interrupt_during_the_uploads_is_waited_out_by_the_next_run(tmp_path, monkeypatch):
+    def interrupted(writer, path, payload):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_counts, "_upload", interrupted)
+    marker = Marker(tmp_path / "m.json", wait_s=300)
+    client = FakeClient()
+    with pytest.raises(KeyboardInterrupt):
+        _counts.write(Writer(client, lambda: client, marker), DATASET, "MYB41",
+                      write_h5ad(tmp_path / "f.h5ad"), _genes.read_names(tmp_path / "f.h5ad"))
+    assert marker.path.exists(), "an upload in flight may still land"
+    assert client.tables["scrna_counts"] == []

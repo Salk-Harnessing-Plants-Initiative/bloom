@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Callable
 
@@ -31,6 +32,15 @@ GENE_BATCH = 5000
 
 # Genes recorded per request; each object is uploaded on its own and a row follows it.
 RECORD_BATCH = 500
+
+# Gene objects uploaded at once. Storage records each object through its own pool of 20
+# database connections, shared with every image and report the website serves, and refuses a
+# request that waits 3 s for one; 8 keeps most of the pool free.
+UPLOAD_WORKERS = 8
+
+# Genes read ahead of the uploads, per worker: enough to keep every worker busy without
+# holding much of the file in memory.
+READ_AHEAD = 2
 
 
 def clean_dataset_name(name: str) -> str:
@@ -67,25 +77,49 @@ def write(
     """Register the genes, then write every gene's object and row not already recorded.
 
     ``unchanged`` is checked after each block of genes is read, before its objects are
-    written. Returns how many genes were written. Afterwards every gene in the file is
-    recorded once.
+    written. Objects are uploaded UPLOAD_WORKERS at a time; a gene's row is recorded, on this
+    thread, only once its object is stored. Returns how many genes were written. Afterwards
+    every gene in the file is recorded once.
     """
     ids = _register(writer, dataset_id, names)
     done = _recorded(writer, dataset_id, ids)
     todo = [i for i, gene in enumerate(names) if gene not in done]
     pending: list[dict] = []
-    for count, (column, values) in enumerate(_genes.gene_values(
-            path, names, only=todo, after_block=unchanged), 1):
-        gene = names[column]
-        object_at = object_path(dataset_name, dataset_id, gene)
-        _upload(writer, object_at, json.dumps(values).encode())
-        pending.append({"dataset_id": dataset_id, "gene_id": ids[gene],
-                        "counts_object_path": object_at})
-        if len(pending) >= RECORD_BATCH:
-            _record(writer, pending)
-            pending = []
-        if on_progress:
-            on_progress(count, len(todo))
+    uploading: dict[Future, tuple[str, str]] = {}
+    stored = 0
+
+    def collect(finished) -> None:
+        nonlocal pending, stored
+        for future in finished:
+            gene, object_at = uploading.pop(future)
+            future.result()  # a failed upload stops the load here
+            pending.append({"dataset_id": dataset_id, "gene_id": ids[gene],
+                            "counts_object_path": object_at})
+            stored += 1
+            if len(pending) >= RECORD_BATCH:
+                _record(writer, pending)
+                pending = []
+            if on_progress:
+                on_progress(stored, len(todo))
+
+    pool = ThreadPoolExecutor(max_workers=UPLOAD_WORKERS)
+    try:
+        for column, values in _genes.gene_values(path, names, only=todo, after_block=unchanged):
+            gene = names[column]
+            object_at = object_path(dataset_name, dataset_id, gene)
+            upload = pool.submit(_upload, writer, object_at, json.dumps(values).encode())
+            uploading[upload] = (gene, object_at)
+            if len(uploading) >= UPLOAD_WORKERS * READ_AHEAD:
+                collect(wait(uploading, return_when=FIRST_COMPLETED).done)
+        while uploading:
+            collect(wait(uploading, return_when=FIRST_COMPLETED).done)
+    except KeyboardInterrupt:
+        # Uploads still in flight may finish after the interrupt.
+        writer.record_unknown("upload gene counts")
+        raise
+    finally:
+        # Whatever stopped the load, queued uploads are dropped and running ones finish.
+        pool.shutdown(wait=True, cancel_futures=True)
     if pending:
         _record(writer, pending)
     recorded = _recorded(writer, dataset_id, ids)

@@ -8,6 +8,15 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a15] - 2026-10-14 — faster gene counts
+
+### Changed
+
+- `scrna hdf5 upload` uploads the per-gene counts 8 at a time instead of one by one, so a
+  dataset with tens of thousands of genes loads in minutes rather than over an hour. A gene is
+  still recorded only once its object is stored, and a stopped load continues with the genes
+  not yet recorded.
+
 ## [0.1.0a14] - 2026-10-13 — any number of clusters
 
 ### Changed
