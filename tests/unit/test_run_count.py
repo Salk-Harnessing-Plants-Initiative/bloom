@@ -220,10 +220,13 @@ def test_the_report_is_kept_in_reports_and_stored_under_the_run(env, run_id, wor
     env.update(BLOOM_RUN_ID=run_id, WORKFLOW_NAME=workflow)
     result = count(env)
     assert result.returncode == 0, result.stdout + result.stderr
-    report = Path(env["RESULTS_DIR"]) / "reports/web_summary.html"
-    assert report.exists()
+    reports = Path(env["RESULTS_DIR"]) / "reports"
+    assert sorted(p.name for p in reports.iterdir()) == ["metrics_summary.csv", "web_summary.html"]
     assert puts(env) == [
-        f"--put {report} --bucket scrna --path reports/{key}/web_summary.html --content-type text/html"
+        f"--put {reports}/web_summary.html --bucket scrna --path reports/{key}/web_summary.html"
+        " --content-type text/html",
+        f"--put {reports}/metrics_summary.csv --bucket scrna --path reports/{key}/metrics_summary.csv"
+        " --content-type text/csv",
     ]
 
 
