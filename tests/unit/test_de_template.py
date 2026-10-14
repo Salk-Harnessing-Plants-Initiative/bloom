@@ -2,6 +2,7 @@
 image, build-h5ad waits for it so the final file holds its result, and the analysis image checks
 its bloomctl can load that result."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -48,3 +49,16 @@ def test_de_is_retried_once_like_the_other_analysis_steps():
 def test_the_analysis_image_checks_its_bloomctl_loads_de():
     dockerfile = (ARGO / "analysis" / "Dockerfile").read_text()
     assert "bloomctl scrna hdf5 upload --help | grep -q -- --de-key" in dockerfile
+
+
+def test_the_analysis_image_has_a_bloomctl_that_colours_any_number_of_clusters():
+    # 0.1.0a14 loads more than 23 clusters; the build checks it does.
+    requirements = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
+    assert "bloomctl==0.1.0a14" in requirements
+    dockerfile = (ARGO / "analysis" / "Dockerfile").read_text()
+    assert "cluster_colours(40)" in dockerfile
+
+
+def test_every_analysis_step_uses_one_image():
+    template = (ARGO / "cellranger" / "cellranger-count-template.yaml").read_text()
+    assert set(re.findall(r"scrna-analysis:(\S+)", template)) == {"0.1.5"}
