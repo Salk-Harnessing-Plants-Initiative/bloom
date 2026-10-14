@@ -30,6 +30,7 @@ function run(id: number, overrides: Partial<RnaseqRun> = {}): RnaseqRun {
     submitted_at: null,
     completed_at: null,
     genome_version_id: null,
+    dataset_id: null,
     ...overrides,
   };
 }

@@ -8,6 +8,7 @@ import {
   fetchGenomeLabel,
   isFinished,
   runAttributes,
+  runDatasetHref,
   runDatasetName,
   runReference,
   runSample,
@@ -40,6 +41,7 @@ function run(overrides: Partial<RnaseqRun> = {}): RnaseqRun {
     submitted_at: "2026-09-30T00:03:54Z",
     completed_at: null,
     genome_version_id: null,
+    dataset_id: null,
     ...overrides,
   };
 }
@@ -55,6 +57,12 @@ describe("reading a run", () => {
       ["tissue", "root"],
       ["replicate", "2"],
     ]);
+  });
+
+  it("links the dataset's expression page only once the load has linked it", () => {
+    expect(runDatasetHref(run())).toBeNull();
+    expect(runDatasetHref(run({ dataset_id: 24 }))).toBe("/app/expression/1/24");
+    expect(runDatasetHref(run({ dataset_id: 24, metadata: null }))).toBeNull();
   });
 
   it("copes with a run started without metadata", () => {

@@ -43,6 +43,7 @@ const RUN: RnaseqRun = {
   submitted_at: "2026-09-30T00:03:54Z",
   completed_at: null,
   genome_version_id: null,
+  dataset_id: null,
 };
 
 function renderView(run: RnaseqRun = RUN, genomeLabel: string | null = null) {
@@ -100,6 +101,15 @@ describe("RnaseqRunView", () => {
     expect(screen.getByText("scrna-cellranger-staging-1-7ef9275d")).toBeTruthy();
     // The source link is shown as text, never made a link.
     expect(screen.queryByRole("link", { name: /doi\.org/ })).toBeNull();
+  });
+
+  it("links the loaded dataset once the run is linked to it, without a reload", () => {
+    renderView();
+    expect(screen.queryByRole("link", { name: "Explore the dataset" })).toBeNull();
+    emit({ id: 1, status: "succeeded", dataset_id: 24 });
+    expect(screen.getByRole("link", { name: "Explore the dataset" }).getAttribute("href")).toBe(
+      "/app/expression/1/24"
+    );
   });
 
   it("follows the run as the poller reports it", () => {

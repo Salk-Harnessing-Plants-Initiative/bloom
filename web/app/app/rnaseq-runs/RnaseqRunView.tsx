@@ -12,6 +12,7 @@ import {
   fetchRun,
   isFinished,
   runAttributes,
+  runDatasetHref,
   runDatasetName,
   runReference,
   runSample,
@@ -166,7 +167,17 @@ export default function RnaseqRunView({
 
       <h3 className="mb-2 text-xs uppercase tracking-widest text-stone-500">Details</h3>
       <dl className="max-w-3xl">
-        <Detail label="Dataset">{runDatasetName(run) ?? "—"}</Detail>
+        <Detail label="Dataset">
+          {runDatasetName(run) ?? "—"}
+          {runDatasetHref(run) ? (
+            <>
+              {" · "}
+              <Link href={runDatasetHref(run)!} className="text-lime-700 underline-offset-4 hover:underline">
+                Explore the dataset
+              </Link>
+            </>
+          ) : null}
+        </Detail>
         <Detail label="Species">{species ?? "—"}</Detail>
         {metadataText(run, "accession") ? <Detail label="Accession">{metadataText(run, "accession")}</Detail> : null}
         {metadataText(run, "experiment_name") ? (
