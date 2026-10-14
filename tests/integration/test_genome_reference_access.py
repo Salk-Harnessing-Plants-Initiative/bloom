@@ -125,8 +125,16 @@ def test_a_writer_cannot_delete_a_genome_file(cur, species_id, genome):
     _, _, fasta_path, _ = uploaded(cur, genome, species_id)
     cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
     as_role(cur, "bloom_writer", WRITER)
-    cur.execute("DELETE FROM storage.objects WHERE bucket_id = %s AND name = %s", (BUCKET, fasta_path))
-    assert cur.rowcount == 0
+    # Refused outright where writers hold no DELETE on storage, or by the genome rules (0 rows)
+    # where they hold it through authenticated.
+    cur.execute("SAVEPOINT writer_delete")
+    try:
+        cur.execute("DELETE FROM storage.objects WHERE bucket_id = %s AND name = %s", (BUCKET, fasta_path))
+        deleted = cur.rowcount
+    except psycopg.errors.InsufficientPrivilege:
+        cur.execute("ROLLBACK TO SAVEPOINT writer_delete")
+        deleted = 0
+    assert deleted == 0
 
 
 def test_a_writers_access_to_other_buckets_is_unchanged(cur):
