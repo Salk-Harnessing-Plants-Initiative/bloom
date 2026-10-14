@@ -64,16 +64,14 @@ describe("parseSraRuns", () => {
 
 describe("newSampleNameProblem", () => {
   it.each(["col0_root_tip_rep1", "SRR28503597", "a-b"])("accepts %s", (name) => {
-    expect(newSampleNameProblem(name, [])).toBeNull();
+    expect(newSampleNameProblem(name)).toBeNull();
   });
 
   it.each(["", "_x", "a__b", "a b", "a.b", "x".repeat(65)])("refuses %j", (name) => {
-    expect(newSampleNameProblem(name, [])).not.toBeNull();
+    expect(newSampleNameProblem(name)).not.toBeNull();
   });
 
-  it("refuses a registered name", () => {
-    expect(newSampleNameProblem("tinygex", ["tinygex"])).toBe(
-      "tinygex is already a registered sample; choose another name.",
-    );
+  it("accepts a name an earlier import registered: each run has its own folder", () => {
+    expect(newSampleNameProblem("tinygex")).toBeNull();
   });
 });

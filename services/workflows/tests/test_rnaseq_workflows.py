@@ -1,6 +1,7 @@
 """Unit tests for the RNA-seq workflow types: the Cell Ranger workflow name and body,
 and checks that they still match the repo's Argo files and database functions."""
 
+import json
 import re
 from pathlib import Path
 
@@ -18,9 +19,14 @@ MIGRATIONS = REPO_ROOT / "supabase" / "migrations"
 RUN = {
     "run_id": 7,
     "workflow_type": "scrna-cellranger",
-    "params": {"sample": "tinygex", "reference": "tiny_ref"},
-    "run_key": "tinygex__tiny_ref__00000000-0000-0000-0000-000000000001",
+    "params": {
+        "sample": "tinygex",
+        "reference": "tiny_ref.v1",
+        "sra_runs": ["SRR28503597"],
+    },
+    "run_key": "tinygex__tiny_ref.v1__00000000-0000-0000-0000-000000000001",
     "msg_id": 12,
+    "genome": "tiny_ref.v1",
 }
 
 
@@ -28,6 +34,7 @@ RUN = {
 def _k8s_config(monkeypatch):
     monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
     monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
 
 
 def _yaml(name: str) -> dict:
@@ -106,9 +113,43 @@ def test_the_run_is_passed_as_workflow_parameters():
     spec = wfs.build_cellranger_body(RUN)["spec"]
     assert {p["name"]: p["value"] for p in spec["arguments"]["parameters"]} == {
         "sample": "tinygex",
-        "reference": "tiny_ref",
+        "reference": "tiny_ref.v1",
         "run-id": RUN["run_key"],
+        "sra-runs": "SRR28503597",
+        "bloom-run-id": "7",
     }
+
+
+def test_the_reference_is_the_runs_recorded_genome_version_not_its_reference_name():
+    run = {**RUN, "params": {**RUN["params"], "reference": "something_else"}}
+    spec = wfs.build_cellranger_body(run)["spec"]
+    params = {p["name"]: p["value"] for p in spec["arguments"]["parameters"]}
+    assert params["reference"] == "tiny_ref.v1"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sample": "tinygex", "reference": "tiny_ref.v1"},
+        {
+            "sample": "tinygex",
+            "reference": "tiny_ref.v1",
+            "sra_runs": [],
+            "fastq_url": "",
+        },
+    ],
+    ids=["no-source", "empty-source"],
+)
+def test_a_run_without_a_folder_or_sra_ids_cant_be_built(params):
+    # Started on a registered sample's name alone, which the pipeline no longer reads.
+    with pytest.raises(wfs.UnrunnableRun, match="names no S3 folder or SRA run IDs"):
+        wfs.build_cellranger_body({**RUN, "params": params})
+
+
+@pytest.mark.parametrize("genome", [None, ""], ids=["none", "empty"])
+def test_a_run_without_a_genome_version_cant_be_built(genome):
+    with pytest.raises(wfs.UnrunnableRun, match="no genome version from Bloom"):
+        wfs.build_cellranger_body({**RUN, "genome": genome})
 
 
 def test_the_run_key_is_the_run_id_so_output_goes_to_its_folder():
@@ -148,9 +189,9 @@ def test_the_ttl_setting_falls_back_to_24_hours(monkeypatch, raw, expected):
     assert wfs._resolve_ttl_seconds() == expected
 
 
-def test_the_sample_runs_after_the_reference_is_staged():
-    body = wfs.build_cellranger_body(RUN)
-    assert _task(body, "sample")["depends"] == "stage-reference"
+def test_an_sra_run_is_just_the_sample_pipeline():
+    tasks = wfs.build_cellranger_body(RUN)["spec"]["templates"][0]["dag"]["tasks"]
+    assert [t["name"] for t in tasks] == ["sample"] and "depends" not in tasks[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -206,11 +247,16 @@ def test_each_environment_names_its_own_template(monkeypatch, value, expected):
         importlib.reload(wfs)
 
 
-@pytest.mark.parametrize("step", ["stage-reference", "sample"])
-def test_each_step_passes_exactly_the_templates_required_inputs(step):
+@pytest.mark.parametrize("step", ["sample"])
+def test_each_step_passes_exactly_the_templates_required_inputs_and_the_runs_source(
+    step,
+):
     task = _task(wfs.build_cellranger_body(RUN), step)
     template = _template(task["templateRef"]["template"])
-    assert set(_params(task)) == _required_inputs(template)
+    assert set(_params(task)) == _required_inputs(template) | {
+        "sra-runs",
+        "bloom-run-id",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -237,3 +283,154 @@ def test_every_registered_type_is_allowed_by_the_runs_table():
 
 def test_cellranger_is_the_one_registered_type():
     assert wfs.WORKFLOW_TYPES == {"scrna-cellranger": wfs.CELLRANGER}
+
+
+# --------------------------------------------------------------------------- #
+# An S3 folder run
+# --------------------------------------------------------------------------- #
+
+FOLDER_FILES = [
+    {"name": "col0_S1_L001_R1_001.fastq.gz", "size": 10, "etag": '"a"'},
+    {"name": "col0_S1_L001_R2_001.fastq.gz", "size": 32, "etag": '"b"'},
+]
+FOLDER_RUN = {
+    **RUN,
+    "params": {
+        "sample": "col0",
+        "reference": "tiny_ref.v1",
+        "fastq_url": "s3://lab-data/run42/",
+        "fastq_files": FOLDER_FILES,
+    },
+    "run_key": "col0__tiny_ref.v1__00000000-0000-0000-0000-000000000001",
+}
+
+
+def test_a_folder_run_passes_its_folder_and_files():
+    body = wfs.build_cellranger_body(FOLDER_RUN)
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert params["fastq-url"] == "s3://lab-data/run42/"
+    assert json.loads(params["fastq-files"]) == FOLDER_FILES
+    sample = _params(_task(body, "sample"))
+    assert sample["fastq-url"] == "{{workflow.parameters.fastq-url}}"
+    assert sample["fastq-files"] == "{{workflow.parameters.fastq-files}}"
+
+
+def test_a_folder_run_passes_only_inputs_the_template_declares():
+    template = _template("sample-pipeline")
+    declared = {p["name"] for p in template["inputs"]["parameters"]}
+    sample = _params(_task(wfs.build_cellranger_body(FOLDER_RUN), "sample"))
+    assert set(sample) <= declared
+    assert _required_inputs(template) <= set(sample)
+
+
+def test_a_run_without_a_folder_passes_no_folder():
+    body = wfs.build_cellranger_body(RUN)
+    names = {p["name"] for p in body["spec"]["arguments"]["parameters"]}
+    assert not names & {"fastq-url", "fastq-files"}
+
+
+# --------------------------------------------------------------------------- #
+# The Bloom credential the steps sign in with
+# --------------------------------------------------------------------------- #
+
+
+def test_a_run_gets_this_environments_pipeline_secret(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client,
+        "PIPELINE_SECRET_NAME",
+        "genericsecret-bloom-staging-pipeline-credentials",
+    )
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [
+        {
+            "name": "bloom-credentials",
+            "secret": {
+                "secretName": "genericsecret-bloom-staging-pipeline-credentials",
+                "optional": True,
+            },
+        }
+    ]
+
+
+def test_without_a_pipeline_secret_the_volume_is_an_empty_folder(monkeypatch):
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [{"name": "bloom-credentials", "emptyDir": {}}]
+
+
+@pytest.mark.parametrize(
+    "raw, volume",
+    [
+        (None, {"emptyDir": {}}),
+        ("Bloom-Secret ", {"emptyDir": {}}),
+        ("bloom-secret", {"secret": {"secretName": "bloom-secret", "optional": True}}),
+    ],
+    ids=["unset", "invalid", "valid"],
+)
+def test_the_volume_follows_the_secret_setting(monkeypatch, raw, volume):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raw)
+    name, _why = k8s_client._resolve_pipeline_secret_name()
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", name)
+    volumes = wfs.build_cellranger_body(RUN)["spec"]["volumes"]
+    assert volumes == [{"name": "bloom-credentials", **volume}]
+
+
+def test_every_volume_a_template_step_mounts_is_defined():
+    """A mount the template doesn't define must come from the body, or every run fails
+    at that step."""
+    body = {v["name"] for v in wfs.build_cellranger_body(RUN)["spec"]["volumes"]}
+    for template in _yaml("cellranger-count-template.yaml")["spec"]["templates"]:
+        own = {v["name"] for v in template.get("volumes", [])}
+        mounts = {
+            m["name"] for m in template.get("container", {}).get("volumeMounts", [])
+        }
+        assert mounts - own <= body, template["name"]
+
+
+def test_the_hand_submitted_workflow_defines_no_volume_the_body_lacks():
+    repo = {
+        v["name"]
+        for v in _yaml("cellranger-count-workflow.yaml")["spec"].get("volumes", [])
+    }
+    body = {v["name"] for v in wfs.build_cellranger_body(RUN)["spec"]["volumes"]}
+    assert repo <= body
+
+
+# --------------------------------------------------------------------------- #
+# The dataset the run loads
+# --------------------------------------------------------------------------- #
+
+
+def test_a_run_naming_a_dataset_passes_it_to_the_sample_pipeline():
+    run = {**RUN, "dataset": {"name": "Root atlas", "species": "Arabidopsis"}}
+    body = wfs.build_cellranger_body(run)
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert (
+        params["dataset-name"] == "Root atlas"
+        and params["species-name"] == "Arabidopsis"
+    )
+    assert params["bloom-run-id"] == str(RUN["run_id"]), "the dataset is tagged with it"
+    passed = _params(_task(body, "sample"))
+    assert passed["dataset-name"] == "{{workflow.parameters.dataset-name}}"
+    assert passed["species-name"] == "{{workflow.parameters.species-name}}"
+    assert passed["bloom-run-id"] == "{{workflow.parameters.bloom-run-id}}"
+
+
+@pytest.mark.parametrize("dataset", [None, {}], ids=["none", "empty"])
+def test_a_run_without_a_dataset_passes_only_its_run_id(dataset):
+    body = wfs.build_cellranger_body({**RUN, "dataset": dataset})
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert not params.keys() & {"dataset-name", "species-name"}
+    assert params["bloom-run-id"] == "7", "its reports are stored under it"
+
+
+def test_the_dataset_inputs_are_ones_the_sample_pipeline_declares_with_an_empty_default():
+    declared = {
+        p["name"]: p.get("value")
+        for p in _template("sample-pipeline")["inputs"]["parameters"]
+    }
+    assert declared["dataset-name"] == "" and declared["species-name"] == ""
+    assert declared["bloom-run-id"] == "", "a run started by hand has no run id"

@@ -138,7 +138,7 @@ def test_a_real_counting_workflow_is_recorded_as_running_at_count(workflows):
     assert name == "update_rnaseq_run_status"
     assert params["p_run_id"] == 7
     assert (params["p_status"], params["p_current_step"]) == ("running", "count")
-    assert set(params["p_step_pods"]) == {"stage-reference", "stage", "qc", "count"}
+    assert set(params["p_step_pods"]) == {"download-genome", "stage", "qc", "count"}
     assert (params["p_exit_code"], params["p_message"]) == (None, None)
 
 
@@ -148,7 +148,10 @@ def test_a_real_finished_workflow_is_recorded_with_its_message(workflows):
     poller.sweep_once(client)
     params = client.rpcs[0][1]
     assert (params["p_status"], params["p_exit_code"]) == ("succeeded", 0)
-    assert params["p_message"].startswith("Finished: results in s3://")
+    # The captured Workflow names no dataset.
+    assert params["p_message"] == (
+        "Finished; the run named no dataset, so nothing was loaded into Bloom"
+    )
 
 
 def test_a_workflow_that_is_gone_fails_the_run(workflows):

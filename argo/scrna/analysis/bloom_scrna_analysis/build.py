@@ -20,6 +20,8 @@ from .steps import (
 from .store import Store
 
 SAMPLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Each cell's sample, which `bloomctl scrna hdf5 upload` reads (its --sample-column default).
+SAMPLE_COLUMN = "sample"
 
 
 def finished_parts(store: Store) -> list[str]:
@@ -46,7 +48,11 @@ def merge(base, part, name: str) -> None:
             EXIT_PARTS_DONT_FIT,
             f"part {name!r} writes uns keys other than its own: {extra_uns}",
         )
-    taken = [f"obs[{c!r}]" for c in part.obs.columns if c in base.obs.columns]
+    taken = [
+        f"obs[{c!r}]"
+        for c in part.obs.columns
+        if c in base.obs.columns or c == SAMPLE_COLUMN
+    ]
     taken += [f"obsm[{k!r}]" for k in part.obsm if k in base.obsm]
     taken += [f"uns[{name!r}]"] if name in part.uns and name in base.uns else []
     if taken:
@@ -62,10 +68,14 @@ def merge(base, part, name: str) -> None:
         base.uns[name] = part.uns[name]
 
 
-def compile_file(base, parts: dict[str, object]):
-    """The final AnnData: the base with each part merged in name order."""
+def compile_file(base, parts: dict[str, object], sample: str):
+    """The final AnnData: the base with each part merged in name order, every cell marked
+    with the run's sample."""
+    import pandas as pd
+
     for name in sorted(parts):
         merge(base, parts[name], name)
+    base.obs[SAMPLE_COLUMN] = pd.Categorical([sample] * base.n_obs)
     base.uns["bloom_pipeline"] = {
         "steps": ["preprocess", *sorted(parts)],
         "versions": versions(),
@@ -82,7 +92,8 @@ def run(
     if not SAMPLE_NAME.match(sample) or "__" in sample:
         raise ValueError(f"bad sample name {sample!r}")
     names = finished_parts(store)
-    record = {"steps": ["preprocess", *names]}
+    # The sample is part of the record, so a file built before it was written in is rebuilt.
+    record = {"steps": ["preprocess", *names], "sample": sample}
     marker = f"{FINAL_DIR}/{MARKER}"
     if store.exists(marker) and json.loads(store.read_text(marker)) == record:
         print(
@@ -97,7 +108,7 @@ def run(
         )
         for name in names
     }
-    final = compile_file(base, parts)
+    final = compile_file(base, parts, sample)
 
     local = workdir / f"{sample}.h5ad"
     final.write_h5ad(local, compression="gzip")

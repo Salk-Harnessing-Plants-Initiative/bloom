@@ -18,6 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILES = ("docker-compose.prod.yml", "docker-compose.dev.yml")
 WORKER = "rnaseq-status-poller"
 REFERENCE = "cyl-status-poller"
+# The run-finished email's settings: the mail relay GoTrue uses, and the site for its link.
+EMAIL_KEYS = ("SMTP_HOST", "SMTP_PORT", "SMTP_ADMIN_EMAIL", "SMTP_SENDER_NAME", "SITE_URL")
 
 
 def _services(compose_file: str) -> dict:
@@ -43,11 +45,20 @@ def test_the_poller_runs_off_the_workflows_image(compose_file):
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
 def test_the_poller_has_the_cyl_pollers_environment(compose_file):
-    """Both read the same cluster as the same account."""
+    """Both read the same cluster as the same account; only the RNA-seq poller also sends the
+    run-finished email."""
     services = _services(compose_file)
-    assert services[WORKER]["environment"] == services[REFERENCE]["environment"], (
+    own = {k: v for k, v in services[WORKER]["environment"].items() if k not in EMAIL_KEYS}
+    assert own == services[REFERENCE]["environment"], (
         f"{WORKER}'s environment has drifted from {REFERENCE}'s in {compose_file}"
     )
+
+
+@pytest.mark.parametrize("compose_file", COMPOSE_FILES)
+def test_the_poller_gets_the_mail_relay_and_site_url(compose_file):
+    env = _services(compose_file)[WORKER]["environment"]
+    for key in EMAIL_KEYS:
+        assert env[key].startswith(f"${{{key}"), key
 
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)

@@ -13,7 +13,7 @@ from .store import Store
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scrna-analysis")
-    parser.add_argument("step", choices=["preprocess", "cluster", "build-h5ad"])
+    parser.add_argument("step", choices=["preprocess", "cluster", "de", "build-h5ad"])
     parser.add_argument(
         "--root", required=True, help="the run's working folder, e.g. /shared/runs/42"
     )
@@ -43,6 +43,10 @@ def main(argv: list[str] | None = None) -> int:
                 from . import cluster
 
                 cluster.run(store, workdir)
+            elif args.step == "de":
+                from . import de
+
+                de.run(store, workdir)
             else:
                 from . import build
 

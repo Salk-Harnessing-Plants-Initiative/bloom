@@ -106,9 +106,11 @@ def login(
 
 # Data-type command groups, one file per command (see bloomctl/cyl, bloomctl/plate).
 from .cyl import cyl  # noqa: E402  (registered after `cli` is defined)
+from .genome import genome  # noqa: E402
 from .plate import plate  # noqa: E402
 from .scrna import scrna  # noqa: E402
 
 cli.add_command(cyl)
+cli.add_command(genome)
 cli.add_command(plate)
 cli.add_command(scrna)

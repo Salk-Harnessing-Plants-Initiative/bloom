@@ -8,6 +8,51 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a15] - 2026-10-14 — faster gene counts
+
+### Changed
+
+- `scrna hdf5 upload` uploads the per-gene counts 8 at a time instead of one by one, so a
+  dataset with tens of thousands of genes loads in minutes rather than over an hour. A gene is
+  still recorded only once its object is stored, and a stopped load continues with the genes
+  not yet recorded.
+
+## [0.1.0a14] - 2026-10-13 — any number of clusters
+
+### Changed
+
+- `scrna hdf5 upload` no longer refuses a file whose `--annotation` has more than 23 labels.
+  The first 23 keep their colours, and each further one gets a generated colour of its own,
+  the same every time, so a pipeline run's finer Leiden clustering loads.
+
+## [0.1.0a13] - 2026-10-12 — each cluster's differential expression
+
+### Added
+
+- `scrna hdf5 upload --de-key KEY` loads a one-vs-rest differential expression from the file's
+  `uns[KEY]` (scanpy's `rank_genes_groups`, each `--annotation` cluster against the rest) with
+  the dataset: one DE run, a comparison per cluster, every tested gene, and each cluster's
+  size, centre and top markers, so the expression page's cluster panel and Genes tab are
+  filled. It is refused unless it compares the annotation's clusters with the rest; a stopped
+  load continues it. The pipeline passes `--de-key de`.
+
+## [0.1.0a12] - 2026-10-12 — reference genomes: upload, list and download
+
+### Added
+
+- `genome upload NAME --fasta FILE --gtf FILE` stores a reference genome's FASTA and GTF in
+  Bloom as the genome's next version, for the Cell Ranger workflow. Both files are checked and
+  gzipped before anything is sent, and a version whose upload stops part-way is abandoned.
+- `genome list` shows every reference genome with its species and versions, and each
+  version's status (`ready`, `uploading`, `abandoned`, `withdrawn`); `--output json|csv` gives
+  one record per version.
+- `genome download NAME[.vN]` fetches a ready version's FASTA and GTF (the newest ready one by
+  default), checked against the SHA-256 and size Bloom recorded; `--unzip` writes them unzipped
+  for `cellranger mkref`, and `--version-file` records the exact version. A file already in
+  place is kept, and a different one is never overwritten. It prints the version as `NAME.vN`,
+  and exits `3` when the version isn't available or a file doesn't match (not worth retrying)
+  and `1` for other failures.
+
 ## [0.1.0a11] - 2026-10-07 — each dataset knows the run that generated it
 
 ### Added

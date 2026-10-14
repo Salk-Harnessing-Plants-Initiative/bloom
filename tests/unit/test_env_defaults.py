@@ -61,6 +61,8 @@ SENSITIVE_INVENTORY = {
     # openspec/changes/add-cyl-pipeline-dispatch/design.md).
     "WORKFLOWS_K8S_TOKEN",
     "WANDB_API_KEY",
+    "WORKFLOWS_S3_READER_ACCESS_KEY_ID",
+    "WORKFLOWS_S3_READER_SECRET_ACCESS_KEY",
     "WORKFLOWS_K8S_CA_CERT",
     "WORKFLOWS_K8S_API_URL",
 }
@@ -629,8 +631,8 @@ def test_pipeline_values_are_pinned_and_staging_matches_the_vendored_file():
 
 @pytest.mark.parametrize("worker", ["cyl-pipeline-worker", "rnaseq-worker"])
 def test_the_workers_receive_the_pipeline_keys_in_prod_compose(worker):
-    """rnaseq-worker receives them only because its environment must equal
-    cyl-pipeline-worker's (test_rnaseq_worker_container.py); it ignores them."""
+    """rnaseq-worker's environment must equal cyl-pipeline-worker's
+    (test_rnaseq_worker_container.py); of these keys it reads only the Secret name."""
     env = _compose_services(COMPOSE_FILE)[worker]["environment"]
     for key in _PIPELINE_KEYS:
         assert env.get(key) == f"${{{key}}}", (worker, key)

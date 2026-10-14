@@ -36,6 +36,7 @@ import { UmapLabelLayer } from "@/components/umap-label-layer";
 import { labelAnchors, projectXY } from "@/components/expression-lib/umap-labels";
 import { transgeneBadge, transgeneByCluster } from "@/components/expression-lib/transgene";
 import type { Database } from "@/lib/database.types";
+import { cellTypeLabelKeys, sourceName } from "@/components/expression-lib/cell-type-labels";
 
 type Dataset = Database["public"]["Tables"]["scrna_datasets"]["Row"];
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
@@ -97,12 +98,14 @@ export function pickCell(
 }
 
 /** What a hovered cell says about itself: its cell type from the catalogue, then
- *  its genotype and which reference its label was transferred from. */
+ *  its genotype, which reference its label was transferred from, and its own
+ *  predicted cell types when the dataset marks any. */
 export function describeCell(
   index: number,
   cells: Pick<CellArraysRow, "replicate" | "facets" | "genotype">[],
   clusterOrdinals: Uint8Array,
   clusters: { ordinal: number; cluster_id: string; name: string | null }[],
+  cellTypeKeys: readonly string[] = [],
 ): { cellType: string; detail: string } | null {
   const cell = cells[index];
   if (!cell) return null;
@@ -118,6 +121,10 @@ export function describeCell(
   if (genotype) parts.push(genotype);
   const source = cell.facets?.nn_source;
   if (source) parts.push(`label from ${source}`);
+  for (const key of cellTypeKeys) {
+    const label = cell.facets?.[key];
+    if (label) parts.push(`${sourceName(key)}: ${label}`);
+  }
   return { cellType, detail: parts.join(" · ") };
 }
 
@@ -726,6 +733,7 @@ export function ExpressionUmap({
     if (!hovered || !data) return null;
     const described = describeCell(
       hovered.index, data.cells, data.clusterOrdinals, data.clusters,
+      cellTypeLabelKeys(data.dataset.metadata),
     );
     return described && { ...described, x: hovered.x, y: hovered.y };
   }, [hovered, data]);

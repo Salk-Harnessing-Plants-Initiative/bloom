@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BACKSTOP_MESSAGE,
+  REMOVED_WORKFLOW_MESSAGE,
   DISPATCH_REFUSED_MESSAGES,
   failedScanCause,
   lateResultNote,
@@ -81,18 +82,29 @@ describe("lateResultNote", () => {
   });
 });
 
+/** A module-level constant in status_poller.py, written as adjacent Python string literals. */
+function pollerMessage(name: string): string {
+  const source = readFileSync(
+    fileURLToPath(new URL("../../../services/workflows/status_poller.py", import.meta.url)),
+    "utf8",
+  );
+  const block = new RegExp(`^${name} = \\(((?:\\s*"[^"\\n]*")+)\\s*\\)`, "m").exec(source);
+  expect(block, `${name} literal not found in status_poller.py`).not.toBeNull();
+  const text = [...block![1].matchAll(/"([^"\n]*)"/g)].map((m) => m[1]).join("");
+  expect(text.length).toBeGreaterThan(20);
+  return text;
+}
+
 describe("BACKSTOP_MESSAGE", () => {
   it("is the status poller's backstop text, read from status_poller.py", () => {
-    const source = readFileSync(
-      fileURLToPath(new URL("../../../services/workflows/status_poller.py", import.meta.url)),
-      "utf8",
-    );
-    // The poller passes the text as adjacent Python string literals.
-    const block = /"p_error_message":\s*\(((?:\s*"[^"\n]*")+)\s*\)/.exec(source);
-    expect(block, "p_error_message literal not found in status_poller.py").not.toBeNull();
-    const text = [...block![1].matchAll(/"([^"\n]*)"/g)].map((m) => m[1]).join("");
-    expect(text.length).toBeGreaterThan(20);
-    expect(BACKSTOP_MESSAGE).toBe(text);
+    expect(BACKSTOP_MESSAGE).toBe(pollerMessage("_BACKSTOP_MESSAGE"));
+  });
+});
+
+describe("REMOVED_WORKFLOW_MESSAGE", () => {
+  it("is the status poller's removed-workflow text, read from status_poller.py", () => {
+    expect(REMOVED_WORKFLOW_MESSAGE).toBe(pollerMessage("_REMOVED_MESSAGE"));
+    expect(REMOVED_WORKFLOW_MESSAGE).not.toBe(BACKSTOP_MESSAGE);
   });
 });
 

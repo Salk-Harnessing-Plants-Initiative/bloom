@@ -112,6 +112,11 @@ erDiagram
 "public.scrna_embedding_points" }o--|| "public.scrna_cells" : "FOREIGN KEY (dataset_id, cell_id) REFERENCES scrna_cells(dataset_id, id) ON DELETE RESTRICT"
 "public.scrna_embedding_points" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_count_changes" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
+"public.rnaseq_runs" |o--o| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id) ON DELETE SET NULL"
+"public.rnaseq_runs" }o--o| "public.genome_reference_versions" : "FOREIGN KEY (genome_version_id) REFERENCES genome_reference_versions(id)"
+"public.cyl_pipeline_run_workflows" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
+"public.genome_references" }o--|| "public.species" : "FOREIGN KEY (species_id) REFERENCES species(id)"
+"public.genome_reference_versions" }o--|| "public.genome_references" : "FOREIGN KEY (genome_id) REFERENCES genome_references(id)"
 
 "public.species" {
   bigint id
@@ -918,6 +923,7 @@ erDiagram
   timestamp_with_time_zone submitted_at
   timestamp_with_time_zone completed_at
   text error_message
+  timestamp_with_time_zone poller_concluded_at
 }
 "public.cyl_pipeline_run_scans" {
   bigint id
@@ -1071,6 +1077,8 @@ erDiagram
   text workflow_type
   jsonb params
   jsonb metadata
+  bigint dataset_id FK
+  bigint genome_version_id FK
 }
 "public.rnaseq_samples" {
   bigint id
@@ -1094,5 +1102,41 @@ erDiagram
   text experiment_name
   integer wave_number
   bigint count
+}
+"public.cyl_pipeline_run_workflows" {
+  bigint run_id FK
+  text argo_workflow_name
+  text phase
+  timestamp_with_time_zone observed_at
+}
+"public.genome_references" {
+  bigint id
+  text name
+  bigint species_id FK
+  text description
+  integer next_version
+  uuid created_by
+  timestamp_with_time_zone created_at
+}
+"public.genome_reference_versions" {
+  bigint id
+  bigint genome_id FK
+  integer version
+  text status
+  text fasta_path
+  text gtf_path
+  text fasta_sha256
+  bigint fasta_bytes
+  text gtf_sha256
+  bigint gtf_bytes
+  text assembly
+  text annotation
+  text source_url
+  text notes
+  uuid created_by
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone ready_at
+  text withdrawn_reason
+  timestamp_with_time_zone withdrawn_at
 }
 ```

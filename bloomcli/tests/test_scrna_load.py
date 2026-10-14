@@ -86,6 +86,14 @@ def test_a_first_load_registers_the_dataset_and_finishes_it_last(tmp_path):
                     (3, "BC3", 3.0, 3.5, "Cortex", "Col-0")]
 
 
+def test_a_dataset_with_more_cell_types_than_the_palette_gets_a_colour_for_each():
+    levels = [f"c{i:02d}" for i in range(32)]
+    rows = _load.catalogue_rows(7, {"levels": levels})
+    assert [r["ordinal"] for r in rows] == list(range(32))
+    assert [r["color"] for r in rows[:23]] == _cells.PALETTE
+    assert len({r["color"] for r in rows}) == 32
+
+
 def test_every_write_goes_out_with_retries_off(tmp_path):
     client = FakeClient()
     load(client, tmp_path)

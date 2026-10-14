@@ -1,7 +1,7 @@
 # cyl-pipeline-ui Specification
 
 ## Purpose
-TBD - created by archiving change add-cyl-pipeline-ui. Update Purpose after archive.
+Defines how scientists start cylinder pipeline runs from Bloom and follow them live: the trigger proxy, the per-environment switch, the confirm dialog and the run views.
 ## Requirements
 ### Requirement: Trigger proxy `POST /api/cyl/pipeline` rejects cross-origin and unauthenticated calls before any other work
 The route handler SHALL apply these checks in order, before reading the body and before contacting upstream:
@@ -37,7 +37,7 @@ The web app SHALL offer run actions, and the trigger proxy SHALL accept a reques
 - `POST /api/cyl/pipeline` responds `503` before reading the session or body, and makes no upstream request;
 - the live views (runs list, drill-down, experiment panel) are unchanged.
 
-It is `true` in staging and `false` in prod until bloom#863 is fixed, because every dispatched Workflow mounts the staging Supabase credential.
+It is `true` in staging and in prod; prod was `false` until its own pipeline credential Secret and stage directories were provisioned (bloom#863). The dispatch worker reads the same switch, at start-up, and fails every batch it claims while it is off (see `cyl-pipeline-dispatch`).
 
 #### Scenario: Switched off hides the run actions
 - **WHEN** `CYL_PIPELINE_TRIGGER_ENABLED` is unset, `false` or `TRUE`, and a member opens a scan, experiment, accession or drill-down page

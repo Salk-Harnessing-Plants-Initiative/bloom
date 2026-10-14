@@ -1,6 +1,6 @@
 """Unit tests for importing a Cell Ranger run's sample from SRA: the start API's sra_runs and
 the database's refusals, fetch-sra in the Workflow body, the new steps and exit messages in
-the status reader, and the poller registering the sample. No database or cluster."""
+the status reader, and the poller registering nothing. No database or cluster."""
 
 from pathlib import Path
 
@@ -27,7 +27,8 @@ class _Result:
 
 
 class FakeClient:
-    """Records RPCs; `errors` maps an RPC name to the APIError it raises."""
+    """Records RPCs; `errors` maps an RPC name to the APIError it raises. Any table read
+    returns genome version 3, tiny_ref v1."""
 
     def __init__(self, result=7, errors=None):
         self.result = result
@@ -46,6 +47,21 @@ class FakeClient:
 
         return _Call()
 
+    def table(self, _name):
+        class _Query:
+            def select(self, _cols):
+                return self
+
+            def eq(self, _col, _value):
+                return self
+
+            def execute(self):
+                return _Result(
+                    [{"version": 1, "genome_references": {"name": "tiny_ref"}}]
+                )
+
+        return _Query()
+
 
 # --------------------------------------------------------------------------- #
 # The start API
@@ -61,7 +77,12 @@ def db(monkeypatch):
 
 def _start(**body):
     return scrna_cellranger.trigger_run(
-        {"sample": "root_tip", "reference": "tiny_ref", **body}, USER
+        {
+            "sample": "root_tip",
+            "genome_version_id": 3,
+            "metadata": {"dataset_name": "Root tip", "species_id": 2},
+            **body,
+        }, USER
     )
 
 
@@ -73,10 +94,15 @@ def test_run_ids_are_passed_to_the_database_in_order(db):
     assert started["sra_runs"] == ["SRR28503598", "SRR28503597"]
 
 
-def test_a_run_without_run_ids_sends_none(db):
-    started = _start()
-    assert "p_sra_runs" not in db.rpcs[0][1]
-    assert "sra_runs" not in started
+def test_a_sample_name_alone_is_refused_before_the_database(db):
+    with pytest.raises(HTTPException) as refused:
+        _start()
+    assert refused.value.status_code == 422
+    assert (
+        refused.value.detail
+        == "give an S3 folder or SRA run IDs to read the sample from"
+    )
+    assert db.rpcs == []
 
 
 @pytest.mark.parametrize(
@@ -113,12 +139,21 @@ def test_bad_run_ids_are_refused_before_the_database(db, sra_runs):
 
 
 @pytest.mark.parametrize(
-    "code, status",
-    [("23505", 409), ("55000", 409), ("22023", 422)],
-    ids=["name-taken", "still-importing", "bad-value"],
+    "code, status, message",
+    [
+        ("23505", 409, "root_tip against athaliana_col0.v2 already has run 7. Choose another "
+         "sample name, or another reference"),
+        ("23505", 409, "SRR28503597, SRR28503598 against athaliana_col0.v2 was already run as "
+         "root_tip (run 7); its results are on that run's page. To run these reads again, "
+         "choose another reference"),
+        # Only the function before 20261013230000 raises this.
+        ("55000", 409, "sample root_tip is still being imported from SRA; start the run once "
+         "it is registered"),
+        ("22023", 422, "give 1 to 9 distinct SRA run IDs like SRR12046049"),
+    ],
+    ids=["live-run-on-the-key", "already-run-as", "still-importing-before-the-migration", "bad-value"],
 )
-def test_the_databases_refusals_become_clear_http_errors(db, code, status):
-    message = "sample root_tip is still being imported from SRA; start the run once it is registered"
+def test_the_databases_refusals_become_clear_http_errors(db, code, status, message):
     db.errors["request_scrna_cellranger_run"] = APIError(
         {"code": code, "message": message}
     )
@@ -132,7 +167,7 @@ def test_any_other_database_error_is_not_hidden(db):
         {"code": "42501", "message": "denied"}
     )
     with pytest.raises(APIError):
-        _start()
+        _start(sra_runs=RUNS)
 
 
 # --------------------------------------------------------------------------- #
@@ -141,8 +176,13 @@ def test_any_other_database_error_is_not_hidden(db):
 
 RUN = {
     "run_id": 42,
-    "run_key": f"root_tip__tiny_ref__{USER}",
-    "params": {"sample": "root_tip", "reference": "tiny_ref", "sra_runs": RUNS},
+    "run_key": f"root_tip__athaliana_col0.v2__{USER}",
+    "params": {
+        "sample": "root_tip",
+        "reference": "athaliana_col0.v2",
+        "sra_runs": RUNS,
+    },
+    "genome": "athaliana_col0.v2",
 }
 
 
@@ -156,52 +196,91 @@ def _tasks(body):
     return {t["name"]: t for t in body["spec"]["templates"][0]["dag"]["tasks"]}
 
 
-def test_an_import_downloads_alongside_the_reference_and_the_sample_waits_for_both(k8s):
+def test_an_import_is_one_sample_pipeline_given_its_run_ids(k8s):
     body = rnaseq_workflows.build_cellranger_body(RUN)
     tasks = _tasks(body)
-    assert list(tasks) == ["stage-reference", "fetch-sra", "sample"]
-    assert "depends" not in tasks["fetch-sra"]
-    assert tasks["sample"]["depends"] == "stage-reference && fetch-sra"
-    assert tasks["fetch-sra"]["templateRef"] == {
-        "name": rnaseq_workflows.CELLRANGER_TEMPLATE,
-        "template": "fetch-sra",
-    }
+    assert list(tasks) == ["sample"] and "depends" not in tasks["sample"]
+    args = {p["name"]: p["value"] for p in tasks["sample"]["arguments"]["parameters"]}
+    assert args["sra-runs"] == "{{workflow.parameters.sra-runs}}"
 
 
-def test_fetch_sra_gets_the_run_ids_comma_separated_in_lane_order(k8s):
+def test_the_run_ids_are_passed_comma_separated_in_lane_order(k8s):
     body = rnaseq_workflows.build_cellranger_body(RUN)
     params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
     assert params["sra-runs"] == "SRR28503597,SRR28503598"
-    args = {
-        p["name"]: p["value"]
-        for p in _tasks(body)["fetch-sra"]["arguments"]["parameters"]
-    }
-    assert args == {
-        "sample": "{{workflow.parameters.sample}}",
-        "sra-runs": "{{workflow.parameters.sra-runs}}",
-        "run-id": "{{workflow.parameters.run-id}}",
-    }
 
 
-def test_fetch_sras_arguments_are_exactly_the_templates_inputs(k8s):
+def _pipeline_tasks():
     import yaml
 
     template = yaml.safe_load(TEMPLATE_FILE.read_text())
+    pipeline = next(
+        t for t in template["spec"]["templates"] if t["name"] == "sample-pipeline"
+    )
+    return {t["name"]: t for t in pipeline["dag"]["tasks"]}, template
+
+
+def test_fetch_sra_runs_inside_the_pipeline_only_for_an_import():
+    tasks, _ = _pipeline_tasks()
+    assert tasks["fetch-sra"]["when"] == "'{{inputs.parameters.sra-runs}}' != ''"
+    assert "depends" not in tasks["fetch-sra"]
+
+
+def test_the_reads_come_from_fetch_sra_or_stage_alongside_the_genome_steps():
+    tasks, _ = _pipeline_tasks()
+    assert tasks["fetch-sra"]["when"] == "'{{inputs.parameters.sra-runs}}' != ''"
+    assert tasks["stage"]["when"] == "'{{inputs.parameters.sra-runs}}' == ''"
+    assert "depends" not in tasks["stage"] and "depends" not in tasks["fetch-sra"]
+    # A skipped task counts as done, so qc follows whichever of the two ran.
+    assert tasks["qc"]["depends"] == "fetch-sra && stage"
+    assert "depends" not in tasks["download-genome"]
+    assert tasks["count"]["depends"] == "qc && build-reference"
+
+
+def test_fetch_sras_arguments_are_exactly_the_templates_inputs():
+    tasks, template = _pipeline_tasks()
     fetch = next(t for t in template["spec"]["templates"] if t["name"] == "fetch-sra")
     inputs = {p["name"] for p in fetch["inputs"]["parameters"]}
-    body = rnaseq_workflows.build_cellranger_body(RUN)
-    given = {p["name"] for p in _tasks(body)["fetch-sra"]["arguments"]["parameters"]}
-    assert given == inputs
+    args = {
+        p["name"]: p["value"] for p in tasks["fetch-sra"]["arguments"]["parameters"]
+    }
+    assert set(args) == inputs
+    assert args == {
+        "sample": "{{inputs.parameters.sample}}",
+        "sra-runs": "{{inputs.parameters.sra-runs}}",
+        "run-id": "{{inputs.parameters.run-id}}",
+    }
 
 
-def test_a_run_without_run_ids_has_no_download(k8s):
-    run = {**RUN, "params": {"sample": "root_tip", "reference": "tiny_ref"}}
+def test_the_pipeline_declares_the_run_ids_empty_by_default():
+    _, template = _pipeline_tasks()
+    pipeline = next(
+        t for t in template["spec"]["templates"] if t["name"] == "sample-pipeline"
+    )
+    declared = {p["name"]: p.get("value") for p in pipeline["inputs"]["parameters"]}
+    assert declared["sra-runs"] == ""
+
+
+def test_a_folder_run_has_no_download(k8s):
+    files = [{"name": "root_tip_S1_L001_R1_001.fastq.gz", "size": 1, "etag": '"e"'}]
+    run = {
+        **RUN,
+        "params": {
+            "sample": "root_tip",
+            "reference": "athaliana_col0.v2",
+            "fastq_url": "s3://lab-data/run42/",
+            "fastq_files": files,
+        },
+    }
     body = rnaseq_workflows.build_cellranger_body(run)
-    assert list(_tasks(body)) == ["stage-reference", "sample"]
-    assert _tasks(body)["sample"]["depends"] == "stage-reference"
+    assert list(_tasks(body)) == ["sample"]
+    assert "depends" not in _tasks(body)["sample"]
     assert "sra-runs" not in {
         p["name"] for p in body["spec"]["arguments"]["parameters"]
     }
+    assert "sra-runs" not in {
+        p["name"] for p in _tasks(body)["sample"]["arguments"]["parameters"]
+    }, "the pipeline's empty default skips fetch-sra"
 
 
 # --------------------------------------------------------------------------- #
@@ -235,13 +314,9 @@ def _workflow(phase, *nodes):
     }
 
 
-DOWNLOADED = {"fastq-count": "6", "total-bytes": "11902105823"}
-
-
 def test_an_import_reports_fetch_sra_while_it_runs():
     wf = _workflow(
         "Running",
-        _node("stage-reference", "Succeeded", "2026-09-30T01:00:00Z", 1),
         _node("fetch-sra", "Running", "2026-09-30T01:00:01Z", 2),
     )
     status = st.read_cellranger_status(wf, RUN)
@@ -260,9 +335,8 @@ def test_the_analysis_steps_are_reported(step):
     [
         (6, "or SRA run IDs SRR28503597, SRR28503598 can't be used"),
         (7, "couldn't be named the Illumina way"),
-        (10, "Couldn't download SRR28503597, SRR28503598 from SRA"),
+        (10, "Couldn't download SRR28503597, SRR28503598 from ENA or SRA"),
         (11, "don't look like 10x gene-expression reads"),
-        (12, "raw_reads/root_tip/ already holds other FASTQs"),
     ],
 )
 def test_a_failed_download_says_why(code, text):
@@ -304,27 +378,17 @@ def test_count_exits_keep_their_meaning_outside_the_download():
     )
 
 
-def test_the_download_reports_its_counts_once_it_succeeds():
-    running = _workflow(
-        "Running", _node("fetch-sra", "Running", "2026-09-30T01:00:00Z", 2)
-    )
-    done = _workflow(
-        "Running",
-        _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2, outputs=DOWNLOADED),
-    )
-    assert st.sra_download(running) is None
-    assert st.sra_download(done) == (6, 11_902_105_823)
-
-
-def test_a_download_without_its_counts_reports_none():
+def test_the_retired_folder_taken_exit_has_no_message_of_its_own():
     wf = _workflow(
-        "Running", _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2)
+        "Failed", _node("fetch-sra", "Failed", "2026-09-30T01:00:01Z", 2, exit_code=12)
     )
-    assert st.sra_download(wf) is None
+    assert (
+        st.read_cellranger_status(wf, RUN).message == "Step fetch-sra failed (exit 12)"
+    )
 
 
 # --------------------------------------------------------------------------- #
-# The poller registering the sample
+# The poller registers nothing
 # --------------------------------------------------------------------------- #
 
 ROW = {
@@ -335,93 +399,15 @@ ROW = {
     "status": "running",
     "argo_workflow_name": WF,
 }
-AFTER_DOWNLOAD = _workflow(
-    "Running",
-    _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2, outputs=DOWNLOADED),
-    _node("count", "Running", "2026-09-30T01:40:00Z", 5),
-)
 
 
-@pytest.fixture(autouse=True)
-def _fresh_poller():
-    poller._registered.clear()
-    yield
-    poller._registered.clear()
-
-
-def _poll(monkeypatch, workflow, row=ROW, client=None):
-    client = client or FakeClient(result=True)
-    monkeypatch.setattr(poller, "get_workflow", lambda name: workflow)
-    poller.poll_run(client, row)
-    return client
-
-
-def _registrations(client):
-    return [params for name, params in client.rpcs if name == "register_rnaseq_sample"]
-
-
-def test_the_sample_is_registered_once_the_download_succeeds(monkeypatch):
-    client = _poll(monkeypatch, AFTER_DOWNLOAD)
-    assert [name for name, _ in client.rpcs] == [
-        "update_rnaseq_run_status",
-        "register_rnaseq_sample",
-    ]
-    assert _registrations(client) == [
-        {"p_run_id": 42, "p_fastq_count": 6, "p_total_bytes": 11_902_105_823}
-    ]
-
-
-def test_it_is_registered_only_once_by_this_poller(monkeypatch):
-    client = _poll(monkeypatch, AFTER_DOWNLOAD)
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    assert len(_registrations(client)) == 1
-
-
-def test_nothing_is_registered_while_the_download_runs(monkeypatch):
-    wf = _workflow("Running", _node("fetch-sra", "Running", "2026-09-30T01:00:00Z", 2))
-    assert _registrations(_poll(monkeypatch, wf)) == []
-
-
-def test_a_failed_run_registers_nothing(monkeypatch):
+def test_a_finished_download_registers_no_sample(monkeypatch):
     wf = _workflow(
-        "Failed",
-        _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2, outputs=DOWNLOADED),
-        _node("count", "Failed", "2026-09-30T01:40:00Z", 5, exit_code=5),
+        "Running",
+        _node("fetch-sra", "Succeeded", "2026-09-30T01:00:00Z", 2),
+        _node("count", "Running", "2026-09-30T01:40:00Z", 5),
     )
-    assert _registrations(_poll(monkeypatch, wf)) == []
-
-
-def test_a_run_without_run_ids_registers_nothing(monkeypatch):
-    row = {**ROW, "params": {"sample": "tinygex", "reference": "tiny_ref"}}
-    assert _registrations(_poll(monkeypatch, AFTER_DOWNLOAD, row=row)) == []
-
-
-def test_a_taken_name_is_logged_once_and_not_retried(monkeypatch, caplog):
-    client = FakeClient(
-        result=True,
-        errors={
-            "register_rnaseq_sample": APIError(
-                {"code": "23505", "message": "already registered"}
-            )
-        },
-    )
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    assert len(_registrations(client)) == 1
-    assert "was not registered: already registered" in caplog.text
-
-
-def test_another_registration_error_is_retried_on_the_next_poll(monkeypatch):
-    client = FakeClient(
-        result=True,
-        errors={
-            "register_rnaseq_sample": APIError(
-                {"code": "08006", "message": "connection lost"}
-            )
-        },
-    )
-    with pytest.raises(APIError):
-        _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    del client.errors["register_rnaseq_sample"]
-    _poll(monkeypatch, AFTER_DOWNLOAD, client=client)
-    assert len(_registrations(client)) == 2
+    client = FakeClient(result=True)
+    monkeypatch.setattr(poller, "get_workflow", lambda name: wf)
+    poller.poll_run(client, ROW)
+    assert [name for name, _ in client.rpcs] == ["update_rnaseq_run_status"]

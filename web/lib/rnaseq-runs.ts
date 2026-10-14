@@ -6,6 +6,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
+import {
+  genomeVersionLabel,
+  genomeVersionOptions,
+  type ReadyVersionRow,
+} from "@/lib/scrna-jobs";
 
 type RunRow = Database["public"]["Tables"]["rnaseq_runs"]["Row"];
 
@@ -25,27 +30,39 @@ export type RnaseqRun = Pick<
   | "created_at"
   | "submitted_at"
   | "completed_at"
+  | "genome_version_id"
+  | "dataset_id"
 >;
 
 export type RunStatus = "queued" | "submitted" | "running" | "succeeded" | "skipped" | "failed";
 
 export const RUN_COLUMNS =
   "id, workflow_type, status, current_step, params, metadata, requested_by, " +
-  "argo_workflow_name, step_pods, exit_code, message, created_at, submitted_at, completed_at";
+  "argo_workflow_name, step_pods, exit_code, message, created_at, submitted_at, completed_at, " +
+  "genome_version_id, dataset_id";
 
 // How many runs the list shows at first.
 export const RUNS_PAGE_SIZE = 50;
 
-/** Cell Ranger's steps in the order they run, as the poller reports them. */
+/**
+ * Cell Ranger's steps in the order the poller ranks them (services/workflows/rnaseq_status.py's
+ * CELLRANGER_STEPS; a test keeps the two the same). The genome steps run alongside the reads'
+ * steps and usually finish last, so they come just before count. stage-reference is the step
+ * runs started before genomes came from Bloom have instead of the two genome steps.
+ */
 export const CELLRANGER_STEPS = [
   { id: "fetch-sra", label: "Download from SRA" },
   { id: "stage-reference", label: "Stage reference" },
   { id: "stage", label: "Stage FASTQs" },
   { id: "qc", label: "FastQC" },
+  { id: "download-genome", label: "Download genome" },
+  { id: "build-reference", label: "Build reference" },
   { id: "count", label: "Cell Ranger count" },
   { id: "preprocess", label: "Filter and normalise" },
   { id: "cluster", label: "Cluster and UMAP" },
+  { id: "de", label: "Differential expression" },
   { id: "build-h5ad", label: "Build the .h5ad" },
+  { id: "load-dataset", label: "Load into Bloom" },
   { id: "cleanup", label: "Clean up" },
 ] as const;
 
@@ -64,7 +81,7 @@ export const STATUS_LABELS: Record<RunStatus, string> = {
 // The pipeline's own exit codes: argo/scrna/cellranger/ (run-count, fetch-sra) and
 // argo/scrna/analysis/ (preprocess, cluster, build-h5ad).
 const EXIT_SENTENCES: Record<number, string> = {
-  3: "The reference genome folder, or its reference.json, wasn't found.",
+  3: "The Cell Ranger reference wasn't found to count against.",
   4: "No FASTQ files were found in the sample's folder.",
   5: "Cell Ranger count failed; its log has the details.",
   6: "The sample name can't be used as a Cell Ranger run id.",
@@ -73,13 +90,29 @@ const EXIT_SENTENCES: Record<number, string> = {
   14: "Cell Ranger's count matrix wasn't found for the analysis steps.",
   15: "An analysis step's results didn't fit with the others; its log has the details.",
 };
+// The genome steps' exits mean something else at each, so the service's message is shown.
+const MESSAGE_STEPS: ReadonlySet<string> = new Set(["download-genome", "build-reference"]);
+// load-dataset (argo/scrna/analysis/load-dataset.sh) reuses 6 with its own meaning.
+const LOAD_DATASET_EXIT_SENTENCES: Record<number, string> = {
+  6: "The run's final .h5ad wasn't found, so there was nothing to load into Bloom; ask the Bloom admins.",
+  16: "The pipeline has no Bloom credentials, so the dataset wasn't loaded; ask the Bloom admins.",
+};
 // fetch-sra reuses some codes with its own meaning.
 const FETCH_SRA_EXIT_SENTENCES: Record<number, string> = {
   6: "The sample name or the SRA run IDs can't be used.",
   7: "The downloaded FASTQs couldn't be named the Illumina way.",
-  10: "A run couldn't be downloaded from SRA, or storage couldn't be checked. Start the run again; if it fails again, check the run IDs are public.",
+  10: "A run couldn't be downloaded from ENA or SRA; the Download from SRA step's log says why. Start the run again; if it fails again, check the run IDs are public.",
   11: "An SRA run's reads don't look like 10x gene-expression reads; the Download from SRA step's log says which run and why.",
-  12: "The sample's folder already holds other FASTQs; choose another sample name.",
+};
+
+// The stage step of a run that reads an S3 folder (stage-fastqs).
+const FOLDER_STAGE_EXIT_SENTENCES: Record<number, string> = {
+  4: "The FASTQs in the S3 folder were removed after the run was started; start a new run once they're back.",
+  6: "The run's S3 folder or its recorded file list couldn't be used. This isn't something wrong with the folder; ask the Bloom admins.",
+  7: "The FASTQ file names in the S3 folder don't follow Illumina's naming (<name>_S1_L001_R1_001.fastq.gz), or a lane lacks R1 or R2.",
+  8: "The S3 folder changed after the run was started, so its reads weren't used; the Stage FASTQs step's log says which file. Start a new run on the folder as it is now.",
+  9: "The FASTQs in the S3 folder are named for another sample than the run's; the Stage FASTQs step's log names it.",
+  10: "The S3 folder couldn't be listed or copied; the Stage FASTQs step's log has S3's error. Check it's still public and its files aren't archived, then start the run again.",
 };
 
 function field(value: Json | null, key: string): unknown {
@@ -109,6 +142,12 @@ export function runSpeciesId(run: RnaseqRun): number | null {
   return typeof id === "number" ? id : null;
 }
 
+/** The expression page of the dataset the run loaded, once the load has linked it. */
+export function runDatasetHref(run: RnaseqRun): string | null {
+  const speciesId = runSpeciesId(run);
+  return run.dataset_id != null && speciesId != null ? `/app/expression/${speciesId}/${run.dataset_id}` : null;
+}
+
 /** The run's free "Other details" rows, as name/value pairs. */
 export function runAttributes(run: RnaseqRun): [string, string][] {
   const attributes = field(run.metadata, "attributes");
@@ -126,10 +165,33 @@ export function runSraRuns(run: RnaseqRun): string[] {
   return Array.isArray(runs) ? runs.filter((r): r is string => typeof r === "string") : [];
 }
 
-/** The steps this run goes through: fetch-sra only when it imports from SRA. */
+/** The S3 folder the run reads its FASTQs from, or null. */
+export function runFastqUrl(run: RnaseqRun): string | null {
+  const url = field(run.params, "fastq_url");
+  return typeof url === "string" ? url : null;
+}
+
+// Steps the pipeline no longer has, and the steps that replaced them.
+const RETIRED_STEPS: ReadonlySet<StepId> = new Set(["stage-reference"]);
+const GENOME_STEPS: ReadonlySet<StepId> = new Set(["download-genome", "build-reference"]);
+
+/** Whether the run started before genomes came from Bloom, so it staged its reference instead. */
+function stagedItsReference(run: RnaseqRun): boolean {
+  return run.current_step === "stage-reference" || Boolean(field(run.step_pods, "stage-reference"));
+}
+
+/** The steps this run goes through: fetch-sra when it imports from SRA, stage otherwise (or when
+ * an earlier SRA run staged its reads), and the genome steps, or stage-reference for an earlier run. */
 export function runSteps(run: RnaseqRun): (typeof CELLRANGER_STEPS)[number][] {
   const imports = runSraRuns(run).length > 0;
-  return CELLRANGER_STEPS.filter((step) => step.id !== "fetch-sra" || imports);
+  const staged = stagedItsReference(run);
+  const stages = !imports || stepStarted(run, "stage");
+  return CELLRANGER_STEPS.filter(
+    (step) =>
+      (step.id !== "fetch-sra" || imports) &&
+      (step.id !== "stage" || stages) &&
+      (staged ? !GENOME_STEPS.has(step.id) : !RETIRED_STEPS.has(step.id))
+  );
 }
 
 /** Whether a step has a pod, and so a log that can be asked for. */
@@ -157,10 +219,30 @@ export function stepStates(run: RnaseqRun): Partial<Record<StepId, StepState>> {
   return states;
 }
 
+// Exits whose fixed sentence talks about the sample's own folder, which a folder run
+// doesn't have; the service's message names what it copied instead.
+const SAMPLE_FOLDER_EXITS = new Set([4, 7]);
+
 /** A sentence for how a failed run ended, or null. */
 export function failureSentence(run: RnaseqRun): string | null {
   if (run.status !== "failed") return null;
-  const sentences = run.current_step === "fetch-sra" ? FETCH_SRA_EXIT_SENTENCES : EXIT_SENTENCES;
+  if (run.current_step && MESSAGE_STEPS.has(run.current_step) && run.message) return run.message;
+  if (runFastqUrl(run)) {
+    // The service words a folder run's failures around its folder, e.g. naming the sample
+    // for exit 9; the fixed sentences are only a fallback when it left no message.
+    if (run.message && (run.current_step === "stage" || SAMPLE_FOLDER_EXITS.has(run.exit_code ?? -1))) {
+      return run.message;
+    }
+    if (run.current_step === "stage") {
+      return (run.exit_code != null && FOLDER_STAGE_EXIT_SENTENCES[run.exit_code]) || run.message;
+    }
+  }
+  const sentences =
+    run.current_step === "fetch-sra"
+      ? FETCH_SRA_EXIT_SENTENCES
+      : run.current_step === "load-dataset"
+        ? LOAD_DATASET_EXIT_SENTENCES
+        : EXIT_SENTENCES;
   if (run.exit_code != null && sentences[run.exit_code]) return sentences[run.exit_code];
   return run.message;
 }
@@ -194,15 +276,33 @@ export async function fetchRun(
   return (data as unknown as RnaseqRun | null) ?? null;
 }
 
-/** Who started each run, by email; runs whose starter can't be read are left out. */
-export async function fetchRequesters(
+/** The run's genome version as the form names it, e.g. "athaliana_col0 v2 — TAIR10 / Araport11";
+ * null for a run started before genomes came from Bloom, or when it can't be read. */
+export async function fetchGenomeLabel(
   supabase: SupabaseClient<Database>,
-  runIds: number[]
-): Promise<Map<number, string>> {
-  if (runIds.length === 0) return new Map();
-  const { data, error } = await supabase.rpc("rnaseq_run_requesters", { p_run_ids: runIds });
-  if (error || !data) return new Map();
-  return new Map(data.map((r) => [r.run_id, r.email]));
+  run: RnaseqRun
+): Promise<string | null> {
+  if (run.genome_version_id == null) return null;
+  const { data, error } = await supabase
+    .from("genome_reference_versions")
+    .select("id, version, assembly, annotation, genome_references(name)")
+    .eq("id", run.genome_version_id)
+    .maybeSingle();
+  if (error || !data) return null;
+  const [option] = genomeVersionOptions([data as unknown as ReadyVersionRow]);
+  return option ? genomeVersionLabel(option) : null;
+}
+
+/** The name the run's dataset was loaded under, which may differ from the name on the form
+ * (e.g. Root atlas_v2 when Root atlas was taken); null before the run is linked to it or when
+ * it can't be read. */
+export async function fetchDatasetName(
+  supabase: SupabaseClient<Database>,
+  run: RnaseqRun
+): Promise<string | null> {
+  if (run.dataset_id == null) return null;
+  const { data, error } = await supabase.from("scrna_datasets").select("name").eq("id", run.dataset_id).maybeSingle();
+  return error || !data ? null : data.name;
 }
 
 /** A list with one run added or replaced, newest first, and runs `accept` rejects left out. */

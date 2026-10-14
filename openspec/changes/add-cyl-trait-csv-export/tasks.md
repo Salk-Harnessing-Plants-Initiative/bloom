@@ -847,7 +847,7 @@ PR B was branched from `origin/staging` 9966cdf5, in worktree `.worktrees/add-cy
 - [ ] 12.4 Archive with `/openspec:archive add-cyl-trait-csv-export` only after all of these:
   - 12.1 for both PRs;
   - 12.3's drafts;
-  - `add-cyl-trait-recipe-key` archived, which itself waits on the staging→main promotion and on `fix-cyl-redelivery-blob-collision`.
+  - `add-cyl-trait-recipe-key` archived, which itself waits on the staging→main promotion and on `fix-cyl-redelivery-blob-collision`. **Met 2026-10-04:** both archived in #1046.
 
 ## Scenario → test
 

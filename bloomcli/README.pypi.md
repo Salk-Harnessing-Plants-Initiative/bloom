@@ -9,7 +9,8 @@ Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative)
 | Download cylinder scans and images           | **3. Cylinder experiments**    |
 | Download plate (GraviScan) images            | **4. Plate experiments**       |
 | Upload or download single-cell `.h5ad` files | **5. Single-cell data**        |
-| Run bloomctl inside a pipeline               | **6. Pipelines and containers** |
+| Store or fetch a reference genome            | **6. Reference genomes**       |
+| Run bloomctl inside a pipeline               | **7. Pipelines and containers** |
 
 ---
 
@@ -18,9 +19,9 @@ Command-line tool for the **Bloom Database** (Salk Harnessing Plants Initiative)
 Releases are still pre-releases (`0.1.0aN`), so install by **asking for the version by name**:
 
 ```bash
-uv tool install "bloomctl==0.1.0a11"   # isolated CLI tool (recommended)
-uvx bloomctl@0.1.0a11 --help           # one-off, no install
-pip install "bloomctl==0.1.0a11"       # into the active environment
+uv tool install "bloomctl==0.1.0a14"   # isolated CLI tool (recommended)
+uvx bloomctl@0.1.0a14 --help           # one-off, no install
+pip install "bloomctl==0.1.0a14"       # into the active environment
 ```
 
 Check it worked:
@@ -207,6 +208,9 @@ bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored
   in `obs['sample']` (or name the column with `--sample-column`), and an `uns['normalization']`
   block saying how `X` was made, e.g. `transform: log1p`, `scaling: library_size`,
   `target_sum: 10000`.
+- `--de-key KEY` also loads a one-vs-rest differential expression from `uns[KEY]` (scanpy's
+  `rank_genes_groups`, each `--annotation` cluster against the rest), which fills each
+  cluster's marker genes in the explorer.
 - `download` writes the file only once its fingerprint matches.
 
 ### Single-cell commands
@@ -219,7 +223,44 @@ bloomctl scrna hdf5 list --file my_dataset.h5ad    # is this file already stored
 
 ---
 
-## 6. Pipelines and containers
+## 6. Reference genomes
+
+Reference genomes for the Cell Ranger workflow are kept in Bloom with numbered versions. Each
+version is one FASTA and one GTF, with their SHA-256 and size recorded. A version's files never
+change; a different FASTA or GTF is a new version.
+
+In the examples below, **`tair10_araport11`** is the genome's name.
+
+### Quickstart
+
+```bash
+# Store a new genome (needs write access); --species is required the first time
+bloomctl genome upload tair10_araport11 --fasta TAIR10.fa --gtf Araport11.gtf \
+  --species Arabidopsis --assembly TAIR10 --annotation Araport11
+# → tair10_araport11 v1: ready
+
+bloomctl genome list                                         # every genome, version and status
+bloomctl genome download tair10_araport11 --to ref/          # newest ready version
+bloomctl genome download tair10_araport11.v1 --to ref/ --unzip   # a named version, unzipped
+```
+
+- **Names:** lowercase letters, digits, `.`, `_`, `-`; can't end in `.vN`.
+- **Upload** checks the files first; uploading again makes the next version.
+- **Only `ready` versions** can be downloaded.
+- **Download** checks each file against Bloom's record; `--unzip` gives `genome.fa` and `genes.gtf`.
+- **Exit codes:** `3` not available or doesn't match (don't retry); `1` network error (retry).
+
+### Genome commands
+
+| Command                          | What it does                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| `genome upload <name>`           | Store a FASTA and GTF as the genome's next version *(needs write access)*    |
+| `genome list`                    | Every genome with its species, versions and each version's status            |
+| `genome download <name>[.vN]`    | Fetch a ready version's files, checked; `--unzip`, `--version-file` to record the version |
+
+---
+
+## 7. Pipelines and containers
 
 These commands are for automated pipelines (stage-in and write-back), not everyday use:
 

@@ -726,7 +726,8 @@ def test_row_level_security_is_on(pg_conn, table):
 @pytest.mark.parametrize("table", ["scrna_de_runs", "scrna_de_genes"])
 def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
     """Deliberately without anon, and with writing limited to submitting: a
-    writer may insert, and only the admin role may change what is there. The
+    writer may insert, the pipeline may insert for a dataset it is loading
+    (20261012230000), and only the admin role may change what is there. The
     set is asserted whole rather than by absence."""
     with pg_conn.cursor() as cur:
         cur.execute(
@@ -739,6 +740,8 @@ def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
             (f"agent_read_scrna_de_{suffix}", "{bloom_agent}", "SELECT"),
             (f"user_read_scrna_de_{suffix}", "{bloom_user}", "SELECT"),
             (f"writer_insert_scrna_de_{suffix}", "{bloom_writer}", "INSERT"),
+            (f"workflows_select_scrna_de_{suffix}", "{bloom_workflows}", "SELECT"),
+            (f"workflows_insert_scrna_de_{suffix}", "{bloom_workflows}", "INSERT"),
         }
 
 

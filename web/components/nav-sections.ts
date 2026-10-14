@@ -30,8 +30,9 @@ export const navSections: NavSection[] = [
       // Temporarily disabled — Bloom Assistant is a work in progress.
       // { name: "Bloom Assistant", href: "/chat" },
       { name: "OrthoBrowser", href: "/app/orthofinder" },
-      // Named for its pipeline: other pipelines (RNA-seq) have runs of their own.
+      // Named for its pipeline: each pipeline has runs of its own.
       { name: "Cylinder\nPipeline Runs", href: "/app/cyl-pipeline-runs" },
+      { name: "RNA-seq\nPipeline Runs", href: "/app/rnaseq-runs" },
     ],
   },
   {
@@ -43,7 +44,6 @@ export const navSections: NavSection[] = [
         children: [
           { name: "Cylinder scanner usage", href: "/app/timeline?panel=cylinder" },
           { name: "Plate scanner usage", href: "/app/timeline?panel=plate" },
-          { name: "RNA-seq runs", href: "/app/timeline?panel=rnaseq" },
         ],
       },
       { name: "Translation", href: "/app/translation" },

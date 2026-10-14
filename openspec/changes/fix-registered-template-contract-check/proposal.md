@@ -141,7 +141,7 @@ CI at all — so "upstream checks it" means "a human runs a second script", not 
   requirement at `spec.md` is a different check and is untouched)
 - Affected code: `scripts/check_registered_templates.py` → `scripts/check_template_contract.py`
   (renamed and rewritten), `tests/unit/test_check_template_contract.py` (new)
-- Affected records: `openspec/changes/fix-cyl-redelivery-blob-collision/tasks.md` (task 9.6),
+- Affected records: `openspec/changes/archive/2026-10-04-fix-cyl-redelivery-blob-collision/tasks.md` (task 9.6),
   `openspec/changes/archive/2026-09-21-vendor-five-task-pipeline-dag/{tasks.md,proposal.md}` (the
   annotations in tasks 4.1–4.2)
 - Cross-repo: one follow-up PR in `talmolab/sleap-roots-pipeline` recording the observation in

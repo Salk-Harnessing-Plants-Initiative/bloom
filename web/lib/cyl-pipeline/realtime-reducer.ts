@@ -11,9 +11,10 @@
  * - **No `updated_at` guard.** `now()` is the transaction start, so an
  *   older-starting transaction that commits later would be dropped.
  * - **List window.** The cursor is the raw `(created_at, id)` of the oldest
- *   row loaded by a snapshot or "load older", and moves only then. `partial`
- *   and `running` runs get an UPDATE every sweep; inserting an older one into
- *   the window would make "load older" skip the runs between.
+ *   row loaded by a snapshot or "load older", and moves only then. `running`
+ *   runs, and `partial` runs the poller has not yet concluded, get an UPDATE
+ *   every sweep; inserting an older one into the window would make "load
+ *   older" skip the runs between.
  */
 
 import type { Database } from "@/lib/database.types";

@@ -148,6 +148,9 @@ services:
       # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
       # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).
       CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED}
+      # Bloom's AWS user (bloomv2-workflows-job), shown on the scRNA job form so a scientist can share a
+      # private folder with it; empty, the form offers public folders only.
+      SCRNA_FOLDER_READER_ARN: ${SCRNA_FOLDER_READER_ARN}
       # Read by web/lib/config/validate-on-boot.ts in production via the
       # Next.js 16 instrumentation hook (web/instrumentation.ts). Required:
       # boot fails if unset. Format:
@@ -278,6 +281,10 @@ services:
       # Reads the production model cards from the wandb registry for GET /model-cards
       # (bloom#971). Only this service gets it; the six other containers built from its image don't.
       WANDB_API_KEY: ${WANDB_API_KEY}
+      # Bloom's AWS user (bloomv2-workflows-job, the pipeline's), so the folder check can read a folder
+      # a scientist shared with it. Unset, only folders anyone can read work.
+      WORKFLOWS_S3_READER_ACCESS_KEY_ID: ${WORKFLOWS_S3_READER_ACCESS_KEY_ID}
+      WORKFLOWS_S3_READER_SECRET_ACCESS_KEY: ${WORKFLOWS_S3_READER_SECRET_ACCESS_KEY}
     networks:
       - supanet
     healthcheck:
@@ -370,8 +377,14 @@ services:
   # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
   # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
   # use of the K8s API (get, not create), so only TOKEN/CA_CERT/API_URL/
-  # NAMESPACE are needed — TTL_SECONDS, ENV_LABEL and the PIPELINE_* pair
-  # are submission-only (build_workflow_body), never read by this poller.
+  # NAMESPACE are needed, plus TTL_SECONDS: the poller never treats a workflow
+  # as removed sooner than that after the workflow was dispatched, because Argo
+  # can't have garbage-collected it yet (bloom#1042). It also needs ENV_LABEL:
+  # it trusts a Workflow as a run's own only if its `environment` label matches,
+  # so this must be the value cyl-pipeline-worker stamps (prod and staging share
+  # a namespace). The PIPELINE_* pair is submission-only (build_workflow_body). Like the poll
+  # interval below, WORKFLOWS_NOT_FOUND_GRACE_SECONDS is left to its code
+  # default (600s).
   # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
   # Python-side default (15s) governs it; adding it here without a real
   # default-file entry would make compose inject an empty string and
@@ -380,7 +393,9 @@ services:
   # worker above: each sweep is an idempotent recompute from Argo's current
   # state (see design.md's "rollup computation happens in Python" decision),
   # not a claimed, exactly-once event — redundant concurrent sweeps just
-  # mean harmless, wasted-work overlap, not a correctness risk.
+  # mean harmless, wasted-work overlap, not a correctness risk. Each replica
+  # keeps its own in-memory count of a workflow's NotFound lookups, so each
+  # must see a workflow's removal conditions for itself before closing its rows.
   cyl-status-poller:
     build:
       context: ./services/workflows
@@ -405,6 +420,8 @@ services:
       WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
       WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
     networks:
       - supanet
     depends_on:
@@ -486,6 +503,15 @@ services:
       WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
       WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL}
+      # The run-finished email, through Salk's relay, as GoTrue's sign-in emails; SITE_URL
+      # makes its link to the run page.
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
+      SITE_URL: ${SITE_URL}
     networks:
       - supanet
     depends_on:

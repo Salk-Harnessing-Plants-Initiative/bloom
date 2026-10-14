@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -131,19 +132,30 @@ def marker_path(directory: Path, dataset_name: str) -> Path:
 
 
 class Writer:
-    """Sends each write once; re-sends only after an unauthorised refusal."""
+    """Sends each write once; re-sends only after an unauthorised refusal.
+
+    Safe to share between threads: several requests refused together sign in once.
+    """
 
     def __init__(self, client: Any, renew: Callable[[], Any], marker: Marker):
         self.client, self._renew, self.marker = client, renew, marker
+        self._lock = threading.Lock()
+
+    def _renewed(self, refused: Any) -> None:
+        """Sign in afresh, unless another request already replaced the refused client."""
+        with self._lock:
+            if self.client is refused:
+                self.client = self._renew()
 
     def read(self, fetch: Callable[[Any], Any]) -> Any:
         """Run fetch(client); a read may be repeated, after one fresh sign-in."""
         for attempt in (1, 2):
+            client = self.client
             try:
-                return fetch(self.client)
+                return fetch(client)
             except _api_errors() as exc:
                 if classify(exc) == "unauthorised" and attempt == 1:
-                    self.client = self._renew()
+                    self._renewed(client)
                     continue
                 raise LoadError(f"reading failed: {exc}; {RERUN}") from None
         return None
@@ -155,24 +167,30 @@ class Writer:
         is recorded as an unknown outcome before the interrupt goes on.
         """
         for attempt in (1, 2):
+            client = self.client
             try:
-                return send(self.client)
+                return send(client)
             except KeyboardInterrupt:
-                self.marker.record(step)
+                self.record_unknown(step)
                 raise
             except _api_errors() as exc:
                 kind = classify(exc)
                 if kind == "unauthorised" and attempt == 1:
-                    self.client = self._renew()
+                    self._renewed(client)
                     continue
                 if kind == "unknown":
-                    self.marker.record(step)
+                    self.record_unknown(step)
                     raise LoadError(
                         f"{step}: {exc}. Its outcome is unknown, so it may still be finishing "
                         f"on the server; wait {self.marker.wait_text()}, then {RERUN}"
                     ) from None
                 raise LoadError(f"{step}: {exc}; {RERUN}") from None
         return None
+
+    def record_unknown(self, step: str) -> None:
+        """Note a write whose outcome is unknown, so the next run waits it out."""
+        with self._lock:
+            self.marker.record(step)
 
 
 def read_all(

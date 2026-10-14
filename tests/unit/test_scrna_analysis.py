@@ -16,13 +16,14 @@ import pytest
 pytest.importorskip("scanpy")
 
 import anndata as ad
+import pandas as pd
 import h5py
 import scipy.sparse as sp
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "argo/scrna/analysis"))
 
-from bloom_scrna_analysis import build, cluster, preprocess
+from bloom_scrna_analysis import build, cluster, de, preprocess
 from bloom_scrna_analysis.__main__ import main
 from bloom_scrna_analysis.steps import part_of
 from bloom_scrna_analysis.store import Store
@@ -82,6 +83,7 @@ def pipeline(root: Path, *extra: str) -> list[int]:
     return [
         main(["preprocess", "--root", str(root), *extra]),
         main(["cluster", "--root", str(root)]),
+        main(["de", "--root", str(root)]),
         main(["build-h5ad", "--root", str(root), "--sample", "root_tip"]),
     ]
 
@@ -96,7 +98,7 @@ def final(root: Path):
 
 
 def test_the_pipeline_writes_one_file_with_every_piece(run_dir):
-    assert pipeline(run_dir) == [0, 0, 0]
+    assert pipeline(run_dir) == [0, 0, 0, 0]
     adata = final(run_dir)
     assert adata.n_obs == N_GROUPS * CELLS_PER_GROUP
     assert adata.obs_names[0] == "0000000000000000-1"
@@ -159,13 +161,45 @@ def test_the_file_passes_bloomctls_upload_check(run_dir):
 def test_the_file_records_its_steps_settings_and_versions(run_dir):
     pipeline(run_dir, "--n-top-genes", "500")
     adata = final(run_dir)
-    assert list(adata.uns["bloom_pipeline"]["steps"]) == ["preprocess", "cluster"]
+    assert list(adata.uns["bloom_pipeline"]["steps"]) == ["preprocess", "cluster", "de"]
     assert "scanpy" in adata.uns["bloom_pipeline"]["versions"]
     assert adata.uns["preprocess"]["n_top_genes"] == 500
     assert adata.uns["cluster"]["n_clusters"] == adata.obs["leiden"].nunique()
     summary = json.loads((run_dir / "h5ad/summary.json").read_text())
     assert summary["n_cells"] == adata.n_obs
-    assert summary["steps"] == ["preprocess", "cluster"]
+    assert summary["steps"] == ["preprocess", "cluster", "de"]
+
+
+def test_every_cell_carries_the_runs_sample(run_dir):
+    # bloomctl scrna hdf5 upload reads each cell's sample from obs['sample'] (bloom 1060).
+    pipeline(run_dir)
+    adata = final(run_dir)
+    assert set(adata.obs["sample"]) == {"root_tip"}
+    assert adata.obs["sample"].notna().all()
+    assert adata.obs["sample"].dtype.name == "category"
+    summary = json.loads((run_dir / "h5ad/summary.json").read_text())
+    assert "sample" in summary["obs"]
+
+
+def test_a_file_built_before_the_sample_column_is_rebuilt(run_dir, capsys):
+    pipeline(run_dir)
+    marker = run_dir / "h5ad/_SUCCESS"
+    old = json.loads(marker.read_text())
+    marker.write_text(json.dumps({"steps": old["steps"]}) + "\n")  # the old record
+    capsys.readouterr()
+    main(["build-h5ad", "--root", str(run_dir), "--sample", "root_tip"])
+    assert "Built" in capsys.readouterr().out
+    assert json.loads(marker.read_text())["sample"] == "root_tip"
+
+
+def test_an_analysis_cant_write_its_own_sample_column(run_dir):
+    pipeline(run_dir)
+    add_part(
+        run_dir,
+        "annotate",
+        obs={"sample": np.array(["other"] * N_GROUPS * CELLS_PER_GROUP)},
+    )
+    assert main(["build-h5ad", "--root", str(run_dir), "--sample", "root_tip"]) == 15
 
 
 def test_the_variable_gene_count_defaults_to_2000_capped_at_the_genes_there_are(
@@ -184,7 +218,7 @@ def test_near_empty_cells_are_dropped(tmp_path):
     root = tmp_path / "run"
     (root / "outs").mkdir(parents=True)
     write_10x_h5(root / "outs/filtered_feature_bc_matrix.h5", low_cells=25)
-    assert pipeline(root) == [0, 0, 0]
+    assert pipeline(root) == [0, 0, 0, 0]
     assert final(root).n_obs == N_GROUPS * CELLS_PER_GROUP
 
 
@@ -241,6 +275,7 @@ def test_a_new_analysis_is_merged_without_changing_build(run_dir):
         "preprocess",
         "annotate",
         "cluster",
+        "de",
     ]
     assert adata.uns["annotate"]["made_up"]
 
@@ -314,8 +349,8 @@ def test_every_step_skips_when_its_marker_is_there(run_dir, capsys):
     pipeline(run_dir)
     stamps = {p: p.stat().st_mtime_ns for p in run_dir.rglob("*.h5ad")}
     capsys.readouterr()
-    assert pipeline(run_dir) == [0, 0, 0]
-    assert capsys.readouterr().out.count("Already") == 3
+    assert pipeline(run_dir) == [0, 0, 0, 0]
+    assert capsys.readouterr().out.count("Already") == 4
     assert {p: p.stat().st_mtime_ns for p in run_dir.rglob("*.h5ad")} == stamps
 
 
@@ -330,7 +365,7 @@ def test_build_reruns_when_a_new_part_has_appeared(run_dir, capsys):
     main(["build-h5ad", "--root", str(run_dir), "--sample", "root_tip"])
     assert "Built" in capsys.readouterr().out
     marker = json.loads((run_dir / "h5ad/_SUCCESS").read_text())
-    assert marker["steps"] == ["preprocess", "annotate", "cluster"]
+    assert marker["steps"] == ["preprocess", "annotate", "cluster", "de"]
 
 
 def test_the_marker_is_written_after_the_file(run_dir, monkeypatch):
@@ -520,3 +555,113 @@ def test_metrics_names_with_a_slash_are_kept_readable():
         '"Q30 Bases in RNA/UMI","Cells"\n"95%","10"\n'
     )
     assert metrics == {"Q30 Bases in RNA_UMI": "95%", "Cells": "10"}
+
+
+# --------------------------------------------------------------------------- #
+# Differential expression: each cluster against the rest
+# --------------------------------------------------------------------------- #
+
+
+def test_each_cluster_is_compared_with_the_rest_over_every_gene(run_dir):
+    pipeline(run_dir)
+    adata = final(run_dir)
+    result = adata.uns["de"]
+    params = result["params"]
+    assert (params["groupby"], params["reference"], params["method"]) == (
+        "leiden", "rest", "wilcoxon")
+    assert params["use_raw"] is False and params["corr_method"] == "benjamini-hochberg"
+    clusters = sorted(adata.obs["leiden"].unique(), key=lambda c: (len(c), c))
+    assert list(result["names"].dtype.names) == clusters
+    assert len(result["names"]) == adata.n_vars, "every gene is listed, not only the top ones"
+    for part in ("logfoldchanges", "pvals", "pvals_adj"):
+        assert list(result[part].dtype.names) == clusters
+    assert list(result["pts"].columns) == clusters and list(result["pts_rest"].columns) == clusters
+
+
+def test_each_clusters_top_gene_is_one_of_its_groups_markers(run_dir):
+    pipeline(run_dir)
+    adata = final(run_dir)
+    truth = np.repeat(np.arange(N_GROUPS), CELLS_PER_GROUP)
+    ids = list(adata.var_names)
+    for group in range(N_GROUPS):
+        cluster = adata.obs["leiden"].values[truth == group][0]
+        top = adata.uns["de"]["names"][cluster][0]
+        start = 20 + group * MARKERS_PER_GROUP
+        assert top in ids[start : start + MARKERS_PER_GROUP], f"group {group}'s top gene {top}"
+        assert adata.uns["de"]["logfoldchanges"][cluster][0] > 1
+        assert adata.uns["de"]["pvals_adj"][cluster][0] < 0.05
+
+
+def test_the_de_step_records_what_it_tested_and_is_not_redone(run_dir, capsys):
+    pipeline(run_dir)
+    marker = json.loads((run_dir / "analysis/de/_SUCCESS").read_text())
+    assert marker["method"] == "wilcoxon" and len(marker["clusters_tested"]) >= N_GROUPS
+    assert main(["de", "--root", str(run_dir)]) == 0
+    assert "Already done" in capsys.readouterr().out
+
+
+def _base(run_dir):
+    assert main(["preprocess", "--root", str(run_dir)]) == 0
+    return ad.read_h5ad(run_dir / "analysis/preprocess/base.h5ad")
+
+
+def test_a_cluster_of_one_cell_is_left_out(run_dir):
+    base = _base(run_dir)
+    half = base.n_obs // 2
+    labels = np.array(["0"] * half + ["1"] * (base.n_obs - half - 1) + ["2"])
+    result = de.compute_part(base, labels).uns["de"]
+    assert list(result["names"].dtype.names) == ["0", "1"]
+
+
+@pytest.mark.parametrize("labels", ["one", "one-and-a-singleton"])
+def test_fewer_than_two_comparable_clusters_give_no_result(run_dir, labels):
+    base = _base(run_dir)
+    values = np.array(["0"] * base.n_obs)
+    if labels == "one-and-a-singleton":
+        values[-1] = "1"
+    assert dict(de.compute_part(base, values).uns["de"]) == {}
+
+
+def test_exactly_one_comparable_cluster_gives_no_result(run_dir):
+    # Cluster 0 can be compared (two cells outside it); the two singletons can't.
+    base = _base(run_dir)
+    values = np.array(["0"] * (base.n_obs - 2) + ["1", "2"])
+    assert de.testable(pd.Series(values)) == ["0"]
+    assert dict(de.compute_part(base, values).uns["de"]) == {}
+
+
+def test_fold_changes_are_scanpys_on_the_normalised_data(run_dir):
+    # The planted markers are 20x background; on log-normalised data scanpy reports about
+    # 5-6. Raw counts would give far more, so this catches the wrong matrix.
+    pipeline(run_dir)
+    adata = final(run_dir)
+    for cluster in adata.uns["de"]["names"].dtype.names:
+        assert 3 < adata.uns["de"]["logfoldchanges"][cluster][0] < 8
+
+
+def _bloomctl_de():
+    """bloomctl's DE reader, loaded without its CLI (which needs the network libraries)."""
+    import importlib
+    import types
+
+    package = types.ModuleType("bloomctl_scrna_for_test")
+    package.__path__ = [str(REPO / "bloomcli/src/bloomctl/scrna")]
+    sys.modules[package.__name__] = package
+    return importlib.import_module(f"{package.__name__}._de")
+
+
+def test_bloomctl_reads_the_pipelines_de_as_it_loads_it(run_dir):
+    _de = _bloomctl_de()
+    pipeline(run_dir)
+    path = run_dir / "h5ad/root_tip.h5ad"
+    adata = final(run_dir)
+    cells = {"labels": [str(v) for v in adata.obs["leiden"]], "n_cells": adata.n_obs,
+             "x": [0.0] * adata.n_obs, "y": [0.0] * adata.n_obs}
+    result = _de.read(path, "de", "leiden", cells)
+    assert len(result.comparisons) == adata.obs["leiden"].nunique()
+    for comparison in result.comparisons:
+        assert len(comparison.genes) == adata.n_vars
+        assert comparison.n_group1 + comparison.n_group2 == adata.n_obs
+        assert all(g["pct_1"] is not None and g["pct_2"] is not None for g in comparison.genes)
+        markers = _de.markers(comparison, result.symbols)
+        assert markers["n_significant"] > 0 and markers["top"][0]["symbol"]

@@ -1,20 +1,49 @@
 /**
- * Shared pieces of the scRNA job form: the choices it offers (registered samples and
- * references), the dataset details saved with the run, the shape of a started run, and
- * the messages shown for a refused start.
+ * Shared pieces of the scRNA job form: the choices it offers (ready genome versions), the
+ * dataset details saved with the run, the shape of a started run, and the messages shown for a
+ * refused start.
  */
 
 import type { Database } from "@/lib/database.types";
 
-export type RnaseqSample = Pick<
-  Database["public"]["Tables"]["rnaseq_samples"]["Row"],
-  "name" | "source" | "fastq_count" | "total_bytes"
->;
+/** A ready genome version a run can build its reference from, as `bloomctl genome list` shows it. */
+export type GenomeVersionOption = {
+  id: number;
+  genome: string;
+  version: number;
+  assembly: string | null;
+  annotation: string | null;
+};
 
-export type RnaseqReference = Pick<
-  Database["public"]["Tables"]["rnaseq_references"]["Row"],
-  "name" | "description"
->;
+/** A ready version row as read with its genome's name. */
+export type ReadyVersionRow = {
+  id: number;
+  version: number;
+  assembly: string | null;
+  annotation: string | null;
+  genome_references: { name: string } | null;
+};
+
+/** The ready versions, by genome name and newest version first; rows without a genome are left out. */
+export function genomeVersionOptions(rows: ReadyVersionRow[]): GenomeVersionOption[] {
+  return rows
+    .filter((r) => r.genome_references?.name)
+    .map((r) => ({
+      id: r.id,
+      genome: r.genome_references!.name,
+      version: r.version,
+      assembly: r.assembly,
+      annotation: r.annotation,
+    }))
+    .sort((a, b) => a.genome.localeCompare(b.genome) || b.version - a.version);
+}
+
+/** How the form names a version, e.g. "athaliana_col0 v2 — TAIR10 / Araport11". */
+export function genomeVersionLabel(option: GenomeVersionOption): string {
+  const detail = [option.assembly, option.annotation].filter(Boolean).join(" / ");
+  const name = `${option.genome} v${option.version}`;
+  return detail ? `${name} — ${detail}` : name;
+}
 
 /** One free key/value row in the form, e.g. tissue = root. */
 export type AttributeRow = { key: string; value: string };
@@ -115,6 +144,8 @@ export function buildRunMetadata(details: DatasetDetails): RunMetadata {
 export type StartedRun = {
   run_id: number;
   sample: string;
+  genome_version_id: number;
+  // The genome version as <genome>.v<N>.
   reference: string;
   run_key: string;
 };
@@ -124,6 +155,7 @@ export function isStartedRun(value: unknown): value is StartedRun {
   return (
     typeof v?.run_id === "number" &&
     typeof v.sample === "string" &&
+    typeof v.genome_version_id === "number" &&
     typeof v.reference === "string" &&
     typeof v.run_key === "string"
   );
@@ -134,8 +166,8 @@ export function startRunErrorMessage(status: number, detail: unknown): string {
   if (typeof detail === "string" && detail.trim()) return detail;
   if (status === 401) return "Sign in to start a job.";
   if (status === 429) return "Too many requests. Wait a minute and try again.";
-  if (status === 409) return "That sample name is taken or still being imported. Choose another name.";
-  if (status === 422) return "The sample or reference name isn't valid.";
+  if (status === 409) return "This sample already has a run on that genome, or these reads were already run on it. Choose another sample name or genome.";
+  if (status === 422) return "The sample name or the genome version can't be used.";
   if (status === 503) return "The job service isn't available right now.";
   return "Couldn't start the job. Try again shortly.";
 }

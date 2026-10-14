@@ -241,21 +241,23 @@ blocks a run while it is above 0.
 
 ### Cell Ranger trigger
 
-Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per run**. A sample is one 10x library: a first-level folder under `raw_reads/` in the scRNA workflows bucket (`bloomv2-workflows`), holding all its lanes and re-sequencing runs. Separate captures are separate runs. A reference is a first-level folder under `reference_genome/` that contains `reference.json`.
+Starts Cell Ranger runs of the scRNA pipeline in `argo/scrna/`, **one sample per run**. A sample is one 10x library, with all its lanes and re-sequencing runs: an S3 folder of FASTQs, or SRA run IDs. Separate captures are separate runs. A run's reference is a ready genome version stored in Bloom, which the run downloads and builds its Cell Ranger reference from.
 
-- `POST /scrna/cellranger/runs` takes `{"sample": ..., "reference": ...}`. The sample is also Cell Ranger's run id, so it must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; the reference must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`; neither may contain `__` (422 otherwise). An optional `"metadata"` object (the dataset's species, name, accession and other details, at most 64 KB) is stored as given in `rnaseq_runs.metadata`, for loading the results later. An optional `"sra_runs"` list (1 to 9 distinct SRA run IDs matching `^[SED]RR[0-9]{6,10}$`, one lane each, in order) imports the sample from SRA under the new name `sample` (422 otherwise). It calls `request_scrna_cellranger_run`, which writes the run to `rnaseq_runs` (`workflow_type` `scrna-cellranger`, the names and any `sra_runs` in `params`) and one `rnaseq_dispatch` message in a single transaction, and returns 201. The function's refusals come back as 409 (a name already registered, or one still being imported from SRA) or 422 (a bad value), with its message.
+- `POST /scrna/cellranger/runs` takes `{"sample": ..., "sra_runs": [...], "genome_version_id": ..., "metadata": {...}}`. The sample is also Cell Ranger's run id, so it must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` without `__`; `genome_version_id` is the id of a genome version (a whole number above 0), and a `reference` is refused (422 otherwise). The version's name, `<genome>.v<N>`, is read first (422 for an unknown id) and becomes the run's reference; the function is called with `p_reference` null and `p_genome_version_id`, and refuses a version that isn't ready (422). The `"metadata"` object (the dataset's species, name, accession and other details, at most 64 KB) is stored as given in `rnaseq_runs.metadata`, for loading the results later; it must have a non-empty `dataset_name` and a whole-number `species_id` above 0 (422 otherwise), so every run loads its result as a dataset. The `"sra_runs"` list (1 to 9 distinct SRA run IDs matching `^[SED]RR[0-9]{6,10}$`, one lane each, in order) imports the sample from SRA under the new name `sample` (422 otherwise); a sample without it is refused with 422, since its reads would have nowhere to come from. It calls `request_scrna_cellranger_run`, which writes the run to `rnaseq_runs` (`workflow_type` `scrna-cellranger`, the names and any `sra_runs` in `params`) and one `rnaseq_dispatch` message in a single transaction, and returns 201. The function's refusals come back as 409 (the sample already has a live run on that genome, so the two would share a folder, or the scientist already ran those SRA run IDs on that genome under another name) or 422 (a bad value), with its message.
+- `POST /scrna/cellranger/runs` also takes `{"fastq_url": "s3://<bucket>/<folder>/", "fastq_files": [...], "genome_version_id": ...}` in place of `sample`: the run reads its FASTQs from that S3 folder, and nothing is copied into our bucket. `fastq_files` is the list `folder-check` returned, as the form showed it. The folder is listed again: if its files' names, sizes or ETags no longer match that list, the start is a 409 ("changed since it was checked"). Otherwise the sample is named from the FASTQs, and each file's name, size and ETag go into `params.fastq_files` with the folder in `params.fastq_url`, so the stage step copies exactly those files. The genome version and metadata are checked before the folder is listed. A folder with `sample` or `sra_runs` is a 422 (a `null` counts as absent). The 201 also returns the folder's `lanes`, `files`, `file_count` and `total_bytes`.
+- `POST /scrna/cellranger/folder-check` takes `{"fastq_url": ...}` and checks the folder without starting anything. It lists it anonymously on AWS's S3 address (following a redirect to the bucket's region). If that's refused and `WORKFLOWS_S3_READER_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` are set, it lists it again signed as that user (the pipeline's `bloomv2-workflows-job`), for a private folder its owner shared with Bloom; otherwise the folder must be public. Once the folder passes, it reads the first byte of one FASTQ the way it listed (anonymous or signed), so a folder Bloom can list but not read (no `s3:GetObject`, or a KMS key it can't use) is refused here rather than at the stage step. It answers `{fastq_url, sample, lanes, files, file_count, total_bytes}`, or 422 saying what's wrong: not readable, not a valid bucket name, no FASTQs directly in it (naming any subfolders), FASTQs not named `<sample>_S<n>_L<lane>_<R1|R2|I1|I2>_001.fastq[.gz]` (a `.fq` or upper-case file is named too), empty or Glacier-archived FASTQs, more than one sample, a lane without its R1 or R2, more than 96 FASTQs, or over 1,000 files and subfolders. Other files and subfolders are ignored. S3 out of reach, or a listing it can't read, is a 502. Each request allows 3 s to connect and 10 s to read. It has its own rate limit, `WORKFLOWS_FOLDER_CHECK_RATE_LIMIT`, since the form checks as the scientist types.
 - `GET /scrna/cellranger/runs/{run_id}` returns the run's `rnaseq_runs` row; a run of another workflow type is a 404.
-- `GET /scrna/cellranger/runs/{run_id}/logs?step=<step>` returns the end of one step's log (`fetch-sra`, `stage-reference`, `stage`, `qc`, `count`, `preprocess`, `cluster`, `build-h5ad` or `cleanup`): the last 2,000 lines, trimmed to their last 1 MiB, of the `main` container of the pod the status poller recorded in `step_pods`, read from the Kubernetes API as `bloom-pipeline`. It answers `{run_id, step, pod, log, truncated}`; 422 for an unknown step, 404 for an unknown run or a step that hasn't started, 409 while the step's pod is waiting to run (queued, pulling its image, starting), and 410 once the pod is gone (its Workflow is removed 24 hours after the run finishes).
+- `GET /scrna/cellranger/runs/{run_id}/logs?step=<step>` returns the end of one step's log (`fetch-sra`, `download-genome`, `build-reference`, `stage`, `qc`, `count`, `preprocess`, `cluster`, `de`, `build-h5ad`, `load-dataset` or `cleanup`, and `stage-reference` for runs started before references came from Bloom): the last 2,000 lines, trimmed to their last 1 MiB, of the `main` container of the pod the status poller recorded in `step_pods`, read from the Kubernetes API as `bloom-pipeline`. It answers `{run_id, step, pod, log, truncated}`; 422 for an unknown step, 404 for an unknown run or a step that hasn't started, 409 while the step's pod is waiting to run (queued, pulling its image, starting), and 410 once the pod is gone (its Workflow is removed 24 hours after the run finishes).
 
-This service does not read the bucket. The pipeline checks that the reference and the FASTQs exist and that the FASTQs are named the Illumina way (`<prefix>_S1_L001_R1_001.fastq.gz`, R1 and R2 for every lane, any prefix), and fails the run with exit 3 (no reference), 4 (no FASTQs) or 7 (misnamed FASTQs) if not. The final `.h5ad` goes to `runs_output/<sample>__<reference>__<user id>/h5ad/`, so one sample can be counted against several references, and two users running the same pair get separate folders. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
+This service doesn't read the reads or the reference; for a folder run it lists the folder, as above. The pipeline checks that the reference and the FASTQs exist and that the FASTQs are named the Illumina way (`<prefix>_S1_L001_R1_001.fastq.gz`, R1 and R2 for every lane, any prefix), and fails the run with exit 3 (no reference), 4 (no FASTQs) or 7 (misnamed FASTQs) if not. The run's working folder on the cluster is `<sample>__<reference>__<user id>`, so one sample can be counted against several references, and two users running the same pair get separate folders; the final `.h5ad` goes into Bloom as the run's dataset. This route does not submit anything to Argo; runs stay `queued` until a dispatch worker picks them up.
 
 ```bash
 curl -X POST http://localhost:5100/scrna/cellranger/runs \
   -H "Authorization: Bearer <supabase-user-jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"sample": "tinygex", "reference": "tiny_ref"}'
+  -d '{"sample": "tinygex", "genome_version_id": 3}'
 
-# 201 {"run_id": 1, "sample": "tinygex", "reference": "tiny_ref", "run_key": "tinygex__tiny_ref__<user id>"}
+# 201 {"run_id": 1, "sample": "tinygex", "genome_version_id": 3, "reference": "tiny_ref.v1", "run_key": "tinygex__tiny_ref.v1__<user id>"}
 ```
 
 ### RNA-seq dispatch worker
@@ -270,24 +272,28 @@ Each pass, the worker claims the next queued run of any type, builds its Workflo
 - the K8s settings are missing: the run is left queued and comes back once they are fixed;
 - the run's type has no entry in `rnaseq_workflows.py`: the run becomes `failed` with a message naming the type.
 
-A Cell Ranger Workflow takes `sample` and `reference` from the run's `params` and runs the registered `cellranger-count-template`: `stage-reference`, then `sample-pipeline` with the run's `run_key` as its run id. A run with `sra_runs` also runs `fetch-sra` alongside `stage-reference`, given the run IDs comma-separated, and `sample-pipeline` waits for both, so its final `.h5ad` goes to `runs_output/<run_key>/h5ad/`. Its name is fixed per run (`scrna-cellranger-<environment>-<run id>-<hash of run_key>`), so the same run is never submitted twice. It carries the labels `workflow-type`, `rnaseq-run-id` (the `rnaseq_runs` id, the same label for every workflow type) and `environment`. It runs as `bloom-workflow` with the GHCR pull secret, and is deleted 24 hours after it finishes, so its step logs can still be read the next day (`WORKFLOWS_RNASEQ_TTL_SECONDS` overrides it; the sleap-roots `WORKFLOWS_K8S_TTL_SECONDS` doesn't apply). Tests compare the body with `argo/scrna/cellranger/cellranger-count-workflow.yaml` and the template's inputs, so a change to either shows up as a failing test.
+Before building the Workflow, the worker reads the run's form details (`rnaseq_runs.metadata`): a `dataset_name` and `species_id` become the `dataset-name` and `species-name` (the species' common name) the `load-dataset` step loads the result under. Every run passes its id as `bloom-run-id`: `count` stores its Cell Ranger report under it, and `load-dataset` tags the dataset with it. A run without a dataset (started before the API required one), or naming a species that doesn't exist, is submitted without them and loads nothing; its report is still stored under its id. It also reads the run's recorded genome version (`genome_version_id`) as `<genome>.v<N>`, which becomes the Workflow's `reference`; a run without one is failed with a message to start it again on a genome, and a failed read leaves the run queued. A Cell Ranger Workflow takes `sample` from the run's `params` and runs the registered `cellranger-count-template`'s `sample-pipeline` with the run's `run_key` as its run id; the pipeline downloads the genome and builds the reference itself. A run with `sra_runs` passes them comma-separated as `sra-runs`, and the pipeline's `fetch-sra` downloads them into the run's folder, alongside the genome steps; a folder run's `stage` copies its folder instead. A run with neither (started on a registered sample's name before that start was retired) is failed with a message to start it again with a folder or SRA run IDs. Its name is fixed per run (`scrna-cellranger-<environment>-<run id>-<hash of run_key>`), so the same run is never submitted twice. It carries the labels `workflow-type`, `rnaseq-run-id` (the `rnaseq_runs` id, the same label for every workflow type) and `environment`. It runs as `bloom-workflow` with the GHCR pull secret, and defines the `bloom-credentials` volume its steps mount to sign in to Bloom: the Secret named by `WORKFLOWS_K8S_PIPELINE_SECRET_NAME`, marked optional, or an empty folder when that is unset or invalid. It is deleted 24 hours after it finishes, so its step logs can still be read the next day (`WORKFLOWS_RNASEQ_TTL_SECONDS` overrides it; the sleap-roots `WORKFLOWS_K8S_TTL_SECONDS` doesn't apply, although `rnaseq-status-poller` receives it to keep its environment identical to `cyl-status-poller`'s). Tests compare the body with `argo/scrna/cellranger/cellranger-count-workflow.yaml` and the template's inputs, so a change to either shows up as a failing test.
 
-The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none. Its compose environment equals `cyl-pipeline-worker`'s (a test enforces it), so it also receives `CYL_PIPELINE_TRIGGER_ENABLED` and `WORKFLOWS_K8S_PIPELINE_*`, but it ignores them: RNA-seq dispatch is not gated by that switch.
+The worker reads the same settings as `cyl-pipeline-worker` (`WORKFLOWS_WORKER_POLL_SECONDS`, `WORKFLOWS_DISPATCH_VT_SECONDS`, `WORKFLOWS_DISPATCH_MAX_READS`, `WORKFLOWS_K8S_*`) and adds none. Its compose environment equals `cyl-pipeline-worker`'s (a test enforces it), so it also receives `CYL_PIPELINE_TRIGGER_ENABLED` and `WORKFLOWS_K8S_PIPELINE_*`. It ignores all of them but `WORKFLOWS_K8S_PIPELINE_SECRET_NAME`: RNA-seq dispatch is not gated by that switch.
 
 
 ### RNA-seq status poller
 
 `rnaseq_status_poller.py` runs as the always-on `rnaseq-status-poller` container and follows each `submitted` or `running` run in `rnaseq_runs` until it ends. Every `WORKFLOWS_STATUS_POLL_SECONDS` (default 15), it reads the run's Argo Workflow by the name the worker recorded (`k8s_client.get_workflow`, as `bloom-pipeline`), turns it into the run's status with the reader for its workflow type, and records it with `update_rnaseq_run_status`. That function only moves a run forward, never changes a finished run, and writes nothing for an unchanged report, so polling sends no Realtime update unless something changed. One poller runs per environment.
 
+Once a run naming a dataset has its `load-dataset` step succeed, the poller calls `link_rnaseq_run_dataset` with the dataset the step reports (its `dataset-id` output) before it records the run's status, so a failed call leaves the run active and is tried again at the next poll. The function links the run to the dataset, copies the form's details into it and gives it to the scientist. "Not yet" (the run isn't recorded as running) is tried again, and once more right after a final status is recorded, for a run that finished before the poller saw it running; any other refusal (no such dataset, one another run linked) is logged once and the run carries on. A failed `load-dataset` says so on the run, with exit 16 meaning the pipeline has no Bloom credentials.
+
+When it records a run's final status (succeeded or failed), the poller emails the scientist who started it (`run_email.py`): the outcome and its message, the run page link (`SITE_URL`), and for a run on an S3 folder a reminder to remove Bloom's access if they shared it. It looks the email up with `rnaseq_run_requesters` and sends through Salk's relay with the `SMTP_*` settings GoTrue uses (STARTTLS, no auth). Without `SMTP_HOST` nothing is sent; a failed send is logged and never changes the run.
+
 For Cell Ranger, the reader (`rnaseq_status.py`) works from the Workflow's `status.nodes`:
 
-- **current step**: the step that is running, or the last one to start: `fetch-sra` (SRA imports only), `stage-reference`, `stage`, `qc`, `count`, `preprocess`, `cluster`, `build-h5ad` or `cleanup`;
+- **current step**: the step that is running, or the last one to start: `fetch-sra` (SRA imports only), `download-genome`, `build-reference`, `stage`, `qc`, `count`, `preprocess`, `cluster`, `de`, `build-h5ad`, `load-dataset` or `cleanup`;
 - **step pods**: each started step's pod, named `<workflow>-<template>-<numeric end of the node id>`; for a retried step, the latest attempt;
-- **outcome**: `succeeded`, or `skipped` when the stage step reports the results already exist, or `failed` with the failed step's exit code and a message: exit 3 "No reference at reference_genome/<reference>/", exit 4 "No FASTQs at raw_reads/<sample>/", exit 5 "Cell Ranger failed; its log is at /hpi/hpi_dev/users/bfernando/scrna/runs/<run_key>/logs/count.log" (the cluster's shared folder, kept after a failure), exit 6 for a sample name Cell Ranger can't use, exit 7 "The FASTQs in raw_reads/<sample>/ must be named like <name>_S1_L001_R1_001.fastq.gz, …", exits 13–15 from the analysis steps (too few cells, no count matrix, a part that doesn't fit), and "Step <step> failed (exit N)" otherwise. `fetch-sra` has its own messages for 6 and 7 and for 10 (a download or storage check failed), 11 (no 10x barcode or cDNA read) and 12 (the sample folder holds other FASTQs).
+- **outcome**: `succeeded` ("Finished: loaded into Bloom", or that the run named no dataset), or `failed` with the failed step's exit code and a message: exit 3 at count "No Cell Ranger reference for <reference> was found to count against", exit 4 "No FASTQs were found on the shared disk for <sample>", exit 5 "Cell Ranger failed; its log is at /hpi/hpi_dev/users/bfernando/scrna/runs/<run_key>/logs/count.log" (the cluster's shared folder, kept after a failure), exit 6 for a sample name Cell Ranger can't use, exit 7 "The FASTQs downloaded for <run IDs> must be named like <name>_S1_L001_R1_001.fastq.gz, …", exits 13–15 from the analysis steps (too few cells, no count matrix, a part that doesn't fit), and "Step <step> failed (exit N)" otherwise. `fetch-sra` has its own messages for 6 and 7 and for 10 (a download from ENA or SRA failed) and 11 (no 10x barcode or cDNA read). A folder run's stage step has its own for 4 (the FASTQs were removed after the start), 6 (its folder or file list couldn't be used), 7 (misnamed FASTQs), 8 (the folder changed after the start), 9 (FASTQs named for another sample) and 10 (listing or copying failed), and its other steps name the copied FASTQs. `download-genome` has its own for 3 (the version isn't available, or a file doesn't match Bloom's record), 1 (the download failed after its retries), 6 (bad input) and 16 (no credentials), and `build-reference` for 3 (no downloaded files), 6 (bad input) and 17 (`cellranger mkref` failed); their other exits are "Step <step> failed (exit N)".
 
-Once an SRA import's `fetch-sra` step has succeeded, and the run is recorded as running or succeeded, the poller registers the sample with `register_rnaseq_sample`, passing the step's `fastq-count` and `total-bytes` outputs. It does this once per run; the function is idempotent, so a restarted poller repeating it is harmless. A name that conflicts (23505) is logged once and not retried; other errors are retried on the next poll.
+The poller registers no samples: an SRA import's reads are downloaded into the run's own folder and deleted with it, so there is nothing to register.
 
-A Workflow that no longer exists fails its run with "The workflow was removed before its result was recorded". One run's error is logged and the sweep goes on; missing K8s settings stop the sweep until they are fixed. The reader is tested against real Workflows from `runai-busch-lab` (`tests/fixtures/argo/`).
+A Workflow that no longer exists fails its run with "The workflow was removed before its result was recorded", but only when the cluster's answer is a NotFound naming that Workflow. Any other 404 (a proxy's page, a missing Argo CRD, a wrong API path) logs `k8s_client: workflow read got a 404 that does not name workflow …` and leaves the run as it is until a later poll can read it: a run stuck at "running" with that line in the log points at `WORKFLOWS_K8S_API_URL`, the namespace, or the Argo install. One run's error is logged and the sweep goes on; missing K8s settings stop the sweep until they are fixed. The reader is tested against real Workflows from `runai-busch-lab` (`tests/fixtures/argo/`).
 
 ### Pipeline dispatch worker
 
@@ -386,9 +392,10 @@ distinct from `dispatch_worker.py` above — deployed as its own
 to new pgmq messages, this poller runs on a fixed wall-clock cadence
 (`WORKFLOWS_STATUS_POLL_SECONDS`, default 15s) regardless of dispatch
 activity, sweeping every `cyl_pipeline_runs` row still `'submitted'`/
-`'running'`/`'partial'` (a `'partial'` run may still have genuinely-dispatched
-batches whose real Argo outcome hasn't been checked yet — it is not excluded
-merely because Phase 2 already settled its dispatch outcome). For each such
+`'running'`, or `'partial'` and not yet concluded by this poller (a `'partial'`
+that dispatch settled may still have genuinely-dispatched batches whose real
+Argo outcome hasn't been checked yet; once the poller writes a terminal status
+it sets `poller_concluded_at` and the run is final). For each such
 run it fetches the real Argo phase of every distinct `argo_workflow_name`
 among that run's scans (`k8s_client.get_workflow_status` — a read-only `GET`,
 not the `create` `dispatch_worker.py` does), computes `done_count`/`failed_count`
@@ -420,14 +427,17 @@ the last chance to close it out. While a run is still `'running'`, the
 poller also closes out, the same way, the leftover `'queued'` rows of each
 workflow whose own phase is confirmed `Succeeded`, `Failed` or `Error`: that
 workflow has finished every node, write-back's retries included, and a run's
-25-scan workflows can finish hours apart. A 404 is never enough here, since a
-misconfigured namespace or API URL also returns 404 while the workflow still
-runs; those rows wait for the run-level case. For a `'running'` run, a failed
+25-scan workflows can finish hours apart. A NotFound with no stored phase is
+not enough here, since a misconfigured namespace also returns NotFound while
+the workflow still runs; those rows wait for the removal rule below. For a
+`'running'` run, a failed
 close-out or recount still lets that cycle's progress write happen (with the
 snapshot counts), since the run stays a candidate anyway. Each close-out logs
-how many rows it closed. It does so via
-`fail_cyl_pipeline_run_scans_without_result` (one call per distinct
-`argo_workflow_name` with a leftover `'queued'` row), then re-deriving
+how many rows it closed. It does so via the run-scoped
+`close_cyl_pipeline_run_workflow_scans` (one call per distinct
+`argo_workflow_name` with a leftover `'queued'` row; a garbage-collected
+workflow's generated name can be reused by a later run, so the name-only RPC
+`bloomctl` uses is not safe here), then re-deriving
 `done_count`/`failed_count` from a fresh read of that run's scan rows before
 the status write — not by incrementing the counts `_fetch_effective_phases`
 already returned, since that snapshot was taken before this cycle's K8s
@@ -436,17 +446,51 @@ scan's write-back genuinely resolved in that window. If the reconciliation
 call itself fails, the status write is skipped entirely for that run this
 cycle — it remains a candidate and is retried next cycle, the same isolation
 already given to every other per-run failure — rather than writing a
-terminal status while leaving those rows permanently unresolved. This
-reconciliation is deliberately **not** gated on whether some other workflow
-in the run is unresolved (404'd) this cycle: `get_workflow_status` returns
-`None` only on a clean 404, which is normally a permanent condition (the
-Workflow object no longer exists), not a transient one — a genuine transient
-K8s failure raises `K8sStatusError` instead, an entirely separate path this
-loop already isolates per-run. A prior attempt to add such a gate was
-reverted after two review passes traced it letting an ordinary, expected
-TTL-GC'd sibling workflow stall a run's reconciliation and status write
-forever (see `openspec/changes/fix-cyl-pipeline-run-scan-status/design.md`'s
-Decision 6 addendum 8). Like `update_cyl_pipeline_run_status` below, the
+terminal status while leaving those rows permanently unresolved.
+
+**Workflows Argo has deleted** (bloom#1042, `fix-cyl-poller-unconcluded-runs`).
+Argo deletes a finished Workflow `WORKFLOWS_K8S_TTL_SECONDS` after it ends.
+
+- **Stored phases.** The poller records each workflow's terminal phase in
+  `cyl_pipeline_run_workflows` the first cycle it sees it, through
+  `record_cyl_pipeline_workflow_phase`, and uses that stored phase once
+  lookups stop finding the workflow. A live phase always wins (`argo retry`
+  can revive a finished workflow).
+- **What counts as "not found".** `get_workflow_status` returns `None` only
+  for a verified NotFound: a Kubernetes `Status` with reason `NotFound` naming
+  that exact Workflow, or a live Workflow whose `pipeline-run-id` or
+  `environment` label names
+  another run. Any other 404 is a lookup error.
+- **Removal.** A workflow that is gone and was never seen finishing counts as
+  removed only when all three hold:
+  - 3 consecutive verified NotFound lookups;
+  - those lookups span `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` (default 600);
+  - its scan rows were last updated (at dispatch, or by write-back while it
+    ran) at least `WORKFLOWS_K8S_TTL_SECONDS` ago. Argo
+    can't have deleted it sooner, so a wrong namespace can't fail a young run.
+
+  The poller then records the workflow's phase from its rows (`Succeeded` when
+  all are `'written'`/`'reused'`, else `Failed`) and closes its `'queued'` rows
+  with "the workflow was removed before Bloom saw it finish…". Recording first
+  makes the removal stick: the close-out stamps `updated_at`, which would
+  otherwise restart the TTL bound.
+- **Failed lookups.** A lookup that fails resets only that workflow's count. With
+  a stored phase the workflow uses it; without one it is unresolved for that
+  cycle.
+- **Environment.** `cyl-status-poller` must get the same
+  `WORKFLOWS_K8S_ENV_LABEL` as `cyl-pipeline-worker`. Its ownership check compares
+  the `environment` label, so with the code default (`dev`) every staging or prod
+  workflow would read as gone.
+- **Unresolved workflows.** A workflow that is neither stored nor removed is
+  unresolved. While any workflow is unresolved, the poller writes no terminal
+  status at all, neither `'complete'` nor `'failed'`/`'partial'`, and the
+  terminal backstop closes no rows: a terminal write is final, and the removal
+  rule bounds the wait. Rows of a removed workflow, and of a workflow with a
+  live or stored terminal phase in a still-running run, are still closed. A
+  lookup that fails makes only that workflow unresolved for the cycle.
+  This replaces the earlier ungated backstop (`fix-cyl-pipeline-run-scan-status`
+  Decision 6 addendum 8), which existed only because a garbage-collected
+  sibling's 404 never cleared. Like `update_cyl_pipeline_run_status` below, the
 reconciliation RPC call also treats a `PGRST202` (function-signature-not-found)
 response as an expected, transient condition during the brief window between
 this deploy's app code going live and its migration actually applying —
@@ -485,14 +529,20 @@ Concretely:
 - **`'partial'` no longer means what its name suggests.** It no longer arises
   from partial failure _within_ a batch — only from terminal phases differing
   across a multi-batch run. Do not treat its absence as "nothing was partial".
-- **The counts can be absent, not just zero.** When any of a run's workflows
-  404s (normally because it was TTL-GC'd), the poller withholds a `'complete'`
-  conclusion and skips the run's status write entirely rather than concluding
-  from incomplete information. A GC'd workflow 404s permanently, so a run whose
-  batches finished more than `WORKFLOWS_K8S_TTL_SECONDS` apart can sit at its
-  previous status with the counts never updated. **Render that as "unknown",
-  not as zero** — it is the one case where "read the counts" is not by itself
-  sufficient advice.
+- **A run can sit unconcluded for a while, but not forever.** While one of a
+  run's workflows is unresolved (gone, never seen finishing, and not yet past
+  the removal rule above), the poller writes no terminal status. The run keeps
+  its previous status and counts until the workflow is removed: about
+  `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` once the TTL bound is met. A workflow the
+  poller saw finish keeps its stored phase, so this happens only after poller
+  downtime or a broken lookup that outlasted the TTL.
+- **A removed workflow's phase is approximate.** It is derived from its rows, so
+  a batch whose producers exited `3` reads `Failed` once its isolated scans are
+  `'failed'`. The counts are exact either way.
+- **A concluded run is final.** Once `poller_concluded_at` is set, the status,
+  counts and `completed_at` never change again. Re-running its scans means
+  starting a new run. A `NULL` `poller_concluded_at` does not mean the run is
+  open: a run that dispatch alone settled to `'failed'` never gets one.
 
 A zero-scan run is set to `'complete'` at enumerate time by the trigger route
 and never dispatched, so it never reaches the rollup at all.
@@ -508,9 +558,9 @@ uv run python status_poller.py
 caller's **Supabase user JWT** (`Authorization: Bearer`). The service validates
 it by delegating to Supabase (`GET /auth/v1/user`), so it **never needs
 `JWT_SECRET`**. A coarse per-user rate limit (`429` when exceeded) is shared
-across every application route except two: `GET /model-cards`, which has its own
-limit, and the plate-video progress poll, which pages call repeatedly and has
-none; it is
+across every application route except three: `folder-check` and `GET /model-cards`,
+which each have their own limit, and the plate-video progress poll, which pages
+call repeatedly and has none; it is
 enforced per process, so the effective limit scales with workers/replicas
 rather than being a hard global quota.
 `/health` is internal-only and not publicly exposed.
@@ -586,7 +636,25 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
    `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` on the `/hpi/hpi_dev` NFS. Nothing creates
    either, and a missing one leaves the pods `Pending`, not `Failed`. Neither
    `bloom-pipeline` nor `argo-user` can read Secrets, so check the secret in the
-   RunAI console.
+   RunAI console. Before creating it:
+   - Set `is_workflows` in `raw_app_meta_data`, as in step 2. In user metadata the
+     hook ignores it and the account signs in as `bloom_user`.
+   - `credentials.txt` is `bloomctl`'s dotenv file: `BLOOM_API_URL`,
+     `BLOOM_ANON_KEY`, `BLOOM_EMAIL`, `BLOOM_PASSWORD`. Take the URL and anon key
+     from **that environment's** `/api/client-info`. Staging's URL is
+     `https://staging.bloom.salk.edu:8443/api`; without `:8443` it reaches prod. A
+     Secret pointing at the other environment's Bloom writes traits under the
+     wrong scans, and nothing at dispatch checks which Bloom it points at.
+   - The file is always named `credentials.txt`, which `bloomctl` reads as its
+     `prod` profile whatever the environment. The templates mount it with
+     `subPath` at `/home/bloom/.bloom/credentials.txt` and set `HOME=/home/bloom`.
+   - Leave the vendored Workflow's `bloom-credentials` volume as `secretName`
+     only. `k8s_client.py` rejects any other key, such as `defaultMode`, and the
+     batch fails.
+   - The account gets the whole `bloom_workflows` role, shared with the
+     service's user: the grants above, write-back's and Cell Ranger's. A separate
+     account gives separate revocation, not narrower access. To rotate it, change
+     the password and update the Generic secret; each new pod reads the file fresh.
 7. For `GET /model-cards` (bloom#971): set the deploy secrets
    `PROD_/STAGING_WANDB_API_KEY`, ideally a wandb service-account key with read access
    to the `sleap-roots-models` registry. Only the `workflows` service gets it. It is
@@ -605,23 +673,27 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_IMAGES_BUCKET`       | `images`                | Storage bucket to read frames from                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEOS_BUCKET`       | `videos`                | Storage bucket to write the MP4 to                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEO_TABLE`         | `cyl_scan_videos`       | Record table (`scan_id -> path`)                                                                                                                                                                                                                                                                             |
-| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes but `GET /model-cards` (its own limit) and the plate-video progress poll (none) (429 over)                                                                                                                                                                                                               |
+| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes but `folder-check` and `GET /model-cards` (their own limits) and the plate-video progress poll (none) (429 over)                                                                                                                                                                                                               |
 | `WORKFLOWS_RATE_WINDOW_SECONDS` | `60`                    | Rate-limit window                                                                                                                                                                                                                                                                                            |
+| `WORKFLOWS_FOLDER_CHECK_RATE_LIMIT` | `30` | Max S3 folder checks per user per window, per process, counted apart from the other routes. Like `WORKFLOWS_RATE_LIMIT`, not passed in either compose file, so the code default applies |
 | `WORKFLOWS_MODEL_CARDS_RATE_LIMIT` | `60` | Max `GET /model-cards` reads per user per window, per process, counted apart from the other routes. Not passed in either compose file, so the code default applies |
 | `WORKFLOWS_PUBLIC_SUPABASE_URL` | –                       | Public base that replaces the internal `SUPABASE_URL` host in signed URLs, so `download_url` works for outside callers (set to `NEXT_PUBLIC_SUPABASE_URL`). Unset → the internal URL is returned unchanged.                                                                                                  |
+| `WORKFLOWS_S3_READER_ACCESS_KEY_ID`, `WORKFLOWS_S3_READER_SECRET_ACCESS_KEY` | – | `workflows` only. The key of the pipeline's AWS user, `bloomv2-workflows-job`, so `folder-check` can list a private folder shared with it. Unset → a private folder is refused as not public. GitHub secrets `PROD_`/`STAGING_`; required in prod and staging, optional in dev |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_ADMIN_EMAIL`, `SMTP_SENDER_NAME`, `SITE_URL` | `.env.*.defaults` | `rnaseq-status-poller`: the run-finished email, through the same relay as GoTrue. Unset `SMTP_HOST` (dev) → no email |
 | `WANDB_API_KEY`                 | –                       | `workflows` only. wandb key that reads the production model cards for `GET /model-cards` (Basic auth to wandb's GraphQL API). Unset → that route answers 503 and the confirm dialog shows "Couldn't check the models' age ranges." Required in prod and staging, optional in dev |
 | `WORKFLOWS_K8S_TOKEN`           | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Bearer token for the `bloom-pipeline` ServiceAccount — a real credential, eagerly required (raises before any network call if missing)                                                                                                                    |
 | `WORKFLOWS_K8S_CA_CERT`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. PEM cluster CA, stored with literal `\n` escapes (see Provisioning above) — a real credential, eagerly required                                                                                                                                           |
 | `WORKFLOWS_K8S_API_URL`         | –                       | `cyl-pipeline-worker` **and** `cyl-status-poller`. K8s API server base URL (`https://<host>:6443`) — a real credential, eagerly required                                                                                                                                                                     |
 | `WORKFLOWS_K8S_NAMESPACE`       | `runai-busch-lab`       | `cyl-pipeline-worker` **and** `cyl-status-poller`. Single hardcoded namespace for v1 (not a credential — never eagerly required)                                                                                                                                                                             |
-| `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `cyl-pipeline-worker` only. `ttlStrategy.secondsAfterCompletion` on every submitted Workflow, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required)                                                                                                                 |
+| `WORKFLOWS_K8S_TTL_SECONDS`     | `3600`                  | `ttlStrategy.secondsAfterCompletion` on every Workflow `cyl-pipeline-worker` submits, since the submitting identity has no `delete` RBAC (not a credential — never eagerly required). `cyl-status-poller` reads the same value: it never treats a workflow as removed sooner than this after the workflow was dispatched. A value that isn't positive switches removal off, with a warning |
 | `WORKFLOWS_K8S_ENV_LABEL`       | `dev`                   | `cyl-pipeline-worker` only. `environment` label on every submitted Workflow — prod and staging share the `runai-busch-lab` namespace and both `run_id` sequences start at 1, so this is what disambiguates them for a future reconciliation sweep (not a credential — never eagerly required)                |
 | `WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). This environment's stage root: the three stage volumes become `<root>/input`, `/predictions`, `/traits` (bloom#863). An absolute POSIX path; no default. Missing or invalid, every claimed batch fails "not configured" |
-| `WORKFLOWS_K8S_PIPELINE_SECRET_NAME` | – | `cyl-pipeline-worker` (`rnaseq-worker` receives it and ignores it). The Kubernetes Secret `bloom-credentials` mounts — this environment's own Supabase pipeline credential (bloom#863). No default. Missing or invalid, every claimed batch fails "not configured" |
+| `WORKFLOWS_K8S_PIPELINE_SECRET_NAME` | – | The Kubernetes Secret holding this environment's own Supabase pipeline credential (bloom#863). No default. `cyl-pipeline-worker`: mounts it as `bloom-credentials`; missing or invalid, every claimed batch fails "not configured". `rnaseq-worker`: adds it to every RNA-seq workflow as the optional `bloom-credentials` volume, so its steps can sign in to Bloom; missing or invalid gives an empty folder |
 | `WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE` | `cellranger-count-template` | The Cell Ranger WorkflowTemplate this environment's runs use. Prod and staging share `runai-busch-lab`, so each registers its own copy (`argo/scrna/README.md`): `cellranger-count-template` for prod, `cellranger-count-template-staging` for staging. Read by `rnaseq-worker` (`cyl-pipeline-worker` receives it and ignores it) |
 | `CYL_PIPELINE_TRIGGER_ENABLED` | – | `cyl-pipeline-worker` (and bloom-web; `rnaseq-worker` receives it and ignores it). On only for exactly `true`; otherwise every claimed batch fails "turned off" and nothing is submitted. Read at start-up |
 | `WORKFLOWS_WORKER_POLL_SECONDS` | `5`                     | `cyl-pipeline-worker` only. Idle sleep between empty-queue polls, and the retry interval for the startup Supabase connection check                                                                                                                                                                           |
 | `WORKFLOWS_STATUS_POLL_SECONDS` | `15`                    | `cyl-status-poller` only. Sleep between sweep cycles, and the retry interval for the startup Supabase connection check. Not wired into either compose file's `environment:` block, matching `WORKFLOWS_WORKER_POLL_SECONDS`'s own treatment — the code-side default governs every deployed environment today |
+| `WORKFLOWS_NOT_FOUND_GRACE_SECONDS` | `600`               | `cyl-status-poller` only. How long a workflow that is gone and was never seen finishing must keep returning a verified NotFound (over at least 3 lookups) before the poller treats it as removed. A malformed or non-positive value falls back to 600 with a warning. Not wired into the compose files, like the poll interval |
 | `WORKFLOWS_DISPATCH_VT_SECONDS` | `60`                    | `cyl-pipeline-worker` only. pgmq visibility timeout passed to `claim_cyl_pipeline_batch` — how long a claimed batch stays hidden from other claimants before redelivery                                                                                                                                      |
 | `WORKFLOWS_DISPATCH_MAX_READS`  | `5`                     | `cyl-pipeline-worker` only. Poison-message threshold passed to `claim_cyl_pipeline_batch` — a batch redelivered more than this many times is dead-lettered (marked failed) instead of claimed again                                                                                                          |
 

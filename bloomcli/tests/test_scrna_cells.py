@@ -6,6 +6,8 @@ real `.h5ad` files: a change that stops refusing is caught here.
 
 from __future__ import annotations
 
+import colorsys
+import re
 from pathlib import Path
 
 import anndata
@@ -208,22 +210,43 @@ def test_as_many_cell_types_as_there_are_colours_is_accepted(tmp_path):
     assert len(cells["levels"]) == n
 
 
-def test_one_more_cell_type_than_colours_is_refused(tmp_path):
-    """Wrapping the palette would draw two cell types identically. One column of
-    the real file has exactly 24 levels, so this is one flag away."""
-    n = len(_cells.PALETTE) + 1
+def test_more_cell_types_than_palette_colours_are_accepted(tmp_path):
+    """A clustering finer than the palette (32 Leiden clusters on a root sample) loads, each
+    cell type with a colour of its own."""
+    n = len(_cells.PALETTE) + 9
     labels = [f"type{i}" for i in range(n)] * 21
-    path = write_h5ad(tmp_path / "onemore.h5ad", n_cells=n * 21, labels=labels)
-    with pytest.raises(LoadError, match="drawn identically"):
-        _cells.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    path = write_h5ad(tmp_path / "many.h5ad", n_cells=n * 21, labels=labels)
+    cells = _cells.read_cells(path, "nn_label_plain", "sample", "X_umap", None)
+    assert len(cells["levels"]) == n
 
 
 def test_the_palette_has_a_distinct_colour_for_every_cell_type():
-    """23 cell types in the target dataset, so 23 distinct colours -- a repeat
-    renders two different cell types identically in the plot and the legend."""
+    """The first 23 cell types keep these hand-picked colours."""
     assert len(_cells.PALETTE) == 23
     assert len(set(_cells.PALETTE)) == len(_cells.PALETTE)
     assert all(c.startswith("#") and len(c) == 7 for c in _cells.PALETTE)
+
+
+@pytest.mark.parametrize("n", [0, 1, 23, 24, 32, 100, 500])
+def test_cluster_colours_gives_each_cell_type_its_own_colour(n):
+    colours = _cells.cluster_colours(n)
+    assert len(colours) == n
+    assert len(set(colours)) == n, "two cell types would be drawn identically"
+    assert all(re.fullmatch(r"#[0-9A-F]{6}", c) for c in colours)
+
+
+def test_cluster_colours_start_with_the_palette_and_never_change():
+    colours = _cells.cluster_colours(40)
+    assert colours[:23] == _cells.PALETTE
+    assert colours[23:] == _cells.cluster_colours(40)[23:]
+    assert _cells.cluster_colours(30) == colours[:30], "adding cell types keeps earlier colours"
+
+
+def test_generated_colours_are_neither_washed_out_nor_too_dark():
+    for colour in _cells.cluster_colours(100)[23:]:
+        r, g, b = (int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        _hue, lightness, _sat = colorsys.rgb_to_hls(r, g, b)
+        assert 0.3 <= lightness <= 0.75, colour
 
 
 def test_unfilled_coordinates_are_refused(tmp_path):

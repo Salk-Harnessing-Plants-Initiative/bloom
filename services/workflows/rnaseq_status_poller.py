@@ -4,10 +4,10 @@ RNA-seq status poller.
 Every WORKFLOWS_STATUS_POLL_SECONDS, reads the Argo Workflow of each submitted or running
 rnaseq_runs row, turns it into the run's status with the reader for its workflow type in
 rnaseq_workflows, and records it with update_rnaseq_run_status, which only moves a run
-forward and writes nothing for an unchanged report. A Workflow that no longer exists
-fails its run. A run that imports its sample from SRA has the sample registered with
-register_rnaseq_sample once its fetch-sra step succeeds. Runs as the bloom_workflows app
-user; one poller per environment.
+forward and writes nothing for an unchanged report. A Workflow the cluster says no longer
+exists fails its run; any other failed read leaves the run for the next poll. A run is
+linked to the dataset it loaded once its load-dataset step succeeds. When a run finishes, its requester is emailed (run_email). Runs as the
+bloom_workflows app user; one poller per environment.
 
 Deploy: a container off the workflows image with `command: python rnaseq_status_poller.py`.
 """
@@ -20,7 +20,8 @@ import time
 from k8s_client import K8sConfigError, get_workflow
 from postgrest import APIError
 
-from rnaseq_status import RunStatus, sra_download
+import run_email
+from rnaseq_status import RunStatus, loaded_dataset
 from rnaseq_workflows import WORKFLOW_TYPES
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
@@ -29,7 +30,9 @@ logger = logging.getLogger(__name__)
 
 RUNS_TABLE = "rnaseq_runs"
 UPDATE_FN = "update_rnaseq_run_status"
-REGISTER_FN = "register_rnaseq_sample"
+LINK_FN = "link_rnaseq_run_dataset"
+# The function refused to link for now: the run isn't recorded as running yet.
+LINK_NOT_YET = "55000"
 # Statuses the poller still has to follow; later ones never change.
 ACTIVE_STATUSES = ("submitted", "running")
 # Recorded when the Workflow is gone before the poller saw it finish.
@@ -51,9 +54,8 @@ def _resolve_poll_interval() -> float:
 POLL_INTERVAL = _resolve_poll_interval()
 
 _running = True
-# SRA runs whose sample this process has registered; the function is idempotent, so a
-# restart that forgets them only repeats a harmless call.
-_registered: set[int] = set()
+# Runs already linked to their dataset, or whose link was refused for good.
+_linked: set[int] = set()
 
 
 def app_client():
@@ -98,43 +100,37 @@ def _record(client, run_id, status: RunStatus) -> bool:
     )
 
 
-def _register_sample(client, run: dict, workflow: dict, status: RunStatus) -> None:
-    """Registers an SRA run's sample once its download has succeeded."""
-    if run["id"] in _registered or not (run.get("params") or {}).get("sra_runs"):
+def _link_dataset(client, run: dict, workflow: dict) -> None:
+    """Links a run to the dataset its load-dataset step loaded and reported, gives the
+    dataset the form's details and hands it to the scientist. Called before the run's status is recorded, so a
+    failed call leaves the run active and it is tried again at the next poll, and once more
+    after a final status is recorded, for a run that finished before it was seen running."""
+    dataset_id = loaded_dataset(workflow)
+    if run["id"] in _linked or dataset_id is None:
         return
-    if status.status not in ("running", "succeeded"):
-        return
-    download = sra_download(workflow)
-    if download is None:
-        return
-    fastq_count, total_bytes = download
     try:
         client.rpc(
-            REGISTER_FN,
-            {
-                "p_run_id": run["id"],
-                "p_fastq_count": fastq_count,
-                "p_total_bytes": total_bytes,
-            },
+            LINK_FN, {"p_run_id": run["id"], "p_dataset_id": dataset_id}
         ).execute()
     except APIError as exc:
-        # A conflicting name is a data problem, not a blip: say so once and stop trying.
-        if exc.code == "23505":
-            _registered.add(run["id"])
-            logger.error(
-                "rnaseq_status_poller: run %s's sample was not registered: %s",
+        if exc.code == LINK_NOT_YET:
+            logger.info(
+                "rnaseq_status_poller: run %s's dataset isn't linked yet: %s",
                 run["id"],
                 exc.message,
             )
             return
-        raise
-    _registered.add(run["id"])
+        # Not one this run can fix by waiting (no such dataset, another run's): say so once.
+        _linked.add(run["id"])
+        logger.error(
+            "rnaseq_status_poller: run %s was not linked to its dataset: %s",
+            run["id"],
+            exc.message,
+        )
+        return
+    _linked.add(run["id"])
     logger.info(
-        "rnaseq_status_poller: run %s registered sample %s (%s FASTQs, %s bytes)",
-        run["id"],
-        run["params"].get("sample"),
-        fastq_count,
-        total_bytes,
+        "rnaseq_status_poller: run %s is linked to dataset %s", run["id"], dataset_id
     )
 
 
@@ -161,9 +157,14 @@ def poll_run(client, run: dict) -> bool:
         if status is None:
             return False
 
-    changed = _record(client, run["id"], status)
     if workflow is not None:
-        _register_sample(client, run, workflow, status)
+        _link_dataset(client, run, workflow)
+    changed = _record(client, run["id"], status)
+    if workflow is not None and status.status not in ACTIVE_STATUSES:
+        _link_dataset(client, run, workflow)
+    # notify() skips a run still going, and a finished run changes only once, so one email.
+    if changed:
+        run_email.notify(client, run, status)
     if changed:
         logger.info(
             "rnaseq_status_poller: run %s is %s at %s",

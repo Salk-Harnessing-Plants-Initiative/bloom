@@ -81,7 +81,9 @@ def _user(cur):
 
 def _run(cur, requested_by, sample="tinygex"):
     cur.execute(
-        "SELECT public.request_scrna_cellranger_run(%s, 'tiny_ref', %s)", (sample, requested_by)
+        "SELECT public.request_scrna_cellranger_run(p_sample => %s, p_reference => 'tiny_ref', "
+        "p_requested_by => %s, p_sra_runs => ARRAY['SRR28503597'])",
+        (sample, requested_by),
     )
     return cur.fetchone()[0]
 

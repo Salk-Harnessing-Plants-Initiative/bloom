@@ -30,7 +30,7 @@ No migration and no new service. Every read runs as the signed-in user, through 
 ## Impact
 
 - **Specs:** new `cyl-trait-export`, with ADDED requirements only.
-  - The new spec cites functions whose requirements live in #976's unarchived `add-cyl-trait-recipe-key`, so this change archives after it.
+  - The new spec cites functions whose requirements live in #976's `add-cyl-trait-recipe-key` (archived 2026-10-04 in #1046), so this change archives after it.
   - No other active change touches this capability.
 - **Code (web only):**
   - new `web/lib/cyl-trait-export/`, `web/app/api/cyl/trait-export/` and `web/components/cyl-trait-export/`;

@@ -1,4 +1,11 @@
-# argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p samples='["sample_a","sample_b"]'
+# QC only, for a look at one sample's reads before a count. Give SRA run IDs or an S3 folder:
+#   argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p sample=root_tip \
+#     -p sra-runs=SRR28503597,SRR28503598
+#   argo submit argo/scrna/fastq_qc/fastq-qc-workflow.yaml -n runai-busch-lab -p sample=col0 \
+#     -p fastq-url=s3://bucket/folder/ -p fastq-files='[{"name": ..., "size": ..., "etag": ...}]'
+# The reads are fetched into /shared/runs/qc-<workflow name>/ with the run template's own steps and
+# QC'd there; the report stays in qc/. However the workflow ends, its reads and .sra are deleted.
+# Nothing goes to S3.
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
@@ -8,6 +15,7 @@ metadata:
     project: busch-lab
 spec:
   entrypoint: main
+  onExit: delete-reads
   serviceAccountName: bloom-workflow
   imagePullSecrets:
     - name: dockerregistry-bloom-ghcr-pull   # from the busch-lab Run:ai credential bloom-ghcr-pull
@@ -15,20 +23,78 @@ spec:
     secondsAfterCompletion: 86400
   arguments:
     parameters:
-      - name: samples
-        value: '[]'
+      - name: sample
+      - name: sra-runs
+        value: ""
+      - name: fastq-url
+        value: ""
+      - name: fastq-files
+        value: ""
+  # The pipeline's Bloom login, for run-with-log to upload each step's log.
+  volumes:
+    - name: bloom-credentials
+      secret:
+        secretName: genericsecret-bloom-prod-pipeline-credentials
+        optional: true
   templates:
     - name: main
       dag:
         tasks:
-          - name: fastq-qc
+          - name: fetch-sra
             templateRef:
-              name: fastq-qc-template
-              template: fastq-qc
-            withParam: "{{workflow.parameters.samples}}"
+              name: cellranger-count-template
+              template: fetch-sra
+            when: "'{{workflow.parameters.sra-runs}}' != ''"
             arguments:
               parameters:
                 - name: sample
-                  value: "{{item}}"
+                  value: "{{workflow.parameters.sample}}"
+                - name: sra-runs
+                  value: "{{workflow.parameters.sra-runs}}"
                 - name: run-id
-                  value: "{{item}}"
+                  value: "qc-{{workflow.name}}"
+          - name: stage
+            templateRef:
+              name: cellranger-count-template
+              template: stage-sample
+            when: "'{{workflow.parameters.sra-runs}}' == ''"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{workflow.parameters.sample}}"
+                - name: run-id
+                  value: "qc-{{workflow.name}}"
+                - name: fastq-url
+                  value: "{{workflow.parameters.fastq-url}}"
+                - name: fastq-files
+                  value: "{{workflow.parameters.fastq-files}}"
+          - name: qc
+            templateRef:
+              name: cellranger-count-template
+              template: qc
+            depends: fetch-sra && stage
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{workflow.parameters.sample}}"
+                - name: run-id
+                  value: "qc-{{workflow.name}}"
+    - name: delete-reads
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        command: [bash, -c]
+        args:
+          - rm -rf -- "/shared/runs/qc-{{workflow.name}}/fastq" "/shared/runs/qc-{{workflow.name}}/sra"
+        resources:
+          requests: {cpu: "0.5", memory: 512Mi}
+          limits: {cpu: "0.5", memory: 512Mi}
+        volumeMounts:
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory

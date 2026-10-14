@@ -35,6 +35,11 @@ mkdir -p "${out}" && echo '{"chemistry": "SC3Pv3"}' > "${out}/qc_summary.json"
 echo "aws $*" >> "${AWS_CALLS}"
 exit 99
 """,
+    # Records each upload it's asked for; FAKE_PUT_FAIL makes it fail.
+    "run-with-log": """#!/usr/bin/env bash
+echo "$*" >> "${PUT_CALLS}"
+[ -z "${FAKE_PUT_FAIL:-}" ] || exit 1
+""",
 }
 
 
@@ -58,6 +63,7 @@ def env(tmp_path):
     return {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "AWS_CALLS": str(tmp_path / "aws_calls"),
+        "PUT_CALLS": str(tmp_path / "put_calls"),
         "SAMPLE": "root_tip",
         "REFERENCE": "tair",
         "RUN_ID": "42",
@@ -158,9 +164,10 @@ def test_every_pipeline_script_parses(script):
     assert result.returncode == 0, result.stderr
 
 
-# Only these steps touch S3: the first reference download, the SRA import, staging a registered
-# sample's reads, and the final .h5ad upload. Every other step works on the shared folder.
-S3_STEPS = {"stage-reference", "fetch-sra", "stage-sample", "build-h5ad"}
+# Only staging an S3 folder's reads touches S3, and only to read. SRA reads come from ENA or
+# SRA, the genome from Bloom, every other step works on the shared folder, and the result leaves
+# through load-dataset, into Bloom.
+S3_STEPS = {"stage-sample"}
 
 
 def test_only_the_steps_that_touch_s3_hold_s3_keys():
@@ -191,3 +198,63 @@ def test_every_step_names_its_command():
         if "container" in t and not t["container"].get("command")
     ]
     assert missing == []
+
+
+# --------------------------------------------------------------------------- #
+# Cell Ranger's report
+# --------------------------------------------------------------------------- #
+
+
+def puts(env):
+    path = Path(env["PUT_CALLS"])
+    return path.read_text().splitlines() if path.exists() else []
+
+
+@pytest.mark.parametrize(
+    "run_id, workflow, key",
+    [("8", "scrna-cellranger-staging-8-c9bf7bdd", "8"),
+     ("", "cellranger-count-x7k2p", "cellranger-count-x7k2p")],
+    ids=["run-from-bloom", "run-by-hand"],
+)
+def test_the_report_is_kept_in_reports_and_stored_under_the_run(env, run_id, workflow, key):
+    env.update(BLOOM_RUN_ID=run_id, WORKFLOW_NAME=workflow)
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    reports = Path(env["RESULTS_DIR"]) / "reports"
+    assert sorted(p.name for p in reports.iterdir()) == ["metrics_summary.csv", "web_summary.html"]
+    assert puts(env) == [
+        f"--put {reports}/web_summary.html --bucket scrna --path reports/{key}/web_summary.html"
+        " --content-type text/html",
+        f"--put {reports}/metrics_summary.csv --bucket scrna --path reports/{key}/metrics_summary.csv"
+        " --content-type text/csv",
+    ]
+
+
+def test_a_failed_upload_doesnt_fail_the_count(env):
+    env.update(BLOOM_RUN_ID="8", FAKE_PUT_FAIL="1")
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (Path(env["RESULTS_DIR"]) / "outs/_SUCCESS").exists()
+
+
+@pytest.mark.parametrize("run_id, workflow", [("", ""), ("../8", ""), ("", "Bad/Name")])
+def test_without_a_usable_key_the_report_is_not_uploaded(env, run_id, workflow):
+    env.update(BLOOM_RUN_ID=run_id, WORKFLOW_NAME=workflow)
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (Path(env["RESULTS_DIR"]) / "reports/web_summary.html").exists()
+    assert puts(env) == []
+    assert "it is not stored in Bloom" in result.stdout
+
+
+def test_the_count_step_passes_the_runs_bloom_id_and_workflow_name():
+    import yaml
+
+    doc = yaml.safe_load((CELLRANGER / "cellranger-count-template.yaml").read_text())
+    templates = {t["name"]: t for t in doc["spec"]["templates"]}
+    env = {e["name"]: e["value"] for e in templates["count"]["container"]["env"]}
+    assert env["BLOOM_RUN_ID"] == "{{inputs.parameters.bloom-run-id}}"
+    assert env["WORKFLOW_NAME"] == "{{workflow.name}}"
+    task = next(t for t in templates["sample-pipeline"]["dag"]["tasks"] if t["name"] == "count")
+    passed = {p["name"]: p["value"] for p in task["arguments"]["parameters"]}
+    assert passed["bloom-run-id"] == "{{inputs.parameters.bloom-run-id}}"

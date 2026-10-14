@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   failureSentence,
+  runFastqUrl,
   runSraRuns,
   runSteps,
-  fetchRequesters,
+  fetchDatasetName,
+  fetchGenomeLabel,
+  fetchRun,
   isFinished,
   runAttributes,
+  runDatasetHref,
   runDatasetName,
   runReference,
   runSample,
@@ -38,6 +42,8 @@ function run(overrides: Partial<RnaseqRun> = {}): RnaseqRun {
     created_at: "2026-09-30T00:03:00Z",
     submitted_at: "2026-09-30T00:03:54Z",
     completed_at: null,
+    genome_version_id: null,
+    dataset_id: null,
     ...overrides,
   };
 }
@@ -53,6 +59,12 @@ describe("reading a run", () => {
       ["tissue", "root"],
       ["replicate", "2"],
     ]);
+  });
+
+  it("links the dataset's expression page only once the load has linked it", () => {
+    expect(runDatasetHref(run())).toBeNull();
+    expect(runDatasetHref(run({ dataset_id: 24 }))).toBe("/app/expression/1/24");
+    expect(runDatasetHref(run({ dataset_id: 24, metadata: null }))).toBeNull();
   });
 
   it("copes with a run started without metadata", () => {
@@ -90,19 +102,21 @@ describe("stepStates", () => {
       count: "waiting",
       preprocess: "waiting",
       cluster: "waiting",
+      de: "waiting",
       "build-h5ad": "waiting",
+      "load-dataset": "waiting",
       cleanup: "waiting",
     });
   });
 
   it("marks every step waiting before the first report", () => {
     expect(Object.values(stepStates(run({ status: "queued", current_step: null })))).toEqual(
-      Array(8).fill("waiting")
+      Array(10).fill("waiting")
     );
   });
 
   const ALL_PODS = Object.fromEntries(
-    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "build-h5ad", "cleanup"].map(
+    ["stage-reference", "stage", "qc", "count", "preprocess", "cluster", "de", "build-h5ad", "load-dataset", "cleanup"].map(
       (step, i) => [step, `p${i}`]
     )
   );
@@ -110,16 +124,18 @@ describe("stepStates", () => {
   it("marks every step done when the run succeeded", () => {
     expect(
       Object.values(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: ALL_PODS })))
-    ).toEqual(Array(8).fill("done"));
+    ).toEqual(Array(10).fill("done"));
   });
 
   it("marks steps a finished run never had as not run", () => {
-    const { preprocess: _p, cluster: _c, "build-h5ad": _b, ...before } = ALL_PODS;
+    const { preprocess: _p, cluster: _c, de: _d, "build-h5ad": _b, ...before } = ALL_PODS;
     expect(stepStates(run({ status: "succeeded", current_step: "cleanup", step_pods: before }))).toMatchObject({
       count: "done",
       preprocess: "not-run",
       cluster: "not-run",
+      de: "not-run",
       "build-h5ad": "not-run",
+      "load-dataset": "done",
       cleanup: "done",
     });
   });
@@ -132,14 +148,16 @@ describe("stepStates", () => {
       count: "failed",
       preprocess: "not-run",
       cluster: "not-run",
+      de: "not-run",
       "build-h5ad": "not-run",
+      "load-dataset": "not-run",
       cleanup: "not-run",
     });
   });
 
   it("marks nothing failed when a run failed before starting", () => {
     expect(Object.values(stepStates(run({ status: "failed", current_step: null })))).toEqual(
-      Array(8).fill("not-run")
+      Array(10).fill("not-run")
     );
   });
 
@@ -154,7 +172,9 @@ describe("stepStates", () => {
       count: "skipped",
       preprocess: "skipped",
       cluster: "skipped",
+      de: "skipped",
       "build-h5ad": "skipped",
+      "load-dataset": "skipped",
       cleanup: "skipped",
     });
   });
@@ -170,6 +190,25 @@ describe("stepStates", () => {
       "stage-reference": "waiting",
       "build-h5ad": "waiting",
     });
+  });
+
+  it("leaves out staging, which an SRA import's reads skip", () => {
+    const imported = run({
+      params: { sample: "root_tip", reference: "tiny_ref", sra_runs: ["SRR28503597"] },
+      current_step: "count",
+      step_pods: { "fetch-sra": "wf-fetch-1", qc: "wf-qc-2", count: "wf-count-3" },
+    });
+    expect(runSteps(imported).map((s) => s.id)).not.toContain("stage");
+    expect(stepStates(imported)).not.toHaveProperty("stage");
+  });
+
+  it("keeps staging for an earlier SRA import that staged its reads", () => {
+    const earlier = run({
+      params: { sample: "root_tip", reference: "tiny_ref", sra_runs: ["SRR28503597"] },
+      current_step: "count",
+      step_pods: { "fetch-sra": "wf-fetch-1", stage: "wf-stage-2" },
+    });
+    expect(stepStates(earlier)).toMatchObject({ stage: "done", count: "running" });
   });
 
   it("marks the download done once the run has moved on", () => {
@@ -196,7 +235,9 @@ describe("runSteps and runSraRuns", () => {
       "count",
       "preprocess",
       "cluster",
+      "de",
       "build-h5ad",
+      "load-dataset",
       "cleanup",
     ]);
     expect(runSraRuns(run())).toEqual([]);
@@ -210,7 +251,7 @@ describe("runSteps and runSraRuns", () => {
 
 describe("failureSentence", () => {
   it.each([
-    [3, /reference\.json/],
+    [3, /Cell Ranger reference wasn't found/],
     [4, /No FASTQ files/],
     [5, /Cell Ranger count failed/],
     [6, /run id/],
@@ -225,12 +266,112 @@ describe("failureSentence", () => {
   it.each([
     [6, /SRA run IDs can't be used/],
     [7, /couldn't be named the Illumina way/],
-    [10, /couldn't be downloaded from SRA/],
+    [10, /couldn't be downloaded from ENA or SRA/],
     [11, /don't look like 10x gene-expression reads/],
-    [12, /already holds other FASTQs/],
   ])("explains exit %i from the SRA download", (code, sentence) => {
     const failed = run({ status: "failed", exit_code: code, current_step: "fetch-sra" });
     expect(failureSentence(failed)).toMatch(sentence);
+  });
+
+  it("has no sentence for the retired exit 12 from the SRA download", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 12,
+      current_step: "fetch-sra",
+      message: "Step fetch-sra failed (exit 12)",
+    });
+    expect(failureSentence(failed)).toBe("Step fetch-sra failed (exit 12)");
+  });
+
+  it.each([
+    [6, /final \.h5ad wasn't found/],
+    [16, /no Bloom credentials/],
+  ])("explains exit %i from loading the dataset", (code, sentence) => {
+    const failed = run({ status: "failed", exit_code: code, current_step: "load-dataset" });
+    expect(failureSentence(failed)).toMatch(sentence);
+  });
+
+  it("gives the service's message for a load bloomctl refused", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 1,
+      current_step: "load-dataset",
+      message: "Loading the dataset into Bloom failed; the load-dataset step's log says why",
+    });
+    expect(failureSentence(failed)).toMatch(/load-dataset step's log says why/);
+  });
+
+  it.each([
+    [4, /were removed after the run was started/],
+    [6, /recorded file list couldn't be used/],
+    [7, /in the S3 folder don't follow/],
+    [8, /changed after the run was started/],
+    [9, /named for another sample/],
+    [10, /couldn't be listed or copied/],
+  ])("explains exit %i from staging an S3 folder", (code, sentence) => {
+    const failed = run({
+      status: "failed",
+      exit_code: code,
+      current_step: "stage",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toMatch(sentence);
+  });
+
+  it("keeps the folder sentences to the stage step of a folder run", () => {
+    expect(failureSentence(run({ status: "failed", exit_code: 4, current_step: "stage" }))).toMatch(
+      /in the sample's folder/
+    );
+    const folderCount = run({
+      status: "failed",
+      exit_code: 5,
+      current_step: "count",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(folderCount)).toMatch(/Cell Ranger count failed/);
+  });
+
+  it("gives a folder run's count exits 6 and 7 the count sentences, not the folder ones", () => {
+    const folder = { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" };
+    expect(
+      failureSentence(run({ status: "failed", exit_code: 6, current_step: "count", params: folder }))
+    ).toMatch(/can't be used as a Cell Ranger run id/);
+    expect(
+      failureSentence(run({ status: "failed", exit_code: 7, current_step: "count", params: folder }))
+    ).toMatch(/don't follow Illumina's naming/);
+  });
+
+  it("prefers the service's own message for a folder run's stage step", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 9,
+      current_step: "stage",
+      message: "The FASTQs in s3://lab-data/run42/ are named for another sample than the run's, col0",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toBe(failed.message);
+  });
+
+  it("doesn't borrow a count sentence for an unexpected stage exit of a folder run", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 3,
+      current_step: "stage",
+      message: "Step stage failed (exit 3)",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toBe("Step stage failed (exit 3)");
+  });
+
+  it("uses the service's message for a folder run's missing or misnamed FASTQs at count", () => {
+    const failed = run({
+      status: "failed",
+      exit_code: 4,
+      current_step: "count",
+      message: "No FASTQs were found on the shared disk after copying s3://lab-data/run42/",
+      params: { sample: "col0", reference: "tiny_ref", fastq_url: "s3://lab-data/run42/" },
+    });
+    expect(failureSentence(failed)).toBe(failed.message);
   });
 
   it("falls back to the run's message for another exit code", () => {
@@ -261,26 +402,169 @@ describe("upsertRun", () => {
   });
 });
 
-describe("fetchRequesters", () => {
-  it("maps run ids to emails", async () => {
-    const client = {
-      rpc: async (fn: string, args: unknown) => {
-        expect(fn).toBe("rnaseq_run_requesters");
-        expect(args).toEqual({ p_run_ids: [1, 2] });
-        return { data: [{ run_id: 1, email: "a@salk.edu" }], error: null };
-      },
-    };
-    expect(await fetchRequesters(client as never, [1, 2])).toEqual(new Map([[1, "a@salk.edu"]]));
+describe("runFastqUrl", () => {
+  it("reads the run's S3 folder, or null", () => {
+    const url = "s3://lab-data/run42/";
+    expect(runFastqUrl(run({ params: { sample: "s", reference: "r", fastq_url: url } }))).toBe(url);
+    expect(runFastqUrl(run())).toBeNull();
+    expect(runFastqUrl(run({ params: null }))).toBeNull();
+  });
+});
+
+describe("a run on a genome version from Bloom", () => {
+  const genomeRun = (overrides: Partial<RnaseqRun> = {}) =>
+    run({
+      params: { sample: "col0", reference: "athaliana_col0.v2" },
+      step_pods: { stage: "p1", qc: "p2", "download-genome": "p3", "build-reference": "p4" },
+      current_step: "build-reference",
+      ...overrides,
+    });
+
+  it("goes through the genome steps, not stage-reference", () => {
+    const ids = runSteps(genomeRun()).map((s) => s.id);
+    expect(ids).toEqual([
+      "stage",
+      "qc",
+      "download-genome",
+      "build-reference",
+      "count",
+      "preprocess",
+      "cluster",
+      "de",
+      "build-h5ad",
+      "load-dataset",
+      "cleanup",
+    ]);
   });
 
-  it("asks nothing for no runs, and returns nothing on an error", async () => {
-    const client = {
-      rpc: async () => {
+  it("shows the reads' steps done while the reference is still building", () => {
+    const states = stepStates(genomeRun());
+    expect(states.stage).toBe("done");
+    expect(states.qc).toBe("done");
+    expect(states["download-genome"]).toBe("done");
+    expect(states["build-reference"]).toBe("running");
+    expect(states.count).toBe("waiting");
+  });
+
+  it("shows a queued run's genome steps too, before any pod", () => {
+    const ids = runSteps(genomeRun({ step_pods: {}, current_step: null, status: "queued" })).map(
+      (s) => s.id
+    );
+    expect(ids).toContain("download-genome");
+    expect(ids).not.toContain("stage-reference");
+  });
+
+  it.each([
+    ["download-genome", 3],
+    ["download-genome", 6],
+    ["build-reference", 17],
+    ["build-reference", 3],
+  ])("shows the service's message when %s fails with exit %i", (step, code) => {
+    const message = "Genome athaliana_col0.v2 isn't available in Bloom";
+    const r = genomeRun({ status: "failed", current_step: step, exit_code: code, message });
+    expect(failureSentence(r)).toBe(message);
+  });
+});
+
+describe("a run started before genomes came from Bloom", () => {
+  it("keeps its stage-reference step, by its pod or its current step", () => {
+    for (const r of [run(), run({ step_pods: {}, current_step: "stage-reference" })]) {
+      const ids = runSteps(r).map((s) => s.id);
+      expect(ids).toContain("stage-reference");
+      expect(ids).not.toContain("download-genome");
+      expect(ids).not.toContain("build-reference");
+    }
+  });
+});
+
+describe("fetchRun", () => {
+  it("asks for the run's dataset id, so a finished run's page links its dataset", async () => {
+    const seen: string[] = [];
+    const query = {
+      select: (cols: string) => (seen.push(cols), query),
+      eq: () => query,
+      maybeSingle: async () => ({ data: run({ dataset_id: 24 }), error: null }),
+    };
+    const fetched = await fetchRun({ from: () => query } as never, 1);
+    expect(seen[0].split(",").map((c) => c.trim())).toContain("dataset_id");
+    expect(fetched?.dataset_id).toBe(24);
+  });
+});
+
+describe("fetchDatasetName", () => {
+  function client(result: { data: unknown; error: unknown }, seen: unknown[] = []) {
+    const query = {
+      select: (cols: string) => (seen.push(cols), query),
+      eq: (col: string, value: unknown) => (seen.push([col, value]), query),
+      maybeSingle: async () => result,
+    };
+    return { from: (table: string) => (seen.push(table), query) };
+  }
+
+  it("reads the name the dataset was loaded under", async () => {
+    const seen: unknown[] = [];
+    const name = await fetchDatasetName(
+      client({ data: { name: "Root atlas_v2" }, error: null }, seen) as never,
+      run({ dataset_id: 24 })
+    );
+    expect(name).toBe("Root atlas_v2");
+    expect(seen).toEqual(["scrna_datasets", "name", ["id", 24]]);
+  });
+
+  it("asks nothing for a run not yet linked to a dataset", async () => {
+    const throwing = {
+      from: () => {
         throw new Error("should not be called");
       },
     };
-    expect(await fetchRequesters(client as never, [])).toEqual(new Map());
-    const failing = { rpc: async () => ({ data: null, error: { message: "denied" } }) };
-    expect(await fetchRequesters(failing as never, [1])).toEqual(new Map());
+    expect(await fetchDatasetName(throwing as never, run())).toBeNull();
+  });
+
+  it("returns null when the dataset can't be read", async () => {
+    const failing = client({ data: null, error: { message: "denied" } });
+    expect(await fetchDatasetName(failing as never, run({ dataset_id: 24 }))).toBeNull();
+  });
+});
+
+describe("fetchGenomeLabel", () => {
+  function client(result: { data: unknown; error: unknown }, seen: unknown[] = []) {
+    const query = {
+      select: (cols: string) => (seen.push(cols), query),
+      eq: (col: string, value: unknown) => (seen.push([col, value]), query),
+      maybeSingle: async () => result,
+    };
+    return { from: (table: string) => (seen.push(table), query) };
+  }
+
+  it("names the run's version with its assembly and annotation", async () => {
+    const seen: unknown[] = [];
+    const row = {
+      id: 3,
+      version: 2,
+      assembly: "TAIR10",
+      annotation: "Araport11",
+      genome_references: { name: "athaliana_col0" },
+    };
+    const label = await fetchGenomeLabel(
+      client({ data: row, error: null }, seen) as never,
+      run({ genome_version_id: 3 })
+    );
+    expect(label).toBe("athaliana_col0 v2 — TAIR10 / Araport11");
+    expect(seen).toContainEqual("genome_reference_versions");
+    expect(seen).toContainEqual(["id", 3]);
+  });
+
+  it("asks nothing for a run without a genome version", async () => {
+    const throwing = {
+      from: () => {
+        throw new Error("should not be called");
+      },
+    };
+    expect(await fetchGenomeLabel(throwing as never, run())).toBeNull();
+  });
+
+  it("returns null when the version can't be read", async () => {
+    const failing = client({ data: null, error: { message: "denied" } });
+    expect(await fetchGenomeLabel(failing as never, run({ genome_version_id: 3 }))).toBeNull();
   });
 });

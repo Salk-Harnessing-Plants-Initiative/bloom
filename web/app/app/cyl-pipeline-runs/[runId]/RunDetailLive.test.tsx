@@ -690,6 +690,77 @@ describe("re-run actions", () => {
     expect(rerunUnresulted()).toBeNull();
   });
 
+  // fix-cyl-poller-unconcluded-runs: a failed row whose scan's current traits are this run's
+  // (the late-result note) already has its result, so neither action re-runs it.
+  const lateRows = (written: number, failed: number, queued: number, lateCount: number) => {
+    run = { ...run, scan_count: written + failed + queued, status: "complete" };
+    scans = [
+      ...Array.from({ length: written }, (_, i) => scanRow(i + 1, 1000 + i, { status: "written" })),
+      ...Array.from({ length: failed }, (_, i) => scanRow(written + i + 1, 2000 + i, { status: "failed" })),
+      ...Array.from({ length: queued }, (_, i) => scanRow(written + failed + i + 1, 3000 + i, { status: "queued" })),
+    ];
+    meta = scans.map((s) => scanMeta(s.scan_id));
+    latest = Array.from({ length: lateCount }, (_, i) => ({ scan_id: 2000 + i, max_source_id: 700 + i }));
+    sources = Array.from({ length: lateCount }, (_, i) => ({ id: 700 + i, cyl_pipeline_run_id: 91 }));
+  };
+
+  it("does not offer a failed row whose late result is this run's", async () => {
+    // (The mocked table renders 20 rows, so keep the failed ones among them.)
+    lateRows(7, 3, 0, 1);
+    mount();
+    await subscribe();
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (2)");
+    fireEvent.click(rerunFailed()!);
+    expect(dialog.props!.target).toEqual({ target_level: "scan_ids", scan_ids: [2001, 2002] });
+    // The row itself still reads failed, with its note, and still counts as failed.
+    expect(scanEl(2000).textContent).toContain("arrived after this row was closed");
+    expect(header().textContent).toContain("7 succeeded · 3 failed");
+  });
+
+  it("offers every failed row when the latest-source lookup fails", async () => {
+    lateRows(38, 2, 0, 2);
+    supabaseMock.respond = (q) =>
+      q.table === "cyl_scan_latest_source" ? { data: null, error: { message: "timeout" } } : respond(q);
+    mount();
+    await subscribe();
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (2)");
+  });
+
+  it("leaves a late-result row out of Re-run scans without a result", async () => {
+    lateRows(30, 2, 8, 1);
+    mount();
+    await subscribe();
+    expect(rerunUnresulted()!.textContent).toBe("Re-run scans without a result (9)");
+    fireEvent.click(rerunUnresulted()!);
+    const ids = (dialog.props!.target as { scan_ids: number[] }).scan_ids;
+    expect([...ids].sort((a, b) => a - b)).toEqual([2001, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007]);
+  });
+
+  it("hides Re-run failed when every failed row shows a late-result note", async () => {
+    lateRows(8, 2, 0, 2);
+    mount();
+    await subscribe();
+    expect(scanEl(2000).textContent).toContain("arrived after");
+    expect(rerunFailed()).toBeNull();
+  });
+
+  it("drops a row from Re-run failed once its late-result lookup lands", async () => {
+    run = { ...run, scan_count: 2, status: "complete" };
+    scans = rows([
+      [577, "written"],
+      [578, "queued"],
+    ]);
+    latest = [{ scan_id: 578, max_source_id: 700 }];
+    sources = [{ id: 700, cyl_pipeline_run_id: 91 }];
+    mount();
+    await subscribe();
+    await emitScan("UPDATE", { id: 2, run_id: 91, scan_id: 578, status: "failed", updated_at: at(60) });
+    expect(rerunFailed()!.textContent).toBe("Re-run failed scans (1)");
+    await tick(500);
+    expect(scanEl(578).textContent).toContain("arrived after");
+    expect(rerunFailed()).toBeNull();
+  });
+
   it("offers nothing on a run with no failures", async () => {
     run = { ...run, scan_count: 2, status: "complete" };
     scans = rows([
