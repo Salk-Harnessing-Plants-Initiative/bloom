@@ -6,6 +6,7 @@ to the explorer exactly like one that is complete. anndata is imported only when
 
 from __future__ import annotations
 
+import colorsys
 import json
 from collections import Counter
 from dataclasses import dataclass
@@ -29,6 +30,30 @@ PALETTE = [
     "#8CD17D", "#B6992D", "#499894", "#FABFD2", "#D4A6C8",
     "#79706E", "#D7B5A6", "#6B4C9A",
 ]
+
+# Past the palette, hues step by the golden angle so each lands far from the ones before,
+# alternating a darker and a lighter shade, at a saturation that stays readable on white.
+GOLDEN_ANGLE = 137.508
+EXTRA_LIGHTNESS = (0.42, 0.62)
+EXTRA_SATURATION = 0.62
+
+
+def cluster_colours(n: int) -> list[str]:
+    """n distinct colours for n cell types: the palette first, then generated ones, the same
+    every time, so any number of cell types can be told apart."""
+    colours = list(PALETTE[:n])
+    taken = set(colours)
+    step = 0
+    while len(colours) < n:
+        hue = (step * GOLDEN_ANGLE % 360) / 360
+        lightness = EXTRA_LIGHTNESS[step % len(EXTRA_LIGHTNESS)]
+        r, g, b = colorsys.hls_to_rgb(hue, lightness, EXTRA_SATURATION)
+        colour = "#{:02X}{:02X}{:02X}".format(round(r * 255), round(g * 255), round(b * 255))
+        if colour not in taken:
+            colours.append(colour)
+            taken.add(colour)
+        step += 1
+    return colours
 
 # A label becomes a row of toggles, so it has to be a handful of values. More is a
 # measurement, and would reach the browser as hundreds of buttons.
@@ -170,11 +195,6 @@ def _read(np, adata: _Cells, path: Path, annotation: str, sample_column: str, um
         _refuse_long_names(genotypes, MAX_GENOTYPE_NAME, "genotype")
     _refuse_long_names(samples, MAX_SAMPLE_NAME, "sample")
     levels = sorted(set(labels))
-    if len(levels) > len(PALETTE):
-        raise LoadError(
-            f"obs[{annotation!r}] has {len(levels)} cell types and there are {len(PALETTE)} "
-            "colours to tell them apart; two would be drawn identically"
-        )
     return {
         "n_cells": int(adata.n_obs),
         "n_genes": int(adata.n_vars),
