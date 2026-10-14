@@ -10,7 +10,7 @@ import { ExpressionCockpit } from "@/components/expression-cockpit";
 import ExpressionDatasetBanner from "@/components/expression-dataset-banner";
 import ExpressionDatasetQc from "@/components/expression-dataset-qc";
 import { datasetRunId } from "@/components/expression-dataset-origin";
-import { METRICS, WEB_SUMMARY, keyMetrics, parseMetrics, readReport, storedReports } from "@/lib/rnaseq-reports";
+import { METRICS_SUMMARY, WEB_SUMMARY, keyMetrics, parseMetrics, readReport, storedReports } from "@/lib/rnaseq-reports";
 
 export default async function Dataset({
   params,
@@ -119,10 +119,10 @@ async function getRunQc(runId: number | null) {
   const supabase = await createServerSupabaseClient();
   const stored = await storedReports(supabase, runId);
   if (stored.size === 0) return null;
-  const csv = stored.has(METRICS) ? await readReport(supabase, runId, METRICS) : null;
+  const csv = stored.has(METRICS_SUMMARY) ? await readReport(supabase, runId, METRICS_SUMMARY) : null;
   return {
     runId,
-    metrics: csv ? keyMetrics(parseMetrics(csv)) : [],
+    metrics: csv && "text" in csv ? keyMetrics(parseMetrics(csv.text)) : [],
     hasReport: stored.has(WEB_SUMMARY),
   };
 }

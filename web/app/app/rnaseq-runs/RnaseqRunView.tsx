@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { Change } from "@/lib/cyl-pipeline/realtime-reducer";
@@ -8,6 +10,7 @@ import { useLiveSync } from "@/lib/cyl-pipeline/use-live-sync";
 import {
   failureSentence,
   fetchRun,
+  isFinished,
   runAttributes,
   runDatasetName,
   runReference,
@@ -76,6 +79,14 @@ export default function RnaseqRunView({
     apply: (run, change) => ({ ...run, ...(change as Change<RnaseqRun>).new }),
   });
   const run = live.view;
+  const router = useRouter();
+  const finished = isFinished(run.status);
+  const wasFinished = useRef(finished);
+  useEffect(() => {
+    // A run that finishes while open may have stored its report since the page loaded.
+    if (finished && !wasFinished.current) router.refresh();
+    wasFinished.current = finished;
+  }, [finished, router]);
   const states = stepStates(run);
   const sraRuns = runSraRuns(run);
   const fastqUrl = runFastqUrl(run);
@@ -181,8 +192,10 @@ export default function RnaseqRunView({
             <Link href={reportHref} className="text-lime-700 underline-offset-4 hover:underline">
               Open the report
             </Link>
+          ) : finished ? (
+            "Not stored for this run"
           ) : (
-            "—"
+            "Not ready yet"
           )}
         </Detail>
       </dl>

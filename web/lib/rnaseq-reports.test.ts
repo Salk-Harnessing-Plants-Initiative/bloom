@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   KEY_METRICS,
+  frameDocument,
   keyMetrics,
   parseMetrics,
   readReport,
   reportHref,
   reportPath,
+  runHref,
   storedReports,
 } from "./rnaseq-reports";
 
@@ -17,7 +19,12 @@ const CSV = [
   "",
 ].join("\n");
 
-function storage({ names = [] as string[], listError = false, text = null as string | null }) {
+function storage({
+  names = [] as string[],
+  listError = false,
+  text = null as string | null,
+  downloadError = { message: "Object not found", statusCode: "404" } as object,
+}) {
   const asked: string[] = [];
   const bucket = {
     list: async (folder: string) => {
@@ -26,7 +33,7 @@ function storage({ names = [] as string[], listError = false, text = null as str
     },
     download: async (path: string) => {
       asked.push(`download ${path}`);
-      return text === null ? { data: null, error: { message: "not found" } } : { data: new Blob([text]), error: null };
+      return text === null ? { data: null, error: downloadError } : { data: new Blob([text]), error: null };
     },
   };
   return { client: { storage: { from: (b: string) => (asked.push(`bucket ${b}`), bucket) } } as never, asked };
@@ -63,6 +70,12 @@ describe("keyMetrics", () => {
     expect(keyMetrics(parseMetrics("Estimated Number of Cells\n12\n"))).toEqual([["Estimated Number of Cells", "12"]]);
     expect(KEY_METRICS).toHaveLength(6);
   });
+
+  it("leaves out a metric the run reported blank", () => {
+    expect(keyMetrics(parseMetrics("Estimated Number of Cells,Sequencing Saturation\n12,\n"))).toEqual([
+      ["Estimated Number of Cells", "12"],
+    ]);
+  });
 });
 
 describe("a run's stored reports", () => {
@@ -76,15 +89,42 @@ describe("a run's stored reports", () => {
     expect((await storedReports(storage({ listError: true }).client, 8)).size).toBe(0);
   });
 
-  it("reads one, or null when it isn't there", async () => {
+  it("reads one, or says it's missing when it isn't there", async () => {
     const { client, asked } = storage({ text: "<html>8</html>" });
-    expect(await readReport(client, 8, "web_summary.html")).toBe("<html>8</html>");
+    expect(await readReport(client, 8, "web_summary.html")).toEqual({ text: "<html>8</html>" });
     expect(asked).toContain("download reports/8/web_summary.html");
-    expect(await readReport(storage({}).client, 8, "web_summary.html")).toBeNull();
+    expect(await readReport(storage({}).client, 8, "web_summary.html")).toEqual({ missing: true });
   });
 
-  it("names the paths and the report page from the run id", () => {
+  it("tells a failed read apart from a missing file", async () => {
+    const { client } = storage({ downloadError: { message: "gateway timeout", status: 504 } });
+    expect(await readReport(client, 8, "web_summary.html")).toEqual({ error: "gateway timeout" });
+  });
+
+  it("names the paths, the run page and the report page from the run id", () => {
     expect(reportPath(8, "web_summary.html")).toBe("reports/8/web_summary.html");
+    expect(runHref(8)).toBe("/app/rnaseq-runs/8");
     expect(reportHref(8)).toBe("/app/rnaseq-runs/8/report");
+  });
+});
+
+describe("frameDocument", () => {
+  const policy = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\';';
+
+  it("puts the no-network policy and new-tab links first in the report's head", () => {
+    const doc = frameDocument('<!DOCTYPE html><html><HEAD lang="en"><script>x()</script></HEAD></html>');
+    expect(doc.startsWith('<!DOCTYPE html><html><HEAD lang="en">' + policy)).toBe(true);
+    expect(doc).toContain('<base target="_blank"><script>x()</script></HEAD>');
+  });
+
+  it("starts the document with them when the report has no head", () => {
+    expect(frameDocument("<p>cells</p>").startsWith(policy)).toBe(true);
+    expect(frameDocument("<p>cells</p>").endsWith('<base target="_blank"><p>cells</p>')).toBe(true);
+  });
+
+  it("allows no connections, only inline scripts and styles and embedded images", () => {
+    const content = /content="([^"]*)"/.exec(frameDocument(""))![1];
+    expect(content).not.toMatch(/connect-src|https?:|\*/);
+    expect(content).toContain("default-src 'none'");
   });
 });

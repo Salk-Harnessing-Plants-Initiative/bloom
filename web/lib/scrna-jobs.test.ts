@@ -168,7 +168,7 @@ describe("startRunErrorMessage", () => {
 
   it.each([
     [401, "Sign in to start a job."],
-    [409, "That sample name is taken or still being imported. Choose another name."],
+    [409, "This sample already has a run on that genome, or these reads were already run on it. Choose another sample name or genome."],
     [422, "The sample name or the genome version can't be used."],
     [429, "Too many requests. Wait a minute and try again."],
     [503, "The job service isn't available right now."],

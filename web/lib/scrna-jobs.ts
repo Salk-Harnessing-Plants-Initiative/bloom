@@ -1,6 +1,7 @@
 /**
- * Shared pieces of the scRNA job form: the choices it offers (ready genome versions), the dataset details saved with the run, the shape of a started
- * run, and the messages shown for a refused start.
+ * Shared pieces of the scRNA job form: the choices it offers (ready genome versions), the
+ * dataset details saved with the run, the shape of a started run, and the messages shown for a
+ * refused start.
  */
 
 import type { Database } from "@/lib/database.types";
@@ -165,7 +166,7 @@ export function startRunErrorMessage(status: number, detail: unknown): string {
   if (typeof detail === "string" && detail.trim()) return detail;
   if (status === 401) return "Sign in to start a job.";
   if (status === 429) return "Too many requests. Wait a minute and try again.";
-  if (status === 409) return "That sample name is taken or still being imported. Choose another name.";
+  if (status === 409) return "This sample already has a run on that genome, or these reads were already run on it. Choose another sample name or genome.";
   if (status === 422) return "The sample name or the genome version can't be used.";
   if (status === 503) return "The job service isn't available right now.";
   return "Couldn't start the job. Try again shortly.";

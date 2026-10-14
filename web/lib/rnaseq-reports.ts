@@ -5,10 +5,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { isNotFound } from "@/lib/supabase/storage-errors";
 
 export const REPORTS_BUCKET = "scrna";
 export const WEB_SUMMARY = "web_summary.html";
-export const METRICS = "metrics_summary.csv";
+export const METRICS_SUMMARY = "metrics_summary.csv";
 
 // The Cell Ranger metrics shown for a dataset, in this order, as Cell Ranger names them.
 export const KEY_METRICS = [
@@ -20,34 +21,59 @@ export const KEY_METRICS = [
   "Sequencing Saturation",
 ] as const;
 
+// Cell Ranger's report needs no network; this keeps its scripts from reaching any.
+const REPORT_POLICY =
+  "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; " +
+  "img-src data: blob:; font-src data:; worker-src blob:";
+
+export function reportFolder(runId: number): string {
+  return `reports/${runId}`;
+}
+
 export function reportPath(runId: number, file: string): string {
-  return `reports/${runId}/${file}`;
+  return `${reportFolder(runId)}/${file}`;
+}
+
+/** The run's page. */
+export function runHref(runId: number): string {
+  return `/app/rnaseq-runs/${runId}`;
 }
 
 /** The run's report page. */
 export function reportHref(runId: number): string {
-  return `/app/rnaseq-runs/${runId}/report`;
+  return `${runHref(runId)}/report`;
 }
+
+/** A stored report file's text; missing when it isn't there, error when it couldn't be read. */
+export type ReportRead = { text: string } | { missing: true } | { error: string };
 
 /** Which of the run's report files are stored; none if the folder can't be read. */
 export async function storedReports(
   supabase: SupabaseClient<Database>,
   runId: number,
 ): Promise<Set<string>> {
-  const { data, error } = await supabase.storage.from(REPORTS_BUCKET).list(`reports/${runId}`);
+  const { data, error } = await supabase.storage.from(REPORTS_BUCKET).list(reportFolder(runId));
   if (error || !data) return new Set();
   return new Set(data.map((f) => f.name));
 }
 
-/** A stored report file's text, or null if it isn't there or can't be read. */
 export async function readReport(
   supabase: SupabaseClient<Database>,
   runId: number,
   file: string,
-): Promise<string | null> {
+): Promise<ReportRead> {
   const { data, error } = await supabase.storage.from(REPORTS_BUCKET).download(reportPath(runId, file));
-  if (error || !data) return null;
-  return data.text();
+  if (error) return isNotFound(error) ? { missing: true } : { error: error.message || "storage error" };
+  if (!data) return { missing: true };
+  return { text: await data.text() };
+}
+
+/** The report as the frame's document: no network, and its links open in a new tab. */
+export function frameDocument(html: string): string {
+  const head = `<meta http-equiv="Content-Security-Policy" content="${REPORT_POLICY}"><base target="_blank">`;
+  const open = /<head(\s[^>]*)?>/i.exec(html);
+  if (open) return html.slice(0, open.index + open[0].length) + head + html.slice(open.index + open[0].length);
+  return head + html;
 }
 
 /** One CSV line's fields; a quoted field may hold commas ("5,066") and doubled quotes. */

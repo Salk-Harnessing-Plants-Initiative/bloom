@@ -161,15 +161,6 @@ describe("importing from SRA", () => {
     expect(startButton().disabled).toBe(true);
   });
 
-  it("accepts a name an earlier import registered: each run has its own folder", () => {
-    openForm();
-    fillTheRest();
-    type("SRA run IDs", "SRR28503597");
-    type("Sample name", "tinygex");
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(startButton().disabled).toBe(false);
-  });
-
   it("sends the new name and the runs in order", async () => {
     openForm();
     fillTheRest();

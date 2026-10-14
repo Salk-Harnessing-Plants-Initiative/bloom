@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { reportHref } from "@/lib/rnaseq-reports";
+import { reportHref, runHref } from "@/lib/rnaseq-reports";
 
 /** A dataset's quality from the Cell Ranger run that made it: the key metrics and its report. */
 export default function ExpressionDatasetQc({
@@ -24,11 +24,17 @@ export default function ExpressionDatasetQc({
               Open the full report
             </Link>
           ) : null}
-          <Link href={`/app/rnaseq-runs/${runId}`} className="text-lime-700 underline-offset-4 hover:underline">
+          <Link href={runHref(runId)} className="text-lime-700 underline-offset-4 hover:underline">
             Run {runId}
           </Link>
         </span>
       </div>
+      {metrics.length > 0 ? (
+        <p className="mb-3 text-xs text-stone-500">
+          As Cell Ranger counted them, before Bloom&apos;s analysis kept only cells with enough genes; the
+          dataset&apos;s own cell count is above.
+        </p>
+      ) : null}
       {metrics.length > 0 ? (
         <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
           {metrics.map(([name, value]) => (
