@@ -11,7 +11,8 @@ commit time, may have that same untrustworthy trim sitting as its canonical
 cleaned version right now, with nothing distinguishing it from a trustworthy one.
 
 This script scans every `outliers_<stem>/manifest.json` in the configured storage
-backend and reports each experiment whose current `latest` entry is
+backend (or, with `--experiment`, only the named experiments' -- see
+`bloom_mcp.audit_scope`) and reports each experiment whose current `latest` entry is
 `remove_outliers`-authored and whose persisted `outlier_report.json` records an
 untrustworthy fit — exactly the run #419's live gate would now reject before
 persisting.
@@ -46,17 +47,30 @@ finds nothing meaningful otherwise. It uses the same storage configuration
 mirroring `tests/smoke/live_persistence_smoke.py`'s documented env-override
 convention for host-vs-container invocation.
 
-Usage: `cd bloommcp && uv run python scripts/audit_untrustworthy_outlier_fits.py`
+Usage: `cd bloommcp && uv run python scripts/audit_untrustworthy_outlier_fits.py
+[--experiment IDENTIFIER ...]`. Without `--experiment` it sweeps the whole shared
+`bloommcp_output/` root; with it, only the named experiments' prefixes are read
+(bloom#919; identifier rules in `bloom_mcp.audit_scope`).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
+from bloom_mcp.audit_scope import (
+    ExperimentScope,
+    add_experiment_argument,
+    all_requested_failed,
+    experiment_scope_record,
+    resolve_experiment_scope,
+    summary_prefix,
+)
 from bloom_mcp.experiment_utils import (
     OUTLIER_REPORT_NAME,
     OUTLIERS_TOOL_CLASS,
@@ -90,12 +104,23 @@ SCOPE_NOTE = (
 )
 
 
-def scan_for_untrustworthy_outlier_fits() -> dict[str, Any]:
-    """Scan every `outliers_<stem>` manifest and report untrustworthy-fit hits.
+def scan_for_untrustworthy_outlier_fits(
+    experiments: Optional[Sequence[str]] = None,
+) -> dict[str, Any]:
+    """Scan every `outliers_<stem>` manifest (or only the requested experiments')
+    and report untrustworthy-fit hits.
 
     Returns `{"hits": [...], "errors": [...], "experiments_scanned": N}`.
     `experiments_scanned` counts every `outliers_<stem>` prefix examined,
     regardless of whether it had a readable manifest.
+
+    `experiments` (bloom#919) scopes the scan to those experiment identifiers:
+    each `outliers_<stem>/` prefix is resolved directly and the shared root is
+    never listed. A scoped result also carries `unevaluated` -- requested
+    experiments with no manifest (`"no_manifest"`, e.g. never trimmed post-#420)
+    or no `latest` pointer (`"no_latest"`), which a full sweep skips silently but
+    a scoped run must disclose. Invalid identifiers raise `ValueError` before any
+    storage call.
 
     Enumeration (`list_prefix`) is unguarded: if the environment is unreachable
     or misconfigured, there is nothing to report at all, so this propagates
@@ -107,16 +132,21 @@ def scan_for_untrustworthy_outlier_fits() -> dict[str, Any]:
     incomplete record for one experiment must not hide every other experiment's
     result in a one-shot forensic sweep over a potentially large bucket.
     """
+    scope = resolve_experiment_scope(experiments)
     hits: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    unevaluated: list[dict[str, str]] = []
     experiments_scanned = 0
 
-    names = list_prefix(f"{_OUTPUT_ROOT}/")
-    stems = [
-        name[len(_OUTLIERS_PREFIX) :]
-        for name in names
-        if name.startswith(_OUTLIERS_PREFIX)
-    ]
+    if scope is None:
+        names = list_prefix(f"{_OUTPUT_ROOT}/")
+        stems = [
+            name[len(_OUTLIERS_PREFIX) :]
+            for name in names
+            if name.startswith(_OUTLIERS_PREFIX)
+        ]
+    else:
+        stems = [e.stem for e in scope]
 
     for stem in stems:
         experiments_scanned += 1
@@ -130,6 +160,10 @@ def scan_for_untrustworthy_outlier_fits() -> dict[str, Any]:
 
         if manifest is None or manifest.latest is None:
             # No manifest, or no current "latest" to evaluate — nothing to check.
+            # A scoped run named this experiment, so it says so.
+            if scope is not None:
+                reason = "no_manifest" if manifest is None else "no_latest"
+                unevaluated.append({"stem": stem, "reason": reason})
             continue
 
         latest_entry = next(
@@ -195,19 +229,26 @@ def scan_for_untrustworthy_outlier_fits() -> dict[str, Any]:
             }
         )
 
-    return {
+    result: dict[str, Any] = {
         "hits": hits,
         "errors": errors,
         "experiments_scanned": experiments_scanned,
     }
+    if scope is not None:
+        result["unevaluated"] = unevaluated
+    return result
 
 
-def write_report(report: dict[str, Any]) -> str:
+def write_report(
+    report: dict[str, Any], scope: Optional[ExperimentScope] = None
+) -> str:
     """Persist `report` as a self-describing, timestamped JSON object.
 
-    Adds `scanned_at` (ISO-8601 UTC), `storage_backend`, and `scope_note` to the
-    payload itself so the report stays interpretable — including its own
-    detection-scope caveat — if later moved, renamed, or copied elsewhere.
+    Adds `scanned_at` (ISO-8601 UTC), `storage_backend`, `scope_note`, and
+    `experiment_scope` (which experiments this run covered -- `{"mode": "all"}`
+    for a full sweep; bloom#919) to the payload itself so the report stays
+    interpretable — including its own detection-scope caveat — if later moved,
+    renamed, or copied elsewhere.
     Writes under the shared `_audit_reports/` prefix (bloom#585) with a distinct
     filename prefix so the two scripts' reports never collide; the key includes
     a short random suffix (not just a per-second timestamp) so two runs
@@ -219,6 +260,7 @@ def write_report(report: dict[str, Any]) -> str:
         "scanned_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "storage_backend": active_backend_name(),
         "scope_note": SCOPE_NOTE,
+        "experiment_scope": experiment_scope_record(scope),
         **report,
     }
     suffix = uuid.uuid4().hex[:8]
@@ -230,20 +272,37 @@ def write_report(report: dict[str, Any]) -> str:
     return key
 
 
-def run() -> int:
-    """Scan, persist the report, print it, and return an exit code.
+def run(argv: Sequence[str] = ()) -> int:
+    """Parse `argv`, scan, persist the report, print it, and return an exit code.
 
-    Returns `1` only when the scan couldn't run at all (enumeration failed --
-    nothing to report). Returns `0` whenever the scan completes, including when
-    it reports hits and/or per-stem errors: those are the script's normal,
-    successful output, not a script failure. Notably, `0` is returned even when
-    EVERY scanned stem individually errored (e.g. "0 hits, 500 errors") -- fine
+    Parses only `argv` (never `sys.argv`; `main()` passes that). Returns `2` for
+    an invalid `--experiment` value, before any storage access. Returns `1` when
+    the scan couldn't run at all (enumeration failed, or a scoped run couldn't
+    read a single requested experiment -- nothing to report, nothing persisted).
+    Returns `0` whenever the scan completes, including when it reports hits
+    and/or per-stem errors: those are the script's normal, successful output,
+    not a script failure. Notably, a full sweep returns `0` even when EVERY
+    scanned stem individually errored (e.g. "0 hits, 500 errors") -- fine
     for this script's intended manual, one-shot, human-reads-the-output use, but
     worth knowing before wrapping this in any future automation that greps the
     exit code alone rather than the printed/persisted `errors` count.
     """
+    parser = argparse.ArgumentParser(
+        prog="audit_untrustworthy_outlier_fits.py",
+        description=(
+            "Read-only audit of pre-#419 untrustworthy-fit remove_outliers trims."
+        ),
+    )
+    add_experiment_argument(parser)
+    args = parser.parse_args(list(argv))
     try:
-        report = scan_for_untrustworthy_outlier_fits()
+        scope = resolve_experiment_scope(args.experiments)
+    except (TypeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        report = scan_for_untrustworthy_outlier_fits(args.experiments)
     except Exception as exc:  # noqa: BLE001 - top-level failure, reported then exits non-zero
         print(
             f"error: could not enumerate manifests: {safe_error_text(exc)}",
@@ -251,10 +310,21 @@ def run() -> int:
         )
         return 1
 
-    key = write_report(report)
+    if all_requested_failed(report, scope):
+        print(json.dumps(report, indent=2))
+        print(
+            "error: no requested experiment could be read; no report persisted",
+            file=sys.stderr,
+        )
+        for error in report["errors"]:
+            print(f"  {error['stem']}: {error['error']}", file=sys.stderr)
+        return 1
+
+    key = write_report(report, scope)
     print(json.dumps(report, indent=2))
     print(f"scope: {SCOPE_NOTE}")
     print(
+        f"{summary_prefix(scope)}"
         f"{report['experiments_scanned']} experiments scanned, "
         f"{len(report['hits'])} hits, {len(report['errors'])} errors, "
         f"report written to {key}"
@@ -263,7 +333,7 @@ def run() -> int:
 
 
 def main() -> None:
-    raise SystemExit(run())
+    raise SystemExit(run(sys.argv[1:]))
 
 
 if __name__ == "__main__":
