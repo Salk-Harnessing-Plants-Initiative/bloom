@@ -49,7 +49,9 @@ class FakeBloom:
                     return self._send(200, json.dumps(reply).encode())
                 if self.path.startswith("/elsewhere"):
                     return self._elsewhere()
-                if self.path.startswith("/storage/v1/object/run-logs/"):
+                if self.path.startswith("/storage/v1/object/") and not self.path.startswith(
+                    "/storage/v1/object/authenticated/"
+                ):
                     if bloom.redirect_uploads:
                         self.send_response(302)
                         self.send_header("Location", f"{bloom.url}/elsewhere")
@@ -66,10 +68,12 @@ class FakeBloom:
                         return self._send(503, b'{"error":"busy"}')
                     if bloom.upload_status != 200:
                         return self._send(bloom.upload_status, b'{"error":"boom"}')
-                    path = self.path.removeprefix("/storage/v1/object/run-logs/")
-                    bloom.stored[path] = body.decode()
+                    bucket, _, path = self.path.removeprefix("/storage/v1/object/").partition("/")
+                    if bucket == "run-logs":
+                        bloom.stored[path] = body.decode()
                     bloom.uploads.append(
                         {
+                            "bucket": bucket,
                             "path": path,
                             "body": body.decode(),
                             "headers": {k.lower(): v for k, v in self.headers.items()},

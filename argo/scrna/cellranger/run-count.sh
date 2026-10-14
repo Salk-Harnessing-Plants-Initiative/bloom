@@ -28,6 +28,12 @@ FASTQ_DIR="${FASTQ_DIR:-${WORK_DIR}/fastq/${SAMPLE}}"
 RESULTS_DIR="${RESULTS_DIR:?set RESULTS_DIR (the run folder on the share)}"
 # Kept for the analysis steps: the matrix, Cell Ranger's metrics and the chemistry check.
 KEEP=(filtered_feature_bc_matrix.h5 metrics_summary.csv qc/qc_summary.json)
+# Cell Ranger's report, kept in the run's reports/ and stored in Bloom's scrna bucket at
+# reports/<run's Bloom id, or the workflow's name for a run started by hand>/.
+REPORT=web_summary.html
+REPORT_KEY_RULE='^[a-z0-9][a-z0-9.-]{0,252}$'
+BLOOM_RUN_ID="${BLOOM_RUN_ID:-}"
+WORKFLOW_NAME="${WORKFLOW_NAME:-}"
 
 # Cell Ranger's run id is the sample, so its report is titled with it; RUN_ID (which can be
 # longer) names the run's folders and goes in the report's description.
@@ -100,6 +106,19 @@ for name in "${KEEP[@]}"; do
     cp -- "${CR_ID}/outs/${name}" "${RESULTS_DIR}/outs/${name##*/}"
   fi
 done
+if [ -f "${CR_ID}/outs/${REPORT}" ]; then
+  mkdir -p "${RESULTS_DIR}/reports"
+  cp -- "${CR_ID}/outs/${REPORT}" "${RESULTS_DIR}/reports/${REPORT}"
+  report_key="${BLOOM_RUN_ID:-${WORKFLOW_NAME}}"
+  if [[ "${report_key}" =~ ${REPORT_KEY_RULE} ]]; then
+    # Never fails the step: a refused upload is noted in the log.
+    run-with-log --put "${RESULTS_DIR}/reports/${REPORT}" --bucket scrna \
+      --path "reports/${report_key}/${REPORT}" --content-type text/html || true
+  else
+    echo "WARNING: no run id or workflow name to store the report under; it stays in ${RESULTS_DIR}/reports/"
+  fi
+fi
+
 # Written last: its presence means the files above are in place.
 printf 'run_id=%s\ncellranger=%s\nfinished=%s\n' \
   "${RUN_ID}" "$(cellranger --version | tail -1)" "$(date -u +%FT%TZ)" \

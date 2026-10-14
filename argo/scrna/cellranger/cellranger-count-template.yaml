@@ -138,6 +138,8 @@ spec:
                   value: "{{inputs.parameters.memory}}"
                 - name: mem-gb
                   value: "{{inputs.parameters.mem-gb}}"
+                - name: bloom-run-id
+                  value: "{{inputs.parameters.bloom-run-id}}"
           - name: cleanup
             template: cleanup
             depends: load-dataset
@@ -263,7 +265,7 @@ spec:
         # 3 (no downloaded genome), 6 (bad input) and 17 (mkref refused the files) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 17"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-reference.log", --, bash, -c]
         args:
           - |
@@ -349,7 +351,7 @@ spec:
         # unusable reads (11) will not fix themselves
         expression: "asInt(lastRetry.exitCode) == 10"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]
         env:
           - name: SAMPLE
@@ -396,7 +398,7 @@ spec:
         # 9 (FASTQs for another sample) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/stage.log", --, bash, -c]
         args:
           - |
@@ -453,7 +455,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/qc.log", --, run-qc]
         env:
           - name: SAMPLE
@@ -490,6 +492,9 @@ spec:
           - name: cores
           - name: memory
           - name: mem-gb
+          # The run's Bloom id, which its report is stored under; empty for a run started by hand.
+          - name: bloom-run-id
+            value: ""
       schedulerName: runai-scheduler
       # CPU and memory come from parameters, so they are set when the pod starts, not at registration.
       podSpecPatch: |
@@ -511,7 +516,7 @@ spec:
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/count.log", --, run-count]
         env:
           - name: SAMPLE
@@ -532,6 +537,10 @@ spec:
             value: "/shared/runs/{{inputs.parameters.run-id}}/fastq/{{inputs.parameters.sample}}"
           - name: REF_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}.genome/ref/{{inputs.parameters.reference}}"
+          - name: BLOOM_RUN_ID
+            value: "{{inputs.parameters.bloom-run-id}}"
+          - name: WORKFLOW_NAME
+            value: "{{workflow.name}}"
         volumeMounts:
           # bloomctl's credentials.txt, for run-with-log to upload the step's log
           - name: bloom-credentials
@@ -559,7 +568,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
@@ -793,7 +802,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
         command: [bash, -c]
         args:
           - |

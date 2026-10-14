@@ -31,7 +31,7 @@ argo/scrna/
 
 Nothing in the pipeline writes to S3, and it reads only one thing there: an S3 folder run's FASTQs, from the scientist's own folder (below). SRA reads come from ENA or SRA, the genome from Bloom, and the result goes into Bloom. FASTQs are in Illumina naming, `<prefix>_S<n>_L<lane>_R1_001.fastq.gz` (barcode and UMI) and `…_R2_001.fastq.gz` (cDNA) for every lane, compressed or plain `.fastq`; `I1`/`I2` optional. The prefix is everything before `_S<n>_L<lane>_…` and can differ from the sample name.
 
-`run-count` exits straight away if the run's folder already holds its `outs/_SUCCESS`. Nothing from the count workflow reaches S3: Cell Ranger runs without a BAM, and its web summary, raw matrix and QC report are deleted with the run's folder. Its metrics go into the final file. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
+`run-count` exits straight away if the run's folder already holds its `outs/_SUCCESS`. Nothing from the count workflow reaches S3: Cell Ranger runs without a BAM, and its raw matrix and QC report are deleted with the run's folder. Its metrics go into the final file. Its web summary is kept in the run's `reports/` folder and stored in Bloom's `scrna` bucket at `reports/<run's Bloom id>/web_summary.html`, or under the workflow's name for a run started by hand, through `run-with-log --put` and the pipeline's Bloom login. A failed upload is logged and doesn't fail the step. Cell Ranger's own run id is the sample name, so its web summary is titled with the sample; the run id goes in the summary's description. A sample name must therefore be letters, digits, `_` or `-`, at most 64 characters, or `run-count` exits 6 before downloading anything.
 
 The FASTQs' prefix is read from their names by `fastq-sample-prefix` and passed to Cell Ranger as `--sample`, so files keep the names the sequencer or core gave them (e.g. `L007-259_S1_L002_R1_001.fastq.gz` in a folder for `root_rep1`). Several prefixes in one folder are counted together as one sample. A `.fastq.gz` or `.fastq` not named that way, or a lane without both R1 and R2, fails the stage step with exit 7 and a message listing the files, before QC and count run. Setting `FASTQ_SAMPLE` overrides the detected prefix.
 
@@ -63,8 +63,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-12
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
