@@ -12,7 +12,6 @@ import {
   genomeVersionOptions,
   type GenomeVersionOption,
   type ReadyVersionRow,
-  type RnaseqSample,
 } from "@/lib/scrna-jobs";
 import { sortedSpeciesOptions } from "@/lib/species-options";
 
@@ -28,7 +27,7 @@ export default async function AllSpecies() {
     url: "/app/expression",
   });
 
-  const [speciesList, { samples, genomeVersions }] = await Promise.all([
+  const [speciesList, { genomeVersions }] = await Promise.all([
     getSpeciesList(),
     getJobChoices(),
   ]);
@@ -49,7 +48,6 @@ export default async function AllSpecies() {
 
       <div className="mb-8">
         <ScrnaJobSubmit
-          samples={samples}
           genomeVersions={genomeVersions}
           species={sortedSpeciesOptions(speciesList)}
           startedBy={user?.email ?? null}
@@ -141,27 +139,13 @@ async function getSpeciesList(): Promise<SpeciesWithRNADatasets[]> {
   return (data ?? []) as SpeciesWithRNADatasets[];
 }
 
-// The samples and ready genome versions a scRNA job can be started with; empty lists if they
-// can't be read. The versions come from the same tables `bloomctl genome list` reads.
-async function getJobChoices(): Promise<{
-  samples: RnaseqSample[];
-  genomeVersions: GenomeVersionOption[];
-}> {
+// The ready genome versions a scRNA job can be started on; an empty list if they can't be read.
+// They come from the same tables `bloomctl genome list` reads.
+async function getJobChoices(): Promise<{ genomeVersions: GenomeVersionOption[] }> {
   const supabase = await createServerSupabaseClient();
-
-  const [samples, versions] = await Promise.all([
-    supabase
-      .from("rnaseq_samples")
-      .select("name, source, fastq_count, total_bytes")
-      .order("name"),
-    supabase
-      .from("genome_reference_versions")
-      .select("id, version, assembly, annotation, genome_references(name)")
-      .eq("status", "ready"),
-  ]);
-
-  return {
-    samples: samples.data ?? [],
-    genomeVersions: genomeVersionOptions((versions.data ?? []) as ReadyVersionRow[]),
-  };
+  const versions = await supabase
+    .from("genome_reference_versions")
+    .select("id, version, assembly, annotation, genome_references(name)")
+    .eq("status", "ready");
+  return { genomeVersions: genomeVersionOptions((versions.data ?? []) as ReadyVersionRow[]) };
 }

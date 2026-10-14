@@ -21,13 +21,9 @@ vi.mock("@/lib/species-options", async (importOriginal) => ({
 
 import ScrnaJobSubmit from "./scrna-job-submit";
 import { addSpecies } from "@/lib/species-options";
-import type { GenomeVersionOption, RnaseqSample } from "@/lib/scrna-jobs";
+import type { GenomeVersionOption } from "@/lib/scrna-jobs";
 import type { SpeciesOption } from "@/lib/species-options";
 
-const SAMPLES: RnaseqSample[] = [
-  { name: "tinygex", source: "s3", fastq_count: 4, total_bytes: 31_400_000_000 },
-  { name: "root_rep2", source: "sra", fastq_count: null, total_bytes: null },
-];
 const GENOME_VERSIONS: GenomeVersionOption[] = [
   { id: 3, genome: "tiny_ref", version: 1, assembly: "TAIR10", annotation: "Araport11" },
   { id: 4, genome: "grch38", version: 2, assembly: null, annotation: null },
@@ -73,10 +69,9 @@ function startCalls() {
   return fetchSpy.mock.calls.filter(([url]) => url === "/api/scrna/cellranger/runs");
 }
 
-function openForm(samples = SAMPLES, genomeVersions = GENOME_VERSIONS) {
+function openForm(genomeVersions = GENOME_VERSIONS) {
   render(
     <ScrnaJobSubmit
-      samples={samples}
       genomeVersions={genomeVersions}
       species={SPECIES}
       startedBy="scientist@salk.edu"
@@ -118,7 +113,7 @@ afterEach(() => {
 describe("the form", () => {
   it("starts closed and opens from the button", () => {
     render(
-      <ScrnaJobSubmit samples={SAMPLES} genomeVersions={GENOME_VERSIONS} species={SPECIES} startedBy={null} />
+      <ScrnaJobSubmit genomeVersions={GENOME_VERSIONS} species={SPECIES} startedBy={null} />
     );
     expect(screen.queryByLabelText("S3 folder URL")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Submit scRNA job" }));
@@ -224,7 +219,7 @@ describe("the form", () => {
   });
 
   it("says how genomes are added when none is ready", () => {
-    openForm(SAMPLES, []);
+    openForm([]);
     expect(screen.getByRole("option", { name: "No reference genomes are ready yet" })).toBeTruthy();
     expect(screen.getByText(/genome upload/)).toBeTruthy();
   });

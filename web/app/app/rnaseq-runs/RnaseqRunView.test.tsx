@@ -143,4 +143,24 @@ describe("the genome a run used", () => {
     renderView(RUN, null);
     expect(screen.getByText("tinygex against tiny_ref")).toBeTruthy();
   });
+
+  it("links the run's Cell Ranger report when there is one", () => {
+    render(
+      <RnaseqRunView
+        initialRun={RUN}
+        startedBy="you"
+        speciesLabel={null}
+        reportHref="/app/rnaseq-runs/1/report"
+      />
+    );
+    expect(screen.getByRole("link", { name: "Open the report" }).getAttribute("href")).toBe(
+      "/app/rnaseq-runs/1/report"
+    );
+  });
+
+  it("shows no report link before the run has stored one", () => {
+    renderView();
+    expect(screen.getByText("Cell Ranger report")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open the report" })).toBeNull();
+  });
 });

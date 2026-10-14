@@ -1,15 +1,9 @@
 /**
- * Shared pieces of the scRNA job form: the choices it offers (registered samples and
- * ready genome versions), the dataset details saved with the run, the shape of a started
+ * Shared pieces of the scRNA job form: the choices it offers (ready genome versions), the dataset details saved with the run, the shape of a started
  * run, and the messages shown for a refused start.
  */
 
 import type { Database } from "@/lib/database.types";
-
-export type RnaseqSample = Pick<
-  Database["public"]["Tables"]["rnaseq_samples"]["Row"],
-  "name" | "source" | "fastq_count" | "total_bytes"
->;
 
 /** A ready genome version a run can build its reference from, as `bloomctl genome list` shows it. */
 export type GenomeVersionOption = {

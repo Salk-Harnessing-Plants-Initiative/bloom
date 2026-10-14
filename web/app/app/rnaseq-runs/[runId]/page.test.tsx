@@ -4,7 +4,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
-const state = vi.hoisted(() => ({ user: null as { id: string } | null, run: null as unknown }));
+const state = vi.hoisted(() => ({
+  user: null as { id: string } | null,
+  run: null as unknown,
+  reports: new Set<string>(),
+}));
 vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: async () => ({}),
   getUser: async () => state.user,
@@ -15,8 +19,17 @@ vi.mock("@/lib/rnaseq-runs", async (importOriginal) => ({
   fetchGenomeLabel: async () => null,
 }));
 vi.mock("../species-labels", () => ({ speciesLabelMap: async () => ({}) }));
+vi.mock("@/lib/rnaseq-reports", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rnaseq-reports")>()),
+  storedReports: async () => state.reports,
+}));
 vi.mock("../RnaseqRunView", () => ({
-  default: ({ startedBy }: { startedBy: string }) => <p>Started by {startedBy}</p>,
+  default: ({ startedBy, reportHref }: { startedBy: string; reportHref: string | null }) => (
+    <>
+      <p>Started by {startedBy}</p>
+      <p>Report: {reportHref ?? "none"}</p>
+    </>
+  ),
 }));
 vi.mock("next/navigation", () => ({
   notFound: () => {
@@ -51,5 +64,17 @@ describe("an RNA-seq run's page", () => {
   it("is not found for a run that can't be read", async () => {
     state.run = null;
     await expect(RnaseqRunPage({ params: Promise.resolve({ runId: "8" }) })).rejects.toThrow("not found");
+  });
+
+  it("links the run's Cell Ranger report once one is stored", async () => {
+    state.reports = new Set(["web_summary.html", "metrics_summary.csv"]);
+    await show("me", "me");
+    expect(screen.getByText("Report: /app/rnaseq-runs/8/report")).toBeTruthy();
+  });
+
+  it("links no report when the run stored none, or only its metrics", async () => {
+    state.reports = new Set(["metrics_summary.csv"]);
+    await show("me", "me");
+    expect(screen.getByText("Report: none")).toBeTruthy();
   });
 });

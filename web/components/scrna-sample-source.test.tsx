@@ -11,12 +11,9 @@ vi.mock("@/lib/s3-folder", async (importOriginal) => ({
 }));
 
 import ScrnaJobSubmit from "./scrna-job-submit";
-import type { GenomeVersionOption, RnaseqSample } from "@/lib/scrna-jobs";
+import type { GenomeVersionOption } from "@/lib/scrna-jobs";
 import type { SpeciesOption } from "@/lib/species-options";
 
-const SAMPLES: RnaseqSample[] = [
-  { name: "tinygex", source: "s3", fastq_count: 6, total_bytes: 12_000_000 },
-];
 const GENOME_VERSIONS: GenomeVersionOption[] = [
   { id: 3, genome: "tiny_ref", version: 1, assembly: null, annotation: null },
 ];
@@ -27,7 +24,6 @@ let fetchSpy: ReturnType<typeof vi.fn>;
 function openForm() {
   render(
     <ScrnaJobSubmit
-      samples={SAMPLES}
       genomeVersions={GENOME_VERSIONS}
       species={SPECIES}
       startedBy="scientist@salk.edu"
@@ -165,15 +161,13 @@ describe("importing from SRA", () => {
     expect(startButton().disabled).toBe(true);
   });
 
-  it("refuses a name that's already registered", () => {
+  it("accepts a name an earlier import registered: each run has its own folder", () => {
     openForm();
     fillTheRest();
     type("SRA run IDs", "SRR28503597");
     type("Sample name", "tinygex");
-    expect(screen.getByRole("alert").textContent).toBe(
-      "tinygex is already a registered sample; choose another name.",
-    );
-    expect(startButton().disabled).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(startButton().disabled).toBe(false);
   });
 
   it("sends the new name and the runs in order", async () => {

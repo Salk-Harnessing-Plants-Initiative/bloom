@@ -10,7 +10,6 @@ import {
   type DataOrigin,
   genomeVersionLabel,
   type GenomeVersionOption,
-  type RnaseqSample,
   type StartedRun,
 } from "@/lib/scrna-jobs";
 import { isFolderChangedRefusal, normaliseFolderUrl, type FolderCheck } from "@/lib/s3-folder";
@@ -31,13 +30,11 @@ const groupHeadingClass =
   "mb-3 text-xs uppercase tracking-widest text-stone-500";
 
 export default function ScrnaJobSubmit({
-  samples,
   genomeVersions,
   species,
   startedBy,
   readerArn = null,
 }: {
-  samples: RnaseqSample[];
   // Ready genome versions, which the run builds its reference from.
   genomeVersions: GenomeVersionOption[];
   species: SpeciesOption[];
@@ -100,10 +97,7 @@ export default function ScrnaJobSubmit({
     source === "folder"
       ? folderCheck !== null && folderCheck.fastq_url === normaliseFolderUrl(folderUrl)
       : !sra.problem &&
-        !newSampleNameProblem(
-          newName.trim(),
-          samples.map((s) => s.name)
-        );
+        !newSampleNameProblem(newName.trim());
   const canSubmit =
     sampleReady && genomeVersionId !== null && !detailsProblem && !submitting;
 
@@ -304,7 +298,6 @@ export default function ScrnaJobSubmit({
               <ScrnaSampleSource
                 source={source}
                 onSource={changeSource}
-                samples={samples}
                 folderUrl={folderUrl}
                 folderRecheck={folderRecheck}
                 readerArn={readerArn}

@@ -54,13 +54,11 @@ export function parseSraRuns(text: string): ParsedSraRuns {
   return { runs, problem: null };
 }
 
-// What's wrong with a new sample's name, or null; registered names can't be reused.
-export function newSampleNameProblem(name: string, registered: string[]): string | null {
+// What's wrong with a new sample's name, or null.
+export function newSampleNameProblem(name: string): string | null {
   if (!name) return "Give the sample a name.";
   if (!SAMPLE_NAME.test(name) || name.includes("__")) {
     return "Sample names use letters, digits, '_' or '-' (no '__'), at most 64.";
   }
-  if (registered.includes(name))
-    return `${name} is already a registered sample; choose another name.`;
   return null;
 }
