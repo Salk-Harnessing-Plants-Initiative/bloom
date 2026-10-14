@@ -16,7 +16,8 @@ RUN pip install -r /opt/scrna-analysis/requirements.txt \
  && python -c "import scanpy, leidenalg, igraph, boto3" \
  && bloomctl scrna hdf5 upload --help | grep -q -- --run-id \
  && bloomctl genome download --help | grep -q -- --version-file \
- && bloomctl scrna hdf5 upload --help | grep -q -- --de-key
+ && bloomctl scrna hdf5 upload --help | grep -q -- --de-key \
+ && python -c "from bloomctl.scrna._cells import cluster_colours; assert len(set(cluster_colours(40))) == 40"
 
 COPY bloom_scrna_analysis /opt/scrna-analysis/bloom_scrna_analysis
 ENV PYTHONPATH=/opt/scrna-analysis
