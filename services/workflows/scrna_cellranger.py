@@ -47,8 +47,10 @@ SRA_RUN_RULE = re.compile(r"^[SED]RR[0-9]{6,10}$")
 MAX_SRA_RUNS = 9
 SRA_RUNS_HELP = f"1 to {MAX_SRA_RUNS} distinct SRA run IDs like SRR12046049"
 
-# What the request function's refusals mean for the caller: a bad value, or a name that
-# is taken or still being imported.
+# What the request function's refusals mean for the caller: a bad value (22023), or a run
+# that would repeat one (23505): its run key already has a live run, or the scientist already
+# ran these SRA runs on this genome under another name. 55000 ("still being imported") comes
+# only from the function before 20261013230000, until that migration is applied.
 _REFUSAL_STATUS = {"22023": 422, "23505": 409, "55000": 409}
 
 
