@@ -147,11 +147,11 @@ The image holds nothing licensed, but it's pushed private like the Cell Ranger o
 
 ```bash
 docker buildx build --platform linux/amd64 --build-context scrna=argo/scrna \
-  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.5 argo/scrna/analysis
-docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.5
+  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.7 argo/scrna/analysis
+docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.7
 # tests (need scanpy), from the repo root:
 docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
-  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.5 \
+  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.7 \
   -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
 ```
 

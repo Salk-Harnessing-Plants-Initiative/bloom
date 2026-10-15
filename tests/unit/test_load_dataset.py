@@ -201,7 +201,7 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a14"]
+    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a15"]
 
 
 def _with_de_result(env):
