@@ -52,13 +52,19 @@ def test_the_analysis_image_checks_its_bloomctl_loads_de():
 
 
 def test_the_analysis_image_has_a_bloomctl_that_colours_any_number_of_clusters():
-    # 0.1.0a14 loads more than 23 clusters; the build checks it does.
-    requirements = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert "bloomctl==0.1.0a14" in requirements
+    # 0.1.0a14 and later load more than 23 clusters; the build checks it does.
     dockerfile = (ARGO / "analysis" / "Dockerfile").read_text()
     assert "cluster_colours(40)" in dockerfile
 
 
+def test_the_analysis_image_has_a_bloomctl_that_uploads_counts_in_parallel():
+    # 0.1.0a15 uploads gene counts 8 at a time; the build checks it does.
+    requirements = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
+    assert "bloomctl==0.1.0a15" in requirements
+    dockerfile = (ARGO / "analysis" / "Dockerfile").read_text()
+    assert "_counts.UPLOAD_WORKERS == 8" in dockerfile
+
+
 def test_every_analysis_step_uses_one_image():
     template = (ARGO / "cellranger" / "cellranger-count-template.yaml").read_text()
-    assert set(re.findall(r"scrna-analysis:(\S+)", template)) == {"0.1.5"}
+    assert set(re.findall(r"scrna-analysis:(\S+)", template)) == {"0.1.7"}

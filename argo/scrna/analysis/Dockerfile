@@ -17,7 +17,8 @@ RUN pip install -r /opt/scrna-analysis/requirements.txt \
  && bloomctl scrna hdf5 upload --help | grep -q -- --run-id \
  && bloomctl genome download --help | grep -q -- --version-file \
  && bloomctl scrna hdf5 upload --help | grep -q -- --de-key \
- && python -c "from bloomctl.scrna._cells import cluster_colours; assert len(set(cluster_colours(40))) == 40"
+ && python -c "from bloomctl.scrna._cells import cluster_colours; assert len(set(cluster_colours(40))) == 40" \
+ && python -c "from bloomctl.scrna import _counts; assert _counts.UPLOAD_WORKERS == 8"
 
 COPY bloom_scrna_analysis /opt/scrna-analysis/bloom_scrna_analysis
 ENV PYTHONPATH=/opt/scrna-analysis
