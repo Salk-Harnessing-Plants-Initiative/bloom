@@ -234,7 +234,7 @@ In the examples below, **`tair10_araport11`** is the genome's name.
 ### Quickstart
 
 ```bash
-# Store a new genome (needs write access); --species is required the first time
+# Store a new genome (any signed-in member); --species is required the first time
 bloomctl genome upload tair10_araport11 --fasta TAIR10.fa --gtf Araport11.gtf \
   --species Arabidopsis --assembly TAIR10 --annotation Araport11
 # → tair10_araport11 v1: ready
@@ -245,7 +245,7 @@ bloomctl genome download tair10_araport11.v1 --to ref/ --unzip   # a named versi
 ```
 
 - **Names:** lowercase letters, digits, `.`, `_`, `-`; can't end in `.vN`.
-- **Upload** checks the files first; uploading again makes the next version.
+- **Upload** checks the files first; uploading again makes the next version (writers only).
 - **Only `ready` versions** can be downloaded.
 - **Download** checks each file against Bloom's record; `--unzip` gives `genome.fa` and `genes.gtf`.
 - **Exit codes:** `3` not available or doesn't match (don't retry); `1` network error (retry).
@@ -254,7 +254,7 @@ bloomctl genome download tair10_araport11.v1 --to ref/ --unzip   # a named versi
 
 | Command                          | What it does                                                                 |
 | -------------------------------- | ---------------------------------------------------------------------------- |
-| `genome upload <name>`           | Store a FASTA and GTF as the genome's next version *(needs write access)*    |
+| `genome upload <name>`           | Store a FASTA and GTF as the genome's next version *(any member: a new genome; a writer: any)* |
 | `genome list`                    | Every genome with its species, versions and each version's status            |
 | `genome download <name>[.vN]`    | Fetch a ready version's files, checked; `--unzip`, `--version-file` to record the version |
 
