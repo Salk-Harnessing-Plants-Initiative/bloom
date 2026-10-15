@@ -29,9 +29,11 @@ from tests.integration.genome_reference_helpers import (
     start,
     uploaded,
 )
-from tests.integration.test_rnaseq_runs import _sql_body
+from tests.integration.test_rnaseq_runs import _find_one, _sql_body
 
 psycopg = pytest.importorskip("psycopg")
+
+MEMBER_UPLOADS_ROLLBACK = _find_one("rollbacks", "*_let_members_upload_genomes_rollback.sql")
 
 
 @pytest.fixture
@@ -343,8 +345,10 @@ def _executable_by(cur, function):
 
 
 @pytest.mark.parametrize("function", UPLOAD_FUNCTIONS)
-def test_only_writers_can_call_the_upload_functions(cur, function):
-    assert _executable_by(cur, function) == {r: r == "bloom_writer" for r in ROLES}
+def test_only_writers_and_members_can_call_the_upload_functions(cur, function):
+    # Members may start and finish a new genome's upload; abandoning stays with writers.
+    callers = {"bloom_writer"} if "abandon" in function else {"bloom_writer", "bloom_user"}
+    assert _executable_by(cur, function) == {r: r in callers for r in ROLES}
 
 
 @pytest.mark.parametrize(
@@ -364,6 +368,8 @@ def test_internal_functions_are_not_callable(cur, function):
 
 def test_the_rollbacks_remove_everything(cur, species_id, genome):
     start(cur, genome, species=species_id)
+    # Newest first: members' genome uploads, then the uploads, then the tables.
+    cur.execute(_sql_body(MEMBER_UPLOADS_ROLLBACK))
     cur.execute(_sql_body(UPLOADS_ROLLBACK))
     cur.execute(_sql_body(TABLES_ROLLBACK))
 
