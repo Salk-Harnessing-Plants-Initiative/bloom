@@ -428,6 +428,65 @@ def test_a_run_without_a_dataset_name_and_species_is_422(metadata, monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Arabidopsis root tip, all cell types (Shahan lab, GSM8180251)",
+        "root/tip",
+        "root:tip",
+        "Root atlas é",
+        "..",
+        ".",
+        # Trimmed to dots alone before the loader sees them.
+        " .. ",
+        ". ",
+        " .",
+    ],
+)
+def test_a_dataset_name_the_loader_would_refuse_is_422(name, monkeypatch):
+    monkeypatch.setattr(
+        scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
+    )
+    body = {
+        "sra_runs": RUNS,
+        "sample": "root_b",
+        "genome_version_id": VERSION_ID,
+        "metadata": {"dataset_name": name, "species_id": 2},
+    }
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(body, USER)
+    assert (exc.value.status_code, exc.value.detail) == (
+        422,
+        scrna_cellranger.DATASET_NAME_HELP,
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Root atlas",
+        "Col-0 root tip 7 DAG",
+        "MYB41_v2",
+        "a.b",
+        "Shahan lab - GSM8180251",
+        # Trimmed to a valid name before the loader sees it.
+        "  Root atlas ",
+        "\tRoot atlas\n",
+    ],
+)
+def test_a_dataset_name_the_loader_takes_is_accepted(db, name):
+    scrna_cellranger.trigger_run(
+        {
+            "sra_runs": RUNS,
+            "sample": "root_b",
+            "genome_version_id": VERSION_ID,
+            "metadata": {"dataset_name": name, "species_id": 2},
+        },
+        USER,
+    )
+    assert db.rpc_calls[0][1]["p_metadata"]["dataset_name"] == name
+
+
 @pytest.mark.parametrize("metadata", [[], "root", 5, True, [{"tissue": "root"}]])
 def test_metadata_that_is_not_an_object_is_422(metadata, monkeypatch):
     monkeypatch.setattr(
