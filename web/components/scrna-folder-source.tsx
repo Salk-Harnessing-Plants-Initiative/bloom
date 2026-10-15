@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import Tooltip from "@mui/material/Tooltip";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import {
   FOLDER_CHECK_DELAY_MS,
   FOLDER_EXAMPLE,
@@ -12,6 +14,42 @@ import {
   normaliseFolderUrl,
   type FolderCheck,
 } from "@/lib/s3-folder";
+
+// What a private bucket's policy must give Bloom's AWS user, for whoever sets it up.
+const PERMISSIONS =
+  "Needs s3:ListBucket and s3:GetObject on the folder, plus kms:Decrypt for a KMS-encrypted bucket";
+// How long "Copied" shows after the AWS user is copied.
+const COPIED_MS = 2000;
+
+// Copies text to the clipboard; if the browser refuses, shows it to copy by hand.
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (state !== "copied") return;
+    const timer = setTimeout(() => setState("idle"), COPIED_MS);
+    return () => clearTimeout(timer);
+  }, [state]);
+  if (state === "failed") {
+    return <code className="select-all [overflow-wrap:anywhere]">{text}</code>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        // No clipboard outside HTTPS, or the browser may refuse.
+        try {
+          await navigator.clipboard.writeText(text);
+          setState("copied");
+        } catch {
+          setState("failed");
+        }
+      }}
+      className="rounded-md bg-lime-700 px-2.5 py-1 text-xs font-medium text-stone-50 hover:bg-lime-800"
+    >
+      {state === "copied" ? "Copied" : label}
+    </button>
+  );
+}
 
 type CheckState =
   | { kind: "idle" }
@@ -145,42 +183,51 @@ export default function ScrnaFolderSource({
       {showLayout ? (
         <div
           id={layoutId}
-          className="rounded-md border border-stone-200 bg-white p-3 text-sm text-stone-600"
+          className="space-y-2 rounded-md border border-stone-200 bg-white p-3 text-sm text-stone-600"
         >
-          <p className="font-medium text-stone-700">One sample&apos;s folder, with:</p>
-          <ul className="mt-1 list-disc space-y-1 pl-5">
-            <li>
-              The FASTQs directly inside it. Subfolders aren&apos;t read, and other files
-              (md5sums, reports) are ignored.
-            </li>
-            <li>
-              Files named <code>&lt;sample_name&gt;_S1_L001_R1_001.fastq.gz</code>. Make sure{" "}
-              <code>&lt;sample_name&gt;</code> is the same for all reads; it becomes the
-              run&apos;s name.
-            </li>
-            <li>R1 and R2 for every lane; I1 and I2 are optional.</li>
-          </ul>
-          <p className="mt-2 font-medium text-stone-700">Giving Bloom the reads</p>
-          <ul className="mt-1 list-disc space-y-1 pl-5">
-            <li>
-              A public folder: upload the reads to a public bucket, such as{" "}
-              <code>salk-tm-pub</code>, or a bucket readable from the Salk network, and paste
-              the path. A public bucket is open to anyone on the internet.
-            </li>
-            {readerArn ? (
+          <div>
+            <p className="font-medium text-stone-700">Folder</p>
+            <ul className="list-disc pl-5">
+              <li>One sample per folder, FASTQs at the top level</li>
               <li>
-                A private folder: give Bloom&apos;s AWS user permission to list and read the
-                folder (s3:ListBucket and s3:GetObject, plus kms:Decrypt for a KMS-encrypted
-                bucket), then paste the path. Bloom&apos;s AWS user is{" "}
-                <code className="[overflow-wrap:anywhere]">{readerArn}</code>. Remove the
-                permission when the run is done; Bloom emails you when it finishes.
+                Named <code>&lt;sample&gt;_S1_L001_R1_001.fastq.gz</code> (R1 + R2 per lane;
+                I1/I2 optional)
               </li>
-            ) : null}
-          </ul>
-          <p className="mt-2 font-medium text-stone-700">For example</p>
-          <pre className="mt-1 overflow-x-auto rounded bg-stone-50 p-2 text-xs">
-            {[FOLDER_EXAMPLE.url, ...FOLDER_EXAMPLE.files.map((f) => `    ${f}`)].join("\n")}
-          </pre>
+            </ul>
+          </div>
+          <div>
+            <p className="font-medium text-stone-700">Access</p>
+            <ul className="list-disc pl-5">
+              <li>
+                Public bucket (e.g. <code>salk-tm-pub</code>) → just paste the path
+              </li>
+              {readerArn ? (
+                <li>
+                  <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+                    Private bucket → give Bloom read access
+                    <CopyButton text={readerArn} label="Copy Bloom's AWS user" />
+                  </span>
+                  <span className="mt-0.5 flex items-center gap-1 text-stone-500">
+                    remove it after the run
+                    <Tooltip title={PERMISSIONS}>
+                      <InfoOutlinedIcon
+                        fontSize="small"
+                        color="action"
+                        tabIndex={0}
+                        aria-label={PERMISSIONS}
+                      />
+                    </Tooltip>
+                  </span>
+                </li>
+              ) : null}
+            </ul>
+          </div>
+          <div>
+            <p className="font-medium text-stone-700">Example</p>
+            <pre className="mt-1 overflow-x-auto rounded bg-stone-50 p-2 text-xs">
+              {[FOLDER_EXAMPLE.url, ...FOLDER_EXAMPLE.files.map((f) => `  ${f}`)].join("\n")}
+            </pre>
+          </div>
         </div>
       ) : null}
 
