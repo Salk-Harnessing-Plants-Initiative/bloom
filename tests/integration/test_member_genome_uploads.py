@@ -1,7 +1,7 @@
 """
 Integration tests for members (bloom_user) uploading a new reference genome: they may start a new
 genome's v1, add its two files once and finish it, and nothing more. Each test applies the genome
-migrations and this one inside its own transaction and rolls it back.
+migrations inside its own transaction and rolls it back.
 """
 
 import json
@@ -42,7 +42,6 @@ CHECK = "public.member_may_upload_genome_file(text, text)"
 def cur(pg_conn):
     with pg_conn.cursor() as c:
         apply_migrations(c)
-        c.execute(_sql_body(MIGRATION))
         yield c
     pg_conn.rollback()
 
@@ -196,6 +195,11 @@ def test_a_member_cannot_store_a_file_owned_by_someone_else(cur, species_id, gen
     row = member_start(cur, genome, species_id)
     refused_as_member(cur, INSERT_FILE, (BUCKET, row[2], OTHER_MEMBER))
     refused_as_member(cur, INSERT_FILE, (BUCKET, row[2], None))
+
+
+def test_a_member_cannot_store_their_own_version_path_in_another_bucket(cur, species_id, genome):
+    row = member_start(cur, genome, species_id)
+    refused_as_member(cur, INSERT_FILE, ("images", row[2], MEMBER))
 
 
 def test_a_member_cannot_store_any_other_path_in_the_bucket(cur, species_id, genome):

@@ -1,6 +1,6 @@
 """Shared helpers for the genome reference tests.
 
-Each test applies both genome migrations inside its own transaction and rolls it back, so the
+Each test applies the genome migrations inside its own transaction and rolls it back, so the
 database is left unchanged whatever it already holds. Roles are exercised with SET LOCAL ROLE
 and the signed-in user's id, the way PostgREST and Storage call in.
 """
@@ -16,6 +16,7 @@ psycopg = pytest.importorskip("psycopg")
 
 TABLES_MIGRATION = _find_one("migrations", "*_add_genome_references.sql")
 UPLOADS_MIGRATION = _find_one("migrations", "*_add_genome_reference_uploads.sql")
+MEMBER_UPLOADS_MIGRATION = _find_one("migrations", "*_let_members_upload_genomes.sql")
 TABLES_ROLLBACK = _find_one("rollbacks", "*_add_genome_references_rollback.sql")
 UPLOADS_ROLLBACK = _find_one("rollbacks", "*_add_genome_reference_uploads_rollback.sql")
 BUCKET = "genome-references"
@@ -28,7 +29,7 @@ SHA_B = "b" * 64
 
 
 def apply_migrations(c) -> None:
-    """Both migrations, applied over whatever this database already holds."""
+    """The genome migrations, applied over whatever this database already holds."""
     c.execute("DROP TRIGGER IF EXISTS rnaseq_runs_keep_genome_version ON public.rnaseq_runs")
     c.execute(
         "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE "
@@ -40,6 +41,7 @@ def apply_migrations(c) -> None:
         c.execute(f"DROP TABLE IF EXISTS public.{table} CASCADE")
     c.execute(_sql_body(TABLES_MIGRATION))
     c.execute(_sql_body(UPLOADS_MIGRATION))
+    c.execute(_sql_body(MEMBER_UPLOADS_MIGRATION))
 
 
 def new_genome_name() -> str:
