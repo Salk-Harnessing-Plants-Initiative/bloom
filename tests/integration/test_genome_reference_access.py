@@ -33,6 +33,8 @@ from tests.integration.test_rnaseq_runs import _find_one, _sql_body
 
 psycopg = pytest.importorskip("psycopg")
 
+MEMBER_UPLOADS_ROLLBACK = _find_one("rollbacks", "*_let_members_upload_genomes_rollback.sql")
+
 
 @pytest.fixture
 def cur(pg_conn):
@@ -196,7 +198,6 @@ def test_each_reader_has_its_own_read_policy_on_the_bucket(cur):
     )
     assert cur.fetchall() == [
         ("agent_read_genome_references_objects", ["bloom_agent"], "SELECT"),
-        ("uploader_read_genome_references_objects", ["bloom_uploader"], "SELECT"),
         ("user_read_genome_references_objects", ["bloom_user"], "SELECT"),
         ("workflows_read_genome_references_objects", ["bloom_workflows"], "SELECT"),
     ]
@@ -344,8 +345,10 @@ def _executable_by(cur, function):
 
 
 @pytest.mark.parametrize("function", UPLOAD_FUNCTIONS)
-def test_only_writers_can_call_the_upload_functions(cur, function):
-    assert _executable_by(cur, function) == {r: r == "bloom_writer" for r in ROLES}
+def test_only_writers_and_members_can_call_the_upload_functions(cur, function):
+    # Members may start and finish a new genome's upload; abandoning stays with writers.
+    callers = {"bloom_writer"} if "abandon" in function else {"bloom_writer", "bloom_user"}
+    assert _executable_by(cur, function) == {r: r in callers for r in ROLES}
 
 
 @pytest.mark.parametrize(
@@ -365,8 +368,8 @@ def test_internal_functions_are_not_callable(cur, function):
 
 def test_the_rollbacks_remove_everything(cur, species_id, genome):
     start(cur, genome, species=species_id)
-    # Rollbacks run newest first; the uploader role adds genome policies of its own.
-    cur.execute(_sql_body(_find_one("rollbacks", "*_add_bloom_uploader_role_rollback.sql")))
+    # Newest first: members' genome uploads, then the uploads, then the tables.
+    cur.execute(_sql_body(MEMBER_UPLOADS_ROLLBACK))
     cur.execute(_sql_body(UPLOADS_ROLLBACK))
     cur.execute(_sql_body(TABLES_ROLLBACK))
 

@@ -69,8 +69,6 @@ EXPECTED_PRIVILEGES = {
     # The pipeline reads it to check a resumed load built nothing later on the dataset.
     # The pipeline loads a run's default DE with its dataset (20261012230000).
     "bloom_workflows": {"INSERT", "SELECT"},
-    # An uploader loads its own dataset's default DE (20261014120000).
-    "bloom_uploader": {"INSERT", "SELECT"},
 }
 
 

@@ -742,8 +742,6 @@ def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
             (f"writer_insert_scrna_de_{suffix}", "{bloom_writer}", "INSERT"),
             (f"workflows_select_scrna_de_{suffix}", "{bloom_workflows}", "SELECT"),
             (f"workflows_insert_scrna_de_{suffix}", "{bloom_workflows}", "INSERT"),
-            (f"uploader_read_scrna_de_{suffix}", "{bloom_uploader}", "SELECT"),
-            (f"uploader_insert_scrna_de_{suffix}", "{bloom_uploader}", "INSERT"),
         }
 
 

@@ -5349,6 +5349,10 @@ export type Database = {
         Args: never
         Returns: undefined
       }
+      member_may_upload_genome_file: {
+        Args: { p_name: string; p_owner_id: string }
+        Returns: boolean
+      }
       record_bloommcp_usage: {
         Args: { p_action: string; p_identity: string }
         Returns: undefined
@@ -5506,19 +5510,6 @@ export type Database = {
         }
         Returns: boolean
       }
-      uploader_may_load_scrna_dataset: {
-        Args: { p_dataset_id: number }
-        Returns: boolean
-      }
-      uploader_may_reopen_scrna_dataset: {
-        Args: { p_dataset_id: number }
-        Returns: boolean
-      }
-      uploader_may_upload_genome_file: {
-        Args: { p_name: string }
-        Returns: boolean
-      }
-      uploader_owns_object: { Args: { p_owner_id: string }; Returns: boolean }
       workflows_may_load_scrna_dataset: {
         Args: { p_dataset_id: number }
         Returns: boolean

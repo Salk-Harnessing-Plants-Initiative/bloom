@@ -204,15 +204,18 @@ def test_the_bucket_has_exactly_its_policies(pg_conn):
         ("bloom_admin", "ALL"),
         ("bloom_agent", "SELECT"),
         ("bloom_user", "SELECT"),
-        ("bloom_uploader", "SELECT"),
         ("bloom_workflows", "SELECT"),
         ("bloom_workflows", "INSERT"),
         ("bloom_workflows", "UPDATE"),
     }
 
 
-def _rollback_sql(glob: str = "*_create_run_logs_bucket_rollback.sql") -> str:
-    [path] = sorted((REPO_ROOT / "supabase" / "rollbacks").glob(glob))
+def _rollback_sql() -> str:
+    [path] = sorted(
+        (REPO_ROOT / "supabase" / "rollbacks").glob(
+            "*_create_run_logs_bucket_rollback.sql"
+        )
+    )
     return "\n".join(
         line
         for line in path.read_text().splitlines()
@@ -220,15 +223,9 @@ def _rollback_sql(glob: str = "*_create_run_logs_bucket_rollback.sql") -> str:
     )
 
 
-def _uploader_rollback_sql() -> str:
-    return _rollback_sql("*_add_bloom_uploader_role_rollback.sql")
-
-
 def test_the_rollback_drops_an_empty_bucket_and_its_policies(pg_conn):
     with pg_conn.cursor() as cur:
         _seed_bucket(cur)
-        # Rollbacks run newest first; the uploader role copies bloom_user's read policy.
-        cur.execute(_uploader_rollback_sql())
         cur.execute(_rollback_sql())
         cur.execute("SELECT 1 FROM storage.buckets WHERE id = %s", (BUCKET,))
         assert cur.fetchone() is None
