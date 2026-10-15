@@ -5506,6 +5506,19 @@ export type Database = {
         }
         Returns: boolean
       }
+      uploader_may_load_scrna_dataset: {
+        Args: { p_dataset_id: number }
+        Returns: boolean
+      }
+      uploader_may_reopen_scrna_dataset: {
+        Args: { p_dataset_id: number }
+        Returns: boolean
+      }
+      uploader_may_upload_genome_file: {
+        Args: { p_name: string }
+        Returns: boolean
+      }
+      uploader_owns_object: { Args: { p_owner_id: string }; Returns: boolean }
       workflows_may_load_scrna_dataset: {
         Args: { p_dataset_id: number }
         Returns: boolean

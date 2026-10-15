@@ -29,7 +29,7 @@ from tests.integration.genome_reference_helpers import (
     start,
     uploaded,
 )
-from tests.integration.test_rnaseq_runs import _sql_body
+from tests.integration.test_rnaseq_runs import _find_one, _sql_body
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -196,6 +196,7 @@ def test_each_reader_has_its_own_read_policy_on_the_bucket(cur):
     )
     assert cur.fetchall() == [
         ("agent_read_genome_references_objects", ["bloom_agent"], "SELECT"),
+        ("uploader_read_genome_references_objects", ["bloom_uploader"], "SELECT"),
         ("user_read_genome_references_objects", ["bloom_user"], "SELECT"),
         ("workflows_read_genome_references_objects", ["bloom_workflows"], "SELECT"),
     ]
@@ -364,6 +365,8 @@ def test_internal_functions_are_not_callable(cur, function):
 
 def test_the_rollbacks_remove_everything(cur, species_id, genome):
     start(cur, genome, species=species_id)
+    # Rollbacks run newest first; the uploader role adds genome policies of its own.
+    cur.execute(_sql_body(_find_one("rollbacks", "*_add_bloom_uploader_role_rollback.sql")))
     cur.execute(_sql_body(UPLOADS_ROLLBACK))
     cur.execute(_sql_body(TABLES_ROLLBACK))
 

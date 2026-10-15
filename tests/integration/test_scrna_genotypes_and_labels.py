@@ -750,6 +750,10 @@ def test_the_policy_set_is_exactly_what_the_migration_declares(pg_conn):
                 ("SELECT", "PERMISSIVE", ["bloom_workflows"]),
             "workflows_insert_scrna_genotypes":
                 ("INSERT", "PERMISSIVE", ["bloom_workflows"]),
+            "uploader_read_scrna_genotypes":
+                ("SELECT", "PERMISSIVE", ["bloom_uploader"]),
+            "uploader_insert_scrna_genotypes":
+                ("INSERT", "PERMISSIVE", ["bloom_uploader"]),
         }
 
 
