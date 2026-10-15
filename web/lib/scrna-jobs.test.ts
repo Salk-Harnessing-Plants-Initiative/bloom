@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRunMetadata,
   datasetDetailsProblem,
+  datasetNameProblem,
   formatBytes,
   genomeVersionLabel,
   genomeVersionOptions,
@@ -29,6 +30,8 @@ const PUBLIC: DatasetDetails = {
   citation: " Shahan et al. 2022 ",
 };
 
+const NAME_PROBLEM = "The dataset name can use only letters, digits, spaces, '.', '_' and '-'.";
+
 describe("datasetDetailsProblem", () => {
   it("accepts the required fields alone", () => {
     expect(datasetDetailsProblem(DETAILS)).toBeNull();
@@ -44,6 +47,15 @@ describe("datasetDetailsProblem", () => {
     ],
   ])("refuses %j", (change, problem) => {
     expect(datasetDetailsProblem({ ...DETAILS, ...change })).toBe(problem);
+  });
+
+  it("refuses a dataset name the loader would refuse", () => {
+    expect(
+      datasetDetailsProblem({
+        ...DETAILS,
+        datasetName: "Arabidopsis root tip, all cell types (Shahan lab, GSM8180251)",
+      })
+    ).toBe(NAME_PROBLEM);
   });
 
   it("accepts a public dataset with a web link", () => {
@@ -82,6 +94,22 @@ describe("datasetDetailsProblem", () => {
       })
     ).toBeNull();
   });
+});
+
+describe("datasetNameProblem", () => {
+  it.each(["Col-0 root tip 7 DAG", "MYB41_v2", "a.b", "  Shahan lab - GSM8180251  ", "", "   "])(
+    "accepts %j",
+    (name) => {
+      expect(datasetNameProblem(name)).toBeNull();
+    }
+  );
+
+  it.each(["root, tip", "root (tip)", "root/tip", "root:tip", "Root é", ".", "..", " .. "])(
+    "refuses %j",
+    (name) => {
+      expect(datasetNameProblem(name)).toBe(NAME_PROBLEM);
+    }
+  );
 });
 
 describe("buildRunMetadata", () => {

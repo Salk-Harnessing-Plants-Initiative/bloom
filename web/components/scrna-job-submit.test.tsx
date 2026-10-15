@@ -158,6 +158,27 @@ describe("the form", () => {
     expect(start.disabled).toBe(false);
   });
 
+  it("says at once when the dataset name can't be loaded, and keeps Start run disabled", async () => {
+    openForm();
+    const nameProblem = "The dataset name can use only letters, digits, spaces, '.', '_' and '-'.";
+    type("Dataset name", "Root tip, all cells (GSM8180251)");
+    // Shown under the field before the run's other details are given.
+    const field = screen.getByLabelText("Dataset name");
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(document.getElementById(field.getAttribute("aria-describedby")!)?.textContent).toBe(
+      nameProblem
+    );
+    await enterFolder();
+    type("Reference genome", "3");
+    type("Species", "1");
+    const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    type("Dataset name", "Root tip all cells - GSM8180251");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(screen.queryByText(nameProblem)).toBeNull();
+    expect(start.disabled).toBe(false);
+  });
+
   it("keeps Start run disabled without a passed check for the folder in the box", async () => {
     let finishCheck: (r: Response) => void = () => {};
     folderReply = () => new Promise<Response>((resolve) => (finishCheck = resolve));

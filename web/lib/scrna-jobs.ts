@@ -89,10 +89,26 @@ function isWebLink(value: string): boolean {
   }
 }
 
+// The loader's rule: the dataset name becomes part of a storage path.
+const DATASET_NAME_RULE = /^[A-Za-z0-9._ -]+$/;
+const DOTS_ONLY = /^\.+$/;
+
+/** Why the (trimmed) dataset name can't be loaded, or null if it can or is still empty. */
+export function datasetNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  if (!DATASET_NAME_RULE.test(trimmed) || DOTS_ONLY.test(trimmed)) {
+    return "The dataset name can use only letters, digits, spaces, '.', '_' and '-'.";
+  }
+  return null;
+}
+
 /** Why the details can't be submitted yet, or null if they can. */
 export function datasetDetailsProblem(details: DatasetDetails): string | null {
   if (details.speciesId == null) return "Choose a species.";
   if (!details.datasetName.trim()) return "Enter a dataset name.";
+  const nameProblem = datasetNameProblem(details.datasetName);
+  if (nameProblem) return nameProblem;
   if (details.origin === "public") {
     const sourceUrl = details.sourceUrl.trim();
     if (!sourceUrl) return "Enter the public dataset's source link.";

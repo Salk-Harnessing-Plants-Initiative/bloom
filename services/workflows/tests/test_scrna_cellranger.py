@@ -428,6 +428,70 @@ def test_a_run_without_a_dataset_name_and_species_is_422(metadata, monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Arabidopsis root tip, all cell types (Shahan lab, GSM8180251)",
+        "root/tip",
+        "root:tip",
+        "Root atlas é",
+        "..",
+        ".",
+    ],
+)
+def test_a_dataset_name_the_loader_would_refuse_is_422(name, monkeypatch):
+    monkeypatch.setattr(
+        scrna_cellranger, "app_client", lambda: pytest.fail("DB was called")
+    )
+    body = {
+        "sra_runs": RUNS,
+        "sample": "root_b",
+        "genome_version_id": VERSION_ID,
+        "metadata": {"dataset_name": name, "species_id": 2},
+    }
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(body, USER)
+    assert (exc.value.status_code, exc.value.detail) == (
+        422,
+        scrna_cellranger.DATASET_NAME_HELP,
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Root atlas", "Col-0 root tip 7 DAG", "MYB41_v2", "a.b", "Shahan lab - GSM8180251"],
+)
+def test_a_dataset_name_the_loader_takes_is_accepted(db, name):
+    scrna_cellranger.trigger_run(
+        {
+            "sra_runs": RUNS,
+            "sample": "root_b",
+            "genome_version_id": VERSION_ID,
+            "metadata": {"dataset_name": name, "species_id": 2},
+        },
+        USER,
+    )
+    assert db.rpc_calls[0][1]["p_metadata"]["dataset_name"] == name
+
+
+def test_the_dataset_name_rule_is_the_loaders_rule():
+    from pathlib import Path
+
+    writer = (
+        Path(__file__).resolve().parents[3]
+        / "bloomcli" / "src" / "bloomctl" / "scrna" / "_writer.py"
+    ).read_text()
+    found = dict(
+        re.findall(
+            r'^(SAFE_DATASET_NAME|DOTS_ONLY) = re\.compile\(r"([^"]+)"\)', writer, re.MULTILINE
+        )
+    )
+    assert found == {
+        "SAFE_DATASET_NAME": scrna_cellranger.DATASET_NAME_RULE.pattern,
+        "DOTS_ONLY": scrna_cellranger.DOTS_ONLY.pattern,
+    }
+
+
 @pytest.mark.parametrize("metadata", [[], "root", 5, True, [{"tissue": "root"}]])
 def test_metadata_that_is_not_an_object_is_422(metadata, monkeypatch):
     monkeypatch.setattr(

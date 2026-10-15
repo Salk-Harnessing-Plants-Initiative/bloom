@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   buildRunMetadata,
   datasetDetailsProblem,
+  datasetNameProblem,
   isStartedRun,
   startRunErrorMessage,
   type AttributeRow,
@@ -92,6 +93,8 @@ export default function ScrnaJobSubmit({
     attributes,
   };
   const detailsProblem = datasetDetailsProblem(details);
+  // Shown as the name is typed, not only when the run is ready to start.
+  const nameProblem = datasetNameProblem(datasetName);
   const sra = parseSraRuns(sraText);
   const sampleReady =
     source === "folder"
@@ -364,9 +367,16 @@ export default function ScrnaJobSubmit({
                   className={fieldClass}
                   value={datasetName}
                   onChange={(e) => setDatasetName(e.target.value)}
-                  placeholder="e.g. Col-0 root tip, 7 DAG"
+                  placeholder="e.g. Col-0 root tip 7 DAG"
+                  aria-invalid={nameProblem ? true : undefined}
+                  aria-describedby={nameProblem ? "dataset-name-problem" : undefined}
                 />
               </label>
+              {nameProblem ? (
+                <p id="dataset-name-problem" className="-mt-2 text-sm text-red-700">
+                  {nameProblem}
+                </p>
+              ) : null}
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className={labelClass}>
