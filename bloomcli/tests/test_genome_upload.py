@@ -284,13 +284,101 @@ def test_a_file_over_the_limit_is_refused_before_starting(db, storage, files, mo
     assert db.calls == []
 
 
-@pytest.mark.parametrize("role", ["bloom_user", "bloom_admin", "bloom_workflows"])
-def test_only_a_writer_login_can_upload(env, db, storage, files, role):
+@pytest.mark.parametrize("role", ["bloom_admin", "bloom_workflows", "bloom_agent", ""])
+def test_only_a_member_or_writer_login_can_upload(env, db, storage, files, role):
     env["role"] = role
     result = _upload(files, "--species", "Arabidopsis", "--yes")
     assert result.exit_code != 0
-    assert "writer login" in result.output
+    assert "needs a member (bloom_user) or writer (bloom_writer) login" in result.output
     assert db.calls == []
+
+
+# --- a member's upload ----------------------------------------------------------------------
+
+
+def test_a_member_uploads_a_new_genome_as_version_1(env, db, storage, files):
+    env["role"] = "bloom_user"
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "tair10_araport11 v1: ready"
+    assert db.calls == ["start_genome_version", "finish_genome_version"]
+
+
+def test_a_member_is_refused_an_existing_genome_before_anything_is_prepared(
+    env, db, storage, files, monkeypatch
+):
+    db.base.tables["genome_references"].append(
+        {"id": 1, "name": "tair10_araport11", "species_id": 7})
+    prepared = []
+    monkeypatch.setattr(upload_module._files, "prepare", lambda *a: prepared.append(a))
+    env["role"] = "bloom_user"
+    result = _upload(files, "--yes")
+    assert result.exit_code != 0
+    assert ("genome tair10_araport11 already exists; a member can only upload a new genome. "
+            "Choose a new name, or ask a writer to add a version. Nothing was sent.") in result.output
+    assert db.calls == [] and prepared == [] and storage.objects == {}
+
+
+def test_a_members_failed_upload_is_not_abandoned_and_says_the_name_is_taken(
+    env, db, storage, files
+):
+    env["role"] = "bloom_user"
+    storage.drop_after = 0
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code != 0
+    assert "abandon_genome_version" not in db.calls, "members cannot abandon a version"
+    assert db.versions[0]["status"] == "uploading"
+    assert ("tair10_araport11 v1 was not finished, so it is never offered for runs, and the "
+            "name tair10_araport11 is now taken. Upload under a new name, or ask an admin to "
+            "clear it.") in result.stderr
+    assert "run the same command again" not in result.stderr
+
+
+def test_a_members_failed_upload_whose_state_cannot_be_read_does_not_guess(
+    env, db, storage, files, monkeypatch
+):
+    env["role"] = "bloom_user"
+    storage.drop_after = 0
+    monkeypatch.setattr(upload_module, "_status_of", lambda client, version_id: None)
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code != 0
+    assert ("Bloom could not report the state of tair10_araport11 v1; check it with "
+            "`bloomctl genome list`. Only a ready version is offered for runs.") in result.stderr
+    assert "now taken" not in result.stderr and "was not finished" not in result.stderr
+    assert "abandon_genome_version" not in db.calls
+
+
+def test_a_member_on_a_server_without_member_uploads_is_told_so(env, db, storage, files):
+    env["role"] = "bloom_user"
+    db.refuse["start_genome_version"] = "permission denied for function start_genome_version"
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code != 0
+    assert ("this Bloom server does not let members upload genomes yet; ask a writer to upload "
+            "it. Nothing was sent.") in result.output
+    assert storage.objects == {}
+
+
+def test_a_writer_refused_at_start_gets_bloom_s_own_message(db, storage, files):
+    db.refuse["start_genome_version"] = "permission denied for function start_genome_version"
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert "Could not start the upload" in result.output
+    assert "does not let members" not in result.output
+
+
+def test_a_members_finish_whose_answer_was_lost_is_reported_ready(env, db, storage, files):
+    env["role"] = "bloom_user"
+    db.lose_finish_answer = True
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "tair10_araport11 v1: ready"
+    assert "abandon_genome_version" not in db.calls and "now taken" not in result.stderr
+
+
+def test_a_writer_still_adds_a_version_to_an_existing_genome(env, db, storage, files):
+    assert _upload(files, "--species", "Arabidopsis", "--yes").exit_code == 0
+    result = _upload(files, "--yes")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "tair10_araport11 v2: ready"
 
 
 # --- failures after the version is started ---------------------------------------------------
