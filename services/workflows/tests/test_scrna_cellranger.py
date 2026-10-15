@@ -437,6 +437,10 @@ def test_a_run_without_a_dataset_name_and_species_is_422(metadata, monkeypatch):
         "Root atlas é",
         "..",
         ".",
+        # Trimmed to dots alone before the loader sees them.
+        " .. ",
+        ". ",
+        " .",
     ],
 )
 def test_a_dataset_name_the_loader_would_refuse_is_422(name, monkeypatch):
@@ -459,7 +463,16 @@ def test_a_dataset_name_the_loader_would_refuse_is_422(name, monkeypatch):
 
 @pytest.mark.parametrize(
     "name",
-    ["Root atlas", "Col-0 root tip 7 DAG", "MYB41_v2", "a.b", "Shahan lab - GSM8180251"],
+    [
+        "Root atlas",
+        "Col-0 root tip 7 DAG",
+        "MYB41_v2",
+        "a.b",
+        "Shahan lab - GSM8180251",
+        # Trimmed to a valid name before the loader sees it.
+        "  Root atlas ",
+        "\tRoot atlas\n",
+    ],
 )
 def test_a_dataset_name_the_loader_takes_is_accepted(db, name):
     scrna_cellranger.trigger_run(
@@ -472,24 +485,6 @@ def test_a_dataset_name_the_loader_takes_is_accepted(db, name):
         USER,
     )
     assert db.rpc_calls[0][1]["p_metadata"]["dataset_name"] == name
-
-
-def test_the_dataset_name_rule_is_the_loaders_rule():
-    from pathlib import Path
-
-    writer = (
-        Path(__file__).resolve().parents[3]
-        / "bloomcli" / "src" / "bloomctl" / "scrna" / "_writer.py"
-    ).read_text()
-    found = dict(
-        re.findall(
-            r'^(SAFE_DATASET_NAME|DOTS_ONLY) = re\.compile\(r"([^"]+)"\)', writer, re.MULTILINE
-        )
-    )
-    assert found == {
-        "SAFE_DATASET_NAME": scrna_cellranger.DATASET_NAME_RULE.pattern,
-        "DOTS_ONLY": scrna_cellranger.DOTS_ONLY.pattern,
-    }
 
 
 @pytest.mark.parametrize("metadata", [[], "root", 5, True, [{"tissue": "root"}]])

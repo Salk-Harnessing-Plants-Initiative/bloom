@@ -30,8 +30,6 @@ const PUBLIC: DatasetDetails = {
   citation: " Shahan et al. 2022 ",
 };
 
-const NAME_PROBLEM = "The dataset name can use only letters, digits, spaces, '.', '_' and '-'.";
-
 describe("datasetDetailsProblem", () => {
   it("accepts the required fields alone", () => {
     expect(datasetDetailsProblem(DETAILS)).toBeNull();
@@ -55,7 +53,7 @@ describe("datasetDetailsProblem", () => {
         ...DETAILS,
         datasetName: "Arabidopsis root tip, all cell types (Shahan lab, GSM8180251)",
       })
-    ).toBe(NAME_PROBLEM);
+    ).toBe("Not allowed: , ( )");
   });
 
   it("accepts a public dataset with a web link", () => {
@@ -97,19 +95,27 @@ describe("datasetDetailsProblem", () => {
 });
 
 describe("datasetNameProblem", () => {
-  it.each(["Col-0 root tip 7 DAG", "MYB41_v2", "a.b", "  Shahan lab - GSM8180251  ", "", "   "])(
+  it.each(["Col-0 root tip 7 DAG", "MYB41_v2", "a.b", ". .", "  Shahan lab - GSM8180251  ", "", "   "])(
     "accepts %j",
     (name) => {
       expect(datasetNameProblem(name)).toBeNull();
     }
   );
 
-  it.each(["root, tip", "root (tip)", "root/tip", "root:tip", "Root é", ".", "..", " .. "])(
-    "refuses %j",
-    (name) => {
-      expect(datasetNameProblem(name)).toBe(NAME_PROBLEM);
-    }
-  );
+  it.each([
+    ["root, tip", "Not allowed: ,"],
+    ["WT (Col-0), 7 DAG", "Not allowed: ( ) ,"],
+    ["35S:MYB41/2", "Not allowed: : /"],
+    ["10 μM ABA", "Not allowed: μ"],
+    ["Root\u00a0atlas", "Not allowed: U+00A0"],
+    ["root\ttip", "Not allowed: U+0009"],
+  ])("names what isn't allowed in %j", (name, problem) => {
+    expect(datasetNameProblem(name)).toBe(problem);
+  });
+
+  it.each([".", "..", " .. "])("refuses dots alone in %j", (name) => {
+    expect(datasetNameProblem(name)).toBe("Can't be only dots");
+  });
 });
 
 describe("buildRunMetadata", () => {

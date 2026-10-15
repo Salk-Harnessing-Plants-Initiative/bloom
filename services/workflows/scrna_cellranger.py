@@ -45,12 +45,12 @@ NO_DATASET = (
     "metadata needs a dataset_name and a species_id: every run loads its result into Bloom "
     "as a dataset"
 )
-# The loader's rule (bloomctl's SAFE_DATASET_NAME): the name becomes part of a storage path.
+# The loader's rule (bloomctl's SAFE_DATASET_NAME), as a storage path needs; tests/unit pins it.
 DATASET_NAME_RULE = re.compile(r"[A-Za-z0-9._ -]+")
 DOTS_ONLY = re.compile(r"\.+")
 DATASET_NAME_HELP = (
-    "dataset_name can use only letters, digits, spaces, '.', '_' and '-', and not dots "
-    "alone: it becomes part of a storage path"
+    "The dataset name can use only letters A-Z, digits, spaces, '.', '_' and '-', and not "
+    "dots alone: it becomes part of a storage path"
 )
 
 # NCBI (SRR), ENA (ERR) and DDBJ (DRR) run IDs; one lane each, named L001-L009.
@@ -83,7 +83,9 @@ def _validate_metadata(metadata) -> dict:
         or species_id < 1
     ):
         raise HTTPException(status_code=422, detail=NO_DATASET)
-    if not DATASET_NAME_RULE.fullmatch(name) or DOTS_ONLY.fullmatch(name):
+    # Checked as the worker and loader see it: trimmed.
+    stripped = name.strip()
+    if not DATASET_NAME_RULE.fullmatch(stripped) or DOTS_ONLY.fullmatch(stripped):
         raise HTTPException(status_code=422, detail=DATASET_NAME_HELP)
     size = len(json.dumps(metadata, ensure_ascii=False).encode())
     if size > METADATA_MAX_BYTES:

@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import Tooltip from "@mui/material/Tooltip";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import {
   buildRunMetadata,
   datasetDetailsProblem,
+  DATASET_NAME_ALLOWED,
   datasetNameProblem,
   isStartedRun,
   startRunErrorMessage,
@@ -95,6 +98,8 @@ export default function ScrnaJobSubmit({
   const detailsProblem = datasetDetailsProblem(details);
   // Shown as the name is typed, not only when the run is ready to start.
   const nameProblem = datasetNameProblem(datasetName);
+  const nameId = useId();
+  const nameProblemId = useId();
   const sra = parseSraRuns(sraText);
   const sampleReady =
     source === "folder"
@@ -361,22 +366,35 @@ export default function ScrnaJobSubmit({
                 labelClass={labelClass}
               />
 
-              <label className={labelClass}>
-                Dataset name
+              <div>
+                <div className="flex items-center gap-1">
+                  <label htmlFor={nameId} className={labelClass}>
+                    Dataset name
+                  </label>
+                  <Tooltip title={DATASET_NAME_ALLOWED}>
+                    <InfoOutlinedIcon
+                      fontSize="small"
+                      color="action"
+                      tabIndex={0}
+                      aria-label={`Allowed: ${DATASET_NAME_ALLOWED}`}
+                    />
+                  </Tooltip>
+                </div>
                 <input
-                  className={fieldClass}
+                  id={nameId}
+                  className={`${fieldClass} aria-[invalid=true]:border-red-600 aria-[invalid=true]:focus:ring-red-600`}
                   value={datasetName}
                   onChange={(e) => setDatasetName(e.target.value)}
                   placeholder="e.g. Col-0 root tip 7 DAG"
                   aria-invalid={nameProblem ? true : undefined}
-                  aria-describedby={nameProblem ? "dataset-name-problem" : undefined}
+                  aria-describedby={nameProblem ? nameProblemId : undefined}
                 />
-              </label>
-              {nameProblem ? (
-                <p id="dataset-name-problem" className="-mt-2 text-sm text-red-700">
-                  {nameProblem}
-                </p>
-              ) : null}
+                {nameProblem ? (
+                  <p id={nameProblemId} role="alert" className="mt-1 text-sm text-red-700">
+                    {nameProblem}
+                  </p>
+                ) : null}
+              </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className={labelClass}>

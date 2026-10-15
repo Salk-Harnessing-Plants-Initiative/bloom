@@ -160,14 +160,14 @@ describe("the form", () => {
 
   it("says at once when the dataset name can't be loaded, and keeps Start run disabled", async () => {
     openForm();
-    const nameProblem = "The dataset name can use only letters, digits, spaces, '.', '_' and '-'.";
+    const nameProblem = "Not allowed: , ( )";
     type("Dataset name", "Root tip, all cells (GSM8180251)");
     // Shown under the field before the run's other details are given.
     const field = screen.getByLabelText("Dataset name");
     expect(field.getAttribute("aria-invalid")).toBe("true");
-    expect(document.getElementById(field.getAttribute("aria-describedby")!)?.textContent).toBe(
-      nameProblem
-    );
+    const problem = document.getElementById(field.getAttribute("aria-describedby")!);
+    expect(problem?.textContent).toBe(nameProblem);
+    expect(problem?.getAttribute("role")).toBe("alert");
     await enterFolder();
     type("Reference genome", "3");
     type("Species", "1");
@@ -177,6 +177,13 @@ describe("the form", () => {
     expect(field.getAttribute("aria-invalid")).toBeNull();
     expect(screen.queryByText(nameProblem)).toBeNull();
     expect(start.disabled).toBe(false);
+  });
+
+  it("shows the allowed characters beside the dataset name before anything is typed", () => {
+    openForm();
+    expect(
+      screen.getByLabelText("Allowed: Letters A–Z, digits, spaces, . _ and -")
+    ).toBeTruthy();
   });
 
   it("keeps Start run disabled without a passed check for the folder in the box", async () => {
