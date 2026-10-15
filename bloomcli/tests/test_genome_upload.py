@@ -334,6 +334,37 @@ def test_a_members_failed_upload_is_not_abandoned_and_says_the_name_is_taken(
     assert "run the same command again" not in result.stderr
 
 
+def test_a_members_failed_upload_whose_state_cannot_be_read_does_not_guess(
+    env, db, storage, files, monkeypatch
+):
+    env["role"] = "bloom_user"
+    storage.drop_after = 0
+    monkeypatch.setattr(upload_module, "_status_of", lambda client, version_id: None)
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code != 0
+    assert ("Bloom could not report the state of tair10_araport11 v1; check it with "
+            "`bloomctl genome list`. Only a ready version is offered for runs.") in result.stderr
+    assert "now taken" not in result.stderr and "was not finished" not in result.stderr
+    assert "abandon_genome_version" not in db.calls
+
+
+def test_a_member_on_a_server_without_member_uploads_is_told_so(env, db, storage, files):
+    env["role"] = "bloom_user"
+    db.refuse["start_genome_version"] = "permission denied for function start_genome_version"
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code != 0
+    assert ("this Bloom server does not let members upload genomes yet; ask a writer to upload "
+            "it. Nothing was sent.") in result.output
+    assert storage.objects == {}
+
+
+def test_a_writer_refused_at_start_gets_bloom_s_own_message(db, storage, files):
+    db.refuse["start_genome_version"] = "permission denied for function start_genome_version"
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert "Could not start the upload" in result.output
+    assert "does not let members" not in result.output
+
+
 def test_a_members_finish_whose_answer_was_lost_is_reported_ready(env, db, storage, files):
     env["role"] = "bloom_user"
     db.lose_finish_answer = True

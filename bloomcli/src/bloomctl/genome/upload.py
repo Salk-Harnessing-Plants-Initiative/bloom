@@ -84,7 +84,7 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
         if not yes and not click.confirm(_question(name, genome), default=False, err=True):
             click.echo("Nothing was sent.", err=True)
             raise click.exceptions.Exit(1)
-        started = _start(conn.client, name, species_id, opts)
+        started = _start(conn.client, name, species_id, opts, member)
         try:
             with _transfer.open_client() as http:
                 conn = _send(http, conn, profile, started["fasta_path"], fasta_file, fasta.name)
@@ -180,7 +180,12 @@ def _question(name: str, genome: dict | None) -> str:
     return f"Upload a new version of {visible(name)}?"
 
 
-def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any]) -> dict:
+# What Bloom answers a member when its database doesn't let members upload genomes yet.
+NO_MEMBER_UPLOADS = "permission denied for function start_genome_version"
+
+
+def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any],
+           member: bool = False) -> dict:
     args = {
         "p_genome": name,
         "p_species_id": species_id,
@@ -190,7 +195,15 @@ def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any])
         "p_source_url": opts["source_url"],
         "p_notes": opts["notes"],
     }
-    rows = _rpc("start the upload", lambda: client.rpc("start_genome_version", args).execute())
+    try:
+        rows = _rpc("start the upload", lambda: client.rpc("start_genome_version", args).execute())
+    except click.ClickException as exc:
+        if member and NO_MEMBER_UPLOADS in exc.message:
+            raise click.ClickException(
+                "this Bloom server does not let members upload genomes yet; ask a writer to "
+                "upload it. Nothing was sent."
+            ) from exc
+        raise
     if not rows:
         raise click.ClickException("Bloom did not return the new version. Nothing was sent.")
     return rows[0]
@@ -259,11 +272,18 @@ def _unfinished(client: Any, name: str, started: dict) -> str | None:
     Returns the version's status, e.g. "ready" when a finish committed but its answer was lost.
     """
     state = _status_of(client, started["version_id"])
-    if state != "ready":
+    label = f"{visible(name)} v{started['version']}"
+    if state == "uploading":
         click.echo(
-            f"{visible(name)} v{started['version']} was not finished, so it is never offered "
-            f"for runs, and the name {visible(name)} is now taken. Upload under a new name, or "
-            "ask an admin to clear it.", err=True,
+            f"{label} was not finished, so it is never offered for runs, and the name "
+            f"{visible(name)} is now taken. Upload under a new name, or ask an admin to clear it.",
+            err=True,
+        )
+    elif state != "ready":
+        # The finish may have gone through even though its answer was lost; don't guess.
+        click.echo(
+            f"Bloom could not report the state of {label}; check it with `bloomctl genome list`. "
+            "Only a ready version is offered for runs.", err=True,
         )
     return state
 
