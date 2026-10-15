@@ -265,7 +265,7 @@ spec:
         # 3 (no downloaded genome), 6 (bad input) and 17 (mkref refused the files) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 17"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-reference.log", --, bash, -c]
         args:
           - |
@@ -351,7 +351,7 @@ spec:
         # unusable reads (11) will not fix themselves
         expression: "asInt(lastRetry.exitCode) == 10"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]
         env:
           - name: SAMPLE
@@ -398,7 +398,7 @@ spec:
         # 9 (FASTQs for another sample) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/stage.log", --, bash, -c]
         args:
           - |
@@ -455,7 +455,7 @@ spec:
         limit: 1
         retryPolicy: OnError
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/qc.log", --, run-qc]
         env:
           - name: SAMPLE
@@ -516,7 +516,7 @@ spec:
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/count.log", --, run-count]
         env:
           - name: SAMPLE
@@ -568,7 +568,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
@@ -802,7 +802,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-13
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [bash, -c]
         args:
           - |

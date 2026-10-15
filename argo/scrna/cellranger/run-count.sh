@@ -43,8 +43,26 @@ if [[ ! "${CR_ID}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
   exit "${EXIT_BAD_SAMPLE_NAME}"
 fi
 
+# Stores the report and metrics kept in the run's reports/ in Bloom, under this run; never
+# fails the step, since a refused upload is noted in the log.
+store_reports() {
+  local key="${BLOOM_RUN_ID:-${WORKFLOW_NAME}}" entry name
+  for entry in "${REPORTS[@]}"; do
+    name="${entry%%:*}"
+    [ -f "${RESULTS_DIR}/reports/${name}" ] || continue
+    if [[ "${key}" =~ ${REPORT_KEY_RULE} ]]; then
+      run-with-log --put "${RESULTS_DIR}/reports/${name}" --bucket scrna \
+        --path "reports/${key}/${name}" --content-type "${entry#*:}" || true
+    else
+      echo "WARNING: no run id or workflow name to store ${name} under; it is not stored in Bloom"
+    fi
+  done
+}
+
 if [ -f "${RESULTS_DIR}/outs/_SUCCESS" ]; then
-  echo "Already done: ${RESULTS_DIR}/outs/_SUCCESS exists, nothing to do."
+  # A new run on a failed run's folder skips the count; its report still belongs to this run.
+  echo "Already done: ${RESULTS_DIR}/outs/_SUCCESS exists; storing its report for this run."
+  store_reports
   exit 0
 fi
 
@@ -106,20 +124,13 @@ for name in "${KEEP[@]}"; do
     cp -- "${CR_ID}/outs/${name}" "${RESULTS_DIR}/outs/${name##*/}"
   fi
 done
-report_key="${BLOOM_RUN_ID:-${WORKFLOW_NAME}}"
 for entry in "${REPORTS[@]}"; do
   name="${entry%%:*}"
   [ -f "${CR_ID}/outs/${name}" ] || continue
   mkdir -p "${RESULTS_DIR}/reports"
   cp -- "${CR_ID}/outs/${name}" "${RESULTS_DIR}/reports/${name}"
-  if [[ "${report_key}" =~ ${REPORT_KEY_RULE} ]]; then
-    # Never fails the step: a refused upload is noted in the log.
-    run-with-log --put "${RESULTS_DIR}/reports/${name}" --bucket scrna \
-      --path "reports/${report_key}/${name}" --content-type "${entry#*:}" || true
-  else
-    echo "WARNING: no run id or workflow name to store ${name} under; it is not stored in Bloom"
-  fi
 done
+store_reports
 
 # Written last: its presence means the files above are in place.
 printf 'run_id=%s\ncellranger=%s\nfinished=%s\n' \
