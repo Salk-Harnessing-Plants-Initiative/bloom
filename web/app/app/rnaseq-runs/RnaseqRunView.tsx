@@ -116,6 +116,15 @@ export default function RnaseqRunView({
         <span className="text-stone-700">
           {runSample(run) ?? "—"} against {genomeLabel ?? runReference(run) ?? "—"}
         </span>
+        {datasetHref ? (
+          <Link
+            href={datasetHref}
+            className="ml-auto inline-flex items-center gap-1 self-center rounded-full bg-lime-700 px-4 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-lime-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lime-700"
+          >
+            Explore the dataset
+            <span aria-hidden="true">→</span>
+          </Link>
+        ) : null}
       </div>
       {fastqUrl ? (
         <p className="-mt-4 mb-6 text-sm text-stone-600">
@@ -173,14 +182,6 @@ export default function RnaseqRunView({
       <dl className="max-w-3xl">
         <Detail label="Dataset">
           {(datasetHref && loadedDatasetName) || runDatasetName(run) || "—"}
-          {datasetHref ? (
-            <>
-              {" · "}
-              <Link href={datasetHref} className="text-lime-700 underline-offset-4 hover:underline">
-                Explore the dataset
-              </Link>
-            </>
-          ) : null}
         </Detail>
         <Detail label="Species">{species ?? "—"}</Detail>
         {metadataText(run, "accession") ? <Detail label="Accession">{metadataText(run, "accession")}</Detail> : null}
