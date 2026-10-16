@@ -16,7 +16,7 @@ published as `X.Y.Z-dev.N` under the `dev` dist-tag).
 
 ### Fixed
 
-- Cylinder images record their camera settings again (`num_frames`, `exposure_time`, `gain`, `brightness`, `contrast`, `gamma`, `seconds_per_rot`): `insertImageMetadata` calls `insert_image_v3_0`, as in V1. 0.3.0 called `insert_image_v2_0`, which dropped them. Missing settings are stored as `0`.
+- Cylinder images record their camera settings again (`exposure_time`, `gain`, `brightness`, `contrast`, `gamma`, `seconds_per_rot`): `insertImageMetadata` calls `insert_image_v3_0`, as in V1. 0.3.0 called `insert_image_v2_0`, which dropped them. Missing settings are stored as `0`.
 
 ## [0.3.0]
 
