@@ -25,6 +25,14 @@ export type CylImageMetadata = {
   phenotyper_email: string | undefined
   scientist_name: string | undefined
   scientist_email: string | undefined
+  // Camera settings, recorded with each image (0 when not given).
+  num_frames?: number
+  exposure_time?: number
+  gain?: number
+  brightness?: number
+  contrast?: number
+  gamma?: number
+  seconds_per_rot?: number
 }
 
 type CylMetadataSummary = {
@@ -282,6 +290,13 @@ function parseFields(obj: { [x: string]: string }): CylImageMetadata {
     phenotyper_email: obj.phenotyper_email,
     scientist_name: obj.scientist_name,
     scientist_email: obj.scientist_email,
+    num_frames: obj.num_frames ? parseInt(obj.num_frames) : 0,
+    exposure_time: obj.exposure_time ? parseFloat(obj.exposure_time) : 0,
+    gain: obj.gain ? parseFloat(obj.gain) : 0,
+    brightness: obj.brightness ? parseFloat(obj.brightness) : 0,
+    contrast: obj.contrast ? parseFloat(obj.contrast) : 0,
+    gamma: obj.gamma ? parseFloat(obj.gamma) : 0,
+    seconds_per_rot: obj.seconds_per_rot ? parseFloat(obj.seconds_per_rot) : 0,
   }
 }
 

@@ -1,5 +1,11 @@
 import { error } from 'console'
-import { CylImageMetadata, DataStore } from '../../types/data-store.js'
+import {
+  CylImageMetadata,
+  DataStore,
+  GraviImageMetadata,
+  GraviScanMetadataParams,
+  GraviScanSessionParams,
+} from '../../types/data-store.js'
 import { Database, Json } from '../../types/database.types.js'
 import { SupabaseClient } from '@supabase/supabase-js'
 
@@ -77,7 +83,7 @@ export class SupabaseStore implements DataStore {
     if (metadata.phenotyper_email === undefined) {
       throw new Error('missing phenotyper_email')
     }
-    const { data, error } = await this.supabase.rpc('insert_image_v2_0', {
+    const { data, error } = await this.supabase.rpc('insert_image_v3_0', {
       species_common_name: metadata.species,
       experiment: metadata.experiment,
       wave_number: metadata.wave_number,
@@ -93,6 +99,13 @@ export class SupabaseStore implements DataStore {
       phenotyper_email: metadata.phenotyper_email,
       scientist_name: metadata.scientist_name,
       scientist_email: metadata.scientist_email,
+      num_frames: metadata.num_frames ?? 0,
+      exposure_time: metadata.exposure_time ?? 0,
+      gain: metadata.gain ?? 0,
+      brightness: metadata.brightness ?? 0,
+      contrast: metadata.contrast ?? 0,
+      gamma: metadata.gamma ?? 0,
+      seconds_per_rot: metadata.seconds_per_rot ?? 0,
     })
     return { created: data, error }
   }
@@ -290,5 +303,87 @@ export class SupabaseStore implements DataStore {
       }
     }
     return creationStatus
+  }
+
+  async insertGraviImageMetadata(metadata: GraviImageMetadata) {
+    const { data, error } = await this.supabase.rpc('insert_gravi_image', {
+      species_common_name: metadata.species,
+      experiment_name: metadata.experiment,
+      scanner_name: metadata.scanner_name,
+      phenotyper_name: metadata.phenotyper_name,
+      phenotyper_email: metadata.phenotyper_email,
+      scientist_name: metadata.scientist_name,
+      scientist_email: metadata.scientist_email,
+      plate_barcode_: metadata.plate_barcode ?? '',
+      capture_date_: metadata.capture_date,
+      grid_mode_: metadata.grid_mode,
+      plate_index_: metadata.plate_index,
+      resolution_: metadata.resolution,
+      format_: metadata.format,
+      accession_name: metadata.accession_name,
+      cycle_number_: metadata.cycle_number,
+      session_id_: metadata.session_id,
+      system_name_: metadata.system_name,
+      metadata_id_: metadata.metadata_id,
+      wave_number_: metadata.wave_number,
+      transplant_date_: metadata.transplant_date,
+      custom_note_: metadata.custom_note,
+    })
+    return { created: data, error }
+  }
+
+  async updateGraviImageMetadata(
+    scan_id: number,
+    fields: { object_path: string; file_hash?: string; file_size_bytes?: number }
+  ) {
+    // Lets a retry succeed if the row already exists (e.g. after a network blip).
+    const { error } = await this.supabase.from('gravi_images').upsert(
+      {
+        scan_id,
+        object_path: fields.object_path,
+        file_hash: fields.file_hash,
+        file_size_bytes: fields.file_size_bytes,
+      },
+      { onConflict: 'scan_id', ignoreDuplicates: true }
+    )
+    return { error }
+  }
+
+  async getAllGraviScanners() {
+    const { data, error } = await this.supabase.from('gravi_scanners').select('*')
+    return { data, error }
+  }
+
+  async insertGraviScanSession(params: GraviScanSessionParams) {
+    const { data, error } = await this.supabase.rpc('insert_gravi_scan_session', {
+      species_common_name: params.species,
+      experiment_name: params.experiment,
+      phenotyper_name: params.phenotyper_name,
+      phenotyper_email: params.phenotyper_email,
+      scientist_name: params.scientist_name,
+      scientist_email: params.scientist_email,
+      accession_name: params.accession_name,
+      scan_mode_: params.scan_mode ?? 'single',
+      interval_seconds_: params.interval_seconds,
+      duration_seconds_: params.duration_seconds,
+      total_cycles_: params.total_cycles,
+      actual_duration_seconds_: params.actual_duration_seconds,
+      completed_at_: params.completed_at,
+      cancelled_: params.cancelled ?? false,
+      system_name_: params.system_name,
+    })
+    return { created: data, error }
+  }
+
+  async insertGraviScanMetadata(params: GraviScanMetadataParams) {
+    const { data, error } = await this.supabase.rpc('insert_gravi_scan_metadata', {
+      accession_name_: params.accession_name,
+      plate_id_: params.plate_id,
+      sections_: params.sections as Json,
+      wave_number_: params.wave_number,
+      transplant_date_: params.transplant_date ?? undefined,
+      custom_note_: params.custom_note ?? undefined,
+    })
+    return { created: data, error }
   }
 }

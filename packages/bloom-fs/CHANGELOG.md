@@ -8,6 +8,11 @@ published as `X.Y.Z-dev.N` under the `dev` dist-tag).
 
 ## [Unreleased]
 
+### Added
+
+- `CylImageMetadata` includes the cylinder camera settings (`num_frames`, `exposure_time`, `gain`, `brightness`, `contrast`, `gamma`, `seconds_per_rot`), defaulting to `0`. Ported from the V1 GitLab packages (`@salk-hpi/bloom-fs` 0.3.0-dev.3).
+- First unit tests.
+
 ## [0.3.0]
 
 ### Added
