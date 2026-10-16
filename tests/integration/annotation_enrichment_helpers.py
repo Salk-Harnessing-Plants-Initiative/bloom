@@ -170,9 +170,10 @@ def term_row(de_id, gene_ids, **change):
     return {**row, **change}
 
 
-def start_run(cur, dataset_id, de_run_id, build_id, params=None, user=WRITER):
-    return call(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, %s)",
-                (dataset_id, de_run_id, build_id, json.dumps(params or PARAMS)), user=user)
+def start_run(cur, dataset_id, de_run_id, build_id, params=None, user=WRITER, rnaseq_run_id=None):
+    return call(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, %s, %s)",
+                (dataset_id, de_run_id, build_id, json.dumps(params or PARAMS), rnaseq_run_id),
+                user=user)
 
 
 def add_run_terms(cur, run_id, rows, user=WRITER):

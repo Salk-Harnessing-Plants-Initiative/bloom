@@ -39,12 +39,14 @@ BEGIN
 END;
 $$;
 
--- Starts an enrichment run; returns its id.
+-- Starts an enrichment run; returns its id. p_rnaseq_run_id names the pipeline job producing
+-- it, a Cell Ranger or enrichment job; leave it out for a run uploaded by hand.
 CREATE OR REPLACE FUNCTION public.start_scrna_enrichment_run(
     p_dataset_id BIGINT,
     p_de_run_id BIGINT,
     p_annotation_build_id BIGINT,
-    p_params JSONB
+    p_params JSONB,
+    p_rnaseq_run_id BIGINT DEFAULT NULL
 ) RETURNS BIGINT
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -87,9 +89,15 @@ BEGIN
         RAISE EXCEPTION 'differential expression % of dataset % is %', p_de_run_id, p_dataset_id,
             coalesce(v_de_status, 'missing') USING ERRCODE = '55000';
     END IF;
-    INSERT INTO public.scrna_enrichment_runs (dataset_id, de_run_id, annotation_build_id, params,
-                                              created_by)
-    VALUES (p_dataset_id, p_de_run_id, p_annotation_build_id, p_params, v_user)
+    IF p_rnaseq_run_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.rnaseq_runs r
+         WHERE r.id = p_rnaseq_run_id AND r.workflow_type IN ('scrna-cellranger', 'scrna-enrichment')
+    ) THEN
+        RAISE EXCEPTION 'no Cell Ranger or enrichment job %', p_rnaseq_run_id USING ERRCODE = '22023';
+    END IF;
+    INSERT INTO public.scrna_enrichment_runs (dataset_id, de_run_id, annotation_build_id,
+                                              rnaseq_run_id, params, created_by)
+    VALUES (p_dataset_id, p_de_run_id, p_annotation_build_id, p_rnaseq_run_id, p_params, v_user)
     RETURNING id INTO v_id;
     RETURN v_id;
 END;
@@ -243,7 +251,7 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.link_scrna_dataset_genome(BIGINT, BIGINT)
     FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.start_scrna_enrichment_run(BIGINT, BIGINT, BIGINT, JSONB)
+REVOKE EXECUTE ON FUNCTION public.start_scrna_enrichment_run(BIGINT, BIGINT, BIGINT, JSONB, BIGINT)
     FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public._own_uploading_enrichment_run(BIGINT)
     FROM PUBLIC, anon, authenticated;
@@ -257,7 +265,7 @@ REVOKE EXECUTE ON FUNCTION public.abandon_scrna_enrichment_run(BIGINT)
 -- Results come from developer tools (bloomctl, as a writer) or the pipeline.
 GRANT EXECUTE ON FUNCTION public.link_scrna_dataset_genome(BIGINT, BIGINT)
     TO bloom_writer, bloom_workflows;
-GRANT EXECUTE ON FUNCTION public.start_scrna_enrichment_run(BIGINT, BIGINT, BIGINT, JSONB)
+GRANT EXECUTE ON FUNCTION public.start_scrna_enrichment_run(BIGINT, BIGINT, BIGINT, JSONB, BIGINT)
     TO bloom_writer, bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.add_scrna_enrichment_terms(BIGINT, JSONB)
     TO bloom_writer, bloom_workflows;

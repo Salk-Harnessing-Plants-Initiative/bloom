@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS public.scrna_enrichment_runs (
     -- The differential expression analysis whose comparisons were tested.
     de_run_id BIGINT NOT NULL,
     annotation_build_id BIGINT NOT NULL,
+    -- The pipeline job that produced the run; empty for one uploaded by hand.
+    rnaseq_run_id BIGINT,
     status TEXT NOT NULL DEFAULT 'uploading',
     -- e.g. {"top_n": 300, "fdr_max": 0.05, "lfc_min": 0.25, "min_term": 5, "max_term": 500,
     --       "kept_fdr_max": 0.05}
@@ -192,6 +194,8 @@ BEGIN
        'FOREIGN KEY (dataset_id, de_run_id) REFERENCES public.scrna_de_runs(dataset_id, id)'),
       ('scrna_enrichment_runs', 'scrna_enrichment_runs_annotation_build_id_fkey',
        'FOREIGN KEY (annotation_build_id) REFERENCES public.genome_annotation_builds(id)'),
+      ('scrna_enrichment_runs', 'scrna_enrichment_runs_rnaseq_run_id_fkey',
+       'FOREIGN KEY (rnaseq_run_id) REFERENCES public.rnaseq_runs(id)'),
       ('scrna_enrichment_terms', 'scrna_enrichment_terms_run_fkey',
        'FOREIGN KEY (dataset_id, run_id) REFERENCES public.scrna_enrichment_runs(dataset_id, id)'),
       ('scrna_enrichment_terms', 'scrna_enrichment_terms_comparison_fkey',
@@ -213,6 +217,10 @@ END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS scrna_enrichment_runs_one_live
     ON public.scrna_enrichment_runs (dataset_id, de_run_id, annotation_build_id, params)
     WHERE status IN ('uploading', 'ready');
+
+-- A pipeline job's page lists the results it produced.
+CREATE INDEX IF NOT EXISTS scrna_enrichment_runs_rnaseq_run_id_idx
+    ON public.scrna_enrichment_runs (rnaseq_run_id);
 
 -- The view reads one comparison's terms.
 CREATE INDEX IF NOT EXISTS scrna_enrichment_terms_comparison_idx
@@ -277,6 +285,7 @@ BEGIN
     IF NEW.id IS DISTINCT FROM OLD.id OR NEW.dataset_id IS DISTINCT FROM OLD.dataset_id
        OR NEW.de_run_id IS DISTINCT FROM OLD.de_run_id
        OR NEW.annotation_build_id IS DISTINCT FROM OLD.annotation_build_id
+       OR NEW.rnaseq_run_id IS DISTINCT FROM OLD.rnaseq_run_id
        OR NEW.params IS DISTINCT FROM OLD.params OR NEW.created_by IS DISTINCT FROM OLD.created_by
        OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'an enrichment run''s identity cannot change' USING ERRCODE = '55000';

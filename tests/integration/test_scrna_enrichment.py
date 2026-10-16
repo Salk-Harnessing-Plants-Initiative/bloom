@@ -155,11 +155,33 @@ def test_the_analysis_must_be_complete(cur, linked, status):
 def test_the_same_settings_run_once_while_live(cur, linked):
     start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
     as_role(cur, "bloom_writer", OTHER_WRITER)
-    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, %s)",
+    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, %s, NULL)",
             (linked["dataset"], linked["de_run"], linked["build"], json.dumps(PARAMS)),
             psycopg.errors.UniqueViolation)
     assert start_run(cur, linked["dataset"], linked["de_run"], linked["build"],
                      params={**PARAMS, "top_n": 200}, user=OTHER_WRITER)
+
+
+def test_a_run_records_the_pipeline_job_that_made_it(cur, version_id, linked):
+    job = add_run(cur, version_id)
+    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"], rnaseq_run_id=job)
+    cur.execute("SELECT rnaseq_run_id FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
+    assert cur.fetchone()[0] == job
+    refused(cur, "UPDATE scrna_enrichment_runs SET rnaseq_run_id = NULL WHERE id = %s", (run_id,),
+            psycopg.errors.ObjectNotInPrerequisiteState)
+
+
+def test_a_run_uploaded_by_hand_has_no_job(cur, linked):
+    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
+    cur.execute("SELECT rnaseq_run_id FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
+    assert cur.fetchone()[0] is None
+
+
+def test_an_unknown_job_is_refused(cur, linked):
+    as_role(cur, "bloom_writer", WRITER)
+    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, '{}', -1)",
+            (linked["dataset"], linked["de_run"], linked["build"]),
+            psycopg.errors.InvalidParameterValue, match="no Cell Ranger or enrichment job")
 
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +284,7 @@ def test_a_ready_run_never_changes(cur, linked, sql):
 
 @pytest.mark.parametrize("function", [
     "link_scrna_dataset_genome(bigint, bigint)",
-    "start_scrna_enrichment_run(bigint, bigint, bigint, jsonb)",
+    "start_scrna_enrichment_run(bigint, bigint, bigint, jsonb, bigint)",
     "add_scrna_enrichment_terms(bigint, jsonb)",
     "finish_scrna_enrichment_run(bigint, integer)",
     "abandon_scrna_enrichment_run(bigint)",
