@@ -6,9 +6,13 @@ Before 20261016120000_widen_cyl_camera_settings_to_double, exposure time, gain, 
 contrast and seconds per rotation were integer, so an upload with brightness 0.5 failed with
 22P02 and the image was not stored. num_frames was accepted but not stored.
 
-Runs as `pg_conn` (supabase_admin) against the database CI has migrated; every test rolls back.
+Most tests run as `pg_conn` (supabase_admin) against the database CI has migrated, and roll
+back. One test calls the RPC through PostgREST, the path uploads take, and writes no rows.
 """
 
+import json
+import os
+import urllib.error
 import uuid
 
 import pytest
@@ -63,7 +67,11 @@ def _insert_image(
     seconds_per_rot,
     num_frames=72,
 ):
-    """Call insert_image_v3_0 by argument name, as PostgREST does, and return the image id."""
+    """Call insert_image_v3_0 directly by argument name and return the image id.
+
+    This skips PostgREST, which converts the JSON body using the declared parameter types;
+    test_postgrest_accepts_decimal_settings covers that path.
+    """
     tag = seeded["tag"]
     cur.execute(
         """
@@ -220,3 +228,57 @@ def test_an_upload_does_not_reuse_an_older_row_without_a_frame_count(cur, seeded
 def test_a_negative_frame_count_is_refused(cur, seeded):
     with pytest.raises(psycopg.errors.CheckViolation):
         _insert_image(cur, seeded, "plant-k", num_frames=-1, **SETTINGS)
+
+
+def test_only_one_insert_image_v3_0_exists(cur):
+    # Two overloads with the same argument names make every PostgREST call fail with PGRST203.
+    cur.execute(
+        "SELECT count(*) FROM pg_proc "
+        "WHERE proname = 'insert_image_v3_0' AND pronamespace = 'public'::regnamespace"
+    )
+    assert cur.fetchone()[0] == 1
+
+
+def test_postgrest_accepts_decimal_settings(api, service_role_key):
+    """A decimal setting reaches the function body through PostgREST.
+
+    The species doesn't exist, so the function raises before writing anything. Before the fix,
+    PostgREST rejected brightness 0.5 with 22P02 and never reached the function.
+    """
+    species = f"no-such-species-{uuid.uuid4().hex[:8]}"
+    body = {
+        "species_common_name": species,
+        "experiment": "exp",
+        "wave_number": 1,
+        "germ_day": 3,
+        "germ_day_color": "red",
+        "plant_age_days": 14,
+        "date_scanned_": "2026-10-16",
+        "device_name": "scanner",
+        "plant_qr_code": "plant",
+        "accession_name": "acc",
+        "frame_number_": 1,
+        "phenotyper_name": "Test",
+        "phenotyper_email": "pheno@example.org",
+        "scientist_name": "Test",
+        "scientist_email": "sci@example.org",
+        "num_frames": 72,
+        **SETTINGS,
+    }
+    try:
+        status, resp = api(
+            "/api/rest/v1/rpc/insert_image_v3_0",
+            api_key=service_role_key,
+            method="POST",
+            data=body,
+        )
+    except (urllib.error.URLError, OSError) as e:
+        if os.environ.get("CI"):
+            pytest.fail(f"PostgREST gateway not reachable in CI: {e}")
+        pytest.skip(f"PostgREST gateway not reachable ({e}); CI covers this")
+    text = json.dumps(resp)
+    assert status == 400, (status, resp)
+    assert "22P02" not in text and "PGRST202" not in text and "PGRST203" not in text, (
+        resp
+    )
+    assert f"Species {species} does not exist" in text, resp
