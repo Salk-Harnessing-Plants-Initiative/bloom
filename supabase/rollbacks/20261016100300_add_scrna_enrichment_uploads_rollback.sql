@@ -18,4 +18,6 @@ DROP FUNCTION IF EXISTS public._own_enrichment_run(BIGINT);
 DROP FUNCTION IF EXISTS public.start_scrna_enrichment_run(BIGINT, BIGINT, BIGINT, JSONB, BIGINT);
 DROP FUNCTION IF EXISTS public.link_scrna_dataset_genome(BIGINT, BIGINT);
 
+NOTIFY pgrst, 'reload schema';
+
 COMMIT;

@@ -286,4 +286,7 @@ CREATE POLICY admin_keep_finished_enrichment_files_delete ON storage.objects
         )
     );
 
+-- PostgREST serves RPCs from a cached schema.
+NOTIFY pgrst, 'reload schema';
+
 COMMIT;

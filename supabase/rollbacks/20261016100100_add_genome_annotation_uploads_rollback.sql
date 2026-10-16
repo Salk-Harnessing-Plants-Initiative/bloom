@@ -32,4 +32,6 @@ DROP FUNCTION IF EXISTS public._own_annotation_build(BIGINT);
 DROP FUNCTION IF EXISTS public._storage_object_bytes(TEXT, TEXT);
 DROP FUNCTION IF EXISTS public.start_genome_annotation_build(BIGINT, TEXT, JSONB);
 
+NOTIFY pgrst, 'reload schema';
+
 COMMIT;
