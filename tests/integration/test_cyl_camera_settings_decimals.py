@@ -1,9 +1,10 @@
 """
-Integration tests for bloom#1119: insert_image_v3_0 accepts decimal camera settings.
+Integration tests for bloom#1119: insert_image_v3_0 accepts decimal camera settings and
+stores the frame count.
 
 Before 20261016120000_widen_cyl_camera_settings_to_double, exposure time, gain, brightness,
 contrast and seconds per rotation were integer, so an upload with brightness 0.5 failed with
-22P02 and the image was not stored.
+22P02 and the image was not stored. num_frames was accepted but not stored.
 
 Runs as `pg_conn` (supabase_admin) against the database CI has migrated; every test rolls back.
 """
@@ -22,6 +23,14 @@ CAMERA_COLUMNS = (
     "scanner_gamma",
     "scanner_seconds_per_rot",
 )
+SETTINGS = {
+    "exposure_time": 9000,
+    "gain": 150,
+    "brightness": 0.5,
+    "contrast": 0,
+    "gamma": 1.0,
+    "seconds_per_rot": 7.5,
+}
 
 
 @pytest.fixture
@@ -52,6 +61,7 @@ def _insert_image(
     contrast,
     gamma,
     seconds_per_rot,
+    num_frames=72,
 ):
     """Call insert_image_v3_0 by argument name, as PostgREST does, and return the image id."""
     tag = seeded["tag"]
@@ -64,7 +74,7 @@ def _insert_image(
             plant_qr_code := %(plant)s, accession_name := %(accession)s, frame_number_ := 1,
             phenotyper_name := 'Test', phenotyper_email := %(phenotyper_email)s,
             scientist_name := 'Test', scientist_email := %(scientist_email)s,
-            num_frames := 72, exposure_time := %(exposure_time)s, gain := %(gain)s,
+            num_frames := %(num_frames)s, exposure_time := %(exposure_time)s, gain := %(gain)s,
             brightness := %(brightness)s, contrast := %(contrast)s, gamma := %(gamma)s,
             seconds_per_rot := %(seconds_per_rot)s)
         """,
@@ -82,6 +92,7 @@ def _insert_image(
             "contrast": contrast,
             "gamma": gamma,
             "seconds_per_rot": seconds_per_rot,
+            "num_frames": num_frames,
         },
     )
     image_id = cur.fetchone()[0]
@@ -162,15 +173,50 @@ def test_whole_number_settings_still_work(cur, seeded):
     }
 
 
+def _num_frames(cur, settings_id):
+    cur.execute("SELECT scanner_num_frames FROM cyl_camera_settings WHERE id = %s", (settings_id,))
+    return cur.fetchone()[0]
+
+
 def test_identical_settings_share_one_row(cur, seeded):
-    settings = {
-        "exposure_time": 9000,
-        "gain": 150,
-        "brightness": 0.5,
-        "contrast": 0,
-        "gamma": 1.0,
-        "seconds_per_rot": 7.5,
-    }
-    first, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-c", **settings))
-    second, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-d", **settings))
+    first, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-c", **SETTINGS))
+    second, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-d", **SETTINGS))
     assert first == second
+
+
+def test_num_frames_is_stored(cur, seeded):
+    settings_id, _ = _settings_for(
+        cur, _insert_image(cur, seeded, "plant-e", num_frames=36, **SETTINGS)
+    )
+    assert _num_frames(cur, settings_id) == 36
+
+
+def test_a_different_frame_count_is_a_different_settings_row(cur, seeded):
+    first, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-f", num_frames=72, **SETTINGS))
+    second, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-g", num_frames=36, **SETTINGS))
+    assert first != second
+    assert (_num_frames(cur, first), _num_frames(cur, second)) == (72, 36)
+
+
+def test_a_missing_frame_count_matches_a_missing_frame_count(cur, seeded):
+    first, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-h", num_frames=None, **SETTINGS))
+    second, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-i", num_frames=None, **SETTINGS))
+    assert first == second
+    assert _num_frames(cur, first) is None
+
+
+def test_an_upload_does_not_reuse_an_older_row_without_a_frame_count(cur, seeded):
+    cur.execute(
+        "INSERT INTO cyl_camera_settings (scanner_exposure_time, scanner_gain, scanner_brightness, "
+        "scanner_contrast, scanner_gamma, scanner_seconds_per_rot) VALUES (9000, 150, 0.5, 0, 1.0, 7.5) "
+        "RETURNING id"
+    )
+    older = cur.fetchone()[0]
+    settings_id, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-j", **SETTINGS))
+    assert settings_id != older
+    assert _num_frames(cur, settings_id) == 72
+
+
+def test_a_negative_frame_count_is_refused(cur, seeded):
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _insert_image(cur, seeded, "plant-k", num_frames=-1, **SETTINGS)

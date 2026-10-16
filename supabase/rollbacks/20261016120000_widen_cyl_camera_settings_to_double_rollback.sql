@@ -1,8 +1,9 @@
 -- Rollback for 20261016120000_widen_cyl_camera_settings_to_double.sql
 -- Manual break-glass only: this repo applies migrations forward via `supabase db push`
--- (no automated down-runner). Returns the five camera settings to integer, rounding any
--- decimal values, and restores insert_image_v3_0's integer parameters. Decimal precision is
--- lost, and the ALTER fails on the unique settings index if two rows round to the same values.
+-- (no automated down-runner). Drops scanner_num_frames, returns the five camera settings to
+-- integer, rounding any decimal values, and restores insert_image_v3_0's integer parameters.
+-- Frame counts and decimal precision are lost. Rows that become identical are merged into one,
+-- and their scans are pointed at it.
 
 BEGIN;
 
@@ -11,11 +12,34 @@ SET LOCAL lock_timeout = '5s';
 DROP FUNCTION IF EXISTS public.insert_image_v3_0(text, text, integer, integer, text, integer, date, text, text, text, integer, text, text, text, text, integer, double precision, double precision, double precision, double precision, double precision, double precision);
 
 ALTER TABLE public.cyl_camera_settings
+    DROP CONSTRAINT IF EXISTS unique_camera_settings_combo,
+    DROP COLUMN IF EXISTS scanner_num_frames;
+
+ALTER TABLE public.cyl_camera_settings
     ALTER COLUMN scanner_exposure_time TYPE integer USING round(scanner_exposure_time)::integer,
     ALTER COLUMN scanner_gain TYPE integer USING round(scanner_gain)::integer,
     ALTER COLUMN scanner_brightness TYPE integer USING round(scanner_brightness)::integer,
     ALTER COLUMN scanner_contrast TYPE integer USING round(scanner_contrast)::integer,
     ALTER COLUMN scanner_seconds_per_rot TYPE integer USING round(scanner_seconds_per_rot)::integer;
+
+-- One row per remaining combination; scans move to the kept row.
+CREATE TEMP TABLE camera_settings_merge ON COMMIT DROP AS
+SELECT id, first_value(id) OVER (
+           PARTITION BY scanner_exposure_time, scanner_gain, scanner_brightness, scanner_contrast, scanner_gamma, scanner_seconds_per_rot
+           ORDER BY id) AS keep_id
+  FROM public.cyl_camera_settings;
+
+UPDATE public.cyl_scans s SET cyl_camera_settings_id = m.keep_id
+  FROM camera_settings_merge m
+ WHERE s.cyl_camera_settings_id = m.id AND m.id <> m.keep_id;
+
+DELETE FROM public.cyl_camera_settings c
+ USING camera_settings_merge m
+ WHERE c.id = m.id AND m.id <> m.keep_id;
+
+ALTER TABLE public.cyl_camera_settings
+    ADD CONSTRAINT unique_camera_settings_combo
+    UNIQUE (scanner_exposure_time, scanner_gain, scanner_brightness, scanner_contrast, scanner_gamma, scanner_seconds_per_rot);
 
 CREATE OR REPLACE FUNCTION public.insert_image_v3_0(species_common_name text, experiment text, wave_number integer, germ_day integer, germ_day_color text, plant_age_days integer, date_scanned_ date, device_name text, plant_qr_code text, accession_name text, frame_number_ integer, phenotyper_name text, phenotyper_email text, scientist_name text, scientist_email text, num_frames integer, exposure_time integer, gain integer, brightness integer, contrast integer,  gamma double precision, seconds_per_rot integer)
 RETURNS bigint
@@ -154,5 +178,7 @@ BEGIN
 
 END;
 $function$;
+
+NOTIFY pgrst, 'reload schema';
 
 COMMIT;

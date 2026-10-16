@@ -4,8 +4,10 @@
 -- 0.5) failed with 22P02 "invalid input syntax for type integer", and the image was not stored.
 -- Exposure time, gain, brightness, contrast and seconds per rotation become double precision,
 -- in the table and in insert_image_v3_0, as gamma already is (20250717172032). Existing values
--- convert in place. Parameter names, order, return value and body are unchanged, so callers
--- (bloom-js, Bloom Desktop) keep working: PostgREST resolves the function by argument names.
+-- convert in place. The frame count (num_frames), which uploads already send but the function
+-- ignored, is now stored as scanner_num_frames; existing rows keep NULL. Parameter names, order
+-- and return value are unchanged, so callers (bloom-js, Bloom Desktop) keep working: PostgREST
+-- resolves the function by argument names.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -18,6 +20,19 @@ ALTER TABLE public.cyl_camera_settings
     ALTER COLUMN scanner_brightness TYPE double precision,
     ALTER COLUMN scanner_contrast TYPE double precision,
     ALTER COLUMN scanner_seconds_per_rot TYPE double precision;
+
+ALTER TABLE public.cyl_camera_settings
+    ADD COLUMN IF NOT EXISTS scanner_num_frames integer;
+
+ALTER TABLE public.cyl_camera_settings
+    DROP CONSTRAINT IF EXISTS cyl_camera_settings_num_frames_check,
+    ADD CONSTRAINT cyl_camera_settings_num_frames_check CHECK (scanner_num_frames >= 0);
+
+-- The frame count joins the settings combination; NULL matches NULL so older rows stay unique.
+ALTER TABLE public.cyl_camera_settings
+    DROP CONSTRAINT IF EXISTS unique_camera_settings_combo,
+    ADD CONSTRAINT unique_camera_settings_combo UNIQUE NULLS NOT DISTINCT
+        (scanner_exposure_time, scanner_gain, scanner_brightness, scanner_contrast, scanner_gamma, scanner_seconds_per_rot, scanner_num_frames);
 
 -- The parameter types change, so CREATE OR REPLACE can't replace the old function.
 DROP FUNCTION IF EXISTS public.insert_image_v3_0(text, text, integer, integer, text, integer, date, text, text, text, integer, text, text, text, text, integer, integer, integer, integer, integer, double precision, integer);
@@ -112,9 +127,9 @@ BEGIN
    END IF;
 
    -- Upsert the scanner settings
-   INSERT INTO cyl_camera_settings (scanner_exposure_time,scanner_gain,scanner_brightness,scanner_contrast,scanner_gamma,scanner_seconds_per_rot)
-   VALUES (exposure_time,gain,brightness,contrast,gamma,seconds_per_rot)
-   ON CONFLICT (scanner_exposure_time,scanner_gain,scanner_brightness,scanner_contrast,scanner_gamma,scanner_seconds_per_rot) DO NOTHING
+   INSERT INTO cyl_camera_settings (scanner_exposure_time,scanner_gain,scanner_brightness,scanner_contrast,scanner_gamma,scanner_seconds_per_rot,scanner_num_frames)
+   VALUES (exposure_time,gain,brightness,contrast,gamma,seconds_per_rot,num_frames)
+   ON CONFLICT (scanner_exposure_time,scanner_gain,scanner_brightness,scanner_contrast,scanner_gamma,scanner_seconds_per_rot,scanner_num_frames) DO NOTHING
    RETURNING id INTO cyl_camera_settings_id_var;
 
    -- If not inserted, fetch the existing one
@@ -127,7 +142,8 @@ BEGIN
         scanner_brightness = brightness AND
         scanner_contrast = contrast AND
         scanner_gamma = gamma AND
-        scanner_seconds_per_rot = seconds_per_rot;
+        scanner_seconds_per_rot = seconds_per_rot AND
+        scanner_num_frames IS NOT DISTINCT FROM num_frames;
     END IF;
 
    -- Upsert the scan
@@ -159,5 +175,7 @@ BEGIN
 
 END;
 $function$;
+
+NOTIFY pgrst, 'reload schema';
 
 COMMIT;
