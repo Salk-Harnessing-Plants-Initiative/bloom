@@ -1,21 +1,17 @@
 """
-Integration tests for genome annotation builds: numbering, the upload handshake, what each
-source may add, write-once rules, and who may do what.
+Integration tests for genome annotation builds: numbering and file paths, finishing against
+the stored file, write-once rules, the storage rules for annotation files, and who may do what.
 """
-
-import json
 
 import pytest
 
 from tests.integration.annotation_enrichment_helpers import (
-    GO_TERMS,
-    KEGG_TERMS,
-    TABLES,
-    add_gene_terms,
-    add_terms,
+    FILE_BYTES,
+    SHA,
     apply_migrations,
     call,
-    gene_terms,
+    finish_build,
+    put_file,
     ready_build,
     start_build,
 )
@@ -23,8 +19,10 @@ from tests.integration.genome_reference_helpers import (
     OTHER_WRITER,
     WRITER,
     add_species,
+    as_admin,
     as_role,
     new_genome_name,
+    put_object,
     ready,
     refused,
     start,
@@ -32,12 +30,11 @@ from tests.integration.genome_reference_helpers import (
 
 psycopg = pytest.importorskip("psycopg")
 
+BUCKET = "genome-references"
+FINISH = "SELECT public.finish_genome_annotation_build(%s, %s, %s, %s, %s)"
 WRITER_FUNCTIONS = (
     "start_genome_annotation_build(bigint, text, jsonb)",
-    "add_functional_terms(jsonb)",
-    "add_genome_gene_terms(bigint, jsonb)",
-    "add_genome_gene_descriptions(bigint, jsonb)",
-    "finish_genome_annotation_build(bigint, integer, bigint)",
+    "finish_genome_annotation_build(bigint, text, bigint, integer, bigint)",
     "abandon_genome_annotation_build(bigint)",
 )
 
@@ -51,13 +48,19 @@ def cur(pg_conn):
 
 
 @pytest.fixture
-def version_id(cur):
-    return ready(cur, new_genome_name(), add_species(cur))[0]
+def genome():
+    return new_genome_name()
 
 
-def _status(cur, build_id):
-    cur.execute("SELECT status FROM genome_annotation_builds WHERE id = %s", (build_id,))
-    return cur.fetchone()[0]
+@pytest.fixture
+def version_id(cur, genome):
+    return ready(cur, genome, add_species(cur))[0]
+
+
+def _build(cur, build_id):
+    cur.execute("SELECT status, file_sha256, file_bytes, gene_count, term_count "
+                "FROM genome_annotation_builds WHERE id = %s", (build_id,))
+    return cur.fetchone()
 
 
 # --------------------------------------------------------------------------- #
@@ -65,177 +68,177 @@ def _status(cur, build_id):
 # --------------------------------------------------------------------------- #
 
 
-def test_builds_are_numbered_per_version_and_source(cur, version_id):
-    eggnog, number = start_build(cur, version_id, "eggnog")
-    assert number == 1 and _status(cur, eggnog) == "uploading"
-    assert start_build(cur, version_id, "mercator")[1] == 1
+def test_builds_are_numbered_per_version_and_source_with_their_file(cur, genome, version_id):
+    build_id, number, path = start_build(cur, version_id, "eggnog")
+    assert (number, path) == (1, f"{genome}/v1/annotation/eggnog-b1.json.gz")
+    assert _build(cur, build_id)[0] == "uploading"
+    assert start_build(cur, version_id, "tair-go")[1:] == (1, f"{genome}/v1/annotation/tair-go-b1.json.gz")
 
 
 def test_one_live_build_per_version_and_source(cur, version_id):
-    start_build(cur, version_id, "eggnog")
+    start_build(cur, version_id)
     as_role(cur, "bloom_writer", OTHER_WRITER)
-    refused(
-        cur, "SELECT * FROM public.start_genome_annotation_build(%s, 'eggnog', '{}')", (version_id,),
-        psycopg.errors.ObjectNotInPrerequisiteState, match="already has eggnog annotation build 1",
-    )
+    refused(cur, "SELECT * FROM public.start_genome_annotation_build(%s, 'eggnog', '{}')",
+            (version_id,), psycopg.errors.ObjectNotInPrerequisiteState,
+            match="already has eggnog annotation build 1")
 
 
-def test_a_version_that_is_not_ready_is_refused(cur):
-    uploading = start(cur, new_genome_name(), species=add_species(cur))[0]
+def test_a_version_that_is_not_ready_is_refused(cur, genome):
+    uploading = start(cur, genome, species=add_species(cur))[0]
     as_role(cur, "bloom_writer", WRITER)
-    refused(
-        cur, "SELECT * FROM public.start_genome_annotation_build(%s, 'eggnog', '{}')", (uploading,),
-        psycopg.errors.ObjectNotInPrerequisiteState, match="not ready",
-    )
+    refused(cur, "SELECT * FROM public.start_genome_annotation_build(%s, 'eggnog', '{}')",
+            (uploading,), psycopg.errors.ObjectNotInPrerequisiteState, match="not ready")
 
 
 def test_an_unknown_source_is_refused(cur, version_id):
     as_role(cur, "bloom_writer", WRITER)
-    refused(
-        cur, "SELECT * FROM public.start_genome_annotation_build(%s, 'interpro', '{}')",
-        (version_id,), psycopg.errors.CheckViolation,
-    )
+    refused(cur, "SELECT * FROM public.start_genome_annotation_build(%s, 'interpro', '{}')",
+            (version_id,), psycopg.errors.CheckViolation)
 
 
 # --------------------------------------------------------------------------- #
-# Terms and rows
+# Finishing
 # --------------------------------------------------------------------------- #
 
 
-def test_terms_are_added_and_renamed(cur):
-    assert add_terms(cur, GO_TERMS) == 2
-    renamed = [{**GO_TERMS[0], "name": "photosynthesis (renamed)"}]
-    assert add_terms(cur, renamed) == 1
-    assert add_terms(cur, renamed) == 0
-    cur.execute("SELECT name FROM functional_terms WHERE term_id = 'GO:0015979'")
-    assert cur.fetchone()[0] == "photosynthesis (renamed)"
+def test_finish_records_the_file_and_counts(cur, version_id):
+    build_id = ready_build(cur, version_id)
+    assert _build(cur, build_id) == ("ready", SHA, FILE_BYTES, 3, 4)
+
+
+def test_finish_without_the_file_is_refused(cur, version_id):
+    build_id, _, _ = start_build(cur, version_id)
+    as_role(cur, "bloom_writer", WRITER)
+    refused(cur, FINISH, (build_id, SHA, FILE_BYTES, 3, 4), psycopg.errors.InvalidParameterValue,
+            match="has not been uploaded")
 
 
 @pytest.mark.parametrize(
-    "term",
+    "args, match",
     [
-        {"kind": "go", "term_id": "GO:1", "name": "x"},
-        {"kind": "kegg_pathway", "term_id": "map1", "name": "x", "namespace": "BP"},
-        {"kind": "reactome", "term_id": "R-1", "name": "x"},
-        {"kind": "go", "term_id": "GO:1", "name": " ", "namespace": "BP"},
+        ((SHA, FILE_BYTES + 1, 3, 4), "bytes in storage"),
+        (("E" * 64, FILE_BYTES, 3, 4), "64 lowercase hex"),
+        ((SHA, FILE_BYTES, 0, 4), "at least one gene"),
+        ((SHA, FILE_BYTES, 3, None), "at least one gene"),
     ],
 )
-def test_bad_terms_are_refused(cur, term):
+def test_finish_with_bad_details_is_refused(cur, version_id, args, match):
+    build_id, _, path = start_build(cur, version_id)
+    put_file(cur, BUCKET, path)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.add_functional_terms(%s)", (json.dumps([term]),),
-            psycopg.errors.CheckViolation)
+    refused(cur, FINISH, (build_id, *args), psycopg.errors.InvalidParameterValue, match=match)
 
 
-def test_each_source_adds_only_its_kinds(cur, version_id):
-    build_id, _ = start_build(cur, version_id, "tair-go")
-    add_terms(cur, GO_TERMS + KEGG_TERMS)
-    as_role(cur, "bloom_writer", WRITER)
-    refused(
-        cur, "SELECT public.add_genome_gene_terms(%s, %s)",
-        (build_id, json.dumps(gene_terms([("G1", "map00195")], kind="kegg_pathway"))),
-        psycopg.errors.InvalidParameterValue, match="holds only go terms",
-    )
-
-
-def test_a_term_must_be_named_first(cur, version_id):
-    build_id, _ = start_build(cur, version_id)
-    as_role(cur, "bloom_writer", WRITER)
-    refused(
-        cur, "SELECT public.add_genome_gene_terms(%s, %s)",
-        (build_id, json.dumps(gene_terms([("G1", "GO:9999999")]))), psycopg.errors.ForeignKeyViolation,
-    )
-
-
-@pytest.mark.parametrize("rows", [[], [{"gene_id": "G", "kind": "go", "term_id": "GO:0015979"}] * 5001])
-def test_batches_are_1_to_5000_rows(cur, version_id, rows):
-    build_id, _ = start_build(cur, version_id)
-    as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.add_genome_gene_terms(%s, %s)", (build_id, json.dumps(rows)),
-            psycopg.errors.InvalidParameterValue)
-
-
-def test_another_writer_cannot_add_rows(cur, version_id):
-    build_id, _ = start_build(cur, version_id)
-    add_terms(cur, GO_TERMS)
+def test_another_writer_cannot_finish(cur, version_id):
+    build_id, _, path = start_build(cur, version_id)
+    put_file(cur, BUCKET, path)
     as_role(cur, "bloom_writer", OTHER_WRITER)
-    refused(
-        cur, "SELECT public.add_genome_gene_terms(%s, %s)",
-        (build_id, json.dumps(gene_terms([("G1", "GO:0015979")]))),
-        psycopg.errors.InsufficientPrivilege, match="someone else",
-    )
-
-
-def test_descriptions_need_a_name_or_description(cur, version_id):
-    build_id, _ = start_build(cur, version_id)
-    assert call(cur, "SELECT public.add_genome_gene_descriptions(%s, %s)", (build_id, json.dumps(
-        [{"gene_id": "G1", "gene_name": "PSBA", "description": "photosystem II protein D1"}]))) == 1
-    as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.add_genome_gene_descriptions(%s, %s)",
-            (build_id, json.dumps([{"gene_id": "G2"}])), psycopg.errors.CheckViolation)
-
-
-# --------------------------------------------------------------------------- #
-# Finishing, abandoning, withdrawing
-# --------------------------------------------------------------------------- #
-
-
-def test_finish_records_the_counts(cur, version_id):
-    build_id = ready_build(cur, version_id)
-    cur.execute("SELECT status, gene_count, term_count FROM genome_annotation_builds WHERE id = %s",
-                (build_id,))
-    assert cur.fetchone() == ("ready", 3, 4)
-
-
-@pytest.mark.parametrize("genes, rows", [(2, 3), (3, 2), (None, 3), (0, 0)])
-def test_finish_with_wrong_counts_is_refused(cur, version_id, genes, rows):
-    build_id, _ = start_build(cur, version_id)
-    add_terms(cur, GO_TERMS)
-    add_gene_terms(cur, build_id, gene_terms([("G1", "GO:0015979"), ("G2", "GO:0015979"),
-                                              ("G3", "GO:0015979")]))
-    as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.finish_genome_annotation_build(%s, %s, %s)", (build_id, genes, rows),
-            psycopg.errors.InvalidParameterValue, match="holds 3 genes and 3 rows")
+    refused(cur, FINISH, (build_id, SHA, FILE_BYTES, 3, 4), psycopg.errors.InsufficientPrivilege,
+            match="someone else")
 
 
 def test_a_build_finishes_once(cur, version_id):
     build_id = ready_build(cur, version_id)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.finish_genome_annotation_build(%s, 3, 4)", (build_id,),
+    refused(cur, FINISH, (build_id, SHA, FILE_BYTES, 3, 4),
             psycopg.errors.ObjectNotInPrerequisiteState, match="is ready, not uploading")
 
 
-def test_abandon_removes_the_rows(cur, version_id):
-    build_id, _ = start_build(cur, version_id)
-    add_terms(cur, GO_TERMS)
-    add_gene_terms(cur, build_id, gene_terms([("G1", "GO:0015979")]))
-    assert call(cur, "SELECT public.abandon_genome_annotation_build(%s)", (build_id,)) is True
-    cur.execute("SELECT count(*) FROM genome_gene_terms WHERE build_id = %s", (build_id,))
-    assert cur.fetchone()[0] == 0 and _status(cur, build_id) == "abandoned"
+def test_the_pipeline_can_upload_a_build(cur, version_id):
+    pipeline = "00000000-0000-0000-0000-00000000aaaa"
+    build_id, _, path = start_build(cur, version_id, user=pipeline, role="bloom_workflows")
+    put_file(cur, BUCKET, path, user=pipeline, role="bloom_workflows")
+    finish_build(cur, build_id, user=pipeline, role="bloom_workflows")
+    assert _build(cur, build_id)[0] == "ready"
+
+
+# --------------------------------------------------------------------------- #
+# Abandoning, withdrawing, write-once
+# --------------------------------------------------------------------------- #
+
+
+def test_abandon_frees_the_next_number(cur, version_id):
+    build_id, _, _ = start_build(cur, version_id)
+    assert call(cur, "SELECT public.abandon_genome_annotation_build(%s)", (build_id,))[0] is True
+    assert _build(cur, build_id)[0] == "abandoned"
     assert start_build(cur, version_id)[1] == 2
 
 
-def test_withdraw_frees_the_version_for_a_new_build(cur, version_id):
+def test_withdraw_allows_a_new_build_in_a_new_file(cur, genome, version_id):
     build_id = ready_build(cur, version_id)
     cur.execute("SELECT public.withdraw_genome_annotation_build(%s, 'wrong GO release')", (build_id,))
-    assert _status(cur, build_id) == "withdrawn"
-    assert start_build(cur, version_id)[1] == 2
+    assert _build(cur, build_id)[0] == "withdrawn"
+    assert start_build(cur, version_id)[2] == f"{genome}/v1/annotation/eggnog-b2.json.gz"
 
 
 @pytest.mark.parametrize(
-    "sql",
-    [
-        "UPDATE genome_annotation_builds SET term_count = 9 WHERE id = %(id)s",
-        "UPDATE genome_annotation_builds SET tool_versions = '{}' WHERE id = %(id)s",
-        "UPDATE genome_annotation_builds SET status = 'uploading' WHERE id = %(id)s",
-        "DELETE FROM genome_annotation_builds WHERE id = %(id)s",
-        "DELETE FROM genome_gene_terms WHERE build_id = %(id)s",
-        "UPDATE genome_gene_terms SET direct = false WHERE build_id = %(id)s",
-        "INSERT INTO genome_gene_terms VALUES (%(id)s, 'G9', 'go', 'GO:0015979', true)",
-    ],
+    "assignment",
+    ["term_count = 9", "file_sha256 = repeat('f', 64)", "file_bytes = 1", "file_path = 'x'",
+     "tool_versions = '{}'", "status = 'uploading'"],
 )
-def test_a_ready_build_never_changes(cur, version_id, sql):
+def test_a_ready_build_never_changes(cur, version_id, assignment):
     build_id = ready_build(cur, version_id)
-    refused(cur, sql, {"id": build_id}, psycopg.errors.ObjectNotInPrerequisiteState)
+    refused(cur, f"UPDATE genome_annotation_builds SET {assignment} WHERE id = %s", (build_id,),
+            (psycopg.errors.ObjectNotInPrerequisiteState, psycopg.errors.CheckViolation))
+
+
+def test_a_ready_build_cannot_be_deleted(cur, version_id):
+    build_id = ready_build(cur, version_id)
+    refused(cur, "DELETE FROM genome_annotation_builds WHERE id = %s", (build_id,),
+            psycopg.errors.ObjectNotInPrerequisiteState)
+
+
+# --------------------------------------------------------------------------- #
+# Storage
+# --------------------------------------------------------------------------- #
+
+
+def _insert_refused(cur, name, user=WRITER, role="bloom_writer"):
+    as_role(cur, role, user)
+    refused(cur, "INSERT INTO storage.objects (bucket_id, name, metadata) VALUES "
+            "('genome-references', %s, '{\"size\": 1}')", (name,), psycopg.errors.InsufficientPrivilege)
+    as_admin(cur)
+
+
+def test_another_writer_cannot_add_the_file(cur, version_id):
+    _, _, path = start_build(cur, version_id)
+    _insert_refused(cur, path, user=OTHER_WRITER)
+
+
+def test_no_file_is_taken_outside_the_builds_path(cur, genome, version_id):
+    start_build(cur, version_id)
+    _insert_refused(cur, f"{genome}/v1/annotation/eggnog-b9.json.gz")
+    _insert_refused(cur, f"{genome}/v1/annotation/eggnog-b9.json.gz", role="bloom_workflows")
+
+
+def test_a_ready_builds_file_cannot_be_added_again(cur, version_id):
+    build_id, _, path = start_build(cur, version_id)
+    put_file(cur, BUCKET, path)
+    finish_build(cur, build_id)
+    cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
+    cur.execute("DELETE FROM storage.objects WHERE name = %s", (path,))
+    _insert_refused(cur, path)
+
+
+@pytest.mark.parametrize("command", ["UPDATE", "DELETE"])
+def test_admin_cannot_change_a_ready_builds_file(cur, version_id, command):
+    build_id, _, path = start_build(cur, version_id)
+    put_file(cur, BUCKET, path)
+    finish_build(cur, build_id)
+    cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
+    as_role(cur, "bloom_admin", WRITER)
+    cur.execute(
+        "UPDATE storage.objects SET metadata = '{\"size\": 2}' WHERE name = %s" if command == "UPDATE"
+        else "DELETE FROM storage.objects WHERE name = %s", (path,),
+    )
+    assert cur.rowcount == 0
+    as_admin(cur)
+
+
+def test_genome_version_uploads_still_work(cur, genome):
+    row = start(cur, genome, species=add_species(cur))
+    put_object(cur, row[2], 100)
+    put_object(cur, row[3], 50)
 
 
 # --------------------------------------------------------------------------- #
@@ -243,18 +246,15 @@ def test_a_ready_build_never_changes(cur, version_id, sql):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("table", TABLES[2:])
-@pytest.mark.parametrize("role", ("bloom_user", "bloom_agent", "bloom_workflows"))
-def test_readers_can_select(cur, table, role):
-    cur.execute("SELECT has_table_privilege(%s, %s, 'SELECT')", (role, f"public.{table}"))
-    assert cur.fetchone()[0] is True
-
-
-@pytest.mark.parametrize("table", TABLES[2:])
-@pytest.mark.parametrize("role", ("bloom_writer", "bloom_workflows", "bloom_user", "anon"))
-def test_only_admin_writes_directly(cur, table, role):
-    cur.execute("SELECT has_table_privilege(%s, %s, 'INSERT')", (role, f"public.{table}"))
-    assert cur.fetchone()[0] is False
+@pytest.mark.parametrize("role, privilege, allowed", [
+    ("bloom_user", "SELECT", True), ("bloom_agent", "SELECT", True),
+    ("bloom_workflows", "SELECT", True), ("bloom_writer", "INSERT", False),
+    ("bloom_workflows", "INSERT", False), ("anon", "SELECT", False),
+])
+def test_table_access(cur, role, privilege, allowed):
+    cur.execute("SELECT has_table_privilege(%s, 'public.genome_annotation_builds', %s)",
+                (role, privilege))
+    assert cur.fetchone()[0] is allowed
 
 
 @pytest.mark.parametrize("function", WRITER_FUNCTIONS)
@@ -265,8 +265,9 @@ def test_who_may_upload(cur, function, role, allowed):
     assert cur.fetchone()[0] is allowed
 
 
-def test_withdraw_is_admin_only(cur):
-    for role, allowed in (("bloom_admin", True), ("bloom_writer", False), ("bloom_workflows", False)):
-        cur.execute("SELECT has_function_privilege(%s, "
-                    "'withdraw_genome_annotation_build(bigint, text)', 'EXECUTE')", (role,))
-        assert cur.fetchone()[0] is allowed
+@pytest.mark.parametrize("role, allowed", [("bloom_admin", True), ("bloom_writer", False),
+                                           ("bloom_workflows", False)])
+def test_withdraw_is_admin_only(cur, role, allowed):
+    cur.execute("SELECT has_function_privilege(%s, "
+                "'withdraw_genome_annotation_build(bigint, text)', 'EXECUTE')", (role,))
+    assert cur.fetchone()[0] is allowed

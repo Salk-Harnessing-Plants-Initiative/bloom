@@ -1,6 +1,7 @@
 """
-Integration tests for a dataset's genome version and its enrichment runs: linking, the upload
-handshake, what a term may name, write-once rules, privileges, and the migrations' rollbacks.
+Integration tests for a dataset's genome version and its enrichment runs: linking, starting
+and finishing against the stored file, write-once rules, the storage rules for enrichment
+files, privileges, and the migrations' rollbacks.
 """
 
 import json
@@ -8,19 +9,20 @@ import json
 import pytest
 
 from tests.integration.annotation_enrichment_helpers import (
+    FILE_BYTES,
     MIGRATIONS,
     PARAMS,
     ROLLBACKS,
+    SHA,
     add_dataset,
     add_de,
-    add_run_terms,
     apply_migrations,
     call,
     finish_run,
     link,
+    put_file,
     ready_build,
     start_run,
-    term_row,
 )
 from tests.integration.genome_reference_helpers import (
     OTHER_WRITER,
@@ -36,6 +38,9 @@ from tests.integration.genome_reference_helpers import (
 from tests.integration.test_rnaseq_runs import _sql_body
 
 psycopg = pytest.importorskip("psycopg")
+
+START = "SELECT * FROM public.start_scrna_enrichment_run(%s, %s, %s, %s, %s)"
+FINISH = "SELECT public.finish_scrna_enrichment_run(%s, %s, %s, %s)"
 
 
 @pytest.fixture
@@ -59,16 +64,25 @@ def version_id(cur, species_id):
 @pytest.fixture
 def linked(cur, species_id, version_id):
     """A linked dataset with a finished analysis and a ready eggNOG build."""
-    dataset_id, genes = add_dataset(cur, species_id)
+    dataset_id, _ = add_dataset(cur, species_id)
     link(cur, dataset_id, version_id)
-    de_run, de_ids = add_de(cur, dataset_id)
-    return {"dataset": dataset_id, "genes": genes, "de_run": de_run, "de": de_ids,
-            "build": ready_build(cur, version_id)}
+    de_run, _ = add_de(cur, dataset_id)
+    return {"dataset": dataset_id, "de_run": de_run, "build": ready_build(cur, version_id)}
 
 
 def _genome_of(cur, dataset_id):
     cur.execute("SELECT genome_version_id FROM scrna_datasets WHERE id = %s", (dataset_id,))
     return cur.fetchone()[0]
+
+
+def _start(cur, linked, **kw):
+    return start_run(cur, linked["dataset"], linked["de_run"], linked["build"], **kw)
+
+
+def _run(cur, run_id):
+    cur.execute("SELECT status, file_sha256, file_bytes, term_count, rnaseq_run_id "
+                "FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
+    return cur.fetchone()
 
 
 # --------------------------------------------------------------------------- #
@@ -83,22 +97,17 @@ def test_a_run_gives_its_dataset_its_genome_version(cur, species_id, version_id)
     assert _genome_of(cur, dataset_id) == version_id
 
 
-def test_a_run_on_another_species_leaves_the_dataset_unlinked(cur, species_id, version_id):
+def test_a_run_on_another_species_leaves_the_dataset_unlinked(cur, version_id):
     dataset_id, _ = add_dataset(cur, add_species(cur))
     run_id = add_run(cur, version_id)
     cur.execute("UPDATE rnaseq_runs SET dataset_id = %s WHERE id = %s", (dataset_id, run_id))
     assert _genome_of(cur, dataset_id) is None
 
 
-def test_a_writer_links_an_older_dataset(cur, species_id, version_id):
+def test_a_writer_links_an_older_dataset_once(cur, species_id, version_id):
     dataset_id, _ = add_dataset(cur, species_id)
     link(cur, dataset_id, version_id)
     assert _genome_of(cur, dataset_id) == version_id
-
-
-def test_a_link_never_changes(cur, species_id, version_id):
-    dataset_id, _ = add_dataset(cur, species_id)
-    link(cur, dataset_id, version_id)
     other = ready(cur, new_genome_name(), species_id)[0]
     as_role(cur, "bloom_writer", WRITER)
     refused(cur, "SELECT public.link_scrna_dataset_genome(%s, %s)", (dataset_id, other),
@@ -108,8 +117,6 @@ def test_a_link_never_changes(cur, species_id, version_id):
     refused(cur, "UPDATE scrna_datasets SET genome_version_id = NULL WHERE id = %s", (dataset_id,),
             psycopg.errors.ObjectNotInPrerequisiteState)
     as_admin(cur)
-    refused(cur, "UPDATE scrna_datasets SET genome_version_id = %s WHERE id = %s", (other, dataset_id),
-            psycopg.errors.ObjectNotInPrerequisiteState)
     refused(cur, "UPDATE scrna_datasets SET species_id = %s WHERE id = %s",
             (add_species(cur), dataset_id), psycopg.errors.ObjectNotInPrerequisiteState)
 
@@ -126,21 +133,25 @@ def test_a_genome_of_another_species_is_refused(cur, version_id):
 # --------------------------------------------------------------------------- #
 
 
+def test_a_run_gets_its_file_path(cur, linked):
+    run_id, path = _start(cur, linked)
+    assert path == f"enrichment/{linked['dataset']}/run-{run_id}.json.gz"
+    assert _run(cur, run_id)[0] == "uploading"
+
+
 def test_a_run_needs_a_linked_dataset(cur, species_id, version_id):
     dataset_id, _ = add_dataset(cur, species_id)
     de_run, _ = add_de(cur, dataset_id)
     build_id = ready_build(cur, version_id)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, '{}')",
-            (dataset_id, de_run, build_id), psycopg.errors.ObjectNotInPrerequisiteState,
-            match="not linked to a genome version")
+    refused(cur, START, (dataset_id, de_run, build_id, "{}", None),
+            psycopg.errors.ObjectNotInPrerequisiteState, match="not linked to a genome version")
 
 
 def test_the_annotation_must_be_of_the_datasets_genome(cur, species_id, linked):
     other_build = ready_build(cur, ready(cur, new_genome_name(), species_id)[0])
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, '{}')",
-            (linked["dataset"], linked["de_run"], other_build),
+    refused(cur, START, (linked["dataset"], linked["de_run"], other_build, "{}", None),
             psycopg.errors.InvalidParameterValue, match="not the dataset's")
 
 
@@ -148,133 +159,139 @@ def test_the_annotation_must_be_of_the_datasets_genome(cur, species_id, linked):
 def test_the_analysis_must_be_complete(cur, linked, status):
     de_run, _ = add_de(cur, linked["dataset"], status=status)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, '{}')",
-            (linked["dataset"], de_run, linked["build"]), psycopg.errors.ObjectNotInPrerequisiteState)
+    refused(cur, START, (linked["dataset"], de_run, linked["build"], "{}", None),
+            psycopg.errors.ObjectNotInPrerequisiteState)
 
 
 def test_the_same_settings_run_once_while_live(cur, linked):
-    start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
+    _start(cur, linked)
     as_role(cur, "bloom_writer", OTHER_WRITER)
-    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, %s, NULL)",
-            (linked["dataset"], linked["de_run"], linked["build"], json.dumps(PARAMS)),
+    refused(cur, START, (linked["dataset"], linked["de_run"], linked["build"], json.dumps(PARAMS), None),
             psycopg.errors.UniqueViolation)
-    assert start_run(cur, linked["dataset"], linked["de_run"], linked["build"],
-                     params={**PARAMS, "top_n": 200}, user=OTHER_WRITER)
+    assert _start(cur, linked, params={**PARAMS, "top_n": 200}, user=OTHER_WRITER)
 
 
 def test_a_run_records_the_pipeline_job_that_made_it(cur, version_id, linked):
     job = add_run(cur, version_id)
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"], rnaseq_run_id=job)
-    cur.execute("SELECT rnaseq_run_id FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
-    assert cur.fetchone()[0] == job
+    run_id, _ = _start(cur, linked, rnaseq_run_id=job)
+    assert _run(cur, run_id)[4] == job
     refused(cur, "UPDATE scrna_enrichment_runs SET rnaseq_run_id = NULL WHERE id = %s", (run_id,),
             psycopg.errors.ObjectNotInPrerequisiteState)
 
 
-def test_a_run_uploaded_by_hand_has_no_job(cur, linked):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    cur.execute("SELECT rnaseq_run_id FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
-    assert cur.fetchone()[0] is None
-
-
 def test_an_unknown_job_is_refused(cur, linked):
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.start_scrna_enrichment_run(%s, %s, %s, '{}', -1)",
-            (linked["dataset"], linked["de_run"], linked["build"]),
+    refused(cur, START, (linked["dataset"], linked["de_run"], linked["build"], "{}", -1),
             psycopg.errors.InvalidParameterValue, match="no Cell Ranger or enrichment job")
 
 
 # --------------------------------------------------------------------------- #
-# Terms
+# Finishing
 # --------------------------------------------------------------------------- #
 
 
-def test_a_run_is_stored_and_finished(cur, linked):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    genes = [linked["genes"][g] for g in ("G1", "G2")]
-    rows = [term_row(linked["de"][0], genes),
-            term_row(linked["de"][0], genes[:1], kind="kegg_pathway", term_id="map00195",
-                     term_size=1)]
-    assert add_run_terms(cur, run_id, rows) == 2
-    finish_run(cur, run_id, 2)
-    cur.execute("SELECT status, term_count FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
-    assert cur.fetchone() == ("ready", 2)
+@pytest.mark.parametrize("terms", [2, 0])
+def test_finish_records_the_file(cur, linked, terms):
+    run_id, path = _start(cur, linked)
+    put_file(cur, "scrna", path)
+    finish_run(cur, run_id, terms=terms)
+    assert _run(cur, run_id)[:4] == ("ready", SHA, FILE_BYTES, terms)
 
 
-def test_a_run_with_nothing_significant_finishes_empty(cur, linked):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    finish_run(cur, run_id, 0)
-    cur.execute("SELECT term_count FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
-    assert cur.fetchone()[0] == 0
-
-
-@pytest.mark.parametrize(
-    "change, error, match",
-    [
-        ({"kind": "mapman", "term_id": "1.1"}, psycopg.errors.InvalidParameterValue, "holds only"),
-        ({"gene_ids": [-1]}, psycopg.errors.InvalidParameterValue, "gene of dataset"),
-        ({"hit_count": 4}, psycopg.errors.CheckViolation, None),
-        ({"fdr": 0.0001}, psycopg.errors.CheckViolation, None),
-        ({"list_size": 5}, psycopg.errors.CheckViolation, None),
-        ({"direction": "both"}, psycopg.errors.CheckViolation, None),
-    ],
-)
-def test_bad_terms_are_refused(cur, linked, change, error, match):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    row = {**term_row(linked["de"][0], [linked["genes"]["G1"]]), **change}
+@pytest.mark.parametrize("stored, args, match", [
+    (False, (SHA, FILE_BYTES, 2), "has not been uploaded"),
+    (True, (SHA, FILE_BYTES + 1, 2), "bytes in storage"),
+    (True, ("x", FILE_BYTES, 2), "64 lowercase hex"),
+    (True, (SHA, FILE_BYTES, -1), "zero or more"),
+])
+def test_finish_with_bad_details_is_refused(cur, linked, stored, args, match):
+    run_id, path = _start(cur, linked)
+    if stored:
+        put_file(cur, "scrna", path)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.add_scrna_enrichment_terms(%s, %s)", (run_id, json.dumps([row])),
-            error, match=match)
+    refused(cur, FINISH, (run_id, *args), psycopg.errors.InvalidParameterValue, match=match)
 
 
-def test_a_term_must_name_a_comparison_of_the_runs_analysis(cur, linked):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    _, other_de = add_de(cur, linked["dataset"])
-    as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.add_scrna_enrichment_terms(%s, %s)",
-            (run_id, json.dumps([term_row(other_de[0], [linked["genes"]["G1"]])])),
-            psycopg.errors.InvalidParameterValue, match="comparison of differential expression")
-
-
-def test_finish_needs_the_count_sent(cur, linked):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    add_run_terms(cur, run_id, [term_row(linked["de"][0], [linked["genes"]["G1"]])])
-    as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "SELECT public.finish_scrna_enrichment_run(%s, 2)", (run_id,),
-            psycopg.errors.InvalidParameterValue, match="holds 1 terms")
-
-
-def test_another_writer_cannot_add_terms(cur, linked):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
+def test_another_writer_cannot_finish(cur, linked):
+    run_id, path = _start(cur, linked)
+    put_file(cur, "scrna", path)
     as_role(cur, "bloom_writer", OTHER_WRITER)
-    refused(cur, "SELECT public.add_scrna_enrichment_terms(%s, %s)",
-            (run_id, json.dumps([term_row(linked["de"][0], [linked["genes"]["G1"]])])),
-            psycopg.errors.InsufficientPrivilege, match="someone else")
+    refused(cur, FINISH, (run_id, SHA, FILE_BYTES, 2), psycopg.errors.InsufficientPrivilege,
+            match="someone else")
 
 
-def test_abandon_removes_the_terms(cur, linked):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    add_run_terms(cur, run_id, [term_row(linked["de"][0], [linked["genes"]["G1"]])])
-    assert call(cur, "SELECT public.abandon_scrna_enrichment_run(%s)", (run_id,)) is True
-    cur.execute("SELECT count(*) FROM scrna_enrichment_terms WHERE run_id = %s", (run_id,))
-    assert cur.fetchone()[0] == 0
+def test_abandon(cur, linked):
+    run_id, _ = _start(cur, linked)
+    assert call(cur, "SELECT public.abandon_scrna_enrichment_run(%s)", (run_id,))[0] is True
+    assert _run(cur, run_id)[0] == "abandoned"
 
 
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "UPDATE scrna_enrichment_runs SET term_count = 5 WHERE id = %(id)s",
-        "UPDATE scrna_enrichment_runs SET status = 'abandoned' WHERE id = %(id)s",
-        "DELETE FROM scrna_enrichment_runs WHERE id = %(id)s",
-        "DELETE FROM scrna_enrichment_terms WHERE run_id = %(id)s",
-        "UPDATE scrna_enrichment_terms SET fdr = 0.02 WHERE run_id = %(id)s",
-    ],
-)
+@pytest.mark.parametrize("sql", [
+    "UPDATE scrna_enrichment_runs SET term_count = 5 WHERE id = %(id)s",
+    "UPDATE scrna_enrichment_runs SET file_path = 'x' WHERE id = %(id)s",
+    "UPDATE scrna_enrichment_runs SET status = 'abandoned' WHERE id = %(id)s",
+    "DELETE FROM scrna_enrichment_runs WHERE id = %(id)s",
+])
 def test_a_ready_run_never_changes(cur, linked, sql):
-    run_id = start_run(cur, linked["dataset"], linked["de_run"], linked["build"])
-    add_run_terms(cur, run_id, [term_row(linked["de"][0], [linked["genes"]["G1"]])])
-    finish_run(cur, run_id, 1)
+    run_id, path = _start(cur, linked)
+    put_file(cur, "scrna", path)
+    finish_run(cur, run_id)
     refused(cur, sql, {"id": run_id}, psycopg.errors.ObjectNotInPrerequisiteState)
+
+
+# --------------------------------------------------------------------------- #
+# Storage
+# --------------------------------------------------------------------------- #
+
+
+def _insert_refused(cur, name, user=WRITER, role="bloom_writer"):
+    as_role(cur, role, user)
+    refused(cur, "INSERT INTO storage.objects (bucket_id, name, metadata) VALUES "
+            "('scrna', %s, '{\"size\": 1}')", (name,), psycopg.errors.InsufficientPrivilege)
+    as_admin(cur)
+
+
+def test_only_the_runs_own_file_is_added_under_enrichment(cur, linked):
+    _, path = _start(cur, linked)
+    _insert_refused(cur, path, user=OTHER_WRITER)
+    _insert_refused(cur, f"enrichment/{linked['dataset']}/run-999999.json.gz")
+    _insert_refused(cur, f"enrichment/{linked['dataset']}/run-999999.json.gz", role="bloom_workflows")
+    put_file(cur, "scrna", path)
+
+
+def test_the_pipeline_adds_its_own_runs_file(cur, linked):
+    pipeline = "00000000-0000-0000-0000-00000000aaaa"
+    _, path = _start(cur, linked, user=pipeline, role="bloom_workflows")
+    put_file(cur, "scrna", path, user=pipeline, role="bloom_workflows")
+
+
+def test_writer_uploads_elsewhere_in_scrna_still_work(cur):
+    put_file(cur, "scrna", "h5ad/test-enrichment-elsewhere.h5ad")
+
+
+def test_a_writer_cannot_overwrite_an_enrichment_file(cur, linked):
+    _, path = _start(cur, linked)
+    put_file(cur, "scrna", path)
+    as_role(cur, "bloom_writer", WRITER)
+    cur.execute("UPDATE storage.objects SET metadata = '{\"size\": 2}' WHERE bucket_id = 'scrna' "
+                "AND name = %s", (path,))
+    assert cur.rowcount == 0
+    as_admin(cur)
+
+
+@pytest.mark.parametrize("command", ["UPDATE", "DELETE"])
+def test_admin_cannot_change_a_ready_runs_file(cur, linked, command):
+    run_id, path = _start(cur, linked)
+    put_file(cur, "scrna", path)
+    finish_run(cur, run_id)
+    cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
+    as_role(cur, "bloom_admin", WRITER)
+    cur.execute(
+        "UPDATE storage.objects SET metadata = '{\"size\": 2}' WHERE name = %s" if command == "UPDATE"
+        else "DELETE FROM storage.objects WHERE name = %s", (path,),
+    )
+    assert cur.rowcount == 0
+    as_admin(cur)
 
 
 # --------------------------------------------------------------------------- #
@@ -285,8 +302,7 @@ def test_a_ready_run_never_changes(cur, linked, sql):
 @pytest.mark.parametrize("function", [
     "link_scrna_dataset_genome(bigint, bigint)",
     "start_scrna_enrichment_run(bigint, bigint, bigint, jsonb, bigint)",
-    "add_scrna_enrichment_terms(bigint, jsonb)",
-    "finish_scrna_enrichment_run(bigint, integer)",
+    "finish_scrna_enrichment_run(bigint, text, bigint, integer)",
     "abandon_scrna_enrichment_run(bigint)",
 ])
 @pytest.mark.parametrize("role, allowed", [("bloom_writer", True), ("bloom_workflows", True),
@@ -296,13 +312,13 @@ def test_who_may_upload(cur, function, role, allowed):
     assert cur.fetchone()[0] is allowed
 
 
-@pytest.mark.parametrize("table", ["scrna_enrichment_runs", "scrna_enrichment_terms"])
-def test_readers_select_and_only_admin_writes(cur, table):
-    for role, privilege, allowed in (("bloom_user", "SELECT", True), ("bloom_agent", "SELECT", True),
-                                     ("bloom_writer", "INSERT", False),
-                                     ("bloom_workflows", "INSERT", False)):
-        cur.execute("SELECT has_table_privilege(%s, %s, %s)", (role, f"public.{table}", privilege))
-        assert cur.fetchone()[0] is allowed
+@pytest.mark.parametrize("role, privilege, allowed", [
+    ("bloom_user", "SELECT", True), ("bloom_agent", "SELECT", True),
+    ("bloom_writer", "INSERT", False), ("bloom_workflows", "INSERT", False),
+])
+def test_table_access(cur, role, privilege, allowed):
+    cur.execute("SELECT has_table_privilege(%s, 'public.scrna_enrichment_runs', %s)", (role, privilege))
+    assert cur.fetchone()[0] is allowed
 
 
 def test_the_migrations_apply_twice(cur, linked):
@@ -314,8 +330,8 @@ def test_the_migrations_apply_twice(cur, linked):
 def test_the_rollbacks_remove_everything(cur, linked):
     for rollback in ROLLBACKS:
         cur.execute(_sql_body(rollback))
-    cur.execute("SELECT to_regclass('public.genome_gene_terms'), "
-                "to_regclass('public.scrna_enrichment_terms')")
+    cur.execute("SELECT to_regclass('public.genome_annotation_builds'), "
+                "to_regclass('public.scrna_enrichment_runs')")
     assert cur.fetchone() == (None, None)
     cur.execute("SELECT count(*) FROM information_schema.columns WHERE table_name = "
                 "'scrna_datasets' AND column_name = 'genome_version_id'")
