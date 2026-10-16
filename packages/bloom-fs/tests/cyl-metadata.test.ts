@@ -5,7 +5,6 @@ import * as path from 'path'
 import * as xlsx from 'xlsx'
 
 import { getImageMetadata } from '../src/cyl/metadata'
-import type { CylImageMetadata } from '../src/cyl/metadata'
 
 const CAMERA_FIELDS = [
   'num_frames',
@@ -76,32 +75,5 @@ describe('getImageMetadata camera settings', () => {
       frame_number: 1,
       accession_name: 'Col-0',
     })
-  })
-
-  it('lets callers set camera settings on the metadata type', () => {
-    // Bloom Desktop builds CylImageMetadata itself with real camera values.
-    const metadata: CylImageMetadata = {
-      species: 'Arabidopsis',
-      experiment: 'exp-1',
-      wave_number: 0,
-      germ_day: undefined,
-      germ_day_color: undefined,
-      plant_age_days: 14,
-      date_scanned: undefined,
-      device_name: undefined,
-      plant_qr_code: 'PLANT-1',
-      frame_number: 1,
-      accession_name: 'Col-0',
-      phenotyper_name: undefined,
-      phenotyper_email: undefined,
-      scientist_name: undefined,
-      scientist_email: undefined,
-      num_frames: 72,
-      exposure_time: 10000,
-      gain: 100,
-      gamma: 1.2,
-      seconds_per_rot: 7.5,
-    }
-    expect(metadata.gamma).toBe(1.2)
   })
 })

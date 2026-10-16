@@ -119,6 +119,7 @@ describe('uploadRawFile', () => {
 describe('uploadJpegImage', () => {
   it('re-encodes to JPEG at quality 85 by default', async () => {
     const src = await pngFile()
+    const jpeg = vi.spyOn(sharp.prototype, 'jpeg')
     const { uploader, bucket } = fakeStorage()
 
     expect(await uploader.uploadJpegImage(src, 'out.jpg', 'b')).toEqual({ error: null })
@@ -126,6 +127,7 @@ describe('uploadJpegImage', () => {
     const [, body, options] = bucket.upload.mock.calls[0]
     expect(options).toEqual({ contentType: 'image/jpeg' })
     expect((await sharp(body).metadata()).format).toBe('jpeg')
+    expect(jpeg).toHaveBeenCalledWith({ quality: 85 })
   })
 
   it('uses the quality it is given', async () => {

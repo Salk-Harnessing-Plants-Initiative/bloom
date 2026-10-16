@@ -73,24 +73,36 @@ describe('insertImageMetadata (cylinder images)', () => {
       num_frames: 72,
       exposure_time: 10000,
       gain: 100,
-      brightness: 0,
-      contrast: 0,
+      brightness: 3,
+      contrast: 4,
       gamma: 1.2,
       seconds_per_rot: 7,
     })
     expect(result).toEqual({ created: 7, error: null })
-    expect(client.rpc).toHaveBeenCalledWith(
-      'insert_image_v3_0',
-      expect.objectContaining({
-        species_common_name: 'Arabidopsis',
-        frame_number_: 1,
-        num_frames: 72,
-        exposure_time: 10000,
-        gain: 100,
-        gamma: 1.2,
-        seconds_per_rot: 7,
-      })
-    )
+    expect(client.rpc).toHaveBeenCalledWith('insert_image_v3_0', {
+      species_common_name: 'Arabidopsis',
+      experiment: 'exp-1',
+      wave_number: 0,
+      germ_day: 3,
+      germ_day_color: 'red',
+      plant_age_days: 14,
+      date_scanned_: '2026-10-16',
+      device_name: 'PBIOBScanner',
+      plant_qr_code: 'PLANT-1',
+      accession_name: 'Col-0',
+      frame_number_: 1,
+      phenotyper_name: 'Ben',
+      phenotyper_email: 'ben@salk.edu',
+      scientist_name: 'Sci',
+      scientist_email: 'sci@salk.edu',
+      num_frames: 72,
+      exposure_time: 10000,
+      gain: 100,
+      brightness: 3,
+      contrast: 4,
+      gamma: 1.2,
+      seconds_per_rot: 7,
+    })
   })
 
   it('sends 0 for camera settings that are missing', async () => {

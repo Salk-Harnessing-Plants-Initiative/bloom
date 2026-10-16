@@ -80,11 +80,12 @@ export class SupabaseUploader implements FileUploader {
       }
     }
 
-    const hash = crypto.createHash('sha256').update(new Uint8Array(buffer)).digest('hex')
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex')
     const { error } = await this.supabase.storage
       .from(bucket)
       .upload(dst, buffer, { contentType: contentType || inferContentType(src) })
-    return { error, hash, sizeBytes: fileSize }
+    // The bytes read, which may differ from the stat if the file was still being written.
+    return { error, hash, sizeBytes: buffer.length }
   }
 }
 
