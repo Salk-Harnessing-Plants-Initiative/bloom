@@ -1,0 +1,176 @@
+"""
+Integration tests for bloom#1119: insert_image_v3_0 accepts decimal camera settings.
+
+Before 20261016120000_widen_cyl_camera_settings_to_double, exposure time, gain, brightness,
+contrast and seconds per rotation were integer, so an upload with brightness 0.5 failed with
+22P02 and the image was not stored.
+
+Runs as `pg_conn` (supabase_admin) against the database CI has migrated; every test rolls back.
+"""
+
+import uuid
+
+import pytest
+
+psycopg = pytest.importorskip("psycopg")
+
+CAMERA_COLUMNS = (
+    "scanner_exposure_time",
+    "scanner_gain",
+    "scanner_brightness",
+    "scanner_contrast",
+    "scanner_gamma",
+    "scanner_seconds_per_rot",
+)
+
+
+@pytest.fixture
+def cur(pg_conn):
+    with pg_conn.cursor() as cursor:
+        yield cursor
+    pg_conn.rollback()
+
+
+@pytest.fixture
+def seeded(cur):
+    """A species and scanner the RPC can find, with names unique to this test."""
+    tag = uuid.uuid4().hex[:8]
+    species, scanner = f"species-{tag}", f"scanner-{tag}"
+    cur.execute("INSERT INTO species (common_name) VALUES (%s)", (species,))
+    cur.execute("INSERT INTO cyl_scanners (name) VALUES (%s)", (scanner,))
+    return {"species": species, "scanner": scanner, "tag": tag}
+
+
+def _insert_image(
+    cur,
+    seeded,
+    plant,
+    *,
+    exposure_time,
+    gain,
+    brightness,
+    contrast,
+    gamma,
+    seconds_per_rot,
+):
+    """Call insert_image_v3_0 by argument name, as PostgREST does, and return the image id."""
+    tag = seeded["tag"]
+    cur.execute(
+        """
+        SELECT public.insert_image_v3_0(
+            species_common_name := %(species)s, experiment := %(experiment)s,
+            wave_number := 1, germ_day := 3, germ_day_color := 'red', plant_age_days := 14,
+            date_scanned_ := '2026-10-16', device_name := %(scanner)s,
+            plant_qr_code := %(plant)s, accession_name := %(accession)s, frame_number_ := 1,
+            phenotyper_name := 'Test', phenotyper_email := %(phenotyper_email)s,
+            scientist_name := 'Test', scientist_email := %(scientist_email)s,
+            num_frames := 72, exposure_time := %(exposure_time)s, gain := %(gain)s,
+            brightness := %(brightness)s, contrast := %(contrast)s, gamma := %(gamma)s,
+            seconds_per_rot := %(seconds_per_rot)s)
+        """,
+        {
+            "species": seeded["species"],
+            "scanner": seeded["scanner"],
+            "experiment": f"exp-{tag}",
+            "plant": f"{plant}-{tag}",
+            "accession": f"acc-{tag}",
+            "phenotyper_email": f"pheno-{tag}@example.org",
+            "scientist_email": f"sci-{tag}@example.org",
+            "exposure_time": exposure_time,
+            "gain": gain,
+            "brightness": brightness,
+            "contrast": contrast,
+            "gamma": gamma,
+            "seconds_per_rot": seconds_per_rot,
+        },
+    )
+    image_id = cur.fetchone()[0]
+    assert image_id is not None
+    return image_id
+
+
+def _settings_for(cur, image_id):
+    cur.execute(
+        f"""
+        SELECT s.cyl_camera_settings_id, {", ".join("cs." + c for c in CAMERA_COLUMNS)}
+          FROM cyl_images i
+          JOIN cyl_scans s ON s.id = i.scan_id
+          JOIN cyl_camera_settings cs ON cs.id = s.cyl_camera_settings_id
+         WHERE i.id = %s
+        """,
+        (image_id,),
+    )
+    row = cur.fetchone()
+    return row[0], dict(zip(CAMERA_COLUMNS, row[1:]))
+
+
+def test_camera_setting_columns_are_double_precision(cur):
+    cur.execute(
+        """
+        SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'cyl_camera_settings'
+           AND column_name = ANY(%s)
+        """,
+        (list(CAMERA_COLUMNS),),
+    )
+    assert dict(cur.fetchall()) == {c: "double precision" for c in CAMERA_COLUMNS}
+
+
+def test_decimal_settings_are_stored_exactly(cur, seeded):
+    image_id = _insert_image(
+        cur,
+        seeded,
+        "plant-a",
+        exposure_time=10000.5,
+        gain=2.5,
+        brightness=0.5,
+        contrast=0.25,
+        gamma=1.2,
+        seconds_per_rot=7.5,
+    )
+    _, stored = _settings_for(cur, image_id)
+    assert stored == {
+        "scanner_exposure_time": 10000.5,
+        "scanner_gain": 2.5,
+        "scanner_brightness": 0.5,
+        "scanner_contrast": 0.25,
+        "scanner_gamma": 1.2,
+        "scanner_seconds_per_rot": 7.5,
+    }
+
+
+def test_whole_number_settings_still_work(cur, seeded):
+    image_id = _insert_image(
+        cur,
+        seeded,
+        "plant-b",
+        exposure_time=10000,
+        gain=100,
+        brightness=0,
+        contrast=0,
+        gamma=1,
+        seconds_per_rot=7,
+    )
+    _, stored = _settings_for(cur, image_id)
+    assert stored == {
+        "scanner_exposure_time": 10000,
+        "scanner_gain": 100,
+        "scanner_brightness": 0,
+        "scanner_contrast": 0,
+        "scanner_gamma": 1,
+        "scanner_seconds_per_rot": 7,
+    }
+
+
+def test_identical_settings_share_one_row(cur, seeded):
+    settings = {
+        "exposure_time": 9000,
+        "gain": 150,
+        "brightness": 0.5,
+        "contrast": 0,
+        "gamma": 1.0,
+        "seconds_per_rot": 7.5,
+    }
+    first, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-c", **settings))
+    second, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-d", **settings))
+    assert first == second
