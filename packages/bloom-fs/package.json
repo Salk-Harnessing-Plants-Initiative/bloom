@@ -22,7 +22,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "dependencies": {
-    "@salk-harnessing-plants-initiative/bloom-js": "^0.3.0",
+    "@salk-harnessing-plants-initiative/bloom-js": "^0.4.0",
     "@supabase/supabase-js": "^2.0.0",
     "ajv": "^8.12.0",
     "csv-parse": "^5.5.6",
