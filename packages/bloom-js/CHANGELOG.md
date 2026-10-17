@@ -8,6 +8,8 @@ published as `X.Y.Z-dev.N` under the `dev` dist-tag).
 
 ## [Unreleased]
 
+## [0.4.0]
+
 ### Added
 
 - GraviScan: `insertGraviImageMetadata`, `updateGraviImageMetadata`, `getAllGraviScanners`, `insertGraviScanSession` and `insertGraviScanMetadata`, with the types `GraviImageMetadata`, `GraviScannersRow`, `GraviScanSessionParams` and `GraviScanMetadataParams`. Ported from the V1 GitLab packages (`@salk-hpi/bloom-js` 0.3.0-dev.4).
