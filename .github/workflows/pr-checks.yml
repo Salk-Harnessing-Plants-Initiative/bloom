@@ -73,6 +73,12 @@ jobs:
           cd packages/bloom-js && npx tsc -p tsconfig.json
           cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
 
+      # Unit tests for bloom-js and bloom-fs (mocked Supabase client)
+      - name: Test shared packages
+        run: |
+          cd packages/bloom-js && npm test
+          cd ../../packages/bloom-fs && npm test
+
       # Checks all frontend code for type errors
       - name: TypeScript type check
         run: cd web && npx tsc --noEmit
