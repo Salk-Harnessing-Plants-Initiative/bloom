@@ -1,6 +1,6 @@
 {
   "name": "@salk-harnessing-plants-initiative/bloom-fs",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Bloom filesystem loaders for cylinder and scRNA data",
   "license": "BSD-2-Clause",
   "repository": {
@@ -12,7 +12,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc --build",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "vitest run"
   },
   "files": [
     "dist"
@@ -21,7 +22,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "dependencies": {
-    "@salk-harnessing-plants-initiative/bloom-js": "^0.3.0",
+    "@salk-harnessing-plants-initiative/bloom-js": "^0.4.0",
     "@supabase/supabase-js": "^2.0.0",
     "ajv": "^8.12.0",
     "csv-parse": "^5.5.6",

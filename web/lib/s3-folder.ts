@@ -26,7 +26,6 @@ export const FOLDER_EXAMPLE = {
   files: [
     "col0_root_rep1_S1_L001_R1_001.fastq.gz",
     "col0_root_rep1_S1_L001_R2_001.fastq.gz",
-    "col0_root_rep1_S1_L001_I1_001.fastq.gz (optional)",
   ],
 };
 

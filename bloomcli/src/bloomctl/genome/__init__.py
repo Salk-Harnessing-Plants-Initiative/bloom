@@ -3,7 +3,7 @@
 A genome has numbered versions; each is a gzipped FASTA and GTF in the genome-references
 bucket, and a version's files never change once it is uploaded.
 
-  upload    — a writer stores a FASTA and GTF as a genome's next version
+  upload    — store a FASTA and GTF as a genome's next version (a member: a new genome only)
   list      — every genome, its species and its versions, with their status
   download  — a version's FASTA and GTF, checked against Bloom's record
 """

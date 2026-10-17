@@ -231,35 +231,57 @@ describe("checking the folder", () => {
 });
 
 describe("the accepted layout", () => {
-  it("is shown behind the ? with an example folder", () => {
+  const arn = "arn:aws:iam::865381831093:user/bloomv2-workflows-job";
+
+  function openHelp() {
+    fireEvent.click(screen.getByRole("button", { name: "What the folder must contain" }));
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("is shown behind the ? as a folder, access and example", () => {
     render(<Harness />);
     const help = screen.getByRole("button", { name: "What the folder must contain" });
     expect(help.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(help);
     expect(help.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText(/R1 and R2 for every lane/)).toBeTruthy();
-    expect(screen.getByText(/other files/)).toBeTruthy();
+    for (const heading of ["Folder", "Access", "Example"]) {
+      expect(screen.getByText(heading)).toBeTruthy();
+    }
+    expect(screen.getByText(/R1 \+ R2 per lane/)).toBeTruthy();
     expect(screen.getByText(/col0_root_rep1_S1_L001_R1_001\.fastq\.gz/)).toBeTruthy();
     fireEvent.click(help);
-    expect(screen.queryByText(/R1 and R2 for every lane/)).toBeNull();
+    expect(screen.queryByText("Folder")).toBeNull();
   });
 
-  it("offers a public folder, and no private one while Bloom has no reader", () => {
+  it("offers a public bucket, and no private one while Bloom has no reader", () => {
     render(<Harness />);
-    fireEvent.click(screen.getByRole("button", { name: "What the folder must contain" }));
-    expect(screen.getByText(/A public folder: upload the reads/)).toBeTruthy();
+    openHelp();
     expect(screen.getByText("salk-tm-pub")).toBeTruthy();
-    expect(screen.getByText(/open to anyone on the internet/)).toBeTruthy();
-    expect(screen.queryByText(/A private folder/)).toBeNull();
+    expect(screen.queryByText(/Private bucket/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy Bloom's AWS user" })).toBeNull();
   });
 
-  it("offers sharing a private folder with Bloom's AWS user, by its ARN", () => {
-    const arn = "arn:aws:iam::865381831093:user/bloomv2-workflows-job";
+  it("copies Bloom's AWS user for a private bucket, with the permissions behind an i", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     render(<Harness readerArn={arn} />);
-    fireEvent.click(screen.getByRole("button", { name: "What the folder must contain" }));
-    expect(screen.getByText(/A private folder: give Bloom's AWS user permission/)).toBeTruthy();
-    expect(screen.getByText(arn)).toBeTruthy();
-    expect(screen.getByText(/Remove the permission when the run is done/)).toBeTruthy();
+    openHelp();
+    expect(screen.getByText(/Private bucket/)).toBeTruthy();
+    expect(screen.getByLabelText(/s3:ListBucket and s3:GetObject/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy Bloom's AWS user" }));
+    expect(writeText).toHaveBeenCalledWith(arn);
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeTruthy();
+  });
+
+  it("shows Bloom's AWS user to copy by hand when the browser won't copy it", async () => {
+    vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+    render(<Harness readerArn={arn} />);
+    openHelp();
+    fireEvent.click(screen.getByRole("button", { name: "Copy Bloom's AWS user" }));
+    expect(await screen.findByText(arn)).toBeTruthy();
   });
 });
 

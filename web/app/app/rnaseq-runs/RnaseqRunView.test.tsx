@@ -112,11 +112,23 @@ describe("RnaseqRunView", () => {
         loadedDatasetName="TEST tinygex pipeline check_v2"
       />
     );
-    expect(screen.getByText(/TEST tinygex pipeline check_v2/)).toBeTruthy();
-    expect(screen.queryByText(/TEST tinygex pipeline check ·/)).toBeNull();
+    const datasetRow = screen.getByText("Dataset").nextElementSibling as HTMLElement;
+    expect(datasetRow.textContent).toBe("TEST tinygex pipeline check_v2");
     expect(screen.getByRole("link", { name: "Explore the dataset" }).getAttribute("href")).toBe(
       "/app/expression/1/24"
     );
+  });
+
+  it("puts one Explore the dataset button at the top, beside the run's title", () => {
+    render(
+      <RnaseqRunView initialRun={{ ...RUN, status: "succeeded", dataset_id: 24 }} startedBy="you" speciesLabel={null} />
+    );
+    const [button, ...others] = screen.getAllByRole("link", { name: "Explore the dataset" });
+    expect(others).toEqual([]);
+    const title = screen.getByRole("heading", { name: "Run 1" });
+    expect(button.parentElement).toBe(title.parentElement);
+    expect(button.className).toContain("rounded-full");
+    expect(button.className).toContain("bg-lime-700");
   });
 
   it("keeps the typed name when the loaded name couldn't be read", () => {
