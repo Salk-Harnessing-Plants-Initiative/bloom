@@ -18,8 +18,7 @@ SET LOCAL lock_timeout = '5s';
 
 -- 1. Functions -----------------------------------------------------------------------------
 
--- Links a dataset with no genome version to one; scrna_datasets_keep_genome_version checks
--- the version is ready and of the dataset's species.
+-- Links a dataset with no genome version to a ready version of the dataset's species.
 CREATE OR REPLACE FUNCTION public.link_scrna_dataset_genome(p_dataset_id BIGINT, p_version_id BIGINT)
 RETURNS VOID
 LANGUAGE plpgsql
@@ -28,11 +27,15 @@ SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_current BIGINT;
+    v_dataset_species BIGINT;
+    v_status TEXT;
+    v_species BIGINT;
 BEGIN
     IF auth.uid() IS NULL THEN
         RAISE EXCEPTION 'sign in to link a dataset' USING ERRCODE = '42501';
     END IF;
-    SELECT d.genome_version_id INTO v_current FROM public.scrna_datasets d
+    SELECT d.genome_version_id, d.species_id INTO v_current, v_dataset_species
+      FROM public.scrna_datasets d
      WHERE d.id = p_dataset_id AND d.deleted_at IS NULL FOR UPDATE;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'no dataset %', p_dataset_id USING ERRCODE = '22023';
@@ -40,6 +43,17 @@ BEGIN
     IF v_current IS NOT NULL THEN
         RAISE EXCEPTION 'dataset % is already linked to genome version %', p_dataset_id, v_current
             USING ERRCODE = '55000';
+    END IF;
+    SELECT v.status, g.species_id INTO v_status, v_species
+      FROM public.genome_reference_versions v
+      JOIN public.genome_references g ON g.id = v.genome_id
+     WHERE v.id = p_version_id;
+    IF v_status IS DISTINCT FROM 'ready' THEN
+        RAISE EXCEPTION 'genome version % is not ready', p_version_id USING ERRCODE = '22023';
+    END IF;
+    IF v_species IS DISTINCT FROM v_dataset_species THEN
+        RAISE EXCEPTION 'genome version % is for species %, not the dataset''s species %',
+            p_version_id, v_species, v_dataset_species USING ERRCODE = '22023';
     END IF;
     UPDATE public.scrna_datasets SET genome_version_id = p_version_id WHERE id = p_dataset_id;
 END;

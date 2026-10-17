@@ -34,81 +34,112 @@ END $$;
 CREATE INDEX IF NOT EXISTS scrna_datasets_genome_version_id_idx
     ON public.scrna_datasets (genome_version_id);
 
--- A dataset's genome version is a ready version of the dataset's species, and once set it
--- never changes or clears.
-CREATE OR REPLACE FUNCTION public.scrna_datasets_keep_genome_version()
-RETURNS TRIGGER
+-- A Cell Ranger run linked to the dataset it loaded gives the dataset its genome version, in
+-- the same call that links them (link_rnaseq_run_dataset, otherwise unchanged from
+-- 20261007000000).
+CREATE OR REPLACE FUNCTION public.link_rnaseq_run_dataset(p_run_id BIGINT, p_dataset_id BIGINT)
+RETURNS BIGINT
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-    v_status TEXT;
-    v_species BIGINT;
+  v_run public.rnaseq_runs%ROWTYPE;
+  v_species BIGINT;
+  v_dataset public.scrna_datasets%ROWTYPE;
+  v_linked BIGINT;
+  v_source JSONB;
+  v_genome BIGINT;
 BEGIN
-    IF TG_OP = 'UPDATE' AND OLD.genome_version_id IS NOT NULL THEN
-        IF NEW.genome_version_id IS DISTINCT FROM OLD.genome_version_id THEN
-            RAISE EXCEPTION 'dataset % is already linked to genome version %; it cannot change',
-                OLD.id, OLD.genome_version_id USING ERRCODE = '55000';
-        END IF;
-        IF NEW.species_id IS DISTINCT FROM OLD.species_id THEN
-            RAISE EXCEPTION 'dataset % is linked to genome version %; its species cannot change',
-                OLD.id, OLD.genome_version_id USING ERRCODE = '55000';
-        END IF;
-        RETURN NEW;
-    END IF;
-    IF NEW.genome_version_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-    SELECT v.status, g.species_id INTO v_status, v_species
-      FROM public.genome_reference_versions v
-      JOIN public.genome_references g ON g.id = v.genome_id
-     WHERE v.id = NEW.genome_version_id;
-    IF v_status IS DISTINCT FROM 'ready' THEN
-        RAISE EXCEPTION 'genome version % is not ready', NEW.genome_version_id
-            USING ERRCODE = '22023';
-    END IF;
-    IF v_species IS DISTINCT FROM NEW.species_id THEN
-        RAISE EXCEPTION 'genome version % is for species %, not the dataset''s species %',
-            NEW.genome_version_id, v_species, NEW.species_id USING ERRCODE = '22023';
-    END IF;
-    RETURN NEW;
+  IF p_run_id IS NULL OR p_dataset_id IS NULL THEN
+    RAISE EXCEPTION 'run id and dataset id are required' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT * INTO v_run FROM public.rnaseq_runs WHERE id = p_run_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no run %', p_run_id USING ERRCODE = 'P0002';
+  END IF;
+  IF v_run.dataset_id = p_dataset_id THEN
+    RETURN v_run.dataset_id;
+  END IF;
+  IF v_run.dataset_id IS NOT NULL THEN
+    RAISE EXCEPTION 'run % is already linked to dataset %', p_run_id, v_run.dataset_id
+      USING ERRCODE = '23505';
+  END IF;
+  IF v_run.workflow_type <> 'scrna-cellranger' THEN
+    RAISE EXCEPTION 'run % is not a Cell Ranger run', p_run_id USING ERRCODE = '22023';
+  END IF;
+  IF v_run.status NOT IN ('running', 'succeeded') THEN
+    RAISE EXCEPTION 'run % is %, so its load has not succeeded', p_run_id, v_run.status
+      USING ERRCODE = '55000';
+  END IF;
+  IF jsonb_typeof(v_run.metadata -> 'species_id') IS DISTINCT FROM 'number'
+     OR jsonb_typeof(v_run.metadata -> 'dataset_name') IS DISTINCT FROM 'string' THEN
+    RAISE EXCEPTION 'run % has no species and dataset name', p_run_id USING ERRCODE = '22023';
+  END IF;
+  v_species := (v_run.metadata ->> 'species_id')::BIGINT;
+
+  SELECT * INTO v_dataset FROM public.scrna_datasets
+   WHERE id = p_dataset_id AND deleted_at IS NULL
+     FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no dataset %', p_dataset_id USING ERRCODE = 'P0002';
+  END IF;
+  IF v_dataset.species_id IS DISTINCT FROM v_species THEN
+    RAISE EXCEPTION 'dataset % is not of run %''s species', v_dataset.id, p_run_id
+      USING ERRCODE = '22023';
+  END IF;
+  IF (v_dataset.metadata ->> 'rnaseq_run_id') IS DISTINCT FROM p_run_id::TEXT THEN
+    RAISE EXCEPTION 'dataset % was not loaded for run %', v_dataset.id, p_run_id
+      USING ERRCODE = '42501';
+  END IF;
+  IF v_dataset.ingested_at IS NULL THEN
+    RAISE EXCEPTION 'dataset % is not finished loading', v_dataset.id USING ERRCODE = '55000';
+  END IF;
+  -- Before the owner check: a dataset another run took is no longer the pipeline's.
+  SELECT id INTO v_linked FROM public.rnaseq_runs WHERE dataset_id = v_dataset.id;
+  IF FOUND THEN
+    RAISE EXCEPTION 'dataset % is already linked to run %', v_dataset.id, v_linked
+      USING ERRCODE = '23505';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM auth.users u
+     WHERE u.id = v_dataset.created_by
+       AND coalesce((u.raw_app_meta_data ->> 'is_workflows')::BOOLEAN, false)
+  ) THEN
+    RAISE EXCEPTION 'dataset % was not loaded by the pipeline', v_dataset.id
+      USING ERRCODE = '42501';
+  END IF;
+
+  v_source := jsonb_strip_nulls(jsonb_build_object(
+    'origin', v_run.metadata -> 'origin',
+    'accession', v_run.metadata -> 'accession',
+    'experiment_name', v_run.metadata -> 'experiment_name',
+    'citation', v_run.metadata -> 'citation',
+    'attributes', v_run.metadata -> 'attributes',
+    'rnaseq_run_id', p_run_id
+  ));
+
+  -- The run's genome version becomes the dataset's when it is ready and of the dataset's
+  -- species; otherwise the dataset is left for a writer to link.
+  SELECT v.id INTO v_genome
+    FROM public.genome_reference_versions v
+    JOIN public.genome_references g ON g.id = v.genome_id
+   WHERE v.id = v_run.genome_version_id AND v.status = 'ready'
+     AND g.species_id = v_dataset.species_id;
+
+  UPDATE public.scrna_datasets
+     SET url = coalesce(nullif(btrim(v_run.metadata ->> 'source_url'), ''), url),
+         genome_version_id = coalesce(genome_version_id, v_genome),
+         metadata = coalesce(metadata, '{}'::JSONB) || jsonb_build_object('source', v_source),
+         created_by = v_run.requested_by
+   WHERE id = v_dataset.id;
+
+  UPDATE public.rnaseq_runs SET dataset_id = v_dataset.id WHERE id = p_run_id;
+
+  RETURN v_dataset.id;
 END;
 $$;
-
-DROP TRIGGER IF EXISTS scrna_datasets_keep_genome_version ON public.scrna_datasets;
-CREATE TRIGGER scrna_datasets_keep_genome_version
-    BEFORE INSERT OR UPDATE OF genome_version_id, species_id ON public.scrna_datasets
-    FOR EACH ROW EXECUTE FUNCTION public.scrna_datasets_keep_genome_version();
-
--- A Cell Ranger run linked to the dataset it loaded gives the dataset its genome version. The
--- dataset trigger refuses a version of another species; the run's link is then left unmade
--- rather than failing the load, and a writer can look into it.
-CREATE OR REPLACE FUNCTION public.rnaseq_runs_link_dataset_genome()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-    IF NEW.dataset_id IS NOT NULL AND NEW.genome_version_id IS NOT NULL THEN
-        BEGIN
-            UPDATE public.scrna_datasets
-               SET genome_version_id = NEW.genome_version_id
-             WHERE id = NEW.dataset_id AND genome_version_id IS NULL;
-        EXCEPTION WHEN invalid_parameter_value THEN
-            RAISE WARNING 'dataset % not linked to genome version %: %', NEW.dataset_id,
-                NEW.genome_version_id, SQLERRM;
-        END;
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS rnaseq_runs_link_dataset_genome ON public.rnaseq_runs;
-CREATE TRIGGER rnaseq_runs_link_dataset_genome
-    AFTER INSERT OR UPDATE OF dataset_id ON public.rnaseq_runs
-    FOR EACH ROW EXECUTE FUNCTION public.rnaseq_runs_link_dataset_genome();
 
 -- Datasets already loaded by a run on a ready genome version of their species take it now;
 -- any other is left for a writer to link.
@@ -305,8 +336,6 @@ REVOKE UPDATE, DELETE, TRUNCATE ON public.scrna_enrichment_runs FROM service_rol
 GRANT SELECT ON public.scrna_enrichment_runs TO bloom_user, bloom_agent, bloom_workflows;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.scrna_enrichment_runs TO bloom_admin;
 
-REVOKE EXECUTE ON FUNCTION public.scrna_datasets_keep_genome_version() FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.rnaseq_runs_link_dataset_genome() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.scrna_enrichment_runs_guard() FROM PUBLIC, anon, authenticated;
 
 COMMIT;

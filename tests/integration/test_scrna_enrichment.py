@@ -34,7 +34,9 @@ from tests.integration.genome_reference_helpers import (
     new_genome_name,
     ready,
     refused,
+    start as start_version,
 )
+from tests.integration import _scrna_pipeline_load as load
 from tests.integration.test_rnaseq_runs import _sql_body
 
 psycopg = pytest.importorskip("psycopg")
@@ -96,18 +98,23 @@ def _gene_counts(cur, run_id):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_run_gives_its_dataset_its_genome_version(cur, species_id, version_id):
-    dataset_id, _ = add_dataset(cur, species_id)
-    run_id = add_run(cur, version_id)
-    cur.execute("UPDATE rnaseq_runs SET dataset_id = %s WHERE id = %s", (dataset_id, run_id))
-    assert _genome_of(cur, dataset_id) == version_id
+def _linked_by_a_run(cur, species_id, run_version):
+    """A pipeline-loaded dataset linked to its Cell Ranger run, which records `run_version`."""
+    pipeline, scientist = load.user(cur, workflows=True), load.user(cur)
+    run_id = load.run(cur, scientist, species_id)
+    cur.execute("UPDATE rnaseq_runs SET genome_version_id = %s WHERE id = %s", (run_version, run_id))
+    dataset_id = load.loaded(cur, pipeline, species_id, run_id=run_id)
+    load.link(cur, pipeline, run_id, dataset_id)
+    return dataset_id
 
 
-def test_a_run_on_another_species_leaves_the_dataset_unlinked(cur, version_id):
-    dataset_id, _ = add_dataset(cur, add_species(cur))
-    run_id = add_run(cur, version_id)
-    cur.execute("UPDATE rnaseq_runs SET dataset_id = %s WHERE id = %s", (dataset_id, run_id))
-    assert _genome_of(cur, dataset_id) is None
+def test_linking_a_run_gives_its_dataset_the_runs_genome_version(cur, species_id, version_id):
+    assert _genome_of(cur, _linked_by_a_run(cur, species_id, version_id)) == version_id
+
+
+def test_a_run_on_a_genome_of_another_species_leaves_the_dataset_for_a_writer(cur, species_id):
+    elsewhere = ready(cur, new_genome_name(), add_species(cur))[0]
+    assert _genome_of(cur, _linked_by_a_run(cur, species_id, elsewhere)) is None
 
 
 def test_a_writer_links_an_older_dataset_once(cur, species_id, version_id):
@@ -118,13 +125,6 @@ def test_a_writer_links_an_older_dataset_once(cur, species_id, version_id):
     as_role(cur, "bloom_writer", WRITER)
     refused(cur, "SELECT public.link_scrna_dataset_genome(%s, %s)", (dataset_id, other),
             psycopg.errors.ObjectNotInPrerequisiteState, match="already linked")
-    # Refused for every role, a writer's direct update and the superuser's alike.
-    as_role(cur, "bloom_writer", WRITER)
-    refused(cur, "UPDATE scrna_datasets SET genome_version_id = NULL WHERE id = %s", (dataset_id,),
-            psycopg.errors.ObjectNotInPrerequisiteState)
-    as_admin(cur)
-    refused(cur, "UPDATE scrna_datasets SET species_id = %s WHERE id = %s",
-            (add_species(cur), dataset_id), psycopg.errors.ObjectNotInPrerequisiteState)
 
 
 def test_a_genome_of_another_species_is_refused(cur, version_id):
@@ -132,6 +132,14 @@ def test_a_genome_of_another_species_is_refused(cur, version_id):
     as_role(cur, "bloom_writer", WRITER)
     refused(cur, "SELECT public.link_scrna_dataset_genome(%s, %s)", (dataset_id, version_id),
             psycopg.errors.InvalidParameterValue, match="not the dataset's species")
+
+
+def test_a_genome_version_that_is_not_ready_is_refused(cur, species_id):
+    dataset_id, _ = add_dataset(cur, species_id)
+    uploading = start_version(cur, new_genome_name(), species=species_id)[0]
+    as_role(cur, "bloom_writer", WRITER)
+    refused(cur, "SELECT public.link_scrna_dataset_genome(%s, %s)", (dataset_id, uploading),
+            psycopg.errors.InvalidParameterValue, match="is not ready")
 
 
 # --------------------------------------------------------------------------- #

@@ -739,7 +739,12 @@ def _migration_body() -> str:
 
 
 # Later migrations on scrna_de, newest first; their rollbacks run before this one's.
-LATER_LAYERS = ("scrna_de_results_belong_to_runs", "scrna_de_common_results")
+LATER_LAYERS = (
+    "add_scrna_enrichment_uploads",
+    "add_scrna_enrichment",
+    "scrna_de_results_belong_to_runs",
+    "scrna_de_common_results",
+)
 
 
 def _later_rollback_body() -> str:
