@@ -1,6 +1,6 @@
 {
   "name": "@salk-harnessing-plants-initiative/bloom-fs",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Bloom filesystem loaders for cylinder and scRNA data",
   "license": "BSD-2-Clause",
   "repository": {
