@@ -373,17 +373,21 @@ def _rollback_body() -> str:
 
 
 def _later_rollback_body() -> str:
-    """The rollback for the migration layered on top of this one."""
+    """The rollbacks for the migrations layered on top of this one, newest first."""
     import re
     from pathlib import Path
 
-    matches = sorted((Path(__file__).parent.parent.parent / "supabase" / "rollbacks")
-                     .glob("*_scrna_de_results_belong_to_runs_rollback.sql"))
-    assert matches, "later rollback script not found"
-    return "\n".join(
-        line for line in matches[-1].read_text().splitlines()
-        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
-    )
+    bodies = []
+    for name in ("add_scrna_enrichment_uploads", "add_scrna_enrichment",
+                 "scrna_de_results_belong_to_runs"):
+        matches = sorted((Path(__file__).parent.parent.parent / "supabase" / "rollbacks")
+                         .glob(f"*_{name}_rollback.sql"))
+        assert matches, f"rollback for {name} not found"
+        bodies.append("\n".join(
+            line for line in matches[-1].read_text().splitlines()
+            if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+        ))
+    return "\n".join(bodies)
 
 
 def test_rollback_refuses_while_an_analysis_exists(pg_conn):
