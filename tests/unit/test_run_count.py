@@ -230,6 +230,35 @@ def test_the_report_is_kept_in_reports_and_stored_under_the_run(env, run_id, wor
     ]
 
 
+def test_a_new_run_on_a_counted_folder_stores_its_report_under_the_new_run(env):
+    env.update(BLOOM_RUN_ID="20")
+    assert count(env).returncode == 0
+    Path(env["PUT_CALLS"]).unlink()
+    # Run 21 reuses run 20's folder: the count is skipped, the report is stored for 21.
+    env.update(BLOOM_RUN_ID="21")
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Already done" in result.stdout
+    reports = Path(env["RESULTS_DIR"]) / "reports"
+    assert puts(env) == [
+        f"--put {reports}/web_summary.html --bucket scrna --path reports/21/web_summary.html"
+        " --content-type text/html",
+        f"--put {reports}/metrics_summary.csv --bucket scrna --path reports/21/metrics_summary.csv"
+        " --content-type text/csv",
+    ]
+
+
+def test_a_counted_folder_without_reports_stores_nothing(env):
+    env.update(BLOOM_RUN_ID="20")
+    assert count(env).returncode == 0
+    shutil.rmtree(Path(env["RESULTS_DIR"]) / "reports")
+    Path(env["PUT_CALLS"]).unlink()
+    env.update(BLOOM_RUN_ID="21")
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert puts(env) == []
+
+
 def test_a_failed_upload_doesnt_fail_the_count(env):
     env.update(BLOOM_RUN_ID="8", FAKE_PUT_FAIL="1")
     result = count(env)

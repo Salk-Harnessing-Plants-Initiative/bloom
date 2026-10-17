@@ -56,6 +56,8 @@ POLL_INTERVAL = _resolve_poll_interval()
 _running = True
 # Runs already linked to their dataset, or whose link was refused for good.
 _linked: set[int] = set()
+# The dataset each run was linked to in this process, for its finish email.
+_linked_dataset: dict[int, int] = {}
 
 
 def app_client():
@@ -73,7 +75,9 @@ def _stop(signum, _frame):
 def _active_runs(client) -> list[dict]:
     return (
         client.table(RUNS_TABLE)
-        .select("id, workflow_type, params, run_key, status, argo_workflow_name")
+        .select(
+            "id, workflow_type, params, metadata, run_key, status, argo_workflow_name"
+        )
         .in_("status", list(ACTIVE_STATUSES))
         .order("id")
         .execute()
@@ -129,6 +133,7 @@ def _link_dataset(client, run: dict, workflow: dict) -> None:
         )
         return
     _linked.add(run["id"])
+    _linked_dataset[run["id"]] = dataset_id
     logger.info(
         "rnaseq_status_poller: run %s is linked to dataset %s", run["id"], dataset_id
     )
@@ -164,7 +169,7 @@ def poll_run(client, run: dict) -> bool:
         _link_dataset(client, run, workflow)
     # notify() skips a run still going, and a finished run changes only once, so one email.
     if changed:
-        run_email.notify(client, run, status)
+        run_email.notify(client, run, status, _linked_dataset.get(run["id"]))
     if changed:
         logger.info(
             "rnaseq_status_poller: run %s is %s at %s",

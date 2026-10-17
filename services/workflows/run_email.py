@@ -4,8 +4,8 @@ The email a scientist gets when an RNA-seq run they started finishes.
 The status poller calls notify() in the pass that records the run's final status. It looks
 the requester's email up with rnaseq_run_requesters and sends one plain-text message through
 Salk's mail relay (the SMTP_* settings GoTrue's sign-in emails use): the outcome and its
-message, a link to the run page and, for a run on an S3 folder, a reminder to remove Bloom's
-access to it if it was shared. Without SMTP_HOST (dev) nothing is sent. A failure is logged
+message, a link to the run page, a link to the dataset it loaded once the run is linked to it
+and, for a run on an S3 folder, a reminder to remove Bloom's access to it if it was shared. Without SMTP_HOST (dev) nothing is sent. A failure is logged
 and never changes the run.
 """
 
@@ -38,8 +38,17 @@ def run_page(run_id) -> str:
     return f"{SITE_URL}/app/rnaseq-runs/{run_id}"
 
 
-def build(run: dict, status, to: str) -> EmailMessage:
-    """The message for a finished run; `status` is its recorded RunStatus."""
+def dataset_page(run: dict, dataset_id) -> str | None:
+    """The loaded dataset's expression page, or None without a dataset or a species."""
+    species_id = (run.get("metadata") or {}).get("species_id")
+    if dataset_id is None or type(species_id) is not int:
+        return None
+    return f"{SITE_URL}/app/expression/{species_id}/{dataset_id}"
+
+
+def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
+    """The message for a finished run; `status` is its recorded RunStatus, and `dataset_id`
+    the dataset the run was linked to, if any."""
     params = run.get("params") or {}
     sample = params.get("sample") or "your sample"
     outcome = OUTCOMES[status.status]
@@ -50,6 +59,9 @@ def build(run: dict, status, to: str) -> EmailMessage:
     if status.message:
         lines += [status.message, ""]
     lines += [f"See the run: {run_page(run['id'])}"]
+    explore = dataset_page(run, dataset_id) if status.status == "succeeded" else None
+    if explore:
+        lines += [f"Explore the dataset: {explore}"]
     if params.get("fastq_url"):
         lines += [
             "",
@@ -77,8 +89,9 @@ def _send(message: EmailMessage) -> None:
         smtp.send_message(message)
 
 
-def notify(client, run: dict, status) -> None:
-    """Emails the run's requester that it finished. Never raises."""
+def notify(client, run: dict, status, dataset_id=None) -> None:
+    """Emails the run's requester that it finished, with the dataset it loaded if linked.
+    Never raises."""
     if SMTP_HOST is None or status.status not in OUTCOMES:
         return
     try:
@@ -88,7 +101,7 @@ def notify(client, run: dict, status) -> None:
                 "run_email: run %s has no requester email; nothing sent", run["id"]
             )
             return
-        _send(build(run, status, to))
+        _send(build(run, status, to, dataset_id))
     except Exception as exc:  # noqa: BLE001 - an email must never change or stop the run
         logger.warning(
             "run_email: run %s's email was not sent: %s", run["id"], type(exc).__name__

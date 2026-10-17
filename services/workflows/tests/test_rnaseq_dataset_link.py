@@ -112,8 +112,10 @@ class FakeClient:
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     poller._linked.clear()
+    poller._linked_dataset.clear()
     yield
     poller._linked.clear()
+    poller._linked_dataset.clear()
 
 
 def _poll(monkeypatch, workflow, client):
@@ -225,6 +227,39 @@ def test_a_run_first_seen_finished_is_linked_after_its_status_is_recorded(monkey
     )
     assert rpcs[:3] == [poller.LINK_FN, poller.UPDATE_FN, poller.LINK_FN]
     assert 7 in poller._linked
+
+
+def test_the_finish_email_gets_the_dataset_the_run_was_linked_to(monkeypatch):
+    emailed = []
+    monkeypatch.setattr(
+        poller.run_email,
+        "notify",
+        lambda c, run, status, dataset: emailed.append(dataset),
+    )
+    _poll(
+        monkeypatch,
+        _workflow("Succeeded", load="Succeeded", after="Succeeded"),
+        FakeClient(),
+    )
+    assert emailed == [DATASET_ID]
+
+
+def test_a_link_refused_for_good_gives_the_email_no_dataset(monkeypatch):
+    emailed = []
+    monkeypatch.setattr(
+        poller.run_email,
+        "notify",
+        lambda c, run, status, dataset: emailed.append(dataset),
+    )
+    refused = APIError({"code": "22023", "message": "dataset 5 belongs to another run"})
+    _poll(
+        monkeypatch,
+        _workflow("Succeeded", load="Succeeded", after="Succeeded"),
+        FakeClient(link=refused),
+    )
+    assert emailed == [None], (
+        "a run marked done without a link still gets no dataset link"
+    )
 
 
 def test_a_running_run_is_linked_once_per_pass(monkeypatch):

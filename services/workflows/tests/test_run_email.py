@@ -100,6 +100,41 @@ def test_a_finished_run_says_so_with_its_message_and_page(relay):
     assert "remove that access" not in body
 
 
+LINKED_RUN = {**RUN, "metadata": {"species_id": 2, "dataset_name": "Root atlas"}}
+
+
+def test_a_finished_run_linked_to_its_dataset_links_it_too(relay):
+    body = run_email.build(LINKED_RUN, DONE, "alice@salk.edu", 24).get_content()
+    assert "See the run: https://bloom.salk.edu/app/rnaseq-runs/42\n" in body
+    assert "Explore the dataset: https://bloom.salk.edu/app/expression/2/24\n" in body
+
+
+@pytest.mark.parametrize(
+    "run, status, dataset",
+    [
+        (LINKED_RUN, DONE, None),
+        (RUN, DONE, 24),
+        ({**RUN, "metadata": {"species_id": "2"}}, DONE, 24),
+        (LINKED_RUN, RunStatus("failed", message="Cell Ranger failed"), 24),
+    ],
+    ids=["not-linked", "no-species", "species-not-a-number", "failed-run"],
+)
+def test_no_dataset_link_without_a_finished_linked_run_and_its_species(
+    relay, run, status, dataset
+):
+    body = run_email.build(run, status, "alice@salk.edu", dataset).get_content()
+    assert "Explore the dataset" not in body
+
+
+def test_notify_passes_the_dataset_to_the_message(relay):
+    run_email.notify(FakeClient({42: "alice@salk.edu"}), LINKED_RUN, DONE, 24)
+    ((_where, sent),) = relay.sent
+    assert (
+        "Explore the dataset: https://bloom.salk.edu/app/expression/2/24"
+        in sent.get_content()
+    )
+
+
 def test_a_folder_run_reminds_the_scientist_to_remove_blooms_access(relay):
     body = run_email.build(FOLDER_RUN, DONE, "alice@salk.edu").get_content()
     assert "If you shared s3://lab-private/col0/ with Bloom's AWS user" in body
@@ -177,7 +212,9 @@ def test_the_poller_emails_only_on_the_update_that_finished_the_run(
         SimpleNamespace(read_status=lambda wf, run: DONE),
     )
     monkeypatch.setattr(
-        poller.run_email, "notify", lambda c, run, status: sent.append(run["id"])
+        poller.run_email,
+        "notify",
+        lambda c, run, status, dataset: sent.append(run["id"]),
     )
     poller.poll_run(object(), RUN)
     assert sent == [42] * emailed

@@ -2,8 +2,11 @@
 
 The files are checked and gzipped before anything is sent. Bloom then numbers the version,
 the two files go to the genome-references bucket, and the version is finished, which checks
-both are stored and makes it ready for Cell Ranger runs. If anything fails after the version
-is numbered, it is abandoned, so it is never offered for a run.
+both are stored and makes it ready for Cell Ranger runs. If a writer's upload fails after the
+version is numbered, it is abandoned, so it is never offered for a run.
+
+Any signed-in member may upload a new genome, as its first version; adding a version to an
+existing genome needs a writer login.
 """
 
 from __future__ import annotations
@@ -21,8 +24,9 @@ from ..scrna._text import visible
 from . import _files
 
 BUCKET = "genome-references"
-# Only writer logins may start, finish or abandon a version.
-UPLOAD_ROLE = "bloom_writer"
+WRITER_ROLE = "bloom_writer"
+# A member may start and finish a new genome's first version, but not abandon one.
+MEMBER_ROLE = "bloom_user"
 
 
 @click.command(name="upload")
@@ -45,6 +49,7 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
 
     NAME is the genome, e.g. tair10_araport11. A new genome needs --species. Both files are
     checked and gzipped first, the upload is described, and it goes ahead once confirmed.
+    Any member may upload a new genome; adding a version to an existing one needs a writer.
     """
     if not _files.NAME_RULE.match(name):
         raise click.UsageError(f"NAME must be {_files.NAME_HELP}.")
@@ -56,12 +61,18 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
             "asking. Nothing was sent."
         )
     conn = _session.connect(profile)
-    if conn.role != UPLOAD_ROLE:
+    if conn.role not in (WRITER_ROLE, MEMBER_ROLE):
         raise click.ClickException(
             f"this login signs in as {conn.role or 'no role'}; uploading a genome needs a "
-            f"writer login ({UPLOAD_ROLE}). Nothing was sent."
+            f"member ({MEMBER_ROLE}) or writer ({WRITER_ROLE}) login. Nothing was sent."
         )
+    member = conn.role == MEMBER_ROLE
     genome = _existing_genome(conn.client, name)
+    if member and genome is not None:
+        raise click.ClickException(
+            f"genome {visible(name)} already exists; a member can only upload a new genome. "
+            "Choose a new name, or ask a writer to add a version. Nothing was sent."
+        )
     species_id, species = _species(conn.client, genome, opts["species"], name)
 
     with tempfile.TemporaryDirectory(prefix="bloomctl-genome-") as workdir:
@@ -73,14 +84,16 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
         if not yes and not click.confirm(_question(name, genome), default=False, err=True):
             click.echo("Nothing was sent.", err=True)
             raise click.exceptions.Exit(1)
-        started = _start(conn.client, name, species_id, opts)
+        started = _start(conn.client, name, species_id, opts, member)
         try:
             with _transfer.open_client() as http:
                 conn = _send(http, conn, profile, started["fasta_path"], fasta_file, fasta.name)
                 conn = _send(http, conn, profile, started["gtf_path"], gtf_file, gtf.name)
             version = _finish(conn.client, started["version_id"], fasta_file, gtf_file)
         except BaseException:
-            if _abandon(conn.client, name, started) != "ready":
+            settled = _unfinished(conn.client, name, started) if member else (
+                _abandon(conn.client, name, started))
+            if settled != "ready":
                 raise
             # The finish went through even though its answer was lost.
             version = started["version"]
@@ -167,7 +180,12 @@ def _question(name: str, genome: dict | None) -> str:
     return f"Upload a new version of {visible(name)}?"
 
 
-def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any]) -> dict:
+# What Bloom answers a member when its database doesn't let members upload genomes yet.
+NO_MEMBER_UPLOADS = "permission denied for function start_genome_version"
+
+
+def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any],
+           member: bool = False) -> dict:
     args = {
         "p_genome": name,
         "p_species_id": species_id,
@@ -177,7 +195,15 @@ def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any])
         "p_source_url": opts["source_url"],
         "p_notes": opts["notes"],
     }
-    rows = _rpc("start the upload", lambda: client.rpc("start_genome_version", args).execute())
+    try:
+        rows = _rpc("start the upload", lambda: client.rpc("start_genome_version", args).execute())
+    except click.ClickException as exc:
+        if member and NO_MEMBER_UPLOADS in exc.message:
+            raise click.ClickException(
+                "this Bloom server does not let members upload genomes yet; ask a writer to "
+                "upload it. Nothing was sent."
+            ) from exc
+        raise
     if not rows:
         raise click.ClickException("Bloom did not return the new version. Nothing was sent.")
     return rows[0]
@@ -238,6 +264,28 @@ def _abandon(client: Any, name: str, started: dict) -> str | None:
         err=True,
     )
     return "abandoned"
+
+
+def _unfinished(client: Any, name: str, started: dict) -> str | None:
+    """A member's failed upload: members cannot abandon a version, so say what it now is.
+
+    Returns the version's status, e.g. "ready" when a finish committed but its answer was lost.
+    """
+    state = _status_of(client, started["version_id"])
+    label = f"{visible(name)} v{started['version']}"
+    if state == "uploading":
+        click.echo(
+            f"{label} was not finished, so it is never offered for runs, and the name "
+            f"{visible(name)} is now taken. Upload under a new name, or ask an admin to clear it.",
+            err=True,
+        )
+    elif state != "ready":
+        # The finish may have gone through even though its answer was lost; don't guess.
+        click.echo(
+            f"Bloom could not report the state of {label}; check it with `bloomctl genome list`. "
+            "Only a ready version is offered for runs.", err=True,
+        )
+    return state
 
 
 def _status_of(client: Any, version_id: int) -> str | None:

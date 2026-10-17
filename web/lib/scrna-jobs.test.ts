@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRunMetadata,
   datasetDetailsProblem,
+  datasetNameProblem,
   formatBytes,
   genomeVersionLabel,
   genomeVersionOptions,
@@ -46,6 +47,15 @@ describe("datasetDetailsProblem", () => {
     expect(datasetDetailsProblem({ ...DETAILS, ...change })).toBe(problem);
   });
 
+  it("refuses a dataset name the loader would refuse", () => {
+    expect(
+      datasetDetailsProblem({
+        ...DETAILS,
+        datasetName: "Arabidopsis root tip, all cell types (Shahan lab, GSM8180251)",
+      })
+    ).toBe("Not allowed: , ( )");
+  });
+
   it("accepts a public dataset with a web link", () => {
     expect(datasetDetailsProblem(PUBLIC)).toBeNull();
     expect(datasetDetailsProblem({ ...PUBLIC, citation: "" })).toBeNull();
@@ -81,6 +91,30 @@ describe("datasetDetailsProblem", () => {
         attributes: [{ key: " ", value: " " }, { key: "", value: "" }],
       })
     ).toBeNull();
+  });
+});
+
+describe("datasetNameProblem", () => {
+  it.each(["Col-0 root tip 7 DAG", "MYB41_v2", "a.b", ". .", "  Shahan lab - GSM8180251  ", "", "   "])(
+    "accepts %j",
+    (name) => {
+      expect(datasetNameProblem(name)).toBeNull();
+    }
+  );
+
+  it.each([
+    ["root, tip", "Not allowed: ,"],
+    ["WT (Col-0), 7 DAG", "Not allowed: ( ) ,"],
+    ["35S:MYB41/2", "Not allowed: : /"],
+    ["10 μM ABA", "Not allowed: μ"],
+    ["Root\u00a0atlas", "Not allowed: U+00A0"],
+    ["root\ttip", "Not allowed: U+0009"],
+  ])("names what isn't allowed in %j", (name, problem) => {
+    expect(datasetNameProblem(name)).toBe(problem);
+  });
+
+  it.each([".", "..", " .. "])("refuses dots alone in %j", (name) => {
+    expect(datasetNameProblem(name)).toBe("Can't be only dots");
   });
 });
 

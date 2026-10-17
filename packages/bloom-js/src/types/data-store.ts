@@ -5,6 +5,7 @@ export type Species = Database['public']['Tables']['species']['Insert']
 export type SpeciesUpdate = Database['public']['Tables']['species']['Update']
 export type SpeciesRow = Database['public']['Tables']['species']['Row']
 export type CylScannersRow = Database['public']['Tables']['cyl_scanners']['Row']
+export type GraviScannersRow = Database['public']['Tables']['gravi_scanners']['Row']
 
 export type CylImageMetadata = {
   species: string | undefined
@@ -22,6 +23,69 @@ export type CylImageMetadata = {
   phenotyper_email: string | undefined
   scientist_name: string | undefined
   scientist_email: string | undefined
+  // Camera settings, recorded with each image (0 when not given).
+  num_frames?: number
+  exposure_time?: number
+  gain?: number
+  brightness?: number
+  contrast?: number
+  gamma?: number
+  seconds_per_rot?: number
+}
+
+export type GraviImageMetadata = {
+  species: string
+  experiment: string
+  scanner_name: string
+  phenotyper_name: string
+  phenotyper_email: string
+  scientist_name: string
+  scientist_email: string
+  plate_barcode: string | null
+  capture_date: string
+  grid_mode: string
+  plate_index: string
+  resolution: number
+  format: string
+  accession_name?: string
+  cycle_number?: number
+  session_id?: number
+  system_name?: string
+  metadata_id?: number
+  wave_number?: number
+  transplant_date?: string
+  custom_note?: string
+}
+
+export type GraviScanMetadataParams = {
+  accession_name: string
+  plate_id: string
+  wave_number?: number
+  transplant_date?: string | null
+  custom_note?: string | null
+  sections: Array<{
+    plate_section_id: string
+    plant_qr: string
+    medium?: string | null
+  }>
+}
+
+export type GraviScanSessionParams = {
+  species: string
+  experiment: string
+  phenotyper_name: string
+  phenotyper_email: string
+  scientist_name: string
+  scientist_email: string
+  accession_name?: string
+  scan_mode?: string
+  interval_seconds?: number
+  duration_seconds?: number
+  total_cycles?: number
+  actual_duration_seconds?: number
+  completed_at?: string
+  cancelled?: boolean
+  system_name?: string
 }
 
 export interface DataStore {
@@ -82,4 +146,21 @@ export interface DataStore {
     store: DataStore,
     filename: string
   ): Promise<{ created: boolean; error: PostgrestError | null }>
+  insertGraviImageMetadata(
+    metadata: GraviImageMetadata
+  ): Promise<{ created: number | null; error: PostgrestError | null }>
+  updateGraviImageMetadata(
+    scan_id: number,
+    fields: { object_path: string; file_hash?: string; file_size_bytes?: number }
+  ): Promise<{ error: PostgrestError | null }>
+  getAllGraviScanners(): Promise<{
+    data: GraviScannersRow[] | null
+    error: PostgrestError | null
+  }>
+  insertGraviScanSession(
+    params: GraviScanSessionParams
+  ): Promise<{ created: number | null; error: PostgrestError | null }>
+  insertGraviScanMetadata(
+    params: GraviScanMetadataParams
+  ): Promise<{ created: number | null; error: PostgrestError | null }>
 }

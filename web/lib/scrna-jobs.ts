@@ -89,10 +89,38 @@ function isWebLink(value: string): boolean {
   }
 }
 
+// The loader's rule (bloomctl's SAFE_DATASET_NAME), as a storage path needs; tests/unit pins it.
+const DATASET_NAME_RULE = /^[A-Za-z0-9._ -]+$/;
+const DOTS_ONLY = /^\.+$/;
+
+/** What the dataset name may contain, shown beside the field before anything is typed. */
+export const DATASET_NAME_ALLOWED = "Letters A–Z, digits, spaces, . _ and -";
+
+/** How a refused character is shown: as itself, or by code point when it can't be seen. */
+function shownChar(char: string): string {
+  return /^[\p{L}\p{N}\p{P}\p{S}]$/u.test(char)
+    ? char
+    : `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+/** What's wrong with the (trimmed) dataset name in a few words, or null if it can be loaded. */
+export function datasetNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  if (!DATASET_NAME_RULE.test(trimmed)) {
+    const refused = [...new Set([...trimmed].filter((c) => !DATASET_NAME_RULE.test(c)))];
+    return `Not allowed: ${refused.map(shownChar).join(" ")}`;
+  }
+  if (DOTS_ONLY.test(trimmed)) return "Can't be only dots";
+  return null;
+}
+
 /** Why the details can't be submitted yet, or null if they can. */
 export function datasetDetailsProblem(details: DatasetDetails): string | null {
   if (details.speciesId == null) return "Choose a species.";
   if (!details.datasetName.trim()) return "Enter a dataset name.";
+  const nameProblem = datasetNameProblem(details.datasetName);
+  if (nameProblem) return nameProblem;
   if (details.origin === "public") {
     const sourceUrl = details.sourceUrl.trim();
     if (!sourceUrl) return "Enter the public dataset's source link.";

@@ -25,6 +25,14 @@ export type CylImageMetadata = {
   phenotyper_email: string | undefined
   scientist_name: string | undefined
   scientist_email: string | undefined
+  // Camera settings, recorded with each image (0 when not given).
+  num_frames?: number
+  exposure_time?: number
+  gain?: number
+  brightness?: number
+  contrast?: number
+  gamma?: number
+  seconds_per_rot?: number
 }
 
 type CylMetadataSummary = {
@@ -282,6 +290,14 @@ function parseFields(obj: { [x: string]: string }): CylImageMetadata {
     phenotyper_email: obj.phenotyper_email,
     scientist_name: obj.scientist_name,
     scientist_email: obj.scientist_email,
+    // Folder paths and cyl-metadata.yml carry no camera settings.
+    num_frames: 0,
+    exposure_time: 0,
+    gain: 0,
+    brightness: 0,
+    contrast: 0,
+    gamma: 0,
+    seconds_per_rot: 0,
   }
 }
 

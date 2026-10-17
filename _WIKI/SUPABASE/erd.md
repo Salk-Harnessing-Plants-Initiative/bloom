@@ -486,12 +486,13 @@ erDiagram
 }
 "public.cyl_camera_settings" {
   uuid id
-  integer scanner_exposure_time
-  integer scanner_gain
-  integer scanner_brightness
-  integer scanner_contrast
+  double_precision scanner_exposure_time
+  double_precision scanner_gain
+  double_precision scanner_brightness
+  double_precision scanner_contrast
   double_precision scanner_gamma
-  integer scanner_seconds_per_rot
+  double_precision scanner_seconds_per_rot
+  integer scanner_num_frames
 }
 "public.cyl_plant_metadata" {
   uuid id

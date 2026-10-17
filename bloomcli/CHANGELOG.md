@@ -8,6 +8,18 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a16] - 2026-10-15 — members upload new genomes
+
+### Changed
+
+- `genome upload` accepts any signed-in member (`bloom_user`) for a new genome, uploaded as its
+  first version. Adding a version to an existing genome still needs a writer login; a member is
+  refused before anything is prepared or sent. A member's failed upload is not abandoned: the
+  command says the name is now taken and an admin can clear it, or, when Bloom can't report the
+  version's state, says to check it with `genome list` rather than guessing.
+- On a Bloom server that doesn't yet let members upload genomes, a member is told so, with
+  nothing sent, instead of a raw permission error.
+
 ## [0.1.0a15] - 2026-10-14 — faster gene counts
 
 ### Changed
