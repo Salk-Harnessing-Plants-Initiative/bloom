@@ -1,7 +1,7 @@
--- Rollback for 20261016100300_add_scrna_enrichment_uploads.sql
+-- Rollback for 20261017100300_add_scrna_enrichment_uploads.sql
 -- Manual break-glass only; nothing runs it automatically. Drops the dataset link and
 -- enrichment upload functions and the enrichment storage rules. Run it before the rollback of
--- 20261016100200.
+-- 20261017100200.
 
 BEGIN;
 

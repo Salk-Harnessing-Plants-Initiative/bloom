@@ -1,8 +1,8 @@
--- 20261016100200_add_scrna_enrichment.sql
+-- 20261017100200_add_scrna_enrichment.sql
 --
 -- Which genome version a single-cell dataset was mapped to, and the GO and pathway enrichment
 -- of its differential expression. A dataset's genome version is set once: by the Cell Ranger
--- run that loaded it, or by a writer for an older dataset (20261016100300). An enrichment run
+-- run that loaded it, or by a writer for an older dataset (20261017100300). An enrichment run
 -- tests one differential expression analysis of a dataset against one ready annotation build
 -- of that dataset's genome version, with the settings it records. Its significant terms live in
 -- one gzipped JSON file in the scrna bucket, at enrichment/<dataset>/run-<id>.json.gz; this

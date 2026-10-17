@@ -1,4 +1,4 @@
--- 20261016100000_add_genome_annotations.sql
+-- 20261017100000_add_genome_annotations.sql
 --
 -- What each gene of a genome version does. An annotation build is one source's annotation of
 -- one genome version: TAIR's curated GO (tair-go), eggNOG-mapper (eggnog: GO, KEGG orthologs
@@ -9,7 +9,7 @@
 -- holds no gene -> term rows or term names. A build is uploading, then ready or abandoned; an
 -- admin can withdraw a ready one, and a new build of the same version and source can then be
 -- made. A ready build never changes. The upload functions and storage rules are added by
--- 20261016100100.
+-- 20261017100100.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;

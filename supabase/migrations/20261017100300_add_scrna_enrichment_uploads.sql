@@ -1,4 +1,4 @@
--- 20261016100300_add_scrna_enrichment_uploads.sql
+-- 20261017100300_add_scrna_enrichment_uploads.sql
 --
 -- Linking an older dataset to its genome version, and uploading enrichment results. A writer
 -- or the pipeline links a dataset once (bloomctl checks its genes against the version's GTF

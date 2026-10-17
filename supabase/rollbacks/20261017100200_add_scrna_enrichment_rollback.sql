@@ -1,8 +1,8 @@
--- Rollback for 20261016100200_add_scrna_enrichment.sql
+-- Rollback for 20261017100200_add_scrna_enrichment.sql
 -- Manual break-glass only; nothing runs it automatically. Drops scrna_enrichment_runs (which
 -- forgets every enrichment file; delete them under scrna/enrichment/ through the Storage API)
 -- and scrna_datasets.genome_version_id (which erases which genome version each dataset was
--- mapped to). Run the rollback of 20261016100300 first.
+-- mapped to). Run the rollback of 20261017100300 first.
 
 BEGIN;
 

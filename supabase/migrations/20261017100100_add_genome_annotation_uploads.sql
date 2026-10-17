@@ -1,4 +1,4 @@
--- 20261016100100_add_genome_annotation_uploads.sql
+-- 20261017100100_add_genome_annotation_uploads.sql
 --
 -- Uploading a genome version's annotation file. A writer or the pipeline starts a build for a
 -- ready version and a source, uploads the build's JSON file to the path it is given, and
