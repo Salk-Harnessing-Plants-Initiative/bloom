@@ -29,10 +29,29 @@ ALTER TABLE public.cyl_camera_settings
     ADD CONSTRAINT cyl_camera_settings_num_frames_check CHECK (scanner_num_frames >= 0);
 
 -- The frame count joins the settings combination; NULL matches NULL so older rows stay unique.
-ALTER TABLE public.cyl_camera_settings
-    DROP CONSTRAINT IF EXISTS unique_camera_settings_combo,
+-- Redefines the key from 20250713205618. No foreign key depends on it (cyl_scans references
+-- cyl_camera_settings(id)), so the old key can be dropped; any other definition is an error.
+DO $$
+DECLARE
+  existing text;
+BEGIN
+  SELECT pg_get_constraintdef(oid) INTO existing
+    FROM pg_constraint
+   WHERE conname = 'unique_camera_settings_combo'
+     AND conrelid = 'public.cyl_camera_settings'::regclass;
+  IF existing = 'UNIQUE NULLS NOT DISTINCT (scanner_exposure_time, scanner_gain, scanner_brightness, scanner_contrast, scanner_gamma, scanner_seconds_per_rot, scanner_num_frames)' THEN
+    RETURN;
+  ELSIF existing IS NOT NULL
+    AND existing <> 'UNIQUE (scanner_exposure_time, scanner_gain, scanner_brightness, scanner_contrast, scanner_gamma, scanner_seconds_per_rot)' THEN
+    RAISE EXCEPTION 'unique_camera_settings_combo is %, expected the 6-column key from 20250713205618', existing;
+  END IF;
+  IF existing IS NOT NULL THEN
+    ALTER TABLE public.cyl_camera_settings DROP CONSTRAINT unique_camera_settings_combo;
+  END IF;
+  ALTER TABLE public.cyl_camera_settings
     ADD CONSTRAINT unique_camera_settings_combo UNIQUE NULLS NOT DISTINCT
         (scanner_exposure_time, scanner_gain, scanner_brightness, scanner_contrast, scanner_gamma, scanner_seconds_per_rot, scanner_num_frames);
+END $$;
 
 -- The parameter types change, so CREATE OR REPLACE can't replace the old function.
 DROP FUNCTION IF EXISTS public.insert_image_v3_0(text, text, integer, integer, text, integer, date, text, text, text, integer, text, text, text, text, integer, integer, integer, integer, integer, double precision, integer);

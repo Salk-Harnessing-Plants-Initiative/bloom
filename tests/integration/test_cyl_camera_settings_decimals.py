@@ -200,10 +200,14 @@ def test_num_frames_is_stored(cur, seeded):
 
 
 def test_a_different_frame_count_is_a_different_settings_row(cur, seeded):
-    first, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-f", num_frames=72, **SETTINGS))
-    second, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-g", num_frames=36, **SETTINGS))
+    first, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-g", num_frames=36, **SETTINGS))
+    second, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-f", num_frames=72, **SETTINGS))
     assert first != second
-    assert (_num_frames(cur, first), _num_frames(cur, second)) == (72, 36)
+    assert (_num_frames(cur, first), _num_frames(cur, second)) == (36, 72)
+    # With both rows present, a 72-frame upload must find the 72-frame row. The 36-frame row
+    # was created first, so a lookup that ignored the frame count would return it instead.
+    third, _ = _settings_for(cur, _insert_image(cur, seeded, "plant-f2", num_frames=72, **SETTINGS))
+    assert third == second
 
 
 def test_a_missing_frame_count_matches_a_missing_frame_count(cur, seeded):
