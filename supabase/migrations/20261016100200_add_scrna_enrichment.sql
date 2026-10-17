@@ -6,8 +6,9 @@
 -- tests one differential expression analysis of a dataset against one ready annotation build
 -- of that dataset's genome version, with the settings it records. Its significant terms live in
 -- one gzipped JSON file in the scrna bucket, at enrichment/<dataset>/run-<id>.json.gz; this
--- row records the file's checksum and size and how many terms it holds. A run is uploading,
--- then ready or abandoned; a ready run never changes.
+-- row records the file's checksum and size, how many terms it holds, and how many background
+-- genes the annotation covered, so a gene ID mismatch is not read as no enrichment. A run is
+-- uploading, then ready or abandoned; a ready run never changes.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -138,6 +139,9 @@ CREATE TABLE IF NOT EXISTS public.scrna_enrichment_runs (
     file_sha256 TEXT,
     file_bytes BIGINT,
     term_count INTEGER,
+    -- Genes tested against, and how many of them have a term in the annotation.
+    background_genes INTEGER,
+    annotated_genes INTEGER,
     created_by UUID NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ready_at TIMESTAMPTZ
@@ -218,14 +222,17 @@ ALTER TABLE public.scrna_enrichment_runs
   DROP CONSTRAINT IF EXISTS scrna_enrichment_runs_file_sha256_check,
   ADD CONSTRAINT scrna_enrichment_runs_file_sha256_check CHECK (file_sha256 ~ '^[0-9a-f]{64}$'),
   -- A ready run has its file's checksum and size, its term count (zero when nothing was
-  -- significant) and ready_at; any other run has none of them.
+  -- significant), its gene counts and ready_at; any other run has none of them.
   DROP CONSTRAINT IF EXISTS scrna_enrichment_runs_finished_check,
   ADD CONSTRAINT scrna_enrichment_runs_finished_check CHECK (
     CASE WHEN status = 'ready' THEN
-      num_nulls(file_sha256, file_bytes, term_count, ready_at) = 0
+      num_nulls(file_sha256, file_bytes, term_count, background_genes, annotated_genes,
+                ready_at) = 0
       AND file_bytes > 0 AND term_count >= 0
+      AND background_genes > 0 AND annotated_genes BETWEEN 0 AND background_genes
     ELSE
-      num_nonnulls(file_sha256, file_bytes, term_count, ready_at) = 0
+      num_nonnulls(file_sha256, file_bytes, term_count, background_genes, annotated_genes,
+                   ready_at) = 0
     END
   );
 

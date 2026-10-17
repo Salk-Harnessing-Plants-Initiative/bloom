@@ -40,7 +40,7 @@ from tests.integration.test_rnaseq_runs import _sql_body
 psycopg = pytest.importorskip("psycopg")
 
 START = "SELECT * FROM public.start_scrna_enrichment_run(%s, %s, %s, %s, %s)"
-FINISH = "SELECT public.finish_scrna_enrichment_run(%s, %s, %s, %s)"
+FINISH = "SELECT public.finish_scrna_enrichment_run(%s, %s, %s, %s, %s, %s)"
 
 
 @pytest.fixture
@@ -82,6 +82,12 @@ def _start(cur, linked, **kw):
 def _run(cur, run_id):
     cur.execute("SELECT status, file_sha256, file_bytes, term_count, rnaseq_run_id "
                 "FROM scrna_enrichment_runs WHERE id = %s", (run_id,))
+    return cur.fetchone()
+
+
+def _gene_counts(cur, run_id):
+    cur.execute("SELECT background_genes, annotated_genes FROM scrna_enrichment_runs "
+                "WHERE id = %s", (run_id,))
     return cur.fetchone()
 
 
@@ -196,13 +202,27 @@ def test_finish_records_the_file(cur, linked, terms):
     put_file(cur, "scrna", path)
     finish_run(cur, run_id, terms=terms)
     assert _run(cur, run_id)[:4] == ("ready", SHA, FILE_BYTES, terms)
+    assert _gene_counts(cur, run_id) == (4, 3)
+
+
+def test_finish_records_no_annotated_genes(cur, linked):
+    """Zero annotated genes is stored, so a gene ID mismatch shows instead of looking empty."""
+    run_id, path = _start(cur, linked)
+    put_file(cur, "scrna", path)
+    finish_run(cur, run_id, terms=0, background=4, annotated=0)
+    assert _gene_counts(cur, run_id) == (4, 0)
 
 
 @pytest.mark.parametrize("stored, args, match", [
-    (False, (SHA, FILE_BYTES, 2), "has not been uploaded"),
-    (True, (SHA, FILE_BYTES + 1, 2), "bytes in storage"),
-    (True, ("x", FILE_BYTES, 2), "64 lowercase hex"),
-    (True, (SHA, FILE_BYTES, -1), "zero or more"),
+    (False, (SHA, FILE_BYTES, 2, 4, 3), "has not been uploaded"),
+    (True, (SHA, FILE_BYTES + 1, 2, 4, 3), "bytes in storage"),
+    (True, ("x", FILE_BYTES, 2, 4, 3), "64 lowercase hex"),
+    (True, (SHA, FILE_BYTES, -1, 4, 3), "zero or more"),
+    (True, (SHA, FILE_BYTES, 2, 0, 0), "at least one gene"),
+    (True, (SHA, FILE_BYTES, 2, None, 3), "at least one gene"),
+    (True, (SHA, FILE_BYTES, 2, 4, 5), "between 0 and the 4 background genes"),
+    (True, (SHA, FILE_BYTES, 2, 4, -1), "between 0 and the 4 background genes"),
+    (True, (SHA, FILE_BYTES, 2, 4, None), "between 0 and the 4 background genes"),
 ])
 def test_finish_with_bad_details_is_refused(cur, linked, stored, args, match):
     run_id, path = _start(cur, linked)
@@ -216,7 +236,7 @@ def test_another_writer_cannot_finish(cur, linked):
     run_id, path = _start(cur, linked)
     put_file(cur, "scrna", path)
     as_role(cur, "bloom_writer", OTHER_WRITER)
-    refused(cur, FINISH, (run_id, SHA, FILE_BYTES, 2), psycopg.errors.InsufficientPrivilege,
+    refused(cur, FINISH, (run_id, SHA, FILE_BYTES, 2, 4, 3), psycopg.errors.InsufficientPrivilege,
             match="someone else")
 
 
@@ -228,6 +248,7 @@ def test_abandon(cur, linked):
 
 @pytest.mark.parametrize("sql", [
     "UPDATE scrna_enrichment_runs SET term_count = 5 WHERE id = %(id)s",
+    "UPDATE scrna_enrichment_runs SET annotated_genes = 1 WHERE id = %(id)s",
     "UPDATE scrna_enrichment_runs SET file_path = 'x' WHERE id = %(id)s",
     "UPDATE scrna_enrichment_runs SET status = 'abandoned' WHERE id = %(id)s",
     "DELETE FROM scrna_enrichment_runs WHERE id = %(id)s",
@@ -302,7 +323,7 @@ def test_admin_cannot_change_a_ready_runs_file(cur, linked, command):
 @pytest.mark.parametrize("function", [
     "link_scrna_dataset_genome(bigint, bigint)",
     "start_scrna_enrichment_run(bigint, bigint, bigint, jsonb, bigint)",
-    "finish_scrna_enrichment_run(bigint, text, bigint, integer)",
+    "finish_scrna_enrichment_run(bigint, text, bigint, integer, integer, integer)",
     "abandon_scrna_enrichment_run(bigint)",
 ])
 @pytest.mark.parametrize("role, allowed", [("bloom_writer", True), ("bloom_workflows", True),

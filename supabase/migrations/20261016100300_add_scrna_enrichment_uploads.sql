@@ -5,10 +5,11 @@
 -- first; the database checks species and readiness). An enrichment run is started for a
 -- dataset's finished differential expression analysis and a ready annotation build of the
 -- dataset's genome version, its JSON file is uploaded to the path it is given, and it is
--- finished with the file's SHA-256 and size and the term count; finishing checks the file is
--- stored at exactly that size and makes the run ready. A run that stops is abandoned. The
--- file's contents are checked by bloomctl before upload. Only the caller's own uploading run's
--- file may be added under enrichment/, and nobody may replace or delete a ready run's file.
+-- finished with the file's SHA-256 and size, the term count and the gene counts; finishing
+-- checks the file is stored at exactly that size and makes the run ready. A run that stops is
+-- abandoned. The file's contents are checked by bloomctl before upload. Only the caller's own
+-- uploading run's file may be added under enrichment/, and nobody may replace or delete a
+-- ready run's file.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -137,12 +138,15 @@ END;
 $$;
 
 -- Finishes the caller's run: its file must be stored at exactly the stated size. Records the
--- file's checksum and size and the term count (zero is allowed: nothing was significant).
+-- file's checksum and size, the term count (zero is allowed: nothing was significant), and
+-- how many background genes have a term in the annotation.
 CREATE OR REPLACE FUNCTION public.finish_scrna_enrichment_run(
     p_run_id BIGINT,
     p_file_sha256 TEXT,
     p_file_bytes BIGINT,
-    p_term_count INTEGER
+    p_term_count INTEGER,
+    p_background_genes INTEGER,
+    p_annotated_genes INTEGER
 ) RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -162,6 +166,14 @@ BEGIN
     IF p_term_count IS NULL OR p_term_count < 0 THEN
         RAISE EXCEPTION 'the term count must be zero or more' USING ERRCODE = '22023';
     END IF;
+    IF p_background_genes IS NULL OR p_background_genes < 1 THEN
+        RAISE EXCEPTION 'the background must have at least one gene' USING ERRCODE = '22023';
+    END IF;
+    IF p_annotated_genes IS NULL OR p_annotated_genes < 0
+       OR p_annotated_genes > p_background_genes THEN
+        RAISE EXCEPTION 'annotated genes must be between 0 and the % background genes',
+            p_background_genes USING ERRCODE = '22023';
+    END IF;
     v_stored := public._storage_object_bytes('scrna', v_row.file_path);
     IF v_stored IS NULL THEN
         RAISE EXCEPTION '% has not been uploaded', v_row.file_path USING ERRCODE = '22023';
@@ -171,7 +183,8 @@ BEGIN
     END IF;
     UPDATE public.scrna_enrichment_runs
        SET status = 'ready', file_sha256 = p_file_sha256, file_bytes = p_file_bytes,
-           term_count = p_term_count, ready_at = now()
+           term_count = p_term_count, background_genes = p_background_genes,
+           annotated_genes = p_annotated_genes, ready_at = now()
      WHERE id = p_run_id;
 END;
 $$;
@@ -217,7 +230,7 @@ REVOKE EXECUTE ON FUNCTION public.link_scrna_dataset_genome(BIGINT, BIGINT)
 REVOKE EXECUTE ON FUNCTION public.start_scrna_enrichment_run(BIGINT, BIGINT, BIGINT, JSONB, BIGINT)
     FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public._own_enrichment_run(BIGINT) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.finish_scrna_enrichment_run(BIGINT, TEXT, BIGINT, INTEGER)
+REVOKE EXECUTE ON FUNCTION public.finish_scrna_enrichment_run(BIGINT, TEXT, BIGINT, INTEGER, INTEGER, INTEGER)
     FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.abandon_scrna_enrichment_run(BIGINT)
     FROM PUBLIC, anon, authenticated;
@@ -228,7 +241,7 @@ GRANT EXECUTE ON FUNCTION public.link_scrna_dataset_genome(BIGINT, BIGINT)
     TO bloom_writer, bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.start_scrna_enrichment_run(BIGINT, BIGINT, BIGINT, JSONB, BIGINT)
     TO bloom_writer, bloom_workflows;
-GRANT EXECUTE ON FUNCTION public.finish_scrna_enrichment_run(BIGINT, TEXT, BIGINT, INTEGER)
+GRANT EXECUTE ON FUNCTION public.finish_scrna_enrichment_run(BIGINT, TEXT, BIGINT, INTEGER, INTEGER, INTEGER)
     TO bloom_writer, bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.abandon_scrna_enrichment_run(BIGINT)
     TO bloom_writer, bloom_workflows;

@@ -155,6 +155,6 @@ def start_run(cur, dataset_id, de_run_id, build_id, params=None, user=WRITER, rn
                 user=user, role=role)
 
 
-def finish_run(cur, run_id, size=FILE_BYTES, terms=2, user=WRITER):
-    call(cur, "SELECT public.finish_scrna_enrichment_run(%s, %s, %s, %s)",
-         (run_id, SHA, size, terms), user=user)
+def finish_run(cur, run_id, size=FILE_BYTES, terms=2, background=4, annotated=3, user=WRITER):
+    call(cur, "SELECT public.finish_scrna_enrichment_run(%s, %s, %s, %s, %s, %s)",
+         (run_id, SHA, size, terms, background, annotated), user=user)
