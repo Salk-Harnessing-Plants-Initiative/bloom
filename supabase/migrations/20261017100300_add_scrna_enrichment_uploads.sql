@@ -47,7 +47,7 @@ BEGIN
     SELECT v.status, g.species_id INTO v_status, v_species
       FROM public.genome_reference_versions v
       JOIN public.genome_references g ON g.id = v.genome_id
-     WHERE v.id = p_version_id;
+     WHERE v.id = p_version_id FOR SHARE OF v;
     IF v_status IS DISTINCT FROM 'ready' THEN
         RAISE EXCEPTION 'genome version % is not ready', p_version_id USING ERRCODE = '22023';
     END IF;

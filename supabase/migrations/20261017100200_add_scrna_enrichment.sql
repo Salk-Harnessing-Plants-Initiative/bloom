@@ -126,7 +126,8 @@ BEGIN
     FROM public.genome_reference_versions v
     JOIN public.genome_references g ON g.id = v.genome_id
    WHERE v.id = v_run.genome_version_id AND v.status = 'ready'
-     AND g.species_id = v_dataset.species_id;
+     AND g.species_id = v_dataset.species_id
+     FOR SHARE OF v;
 
   UPDATE public.scrna_datasets
      SET url = coalesce(nullif(btrim(v_run.metadata ->> 'source_url'), ''), url),
@@ -140,15 +141,6 @@ BEGIN
   RETURN v_dataset.id;
 END;
 $$;
-
--- Datasets already loaded by a run on a ready genome version of their species take it now;
--- any other is left for a writer to link.
-UPDATE public.scrna_datasets d
-   SET genome_version_id = r.genome_version_id
-  FROM public.rnaseq_runs r
-  JOIN public.genome_reference_versions v ON v.id = r.genome_version_id AND v.status = 'ready'
-  JOIN public.genome_references g ON g.id = v.genome_id
- WHERE r.dataset_id = d.id AND d.genome_version_id IS NULL AND g.species_id = d.species_id;
 
 -- 2. Enrichment runs -----------------------------------------------------------------------
 

@@ -98,14 +98,26 @@ def _gene_counts(cur, run_id):
 # --------------------------------------------------------------------------- #
 
 
-def _linked_by_a_run(cur, species_id, run_version):
-    """A pipeline-loaded dataset linked to its Cell Ranger run, which records `run_version`."""
+def _loaded_by_a_run(cur, species_id, run_version):
+    """A pipeline-loaded dataset not yet linked to its Cell Ranger run, which records
+    `run_version`: (pipeline user, run id, dataset id)."""
     pipeline, scientist = load.user(cur, workflows=True), load.user(cur)
     run_id = load.run(cur, scientist, species_id)
     cur.execute("UPDATE rnaseq_runs SET genome_version_id = %s WHERE id = %s", (run_version, run_id))
-    dataset_id = load.loaded(cur, pipeline, species_id, run_id=run_id)
+    return pipeline, run_id, load.loaded(cur, pipeline, species_id, run_id=run_id)
+
+
+def _linked_by_a_run(cur, species_id, run_version):
+    """A pipeline-loaded dataset linked to its Cell Ranger run, which records `run_version`."""
+    pipeline, run_id, dataset_id = _loaded_by_a_run(cur, species_id, run_version)
     load.link(cur, pipeline, run_id, dataset_id)
     return dataset_id
+
+
+def _withdraw(cur, version_id):
+    as_admin(cur)
+    cur.execute("UPDATE genome_reference_versions SET status = 'withdrawn', withdrawn_reason = 'x' "
+                "WHERE id = %s", (version_id,))
 
 
 def test_linking_a_run_gives_its_dataset_the_runs_genome_version(cur, species_id, version_id):
@@ -115,6 +127,23 @@ def test_linking_a_run_gives_its_dataset_the_runs_genome_version(cur, species_id
 def test_a_run_on_a_genome_of_another_species_leaves_the_dataset_for_a_writer(cur, species_id):
     elsewhere = ready(cur, new_genome_name(), add_species(cur))[0]
     assert _genome_of(cur, _linked_by_a_run(cur, species_id, elsewhere)) is None
+
+
+def test_a_run_on_a_withdrawn_genome_version_leaves_the_dataset_for_a_writer(
+    cur, species_id, version_id
+):
+    pipeline, run_id, dataset_id = _loaded_by_a_run(cur, species_id, version_id)
+    _withdraw(cur, version_id)
+    load.link(cur, pipeline, run_id, dataset_id)
+    assert _genome_of(cur, dataset_id) is None
+
+
+def test_a_run_never_replaces_a_writers_link(cur, species_id, version_id):
+    pipeline, run_id, dataset_id = _loaded_by_a_run(cur, species_id, version_id)
+    writers = ready(cur, new_genome_name(), species_id)[0]
+    link(cur, dataset_id, writers)
+    load.link(cur, pipeline, run_id, dataset_id)
+    assert _genome_of(cur, dataset_id) == writers
 
 
 def test_a_writer_links_an_older_dataset_once(cur, species_id, version_id):
@@ -365,3 +394,6 @@ def test_the_rollbacks_remove_everything(cur, linked):
     cur.execute("SELECT count(*) FROM information_schema.columns WHERE table_name = "
                 "'scrna_datasets' AND column_name = 'genome_version_id'")
     assert cur.fetchone()[0] == 0
+    cur.execute("SELECT pg_get_functiondef("
+                "'public.link_rnaseq_run_dataset(bigint, bigint)'::regprocedure)")
+    assert "genome_version_id" not in cur.fetchone()[0], "the run link is restored"
