@@ -29,6 +29,7 @@ from bloom_mcp.manifest import (
 )
 from bloom_mcp.storage_backend import (
     LocalStorageBackend,
+    StorageListingError,
     active_backend,
     active_backend_name,
     is_local_backend,
@@ -397,6 +398,23 @@ class SupabaseResultStore:
                     raise CommitFailedError(
                         f"commit failed for {adir.tool_class}/{adir.stem} "
                         f"(structural bug — do not retry; see server logs)"
+                    ) from exc
+                if isinstance(exc, StorageListingError):
+                    # #396: the two manifest re-reads above (`read_manifest` in
+                    # the id-allocation loop and the pre-write freshness check)
+                    # are unguarded, so a listing the backend cannot enumerate
+                    # surfaces here. It is deterministic by construction — the
+                    # backend ignored `offset`, or the prefix exceeded the
+                    # request backstop — so the identical retry fails
+                    # identically. Without this branch it would fall through to
+                    # the "(transient — retry)" default below and invite a retry
+                    # loop that can never succeed. A raw client error (a real
+                    # network blip) is deliberately not of this type and still
+                    # lands in that default.
+                    raise CommitFailedError(
+                        f"commit failed for {adir.tool_class}/{adir.stem} "
+                        f"(storage listing incomplete — do not retry; "
+                        f"see server logs)"
                     ) from exc
                 raise CommitFailedError(
                     f"commit failed for {adir.tool_class}/{adir.stem} "
