@@ -187,10 +187,12 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   analysis (or `de-run-id`). For each comparison and direction, the list
   is the genes with FDR < 0.05 and |log2FC| > 0.25, strongest first, up to 300. Each of GO's
   three namespaces and KEGG is tested against its own background, the dataset's genes with a
-  term of that kind: a hypergeometric test for terms of 5–500 background genes with at least 3
-  list genes, terms covering the same genes merged into the most specific, and
-  Benjamini–Hochberg within a comparison, direction and kind. Only terms with FDR < 0.05 are
-  kept. The settings are workflow parameters. **upload-enrichment** records the file in Bloom
+  term of that kind: a hypergeometric test for every term of 5–500 background genes with at
+  least one list gene, terms covering the same genes merged into the most specific, and
+  Benjamini–Hochberg over all of them within a comparison, direction and kind. Then terms with
+  FDR < 0.05 and at least 3 list genes are kept; the 3-gene rule comes after the correction,
+  since dropping terms by their list-gene count before it would make the FDRs too low. The
+  settings are workflow parameters. **upload-enrichment** records the file in Bloom
   as an enrichment run, in the `scrna` bucket at `enrichment/<dataset>/run-<id>.json.gz`; a
   dataset not yet linked to a genome version is first linked to the build's.
 - Recording starts the build or run, uploads its file and finishes it, which checks the stored

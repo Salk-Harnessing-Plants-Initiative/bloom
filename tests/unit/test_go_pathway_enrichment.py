@@ -211,3 +211,26 @@ def test_an_annotation_without_orthologs_gives_kegg_results_none():
                             params=PARAMS)
     (kegg,) = [r for r in result.results if r["kind"] == "KEGG"]
     assert kegg["kos"] == []
+
+
+def test_the_fdr_counts_every_term_tested_not_only_those_shown():
+    # One strong term (all 5 list genes) and ten terms that each hold just one list gene. The
+    # ten are tested and counted by Benjamini-Hochberg, but have too few list genes to show.
+    background = [f"G{i:02d}" for i in range(20)]
+    listed = background[:5]
+    terms = {"GO:A": {"kind": "GO_BP", "name": "strong", "parents": []}}
+    members = {"GO:A": background[:6]}
+    for i in range(10):
+        others = [background[5 + (i + j) % 15] for j in range(5)]
+        members[f"GO:W{i}"] = [listed[i % 5]] + others
+        terms[f"GO:W{i}"] = {"kind": "GO_BP", "name": f"weak {i}", "parents": []}
+    genes = {g: {"name": None, "description": None,
+                 "terms": [t for t, m in members.items() if g in m]} for g in background}
+    comparison = {"comparison": "0_vs_rest", "genes": de(*[(g, 2.0, 0.001) for g in listed])}
+    result = enrichment.run(Annotation(terms=terms, genes=genes), dataset_genes=background,
+                            comparisons=[comparison], params=PARAMS)
+
+    assert [r["term"] for r in result.results] == ["GO:A"], "the weak terms aren't shown"
+    annotated = len({g for m in members.values() for g in m})
+    p = enrichment.p_value(k=5, background=annotated, term=6, listed=5)
+    assert result.results[0]["fdr"] == pytest.approx(p * 11), "corrected over all 11 tested"

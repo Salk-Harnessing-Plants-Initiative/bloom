@@ -3,10 +3,12 @@ annotation, and the gzipped JSON file that holds the significant terms.
 
 Per comparison and direction, the list is the genes with fdr < fdr_max and |log2fc| > lfc_min,
 strongest first, up to top_n. Each kind (GO_BP, GO_MF, GO_CC, KEGG) is tested against its own
-background: the dataset's genes with a term of that kind. Terms with min_term..max_term
-background genes and at least min_list list genes get a hypergeometric test; terms covering
-the same genes are merged into the most specific; Benjamini-Hochberg within a comparison,
-direction and kind; only terms with fdr < fdr_max are kept. A KEGG result also lists its list
+background: the dataset's genes with a term of that kind. Every term with min_term..max_term
+background genes and at least one list gene gets a hypergeometric test; terms covering the same
+genes are merged into the most specific; Benjamini-Hochberg over all of them within a
+comparison, direction and kind; then terms with fdr < fdr_max and at least min_list list genes
+are kept. min_list only hides terms, after the correction: filtering on the list-gene count
+before it would leave out the tests least likely to pass, and the FDRs would come out too low. A KEGG result also lists its list
 genes' KEGG orthologs, to colour them on the pathway's map.
 """
 
@@ -135,7 +137,7 @@ def run(annotation: Annotation, *, dataset_genes: list[str], comparisons: list[d
                 tested = []
                 for term, genes in by_kind[kind].items():
                     in_list = genes & hits
-                    if len(in_list) < params.min_list:
+                    if not in_list:
                         continue
                     if not params.min_term <= len(genes) <= params.max_term:
                         continue
@@ -153,7 +155,7 @@ def run(annotation: Annotation, *, dataset_genes: list[str], comparisons: list[d
                                                     annotation.genes[gene].get("kos", [])})
                 tested = _most_specific(tested, members, ancestors)
                 for row, fdr in zip(tested, bh([r["p"] for r in tested])):
-                    if fdr < params.fdr_max:
+                    if fdr < params.fdr_max and row["list_genes_in_term"] >= params.min_list:
                         row["fdr"] = fdr
                         results.append(row)
     results.sort(key=lambda r: (r["comparison"], r["direction"], r["kind"], r["fdr"], r["term"]))
