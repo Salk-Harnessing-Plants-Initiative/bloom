@@ -239,6 +239,7 @@ export type Database = {
           scanner_exposure_time: number
           scanner_gain: number
           scanner_gamma: number
+          scanner_num_frames: number | null
           scanner_seconds_per_rot: number
         }
         Insert: {
@@ -248,6 +249,7 @@ export type Database = {
           scanner_exposure_time: number
           scanner_gain: number
           scanner_gamma: number
+          scanner_num_frames?: number | null
           scanner_seconds_per_rot: number
         }
         Update: {
@@ -257,6 +259,7 @@ export type Database = {
           scanner_exposure_time?: number
           scanner_gain?: number
           scanner_gamma?: number
+          scanner_num_frames?: number | null
           scanner_seconds_per_rot?: number
         }
         Relationships: []
@@ -1922,6 +1925,71 @@ export type Database = {
             columns: ["reference_id"]
             isOneToOne: false
             referencedRelation: "assemblies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      genome_annotation_builds: {
+        Row: {
+          build: number
+          created_at: string
+          created_by: string
+          file_bytes: number | null
+          file_path: string
+          file_sha256: string | null
+          gene_count: number | null
+          id: number
+          ready_at: string | null
+          source: string
+          status: string
+          term_count: number | null
+          tool_versions: Json
+          version_id: number
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+        }
+        Insert: {
+          build: number
+          created_at?: string
+          created_by: string
+          file_bytes?: number | null
+          file_path: string
+          file_sha256?: string | null
+          gene_count?: number | null
+          id?: number
+          ready_at?: string | null
+          source: string
+          status?: string
+          term_count?: number | null
+          tool_versions?: Json
+          version_id: number
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+        }
+        Update: {
+          build?: number
+          created_at?: string
+          created_by?: string
+          file_bytes?: number | null
+          file_path?: string
+          file_sha256?: string | null
+          gene_count?: number | null
+          id?: number
+          ready_at?: string | null
+          source?: string
+          status?: string
+          term_count?: number | null
+          tool_versions?: Json
+          version_id?: number
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "genome_annotation_builds_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "genome_reference_versions"
             referencedColumns: ["id"]
           },
         ]
@@ -3619,6 +3687,7 @@ export type Database = {
           created_by: string | null
           deleted_at: string | null
           expression_units: string | null
+          genome_version_id: number | null
           id: number
           ingested_at: string | null
           kind: string
@@ -3642,6 +3711,7 @@ export type Database = {
           created_by?: string | null
           deleted_at?: string | null
           expression_units?: string | null
+          genome_version_id?: number | null
           id?: number
           ingested_at?: string | null
           kind?: string
@@ -3665,6 +3735,7 @@ export type Database = {
           created_by?: string | null
           deleted_at?: string | null
           expression_units?: string | null
+          genome_version_id?: number | null
           id?: number
           ingested_at?: string | null
           kind?: string
@@ -3682,6 +3753,13 @@ export type Database = {
           url?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "scrna_datasets_genome_version_id_fkey"
+            columns: ["genome_version_id"]
+            isOneToOne: false
+            referencedRelation: "genome_reference_versions"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "scrna_datasets_scientist_id_fkey"
             columns: ["scientist_id"]
@@ -4093,6 +4171,92 @@ export type Database = {
           title?: string
         }
         Relationships: []
+      }
+      scrna_enrichment_runs: {
+        Row: {
+          annotated_genes: number | null
+          annotation_build_id: number
+          background_genes: number | null
+          created_at: string
+          created_by: string
+          dataset_id: number
+          de_run_id: number
+          file_bytes: number | null
+          file_path: string
+          file_sha256: string | null
+          id: number
+          params: Json
+          ready_at: string | null
+          rnaseq_run_id: number | null
+          status: string
+          term_count: number | null
+        }
+        Insert: {
+          annotated_genes?: number | null
+          annotation_build_id: number
+          background_genes?: number | null
+          created_at?: string
+          created_by: string
+          dataset_id: number
+          de_run_id: number
+          file_bytes?: number | null
+          file_path: string
+          file_sha256?: string | null
+          id?: number
+          params: Json
+          ready_at?: string | null
+          rnaseq_run_id?: number | null
+          status?: string
+          term_count?: number | null
+        }
+        Update: {
+          annotated_genes?: number | null
+          annotation_build_id?: number
+          background_genes?: number | null
+          created_at?: string
+          created_by?: string
+          dataset_id?: number
+          de_run_id?: number
+          file_bytes?: number | null
+          file_path?: string
+          file_sha256?: string | null
+          id?: number
+          params?: Json
+          ready_at?: string | null
+          rnaseq_run_id?: number | null
+          status?: string
+          term_count?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scrna_enrichment_runs_annotation_build_id_fkey"
+            columns: ["annotation_build_id"]
+            isOneToOne: false
+            referencedRelation: "genome_annotation_builds"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_enrichment_runs_dataset_id_fkey"
+            columns: ["dataset_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_datasets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scrna_enrichment_runs_de_run_fkey"
+            columns: ["dataset_id", "de_run_id"]
+            isOneToOne: false
+            referencedRelation: "scrna_de_runs"
+            referencedColumns: ["dataset_id", "id"]
+          },
+          {
+            foreignKeyName: "scrna_enrichment_runs_rnaseq_run_id_fkey"
+            columns: ["rnaseq_run_id"]
+            isOneToOne: false
+            referencedRelation: "rnaseq_runs"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       scrna_genes: {
         Row: {
@@ -4866,12 +5030,78 @@ export type Database = {
         }[]
       }
       _genome_object_bytes: { Args: { p_name: string }; Returns: number }
+      _own_annotation_build: {
+        Args: { p_build_id: number }
+        Returns: {
+          build: number
+          created_at: string
+          created_by: string
+          file_bytes: number | null
+          file_path: string
+          file_sha256: string | null
+          gene_count: number | null
+          id: number
+          ready_at: string | null
+          source: string
+          status: string
+          term_count: number | null
+          tool_versions: Json
+          version_id: number
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "genome_annotation_builds"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      _own_enrichment_run: {
+        Args: { p_run_id: number }
+        Returns: {
+          annotated_genes: number | null
+          annotation_build_id: number
+          background_genes: number | null
+          created_at: string
+          created_by: string
+          dataset_id: number
+          de_run_id: number
+          file_bytes: number | null
+          file_path: string
+          file_sha256: string | null
+          id: number
+          params: Json
+          ready_at: string | null
+          rnaseq_run_id: number | null
+          status: string
+          term_count: number | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "scrna_enrichment_runs"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       _settle_cyl_pipeline_run: {
         Args: { p_run_id: number }
         Returns: undefined
       }
+      _storage_object_bytes: {
+        Args: { p_bucket: string; p_name: string }
+        Returns: number
+      }
+      abandon_genome_annotation_build: {
+        Args: { p_build_id: number }
+        Returns: boolean
+      }
       abandon_genome_version: {
         Args: { p_version_id: number }
+        Returns: boolean
+      }
+      abandon_scrna_enrichment_run: {
+        Args: { p_run_id: number }
         Returns: boolean
       }
       add_species: {
@@ -5067,6 +5297,16 @@ export type Database = {
         Args: { p_message: string; p_msg_id: number; p_run_id: number }
         Returns: boolean
       }
+      finish_genome_annotation_build: {
+        Args: {
+          p_build_id: number
+          p_file_bytes: number
+          p_file_sha256: string
+          p_gene_count: number
+          p_term_count: number
+        }
+        Returns: number
+      }
       finish_genome_version: {
         Args: {
           p_fasta_bytes: number
@@ -5076,6 +5316,17 @@ export type Database = {
           p_version_id: number
         }
         Returns: number
+      }
+      finish_scrna_enrichment_run: {
+        Args: {
+          p_annotated_genes: number
+          p_background_genes: number
+          p_file_bytes: number
+          p_file_sha256: string
+          p_run_id: number
+          p_term_count: number
+        }
+        Returns: undefined
       }
       genome_name_ok: { Args: { p_name: string }; Returns: boolean }
       get_experiment_summary_counts: {
@@ -5325,6 +5576,10 @@ export type Database = {
         Args: { p_dataset_id: number; p_run_id: number }
         Returns: number
       }
+      link_scrna_dataset_genome: {
+        Args: { p_dataset_id: number; p_version_id: number }
+        Returns: undefined
+      }
       list_experiment_trait_sources: {
         Args: { experiment_id_: number }
         Returns: {
@@ -5349,6 +5604,8 @@ export type Database = {
         Args: never
         Returns: undefined
       }
+      may_upload_annotation_file: { Args: { p_name: string }; Returns: boolean }
+      may_upload_enrichment_file: { Args: { p_name: string }; Returns: boolean }
       member_may_upload_genome_file: {
         Args: { p_name: string; p_owner_id: string }
         Returns: boolean
@@ -5473,6 +5730,14 @@ export type Database = {
         Args: { target_id: number; target_table: string }
         Returns: undefined
       }
+      start_genome_annotation_build: {
+        Args: { p_source: string; p_tool_versions?: Json; p_version_id: number }
+        Returns: {
+          build: number
+          build_id: number
+          file_path: string
+        }[]
+      }
       start_genome_version: {
         Args: {
           p_annotation?: string
@@ -5488,6 +5753,19 @@ export type Database = {
           gtf_path: string
           version: number
           version_id: number
+        }[]
+      }
+      start_scrna_enrichment_run: {
+        Args: {
+          p_annotation_build_id: number
+          p_dataset_id: number
+          p_de_run_id: number
+          p_params: Json
+          p_rnaseq_run_id?: number
+        }
+        Returns: {
+          file_path: string
+          run_id: number
         }[]
       }
       update_cyl_pipeline_run_status: {
@@ -5509,6 +5787,10 @@ export type Database = {
           p_step_pods: Json
         }
         Returns: boolean
+      }
+      withdraw_genome_annotation_build: {
+        Args: { p_build_id: number; p_reason: string }
+        Returns: undefined
       }
       workflows_may_load_scrna_dataset: {
         Args: { p_dataset_id: number }
