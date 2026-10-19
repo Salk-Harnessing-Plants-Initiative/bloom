@@ -12,13 +12,15 @@ import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import { fetchComparisons } from "@/components/expression-differential-analysis";
 import {
-  comparisonsOf,
+  clustersOf,
   fetchLatestEnrichment,
   geneRatio,
   KIND_LABELS,
   KINDS,
   termsFor,
+  type ClusterChoice,
   type Direction,
   type EnrichmentFile,
   type EnrichmentTerm,
@@ -44,7 +46,7 @@ type Loaded =
   | { state: "loading" }
   | { state: "none" }
   | { state: "error"; message: string }
-  | { state: "ready"; file: EnrichmentFile };
+  | { state: "ready"; file: EnrichmentFile; clusters: ClusterChoice[] };
 
 export interface ExpressionGoPathwaysProps {
   datasetId: number;
@@ -53,6 +55,7 @@ export interface ExpressionGoPathwaysProps {
 /** The dataset's GO and KEGG pathway enrichment, one comparison, direction and kind at a time. */
 export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
+  const [cluster, setCluster] = useState<string>("");
   const [comparison, setComparison] = useState<string>("");
   const [direction, setDirection] = useState<Direction>("up");
   const [kind, setKind] = useState<TermKind>("GO_BP");
@@ -60,15 +63,24 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
   useEffect(() => {
     let cancelled = false;
     setLoaded({ state: "loading" });
-    fetchLatestEnrichment(createClientSupabaseClient(), datasetId)
-      .then((found) => {
+    const supabase = createClientSupabaseClient();
+    fetchLatestEnrichment(supabase, datasetId)
+      .then(async (found) => {
+        if (!found) return null;
+        // Which cluster each comparison belongs to, from the analysis the file tested.
+        const rows = await fetchComparisons(supabase, found.file.de_run_id);
+        return { file: found.file, clusters: clustersOf(found.file, rows) };
+      })
+      .then((ready) => {
         if (cancelled) return;
-        if (!found) {
+        if (!ready) {
           setLoaded({ state: "none" });
           return;
         }
-        setLoaded({ state: "ready", file: found.file });
-        setComparison(comparisonsOf(found.file)[0] ?? "");
+        setLoaded({ state: "ready", ...ready });
+        const first = ready.clusters[0];
+        setCluster(first?.cluster ?? "");
+        setComparison(first?.comparisons[0]?.comparison ?? "");
       })
       .catch((error: Error) => {
         if (!cancelled) setLoaded({ state: "error", message: error.message });
@@ -79,7 +91,9 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
   }, [datasetId]);
 
   const file = loaded.state === "ready" ? loaded.file : null;
-  const comparisons = useMemo(() => (file ? comparisonsOf(file) : []), [file]);
+  const clusters = loaded.state === "ready" ? loaded.clusters : [];
+  const choices = clusters.find((c) => c.cluster === cluster)?.comparisons ?? [];
+  const chosen = choices.find((c) => c.comparison === comparison);
   const terms = useMemo(
     () => (file && comparison ? termsFor(file, comparison, direction, kind) : []),
     [file, comparison, direction, kind],
@@ -109,19 +123,39 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
     <div className="space-y-4">
       <Paper sx={{ p: 2 }}>
         <div className="flex flex-wrap items-center gap-3">
-          <FormControl sx={{ minWidth: 220 }} size="small">
-            <InputLabel id="go-comparison-label">Comparison</InputLabel>
+          <FormControl sx={{ minWidth: 160 }} size="small">
+            <InputLabel id="go-cluster-label">Cluster</InputLabel>
             <Select
-              labelId="go-comparison-label"
-              label="Comparison"
-              value={comparison}
-              onChange={(e) => setComparison(e.target.value)}
+              labelId="go-cluster-label"
+              label="Cluster"
+              value={cluster}
+              onChange={(e) => {
+                const next = clusters.find((c) => c.cluster === e.target.value);
+                setCluster(e.target.value);
+                setComparison(next?.comparisons[0]?.comparison ?? "");
+              }}
             >
-              {comparisons.map((c) => (
-                <MenuItem key={c} value={c}>{c.replaceAll("_", " ")}</MenuItem>
+              {clusters.map((c) => (
+                <MenuItem key={c.cluster} value={c.cluster}>{c.cluster}</MenuItem>
               ))}
             </Select>
           </FormControl>
+          {/* Most clusters have one comparison, against all other cells; then there's nothing to choose. */}
+          {choices.length > 1 && (
+            <FormControl sx={{ minWidth: 200 }} size="small">
+              <InputLabel id="go-comparison-label">Compared with</InputLabel>
+              <Select
+                labelId="go-comparison-label"
+                label="Compared with"
+                value={comparison}
+                onChange={(e) => setComparison(e.target.value)}
+              >
+                {choices.map((c) => (
+                  <MenuItem key={c.comparison} value={c.comparison}>{c.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
           <ToggleButtonGroup
             size="small"
             exclusive
@@ -142,19 +176,47 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
             ))}
           </ToggleButtonGroup>
         </div>
+        <p className="mt-2 text-sm text-stone-600">
+          Genes {direction} in cluster {cluster} compared with {chosen?.label ?? "all other cells"},
+          from the Differential expression tab.
+        </p>
+        <p className="mt-1 text-xs text-stone-500">
+          {f.annotated_genes.toLocaleString("en-US")} of this dataset&apos;s{" "}
+          {f.background_genes.toLocaleString("en-US")} genes have a GO term or KEGG pathway.
+        </p>
+        <details className="mt-1 text-xs text-stone-600">
+          <summary className="cursor-pointer text-stone-500 hover:text-stone-800">
+            How were these found?
+          </summary>
+          <ul className="mt-2 ml-4 list-disc space-y-1">
+            <li>
+              For each cluster, we took the genes that go up (or down) the most compared with the
+              other cells: up to {f.params.top_n} genes that change clearly (FDR below{" "}
+              {f.params.fdr_max}).
+            </li>
+            <li>
+              We then looked for GO terms and KEGG pathways that contain more of those genes than
+              you&apos;d expect by chance. The FDR column says how sure that is: smaller is stronger.
+            </li>
+            <li>
+              When several terms contain exactly the same genes, only the most specific one is shown.
+            </li>
+            <li>Annotation used: {f.annotation}.</li>
+          </ul>
+        </details>
       </Paper>
 
       {terms.length === 0 ? (
         <Alert severity="info">
-          No significant {SHORT_KIND[kind].toLowerCase()} terms for {comparison.replaceAll("_", " ")}{" "}
-          ({direction === "up" ? "up" : "down"}-regulated genes).
+          No significant {SHORT_KIND[kind].toLowerCase()} terms among the genes {direction} in
+          cluster {cluster} vs {chosen?.label ?? "all other cells"}.
         </Alert>
       ) : (
         <>
           <Paper sx={{ p: 2 }}>
             <h3 className="font-serif italic text-stone-800 mb-2">
-              {KIND_LABELS[kind]}, {direction === "up" ? "up" : "down"}-regulated in{" "}
-              {comparison.replaceAll("_", " ")}
+              {KIND_LABELS[kind]}: genes {direction} in cluster {cluster} vs{" "}
+              {chosen?.label ?? "all other cells"}
             </h3>
             <DotPlot terms={terms.slice(0, DOT_PLOT_TERMS)} />
           </Paper>
@@ -164,14 +226,6 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
         </>
       )}
 
-      <p className="text-xs text-stone-500">
-        Annotation {f.annotation}; {f.annotated_genes.toLocaleString("en-US")} of{" "}
-        {f.background_genes.toLocaleString("en-US")} genes in the dataset have a term. Lists:
-        genes with FDR &lt; {f.params.fdr_max} and |log2FC| &gt; {f.params.lfc_min}, the{" "}
-        {f.params.top_n} strongest; each kind is tested against the dataset&apos;s genes with a
-        term of that kind (hypergeometric test, Benjamini–Hochberg). Terms covering the same
-        genes show as the most specific one.
-      </p>
     </div>
   );
 }
@@ -182,6 +236,8 @@ const PLOT_WIDTH = 360;
 const TOP = 8;
 const BOTTOM = 36;
 const RIGHT = 120;
+// The legend's height, so a plot of one or two terms still shows all of it.
+const LEGEND_HEIGHT = 100;
 
 function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
   const maxRatio = Math.max(...terms.map(geneRatio)) * 1.1 || 1;
@@ -189,7 +245,8 @@ function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
   const [minCount, maxCount] = [Math.min(...counts), Math.max(...counts)];
   const scores = terms.map((t) => -Math.log10(Math.max(t.fdr, Number.MIN_VALUE)));
   const [lo, hi] = [Math.min(...scores), Math.max(...scores)];
-  const height = TOP + terms.length * ROW + BOTTOM;
+  const height = Math.max(TOP + terms.length * ROW + BOTTOM, LEGEND_HEIGHT);
+  const bottom = height - BOTTOM;
   const x = (ratio: number) => LEFT + (ratio / maxRatio) * PLOT_WIDTH;
   const radius = (n: number) =>
     maxCount === minCount ? 7 : 4 + ((n - minCount) / (maxCount - minCount)) * 7;
@@ -208,8 +265,8 @@ function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
     >
       {ticks.map((t) => (
         <g key={t}>
-          <line x1={x(t)} x2={x(t)} y1={TOP} y2={height - BOTTOM} stroke="#e7e5e4" />
-          <text x={x(t)} y={height - BOTTOM + 14} fontSize={10} textAnchor="middle" fill="#57534e">
+          <line x1={x(t)} x2={x(t)} y1={TOP} y2={bottom} stroke="#e7e5e4" />
+          <text x={x(t)} y={bottom + 14} fontSize={10} textAnchor="middle" fill="#57534e">
             {t.toFixed(2)}
           </text>
         </g>
@@ -233,13 +290,21 @@ function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
         <text y={0}>−log10 FDR</text>
         <rect y={6} width={10} height={10} fill={colour(hi)} />
         <text x={14} y={15}>{hi.toFixed(1)}</text>
-        <rect y={20} width={10} height={10} fill={colour(lo)} />
-        <text x={14} y={29}>{lo.toFixed(1)}</text>
+        {lo !== hi && (
+          <>
+            <rect y={20} width={10} height={10} fill={colour(lo)} />
+            <text x={14} y={29}>{lo.toFixed(1)}</text>
+          </>
+        )}
         <text y={50}>Genes in list</text>
-        <circle cx={5} cy={62} r={radius(maxCount)} fill="none" stroke="#44403c" />
-        <text x={18} y={65}>{maxCount}</text>
-        <circle cx={5} cy={82} r={radius(minCount)} fill="none" stroke="#44403c" />
-        <text x={18} y={85}>{minCount}</text>
+        <circle cx={7} cy={64} r={radius(maxCount)} fill="none" stroke="#44403c" />
+        <text x={22} y={67}>{maxCount}</text>
+        {minCount !== maxCount && (
+          <>
+            <circle cx={7} cy={84} r={radius(minCount)} fill="none" stroke="#44403c" />
+            <text x={22} y={87}>{minCount}</text>
+          </>
+        )}
       </g>
     </svg>
   );
@@ -252,8 +317,8 @@ function TermTable({ terms }: { terms: EnrichmentTerm[] }) {
         <thead className="sticky top-0 bg-white text-left text-stone-600">
           <tr>
             <th className="py-2 pr-4 font-medium">Term</th>
-            <th className="py-2 pr-4 font-medium">In list</th>
-            <th className="py-2 pr-4 font-medium">Term size</th>
+            <th className="py-2 pr-4 font-medium whitespace-nowrap">In list</th>
+            <th className="py-2 pr-4 font-medium whitespace-nowrap">Term size</th>
             <th className="py-2 pr-4 font-medium">FDR</th>
             <th className="py-2 font-medium">List genes</th>
           </tr>
@@ -265,9 +330,9 @@ function TermTable({ terms }: { terms: EnrichmentTerm[] }) {
                 <span className="text-stone-900">{t.name}</span>{" "}
                 <span className="text-xs text-stone-500">{t.term}</span>
               </td>
-              <td className="py-1.5 pr-4 tabular-nums">{t.list_genes_in_term} / {t.list_size}</td>
-              <td className="py-1.5 pr-4 tabular-nums">{t.term_size}</td>
-              <td className="py-1.5 pr-4 tabular-nums">{t.fdr.toExponential(2)}</td>
+              <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.list_genes_in_term} / {t.list_size}</td>
+              <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.term_size}</td>
+              <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.fdr.toExponential(2)}</td>
               <td className="py-1.5 text-xs text-stone-600" title={t.genes.join(", ")}>
                 {t.genes.slice(0, SHOWN_GENES).join(", ")}
                 {t.genes.length > SHOWN_GENES && ` +${t.genes.length - SHOWN_GENES} more`}

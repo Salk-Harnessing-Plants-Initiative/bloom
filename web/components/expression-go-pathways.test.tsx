@@ -11,9 +11,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 
 import type { EnrichmentFile, EnrichmentTerm } from "@/components/expression-lib/enrichment";
 
-const fetched = vi.hoisted(() => ({ result: null as unknown, error: null as Error | null }));
+const fetched = vi.hoisted(() => ({
+  result: null as unknown,
+  error: null as Error | null,
+  rows: [] as { cluster_id: string; contrast: string | null }[],
+}));
 
 vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
+vi.mock("@/components/expression-differential-analysis", () => ({
+  fetchComparisons: async () => fetched.rows,
+}));
 vi.mock("@/components/expression-lib/enrichment", async (original) => ({
   ...(await original<typeof import("@/components/expression-lib/enrichment")>()),
   fetchLatestEnrichment: async () => {
@@ -51,12 +58,35 @@ beforeEach(() => {
                             file_path: "enrichment/25/run-9.json.gz", ready_at: null },
                      file: FILE };
   fetched.error = null;
+  fetched.rows = [{ cluster_id: "2", contrast: "2_vs_rest" },
+                  { cluster_id: "10", contrast: "10_vs_rest" }];
 });
 afterEach(cleanup);
 
 const table = () => screen.getByRole("table", { name: /terms/i });
 
 describe("ExpressionGoPathways", () => {
+  it("picks a cluster, with nothing more to choose when it has one comparison", async () => {
+    render(<ExpressionGoPathways datasetId={25} />);
+    await waitFor(() => expect(table()).toBeTruthy());
+    expect(screen.getByLabelText("Cluster").textContent).toBe("2");
+    expect(screen.queryByLabelText("Compared with")).toBeNull();
+    expect(screen.getByText(/Genes up in cluster 2 compared with all other cells/)).toBeTruthy();
+    expect(screen.getByText(/genes up in cluster 2 vs\s+all other cells/)).toBeTruthy();
+  });
+
+  it("offers a cluster's comparisons when it has more than one", async () => {
+    fetched.rows = [...fetched.rows, { cluster_id: "2", contrast: "2_vs_5" }];
+    const file = (fetched.result as { file: EnrichmentFile }).file;
+    file.results = [...FILE.results, term({ comparison: "2_vs_5", name: "cell wall" })];
+    render(<ExpressionGoPathways datasetId={25} />);
+    await waitFor(() => expect(table()).toBeTruthy());
+    expect(screen.getByLabelText("Compared with").textContent).toBe("cluster 5");
+    expect(screen.getByText(/Genes up in cluster 2 compared with cluster 5/)).toBeTruthy();
+    expect(within(table()).getByText("cell wall")).toBeTruthy();
+    file.results = FILE.results;
+  });
+
   it("opens on the first comparison's up-regulated biological processes", async () => {
     render(<ExpressionGoPathways datasetId={25} />);
     await waitFor(() => expect(table()).toBeTruthy());
@@ -87,14 +117,15 @@ describe("ExpressionGoPathways", () => {
     render(<ExpressionGoPathways datasetId={25} />);
     await waitFor(() => expect(table()).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Cellular component" }));
-    expect(screen.getByText(/No significant cellular component terms/i)).toBeTruthy();
+    expect(screen.getByText(/No significant cellular component terms among the genes up/i))
+      .toBeTruthy();
   });
 
   it("says what was tested", async () => {
     render(<ExpressionGoPathways datasetId={25} />);
     await waitFor(() => expect(table()).toBeTruthy());
-    expect(screen.getByText(/sbicolor\.btx623\.hpiv3\.v1\/eggnog-b1/)).toBeTruthy();
-    expect(screen.getByText(/11,427 of 21,957 genes/)).toBeTruthy();
+    expect(screen.getByText(/11,427 of this dataset's\s+21,957 genes/)).toBeTruthy();
+    expect(screen.getByText(/Annotation used: sbicolor\.btx623\.hpiv3\.v1\/eggnog-b1/)).toBeTruthy();
   });
 
   it("says when the dataset has no GO and pathway results yet", async () => {

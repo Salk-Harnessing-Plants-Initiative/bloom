@@ -158,3 +158,52 @@ export function termsFor(file: EnrichmentFile, comparison: string, direction: Di
 export function geneRatio(term: EnrichmentTerm): number {
   return term.list_size === 0 ? 0 : term.list_genes_in_term / term.list_size;
 }
+
+/** One of a cluster's comparisons: the file's name for it, and what the cluster is compared with. */
+export interface ClusterComparison {
+  comparison: string;
+  label: string;
+}
+
+const AGAINST_REST = "all other cells";
+
+/** What a comparison sets its cluster against: "all other cells", or "cluster 5" for 2_vs_5. */
+function againstOf(contrast: string | null): string {
+  if (contrast === null) return AGAINST_REST;
+  const at = contrast.lastIndexOf("_vs_");
+  const other = at < 0 ? "" : contrast.slice(at + "_vs_".length);
+  return other === "" || other === "rest" ? AGAINST_REST : `cluster ${other}`;
+}
+
+/** A cluster and its comparisons in the file. */
+export interface ClusterChoice {
+  cluster: string;
+  comparisons: ClusterComparison[];
+}
+
+/** The DE row fields that say which cluster a comparison belongs to. */
+export interface ComparisonRow {
+  cluster_id: string | null;
+  contrast: string | null;
+}
+
+/**
+ * The file's comparisons grouped by cluster, in cluster order. A comparison is named by its DE
+ * row's contrast (or its cluster, for older one-vs-rest rows); one without a row stands alone.
+ */
+export function clustersOf(file: EnrichmentFile, rows: ComparisonRow[]): ClusterChoice[] {
+  const byName = new Map(rows.flatMap((r) => {
+    const name = r.contrast ?? r.cluster_id;
+    return name === null ? [] : [[name, r] as const];
+  }));
+  const clusters = new Map<string, ClusterComparison[]>();
+  for (const comparison of comparisonsOf(file)) {
+    const row = byName.get(comparison);
+    const cluster = row?.cluster_id ?? comparison;
+    const label = againstOf(row ? row.contrast : comparison);
+    clusters.set(cluster, [...(clusters.get(cluster) ?? []), { comparison, label }]);
+  }
+  return [...clusters.keys()]
+    .sort((a, b) => clusterNumber(a) - clusterNumber(b) || a.localeCompare(b))
+    .map((cluster) => ({ cluster, comparisons: clusters.get(cluster) ?? [] }));
+}

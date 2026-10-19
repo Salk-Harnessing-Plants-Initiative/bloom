@@ -10,6 +10,7 @@ import { gzipSync, strToU8 } from "fflate";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  clustersOf,
   comparisonsOf,
   decodeEnrichment,
   EnrichmentFileError,
@@ -151,5 +152,36 @@ describe("comparisonsOf and termsFor", () => {
 
   it("gives the share of the list in the term", () => {
     expect(geneRatio(TERM as never)).toBeCloseTo(0.25);
+  });
+});
+
+describe("clustersOf", () => {
+  const terms = [
+    { ...TERM, comparison: "10_vs_rest" },
+    { ...TERM, comparison: "2_vs_rest" },
+    { ...TERM, comparison: "2_vs_5" },
+    { ...TERM, comparison: "orphan" },
+  ];
+  const parsed = decodeEnrichment(gz(file(terms)), 25);
+  const rows = [
+    { cluster_id: "2", contrast: "2_vs_rest" },
+    { cluster_id: "2", contrast: "2_vs_5" },
+    { cluster_id: "10", contrast: "10_vs_rest" },
+  ];
+
+  it("groups comparisons under their DE row's cluster, in cluster order", () => {
+    expect(clustersOf(parsed, rows)).toEqual([
+      { cluster: "2", comparisons: [{ comparison: "2_vs_5", label: "cluster 5" },
+                                    { comparison: "2_vs_rest", label: "all other cells" }] },
+      { cluster: "10", comparisons: [{ comparison: "10_vs_rest", label: "all other cells" }] },
+      { cluster: "orphan", comparisons: [{ comparison: "orphan", label: "all other cells" }] },
+    ]);
+  });
+
+  it("names an older one-vs-rest row, which has no contrast, by its cluster", () => {
+    const old = decodeEnrichment(gz(file([{ ...TERM, comparison: "7" }])), 25);
+    expect(clustersOf(old, [{ cluster_id: "7", contrast: null }])).toEqual([
+      { cluster: "7", comparisons: [{ comparison: "7", label: "all other cells" }] },
+    ]);
   });
 });
