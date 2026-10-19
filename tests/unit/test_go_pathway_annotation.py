@@ -89,12 +89,13 @@ EMAPPER_HEADER = "\t".join(
 )
 
 
-def emapper(*rows: tuple[str, str, str, str, str]) -> str:
-    """eggNOG-mapper output: (protein, description, preferred name, GOs, KEGG_Pathway) per row."""
+def emapper(*rows: tuple[str, ...]) -> str:
+    """eggNOG-mapper output: (protein, description, preferred name, GOs, KEGG_Pathway[, KEGG_ko])
+    per row."""
     lines = ["## emapper-2.1.13", EMAPPER_HEADER]
-    for query, description, name, gos, pathways in rows:
+    for query, description, name, gos, pathways, *kos in rows:
         lines.append("\t".join([query, "1e-50", "33090|Viridiplantae", "S", description, name,
-                                gos, "-", pathways, "-"]))
+                                gos, kos[0] if kos else "-", pathways, "-"]))
     lines.append("## 3 queries scanned")
     return "\n".join(lines) + "\n"
 
@@ -168,6 +169,16 @@ def test_a_gene_gets_the_union_of_its_proteins_terms_with_ancestors(ontology):
     assert built.genes["G1"]["description"] == "Light response protein"
 
 
+def test_a_gene_keeps_its_proteins_kegg_orthologs_without_the_ko_prefix(ontology):
+    built = eggnog(ontology, emapper(
+        ("G1.t1", "-", "-", "GO:0009416", "map00010", "ko:K00844"),
+        ("G1.t2", "-", "-", "-", "-", "ko:K12811,ko:K00844"),
+        ("G2.t1", "-", "-", "GO:0003674", "-"),
+    ))
+    assert built.genes["G1"]["kos"] == ["K00844", "K12811"]
+    assert built.genes["G2"]["kos"] == []
+
+
 def test_ko_ids_unknown_terms_and_other_species_pathways_are_dropped(ontology):
     built = eggnog(ontology, emapper(
         ("G2.t1", "-", "-", "GO:9999999,GO:0000001", "ko01100,map01100"),
@@ -230,6 +241,7 @@ def test_tair_go_maps_genes_by_their_agi_code_and_drops_not_lines(ontology):
     assert built.genes["AT1G01010"]["terms"] == [
         "GO:0008150", "GO:0009314", "GO:0009416", "GO:0050896"
     ]
+    assert built.genes["AT1G01010"]["kos"] == [], "TAIR has no KEGG orthologs"
 
 
 # --------------------------------------------------------------------------- #

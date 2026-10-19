@@ -1,5 +1,6 @@
-"""A genome version's annotation: every gene's GO terms (with their ancestors) and KEGG pathways,
-built from eggNOG-mapper or TAIR's GO annotations, and the gzipped JSON file that holds it."""
+"""A genome version's annotation: every gene's GO terms (with their ancestors), KEGG pathways and
+KEGG orthologs, built from eggNOG-mapper or TAIR's GO annotations, and the gzipped JSON file that
+holds it."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from .steps import EXIT_BAD_ANNOTATION, StepError
 FORMAT = "bloom-annotation/1"
 EGGNOG_HEADER = "#query"
 NONE = "-"
+KO_PREFIX = "ko:"
 AGI = re.compile(r"^AT[1-5CM]G\d{5}$", re.IGNORECASE)
 _GENE_ID = re.compile(r'gene_id "([^"]+)"')
 _TRANSCRIPT_ID = re.compile(r'transcript_id "([^"]+)"')
@@ -24,7 +26,7 @@ _TRANSCRIPT_ID = re.compile(r'transcript_id "([^"]+)"')
 
 @dataclass
 class Annotation:
-    """Terms by ID ({kind, name, parents}) and genes by ID ({name, description, terms})."""
+    """Terms by ID ({kind, name, parents}) and genes by ID ({name, description, terms, kos})."""
 
     terms: dict[str, dict] = field(default_factory=dict)
     genes: dict[str, dict] = field(default_factory=dict)
@@ -66,7 +68,7 @@ def _built(ontology: Ontology, direct: dict[str, set[str]], pathways: dict[str, 
         if terms:
             info = details.get(gene, {})
             genes[gene] = {"name": info.get("name"), "description": info.get("description"),
-                           "terms": sorted(terms)}
+                           "terms": sorted(terms), "kos": sorted(info.get("kos", set()))}
             used |= terms
     terms = {}
     for term in sorted(used):
@@ -82,7 +84,8 @@ def _built(ontology: Ontology, direct: dict[str, set[str]], pathways: dict[str, 
 def from_eggnog(lines: Iterable[str], *, transcript_genes: dict[str, str], ontology: Ontology,
                 pathways: dict[str, str]) -> Annotation:
     """eggNOG-mapper's annotations of a genome's proteins; each gene gets the union of its
-    proteins' GO terms and KEGG pathways (map IDs, of the species' pathways only)."""
+    proteins' GO terms, KEGG pathways (map IDs, of the species' pathways only) and KEGG
+    orthologs (K numbers), which show where its genes sit on a pathway's map."""
     rows = [line for line in lines if not line.startswith("##")]
     if not rows or not rows[0].startswith(EGGNOG_HEADER):
         raise StepError(EXIT_BAD_ANNOTATION, "eggNOG-mapper output has no #query header")
@@ -100,6 +103,9 @@ def from_eggnog(lines: Iterable[str], *, transcript_genes: dict[str, str], ontol
         if row["KEGG_Pathway"] not in (NONE, ""):
             terms.update(p for p in row["KEGG_Pathway"].split(",") if p.startswith("map"))
         info = details.setdefault(gene, {})
+        if row["KEGG_ko"] not in (NONE, ""):
+            info.setdefault("kos", set()).update(
+                k.removeprefix(KO_PREFIX) for k in row["KEGG_ko"].split(","))
         for key, column in (("name", "Preferred_name"), ("description", "Description")):
             if info.get(key) is None and row[column] not in (NONE, ""):
                 info[key] = row[column]

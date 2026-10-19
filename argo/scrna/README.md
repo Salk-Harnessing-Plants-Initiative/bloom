@@ -209,11 +209,12 @@ The files (`bloom_scrna_analysis/annotation.py` and `enrichment.py`):
 - `bloom-annotation/1`: `genome`, `version`, `source`, `tools` (eggNOG-mapper and database
   versions, the GO release, TAIR's file date), `terms` by ID (`kind` GO_BP, GO_MF, GO_CC or
   KEGG, `name`, and for GO the `parents` that are in the file), and `genes` by ID (`name`,
-  `description`, and `terms`, ancestors included).
+  `description`, `terms` with ancestors included, and `kos`, the gene's KEGG orthologs).
 - `bloom-enrichment/1`: `dataset_id`, `de_run_id`, `annotation`, `params`, `background_genes`
   (the dataset's genes), `annotated_genes` (those with any term), and `results`: per
   significant term its comparison, direction, kind, term, name, list and term counts,
-  background size, p, FDR and list genes.
+  background size, p, FDR and list genes; a KEGG term also has `kos`, its list genes' KEGG
+  orthologs, which colour them on the pathway's map.
 
 ## Step logs
 
