@@ -25,6 +25,8 @@ export const KIND_LABELS: Record<TermKind, string> = {
 const GZIP_MAGIC = [0x1f, 0x8b];
 // A KEGG ortholog, e.g. K02866.
 const KO = /^K\d{5}$/;
+// QuickGO's page for a GO term: its definition and where it sits in the GO tree.
+const QUICKGO_TERM_URL = "https://www.ebi.ac.uk/QuickGO/term/";
 // KEGG's map viewer, which colours the orthologs it's given.
 const KEGG_MAP_URL = "https://www.kegg.jp/kegg-bin/show_pathway";
 // Up and down, as the map colours them (ColorBrewer RdYlBu's ends).
@@ -231,4 +233,9 @@ export function keggMapUrl(term: EnrichmentTerm): string | null {
   url.searchParams.set("map", term.term);
   url.searchParams.set("multi_query", term.kos.map((ko) => `${ko} ${colour}`).join("\n"));
   return url.toString();
+}
+
+/** QuickGO's page for a GO term, or null for a KEGG pathway. */
+export function goTermUrl(term: EnrichmentTerm): string | null {
+  return term.kind === "KEGG" ? null : `${QUICKGO_TERM_URL}${encodeURIComponent(term.term)}`;
 }

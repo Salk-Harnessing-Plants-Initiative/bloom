@@ -16,6 +16,7 @@ import {
   EnrichmentFileError,
   fetchLatestEnrichment,
   geneRatio,
+  goTermUrl,
   keggMapUrl,
   termsFor,
   type EnrichmentFile,
@@ -212,5 +213,15 @@ describe("keggMapUrl", () => {
   it("refuses a file whose orthologs aren't a list of K numbers", () => {
     expect(() => decodeEnrichment(gz(file([{ ...kegg, kos: ["not-a-ko"] }])), 25))
       .toThrow(EnrichmentFileError);
+  });
+});
+
+describe("goTermUrl", () => {
+  it("opens a GO term's QuickGO page", () => {
+    expect(goTermUrl(TERM as never)).toBe("https://www.ebi.ac.uk/QuickGO/term/GO%3A0006412");
+  });
+
+  it("is nothing for a KEGG pathway", () => {
+    expect(goTermUrl({ ...TERM, kind: "KEGG", term: "map03010" } as never)).toBeNull();
   });
 });

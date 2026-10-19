@@ -114,14 +114,28 @@ describe("ExpressionGoPathways", () => {
     expect(within(table()).getByText("Ribosome")).toBeTruthy();
   });
 
-  it("links a KEGG pathway to its map on KEGG, when its genes have orthologs", async () => {
+  it("links each GO term to its QuickGO page", async () => {
+    render(<ExpressionGoPathways datasetId={25} />);
+    await waitFor(() => expect(table()).toBeTruthy());
+    const link = within(table()).getByRole("link", { name: /GO:0006412/ });
+    expect(link.getAttribute("href")).toBe("https://www.ebi.ac.uk/QuickGO/term/GO%3A0006412");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("shows a KEGG pathway's map in the page, when its genes have orthologs", async () => {
     render(<ExpressionGoPathways datasetId={25} />);
     await waitFor(() => expect(table()).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "KEGG pathways" }));
-    const links = within(table()).getAllByRole("link", { name: /View pathway/ });
-    expect(links).toHaveLength(1);
-    expect(links[0].getAttribute("href")).toContain("map=map03010");
-    expect(links[0].getAttribute("target")).toBe("_blank");
+    expect(screen.queryByTitle(/KEGG map/)).toBeNull();
+    const buttons = within(table()).getAllByRole("button", { name: /Show map/ });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]);
+    const frame = screen.getByTitle("KEGG map: Ribosome");
+    expect(frame.getAttribute("src")).toContain("map=map03010");
+    expect(screen.getByRole("link", { name: /Open on KEGG/ }).getAttribute("target"))
+      .toBe("_blank");
+    fireEvent.click(screen.getByRole("button", { name: "Close map" }));
+    expect(screen.queryByTitle(/KEGG map/)).toBeNull();
   });
 
   it("says when a choice has nothing significant", async () => {

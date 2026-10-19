@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import CircularProgress from "@mui/material/CircularProgress";
 import FormControl from "@mui/material/FormControl";
@@ -17,6 +17,7 @@ import {
   clustersOf,
   fetchLatestEnrichment,
   geneRatio,
+  goTermUrl,
   keggMapUrl,
   KIND_LABELS,
   KINDS,
@@ -60,6 +61,8 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
   const [comparison, setComparison] = useState<string>("");
   const [direction, setDirection] = useState<Direction>("up");
   const [kind, setKind] = useState<TermKind>("GO_BP");
+  // The KEGG pathway whose map is open under the table, if any.
+  const [mapOf, setMapOf] = useState<EnrichmentTerm | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -222,8 +225,11 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
             <DotPlot terms={terms.slice(0, DOT_PLOT_TERMS)} />
           </Paper>
           <Paper sx={{ p: 2 }}>
-            <TermTable terms={terms} />
+            <TermTable terms={terms} onShowMap={setMapOf} />
           </Paper>
+          {mapOf && terms.includes(mapOf) && (
+            <PathwayMap term={mapOf} onClose={() => setMapOf(null)} />
+          )}
         </>
       )}
 
@@ -311,7 +317,10 @@ function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
   );
 }
 
-function TermTable({ terms }: { terms: EnrichmentTerm[] }) {
+function TermTable({ terms, onShowMap }: {
+  terms: EnrichmentTerm[];
+  onShowMap: (term: EnrichmentTerm) => void;
+}) {
   return (
     <div className="max-h-[480px] overflow-auto">
       <table aria-label="Enriched terms" className="w-full text-sm">
@@ -329,16 +338,23 @@ function TermTable({ terms }: { terms: EnrichmentTerm[] }) {
             <tr key={t.term} className="border-t border-stone-100 align-top">
               <td className="py-1.5 pr-4">
                 <span className="text-stone-900">{t.name}</span>{" "}
-                <span className="text-xs text-stone-500">{t.term}</span>
+                {goTermUrl(t) ? (
+                  <a href={goTermUrl(t) ?? undefined} target="_blank" rel="noopener noreferrer"
+                     title="Open this term on QuickGO"
+                     className="text-xs text-lime-800 underline hover:text-lime-900">
+                    {t.term} ↗
+                  </a>
+                ) : (
+                  <span className="text-xs text-stone-500">{t.term}</span>
+                )}
                 {keggMapUrl(t) && (
-                  <a
-                    href={keggMapUrl(t) ?? undefined}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => onShowMap(t)}
                     className="ml-2 whitespace-nowrap text-xs text-lime-800 underline hover:text-lime-900"
                   >
-                    View pathway ↗
-                  </a>
+                    Show map
+                  </button>
                 )}
               </td>
               <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.list_genes_in_term} / {t.list_size}</td>
@@ -353,6 +369,60 @@ function TermTable({ terms }: { terms: EnrichmentTerm[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// KEGG's map page is laid out this wide and tall, then scaled down to fit the panel, so the
+// whole map shows without scrolling sideways.
+const MAP_PAGE_WIDTH = 1400;
+const MAP_PAGE_HEIGHT = 1000;
+
+/** KEGG's own map of a pathway, the list genes coloured, shown in the page. */
+function PathwayMap({ term, onClose }: { term: EnrichmentTerm; onClose: () => void }) {
+  const url = keggMapUrl(term);
+  const box = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const fit = () => setScale(Math.min(1, el.clientWidth / MAP_PAGE_WIDTH));
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  if (!url) return null;
+  return (
+    <Paper sx={{ p: 2 }}>
+      <div className="mb-2 flex items-center gap-3">
+        <h3 className="font-serif italic text-stone-800">
+          {term.name}: {term.list_genes_in_term} genes {term.direction} (
+          {term.direction === "up" ? "red" : "blue"} on the map)
+        </h3>
+        <a href={url} target="_blank" rel="noopener noreferrer"
+           className="text-xs text-lime-800 underline hover:text-lime-900">
+          Open on KEGG ↗
+        </a>
+        <button type="button" onClick={onClose} aria-label="Close map"
+                className="ml-auto text-sm text-stone-500 hover:text-stone-800">
+          ✕
+        </button>
+      </div>
+      <p className="mb-2 text-xs text-stone-500">
+        Shrunk to fit. For the full-size map, where each box opens its gene, use Open on KEGG.
+      </p>
+      <div ref={box} className="w-full overflow-hidden rounded border border-stone-200"
+           style={{ height: MAP_PAGE_HEIGHT * scale }}>
+        <iframe
+          title={`KEGG map: ${term.name}`}
+          src={url}
+          style={{ width: MAP_PAGE_WIDTH, height: MAP_PAGE_HEIGHT, border: 0,
+                   transform: `scale(${scale})`, transformOrigin: "top left" }}
+          referrerPolicy="no-referrer"
+          sandbox="allow-scripts allow-same-origin allow-popups"
+        />
+      </div>
+    </Paper>
   );
 }
 
