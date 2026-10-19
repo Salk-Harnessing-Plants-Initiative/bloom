@@ -16,7 +16,8 @@ metadata:
 spec:
   templates:
     # One genome version, one source: download-genome -> fetch-references, then for eggnog
-    # proteins -> eggnog-db -> emapper, then build-annotation -> upload-annotation -> cleanup.
+    # proteins -> eggnog-db -> emapper, then build-annotation -> upload-annotation -> upload-logs
+    # -> cleanup.
     # upload-annotation records the file as the version's next build of the source in Bloom.
     - name: genome-annotation
       inputs:
@@ -84,9 +85,17 @@ spec:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
                 - {name: source, value: "{{inputs.parameters.source}}"}
+          # The logs of the steps without run-with-log, before cleanup deletes them; a failed run
+          # keeps its folder, and the hand-run Workflow's exit handler uploads them instead.
+          - name: upload-logs
+            template: upload-logs
+            depends: upload-annotation
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
           - name: cleanup
             template: cleanup
-            depends: upload-annotation
+            depends: upload-logs
             arguments:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
@@ -171,7 +180,7 @@ spec:
         # 1: Bloom couldn't be reached; 16 (no credentials) and 19 (no such analysis) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-de.log", --, bash, -c]
         args:
           - |
@@ -211,7 +220,7 @@ spec:
         # 1: Bloom couldn't be reached; 16 and 19 (no such ready build, or a mismatched file) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-annotation.log", --, bash, -c]
         args:
           - |
@@ -247,7 +256,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/enrich.log", --, bash, -c]
         args:
           - |
@@ -290,7 +299,7 @@ spec:
         # Only 1 (a network or storage error) may be a blip; 3, 6 and 16 won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
         env:
           - {name: GENOME, value: "{{inputs.parameters.genome}}"}
@@ -320,7 +329,7 @@ spec:
         # 1: a download failed; 18 (a bad KEGG organism) won't fix itself.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command:
           - run-with-log
           - --path
@@ -466,7 +475,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-annotation.log", --, bash, -c]
         args:
           - |
@@ -511,7 +520,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command:
           - run-with-log
           - --path
@@ -543,7 +552,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/upload-enrichment.log", --, bash, -c]
         args:
           - |
@@ -574,7 +583,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
@@ -607,7 +616,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.10
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
         command: [bash, -c]
         args:
           - |

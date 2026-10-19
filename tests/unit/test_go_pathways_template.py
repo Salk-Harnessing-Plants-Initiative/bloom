@@ -119,11 +119,16 @@ def test_the_annotation_run_uploads_eggnogs_logs_however_it_ends():
     assert task["templateRef"] == {"name": "go-pathways-template", "template": "upload-logs"}
 
 
-@pytest.mark.parametrize("dag, last", [("genome-annotation", "upload-annotation"),
+@pytest.mark.parametrize("dag, last", [("genome-annotation", "upload-logs"),
                                        ("scrna-enrichment", "upload-enrichment")])
 def test_each_run_records_its_result_in_bloom_before_its_files_are_deleted(dag, last):
     tasks = {t["name"]: t for t in STEPS[dag]["dag"]["tasks"]}
     assert tasks["cleanup"]["depends"] == last
+
+
+def test_the_annotation_runs_logs_are_uploaded_before_cleanup_deletes_them():
+    tasks = {t["name"]: t for t in STEPS["genome-annotation"]["dag"]["tasks"]}
+    assert tasks["upload-logs"]["depends"] == "upload-annotation"
 
 
 def test_uploads_that_start_a_record_in_bloom_are_not_retried():
