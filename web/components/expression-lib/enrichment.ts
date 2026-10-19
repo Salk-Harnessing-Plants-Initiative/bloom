@@ -23,6 +23,12 @@ export const KIND_LABELS: Record<TermKind, string> = {
 
 // gzip's first two bytes.
 const GZIP_MAGIC = [0x1f, 0x8b];
+// A KEGG ortholog, e.g. K02866.
+const KO = /^K\d{5}$/;
+// KEGG's map viewer, which colours the orthologs it's given.
+const KEGG_MAP_URL = "https://www.kegg.jp/kegg-bin/show_pathway";
+// Up and down, as the map colours them (ColorBrewer RdYlBu's ends).
+const MAP_COLOURS: Record<Direction, string> = { up: "#d73027", down: "#4575b4" };
 
 export interface EnrichmentTerm {
   comparison: string;
@@ -37,6 +43,8 @@ export interface EnrichmentTerm {
   p: number;
   fdr: number;
   genes: string[];
+  /** A KEGG result's list genes' KEGG orthologs, to colour on the pathway's map. */
+  kos?: string[];
 }
 
 export interface EnrichmentFile {
@@ -83,6 +91,10 @@ function checkTerm(t: Record<string, unknown>, i: number): EnrichmentTerm {
   if (!isNumber(t.p) || !isNumber(t.fdr)) fail("p or fdr is not a number");
   if (!Array.isArray(t.genes) || !t.genes.every((g) => typeof g === "string")) {
     fail("genes is not a list of names");
+  }
+  if (t.kos !== undefined &&
+      (!Array.isArray(t.kos) || !t.kos.every((k) => typeof k === "string" && KO.test(k)))) {
+    fail("kos is not a list of KEGG orthologs");
   }
   if ((t.list_genes_in_term as number) > (t.list_size as number) ||
       (t.list_genes_in_term as number) > (t.term_size as number)) {
@@ -206,4 +218,17 @@ export function clustersOf(file: EnrichmentFile, rows: ComparisonRow[]): Cluster
   return [...clusters.keys()]
     .sort((a, b) => clusterNumber(a) - clusterNumber(b) || a.localeCompare(b))
     .map((cluster) => ({ cluster, comparisons: clusters.get(cluster) ?? [] }));
+}
+
+/**
+ * KEGG's map of a pathway with the list genes' orthologs coloured (red up, blue down), or null
+ * for a GO term or a pathway whose genes have no orthologs.
+ */
+export function keggMapUrl(term: EnrichmentTerm): string | null {
+  if (term.kind !== "KEGG" || !term.kos?.length) return null;
+  const colour = MAP_COLOURS[term.direction];
+  const url = new URL(KEGG_MAP_URL);
+  url.searchParams.set("map", term.term);
+  url.searchParams.set("multi_query", term.kos.map((ko) => `${ko} ${colour}`).join("\n"));
+  return url.toString();
 }

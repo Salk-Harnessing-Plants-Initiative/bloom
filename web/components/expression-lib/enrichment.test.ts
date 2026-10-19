@@ -16,6 +16,7 @@ import {
   EnrichmentFileError,
   fetchLatestEnrichment,
   geneRatio,
+  keggMapUrl,
   termsFor,
   type EnrichmentFile,
 } from "./enrichment";
@@ -183,5 +184,33 @@ describe("clustersOf", () => {
     expect(clustersOf(old, [{ cluster_id: "7", contrast: null }])).toEqual([
       { cluster: "7", comparisons: [{ comparison: "7", label: "all other cells" }] },
     ]);
+  });
+});
+
+describe("keggMapUrl", () => {
+  const kegg = { ...TERM, kind: "KEGG", term: "map03010", name: "Ribosome",
+                 kos: ["K02866", "K02872"] };
+
+  it("colours the list genes' orthologs on KEGG's map: red for up", () => {
+    const url = new URL(keggMapUrl(kegg as never)!);
+    expect(url.origin + url.pathname).toBe("https://www.kegg.jp/kegg-bin/show_pathway");
+    expect(url.searchParams.get("map")).toBe("map03010");
+    expect(url.searchParams.get("multi_query")).toBe("K02866 #d73027\nK02872 #d73027");
+  });
+
+  it("blue for down", () => {
+    const url = new URL(keggMapUrl({ ...kegg, direction: "down" } as never)!);
+    expect(url.searchParams.get("multi_query")).toContain("K02866 #4575b4");
+  });
+
+  it("is nothing for a GO term, or a pathway without orthologs", () => {
+    expect(keggMapUrl(TERM as never)).toBeNull();
+    expect(keggMapUrl({ ...kegg, kos: [] } as never)).toBeNull();
+    expect(keggMapUrl({ ...kegg, kos: undefined } as never)).toBeNull();
+  });
+
+  it("refuses a file whose orthologs aren't a list of K numbers", () => {
+    expect(() => decodeEnrichment(gz(file([{ ...kegg, kos: ["not-a-ko"] }])), 25))
+      .toThrow(EnrichmentFileError);
   });
 });

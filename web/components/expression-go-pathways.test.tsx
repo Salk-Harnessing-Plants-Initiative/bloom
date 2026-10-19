@@ -48,7 +48,8 @@ const FILE: EnrichmentFile = {
     term({}),
     term({ term: "GO:0042254", name: "ribosome biogenesis", fdr: 1e-5 }),
     term({ direction: "down", term: "GO:0009416", name: "response to light stimulus" }),
-    term({ kind: "KEGG", term: "map03010", name: "Ribosome" }),
+    term({ kind: "KEGG", term: "map03010", name: "Ribosome", kos: ["K02866"] }),
+    term({ kind: "KEGG", term: "map00010", name: "Glycolysis", fdr: 1e-4 }),
     term({ comparison: "10_vs_rest", term: "GO:0010015", name: "root morphogenesis" }),
   ],
 };
@@ -111,6 +112,16 @@ describe("ExpressionGoPathways", () => {
     await waitFor(() => expect(table()).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "KEGG pathways" }));
     expect(within(table()).getByText("Ribosome")).toBeTruthy();
+  });
+
+  it("links a KEGG pathway to its map on KEGG, when its genes have orthologs", async () => {
+    render(<ExpressionGoPathways datasetId={25} />);
+    await waitFor(() => expect(table()).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "KEGG pathways" }));
+    const links = within(table()).getAllByRole("link", { name: /View pathway/ });
+    expect(links).toHaveLength(1);
+    expect(links[0].getAttribute("href")).toContain("map=map03010");
+    expect(links[0].getAttribute("target")).toBe("_blank");
   });
 
   it("says when a choice has nothing significant", async () => {

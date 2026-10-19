@@ -17,6 +17,7 @@ import {
   clustersOf,
   fetchLatestEnrichment,
   geneRatio,
+  keggMapUrl,
   KIND_LABELS,
   KINDS,
   termsFor,
@@ -329,6 +330,16 @@ function TermTable({ terms }: { terms: EnrichmentTerm[] }) {
               <td className="py-1.5 pr-4">
                 <span className="text-stone-900">{t.name}</span>{" "}
                 <span className="text-xs text-stone-500">{t.term}</span>
+                {keggMapUrl(t) && (
+                  <a
+                    href={keggMapUrl(t) ?? undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-2 whitespace-nowrap text-xs text-lime-800 underline hover:text-lime-900"
+                  >
+                    View pathway ↗
+                  </a>
+                )}
               </td>
               <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.list_genes_in_term} / {t.list_size}</td>
               <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.term_size}</td>
