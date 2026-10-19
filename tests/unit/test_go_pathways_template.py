@@ -20,8 +20,8 @@ WORKFLOWS = {
 STEPS = {t["name"]: t for t in TEMPLATE["spec"]["templates"]}
 DAGS = ("genome-annotation", "scrna-enrichment")
 ANALYSIS_IMAGE = "ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:"
-# Steps that upload files with run-with-log --put instead of running under it.
-UPLOADERS = {"publish", "upload-logs"}
+# The step that uploads logs with run-with-log --put instead of running under it.
+UPLOADERS = {"upload-logs"}
 EGGNOG_ONLY = {"proteins", "eggnog-db", "emapper"}
 
 
@@ -93,7 +93,8 @@ def test_every_step_uses_one_analysis_image_tag():
     assert len(tags) == 1, tags
 
 
-@pytest.mark.parametrize("name", ["download-genome", "fetch-references", "fetch-de"])
+@pytest.mark.parametrize("name", ["download-genome", "fetch-references", "fetch-de",
+                                  "fetch-annotation"])
 def test_only_a_network_error_is_retried(name):
     assert STEPS[name]["retryStrategy"]["expression"] == "asInt(lastRetry.exitCode) == 1"
 
@@ -116,3 +117,16 @@ def test_the_annotation_run_uploads_eggnogs_logs_however_it_ends():
     handler = next(t for t in doc["spec"]["templates"] if t["name"] == doc["spec"]["onExit"])
     (task,) = handler["dag"]["tasks"]
     assert task["templateRef"] == {"name": "go-pathways-template", "template": "upload-logs"}
+
+
+@pytest.mark.parametrize("dag, last", [("genome-annotation", "upload-annotation"),
+                                       ("scrna-enrichment", "upload-enrichment")])
+def test_each_run_records_its_result_in_bloom_before_its_files_are_deleted(dag, last):
+    tasks = {t["name"]: t for t in STEPS[dag]["dag"]["tasks"]}
+    assert tasks["cleanup"]["depends"] == last
+
+
+def test_uploads_that_start_a_record_in_bloom_are_not_retried():
+    # A retry would find its own uploading record and be refused; the step abandons it instead.
+    for name in ("upload-annotation", "upload-enrichment"):
+        assert "retryStrategy" not in STEPS[name]
