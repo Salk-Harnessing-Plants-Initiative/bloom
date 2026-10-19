@@ -30,6 +30,7 @@ namespace: biological_process
 id: GO:0050896
 name: response to stimulus
 namespace: biological_process
+alt_id: GO:0051869
 is_a: GO:0008150 ! biological_process
 
 [Term]
@@ -60,6 +61,20 @@ id: GO:0000001
 name: mitochondrion inheritance
 namespace: biological_process
 is_obsolete: true
+
+[Term]
+id: GO:0042493
+name: obsolete response to drug
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:0009416
+
+[Term]
+id: GO:0000002
+name: obsolete with only a suggestion
+namespace: biological_process
+is_obsolete: true
+consider: GO:0009416
 
 [Typedef]
 id: part_of
@@ -129,6 +144,18 @@ def test_ancestors_follow_is_a_and_part_of(ontology):
     assert ontology.parents["GO:0009416"] == {"GO:0050896", "GO:0009314"}
 
 
+def test_an_old_id_resolves_to_the_term_that_now_has_it(ontology):
+    assert ontology.resolve("GO:0051869") == "GO:0050896", "alt_id: the same term"
+    assert ontology.resolve("GO:0042493") == "GO:0009416", "obsolete, replaced_by"
+    assert ontology.resolve("GO:0009416") == "GO:0009416"
+
+
+def test_an_id_with_no_current_term_resolves_to_nothing(ontology):
+    assert ontology.resolve("GO:0000001") is None, "obsolete, no replacement"
+    assert ontology.resolve("GO:0000002") is None, "a consider is only a suggestion"
+    assert ontology.resolve("GO:9999999") is None
+
+
 def test_kegg_pathways_are_named_by_their_map_id_without_the_species():
     assert go_terms.parse_kegg_list(KEGG_LIST) == {
         "map00010": "Glycolysis / Gluconeogenesis",
@@ -177,6 +204,14 @@ def test_a_gene_keeps_its_proteins_kegg_orthologs_without_the_ko_prefix(ontology
     ))
     assert built.genes["G1"]["kos"] == ["K00844", "K12811"]
     assert built.genes["G2"]["kos"] == []
+
+
+def test_eggnogs_older_go_ids_count_as_the_terms_that_now_have_them(ontology):
+    built = eggnog(ontology, emapper(("G1.t1", "-", "-", "GO:0042493,GO:0051869", "-"),))
+    assert built.genes["G1"]["terms"] == [
+        "GO:0008150", "GO:0009314", "GO:0009416", "GO:0050896"
+    ]
+    assert "GO:0042493" not in built.terms and "GO:0051869" not in built.terms
 
 
 def test_ko_ids_unknown_terms_and_other_species_pathways_are_dropped(ontology):
