@@ -24,16 +24,22 @@ def cur(pg_conn):
 
 @pytest.fixture
 def species(cur):
-    name = f"Sp{uuid.uuid4().hex[:10]}"
+    tok = uuid.uuid4().hex[:10]
+    name = f"Sp{tok}"
+    # (genus, species) is UNIQUE, so the names are fixture-only.
     cur.execute(
         "INSERT INTO species (common_name, genus, species) VALUES (%s, %s, %s)",
-        (name, "Arabidopsis", "thaliana"),
+        (name, f"Zgravi{tok}", "retry"),
     )
     return name
 
 
 def _insert_gravi_image(cur, species, plate="PLATE-1"):
-    """Call the RPC the way bloom-js does, with a system name so the experiment is shared."""
+    """Call the RPC the way bloom-js does.
+
+    It passes a system name so repeated calls share one experiment: without one, #250 creates
+    a new experiment per call and the duplicate check never matches.
+    """
     tok = species[2:]
     cur.execute(
         """
@@ -71,11 +77,15 @@ def test_a_new_scan_returns_its_id(cur, species):
 
 
 def test_a_scan_whose_file_never_arrived_returns_the_same_id(cur, species):
-    first = _insert_gravi_image(cur, species)
-    # The file upload failed: no gravi_images row. The retry gets the scan back.
-    assert _insert_gravi_image(cur, species) == first
+    # Another plate's image is stored, so the check must look at this scan's image, not any.
+    _store_image(cur, _insert_gravi_image(cur, species, plate="PLATE-2"))
+    first = _insert_gravi_image(cur, species, plate="PLATE-1")
+
+    # PLATE-1's file upload failed: no gravi_images row. The retry gets the scan back.
+    assert _insert_gravi_image(cur, species, plate="PLATE-1") == first
     cur.execute(
-        "SELECT count(*) FROM gravi_scans WHERE id = %s",
+        "SELECT count(*) FROM gravi_scans WHERE experiment_id = "
+        "(SELECT experiment_id FROM gravi_scans WHERE id = %s) AND plate_id = 'PLATE-1'",
         (first,),
     )
     assert cur.fetchone()[0] == 1
