@@ -147,3 +147,33 @@ def test_every_condition_quotes_its_values():
             if "when" in task:
                 sides = [side.strip() for side in re.split(r"==|!=", task["when"])]
                 assert all(side.startswith("'") and side.endswith("'") for side in sides), task
+
+
+def _eggnog_db_script():
+    return STEPS["eggnog-db"]["container"]["args"][0]
+
+
+def test_the_eggnog_database_is_downloaded_apart_and_renamed_into_place():
+    script = _eggnog_db_script()
+    assert 'work="${root}/.partial-${EGGNOG_DB}-${WORKFLOW_NAME}"' in script
+    assert script.index("touch .verified") < script.index('mv -- "${work}" "${db}"'), \
+        "marked verified in its own folder, before it's moved into place"
+    assert "{{workflow.name}}" in str(STEPS["eggnog-db"]["container"]["env"])
+
+
+def test_each_download_step_stops_the_script_when_it_fails():
+    # A command joined with && doesn't stop set -e when it fails, so each one has its own line.
+    lines = [line.strip() for line in _eggnog_db_script().splitlines()]
+    for command in ("wget", "gzip -t", "gunzip", "tar -zxf"):
+        steps = [line for line in lines if line.startswith(command)]
+        assert steps and all("&&" not in line for line in steps), command
+
+
+def test_every_archive_is_checked_before_it_is_unpacked():
+    script = _eggnog_db_script()
+    for archive in ("eggnog.db.gz", "eggnog_proteins.dmnd.gz", "eggnog.taxa.tar.gz"):
+        assert script.index(f"gzip -t {archive}") < script.index("gunzip eggnog.db.gz"), archive
+
+
+def test_a_stopped_download_removes_its_own_partial_copy():
+    assert """trap 'rm -rf -- "${work}"' EXIT""" in _eggnog_db_script()
