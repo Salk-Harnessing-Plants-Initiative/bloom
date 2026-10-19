@@ -6,7 +6,8 @@ strongest first, up to top_n. Each kind (GO_BP, GO_MF, GO_CC, KEGG) is tested ag
 background: the dataset's genes with a term of that kind. Terms with min_term..max_term
 background genes and at least min_list list genes get a hypergeometric test; terms covering
 the same genes are merged into the most specific; Benjamini-Hochberg within a comparison,
-direction and kind; only terms with fdr < fdr_max are kept.
+direction and kind; only terms with fdr < fdr_max are kept. A KEGG result also lists its list
+genes' KEGG orthologs, to colour them on the pathway's map.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pathlib import Path
 from scipy.stats import hypergeom
 
 from .annotation import Annotation
+from .go_terms import KEGG
 from .steps import EXIT_BAD_ENRICHMENT_INPUT, StepError
 
 FORMAT = "bloom-enrichment/1"
@@ -146,6 +148,9 @@ def run(annotation: Annotation, *, dataset_genes: list[str], comparisons: list[d
                                      term=len(genes), listed=len(hits)),
                         "genes": sorted(in_list),
                     })
+                    if kind == KEGG:
+                        tested[-1]["kos"] = sorted({ko for gene in in_list for ko in
+                                                    annotation.genes[gene].get("kos", [])})
                 tested = _most_specific(tested, members, ancestors)
                 for row, fdr in zip(tested, bh([r["p"] for r in tested])):
                     if fdr < params.fdr_max:

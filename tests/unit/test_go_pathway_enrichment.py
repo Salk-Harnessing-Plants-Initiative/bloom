@@ -96,7 +96,9 @@ def genes():
             terms += ["map00020"]
         if 10 <= i < 16:
             terms += ["GO:0003674"]
-        out[g] = {"name": None, "description": None, "terms": terms}
+        # Each pathway gene has its own KEGG ortholog; G00 has a second one.
+        kos = [f"K{i:05d}"] + (["K99999"] if i == 0 else []) if i < 16 else []
+        out[g] = {"name": None, "description": None, "terms": terms, "kos": kos}
     return out
 
 
@@ -191,3 +193,21 @@ def test_results_are_ordered_by_comparison_direction_kind_then_fdr():
     rows = run().results
     keys = [(r["comparison"], r["direction"], r["kind"], r["fdr"], r["term"]) for r in rows]
     assert keys == sorted(keys)
+
+
+def test_a_kegg_result_lists_its_list_genes_kegg_orthologs():
+    (kegg,) = [r for r in run().results if r["kind"] == "KEGG"]
+    assert kegg["kos"] == ["K00000", "K00001", "K00002", "K00003", "K00004", "K99999"]
+
+
+def test_go_results_have_no_orthologs():
+    assert all("kos" not in r for r in run().results if r["kind"] != "KEGG")
+
+
+def test_an_annotation_without_orthologs_gives_kegg_results_none():
+    plain = Annotation(terms=TERMS, genes={g: {k: v for k, v in info.items() if k != "kos"}
+                                           for g, info in genes().items()})
+    result = enrichment.run(plain, dataset_genes=BACKGROUND, comparisons=[COMPARISON],
+                            params=PARAMS)
+    (kegg,) = [r for r in result.results if r["kind"] == "KEGG"]
+    assert kegg["kos"] == []
