@@ -61,8 +61,11 @@ def _built(ontology: Ontology, direct: dict[str, set[str]], pathways: dict[str, 
     for gene in sorted(direct):
         terms = set()
         for term in direct[gene]:
-            if term in ontology.terms:
-                terms |= ontology.ancestors(term) & ontology.terms.keys()
+            # eggNOG's GO data is older than go-basic: an ID since merged or replaced counts as
+            # the term that has it now.
+            live = ontology.resolve(term)
+            if live is not None:
+                terms |= ontology.ancestors(live) & ontology.terms.keys()
             elif term in pathways:
                 terms.add(term)
         if terms:
