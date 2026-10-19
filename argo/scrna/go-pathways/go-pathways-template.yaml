@@ -359,26 +359,54 @@ spec:
         args:
           - |
             set -euo pipefail
-            db="/shared/ref/eggnog/${EGGNOG_DB}"
-            mkdir -p "/shared/runs/${RUN_ID}/logs"
+            case "${EGGNOG_DB}" in
+              ""|.|..|*/*) echo "ERROR: bad eggNOG release '${EGGNOG_DB}'"; exit 6 ;;
+            esac
+            root=/shared/ref/eggnog
+            db="${root}/${EGGNOG_DB}"
+            mkdir -p "/shared/runs/${RUN_ID}/logs" "${root}"
             exec > "/shared/runs/${RUN_ID}/logs/eggnog-db.log" 2>&1
             if [ -f "${db}/.verified" ]; then echo "eggNOG ${EGGNOG_DB}: already verified"; exit 0; fi
             free_gb=$(df -Pk /shared | awk 'NR==2{print int($4/1048576)}')
             if [ "${free_gb}" -lt 120 ]; then echo "ERROR: only ${free_gb} GB free on /shared"; exit 9; fi
+            # Downloaded into this workflow's own folder, checked, then renamed into place, so a
+            # half-finished download, or two runs downloading at once, never looks like the database.
+            work="${root}/.partial-${EGGNOG_DB}-${WORKFLOW_NAME}"
+            # However the script stops, its own partial copy goes (after the rename it's gone).
+            trap 'rm -rf -- "${work}"' EXIT
+            rm -rf -- "${work}"
+            mkdir -p "${work}"
+            cd "${work}"
             # eggnogdb.embl.de, which download_eggnog_data.py uses, no longer resolves.
             base="http://eggnog5.embl.de/download/emapperdb-${EGGNOG_DB}"
-            mkdir -p "${db}" && cd "${db}"
-            wget -q -c "${base}/eggnog.db.gz" && gunzip -f eggnog.db.gz
-            wget -q -c "${base}/eggnog_proteins.dmnd.gz" && gunzip -f eggnog_proteins.dmnd.gz
-            wget -q -c "${base}/eggnog.taxa.tar.gz" && tar -zxf eggnog.taxa.tar.gz && rm eggnog.taxa.tar.gz
+            wget -nv "${base}/eggnog.db.gz"
+            wget -nv "${base}/eggnog_proteins.dmnd.gz"
+            wget -nv "${base}/eggnog.taxa.tar.gz"
+            gzip -t eggnog.db.gz
+            gzip -t eggnog_proteins.dmnd.gz
+            gzip -t eggnog.taxa.tar.gz
+            gunzip eggnog.db.gz
+            gunzip eggnog_proteins.dmnd.gz
+            tar -zxf eggnog.taxa.tar.gz
+            rm eggnog.taxa.tar.gz
             for f in eggnog.db eggnog_proteins.dmnd eggnog.taxa.db; do
               [ -s "${f}" ] || { echo "ERROR: ${f} missing or empty"; exit 10; }
             done
-            touch "${db}/.verified"
+            touch .verified
+            cd "${root}"
+            if [ -f "${db}/.verified" ]; then
+              echo "eggNOG ${EGGNOG_DB}: another run put it in place first; dropping this copy"
+              rm -rf -- "${work}"
+              exit 0
+            fi
+            # A folder an older download left unfinished is set aside, not trusted.
+            if [ -e "${db}" ]; then mv -- "${db}" "${db}.unfinished-${WORKFLOW_NAME}"; fi
+            mv -- "${work}" "${db}"
             ls -la "${db}"
         env:
           - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
           - {name: EGGNOG_DB, value: "{{inputs.parameters.eggnog-db}}"}
+          - {name: WORKFLOW_NAME, value: "{{workflow.name}}"}
         resources:
           requests: {cpu: "2", memory: 4Gi}
           limits: {cpu: "2", memory: 4Gi}
