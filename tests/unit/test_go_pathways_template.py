@@ -62,7 +62,7 @@ def test_each_task_depends_only_on_tasks_of_its_dag(dag):
 def test_eggnogs_steps_run_only_for_the_eggnog_source():
     tasks = {t["name"]: t for t in STEPS["genome-annotation"]["dag"]["tasks"]}
     for name in EGGNOG_ONLY:
-        assert tasks[name]["when"] == "{{inputs.parameters.source}} == eggnog"
+        assert tasks[name]["when"] == "'{{inputs.parameters.source}}' == 'eggnog'"
     assert "emapper.Skipped" in tasks["build-annotation"]["depends"], "tair-go skips eggNOG"
 
 
@@ -116,3 +116,15 @@ def test_the_annotation_run_uploads_eggnogs_logs_however_it_ends():
     handler = next(t for t in doc["spec"]["templates"] if t["name"] == doc["spec"]["onExit"])
     (task,) = handler["dag"]["tasks"]
     assert task["templateRef"] == {"name": "go-pathways-template", "template": "upload-logs"}
+
+
+def test_every_condition_quotes_its_values():
+    # Argo reads a bare word in a `when` as a value or an operator: unquoted, tair-go would be
+    # read as tair minus go, and the condition would error instead of skipping the step.
+    import re
+
+    for dag in DAGS:
+        for task in STEPS[dag]["dag"]["tasks"]:
+            if "when" in task:
+                sides = [side.strip() for side in re.split(r"==|!=", task["when"])]
+                assert all(side.startswith("'") and side.endswith("'") for side in sides), task

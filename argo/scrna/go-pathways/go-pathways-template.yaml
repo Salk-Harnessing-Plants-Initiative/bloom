@@ -52,13 +52,13 @@ spec:
           - name: proteins
             template: proteins
             depends: download-genome
-            when: "{{inputs.parameters.source}} == eggnog"
+            when: "'{{inputs.parameters.source}}' == 'eggnog'"
             arguments:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
           - name: eggnog-db
             template: eggnog-db
-            when: "{{inputs.parameters.source}} == eggnog"
+            when: "'{{inputs.parameters.source}}' == 'eggnog'"
             arguments:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
@@ -66,7 +66,7 @@ spec:
           - name: emapper
             template: emapper
             depends: proteins && eggnog-db
-            when: "{{inputs.parameters.source}} == eggnog"
+            when: "'{{inputs.parameters.source}}' == 'eggnog'"
             arguments:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
