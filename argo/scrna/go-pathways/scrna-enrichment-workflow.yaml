@@ -1,0 +1,52 @@
+# A dataset's GO and KEGG pathway enrichment, started by hand (go-pathways-template's
+# scrna-enrichment): its newest complete differential expression analysis (or de-run-id),
+# tested against an annotation run's file. `label` names that annotation in the result,
+# <genome>.v<N>/<source>. Signs in to staging's Bloom; for prod, use
+# genericsecret-bloom-prod-pipeline-credentials. The result goes to run-logs at
+# scrna/<workflow>/enrichment.json:
+#   argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch-lab \
+#     -p dataset-id=25 -p label=sbicolor.btx623.hpiv3.v1/eggnog \
+#     -p annotation=/shared/runs/<annotation workflow>/annotation/eggnog.json.gz --watch
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: scrna-enrichment-
+  namespace: runai-busch-lab
+  labels:
+    project: busch-lab
+spec:
+  entrypoint: main
+  # Step pods report results as bloom-workflow; without it every step fails on workflowtaskresults.
+  serviceAccountName: bloom-workflow
+  imagePullSecrets:
+    - name: dockerregistry-bloom-ghcr-pull   # from the busch-lab Run:ai credential bloom-ghcr-pull
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  arguments:
+    parameters:
+      - name: dataset-id
+      - name: annotation
+      - name: label
+      - name: de-run-id
+        value: ""
+  # The pipeline's Bloom login: fetch-de reads the dataset with it and run-with-log uses it.
+  volumes:
+    - name: bloom-credentials
+      secret:
+        secretName: genericsecret-bloom-staging-pipeline-credentials
+        optional: true
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: enrichment
+            templateRef:
+              name: go-pathways-template
+              template: scrna-enrichment
+            arguments:
+              parameters:
+                - {name: dataset-id, value: "{{workflow.parameters.dataset-id}}"}
+                - {name: run-id, value: "{{workflow.name}}"}
+                - {name: annotation, value: "{{workflow.parameters.annotation}}"}
+                - {name: label, value: "{{workflow.parameters.label}}"}
+                - {name: de-run-id, value: "{{workflow.parameters.de-run-id}}"}
