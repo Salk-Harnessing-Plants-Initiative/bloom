@@ -103,6 +103,15 @@ def _annotation_counts(doc: dict, name: str) -> tuple[int, int]:
     return len(genes), len(terms)
 
 
+def _abandon(client: Any, function: str, key: str, record_id: int, what: str) -> None:
+    """Cancel a failed upload's record; if Bloom can't be told, say who can clear it."""
+    try:
+        client.rpc(function, {key: record_id}).execute()
+    except Exception:  # noqa: BLE001 - the upload's own failure is the one to raise
+        click.echo(f"{what} couldn't be cancelled and is left as a partial upload; ask a Bloom "
+                   "admin to clear it before uploading again.", err=True)
+
+
 def upload_annotation(client: Any, path: Path) -> dict:
     """Records an annotation file as its genome version's next build of its source."""
     doc = read_file(path, ANNOTATION_FORMAT)
@@ -128,10 +137,12 @@ def upload_annotation(client: Any, path: Path) -> dict:
             "p_gene_count": gene_count, "p_term_count": term_count,
         }).execute()
     except refused as exc:
-        client.rpc("abandon_genome_annotation_build", {"p_build_id": build["build_id"]}).execute()
+        _abandon(client, "abandon_genome_annotation_build", "p_build_id", build["build_id"],
+                 f"Annotation build {build['build']}")
         raise Refused(f"Bloom refused to {stage} annotation build {build['build']}: {exc}") from exc
     except BaseException:
-        client.rpc("abandon_genome_annotation_build", {"p_build_id": build["build_id"]}).execute()
+        _abandon(client, "abandon_genome_annotation_build", "p_build_id", build["build_id"],
+                 f"Annotation build {build['build']}")
         raise
     return build
 
@@ -220,9 +231,11 @@ def upload_enrichment(client: Any, path: Path, *, build_id: int,
             "p_annotated_genes": doc["annotated_genes"],
         }).execute()
     except refused as exc:
-        client.rpc("abandon_scrna_enrichment_run", {"p_run_id": run["run_id"]}).execute()
+        _abandon(client, "abandon_scrna_enrichment_run", "p_run_id", run["run_id"],
+                 f"Enrichment run {run['run_id']}")
         raise Refused(f"Bloom refused to {stage} enrichment run {run['run_id']}: {exc}") from exc
     except BaseException:
-        client.rpc("abandon_scrna_enrichment_run", {"p_run_id": run["run_id"]}).execute()
+        _abandon(client, "abandon_scrna_enrichment_run", "p_run_id", run["run_id"],
+                 f"Enrichment run {run['run_id']}")
         raise
     return run

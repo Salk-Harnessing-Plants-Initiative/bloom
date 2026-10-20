@@ -171,6 +171,15 @@ def test_a_network_error_abandons_the_build_and_exits_1(bloom, tmp_path):
     assert bloom.called("abandon_genome_annotation_build") == [{"p_build_id": 3}]
 
 
+def test_a_build_that_cant_be_cancelled_keeps_the_error_and_says_to_ask_an_admin(bloom, tmp_path):
+    bloom.answers["finish_genome_annotation_build"] = Refused("10 bytes in storage, not 11")
+    bloom.answers["abandon_genome_annotation_build"] = OSError("connection reset")
+    result = run("genome", "annotation", "upload", str(annotation_file(tmp_path)))
+    assert result.exit_code == go_pathways.EXIT_REFUSED
+    assert "10 bytes in storage, not 11" in result.output
+    assert "ask a Bloom admin to clear it" in result.output
+
+
 @pytest.mark.parametrize("extra, words", [
     ({"format": "bloom-annotation/0"}, "bloom-annotation/0"),
     ({"genes": {}}, "no genes"),
@@ -290,6 +299,15 @@ def test_a_refused_finish_abandons_the_run(ready_build, tmp_path):
     result = run("scrna", "enrichment", "upload", str(enrichment_file(tmp_path)), "--build-id", "3")
     assert result.exit_code == go_pathways.EXIT_REFUSED
     assert ready_build.called("abandon_scrna_enrichment_run") == [{"p_run_id": 9}]
+
+
+def test_a_run_that_cant_be_cancelled_says_to_ask_an_admin(ready_build, tmp_path):
+    ready_build.upload_error = OSError("connection reset")
+    ready_build.answers["abandon_scrna_enrichment_run"] = OSError("connection reset")
+    result = run("scrna", "enrichment", "upload", str(enrichment_file(tmp_path)), "--build-id", "3")
+    assert result.exit_code == 1
+    assert "Enrichment run 9 couldn't be cancelled" in result.output
+    assert "ask a Bloom admin to clear it" in result.output
 
 
 def test_an_unknown_build_is_refused(ready_build, tmp_path):
