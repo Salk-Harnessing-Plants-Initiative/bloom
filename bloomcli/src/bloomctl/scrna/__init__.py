@@ -16,6 +16,7 @@ from __future__ import annotations
 import click
 
 from .download import download as download_cmd
+from .enrichment import enrichment as enrichment_cmd
 from .list_files import list_files as list_cmd
 from .upload import upload as upload_cmd
 
@@ -34,3 +35,4 @@ hdf5.add_command(upload_cmd)
 hdf5.add_command(download_cmd)
 hdf5.add_command(list_cmd)
 scrna.add_command(hdf5)
+scrna.add_command(enrichment_cmd)

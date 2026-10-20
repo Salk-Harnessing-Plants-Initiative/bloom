@@ -8,6 +8,16 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `genome annotation upload` records a genome version's GO and pathway annotation file as its
+  next build (abandoned if the upload or finish fails); `genome annotation download` fetches its
+  ready build, checked against Bloom's record, exiting 4 while one is still uploading and 3 when
+  there is none.
+- `scrna enrichment upload` records a dataset's GO and pathway enrichment against an annotation
+  build, with the pipeline job that made it, linking the dataset to the build's genome version
+  when it has none.
+
 ## [0.1.0a16] - 2026-10-15 — members upload new genomes
 
 ### Changed
