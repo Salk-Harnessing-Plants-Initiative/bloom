@@ -146,9 +146,12 @@ def _templates():
 def test_the_sample_pipeline_loads_after_build_h5ad_and_cleans_up_after_the_load():
     tasks = {t["name"]: t for t in _templates()["sample-pipeline"]["dag"]["tasks"]}
     assert tasks["load-dataset"]["depends"] == "build-h5ad"
-    assert tasks["cleanup"]["depends"] == "load-dataset"
-    # Only the read source not used is skipped; the result leaves only through the load.
-    assert [name for name, task in tasks.items() if "when" in task] == ["fetch-sra", "stage"]
+    # It also waits for the GO steps (test_cellranger_go_steps.py).
+    assert tasks["cleanup"]["depends"].startswith("load-dataset && ")
+    # Besides the GO steps, only the read source not used is skipped; the result leaves only
+    # through the load.
+    own = {name: task for name, task in tasks.items() if "templateRef" not in task}
+    assert [name for name, task in own.items() if "when" in task] == ["fetch-sra", "stage"]
     passed = {p["name"]: p["value"] for p in tasks["load-dataset"]["arguments"]["parameters"]}
     assert passed["dataset-name"] == "{{inputs.parameters.dataset-name}}"
     assert passed["bloom-run-id"] == "{{inputs.parameters.bloom-run-id}}"
@@ -201,7 +204,7 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a15"]
+    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a17"]
 
 
 def _with_de_result(env):

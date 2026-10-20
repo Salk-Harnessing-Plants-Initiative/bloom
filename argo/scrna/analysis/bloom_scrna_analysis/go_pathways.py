@@ -4,9 +4,8 @@ fetch-references downloads the GO ontology and each source's own files (KEGG's p
 the species, TAIR's GO annotations); the annotation file records the releases. fetch-de reads a dataset's genes and one complete differential expression analysis from Bloom
 (signed in as bloomctl does, ~/.bloom) into a JSON file. build-annotation turns eggNOG-mapper's
 output, or TAIR's GO annotations, into a genome version's annotation file. enrich tests the
-fetched analysis against an annotation file and writes the enrichment file. upload-annotation
-and upload-enrichment record a file in Bloom (catalogue.py); fetch-annotation fetches a ready
-build's file back.
+fetched analysis against an annotation file and writes the enrichment file. bloomctl records
+the files in Bloom.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import annotation, catalogue, enrichment, go_terms
+from . import annotation, enrichment, go_terms
 from .steps import EXIT_BAD_ANNOTATION, EXIT_BAD_ENRICHMENT_INPUT, EXIT_NO_CREDENTIALS, StepError
 
 SOURCES = ("eggnog", "tair-go")
@@ -273,19 +272,6 @@ def main(argv: list[str] | None = None) -> int:
         enrich.add_argument(f"--{name.replace('_', '-')}", type=float,
                             default=getattr(defaults, name))
 
-    upload = steps.add_parser("upload-annotation")
-    upload.add_argument("--file", required=True)
-
-    fetch_build = steps.add_parser("fetch-annotation")
-    fetch_build.add_argument("--build-id", type=int, required=True)
-    fetch_build.add_argument("--out", required=True)
-    fetch_build.add_argument("--label-out", required=True, help="where to write the build's name")
-
-    record = steps.add_parser("upload-enrichment")
-    record.add_argument("--file", required=True)
-    record.add_argument("--build-id", type=int, required=True)
-    record.add_argument("--rnaseq-run-id", type=int, help="the pipeline job, when it has one")
-
     args = parser.parse_args(argv)
     try:
         if args.step == "fetch-references":
@@ -300,22 +286,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"analysis {doc['de_run_id']}: {len(doc['comparisons'])} comparisons")
         elif args.step == "build-annotation":
             _build_annotation(args)
-        elif args.step == "enrich":
-            _enrich(args)
-        elif args.step == "upload-annotation":
-            build = catalogue.upload_annotation(_client(), Path(args.file))
-            print(f"annotation build {build['build']} (id {build['build_id']}): "
-                  f"{build['file_path']}")
-        elif args.step == "fetch-annotation":
-            client = _client()
-            build = catalogue.fetch_annotation(client, args.build_id, Path(args.out))
-            name = catalogue.label(client, build)
-            Path(args.label_out).write_text(name, encoding="utf-8")
-            print(f"annotation build {args.build_id}: {name}")
         else:
-            run = catalogue.upload_enrichment(_client(), Path(args.file), build_id=args.build_id,
-                                              rnaseq_run_id=args.rnaseq_run_id)
-            print(f"enrichment run {run['run_id']}: {run['file_path']}")
+            _enrich(args)
     except StepError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return error.code

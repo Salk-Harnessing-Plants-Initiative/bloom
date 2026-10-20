@@ -226,4 +226,5 @@ def test_the_genome_and_reference_live_next_to_the_runs_folder_not_in_it():
 
 def test_cleanup_deletes_the_genome_folder_with_the_runs():
     cleanup = _templates()["cleanup"]["container"]["args"][0]
-    assert 'for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome"; do' in cleanup
+    assert ('for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome" '
+            '"/shared/runs/${RUN_ID}.go"; do') in cleanup

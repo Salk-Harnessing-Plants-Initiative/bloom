@@ -22,10 +22,10 @@ argo/scrna/
     ├── fetch-sra.sh            installed as fetch-sra: an SRA run's reads into the run's folder, from ENA or SRA
     ├── stage-fastqs.sh         installed as stage-fastqs: an S3 folder run's reads into the run's folder
     ├── claim-run-dir.sh        installed as claim-run-dir: makes the run's folder this run's own before either writes to it
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside fetch-sra or stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → cleanup), testrun
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside fetch-sra or stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → GO & pathways → cleanup, with the genome's annotation built alongside count), testrun
     ├── cellranger-count-workflow.yaml   a run started by hand: the sample pipeline for a list of samples on one genome version, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
-go-pathways/                    GO and KEGG pathway enrichment, run by hand for now
+go-pathways/                    GO and KEGG pathway enrichment: the pipeline's GO steps, and two hand-run workflows
 ├── go-pathways-template.yaml   WorkflowTemplate: genome-annotation and scrna-enrichment
 ├── genome-annotation-workflow.yaml   a genome version's annotation, from eggNOG-mapper or TAIR, recorded in Bloom
 └── scrna-enrichment-workflow.yaml    a dataset's enrichment against one annotation build, recorded in Bloom
@@ -161,9 +161,24 @@ docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
 
 ## GO and pathways
 
-Two workflows in `go-pathways/`, started by hand for now. Both sign in to
-staging's Bloom; their headers say how to point them at prod. Register the template once with
+Every Cell Ranger run makes its dataset's GO and pathway results, from the template's steps:
+
+- **Annotate genome** starts once the genome is downloaded, alongside the reads and count.
+  find-annotation asks Bloom for the genome version's ready eggNOG annotation
+  (`bloomctl genome annotation download`, checked against its checksum). With none, the run
+  builds one (the genome-annotation steps below) for the species' KEGG code (`species.kegg_org`;
+  none, GO only) and records it, so later runs reuse it. While another run's build is still
+  uploading, it waits, checking every 5 minutes for up to 12 hours.
+- **GO & pathways** runs after load-dataset: fetch-de, enrich, and upload-enrichment, which
+  records the result with the Cell Ranger run as its job.
+- A failure in either leaves the dataset loaded and the run succeeded; the run's message says
+  which GO step failed. cleanup waits for both, and deletes their folder
+  (`/shared/runs/<run-id>.go`).
+
+Register the template, before the Cell Ranger template that uses it, with
 `argo template create argo/scrna/go-pathways/go-pathways-template.yaml -n runai-busch-lab`.
+Two workflows also run it by hand, for an existing dataset or a TAIR annotation. Both sign in to
+staging's Bloom; their headers say how to point them at prod.
 
 ```bash
 # 1. A genome version's annotation: GO and the species' KEGG pathways from eggNOG-mapper, or
@@ -180,7 +195,7 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   `/shared/ref/eggnog/<release>/`, downloaded there once. Each gene gets the union of its
   proteins' GO terms, with every ancestor term added (`go-basic.obo`), and the KEGG pathways
   KEGG lists for the species (`kegg-org`; left empty, GO only). **upload-annotation** records
-  the file in Bloom as the version's next build of the source, in the `genome-references` bucket
+  the file with `bloomctl genome annotation upload` as the version's next build of the source, in the `genome-references` bucket
   at `<genome>/v<N>/annotation/<source>-b<B>.json.gz`.
 - **scrna-enrichment** fetches the annotation build's file from Bloom, checked against its
   checksum, and reads the dataset's genes and its newest complete differential expression
@@ -192,8 +207,8 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   Benjamini–Hochberg over all of them within a comparison, direction and kind. Then terms with
   FDR < 0.05 and at least 3 list genes are kept; the 3-gene rule comes after the correction,
   since dropping terms by their list-gene count before it would make the FDRs too low. The
-  settings are workflow parameters. **upload-enrichment** records the file in Bloom
-  as an enrichment run, in the `scrna` bucket at `enrichment/<dataset>/run-<id>.json.gz`; a
+  settings are workflow parameters. **upload-enrichment** records the file with
+  `bloomctl scrna enrichment upload` as an enrichment run, in the `scrna` bucket at `enrichment/<dataset>/run-<id>.json.gz`; a
   dataset not yet linked to a genome version is first linked to the build's.
 - Recording starts the build or run, uploads its file and finishes it, which checks the stored
   size; a failed upload abandons it. Neither upload step is retried, since a retry would find

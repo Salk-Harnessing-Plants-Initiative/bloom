@@ -12,6 +12,7 @@ bloom_workflows app user; one poller per environment.
 Deploy: a container off the workflows image with `command: python rnaseq_status_poller.py`.
 """
 
+import dataclasses
 import logging
 import os
 import signal
@@ -21,7 +22,7 @@ from k8s_client import K8sConfigError, get_workflow
 from postgrest import APIError
 
 import run_email
-from rnaseq_status import RunStatus, loaded_dataset
+from rnaseq_status import PHASES_KEY, RunStatus, loaded_dataset, step_phases
 from rnaseq_workflows import WORKFLOW_TYPES
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
@@ -84,6 +85,11 @@ def _active_runs(client) -> list[dict]:
         .data
         or []
     )
+
+
+def _with_phases(step_pods: dict, phases: dict | None) -> dict:
+    """step_pods as stored: each step's pod, and each step's own outcome under PHASES_KEY."""
+    return {**step_pods, PHASES_KEY: phases} if phases else dict(step_pods)
 
 
 def _record(client, run_id, status: RunStatus) -> bool:
@@ -164,6 +170,10 @@ def poll_run(client, run: dict) -> bool:
 
     if workflow is not None:
         _link_dataset(client, run, workflow)
+    if workflow is not None:
+        # Each step's own outcome goes with its pod, for the run page.
+        status = dataclasses.replace(
+            status, step_pods=_with_phases(status.step_pods, step_phases(workflow)))
     changed = _record(client, run["id"], status)
     if workflow is not None and status.status not in ACTIVE_STATUSES:
         _link_dataset(client, run, workflow)

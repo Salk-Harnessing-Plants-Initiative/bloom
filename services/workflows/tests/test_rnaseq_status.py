@@ -254,6 +254,10 @@ def test_the_steps_match_the_template_file():
         ).read_text()
     )
     names = {t["name"] for t in template["spec"]["templates"]}
+    # The GO steps' templates are go-pathways-template's, named by the pipeline's templateRefs.
+    pipeline = next(t for t in template["spec"]["templates"] if t["name"] == "sample-pipeline")
+    names |= {task["templateRef"]["template"] for task in pipeline["dag"]["tasks"]
+              if task.get("templateRef", {}).get("name") == "go-pathways-template"}
     assert set(st.CELLRANGER_STEPS) <= names
 
 
@@ -409,9 +413,12 @@ def test_a_failed_genome_step_says_why(template, exit_code, message):
 
 
 def test_the_genome_steps_come_after_the_reads_and_just_before_count():
-    steps = list(st.CELLRANGER_STEPS.values())
+    steps = list(dict.fromkeys(st.CELLRANGER_STEPS.values()))
     assert steps.index("qc") < steps.index("download-genome")
-    assert steps.index("build-reference") + 1 == steps.index("count")
+    assert steps.index("build-reference") + 1 == steps.index("annotate-genome")
+    assert steps.index("annotate-genome") + 1 == steps.index("count")
+    assert steps.index("load-dataset") + 1 == steps.index("go-pathways")
+    assert steps[-1] == "cleanup"
 
 
 @pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
@@ -475,3 +482,72 @@ def test_a_run_building_its_reference_after_its_reads_reports_the_build():
         "build-reference",
     }
     assert status.step_pods["build-reference"] == f"{WF}-build-reference-800000003"
+
+
+# --------------------------------------------------------------------------- #
+# GO and pathways: steps that can't fail the run
+# --------------------------------------------------------------------------- #
+
+
+def _with_go(workflow: dict, **phases: str) -> dict:
+    """The Workflow with GO pods (template=phase, e.g. emapper="Failed"), started after load."""
+    for i, (template, phase) in enumerate(phases.items()):
+        node = {
+            "id": f"go-{i}",
+            "type": "Pod",
+            "templateRef": {"name": "go-pathways-template", "template": template.replace("_", "-")},
+            "phase": phase,
+            "startedAt": f"2026-09-29T01:3{i}:00Z",
+            "finishedAt": f"2026-09-29T01:3{i}:30Z",
+        }
+        if phase == "Failed":
+            node["outputs"] = {"exitCode": "1"}
+        workflow["status"]["nodes"][node["id"]] = node
+    return workflow
+
+
+def test_a_loaded_dataset_whose_go_steps_succeeded_says_so():
+    wf = _with_go(_with_load(_load("succeeded"), "Root atlas"),
+                  find_annotation="Succeeded", fetch_de="Succeeded", enrich="Succeeded",
+                  upload_enrichment="Succeeded")
+    status = st.read_cellranger_status(wf, RUN)
+    assert status.status == "succeeded"
+    assert status.message == "Finished: loaded into Bloom, with GO & pathways"
+    assert {"annotate-genome", "go-pathways"} <= set(status.step_pods)
+
+
+def test_a_go_failure_after_the_dataset_loaded_keeps_the_run_succeeded_with_a_note():
+    wf = _with_go(_with_load(_load("succeeded"), "Root atlas"),
+                  find_annotation="Succeeded", fetch_de="Succeeded", enrich="Failed")
+    status = st.read_cellranger_status(wf, RUN)
+    assert (status.status, status.exit_code) == ("succeeded", 0)
+    assert status.message == ("Finished: loaded into Bloom; GO & pathways didn't finish: "
+                              "the go-pathways step failed (exit 1)")
+
+
+def test_a_failed_annotation_is_the_note_when_the_enrichment_never_ran():
+    wf = _with_go(_with_load(_load("succeeded"), "Root atlas"),
+                  find_annotation="Succeeded", proteins="Succeeded", emapper="Failed")
+    status = st.read_cellranger_status(wf, RUN)
+    assert status.status == "succeeded"
+    assert "the annotate-genome step failed (exit 1)" in status.message
+
+
+def test_a_step_s_outcome_is_a_failure_of_any_of_its_pods():
+    wf = _with_go(_with_load(_load("succeeded"), "Root atlas"),
+                  emapper="Failed", upload_annotation="Succeeded")
+    phases = st.step_phases(wf)
+    assert phases["annotate-genome"] == "Failed", "the later succeeded pod doesn't hide it"
+    assert phases["count"] == "Succeeded"
+
+
+def test_a_real_failure_is_reported_rather_than_a_go_one():
+    wf = _with_go(_load("no_reference"), emapper="Failed")
+    status = st.read_cellranger_status(wf, NO_REF_RUN)
+    assert status.status == "failed"
+    assert status.current_step not in st.GO_STEPS
+
+
+def test_the_go_steps_never_show_as_a_failed_runs_cause_when_another_failed():
+    assert set(st.GO_STEPS) == {"annotate-genome", "go-pathways"}
+    assert st.PHASES_KEY not in st.CELLRANGER_STEPS.values(), "no step shadows the outcomes"

@@ -197,57 +197,6 @@ def test_downloads_name_themselves_since_go_refuses_pythons_default_agent():
 
 
 # --------------------------------------------------------------------------- #
-# Recording in Bloom
-# --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def recorded(monkeypatch):
-    """The catalogue calls the command makes, with a stand-in client."""
-    calls = []
-    monkeypatch.setattr(go_pathways, "_client", lambda: "client")
-
-    def fake(name, result):
-        def call(*args, **kwargs):
-            calls.append((name, args, kwargs))
-            return result
-        return call
-
-    from bloom_scrna_analysis import catalogue
-    monkeypatch.setattr(catalogue, "upload_annotation",
-                        fake("upload_annotation", {"build_id": 3, "build": 1, "file_path": "p"}))
-    monkeypatch.setattr(catalogue, "fetch_annotation",
-                        fake("fetch_annotation", {"id": 3, "source": "eggnog"}))
-    monkeypatch.setattr(catalogue, "label", fake("label", "g.v1/eggnog-b1"))
-    monkeypatch.setattr(catalogue, "upload_enrichment",
-                        fake("upload_enrichment", {"run_id": 9, "file_path": "q"}))
-    return calls
-
-
-def test_upload_annotation_records_the_file(recorded, tmp_path, capsys):
-    assert go_pathways.main(["upload-annotation", "--file", str(tmp_path / "a.json.gz")]) == 0
-    assert recorded == [("upload_annotation", ("client", tmp_path / "a.json.gz"), {})]
-    assert "build 1 (id 3)" in capsys.readouterr().out
-
-
-def test_fetch_annotation_saves_the_file_and_its_label(recorded, tmp_path):
-    out = tmp_path / "annotation.json.gz"
-    assert go_pathways.main(["fetch-annotation", "--build-id", "3", "--out", str(out),
-                             "--label-out", str(tmp_path / "label")]) == 0
-    assert recorded[0] == ("fetch_annotation", ("client", 3, out), {})
-    assert (tmp_path / "label").read_text() == "g.v1/eggnog-b1"
-
-
-def test_upload_enrichment_records_the_run_and_the_job_when_given(recorded, tmp_path):
-    path = tmp_path / "e.json.gz"
-    go_pathways.main(["upload-enrichment", "--file", str(path), "--build-id", "3"])
-    go_pathways.main(["upload-enrichment", "--file", str(path), "--build-id", "3",
-                      "--rnaseq-run-id", "42"])
-    assert [c[2] for c in recorded] == [{"build_id": 3, "rnaseq_run_id": None},
-                                        {"build_id": 3, "rnaseq_run_id": 42}]
-
-
-# --------------------------------------------------------------------------- #
 # Signing in
 # --------------------------------------------------------------------------- #
 

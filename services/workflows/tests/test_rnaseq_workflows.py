@@ -419,6 +419,22 @@ def test_a_run_naming_a_dataset_passes_it_to_the_sample_pipeline():
     assert passed["bloom-run-id"] == "{{workflow.parameters.bloom-run-id}}"
 
 
+def test_a_species_with_a_kegg_code_passes_it_for_its_pathways():
+    run = {**RUN, "dataset": {"name": "Root atlas", "species": "Sorghum", "kegg_org": "sbi"}}
+    body = wfs.build_cellranger_body(run)
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert params["kegg-org"] == "sbi"
+    assert _params(_task(body, "sample"))["kegg-org"] == "{{workflow.parameters.kegg-org}}"
+
+
+def test_a_species_without_one_passes_none_so_the_run_annotates_go_only():
+    run = {**RUN, "dataset": {"name": "Root atlas", "species": "Pennycress", "kegg_org": None}}
+    params = {p["name"] for p in wfs.build_cellranger_body(run)["spec"]["arguments"]["parameters"]}
+    assert "kegg-org" not in params
+    declared = {p["name"]: p.get("value") for p in _template("sample-pipeline")["inputs"]["parameters"]}
+    assert declared["kegg-org"] == "", "the pipeline's default is GO only"
+
+
 @pytest.mark.parametrize("dataset", [None, {}], ids=["none", "empty"])
 def test_a_run_without_a_dataset_passes_only_its_run_id(dataset):
     body = wfs.build_cellranger_body({**RUN, "dataset": dataset})

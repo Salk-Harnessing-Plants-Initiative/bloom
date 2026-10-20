@@ -57,12 +57,14 @@ export const CELLRANGER_STEPS = [
   { id: "qc", label: "FastQC" },
   { id: "download-genome", label: "Download genome" },
   { id: "build-reference", label: "Build reference" },
+  { id: "annotate-genome", label: "Annotate genome (GO & KEGG)" },
   { id: "count", label: "Cell Ranger count" },
   { id: "preprocess", label: "Filter and normalise" },
   { id: "cluster", label: "Cluster and UMAP" },
   { id: "de", label: "Differential expression" },
   { id: "build-h5ad", label: "Build the .h5ad" },
   { id: "load-dataset", label: "Load into Bloom" },
+  { id: "go-pathways", label: "GO & pathways" },
   { id: "cleanup", label: "Clean up" },
 ] as const;
 
@@ -174,6 +176,8 @@ export function runFastqUrl(run: RnaseqRun): string | null {
 // Steps the pipeline no longer has, and the steps that replaced them.
 const RETIRED_STEPS: ReadonlySet<StepId> = new Set(["stage-reference"]);
 const GENOME_STEPS: ReadonlySet<StepId> = new Set(["download-genome", "build-reference"]);
+// GO steps run alongside the others; listed once the run reaches them.
+const GO_STEPS: ReadonlySet<StepId> = new Set(["annotate-genome", "go-pathways"]);
 
 /** Whether the run started before genomes came from Bloom, so it staged its reference instead. */
 function stagedItsReference(run: RnaseqRun): boolean {
@@ -190,6 +194,7 @@ export function runSteps(run: RnaseqRun): (typeof CELLRANGER_STEPS)[number][] {
     (step) =>
       (step.id !== "fetch-sra" || imports) &&
       (step.id !== "stage" || stages) &&
+      (!GO_STEPS.has(step.id) || stepStarted(run, step.id) || run.current_step === step.id) &&
       (staged ? !GENOME_STEPS.has(step.id) : !RETIRED_STEPS.has(step.id))
   );
 }

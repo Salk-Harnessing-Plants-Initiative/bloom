@@ -121,8 +121,9 @@ def _fail_logged(client, run: dict, message: str) -> None:
 
 
 def _dataset(client, run: dict) -> dict | None:
-    """The dataset the run loads into Bloom when it finishes: the form's dataset name and the
-    species' common name, as bloomctl takes them. None when the run names no dataset."""
+    """The dataset the run loads into Bloom when it finishes: the form's dataset name, the
+    species' common name, as bloomctl takes them, and the species' KEGG organism code for its
+    GO and pathway annotation (None when it has none). None when the run names no dataset."""
     rows = (
         client.table(RUNS_TABLE)
         .select("metadata")
@@ -135,9 +136,10 @@ def _dataset(client, run: dict) -> dict | None:
     name, species_id = metadata.get("dataset_name"), metadata.get("species_id")
     if not isinstance(name, str) or not name.strip() or type(species_id) is not int:
         return None
+    # Every column, so a server without species.kegg_org yet still answers.
     species = (
         client.table(SPECIES_TABLE)
-        .select("common_name")
+        .select("*")
         .eq("id", species_id)
         .execute()
         .data
@@ -150,7 +152,11 @@ def _dataset(client, run: dict) -> dict | None:
             species_id,
         )
         return None
-    return {"name": name.strip(), "species": species[0]["common_name"]}
+    return {
+        "name": name.strip(),
+        "species": species[0]["common_name"],
+        "kegg_org": species[0].get("kegg_org"),
+    }
 
 
 def _genome(client, run: dict) -> str | None:

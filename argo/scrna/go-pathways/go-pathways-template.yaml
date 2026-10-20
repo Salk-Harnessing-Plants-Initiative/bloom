@@ -85,6 +85,7 @@ spec:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
                 - {name: source, value: "{{inputs.parameters.source}}"}
+                - {name: genome, value: "{{inputs.parameters.genome}}"}
           # The logs of the steps without run-with-log, before cleanup deletes them; a failed run
           # keeps its folder, and the hand-run Workflow's exit handler uploads them instead.
           - name: upload-logs
@@ -180,7 +181,7 @@ spec:
         # 1: Bloom couldn't be reached; 16 (no credentials) and 19 (no such analysis) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-de.log", --, bash, -c]
         args:
           - |
@@ -220,7 +221,7 @@ spec:
         # 1: Bloom couldn't be reached; 16 and 19 (no such ready build, or a mismatched file) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-annotation.log", --, bash, -c]
         args:
           - |
@@ -256,7 +257,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/enrich.log", --, bash, -c]
         args:
           - |
@@ -299,7 +300,7 @@ spec:
         # Only 1 (a network or storage error) may be a blip; 3, 6 and 16 won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
         env:
           - {name: GENOME, value: "{{inputs.parameters.genome}}"}
@@ -329,7 +330,7 @@ spec:
         # 1: a download failed; 18 (a bad KEGG organism) won't fix itself.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command:
           - run-with-log
           - --path
@@ -358,6 +359,9 @@ spec:
       inputs:
         parameters:
           - name: run-id
+          # A Cell Ranger run keeps the genome in its own run's folder; empty: this run's.
+          - name: genome-run-id
+            value: ""
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
@@ -366,7 +370,7 @@ spec:
         args:
           - |
             set -euo pipefail
-            g="/shared/runs/${RUN_ID}.genome/genome"
+            g="/shared/runs/${GENOME_RUN_ID:-${RUN_ID}}.genome/genome"
             out="/shared/runs/${RUN_ID}"
             mkdir -p "${out}/logs"
             {
@@ -375,6 +379,7 @@ spec:
             } > "${out}/logs/proteins.log" 2>&1
         env:
           - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: GENOME_RUN_ID, value: "{{inputs.parameters.genome-run-id}}"}
         resources:
           requests: {cpu: "1", memory: 4Gi}
           limits: {cpu: "1", memory: 4Gi}
@@ -498,12 +503,15 @@ spec:
         parameters:
           - name: genome
           - name: run-id
+          # A Cell Ranger run keeps the genome in its own run's folder; empty: this run's.
+          - name: genome-run-id
+            value: ""
           - name: source
           - name: eggnog-db
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-annotation.log", --, bash, -c]
         args:
           - |
@@ -513,7 +521,7 @@ spec:
             version="${GENOME##*.v}"
             mkdir -p "${run}/annotation"
             args=(build-annotation --source "${SOURCE}" --genome "${genome}" --version "${version}"
-                  --gtf "/shared/runs/${RUN_ID}.genome/genome/genes.gtf" --obo "${run}/ref/go-basic.obo"
+                  --gtf "/shared/runs/${GENOME_RUN_ID:-${RUN_ID}}.genome/genome/genes.gtf" --obo "${run}/ref/go-basic.obo"
                   --out "${run}/annotation/${SOURCE}.json.gz")
             if [ "${SOURCE}" = eggnog ]; then
               args+=(--emapper "${run}/emapper/genome.emapper.annotations"
@@ -526,6 +534,7 @@ spec:
         env:
           - {name: GENOME, value: "{{inputs.parameters.genome}}"}
           - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: GENOME_RUN_ID, value: "{{inputs.parameters.genome-run-id}}"}
           - {name: SOURCE, value: "{{inputs.parameters.source}}"}
           - {name: EGGNOG_DB, value: "{{inputs.parameters.eggnog-db}}"}
         resources:
@@ -545,19 +554,29 @@ spec:
         parameters:
           - name: run-id
           - name: source
+          - name: genome
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
-        command:
-          - run-with-log
-          - --path
-          - "scrna/{{workflow.name}}/upload-annotation.log"
-          - --
-          - go-pathways
-          - upload-annotation
-          - --file
-          - "/shared/runs/{{inputs.parameters.run-id}}/annotation/{{inputs.parameters.source}}.json.gz"
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/upload-annotation.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            [ -s /etc/bloom/credentials.txt ] || { echo "ERROR: no Bloom credentials at /etc/bloom" >&2; exit 16; }
+            HOME="$(mktemp -d)" && export HOME
+            mkdir -p "${HOME}/.bloom"
+            install -m 600 /etc/bloom/credentials.txt "${HOME}/.bloom/credentials.txt"
+            run="/shared/runs/${RUN_ID}"
+            bloomctl genome annotation upload "${run}/annotation/${SOURCE}.json.gz"
+            # The recorded build, its id and name, for a Cell Ranger run's enrichment that follows.
+            bloomctl genome annotation download "${GENOME}" --source "${SOURCE}" \
+              --out "${run}/annotation.json.gz" --id-file "${run}/annotation.build-id" \
+              | cut -d' ' -f1 > "${run}/annotation.label"
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: SOURCE, value: "{{inputs.parameters.source}}"}
+          - {name: GENOME, value: "{{inputs.parameters.genome}}"}
         resources:
           requests: {cpu: "0.5", memory: 2Gi}
           limits: {cpu: "0.5", memory: 2Gi}
@@ -569,7 +588,7 @@ spec:
           hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
 
     # The enrichment file recorded in Bloom as a run of the dataset's analysis against the build
-    # (go-pathways upload-enrichment), linking the dataset to the build's genome version first
+    # (bloomctl scrna enrichment upload), linking the dataset to the build's genome version first
     # when it has none.
     - name: upload-enrichment
       inputs:
@@ -580,15 +599,21 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/upload-enrichment.log", --, bash, -c]
         args:
           - |
             set -euo pipefail
-            args=(upload-enrichment --file "/shared/runs/${RUN_ID}/enrichment.json.gz"
-                  --build-id "${BUILD_ID}")
-            if [ -n "${RNASEQ_RUN_ID}" ]; then args+=(--rnaseq-run-id "${RNASEQ_RUN_ID}"); fi
-            go-pathways "${args[@]}"
+            [ -s /etc/bloom/credentials.txt ] || { echo "ERROR: no Bloom credentials at /etc/bloom" >&2; exit 16; }
+            HOME="$(mktemp -d)" && export HOME
+            mkdir -p "${HOME}/.bloom"
+            install -m 600 /etc/bloom/credentials.txt "${HOME}/.bloom/credentials.txt"
+            run="/shared/runs/${RUN_ID}"
+            # A hand run names the build; a Cell Ranger run's annotate-genome steps wrote it.
+            build="${BUILD_ID:-$(cat "${run}/annotation.build-id")}"
+            args=(scrna enrichment upload "${run}/enrichment.json.gz" --build-id "${build}")
+            if [ -n "${RNASEQ_RUN_ID}" ]; then args+=(--run-id "${RNASEQ_RUN_ID}"); fi
+            bloomctl "${args[@]}"
         env:
           - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
           - {name: BUILD_ID, value: "{{inputs.parameters.annotation-build-id}}"}
@@ -611,7 +636,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
@@ -635,6 +660,79 @@ spec:
         - name: shared
           hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
 
+    # A Cell Ranger run's genome annotation: the version's ready build of the source from Bloom, saved
+    # as /shared/runs/<run-id>/annotation.json.gz with its id and name; "build" when there is none,
+    # so the run builds it; while another run's build is uploading, it waits for it.
+    - name: find-annotation
+      inputs:
+        parameters:
+          - name: genome
+          - name: run-id
+          - name: source
+            value: eggnog
+          # How long to wait for another run's build, in seconds (emapper's own limit).
+          - name: wait-seconds
+            value: "43200"
+      outputs:
+        parameters:
+          - name: decision
+            valueFrom: {path: /tmp/outputs/decision}
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # 1: Bloom couldn't be reached; 4 (still building after the wait) and 16 won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) == 1"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/find-annotation.log", --, bash, -c]
+        args:
+          - |
+            set -uo pipefail
+            [ -s /etc/bloom/credentials.txt ] || { echo "ERROR: no Bloom credentials at /etc/bloom" >&2; exit 16; }
+            HOME="$(mktemp -d)" && export HOME
+            mkdir -p "${HOME}/.bloom"
+            install -m 600 /etc/bloom/credentials.txt "${HOME}/.bloom/credentials.txt"
+            run="/shared/runs/${RUN_ID}"
+            mkdir -p "${run}" /tmp/outputs
+            waited=0
+            while :; do
+              bloomctl genome annotation download "${GENOME}" --source "${SOURCE}" \
+                --out "${run}/annotation.json.gz" --id-file "${run}/annotation.build-id" \
+                > "${run}/annotation.found"
+              code=$?
+              case "${code}" in
+                0) cut -d' ' -f1 "${run}/annotation.found" > "${run}/annotation.label"
+                   echo ready > /tmp/outputs/decision
+                   echo "using $(cat "${run}/annotation.found")"; exit 0 ;;
+                3) echo build > /tmp/outputs/decision
+                   echo "no ${SOURCE} annotation of ${GENOME} yet: building it"; exit 0 ;;
+                4) if [ "${waited}" -ge "${WAIT_SECONDS}" ]; then
+                     echo "ERROR: another run's annotation of ${GENOME} is still building after ${waited}s" >&2
+                     exit 4
+                   fi
+                   echo "another run is building the annotation of ${GENOME}; waiting"
+                   sleep 300
+                   waited=$((waited + 300)) ;;
+                *) exit "${code}" ;;
+              esac
+            done
+        env:
+          - {name: GENOME, value: "{{inputs.parameters.genome}}"}
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: SOURCE, value: "{{inputs.parameters.source}}"}
+          - {name: WAIT_SECONDS, value: "{{inputs.parameters.wait-seconds}}"}
+        resources:
+          requests: {cpu: "0.5", memory: 1Gi}
+          limits: {cpu: "0.5", memory: 1Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
     # The logs of the steps without run-with-log (proteins, eggnog-db, emapper), from
     # /shared/runs/<run-id>/logs/ into run-logs; the hand-run Workflow calls it on exit.
     - name: upload-logs
@@ -644,7 +742,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
         command: [bash, -c]
         args:
           - |

@@ -60,6 +60,9 @@ spec:
             value: "32Gi"
           - name: ref-mem-gb
             value: "28"
+          # The species' KEGG organism code (species.kegg_org) for its pathways; empty: GO only.
+          - name: kegg-org
+            value: ""
       dag:
         tasks:
           - name: download-genome
@@ -140,9 +143,107 @@ spec:
                   value: "{{inputs.parameters.mem-gb}}"
                 - name: bloom-run-id
                   value: "{{inputs.parameters.bloom-run-id}}"
+          # GO and pathways (go-pathways-template), in /shared/runs/<run-id>.go/ beside the run's
+          # folder, which fetch-sra and stage clear. The genome version's annotation comes from Bloom,
+          # or is built here alongside the reads and count; then the dataset's enrichment is recorded.
+          # Neither fails the run: cleanup depends on each one's failure too (below).
+          - name: find-annotation
+            templateRef: {name: go-pathways-template, template: find-annotation}
+            arguments:
+              parameters:
+                - {name: genome, value: "{{inputs.parameters.reference}}"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+          - name: fetch-references
+            templateRef: {name: go-pathways-template, template: fetch-references}
+            depends: find-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: source, value: eggnog}
+                - {name: kegg-org, value: "{{inputs.parameters.kegg-org}}"}
+          - name: proteins
+            templateRef: {name: go-pathways-template, template: proteins}
+            depends: download-genome && find-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: genome-run-id, value: "{{inputs.parameters.run-id}}"}
+          - name: eggnog-db
+            templateRef: {name: go-pathways-template, template: eggnog-db}
+            depends: find-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: eggnog-db, value: "5.0.2"}
+          - name: emapper
+            templateRef: {name: go-pathways-template, template: emapper}
+            depends: proteins && eggnog-db
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: eggnog-db, value: "5.0.2"}
+          - name: build-annotation
+            templateRef: {name: go-pathways-template, template: build-annotation}
+            depends: emapper && fetch-references
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: genome, value: "{{inputs.parameters.reference}}"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: genome-run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: source, value: eggnog}
+                - {name: eggnog-db, value: "5.0.2"}
+          - name: upload-annotation
+            templateRef: {name: go-pathways-template, template: upload-annotation}
+            depends: build-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: source, value: eggnog}
+                - {name: genome, value: "{{inputs.parameters.reference}}"}
+          - name: fetch-de
+            templateRef: {name: go-pathways-template, template: fetch-de}
+            depends: load-dataset
+            when: "'{{tasks.load-dataset.outputs.parameters.dataset-id}}' != ''"
+            arguments:
+              parameters:
+                - {name: dataset-id, value: "{{tasks.load-dataset.outputs.parameters.dataset-id}}"}
+                - {name: de-run-id, value: ""}
+                - {name: fdr-max, value: "0.05"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+          - name: enrich
+            templateRef: {name: go-pathways-template, template: enrich}
+            depends: "fetch-de && find-annotation && (upload-annotation.Succeeded || upload-annotation.Skipped)"
+            when: "'{{tasks.load-dataset.outputs.parameters.dataset-id}}' != ''"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: top-n, value: "300"}
+                - {name: fdr-max, value: "0.05"}
+                - {name: lfc-min, value: "0.25"}
+                - {name: min-term, value: "5"}
+                - {name: max-term, value: "500"}
+                - {name: min-list, value: "3"}
+          - name: upload-enrichment
+            templateRef: {name: go-pathways-template, template: upload-enrichment}
+            depends: enrich
+            when: "'{{tasks.load-dataset.outputs.parameters.dataset-id}}' != ''"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: annotation-build-id, value: ""}
+                - {name: rnaseq-run-id, value: "{{inputs.parameters.bloom-run-id}}"}
+          # Waits for every GO step whatever its outcome; depending on a step's .Failed is how Argo
+          # lets a step fail without failing the run (continueOn isn't allowed with depends).
           - name: cleanup
             template: cleanup
-            depends: load-dataset
+            depends: >-
+              load-dataset && (find-annotation.Succeeded || find-annotation.Failed || find-annotation.Errored || find-annotation.Skipped || find-annotation.Omitted) && (fetch-references.Succeeded || fetch-references.Failed || fetch-references.Errored || fetch-references.Skipped || fetch-references.Omitted) && (proteins.Succeeded || proteins.Failed || proteins.Errored || proteins.Skipped || proteins.Omitted) && (eggnog-db.Succeeded || eggnog-db.Failed || eggnog-db.Errored || eggnog-db.Skipped || eggnog-db.Omitted) && (emapper.Succeeded || emapper.Failed || emapper.Errored || emapper.Skipped || emapper.Omitted) && (build-annotation.Succeeded || build-annotation.Failed || build-annotation.Errored || build-annotation.Skipped || build-annotation.Omitted) && (upload-annotation.Succeeded || upload-annotation.Failed || upload-annotation.Errored || upload-annotation.Skipped || upload-annotation.Omitted) && (fetch-de.Succeeded || fetch-de.Failed || fetch-de.Errored || fetch-de.Skipped || fetch-de.Omitted) && (enrich.Succeeded || enrich.Failed || enrich.Errored || enrich.Skipped || enrich.Omitted) && (upload-enrichment.Succeeded || upload-enrichment.Failed || upload-enrichment.Errored || upload-enrichment.Skipped || upload-enrichment.Omitted)
             arguments:
               parameters:
                 - name: run-id
@@ -577,7 +678,7 @@ spec:
               ""|.|..|*/*) echo "refusing to delete: bad run id '${RUN_ID}'"; exit 1 ;;
             esac
             # The run's folder and its genome folder next to it.
-            for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome"; do
+            for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome" "/shared/runs/${RUN_ID}.go"; do
               if [ -d "${target}" ]; then rm -rf -- "${target}"; fi
               echo "removed ${target}"
             done

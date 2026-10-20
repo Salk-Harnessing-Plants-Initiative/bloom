@@ -29,7 +29,8 @@ def test_the_run_page_lists_the_pollers_steps_in_order():
     status = _status_module()
     retired = set(status.RETIRED_CELLRANGER_STEPS)
     current = [s for s in _web_steps() if s not in retired]
-    assert current == list(status.CELLRANGER_STEPS.values())
+    # Several templates can make up one step (the GO steps' pods); the run page lists it once.
+    assert current == list(dict.fromkeys(status.CELLRANGER_STEPS.values()))
 
 
 def test_the_run_page_still_lists_every_retired_step():

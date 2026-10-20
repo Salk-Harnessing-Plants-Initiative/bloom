@@ -22,15 +22,33 @@ CELLRANGER_STEPS = {
     "qc": "qc",
     "download-genome": "download-genome",
     "build-reference": "build-reference",
+    # The genome's GO and pathway annotation (go-pathways-template), alongside the reads and count;
+    # one run-page step for all its pods.
+    "find-annotation": "annotate-genome",
+    "fetch-references": "annotate-genome",
+    "proteins": "annotate-genome",
+    "eggnog-db": "annotate-genome",
+    "emapper": "annotate-genome",
+    "build-annotation": "annotate-genome",
+    "upload-annotation": "annotate-genome",
     "count": "count",
     "preprocess": "preprocess",
     "cluster": "cluster",
     "de": "de",
     "build-h5ad": "build-h5ad",
     "load-dataset": "load-dataset",
+    # The new dataset's enrichment against that annotation.
+    "fetch-de": "go-pathways",
+    "enrich": "go-pathways",
+    "upload-enrichment": "go-pathways",
     "cleanup": "cleanup",
 }
-_STEP_ORDER = {step: i for i, step in enumerate(CELLRANGER_STEPS.values())}
+_STEP_ORDER = {step: i for i, step in enumerate(dict.fromkeys(CELLRANGER_STEPS.values()))}
+# Steps that may fail without failing the run: the dataset is loaded either way.
+GO_STEPS = ("annotate-genome", "go-pathways")
+# The key in step_pods that holds each step's own outcome (Argo's phase), for the run page;
+# no step is named it.
+PHASES_KEY = "_phases"
 # Steps the template no longer has, which runs started before still list.
 RETIRED_CELLRANGER_STEPS = ("stage-reference",)
 
@@ -298,6 +316,7 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
     phase = (workflow.get("status") or {}).get("phase")
     pods = _step_pods(workflow)
     step_pods = {step: _pod_name(name, node) for step, node in pods.items()}
+    phases = step_phases(workflow)
 
     # By step order, so steps running side by side always give the same current step.
     started = sorted(pods, key=_STEP_ORDER.__getitem__)
@@ -306,6 +325,8 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
 
     if phase in _FAILED_PHASES:
         failed = [s for s, n in pods.items() if n.get("phase") in _FAILED_PHASES]
+        # A GO step's failure doesn't fail the run; another step's did.
+        failed = [s for s in failed if s not in GO_STEPS] or failed
         if not failed:
             return RunStatus(
                 "failed",
@@ -321,13 +342,37 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
         )
 
     if phase == "Succeeded":
-        message = (
-            "Finished: loaded into Bloom"
-            if dataset_loaded(workflow)
-            else "Finished; the run named no dataset, so nothing was loaded into Bloom"
-        )
+        if dataset_loaded(workflow):
+            message = "Finished: loaded into Bloom" + _go_note(pods, phases)
+        else:
+            message = "Finished; the run named no dataset, so nothing was loaded into Bloom"
         return RunStatus("succeeded", current, step_pods, 0, message)
 
     if current is None:
         return None
     return RunStatus("running", current, step_pods)
+
+
+def step_phases(workflow: dict) -> dict[str, str]:
+    """Each started step's own outcome (Argo's phase): a failure of any of its pods, else its
+    latest pod's phase. The poller stores it in step_pods under PHASES_KEY for the run page."""
+    phases: dict[str, str] = {}
+    for step, node in _step_pods(workflow).items():
+        phases[step] = node.get("phase") or "Pending"
+    for node in (workflow.get("status") or {}).get("nodes", {}).values():
+        step = CELLRANGER_STEPS.get(_template(node))
+        if node.get("type") == "Pod" and step and node.get("phase") in _FAILED_PHASES:
+            phases[step] = node["phase"]
+    return phases
+
+
+def _go_note(pods: dict[str, dict], phases: dict[str, str]) -> str:
+    """What the run's message adds about GO and pathways once the dataset has loaded."""
+    for step in GO_STEPS:
+        if phases.get(step) in _FAILED_PHASES:
+            code = _exit_code(pods[step]) if step in pods else None
+            reason = f"the {step} step failed" + (f" (exit {code})" if code is not None else "")
+            return f"; GO & pathways didn't finish: {reason}"
+    if phases.get("go-pathways") == "Succeeded":
+        return ", with GO & pathways"
+    return ""
