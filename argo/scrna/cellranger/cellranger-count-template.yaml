@@ -236,7 +236,6 @@ spec:
             arguments:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
-                - {name: annotation-build-id, value: ""}
                 - {name: rnaseq-run-id, value: "{{inputs.parameters.bloom-run-id}}"}
           # Waits for every GO step whatever its outcome; depending on a step's .Failed is how Argo
           # lets a step fail without failing the run (continueOn isn't allowed with depends).

@@ -185,9 +185,9 @@ staging's Bloom; their headers say how to point them at prod.
 #    Arabidopsis' curated GO from TAIR (source=tair-go).
 argo submit argo/scrna/go-pathways/genome-annotation-workflow.yaml -n runai-busch-lab \
   -p genome=sbicolor.btx623.hpiv3.v1 -p source=eggnog -p kegg-org=sbi --watch
-# 2. A dataset's enrichment against that annotation build (upload-annotation's log prints its id).
+# 2. A dataset's enrichment against its genome version's ready annotation.
 argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch-lab \
-  -p dataset-id=25 -p annotation-build-id=1 --watch
+  -p dataset-id=25 -p genome=sbicolor.btx623.hpiv3.v1 --watch
 ```
 
 - **genome-annotation** downloads the genome version from Bloom, builds every transcript's
@@ -197,8 +197,8 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   KEGG lists for the species (`kegg-org`; left empty, GO only). **upload-annotation** records
   the file with `bloomctl genome annotation upload` as the version's next build of the source, in the `genome-references` bucket
   at `<genome>/v<N>/annotation/<source>-b<B>.json.gz`.
-- **scrna-enrichment** fetches the annotation build's file from Bloom, checked against its
-  checksum, and reads the dataset's genes and its newest complete differential expression
+- **scrna-enrichment** fetches the genome version's ready annotation from Bloom, checked
+  against its checksum, and reads the dataset's genes and its newest complete differential expression
   analysis (or `de-run-id`). For each comparison and direction, the list
   is the genes with FDR < 0.05 and |log2FC| > 0.25, strongest first, up to 300. Each of GO's
   three namespaces and KEGG is tested against its own background, the dataset's genes with a

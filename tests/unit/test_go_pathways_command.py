@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -287,3 +288,15 @@ def test_a_network_error_signing_in_stays_a_retried_error(monkeypatch, tmp_path)
     sign_in_failing(monkeypatch, tmp_path, httpx.ConnectError("connection refused"))
     with pytest.raises(click.ClickException):
         go_pathways._client()
+
+
+
+def test_every_go_pathways_step_a_template_runs_exists():
+    """A template calling a removed subcommand fails at its first step."""
+    texts = [t.read_text() for t in (REPO / "argo/scrna").rglob("*.yaml")]
+    called = {m for text in texts for m in re.findall(r"\bgo-pathways ([a-z][a-z-]*)", text)}
+    assert called, "the templates run go-pathways steps"
+    for step in sorted(called):
+        with pytest.raises(SystemExit) as exc:
+            go_pathways.main([step, "--help"])
+        assert exc.value.code == 0, step
