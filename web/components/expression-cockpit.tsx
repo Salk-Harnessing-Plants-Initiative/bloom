@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { ExpressionView } from "@/components/expression-view";
 import DifferentialExpressionAnalysis from "@/components/expression-differential-analysis";
 import { ExpressionGenesByCellType } from "@/components/expression-genes-by-cell-type";
+import { ExpressionGoPathways } from "@/components/expression-go-pathways";
 // The remaining tabs stay disabled until their schema is plumbed through —
 // re-enable one by uncommenting its import, its entry in the Tab union, its
 // button and its body.
@@ -13,7 +14,7 @@ import { ExpressionGenesByCellType } from "@/components/expression-genes-by-cell
 import { ExpressionThemeProvider } from "@/components/expression-theme-provider";
 import type { DeFocus } from "@/components/expression-lib/de-types";
 
-type Tab = "umap" | "genes" | "de"; // | "correlation" | "download";
+type Tab = "umap" | "genes" | "de" | "go"; // | "correlation" | "download";
 
 export interface ExpressionCockpitProps {
   datasetId: number;
@@ -53,6 +54,9 @@ export function ExpressionCockpit({
         <TabBtn active={tab === "de"} onClick={() => open("de")}>
           Differential expression
         </TabBtn>
+        <TabBtn active={tab === "go"} onClick={() => open("go")}>
+          GO &amp; pathways
+        </TabBtn>
         {/*
         <TabBtn
           active={tab === "correlation"}
@@ -81,6 +85,11 @@ export function ExpressionCockpit({
         {opened.has("de") && (
           <div hidden={tab !== "de"}>
             <DifferentialExpressionAnalysis file_id={datasetId} focus={deFocus} />
+          </div>
+        )}
+        {opened.has("go") && (
+          <div hidden={tab !== "go"}>
+            <ExpressionGoPathways datasetId={datasetId} />
           </div>
         )}
         {/*

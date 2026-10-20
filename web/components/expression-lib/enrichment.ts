@@ -1,0 +1,264 @@
+/**
+ * A dataset's GO and KEGG pathway enrichment: the newest ready run in scrna_enrichment_runs,
+ * and its file (bloom-enrichment/1, gzipped JSON in the scrna bucket), checked on load.
+ */
+
+import { gunzipSync, strFromU8 } from "fflate";
+
+import type { Client } from "./de-types";
+
+export const ENRICHMENT_FORMAT = "bloom-enrichment/1";
+export const ENRICHMENT_BUCKET = "scrna";
+export const DIRECTIONS = ["up", "down"] as const;
+export const KINDS = ["GO_BP", "GO_MF", "GO_CC", "KEGG"] as const;
+export type Direction = (typeof DIRECTIONS)[number];
+export type TermKind = (typeof KINDS)[number];
+
+export const KIND_LABELS: Record<TermKind, string> = {
+  GO_BP: "GO biological process",
+  GO_MF: "GO molecular function",
+  GO_CC: "GO cellular component",
+  KEGG: "KEGG pathways",
+};
+
+// gzip's first two bytes.
+const GZIP_MAGIC = [0x1f, 0x8b];
+// The settings the tab shows, which a file must record.
+const PARAMS_SHOWN = ["top_n", "fdr_max", "min_term", "max_term"] as const;
+// A KEGG ortholog, e.g. K02866.
+const KO = /^K\d{5}$/;
+// QuickGO's page for a GO term: its definition and where it sits in the GO tree.
+const QUICKGO_TERM_URL = "https://www.ebi.ac.uk/QuickGO/term/";
+// KEGG's map viewer, which colours the orthologs it's given.
+const KEGG_MAP_URL = "https://www.kegg.jp/kegg-bin/show_pathway";
+// Up and down, as the map colours them (ColorBrewer RdYlBu's ends).
+const MAP_COLOURS: Record<Direction, string> = { up: "#d73027", down: "#4575b4" };
+
+export interface EnrichmentTerm {
+  comparison: string;
+  direction: Direction;
+  kind: TermKind;
+  term: string;
+  name: string;
+  list_genes_in_term: number;
+  list_size: number;
+  term_size: number;
+  background_size: number;
+  p: number;
+  fdr: number;
+  genes: string[];
+  /** A KEGG result's list genes' KEGG orthologs, to colour on the pathway's map. */
+  kos?: string[];
+}
+
+export interface EnrichmentFile {
+  format: typeof ENRICHMENT_FORMAT;
+  dataset_id: number;
+  de_run_id: number;
+  annotation: string;
+  params: Record<string, number>;
+  background_genes: number;
+  annotated_genes: number;
+  results: EnrichmentTerm[];
+}
+
+export interface EnrichmentRun {
+  id: number;
+  de_run_id: number;
+  annotation_build_id: number;
+  file_path: string;
+  ready_at: string | null;
+}
+
+/** A file that isn't a bloom-enrichment/1 file of this dataset. */
+export class EnrichmentFileError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EnrichmentFileError";
+  }
+}
+
+const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const isCount = (v: unknown): v is number => isNumber(v) && Number.isInteger(v) && v >= 0;
+
+function checkTerm(t: Record<string, unknown>, i: number): EnrichmentTerm {
+  const fail = (why: string) => {
+    throw new EnrichmentFileError(`result ${i} (${String(t.term)}): ${why}`);
+  };
+  if (typeof t.comparison !== "string" || typeof t.term !== "string" ||
+      typeof t.name !== "string") fail("missing its comparison, term or name");
+  if (!DIRECTIONS.includes(t.direction as Direction)) fail(`unknown direction ${String(t.direction)}`);
+  if (!KINDS.includes(t.kind as TermKind)) fail(`unknown kind ${String(t.kind)}`);
+  for (const key of ["list_genes_in_term", "list_size", "term_size", "background_size"]) {
+    if (!isCount(t[key])) fail(`${key} is not a count`);
+  }
+  if (!isNumber(t.p) || !isNumber(t.fdr)) fail("p or fdr is not a number");
+  if (!Array.isArray(t.genes) || !t.genes.every((g) => typeof g === "string")) {
+    fail("genes is not a list of names");
+  }
+  if (t.kos !== undefined &&
+      (!Array.isArray(t.kos) || !t.kos.every((k) => typeof k === "string" && KO.test(k)))) {
+    fail("kos is not a list of KEGG orthologs");
+  }
+  if ((t.list_genes_in_term as number) > (t.list_size as number) ||
+      (t.list_genes_in_term as number) > (t.term_size as number)) {
+    fail("has more list genes in the term than in the list or the term");
+  }
+  return t as unknown as EnrichmentTerm;
+}
+
+/** An enrichment file's bytes (gzipped, or already unzipped by the server), checked. */
+export function decodeEnrichment(bytes: Uint8Array, datasetId: number): EnrichmentFile {
+  const zipped = bytes[0] === GZIP_MAGIC[0] && bytes[1] === GZIP_MAGIC[1];
+  let doc: Record<string, unknown>;
+  try {
+    doc = JSON.parse(strFromU8(zipped ? gunzipSync(bytes) : bytes));
+  } catch {
+    throw new EnrichmentFileError("the enrichment file is not readable JSON");
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+    throw new EnrichmentFileError("the enrichment file is not a JSON object");
+  }
+  if (doc.format !== ENRICHMENT_FORMAT) {
+    throw new EnrichmentFileError(`the file is ${String(doc.format)}, not ${ENRICHMENT_FORMAT}`);
+  }
+  if (doc.dataset_id !== datasetId) {
+    throw new EnrichmentFileError(`the file is for dataset ${String(doc.dataset_id)}`);
+  }
+  if (!Array.isArray(doc.results)) throw new EnrichmentFileError("the file has no results");
+  for (const key of ["background_genes", "annotated_genes"]) {
+    if (!isCount(doc[key])) throw new EnrichmentFileError(`the file's ${key} is not a count`);
+  }
+  if (!isNumber(doc.de_run_id) || typeof doc.annotation !== "string") {
+    throw new EnrichmentFileError("the file doesn't say which analysis and annotation it used");
+  }
+  const params = doc.params as Record<string, unknown> | null;
+  if (!params || typeof params !== "object" ||
+      !PARAMS_SHOWN.every((key) => isNumber(params[key]))) {
+    throw new EnrichmentFileError(`the file's settings need ${PARAMS_SHOWN.join(", ")}`);
+  }
+  const results = doc.results.map((t, i) => {
+    if (!t || typeof t !== "object") throw new EnrichmentFileError(`result ${i} is not an object`);
+    return checkTerm(t as Record<string, unknown>, i);
+  });
+  return { ...(doc as unknown as EnrichmentFile), results };
+}
+
+/** The dataset's newest ready enrichment run and its file, or null when it has none. */
+export async function fetchLatestEnrichment(
+  supabase: Client,
+  datasetId: number,
+): Promise<{ run: EnrichmentRun; file: EnrichmentFile } | null> {
+  const { data, error } = await supabase
+    .from("scrna_enrichment_runs")
+    .select("id, de_run_id, annotation_build_id, file_path, ready_at")
+    .eq("dataset_id", datasetId)
+    .eq("status", "ready")
+    .order("ready_at", { ascending: false })
+    .limit(1);
+  if (error) throw new Error(error.message);
+  const run = data?.[0] as EnrichmentRun | undefined;
+  if (!run) return null;
+  const stored = await supabase.storage.from(ENRICHMENT_BUCKET).download(run.file_path);
+  if (stored.error || !stored.data) {
+    throw new Error(stored.error?.message ?? `couldn't read ${run.file_path}`);
+  }
+  const bytes = new Uint8Array(await stored.data.arrayBuffer());
+  return { run, file: decodeEnrichment(bytes, datasetId) };
+}
+
+const clusterNumber = (comparison: string) => {
+  const n = Number.parseInt(comparison, 10);
+  return Number.isNaN(n) ? Number.POSITIVE_INFINITY : n;
+};
+
+/** The file's comparisons, in cluster order (2 before 10), then by name. */
+export function comparisonsOf(file: EnrichmentFile): string[] {
+  return [...new Set(file.results.map((t) => t.comparison))].sort(
+    (a, b) => clusterNumber(a) - clusterNumber(b) || a.localeCompare(b),
+  );
+}
+
+/** One comparison, direction and kind's terms, most significant first. */
+export function termsFor(file: EnrichmentFile, comparison: string, direction: Direction,
+                         kind: TermKind): EnrichmentTerm[] {
+  return file.results
+    .filter((t) => t.comparison === comparison && t.direction === direction && t.kind === kind)
+    .sort((a, b) => a.fdr - b.fdr || a.term.localeCompare(b.term));
+}
+
+/** The share of the list that falls in the term. */
+export function geneRatio(term: EnrichmentTerm): number {
+  return term.list_size === 0 ? 0 : term.list_genes_in_term / term.list_size;
+}
+
+/** One of a cluster's comparisons: the file's name for it, and what the cluster is compared with. */
+export interface ClusterComparison {
+  comparison: string;
+  label: string;
+}
+
+const AGAINST_REST = "all other cells";
+
+/** What a comparison sets its cluster against: "all other cells", or "cluster 5" for 2_vs_5. */
+function againstOf(contrast: string | null): string {
+  if (contrast === null) return AGAINST_REST;
+  const at = contrast.lastIndexOf("_vs_");
+  const other = at < 0 ? "" : contrast.slice(at + "_vs_".length);
+  return other === "" || other === "rest" ? AGAINST_REST : `cluster ${other}`;
+}
+
+/** A cluster and its comparisons in the file. */
+export interface ClusterChoice {
+  cluster: string;
+  comparisons: ClusterComparison[];
+}
+
+/** The DE row fields that say which cluster a comparison belongs to. */
+export interface ComparisonRow {
+  cluster_id: string | null;
+  contrast: string | null;
+}
+
+/**
+ * Every comparison grouped by cluster, in cluster order: the analysis's DE rows (so a comparison
+ * with nothing significant is still listed) and the file's own. A comparison is named by its DE
+ * row's contrast (or its cluster, for older one-vs-rest rows); one without a row stands alone.
+ */
+export function clustersOf(file: EnrichmentFile, rows: ComparisonRow[]): ClusterChoice[] {
+  const byName = new Map(rows.flatMap((r) => {
+    const name = r.contrast ?? r.cluster_id;
+    return name === null ? [] : [[name, r] as const];
+  }));
+  const names = [...new Set([...comparisonsOf(file), ...byName.keys()])].sort(
+    (a, b) => clusterNumber(a) - clusterNumber(b) || a.localeCompare(b),
+  );
+  const clusters = new Map<string, ClusterComparison[]>();
+  for (const comparison of names) {
+    const row = byName.get(comparison);
+    const cluster = row?.cluster_id ?? comparison;
+    const label = againstOf(row ? row.contrast : comparison);
+    clusters.set(cluster, [...(clusters.get(cluster) ?? []), { comparison, label }]);
+  }
+  return [...clusters.keys()]
+    .sort((a, b) => clusterNumber(a) - clusterNumber(b) || a.localeCompare(b))
+    .map((cluster) => ({ cluster, comparisons: clusters.get(cluster) ?? [] }));
+}
+
+/**
+ * KEGG's map of a pathway with the list genes' orthologs coloured (red up, blue down), or null
+ * for a GO term or a pathway whose genes have no orthologs.
+ */
+export function keggMapUrl(term: EnrichmentTerm): string | null {
+  if (term.kind !== "KEGG" || !term.kos?.length) return null;
+  const colour = MAP_COLOURS[term.direction];
+  const url = new URL(KEGG_MAP_URL);
+  url.searchParams.set("map", term.term);
+  url.searchParams.set("multi_query", term.kos.map((ko) => `${ko} ${colour}`).join("\n"));
+  return url.toString();
+}
+
+/** QuickGO's page for a GO term, or null for a KEGG pathway. */
+export function goTermUrl(term: EnrichmentTerm): string | null {
+  return term.kind === "KEGG" ? null : `${QUICKGO_TERM_URL}${encodeURIComponent(term.term)}`;
+}

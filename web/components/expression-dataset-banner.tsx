@@ -1,4 +1,3 @@
-import Link from "next/link";
 import Illustration from "@/components/illustration";
 import {
   IncompleteUploadNotice,
@@ -11,7 +10,6 @@ type Props = {
   speciesId: number;
 };
 
-type SiblingDataset = { id: number; name: string };
 
 async function fetchBannerData(datasetId: number) {
   const supabase = await createServerSupabaseClient();
@@ -29,28 +27,11 @@ async function fetchBannerData(datasetId: number) {
   const species = Array.isArray(dataset.species) ? dataset.species[0] : dataset.species;
   const scientist = Array.isArray(dataset.people) ? dataset.people[0] : dataset.people;
 
-  const [siblingsRes, cellsRes] = await Promise.all([
-    supabase
-      .from("scrna_datasets")
-      .select("id, name")
-      .eq("species_id", dataset.species_id)
-      .is("deleted_at", null)
-      .neq("id", datasetId)
-      .neq("name", "NULL_DATASET")
-      // A reference atlas has no cells of its own; it is only seen on an integration map.
-      .neq("kind", "reference")
-      .order("name"),
-    supabase
-      .from("scrna_cells")
-      .select("cluster_id")
-      .eq("dataset_id", datasetId)
-      .limit(500000),
-  ]);
-
-  const siblings: SiblingDataset[] = (siblingsRes.data ?? []).map((r) => ({
-    id: r.id,
-    name: r.name,
-  }));
+  const cellsRes = await supabase
+    .from("scrna_cells")
+    .select("cluster_id")
+    .eq("dataset_id", datasetId)
+    .limit(500000);
 
   const clusterIds = new Set<string>();
   for (const row of cellsRes.data ?? []) {
@@ -58,7 +39,7 @@ async function fetchBannerData(datasetId: number) {
   }
   const clusters = clusterIds.size || null;
 
-  return { dataset, species, scientist, siblings, clusters, incomplete: isIncompleteUpload(dataset) };
+  return { dataset, species, scientist, clusters, incomplete: isIncompleteUpload(dataset) };
 }
 
 function formatCount(n: number | null | undefined): string {
@@ -80,11 +61,11 @@ function renderJsonValue(v: unknown): React.ReactNode {
   );
 }
 
-export default async function ExpressionDatasetBanner({ datasetId, speciesId }: Props) {
+export default async function ExpressionDatasetBanner({ datasetId }: Props) {
   const data = await fetchBannerData(datasetId);
   if (!data) return null;
 
-  const { dataset, species, scientist, siblings, clusters, incomplete } = data;
+  const { dataset, species, scientist, clusters, incomplete } = data;
   const assemblyAnnotation =
     dataset.assembly || dataset.annotation
       ? `${dataset.assembly ?? "—"} / ${dataset.annotation ?? "—"}`
@@ -109,7 +90,7 @@ export default async function ExpressionDatasetBanner({ datasetId, speciesId }: 
           </div>
           <div className="flex items-baseline gap-3 flex-wrap">
             <h1
-              className="text-xl font-semibold text-stone-900 truncate"
+              className="text-xl font-semibold text-stone-900 break-words"
               title={dataset.name}
             >
               {dataset.name}
@@ -135,23 +116,6 @@ export default async function ExpressionDatasetBanner({ datasetId, speciesId }: 
           <MetadataDisclosure metadata={dataset.metadata} />
         </div>
 
-        {siblings.length > 0 ? (
-          <div className="shrink-0 flex flex-col gap-2 items-end">
-            <div className="text-xs uppercase tracking-widest text-stone-500">
-              Dataset
-            </div>
-            <div className="flex gap-2 flex-wrap justify-end max-w-md">
-              <DatasetPill name={dataset.name} active />
-              {siblings.map((s) => (
-                <DatasetPill
-                  key={s.id}
-                  name={s.name}
-                  href={`/app/expression/${speciesId}/${s.id}`}
-                />
-              ))}
-            </div>
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -165,31 +129,6 @@ function StatPill({ label, value }: { label: string; value: string }) {
       </span>
       <span className="text-xs text-stone-500">{label}</span>
     </span>
-  );
-}
-
-function DatasetPill({
-  name,
-  href,
-  active = false,
-}: {
-  name: string;
-  href?: string;
-  active?: boolean;
-}) {
-  const classes = active
-    ? "bg-lime-700 text-stone-50 border border-lime-700 cursor-default"
-    : "border border-stone-300 text-stone-600 hover:bg-stone-50 hover:border-stone-400";
-  const base =
-    "rounded-full px-3 py-1 text-xs font-medium tabular-nums transition-colors";
-
-  if (active || !href) {
-    return <span className={`${base} ${classes}`}>{name}</span>;
-  }
-  return (
-    <Link href={href} className={`${base} ${classes}`}>
-      {name}
-    </Link>
   );
 }
 
