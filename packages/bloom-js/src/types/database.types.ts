@@ -4343,6 +4343,7 @@ export type Database = {
           genus: string | null
           id: number
           illustration_path: string | null
+          kegg_org: string | null
           species: string | null
         }
         Insert: {
@@ -4352,6 +4353,7 @@ export type Database = {
           genus?: string | null
           id?: number
           illustration_path?: string | null
+          kegg_org?: string | null
           species?: string | null
         }
         Update: {
@@ -4361,6 +4363,7 @@ export type Database = {
           genus?: string | null
           id?: number
           illustration_path?: string | null
+          kegg_org?: string | null
           species?: string | null
         }
         Relationships: []
