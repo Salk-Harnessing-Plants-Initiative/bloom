@@ -177,3 +177,9 @@ def test_every_archive_is_checked_before_it_is_unpacked():
 
 def test_a_stopped_download_removes_its_own_partial_copy():
     assert """trap 'rm -rf -- "${work}"' EXIT""" in _eggnog_db_script()
+
+
+def test_enrich_waits_for_both_the_annotation_and_the_analysis():
+    tasks = {t["name"]: t for t in STEPS["scrna-enrichment"]["dag"]["tasks"]}
+    needed = set(tasks["enrich"]["depends"].replace("&&", " ").split())
+    assert needed == {"fetch-annotation", "fetch-de"}

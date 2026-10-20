@@ -307,3 +307,59 @@ def test_the_pipeline_job_is_recorded_when_given(ready_build, tmp_path):
     catalogue.upload_enrichment(ready_build, enrichment_file(tmp_path), build_id=3,
                                 rnaseq_run_id=42)
     assert ready_build.called("start_scrna_enrichment_run")[0]["p_rnaseq_run_id"] == 42
+
+
+# --------------------------------------------------------------------------- #
+# Each check on its own
+# --------------------------------------------------------------------------- #
+
+
+def test_a_file_of_the_right_checksum_but_another_size_is_refused(bloom, tmp_path):
+    stored_build(bloom, tmp_path)
+    bloom.tables["genome_annotation_builds"][0]["file_bytes"] += 1
+    out = tmp_path / "x"
+    with pytest.raises(StepError, match="checksum and size"):
+        catalogue.fetch_annotation(bloom, 3, out)
+    assert not out.exists()
+
+
+def test_a_refused_finish_abandons_the_build(bloom, tmp_path):
+    bloom.answers["finish_genome_annotation_build"] = Refused("is 10 bytes in storage, not 11")
+    with pytest.raises(Refused):
+        catalogue.upload_annotation(bloom, annotation_file(tmp_path), refused=Refused)
+    assert bloom.called("abandon_genome_annotation_build") == [{"p_build_id": 3}]
+
+
+def test_a_refused_finish_abandons_the_run(ready_build, tmp_path):
+    ready_build.answers["finish_scrna_enrichment_run"] = Refused("not uploaded")
+    with pytest.raises(Refused):
+        catalogue.upload_enrichment(ready_build, enrichment_file(tmp_path), build_id=3,
+                                    refused=Refused)
+    assert ready_build.called("abandon_scrna_enrichment_run") == [{"p_run_id": 9}]
+
+
+def test_a_file_that_isnt_an_enrichment_is_refused_before_anything_starts(ready_build, tmp_path):
+    path = tmp_path / "old.json.gz"
+    with gzip.open(path, "wt") as fh:
+        json.dump({"format": "bloom-enrichment/0", "dataset_id": 25}, fh)
+    with pytest.raises(StepError, match="bloom-enrichment/0") as exc:
+        catalogue.upload_enrichment(ready_build, path, build_id=3)
+    assert exc.value.code == EXIT_BAD_ENRICHMENT_INPUT
+    assert not ready_build.calls
+
+
+def test_a_refused_link_is_the_steps_own_error_and_nothing_starts(ready_build, tmp_path):
+    ready_build.tables["scrna_datasets"][0]["genome_version_id"] = None
+    ready_build.answers["link_scrna_dataset_genome"] = Refused("is for species 2")
+    with pytest.raises(StepError, match="refused the link") as exc:
+        catalogue.upload_enrichment(ready_build, enrichment_file(tmp_path), build_id=3,
+                                    refused=Refused)
+    assert exc.value.code == EXIT_BAD_ENRICHMENT_INPUT
+    assert not ready_build.called("start_scrna_enrichment_run")
+
+
+def test_an_unknown_dataset_is_refused(ready_build, tmp_path):
+    ready_build.tables["scrna_datasets"] = []
+    with pytest.raises(StepError, match="no dataset 25"):
+        catalogue.upload_enrichment(ready_build, enrichment_file(tmp_path), build_id=3)
+    assert not ready_build.called("start_scrna_enrichment_run")
