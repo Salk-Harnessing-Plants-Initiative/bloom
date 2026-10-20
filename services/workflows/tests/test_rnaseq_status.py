@@ -541,6 +541,18 @@ def test_a_step_s_outcome_is_a_failure_of_any_of_its_pods():
     assert phases["count"] == "Succeeded"
 
 
+def test_a_pod_whose_retry_succeeded_doesnt_fail_its_step():
+    wf = _with_load(_load("succeeded"), "Root atlas")
+    for i, phase in enumerate(("Failed", "Succeeded")):
+        _with_go(wf, **{"fetch_de": phase})
+        wf["status"]["nodes"][f"retry-{i}"] = wf["status"]["nodes"].pop("go-0") | {"id": f"retry-{i}"}
+    wf["status"]["nodes"]["fetch-de"] = {"id": "fetch-de", "type": "Retry", "phase": "Succeeded",
+                                         "children": ["retry-0", "retry-1"]}
+    _with_go(wf, enrich="Succeeded", upload_enrichment="Succeeded")
+    assert st.step_phases(wf)["go-pathways"] == "Succeeded"
+    assert st.read_cellranger_status(wf, RUN).message.endswith("with GO & pathways")
+
+
 def test_a_real_failure_is_reported_rather_than_a_go_one():
     wf = _with_go(_load("no_reference"), emapper="Failed")
     status = st.read_cellranger_status(wf, NO_REF_RUN)

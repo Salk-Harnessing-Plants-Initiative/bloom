@@ -359,9 +359,14 @@ def step_phases(workflow: dict) -> dict[str, str]:
     phases: dict[str, str] = {}
     for step, node in _step_pods(workflow).items():
         phases[step] = node.get("phase") or "Pending"
-    for node in (workflow.get("status") or {}).get("nodes", {}).values():
+    nodes = (workflow.get("status") or {}).get("nodes", {}).values()
+    # A pod whose retry then succeeded didn't fail its step.
+    retried = {child for node in nodes if node.get("type") == "Retry"
+               and node.get("phase") == "Succeeded" for child in node.get("children", [])}
+    for node in nodes:
         step = CELLRANGER_STEPS.get(_template(node))
-        if node.get("type") == "Pod" and step and node.get("phase") in _FAILED_PHASES:
+        if (node.get("type") == "Pod" and step and node.get("phase") in _FAILED_PHASES
+                and node.get("id") not in retried):
             phases[step] = node["phase"]
     return phases
 
