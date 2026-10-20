@@ -42,7 +42,7 @@ function term(over: Partial<EnrichmentTerm>): EnrichmentTerm {
 const FILE: EnrichmentFile = {
   format: "bloom-enrichment/1", dataset_id: 25, de_run_id: 5,
   annotation: "sbicolor.btx623.hpiv3.v1/eggnog-b1",
-  params: { top_n: 300, fdr_max: 0.05, lfc_min: 0.25 },
+  params: { top_n: 300, fdr_max: 0.05, lfc_min: 0.25, min_term: 5, max_term: 500 },
   background_genes: 21957, annotated_genes: 11427,
   results: [
     term({}),
@@ -84,6 +84,8 @@ describe("ExpressionGoPathways", () => {
     await waitFor(() => expect(table()).toBeTruthy());
     expect(screen.getByLabelText("Compared with").textContent).toBe("cluster 5");
     expect(screen.getByText(/Genes up in cluster 2 compared with cluster 5/)).toBeTruthy();
+    expect(screen.getByText(/cluster 2 vs cluster 5 \(Differential\s+expression tab\)/))
+      .toBeTruthy();
     expect(within(table()).getByText("cell wall")).toBeTruthy();
     file.results = FILE.results;
   });
@@ -150,13 +152,16 @@ describe("ExpressionGoPathways", () => {
     render(<ExpressionGoPathways datasetId={25} />);
     await waitFor(() => expect(table()).toBeTruthy());
     expect(screen.getByText(/11,427 of this dataset's\s+21,957 genes/)).toBeTruthy();
-    expect(screen.getByText(/Annotation used: sbicolor\.btx623\.hpiv3\.v1\/eggnog-b1/)).toBeTruthy();
+    expect(screen.getByText(/cluster 2 vs all other cells \(Differential\s+expression tab\)/))
+      .toBeTruthy();
+    expect(screen.getByText(/terms carried by 5–500 of this\s+dataset's genes/)).toBeTruthy();
+    expect(screen.getByText(/sbicolor\.btx623\.hpiv3\.v1\/eggnog-b1/)).toBeTruthy();
   });
 
   it("says when the dataset has no GO and pathway results yet", async () => {
     fetched.result = null;
     render(<ExpressionGoPathways datasetId={25} />);
-    expect(await screen.findByText(/No GO and pathway results for this dataset yet/i))
+    expect(await screen.findByText(/No GO or pathway results for this dataset yet/i))
       .toBeTruthy();
   });
 

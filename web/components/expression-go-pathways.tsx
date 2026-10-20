@@ -113,8 +113,7 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
   if (loaded.state === "none") {
     return (
       <Alert severity="info">
-        No GO and pathway results for this dataset yet. They are added by an enrichment run
-        against an annotation of the dataset&apos;s genome.
+        No GO or pathway results for this dataset yet.
       </Alert>
     );
   }
@@ -194,18 +193,17 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
           </summary>
           <ul className="mt-2 ml-4 list-disc space-y-1">
             <li>
-              For each cluster, we took the genes that go up (or down) the most compared with the
-              other cells: up to {f.params.top_n} genes that change clearly (FDR below{" "}
-              {f.params.fdr_max}).
+              <b>Genes:</b> cluster {cluster} vs {chosen?.label ?? "all other cells"} (Differential
+              expression tab), FDR &lt; {f.params.fdr_max}, top {f.params.top_n}.
             </li>
+            <li><b>Test:</b> terms with more of these genes than chance would give.</li>
             <li>
-              We then looked for GO terms and KEGG pathways that contain more of those genes than
-              you&apos;d expect by chance. The FDR column says how sure that is: smaller is stronger.
+              <b>Tested only:</b> terms carried by {f.params.min_term}–{f.params.max_term} of this
+              dataset&apos;s genes.
             </li>
-            <li>
-              When several terms contain exactly the same genes, only the most specific one is shown.
-            </li>
-            <li>Annotation used: {f.annotation}.</li>
+            <li><b>Shown:</b> term FDR &lt; {f.params.fdr_max}; smaller is stronger.</li>
+            <li><b>Same genes:</b> only the most specific term is kept.</li>
+            <li><b>Annotation:</b> {f.annotation}</li>
           </ul>
         </details>
       </Paper>
@@ -409,7 +407,7 @@ function PathwayMap({ term, onClose }: { term: EnrichmentTerm; onClose: () => vo
         </button>
       </div>
       <p className="mb-2 text-xs text-stone-500">
-        Shrunk to fit. For the full-size map, where each box opens its gene, use Open on KEGG.
+        Shrunk to fit. Open on KEGG for full size.
       </p>
       <div ref={box} className="w-full overflow-hidden rounded border border-stone-200"
            style={{ height: MAP_PAGE_HEIGHT * scale }}>
