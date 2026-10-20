@@ -14,7 +14,7 @@ argo/scrna/
 │   └── fastq-qc-workflow.yaml  QC only, for one sample: a quick look before counting, with the Cell Ranger template's steps
 ├── analysis/                   after count: scanpy steps, in their own image
 │   ├── Dockerfile              scrna-analysis image: Python, scanpy, leidenalg
-│   ├── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, de, build-h5ad
+│   ├── bloom_scrna_analysis/   installed as scrna-analysis: preprocess, cluster, de, build-h5ad; and as go-pathways
 │   ├── download-genome.sh      installed as download-genome: fetches the run's genome version from Bloom with bloomctl
 │   └── load-dataset.sh         installed as load-dataset: loads the final .h5ad into Bloom with bloomctl
 └── cellranger/                 then: cellranger count
@@ -25,6 +25,10 @@ argo/scrna/
     ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside fetch-sra or stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → cleanup), testrun
     ├── cellranger-count-workflow.yaml   a run started by hand: the sample pipeline for a list of samples on one genome version, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
+go-pathways/                    GO and KEGG pathway enrichment, run by hand for now
+├── go-pathways-template.yaml   WorkflowTemplate: genome-annotation and scrna-enrichment
+├── genome-annotation-workflow.yaml   a genome version's annotation, from eggNOG-mapper or TAIR
+└── scrna-enrichment-workflow.yaml    a dataset's enrichment against one annotation
 ```
 
 ## S3 layout
@@ -154,6 +158,58 @@ docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
   ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.7 \
   -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
 ```
+
+## GO and pathways
+
+Two workflows in `go-pathways/`, started by hand while the results are checked. Both sign in to
+staging's Bloom; their headers say how to point them at prod. Register the template once with
+`argo template create argo/scrna/go-pathways/go-pathways-template.yaml -n runai-busch-lab`.
+
+```bash
+# 1. A genome version's annotation: GO and the species' KEGG pathways from eggNOG-mapper, or
+#    Arabidopsis' curated GO from TAIR (source=tair-go).
+argo submit argo/scrna/go-pathways/genome-annotation-workflow.yaml -n runai-busch-lab \
+  -p genome=sbicolor.btx623.hpiv3.v1 -p source=eggnog -p kegg-org=sbi --watch
+# 2. A dataset's enrichment against that annotation.
+argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch-lab \
+  -p dataset-id=25 -p label=sbicolor.btx623.hpiv3.v1/eggnog \
+  -p annotation=/shared/runs/<annotation workflow>/annotation/eggnog.json.gz --watch
+```
+
+- **genome-annotation** downloads the genome version from Bloom, builds every transcript's
+  protein with gffread, and runs eggNOG-mapper (diamond, 16 cores) against its database in
+  `/shared/ref/eggnog/<release>/`, downloaded there once. Each gene gets the union of its
+  proteins' GO terms, with every ancestor term added (`go-basic.obo`), and the KEGG pathways
+  KEGG lists for the species (`kegg-org`; left empty, GO only). The annotation stays in
+  `/shared/runs/<workflow>/annotation/<source>.json.gz` for enrichment runs.
+- **scrna-enrichment** reads the dataset's genes and its newest complete differential
+  expression analysis from Bloom (or `de-run-id`). For each comparison and direction, the list
+  is the genes with FDR < 0.05 and |log2FC| > 0.25, strongest first, up to 300. Each of GO's
+  three namespaces and KEGG is tested against its own background, the dataset's genes with a
+  term of that kind: a hypergeometric test for every term of 5–500 background genes with at
+  least one list gene, terms covering the same genes merged into the most specific, and
+  Benjamini–Hochberg over all of them within a comparison, direction and kind. Then terms with
+  FDR < 0.05 and at least 3 list genes are kept; the 3-gene rule comes after the correction,
+  since dropping terms by their list-gene count before it would make the FDRs too low. The
+  settings are workflow parameters.
+- Both put their result, uncompressed, in the `run-logs` bucket: `scrna/<workflow>/annotation-<source>.json`
+  and `scrna/<workflow>/enrichment.json`. They are not yet recorded in Bloom's catalogue.
+- Exit codes: 18 for an annotation input that isn't what the step expects (eggNOG output
+  without its header, a protein that isn't in the GTF, a bad KEGG organism, no gene with a
+  term), 19 for an enrichment input (no complete analysis, genes outside the dataset, a dataset
+  sharing no gene with the annotation). Neither is retried.
+
+The files (`bloom_scrna_analysis/annotation.py` and `enrichment.py`):
+
+- `bloom-annotation/1`: `genome`, `version`, `source`, `tools` (eggNOG-mapper and database
+  versions, the GO release, TAIR's file date), `terms` by ID (`kind` GO_BP, GO_MF, GO_CC or
+  KEGG, `name`, and for GO the `parents` that are in the file), and `genes` by ID (`name`,
+  `description`, `terms` with ancestors included, and `kos`, the gene's KEGG orthologs).
+- `bloom-enrichment/1`: `dataset_id`, `de_run_id`, `annotation`, `params`, `background_genes`
+  (the dataset's genes), `annotated_genes` (those with any term), and `results`: per
+  significant term its comparison, direction, kind, term, name, list and term counts,
+  background size, p, FDR and list genes; a KEGG term also has `kos`, its list genes' KEGG
+  orthologs, which colour them on the pathway's map.
 
 ## Step logs
 

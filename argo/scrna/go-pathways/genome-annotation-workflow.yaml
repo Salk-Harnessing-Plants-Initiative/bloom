@@ -1,0 +1,62 @@
+# A genome version's GO and KEGG pathway annotation, started by hand (go-pathways-template's
+# genome-annotation). `genome` is a genome version in Bloom, <genome>.v<N>; `source` is eggnog
+# (any species) or tair-go (Arabidopsis); `kegg-org` is KEGG's code for the species' pathways
+# (e.g. sbi for sorghum, ath for Arabidopsis), or empty for GO only. Signs in to staging's Bloom;
+# for prod, use genericsecret-bloom-prod-pipeline-credentials. The annotation is kept at
+# /shared/runs/<run-id>/annotation/<source>.json.gz for enrichment runs:
+#   argo submit argo/scrna/go-pathways/genome-annotation-workflow.yaml -n runai-busch-lab \
+#     -p genome=sbicolor.btx623.hpiv3.v1 -p source=eggnog -p kegg-org=sbi --watch
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: genome-annotation-
+  namespace: runai-busch-lab
+  labels:
+    project: busch-lab
+spec:
+  entrypoint: main
+  # Step pods report results as bloom-workflow; without it every step fails on workflowtaskresults.
+  serviceAccountName: bloom-workflow
+  imagePullSecrets:
+    - name: dockerregistry-bloom-ghcr-pull   # from the busch-lab Run:ai credential bloom-ghcr-pull
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  onExit: logs
+  arguments:
+    parameters:
+      - name: genome
+      - name: source
+        value: eggnog
+      - name: kegg-org
+        value: ""
+  # The pipeline's Bloom login: download-genome and run-with-log use it.
+  volumes:
+    - name: bloom-credentials
+      secret:
+        secretName: genericsecret-bloom-staging-pipeline-credentials
+        optional: true
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: annotation
+            templateRef:
+              name: go-pathways-template
+              template: genome-annotation
+            arguments:
+              parameters:
+                - {name: genome, value: "{{workflow.parameters.genome}}"}
+                - {name: run-id, value: "{{workflow.name}}"}
+                - {name: source, value: "{{workflow.parameters.source}}"}
+                - {name: kegg-org, value: "{{workflow.parameters.kegg-org}}"}
+    # However the run ends, the logs of the steps without run-with-log go to run-logs.
+    - name: logs
+      dag:
+        tasks:
+          - name: upload-logs
+            templateRef:
+              name: go-pathways-template
+              template: upload-logs
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{workflow.name}}"}

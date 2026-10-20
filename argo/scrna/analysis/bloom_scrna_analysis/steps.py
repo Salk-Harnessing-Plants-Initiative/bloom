@@ -22,6 +22,9 @@ PART = "part.h5ad"
 EXIT_TOO_FEW_CELLS = 13
 EXIT_NO_MATRIX = 14
 EXIT_PARTS_DONT_FIT = 15
+# build-annotation and enrich: an input or file that isn't what the step expects.
+EXIT_BAD_ANNOTATION = 18
+EXIT_BAD_ENRICHMENT_INPUT = 19
 
 PACKAGES = ("scanpy", "anndata", "numpy", "scipy", "igraph", "leidenalg", "umap-learn")
 
