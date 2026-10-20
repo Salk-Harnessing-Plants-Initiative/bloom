@@ -122,6 +122,10 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
   }
 
   const { file: f } = loaded;
+  // A run can be ready with nothing significant anywhere; then there's nothing to choose from.
+  if (clusters.length === 0) {
+    return <Alert severity="info">No GO term or pathway stood out in any comparison of this dataset.</Alert>;
+  }
   return (
     <div className="space-y-4">
       <Paper sx={{ p: 2 }}>

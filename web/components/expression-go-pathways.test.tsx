@@ -165,6 +165,14 @@ describe("ExpressionGoPathways", () => {
       .toBeTruthy();
   });
 
+  it("says so in one line when a run found nothing in any comparison", async () => {
+    fetched.result = { ...(fetched.result as object), file: { ...FILE, results: [] } };
+    render(<ExpressionGoPathways datasetId={25} />);
+    expect(await screen.findByText(/No GO term or pathway stood out in any comparison/))
+      .toBeTruthy();
+    expect(screen.queryByLabelText("Cluster")).toBeNull();
+  });
+
   it("says why when the file can't be read", async () => {
     fetched.error = new Error("the file is for dataset 26");
     render(<ExpressionGoPathways datasetId={25} />);
