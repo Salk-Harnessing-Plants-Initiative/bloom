@@ -1,10 +1,12 @@
-"""go-pathways fetch-references|fetch-de|build-annotation|enrich: the GO and pathway workflow steps.
+"""go-pathways <step>: the GO and pathway workflow steps.
 
 fetch-references downloads the GO ontology and each source's own files (KEGG's pathway list for
 the species, TAIR's GO annotations); the annotation file records the releases. fetch-de reads a dataset's genes and one complete differential expression analysis from Bloom
 (signed in as bloomctl does, ~/.bloom) into a JSON file. build-annotation turns eggNOG-mapper's
 output, or TAIR's GO annotations, into a genome version's annotation file. enrich tests the
-fetched analysis against an annotation file and writes the enrichment file.
+fetched analysis against an annotation file and writes the enrichment file. upload-annotation
+and upload-enrichment record a file in Bloom (catalogue.py); fetch-annotation fetches a ready
+build's file back.
 """
 
 from __future__ import annotations
@@ -12,13 +14,17 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import re
+import shutil
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
+from typing import Any
 
-from . import annotation, enrichment, go_terms
-from .steps import EXIT_BAD_ANNOTATION, EXIT_BAD_ENRICHMENT_INPUT, StepError
+from . import annotation, catalogue, enrichment, go_terms
+from .steps import EXIT_BAD_ANNOTATION, EXIT_BAD_ENRICHMENT_INPUT, EXIT_NO_CREDENTIALS, StepError
 
 SOURCES = ("eggnog", "tair-go")
 # PostgREST returns at most this many rows per request.
@@ -109,12 +115,56 @@ def _all(build) -> list[dict]:
         start += PAGE
 
 
-def fetch_de(dataset_id: int, wanted: int | None, fdr_max: float) -> dict:
-    """Reads the dataset's genes and analysis as bloomctl's default login."""
+# The pipeline's bloomctl credentials file, mounted from the environment's Secret.
+CREDENTIALS = "/etc/bloom/credentials.txt"
+
+
+def sign_in_home() -> None:
+    """Gives bloomctl the pipeline's login: the mounted credentials copied into a private home,
+    unless this home already has a bloomctl login (a hand run on a laptop)."""
+    if (Path.home() / ".bloom" / "credentials.txt").is_file():
+        return
+    mounted = Path(os.environ.get("BLOOM_CREDENTIALS", CREDENTIALS))
+    if not mounted.is_file() or mounted.stat().st_size == 0:
+        raise StepError(EXIT_NO_CREDENTIALS, f"no Bloom credentials at {mounted}")
+    home = Path(tempfile.mkdtemp())
+    (home / ".bloom").mkdir(mode=0o700)
+    copied = home / ".bloom" / "credentials.txt"
+    shutil.copyfile(mounted, copied)
+    copied.chmod(0o600)
+    os.environ["HOME"] = str(home)
+
+
+def _network_error(exc: BaseException) -> bool:
+    """Whether a failure was the network's (worth retrying), anywhere in its chain of causes."""
+    import httpx
+
+    while exc is not None:
+        if isinstance(exc, httpx.HTTPError):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _client() -> Any:
+    """Bloom, signed in as bloomctl's default login. A credential Bloom won't sign in with is
+    exit 16 (not retried); a network error stays an error the step's retry covers."""
+    sign_in_home()
+    import click
     from bloomctl.credentials import DEFAULT_PROFILE
     from bloomctl.scrna import _session
 
-    client = _session.connect(DEFAULT_PROFILE).client
+    try:
+        return _session.connect(DEFAULT_PROFILE).client
+    except click.ClickException as exc:
+        if _network_error(exc):
+            raise
+        raise StepError(EXIT_NO_CREDENTIALS, f"couldn't sign in to Bloom: {exc.message}") from exc
+
+
+def fetch_de(dataset_id: int, wanted: int | None, fdr_max: float) -> dict:
+    """Reads the dataset's genes and analysis."""
+    client = _client()
     runs = _all(lambda: client.table("scrna_de_runs").select("id, status, completed_at")
                 .eq("dataset_id", dataset_id).order("id"))
     de_run_id = pick_de_run(runs, wanted)
@@ -223,6 +273,19 @@ def main(argv: list[str] | None = None) -> int:
         enrich.add_argument(f"--{name.replace('_', '-')}", type=float,
                             default=getattr(defaults, name))
 
+    upload = steps.add_parser("upload-annotation")
+    upload.add_argument("--file", required=True)
+
+    fetch_build = steps.add_parser("fetch-annotation")
+    fetch_build.add_argument("--build-id", type=int, required=True)
+    fetch_build.add_argument("--out", required=True)
+    fetch_build.add_argument("--label-out", required=True, help="where to write the build's name")
+
+    record = steps.add_parser("upload-enrichment")
+    record.add_argument("--file", required=True)
+    record.add_argument("--build-id", type=int, required=True)
+    record.add_argument("--rnaseq-run-id", type=int, help="the pipeline job, when it has one")
+
     args = parser.parse_args(argv)
     try:
         if args.step == "fetch-references":
@@ -237,8 +300,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"analysis {doc['de_run_id']}: {len(doc['comparisons'])} comparisons")
         elif args.step == "build-annotation":
             _build_annotation(args)
-        else:
+        elif args.step == "enrich":
             _enrich(args)
+        elif args.step == "upload-annotation":
+            build = catalogue.upload_annotation(_client(), Path(args.file))
+            print(f"annotation build {build['build']} (id {build['build_id']}): "
+                  f"{build['file_path']}")
+        elif args.step == "fetch-annotation":
+            client = _client()
+            build = catalogue.fetch_annotation(client, args.build_id, Path(args.out))
+            name = catalogue.label(client, build)
+            Path(args.label_out).write_text(name, encoding="utf-8")
+            print(f"annotation build {args.build_id}: {name}")
+        else:
+            run = catalogue.upload_enrichment(_client(), Path(args.file), build_id=args.build_id,
+                                              rnaseq_run_id=args.rnaseq_run_id)
+            print(f"enrichment run {run['run_id']}: {run['file_path']}")
     except StepError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return error.code

@@ -2,8 +2,8 @@
 # genome-annotation). `genome` is a genome version in Bloom, <genome>.v<N>; `source` is eggnog
 # (any species) or tair-go (Arabidopsis); `kegg-org` is KEGG's code for the species' pathways
 # (e.g. sbi for sorghum, ath for Arabidopsis), or empty for GO only. Signs in to staging's Bloom;
-# for prod, use genericsecret-bloom-prod-pipeline-credentials. The annotation is kept at
-# /shared/runs/<run-id>/annotation/<source>.json.gz for enrichment runs:
+# for prod, use genericsecret-bloom-prod-pipeline-credentials. The annotation is recorded in
+# Bloom as the version's next build of the source; upload-annotation's log prints its id:
 #   argo submit argo/scrna/go-pathways/genome-annotation-workflow.yaml -n runai-busch-lab \
 #     -p genome=sbicolor.btx623.hpiv3.v1 -p source=eggnog -p kegg-org=sbi --watch
 apiVersion: argoproj.io/v1alpha1
@@ -29,7 +29,7 @@ spec:
         value: eggnog
       - name: kegg-org
         value: ""
-  # The pipeline's Bloom login: download-genome and run-with-log use it.
+  # The pipeline's Bloom login: download-genome and upload-annotation use it, and run-with-log.
   volumes:
     - name: bloom-credentials
       secret:

@@ -194,3 +194,147 @@ def test_downloads_name_themselves_since_go_refuses_pythons_default_agent():
     request = go_pathways._request(go_pathways.GO_URL)
     assert request.get_header("User-agent") == go_pathways.USER_AGENT
     assert "Python-urllib" not in go_pathways.USER_AGENT
+
+
+# --------------------------------------------------------------------------- #
+# Recording in Bloom
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """The catalogue calls the command makes, with a stand-in client."""
+    calls = []
+    monkeypatch.setattr(go_pathways, "_client", lambda: "client")
+
+    def fake(name, result):
+        def call(*args, **kwargs):
+            calls.append((name, args, kwargs))
+            return result
+        return call
+
+    from bloom_scrna_analysis import catalogue
+    monkeypatch.setattr(catalogue, "upload_annotation",
+                        fake("upload_annotation", {"build_id": 3, "build": 1, "file_path": "p"}))
+    monkeypatch.setattr(catalogue, "fetch_annotation",
+                        fake("fetch_annotation", {"id": 3, "source": "eggnog"}))
+    monkeypatch.setattr(catalogue, "label", fake("label", "g.v1/eggnog-b1"))
+    monkeypatch.setattr(catalogue, "upload_enrichment",
+                        fake("upload_enrichment", {"run_id": 9, "file_path": "q"}))
+    return calls
+
+
+def test_upload_annotation_records_the_file(recorded, tmp_path, capsys):
+    assert go_pathways.main(["upload-annotation", "--file", str(tmp_path / "a.json.gz")]) == 0
+    assert recorded == [("upload_annotation", ("client", tmp_path / "a.json.gz"), {})]
+    assert "build 1 (id 3)" in capsys.readouterr().out
+
+
+def test_fetch_annotation_saves_the_file_and_its_label(recorded, tmp_path):
+    out = tmp_path / "annotation.json.gz"
+    assert go_pathways.main(["fetch-annotation", "--build-id", "3", "--out", str(out),
+                             "--label-out", str(tmp_path / "label")]) == 0
+    assert recorded[0] == ("fetch_annotation", ("client", 3, out), {})
+    assert (tmp_path / "label").read_text() == "g.v1/eggnog-b1"
+
+
+def test_upload_enrichment_records_the_run_and_the_job_when_given(recorded, tmp_path):
+    path = tmp_path / "e.json.gz"
+    go_pathways.main(["upload-enrichment", "--file", str(path), "--build-id", "3"])
+    go_pathways.main(["upload-enrichment", "--file", str(path), "--build-id", "3",
+                      "--rnaseq-run-id", "42"])
+    assert [c[2] for c in recorded] == [{"build_id": 3, "rnaseq_run_id": None},
+                                        {"build_id": 3, "rnaseq_run_id": 42}]
+
+
+# --------------------------------------------------------------------------- #
+# Signing in
+# --------------------------------------------------------------------------- #
+
+
+def test_the_pipeline_credential_is_copied_into_a_private_home(tmp_path, monkeypatch):
+    mounted = tmp_path / "etc-bloom.txt"
+    mounted.write_text("BLOOM_EMAIL=x\n")
+    monkeypatch.setenv("HOME", str(tmp_path / "root"))
+    monkeypatch.setenv("BLOOM_CREDENTIALS", str(mounted))
+    go_pathways.sign_in_home()
+    copied = Path.home() / ".bloom" / "credentials.txt"
+    assert copied.read_text() == "BLOOM_EMAIL=x\n"
+    assert oct(copied.stat().st_mode)[-3:] == "600"
+    assert not str(copied).startswith(str(tmp_path / "root"))
+
+
+def test_an_existing_bloomctl_login_is_used_as_it_is(tmp_path, monkeypatch):
+    own = tmp_path / "home" / ".bloom" / "credentials.txt"
+    own.parent.mkdir(parents=True)
+    own.write_text("mine")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("BLOOM_CREDENTIALS", str(tmp_path / "missing"))
+    go_pathways.sign_in_home()
+    assert Path.home() == tmp_path / "home"
+
+
+def test_without_any_credential_the_step_exits_16(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("BLOOM_CREDENTIALS", str(tmp_path / "missing"))
+    with pytest.raises(StepError, match="no Bloom credentials") as exc:
+        go_pathways.sign_in_home()
+    assert exc.value.code == 16
+
+
+
+# --------------------------------------------------------------------------- #
+# Signing in fails
+# --------------------------------------------------------------------------- #
+
+
+def sign_in_failing(monkeypatch, tmp_path, cause):
+    """_client with a credential present and bloomctl's sign-in raising as it does."""
+    import click
+
+    own = tmp_path / "home" / ".bloom" / "credentials.txt"
+    own.parent.mkdir(parents=True)
+    own.write_text("x")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    def connect(profile):
+        # As bloomctl does: the cause, wrapped in its AuthError, wrapped in a ClickException.
+        try:
+            raise cause
+        except Exception as inner:
+            try:
+                raise RuntimeError(f"sign-in failed: {inner}") from inner
+            except RuntimeError as outer:
+                raise click.ClickException(str(outer)) from outer
+
+    # A stand-in for bloomctl's sign-in, so the test needs neither bloomctl nor a server.
+    import types
+
+    session = types.ModuleType("bloomctl.scrna._session")
+    session.connect = connect
+    credentials = types.ModuleType("bloomctl.credentials")
+    credentials.DEFAULT_PROFILE = "prod"
+    scrna = types.ModuleType("bloomctl.scrna")
+    scrna._session = session
+    package = types.ModuleType("bloomctl")
+    package.scrna, package.credentials = scrna, credentials
+    for name, module in (("bloomctl", package), ("bloomctl.scrna", scrna),
+                         ("bloomctl.scrna._session", session),
+                         ("bloomctl.credentials", credentials)):
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def test_a_credential_bloom_refuses_exits_16_and_isnt_retried(monkeypatch, tmp_path):
+    sign_in_failing(monkeypatch, tmp_path, ValueError("Invalid login credentials"))
+    with pytest.raises(StepError, match="couldn't sign in.*Invalid login credentials") as exc:
+        go_pathways._client()
+    assert exc.value.code == 16
+
+
+def test_a_network_error_signing_in_stays_a_retried_error(monkeypatch, tmp_path):
+    import click
+    import httpx
+
+    sign_in_failing(monkeypatch, tmp_path, httpx.ConnectError("connection refused"))
+    with pytest.raises(click.ClickException):
+        go_pathways._client()

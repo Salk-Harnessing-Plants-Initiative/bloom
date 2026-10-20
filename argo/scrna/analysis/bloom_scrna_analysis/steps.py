@@ -22,6 +22,8 @@ PART = "part.h5ad"
 EXIT_TOO_FEW_CELLS = 13
 EXIT_NO_MATRIX = 14
 EXIT_PARTS_DONT_FIT = 15
+# Steps that sign in to Bloom: no pipeline credential mounted (as download-genome).
+EXIT_NO_CREDENTIALS = 16
 # build-annotation and enrich: an input or file that isn't what the step expects.
 EXIT_BAD_ANNOTATION = 18
 EXIT_BAD_ENRICHMENT_INPUT = 19

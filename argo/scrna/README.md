@@ -27,8 +27,8 @@ argo/scrna/
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
 go-pathways/                    GO and KEGG pathway enrichment, run by hand for now
 ├── go-pathways-template.yaml   WorkflowTemplate: genome-annotation and scrna-enrichment
-├── genome-annotation-workflow.yaml   a genome version's annotation, from eggNOG-mapper or TAIR
-└── scrna-enrichment-workflow.yaml    a dataset's enrichment against one annotation
+├── genome-annotation-workflow.yaml   a genome version's annotation, from eggNOG-mapper or TAIR, recorded in Bloom
+└── scrna-enrichment-workflow.yaml    a dataset's enrichment against one annotation build, recorded in Bloom
 ```
 
 ## S3 layout
@@ -161,7 +161,7 @@ docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
 
 ## GO and pathways
 
-Two workflows in `go-pathways/`, started by hand while the results are checked. Both sign in to
+Two workflows in `go-pathways/`, started by hand for now. Both sign in to
 staging's Bloom; their headers say how to point them at prod. Register the template once with
 `argo template create argo/scrna/go-pathways/go-pathways-template.yaml -n runai-busch-lab`.
 
@@ -170,20 +170,21 @@ staging's Bloom; their headers say how to point them at prod. Register the templ
 #    Arabidopsis' curated GO from TAIR (source=tair-go).
 argo submit argo/scrna/go-pathways/genome-annotation-workflow.yaml -n runai-busch-lab \
   -p genome=sbicolor.btx623.hpiv3.v1 -p source=eggnog -p kegg-org=sbi --watch
-# 2. A dataset's enrichment against that annotation.
+# 2. A dataset's enrichment against that annotation build (upload-annotation's log prints its id).
 argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch-lab \
-  -p dataset-id=25 -p label=sbicolor.btx623.hpiv3.v1/eggnog \
-  -p annotation=/shared/runs/<annotation workflow>/annotation/eggnog.json.gz --watch
+  -p dataset-id=25 -p annotation-build-id=1 --watch
 ```
 
 - **genome-annotation** downloads the genome version from Bloom, builds every transcript's
   protein with gffread, and runs eggNOG-mapper (diamond, 16 cores) against its database in
   `/shared/ref/eggnog/<release>/`, downloaded there once. Each gene gets the union of its
   proteins' GO terms, with every ancestor term added (`go-basic.obo`), and the KEGG pathways
-  KEGG lists for the species (`kegg-org`; left empty, GO only). The annotation stays in
-  `/shared/runs/<workflow>/annotation/<source>.json.gz` for enrichment runs.
-- **scrna-enrichment** reads the dataset's genes and its newest complete differential
-  expression analysis from Bloom (or `de-run-id`). For each comparison and direction, the list
+  KEGG lists for the species (`kegg-org`; left empty, GO only). **upload-annotation** records
+  the file in Bloom as the version's next build of the source, in the `genome-references` bucket
+  at `<genome>/v<N>/annotation/<source>-b<B>.json.gz`.
+- **scrna-enrichment** fetches the annotation build's file from Bloom, checked against its
+  checksum, and reads the dataset's genes and its newest complete differential expression
+  analysis (or `de-run-id`). For each comparison and direction, the list
   is the genes with FDR < 0.05 and |log2FC| > 0.25, strongest first, up to 300. Each of GO's
   three namespaces and KEGG is tested against its own background, the dataset's genes with a
   term of that kind: a hypergeometric test for every term of 5–500 background genes with at
@@ -191,13 +192,21 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   Benjamini–Hochberg over all of them within a comparison, direction and kind. Then terms with
   FDR < 0.05 and at least 3 list genes are kept; the 3-gene rule comes after the correction,
   since dropping terms by their list-gene count before it would make the FDRs too low. The
-  settings are workflow parameters.
-- Both put their result, uncompressed, in the `run-logs` bucket: `scrna/<workflow>/annotation-<source>.json`
-  and `scrna/<workflow>/enrichment.json`. They are not yet recorded in Bloom's catalogue.
-- Exit codes: 18 for an annotation input that isn't what the step expects (eggNOG output
-  without its header, a protein that isn't in the GTF, a bad KEGG organism, no gene with a
-  term), 19 for an enrichment input (no complete analysis, genes outside the dataset, a dataset
-  sharing no gene with the annotation). Neither is retried.
+  settings are workflow parameters. **upload-enrichment** records the file in Bloom
+  as an enrichment run, in the `scrna` bucket at `enrichment/<dataset>/run-<id>.json.gz`; a
+  dataset not yet linked to a genome version is first linked to the build's.
+- Recording starts the build or run, uploads its file and finishes it, which checks the stored
+  size; a failed upload abandons it. Neither upload step is retried, since a retry would find
+  its own unfinished record. Both runs delete their folders on `/shared` once the result is in
+  Bloom; a failed run keeps them.
+- Exit codes: 16 without the pipeline's Bloom credential, or when Bloom won't sign in with it;
+  18 for an annotation input that isn't what the step expects (eggNOG output without its
+  header, a protein that isn't in the GTF, a bad KEGG organism, no gene with a term, a genome
+  version that isn't ready) or a build Bloom refuses to start, store or finish; 19 for an
+  enrichment input (no complete analysis, no such ready build or a file that doesn't match it,
+  genes outside the dataset, a dataset sharing no gene with the annotation or linked to another
+  genome version) or a link or run Bloom refuses. None is retried. A network error is exit 1,
+  which the fetch steps retry.
 
 The files (`bloom_scrna_analysis/annotation.py` and `enrichment.py`):
 
