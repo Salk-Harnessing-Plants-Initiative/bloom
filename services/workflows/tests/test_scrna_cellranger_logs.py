@@ -123,8 +123,9 @@ def test_an_unknown_step_is_refused_before_any_lookup(monkeypatch, step):
     status, detail = _status(7, step)
     assert status == 422
     assert (
-        "fetch-sra, stage, qc, download-genome, build-reference, count, preprocess, "
-        "cluster, de, build-h5ad, load-dataset, cleanup, stage-reference" in detail
+        "fetch-sra, stage, qc, download-genome, build-reference, annotate-genome, count, "
+        "preprocess, cluster, de, build-h5ad, load-dataset, go-pathways, cleanup, "
+        "stage-reference" in detail
     )
 
 
@@ -135,12 +136,14 @@ def test_every_cellranger_step_can_be_asked_for():
         "qc",
         "download-genome",
         "build-reference",
+        "annotate-genome",
         "count",
         "preprocess",
         "cluster",
         "de",
         "build-h5ad",
         "load-dataset",
+        "go-pathways",
         "cleanup",
         "stage-reference",
     ), "an earlier run's retired step's log can still be read"

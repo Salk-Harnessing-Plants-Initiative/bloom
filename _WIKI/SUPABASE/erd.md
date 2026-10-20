@@ -132,6 +132,7 @@ erDiagram
   text illustration_path
   uuid created_by FK
   timestamp_with_time_zone deleted_at
+  text kegg_org
 }
 "public.phenotypers" {
   bigint id

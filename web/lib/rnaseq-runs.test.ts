@@ -466,6 +466,28 @@ describe("a run on a genome version from Bloom", () => {
   });
 });
 
+describe("a run with GO & pathways", () => {
+  const pods = Object.fromEntries(
+    ["stage", "qc", "download-genome", "build-reference", "annotate-genome", "count", "load-dataset", "go-pathways"].map(
+      (step, i) => [step, `p${i}`]
+    )
+  );
+
+  it("lists the GO steps once the run has started them", () => {
+    const ids = runSteps(run({ status: "succeeded", current_step: "cleanup", step_pods: pods })).map(
+      (s) => s.id
+    );
+    expect(ids.indexOf("annotate-genome")).toBe(ids.indexOf("build-reference") + 1);
+    expect(ids.indexOf("go-pathways")).toBe(ids.indexOf("load-dataset") + 1);
+  });
+
+  it("leaves them out of a run that hasn't reached them", () => {
+    const ids = runSteps(run()).map((s) => s.id);
+    expect(ids).not.toContain("annotate-genome");
+    expect(ids).not.toContain("go-pathways");
+  });
+});
+
 describe("a run started before genomes came from Bloom", () => {
   it("keeps its stage-reference step, by its pod or its current step", () => {
     for (const r of [run(), run({ step_pods: {}, current_step: "stage-reference" })]) {

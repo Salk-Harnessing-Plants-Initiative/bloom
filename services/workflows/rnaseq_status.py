@@ -22,15 +22,35 @@ CELLRANGER_STEPS = {
     "qc": "qc",
     "download-genome": "download-genome",
     "build-reference": "build-reference",
+    # The genome's GO and pathway annotation (go-pathways-template), alongside the reads and count;
+    # one run-page step for all its pods.
+    "find-annotation": "annotate-genome",
+    "fetch-references": "annotate-genome",
+    "proteins": "annotate-genome",
+    "eggnog-db": "annotate-genome",
+    "emapper": "annotate-genome",
+    "build-annotation": "annotate-genome",
+    "upload-annotation": "annotate-genome",
     "count": "count",
     "preprocess": "preprocess",
     "cluster": "cluster",
     "de": "de",
     "build-h5ad": "build-h5ad",
     "load-dataset": "load-dataset",
+    # The new dataset's enrichment against that annotation.
+    "fetch-de": "go-pathways",
+    "enrich": "go-pathways",
+    "upload-enrichment": "go-pathways",
     "cleanup": "cleanup",
 }
-_STEP_ORDER = {step: i for i, step in enumerate(CELLRANGER_STEPS.values())}
+_STEP_ORDER = {step: i for i, step in enumerate(dict.fromkeys(CELLRANGER_STEPS.values()))}
+# Steps that may fail without failing the run: the dataset is loaded either way.
+GO_STEPS = ("annotate-genome", "go-pathways")
+# The pod that finishes each GO step; the step is done only once it has succeeded.
+GO_STEP_LAST_POD = {"annotate-genome": "upload-annotation", "go-pathways": "upload-enrichment"}
+# The key in step_pods that holds each step's own outcome (Argo's phase), for the run page;
+# no step is named it.
+PHASES_KEY = "_phases"
 # Steps the template no longer has, which runs started before still list.
 RETIRED_CELLRANGER_STEPS = ("stage-reference",)
 
@@ -101,16 +121,37 @@ def _output(node: dict, name: str) -> str | None:
     return None
 
 
-def _step_pods(workflow: dict) -> dict[str, dict]:
-    """Each Cell Ranger step's latest Pod node, keyed by step."""
-    latest: dict[str, dict] = {}
+def _retrying(workflow: dict) -> set[str]:
+    """Pods whose retry succeeded or is still going, so their own failure isn't the step's."""
+    nodes = (workflow.get("status") or {}).get("nodes", {}).values()
+    return {child for node in nodes if node.get("type") == "Retry"
+            and node.get("phase") not in _FAILED_PHASES for child in node.get("children", [])}
+
+
+def _failed(node: dict, retrying: set[str]) -> bool:
+    return node.get("phase") in _FAILED_PHASES and node.get("id") not in retrying
+
+
+def _step_pod_nodes(workflow: dict) -> dict[str, list[dict]]:
+    """Each Cell Ranger step's started Pod nodes, oldest first."""
+    by_step: dict[str, list[dict]] = {}
     for node in (workflow.get("status") or {}).get("nodes", {}).values():
         step = CELLRANGER_STEPS.get(_template(node))
-        if node.get("type") != "Pod" or step is None or not node.get("startedAt"):
-            continue
-        if step not in latest or node["startedAt"] >= latest[step]["startedAt"]:
-            latest[step] = node
-    return latest
+        if node.get("type") == "Pod" and step is not None and node.get("startedAt"):
+            by_step.setdefault(step, []).append(node)
+    for nodes in by_step.values():
+        nodes.sort(key=lambda n: n["startedAt"])
+    return by_step
+
+
+def _step_pods(workflow: dict) -> dict[str, dict]:
+    """Each Cell Ranger step's pod: its latest failed one, else its latest."""
+    retrying = _retrying(workflow)
+    chosen: dict[str, dict] = {}
+    for step, nodes in _step_pod_nodes(workflow).items():
+        failed = [n for n in nodes if _failed(n, retrying)]
+        chosen[step] = (failed or nodes)[-1]
+    return chosen
 
 
 def _fetch_sra_message(exit_code: int | None, params: dict) -> str | None:
@@ -298,6 +339,7 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
     phase = (workflow.get("status") or {}).get("phase")
     pods = _step_pods(workflow)
     step_pods = {step: _pod_name(name, node) for step, node in pods.items()}
+    phases = step_phases(workflow)
 
     # By step order, so steps running side by side always give the same current step.
     started = sorted(pods, key=_STEP_ORDER.__getitem__)
@@ -306,6 +348,8 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
 
     if phase in _FAILED_PHASES:
         failed = [s for s, n in pods.items() if n.get("phase") in _FAILED_PHASES]
+        # A GO step's failure doesn't fail the run; another step's did.
+        failed = [s for s in failed if s not in GO_STEPS] or failed
         if not failed:
             return RunStatus(
                 "failed",
@@ -321,13 +365,54 @@ def read_cellranger_status(workflow: dict, run: dict) -> RunStatus | None:
         )
 
     if phase == "Succeeded":
-        message = (
-            "Finished: loaded into Bloom"
-            if dataset_loaded(workflow)
-            else "Finished; the run named no dataset, so nothing was loaded into Bloom"
-        )
+        if dataset_loaded(workflow):
+            message = "Finished: loaded into Bloom" + _go_note(pods, phases)
+        else:
+            message = "Finished; the run named no dataset, so nothing was loaded into Bloom"
         return RunStatus("succeeded", current, step_pods, 0, message)
 
     if current is None:
         return None
     return RunStatus("running", current, step_pods)
+
+
+def _go_step_phase(nodes: list[dict], last_pod: str, retrying: set[str], live: bool) -> str:
+    """A GO step's outcome from its pods: failed, running, done once its last pod succeeded
+    (or the annotation in Bloom was reused), else running while the run is, Omitted after."""
+    failed = [n for n in nodes if _failed(n, retrying)]
+    if failed:
+        return failed[-1]["phase"]
+    if any(n.get("phase") in _RUNNING_PHASES for n in nodes):
+        return "Running"
+    for node in nodes:
+        if node.get("phase") != "Succeeded":
+            continue
+        if _template(node) == last_pod or (
+            _template(node) == "find-annotation" and _output(node, "decision") == "ready"
+        ):
+            return "Succeeded"
+    return "Running" if live else "Omitted"
+
+
+def step_phases(workflow: dict) -> dict[str, str]:
+    """Each started step's own outcome (Argo's phase). The poller stores it in step_pods under
+    PHASES_KEY for the run page."""
+    live = (workflow.get("status") or {}).get("phase") in _RUNNING_PHASES | {None}
+    retrying = _retrying(workflow)
+    phases = {step: node.get("phase") or "Pending" for step, node in _step_pods(workflow).items()}
+    for step, nodes in _step_pod_nodes(workflow).items():
+        if step in GO_STEP_LAST_POD:
+            phases[step] = _go_step_phase(nodes, GO_STEP_LAST_POD[step], retrying, live)
+    return phases
+
+
+def _go_note(pods: dict[str, dict], phases: dict[str, str]) -> str:
+    """What the run's message adds about GO and pathways once the dataset has loaded."""
+    for step in GO_STEPS:
+        if phases.get(step) in _FAILED_PHASES:
+            code = _exit_code(pods[step]) if step in pods else None
+            reason = f"the {step} step failed" + (f", exit {code}" if code is not None else "")
+            return f" without GO & pathways, which didn't finish ({reason})"
+    if phases.get("go-pathways") == "Succeeded":
+        return ", with GO & pathways"
+    return ""

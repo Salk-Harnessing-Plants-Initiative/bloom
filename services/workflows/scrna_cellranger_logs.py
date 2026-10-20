@@ -23,7 +23,7 @@ from supabase_client import app_client
 RUNS_TABLE = "rnaseq_runs"
 WORKFLOW_TYPE = "scrna-cellranger"
 # Earlier runs' retired steps too, so their logs can still be read.
-STEPS = tuple(CELLRANGER_STEPS.values()) + RETIRED_CELLRANGER_STEPS
+STEPS = tuple(dict.fromkeys(CELLRANGER_STEPS.values())) + RETIRED_CELLRANGER_STEPS
 
 # Argo runs each step's own command in the pod's "main" container.
 STEP_CONTAINER = "main"

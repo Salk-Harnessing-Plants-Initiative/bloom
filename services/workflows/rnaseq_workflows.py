@@ -177,6 +177,10 @@ def build_cellranger_body(run: dict) -> dict:
             "dataset-name": "dataset-name",
             "species-name": "species-name",
         }
+        # The species' KEGG pathways in the run's GO and pathway annotation; none: GO only.
+        if dataset.get("kegg_org"):
+            parameters.append({"name": "kegg-org", "value": dataset["kegg_org"]})
+            sample_inputs |= {"kegg-org": "kegg-org"}
     if sra_runs:
         # fetch-sra reads the run IDs comma-separated, in lane order.
         parameters.append({"name": "sra-runs", "value": ",".join(sra_runs)})
