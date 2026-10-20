@@ -37,6 +37,14 @@ const LABEL_CHARS = 46;
 // How many of a term's list genes the table shows before "+N more".
 const SHOWN_GENES = 8;
 
+// What a list gene needs to count towards "List genes" for each kind.
+const KIND_NOUN: Record<TermKind, string> = {
+  GO_BP: "a biological process term",
+  GO_MF: "a molecular function term",
+  GO_CC: "a cellular component term",
+  KEGG: "a KEGG pathway",
+};
+
 const SHORT_KIND: Record<TermKind, string> = {
   GO_BP: "Biological process",
   GO_MF: "Molecular function",
@@ -227,7 +235,7 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
             <DotPlot terms={terms.slice(0, DOT_PLOT_TERMS)} />
           </Paper>
           <Paper sx={{ p: 2 }}>
-            <TermTable terms={terms} onShowMap={setMapOf} />
+            <TermTable terms={terms} kind={kind} onShowMap={setMapOf} />
           </Paper>
           {mapOf && terms.includes(mapOf) && (
             <PathwayMap term={mapOf} onClose={() => setMapOf(null)} />
@@ -281,7 +289,7 @@ function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
         </g>
       ))}
       <text x={LEFT + PLOT_WIDTH / 2} y={height - 6} fontSize={11} textAnchor="middle" fill="#44403c">
-        Gene ratio (list genes in the term / list size)
+        Share of list genes in this term
       </text>
       {terms.map((t, i) => {
         const y = TOP + i * ROW + ROW / 2;
@@ -319,8 +327,9 @@ function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
   );
 }
 
-function TermTable({ terms, onShowMap }: {
+function TermTable({ terms, kind, onShowMap }: {
   terms: EnrichmentTerm[];
+  kind: TermKind;
   onShowMap: (term: EnrichmentTerm) => void;
 }) {
   return (
@@ -329,10 +338,12 @@ function TermTable({ terms, onShowMap }: {
         <thead className="sticky top-0 bg-white text-left text-stone-600">
           <tr>
             <th className="py-2 pr-4 font-medium">Term</th>
-            <th className="py-2 pr-4 font-medium whitespace-nowrap">In list</th>
-            <th className="py-2 pr-4 font-medium whitespace-nowrap">Term size</th>
+            <th className="py-2 pr-4 font-medium whitespace-nowrap"
+                title={`Of the list genes that have ${KIND_NOUN[kind]}`}>List genes</th>
+            <th className="py-2 pr-4 font-medium whitespace-nowrap"
+                title="In this dataset">Genes with term</th>
             <th className="py-2 pr-4 font-medium">FDR</th>
-            <th className="py-2 font-medium">List genes</th>
+            <th className="py-2 font-medium">Genes</th>
           </tr>
         </thead>
         <tbody>
@@ -359,7 +370,7 @@ function TermTable({ terms, onShowMap }: {
                   </button>
                 )}
               </td>
-              <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.list_genes_in_term} / {t.list_size}</td>
+              <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.list_genes_in_term} of {t.list_size}</td>
               <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.term_size}</td>
               <td className="py-1.5 pr-4 tabular-nums whitespace-nowrap">{t.fdr.toExponential(2)}</td>
               <td className="py-1.5 text-xs text-stone-600" title={t.genes.join(", ")}>
@@ -398,8 +409,8 @@ function PathwayMap({ term, onClose }: { term: EnrichmentTerm; onClose: () => vo
     <Paper sx={{ p: 2 }}>
       <div className="mb-2 flex items-center gap-3">
         <h3 className="font-serif italic text-stone-800">
-          {term.name}: {term.list_genes_in_term} genes {term.direction} (
-          {term.direction === "up" ? "red" : "blue"} on the map)
+          {term.name}: {term.list_genes_in_term} list genes {term.direction}, in{" "}
+          {term.direction === "up" ? "red" : "blue"}
         </h3>
         <a href={url} target="_blank" rel="noopener noreferrer"
            className="text-xs text-lime-800 underline hover:text-lime-900">
@@ -411,7 +422,7 @@ function PathwayMap({ term, onClose }: { term: EnrichmentTerm; onClose: () => vo
         </button>
       </div>
       <p className="mb-2 text-xs text-stone-500">
-        Shrunk to fit. Open on KEGG for full size.
+        A coloured box has at least one of these genes. Shrunk to fit; open on KEGG for full size.
       </p>
       <div ref={box} className="w-full overflow-hidden rounded border border-stone-200"
            style={{ height: MAP_PAGE_HEIGHT * scale }}>

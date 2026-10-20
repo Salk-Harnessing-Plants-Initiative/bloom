@@ -133,11 +133,25 @@ describe("ExpressionGoPathways", () => {
     expect(buttons).toHaveLength(1);
     fireEvent.click(buttons[0]);
     const frame = screen.getByTitle("KEGG map: Ribosome");
+    expect(screen.getByText(/Ribosome: 30 list genes up, in\s+red/)).toBeTruthy();
     expect(frame.getAttribute("src")).toContain("map=map03010");
     expect(screen.getByRole("link", { name: /Open on KEGG/ }).getAttribute("target"))
       .toBe("_blank");
     fireEvent.click(screen.getByRole("button", { name: "Close map" }));
     expect(screen.queryByTitle(/KEGG map/)).toBeNull();
+  });
+
+  it("labels the counts by what they count", async () => {
+    render(<ExpressionGoPathways datasetId={25} />);
+    await waitFor(() => expect(table()).toBeTruthy());
+    const header = within(table()).getByRole("columnheader", { name: "List genes" });
+    expect(header.getAttribute("title")).toBe("Of the list genes that have a biological process term");
+    expect(within(table()).getByRole("columnheader", { name: "Genes with term" })
+      .getAttribute("title")).toBe("In this dataset");
+    expect(within(table()).getAllByText("30 of 120").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "KEGG pathways" }));
+    expect(within(table()).getByRole("columnheader", { name: "List genes" })
+      .getAttribute("title")).toBe("Of the list genes that have a KEGG pathway");
   });
 
   it("says when a choice has nothing significant", async () => {
