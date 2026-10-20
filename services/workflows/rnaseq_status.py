@@ -411,8 +411,8 @@ def _go_note(pods: dict[str, dict], phases: dict[str, str]) -> str:
     for step in GO_STEPS:
         if phases.get(step) in _FAILED_PHASES:
             code = _exit_code(pods[step]) if step in pods else None
-            reason = f"the {step} step failed" + (f" (exit {code})" if code is not None else "")
-            return f"; GO & pathways didn't finish: {reason}"
+            reason = f"the {step} step failed" + (f", exit {code}" if code is not None else "")
+            return f" without GO & pathways, which didn't finish ({reason})"
     if phases.get("go-pathways") == "Succeeded":
         return ", with GO & pathways"
     return ""

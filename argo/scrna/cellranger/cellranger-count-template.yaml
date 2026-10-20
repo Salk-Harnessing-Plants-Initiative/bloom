@@ -64,6 +64,8 @@ spec:
           - name: kegg-org
             value: ""
       dag:
+        # A failed GO step mustn't stop the steps that load the dataset from being started.
+        failFast: false
         tasks:
           - name: download-genome
             template: download-genome

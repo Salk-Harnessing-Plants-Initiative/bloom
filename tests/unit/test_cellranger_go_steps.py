@@ -102,6 +102,11 @@ def test_cleanup_waits_for_every_go_step_whatever_its_outcome():
         assert f"({outcomes})" in depends, name
 
 
+def test_a_failed_go_step_doesnt_stop_the_rest_of_the_pipeline_starting():
+    # Argo's default stops scheduling every new task once any task fails.
+    assert PIPELINE["dag"]["failFast"] is False
+
+
 def test_no_task_uses_continue_on_which_argo_refuses_with_depends():
     assert not any("continueOn" in t for t in TASKS.values())
 

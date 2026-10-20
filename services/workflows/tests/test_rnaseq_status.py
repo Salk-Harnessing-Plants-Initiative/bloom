@@ -521,8 +521,8 @@ def test_a_go_failure_after_the_dataset_loaded_keeps_the_run_succeeded_with_a_no
                   find_annotation="Succeeded", fetch_de="Succeeded", enrich="Failed")
     status = st.read_cellranger_status(wf, RUN)
     assert (status.status, status.exit_code) == ("succeeded", 0)
-    assert status.message == ("Finished: loaded into Bloom; GO & pathways didn't finish: "
-                              "the go-pathways step failed (exit 1)")
+    assert status.message == ("Finished: loaded into Bloom without GO & pathways, which didn't "
+                              "finish (the go-pathways step failed, exit 1)")
 
 
 def test_a_failed_annotation_is_the_note_when_the_enrichment_never_ran():
@@ -530,7 +530,7 @@ def test_a_failed_annotation_is_the_note_when_the_enrichment_never_ran():
                   find_annotation="Succeeded", proteins="Succeeded", emapper="Failed")
     status = st.read_cellranger_status(wf, RUN)
     assert status.status == "succeeded"
-    assert "the annotate-genome step failed (exit 1)" in status.message
+    assert "the annotate-genome step failed, exit 1" in status.message
 
 
 def test_a_step_s_outcome_is_a_failure_of_any_of_its_pods():
@@ -565,7 +565,7 @@ def test_go_isnt_done_when_the_annotation_failed_and_enrichment_never_ran():
     phases = st.step_phases(_decided(wf, "build"))
     assert phases["annotate-genome"] == "Failed"
     assert phases["go-pathways"] == "Omitted", "fetch-de alone made no results"
-    assert "didn't finish: the annotate-genome step failed" in st.read_cellranger_status(wf, RUN).message
+    assert "didn't finish (the annotate-genome step failed" in st.read_cellranger_status(wf, RUN).message
 
 
 def test_a_go_step_waiting_for_its_next_pod_is_still_running():
@@ -587,7 +587,7 @@ def test_the_failed_pod_gives_the_exit_code_and_the_log():
                   find_annotation="Succeeded", eggnog_db="Failed", proteins="Succeeded")
     wf["status"]["nodes"]["go-1"]["outputs"] = {"exitCode": "9"}
     status = st.read_cellranger_status(_decided(wf, "build"), RUN)
-    assert "the annotate-genome step failed (exit 9)" in status.message
+    assert "the annotate-genome step failed, exit 9" in status.message
     assert "eggnog-db" in status.step_pods["annotate-genome"]
 
 
