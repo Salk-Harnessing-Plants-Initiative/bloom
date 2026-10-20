@@ -180,7 +180,7 @@ spec:
         # 1: Bloom couldn't be reached; 16 (no credentials) and 19 (no such analysis) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-de.log", --, bash, -c]
         args:
           - |
@@ -220,7 +220,7 @@ spec:
         # 1: Bloom couldn't be reached; 16 and 19 (no such ready build, or a mismatched file) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-annotation.log", --, bash, -c]
         args:
           - |
@@ -256,7 +256,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/enrich.log", --, bash, -c]
         args:
           - |
@@ -299,7 +299,7 @@ spec:
         # Only 1 (a network or storage error) may be a blip; 3, 6 and 16 won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
         env:
           - {name: GENOME, value: "{{inputs.parameters.genome}}"}
@@ -329,7 +329,7 @@ spec:
         # 1: a download failed; 18 (a bad KEGG organism) won't fix itself.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command:
           - run-with-log
           - --path
@@ -503,7 +503,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-annotation.log", --, bash, -c]
         args:
           - |
@@ -548,7 +548,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command:
           - run-with-log
           - --path
@@ -580,7 +580,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/upload-enrichment.log", --, bash, -c]
         args:
           - |
@@ -611,7 +611,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
@@ -644,7 +644,7 @@ spec:
       schedulerName: runai-scheduler
       priorityClassName: high
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.11
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
         command: [bash, -c]
         args:
           - |
