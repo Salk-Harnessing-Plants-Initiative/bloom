@@ -16,7 +16,7 @@ import ssl
 from email.message import EmailMessage
 from email.utils import formataddr
 
-from rnaseq_status import PHASES_KEY
+from rnaseq_status import GO_STEPS, PHASES_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,12 @@ def dataset_page(run: dict, dataset_id) -> str | None:
     return f"{SITE_URL}/app/expression/{species_id}/{dataset_id}"
 
 
-def _made_go_results(status) -> bool:
-    phases = (status.step_pods or {}).get(PHASES_KEY) or {}
-    return phases.get("go-pathways") == "Succeeded"
+def _go_outcome(status) -> str | None:
+    """"made" or "missed" for a run that had the GO steps; None for one that didn't."""
+    phases = (status.step_pods or {}).get(PHASES_KEY)
+    if not isinstance(phases, dict) or not phases.keys() & set(GO_STEPS):
+        return None
+    return "made" if phases.get("go-pathways") == "Succeeded" else "missed"
 
 
 def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
@@ -59,6 +62,11 @@ def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
     params = run.get("params") or {}
     sample = params.get("sample") or "your sample"
     outcome = OUTCOMES[status.status]
+    explore = dataset_page(run, dataset_id) if status.status == "succeeded" else None
+    go = _go_outcome(status) if explore else None
+    if go == "missed":
+        # The dataset and its analysis are in Bloom; only GO & pathways are missing.
+        outcome += " without GO & pathways"
     lines = [
         f"Your Cell Ranger run on {sample} (reference {params.get('reference')}) {outcome}.",
         "",
@@ -66,10 +74,9 @@ def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
     if status.message:
         lines += [status.message, ""]
     lines += [f"See the run: {run_page(run['id'])}"]
-    explore = dataset_page(run, dataset_id) if status.status == "succeeded" else None
     if explore:
         lines += [f"Explore the dataset: {explore}"]
-        if _made_go_results(status):
+        if go == "made":
             lines += [f"See its GO & pathways: {explore}?tab=go"]
     if params.get("fastq_url"):
         lines += [
