@@ -32,7 +32,8 @@ function file(results: object[] = [TERM], extra: object = {}): object {
   return {
     format: "bloom-enrichment/1", dataset_id: 25, de_run_id: 5,
     annotation: "sbicolor.btx623.hpiv3.v1/eggnog-b1",
-    params: { top_n: 300, fdr_max: 0.05 }, background_genes: 21957, annotated_genes: 11427,
+    params: { top_n: 300, fdr_max: 0.05, min_term: 5, max_term: 500 },
+    background_genes: 21957, annotated_genes: 11427,
     results, ...extra,
   };
 }
@@ -60,6 +61,19 @@ describe("decodeEnrichment", () => {
 
   it("refuses a file of another dataset", () => {
     expect(() => decodeEnrichment(gz(file()), 26)).toThrow(/dataset 25/);
+  });
+
+  it.each([
+    ["no gene counts", { annotated_genes: undefined }],
+    ["settings without the term sizes", { params: { top_n: 300, fdr_max: 0.05 } }],
+    ["no analysis", { de_run_id: "five" }],
+  ])("refuses a file with %s", (_, change) => {
+    expect(() => decodeEnrichment(gz(file([TERM], change)), 25)).toThrow(EnrichmentFileError);
+  });
+
+  it("refuses a file that isn't an object, or a result that isn't one", () => {
+    expect(() => decodeEnrichment(strToU8("null"), 25)).toThrow(EnrichmentFileError);
+    expect(() => decodeEnrichment(gz(file([null as never])), 25)).toThrow(/result 0/);
   });
 
   it.each([
@@ -178,6 +192,13 @@ describe("clustersOf", () => {
       { cluster: "10", comparisons: [{ comparison: "10_vs_rest", label: "all other cells" }] },
       { cluster: "orphan", comparisons: [{ comparison: "orphan", label: "all other cells" }] },
     ]);
+  });
+
+  it("lists a cluster the analysis compared even when nothing stood out in it", () => {
+    const withQuiet = [...rows, { cluster_id: "3", contrast: "3_vs_rest" }];
+    expect(clustersOf(parsed, withQuiet).map((c) => c.cluster)).toEqual(["2", "3", "10", "orphan"]);
+    expect(clustersOf(parsed, withQuiet)[1].comparisons)
+      .toEqual([{ comparison: "3_vs_rest", label: "all other cells" }]);
   });
 
   it("names an older one-vs-rest row, which has no contrast, by its cluster", () => {

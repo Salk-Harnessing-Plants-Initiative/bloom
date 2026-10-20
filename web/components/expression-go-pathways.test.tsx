@@ -29,7 +29,7 @@ vi.mock("@/components/expression-lib/enrichment", async (original) => ({
   },
 }));
 
-import { ExpressionGoPathways } from "./expression-go-pathways";
+import { ExpressionGoPathways, shareLabel } from "./expression-go-pathways";
 
 function term(over: Partial<EnrichmentTerm>): EnrichmentTerm {
   return {
@@ -158,8 +158,9 @@ describe("ExpressionGoPathways", () => {
     render(<ExpressionGoPathways datasetId={25} />);
     await waitFor(() => expect(table()).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Cellular component" }));
-    expect(screen.getByText(/No significant cellular component terms among the genes up/i))
-      .toBeTruthy();
+    expect(screen.getByText(
+      /No cellular component terms stood out for the genes up in cluster 2\s+compared with all other cells/,
+    )).toBeTruthy();
   });
 
   it("says what was tested", async () => {
@@ -179,6 +180,26 @@ describe("ExpressionGoPathways", () => {
       .toBeTruthy();
   });
 
+  it("shows the chosen cluster's own terms when the cluster changes", async () => {
+    render(<ExpressionGoPathways datasetId={25} />);
+    await waitFor(() => expect(table()).toBeTruthy());
+    fireEvent.mouseDown(screen.getByLabelText("Cluster"));
+    fireEvent.click(await screen.findByRole("option", { name: "10" }));
+    await waitFor(() => expect(within(table()).getByText("root morphogenesis")).toBeTruthy());
+    expect(within(table()).queryByText("translation")).toBeNull();
+    expect(screen.getByText(/genes up in cluster 10 vs/)).toBeTruthy();
+  });
+
+  it("lists a cluster with nothing significant, and says so", async () => {
+    fetched.rows = [...fetched.rows, { cluster_id: "3", contrast: "3_vs_rest" }];
+    render(<ExpressionGoPathways datasetId={25} />);
+    await waitFor(() => expect(table()).toBeTruthy());
+    fireEvent.mouseDown(screen.getByLabelText("Cluster"));
+    fireEvent.click(await screen.findByRole("option", { name: "3" }));
+    expect(await screen.findByText(/No biological process terms stood out for the genes up in cluster 3/))
+      .toBeTruthy();
+  });
+
   it("says so in one line when a run found nothing in any comparison", async () => {
     fetched.result = { ...(fetched.result as object), file: { ...FILE, results: [] } };
     render(<ExpressionGoPathways datasetId={25} />);
@@ -191,5 +212,19 @@ describe("ExpressionGoPathways", () => {
     fetched.error = new Error("the file is for dataset 26");
     render(<ExpressionGoPathways datasetId={25} />);
     expect(await screen.findByText(/the file is for dataset 26/)).toBeTruthy();
+  });
+});
+
+
+describe("shareLabel", () => {
+  it("keeps close axis ticks apart", () => {
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * 0.0275);
+    const labels = ticks.map(shareLabel);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).toEqual(["0%", "0.69%", "1.4%", "2.1%", "2.8%"]);
+  });
+
+  it("reads plainly for large shares", () => {
+    expect(shareLabel(0.25)).toBe("25%");
   });
 });

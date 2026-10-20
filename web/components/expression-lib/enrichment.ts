@@ -23,6 +23,8 @@ export const KIND_LABELS: Record<TermKind, string> = {
 
 // gzip's first two bytes.
 const GZIP_MAGIC = [0x1f, 0x8b];
+// The settings the tab shows, which a file must record.
+const PARAMS_SHOWN = ["top_n", "fdr_max", "min_term", "max_term"] as const;
 // A KEGG ortholog, e.g. K02866.
 const KO = /^K\d{5}$/;
 // QuickGO's page for a GO term: its definition and where it sits in the GO tree.
@@ -114,6 +116,9 @@ export function decodeEnrichment(bytes: Uint8Array, datasetId: number): Enrichme
   } catch {
     throw new EnrichmentFileError("the enrichment file is not readable JSON");
   }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+    throw new EnrichmentFileError("the enrichment file is not a JSON object");
+  }
   if (doc.format !== ENRICHMENT_FORMAT) {
     throw new EnrichmentFileError(`the file is ${String(doc.format)}, not ${ENRICHMENT_FORMAT}`);
   }
@@ -121,7 +126,21 @@ export function decodeEnrichment(bytes: Uint8Array, datasetId: number): Enrichme
     throw new EnrichmentFileError(`the file is for dataset ${String(doc.dataset_id)}`);
   }
   if (!Array.isArray(doc.results)) throw new EnrichmentFileError("the file has no results");
-  const results = doc.results.map((t, i) => checkTerm(t as Record<string, unknown>, i));
+  for (const key of ["background_genes", "annotated_genes"]) {
+    if (!isCount(doc[key])) throw new EnrichmentFileError(`the file's ${key} is not a count`);
+  }
+  if (!isNumber(doc.de_run_id) || typeof doc.annotation !== "string") {
+    throw new EnrichmentFileError("the file doesn't say which analysis and annotation it used");
+  }
+  const params = doc.params as Record<string, unknown> | null;
+  if (!params || typeof params !== "object" ||
+      !PARAMS_SHOWN.every((key) => isNumber(params[key]))) {
+    throw new EnrichmentFileError(`the file's settings need ${PARAMS_SHOWN.join(", ")}`);
+  }
+  const results = doc.results.map((t, i) => {
+    if (!t || typeof t !== "object") throw new EnrichmentFileError(`result ${i} is not an object`);
+    return checkTerm(t as Record<string, unknown>, i);
+  });
   return { ...(doc as unknown as EnrichmentFile), results };
 }
 
@@ -202,7 +221,8 @@ export interface ComparisonRow {
 }
 
 /**
- * The file's comparisons grouped by cluster, in cluster order. A comparison is named by its DE
+ * Every comparison grouped by cluster, in cluster order: the analysis's DE rows (so a comparison
+ * with nothing significant is still listed) and the file's own. A comparison is named by its DE
  * row's contrast (or its cluster, for older one-vs-rest rows); one without a row stands alone.
  */
 export function clustersOf(file: EnrichmentFile, rows: ComparisonRow[]): ClusterChoice[] {
@@ -210,8 +230,11 @@ export function clustersOf(file: EnrichmentFile, rows: ComparisonRow[]): Cluster
     const name = r.contrast ?? r.cluster_id;
     return name === null ? [] : [[name, r] as const];
   }));
+  const names = [...new Set([...comparisonsOf(file), ...byName.keys()])].sort(
+    (a, b) => clusterNumber(a) - clusterNumber(b) || a.localeCompare(b),
+  );
   const clusters = new Map<string, ClusterComparison[]>();
-  for (const comparison of comparisonsOf(file)) {
+  for (const comparison of names) {
     const row = byName.get(comparison);
     const cluster = row?.cluster_id ?? comparison;
     const label = againstOf(row ? row.contrast : comparison);

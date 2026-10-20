@@ -37,6 +37,14 @@ const LABEL_CHARS = 46;
 // How many of a term's list genes the table shows before "+N more".
 const SHOWN_GENES = 8;
 
+// Each kind's terms, as the "nothing stood out" message names them.
+const KIND_PLURAL: Record<TermKind, string> = {
+  GO_BP: "biological process terms",
+  GO_MF: "molecular function terms",
+  GO_CC: "cellular component terms",
+  KEGG: "KEGG pathways",
+};
+
 // What a list gene needs to count towards "List genes" for each kind.
 const KIND_NOUN: Record<TermKind, string> = {
   GO_BP: "a biological process term",
@@ -131,7 +139,7 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
 
   const { file: f } = loaded;
   // A run can be ready with nothing significant anywhere; then there's nothing to choose from.
-  if (clusters.length === 0) {
+  if (f.results.length === 0) {
     return <Alert severity="info">No GO term or pathway stood out in any comparison of this dataset.</Alert>;
   }
   return (
@@ -222,8 +230,8 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
 
       {terms.length === 0 ? (
         <Alert severity="info">
-          No significant {SHORT_KIND[kind].toLowerCase()} terms among the genes {direction} in
-          cluster {cluster} vs {chosen?.label ?? "all other cells"}.
+          No {KIND_PLURAL[kind]} stood out for the genes {direction} in cluster {cluster}{" "}
+          compared with {chosen?.label ?? "all other cells"}.
         </Alert>
       ) : (
         <>
@@ -284,7 +292,7 @@ function DotPlot({ terms }: { terms: EnrichmentTerm[] }) {
         <g key={t}>
           <line x1={x(t)} x2={x(t)} y1={TOP} y2={bottom} stroke="#e7e5e4" />
           <text x={x(t)} y={bottom + 14} fontSize={10} textAnchor="middle" fill="#57534e">
-            {t.toFixed(2)}
+            {shareLabel(t)}
           </text>
         </g>
       ))}
@@ -437,6 +445,11 @@ function PathwayMap({ term, onClose }: { term: EnrichmentTerm; onClose: () => vo
       </div>
     </Paper>
   );
+}
+
+/** An axis tick as a percentage to two significant figures, so close ticks don't repeat. */
+export function shareLabel(share: number): string {
+  return share === 0 ? "0%" : `${Number((share * 100).toPrecision(2))}%`;
 }
 
 export default ExpressionGoPathways;
