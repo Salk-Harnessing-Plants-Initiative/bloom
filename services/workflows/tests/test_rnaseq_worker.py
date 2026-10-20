@@ -402,7 +402,15 @@ def _with_metadata(metadata, species=({"id": 3, "common_name": "Arabidopsis"},))
 def test_a_run_naming_a_dataset_passes_its_name_and_species(types, submitted):
     tables = _with_metadata({"dataset_name": "  Root atlas ", "species_id": 3})
     worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
-    assert types[0]["dataset"] == {"name": "Root atlas", "species": "Arabidopsis"}
+    assert types[0]["dataset"] == {"name": "Root atlas", "species": "Arabidopsis",
+                                   "kegg_org": None}
+
+
+def test_a_species_kegg_code_goes_with_the_dataset(types, submitted):
+    tables = _with_metadata({"dataset_name": "Root atlas", "species_id": 3},
+                            species=({"id": 3, "common_name": "Sorghum", "kegg_org": "sbi"},))
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["dataset"]["kegg_org"] == "sbi"
 
 
 @pytest.mark.parametrize(

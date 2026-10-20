@@ -1,7 +1,8 @@
 # The scRNA analysis steps after Cell Ranger's count: preprocess, cluster, build-h5ad, and
 # load-dataset, which loads the result into Bloom with bloomctl; and download-genome, which
 # fetches the run's genome version from Bloom with bloomctl before the reference is built; and
-# go-pathways, the GO and pathway workflow's steps (argo/scrna/go-pathways/).
+# go-pathways, the GO and pathway workflow's steps (argo/scrna/go-pathways/), which record their
+# files with bloomctl.
 # Build from argo/scrna/analysis/, with argo/scrna/ as the `scrna` context for the log wrapper:
 #   docker build --platform linux/amd64 --build-context scrna=.. \
 #     -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:<tag> .
@@ -18,6 +19,8 @@ RUN pip install -r /opt/scrna-analysis/requirements.txt \
  && bloomctl scrna hdf5 upload --help | grep -q -- --run-id \
  && bloomctl genome download --help | grep -q -- --version-file \
  && bloomctl scrna hdf5 upload --help | grep -q -- --de-key \
+ && bloomctl genome annotation download --help | grep -q -- --id-file \
+ && bloomctl scrna enrichment upload --help | grep -q -- --run-id \
  && python -c "from bloomctl.scrna._cells import cluster_colours; assert len(set(cluster_colours(40))) == 40" \
  && python -c "from bloomctl.scrna import _counts; assert _counts.UPLOAD_WORKERS == 8"
 

@@ -58,9 +58,9 @@ def test_the_analysis_image_has_a_bloomctl_that_colours_any_number_of_clusters()
 
 
 def test_the_analysis_image_has_a_bloomctl_that_uploads_counts_in_parallel():
-    # 0.1.0a15 uploads gene counts 8 at a time; the build checks it does.
+    # 0.1.0a15 and later upload gene counts 8 at a time; the build checks it does.
     requirements = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert "bloomctl==0.1.0a15" in requirements
+    assert "bloomctl==0.1.0a17" in requirements
     dockerfile = (ARGO / "analysis" / "Dockerfile").read_text()
     assert "_counts.UPLOAD_WORKERS == 8" in dockerfile
 

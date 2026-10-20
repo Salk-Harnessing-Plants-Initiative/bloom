@@ -1,11 +1,11 @@
 # A dataset's GO and KEGG pathway enrichment, started by hand (go-pathways-template's
 # scrna-enrichment): its newest complete differential expression analysis (or de-run-id),
-# tested against a ready annotation build of its genome version (its id: the annotation run's
-# upload-annotation log prints it), and recorded in Bloom as an enrichment run. A dataset not
-# yet linked to a genome version is linked to the build's. Signs in to staging's Bloom; for
-# prod, use genericsecret-bloom-prod-pipeline-credentials:
+# tested against its genome version's ready annotation (source eggnog, or tair-go), and recorded
+# in Bloom as an enrichment run. A dataset not yet linked to a genome version is linked to the
+# annotation's. Signs in to staging's Bloom; for prod, use
+# genericsecret-bloom-prod-pipeline-credentials:
 #   argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch-lab \
-#     -p dataset-id=25 -p annotation-build-id=1 --watch
+#     -p dataset-id=25 -p genome=sbicolor.btx623.hpiv3.v1 --watch
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
@@ -24,7 +24,9 @@ spec:
   arguments:
     parameters:
       - name: dataset-id
-      - name: annotation-build-id
+      - name: genome
+      - name: source
+        value: eggnog
       - name: de-run-id
         value: ""
   # The pipeline's Bloom login: the steps read and record with it, and run-with-log uses it.
@@ -45,5 +47,6 @@ spec:
               parameters:
                 - {name: dataset-id, value: "{{workflow.parameters.dataset-id}}"}
                 - {name: run-id, value: "{{workflow.name}}"}
-                - {name: annotation-build-id, value: "{{workflow.parameters.annotation-build-id}}"}
+                - {name: genome, value: "{{workflow.parameters.genome}}"}
+                - {name: source, value: "{{workflow.parameters.source}}"}
                 - {name: de-run-id, value: "{{workflow.parameters.de-run-id}}"}
