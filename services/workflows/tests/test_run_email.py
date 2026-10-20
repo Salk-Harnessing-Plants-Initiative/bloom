@@ -109,6 +109,15 @@ def test_a_finished_run_linked_to_its_dataset_links_it_too(relay):
     assert "Explore the dataset: https://bloom.salk.edu/app/expression/2/24\n" in body
 
 
+def test_a_run_that_made_go_results_links_the_datasets_go_tab(relay):
+    made = RunStatus("succeeded", "cleanup", {"_phases": {"go-pathways": "Succeeded"}}, 0, "m")
+    failed = RunStatus("succeeded", "cleanup", {"_phases": {"go-pathways": "Failed"}}, 0, "m")
+    link = "See its GO & pathways: https://bloom.salk.edu/app/expression/2/24?tab=go\n"
+    assert link in run_email.build(LINKED_RUN, made, "alice@salk.edu", 24).get_content()
+    assert link not in run_email.build(LINKED_RUN, failed, "alice@salk.edu", 24).get_content()
+    assert "GO & pathways" not in run_email.build(LINKED_RUN, DONE, "alice@salk.edu", 24).get_content()
+
+
 @pytest.mark.parametrize(
     "run, status, dataset",
     [

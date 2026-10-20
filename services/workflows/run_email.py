@@ -5,7 +5,7 @@ The status poller calls notify() in the pass that records the run's final status
 the requester's email up with rnaseq_run_requesters and sends one plain-text message through
 Salk's mail relay (the SMTP_* settings GoTrue's sign-in emails use): the outcome and its
 message, a link to the run page, a link to the dataset it loaded once the run is linked to it
-and, for a run on an S3 folder, a reminder to remove Bloom's access to it if it was shared. Without SMTP_HOST (dev) nothing is sent. A failure is logged
+(its GO & pathways tab when the run made those results) and, for a run on an S3 folder, a reminder to remove Bloom's access to it if it was shared. Without SMTP_HOST (dev) nothing is sent. A failure is logged
 and never changes the run.
 """
 
@@ -15,6 +15,8 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from email.utils import formataddr
+
+from rnaseq_status import PHASES_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,11 @@ def dataset_page(run: dict, dataset_id) -> str | None:
     return f"{SITE_URL}/app/expression/{species_id}/{dataset_id}"
 
 
+def _made_go_results(status) -> bool:
+    phases = (status.step_pods or {}).get(PHASES_KEY) or {}
+    return phases.get("go-pathways") == "Succeeded"
+
+
 def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
     """The message for a finished run; `status` is its recorded RunStatus, and `dataset_id`
     the dataset the run was linked to, if any."""
@@ -62,6 +69,8 @@ def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
     explore = dataset_page(run, dataset_id) if status.status == "succeeded" else None
     if explore:
         lines += [f"Explore the dataset: {explore}"]
+        if _made_go_results(status):
+            lines += [f"See its GO & pathways: {explore}?tab=go"]
     if params.get("fastq_url"):
         lines += [
             "",

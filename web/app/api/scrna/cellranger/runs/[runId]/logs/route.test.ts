@@ -62,6 +62,11 @@ describe("forwarding", () => {
     expect(init.headers.Authorization).toBe("Bearer tok");
   });
 
+  it.each(["annotate-genome", "go-pathways"])("forwards the GO step %s", async (step) => {
+    expect((await callRoute("7", step)).status).toBe(200);
+    expect(fetchSpy.mock.calls[0][0]).toContain(`logs?step=${step}`);
+  });
+
   it.each([404, 409, 410])("passes the %i detail through", async (status) => {
     fetchSpy.mockResolvedValue(upstream({ detail: "Step count of run 1 hasn't started running yet" }, status));
     const res = await callRoute("1");
