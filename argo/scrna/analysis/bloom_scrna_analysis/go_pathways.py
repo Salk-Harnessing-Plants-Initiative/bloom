@@ -135,13 +135,31 @@ def sign_in_home() -> None:
     os.environ["HOME"] = str(home)
 
 
+def _network_error(exc: BaseException) -> bool:
+    """Whether a failure was the network's (worth retrying), anywhere in its chain of causes."""
+    import httpx
+
+    while exc is not None:
+        if isinstance(exc, httpx.HTTPError):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def _client() -> Any:
-    """Bloom, signed in as bloomctl's default login."""
+    """Bloom, signed in as bloomctl's default login. A credential Bloom won't sign in with is
+    exit 16 (not retried); a network error stays an error the step's retry covers."""
     sign_in_home()
+    import click
     from bloomctl.credentials import DEFAULT_PROFILE
     from bloomctl.scrna import _session
 
-    return _session.connect(DEFAULT_PROFILE).client
+    try:
+        return _session.connect(DEFAULT_PROFILE).client
+    except click.ClickException as exc:
+        if _network_error(exc):
+            raise
+        raise StepError(EXIT_NO_CREDENTIALS, f"couldn't sign in to Bloom: {exc.message}") from exc
 
 
 def fetch_de(dataset_id: int, wanted: int | None, fdr_max: float) -> dict:

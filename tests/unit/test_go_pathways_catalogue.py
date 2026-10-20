@@ -67,6 +67,8 @@ class Bucket:
     def upload(self, path, data, options):
         if self.bloom.fail_upload:
             raise OSError("connection reset")
+        if self.bloom.refuse_upload:
+            raise self.bloom.refuse_upload
         self.bloom.stored[(self.name, path)] = (bytes(data), options)
 
     def download(self, path):
@@ -85,6 +87,7 @@ class Bloom:
     def __init__(self):
         self.tables, self.answers, self.calls, self.stored = {}, {}, [], {}
         self.fail_upload = False
+        self.refuse_upload = None
         self.storage = Storage(self)
 
     def table(self, name):
@@ -323,18 +326,29 @@ def test_a_file_of_the_right_checksum_but_another_size_is_refused(bloom, tmp_pat
     assert not out.exists()
 
 
-def test_a_refused_finish_abandons_the_build(bloom, tmp_path):
+def test_a_refused_finish_abandons_the_build_and_is_the_steps_own_error(bloom, tmp_path):
     bloom.answers["finish_genome_annotation_build"] = Refused("is 10 bytes in storage, not 11")
-    with pytest.raises(Refused):
+    with pytest.raises(StepError, match="refused to finish.*10 bytes") as exc:
         catalogue.upload_annotation(bloom, annotation_file(tmp_path), refused=Refused)
+    assert exc.value.code == EXIT_BAD_ANNOTATION
     assert bloom.called("abandon_genome_annotation_build") == [{"p_build_id": 3}]
 
 
-def test_a_refused_finish_abandons_the_run(ready_build, tmp_path):
+def test_a_refused_upload_abandons_the_build_and_is_the_steps_own_error(bloom, tmp_path):
+    bloom.refuse_upload = Refused("new row violates row-level security policy")
+    with pytest.raises(StepError, match="row-level security") as exc:
+        catalogue.upload_annotation(bloom, annotation_file(tmp_path), refused=Refused)
+    assert exc.value.code == EXIT_BAD_ANNOTATION
+    assert bloom.called("abandon_genome_annotation_build") == [{"p_build_id": 3}]
+    assert not bloom.called("finish_genome_annotation_build")
+
+
+def test_a_refused_finish_abandons_the_run_and_is_the_steps_own_error(ready_build, tmp_path):
     ready_build.answers["finish_scrna_enrichment_run"] = Refused("not uploaded")
-    with pytest.raises(Refused):
+    with pytest.raises(StepError, match="refused to finish") as exc:
         catalogue.upload_enrichment(ready_build, enrichment_file(tmp_path), build_id=3,
                                     refused=Refused)
+    assert exc.value.code == EXIT_BAD_ENRICHMENT_INPUT
     assert ready_build.called("abandon_scrna_enrichment_run") == [{"p_run_id": 9}]
 
 

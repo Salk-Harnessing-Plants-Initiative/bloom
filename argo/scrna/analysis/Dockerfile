@@ -34,7 +34,8 @@ RUN printf '#!/bin/sh\nexec python -m bloom_scrna_analysis "$@"\n' > /usr/local/
     /usr/local/bin/bloom-dataset /usr/local/bin/download-genome /usr/local/bin/go-pathways \
  && scrna-analysis --help >/dev/null && bloom-dataset --help >/dev/null \
  && go-pathways enrich --help >/dev/null && python -c "import scipy.stats" \
- && python -c "from bloomctl.scrna import _session; from bloomctl.credentials import DEFAULT_PROFILE"
+ && python -c "from bloomctl.scrna import _session; from bloomctl.credentials import DEFAULT_PROFILE" \
+ && python -c "from postgrest.exceptions import APIError; from storage3.exceptions import StorageApiError; import httpx"
 
 # Runs as root like the Cell Ranger steps, which create the run's folder on the share.
 ENTRYPOINT ["scrna-analysis"]

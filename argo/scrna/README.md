@@ -199,12 +199,14 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   size; a failed upload abandons it. Neither upload step is retried, since a retry would find
   its own unfinished record. Both runs delete their folders on `/shared` once the result is in
   Bloom; a failed run keeps them.
-- Exit codes: 16 without the pipeline's Bloom credential, 18 for an annotation input that isn't what the step expects (eggNOG output
-  without its header, a protein that isn't in the GTF, a bad KEGG organism, no gene with a
-  term, a genome version that isn't ready, a build Bloom refuses), 19 for an enrichment input
-  (no complete analysis, no such ready build or a file that doesn't match it, genes outside the
-  dataset, a dataset sharing no gene with the annotation or linked to another genome version, a
-  run Bloom refuses). None is retried.
+- Exit codes: 16 without the pipeline's Bloom credential, or when Bloom won't sign in with it;
+  18 for an annotation input that isn't what the step expects (eggNOG output without its
+  header, a protein that isn't in the GTF, a bad KEGG organism, no gene with a term, a genome
+  version that isn't ready) or a build Bloom refuses to start, store or finish; 19 for an
+  enrichment input (no complete analysis, no such ready build or a file that doesn't match it,
+  genes outside the dataset, a dataset sharing no gene with the annotation or linked to another
+  genome version) or a link or run Bloom refuses. None is retried. A network error is exit 1,
+  which the fetch steps retry.
 
 The files (`bloom_scrna_analysis/annotation.py` and `enrichment.py`):
 

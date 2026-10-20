@@ -280,3 +280,61 @@ def test_without_any_credential_the_step_exits_16(tmp_path, monkeypatch):
     with pytest.raises(StepError, match="no Bloom credentials") as exc:
         go_pathways.sign_in_home()
     assert exc.value.code == 16
+
+
+
+# --------------------------------------------------------------------------- #
+# Signing in fails
+# --------------------------------------------------------------------------- #
+
+
+def sign_in_failing(monkeypatch, tmp_path, cause):
+    """_client with a credential present and bloomctl's sign-in raising as it does."""
+    import click
+
+    own = tmp_path / "home" / ".bloom" / "credentials.txt"
+    own.parent.mkdir(parents=True)
+    own.write_text("x")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    def connect(profile):
+        # As bloomctl does: the cause, wrapped in its AuthError, wrapped in a ClickException.
+        try:
+            raise cause
+        except Exception as inner:
+            try:
+                raise RuntimeError(f"sign-in failed: {inner}") from inner
+            except RuntimeError as outer:
+                raise click.ClickException(str(outer)) from outer
+
+    # A stand-in for bloomctl's sign-in, so the test needs neither bloomctl nor a server.
+    import types
+
+    session = types.ModuleType("bloomctl.scrna._session")
+    session.connect = connect
+    credentials = types.ModuleType("bloomctl.credentials")
+    credentials.DEFAULT_PROFILE = "prod"
+    scrna = types.ModuleType("bloomctl.scrna")
+    scrna._session = session
+    package = types.ModuleType("bloomctl")
+    package.scrna, package.credentials = scrna, credentials
+    for name, module in (("bloomctl", package), ("bloomctl.scrna", scrna),
+                         ("bloomctl.scrna._session", session),
+                         ("bloomctl.credentials", credentials)):
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def test_a_credential_bloom_refuses_exits_16_and_isnt_retried(monkeypatch, tmp_path):
+    sign_in_failing(monkeypatch, tmp_path, ValueError("Invalid login credentials"))
+    with pytest.raises(StepError, match="couldn't sign in.*Invalid login credentials") as exc:
+        go_pathways._client()
+    assert exc.value.code == 16
+
+
+def test_a_network_error_signing_in_stays_a_retried_error(monkeypatch, tmp_path):
+    import click
+    import httpx
+
+    sign_in_failing(monkeypatch, tmp_path, httpx.ConnectError("connection refused"))
+    with pytest.raises(click.ClickException):
+        go_pathways._client()

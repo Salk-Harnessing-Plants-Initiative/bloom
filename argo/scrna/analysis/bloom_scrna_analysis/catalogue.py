@@ -21,13 +21,15 @@ GZIP_OPTIONS = {"content-type": "application/gzip", "upsert": "false"}
 _VERSION_LABEL = re.compile(r"^(?P<genome>.+)\.v(?P<version>[1-9][0-9]*)$")
 
 
-def _refused_errors(refused: type[Exception] | None) -> type[Exception]:
-    """What Bloom raises when it answers with a refusal (postgrest's APIError)."""
+def _refused_errors(refused: type[Exception] | None) -> tuple[type[Exception], ...]:
+    """What Bloom raises when it answers with a refusal: postgrest's APIError for a function,
+    storage3's StorageApiError for an upload."""
     if refused is not None:
-        return refused
+        return (refused,)
     from postgrest.exceptions import APIError
+    from storage3.exceptions import StorageApiError
 
-    return APIError
+    return (APIError, StorageApiError)
 
 
 def _rows(result: Any) -> list[dict]:
@@ -82,12 +84,18 @@ def upload_annotation(client: Any, path: Path, *, refused: type[Exception] | Non
         }).execute())
     except refusal as exc:
         raise StepError(EXIT_BAD_ANNOTATION, f"Bloom refused the build: {exc}") from exc
+    stage = "store the file of"
     try:
         client.storage.from_(ANNOTATION_BUCKET).upload(build["file_path"], data, GZIP_OPTIONS)
+        stage = "finish"
         client.rpc("finish_genome_annotation_build", {
             "p_build_id": build["build_id"], "p_file_sha256": sha256, "p_file_bytes": len(data),
             "p_gene_count": len(built.genes), "p_term_count": len(built.terms),
         }).execute()
+    except refusal as exc:
+        client.rpc("abandon_genome_annotation_build", {"p_build_id": build["build_id"]}).execute()
+        raise StepError(EXIT_BAD_ANNOTATION, f"Bloom refused to {stage} annotation build "
+                                             f"{build['build']}: {exc}") from exc
     except BaseException:
         client.rpc("abandon_genome_annotation_build", {"p_build_id": build["build_id"]}).execute()
         raise
@@ -171,13 +179,19 @@ def upload_enrichment(client: Any, path: Path, *, build_id: int, rnaseq_run_id: 
         }).execute())
     except refusal as exc:
         raise StepError(EXIT_BAD_ENRICHMENT_INPUT, f"Bloom refused the run: {exc}") from exc
+    stage = "store the file of"
     try:
         client.storage.from_(ENRICHMENT_BUCKET).upload(run["file_path"], data, GZIP_OPTIONS)
+        stage = "finish"
         client.rpc("finish_scrna_enrichment_run", {
             "p_run_id": run["run_id"], "p_file_sha256": sha256, "p_file_bytes": len(data),
             "p_term_count": len(doc["results"]), "p_background_genes": doc["background_genes"],
             "p_annotated_genes": doc["annotated_genes"],
         }).execute()
+    except refusal as exc:
+        client.rpc("abandon_scrna_enrichment_run", {"p_run_id": run["run_id"]}).execute()
+        raise StepError(EXIT_BAD_ENRICHMENT_INPUT, f"Bloom refused to {stage} enrichment run "
+                                                   f"{run['run_id']}: {exc}") from exc
     except BaseException:
         client.rpc("abandon_scrna_enrichment_run", {"p_run_id": run["run_id"]}).execute()
         raise
