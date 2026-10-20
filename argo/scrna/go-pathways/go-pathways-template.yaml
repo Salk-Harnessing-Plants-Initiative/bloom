@@ -1,0 +1,667 @@
+# Register once: argo template create argo/scrna/go-pathways/go-pathways-template.yaml -n runai-busch-lab
+# After changes: kubectl replace -f argo/scrna/go-pathways/go-pathways-template.yaml -n runai-busch-lab
+#
+# Two entry points: genome-annotation (a genome version's GO and KEGG pathway annotation) and
+# scrna-enrichment (a dataset's differential expression tested against one annotation).
+# Every step mounts the same NFS folder at /shared:
+#   /shared/runs/<run-id>/          a run's working files, deleted once its result is in Bloom
+#   /shared/runs/<run-id>.genome/   an annotation run's genome version, deleted with it
+#   /shared/ref/eggnog/<release>/   eggNOG-mapper's database (~50 GB), downloaded once per release
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: go-pathways-template
+  labels:
+    project: busch-lab
+spec:
+  templates:
+    # One genome version, one source: download-genome -> fetch-references, then for eggnog
+    # proteins -> eggnog-db -> emapper, then build-annotation -> upload-annotation -> upload-logs
+    # -> cleanup.
+    # upload-annotation records the file as the version's next build of the source in Bloom.
+    - name: genome-annotation
+      inputs:
+        parameters:
+          # A genome version in Bloom, <genome>.v<N> (bloomctl genome list).
+          - name: genome
+          - name: run-id
+          # eggnog (GO and KEGG pathways, any species) or tair-go (Arabidopsis' curated GO).
+          - name: source
+          # KEGG's organism code for the species' pathways, e.g. sbi; empty: GO only.
+          - name: kegg-org
+            value: ""
+          - name: eggnog-db
+            value: "5.0.2"
+      dag:
+        tasks:
+          - name: download-genome
+            template: download-genome
+            arguments:
+              parameters:
+                - {name: genome, value: "{{inputs.parameters.genome}}"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+          - name: fetch-references
+            template: fetch-references
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: source, value: "{{inputs.parameters.source}}"}
+                - {name: kegg-org, value: "{{inputs.parameters.kegg-org}}"}
+          - name: proteins
+            template: proteins
+            depends: download-genome
+            when: "'{{inputs.parameters.source}}' == 'eggnog'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+          - name: eggnog-db
+            template: eggnog-db
+            when: "'{{inputs.parameters.source}}' == 'eggnog'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: eggnog-db, value: "{{inputs.parameters.eggnog-db}}"}
+          - name: emapper
+            template: emapper
+            depends: proteins && eggnog-db
+            when: "'{{inputs.parameters.source}}' == 'eggnog'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: eggnog-db, value: "{{inputs.parameters.eggnog-db}}"}
+          - name: build-annotation
+            template: build-annotation
+            depends: "download-genome && fetch-references && (emapper.Succeeded || emapper.Skipped)"
+            arguments:
+              parameters:
+                - {name: genome, value: "{{inputs.parameters.genome}}"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: source, value: "{{inputs.parameters.source}}"}
+                - {name: eggnog-db, value: "{{inputs.parameters.eggnog-db}}"}
+          - name: upload-annotation
+            template: upload-annotation
+            depends: build-annotation
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: source, value: "{{inputs.parameters.source}}"}
+          # The logs of the steps without run-with-log, before cleanup deletes them; a failed run
+          # keeps its folder, and the hand-run Workflow's exit handler uploads them instead.
+          - name: upload-logs
+            template: upload-logs
+            depends: upload-annotation
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+          - name: cleanup
+            template: cleanup
+            depends: upload-logs
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+
+    # One dataset: fetch-annotation alongside fetch-de -> enrich -> upload-enrichment -> cleanup.
+    # Tests the dataset's newest complete differential expression analysis (or de-run-id)
+    # against a ready annotation build from Bloom, and records the result as an enrichment run.
+    - name: scrna-enrichment
+      inputs:
+        parameters:
+          - name: dataset-id
+          - name: run-id
+          # A ready annotation build of the dataset's genome version (its id in Bloom).
+          - name: annotation-build-id
+          - name: de-run-id
+            value: ""
+          # The pipeline job that asked for it, when there is one.
+          - name: rnaseq-run-id
+            value: ""
+          - {name: top-n, value: "300"}
+          - {name: fdr-max, value: "0.05"}
+          - {name: lfc-min, value: "0.25"}
+          - {name: min-term, value: "5"}
+          - {name: max-term, value: "500"}
+          - {name: min-list, value: "3"}
+      dag:
+        tasks:
+          - name: fetch-annotation
+            template: fetch-annotation
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: annotation-build-id, value: "{{inputs.parameters.annotation-build-id}}"}
+          - name: fetch-de
+            template: fetch-de
+            arguments:
+              parameters:
+                - {name: dataset-id, value: "{{inputs.parameters.dataset-id}}"}
+                - {name: de-run-id, value: "{{inputs.parameters.de-run-id}}"}
+                - {name: fdr-max, value: "{{inputs.parameters.fdr-max}}"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+          - name: enrich
+            template: enrich
+            depends: fetch-annotation && fetch-de
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: top-n, value: "{{inputs.parameters.top-n}}"}
+                - {name: fdr-max, value: "{{inputs.parameters.fdr-max}}"}
+                - {name: lfc-min, value: "{{inputs.parameters.lfc-min}}"}
+                - {name: min-term, value: "{{inputs.parameters.min-term}}"}
+                - {name: max-term, value: "{{inputs.parameters.max-term}}"}
+                - {name: min-list, value: "{{inputs.parameters.min-list}}"}
+          - name: upload-enrichment
+            template: upload-enrichment
+            depends: enrich
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: annotation-build-id, value: "{{inputs.parameters.annotation-build-id}}"}
+                - {name: rnaseq-run-id, value: "{{inputs.parameters.rnaseq-run-id}}"}
+          - name: cleanup
+            template: cleanup
+            depends: upload-enrichment
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}"}
+
+    # The dataset's genes and one complete analysis from Bloom, into /shared/runs/<run-id>/de.json.
+    - name: fetch-de
+      inputs:
+        parameters:
+          - name: dataset-id
+          - name: de-run-id
+          - name: fdr-max
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # 1: Bloom couldn't be reached; 16 (no credentials) and 19 (no such analysis) won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) == 1"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-de.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            mkdir -p "/shared/runs/${RUN_ID}"
+            args=(fetch-de --dataset-id "${DATASET_ID}" --fdr-max "${FDR_MAX}"
+                  --out "/shared/runs/${RUN_ID}/de.json")
+            if [ -n "${DE_RUN_ID}" ]; then args+=(--de-run-id "${DE_RUN_ID}"); fi
+            go-pathways "${args[@]}"
+        env:
+          - {name: DATASET_ID, value: "{{inputs.parameters.dataset-id}}"}
+          - {name: DE_RUN_ID, value: "{{inputs.parameters.de-run-id}}"}
+          - {name: FDR_MAX, value: "{{inputs.parameters.fdr-max}}"}
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+        resources:
+          requests: {cpu: "1", memory: 2Gi}
+          limits: {cpu: "1", memory: 2Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # A ready annotation build's file from Bloom, checked against its checksum, into
+    # /shared/runs/<run-id>/annotation.json.gz, and its name into annotation.label.
+    - name: fetch-annotation
+      inputs:
+        parameters:
+          - name: run-id
+          - name: annotation-build-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # 1: Bloom couldn't be reached; 16 and 19 (no such ready build, or a mismatched file) won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) == 1"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-annotation.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            run="/shared/runs/${RUN_ID}"
+            mkdir -p "${run}"
+            go-pathways fetch-annotation --build-id "${BUILD_ID}" \
+              --out "${run}/annotation.json.gz" --label-out "${run}/annotation.label"
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: BUILD_ID, value: "{{inputs.parameters.annotation-build-id}}"}
+        resources:
+          requests: {cpu: "0.5", memory: 1Gi}
+          limits: {cpu: "0.5", memory: 1Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # The enrichment file, /shared/runs/<run-id>/enrichment.json.gz (go-pathways enrich).
+    - name: enrich
+      inputs:
+        parameters:
+          - name: run-id
+          - name: top-n
+          - name: fdr-max
+          - name: lfc-min
+          - name: min-term
+          - name: max-term
+          - name: min-list
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/enrich.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            run="/shared/runs/${RUN_ID}"
+            go-pathways enrich --annotation "${run}/annotation.json.gz" --de "${run}/de.json" \
+              --label "$(cat "${run}/annotation.label")" --out "${run}/enrichment.json.gz" \
+              --top-n "${TOP_N}" --fdr-max "${FDR_MAX}" --lfc-min "${LFC_MIN}" \
+              --min-term "${MIN_TERM}" --max-term "${MAX_TERM}" --min-list "${MIN_LIST}"
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: TOP_N, value: "{{inputs.parameters.top-n}}"}
+          - {name: FDR_MAX, value: "{{inputs.parameters.fdr-max}}"}
+          - {name: LFC_MIN, value: "{{inputs.parameters.lfc-min}}"}
+          - {name: MIN_TERM, value: "{{inputs.parameters.min-term}}"}
+          - {name: MAX_TERM, value: "{{inputs.parameters.max-term}}"}
+          - {name: MIN_LIST, value: "{{inputs.parameters.min-list}}"}
+        resources:
+          requests: {cpu: "1", memory: 4Gi}
+          limits: {cpu: "1", memory: 4Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # The genome version from Bloom, checked against Bloom's record, into
+    # /shared/runs/<run-id>.genome/genome/ as genome.fa and genes.gtf (argo/scrna/analysis/download-genome.sh).
+    - name: download-genome
+      inputs:
+        parameters:
+          - name: genome
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # Only 1 (a network or storage error) may be a blip; 3, 6 and 16 won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) == 1"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
+        env:
+          - {name: GENOME, value: "{{inputs.parameters.genome}}"}
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+        resources:
+          requests: {cpu: "1", memory: 2Gi}
+          limits: {cpu: "1", memory: 2Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # The GO ontology, and KEGG's pathway list or TAIR's GO annotations, into /shared/runs/<run-id>/ref/.
+    - name: fetch-references
+      inputs:
+        parameters:
+          - name: run-id
+          - name: source
+          - name: kegg-org
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # 1: a download failed; 18 (a bad KEGG organism) won't fix itself.
+        expression: "asInt(lastRetry.exitCode) == 1"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command:
+          - run-with-log
+          - --path
+          - "scrna/{{workflow.name}}/fetch-references.log"
+          - --
+          - go-pathways
+          - fetch-references
+          - --source
+          - "{{inputs.parameters.source}}"
+          - --kegg-org
+          - "{{inputs.parameters.kegg-org}}"
+          - --to
+          - "/shared/runs/{{inputs.parameters.run-id}}/ref"
+        resources:
+          requests: {cpu: "0.5", memory: 1Gi}
+          limits: {cpu: "0.5", memory: 1Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # Every transcript's protein, named by transcript ID (stops written as '*').
+    - name: proteins
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: quay.io/biocontainers/gffread:0.12.9--hf426362_0
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            g="/shared/runs/${RUN_ID}.genome/genome"
+            out="/shared/runs/${RUN_ID}"
+            mkdir -p "${out}/logs"
+            {
+              gffread "${g}/genes.gtf" -g "${g}/genome.fa" -y "${out}/proteins.fa" -S
+              echo "proteins: $(grep -c '>' "${out}/proteins.fa")"
+            } > "${out}/logs/proteins.log" 2>&1
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+        resources:
+          requests: {cpu: "1", memory: 4Gi}
+          limits: {cpu: "1", memory: 4Gi}
+        volumeMounts:
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # eggNOG-mapper's database, downloaded once per release; later runs find it verified and skip.
+    - name: eggnog-db
+      inputs:
+        parameters:
+          - name: run-id
+          - name: eggnog-db
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      activeDeadlineSeconds: 21600
+      container:
+        image: quay.io/biocontainers/eggnog-mapper:2.1.13--pyhdfd78af_2
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            case "${EGGNOG_DB}" in
+              ""|.|..|*/*) echo "ERROR: bad eggNOG release '${EGGNOG_DB}'"; exit 6 ;;
+            esac
+            root=/shared/ref/eggnog
+            db="${root}/${EGGNOG_DB}"
+            mkdir -p "/shared/runs/${RUN_ID}/logs" "${root}"
+            exec > "/shared/runs/${RUN_ID}/logs/eggnog-db.log" 2>&1
+            if [ -f "${db}/.verified" ]; then echo "eggNOG ${EGGNOG_DB}: already verified"; exit 0; fi
+            free_gb=$(df -Pk /shared | awk 'NR==2{print int($4/1048576)}')
+            if [ "${free_gb}" -lt 120 ]; then echo "ERROR: only ${free_gb} GB free on /shared"; exit 9; fi
+            # Downloaded into this workflow's own folder, checked, then renamed into place, so a
+            # half-finished download, or two runs downloading at once, never looks like the database.
+            work="${root}/.partial-${EGGNOG_DB}-${WORKFLOW_NAME}"
+            # However the script stops, its own partial copy goes (after the rename it's gone).
+            trap 'rm -rf -- "${work}"' EXIT
+            rm -rf -- "${work}"
+            mkdir -p "${work}"
+            cd "${work}"
+            # eggnogdb.embl.de, which download_eggnog_data.py uses, no longer resolves.
+            base="http://eggnog5.embl.de/download/emapperdb-${EGGNOG_DB}"
+            wget -nv "${base}/eggnog.db.gz"
+            wget -nv "${base}/eggnog_proteins.dmnd.gz"
+            wget -nv "${base}/eggnog.taxa.tar.gz"
+            gzip -t eggnog.db.gz
+            gzip -t eggnog_proteins.dmnd.gz
+            gzip -t eggnog.taxa.tar.gz
+            gunzip eggnog.db.gz
+            gunzip eggnog_proteins.dmnd.gz
+            tar -zxf eggnog.taxa.tar.gz
+            rm eggnog.taxa.tar.gz
+            for f in eggnog.db eggnog_proteins.dmnd eggnog.taxa.db; do
+              [ -s "${f}" ] || { echo "ERROR: ${f} missing or empty"; exit 10; }
+            done
+            touch .verified
+            cd "${root}"
+            if [ -f "${db}/.verified" ]; then
+              echo "eggNOG ${EGGNOG_DB}: another run put it in place first; dropping this copy"
+              rm -rf -- "${work}"
+              exit 0
+            fi
+            # A folder an older download left unfinished is set aside, not trusted.
+            if [ -e "${db}" ]; then mv -- "${db}" "${db}.unfinished-${WORKFLOW_NAME}"; fi
+            mv -- "${work}" "${db}"
+            ls -la "${db}"
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: EGGNOG_DB, value: "{{inputs.parameters.eggnog-db}}"}
+          - {name: WORKFLOW_NAME, value: "{{workflow.name}}"}
+        resources:
+          requests: {cpu: "2", memory: 4Gi}
+          limits: {cpu: "2", memory: 4Gi}
+        volumeMounts:
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # eggNOG-mapper (diamond) on every protein, into /shared/runs/<run-id>/emapper/.
+    - name: emapper
+      inputs:
+        parameters:
+          - name: run-id
+          - name: eggnog-db
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      activeDeadlineSeconds: 43200
+      container:
+        image: quay.io/biocontainers/eggnog-mapper:2.1.13--pyhdfd78af_2
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            out="/shared/runs/${RUN_ID}"
+            mkdir -p "${out}/emapper" "${out}/logs"
+            exec > "${out}/logs/emapper.log" 2>&1
+            date
+            emapper.py -i "${out}/proteins.fa" --itype proteins -m diamond \
+              --data_dir "/shared/ref/eggnog/${EGGNOG_DB}" \
+              --cpu 16 -o genome --output_dir "${out}/emapper" --override
+            date
+            wc -l "${out}/emapper/genome.emapper.annotations"
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: EGGNOG_DB, value: "{{inputs.parameters.eggnog-db}}"}
+        resources:
+          requests: {cpu: "16", memory: 32Gi}
+          limits: {cpu: "16", memory: 32Gi}
+        volumeMounts:
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # The annotation file, /shared/runs/<run-id>/annotation/<source>.json.gz (go-pathways build-annotation).
+    - name: build-annotation
+      inputs:
+        parameters:
+          - name: genome
+          - name: run-id
+          - name: source
+          - name: eggnog-db
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/build-annotation.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            run="/shared/runs/${RUN_ID}"
+            genome="${GENOME%.v*}"
+            version="${GENOME##*.v}"
+            mkdir -p "${run}/annotation"
+            args=(build-annotation --source "${SOURCE}" --genome "${genome}" --version "${version}"
+                  --gtf "/shared/runs/${RUN_ID}.genome/genome/genes.gtf" --obo "${run}/ref/go-basic.obo"
+                  --out "${run}/annotation/${SOURCE}.json.gz")
+            if [ "${SOURCE}" = eggnog ]; then
+              args+=(--emapper "${run}/emapper/genome.emapper.annotations"
+                     --tool eggnog_mapper=2.1.13 --tool "eggnog_db=${EGGNOG_DB}")
+              if [ -f "${run}/ref/kegg-pathways.tsv" ]; then args+=(--kegg-list "${run}/ref/kegg-pathways.tsv"); fi
+            else
+              args+=(--gaf "${run}/ref/tair.gaf.gz")
+            fi
+            go-pathways "${args[@]}"
+        env:
+          - {name: GENOME, value: "{{inputs.parameters.genome}}"}
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: SOURCE, value: "{{inputs.parameters.source}}"}
+          - {name: EGGNOG_DB, value: "{{inputs.parameters.eggnog-db}}"}
+        resources:
+          requests: {cpu: "1", memory: 8Gi}
+          limits: {cpu: "1", memory: 8Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # The annotation file recorded in Bloom as the version's next build of its source
+    # (go-pathways upload-annotation): started, uploaded to genome-references, and finished.
+    - name: upload-annotation
+      inputs:
+        parameters:
+          - name: run-id
+          - name: source
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command:
+          - run-with-log
+          - --path
+          - "scrna/{{workflow.name}}/upload-annotation.log"
+          - --
+          - go-pathways
+          - upload-annotation
+          - --file
+          - "/shared/runs/{{inputs.parameters.run-id}}/annotation/{{inputs.parameters.source}}.json.gz"
+        resources:
+          requests: {cpu: "0.5", memory: 2Gi}
+          limits: {cpu: "0.5", memory: 2Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # The enrichment file recorded in Bloom as a run of the dataset's analysis against the build
+    # (go-pathways upload-enrichment), linking the dataset to the build's genome version first
+    # when it has none.
+    - name: upload-enrichment
+      inputs:
+        parameters:
+          - name: run-id
+          - name: annotation-build-id
+          - name: rnaseq-run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/upload-enrichment.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            args=(upload-enrichment --file "/shared/runs/${RUN_ID}/enrichment.json.gz"
+                  --build-id "${BUILD_ID}")
+            if [ -n "${RNASEQ_RUN_ID}" ]; then args+=(--rnaseq-run-id "${RNASEQ_RUN_ID}"); fi
+            go-pathways "${args[@]}"
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: BUILD_ID, value: "{{inputs.parameters.annotation-build-id}}"}
+          - {name: RNASEQ_RUN_ID, value: "{{inputs.parameters.rnaseq-run-id}}"}
+        resources:
+          requests: {cpu: "0.5", memory: 1Gi}
+          limits: {cpu: "0.5", memory: 1Gi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # Delete /shared/runs/<run-id>/ and <run-id>.genome/ once the result is in Bloom.
+    - name: cleanup
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            case "${RUN_ID}" in
+              ""|.|..|*/*) echo "refusing to delete: bad run id '${RUN_ID}'"; exit 1 ;;
+            esac
+            for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome"; do
+              if [ -d "${target}" ]; then rm -rf -- "${target}"; fi
+              echo "removed ${target}"
+            done
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+        resources:
+          requests: {cpu: "0.5", memory: 512Mi}
+          limits: {cpu: "0.5", memory: 512Mi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
+
+    # The logs of the steps without run-with-log (proteins, eggnog-db, emapper), from
+    # /shared/runs/<run-id>/logs/ into run-logs; the hand-run Workflow calls it on exit.
+    - name: upload-logs
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.12
+        command: [bash, -c]
+        args:
+          - |
+            for f in "/shared/runs/${RUN_ID}/logs/"*.log; do
+              [ -f "${f}" ] && run-with-log --put "${f}" --bucket run-logs \
+                --path "scrna/${WORKFLOW}/$(basename "${f}")" --content-type text/plain
+            done
+            exit 0
+        env:
+          - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
+          - {name: WORKFLOW, value: "{{workflow.name}}"}
+        resources:
+          requests: {cpu: "0.5", memory: 512Mi}
+          limits: {cpu: "0.5", memory: 512Mi}
+        volumeMounts:
+          - {name: bloom-credentials, mountPath: /etc/bloom, readOnly: true}
+          - {name: shared, mountPath: /shared}
+      volumes:
+        - name: shared
+          hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}

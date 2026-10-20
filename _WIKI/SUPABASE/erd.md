@@ -35,6 +35,7 @@ erDiagram
 "public.gene_candidate_scientists" }o--|| "public.people" : "FOREIGN KEY (scientist_id) REFERENCES people(id)"
 "public.scrna_datasets" }o--|| "public.species" : "FOREIGN KEY (species_id) REFERENCES species(id)"
 "public.scrna_datasets" }o--o| "public.people" : "FOREIGN KEY (scientist_id) REFERENCES people(id)"
+"public.scrna_datasets" }o--o| "public.genome_reference_versions" : "FOREIGN KEY (genome_version_id) REFERENCES genome_reference_versions(id)"
 "public.scrna_cells" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_cells" }o--|| "public.scrna_clusters" : "FOREIGN KEY (dataset_id, cluster_id) REFERENCES scrna_clusters(dataset_id, cluster_id) ON UPDATE CASCADE ON DELETE RESTRICT NOT VALID"
 "public.scrna_cells" }o--|| "public.scrna_genotypes" : "FOREIGN KEY (dataset_id, genotype_id) REFERENCES scrna_genotypes(dataset_id, id) ON DELETE RESTRICT"
@@ -117,6 +118,11 @@ erDiagram
 "public.cyl_pipeline_run_workflows" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
 "public.genome_references" }o--|| "public.species" : "FOREIGN KEY (species_id) REFERENCES species(id)"
 "public.genome_reference_versions" }o--|| "public.genome_references" : "FOREIGN KEY (genome_id) REFERENCES genome_references(id)"
+"public.genome_annotation_builds" }o--|| "public.genome_reference_versions" : "FOREIGN KEY (version_id) REFERENCES genome_reference_versions(id)"
+"public.scrna_enrichment_runs" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
+"public.scrna_enrichment_runs" }o--|| "public.scrna_de_runs" : "FOREIGN KEY (dataset_id, de_run_id) REFERENCES scrna_de_runs(dataset_id, id)"
+"public.scrna_enrichment_runs" }o--o| "public.rnaseq_runs" : "FOREIGN KEY (rnaseq_run_id) REFERENCES rnaseq_runs(id)"
+"public.scrna_enrichment_runs" }o--|| "public.genome_annotation_builds" : "FOREIGN KEY (annotation_build_id) REFERENCES genome_annotation_builds(id)"
 
 "public.species" {
   bigint id
@@ -352,6 +358,7 @@ erDiagram
   timestamp_with_time_zone ingested_at
   text markers_method
   text kind
+  bigint genome_version_id FK
 }
 "public.scrna_cells" {
   bigint id
@@ -1139,5 +1146,41 @@ erDiagram
   timestamp_with_time_zone ready_at
   text withdrawn_reason
   timestamp_with_time_zone withdrawn_at
+}
+"public.genome_annotation_builds" {
+  bigint id
+  bigint version_id FK
+  text source
+  integer build
+  text status
+  jsonb tool_versions
+  text file_path
+  text file_sha256
+  bigint file_bytes
+  integer gene_count
+  bigint term_count
+  uuid created_by
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone ready_at
+  text withdrawn_reason
+  timestamp_with_time_zone withdrawn_at
+}
+"public.scrna_enrichment_runs" {
+  bigint id
+  bigint dataset_id FK
+  bigint de_run_id FK
+  bigint annotation_build_id FK
+  bigint rnaseq_run_id FK
+  text status
+  jsonb params
+  text file_path
+  text file_sha256
+  bigint file_bytes
+  integer term_count
+  integer background_genes
+  integer annotated_genes
+  uuid created_by
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone ready_at
 }
 ```
