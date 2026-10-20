@@ -11,11 +11,13 @@ import Select from "@mui/material/Select";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 
+import Link from "next/link";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { fetchComparisons } from "@/components/expression-differential-analysis";
 import {
   clustersOf,
   fetchLatestEnrichment,
+  fetchRunMakingEnrichment,
   geneRatio,
   goTermUrl,
   keggMapUrl,
@@ -62,7 +64,7 @@ const SHORT_KIND: Record<TermKind, string> = {
 
 type Loaded =
   | { state: "loading" }
-  | { state: "none" }
+  | { state: "none"; runId: number | null }
   | { state: "error"; message: string }
   | { state: "ready"; file: EnrichmentFile; clusters: ClusterChoice[] };
 
@@ -86,15 +88,15 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
     const supabase = createClientSupabaseClient();
     fetchLatestEnrichment(supabase, datasetId)
       .then(async (found) => {
-        if (!found) return null;
+        if (!found) return { runId: await fetchRunMakingEnrichment(supabase, datasetId) };
         // Which cluster each comparison belongs to, from the analysis the file tested.
         const rows = await fetchComparisons(supabase, found.file.de_run_id);
         return { file: found.file, clusters: clustersOf(found.file, rows) };
       })
       .then((ready) => {
         if (cancelled) return;
-        if (!ready) {
-          setLoaded({ state: "none" });
+        if ("runId" in ready) {
+          setLoaded({ state: "none", runId: ready.runId ?? null });
           return;
         }
         setLoaded({ state: "ready", ...ready });
@@ -127,7 +129,14 @@ export function ExpressionGoPathways({ datasetId }: ExpressionGoPathwaysProps) {
     );
   }
   if (loaded.state === "none") {
-    return (
+    return loaded.runId != null ? (
+      <Alert severity="info">
+        GO and pathway results are being made.{" "}
+        <Link href={`/app/rnaseq-runs/${loaded.runId}`} className="underline">
+          See the run
+        </Link>
+      </Alert>
+    ) : (
       <Alert severity="info">
         No GO or pathway results for this dataset yet.
       </Alert>

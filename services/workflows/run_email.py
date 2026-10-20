@@ -5,7 +5,7 @@ The status poller calls notify() in the pass that records the run's final status
 the requester's email up with rnaseq_run_requesters and sends one plain-text message through
 Salk's mail relay (the SMTP_* settings GoTrue's sign-in emails use): the outcome and its
 message, a link to the run page, a link to the dataset it loaded once the run is linked to it
-and, for a run on an S3 folder, a reminder to remove Bloom's access to it if it was shared. Without SMTP_HOST (dev) nothing is sent. A failure is logged
+(its GO & pathways tab when the run made those results) and, for a run on an S3 folder, a reminder to remove Bloom's access to it if it was shared. Without SMTP_HOST (dev) nothing is sent. A failure is logged
 and never changes the run.
 """
 
@@ -15,6 +15,8 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from email.utils import formataddr
+
+from rnaseq_status import GO_STEPS, PHASES_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +48,25 @@ def dataset_page(run: dict, dataset_id) -> str | None:
     return f"{SITE_URL}/app/expression/{species_id}/{dataset_id}"
 
 
+def _go_outcome(status) -> str | None:
+    """"made" or "missed" for a run that had the GO steps; None for one that didn't."""
+    phases = (status.step_pods or {}).get(PHASES_KEY)
+    if not isinstance(phases, dict) or not phases.keys() & set(GO_STEPS):
+        return None
+    return "made" if phases.get("go-pathways") == "Succeeded" else "missed"
+
+
 def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
     """The message for a finished run; `status` is its recorded RunStatus, and `dataset_id`
     the dataset the run was linked to, if any."""
     params = run.get("params") or {}
     sample = params.get("sample") or "your sample"
     outcome = OUTCOMES[status.status]
+    explore = dataset_page(run, dataset_id) if status.status == "succeeded" else None
+    go = _go_outcome(status) if explore else None
+    if go == "missed":
+        # The dataset and its analysis are in Bloom; only GO & pathways are missing.
+        outcome += " without GO & pathways"
     lines = [
         f"Your Cell Ranger run on {sample} (reference {params.get('reference')}) {outcome}.",
         "",
@@ -59,9 +74,10 @@ def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
     if status.message:
         lines += [status.message, ""]
     lines += [f"See the run: {run_page(run['id'])}"]
-    explore = dataset_page(run, dataset_id) if status.status == "succeeded" else None
     if explore:
         lines += [f"Explore the dataset: {explore}"]
+        if go == "made":
+            lines += [f"See its GO & pathways: {explore}?tab=go"]
     if params.get("fastq_url"):
         lines += [
             "",

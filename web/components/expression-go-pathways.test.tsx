@@ -15,6 +15,7 @@ const fetched = vi.hoisted(() => ({
   result: null as unknown,
   error: null as Error | null,
   rows: [] as { cluster_id: string; contrast: string | null }[],
+  runId: null as number | null,
 }));
 
 vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
@@ -27,6 +28,7 @@ vi.mock("@/components/expression-lib/enrichment", async (original) => ({
     if (fetched.error) throw fetched.error;
     return fetched.result;
   },
+  fetchRunMakingEnrichment: async () => fetched.runId,
 }));
 
 import { ExpressionGoPathways, shareLabel } from "./expression-go-pathways";
@@ -59,6 +61,7 @@ beforeEach(() => {
                             file_path: "enrichment/25/run-9.json.gz", ready_at: null },
                      file: FILE };
   fetched.error = null;
+  fetched.runId = null;
   fetched.rows = [{ cluster_id: "2", contrast: "2_vs_rest" },
                   { cluster_id: "10", contrast: "10_vs_rest" }];
 });
@@ -178,6 +181,15 @@ describe("ExpressionGoPathways", () => {
     render(<ExpressionGoPathways datasetId={25} />);
     expect(await screen.findByText(/No GO or pathway results for this dataset yet/i))
       .toBeTruthy();
+  });
+
+  it("says the results are being made while the dataset's run is still going", async () => {
+    fetched.result = null;
+    fetched.runId = 42;
+    render(<ExpressionGoPathways datasetId={25} />);
+    expect(await screen.findByText(/GO and pathway results are being made/i)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "See the run" }).getAttribute("href"))
+      .toBe("/app/rnaseq-runs/42");
   });
 
   it("shows the chosen cluster's own terms when the cluster changes", async () => {

@@ -15,20 +15,25 @@ import { ExpressionThemeProvider } from "@/components/expression-theme-provider"
 import type { DeFocus } from "@/components/expression-lib/de-types";
 
 type Tab = "umap" | "genes" | "de" | "go"; // | "correlation" | "download";
+const TABS: readonly Tab[] = ["umap", "genes", "de", "go"];
 
 export interface ExpressionCockpitProps {
   datasetId: number;
   datasetName: string;
+  /** The tab to open on, e.g. "go" from a link; an unknown one opens UMAP. */
+  initialTab?: string;
 }
 
 /** Five-tab cockpit around a dataset: UMAP, gene-level, correlation, DE, downloads. */
 export function ExpressionCockpit({
   datasetId,
   datasetName,
+  initialTab,
 }: ExpressionCockpitProps) {
-  const [tab, setTab] = useState<Tab>("umap");
+  const first = TABS.find((t) => t === initialTab) ?? "umap";
+  const [tab, setTab] = useState<Tab>(first);
   // A tab stays on the page once opened, hidden while another shows, so it keeps its choices and data.
-  const [opened, setOpened] = useState<ReadonlySet<Tab>>(() => new Set<Tab>(["umap"]));
+  const [opened, setOpened] = useState<ReadonlySet<Tab>>(() => new Set<Tab>([first]));
   const open = (next: Tab) => {
     setTab(next);
     setOpened((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));

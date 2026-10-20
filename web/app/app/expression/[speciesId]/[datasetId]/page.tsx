@@ -14,10 +14,13 @@ import { METRICS_SUMMARY, WEB_SUMMARY, keyMetrics, parseMetrics, readReport, sto
 
 export default async function Dataset({
   params,
+  searchParams,
 }: {
   params: Promise<{ datasetId: string; speciesId: string }>;
+  searchParams?: Promise<{ tab?: string | string[] }>;
 }) {
   const { datasetId, speciesId } = await params;
+  const { tab } = (await searchParams) ?? {};
   const datasetIdNum = Number(datasetId);
   const speciesIdNum = Number(speciesId);
   if (!Number.isFinite(datasetIdNum) || !Number.isFinite(speciesIdNum)) notFound();
@@ -97,7 +100,11 @@ export default async function Dataset({
 
       {qc ? <ExpressionDatasetQc {...qc} /> : null}
 
-      <ExpressionCockpit datasetId={datasetIdNum} datasetName={dataset.name} />
+      <ExpressionCockpit
+        datasetId={datasetIdNum}
+        datasetName={dataset.name}
+        initialTab={typeof tab === "string" ? tab : undefined}
+      />
     </div>
   );
 }

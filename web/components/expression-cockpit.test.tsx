@@ -73,6 +73,15 @@ describe("ExpressionCockpit", () => {
     expect(screen.queryByTestId("go-body")).toBeNull();
   });
 
+  it("opens on the tab a link names, and on the map for an unknown one", () => {
+    render(<ExpressionCockpit datasetId={1} datasetName="ds" initialTab="go" />);
+    expect(isShown("go-body")).toBe(true);
+    expect(screen.queryByTestId("umap-body")).toBeNull();
+    cleanup();
+    render(<ExpressionCockpit datasetId={1} datasetName="ds" initialTab="nope" />);
+    expect(isShown("umap-body")).toBe(true);
+  });
+
   it("keeps a tab and everything in it when you leave it and come back", () => {
     render(<ExpressionCockpit datasetId={1} datasetName="ds" />);
     tab("Genes by cell type");

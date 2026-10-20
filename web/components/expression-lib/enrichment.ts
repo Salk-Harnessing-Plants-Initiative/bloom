@@ -167,6 +167,23 @@ export async function fetchLatestEnrichment(
   return { run, file: decodeEnrichment(bytes, datasetId) };
 }
 
+/** The pipeline run still working on the dataset, which makes its GO and pathway results
+ * after loading it, or null. */
+export async function fetchRunMakingEnrichment(
+  supabase: Client,
+  datasetId: number,
+): Promise<number | null> {
+  const { data, error } = await supabase
+    .from("rnaseq_runs")
+    .select("id")
+    .eq("dataset_id", datasetId)
+    .in("status", ["submitted", "running"])
+    .order("id", { ascending: false })
+    .limit(1);
+  if (error) throw new Error(error.message);
+  return (data?.[0] as { id: number } | undefined)?.id ?? null;
+}
+
 const clusterNumber = (comparison: string) => {
   const n = Number.parseInt(comparison, 10);
   return Number.isNaN(n) ? Number.POSITIVE_INFINITY : n;
