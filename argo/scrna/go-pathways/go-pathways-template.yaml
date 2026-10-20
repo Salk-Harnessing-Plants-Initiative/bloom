@@ -103,14 +103,17 @@ spec:
 
     # One dataset: fetch-annotation alongside fetch-de -> enrich -> upload-enrichment -> cleanup.
     # Tests the dataset's newest complete differential expression analysis (or de-run-id)
-    # against a ready annotation build from Bloom, and records the result as an enrichment run.
+    # against its genome version's ready annotation from Bloom, and records the result as an
+    # enrichment run.
     - name: scrna-enrichment
       inputs:
         parameters:
           - name: dataset-id
           - name: run-id
-          # A ready annotation build of the dataset's genome version (its id in Bloom).
-          - name: annotation-build-id
+          # The dataset's genome version, <genome>.v<N>, and the annotation's source.
+          - name: genome
+          - name: source
+            value: eggnog
           - name: de-run-id
             value: ""
           # The pipeline job that asked for it, when there is one.
@@ -129,7 +132,8 @@ spec:
             arguments:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
-                - {name: annotation-build-id, value: "{{inputs.parameters.annotation-build-id}}"}
+                - {name: genome, value: "{{inputs.parameters.genome}}"}
+                - {name: source, value: "{{inputs.parameters.source}}"}
           - name: fetch-de
             template: fetch-de
             arguments:
@@ -156,7 +160,6 @@ spec:
             arguments:
               parameters:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}"}
-                - {name: annotation-build-id, value: "{{inputs.parameters.annotation-build-id}}"}
                 - {name: rnaseq-run-id, value: "{{inputs.parameters.rnaseq-run-id}}"}
           - name: cleanup
             template: cleanup
@@ -206,19 +209,23 @@ spec:
         - name: shared
           hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
 
-    # A ready annotation build's file from Bloom, checked against its checksum, into
-    # /shared/runs/<run-id>/annotation.json.gz, and its name into annotation.label.
+    # The genome version's ready annotation from Bloom, checked against its checksum, into
+    # /shared/runs/<run-id>/annotation.json.gz; its name into annotation.label, its id into
+    # annotation.build-id.
     - name: fetch-annotation
       inputs:
         parameters:
           - name: run-id
-          - name: annotation-build-id
+          - name: genome
+          - name: source
+            value: eggnog
       schedulerName: runai-scheduler
       priorityClassName: high
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # 1: Bloom couldn't be reached; 16 and 19 (no such ready build, or a mismatched file) won't fix themselves.
+        # 1: Bloom couldn't be reached; 3 (no ready annotation, or a mismatched file), 4 (still
+        # uploading) and 16 won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == 1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.13
@@ -226,13 +233,21 @@ spec:
         args:
           - |
             set -euo pipefail
+            [ -s /etc/bloom/credentials.txt ] || { echo "ERROR: no Bloom credentials at /etc/bloom" >&2; exit 16; }
+            HOME="$(mktemp -d)" && export HOME
+            mkdir -p "${HOME}/.bloom"
+            install -m 600 /etc/bloom/credentials.txt "${HOME}/.bloom/credentials.txt"
             run="/shared/runs/${RUN_ID}"
             mkdir -p "${run}"
-            go-pathways fetch-annotation --build-id "${BUILD_ID}" \
-              --out "${run}/annotation.json.gz" --label-out "${run}/annotation.label"
+            bloomctl genome annotation download "${GENOME}" --source "${SOURCE}" \
+              --out "${run}/annotation.json.gz" --id-file "${run}/annotation.build-id" \
+              > "${run}/annotation.found"
+            cut -d' ' -f1 "${run}/annotation.found" > "${run}/annotation.label"
+            echo "using $(cat "${run}/annotation.found")"
         env:
           - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
-          - {name: BUILD_ID, value: "{{inputs.parameters.annotation-build-id}}"}
+          - {name: GENOME, value: "{{inputs.parameters.genome}}"}
+          - {name: SOURCE, value: "{{inputs.parameters.source}}"}
         resources:
           requests: {cpu: "0.5", memory: 1Gi}
           limits: {cpu: "0.5", memory: 1Gi}
@@ -548,7 +563,7 @@ spec:
           hostPath: {path: /hpi/hpi_dev/users/bfernando/scrna, type: Directory}
 
     # The annotation file recorded in Bloom as the version's next build of its source
-    # (go-pathways upload-annotation): started, uploaded to genome-references, and finished.
+    # (bloomctl genome annotation upload): started, uploaded to genome-references, and finished.
     - name: upload-annotation
       inputs:
         parameters:
@@ -594,7 +609,6 @@ spec:
       inputs:
         parameters:
           - name: run-id
-          - name: annotation-build-id
           - name: rnaseq-run-id
       schedulerName: runai-scheduler
       priorityClassName: high
@@ -609,14 +623,13 @@ spec:
             mkdir -p "${HOME}/.bloom"
             install -m 600 /etc/bloom/credentials.txt "${HOME}/.bloom/credentials.txt"
             run="/shared/runs/${RUN_ID}"
-            # A hand run names the build; a Cell Ranger run's annotate-genome steps wrote it.
-            build="${BUILD_ID:-$(cat "${run}/annotation.build-id")}"
+            # The annotation's id, written where it was fetched or uploaded.
+            build="$(cat "${run}/annotation.build-id")"
             args=(scrna enrichment upload "${run}/enrichment.json.gz" --build-id "${build}")
             if [ -n "${RNASEQ_RUN_ID}" ]; then args+=(--run-id "${RNASEQ_RUN_ID}"); fi
             bloomctl "${args[@]}"
         env:
           - {name: RUN_ID, value: "{{inputs.parameters.run-id}}"}
-          - {name: BUILD_ID, value: "{{inputs.parameters.annotation-build-id}}"}
           - {name: RNASEQ_RUN_ID, value: "{{inputs.parameters.rnaseq-run-id}}"}
         resources:
           requests: {cpu: "0.5", memory: 1Gi}
