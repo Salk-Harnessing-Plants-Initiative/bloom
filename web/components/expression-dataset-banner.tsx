@@ -6,7 +6,7 @@ import {
 import { DatasetReads, readsSource, type ReadsSource } from "@/components/expression-dataset-reads";
 import { datasetRunId } from "@/components/expression-dataset-origin";
 import { fetchRun } from "@/lib/rnaseq-runs";
-import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 type Props = {
   datasetId: number;
@@ -54,8 +54,8 @@ async function fetchReadsSource(
 ): Promise<ReadsSource | null> {
   if (runId === null) return null;
   try {
-    const [run, user] = await Promise.all([fetchRun(supabase, runId), getUser()]);
-    return run ? readsSource(run, user?.id ?? null) : null;
+    const run = await fetchRun(supabase, runId);
+    return run ? readsSource(run) : null;
   } catch {
     return null;
   }

@@ -1,23 +1,19 @@
 import Link from "next/link";
-import { requesterText } from "@/lib/cyl-pipeline/run-text";
 import { runHref } from "@/lib/rnaseq-reports";
 import { runFastqUrl, runSraRuns, type RnaseqRun } from "@/lib/rnaseq-runs";
+import { sraRunUrl } from "@/lib/sra-runs";
 
 /** Where a pipeline dataset's reads came from: SRA (with the form's source link), or an S3
- * folder whose owner is the person who started the run. */
+ * folder, which isn't named. */
 export type ReadsSource =
   | { kind: "sra"; runId: number; sraRuns: string[]; sourceUrl: string | null }
-  | { kind: "s3"; runId: number; requester: string };
-
-const SRA_RUN_URL = "https://www.ncbi.nlm.nih.gov/sra/";
+  | { kind: "s3"; runId: number };
 
 /** The run's reads source, or null for a run that records neither SRA runs nor an S3 folder. */
-export function readsSource(run: RnaseqRun, currentUserId: string | null): ReadsSource | null {
+export function readsSource(run: RnaseqRun): ReadsSource | null {
   const sraRuns = runSraRuns(run);
   if (sraRuns.length > 0) return { kind: "sra", runId: run.id, sraRuns, sourceUrl: webLink(run) };
-  if (runFastqUrl(run)) {
-    return { kind: "s3", runId: run.id, requester: requesterText(run.requested_by, currentUserId) };
-  }
+  if (runFastqUrl(run)) return { kind: "s3", runId: run.id };
   return null;
 }
 
@@ -36,43 +32,35 @@ export function DatasetReads({ source }: { source: ReadsSource }) {
       run {source.runId}
     </Link>
   );
-  if (source.kind === "sra") {
-    const sraLinks = new Set(source.sraRuns.map((id) => `${SRA_RUN_URL}${id}`));
+  const label = <span className="uppercase tracking-widest text-[10px] text-stone-500">Reads</span>;
+  if (source.kind === "s3") {
     return (
       <p className="mt-3 text-xs text-stone-600">
-        <span className="uppercase tracking-widest text-[10px] text-stone-500">Reads</span>{" "}
-        from SRA{" "}
-        {source.sraRuns.map((id, i) => (
-          <span key={id}>
-            {i > 0 ? ", " : null}
-            <a href={`${SRA_RUN_URL}${id}`} target="_blank" rel="noreferrer" className={linkClass}>
-              {id}
-            </a>
-          </span>
-        ))}
-        {source.sourceUrl && !sraLinks.has(source.sourceUrl) ? (
-          <>
-            {" · source "}
-            <a href={source.sourceUrl} target="_blank" rel="noreferrer" className={linkClass}>
-              {source.sourceUrl}
-            </a>
-          </>
-        ) : null}{" "}
-        · {run}
+        {label} uploaded via S3 · {run}
       </p>
     );
   }
+  const sraLinks = new Set(source.sraRuns.map(sraRunUrl));
   return (
     <p className="mt-3 text-xs text-stone-600">
-      <span className="uppercase tracking-widest text-[10px] text-stone-500">Reads</span>{" "}
-      {source.requester === "you" ? (
-        <>from your S3 folder · {run}</>
-      ) : (
+      {label} from SRA{" "}
+      {source.sraRuns.map((id, i) => (
+        <span key={`${i}-${id}`}>
+          {i > 0 ? ", " : null}
+          <a href={sraRunUrl(id)} target="_blank" rel="noreferrer" className={linkClass}>
+            {id}
+          </a>
+        </span>
+      ))}
+      {source.sourceUrl && !sraLinks.has(source.sourceUrl) ? (
         <>
-          from an S3 folder; for the raw reads, contact the person who started {run} (
-          {source.requester})
+          {" · source "}
+          <a href={source.sourceUrl} target="_blank" rel="noreferrer" className={linkClass}>
+            {source.sourceUrl}
+          </a>
         </>
-      )}
+      ) : null}{" "}
+      · {run}
     </p>
   );
 }
