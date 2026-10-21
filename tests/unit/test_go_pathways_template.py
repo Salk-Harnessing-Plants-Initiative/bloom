@@ -183,3 +183,12 @@ def test_enrich_waits_for_both_the_annotation_and_the_analysis():
     tasks = {t["name"]: t for t in STEPS["scrna-enrichment"]["dag"]["tasks"]}
     needed = set(tasks["enrich"]["depends"].replace("&&", " ").split())
     assert needed == {"fetch-annotation", "fetch-de"}
+
+
+@pytest.mark.parametrize("name, limit", [("proteins", 2), ("eggnog-db", 2), ("emapper", 1)])
+def test_the_eggnog_steps_try_again_when_the_cluster_rejects_their_pod(name, limit):
+    # A node without room rejects the pod before it runs; it has no exit code to test.
+    retry = STEPS[name]["retryStrategy"]
+    assert retry["limit"] == limit and retry["retryPolicy"] == "Always"
+    assert "expression" not in retry
+    assert retry["backoff"]["duration"].endswith("m")
