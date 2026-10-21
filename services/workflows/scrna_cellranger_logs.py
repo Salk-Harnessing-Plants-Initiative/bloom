@@ -22,6 +22,8 @@ STEPS = tuple(dict.fromkeys(CELLRANGER_STEPS.values())) + RETIRED_CELLRANGER_STE
 # Where run-with-log saves each step's log.
 LOGS_BUCKET = "run-logs"
 LOG_PREFIX = "scrna"
+# Templates whose log file isn't named after them (their run-with-log --path).
+LOG_NAMES = {"stage-sample": "stage"}
 # How much of a log one request returns: its last lines, capped in size.
 TAIL_LINES = 2000
 LIMIT_BYTES = 1024 * 1024
@@ -91,7 +93,7 @@ def read_step_log(run_id: int, step) -> dict:
         raise HTTPException(
             status_code=500, detail=f"Run {run_id} has an invalid pod for step {step}"
         )
-    path = f"{LOG_PREFIX}/{rows[0]['argo_workflow_name']}/{template}.log"
+    path = f"{LOG_PREFIX}/{rows[0]['argo_workflow_name']}/{LOG_NAMES.get(template, template)}.log"
     try:
         data = app_client().storage.from_(LOGS_BUCKET).download(path)
     except Exception as exc:  # noqa: BLE001 - storage3 and httpx raise several kinds

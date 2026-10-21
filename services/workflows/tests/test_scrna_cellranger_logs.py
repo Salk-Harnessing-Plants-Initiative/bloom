@@ -2,10 +2,14 @@
 run-logs bucket, a log not saved yet, storage errors, truncation and the route (no database
 or storage)."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+import rnaseq_status
 import scrna_cellranger_logs as logs
 USER = "00000000-0000-0000-0000-000000000001"
 WORKFLOW = "scrna-cellranger-dev-7-abcd1234"
@@ -134,6 +138,11 @@ def test_a_started_steps_log_is_returned(db, pod_log):
         "truncated": False,
     }
     assert pod_log["calls"] == [("run-logs", f"scrna/{WORKFLOW}/count.log")]
+
+
+def test_the_stage_steps_log_is_read_from_stage_log(db, pod_log):
+    logs.read_step_log(7, "stage")
+    assert pod_log["calls"] == [("run-logs", f"scrna/{WORKFLOW}/stage.log")]
 
 
 def test_a_steps_log_is_named_for_its_template():
@@ -333,3 +342,37 @@ def test_the_route_is_rate_limited(app_as_user, db, pod_log, monkeypatch):
     assert app_as_user.get(url, params=params).status_code == 200
     assert app_as_user.get(url, params=params).status_code == 429
     assert len(pod_log["calls"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The log each template saves
+# --------------------------------------------------------------------------- #
+
+ARGO = Path(__file__).resolve().parents[3] / "argo" / "scrna"
+TEMPLATE_FILES = (
+    ARGO / "cellranger" / "cellranger-count-template.yaml",
+    ARGO / "go-pathways" / "go-pathways-template.yaml",
+)
+# Steps whose own image has no run-with-log; their logs aren't in the bucket.
+NO_SAVED_LOG = {"proteins", "eggnog-db", "emapper"}
+
+
+def _saved_logs() -> dict[str, str]:
+    """Each template's run-with-log --path file name, from the template files."""
+    saved = {}
+    for path in TEMPLATE_FILES:
+        for template in yaml.safe_load(path.read_text())["spec"]["templates"]:
+            command = (template.get("container") or {}).get("command") or []
+            if command[:2] == ["run-with-log", "--path"]:
+                saved[template["name"]] = command[2].rsplit("/", 1)[-1]
+    return saved
+
+
+def test_every_steps_log_is_read_from_the_file_its_template_saves():
+    saved = _saved_logs()
+    for template in rnaseq_status.CELLRANGER_STEPS:
+        if template in NO_SAVED_LOG:
+            assert template not in saved, f"{template} now saves its log; drop it from NO_SAVED_LOG"
+            continue
+        assert template in saved, f"{template} saves no log with run-with-log"
+        assert f"{logs.LOG_NAMES.get(template, template)}.log" == saved[template], template
