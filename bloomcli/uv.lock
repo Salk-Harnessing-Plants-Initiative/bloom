@@ -98,7 +98,7 @@ wheels = [
 
 [[package]]
 name = "bloomctl"
-version = "0.1.0a18"
+version = "0.1.0a19"
 source = { editable = "." }
 dependencies = [
     { name = "anndata", version = "0.12.19", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -141,7 +141,7 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6" },
     { name = "rich", specifier = ">=13.0" },
     { name = "sleap-roots-contracts", specifier = ">=0.1.0a9" },
-    { name = "supabase", specifier = ">=2.0.0,<3" },
+    { name = "supabase", specifier = ">=2.31.0,<3" },
 ]
 provides-extras = ["test"]
 

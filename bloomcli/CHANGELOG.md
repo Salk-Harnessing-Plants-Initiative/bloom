@@ -8,6 +8,18 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a19] - 2026-10-21 — parallel gene uploads no longer collide
+
+### Fixed
+
+- `scrna hdf5 upload` no longer stops with "deque mutated during iteration" while uploading gene
+  counts. Each upload thread now sends through its own storage connection; sharing one HTTP/2
+  connection between threads corrupted its header table.
+
+### Changed
+
+- Needs `supabase` 2.31 or newer (was 2.0), the version the per-thread connections were tested with.
+
 ## [0.1.0a18] - 2026-10-21 — resend dropped gene uploads
 
 ### Fixed

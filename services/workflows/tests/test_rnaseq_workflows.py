@@ -66,14 +66,46 @@ def _params(task: dict) -> dict:
 
 def test_the_name_is_fixed_per_run():
     assert wfs.cellranger_workflow_name(RUN) == wfs.cellranger_workflow_name(dict(RUN))
-    assert re.fullmatch(
-        r"scrna-cellranger-staging-7-[0-9a-f]{8}", wfs.cellranger_workflow_name(RUN)
-    )
+    assert re.fullmatch(r"scrna-staging-7-[0-9a-f]{8}", wfs.cellranger_workflow_name(RUN))
 
 
 def test_a_reused_run_id_with_another_run_key_gets_another_name():
     other = {**RUN, "run_key": "root_a__tair10__00000000-0000-0000-0000-000000000002"}
     assert wfs.cellranger_workflow_name(other) != wfs.cellranger_workflow_name(RUN)
+
+
+def test_the_earlier_name_is_the_one_runs_were_submitted_under_before_the_rename():
+    earlier = wfs.CELLRANGER.earlier_names(RUN)
+    assert earlier == [wfs.cellranger_workflow_name(RUN).replace("scrna-", "scrna-cellranger-", 1)]
+    assert re.fullmatch(r"scrna-cellranger-staging-7-[0-9a-f]{8}", earlier[0])
+
+
+def _template_names() -> list[str]:
+    """Every template a Cell Ranger run's pods can be named after, in both Argo files."""
+    files = [ARGO_DIR / "cellranger-count-template.yaml",
+             REPO_ROOT / "argo" / "scrna" / "go-pathways" / "go-pathways-template.yaml"]
+    return [t["name"] for f in files
+            for t in yaml.safe_load(f.read_text(encoding="utf-8"))["spec"]["templates"]]
+
+
+def test_the_longest_template_name_is_the_one_the_name_budget_allows_for():
+    # A longer step name would push its pods past Run:ai's 63-character label and leave them
+    # pending forever (staging run 12's fetch-references); raise LONGEST_TEMPLATE_NAME with it.
+    assert max(map(len, _template_names())) <= wfs.LONGEST_TEMPLATE_NAME
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_every_step_pod_name_fits_run_ais_label_for_a_billion_runs(monkeypatch, env):
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", env)
+    name = wfs.cellranger_workflow_name({**RUN, "run_id": 10**9})
+    longest_pod = f"{name}-{max(_template_names(), key=len)}-{'9' * wfs.NODE_ID_DIGITS}"
+    assert len(longest_pod) <= wfs.POD_NAME_MAX
+
+
+def test_a_name_too_long_for_its_pods_is_refused_not_left_pending(monkeypatch):
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "a-very-long-environment-label")
+    with pytest.raises(wfs.UnrunnableRun, match="over 34 characters"):
+        wfs.cellranger_workflow_name(RUN)
 
 
 @pytest.mark.parametrize("env", ["", "Staging", "stag ing", "-dev", "dev_1"])
