@@ -92,6 +92,11 @@ class Storage:
         return Bucket(self.client, bucket)
 
 
+# A gene file upload is sent once and repeated after each REPEAT_DELAYS_S wait, so a fault
+# that should stop the load has to last that many tries.
+UPLOAD_TRIES = 4
+
+
 class FakeClient:
     """Tables are lists of dicts; inserted rows get an increasing `id`."""
 
@@ -107,18 +112,20 @@ class FakeClient:
     def table(self, name):
         return Query(self, name)
 
-    def fail(self, when, error, *, commit=False):
-        """Raise `error` on the first request where when(op, table, payload) holds.
+    def fail(self, when, error, *, commit=False, times=1):
+        """Raise `error` on the first `times` requests where when(op, table, payload) holds.
 
         With `commit`, the request takes effect first, the way a write can commit on
         the server after the client has given up on it.
         """
-        self.faults.append({"when": when, "error": error, "commit": commit})
+        self.faults.append({"when": when, "error": error, "commit": commit, "left": times})
 
     def _take_fault(self, op, table, payload):
         for fault in self.faults:
             if fault["when"](op, table, payload):
-                self.faults.remove(fault)
+                fault["left"] -= 1
+                if fault["left"] <= 0:
+                    self.faults.remove(fault)
                 return fault
         return None
 

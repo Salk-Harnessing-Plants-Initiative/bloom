@@ -8,6 +8,7 @@ import httpx
 import pytest
 from postgrest.exceptions import APIError
 from scrna_fake_db import FakeClient
+from storage3.exceptions import StorageApiError
 
 from bloomctl.scrna import _writer
 from bloomctl.scrna._writer import LoadError, Marker, Writer
@@ -98,6 +99,67 @@ def test_a_write_that_failed_outright_stops_without_a_record(tmp_path, error):
     with pytest.raises(LoadError, match="run the same command again to continue"):
         w.write("insert cells 7", send)
     assert len(calls) == 1 and not marker.path.exists()
+
+
+# --- repeatable writes ----------------------------------------------------------
+
+
+def repeating(tmp_path):
+    """A writer that records its waits instead of sleeping."""
+    slept = []
+    marker = Marker(tmp_path / "m.json", wait_s=300, clock=lambda: 1000.0)
+    return Writer(object(), lambda: object(), marker, sleep=slept.append), slept, marker
+
+
+def failing(times, error):
+    calls = []
+
+    def send(client):
+        calls.append(client)
+        if len(calls) <= times:
+            raise error
+        return "ok"
+
+    return send, calls
+
+
+@pytest.mark.parametrize("error", [
+    httpx.RemoteProtocolError("<ConnectionTerminated error_code:1>"),
+    httpx.ReadError("Server disconnected"),
+    httpx.ConnectError("refused"),
+    StorageApiError("upstream timed out", "InternalError", 503),
+], ids=["goaway", "server-disconnected", "never-connected", "storage-503"])
+def test_a_repeatable_write_is_sent_again_after_a_dropped_connection(tmp_path, error):
+    w, slept, marker = repeating(tmp_path)
+    send, calls = failing(2, error)
+    assert w.write("upload counts/x/G1.json", send, repeatable=True) == "ok"
+    assert len(calls) == 3 and slept == list(_writer.REPEAT_DELAYS_S[:2])
+    assert not marker.path.exists()
+
+
+def test_a_repeatable_write_that_keeps_dropping_stops_as_before(tmp_path):
+    w, slept, marker = repeating(tmp_path)
+    send, calls = failing(99, httpx.RemoteProtocolError("dropped"))
+    with pytest.raises(LoadError, match="outcome is unknown"):
+        w.write("upload counts/x/G1.json", send, repeatable=True)
+    assert len(calls) == 1 + len(_writer.REPEAT_DELAYS_S)
+    assert slept == list(_writer.REPEAT_DELAYS_S) and marker.path.exists()
+
+
+def test_a_repeatable_write_that_is_refused_is_not_sent_again(tmp_path):
+    w, slept, _ = repeating(tmp_path)
+    send, calls = failing(99, StorageApiError("permission denied", "Unauthorized", 403))
+    with pytest.raises(LoadError):
+        w.write("upload counts/x/G1.json", send, repeatable=True)
+    assert len(calls) == 1 and slept == []
+
+
+def test_a_write_that_is_not_repeatable_is_never_sent_again_after_a_drop(tmp_path):
+    w, slept, marker = repeating(tmp_path)
+    send, calls = failing(1, httpx.RemoteProtocolError("dropped"))
+    with pytest.raises(LoadError, match="outcome is unknown"):
+        w.write("insert cells 7", send)
+    assert len(calls) == 1 and slept == [] and marker.path.exists()
 
 
 def test_a_fault_here_propagates_and_records_nothing(tmp_path):

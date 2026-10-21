@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+from scrna_fake_db import UPLOAD_TRIES
 from scrna_fixtures import X, write_h5ad
 from test_scrna_cli import _run
 from test_scrna_upload_load import _writes
@@ -39,7 +40,8 @@ def test_an_upload_writes_every_genes_counts_and_finishes_last(tmp_path, env, st
 
 def test_a_load_stopped_during_the_counts_stays_unfinished_and_resumes(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "d.h5ad")
-    env["client"].fail(lambda op, table, payload: op == "upload", httpx.ConnectError("refused"))
+    env["client"].fail(lambda op, table, payload: op == "upload", httpx.ConnectError("refused"),
+                       times=UPLOAD_TRIES)
     stopped = _run("upload", "--yes", str(path))
     assert stopped.exit_code != 0
     assert "the file is stored, but loading it stopped" in stopped.output
@@ -238,7 +240,8 @@ def test_a_file_that_cannot_be_read_during_the_counts_gives_a_plain_message(
 
 def test_a_resume_typed_in_other_capitals_is_refused_before_sending(tmp_path, env, storage):
     path = write_h5ad(tmp_path / "d.h5ad")
-    env["client"].fail(lambda op, table, payload: op == "upload", httpx.ConnectError("refused"))
+    env["client"].fail(lambda op, table, payload: op == "upload", httpx.ConnectError("refused"),
+                       times=UPLOAD_TRIES)
     assert _run("upload", "--yes", str(path)).exit_code != 0
     requests = len(storage.requests)
     result = _run("upload", "--yes", "--name", "myb41", "--species", "Arabidopsis",
@@ -270,7 +273,7 @@ def _recorded_files(client) -> set[str]:
 
 def _fail_on_gene(client, gene):
     client.fail(lambda op, table, payload: op == "upload" and payload.endswith(f"/{gene}.json"),
-                httpx.ConnectError("refused"))
+                httpx.ConnectError("refused"), times=UPLOAD_TRIES)
 
 
 def test_a_load_stopped_after_some_genes_are_recorded_resumes_with_the_rest(
