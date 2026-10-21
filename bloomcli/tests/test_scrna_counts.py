@@ -10,7 +10,7 @@ import json
 
 import httpx
 import pytest
-from scrna_fake_db import UPLOAD_TRIES, FakeClient
+from scrna_fake_db import UPLOAD_TRIES, FakeClient, fail_one_upload
 from test_scrna_genes import MATRIX, expected, write_h5ad
 
 from bloomctl.scrna import _counts, _genes
@@ -110,8 +110,7 @@ def test_a_stopped_write_resumes_to_the_same_rows_and_objects(tmp_path, monkeypa
 
 def test_a_stop_after_an_upload_writes_no_second_row(tmp_path):
     client = FakeClient()
-    client.fail(lambda op, table, payload: op == "upload", httpx.ReadTimeout("slow"), commit=True,
-                times=UPLOAD_TRIES)
+    fail_one_upload(client, httpx.ReadTimeout("slow"), commit=True)
     with pytest.raises(LoadError, match="outcome is unknown"):
         write(client, tmp_path)
     write(client, tmp_path)

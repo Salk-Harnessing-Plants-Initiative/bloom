@@ -97,6 +97,21 @@ class Storage:
 UPLOAD_TRIES = 4
 
 
+def fail_one_upload(client, error, *, commit=False):
+    """Fail every try of one gene's upload (the first one sent), so the load stops whatever
+    order the parallel uploads run in."""
+    first = []
+
+    def when(op, table, payload):
+        if op != "upload":
+            return False
+        if not first:
+            first.append(payload)
+        return payload == first[0]
+
+    client.fail(when, error, commit=commit, times=UPLOAD_TRIES)
+
+
 class FakeClient:
     """Tables are lists of dicts; inserted rows get an increasing `id`."""
 
