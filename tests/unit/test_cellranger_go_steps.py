@@ -33,7 +33,19 @@ def _named(depends):
 
 
 def test_the_pipeline_has_every_go_step():
-    assert set(GO_TASKS) == {"find-annotation"} | BUILD | ENRICH
+    assert set(GO_TASKS) == {"find-annotation", "upload-annotation-logs"} | BUILD | ENRICH
+
+
+def test_the_eggnog_steps_logs_are_saved_once_they_end():
+    # Their images have no run-with-log; upload-logs copies their logs to run-logs.
+    task = GO_TASKS["upload-annotation-logs"]
+    assert task["templateRef"]["template"] == "upload-logs"
+    assert "when" not in task, "it runs even when the annotation was reused or failed"
+    assert _named(task["depends"]) == {"proteins", "eggnog-db", "emapper"}
+    for name in ("proteins", "eggnog-db", "emapper"):
+        outcomes = " || ".join(f"{name}.{o}" for o in OUTCOMES)
+        assert f"({outcomes})" in task["depends"], name
+    assert _passed(task)["run-id"] == "{{inputs.parameters.run-id}}.go"
 
 
 @pytest.mark.parametrize("name", sorted({"find-annotation"} | BUILD | ENRICH))

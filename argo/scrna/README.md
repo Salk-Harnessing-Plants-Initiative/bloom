@@ -237,7 +237,7 @@ The files (`bloom_scrna_analysis/annotation.py` and `enrichment.py`):
 
 ## Step logs
 
-Every step of the Cell Ranger template runs through `run-with-log` (`run_with_log.py`, in both images). It passes the step's output through to the pod's log as before, and keeps a copy in Bloom's `run-logs` bucket at `scrna/<workflow name>/<step>.log`, uploaded every 30 seconds while it grows (`RUN_LOG_INTERVAL` changes that) and once more when the step's command ends, whether it succeeded or failed. The run page reads it from there, so a step's log outlives its pod.
+Every step of the Cell Ranger template runs through `run-with-log` (`run_with_log.py`, in both images). It passes the step's output through to the pod's log as before, and keeps a copy in Bloom's `run-logs` bucket at `scrna/<workflow name>/<step>.log`, uploaded every 30 seconds while it grows (`RUN_LOG_INTERVAL` changes that) and once more when the step's command ends, whether it succeeded or failed. The run page reads it from there, so a step's log outlives its pod. The eggNOG steps (proteins, eggnog-db, emapper) run in images without it; they write `logs/<step>.log` in the run's `.go` folder, and the pipeline's `upload-annotation-logs` task copies those to `run-logs` once they end, before cleanup.
 
 - It signs in with the `bloom-credentials` volume, mounted at `/etc/bloom/credentials.txt`: the environment's pipeline Secret, which the workflows service adds to every RNA-seq workflow. Without it (dev, or a hand-submitted run) the step runs and uploads nothing.
 - An upload never fails a step; the step's exit code is the command's own.

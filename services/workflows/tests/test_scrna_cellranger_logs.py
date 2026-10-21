@@ -241,6 +241,33 @@ def test_a_log_not_saved_yet_is_404(db, pod_log, status, code):
     )
 
 
+def _row(**extra):
+    return {**ROW, **extra}
+
+
+@pytest.mark.parametrize("row, words", [
+    (_row(status="succeeded"), "has no saved log"),
+    (_row(status="running", step_pods={**ROW["step_pods"], "_phases": {"count": "Failed"}}),
+     "has no saved log"),
+    (_row(status="running"), "saves its log every 30 seconds"),
+])
+def test_the_404_says_whether_the_log_is_still_coming(monkeypatch, pod_log, row, words):
+    monkeypatch.setattr(logs, "app_client", lambda: FakeSupabase([row]))
+    pod_log["result"] = StorageError("Object not found", "404")
+    assert words in _status(7, "count")[1]
+
+
+def test_an_eggnog_step_says_its_log_comes_when_it_ends(monkeypatch, pod_log):
+    pods = {"annotate-genome": f"{WORKFLOW}-emapper-5"}
+    monkeypatch.setattr(logs, "app_client",
+                        lambda: FakeSupabase([_row(status="running", step_pods=pods)]))
+    pod_log["result"] = StorageError("Object not found", "404")
+    assert _status(7, "annotate-genome")[1] == (
+        "Step annotate-genome of run 7 saves its log when it ends"
+    )
+    assert pod_log["calls"] == [("run-logs", f"scrna/{WORKFLOW}/emapper.log")]
+
+
 @pytest.mark.parametrize("error", [StorageError("secret-token boom", "500", "InternalError"),
                                    StorageError("Unable to parse", 400, "InternalError"),
                                    OSError("connection reset")])
@@ -353,26 +380,39 @@ TEMPLATE_FILES = (
     ARGO / "cellranger" / "cellranger-count-template.yaml",
     ARGO / "go-pathways" / "go-pathways-template.yaml",
 )
-# Steps whose own image has no run-with-log; their logs aren't in the bucket.
-NO_SAVED_LOG = {"proteins", "eggnog-db", "emapper"}
+# Steps whose image has no run-with-log: each writes logs/<template>.log in its run folder,
+# and the pipeline's upload-logs task copies those to run-logs under the same name.
+UPLOADED_LATER = logs.SAVED_AT_END
+
+
+def _templates() -> dict[str, dict]:
+    return {t["name"]: t for path in TEMPLATE_FILES
+            for t in yaml.safe_load(path.read_text())["spec"]["templates"]}
 
 
 def _saved_logs() -> dict[str, str]:
     """Each template's run-with-log --path file name, from the template files."""
     saved = {}
-    for path in TEMPLATE_FILES:
-        for template in yaml.safe_load(path.read_text())["spec"]["templates"]:
-            command = (template.get("container") or {}).get("command") or []
-            if command[:2] == ["run-with-log", "--path"]:
-                saved[template["name"]] = command[2].rsplit("/", 1)[-1]
+    for name, template in _templates().items():
+        command = (template.get("container") or {}).get("command") or []
+        if command[:2] == ["run-with-log", "--path"]:
+            saved[name] = command[2].rsplit("/", 1)[-1]
     return saved
 
 
 def test_every_steps_log_is_read_from_the_file_its_template_saves():
     saved = _saved_logs()
     for template in rnaseq_status.CELLRANGER_STEPS:
-        if template in NO_SAVED_LOG:
-            assert template not in saved, f"{template} now saves its log; drop it from NO_SAVED_LOG"
+        if template in UPLOADED_LATER:
+            assert template not in saved, f"{template} now runs under run-with-log"
             continue
         assert template in saved, f"{template} saves no log with run-with-log"
         assert f"{logs.LOG_NAMES.get(template, template)}.log" == saved[template], template
+
+
+def test_the_steps_without_run_with_log_have_their_logs_uploaded():
+    templates = _templates()
+    pipeline = templates["sample-pipeline"]["dag"]["tasks"]
+    assert any((t.get("templateRef") or {}).get("template") == "upload-logs" for t in pipeline)
+    for name in UPLOADED_LATER:
+        assert f"/logs/{name}.log" in "\n".join(templates[name]["container"]["args"]), name

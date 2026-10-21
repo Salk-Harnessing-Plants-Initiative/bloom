@@ -11,7 +11,7 @@ import re
 
 from fastapi import HTTPException
 
-from rnaseq_status import CELLRANGER_STEPS, RETIRED_CELLRANGER_STEPS
+from rnaseq_status import CELLRANGER_STEPS, PHASES_KEY, RETIRED_CELLRANGER_STEPS
 from supabase_client import app_client
 
 RUNS_TABLE = "rnaseq_runs"
@@ -24,6 +24,11 @@ LOGS_BUCKET = "run-logs"
 LOG_PREFIX = "scrna"
 # Templates whose log file isn't named after them (their run-with-log --path).
 LOG_NAMES = {"stage-sample": "stage"}
+# Templates without run-with-log: the pipeline's upload-logs saves their logs once they end.
+SAVED_AT_END = frozenset({"proteins", "eggnog-db", "emapper"})
+# A run that has ended, and a step's Argo phases once it has ended (rnaseq_status' _phases).
+_RUN_ENDED = frozenset({"succeeded", "failed", "skipped"})
+_STEP_ENDED = frozenset({"Succeeded", "Failed", "Error", "Omitted", "Skipped"})
 # How much of a log one request returns: its last lines, capped in size.
 TAIL_LINES = 2000
 LIMIT_BYTES = 1024 * 1024
@@ -55,6 +60,19 @@ def _missing(exc: Exception) -> bool:
     return str(getattr(exc, "status", "")) == "404" or getattr(exc, "code", "") == "not_found"
 
 
+def _no_log(run_id: int, step: str, row: dict, template: str) -> str:
+    """Why a started step has no log in the bucket, for the run page."""
+    phase = ((row.get("step_pods") or {}).get(PHASES_KEY) or {}).get(step)
+    if row.get("status") in _RUN_ENDED or phase in _STEP_ENDED:
+        return f"Step {step} of run {run_id} has no saved log"
+    if template in SAVED_AT_END:
+        return f"Step {step} of run {run_id} saves its log when it ends"
+    return (
+        f"Step {step} of run {run_id} has no log in Bloom yet; a running step saves its "
+        "log every 30 seconds"
+    )
+
+
 def read_step_log(run_id: int, step) -> dict:
     """The end of one step's log as {run_id, step, pod, log, truncated}."""
     if step not in STEPS:
@@ -65,7 +83,7 @@ def read_step_log(run_id: int, step) -> dict:
     rows = (
         app_client()
         .table(RUNS_TABLE)
-        .select("id, step_pods, argo_workflow_name")
+        .select("id, status, step_pods, argo_workflow_name")
         .eq("id", run_id)
         .eq("workflow_type", WORKFLOW_TYPE)
         .limit(1)
@@ -99,11 +117,7 @@ def read_step_log(run_id: int, step) -> dict:
     except Exception as exc:  # noqa: BLE001 - storage3 and httpx raise several kinds
         if _missing(exc):
             raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Step {step} of run {run_id} has no log in Bloom yet; a running "
-                    "step saves its log every 30 seconds"
-                ),
+                status_code=404, detail=_no_log(run_id, step, rows[0], template)
             ) from None
         raise HTTPException(
             status_code=502, detail="Could not read the log from Bloom's storage"

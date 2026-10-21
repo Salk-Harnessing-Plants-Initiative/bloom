@@ -208,6 +208,15 @@ spec:
                 - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
                 - {name: source, value: eggnog}
                 - {name: genome, value: "{{inputs.parameters.reference}}"}
+          # proteins, eggnog-db and emapper write their logs to the .go folder, not run-logs;
+          # copy them there once those steps end, before cleanup deletes the folder.
+          - name: upload-annotation-logs
+            templateRef: {name: go-pathways-template, template: upload-logs}
+            depends: >-
+              (proteins.Succeeded || proteins.Failed || proteins.Errored || proteins.Skipped || proteins.Omitted) && (eggnog-db.Succeeded || eggnog-db.Failed || eggnog-db.Errored || eggnog-db.Skipped || eggnog-db.Omitted) && (emapper.Succeeded || emapper.Failed || emapper.Errored || emapper.Skipped || emapper.Omitted)
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
           - name: fetch-de
             templateRef: {name: go-pathways-template, template: fetch-de}
             depends: load-dataset
@@ -244,7 +253,7 @@ spec:
           - name: cleanup
             template: cleanup
             depends: >-
-              load-dataset && (find-annotation.Succeeded || find-annotation.Failed || find-annotation.Errored || find-annotation.Skipped || find-annotation.Omitted) && (fetch-references.Succeeded || fetch-references.Failed || fetch-references.Errored || fetch-references.Skipped || fetch-references.Omitted) && (proteins.Succeeded || proteins.Failed || proteins.Errored || proteins.Skipped || proteins.Omitted) && (eggnog-db.Succeeded || eggnog-db.Failed || eggnog-db.Errored || eggnog-db.Skipped || eggnog-db.Omitted) && (emapper.Succeeded || emapper.Failed || emapper.Errored || emapper.Skipped || emapper.Omitted) && (build-annotation.Succeeded || build-annotation.Failed || build-annotation.Errored || build-annotation.Skipped || build-annotation.Omitted) && (upload-annotation.Succeeded || upload-annotation.Failed || upload-annotation.Errored || upload-annotation.Skipped || upload-annotation.Omitted) && (fetch-de.Succeeded || fetch-de.Failed || fetch-de.Errored || fetch-de.Skipped || fetch-de.Omitted) && (enrich.Succeeded || enrich.Failed || enrich.Errored || enrich.Skipped || enrich.Omitted) && (upload-enrichment.Succeeded || upload-enrichment.Failed || upload-enrichment.Errored || upload-enrichment.Skipped || upload-enrichment.Omitted)
+              load-dataset && (find-annotation.Succeeded || find-annotation.Failed || find-annotation.Errored || find-annotation.Skipped || find-annotation.Omitted) && (fetch-references.Succeeded || fetch-references.Failed || fetch-references.Errored || fetch-references.Skipped || fetch-references.Omitted) && (proteins.Succeeded || proteins.Failed || proteins.Errored || proteins.Skipped || proteins.Omitted) && (eggnog-db.Succeeded || eggnog-db.Failed || eggnog-db.Errored || eggnog-db.Skipped || eggnog-db.Omitted) && (emapper.Succeeded || emapper.Failed || emapper.Errored || emapper.Skipped || emapper.Omitted) && (build-annotation.Succeeded || build-annotation.Failed || build-annotation.Errored || build-annotation.Skipped || build-annotation.Omitted) && (upload-annotation.Succeeded || upload-annotation.Failed || upload-annotation.Errored || upload-annotation.Skipped || upload-annotation.Omitted) && (fetch-de.Succeeded || fetch-de.Failed || fetch-de.Errored || fetch-de.Skipped || fetch-de.Omitted) && (enrich.Succeeded || enrich.Failed || enrich.Errored || enrich.Skipped || enrich.Omitted) && (upload-enrichment.Succeeded || upload-enrichment.Failed || upload-enrichment.Errored || upload-enrichment.Skipped || upload-enrichment.Omitted) && (upload-annotation-logs.Succeeded || upload-annotation-logs.Failed || upload-annotation-logs.Errored || upload-annotation-logs.Skipped || upload-annotation-logs.Omitted)
             arguments:
               parameters:
                 - name: run-id
