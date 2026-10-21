@@ -49,7 +49,6 @@ describe("navSections", () => {
         heading: "Tools",
         items: [
           { name: "OrthoBrowser", href: "/app/orthofinder" },
-          { name: "OrthoVec", href: "/app/embedtree" },
         ],
       },
       {
