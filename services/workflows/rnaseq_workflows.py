@@ -58,6 +58,13 @@ BLOOM_CREDENTIALS_VOLUME = "bloom-credentials"
 
 _DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
+# Run:ai labels each pod with its name, so a pod name is at most 63 characters: the workflow
+# name, "-", the step's template name (17 at most), "-" and Argo's node id (up to 10 digits).
+POD_NAME_MAX = 63
+LONGEST_TEMPLATE_NAME = 17
+NODE_ID_DIGITS = 10
+WORKFLOW_NAME_MAX = POD_NAME_MAX - 1 - LONGEST_TEMPLATE_NAME - 1 - NODE_ID_DIGITS
+
 # How long Argo keeps a finished RNA-seq Workflow and its step pods (and so their logs).
 DEFAULT_TTL_SECONDS = 86400
 
@@ -77,7 +84,8 @@ TTL_SECONDS = _resolve_ttl_seconds()
 def cellranger_workflow_name(run: dict) -> str:
     """A fixed name per run, so resubmitting the same run is refused by Argo.
 
-    The run_key hash keeps names distinct if a database reset reuses a run id.
+    The run_key hash keeps names distinct if a database reset reuses a run id. A name too long
+    for its pods' names to fit Run:ai's labels is refused rather than left pending forever.
     """
     env = k8s_client.ENV_LABEL
     if not _DNS_LABEL.match(env):
@@ -86,7 +94,13 @@ def cellranger_workflow_name(run: dict) -> str:
             "a lowercase DNS label"
         )
     digest = hashlib.sha256(run["run_key"].encode()).hexdigest()[:8]
-    return f"scrna-cellranger-{env}-{run['run_id']}-{digest}"
+    name = f"scrna-{env}-{run['run_id']}-{digest}"
+    if len(name) > WORKFLOW_NAME_MAX:
+        raise UnrunnableRun(
+            f"the workflow name {name} is over {WORKFLOW_NAME_MAX} characters, so its steps' "
+            "pods couldn't be scheduled; ask the Bloom admins"
+        )
+    return name
 
 
 def _task(
