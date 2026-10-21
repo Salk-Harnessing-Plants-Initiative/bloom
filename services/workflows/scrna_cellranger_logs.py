@@ -1,22 +1,16 @@
 """
 Reading one step's log of a Cell Ranger run.
 
-The status poller records each started step's pod in the run's `step_pods`; this reads
-the last part of that pod's `main` container log from the Kubernetes API, as the
-workflows service's `bloom-pipeline` account. A pod is removed with its Workflow, 24
-hours after the run finishes, so older logs are gone.
+The status poller records each started step's pod in the run's `step_pods`; every step
+saves its log to the run-logs bucket as it runs (argo/scrna/run_with_log.py), at
+scrna/<workflow>/<template>.log. This reads the last part of that file, as the workflows
+service's login, so it needs no cluster access and outlives the Workflow.
 """
 
 import re
 
 from fastapi import HTTPException
 
-from k8s_client import (
-    K8sConfigError,
-    K8sPodNotRunningError,
-    K8sStatusError,
-    get_pod_log,
-)
 from rnaseq_status import CELLRANGER_STEPS, RETIRED_CELLRANGER_STEPS
 from supabase_client import app_client
 
@@ -25,14 +19,12 @@ WORKFLOW_TYPE = "scrna-cellranger"
 # Earlier runs' retired steps too, so their logs can still be read.
 STEPS = tuple(dict.fromkeys(CELLRANGER_STEPS.values())) + RETIRED_CELLRANGER_STEPS
 
-# Argo runs each step's own command in the pod's "main" container.
-STEP_CONTAINER = "main"
+# Where run-with-log saves each step's log.
+LOGS_BUCKET = "run-logs"
+LOG_PREFIX = "scrna"
 # How much of a log one request returns: its last lines, capped in size.
 TAIL_LINES = 2000
 LIMIT_BYTES = 1024 * 1024
-# Asked of the cluster; it cuts at this size from the start of the window, so it is
-# larger than LIMIT_BYTES and the end is trimmed here instead.
-FETCH_LIMIT_BYTES = 4 * LIMIT_BYTES
 
 # A Kubernetes pod name: lowercase letters, digits and '-', at most 253 characters.
 _POD_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$")
@@ -48,6 +40,19 @@ def _keep_end(log: str) -> tuple[str, bool]:
     return (end[newline + 1 :] if newline != -1 else end), True
 
 
+def _template(pod: str, workflow: str) -> str | None:
+    """The step's template from its pod name, <workflow>-<template>-<node id>."""
+    if not workflow or not pod.startswith(f"{workflow}-"):
+        return None
+    template = pod[len(workflow) + 1 :].rsplit("-", 1)[0]
+    return template if template and _POD_NAME.match(template) else None
+
+
+def _missing(exc: Exception) -> bool:
+    """Whether storage answered that the file isn't there (storage3's StorageApiError)."""
+    return str(getattr(exc, "status", "")) == "404" or getattr(exc, "code", "") == "not_found"
+
+
 def read_step_log(run_id: int, step) -> dict:
     """The end of one step's log as {run_id, step, pod, log, truncated}."""
     if step not in STEPS:
@@ -58,7 +63,7 @@ def read_step_log(run_id: int, step) -> dict:
     rows = (
         app_client()
         .table(RUNS_TABLE)
-        .select("id, step_pods")
+        .select("id, step_pods, argo_workflow_name")
         .eq("id", run_id)
         .eq("workflow_type", WORKFLOW_TYPE)
         .limit(1)
@@ -81,36 +86,30 @@ def read_step_log(run_id: int, step) -> dict:
             status_code=500, detail=f"Run {run_id} has an invalid pod for step {step}"
         )
 
-    try:
-        log = get_pod_log(pod, STEP_CONTAINER, TAIL_LINES, FETCH_LIMIT_BYTES)
-    except K8sPodNotRunningError:
+    template = _template(pod, rows[0].get("argo_workflow_name") or "")
+    if template is None:
         raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Step {step} of run {run_id} hasn't started running yet; "
-                "its log appears once it does"
-            ),
-        ) from None
-    except K8sConfigError:
-        raise HTTPException(
-            status_code=503, detail="Cluster access is not configured"
-        ) from None
-    except K8sStatusError:
-        raise HTTPException(
-            status_code=502, detail="Could not read the log from the cluster"
-        ) from None
-
-    if log is None:
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                f"The log of step {step} is no longer available; the workflow "
-                "was removed from the cluster"
-            ),
+            status_code=500, detail=f"Run {run_id} has an invalid pod for step {step}"
         )
+    path = f"{LOG_PREFIX}/{rows[0]['argo_workflow_name']}/{template}.log"
+    try:
+        data = app_client().storage.from_(LOGS_BUCKET).download(path)
+    except Exception as exc:  # noqa: BLE001 - storage3 and httpx raise several kinds
+        if _missing(exc):
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Step {step} of run {run_id} has no log in Bloom yet; a running "
+                    "step saves its log every 30 seconds"
+                ),
+            ) from None
+        raise HTTPException(
+            status_code=502, detail="Could not read the log from Bloom's storage"
+        ) from None
 
-    log, cut = _keep_end(log)
-    truncated = cut or log.count("\n") >= TAIL_LINES
+    lines = data.decode(errors="replace").splitlines(keepends=True)
+    log, cut = _keep_end("".join(lines[-TAIL_LINES:]))
+    truncated = cut or len(lines) > TAIL_LINES
     return {
         "run_id": run_id,
         "step": step,

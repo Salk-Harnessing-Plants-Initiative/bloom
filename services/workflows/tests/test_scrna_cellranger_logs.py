@@ -1,22 +1,32 @@
-"""Unit tests for reading a Cell Ranger step's log: step and pod checks, the pod log
-read, a gone pod, cluster errors, truncation and the route (no database or cluster)."""
+"""Unit tests for reading a Cell Ranger step's log: step and pod checks, the read from the
+run-logs bucket, a log not saved yet, storage errors, truncation and the route (no database
+or storage)."""
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import scrna_cellranger_logs as logs
-from k8s_client import K8sConfigError, K8sPodNotRunningError, K8sStatusError
-
 USER = "00000000-0000-0000-0000-000000000001"
-POD = "scrna-cellranger-dev-7-abcd1234-count-3938252481"
+WORKFLOW = "scrna-cellranger-dev-7-abcd1234"
+POD = f"{WORKFLOW}-count-3938252481"
 ROW = {
     "id": 7,
+    "argo_workflow_name": WORKFLOW,
     "step_pods": {
-        "stage": "scrna-cellranger-dev-7-abcd1234-stage-sample-1",
+        "stage": f"{WORKFLOW}-stage-sample-1",
         "count": POD,
     },
 }
+
+
+class StorageError(Exception):
+    """Stands in for storage3's StorageApiError, which carries the HTTP status."""
+
+    def __init__(self, message, status, code="not_found"):
+        super().__init__(message)
+        self.status = status
+        self.code = code
 
 
 class _Result:
@@ -25,12 +35,35 @@ class _Result:
 
 
 class FakeSupabase:
-    """Serves `rows` filtered by the .eq() calls, and records them."""
+    """Serves `rows` filtered by the .eq() calls, and records them; its storage serves
+    log_state["result"] (text, or an exception to raise) and records each download."""
+
+    log_state = {"result": "", "calls": []}
 
     def __init__(self, rows=()):
         self.rows = list(rows)
         self.filters = []
         self.selected = []
+
+    @property
+    def storage(self):
+        state = self.log_state
+
+        class _Bucket:
+            def __init__(self, name):
+                self.name = name
+
+            def download(self, path):
+                state["calls"].append((self.name, path))
+                if isinstance(state["result"], Exception):
+                    raise state["result"]
+                return state["result"].encode()
+
+        class _Storage:
+            def from_(self, name):
+                return _Bucket(name)
+
+        return _Storage()
 
     def table(self, name):
         client = self
@@ -75,16 +108,9 @@ def db(monkeypatch):
 
 @pytest.fixture
 def pod_log(monkeypatch):
-    """Records get_pod_log calls; `result` is returned, or raised if an exception."""
+    """The stored log the fake storage serves; `result` is returned, or raised."""
     state = {"result": "line 1\nline 2\n", "calls": []}
-
-    def _get(pod, container, tail_lines, limit_bytes):
-        state["calls"].append((pod, container, tail_lines, limit_bytes))
-        if isinstance(state["result"], Exception):
-            raise state["result"]
-        return state["result"]
-
-    monkeypatch.setattr(logs, "get_pod_log", _get)
+    monkeypatch.setattr(FakeSupabase, "log_state", state)
     return state
 
 
@@ -107,12 +133,17 @@ def test_a_started_steps_log_is_returned(db, pod_log):
         "log": "line 1\nline 2\n",
         "truncated": False,
     }
-    assert pod_log["calls"] == [(POD, "main", 2000, 4 * 1024 * 1024)]
+    assert pod_log["calls"] == [("run-logs", f"scrna/{WORKFLOW}/count.log")]
+
+
+def test_a_steps_log_is_named_for_its_template():
+    assert logs._template(f"{WORKFLOW}-stage-sample-1", WORKFLOW) == "stage-sample"
+    assert logs._template(f"{WORKFLOW}-find-annotation-42", WORKFLOW) == "find-annotation"
 
 
 def test_only_cellranger_runs_are_looked_up(db, pod_log):
     logs.read_step_log(7, "count")
-    assert "step_pods" in db.selected[0]
+    assert "step_pods" in db.selected[0] and "argo_workflow_name" in db.selected[0]
     assert ("workflow_type", "scrna-cellranger") in db.filters[0]
     assert ("id", 7) in db.filters[0]
 
@@ -172,33 +203,58 @@ def test_a_pod_name_kubernetes_would_not_accept_is_never_requested(
     monkeypatch.setattr(
         logs,
         "app_client",
-        lambda: FakeSupabase([{"id": 7, "step_pods": {"count": pod}}]),
+        lambda: FakeSupabase([{"id": 7, "argo_workflow_name": WORKFLOW,
+                               "step_pods": {"count": pod}}]),
     )
     assert _status(7, "count")[0] == 500
     assert pod_log["calls"] == []
 
 
-def test_a_removed_pod_is_410(db, pod_log):
-    pod_log["result"] = None
-    status, detail = _status(7, "count")
-    assert status == 410
-    assert "no longer available" in detail
+def test_a_pod_of_another_workflow_is_never_read(monkeypatch, pod_log):
+    monkeypatch.setattr(
+        logs,
+        "app_client",
+        lambda: FakeSupabase([{"id": 7, "argo_workflow_name": "other-wf",
+                               "step_pods": {"count": POD}}]),
+    )
+    assert _status(7, "count")[0] == 500
+    assert pod_log["calls"] == []
 
 
-@pytest.mark.parametrize(
-    "error, status",
-    [(K8sStatusError("x"), 502), (K8sConfigError("no token"), 503)],
-)
-def test_cluster_errors_are_reported_without_detail(db, pod_log, error, status):
+@pytest.mark.parametrize("status, code", [("404", "not_found"), (404, "x"), (400, "not_found")])
+def test_a_log_not_saved_yet_is_404(db, pod_log, status, code):
+    pod_log["result"] = StorageError("Object not found", status, code)
+    code, detail = _status(7, "count")
+    assert code == 404
+    assert detail == (
+        "Step count of run 7 has no log in Bloom yet; a running step saves its log every "
+        "30 seconds"
+    )
+
+
+@pytest.mark.parametrize("error", [StorageError("secret-token boom", "500", "InternalError"),
+                                   StorageError("Unable to parse", 400, "InternalError"),
+                                   OSError("connection reset")])
+def test_storage_errors_are_reported_without_detail(db, pod_log, error):
     pod_log["result"] = error
     code, detail = _status(7, "count")
-    assert code == status
-    assert "no token" not in detail
+    assert code == 502
+    assert "secret-token" not in detail and "reset" not in detail
 
 
-def test_a_log_at_the_line_limit_is_marked_cut(db, pod_log):
+def test_a_log_at_the_line_limit_is_kept_whole(db, pod_log):
     pod_log["result"] = "x\n" * logs.TAIL_LINES
-    assert logs.read_step_log(7, "count")["truncated"] is True
+    out = logs.read_step_log(7, "count")
+    assert out["truncated"] is False
+    assert out["log"].count("\n") == logs.TAIL_LINES
+
+
+def test_a_log_past_the_line_limit_keeps_its_last_lines(db, pod_log):
+    pod_log["result"] = "first\n" + "x\n" * logs.TAIL_LINES
+    out = logs.read_step_log(7, "count")
+    assert out["truncated"] is True
+    assert "first" not in out["log"]
+    assert out["log"].count("\n") == logs.TAIL_LINES
 
 
 def test_a_log_at_the_size_limit_is_kept_whole(db, pod_log):
@@ -209,7 +265,7 @@ def test_a_log_at_the_size_limit_is_kept_whole(db, pod_log):
 
 
 def test_a_log_over_the_size_limit_keeps_its_end(db, pod_log):
-    # The kubelet's byte cap would keep the start; the route keeps the end, where the error is.
+    # The end is where the error is.
     line = "progress " * 100 + "\n"
     pod_log["result"] = line * 3000 + "ERROR: cellranger count failed\n"
     out = logs.read_step_log(7, "count")
@@ -224,15 +280,6 @@ def test_the_end_is_cut_at_a_whole_character(db, pod_log):
     out = logs.read_step_log(7, "count")
     assert "\ufffd" not in out["log"]
     assert out["truncated"] is True
-
-
-def test_a_step_waiting_to_run_is_409(db, pod_log):
-    pod_log["result"] = K8sPodNotRunningError("waiting")
-    status, detail = _status(7, "count")
-    assert status == 409
-    assert detail == (
-        "Step count of run 7 hasn't started running yet; its log appears once it does"
-    )
 
 
 # --------------------------------------------------------------------------- #
