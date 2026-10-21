@@ -167,7 +167,7 @@ def test_the_download_runs_the_script_in_the_analysis_image():
 
 def test_only_a_network_error_retries_the_download_twice():
     strategy = _templates()["download-genome"]["retryStrategy"]
-    assert strategy["expression"] == "asInt(lastRetry.exitCode) == 1"
+    assert strategy["expression"] == "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
     assert strategy["limit"] == 2
 
 

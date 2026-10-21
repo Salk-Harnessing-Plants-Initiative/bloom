@@ -182,7 +182,7 @@ spec:
         limit: 2
         retryPolicy: Always
         # 1: Bloom couldn't be reached; 16 (no credentials) and 19 (no such analysis) won't fix themselves.
-        expression: "asInt(lastRetry.exitCode) == 1"
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-de.log", --, bash, -c]
@@ -226,7 +226,7 @@ spec:
         retryPolicy: Always
         # 1: Bloom couldn't be reached; 3 (no ready annotation, or a mismatched file), 4 (still
         # uploading) and 16 won't fix themselves.
-        expression: "asInt(lastRetry.exitCode) == 1"
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-annotation.log", --, bash, -c]
@@ -271,6 +271,12 @@ spec:
           - name: min-list
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/enrich.log", --, bash, -c]
@@ -313,7 +319,7 @@ spec:
         limit: 2
         retryPolicy: Always
         # Only 1 (a network or storage error) may be a blip; 3, 6 and 16 won't fix themselves.
-        expression: "asInt(lastRetry.exitCode) == 1"
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
@@ -343,7 +349,7 @@ spec:
         limit: 2
         retryPolicy: Always
         # 1: a download failed; 18 (a bad KEGG organism) won't fix itself.
-        expression: "asInt(lastRetry.exitCode) == 1"
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command:
@@ -540,6 +546,12 @@ spec:
           - name: eggnog-db
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-annotation.log", --, bash, -c]
@@ -587,6 +599,12 @@ spec:
           - name: genome
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/upload-annotation.log", --, bash, -c]
@@ -627,6 +645,12 @@ spec:
           - name: rnaseq-run-id
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/upload-enrichment.log", --, bash, -c]
@@ -663,6 +687,12 @@ spec:
           - name: run-id
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
@@ -711,7 +741,7 @@ spec:
         limit: 2
         retryPolicy: Always
         # 1: Bloom couldn't be reached; 4 (still building after the wait) and 16 won't fix themselves.
-        expression: "asInt(lastRetry.exitCode) == 1"
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/find-annotation.log", --, bash, -c]
@@ -769,6 +799,12 @@ spec:
           - name: run-id
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [bash, -c]

@@ -126,3 +126,18 @@ def test_no_task_uses_continue_on_which_argo_refuses_with_depends():
 def test_cleanup_deletes_the_go_folder_too():
     cleanup = next(t for t in CELLRANGER["spec"]["templates"] if t["name"] == "cleanup")
     assert ".go" in "\n".join(cleanup["container"].get("args", []) + cleanup["container"].get("command", []))
+
+
+@pytest.mark.parametrize("path", [ROOT / "cellranger/cellranger-count-template.yaml",
+                                  ROOT / "go-pathways/go-pathways-template.yaml"])
+def test_every_step_tries_again_when_its_pod_never_ran(path):
+    # A pod the cluster rejects or loses never runs, and Argo gives it exit code -1.
+    for template in yaml.safe_load(path.read_text())["spec"]["templates"]:
+        if "container" not in template:
+            continue
+        retry = template.get("retryStrategy")
+        assert retry and retry["limit"] >= 1, template["name"]
+        expression = retry.get("expression", "")
+        never_ran = not expression or "== -1" in expression or (
+            "!=" in expression and "==" not in expression and "-1" not in expression)
+        assert retry["retryPolicy"] in ("Always", "OnError") and never_ran, template["name"]

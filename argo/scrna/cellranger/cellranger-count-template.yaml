@@ -323,7 +323,7 @@ spec:
         retryPolicy: Always
         # Only 1 (a network or storage error) may be a blip; 3 (not available, or a file
         # doesn't match Bloom's record), 6 (bad input) and 16 (no credentials) won't fix themselves.
-        expression: "asInt(lastRetry.exitCode) == 1"
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
@@ -460,7 +460,7 @@ spec:
         retryPolicy: Always
         # only a failed download (10) may be a blip; bad input (6), misnamed files (7) and
         # unusable reads (11) will not fix themselves
-        expression: "asInt(lastRetry.exitCode) == 10"
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 10"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]
@@ -678,6 +678,12 @@ spec:
           - name: run-id
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
@@ -912,6 +918,12 @@ spec:
     - name: testrun
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "3m", factor: 1}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [bash, -c]
