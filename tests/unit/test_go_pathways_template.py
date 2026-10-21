@@ -95,7 +95,7 @@ def test_every_step_uses_one_analysis_image_tag():
 
 @pytest.mark.parametrize("name", ["download-genome", "fetch-references", "fetch-de",
                                   "fetch-annotation"])
-def test_only_a_network_error_is_retried(name):
+def test_only_a_network_error_or_a_pod_that_never_ran_is_retried(name):
     # Or a pod that never ran (-1).
     assert STEPS[name]["retryStrategy"]["expression"] == "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
 
@@ -187,10 +187,10 @@ def test_enrich_waits_for_both_the_annotation_and_the_analysis():
     assert needed == {"fetch-annotation", "fetch-de"}
 
 
-@pytest.mark.parametrize("name, limit", [("proteins", 2), ("eggnog-db", 2), ("emapper", 1)])
-def test_the_eggnog_steps_try_again_when_the_cluster_rejects_their_pod(name, limit):
-    # A node without room rejects the pod before it runs; it has no exit code to test.
+@pytest.mark.parametrize("name", ["proteins", "eggnog-db", "emapper"])
+def test_the_eggnog_steps_retry_only_a_pod_with_no_exit_code(name):
+    # Not a real failure or a deadline kill: emapper's limit alone is 12 hours.
     retry = STEPS[name]["retryStrategy"]
-    assert retry["limit"] == limit and retry["retryPolicy"] == "Always"
-    assert "expression" not in retry
-    assert retry["backoff"]["duration"].endswith("m")
+    assert retry == {"limit": 2, "retryPolicy": "Always",
+                     "backoff": {"duration": "2m", "factor": 2},
+                     "expression": "asInt(lastRetry.exitCode) == -1"}

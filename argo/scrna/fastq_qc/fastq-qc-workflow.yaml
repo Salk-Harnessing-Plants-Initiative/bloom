@@ -82,6 +82,12 @@ spec:
     - name: delete-reads
       schedulerName: runai-scheduler
       priorityClassName: high
+      # No exit code (the cluster rejected, deleted or lost the pod): tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
         command: [bash, -c]

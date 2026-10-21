@@ -128,16 +128,26 @@ def test_cleanup_deletes_the_go_folder_too():
     assert ".go" in "\n".join(cleanup["container"].get("args", []) + cleanup["container"].get("command", []))
 
 
+def _retries_when(expression: str, exit_code: int) -> bool:
+    """Argo's retry expression, evaluated for one exit code (empty: always)."""
+    if not expression:
+        return True
+    python = (expression.replace("asInt(lastRetry.exitCode)", "x")
+              .replace("&&", " and ").replace("||", " or "))
+    return eval(python, {"__builtins__": {}}, {"x": exit_code})  # noqa: S307 - our own templates
+
+
 @pytest.mark.parametrize("path", [ROOT / "cellranger/cellranger-count-template.yaml",
-                                  ROOT / "go-pathways/go-pathways-template.yaml"])
-def test_every_step_tries_again_when_its_pod_never_ran(path):
-    # A pod the cluster rejects or loses never runs, and Argo gives it exit code -1.
+                                  ROOT / "go-pathways/go-pathways-template.yaml",
+                                  ROOT / "fastq_qc/fastq-qc-workflow.yaml"])
+def test_every_step_waits_and_tries_again_when_its_pod_never_ran(path):
+    # A pod the cluster rejects, deletes or loses has no exit code; Argo gives it -1 and marks
+    # the node Failed, so only retryPolicy Always retries it. A wait lets a busy node free up.
     for template in yaml.safe_load(path.read_text())["spec"]["templates"]:
         if "container" not in template:
             continue
         retry = template.get("retryStrategy")
         assert retry and retry["limit"] >= 1, template["name"]
-        expression = retry.get("expression", "")
-        never_ran = not expression or "== -1" in expression or (
-            "!=" in expression and "==" not in expression and "-1" not in expression)
-        assert retry["retryPolicy"] in ("Always", "OnError") and never_ran, template["name"]
+        assert retry["retryPolicy"] == "Always", template["name"]
+        assert _retries_when(retry.get("expression", ""), -1), template["name"]
+        assert retry.get("backoff", {}).get("duration"), template["name"]
