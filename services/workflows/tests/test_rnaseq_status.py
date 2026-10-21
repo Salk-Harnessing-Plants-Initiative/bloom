@@ -600,6 +600,25 @@ def test_a_pod_still_being_retried_doesnt_fail_its_step():
     assert st.step_phases(wf)["go-pathways"] == "Running"
 
 
+def _retry_gap(retry_phase: str) -> dict:
+    """load-dataset's first attempt failed; its Retry node is `retry_phase`."""
+    wf = _with_load(_load("succeeded"), "Root atlas")
+    wf["status"]["phase"] = "Running"
+    pod = _pod(wf, "load-dataset")
+    pod["phase"] = "Failed"
+    wf["status"]["nodes"]["load-retry"] = {"id": "load-retry", "type": "Retry",
+                                           "phase": retry_phase, "children": [pod["id"]]}
+    return wf
+
+
+def test_a_step_between_retry_attempts_is_retrying_not_failed():
+    assert st.step_phases(_retry_gap("Running"))["load-dataset"] == "Retrying"
+
+
+def test_a_step_whose_retries_ran_out_is_failed():
+    assert st.step_phases(_retry_gap("Failed"))["load-dataset"] == "Failed"
+
+
 def test_a_real_failure_is_reported_rather_than_a_go_one():
     wf = _with_go(_load("no_reference"), emapper="Failed")
     status = st.read_cellranger_status(wf, NO_REF_RUN)

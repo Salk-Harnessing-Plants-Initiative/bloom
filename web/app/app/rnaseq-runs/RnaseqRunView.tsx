@@ -32,6 +32,7 @@ import StepLog from "./StepLog";
 const STEP_STATE: Record<StepState, { mark: string; label: string; className: string }> = {
   done: { mark: "✓", label: "Done", className: "text-lime-700" },
   running: { mark: "●", label: "Running", className: "text-sky-700" },
+  retrying: { mark: "↻", label: "Retrying", className: "text-sky-700" },
   failed: { mark: "✕", label: "Failed", className: "text-red-700" },
   waiting: { mark: "○", label: "Waiting", className: "text-stone-400" },
   "not-run": { mark: "–", label: "Not run", className: "text-stone-400" },
@@ -171,7 +172,7 @@ export default function RnaseqRunView({
               <span className="w-44 text-sm text-stone-800">{step.label}</span>
               <span className={`w-20 text-xs ${state.className}`}>{state.label}</span>
               {stepStarted(run, step.id) ? (
-                <StepLog runId={run.id} step={step.id} running={states[step.id] === "running"} />
+                <StepLog runId={run.id} step={step.id} running={states[step.id] === "running" || states[step.id] === "retrying"} />
               ) : null}
             </li>
           );

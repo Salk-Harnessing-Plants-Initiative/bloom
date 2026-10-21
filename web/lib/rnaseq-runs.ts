@@ -69,7 +69,14 @@ export const CELLRANGER_STEPS = [
 ] as const;
 
 export type StepId = (typeof CELLRANGER_STEPS)[number]["id"];
-export type StepState = "done" | "running" | "failed" | "waiting" | "not-run" | "skipped";
+export type StepState =
+  | "done"
+  | "running"
+  | "retrying"
+  | "failed"
+  | "waiting"
+  | "not-run"
+  | "skipped";
 
 export const STATUS_LABELS: Record<RunStatus, string> = {
   queued: "Queued",
@@ -184,6 +191,8 @@ const PHASES_KEY = "_phases";
 const PHASE_STATES: Record<string, StepState> = {
   Pending: "running",
   Running: "running",
+  // A failed attempt with Argo's next one still to start.
+  Retrying: "retrying",
   Succeeded: "done",
   Failed: "failed",
   Error: "failed",
@@ -259,7 +268,7 @@ function statesFromPhases(
     const phase = phases[step.id];
     const state = (typeof phase === "string" && PHASE_STATES[phase]) || unstarted;
     // The last poll can catch a step running that the run's end then stopped.
-    states[step.id] = finished && state === "running" ? "not-run" : state;
+    states[step.id] = finished && (state === "running" || state === "retrying") ? "not-run" : state;
   }
   return states;
 }
