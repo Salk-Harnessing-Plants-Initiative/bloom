@@ -704,7 +704,9 @@ done, e.g. `Uploading my_dataset.h5ad ━━━━━━━━╺━━━━━
 only the result lines.
 
 Each write is one request sent once; if one fails the command says the file is stored and
-the load stopped, and running the same command again continues it. A write whose outcome
+the load stopped, and running the same command again continues it. The exception is a
+gene's counts file, which only replaces itself: when the connection drops or storage answers
+with a server error, it is sent again, up to three times, 2, 5 and 15 seconds apart. A write whose outcome
 is unknown (a timeout, or Ctrl-C or a closed terminal while it was being sent) may still be finishing on the
 server, so the next run waits that out first, about six minutes, saying how many seconds
 are left. Load a dataset from one terminal at a time.
