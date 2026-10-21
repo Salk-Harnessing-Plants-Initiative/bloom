@@ -55,6 +55,7 @@ def env(tmp_path):
         "SPECIES_NAME": "Arabidopsis",
         "FAKE_OUT": str(tmp_path / "bloomctl.out"),
         "OUTPUT_DIR": str(tmp_path / "outputs"),
+        "H5AD_SETTLE_SECONDS": "0",
     }
 
 
@@ -69,6 +70,40 @@ def _bloomctl(env) -> dict:
     if not out.exists():
         return {}
     return dict(line.split(": ", 1) for line in out.read_text().splitlines())
+
+
+# A sleep that appends to the .h5ad on its first `changes` calls, as a write still landing.
+FAKE_SLEEP = r"""#!/usr/bin/env bash
+n=$(( $(cat "${SLEEP_COUNT}" 2>/dev/null || echo 0) + 1 ))
+echo "${n}" > "${SLEEP_COUNT}"
+if [ "${n}" -le "${SLEEP_CHANGES}" ]; then printf 'more' >> "${H5AD_PATH}"; fi
+"""
+
+
+@pytest.fixture
+def changing(env, tmp_path):
+    """The env with a sleep that grows the .h5ad on its first SLEEP_CHANGES calls."""
+    fake = Path(env["PATH"].split(":", 1)[0]) / "sleep"
+    fake.write_text(FAKE_SLEEP)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    h5ad = Path(env["SHARED_RUNS"]) / env["RUN_ID"] / "h5ad" / "col0.h5ad"
+    return {**env, "SLEEP_COUNT": str(tmp_path / "sleeps"), "H5AD_PATH": str(h5ad),
+            "H5AD_SETTLE_TRIES": "3"}
+
+
+def test_the_load_waits_for_the_h5ad_to_stop_changing(changing):
+    result = _run(changing, SLEEP_CHANGES="2")
+    assert result.returncode == 0, result.stderr
+    assert _bloomctl(changing)["args"].startswith("[scrna]")
+    sleeps = int(Path(changing["SLEEP_COUNT"]).read_text())
+    assert sleeps == 3, "two checks saw it grow, the third saw it settled"
+
+
+def test_an_h5ad_that_keeps_changing_is_not_loaded(changing):
+    result = _run(changing, SLEEP_CHANGES="99")
+    assert result.returncode == 1
+    assert "was still changing after 3 checks" in result.stderr
+    assert _bloomctl(changing) == {}, "bloomctl never ran"
 
 
 def test_the_runs_h5ad_is_loaded_as_its_dataset(env):
@@ -204,7 +239,7 @@ def test_the_analysis_image_installs_the_script_and_a_pinned_bloomctl():
     assert "COPY load-dataset.sh /usr/local/bin/load-dataset" in dockerfile
     assert "/usr/local/bin/load-dataset" in dockerfile.split("chmod +x", 1)[1].split("\n")[0]
     pins = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a17"]
+    assert [p for p in pins if p.startswith("bloomctl")] == ["bloomctl==0.1.0a18"]
 
 
 def _with_de_result(env):
