@@ -394,15 +394,27 @@ def _go_step_phase(nodes: list[dict], last_pod: str, retrying: set[str], live: b
     return "Running" if live else "Omitted"
 
 
+def _retry_pending(workflow: dict) -> set[str]:
+    """Pods whose Retry node is still going: a failed one is waiting for its next attempt."""
+    nodes = (workflow.get("status") or {}).get("nodes", {}).values()
+    return {child for node in nodes if node.get("type") == "Retry"
+            and node.get("phase") in _RUNNING_PHASES for child in node.get("children", [])}
+
+
 def step_phases(workflow: dict) -> dict[str, str]:
-    """Each started step's own outcome (Argo's phase). The poller stores it in step_pods under
-    PHASES_KEY for the run page."""
+    """Each started step's own outcome (Argo's phase), or "Retrying" between a failed attempt
+    and its next one. The poller stores it in step_pods under PHASES_KEY for the run page."""
     live = (workflow.get("status") or {}).get("phase") in _RUNNING_PHASES | {None}
     retrying = _retrying(workflow)
+    pending = _retry_pending(workflow)
     phases = {step: node.get("phase") or "Pending" for step, node in _step_pods(workflow).items()}
     for step, nodes in _step_pod_nodes(workflow).items():
         if step in GO_STEP_LAST_POD:
             phases[step] = _go_step_phase(nodes, GO_STEP_LAST_POD[step], retrying, live)
+        if phases[step] not in _RUNNING_PHASES and any(
+            n.get("phase") in _FAILED_PHASES and n.get("id") in pending for n in nodes
+        ) and not any(n.get("phase") in _RUNNING_PHASES for n in nodes):
+            phases[step] = "Retrying"
     return phases
 
 

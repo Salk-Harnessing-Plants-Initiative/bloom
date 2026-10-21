@@ -534,6 +534,16 @@ describe("a run reporting each step's own outcome", () => {
     expect(states["go-pathways"]).toBe("not-run");
   });
 
+  it("shows a step waiting for its next attempt as retrying, and not run once the run ends", () => {
+    expect(stepStates(phased({ "load-dataset": "Retrying" }, { current_step: "load-dataset" }))["load-dataset"])
+      .toBe("retrying");
+    expect(
+      stepStates(phased({ "load-dataset": "Retrying" }, { status: "failed", current_step: "load-dataset" }))[
+        "load-dataset"
+      ]
+    ).toBe("not-run");
+  });
+
   it("marks a skipped run's unstarted steps skipped", () => {
     const states = stepStates(phased({ stage: "Succeeded" }, { status: "skipped" }));
     expect(states.stage).toBe("done");
