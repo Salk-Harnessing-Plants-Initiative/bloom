@@ -38,6 +38,9 @@ class WorkflowType:
     build_body: Callable[[dict], dict]
     # Reads the run's status from its Workflow (Workflow, run row); None = nothing to report yet.
     read_status: Callable[[dict, dict], RunStatus | None]
+    # Names an earlier version of this worker gave the run's Workflow, checked before submitting
+    # so a run submitted under one but never recorded isn't started a second time.
+    earlier_names: Callable[[dict], list[str]] = lambda _run: []
 
 
 # The WorkflowTemplate from argo/scrna/cellranger/cellranger-count-template.yaml. Prod and
@@ -87,13 +90,7 @@ def cellranger_workflow_name(run: dict) -> str:
     The run_key hash keeps names distinct if a database reset reuses a run id. A name too long
     for its pods' names to fit Run:ai's labels is refused rather than left pending forever.
     """
-    env = k8s_client.ENV_LABEL
-    if not _DNS_LABEL.match(env):
-        raise K8sConfigError(
-            f"K8s client not configured: WORKFLOWS_K8S_ENV_LABEL {env!r} is not "
-            "a lowercase DNS label"
-        )
-    digest = hashlib.sha256(run["run_key"].encode()).hexdigest()[:8]
+    env, digest = _name_parts(run)
     name = f"scrna-{env}-{run['run_id']}-{digest}"
     if len(name) > WORKFLOW_NAME_MAX:
         raise UnrunnableRun(
@@ -101,6 +98,23 @@ def cellranger_workflow_name(run: dict) -> str:
             "pods couldn't be scheduled; ask the Bloom admins"
         )
     return name
+
+
+def earlier_cellranger_workflow_names(run: dict) -> list[str]:
+    """The name runs were submitted under before names were shortened to fit Run:ai's labels."""
+    env, digest = _name_parts(run)
+    return [f"scrna-cellranger-{env}-{run['run_id']}-{digest}"]
+
+
+def _name_parts(run: dict) -> tuple[str, str]:
+    """The environment label and the run_key hash every Cell Ranger workflow name carries."""
+    env = k8s_client.ENV_LABEL
+    if not _DNS_LABEL.match(env):
+        raise K8sConfigError(
+            f"K8s client not configured: WORKFLOWS_K8S_ENV_LABEL {env!r} is not "
+            "a lowercase DNS label"
+        )
+    return env, hashlib.sha256(run["run_key"].encode()).hexdigest()[:8]
 
 
 def _task(
@@ -232,6 +246,7 @@ CELLRANGER = WorkflowType(
     name="scrna-cellranger",
     build_body=build_cellranger_body,
     read_status=read_cellranger_status,
+    earlier_names=earlier_cellranger_workflow_names,
 )
 
 # Keyed by workflow_type; a claimed run of a type missing here is failed.

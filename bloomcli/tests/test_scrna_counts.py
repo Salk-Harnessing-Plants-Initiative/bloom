@@ -221,6 +221,22 @@ def test_an_expired_login_named_in_storages_message_signs_in_again(tmp_path):
     assert renewed == [1]
 
 
+def test_a_handle_that_cant_be_opened_is_not_mistaken_for_a_storage_reply(tmp_path):
+    # e.g. a supabase release without the internals ThreadStorages uses: nothing was sent.
+    client = FakeClient()
+
+    def missing(**_kwargs):
+        raise AttributeError("'SyncClient' has no attribute '_init_storage_client'")
+
+    client._init_storage_client = missing
+    marker = Marker(tmp_path / "m.json", wait_s=300)
+    with pytest.raises(AttributeError, match="_init_storage_client"):
+        _counts._upload(Writer(client, lambda: client, marker), _counts.ThreadStorages(),
+                        "counts/MYB41_7_/G.json", b"{}")
+    assert not marker.path.exists(), "no unknown outcome for the next run to wait out"
+    assert client.objects == {}
+
+
 @pytest.mark.parametrize("name", ["a/../../x", "..", "a/b", "."])
 def test_a_dataset_name_that_cannot_be_a_path_stops_before_any_object(tmp_path, name):
     with pytest.raises(LoadError, match="cannot be part of a storage path; an admin has to"):

@@ -74,6 +74,12 @@ def test_a_reused_run_id_with_another_run_key_gets_another_name():
     assert wfs.cellranger_workflow_name(other) != wfs.cellranger_workflow_name(RUN)
 
 
+def test_the_earlier_name_is_the_one_runs_were_submitted_under_before_the_rename():
+    earlier = wfs.CELLRANGER.earlier_names(RUN)
+    assert earlier == [wfs.cellranger_workflow_name(RUN).replace("scrna-", "scrna-cellranger-", 1)]
+    assert re.fullmatch(r"scrna-cellranger-staging-7-[0-9a-f]{8}", earlier[0])
+
+
 def _template_names() -> list[str]:
     """Every template a Cell Ranger run's pods can be named after, in both Argo files."""
     files = [ARGO_DIR / "cellranger-count-template.yaml",

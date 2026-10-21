@@ -25,7 +25,9 @@ import k8s_client
 from k8s_client import (
     K8sAlreadyExistsError,
     K8sConfigError,
+    K8sStatusError,
     K8sSubmissionError,
+    get_workflow,
     submit_workflow,
 )
 from pipeline_queue import MAX_READS, VISIBILITY_TIMEOUT
@@ -215,7 +217,17 @@ def process_one(client) -> bool:
 
     try:
         body = wf.build_body(run)
-        workflow_name = submit_workflow(body)
+        workflow_name = _submitted_earlier(wf, run) or submit_workflow(body)
+    except K8sStatusError as exc:
+        # Argo couldn't be asked about an earlier submission: leave it to come back.
+        logger.warning(
+            "rnaseq_worker: couldn't check %s run %s for an earlier submission, "
+            "leaving it queued: %s",
+            wf.name,
+            run_id,
+            exc,
+        )
+        return True
     except UnrunnableRun as exc:
         logger.warning("rnaseq_worker: %s run %s can't run: %s", wf.name, run_id, exc)
         _fail_logged(client, run, str(exc))
@@ -272,6 +284,24 @@ def process_one(client) -> bool:
             exc,
         )
     return True
+
+
+def _submitted_earlier(wf, run: dict) -> str | None:
+    """The name of a Workflow an earlier worker submitted for this run under a name this one no
+    longer builds, or None. Argo only refuses a repeated name, so without this a run submitted
+    but never recorded before a rename would be started a second time."""
+    for name in wf.earlier_names(run):
+        found = get_workflow(name)
+        labels = (found or {}).get("metadata", {}).get("labels") or {}
+        if found is not None and labels.get("rnaseq-run-id") == str(run["run_id"]):
+            logger.info(
+                "rnaseq_worker: %s run %s was already submitted as %s",
+                wf.name,
+                run["run_id"],
+                name,
+            )
+            return name
+    return None
 
 
 def _connect_with_retry():

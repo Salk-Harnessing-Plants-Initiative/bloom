@@ -19,7 +19,9 @@ dependencies = [
     # something we import, so a --pre install picks them up and nothing runs (#629).
     # Lifted once those ship stable (#645).
     "httpx>=0.27,<1.0",
-    "supabase>=2.0.0,<3",
+    # 2.31+: `scrna hdf5 upload` opens a storage handle per thread through the client's
+    # _init_storage_client, storage_url and options, as tested on 2.31.
+    "supabase>=2.31.0,<3",
     "python-dotenv>=1.0.0",
     # Floors, not caps: a cap here would only keep the next security fix out.
     "cryptography>=50.0.0",  # CVE-2026-69247

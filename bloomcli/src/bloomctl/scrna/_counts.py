@@ -240,8 +240,10 @@ def _upload(writer: Writer, storages: ThreadStorages, path: str, payload: bytes)
     """One gene's values, replacing what is there, so a re-run repairs a stopped upload. The
     storage handle is this thread's, for the current client, on each request."""
     def send(client):
+        # Outside the try: a failure opening the handle is not a reply from storage.
+        storage = storages.get(client)
         try:
-            return storages.get(client).from_(BUCKET).upload(
+            return storage.from_(BUCKET).upload(
                 path=path, file=payload,
                 file_options={"content-type": "application/json", "upsert": "true"})
         except (ValueError, KeyError, AttributeError) as exc:
