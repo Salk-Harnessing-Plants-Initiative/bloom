@@ -24,6 +24,8 @@ STATEMENT_TIMEOUT_S = 300
 WAIT_MARGIN_S = 30
 
 RERUN = "run the same command again to continue"
+# Waits before re-sending a write that is safe to repeat, after a dropped connection.
+REPEAT_DELAYS_S = (2, 5, 15)
 
 # Rows per read. Each page is one request that has to finish inside the gateway's 60 s.
 PAGE_ROWS = 5000
@@ -131,14 +133,29 @@ def marker_path(directory: Path, dataset_name: str) -> Path:
     return Path(directory) / f"unknown-write.{safe}.json"
 
 
+def _transient(exc: BaseException) -> bool:
+    """A dropped or failed connection, or a storage server error: worth sending again."""
+    import httpx
+    from storage3.exceptions import StorageApiError
+
+    if isinstance(exc, httpx.HTTPError):
+        return True
+    if isinstance(exc, StorageApiError):
+        return str(exc.status).isdigit() and int(exc.status) >= 500
+    return False
+
+
 class Writer:
-    """Sends each write once; re-sends only after an unauthorised refusal.
+    """Sends each write once; re-sends after an unauthorised refusal, and a write that is
+    safe to repeat after a dropped connection.
 
     Safe to share between threads: several requests refused together sign in once.
     """
 
-    def __init__(self, client: Any, renew: Callable[[], Any], marker: Marker):
+    def __init__(self, client: Any, renew: Callable[[], Any], marker: Marker,
+                 sleep: Callable[[float], None] = time.sleep):
         self.client, self._renew, self.marker = client, renew, marker
+        self._sleep = sleep
         self._lock = threading.Lock()
 
     def _renewed(self, refused: Any) -> None:
@@ -160,13 +177,17 @@ class Writer:
                 raise LoadError(f"reading failed: {exc}; {RERUN}") from None
         return None
 
-    def write(self, step: str, send: Callable[[Any], Any]) -> Any:
+    def write(self, step: str, send: Callable[[Any], Any], *, repeatable: bool = False) -> Any:
         """Run send(client), one request, under the write rules.
 
+        A repeatable write (one that only replaces what is there) is sent again after a
+        dropped connection or a storage server error, up to len(REPEAT_DELAYS_S) times.
         Interrupted mid-request (Ctrl-C), the write may still commit on the server, so that
         is recorded as an unknown outcome before the interrupt goes on.
         """
-        for attempt in (1, 2):
+        delays = list(REPEAT_DELAYS_S) if repeatable else []
+        signed_in_again = False
+        while True:
             client = self.client
             try:
                 return send(client)
@@ -175,8 +196,12 @@ class Writer:
                 raise
             except _api_errors() as exc:
                 kind = classify(exc)
-                if kind == "unauthorised" and attempt == 1:
+                if kind == "unauthorised" and not signed_in_again:
+                    signed_in_again = True
                     self._renewed(client)
+                    continue
+                if delays and _transient(exc):
+                    self._sleep(delays.pop(0))
                     continue
                 if kind == "unknown":
                     self.record_unknown(step)
@@ -185,7 +210,6 @@ class Writer:
                         f"on the server; wait {self.marker.wait_text()}, then {RERUN}"
                     ) from None
                 raise LoadError(f"{step}: {exc}; {RERUN}") from None
-        return None
 
     def record_unknown(self, step: str) -> None:
         """Note a write whose outcome is unknown, so the next run waits it out."""

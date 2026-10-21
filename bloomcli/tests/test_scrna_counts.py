@@ -10,7 +10,7 @@ import json
 
 import httpx
 import pytest
-from scrna_fake_db import FakeClient
+from scrna_fake_db import UPLOAD_TRIES, FakeClient, fail_one_upload
 from test_scrna_genes import MATRIX, expected, write_h5ad
 
 from bloomctl.scrna import _counts, _genes
@@ -96,9 +96,8 @@ def test_a_stopped_write_resumes_to_the_same_rows_and_objects(tmp_path, monkeypa
     whole = FakeClient()
     write(whole, tmp_path)
     client = FakeClient()
-    seen = []
-    client.fail(lambda op, table, payload: op == "upload" and seen.append(1) is None
-                and len(seen) == 4, httpx.ConnectError("refused"))
+    client.fail(lambda op, table, payload: op == "upload" and payload.endswith("AT1G00003.json"),
+                httpx.ConnectError("refused"), times=UPLOAD_TRIES)
     with pytest.raises(LoadError, match="run the same command again"):
         write(client, tmp_path)
     assert 0 < len(client.tables["scrna_counts"]) < 5
@@ -111,7 +110,7 @@ def test_a_stopped_write_resumes_to_the_same_rows_and_objects(tmp_path, monkeypa
 
 def test_a_stop_after_an_upload_writes_no_second_row(tmp_path):
     client = FakeClient()
-    client.fail(lambda op, table, payload: op == "upload", httpx.ReadTimeout("slow"), commit=True)
+    fail_one_upload(client, httpx.ReadTimeout("slow"), commit=True)
     with pytest.raises(LoadError, match="outcome is unknown"):
         write(client, tmp_path)
     write(client, tmp_path)
@@ -271,7 +270,7 @@ def test_a_failed_upload_stops_new_uploads_and_records_no_row_for_it(tmp_path, m
     monkeypatch.setattr(_counts, "READ_AHEAD", 1)
     client = FakeClient()
     client.fail(lambda op, table, payload: op == "upload" and payload.endswith("AT1G00001.json"),
-                httpx.ConnectError("refused"))
+                httpx.ConnectError("refused"), times=UPLOAD_TRIES)
     with pytest.raises(LoadError, match="run the same command again"):
         write(client, tmp_path)
     sent = [e[2].rsplit("/", 1)[1] for e in client.log if e[0] == "upload"]
@@ -299,7 +298,7 @@ def test_a_failed_upload_still_records_every_gene_that_was_stored(tmp_path, monk
     monkeypatch.setattr(_counts, "RECORD_BATCH", 500)
     client = FakeClient()
     client.fail(lambda op, table, payload: op == "upload" and payload.endswith("AT1G00002.json"),
-                httpx.ConnectError("refused"))
+                httpx.ConnectError("refused"), times=UPLOAD_TRIES)
     with pytest.raises(LoadError, match="run the same command again"):
         write(client, tmp_path)
     recorded = sorted(r["counts_object_path"].rsplit("/", 1)[1] for r in client.tables["scrna_counts"])

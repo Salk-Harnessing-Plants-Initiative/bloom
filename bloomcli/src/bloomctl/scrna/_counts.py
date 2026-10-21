@@ -214,7 +214,8 @@ def _upload(writer: Writer, path: str, payload: bytes) -> None:
             raise UnreadableReply(
                 "the storage server answered with an error page instead of a reply") from exc
 
-    writer.write(f"upload {path}", send)
+    # Upserted, so sending it again after a dropped connection is harmless.
+    writer.write(f"upload {path}", send, repeatable=True)
 
 
 def _record(writer: Writer, rows: list[dict]) -> None:

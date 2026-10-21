@@ -8,6 +8,14 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a18] - 2026-10-21 — resend dropped gene uploads
+
+### Fixed
+
+- `scrna hdf5 upload` sends a gene's counts file again, up to three times, when the connection
+  drops or storage answers with a server error, instead of stopping the whole load. Re-sending
+  only replaces the same file; other writes still stop at once when their outcome is unknown.
+
 ## [0.1.0a17] - 2026-10-20 — GO and pathway results
 
 ### Added

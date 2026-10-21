@@ -5,7 +5,7 @@ import pytest
 from scrna_fake_db import database
 from test_scrna_transfer import FakeStorage
 
-from bloomctl.scrna import _object, _session, _transfer
+from bloomctl.scrna import _object, _session, _transfer, _writer
 
 
 @pytest.fixture
@@ -32,3 +32,9 @@ def env(monkeypatch, tmp_path, storage):
     monkeypatch.setattr(_object, "staging_dir", lambda: tmp_path / "stage")
     monkeypatch.setattr(_transfer, "CHUNK_BYTES", 1024)
     return state
+
+
+@pytest.fixture(autouse=True)
+def _no_repeat_waits(monkeypatch):
+    """A repeatable write's waits between tries, as zero seconds."""
+    monkeypatch.setattr(_writer, "REPEAT_DELAYS_S", (0, 0, 0))
