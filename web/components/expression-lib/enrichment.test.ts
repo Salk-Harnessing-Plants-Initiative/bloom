@@ -15,6 +15,7 @@ import {
   decodeEnrichment,
   EnrichmentFileError,
   fetchLatestEnrichment,
+  fetchRunMakingEnrichment,
   geneRatio,
   goTermUrl,
   keggMapUrl,
@@ -98,6 +99,7 @@ function client(rows: object[], stored: Uint8Array | null) {
   const query = {
     select: () => query,
     eq: (column: string, value: unknown) => { asked[column] = value; return query; },
+    in: (column: string, values: unknown[]) => { asked[column] = values; return query; },
     order: (column: string, options: object) => { asked.order = [column, options]; return query; },
     limit: async () => ({ data: rows, error: null }),
   };
@@ -140,6 +142,19 @@ describe("fetchLatestEnrichment", () => {
   it("says when the run's file can't be read", async () => {
     await expect(fetchLatestEnrichment(client([RUN], null) as never, 25))
       .rejects.toThrow(/Object not found/);
+  });
+});
+
+describe("fetchRunMakingEnrichment", () => {
+  it("finds the newest pipeline run still working on the dataset", async () => {
+    const c = client([{ id: 42 }], null);
+    expect(await fetchRunMakingEnrichment(c as never, 25)).toBe(42);
+    expect(c.asked).toMatchObject({ table: "rnaseq_runs", dataset_id: 25,
+                                     status: ["submitted", "running"] });
+  });
+
+  it("is nothing when no run is working on it", async () => {
+    expect(await fetchRunMakingEnrichment(client([], null) as never, 25)).toBeNull();
   });
 });
 

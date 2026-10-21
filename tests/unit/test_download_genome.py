@@ -165,9 +165,9 @@ def test_the_download_runs_the_script_in_the_analysis_image():
     }
 
 
-def test_only_a_network_error_retries_the_download_twice():
+def test_a_network_error_or_a_pod_that_never_ran_retries_the_download_twice():
     strategy = _templates()["download-genome"]["retryStrategy"]
-    assert strategy["expression"] == "asInt(lastRetry.exitCode) == 1"
+    assert strategy["expression"] == "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
     assert strategy["limit"] == 2
 
 
@@ -226,4 +226,5 @@ def test_the_genome_and_reference_live_next_to_the_runs_folder_not_in_it():
 
 def test_cleanup_deletes_the_genome_folder_with_the_runs():
     cleanup = _templates()["cleanup"]["container"]["args"][0]
-    assert 'for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome"; do' in cleanup
+    assert ('for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome" '
+            '"/shared/runs/${RUN_ID}.go"; do') in cleanup

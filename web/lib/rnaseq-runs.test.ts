@@ -466,6 +466,91 @@ describe("a run on a genome version from Bloom", () => {
   });
 });
 
+describe("a run with GO & pathways", () => {
+  const pods = Object.fromEntries(
+    ["stage", "qc", "download-genome", "build-reference", "annotate-genome", "count", "load-dataset", "go-pathways"].map(
+      (step, i) => [step, `p${i}`]
+    )
+  );
+
+  it("lists the GO steps once the run has started them", () => {
+    const ids = runSteps(run({ status: "succeeded", current_step: "cleanup", step_pods: pods })).map(
+      (s) => s.id
+    );
+    expect(ids.indexOf("annotate-genome")).toBe(ids.indexOf("build-reference") + 1);
+    expect(ids.indexOf("go-pathways")).toBe(ids.indexOf("load-dataset") + 1);
+  });
+
+  it("leaves them out of a run that hasn't reached them", () => {
+    const ids = runSteps(run()).map((s) => s.id);
+    expect(ids).not.toContain("annotate-genome");
+    expect(ids).not.toContain("go-pathways");
+  });
+});
+
+describe("a run reporting each step's own outcome", () => {
+  const phased = (phases: Record<string, string>, overrides: Partial<RnaseqRun> = {}) =>
+    run({
+      params: { sample: "col0", reference: "athaliana_col0.v2" },
+      step_pods: { ...Object.fromEntries(Object.keys(phases).map((s, i) => [s, `p${i}`])), _phases: phases },
+      ...overrides,
+    });
+
+  it("shows the annotation and count running together", () => {
+    const states = stepStates(
+      phased({ stage: "Succeeded", qc: "Succeeded", "download-genome": "Succeeded",
+               "build-reference": "Succeeded", "annotate-genome": "Running", count: "Running" },
+             { current_step: "count" })
+    );
+    expect(states["annotate-genome"]).toBe("running");
+    expect(states.count).toBe("running");
+    expect(states.preprocess).toBe("waiting");
+    expect(states["go-pathways"]).toBe("waiting");
+  });
+
+  it("lists the GO steps before they start", () => {
+    const ids = runSteps(phased({ stage: "Running" })).map((s) => s.id);
+    expect(ids).toContain("annotate-genome");
+    expect(ids).toContain("go-pathways");
+  });
+
+  it("shows GO failed after the dataset loaded on a succeeded run", () => {
+    const states = stepStates(
+      phased({ "load-dataset": "Succeeded", "go-pathways": "Failed", cleanup: "Succeeded" },
+             { status: "succeeded", current_step: "cleanup" })
+    );
+    expect(states["load-dataset"]).toBe("done");
+    expect(states["go-pathways"]).toBe("failed");
+    expect(states.cleanup).toBe("done");
+  });
+
+  it("marks a failed run's unstarted steps not run, and a step its end stopped too", () => {
+    const states = stepStates(
+      phased({ count: "Failed", "annotate-genome": "Running" },
+             { status: "failed", current_step: "count" })
+    );
+    expect(states.count).toBe("failed");
+    expect(states["annotate-genome"]).toBe("not-run");
+    expect(states["go-pathways"]).toBe("not-run");
+  });
+
+  it("shows a step waiting for its next attempt as retrying, and not run once the run ends", () => {
+    expect(stepStates(phased({ "load-dataset": "Retrying" }, { current_step: "load-dataset" }))["load-dataset"])
+      .toBe("retrying");
+    expect(
+      stepStates(phased({ "load-dataset": "Retrying" }, { status: "failed", current_step: "load-dataset" }))[
+        "load-dataset"
+      ]
+    ).toBe("not-run");
+  });
+
+  it("marks a skipped run's unstarted steps skipped", () => {
+    const states = stepStates(phased({ stage: "Succeeded" }, { status: "skipped" }));
+    expect(states.stage).toBe("done");
+    expect(states.count).toBe("skipped");
+  });
+});
+
 describe("a run started before genomes came from Bloom", () => {
   it("keeps its stage-reference step, by its pod or its current step", () => {
     for (const r of [run(), run({ step_pods: {}, current_step: "stage-reference" })]) {

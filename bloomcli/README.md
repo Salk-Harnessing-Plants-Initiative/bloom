@@ -52,6 +52,14 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl genome list` / `bloomctl genome download <name>[.vN]` — see which
   genomes and versions Bloom holds, and fetch a ready version's FASTA and GTF, checked
   against Bloom's record. See [below](#bloomctl-genome-list-and-download).
+- **[write]** `bloomctl genome annotation upload <file>` / **[read]** `bloomctl genome
+  annotation download <name>.vN --out <file>` — record a genome version's GO and pathway
+  annotation (a `bloom-annotation/1` file from the GO and pathway workflow) as its next build, or
+  fetch its ready build, checked against Bloom's record. Download exits 4 while a build is still
+  uploading and 3 when there is none.
+- **[write]** `bloomctl scrna enrichment upload <file> --build-id N [--run-id R]` — record a
+  dataset's GO and pathway enrichment (`bloom-enrichment/1`) against an annotation build, linking
+  the dataset to the build's genome version when it has none.
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
   or single scan (metadata `scans.csv` + per-frame images). Select the experiment
   by `--experiment-id N`, `--scan-id N`, or `--experiment-name "<text>"` (a
@@ -696,7 +704,9 @@ done, e.g. `Uploading my_dataset.h5ad ━━━━━━━━╺━━━━━
 only the result lines.
 
 Each write is one request sent once; if one fails the command says the file is stored and
-the load stopped, and running the same command again continues it. A write whose outcome
+the load stopped, and running the same command again continues it. The exception is a
+gene's counts file, which only replaces itself: when the connection drops or storage answers
+with a server error, it is sent again, up to three times, 2, 5 and 15 seconds apart. A write whose outcome
 is unknown (a timeout, or Ctrl-C or a closed terminal while it was being sent) may still be finishing on the
 server, so the next run waits that out first, about six minutes, saying how many seconds
 are left. Load a dataset from one terminal at a time.

@@ -8,6 +8,10 @@ published as `X.Y.Z-dev.N` under the `dev` dist-tag).
 
 ## [Unreleased]
 
+### Fixed
+
+- `sharp` is accepted from `0.34.5` up to `0.35.x`. `0.35` needs Node 20.9 or later, so Electron 28 apps such as Bloom Desktop (Node 18.18) couldn't load bloom-js's copy; they can now share their own `0.34.5`.
+
 ## [0.4.0]
 
 ### Added

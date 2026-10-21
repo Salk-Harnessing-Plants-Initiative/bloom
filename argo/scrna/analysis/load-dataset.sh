@@ -11,8 +11,11 @@
 # The credentials are copied into the pod's own /tmp, never onto the shared disk. bloomctl's
 # resume state (~/.bloom/scrna-uploads) is the run's folder on the shared disk, so a retried
 # step continues the load; cleanup removes it with the rest of the run's folder.
-# Exit codes: 0 loaded or nothing to load, 6 bad input or no .h5ad, 16 no credentials,
-#      otherwise bloomctl's own (1 a refused or failed load, 2 a usage error).
+# The .h5ad was just written by another pod, and the shared disk may not show its final size
+# yet, so the load waits until its size and time stop changing (H5AD_SETTLE_SECONDS apart, up to
+# H5AD_SETTLE_TRIES times).
+# Exit codes: 0 loaded or nothing to load, 1 the .h5ad kept changing, 6 bad input or no .h5ad,
+#      16 no credentials, otherwise bloomctl's own (1 a refused or failed load, 2 a usage error).
 set -euo pipefail
 
 readonly EXIT_BAD_INPUT=6
@@ -40,6 +43,21 @@ if [ ! -f "${h5ad}" ]; then
   echo "ERROR: no final .h5ad at ${h5ad}" >&2
   exit "${EXIT_BAD_INPUT}"
 fi
+
+file_state() { stat -c '%s %Y' "$1" 2>/dev/null || stat -f '%z %m' "$1"; }
+settle="${H5AD_SETTLE_SECONDS:-10}"
+tries="${H5AD_SETTLE_TRIES:-12}"
+seen="$(file_state "${h5ad}")"
+for ((try = 1; ; try++)); do
+  sleep "${settle}"
+  now="$(file_state "${h5ad}")"
+  [ "${now}" = "${seen}" ] && break
+  if [ "${try}" -ge "${tries}" ]; then
+    echo "ERROR: ${h5ad} was still changing after ${tries} checks ${settle} s apart" >&2
+    exit 1
+  fi
+  seen="${now}"
+done
 
 HOME="$(mktemp -d)"
 export HOME

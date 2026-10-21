@@ -6,4 +6,4 @@ h5py==3.16.0
 boto3==1.43.105
 # load-dataset loads the run's .h5ad into Bloom with it, and download-genome fetches the run's
 # genome version (both as the bloom_workflows login).
-bloomctl==0.1.0a15
+bloomctl==0.1.0a18

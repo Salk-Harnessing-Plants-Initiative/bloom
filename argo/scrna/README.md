@@ -22,10 +22,10 @@ argo/scrna/
     ├── fetch-sra.sh            installed as fetch-sra: an SRA run's reads into the run's folder, from ENA or SRA
     ├── stage-fastqs.sh         installed as stage-fastqs: an S3 folder run's reads into the run's folder
     ├── claim-run-dir.sh        installed as claim-run-dir: makes the run's folder this run's own before either writes to it
-    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside fetch-sra or stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → cleanup), testrun
+    ├── cellranger-count-template.yaml   WorkflowTemplate: sample-pipeline (download-genome → build-reference alongside fetch-sra or stage → qc, then count → preprocess → cluster → de → build-h5ad → load-dataset → GO & pathways → cleanup, with the genome's annotation built alongside count), testrun
     ├── cellranger-count-workflow.yaml   a run started by hand: the sample pipeline for a list of samples on one genome version, each loaded into Bloom
     └── cellranger-testrun-workflow.yaml Cell Ranger's bundled tiny dataset, to check the setup
-go-pathways/                    GO and KEGG pathway enrichment, run by hand for now
+go-pathways/                    GO and KEGG pathway enrichment: the pipeline's GO steps, and two hand-run workflows
 ├── go-pathways-template.yaml   WorkflowTemplate: genome-annotation and scrna-enrichment
 ├── genome-annotation-workflow.yaml   a genome version's annotation, from eggNOG-mapper or TAIR, recorded in Bloom
 └── scrna-enrichment-workflow.yaml    a dataset's enrichment against one annotation build, recorded in Bloom
@@ -145,34 +145,49 @@ The final file has the barcodes as `obs_names`, gene IDs as `var_names` (Cell Ra
 
 Each analysis step writes its `_SUCCESS` last and does nothing if it's already there, so a retry redoes only what's missing. `build-h5ad` rebuilds when the set of finished parts has changed. `cleanup` runs after `load-dataset`, so the folder is kept after a failure. Exit 13 means fewer than 50 cells passed the filters, and exit 14 means the count matrix is missing; neither is retried.
 
-**load-dataset** then loads `h5ad/<sample>.h5ad` into Bloom as the run's dataset: `bloomctl scrna hdf5 upload <file> --name <dataset-name> --species <species-name> --annotation leiden --create --yes` (`analysis/load-dataset.sh`, with `bloomctl` pinned in `analysis/requirements.txt`). When the file holds the de step's result, it adds `--de-key de`, so the dataset loads with its differential expression: each cluster's comparison with the rest, every tested gene, and each cluster's statistics and top markers, which fill the expression page's cluster panel and Genes tab. The worker passes the dataset name and the species' common name from the run's form, and the run's id (`bloom-run-id`); a run naming no dataset loads nothing. For a run from Bloom, `bloom-dataset pick` (`analysis/bloom_scrna_analysis/bloom_dataset.py`) chooses the name: the one this run already loaded under, else the typed name, else the first free `<name>_v2`, `<name>_v3`, …, so a run never loads into another's dataset and a retry continues its own. bloomctl tags the dataset with the run (`--run-id`), and `bloom-dataset id` writes its id to the step's `dataset-id` output, which the status poller links the run to. A run started by hand has no run id: it loads under the name as given, untagged, and reports nothing. It signs in with `/etc/bloom/credentials.txt` (the pipeline's `bloom_workflows` login), copied into the pod's own `/tmp`, and fails with exit 16 without it. bloomctl's resume state is `/shared/runs/<run-id>/bloomctl-uploads/`, so a retry (up to 2, 6 minutes apart, past bloomctl's 330-second hold after a write it couldn't confirm) continues the load; exit 2, 6 and 16 aren't retried. It uploads one counts file per gene, so a run takes tens of minutes; the step allows 6 hours. When it succeeds, the status poller links the run to its dataset and gives the dataset to the scientist (`link_rnaseq_run_dataset`).
+**load-dataset** then loads `h5ad/<sample>.h5ad` into Bloom as the run's dataset: `bloomctl scrna hdf5 upload <file> --name <dataset-name> --species <species-name> --annotation leiden --create --yes` (`analysis/load-dataset.sh`, with `bloomctl` pinned in `analysis/requirements.txt`). When the file holds the de step's result, it adds `--de-key de`, so the dataset loads with its differential expression: each cluster's comparison with the rest, every tested gene, and each cluster's statistics and top markers, which fill the expression page's cluster panel and Genes tab. The worker passes the dataset name and the species' common name from the run's form, and the run's id (`bloom-run-id`); a run naming no dataset loads nothing. For a run from Bloom, `bloom-dataset pick` (`analysis/bloom_scrna_analysis/bloom_dataset.py`) chooses the name: the one this run already loaded under, else the typed name, else the first free `<name>_v2`, `<name>_v3`, …, so a run never loads into another's dataset and a retry continues its own. bloomctl tags the dataset with the run (`--run-id`), and `bloom-dataset id` writes its id to the step's `dataset-id` output, which the status poller links the run to. A run started by hand has no run id: it loads under the name as given, untagged, and reports nothing. It signs in with `/etc/bloom/credentials.txt` (the pipeline's `bloom_workflows` login), copied into the pod's own `/tmp`, and fails with exit 16 without it. bloomctl's resume state is `/shared/runs/<run-id>/bloomctl-uploads/`, so a retry (up to 2, 6 minutes apart, past bloomctl's 330-second hold after a write it couldn't confirm) continues the load; exit 2, 6 and 16 aren't retried. It first waits until the .h5ad's size and time stop changing, since build-h5ad wrote it from another pod. It uploads one counts file per gene, so a run takes tens of minutes; the step allows 6 hours. A gene's file is sent again, up to three times, when the connection drops. When it succeeds, the status poller links the run to its dataset and gives the dataset to the scientist (`link_rnaseq_run_dataset`).
 
 The image holds nothing licensed, but it's pushed private like the Cell Ranger one:
 
 ```bash
 docker buildx build --platform linux/amd64 --build-context scrna=argo/scrna \
-  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.7 argo/scrna/analysis
-docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.7
+  -t ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14 argo/scrna/analysis
+docker push ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
 # tests (need scanpy), from the repo root:
 docker run --rm --entrypoint sh -v "$PWD:/repo" -w /repo \
-  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.7 \
+  ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14 \
   -c 'pip install -q pytest && python -m pytest -q tests/unit/test_scrna_analysis.py'
 ```
 
 ## GO and pathways
 
-Two workflows in `go-pathways/`, started by hand for now. Both sign in to
-staging's Bloom; their headers say how to point them at prod. Register the template once with
+Every Cell Ranger run makes its dataset's GO and pathway results, from the template's steps:
+
+- **Annotate genome** starts once the genome is downloaded, alongside the reads and count.
+  find-annotation asks Bloom for the genome version's ready eggNOG annotation
+  (`bloomctl genome annotation download`, checked against its checksum). With none, the run
+  builds one (the genome-annotation steps below) for the species' KEGG code (`species.kegg_org`;
+  none, GO only) and records it, so later runs reuse it. While another run's build is still
+  uploading, it waits, checking every 5 minutes for up to 12 hours.
+- **GO & pathways** runs after load-dataset: fetch-de, enrich, and upload-enrichment, which
+  records the result with the Cell Ranger run as its job.
+- A failure in either leaves the dataset loaded and the run succeeded; the run's message says
+  which GO step failed. cleanup waits for both, and deletes their folder
+  (`/shared/runs/<run-id>.go`).
+
+Register the template, before the Cell Ranger template that uses it, with
 `argo template create argo/scrna/go-pathways/go-pathways-template.yaml -n runai-busch-lab`.
+Two workflows also run it by hand, for an existing dataset or a TAIR annotation. Both sign in to
+staging's Bloom; their headers say how to point them at prod.
 
 ```bash
 # 1. A genome version's annotation: GO and the species' KEGG pathways from eggNOG-mapper, or
 #    Arabidopsis' curated GO from TAIR (source=tair-go).
 argo submit argo/scrna/go-pathways/genome-annotation-workflow.yaml -n runai-busch-lab \
   -p genome=sbicolor.btx623.hpiv3.v1 -p source=eggnog -p kegg-org=sbi --watch
-# 2. A dataset's enrichment against that annotation build (upload-annotation's log prints its id).
+# 2. A dataset's enrichment against its genome version's ready annotation.
 argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch-lab \
-  -p dataset-id=25 -p annotation-build-id=1 --watch
+  -p dataset-id=25 -p genome=sbicolor.btx623.hpiv3.v1 --watch
 ```
 
 - **genome-annotation** downloads the genome version from Bloom, builds every transcript's
@@ -180,10 +195,10 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   `/shared/ref/eggnog/<release>/`, downloaded there once. Each gene gets the union of its
   proteins' GO terms, with every ancestor term added (`go-basic.obo`), and the KEGG pathways
   KEGG lists for the species (`kegg-org`; left empty, GO only). **upload-annotation** records
-  the file in Bloom as the version's next build of the source, in the `genome-references` bucket
+  the file with `bloomctl genome annotation upload` as the version's next build of the source, in the `genome-references` bucket
   at `<genome>/v<N>/annotation/<source>-b<B>.json.gz`.
-- **scrna-enrichment** fetches the annotation build's file from Bloom, checked against its
-  checksum, and reads the dataset's genes and its newest complete differential expression
+- **scrna-enrichment** fetches the genome version's ready annotation from Bloom, checked
+  against its checksum, and reads the dataset's genes and its newest complete differential expression
   analysis (or `de-run-id`). For each comparison and direction, the list
   is the genes with FDR < 0.05 and |log2FC| > 0.25, strongest first, up to 300. Each of GO's
   three namespaces and KEGG is tested against its own background, the dataset's genes with a
@@ -192,8 +207,8 @@ argo submit argo/scrna/go-pathways/scrna-enrichment-workflow.yaml -n runai-busch
   Benjamini–Hochberg over all of them within a comparison, direction and kind. Then terms with
   FDR < 0.05 and at least 3 list genes are kept; the 3-gene rule comes after the correction,
   since dropping terms by their list-gene count before it would make the FDRs too low. The
-  settings are workflow parameters. **upload-enrichment** records the file in Bloom
-  as an enrichment run, in the `scrna` bucket at `enrichment/<dataset>/run-<id>.json.gz`; a
+  settings are workflow parameters. **upload-enrichment** records the file with
+  `bloomctl scrna enrichment upload` as an enrichment run, in the `scrna` bucket at `enrichment/<dataset>/run-<id>.json.gz`; a
   dataset not yet linked to a genome version is first linked to the build's.
 - Recording starts the build or run, uploads its file and finishes it, which checks the stored
   size; a failed upload abandons it. Neither upload step is retried, since a retry would find
@@ -222,7 +237,7 @@ The files (`bloom_scrna_analysis/annotation.py` and `enrichment.py`):
 
 ## Step logs
 
-Every step of the Cell Ranger template runs through `run-with-log` (`run_with_log.py`, in both images). It passes the step's output through to the pod's log as before, and keeps a copy in Bloom's `run-logs` bucket at `scrna/<workflow name>/<step>.log`, uploaded every 30 seconds while it grows (`RUN_LOG_INTERVAL` changes that) and once more when the step's command ends, whether it succeeded or failed. The run page reads it from there, so a step's log outlives its pod.
+Every step of the Cell Ranger template runs through `run-with-log` (`run_with_log.py`, in both images). It passes the step's output through to the pod's log as before, and keeps a copy in Bloom's `run-logs` bucket at `scrna/<workflow name>/<step>.log`, uploaded every 30 seconds while it grows (`RUN_LOG_INTERVAL` changes that) and once more when the step's command ends, whether it succeeded or failed. The run page reads it from there, so a step's log outlives its pod. The eggNOG steps (proteins, eggnog-db, emapper) run in images without it; they write `logs/<step>.log` in the run's `.go` folder, and the pipeline's `upload-annotation-logs` task copies those to `run-logs` once they end, before cleanup.
 
 - It signs in with the `bloom-credentials` volume, mounted at `/etc/bloom/credentials.txt`: the environment's pipeline Secret, which the workflows service adds to every RNA-seq workflow. Without it (dev, or a hand-submitted run) the step runs and uploads nothing.
 - An upload never fails a step; the step's exit code is the command's own.

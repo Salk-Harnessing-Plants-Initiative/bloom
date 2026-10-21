@@ -57,17 +57,26 @@ export const CELLRANGER_STEPS = [
   { id: "qc", label: "FastQC" },
   { id: "download-genome", label: "Download genome" },
   { id: "build-reference", label: "Build reference" },
+  { id: "annotate-genome", label: "Annotate genome (GO & KEGG)" },
   { id: "count", label: "Cell Ranger count" },
   { id: "preprocess", label: "Filter and normalise" },
   { id: "cluster", label: "Cluster and UMAP" },
   { id: "de", label: "Differential expression" },
   { id: "build-h5ad", label: "Build the .h5ad" },
   { id: "load-dataset", label: "Load into Bloom" },
+  { id: "go-pathways", label: "GO & pathways" },
   { id: "cleanup", label: "Clean up" },
 ] as const;
 
 export type StepId = (typeof CELLRANGER_STEPS)[number]["id"];
-export type StepState = "done" | "running" | "failed" | "waiting" | "not-run" | "skipped";
+export type StepState =
+  | "done"
+  | "running"
+  | "retrying"
+  | "failed"
+  | "waiting"
+  | "not-run"
+  | "skipped";
 
 export const STATUS_LABELS: Record<RunStatus, string> = {
   queued: "Queued",
@@ -174,6 +183,28 @@ export function runFastqUrl(run: RnaseqRun): string | null {
 // Steps the pipeline no longer has, and the steps that replaced them.
 const RETIRED_STEPS: ReadonlySet<StepId> = new Set(["stage-reference"]);
 const GENOME_STEPS: ReadonlySet<StepId> = new Set(["download-genome", "build-reference"]);
+// GO steps run alongside the others; listed on runs that report each step's outcome.
+const GO_STEPS: ReadonlySet<StepId> = new Set(["annotate-genome", "go-pathways"]);
+
+// Where the poller keeps each started step's Argo phase in step_pods.
+const PHASES_KEY = "_phases";
+const PHASE_STATES: Record<string, StepState> = {
+  Pending: "running",
+  Running: "running",
+  // A failed attempt with Argo's next one still to start.
+  Retrying: "retrying",
+  Succeeded: "done",
+  Failed: "failed",
+  Error: "failed",
+};
+
+/** Each started step's own Argo phase, or null for a run polled before steps reported one. */
+function stepPhases(run: RnaseqRun): Record<string, unknown> | null {
+  const phases = field(run.step_pods, PHASES_KEY);
+  return phases && typeof phases === "object" && !Array.isArray(phases)
+    ? (phases as Record<string, unknown>)
+    : null;
+}
 
 /** Whether the run started before genomes came from Bloom, so it staged its reference instead. */
 function stagedItsReference(run: RnaseqRun): boolean {
@@ -190,6 +221,7 @@ export function runSteps(run: RnaseqRun): (typeof CELLRANGER_STEPS)[number][] {
     (step) =>
       (step.id !== "fetch-sra" || imports) &&
       (step.id !== "stage" || stages) &&
+      (!GO_STEPS.has(step.id) || stepPhases(run) !== null || stepStarted(run, step.id)) &&
       (staged ? !GENOME_STEPS.has(step.id) : !RETIRED_STEPS.has(step.id))
   );
 }
@@ -199,9 +231,12 @@ export function stepStarted(run: RnaseqRun, step: StepId): boolean {
   return Boolean(field(run.step_pods, step));
 }
 
-/** Each of the run's steps' state, from the run's status and current step. */
+/** Each of the run's steps' state: from each step's own outcome when the run reports it, else
+ * from the run's status and current step. */
 export function stepStates(run: RnaseqRun): Partial<Record<StepId, StepState>> {
   const steps = runSteps(run);
+  const phases = stepPhases(run);
+  if (phases) return statesFromPhases(run, steps, phases);
   const current = steps.findIndex((s) => s.id === run.current_step);
   const states: Partial<Record<StepId, StepState>> = {};
   steps.forEach((step, index) => {
@@ -216,6 +251,25 @@ export function stepStates(run: RnaseqRun): Partial<Record<StepId, StepState>> {
     else state = index < current ? "done" : index === current ? "running" : "waiting";
     states[step.id] = state;
   });
+  return states;
+}
+
+// Steps run in parallel and a GO step can fail after the dataset loaded, so each step's
+// state is its own phase; a step without one hasn't started.
+function statesFromPhases(
+  run: RnaseqRun,
+  steps: readonly { id: StepId }[],
+  phases: Record<string, unknown>
+): Partial<Record<StepId, StepState>> {
+  const finished = isFinished(run.status);
+  const unstarted: StepState = run.status === "skipped" ? "skipped" : finished ? "not-run" : "waiting";
+  const states: Partial<Record<StepId, StepState>> = {};
+  for (const step of steps) {
+    const phase = phases[step.id];
+    const state = (typeof phase === "string" && PHASE_STATES[phase]) || unstarted;
+    // The last poll can catch a step running that the run's end then stopped.
+    states[step.id] = finished && (state === "running" || state === "retrying") ? "not-run" : state;
+  }
   return states;
 }
 

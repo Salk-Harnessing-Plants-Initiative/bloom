@@ -95,8 +95,9 @@ def test_every_step_uses_one_analysis_image_tag():
 
 @pytest.mark.parametrize("name", ["download-genome", "fetch-references", "fetch-de",
                                   "fetch-annotation"])
-def test_only_a_network_error_is_retried(name):
-    assert STEPS[name]["retryStrategy"]["expression"] == "asInt(lastRetry.exitCode) == 1"
+def test_only_a_network_error_or_a_pod_that_never_ran_is_retried(name):
+    # Or a pod that never ran (-1).
+    assert STEPS[name]["retryStrategy"]["expression"] == "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
 
 
 @pytest.mark.parametrize("workflow", sorted(WORKFLOWS))
@@ -131,10 +132,11 @@ def test_the_annotation_runs_logs_are_uploaded_before_cleanup_deletes_them():
     assert tasks["upload-logs"]["depends"] == "upload-annotation"
 
 
-def test_uploads_that_start_a_record_in_bloom_are_not_retried():
-    # A retry would find its own uploading record and be refused; the step abandons it instead.
+def test_uploads_that_start_a_record_in_bloom_are_retried_only_if_they_never_ran():
+    # A retry after it ran would find its own uploading record and be refused; the step
+    # abandons it instead. A pod that never ran (-1) started nothing.
     for name in ("upload-annotation", "upload-enrichment"):
-        assert "retryStrategy" not in STEPS[name]
+        assert STEPS[name]["retryStrategy"]["expression"] == "asInt(lastRetry.exitCode) == -1"
 
 
 def test_every_condition_quotes_its_values():
@@ -183,3 +185,12 @@ def test_enrich_waits_for_both_the_annotation_and_the_analysis():
     tasks = {t["name"]: t for t in STEPS["scrna-enrichment"]["dag"]["tasks"]}
     needed = set(tasks["enrich"]["depends"].replace("&&", " ").split())
     assert needed == {"fetch-annotation", "fetch-de"}
+
+
+@pytest.mark.parametrize("name", ["proteins", "eggnog-db", "emapper"])
+def test_the_eggnog_steps_retry_only_a_pod_with_no_exit_code(name):
+    # Not a real failure or a deadline kill: emapper's limit alone is 12 hours.
+    retry = STEPS[name]["retryStrategy"]
+    assert retry == {"limit": 2, "retryPolicy": "Always",
+                     "backoff": {"duration": "2m", "factor": 2},
+                     "expression": "asInt(lastRetry.exitCode) == -1"}
