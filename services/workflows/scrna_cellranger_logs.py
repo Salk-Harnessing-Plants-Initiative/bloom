@@ -9,6 +9,7 @@ service's login, so it needs no cluster access and outlives the Workflow.
 
 import re
 
+import httpx
 from fastapi import HTTPException
 
 from rnaseq_status import CELLRANGER_STEPS, PHASES_KEY, RETIRED_CELLRANGER_STEPS
@@ -32,6 +33,11 @@ _STEP_ENDED = frozenset({"Succeeded", "Failed", "Error", "Omitted", "Skipped"})
 # How much of a log one request returns: its last lines, capped in size.
 TAIL_LINES = 2000
 LIMIT_BYTES = 1024 * 1024
+# Only the end of the file is fetched (a Range request), so a 45 MB log costs no more.
+FETCH_BYTES = 2 * LIMIT_BYTES
+SIGNED_URL_SECONDS = 60
+FETCH_TIMEOUT_SECONDS = 30
+_CONTENT_RANGE = re.compile(r"^bytes (\d+)-\d+/\d+$")
 
 # A Kubernetes pod name: lowercase letters, digits and '-', at most 253 characters.
 _POD_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$")
@@ -71,6 +77,24 @@ def _no_log(run_id: int, step: str, row: dict, template: str) -> str:
         f"Step {step} of run {run_id} has no log in Bloom yet; a running step saves its "
         "log every 30 seconds"
     )
+
+
+def _fetch_end(path: str) -> tuple[bytes, bool]:
+    """The last FETCH_BYTES of the stored log, and whether its start was left out."""
+    signed = (
+        app_client()
+        .storage.from_(LOGS_BUCKET)
+        .create_signed_url(path, SIGNED_URL_SECONDS)["signedURL"]
+    )
+    resp = httpx.get(signed, headers={"Range": f"bytes=-{FETCH_BYTES}"},
+                     timeout=FETCH_TIMEOUT_SECONDS)
+    if resp.status_code == 416:  # an empty file has no last bytes
+        return b"", False
+    resp.raise_for_status()
+    if resp.status_code != 206:  # storage sent the whole file
+        return resp.content[-FETCH_BYTES:], len(resp.content) > FETCH_BYTES
+    found = _CONTENT_RANGE.match(resp.headers.get("content-range", ""))
+    return resp.content, bool(found and int(found.group(1)) > 0)
 
 
 def read_step_log(run_id: int, step) -> dict:
@@ -113,7 +137,7 @@ def read_step_log(run_id: int, step) -> dict:
         )
     path = f"{LOG_PREFIX}/{rows[0]['argo_workflow_name']}/{LOG_NAMES.get(template, template)}.log"
     try:
-        data = app_client().storage.from_(LOGS_BUCKET).download(path)
+        data, cut_start = _fetch_end(path)
     except Exception as exc:  # noqa: BLE001 - storage3 and httpx raise several kinds
         if _missing(exc):
             raise HTTPException(
@@ -123,9 +147,12 @@ def read_step_log(run_id: int, step) -> dict:
             status_code=502, detail="Could not read the log from Bloom's storage"
         ) from None
 
-    lines = data.decode(errors="replace").splitlines(keepends=True)
+    text = data.decode(errors="replace")
+    if cut_start:  # the first line was cut part way through
+        text = text[text.find("\n") + 1 :] if "\n" in text else ""
+    lines = text.splitlines(keepends=True)
     log, cut = _keep_end("".join(lines[-TAIL_LINES:]))
-    truncated = cut or len(lines) > TAIL_LINES
+    truncated = cut_start or cut or len(lines) > TAIL_LINES
     return {
         "run_id": run_id,
         "step": step,

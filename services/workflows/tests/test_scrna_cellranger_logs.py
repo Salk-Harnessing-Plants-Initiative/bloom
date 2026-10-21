@@ -3,6 +3,7 @@ run-logs bucket, a log not saved yet, storage errors, truncation and the route (
 or storage)."""
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import yaml
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import rnaseq_status
 import scrna_cellranger_logs as logs
+
 USER = "00000000-0000-0000-0000-000000000001"
 WORKFLOW = "scrna-cellranger-dev-7-abcd1234"
 POD = f"{WORKFLOW}-count-3938252481"
@@ -39,10 +41,10 @@ class _Result:
 
 
 class FakeSupabase:
-    """Serves `rows` filtered by the .eq() calls, and records them; its storage serves
-    log_state["result"] (text, or an exception to raise) and records each download."""
+    """Serves `rows` filtered by the .eq() calls, and records them; its storage signs a URL
+    for log_state["result"] (text, or an exception to raise) and records each one."""
 
-    log_state = {"result": "", "calls": []}
+    log_state: ClassVar[dict] = {"result": "", "calls": []}
 
     def __init__(self, rows=()):
         self.rows = list(rows)
@@ -57,11 +59,11 @@ class FakeSupabase:
             def __init__(self, name):
                 self.name = name
 
-            def download(self, path):
+            def create_signed_url(self, path, expires_in):
                 state["calls"].append((self.name, path))
                 if isinstance(state["result"], Exception):
                     raise state["result"]
-                return state["result"].encode()
+                return {"signedURL": f"https://storage.test/sign/{self.name}/{path}"}
 
         class _Storage:
             def from_(self, name):
@@ -110,11 +112,35 @@ def db(monkeypatch):
     return fake
 
 
+class _Response:
+    def __init__(self, status, content=b"", headers=None):
+        self.status_code, self.content, self.headers = status, content, headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
 @pytest.fixture
 def pod_log(monkeypatch):
-    """The stored log the fake storage serves; `result` is returned, or raised."""
-    state = {"result": "line 1\nline 2\n", "calls": []}
+    """The stored log the fake storage serves; `result` is returned, or raised. The GET
+    honours a suffix Range like storage does, unless `ranges` is False."""
+    state = {"result": "line 1\nline 2\n", "calls": [], "ranges": True, "asked": []}
     monkeypatch.setattr(FakeSupabase, "log_state", state)
+
+    def _get(url, headers, timeout):
+        state["asked"].append(headers.get("Range"))
+        data = state["result"].encode()
+        if not state["ranges"]:
+            return _Response(200, data)
+        if not data:
+            return _Response(416)
+        want = int(headers["Range"].removeprefix("bytes=-"))
+        start = max(0, len(data) - want)
+        return _Response(206, data[start:],
+                         {"content-range": f"bytes {start}-{len(data) - 1}/{len(data)}"})
+
+    monkeypatch.setattr(logs.httpx, "get", _get)
     return state
 
 
@@ -143,6 +169,31 @@ def test_a_started_steps_log_is_returned(db, pod_log):
 def test_the_stage_steps_log_is_read_from_stage_log(db, pod_log):
     logs.read_step_log(7, "stage")
     assert pod_log["calls"] == [("run-logs", f"scrna/{WORKFLOW}/stage.log")]
+
+
+def test_only_the_end_of_the_log_is_fetched(db, pod_log):
+    logs.read_step_log(7, "count")
+    assert pod_log["asked"] == [f"bytes=-{logs.FETCH_BYTES}"]
+
+
+def test_a_fetch_that_starts_mid_line_drops_that_part_line(db, pod_log):
+    tail = "ERROR: count failed\n"
+    pod_log["result"] = "a" * (logs.FETCH_BYTES - len(tail) + 5) + "\n" + tail
+    out = logs.read_step_log(7, "count")
+    assert out["log"] == tail
+    assert out["truncated"] is True
+
+
+def test_storage_that_ignores_the_range_still_gives_the_end(db, pod_log):
+    pod_log["ranges"] = False
+    pod_log["result"] = "x\n" * (logs.FETCH_BYTES) + "last\n"
+    out = logs.read_step_log(7, "count")
+    assert out["log"].endswith("last\n") and out["truncated"] is True
+
+
+def test_an_empty_log_is_empty(db, pod_log):
+    pod_log["result"] = ""
+    assert logs.read_step_log(7, "count")["log"] == ""
 
 
 def test_a_steps_log_is_named_for_its_template():
