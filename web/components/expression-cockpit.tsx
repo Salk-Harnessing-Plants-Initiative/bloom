@@ -6,6 +6,7 @@ import { ExpressionView } from "@/components/expression-view";
 import DifferentialExpressionAnalysis from "@/components/expression-differential-analysis";
 import { ExpressionGenesByCellType } from "@/components/expression-genes-by-cell-type";
 import { ExpressionGoPathways } from "@/components/expression-go-pathways";
+import { ExpressionMappingReport } from "@/components/expression-mapping-report";
 // The remaining tabs stay disabled until their schema is plumbed through —
 // re-enable one by uncommenting its import, its entry in the Tab union, its
 // button and its body.
@@ -14,23 +15,28 @@ import { ExpressionGoPathways } from "@/components/expression-go-pathways";
 import { ExpressionThemeProvider } from "@/components/expression-theme-provider";
 import type { DeFocus } from "@/components/expression-lib/de-types";
 
-type Tab = "umap" | "genes" | "de" | "go"; // | "correlation" | "download";
-const TABS: readonly Tab[] = ["umap", "genes", "de", "go"];
+type Tab = "report" | "umap" | "genes" | "de" | "go"; // | "correlation" | "download";
+const TABS: readonly Tab[] = ["report", "umap", "genes", "de", "go"];
 
 export interface ExpressionCockpitProps {
   datasetId: number;
   datasetName: string;
   /** The tab to open on, e.g. "go" from a link; an unknown one opens UMAP. */
   initialTab?: string;
+  /** The run whose Cell Ranger report the Mapping report tab shows; no tab without one. */
+  reportRunId?: number | null;
 }
 
-/** Five-tab cockpit around a dataset: UMAP, gene-level, correlation, DE, downloads. */
+/** The tabs around a dataset: its mapping report (when its run stored one), UMAP, genes by cell
+ * type, differential expression, and GO & pathways. */
 export function ExpressionCockpit({
   datasetId,
   datasetName,
   initialTab,
+  reportRunId = null,
 }: ExpressionCockpitProps) {
-  const first = TABS.find((t) => t === initialTab) ?? "umap";
+  const available = TABS.filter((t) => t !== "report" || reportRunId !== null);
+  const first = available.find((t) => t === initialTab) ?? "umap";
   const [tab, setTab] = useState<Tab>(first);
   // A tab stays on the page once opened, hidden while another shows, so it keeps its choices and data.
   const [opened, setOpened] = useState<ReadonlySet<Tab>>(() => new Set<Tab>([first]));
@@ -50,6 +56,11 @@ export function ExpressionCockpit({
     <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
       {/* Tab strip */}
       <div className="border-b border-stone-200 bg-white px-5 flex items-center gap-1 overflow-x-auto">
+        {reportRunId !== null && (
+          <TabBtn active={tab === "report"} onClick={() => open("report")}>
+            Mapping report
+          </TabBtn>
+        )}
         <TabBtn active={tab === "umap"} onClick={() => open("umap")}>
           UMAP
         </TabBtn>
@@ -77,6 +88,11 @@ export function ExpressionCockpit({
 
       {/* Tab body */}
       <div className="p-5 bg-stone-50 min-h-[640px]">
+        {reportRunId !== null && opened.has("report") && (
+          <div hidden={tab !== "report"}>
+            <ExpressionMappingReport runId={reportRunId} />
+          </div>
+        )}
         {opened.has("umap") && (
           <div hidden={tab !== "umap"}>
             <ExpressionView datasetId={datasetId} datasetName={datasetName} onShowDe={showDe} />

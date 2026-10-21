@@ -3,6 +3,9 @@ import {
   IncompleteUploadNotice,
   isIncompleteUpload,
 } from "@/components/expression-upload-status";
+import { DatasetReads, readsSource, type ReadsSource } from "@/components/expression-dataset-reads";
+import { datasetRunId } from "@/components/expression-dataset-origin";
+import { fetchRun } from "@/lib/rnaseq-runs";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 type Props = {
@@ -38,8 +41,24 @@ async function fetchBannerData(datasetId: number) {
     if (row.cluster_id) clusterIds.add(row.cluster_id);
   }
   const clusters = clusterIds.size || null;
+  const reads = await fetchReadsSource(supabase, datasetRunId(dataset));
 
-  return { dataset, species, scientist, clusters, incomplete: isIncompleteUpload(dataset) };
+  return { dataset, species, scientist, clusters, reads, incomplete: isIncompleteUpload(dataset) };
+}
+
+/** Where the reads of the run that made the dataset came from; null for a dataset no run made,
+ * or when the run can't be read. */
+async function fetchReadsSource(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  runId: number | null,
+): Promise<ReadsSource | null> {
+  if (runId === null) return null;
+  try {
+    const run = await fetchRun(supabase, runId);
+    return run ? readsSource(run) : null;
+  } catch {
+    return null;
+  }
 }
 
 function formatCount(n: number | null | undefined): string {
@@ -65,7 +84,7 @@ export default async function ExpressionDatasetBanner({ datasetId }: Props) {
   const data = await fetchBannerData(datasetId);
   if (!data) return null;
 
-  const { dataset, species, scientist, clusters, incomplete } = data;
+  const { dataset, species, scientist, clusters, reads, incomplete } = data;
   const assemblyAnnotation =
     dataset.assembly || dataset.annotation
       ? `${dataset.assembly ?? "—"} / ${dataset.annotation ?? "—"}`
@@ -112,6 +131,8 @@ export default async function ExpressionDatasetBanner({ datasetId }: Props) {
             <StatPill label="assembly / annotation" value={assemblyAnnotation} />
             <StatPill label="strain" value={dataset.strain ?? "—"} />
           </div>
+
+          {reads ? <DatasetReads source={reads} /> : null}
 
           <MetadataDisclosure metadata={dataset.metadata} />
         </div>
