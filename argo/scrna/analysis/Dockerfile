@@ -22,7 +22,8 @@ RUN pip install -r /opt/scrna-analysis/requirements.txt \
  && bloomctl genome annotation download --help | grep -q -- --id-file \
  && bloomctl scrna enrichment upload --help | grep -q -- --run-id \
  && python -c "from bloomctl.scrna._cells import cluster_colours; assert len(set(cluster_colours(40))) == 40" \
- && python -c "from bloomctl.scrna import _counts; assert _counts.UPLOAD_WORKERS == 8"
+ && python -c "from bloomctl.scrna import _counts; assert _counts.UPLOAD_WORKERS == 8" \
+ && python -c "from bloomctl.scrna import _writer; assert len(_writer.REPEAT_DELAYS_S) == 3"
 
 COPY bloom_scrna_analysis /opt/scrna-analysis/bloom_scrna_analysis
 ENV PYTHONPATH=/opt/scrna-analysis
