@@ -7,6 +7,7 @@ Any request can be made to fail, before or after it commits.
 from __future__ import annotations
 
 import itertools
+import threading
 
 
 class Response:
@@ -84,12 +85,27 @@ class Bucket:
         return {"path": path}
 
 
+class Session:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class Storage:
     def __init__(self, client):
         self.client = client
+        self.session = Session()
 
     def from_(self, bucket):
         return Bucket(self.client, bucket)
+
+
+class Options:
+    def __init__(self):
+        self.headers = {"apikey": "anon", "Authorization": "Bearer first-login"}
+        self.storage_client_timeout = 20
 
 
 # A gene file upload is sent once and repeated after each REPEAT_DELAYS_S wait, so a fault
@@ -123,6 +139,16 @@ class FakeClient:
         self._ids = itertools.count(1000)
         self.asked: list[list] = []  # every in_ filter's values, to size the URL
         self.storage = Storage(self)
+        self.options = Options()
+        self.storage_url = "http://fake/storage/v1/"
+        # Each storage handle opened as the real client's _init_storage_client would, with the
+        # thread that asked for it and the login it carries.
+        self.opened: list[tuple[int, str, Storage]] = []
+
+    def _init_storage_client(self, *, storage_url, headers, storage_client_timeout):
+        storage = Storage(self)
+        self.opened.append((threading.get_ident(), headers.get("Authorization"), storage))
+        return storage
 
     def table(self, name):
         return Query(self, name)

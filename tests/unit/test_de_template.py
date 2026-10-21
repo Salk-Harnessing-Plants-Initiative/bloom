@@ -58,12 +58,13 @@ def test_the_analysis_image_has_a_bloomctl_that_colours_any_number_of_clusters()
 
 
 def test_the_analysis_image_has_a_bloomctl_that_uploads_counts_in_parallel():
-    # 0.1.0a15 and later upload gene counts 8 at a time, and 0.1.0a18 resends one after a
-    # dropped connection; the build checks both.
+    # 0.1.0a15 and later upload gene counts 8 at a time, 0.1.0a18 resends one after a dropped
+    # connection, and 0.1.0a19 gives each upload thread its own connection; the build checks all three.
     requirements = (ARGO / "analysis" / "requirements.txt").read_text().splitlines()
-    assert "bloomctl==0.1.0a18" in requirements
+    assert "bloomctl==0.1.0a19" in requirements
     dockerfile = (ARGO / "analysis" / "Dockerfile").read_text()
     assert "_counts.UPLOAD_WORKERS == 8" in dockerfile
+    assert "from bloomctl.scrna._counts import ThreadStorages" in dockerfile
     assert "_writer.REPEAT_DELAYS_S" in dockerfile
 
 
@@ -72,4 +73,4 @@ def test_every_analysis_step_uses_one_image():
     tags = set()
     for path in ("cellranger/cellranger-count-template.yaml", "go-pathways/go-pathways-template.yaml"):
         tags |= set(re.findall(r"scrna-analysis:(\S+)", (ARGO / path).read_text()))
-    assert tags == {"0.1.14"}
+    assert tags == {"0.1.15"}

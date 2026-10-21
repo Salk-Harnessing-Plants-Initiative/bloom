@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -110,12 +111,14 @@ def write(
             if on_progress:
                 on_progress(stored, len(todo))
 
+    storages = ThreadStorages()
     pool = ThreadPoolExecutor(max_workers=UPLOAD_WORKERS)
     try:
         for column, values in _genes.gene_values(path, names, only=todo, after_block=unchanged):
             gene = names[column]
             object_at = object_path(dataset_name, dataset_id, gene)
-            upload = pool.submit(_upload, writer, object_at, json.dumps(values).encode())
+            upload = pool.submit(_upload, writer, storages, object_at,
+                                 json.dumps(values).encode())
             uploading[upload] = (gene, object_at)
             if len(uploading) >= UPLOAD_WORKERS * READ_AHEAD:
                 collect(wait(uploading, return_when=FIRST_COMPLETED).done)
@@ -133,6 +136,7 @@ def write(
         raise
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
+        storages.close()
     # Every stored gene is recorded, even when another upload failed, so a rerun redoes less.
     if pending:
         _record(writer, pending)
@@ -201,12 +205,45 @@ def _recorded(writer: Writer, dataset_id: int, ids: dict[str, int]) -> set[str]:
     return {name_of[g] for g in recorded if g in name_of}
 
 
-def _upload(writer: Writer, path: str, payload: bytes) -> None:
+class ThreadStorages:
+    """A storage handle per upload thread and login. The client's own handle sends every request
+    over one HTTP/2 connection, whose header table breaks ("deque mutated during iteration")
+    when several threads send on it at once."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._opened: list = []
+
+    def get(self, client):
+        """This thread's handle for the client and its current login, opened on first use."""
+        login = client.options.headers.get("Authorization")
+        held = getattr(self._local, "held", None)
+        if held is None or held[0] is not client or held[1] != login:
+            storage = client._init_storage_client(
+                storage_url=str(client.storage_url), headers=dict(client.options.headers),
+                storage_client_timeout=client.options.storage_client_timeout)
+            with self._lock:
+                self._opened.append(storage)
+            held = self._local.held = (client, login, storage)
+        return held[2]
+
+    def close(self) -> None:
+        """Close every handle opened; call once the uploads have stopped."""
+        with self._lock:
+            opened, self._opened = self._opened, []
+        for storage in opened:
+            storage.session.close()
+
+
+def _upload(writer: Writer, storages: ThreadStorages, path: str, payload: bytes) -> None:
     """One gene's values, replacing what is there, so a re-run repairs a stopped upload. The
-    storage handle is taken from the current client on each request."""
+    storage handle is this thread's, for the current client, on each request."""
     def send(client):
+        # Outside the try: a failure opening the handle is not a reply from storage.
+        storage = storages.get(client)
         try:
-            return client.storage.from_(BUCKET).upload(
+            return storage.from_(BUCKET).upload(
                 path=path, file=payload,
                 file_options={"content-type": "application/json", "upsert": "true"})
         except (ValueError, KeyError, AttributeError) as exc:

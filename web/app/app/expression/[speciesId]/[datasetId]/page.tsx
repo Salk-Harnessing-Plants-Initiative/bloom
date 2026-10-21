@@ -104,6 +104,7 @@ export default async function Dataset({
         datasetId={datasetIdNum}
         datasetName={dataset.name}
         initialTab={typeof tab === "string" ? tab : undefined}
+        reportRunId={qc?.hasReport ? qc.runId : null}
       />
     </div>
   );

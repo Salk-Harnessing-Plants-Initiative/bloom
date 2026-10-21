@@ -176,15 +176,23 @@ def test_a_value_that_is_not_finite_stops_before_its_object(tmp_path):
 
 
 def _storage_client(status, body, ctype="application/json"):
-    """A client whose storage is the real storage3 client, answering every request so."""
+    """A client whose storage handles are the real storage3 client, answering every request so."""
     from storage3 import SyncStorageClient
 
     def reply(_request):
         return httpx.Response(status, content=body, headers={"content-type": ctype})
 
-    storage = SyncStorageClient("http://s.test/storage/v1/", {"Authorization": "Bearer t"},
-                                http_client=httpx.Client(transport=httpx.MockTransport(reply)))
-    return type("Client", (), {"storage": storage})()
+    class Client:
+        options = type("Options", (), {"headers": {"Authorization": "Bearer t"},
+                                       "storage_client_timeout": 20})()
+        storage_url = "http://s.test/storage/v1/"
+
+        @staticmethod
+        def _init_storage_client(*, storage_url, headers, storage_client_timeout):
+            return SyncStorageClient(
+                storage_url, headers, http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+
+    return Client()
 
 
 @pytest.mark.parametrize("status,body,ctype", [
@@ -197,7 +205,7 @@ def test_an_unreadable_storage_reply_is_an_unknown_outcome_not_a_traceback(
     marker = Marker(tmp_path / "m.json", wait_s=300)
     w = Writer(_storage_client(status, body, ctype), lambda: None, marker)
     with pytest.raises(LoadError) as exc:
-        _counts._upload(w, "counts/MYB41_7_/G.json", b"{}")
+        _counts._upload(w, _counts.ThreadStorages(), "counts/MYB41_7_/G.json", b"{}")
     assert "the storage server answered with an error page instead of a reply" in str(exc.value)
     assert "outcome is unknown" in str(exc.value)
     assert marker.path.exists(), "the next run waits it out"
@@ -209,8 +217,24 @@ def test_an_expired_login_named_in_storages_message_signs_in_again(tmp_path):
     fresh = _storage_client(200, b'{"Key": "scrna/counts/MYB41_7_/G.json"}')
     renewed = []
     w = Writer(expired, lambda: renewed.append(1) or fresh, Marker(tmp_path / "m.json"))
-    _counts._upload(w, "counts/MYB41_7_/G.json", b"{}")
+    _counts._upload(w, _counts.ThreadStorages(), "counts/MYB41_7_/G.json", b"{}")
     assert renewed == [1]
+
+
+def test_a_handle_that_cant_be_opened_is_not_mistaken_for_a_storage_reply(tmp_path):
+    # e.g. a supabase release without the internals ThreadStorages uses: nothing was sent.
+    client = FakeClient()
+
+    def missing(**_kwargs):
+        raise AttributeError("'SyncClient' has no attribute '_init_storage_client'")
+
+    client._init_storage_client = missing
+    marker = Marker(tmp_path / "m.json", wait_s=300)
+    with pytest.raises(AttributeError, match="_init_storage_client"):
+        _counts._upload(Writer(client, lambda: client, marker), _counts.ThreadStorages(),
+                        "counts/MYB41_7_/G.json", b"{}")
+    assert not marker.path.exists(), "no unknown outcome for the next run to wait out"
+    assert client.objects == {}
 
 
 @pytest.mark.parametrize("name", ["a/../../x", "..", "a/b", "."])
@@ -236,13 +260,13 @@ def _timed_uploads(monkeypatch, delay=0.02):
     lock = threading.Lock()
     upload = _counts._upload
 
-    def timed(writer, path, payload):
+    def timed(writer, storages, path, payload):
         with lock:
             tally["now"] += 1
             tally["most"] = max(tally["most"], tally["now"])
         try:
             time.sleep(delay)
-            return upload(writer, path, payload)
+            return upload(writer, storages, path, payload)
         finally:
             with lock:
                 tally["now"] -= 1
@@ -258,6 +282,52 @@ def test_uploads_run_together_but_never_more_than_the_limit(tmp_path, monkeypatc
     assert write(client, tmp_path) == 5
     assert tally["most"] == 2
     assert len(client.tables["scrna_counts"]) == 5 and len(objects(client)) == 5
+
+
+def test_each_upload_thread_sends_through_its_own_storage_handle(tmp_path, monkeypatch):
+    # The client's own handle is one HTTP/2 connection; threads sharing it broke its header table.
+    monkeypatch.setattr(_counts, "UPLOAD_WORKERS", 2)
+    _timed_uploads(monkeypatch)
+    client = FakeClient()
+    client.storage = None  # the shared handle must not be used
+    assert write(client, tmp_path) == 5
+    threads = [thread for thread, _login, _storage in client.opened]
+    assert len(threads) == len(set(threads)) == 2, "one handle per upload thread"
+
+
+def test_every_storage_handle_is_closed_once_the_uploads_stop(tmp_path):
+    client = FakeClient()
+    write(client, tmp_path)
+    assert client.opened and all(storage.session.closed for _t, _l, storage in client.opened)
+
+
+def test_a_new_login_or_client_opens_a_new_storage_handle():
+    storages = _counts.ThreadStorages()
+    client = FakeClient()
+    first = storages.get(client)
+    assert storages.get(client) is first, "reused while the login is the same"
+    client.options.headers["Authorization"] = "Bearer refreshed-login"
+    refreshed = storages.get(client)
+    assert refreshed is not first
+    assert storages.get(FakeClient()) is not refreshed, "a client signed in afresh gets its own"
+    assert [login for _t, login, _s in client.opened] == ["Bearer first-login",
+                                                         "Bearer refreshed-login"]
+
+
+def test_a_real_client_opens_separate_connections_with_its_login():
+    # Guards the supabase internals ThreadStorages relies on; nothing is sent.
+    from supabase import create_client
+
+    client = create_client("http://bloom.test", "header.payload.signature")
+    client.options.headers["Authorization"] = "Bearer a-login"
+    storages = _counts.ThreadStorages()
+    one = storages.get(client)
+    other = _counts.ThreadStorages().get(client)
+    assert one.session is not other.session is not client.storage.session
+    assert one.session.headers["Authorization"] == "Bearer a-login"
+    assert str(one._base_url).startswith("http://bloom.test/storage/v1")
+    storages.close()
+    assert one.session.is_closed
 
 
 def test_the_limit_leaves_most_of_storages_database_pool_free():
@@ -280,7 +350,7 @@ def test_a_failed_upload_stops_new_uploads_and_records_no_row_for_it(tmp_path, m
 
 
 def test_an_interrupt_during_the_uploads_is_waited_out_by_the_next_run(tmp_path, monkeypatch):
-    def interrupted(writer, path, payload):
+    def interrupted(writer, storages, path, payload):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(_counts, "_upload", interrupted)

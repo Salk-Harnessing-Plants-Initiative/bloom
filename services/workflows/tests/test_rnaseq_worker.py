@@ -213,6 +213,80 @@ def test_an_already_existing_workflow_is_recorded_as_submitted(types, monkeypatc
     assert client.calls[1][1]["p_argo_workflow_name"] == BODY["metadata"]["name"]
 
 
+# --------------------------------------------------------------------------- #
+# A run submitted under a name the worker no longer builds
+# --------------------------------------------------------------------------- #
+
+OLD_NAME = "scrna-cellranger-dev-7-abcd1234"
+
+
+@pytest.fixture
+def renamed(monkeypatch):
+    """The run's type names the Workflow differently now; OLD_NAME is its earlier name."""
+    registry = {
+        "scrna-cellranger": WorkflowType(
+            "scrna-cellranger",
+            lambda run: {"metadata": {"name": "scrna-dev-7-abcd1234"}},
+            _no_status,
+            earlier_names=lambda run: [OLD_NAME],
+        )
+    }
+    monkeypatch.setattr(worker, "WORKFLOW_TYPES", registry)
+
+
+def _argo(monkeypatch, found):
+    """get_workflow answers with `found` (a Workflow, None, or an exception to raise)."""
+    asked = []
+
+    def _get(name):
+        asked.append(name)
+        if isinstance(found, Exception):
+            raise found
+        return found
+
+    monkeypatch.setattr(worker, "get_workflow", _get)
+    return asked
+
+
+def test_a_run_already_submitted_under_its_earlier_name_is_recorded_not_resubmitted(
+    renamed, submitted, monkeypatch
+):
+    asked = _argo(monkeypatch, {"metadata": {"labels": {"rnaseq-run-id": "7"}}})
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert asked == [OLD_NAME]
+    assert submitted == []
+    assert client.calls[1] == (
+        COMPLETE,
+        {"p_run_id": 7, "p_msg_id": 12, "p_argo_workflow_name": OLD_NAME},
+    )
+
+
+@pytest.mark.parametrize(
+    "found",
+    [None, {"metadata": {"labels": {"rnaseq-run-id": "8"}}}, {"metadata": {}}],
+    ids=["no-such-workflow", "another-runs-workflow", "unlabelled"],
+)
+def test_a_run_with_no_earlier_workflow_of_its_own_is_submitted_under_its_name(
+    renamed, submitted, monkeypatch, found
+):
+    _argo(monkeypatch, found)
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert [b["metadata"]["name"] for b in submitted] == ["scrna-dev-7-abcd1234"]
+    assert client.calls[1][1]["p_argo_workflow_name"] == "scrna-dev-7-abcd1234"
+
+
+def test_a_run_whose_earlier_submission_cant_be_checked_stays_queued(
+    renamed, submitted, monkeypatch
+):
+    _argo(monkeypatch, k8s_client.K8sStatusError("Argo Workflow status check failed"))
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert submitted == []
+    assert client.names() == [CLAIM], "neither recorded nor failed; it comes back"
+
+
 def test_a_rejected_submission_fails_the_run_with_a_generic_message(types, monkeypatch):
     monkeypatch.setattr(
         worker, "submit_workflow", _raise(K8sSubmissionError("detail with a URL"))
@@ -545,10 +619,12 @@ def test_a_run_with_a_genome_version_is_submitted_by_the_real_builder(
     monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
     monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
     monkeypatch.setattr(worker, "WORKFLOW_TYPES", rnaseq_workflows.WORKFLOW_TYPES)
+    asked = _argo(monkeypatch, None)
     tables = _with_genome(
         {"version": 2, "genome_references": {"name": "athaliana_col0"}}
     )
     worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert asked == rnaseq_workflows.CELLRANGER.earlier_names(RUN)
     params = {
         p["name"]: p["value"] for p in submitted[0]["spec"]["arguments"]["parameters"]
     }

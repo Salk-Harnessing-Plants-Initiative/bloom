@@ -326,7 +326,7 @@ spec:
         # doesn't match Bloom's record), 6 (bad input) and 16 (no credentials) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
         env:
           - name: GENOME
@@ -739,7 +739,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/preprocess.log", --, scrna-analysis]
         args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
@@ -773,7 +773,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cluster.log", --, scrna-analysis]
         args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
@@ -808,7 +808,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/de.log", --, scrna-analysis]
         args: [de, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
@@ -843,7 +843,7 @@ spec:
         # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
         # Named here: Argo can't read the private image's entrypoint without the pull secret.
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-h5ad.log", --, scrna-analysis]
         args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}"]
@@ -894,7 +894,7 @@ spec:
         # A retry resumes the load. 2 (usage), 6 (bad input) and 16 (no credentials) won't fix themselves.
         expression: "asInt(lastRetry.exitCode) != 2 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 16"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.14
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/load-dataset.log", --, load-dataset]
         env:
           - name: SAMPLE
