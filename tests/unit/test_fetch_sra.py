@@ -565,5 +565,5 @@ def test_the_template_runs_it_into_the_runs_folder_without_s3_keys():
     assert "--, fetch-sra]" in step
     assert 'value: "/shared/runs/{{inputs.parameters.run-id}}"' in step
     assert "AWS_" not in step and "outputs:" not in step
-    assert 'expression: "asInt(lastRetry.exitCode) == 10"' in step
+    assert 'expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 10"' in step
     assert len(set(re.findall(r"cellranger:(\S+)", template))) == 1

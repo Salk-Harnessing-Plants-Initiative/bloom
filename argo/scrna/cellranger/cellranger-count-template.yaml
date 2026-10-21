@@ -461,8 +461,8 @@ spec:
         limit: 1
         retryPolicy: Always
         backoff: {duration: "2m", factor: 2}
-        # only a failed download (10) may be a blip; bad input (6), misnamed files (7) and
-        # unusable reads (11) will not fix themselves
+        # only a lost pod (-1) or a failed download (10) may be a blip; bad input (6),
+        # misnamed files (7) and unusable reads (11) will not fix themselves
         expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 10"
       container:
         image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
