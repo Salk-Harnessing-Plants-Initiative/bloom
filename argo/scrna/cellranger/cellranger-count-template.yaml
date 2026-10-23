@@ -63,6 +63,10 @@ spec:
           # The species' KEGG organism code (species.kegg_org) for its pathways; empty: GO only.
           - name: kegg-org
             value: ""
+          # The library's Cell Ranger chemistry, e.g. ARC-v1 for a 10x Multiome RNA library;
+          # empty: Cell Ranger detects it.
+          - name: chemistry
+            value: ""
       dag:
         # A failed GO step mustn't stop the steps that load the dataset from being started.
         failFast: false
@@ -126,6 +130,8 @@ spec:
                   value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+                - name: chemistry
+                  value: "{{inputs.parameters.chemistry}}"
           - name: count
             template: count
             depends: qc && build-reference
@@ -145,6 +151,8 @@ spec:
                   value: "{{inputs.parameters.mem-gb}}"
                 - name: bloom-run-id
                   value: "{{inputs.parameters.bloom-run-id}}"
+                - name: chemistry
+                  value: "{{inputs.parameters.chemistry}}"
           # GO and pathways (go-pathways-template), in /shared/runs/<run-id>.go/ beside the run's
           # folder, which fetch-sra and stage clear. The genome version's annotation comes from Bloom,
           # or is built here alongside the reads and count; then the dataset's enrichment is recorded.
@@ -378,7 +386,7 @@ spec:
         # 3 (no downloaded genome), 6 (bad input) and 17 (mkref refused the files) won't fix themselves
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 17"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/build-reference.log", --, bash, -c]
         args:
           - |
@@ -465,7 +473,7 @@ spec:
         # misnamed files (7) and unusable reads (11) will not fix themselves
         expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 10"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]
         env:
           - name: SAMPLE
@@ -513,7 +521,7 @@ spec:
         # 9 (FASTQs for another sample) will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/stage.log", --, bash, -c]
         args:
           - |
@@ -564,6 +572,9 @@ spec:
         parameters:
           - name: sample
           - name: run-id
+          # The chemistry the run names, whose barcode list the reads must match; empty: guessed.
+          - name: chemistry
+            value: ""
       schedulerName: runai-scheduler
       priorityClassName: high
       retryStrategy:
@@ -572,7 +583,7 @@ spec:
         backoff: {duration: "2m", factor: 2}
         expression: "asInt(lastRetry.exitCode) == -1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/qc.log", --, run-qc]
         env:
           - name: SAMPLE
@@ -583,6 +594,8 @@ spec:
             value: "4"
           - name: WORK_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}"
+          - name: CHEMISTRY
+            value: "{{inputs.parameters.chemistry}}"
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
@@ -612,6 +625,9 @@ spec:
           # The run's Bloom id, which its report is stored under; empty for a run started by hand.
           - name: bloom-run-id
             value: ""
+          # The chemistry cellranger count is told; empty: it detects the chemistry.
+          - name: chemistry
+            value: ""
       schedulerName: runai-scheduler
       # CPU and memory come from parameters, so they are set when the pod starts, not at registration.
       podSpecPatch: |
@@ -634,7 +650,7 @@ spec:
         # will not fix themselves on a retry
         expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/count.log", --, run-count]
         env:
           - name: SAMPLE
@@ -659,6 +675,8 @@ spec:
             value: "{{inputs.parameters.bloom-run-id}}"
           - name: WORKFLOW_NAME
             value: "{{workflow.name}}"
+          - name: CHEMISTRY
+            value: "{{inputs.parameters.chemistry}}"
         volumeMounts:
           # bloomctl's credentials.txt, for run-with-log to upload the step's log
           - name: bloom-credentials
@@ -692,7 +710,7 @@ spec:
         backoff: {duration: "2m", factor: 2}
         expression: "asInt(lastRetry.exitCode) == -1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
@@ -936,7 +954,7 @@ spec:
         backoff: {duration: "2m", factor: 2}
         expression: "asInt(lastRetry.exitCode) == -1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [bash, -c]
         args:
           - |

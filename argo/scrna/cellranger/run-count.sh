@@ -21,6 +21,8 @@ FASTQ_SAMPLE="${FASTQ_SAMPLE:-}"
 CORES="${CORES:?set CORES to the CPU request of the job}"
 MEM_GB="${MEM_GB:?set MEM_GB a little below the memory limit of the job}"
 CREATE_BAM="${CREATE_BAM:-false}"
+# The chemistry to tell Cell Ranger, e.g. ARC-v1 for a 10x Multiome RNA library; empty: it detects it.
+CHEMISTRY="${CHEMISTRY:-}"
 WORK_DIR="${WORK_DIR:-/work}"
 REF_DIR="${REF_DIR:-${WORK_DIR}/ref/${REFERENCE}}"
 FASTQ_DIR="${FASTQ_DIR:-${WORK_DIR}/fastq/${SAMPLE}}"
@@ -94,6 +96,11 @@ if [ -z "${FASTQ_SAMPLE}" ]; then
   FASTQ_SAMPLE="$(fastq-sample-prefix "${FASTQ_DIR}")" || exit "${EXIT_BAD_FASTQ_NAMES}"
 fi
 echo "FASTQ prefix: ${FASTQ_SAMPLE}"
+chemistry_args=()
+if [ -n "${CHEMISTRY}" ]; then
+  chemistry_args=(--chemistry="${CHEMISTRY}")
+  echo "Chemistry: ${CHEMISTRY} (named by the run)"
+fi
 
 # A killed pod leaves Martian's lock behind; only this job uses this folder.
 rm -f "${CR_ID}/_lock"
@@ -106,6 +113,7 @@ cellranger count \
   --fastqs="${FASTQ_DIR}" \
   --sample="${FASTQ_SAMPLE}" \
   --create-bam="${CREATE_BAM}" \
+  ${chemistry_args[@]+"${chemistry_args[@]}"} \
   --localcores="${CORES}" \
   --localmem="${MEM_GB}" \
   || { echo "ERROR: cellranger count failed; Cell Ranger's errors are in the log"; exit "${EXIT_CELLRANGER_FAILED}"; }

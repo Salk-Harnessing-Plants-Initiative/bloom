@@ -363,8 +363,52 @@ def test_a_valid_request_calls_the_request_function_once(db):
         "genome_version_id": VERSION_ID,
         "reference": "tiny_ref.v1",
         "run_key": f"root_b__tiny_ref.v1__{USER}",
+        "chemistry": "auto",
         "sra_runs": RUNS,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Chemistry: auto (Cell Ranger detects it) or ARC-v1 (a 10x Multiome RNA library)
+# --------------------------------------------------------------------------- #
+
+
+def _sra_request(**extra):
+    return {"sra_runs": RUNS, "sample": "root_b", "genome_version_id": VERSION_ID,
+            "metadata": META, **extra}
+
+
+@pytest.mark.parametrize("extra", [{}, {"chemistry": "auto"}, {"chemistry": None}])
+def test_auto_chemistry_is_not_sent_to_the_database(db, extra):
+    out = scrna_cellranger.trigger_run(_sra_request(**extra), USER)
+    assert "p_chemistry" not in db.rpc_calls[0][1]
+    assert out["chemistry"] == "auto"
+
+
+def test_a_multiome_rna_run_sends_arc_v1(db):
+    out = scrna_cellranger.trigger_run(_sra_request(chemistry="ARC-v1"), USER)
+    assert db.rpc_calls[0][1]["p_chemistry"] == "ARC-v1"
+    assert out["chemistry"] == "ARC-v1"
+
+
+@pytest.mark.parametrize("chemistry", ["arc-v1", "SC3Pv3", "", 1, ["ARC-v1"]])
+def test_any_other_chemistry_is_refused_before_anything_is_asked(db, chemistry):
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(_sra_request(chemistry=chemistry), USER)
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "chemistry must be 'auto' or one of 'ARC-v1'"
+    assert db.rpc_calls == []
+
+
+def test_a_bad_chemistry_is_refused_before_a_folder_is_listed(db, monkeypatch):
+    listed = []
+    monkeypatch.setattr(scrna_cellranger.s3_folder, "check_folder", lambda url: listed.append(url))
+    with pytest.raises(HTTPException) as exc:
+        scrna_cellranger.trigger_run(
+            {"fastq_url": "s3://lab/x/", "fastq_files": [], "genome_version_id": VERSION_ID,
+             "metadata": META, "chemistry": "nope"}, USER)
+    assert exc.value.status_code == 422
+    assert listed == []
 
 
 def test_metadata_is_passed_to_the_request_function(db):
