@@ -228,7 +228,7 @@ export interface Deferred<T> {
   reject(reason: unknown): void;
 }
 
-/** A promise with its settle functions (not `Promise.withResolvers`: CI runs Node 20). */
+/** A promise with its settle functions (not `Promise.withResolvers`, which Node 20 lacked). */
 export function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;

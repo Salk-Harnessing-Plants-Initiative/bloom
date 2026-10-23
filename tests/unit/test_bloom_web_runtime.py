@@ -51,8 +51,8 @@ DEFAULTS_FILES = (".env.prod.defaults", ".env.staging.defaults")
 SERVICE = "bloom-web"
 SHA_VAR = "BLOOM_WEB_BUILD_SHA"
 
-# Node 20 sizes its JS heap from the container limit, at about half of it
-# (node:20-alpine, measured 2026-10-01: 1536m -> 792 MiB heap, 3g -> 1584 MiB).
+# Node 24 sizes its JS heap from the container limit, at about 56% of it
+# (node:24.22.1-alpine, measured 2026-10-23: 1536m -> 864 MiB heap, 3g -> 1728 MiB).
 # Two running exports plus the Next.js baseline are estimated at ~1 GB of heap,
 # and up to MAX_HELD_BYTES of zip buffers sit outside it, inside the same limit.
 MEMORY_LIMIT_BYTES = 3 * (1 << 30)

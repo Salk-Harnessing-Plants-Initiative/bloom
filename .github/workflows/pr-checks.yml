@@ -38,7 +38,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -699,7 +699,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install workspace deps
@@ -1163,8 +1163,8 @@ jobs:
       # Playwright E2E tests — run after integration tests against the same
       # live compose stack. Skips gracefully if web/e2e/ is absent.
       #
-      # Node 20 is pinned explicitly to match the web-unit-tests job and the
-      # runtime image (web/Dockerfile.bloom-web.prod uses node:20). Without
+      # Node 24 is pinned explicitly to match the web-unit-tests job and the
+      # runtime image (web/Dockerfile.bloom-web.prod uses node:24). Without
       # this pin the runner's default Node is used, which can change between
       # runner releases and produce non-deterministic CI. Flagged by Copilot
       # review on PR #268.
@@ -1172,7 +1172,7 @@ jobs:
         if: hashFiles('web/e2e/**') != ''
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Cache Playwright browsers
