@@ -8,6 +8,8 @@ import {
   genomeVersionLabel,
   genomeVersionOptions,
   isStartedRun,
+  libraryTypeLabel,
+  LIBRARY_TYPES,
   startRunErrorMessage,
   type DatasetDetails,
 } from "./scrna-jobs";
@@ -260,5 +262,18 @@ describe("genome versions on the form", () => {
     ]);
     expect(genomeVersionLabel(withDetail)).toBe("athaliana_col0 v2 — TAIR10 / Araport11");
     expect(genomeVersionLabel(plain)).toBe("athaliana_col0 v1");
+  });
+});
+
+describe("library types", () => {
+  it("offers 10x 3' (Cell Ranger detects it) and Multiome RNA (ARC-v1)", () => {
+    expect(LIBRARY_TYPES.map((t) => t.chemistry)).toEqual(["auto", "ARC-v1"]);
+  });
+
+  it("names a run's library type, 10x 3' when it named no chemistry", () => {
+    expect(libraryTypeLabel("ARC-v1")).toBe("10x Multiome — RNA part");
+    expect(libraryTypeLabel(null)).toBe("10x 3′ gene expression");
+    expect(libraryTypeLabel("")).toBe("10x 3′ gene expression");
+    expect(libraryTypeLabel("SC5P-R2")).toBe("Chemistry SC5P-R2");
   });
 });

@@ -283,7 +283,24 @@ describe("starting a run", () => {
         origin: "hpi",
         attributes: { tissue: "root tip", days_after_germination: "7" },
       },
+      chemistry: "auto",
     });
+  });
+
+  it("offers 10x 3' by default and sends a Multiome choice as ARC-v1", async () => {
+    respond({ run_id: 14, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" });
+    openForm();
+    const library = screen.getByLabelText(/Library type/) as HTMLSelectElement;
+    expect(library.value).toBe("auto");
+    expect(Array.from(library.options).map((o) => o.textContent)).toEqual([
+      "10x 3′ gene expression",
+      "10x Multiome — RNA part",
+    ]);
+    await choose();
+    fireEvent.change(library, { target: { value: "ARC-v1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    await screen.findByRole("status");
+    expect(JSON.parse(startCalls()[0][1].body).chemistry).toBe("ARC-v1");
   });
 
   it("asks for a public dataset's source link and sends it with the citation", async () => {

@@ -12,6 +12,7 @@ import {
   fetchRun,
   isFinished,
   runAttributes,
+  runChemistry,
   runDatasetHref,
   runDatasetName,
   runReference,
@@ -25,6 +26,7 @@ import {
   type RnaseqRun,
   type StepState,
 } from "@/lib/rnaseq-runs";
+import { libraryTypeLabel } from "@/lib/scrna-jobs";
 import { sraRunUrl } from "@/lib/sra-runs";
 import { StatusBadge, when } from "./run-labels";
 import StepLog from "./StepLog";
@@ -185,6 +187,7 @@ export default function RnaseqRunView({
           {(datasetHref && loadedDatasetName) || runDatasetName(run) || "—"}
         </Detail>
         <Detail label="Species">{species ?? "—"}</Detail>
+        <Detail label="Library type">{libraryTypeLabel(runChemistry(run))}</Detail>
         {metadataText(run, "accession") ? <Detail label="Accession">{metadataText(run, "accession")}</Detail> : null}
         {metadataText(run, "experiment_name") ? (
           <Detail label="Experiment">{metadataText(run, "experiment_name")}</Detail>
