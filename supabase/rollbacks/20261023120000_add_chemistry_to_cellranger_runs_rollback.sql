@@ -282,4 +282,7 @@ REVOKE EXECUTE ON FUNCTION public.request_scrna_cellranger_run(TEXT, TEXT, UUID,
 GRANT EXECUTE ON FUNCTION public.request_scrna_cellranger_run(TEXT, TEXT, UUID, JSONB, TEXT[], TEXT, JSONB, BIGINT)
     TO bloom_workflows;
 
+-- PostgREST serves RPCs from a cached schema.
+NOTIFY pgrst, 'reload schema';
+
 COMMIT;

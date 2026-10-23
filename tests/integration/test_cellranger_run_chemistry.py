@@ -140,15 +140,21 @@ def test_the_migration_runs_twice(cur, version):
     assert _params(cur, _import(cur, version, chemistry="ARC-v1"))["chemistry"] == "ARC-v1"
 
 
-def test_the_table_refuses_any_other_chemistry_written_directly(cur, version):
+def _write_chemistry_directly(cur, run_id, value):
+    """A direct write of params.chemistry, as only an admin could make; the table's check decides."""
+    cur.execute(
+        f"UPDATE {TABLE} SET params = params || jsonb_build_object('chemistry', %s::jsonb) "
+        "WHERE id = %s",
+        (Jsonb(value), run_id),
+    )
+
+
+@pytest.mark.parametrize("value", ["SC3Pv3", "arc-v1", "", None, 1, ["ARC-v1"], {"name": "ARC-v1"}],
+                         ids=["other", "lowercase", "empty", "json-null", "number", "list", "object"])
+def test_the_table_refuses_any_other_chemistry_written_directly(cur, version, value):
     run_id = _import(cur, version, chemistry="ARC-v1")
-    cur.execute("SAVEPOINT direct")
-    with pytest.raises(psycopg.errors.CheckViolation, match="rnaseq_runs_scrna_cellranger_check"):
-        cur.execute(
-            f"UPDATE {TABLE} SET params = params || '{{\"chemistry\": \"SC3Pv3\"}}' WHERE id = %s",
-            (run_id,),
-        )
-    cur.execute("ROLLBACK TO SAVEPOINT direct")
+    _refused(cur, _write_chemistry_directly, run_id, value,
+             error=psycopg.errors.CheckViolation, match="rnaseq_runs_scrna_cellranger_check")
 
 
 def test_the_rollback_restores_the_eight_argument_function_and_check(cur, version):
@@ -158,6 +164,9 @@ def test_the_rollback_restores_the_eight_argument_function_and_check(cur, versio
     assert _can_execute(cur, "bloom_workflows", OLD_SIG)
     assert not _can_execute(cur, "authenticated", OLD_SIG)
     assert "chemistry" not in _params(cur, run_id)
+    # The earlier check is back: a chemistry is no longer allowed at all.
+    _refused(cur, _write_chemistry_directly, run_id, "ARC-v1",
+             error=psycopg.errors.CheckViolation, match="rnaseq_runs_scrna_cellranger_check")
 
 
 def test_the_rollback_is_refused_while_a_run_has_a_chemistry(cur, version):
