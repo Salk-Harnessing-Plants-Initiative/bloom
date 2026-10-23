@@ -23,7 +23,7 @@ psycopg = pytest.importorskip("psycopg")
 MIGRATION = _find_one("migrations", "*_let_pipeline_load_default_de.sql")
 ROLLBACK = _find_one("rollbacks", "*_let_pipeline_load_default_de_rollback.sql")
 REQUEST_FN = (
-    "public.request_scrna_cellranger_run(text, text, uuid, jsonb, text[], text, jsonb, bigint)"
+    "public.request_scrna_cellranger_run(text, text, uuid, jsonb, text[], text, jsonb, bigint, text)"
 )
 # The rule a write must pass: the 20261005220000 function, applied to the row's dataset.
 MAY_LOAD_CHECK = "workflows_may_load_scrna_dataset(dataset_id)"

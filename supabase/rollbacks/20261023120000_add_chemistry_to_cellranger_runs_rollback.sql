@@ -1,11 +1,75 @@
 -- Rollback for 20261023120000_add_chemistry_to_cellranger_runs.sql: restores the 8-argument
--- request_scrna_cellranger_run from 20261013230000. Runs with params.chemistry keep it.
+-- request_scrna_cellranger_run from 20261013230000 and the params check from 20261001230000. The
+-- check is refused while a run has params.chemistry; remove that key from those runs first.
 
 BEGIN;
 
+ALTER TABLE public.rnaseq_runs DROP CONSTRAINT IF EXISTS rnaseq_runs_scrna_cellranger_check;
+ALTER TABLE public.rnaseq_runs ADD CONSTRAINT rnaseq_runs_scrna_cellranger_check CHECK (
+    workflow_type <> 'scrna-cellranger' OR coalesce(
+        jsonb_typeof(params) = 'object'
+        AND params - 'sample' - 'reference' - 'sra_runs' - 'fastq_url' - 'fastq_files' = '{}'::jsonb
+        AND jsonb_typeof(params -> 'sample') = 'string'
+        AND jsonb_typeof(params -> 'reference') = 'string'
+        AND params ->> 'sample' ~ '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+        AND params ->> 'sample' !~ '__'
+        AND params ->> 'reference' ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
+        AND params ->> 'reference' !~ '__'
+        -- 1 to 9 SRA run IDs (one lane each); the request function also refuses repeats.
+        AND (NOT params ? 'sra_runs' OR CASE
+            WHEN jsonb_typeof(params -> 'sra_runs') = 'array' THEN
+                jsonb_array_length(params -> 'sra_runs') BETWEEN 1 AND 9
+                AND NOT jsonb_path_exists(
+                    params -> 'sra_runs',
+                    'strict $[*] ? (@.type() != "string" || !(@ like_regex "^[SED]RR[0-9]{6,10}$"))'
+                )
+            ELSE false
+        END)
+        -- One source at most, and a folder always comes with its files.
+        AND NOT (params ? 'sra_runs' AND params ? 'fastq_url')
+        AND (params ? 'fastq_url') = (params ? 'fastq_files')
+        AND (NOT params ? 'fastq_url' OR (
+            jsonb_typeof(params -> 'fastq_url') = 'string'
+            AND length(params ->> 'fastq_url') <= 1024
+            AND params ->> 'fastq_url'
+                ~ '^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/([A-Za-z0-9!_.*''()-]+/)+$'
+            AND params ->> 'fastq_url' !~ '/\.{1,2}/'
+        ))
+        -- 2 to 96 FASTQs, each an object of exactly a name for this sample, a whole size and
+        -- an ETag. Lax paths find missing and extra keys: a strict path treats a missing key
+        -- as unknown, which a filter lets through.
+        AND (NOT params ? 'fastq_files' OR CASE
+            WHEN jsonb_typeof(params -> 'fastq_files') = 'array' THEN
+                jsonb_array_length(params -> 'fastq_files') BETWEEN 2 AND 96
+                AND NOT jsonb_path_exists(
+                    params -> 'fastq_files',
+                    'lax $[*] ? (@.type() != "object" || !exists(@.name) || !exists(@.size) || !exists(@.etag))'
+                )
+                AND NOT jsonb_path_exists(
+                    params -> 'fastq_files',
+                    'lax $[*] ? (@.type() == "object").keyvalue() ? (@.key != "name" && @.key != "size" && @.key != "etag")'
+                )
+                AND NOT jsonb_path_exists(
+                    params -> 'fastq_files',
+                    'strict $[*] ? (@.type() != "object"
+                        || @.name.type() != "string"
+                        || !(@.name like_regex "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}_S[0-9]+_L[0-9]{3}_(R1|R2|I1|I2)_001\\.fastq(\\.gz)?$")
+                        || !(@.name starts with $prefix)
+                        || @.size.type() != "number" || @.size < 0 || @.size.floor() != @.size
+                        || @.etag.type() != "string" || !(@.etag like_regex "^.{1,200}$"))',
+                    jsonb_build_object('prefix', (params ->> 'sample') || '_S')
+                )
+            ELSE false
+        END)
+        AND run_key = (params ->> 'sample') || '__' || (params ->> 'reference')
+                      || '__' || requested_by::text,
+        false
+    )
+);
+
 DROP FUNCTION IF EXISTS public.request_scrna_cellranger_run(TEXT, TEXT, UUID, JSONB, TEXT[], TEXT, JSONB, BIGINT, TEXT);
 
-CREATE FUNCTION public.request_scrna_cellranger_run(
+CREATE OR REPLACE FUNCTION public.request_scrna_cellranger_run(
     p_sample TEXT,
     p_reference TEXT,
     p_requested_by UUID,
