@@ -11,8 +11,10 @@ import {
   isStartedRun,
   startRunErrorMessage,
   type AttributeRow,
+  type Chemistry,
   type DataOrigin,
   genomeVersionLabel,
+  LIBRARY_TYPES,
   type GenomeVersionOption,
   type StartedRun,
 } from "@/lib/scrna-jobs";
@@ -63,6 +65,7 @@ export default function ScrnaJobSubmit({
   const [newName, setNewName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [genomeVersionId, setGenomeVersionId] = useState<number | null>(null);
+  const [chemistry, setChemistry] = useState<Chemistry>("auto");
   const [speciesId, setSpeciesId] = useState<number | null>(null);
   const [datasetName, setDatasetName] = useState("");
   const [accession, setAccession] = useState("");
@@ -203,12 +206,14 @@ export default function ScrnaJobSubmit({
                 fastq_files: check?.files,
                 genome_version_id: genomeVersionId,
                 metadata: buildRunMetadata(details),
+                chemistry,
               }
             : {
                 sample: newName.trim(),
                 genome_version_id: genomeVersionId,
                 metadata: buildRunMetadata(details),
                 sra_runs: sra.runs,
+                chemistry,
               }
         ),
       });
@@ -301,6 +306,25 @@ export default function ScrnaJobSubmit({
                 <select className={fieldClass} value="cellranger-count" disabled>
                   <option value="cellranger-count">Cell Ranger count</option>
                 </select>
+              </label>
+
+              <label className={labelClass}>
+                Library type
+                <select
+                  className={fieldClass}
+                  value={chemistry}
+                  onChange={(e) => setChemistry(e.target.value as Chemistry)}
+                >
+                  {LIBRARY_TYPES.map((t) => (
+                    <option key={t.chemistry} value={t.chemistry}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-xs font-normal text-stone-500">
+                  Multiome: the RNA library of a 10x Multiome (ATAC + RNA) experiment. ATAC
+                  libraries can&apos;t be run.
+                </span>
               </label>
 
               <ScrnaSampleSource
