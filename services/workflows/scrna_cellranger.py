@@ -12,7 +12,8 @@ checks that the FASTQs exist and fails the run if not.
 A `metadata` object (the dataset's name and species, which every run needs, and its
 conditions) is stored on the run as given, for loading the results later. Optional `sra_runs` (1 to 9 SRA run IDs, one
 lane each) import the sample from SRA under the new name `sample`; the run downloads them
-into its own folder on the cluster.
+into its own folder on the cluster. Optional `chemistry` is "auto" (the default: Cell Ranger
+detects it) or "ARC-v1" for the RNA library of a 10x Multiome experiment.
 """
 
 import json
@@ -57,6 +58,12 @@ DATASET_NAME_HELP = (
 SRA_RUN_RULE = re.compile(r"^[SED]RR[0-9]{6,10}$")
 MAX_SRA_RUNS = 9
 SRA_RUNS_HELP = f"1 to {MAX_SRA_RUNS} distinct SRA run IDs like SRR12046049"
+
+# The library's Cell Ranger chemistry: "auto" lets Cell Ranger detect it (10x 3' and 5' gene
+# expression); a 10x Multiome RNA library needs ARC-v1 named. The database checks the same list.
+AUTO_CHEMISTRY = "auto"
+CHEMISTRIES = ("ARC-v1",)
+CHEMISTRY_HELP = f"{AUTO_CHEMISTRY!r} or one of {', '.join(map(repr, CHEMISTRIES))}"
 
 # What the request function's refusals mean for the caller: a bad value (22023), or a run
 # that would repeat one (23505): its run key already has a live run, or the scientist already
@@ -107,6 +114,15 @@ def _validate_sra_runs(runs) -> list[str] | None:
     ):
         raise HTTPException(status_code=422, detail=f"sra_runs must be {SRA_RUNS_HELP}")
     return runs
+
+
+def _validate_chemistry(value) -> str | None:
+    """The chemistry to name to Cell Ranger, or None for it to detect the chemistry itself."""
+    if value is None or value == AUTO_CHEMISTRY:
+        return None
+    if value not in CHEMISTRIES:
+        raise HTTPException(status_code=422, detail=f"chemistry must be {CHEMISTRY_HELP}")
+    return value
 
 
 def _validate_genome_version(body: dict) -> int:
@@ -191,6 +207,7 @@ def check_folder(body) -> dict:
 
 def trigger_run(body, user_id: str) -> dict:
     folder = None
+    chemistry = _validate_chemistry(body.get("chemistry")) if isinstance(body, dict) else None
     if isinstance(body, dict) and body.get("fastq_url") is not None:
         if body.get("sra_runs") is not None:
             raise HTTPException(
@@ -229,6 +246,8 @@ def trigger_run(body, user_id: str) -> dict:
     if folder is not None:
         args["p_fastq_url"] = folder["fastq_url"]
         args["p_fastq_files"] = folder["files"]
+    if chemistry is not None:
+        args["p_chemistry"] = chemistry
 
     try:
         run_id = client.rpc(REQUEST_FN, args).execute().data
@@ -244,6 +263,7 @@ def trigger_run(body, user_id: str) -> dict:
         "genome_version_id": version_id,
         "reference": reference,
         "run_key": f"{sample}__{reference}__{user_id}",
+        "chemistry": chemistry or AUTO_CHEMISTRY,
     }
     if sra_runs is not None:
         started["sra_runs"] = sra_runs
