@@ -19,7 +19,7 @@ Seven invariants total. Five are on .github/workflows/pr-checks.yml:
 4. A Playwright step MUST exist in ``compose-health-check`` that runs
    ``cd web && npm run test:e2e`` after the stack is verified healthy.
 5. The ``compose-health-check`` job MUST pin Node.js via
-   ``actions/setup-node@v4`` with ``node-version: '20'`` BEFORE the
+   ``actions/setup-node@v4`` with the runtime image's Node major BEFORE the
    Playwright/npm steps so CI is deterministic across runner-default
    changes (Copilot review finding on PR #268).
 
@@ -58,9 +58,17 @@ import yaml
 REPO_ROOT = Path(__file__).parent.parent.parent
 PR_CHECKS = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
 COMPOSE_CI = REPO_ROOT / "docker-compose.ci.yml"
+WEB_PROD_DOCKERFILE = REPO_ROOT / "web" / "Dockerfile.bloom-web.prod"
 
 EXPECTED_COMPOSE_FILES = "-f docker-compose.prod.yml -f docker-compose.ci.yml"
 CUSTOM_SERVICES = ("bloom-web", "langchain-agent", "bloommcp")
+
+
+def _runtime_node_major() -> str:
+    """Node major of the bloom-web runner stage, e.g. '24' from `FROM node:24.22.1-alpine@...`."""
+    match = re.search(r"^FROM node:(\d+)[^\s]* AS runner$", WEB_PROD_DOCKERFILE.read_text(), re.M)
+    assert match, f"{WEB_PROD_DOCKERFILE} has no `FROM node:<version> AS runner` line"
+    return match.group(1)
 
 
 def _load_workflow() -> dict:
@@ -170,16 +178,17 @@ def test_compose_health_check_runs_playwright_e2e() -> None:
     )
 
 
-def test_compose_health_check_pins_node_20_before_npm_steps() -> None:
-    """Invariant 5: actions/setup-node@v4 with Node 20 precedes npm/Playwright.
+def test_compose_health_check_pins_runtime_node_before_npm_steps() -> None:
+    """Invariant 5: setup-node with the runtime image's Node major precedes npm/Playwright.
 
     Copilot review on PR #268 flagged that compose-health-check runs
     ``npm ci`` and Playwright without pinning a Node version, unlike the
-    parallel web-unit-tests job that explicitly uses Node 20. Without a
+    parallel web-unit-tests job that explicitly pins Node. Without a
     pin the runner's default Node is used, which can change between
     runner releases and produce non-deterministic CI behavior.
     """
     workflow = _load_workflow()
+    runtime_major = _runtime_node_major()
     job = workflow["jobs"]["compose-health-check"]
     steps = job.get("steps") or []
     setup_node_idx: int | None = None
@@ -188,17 +197,17 @@ def test_compose_health_check_pins_node_20_before_npm_steps() -> None:
         uses = step.get("uses") or ""
         if uses.startswith("actions/setup-node@"):
             # Tolerate v4 (current) or any newer major; the spec only
-            # requires the action to be present and pin Node 20.
+            # requires the action to be present and pin the runtime's Node.
             assert uses.startswith("actions/setup-node@v"), (
                 f"compose-health-check uses {uses!r} for setup-node — "
                 "must reference a pinned major version (e.g. v4)"
             )
             with_block = step.get("with") or {}
             node_version = with_block.get("node-version")
-            assert node_version in (20, "20", "20.x"), (
+            assert str(node_version) in (runtime_major, f"{runtime_major}.x"), (
                 f"compose-health-check setup-node pins node-version={node_version!r}; "
-                "must be '20' to match the web-unit-tests job and the "
-                "runtime image (web/Dockerfile.bloom-web.prod uses node:20)."
+                f"must be '{runtime_major}' to match the web-unit-tests job and the "
+                f"runtime image (web/Dockerfile.bloom-web.prod uses node:{runtime_major})."
             )
             setup_node_idx = idx
         run = step.get("run") or ""
@@ -210,7 +219,7 @@ def test_compose_health_check_pins_node_20_before_npm_steps() -> None:
             first_npm_idx = idx
     assert setup_node_idx is not None, (
         "compose-health-check must include an 'actions/setup-node@v4' step "
-        "pinning Node 20 before any npm/Playwright step."
+        f"pinning Node {runtime_major} before any npm/Playwright step."
     )
     assert first_npm_idx is not None, (
         "compose-health-check appears to have no npm/Playwright step at all "
