@@ -49,9 +49,33 @@ export function sortedSpeciesOptions(rows: SpeciesRow[]): SpeciesOption[] {
   return rows.map(speciesOption).sort((a, b) => a.label.localeCompare(b.label));
 }
 
-/** The list with `option` in it, sorted, replacing the same species if it was there. */
-export function withSpeciesOption(list: SpeciesOption[], option: SpeciesOption): SpeciesOption[] {
-  return [...list.filter((s) => s.id !== option.id), option].sort((a, b) =>
+/** A species on the Species page, with who added it: `created_by`, null from before that was recorded. */
+export type SpeciesListItem = SpeciesOption & { addedBy: string | null };
+
+type SpeciesListRow = SpeciesRow & { created_by?: string | null };
+
+export function speciesListItem(row: SpeciesListRow): SpeciesListItem {
+  return { ...speciesOption(row), addedBy: row.created_by ?? null };
+}
+
+export function sortedSpeciesList(rows: SpeciesListRow[]): SpeciesListItem[] {
+  return rows.map(speciesListItem).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * Who added a species, as the pipeline-run views name a requester: "you", or "another
+ * member · <first 8 characters of their user id>". Species from before `created_by` was
+ * recorded were added by Bloom's admins.
+ */
+export function addedByText(addedBy: string | null, currentUserId: string | null): string {
+  if (!addedBy) return "Bloom admin";
+  if (currentUserId && addedBy === currentUserId) return "you";
+  return `another member · ${addedBy.slice(0, 8)}`;
+}
+
+/** The list with `item` in it, sorted, replacing the same species if it was there. */
+export function withSpeciesOption<T extends SpeciesOption>(list: T[], item: T): T[] {
+  return [...list.filter((s) => s.id !== item.id), item].sort((a, b) =>
     a.label.localeCompare(b.label)
   );
 }
@@ -61,12 +85,12 @@ export function withSpeciesOption(list: SpeciesOption[], option: SpeciesOption):
  * (re)listed, and one marked deleted is dropped.
  */
 export function applySpeciesChange(
-  list: SpeciesOption[],
-  row: Partial<SpeciesRow> & { deleted_at?: string | null }
-): SpeciesOption[] {
+  list: SpeciesListItem[],
+  row: Partial<SpeciesListRow> & { deleted_at?: string | null }
+): SpeciesListItem[] {
   if (typeof row.id !== "number") return list;
   if (row.deleted_at) return list.filter((s) => s.id !== row.id);
-  return withSpeciesOption(list, speciesOption(row as SpeciesRow));
+  return withSpeciesOption(list, speciesListItem(row as SpeciesListRow));
 }
 
 /** The species as add_species stores it (Genus, epithet, Common name), or why not. */

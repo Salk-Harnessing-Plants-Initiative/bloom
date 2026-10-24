@@ -33,8 +33,8 @@ describe("the Species page", () => {
   it("lists the species that haven't been removed, sorted", async () => {
     result = {
       data: [
-        { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa" },
-        { id: 1, common_name: "Arabidopsis", genus: "arabidopsis", species: "Thaliana" },
+        { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", created_by: "u-1" },
+        { id: 1, common_name: "Arabidopsis", genus: "arabidopsis", species: "Thaliana", created_by: null },
       ],
       error: null,
     };
@@ -46,13 +46,18 @@ describe("the Species page", () => {
     expect(screen.getByRole("tooltip").textContent).toBe(
       "Add a species here before you use it in:• Bloom Desktop, for cylinder scans• an Expression analysis"
     );
-    const items = within(screen.getByRole("list", { name: "Species" }))
-      .getAllByRole("listitem")
-      .map((li) => li.textContent);
-    expect(items).toEqual(["Arabidopsis (Arabidopsis thaliana)", "Rice (Oryza sativa)"]);
+    const rows = within(screen.getByRole("table", { name: "Species" }))
+      .getAllByRole("row")
+      .slice(1)
+      .map((tr) => within(tr).getAllByRole("cell").map((td) => td.textContent));
+    // u-1 is the signed-in user (see the getUser mock).
+    expect(rows).toEqual([
+      ["Arabidopsis (Arabidopsis thaliana)", "Bloom admin"],
+      ["Rice (Oryza sativa)", "you"],
+    ]);
     expect(calls).toEqual([
       { method: "from", args: ["species"] },
-      { method: "select", args: ["id, common_name, genus, species"] },
+      { method: "select", args: ["id, common_name, genus, species, created_by"] },
       { method: "is", args: ["deleted_at", null] },
     ]);
   });

@@ -2,7 +2,7 @@ import Mixpanel from "mixpanel";
 import SpeciesCatalog from "@/components/species-catalog";
 import InfoTip from "@/components/info-tip";
 import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
-import { sortedSpeciesOptions } from "@/lib/species-options";
+import { sortedSpeciesList } from "@/lib/species-options";
 
 /** Every species in Bloom, and a form to add one (e.g. before uploading its scans). */
 export default async function SpeciesPage() {
@@ -20,7 +20,7 @@ export default async function SpeciesPage() {
   const supabase = await createServerSupabaseClient();
   const { data, error } = await supabase
     .from("species")
-    .select("id, common_name, genus, species")
+    .select("id, common_name, genus, species, created_by")
     .is("deleted_at", null);
 
   return (
@@ -42,7 +42,7 @@ export default async function SpeciesPage() {
           Couldn&apos;t load the species: {error.message}
         </p>
       ) : (
-        <SpeciesCatalog species={sortedSpeciesOptions(data ?? [])} />
+        <SpeciesCatalog species={sortedSpeciesList(data ?? [])} currentUserId={user?.id ?? null} />
       )}
     </div>
   );

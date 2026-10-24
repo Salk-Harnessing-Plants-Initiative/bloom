@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   addSpecies,
+  addedByText,
   applySpeciesChange,
   normalizeNewSpecies,
   sortedSpeciesOptions,
@@ -67,19 +68,34 @@ describe("withSpeciesOption", () => {
 });
 
 describe("applySpeciesChange", () => {
-  const LIST = [speciesOption(ROW)];
+  const LIST = [{ ...speciesOption(ROW), addedBy: null }];
 
-  it("lists a new or edited row, and drops one marked deleted", () => {
-    const rice = { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", deleted_at: null };
-    expect(applySpeciesChange(LIST, rice).map((s) => s.label)).toEqual([
-      "Arabidopsis (Arabidopsis thaliana)",
-      "Rice (Oryza sativa)",
+  it("lists a new or edited row with who added it, and drops one marked deleted", () => {
+    const rice = { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", created_by: "u-2", deleted_at: null };
+    expect(applySpeciesChange(LIST, rice)).toEqual([
+      { id: 1, label: "Arabidopsis (Arabidopsis thaliana)", addedBy: null },
+      { id: 4, label: "Rice (Oryza sativa)", addedBy: "u-2" },
     ]);
     expect(applySpeciesChange(LIST, { ...ROW, deleted_at: "2026-10-24T10:00:00Z" })).toEqual([]);
   });
 
   it("ignores a row without an id", () => {
     expect(applySpeciesChange(LIST, {})).toBe(LIST);
+  });
+});
+
+describe("addedByText", () => {
+  const ME = "4965b3af-ccfe-40f5-814b-447e1f726e1b";
+  const OTHER = "1a2b3c4d-0000-4000-8000-000000000002";
+
+  it("names who added a species as the run views name a requester", () => {
+    expect(addedByText(ME, ME)).toBe("you");
+    expect(addedByText(OTHER, ME)).toBe("another member · 1a2b3c4d");
+    expect(addedByText(OTHER, null)).toBe("another member · 1a2b3c4d");
+  });
+
+  it("says Bloom admin for a species from before who added it was recorded", () => {
+    expect(addedByText(null, ME)).toBe("Bloom admin");
   });
 });
 
