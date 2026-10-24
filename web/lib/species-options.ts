@@ -49,6 +49,26 @@ export function sortedSpeciesOptions(rows: SpeciesRow[]): SpeciesOption[] {
   return rows.map(speciesOption).sort((a, b) => a.label.localeCompare(b.label));
 }
 
+/** The list with `option` in it, sorted, replacing the same species if it was there. */
+export function withSpeciesOption(list: SpeciesOption[], option: SpeciesOption): SpeciesOption[] {
+  return [...list.filter((s) => s.id !== option.id), option].sort((a, b) =>
+    a.label.localeCompare(b.label)
+  );
+}
+
+/**
+ * The list after a realtime change to a species row: an added or edited species is
+ * (re)listed, and one marked deleted is dropped.
+ */
+export function applySpeciesChange(
+  list: SpeciesOption[],
+  row: Partial<SpeciesRow> & { deleted_at?: string | null }
+): SpeciesOption[] {
+  if (typeof row.id !== "number") return list;
+  if (row.deleted_at) return list.filter((s) => s.id !== row.id);
+  return withSpeciesOption(list, speciesOption(row as SpeciesRow));
+}
+
 /** The species as add_species stores it (Genus, epithet, Common name), or why not. */
 export function normalizeNewSpecies(
   input: NewSpeciesInput

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-/** The Species page's list and its Add a species form. */
+/** The Species page's list, kept live through Realtime, and its Add a species form. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { liveChannels, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 
-vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
+vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 vi.mock("@/lib/species-options", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/species-options")>()),
   addSpecies: vi.fn(),
@@ -15,9 +16,10 @@ import { addSpecies, type SpeciesOption } from "@/lib/species-options";
 
 const mockedAdd = vi.mocked(addSpecies);
 
+// The server's snapshot, already sorted.
 const SPECIES: SpeciesOption[] = [
-  { id: 4, label: "Rice (Oryza sativa)" },
   { id: 1, label: "Arabidopsis (Arabidopsis thaliana)" },
+  { id: 4, label: "Rice (Oryza sativa)" },
 ];
 
 function type(label: string, value: string) {
@@ -38,11 +40,20 @@ function listed() {
     .map((li) => li.textContent);
 }
 
-beforeEach(() => mockedAdd.mockReset());
+/** Wait for the list to join its Realtime channel, then deliver a change to `species`. */
+async function emit(eventType: string, row: Record<string, unknown>) {
+  await act(async () => {});
+  await act(async () => liveChannels()[0].emit({ table: "species", eventType, new: row }));
+}
+
+beforeEach(() => {
+  mockedAdd.mockReset();
+  resetSupabaseMock();
+});
 afterEach(cleanup);
 
 describe("the species list", () => {
-  it("lists every species, sorted, with a count", () => {
+  it("lists the species, with a count", () => {
     render(<SpeciesCatalog species={SPECIES} />);
     expect(listed()).toEqual(["Arabidopsis (Arabidopsis thaliana)", "Rice (Oryza sativa)"]);
     expect(screen.getByText("2 species in Bloom")).toBeTruthy();
@@ -75,6 +86,19 @@ describe("adding a species", () => {
     ]);
     expect(screen.getByText("3 species in Bloom")).toBeTruthy();
     expect(screen.queryByLabelText("Genus")).toBeNull();
+  });
+
+  it("lists a species found already in Bloom that wasn't there when the page loaded", async () => {
+    mockedAdd.mockResolvedValue({ kind: "existing", option: { id: 9, label: "Pennycress (Thlaspi arvense)" } });
+    render(<SpeciesCatalog species={SPECIES} />);
+    addPennycress();
+
+    expect((await screen.findByRole("status")).textContent).toBe("Pennycress (Thlaspi arvense) is already in Bloom.");
+    expect(listed()).toEqual([
+      "Arabidopsis (Arabidopsis thaliana)",
+      "Pennycress (Thlaspi arvense)",
+      "Rice (Oryza sativa)",
+    ]);
   });
 
   it("reports a species already in Bloom without listing it twice", async () => {
@@ -113,5 +137,51 @@ describe("adding a species", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByLabelText("Genus")).toBeNull();
     expect(mockedAdd).not.toHaveBeenCalled();
+  });
+});
+
+describe("live updates", () => {
+  it("subscribes to every change to species", async () => {
+    render(<SpeciesCatalog species={SPECIES} />);
+    await act(async () => {});
+    expect(liveChannels()).toHaveLength(1);
+    expect(liveChannels()[0].bindings.map((b) => b.filter)).toEqual([
+      { event: "*", schema: "public", table: "species" },
+    ]);
+  });
+
+  it("lists a species someone else adds, in order", async () => {
+    render(<SpeciesCatalog species={SPECIES} />);
+    await emit("INSERT", { id: 7, common_name: "Maize", genus: "Zea", species: "mays", deleted_at: null });
+    expect(listed()).toEqual([
+      "Arabidopsis (Arabidopsis thaliana)",
+      "Maize (Zea mays)",
+      "Rice (Oryza sativa)",
+    ]);
+    expect(screen.getByText("3 species in Bloom")).toBeTruthy();
+  });
+
+  it("drops a species marked deleted, and relists an edited one under its new name", async () => {
+    render(<SpeciesCatalog species={SPECIES} />);
+    await emit("UPDATE", { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", deleted_at: "2026-10-24T10:00:00Z" });
+    expect(listed()).toEqual(["Arabidopsis (Arabidopsis thaliana)"]);
+    await emit("UPDATE", { id: 1, common_name: "Thale cress", genus: "Arabidopsis", species: "thaliana", deleted_at: null });
+    expect(listed()).toEqual(["Thale cress (Arabidopsis thaliana)"]);
+  });
+
+  it("refreshes the list from the database when it (re)joins, and says so if that fails", async () => {
+    vi.useFakeTimers();
+    try {
+      supabaseMock.respond = () => ({ data: null, error: { message: "connection refused" } });
+      render(<SpeciesCatalog species={SPECIES} />);
+      await act(async () => {});
+      await act(async () => liveChannels()[0].status("SUBSCRIBED"));
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(screen.getByRole("alert").textContent).toBe("Couldn't refresh the species: connection refused");
+      // The list it had stays.
+      expect(listed()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

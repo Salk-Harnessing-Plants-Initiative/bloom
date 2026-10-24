@@ -15,7 +15,8 @@ const query = {
   is: (...args: unknown[]) => (calls.push({ method: "is", args }), Promise.resolve(result)),
 };
 
-vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
+// The list joins Realtime in the browser; the shared mock gives it a channel.
+vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: async () => query,
   getUser: async () => ({ id: "u-1", email: "scientist@example.org" }),
