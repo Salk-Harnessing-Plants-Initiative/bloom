@@ -42,7 +42,10 @@ describe("the Species page", () => {
 
     expect(screen.getByRole("heading", { name: "Species" })).toBeTruthy();
     expect(screen.getByText("Lists every species in Bloom.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "When to add a species" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "When to add a species" })).toBeTruthy();
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "Add a species here before you use it in:• Bloom Desktop, for cylinder scans• an Expression analysis"
+    );
     const items = within(screen.getByRole("list", { name: "Species" }))
       .getAllByRole("listitem")
       .map((li) => li.textContent);

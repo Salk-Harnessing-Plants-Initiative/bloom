@@ -20,6 +20,7 @@ import {
   type SpeciesOption,
 } from "@/lib/species-options";
 import SpeciesAddForm, { type SpeciesAdded } from "@/components/species-add-form";
+import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
 
 const FIELD_CLASS =
   "mt-1 block w-full rounded-md border border-stone-300 px-2 py-1.5 text-sm text-stone-900";
@@ -85,8 +86,9 @@ export default function SpeciesCatalog({ species }: { species: SpeciesOption[] }
       </div>
 
       <div>
-        <div className="mb-2 text-sm text-stone-500">
-          {list.length} species in Bloom
+        <div className="mb-2 flex items-center justify-between gap-4 text-sm text-stone-500">
+          <span>{list.length} species in Bloom</span>
+          <LiveIndicator state={live.connection} onRefresh={live.refresh} />
         </div>
         {live.error ? (
           <p role="alert" className="mb-2 text-sm text-red-700">

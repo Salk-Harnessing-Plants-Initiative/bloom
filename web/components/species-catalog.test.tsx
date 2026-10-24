@@ -77,7 +77,7 @@ describe("adding a species", () => {
     render(<SpeciesCatalog species={SPECIES} />);
     addPennycress();
 
-    expect((await screen.findByRole("status")).textContent).toBe("Added Pennycress (Thlaspi arvense).");
+    expect(await screen.findByText("Added Pennycress (Thlaspi arvense).")).toBeTruthy();
     expect(mockedAdd.mock.calls[0][1]).toEqual({ genus: "Thlaspi", species: "arvense", common_name: "Pennycress" });
     expect(listed()).toEqual([
       "Arabidopsis (Arabidopsis thaliana)",
@@ -93,7 +93,7 @@ describe("adding a species", () => {
     render(<SpeciesCatalog species={SPECIES} />);
     addPennycress();
 
-    expect((await screen.findByRole("status")).textContent).toBe("Pennycress (Thlaspi arvense) is already in Bloom.");
+    expect(await screen.findByText("Pennycress (Thlaspi arvense) is already in Bloom.")).toBeTruthy();
     expect(listed()).toEqual([
       "Arabidopsis (Arabidopsis thaliana)",
       "Pennycress (Thlaspi arvense)",
@@ -106,7 +106,7 @@ describe("adding a species", () => {
     render(<SpeciesCatalog species={SPECIES} />);
     addPennycress();
 
-    expect((await screen.findByRole("status")).textContent).toBe("Rice (Oryza sativa) is already in Bloom.");
+    expect(await screen.findByText("Rice (Oryza sativa) is already in Bloom.")).toBeTruthy();
     expect(listed()).toEqual(["Arabidopsis (Arabidopsis thaliana)", "Rice (Oryza sativa)"]);
   });
 
@@ -148,6 +148,14 @@ describe("live updates", () => {
     expect(liveChannels()[0].bindings.map((b) => b.filter)).toEqual([
       { event: "*", schema: "public", table: "species" },
     ]);
+  });
+
+  it("shows whether the list is live", async () => {
+    render(<SpeciesCatalog species={SPECIES} />);
+    expect(screen.getByRole("status").textContent).toBe("Connecting…");
+    await act(async () => {});
+    await act(async () => liveChannels()[0].status("SUBSCRIBED"));
+    expect(screen.getByRole("status").textContent).toBe("Live");
   });
 
   it("lists a species someone else adds, in order", async () => {
