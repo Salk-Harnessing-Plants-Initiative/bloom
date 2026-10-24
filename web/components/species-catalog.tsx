@@ -2,9 +2,12 @@
 
 /**
  * The Species page's list and its Add a species form. The list stays live through
- * Realtime: a species added or removed anywhere in Bloom shows up without a reload. A
- * species added here, or found already in Bloom, is listed straight away too. Species
- * aren't renamed or removed here: uploads find a species by its common name.
+ * Realtime: a species added or edited anywhere in Bloom shows up without a reload. A
+ * removed one disappears on the next reload or rejoin, since row-level security keeps
+ * removed species (and so their change events) from signed-in users; admins, who can
+ * read them, see it go straight away. A species added here, or found already in Bloom,
+ * is listed straight away too. Species aren't renamed or removed here: uploads find a
+ * species by its common name.
  */
 
 import { useState } from "react";
