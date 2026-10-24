@@ -28,10 +28,7 @@ export default async function SpeciesPage() {
       <h1 className="text-3xl font-serif italic mb-2 select-none">Species</h1>
       <div className="mb-6 max-w-2xl space-y-1 text-sm text-stone-500">
         <p>Lists every species in Bloom.</p>
-        <p>
-          Add one here before uploading its scans or data: uploads are matched to a species
-          by its common name.
-        </p>
+        <p>Add the species here if it isn&apos;t available in Bloom Desktop.</p>
       </div>
       {error ? (
         <p role="alert" className="text-sm text-red-700">
