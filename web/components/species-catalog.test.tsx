@@ -120,14 +120,14 @@ describe("adding a species", () => {
     expect(listed()).toHaveLength(2);
   });
 
-  it("previews the name without mentioning the Expression page", () => {
+  it("previews how the name will be stored", () => {
     render(<SpeciesCatalog species={SPECIES} />);
     fireEvent.click(screen.getByRole("button", { name: "Add a species" }));
     type("Genus", "thlaspi");
     type("Species name", "arvense");
     type("Common name", "pennycress");
     expect(screen.getByText(/Will be added as/).textContent).toBe(
-      "Will be added as Pennycress (Thlaspi arvense), for everyone."
+      "Will be added as Pennycress (Thlaspi arvense), for everyone to use."
     );
   });
 

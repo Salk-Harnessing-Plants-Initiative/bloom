@@ -21,7 +21,6 @@ export default function SpeciesAddForm({
   onAdded,
   onCancel,
   onSavingChange,
-  where = "",
   fieldClass,
   labelClass,
 }: {
@@ -30,8 +29,6 @@ export default function SpeciesAddForm({
   // Shown as a Cancel button when given.
   onCancel?: () => void;
   onSavingChange?: (saving: boolean) => void;
-  // Where else the species shows, e.g. ", and shown on the Expression page".
-  where?: string;
   fieldClass: string;
   labelClass: string;
 }) {
@@ -112,7 +109,7 @@ export default function SpeciesAddForm({
           (<span className="italic">
             {preview.value.genus} {preview.value.species}
           </span>
-          ), for everyone{where}.
+          ), for everyone to use.
         </p>
       ) : typed ? (
         <p aria-live="polite" className="text-sm text-stone-500">
@@ -120,7 +117,7 @@ export default function SpeciesAddForm({
         </p>
       ) : (
         <p className="text-sm text-stone-500">
-          Added to Bloom&apos;s species list for everyone{where}.
+          Added to Bloom&apos;s species list for everyone to use.
         </p>
       )}
       <div className="flex flex-wrap items-center gap-4">

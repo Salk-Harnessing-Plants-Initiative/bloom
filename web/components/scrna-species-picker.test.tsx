@@ -100,7 +100,7 @@ describe("adding a species", () => {
     type("Species name", "ARVENSE");
     type("Common name", "field   pennycress");
     expect(screen.getByText(/Will be added as/).textContent).toBe(
-      "Will be added as Field pennycress (Thlaspi arvense), for everyone, and shown on the Expression page."
+      "Will be added as Field pennycress (Thlaspi arvense), for everyone to use."
     );
     expect(
       (screen.getByRole("button", { name: "Add species" }) as HTMLButtonElement).disabled

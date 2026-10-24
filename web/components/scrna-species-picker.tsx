@@ -99,7 +99,6 @@ export default function ScrnaSpeciesPicker({
             onAdded={added}
             onCancel={cancelAdd}
             onSavingChange={(s) => setAddStatus(s ? "saving" : "open")}
-            where=", and shown on the Expression page"
             fieldClass={fieldClass}
             labelClass={labelClass}
           />
