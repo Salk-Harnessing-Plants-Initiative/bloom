@@ -61,6 +61,13 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("choosing", () => {
+  it("links to the Species page", () => {
+    renderPicker();
+    expect(screen.getByRole("link", { name: "See all species" }).getAttribute("href")).toBe(
+      "/app/species"
+    );
+  });
+
   it("lists the species and an option to add one", () => {
     renderPicker();
     expect(screen.getByRole("option", { name: "Rice (Oryza sativa)" })).toBeTruthy();

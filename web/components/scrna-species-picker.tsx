@@ -1,12 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
-import { createClientSupabaseClient } from "@/lib/supabase/client";
-import {
-  addSpecies,
-  normalizeNewSpecies,
-  type SpeciesOption,
-} from "@/lib/species-options";
+import type { SpeciesOption } from "@/lib/species-options";
+import SpeciesAddForm, { type SpeciesAdded } from "@/components/species-add-form";
 
 // The select's value for "add a species", which no species id can equal.
 const ADD_NEW = "add-new";
@@ -30,23 +27,11 @@ export default function ScrnaSpeciesPicker({
   labelClass: string;
 }) {
   const [addStatus, setAddStatus] = useState<AddStatus>("closed");
-  const [genus, setGenus] = useState("");
-  const [epithet, setEpithet] = useState("");
-  const [commonName, setCommonName] = useState("");
-  const [problem, setProblem] = useState("");
   const [notice, setNotice] = useState("");
   // The species chosen before "Add a species", restored on Cancel.
   const [previous, setPrevious] = useState<number | null>(null);
 
   const saving = addStatus === "saving";
-  const typed = Boolean(genus.trim() || epithet.trim() || commonName.trim());
-  const preview = normalizeNewSpecies({ genus, species: epithet, commonName });
-
-  // A failed add's message goes once the name is edited.
-  function edit(set: (value: string) => void, value: string) {
-    setProblem("");
-    set(value);
-  }
 
   function choose(selected: string) {
     setNotice("");
@@ -61,31 +46,17 @@ export default function ScrnaSpeciesPicker({
   }
 
   function cancelAdd() {
-    setProblem("");
     setAddStatus("closed");
     onChange(previous);
   }
 
-  async function add() {
-    if ("problem" in preview) return;
-    setProblem("");
-    setAddStatus("saving");
-    const result = await addSpecies(createClientSupabaseClient(), preview.value);
-    if (result.kind === "error") {
-      setProblem(result.message);
-      setAddStatus("open");
-      return;
-    }
-    const option = result.option;
+  function added({ kind, option }: SpeciesAdded) {
     onAdded(option);
     setNotice(
-      result.kind === "added"
+      kind === "added"
         ? `Added ${option.label}.`
         : `${option.label} is already in Bloom, so it's selected.`
     );
-    setGenus("");
-    setEpithet("");
-    setCommonName("");
     setAddStatus("closed");
     onChange(option.id);
   }
@@ -109,6 +80,12 @@ export default function ScrnaSpeciesPicker({
           <option value={ADD_NEW}>+ Add a species…</option>
         </select>
       </label>
+      <Link
+        href="/app/species"
+        className="mt-1 inline-block text-xs text-stone-500 hover:text-lime-700 hover:underline"
+      >
+        See all species
+      </Link>
 
       {addStatus === "closed" ? (
         notice ? (
@@ -117,81 +94,15 @@ export default function ScrnaSpeciesPicker({
           </p>
         ) : null
       ) : (
-        <div className="mt-3 space-y-3 rounded-md border border-stone-200 bg-white p-4">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label className={labelClass}>
-              Genus
-              <input
-                className={fieldClass}
-                value={genus}
-                onChange={(e) => edit(setGenus, e.target.value)}
-                placeholder="e.g. Arabidopsis"
-                disabled={saving}
-              />
-            </label>
-            <label className={labelClass}>
-              Species name
-              <input
-                className={fieldClass}
-                value={epithet}
-                onChange={(e) => edit(setEpithet, e.target.value)}
-                placeholder="e.g. thaliana"
-                disabled={saving}
-              />
-            </label>
-            <label className={labelClass}>
-              Common name
-              <input
-                className={fieldClass}
-                value={commonName}
-                onChange={(e) => edit(setCommonName, e.target.value)}
-                placeholder="e.g. Arabidopsis"
-                disabled={saving}
-              />
-            </label>
-          </div>
-          {"value" in preview ? (
-            <p aria-live="polite" className="text-sm text-stone-700">
-              Will be added as{" "}
-              <span className="font-medium">{preview.value.common_name}</span>{" "}
-              (<span className="italic">
-                {preview.value.genus} {preview.value.species}
-              </span>
-              ), for everyone, and shown on the Expression page.
-            </p>
-          ) : typed ? (
-            <p aria-live="polite" className="text-sm text-stone-500">
-              {preview.problem}
-            </p>
-          ) : (
-            <p className="text-sm text-stone-500">
-              Added to Bloom&apos;s species list for everyone, and shown on the
-              Expression page.
-            </p>
-          )}
-          <div className="flex flex-wrap items-center gap-4">
-            <button
-              type="button"
-              onClick={add}
-              disabled={saving || "problem" in preview}
-              className="rounded-md border border-lime-700 px-3 py-1.5 text-sm font-medium text-lime-800 hover:bg-lime-50 disabled:opacity-50"
-            >
-              {saving ? "Adding…" : "Add species"}
-            </button>
-            <button
-              type="button"
-              onClick={cancelAdd}
-              disabled={saving}
-              className="text-sm text-stone-500 hover:text-stone-800"
-            >
-              Cancel
-            </button>
-            {problem ? (
-              <p role="alert" className="text-sm text-red-700">
-                {problem}
-              </p>
-            ) : null}
-          </div>
+        <div className="mt-3">
+          <SpeciesAddForm
+            onAdded={added}
+            onCancel={cancelAdd}
+            onSavingChange={(s) => setAddStatus(s ? "saving" : "open")}
+            where=", and shown on the Expression page"
+            fieldClass={fieldClass}
+            labelClass={labelClass}
+          />
         </div>
       )}
     </div>
