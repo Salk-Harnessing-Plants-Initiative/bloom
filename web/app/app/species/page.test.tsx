@@ -41,6 +41,12 @@ describe("the Species page", () => {
     render(await SpeciesPage());
 
     expect(screen.getByRole("heading", { name: "Species" })).toBeTruthy();
+    expect(screen.getByText("Lists every species in Bloom.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Add one here before uploading its scans or data: uploads are matched to a species by its common name."
+      )
+    ).toBeTruthy();
     const items = within(screen.getByRole("list", { name: "Species" }))
       .getAllByRole("listitem")
       .map((li) => li.textContent);

@@ -26,10 +26,13 @@ export default async function SpeciesPage() {
     <div>
       <div className="mb-1 text-sm uppercase tracking-widest text-stone-500">Resources</div>
       <h1 className="text-3xl font-serif italic mb-2 select-none">Species</h1>
-      <p className="mb-6 max-w-2xl text-sm text-stone-500">
-        Every species in Bloom. Add one here before uploading its scans or data: uploads
-        are matched to a species by its common name.
-      </p>
+      <div className="mb-6 max-w-2xl space-y-1 text-sm text-stone-500">
+        <p>Lists every species in Bloom.</p>
+        <p>
+          Add one here before uploading its scans or data: uploads are matched to a species
+          by its common name.
+        </p>
+      </div>
       {error ? (
         <p role="alert" className="text-sm text-red-700">
           Couldn&apos;t load the species: {error.message}
