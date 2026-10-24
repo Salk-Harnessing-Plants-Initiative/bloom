@@ -2,7 +2,7 @@
 Integration tests for adding public.species to the supabase_realtime publication, so the
 Species page updates live: the migration adds it, re-applying it is a no-op, and the
 rollback takes it out (also a no-op when it is already out). Bloom's signed-in role can
-read species, which Realtime needs before it sends a row.
+read species (a grant and a row policy), which Realtime needs before it sends a row.
 
 Each test applies the files inside its own transaction and rolls it back, so the database
 is left unchanged.
@@ -51,5 +51,12 @@ def test_the_rollback_takes_species_out_and_can_run_twice(cur):
 
 
 def test_signed_in_bloom_users_can_read_species(cur):
+    """Realtime sends a row only to a subscriber who could SELECT it: both the grant and a
+    row policy are needed."""
     cur.execute("SELECT has_table_privilege('bloom_user', 'public.species', 'SELECT')")
     assert cur.fetchone()[0] is True
+    cur.execute(
+        "SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'species' "
+        "AND cmd IN ('SELECT', 'ALL') AND 'bloom_user' = ANY(roles)"
+    )
+    assert cur.fetchone() is not None
