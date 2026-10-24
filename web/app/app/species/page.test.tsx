@@ -42,7 +42,7 @@ describe("the Species page", () => {
 
     expect(screen.getByRole("heading", { name: "Species" })).toBeTruthy();
     expect(screen.getByText("Lists every species in Bloom.")).toBeTruthy();
-    expect(screen.getByText("Add the species here if it isn't available in Bloom Desktop.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "When to add a species" })).toBeTruthy();
     const items = within(screen.getByRole("list", { name: "Species" }))
       .getAllByRole("listitem")
       .map((li) => li.textContent);

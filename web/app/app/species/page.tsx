@@ -1,5 +1,6 @@
 import Mixpanel from "mixpanel";
 import SpeciesCatalog from "@/components/species-catalog";
+import SpeciesInfoTip from "@/components/species-info-tip";
 import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
 import { sortedSpeciesOptions } from "@/lib/species-options";
 
@@ -26,10 +27,10 @@ export default async function SpeciesPage() {
     <div>
       <div className="mb-1 text-sm uppercase tracking-widest text-stone-500">Resources</div>
       <h1 className="text-3xl font-serif italic mb-2 select-none">Species</h1>
-      <div className="mb-6 max-w-2xl space-y-1 text-sm text-stone-500">
-        <p>Lists every species in Bloom.</p>
-        <p>Add the species here if it isn&apos;t available in Bloom Desktop.</p>
-      </div>
+      <p className="mb-6 max-w-2xl text-sm text-stone-500">
+        Lists every species in Bloom.
+        <SpeciesInfoTip />
+      </p>
       {error ? (
         <p role="alert" className="text-sm text-red-700">
           Couldn&apos;t load the species: {error.message}
