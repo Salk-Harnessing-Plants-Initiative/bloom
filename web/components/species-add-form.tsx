@@ -70,7 +70,7 @@ export default function SpeciesAddForm({
 
   return (
     <div className="space-y-3 rounded-md border border-stone-200 bg-white p-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid max-w-md gap-3">
         <label className={labelClass}>
           Genus
           <input
