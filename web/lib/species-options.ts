@@ -1,5 +1,5 @@
 /**
- * Species as the job form lists them, and adding a new one with the add_species function,
+ * Species as the job form and the Species page list them, and adding a new one with the add_species function,
  * which returns the species already stored under the same genus and species, or the same
  * common name (compared in lower case), instead of a duplicate.
  */
@@ -80,14 +80,14 @@ export function withSpeciesOption<T extends SpeciesOption>(list: T[], item: T): 
   );
 }
 
+/** A species row as a Realtime change carries it. */
+export type SpeciesChangeRow = Partial<SpeciesListRow> & { deleted_at?: string | null };
+
 /**
  * The list after a realtime change to a species row: an added or edited species is
  * (re)listed, and one marked deleted is dropped.
  */
-export function applySpeciesChange(
-  list: SpeciesListItem[],
-  row: Partial<SpeciesListRow> & { deleted_at?: string | null }
-): SpeciesListItem[] {
+export function applySpeciesChange(list: SpeciesListItem[], row: SpeciesChangeRow): SpeciesListItem[] {
   if (typeof row.id !== "number") return list;
   if (row.deleted_at) return list.filter((s) => s.id !== row.id);
   return withSpeciesOption(list, speciesListItem(row as SpeciesListRow));

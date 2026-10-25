@@ -22,6 +22,7 @@ export default async function SpeciesPage() {
     .from("species")
     .select("id, common_name, genus, species, created_by")
     .is("deleted_at", null);
+  if (error) console.error("[species] Couldn't load the species:", error.message);
 
   return (
     <div>
@@ -34,12 +35,12 @@ export default async function SpeciesPage() {
             Add a species here before you use it in:
           </span>
           <span className="mt-1 block">• Bloom Desktop, for cylinder scans</span>
-          <span className="block">• an Expression analysis</span>
+          <span className="block">• an Expression analysis (its form can add one too)</span>
         </InfoTip>
       </p>
       {error ? (
         <p role="alert" className="text-sm text-red-700">
-          Couldn&apos;t load the species: {error.message}
+          Couldn&apos;t load the species. Reload the page to try again.
         </p>
       ) : (
         <SpeciesCatalog species={sortedSpeciesList(data ?? [])} currentUserId={user?.id ?? null} />

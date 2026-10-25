@@ -38,8 +38,8 @@ type Pivot = {
 
 function InfoDot({ text }: { text: string }) {
   return (
-    <span className="absolute right-2 top-2">
-      <InfoTip label={text} align="right">
+    <span className="absolute right-2 top-2 leading-none">
+      <InfoTip label="About this tab" align="right">
         {text}
       </InfoTip>
     </span>

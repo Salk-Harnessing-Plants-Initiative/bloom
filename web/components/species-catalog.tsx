@@ -13,7 +13,7 @@
  * species by its common name.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import { useLiveSync } from "@/lib/cyl-pipeline/use-live-sync";
 import {
@@ -21,6 +21,7 @@ import {
   applySpeciesChange,
   sortedSpeciesList,
   withSpeciesOption,
+  type SpeciesChangeRow,
   type SpeciesListItem,
 } from "@/lib/species-options";
 import SpeciesAddForm, { type SpeciesAdded } from "@/components/species-add-form";
@@ -53,11 +54,21 @@ export default function SpeciesCatalog({
     bindings: [{ table: "species", event: "*" }],
     initial: species,
     snapshot: loadSpecies,
-    apply: (list, change) => applySpeciesChange(list, change.new as Parameters<typeof applySpeciesChange>[1]),
+    apply: (list, change) => applySpeciesChange(list, change.new as SpeciesChangeRow),
   });
   const list = live.view;
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState("");
+  // Back to the Add a species button when the form closes, so keyboard users keep their place.
+  const addButton = useRef<HTMLButtonElement>(null);
+  const wasAdding = useRef(false);
+  useEffect(() => {
+    if (wasAdding.current && !adding) addButton.current?.focus();
+    wasAdding.current = adding;
+  }, [adding]);
+  useEffect(() => {
+    if (live.error) console.error("[species] Couldn't refresh the species:", live.error);
+  }, [live.error]);
 
   function added({ kind, option }: SpeciesAdded) {
     if (kind === "added") {
@@ -78,11 +89,13 @@ export default function SpeciesCatalog({
           <SpeciesAddForm
             onAdded={added}
             onCancel={() => setAdding(false)}
+            autoFocus
             fieldClass={FIELD_CLASS}
             labelClass={LABEL_CLASS}
           />
         ) : (
           <button
+            ref={addButton}
             type="button"
             onClick={() => {
               setNotice("");
@@ -93,11 +106,10 @@ export default function SpeciesCatalog({
             Add a species
           </button>
         )}
-        {notice && !adding ? (
-          <p role="status" className="mt-2 text-sm text-stone-600">
-            {notice}
-          </p>
-        ) : null}
+        {/* Always mounted, so screen readers announce a new notice. */}
+        <p role="status" className="mt-2 min-h-5 text-sm text-stone-600">
+          {adding ? "" : notice}
+        </p>
       </div>
 
       <div>
@@ -107,7 +119,7 @@ export default function SpeciesCatalog({
         </div>
         {live.error ? (
           <p role="alert" className="mb-2 text-sm text-red-700">
-            Couldn&apos;t refresh the species: {live.error}
+            Couldn&apos;t refresh the species, so this list may be out of date. Reload the page to try again.
           </p>
         ) : null}
         {list.length === 0 ? (

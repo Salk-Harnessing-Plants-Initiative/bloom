@@ -99,6 +99,7 @@ export default function ScrnaSpeciesPicker({
             onAdded={added}
             onCancel={cancelAdd}
             onSavingChange={(s) => setAddStatus(s ? "saving" : "open")}
+            autoFocus
             fieldClass={fieldClass}
             labelClass={labelClass}
           />

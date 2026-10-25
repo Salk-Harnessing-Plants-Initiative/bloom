@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { liveChannels, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
+import { liveChannels, queriesFor, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 vi.mock("@/lib/species-options", async (importOriginal) => ({
@@ -155,6 +155,8 @@ describe("adding a species", () => {
 
     expect(await screen.findByText("Rice (Oryza sativa) is already in Bloom.")).toBeTruthy();
     expect(listed()).toEqual(["Arabidopsis (Arabidopsis thaliana)", "Rice (Oryza sativa)"]);
+    // Already listed, so no reload.
+    expect(queriesFor("species")).toHaveLength(0);
   });
 
   it("keeps the form open with the typed names and the reason when adding fails", async () => {
@@ -178,6 +180,14 @@ describe("adding a species", () => {
     );
   });
 
+  it("puts the cursor in Genus when the form opens, and back on the button when it closes", () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Add a species" }));
+    expect(document.activeElement).toBe(screen.getByLabelText("Genus"));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a species" }));
+  });
+
   it("closes the form on Cancel, adding nothing", () => {
     mount();
     fireEvent.click(screen.getByRole("button", { name: "Add a species" }));
@@ -199,10 +209,10 @@ describe("live updates", () => {
 
   it("shows whether the list is live", async () => {
     mount();
-    expect(screen.getByRole("status").textContent).toBe("Connecting…");
+    expect(screen.getByText("Connecting…")).toBeTruthy();
     await act(async () => {});
     await act(async () => liveChannels()[0].status("SUBSCRIBED"));
-    expect(screen.getByRole("status").textContent).toBe("Live");
+    expect(screen.getByText("Live")).toBeTruthy();
   });
 
   it("lists a species someone else adds, in order", async () => {
@@ -219,9 +229,10 @@ describe("live updates", () => {
 
   it("drops a species marked deleted, and relists an edited one under its new name", async () => {
     mount();
-    await emit("UPDATE", { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", deleted_at: "2026-10-24T10:00:00Z" });
+    // An admin's view: signed-in users don't receive removals (row-level security).
+    await emit("UPDATE", { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", created_by: OTHER, deleted_at: "2026-10-24T10:00:00Z" });
     expect(listed()).toEqual(["Arabidopsis (Arabidopsis thaliana)"]);
-    await emit("UPDATE", { id: 1, common_name: "Thale cress", genus: "Arabidopsis", species: "thaliana", deleted_at: null });
+    await emit("UPDATE", { id: 1, common_name: "Thale cress", genus: "Arabidopsis", species: "thaliana", created_by: null, deleted_at: null });
     expect(listed()).toEqual(["Thale cress (Arabidopsis thaliana)"]);
   });
 
@@ -229,11 +240,18 @@ describe("live updates", () => {
     vi.useFakeTimers();
     try {
       supabaseMock.respond = () => ({ data: null, error: { message: "connection refused" } });
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
       mount();
       await act(async () => {});
       await act(async () => liveChannels()[0].status("SUBSCRIBED"));
       await act(() => vi.advanceTimersByTimeAsync(1000));
-      expect(screen.getByRole("alert").textContent).toBe("Couldn't refresh the species: connection refused");
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Couldn't refresh the species, so this list may be out of date. Reload the page to try again."
+      );
+      expect(log).toHaveBeenCalledWith("[species] Couldn't refresh the species:", "connection refused");
+      // It reads only the species that haven't been removed.
+      expect(queriesFor("species")[0].arg("is")).toEqual(["deleted_at", null]);
+      log.mockRestore();
       // The list it had stays.
       expect(listed()).toHaveLength(2);
     } finally {

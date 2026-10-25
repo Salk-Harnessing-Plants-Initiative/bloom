@@ -200,6 +200,8 @@ describe("adding a species", () => {
       (screen.getByRole("button", { name: "Adding…" }) as HTMLButtonElement).disabled
     ).toBe(true);
     expect((screen.getByLabelText("Genus") as HTMLInputElement).disabled).toBe(true);
+    // The species list too, so another choice can't be overwritten when the add returns.
+    expect((screen.getByLabelText("Species") as HTMLSelectElement).disabled).toBe(true);
   });
 
   it("closes the fields on Cancel and restores the species chosen before", () => {

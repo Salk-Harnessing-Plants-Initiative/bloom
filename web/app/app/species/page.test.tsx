@@ -1,50 +1,37 @@
 // @vitest-environment jsdom
-/** The Species page lists the non-deleted species, and shows the error when it can't. */
+/** The Species page lists the non-deleted species with who added them, and shows an error when it can't. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
+import { mockClient, queriesFor, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 
-type Result = { data: unknown; error: { message: string } | null };
-let result: Result;
-const calls: { method: string; args: unknown[] }[] = [];
-
-// A Supabase query chain that records its calls and resolves to `result`.
-const query = {
-  from: (...args: unknown[]) => (calls.push({ method: "from", args }), query),
-  select: (...args: unknown[]) => (calls.push({ method: "select", args }), query),
-  is: (...args: unknown[]) => (calls.push({ method: "is", args }), Promise.resolve(result)),
-};
-
-// The list joins Realtime in the browser; the shared mock gives it a channel.
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
 vi.mock("@/lib/supabase/server", () => ({
-  createServerSupabaseClient: async () => query,
+  createServerSupabaseClient: async () => mockClient,
   getUser: async () => ({ id: "u-1", email: "scientist@example.org" }),
 }));
 
 import SpeciesPage from "./page";
 
-beforeEach(() => {
-  calls.length = 0;
-});
+beforeEach(() => resetSupabaseMock());
 afterEach(cleanup);
 
 describe("the Species page", () => {
-  it("lists the species that haven't been removed, sorted", async () => {
-    result = {
+  it("lists the species that haven't been removed, sorted, with who added them", async () => {
+    supabaseMock.respond = () => ({
       data: [
         { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", created_by: "u-1" },
         { id: 1, common_name: "Arabidopsis", genus: "arabidopsis", species: "Thaliana", created_by: null },
       ],
       error: null,
-    };
+    });
     render(await SpeciesPage());
 
     expect(screen.getByRole("heading", { name: "Species" })).toBeTruthy();
     expect(screen.getByText("Lists every species in Bloom.")).toBeTruthy();
     expect(screen.getByRole("img", { name: "When to add a species" })).toBeTruthy();
-    expect(screen.getByRole("tooltip").textContent).toBe(
-      "Add a species here before you use it in:• Bloom Desktop, for cylinder scans• an Expression analysis"
+    expect(screen.getByRole("tooltip", { hidden: true }).textContent).toBe(
+      "Add a species here before you use it in:• Bloom Desktop, for cylinder scans• an Expression analysis (its form can add one too)"
     );
     const rows = within(screen.getByRole("table", { name: "Species" }))
       .getAllByRole("row")
@@ -55,19 +42,20 @@ describe("the Species page", () => {
       ["Arabidopsis (Arabidopsis thaliana)", "Bloom admin"],
       ["Rice (Oryza sativa)", "you"],
     ]);
-    expect(calls).toEqual([
-      { method: "from", args: ["species"] },
-      { method: "select", args: ["id, common_name, genus, species, created_by"] },
-      { method: "is", args: ["deleted_at", null] },
-    ]);
+    const query = queriesFor("species")[0];
+    expect(query.arg("select")).toEqual(["id, common_name, genus, species, created_by"]);
+    expect(query.arg("is")).toEqual(["deleted_at", null]);
   });
 
-  it("shows the error, not an empty list, when the species can't be loaded", async () => {
-    result = { data: null, error: { message: "connection refused" } };
+  it("shows a friendly error, not an empty list, when the species can't be loaded", async () => {
+    supabaseMock.respond = () => ({ data: null, error: { message: "connection refused" } });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
     render(await SpeciesPage());
 
-    expect(screen.getByRole("alert").textContent).toBe("Couldn't load the species: connection refused");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't load the species. Reload the page to try again.");
+    expect(log).toHaveBeenCalledWith("[species] Couldn't load the species:", "connection refused");
     expect(screen.queryByText("No species yet.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add a species" })).toBeNull();
+    log.mockRestore();
   });
 });

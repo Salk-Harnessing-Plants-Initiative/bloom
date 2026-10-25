@@ -21,6 +21,7 @@ export default function SpeciesAddForm({
   onAdded,
   onCancel,
   onSavingChange,
+  autoFocus = false,
   fieldClass,
   labelClass,
 }: {
@@ -29,6 +30,8 @@ export default function SpeciesAddForm({
   // Shown as a Cancel button when given.
   onCancel?: () => void;
   onSavingChange?: (saving: boolean) => void;
+  // Put the cursor in Genus when the form opens.
+  autoFocus?: boolean;
   fieldClass: string;
   labelClass: string;
 }) {
@@ -76,6 +79,7 @@ export default function SpeciesAddForm({
           <input
             className={fieldClass}
             value={genus}
+            autoFocus={autoFocus}
             onChange={(e) => edit(setGenus, e.target.value)}
             placeholder="e.g. Arabidopsis"
             disabled={saving}
