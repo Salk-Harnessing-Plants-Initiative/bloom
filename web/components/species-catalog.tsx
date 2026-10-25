@@ -2,10 +2,13 @@
 
 /**
  * The Species page's list and its Add a species form. The list stays live through
- * Realtime: a species added or edited anywhere in Bloom shows up without a reload. A
- * removed one disappears on the next reload or rejoin, since row-level security keeps
- * removed species (and so their change events) from signed-in users; admins, who can
- * read them, see it go straight away. A species added here, or found already in Bloom,
+ * Realtime once species is in the supabase_realtime publication (the migration
+ * 20261024120000_enable_realtime_for_species.sql); until then the channel still joins
+ * and shows "Live", but no changes arrive, and the list updates on reload. With it, a
+ * species added or edited anywhere in Bloom shows up without a reload. A removed one
+ * disappears on the next reload or rejoin, since row-level security keeps removed
+ * species (and so their change events) from signed-in users; admins, who can read them,
+ * see it go straight away. A species added here, or found already in Bloom,
  * is listed straight away too. Species aren't renamed or removed here: uploads find a
  * species by its common name.
  */

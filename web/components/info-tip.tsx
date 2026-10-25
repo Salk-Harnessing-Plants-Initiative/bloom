@@ -3,8 +3,9 @@
  * hover or keyboard focus. Use it for every ⓘ in the web app, so they all look and behave
  * the same.
  *
- * It's CSS only (no state, no button), so it also works inside a button or a server
- * component. `label` is what screen readers announce; `children` is the note.
+ * It's CSS only (no state), so it works in a server component. It is focusable itself, so
+ * don't put it inside a <button>. `label` is what screen readers announce; `children` is
+ * the note.
  */
 
 import type { ReactNode } from "react";
