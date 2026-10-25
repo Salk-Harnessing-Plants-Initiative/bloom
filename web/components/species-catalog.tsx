@@ -110,9 +110,9 @@ export default function SpeciesCatalog({
         {list.length === 0 ? (
           <p className="text-sm text-stone-500">No species yet.</p>
         ) : (
-          <table className="w-full border-b border-t border-b-stone-200 border-t-lime-300 text-left text-sm" aria-label="Species">
+          <table className="w-full border-b border-t-2 border-b-stone-200 border-t-stone-600 text-left text-sm" aria-label="Species">
             <thead>
-              <tr className="border-b border-lime-300 text-xs uppercase tracking-wide text-lime-800">
+              <tr className="border-b-2 border-stone-600 text-xs uppercase tracking-wide text-lime-800">
                 <th scope="col" className="py-2 pr-4 font-semibold">
                   Species
                 </th>
