@@ -53,8 +53,8 @@ CELLRANGER_TEMPLATE = (
 )
 # Step pods report results as this account; the same as cellranger-count-workflow.yaml.
 STEP_SERVICE_ACCOUNT = "bloom-workflow"
-# The busch-lab Run:ai credential bloom-ghcr-pull.
-IMAGE_PULL_SECRET = "dockerregistry-bloom-ghcr-pull"
+# The busch-lab Run:ai credential bloom-ghcr-pull-2.
+IMAGE_PULL_SECRET = "dockerregistry-bloom-ghcr-pull-2"
 # The volume RNA-seq steps mount to sign in to Bloom (bloomctl's credentials.txt): this
 # environment's pipeline Secret, the cylinder pipeline's too.
 BLOOM_CREDENTIALS_VOLUME = "bloom-credentials"

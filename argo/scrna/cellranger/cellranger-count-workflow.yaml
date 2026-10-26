@@ -18,7 +18,7 @@ spec:
   # Step pods report results as bloom-workflow; without it every step fails on workflowtaskresults.
   serviceAccountName: bloom-workflow
   imagePullSecrets:
-    - name: dockerregistry-bloom-ghcr-pull   # from the busch-lab Run:ai credential bloom-ghcr-pull
+    - name: dockerregistry-bloom-ghcr-pull-2   # from the busch-lab Run:ai credential bloom-ghcr-pull-2
   ttlStrategy:
     secondsAfterCompletion: 86400
   arguments:
