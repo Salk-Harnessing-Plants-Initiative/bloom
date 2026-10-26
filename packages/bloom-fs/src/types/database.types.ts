@@ -5650,6 +5650,7 @@ export type Database = {
       refresh_cyl_experiment_trait_counts: { Args: never; Returns: undefined }
       request_scrna_cellranger_run: {
         Args: {
+          p_chemistry?: string
           p_fastq_files?: Json
           p_fastq_url?: string
           p_genome_version_id?: number
