@@ -1,7 +1,7 @@
 /**
  * Server-side proxy for starting a Cell Ranger run.
  *
- * Forwards `{sample and sra_runs, or fastq_url and fastq_files; genome_version_id; metadata?}` with the
+ * Forwards `{sample and sra_runs, or fastq_url and fastq_files; genome_version_id; metadata?; chemistry?}` with the
  * signed-in user's Supabase token to the workflows service (`POST /scrna/cellranger/runs`,
  * in-cluster at `workflows:5100`), which checks the request, records the run and queues
  * it. Proxying keeps the token out of client JS. A request must be JSON (415 otherwise),
@@ -62,15 +62,16 @@ export async function POST(request: Request) {
 
   const read = await readJsonBody(request);
   if (!read.ok) return read.response;
-  const { sample, fastq_url, fastq_files, genome_version_id, metadata, sra_runs } = (read.body ??
-    {}) as {
-    sample?: unknown;
-    fastq_url?: unknown;
-    fastq_files?: unknown;
-    genome_version_id?: unknown;
-    metadata?: unknown;
-    sra_runs?: unknown;
-  };
+  const { sample, fastq_url, fastq_files, genome_version_id, metadata, sra_runs, chemistry } =
+    (read.body ?? {}) as {
+      sample?: unknown;
+      fastq_url?: unknown;
+      fastq_files?: unknown;
+      genome_version_id?: unknown;
+      metadata?: unknown;
+      sra_runs?: unknown;
+      chemistry?: unknown;
+    };
   // A run's reads come from an S3 folder (whose files name the sample) or SRA run IDs imported
   // under a new sample name. A folder comes with the files its check showed; the service
   // refuses it if they changed.
@@ -109,6 +110,14 @@ export async function POST(request: Request) {
     );
   }
 
+  // The service checks the library type's value; this only keeps the field's shape.
+  if (chemistry !== undefined && typeof chemistry !== "string") {
+    return NextResponse.json(
+      { detail: "The library type must be text." },
+      { status: 400 }
+    );
+  }
+
   // Only a short-circuit for the signed-out case; the service verifies the token itself.
   const session = await getSession();
   if (!session?.access_token) {
@@ -127,6 +136,7 @@ export async function POST(request: Request) {
       genome_version_id,
       ...(metadata === undefined ? {} : { metadata }),
       ...(sra_runs === undefined ? {} : { sra_runs }),
+      ...(chemistry === undefined ? {} : { chemistry }),
     },
     timeoutMs: UPSTREAM_TIMEOUT_MS,
     passthrough: DETAIL_PASSTHROUGH_STATUSES,
