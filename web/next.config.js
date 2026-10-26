@@ -6,7 +6,7 @@ const nextConfig = {
   turbopack: {
     resolveAlias: {
       // Optimize JBrowse client-side libraries
-      '@jbrowse/react-app': '@jbrowse/react-app',
+      '@jbrowse/react-app2': '@jbrowse/react-app2',
       '@jbrowse/core': '@jbrowse/core',
     },
     // Disable HMR for problematic MUI CSS modules
@@ -15,9 +15,9 @@ const nextConfig = {
   experimental: {
     serverActions: {},
     // Optimize large module compilation  
-    optimizePackageImports: ['@jbrowse/react-app', '@jbrowse/core'],
+    optimizePackageImports: ['@jbrowse/react-app2', '@jbrowse/core'],
     // Disable optimizePackageImports for MUI to prevent CSS HMR issues
-    // optimizePackageImports: ['@jbrowse/react-app', '@jbrowse/core', '@mui/x-data-grid'],
+    // optimizePackageImports: ['@jbrowse/react-app2', '@jbrowse/core', '@mui/x-data-grid'],
     
     // Enable Turbopack memory optimizations for large files
     turbo: {
@@ -51,7 +51,7 @@ const nextConfig = {
     if (isServer) {
       config.externals = [
         ...(config.externals || []),
-        '@jbrowse/react-app',
+        '@jbrowse/react-app2',
         '@jbrowse/core',
         '@mui/x-data-grid',
       ];

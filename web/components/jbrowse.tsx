@@ -30,7 +30,7 @@ function JBrowse() {
         setLoadingStatus("Loading JBrowse libraries...");
         
         const [jbrowseReactApp, jbrowseCore] = await Promise.all([
-          import("@jbrowse/react-app"),
+          import("@jbrowse/react-app2"),
           import("@jbrowse/core/util"),
         ]);
 
