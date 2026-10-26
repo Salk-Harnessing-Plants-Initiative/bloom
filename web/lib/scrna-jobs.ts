@@ -48,6 +48,24 @@ export function genomeVersionLabel(option: GenomeVersionOption): string {
 /** One free key/value row in the form, e.g. tissue = root. */
 export type AttributeRow = { key: string; value: string };
 
+/** The library's Cell Ranger chemistry: "auto" lets Cell Ranger detect it; a 10x Multiome RNA
+ * library needs ARC-v1 named. The workflows service and the database accept the same values. */
+export type Chemistry = "auto" | "ARC-v1";
+
+export const LIBRARY_TYPES: readonly { chemistry: Chemistry; label: string }[] = [
+  { chemistry: "auto", label: "10x gene expression (kit detected automatically)" },
+  { chemistry: "ARC-v1", label: "10x Multiome — RNA part" },
+];
+
+/** How the run page names a run that left the kit to Cell Ranger. */
+const DETECTED_LIBRARY_LABEL = "10x gene expression (detected by Cell Ranger)";
+
+/** A run's library type for the run page. */
+export function libraryTypeLabel(chemistry: string | null | undefined): string {
+  if (!chemistry || chemistry === "auto") return DETECTED_LIBRARY_LABEL;
+  return LIBRARY_TYPES.find((t) => t.chemistry === chemistry)?.label ?? `Chemistry ${chemistry}`;
+}
+
 /** What the form collects about the dataset the run will produce. */
 /** HPI's own data, or a public dataset from a paper or archive. */
 export type DataOrigin = "hpi" | "public";

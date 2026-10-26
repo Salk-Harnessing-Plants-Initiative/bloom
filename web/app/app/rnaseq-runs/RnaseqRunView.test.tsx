@@ -85,6 +85,17 @@ describe("RnaseqRunView", () => {
     expect(screen.getByText(/Reads from/)).toBeTruthy();
   });
 
+  it("shows the library type as detected by Cell Ranger when the run named no chemistry", () => {
+    renderView();
+    expect(screen.getByText("Library type")).toBeTruthy();
+    expect(screen.getByText("10x gene expression (detected by Cell Ranger)")).toBeTruthy();
+  });
+
+  it("shows a Multiome RNA run's library type", () => {
+    renderView({ ...RUN, params: { ...(RUN.params as object), chemistry: "ARC-v1" } } as RnaseqRun);
+    expect(screen.getByText("10x Multiome — RNA part")).toBeTruthy();
+  });
+
   it("doesn't mention a folder for a run without one", () => {
     renderView();
     expect(screen.queryByText(/Reads from/)).toBeNull();

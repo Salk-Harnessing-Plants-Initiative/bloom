@@ -33,11 +33,12 @@ function openForm() {
   fireEvent.click(screen.getByLabelText("Import from SRA"));
 }
 
-function type(label: string, value: string) {
+function type(label: string | RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
 function fillTheRest() {
+  type(/Library type/, "auto");
   type("Reference genome", "3");
   type("Species", "1");
   type("Dataset name", "Root tip sc_71");
