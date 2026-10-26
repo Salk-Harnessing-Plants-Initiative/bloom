@@ -32,3 +32,17 @@ Routes, all under `/api/cyl/trait-export/`:
 - **Reads.** Every read uses the signed-in user's token. `cyl_scans_extended` does not apply RLS, so access is decided by the RLS-filtered `cyl_experiments` check that runs first. `lib/cyl-trait-export/db.ts` wraps every PostgREST request in one process-wide semaphore (`PG_CONCURRENCY`), turns off postgrest-js's own retries, never aborts a request once issued (a cancelled export stops issuing them and discards late results; one listing in flight per user), and reads in batches of `BATCH_SCANS` scans (recipe listings in batches of `LISTING_BATCH_SCANS`, one call for every current experiment), always with an explicit recipe key. Any read error or integrity failure fails the job; nothing partial is served.
 - **Limits.** The constants are in `lib/cyl-trait-export/limits.ts`: `BATCH_SCANS`, `LISTING_BATCH_SCANS`, `PG_CONCURRENCY`, `MAX_RUNNING_JOBS`, `MAX_JOBS_PER_USER`, `MAX_HELD_BYTES`, `RUNNING_JOB_RESERVE_BYTES`, `MIN_SESSION_SECONDS`, `EXPORT_MAX_SECONDS`, `RETAIN_SECONDS`, `SELECTION_PAGE_SIZE` and `CSV_SLICE_CELLS`.
 - **In-process jobs.** Jobs and finished zips live in memory in the one `next start` process, shared through a `globalThis` symbol. A restart or deploy loses running jobs and finished zips; the dialog reports that as an interrupted export. Running more than one `bloom-web` replica would need a durable job store instead.
+
+## New-species email
+
+When someone adds a species that wasn't in Bloom yet (on the Species page or the scRNA job form), Bloom emails everyone flagged to hear about it, so the species' image can be added: until then it shows the placeholder (`public/species-icons/_default.svg`). See `lib/species-added-email.ts`.
+
+To get these emails, set the flag on your Bloom account. Only the service role can change `raw_app_meta_data`, so run this in Supabase Studio's SQL editor:
+
+```sql
+UPDATE auth.users
+SET raw_app_meta_data = raw_app_meta_data || '{"notify_new_species": true}'::jsonb
+WHERE email = '<your email>';
+```
+
+Use `- 'notify_new_species'` instead of `|| …` to stop them. The email goes through Salk's mail relay (`SMTP_*`); without `SMTP_HOST`, as in dev, nothing is sent.

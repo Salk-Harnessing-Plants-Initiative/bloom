@@ -50,7 +50,11 @@ export function sortedSpeciesOptions(rows: SpeciesRow[]): SpeciesOption[] {
 }
 
 /** A species on the Species page, with who added it: `created_by`, null from before that was recorded. */
-export type SpeciesListItem = SpeciesOption & { addedBy: string | null };
+export type SpeciesListItem = SpeciesOption & {
+  addedBy: string | null;
+  /** Its image, worked out on the server; absent for one that arrived live (shown as the placeholder). */
+  image?: { url: string; placeholder: boolean };
+};
 
 type SpeciesListRow = SpeciesRow & { created_by?: string | null };
 

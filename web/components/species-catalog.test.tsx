@@ -6,15 +6,14 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { liveChannels, queriesFor, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
-vi.mock("@/lib/species-options", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/species-options")>()),
-  addSpecies: vi.fn(),
-}));
+// Adding goes through the server action (which also sends the new-species email).
+vi.mock("@/app/app/species/actions", () => ({ addSpeciesAction: vi.fn() }));
 
 import SpeciesCatalog from "./species-catalog";
-import { addSpecies, type SpeciesListItem } from "@/lib/species-options";
+import type { SpeciesListItem } from "@/lib/species-options";
+import { addSpeciesAction } from "@/app/app/species/actions";
 
-const mockedAdd = vi.mocked(addSpecies);
+const mockedAdd = vi.mocked(addSpeciesAction);
 
 const ME = "4965b3af-ccfe-40f5-814b-447e1f726e1b";
 const OTHER = "1a2b3c4d-0000-4000-8000-000000000002";
@@ -51,7 +50,7 @@ function rows() {
   return within(screen.getByRole("table", { name: "Species" }))
     .getAllByRole("row")
     .slice(1)
-    .map((tr) => within(tr).getAllByRole("cell").map((td) => td.textContent));
+    .map((tr) => within(tr).getAllByRole("cell").slice(0, 2).map((td) => td.textContent));
 }
 
 /** Wait for the list to join its Realtime channel, then deliver a change to `species`. */
@@ -106,6 +105,25 @@ describe("who added each species", () => {
   });
 });
 
+describe("each species' image", () => {
+  const imageCell = (name: string) =>
+    within(screen.getByRole("row", { name: new RegExp(name) })).getAllByRole("cell")[2];
+
+  it("shows the placeholder, marked No image yet, until the species has an image", () => {
+    mount([
+      { id: 1, label: "Arabidopsis (Arabidopsis thaliana)", addedBy: null, image: { url: "/species-icons/arabidopsis.png", placeholder: false } },
+      { id: 9, label: "Pennycress (Thlaspi arvense)", addedBy: ME, image: { url: "/species-icons/_default.svg", placeholder: true } },
+      // One that arrived live has no image worked out yet: the placeholder.
+      { id: 7, label: "Maize (Zea mays)", addedBy: OTHER },
+    ]);
+    expect(imageCell("Arabidopsis").querySelector("img")?.getAttribute("src")).toBe("/species-icons/arabidopsis.png");
+    expect(imageCell("Arabidopsis").textContent).toBe("");
+    expect(imageCell("Pennycress").textContent).toBe("No image yet");
+    expect(imageCell("Maize").querySelector("img")?.getAttribute("src")).toBe("/species-icons/_default.svg");
+    expect(imageCell("Maize").textContent).toBe("No image yet");
+  });
+});
+
 describe("adding a species", () => {
   it("adds a new species to the list, in order, and says so", async () => {
     mockedAdd.mockResolvedValue({ kind: "added", option: { id: 9, label: "Pennycress (Thlaspi arvense)" } });
@@ -113,7 +131,7 @@ describe("adding a species", () => {
     addPennycress();
 
     expect(await screen.findByText("Added Pennycress (Thlaspi arvense).")).toBeTruthy();
-    expect(mockedAdd.mock.calls[0][1]).toEqual({ genus: "Thlaspi", species: "arvense", common_name: "Pennycress" });
+    expect(mockedAdd.mock.calls[0][0]).toEqual({ genus: "thlaspi", species: "arvense", commonName: "Pennycress" });
     expect(listed()).toEqual([
       "Arabidopsis (Arabidopsis thaliana)",
       "Pennycress (Thlaspi arvense)",

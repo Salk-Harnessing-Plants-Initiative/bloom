@@ -14,13 +14,11 @@ vi.mock("@/lib/s3-folder", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/s3-folder")>()),
   FOLDER_CHECK_DELAY_MS: 0,
 }));
-vi.mock("@/lib/species-options", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/species-options")>()),
-  addSpecies: vi.fn(),
-}));
+// Adding a species goes through the server action.
+vi.mock("@/app/app/species/actions", () => ({ addSpeciesAction: vi.fn() }));
 
 import ScrnaJobSubmit from "./scrna-job-submit";
-import { addSpecies } from "@/lib/species-options";
+import { addSpeciesAction } from "@/app/app/species/actions";
 import type { GenomeVersionOption } from "@/lib/scrna-jobs";
 import type { SpeciesOption } from "@/lib/species-options";
 
@@ -550,7 +548,7 @@ describe("after a run is queued", () => {
 
 describe("a species added from the form", () => {
   it("is still listed and selected after the form is closed and reopened", async () => {
-    vi.mocked(addSpecies).mockResolvedValue({
+    vi.mocked(addSpeciesAction).mockResolvedValue({
       kind: "added",
       option: { id: 9, label: "Maize (Zea mays)" },
     });

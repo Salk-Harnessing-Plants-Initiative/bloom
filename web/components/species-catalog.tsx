@@ -26,6 +26,7 @@ import {
 } from "@/lib/species-options";
 import SpeciesAddForm, { type SpeciesAdded } from "@/components/species-add-form";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
+import { DEFAULT_SPECIES_IMAGE } from "@/lib/species-image";
 
 const FIELD_CLASS =
   "mt-1 block w-full rounded-md border border-stone-300 px-2 py-1.5 text-sm text-stone-900";
@@ -131,8 +132,11 @@ export default function SpeciesCatalog({
                 <th scope="col" className="py-2 pr-4 font-semibold">
                   Species
                 </th>
-                <th scope="col" className="py-2 font-semibold">
+                <th scope="col" className="py-2 pr-4 font-semibold">
                   Added by
+                </th>
+                <th scope="col" className="py-2 font-semibold">
+                  Image
                 </th>
               </tr>
             </thead>
@@ -140,8 +144,19 @@ export default function SpeciesCatalog({
               {list.map((s) => (
                 <tr key={s.id}>
                   <td className="py-2 pr-4 text-stone-800">{s.label}</td>
-                  <td className="py-2 text-stone-500" title={s.addedBy ?? undefined}>
+                  <td className="py-2 pr-4 text-stone-500" title={s.addedBy ?? undefined}>
                     {addedByText(s.addedBy, currentUserId)}
+                  </td>
+                  <td className="py-2">
+                    <span className="flex items-center gap-2 text-xs text-stone-500">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- a small local or signed image, like Illustration's */}
+                      <img
+                        src={s.image?.url ?? DEFAULT_SPECIES_IMAGE}
+                        alt=""
+                        className="h-8 w-8 object-contain"
+                      />
+                      {(s.image?.placeholder ?? true) ? "No image yet" : null}
+                    </span>
                   </td>
                 </tr>
               ))}

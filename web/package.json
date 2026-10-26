@@ -42,6 +42,7 @@
     "lodash": "^4.17.21",
     "mixpanel": "^0.18.0",
     "next": "16.4.1",
+    "nodemailer": "^10.0.16",
     "postcss": "^8.5.0",
     "react": "19.2.0",
     "react-dom": "19.2.0",

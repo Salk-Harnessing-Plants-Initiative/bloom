@@ -1,6 +1,7 @@
 import Mixpanel from "mixpanel";
 import SpeciesCatalog from "@/components/species-catalog";
 import InfoTip from "@/components/info-tip";
+import { speciesImage } from "@/components/illustration";
 import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
 import { sortedSpeciesList } from "@/lib/species-options";
 
@@ -20,9 +21,18 @@ export default async function SpeciesPage() {
   const supabase = await createServerSupabaseClient();
   const { data, error } = await supabase
     .from("species")
-    .select("id, common_name, genus, species, created_by")
+    .select("id, common_name, genus, species, created_by, illustration_path")
     .is("deleted_at", null);
   if (error) console.error("[species] Couldn't load the species:", error.message);
+
+  // Each species' image, or the placeholder until someone adds one.
+  const rows = data ?? [];
+  const images = new Map(
+    await Promise.all(
+      rows.map(async (r) => [r.id, await speciesImage(r.illustration_path, r.common_name)] as const)
+    )
+  );
+  const withImages = sortedSpeciesList(rows).map((s) => ({ ...s, image: images.get(s.id) }));
 
   return (
     <div>
@@ -43,7 +53,7 @@ export default async function SpeciesPage() {
           Couldn&apos;t load the species. Reload the page to try again.
         </p>
       ) : (
-        <SpeciesCatalog species={sortedSpeciesList(data ?? [])} currentUserId={user?.id ?? null} />
+        <SpeciesCatalog species={withImages} currentUserId={user?.id ?? null} />
       )}
     </div>
   );

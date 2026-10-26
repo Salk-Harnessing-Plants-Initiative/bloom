@@ -6,6 +6,12 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { mockClient, queriesFor, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
+// Images come from storage and public/species-icons; here, Arabidopsis has one and Rice doesn't.
+vi.mock("@/components/illustration", () => ({
+  speciesImage: vi.fn(async (path: string | null, name: string) =>
+    path ? { url: `signed/${path}`, placeholder: false } : { url: "/species-icons/_default.svg", placeholder: true }
+  ),
+}));
 vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: async () => mockClient,
   getUser: async () => ({ id: "u-1", email: "scientist@example.org" }),
@@ -20,8 +26,8 @@ describe("the Species page", () => {
   it("lists the species that haven't been removed, sorted, with who added them", async () => {
     supabaseMock.respond = () => ({
       data: [
-        { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", created_by: "u-1" },
-        { id: 1, common_name: "Arabidopsis", genus: "arabidopsis", species: "Thaliana", created_by: null },
+        { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", created_by: "u-1", illustration_path: null },
+        { id: 1, common_name: "Arabidopsis", genus: "arabidopsis", species: "Thaliana", created_by: null, illustration_path: "arabidopsis.png" },
       ],
       error: null,
     });
@@ -36,14 +42,19 @@ describe("the Species page", () => {
     const rows = within(screen.getByRole("table", { name: "Species" }))
       .getAllByRole("row")
       .slice(1)
-      .map((tr) => within(tr).getAllByRole("cell").map((td) => td.textContent));
+      .map((tr) => within(tr).getAllByRole("cell").slice(0, 2).map((td) => td.textContent));
     // u-1 is the signed-in user (see the getUser mock).
     expect(rows).toEqual([
       ["Arabidopsis (Arabidopsis thaliana)", "Bloom admin"],
       ["Rice (Oryza sativa)", "you"],
     ]);
     const query = queriesFor("species")[0];
-    expect(query.arg("select")).toEqual(["id, common_name, genus, species, created_by"]);
+    expect(query.arg("select")).toEqual(["id, common_name, genus, species, created_by, illustration_path"]);
+    // Each species' own image, or the placeholder.
+    const images = [...screen.getByRole("table", { name: "Species" }).querySelectorAll("img")].map((img) =>
+      img.getAttribute("src")
+    );
+    expect(images).toEqual(["signed/arabidopsis.png", "/species-icons/_default.svg"]);
     expect(query.arg("is")).toEqual(["deleted_at", null]);
   });
 
