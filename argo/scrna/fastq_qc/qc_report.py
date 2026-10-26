@@ -51,17 +51,27 @@ def main(qc_dir):
         f"- R2 length: {s['r2_length']['min']}-{s['r2_length']['max']} bp (cDNA)",
         f"- FASTQ prefix for Cell Ranger `--sample`: `{s['fastq_prefix']}`",
         "",
-        "## Chemistry guess",
+        "## Chemistry",
         "",
     ]
+    # Older summaries have no chemistry_named.
+    named = s.get("chemistry_named")
+    if named:
+        lines.append(f"The run names the chemistry `{named}`; QC checked the reads against its barcode list.")
+        lines.append("")
     if guess:
         lines.append(f"**{guess['kit']}** (`{guess['chemistry']}`): {guess['share_of_barcodes']:.0%} of sampled R1 "
                      f"barcodes are on the `{guess['file']}` list. Needs R1 of at least {guess['r1_needed']} bp.")
+    elif named:
+        lines.append("Fewer than half of the sampled R1 barcodes are on that list; see Problems.")
     else:
         lines.append("No guess: no 10x barcode list matched half of the sampled R1 barcodes.")
     lines += ["", "| Barcode list | Kit | Share of barcodes |", "|---|---|---|"]
     lines += [f"| `{w['file']}` | {w['kit']} | {w['share_of_barcodes']:.1%} |" for w in s["whitelist_scores"]]
-    lines += ["", "Cell Ranger runs with `--chemistry auto`; its choice is compared with this guess after the count.", ""]
+    if named:
+        lines += ["", f"Cell Ranger runs with `--chemistry={named}`.", ""]
+    else:
+        lines += ["", "Cell Ranger runs with `--chemistry auto`; its choice is compared with this guess after the count.", ""]
 
     if s["problems"]:
         lines += ["## Problems", ""] + [f"- {p}" for p in s["problems"]] + [""]

@@ -28,6 +28,7 @@ echo metrics > "${id}/outs/metrics_summary.csv"
 echo bam > "${id}/outs/web_summary.html"
 """,
     "fastq-qc": """#!/usr/bin/env bash
+[ -z "${QC_ARGS:-}" ] || echo "$*" >> "${QC_ARGS}"
 while [ $# -gt 0 ]; do [ "$1" = --out-dir ] && out="$2"; shift; done
 mkdir -p "${out}" && echo '{"chemistry": "SC3Pv3"}' > "${out}/qc_summary.json"
 """,
@@ -287,3 +288,50 @@ def test_the_count_step_passes_the_runs_bloom_id_and_workflow_name():
     task = next(t for t in templates["sample-pipeline"]["dag"]["tasks"] if t["name"] == "count")
     passed = {p["name"]: p["value"] for p in task["arguments"]["parameters"]}
     assert passed["bloom-run-id"] == "{{inputs.parameters.bloom-run-id}}"
+
+
+def _count_args(env, tmp_path) -> str:
+    """cellranger's arguments for one count, recorded by its stub."""
+    log = tmp_path / "cr_args"
+    stub = Path(env["PATH"].split(":", 1)[0]) / "cellranger"
+    stub.write_text(stub.read_text().replace("for a in", f'echo "$*" >> {log}\nfor a in', 1))
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return next(line for line in log.read_text().splitlines() if line.startswith("count "))
+
+
+def test_a_named_chemistry_is_passed_to_cellranger(env, tmp_path):
+    env["CHEMISTRY"] = "ARC-v1"
+    assert "--chemistry=ARC-v1" in _count_args(env, tmp_path).split()
+
+
+@pytest.mark.parametrize("chemistry", [None, ""])
+def test_without_a_named_chemistry_cellranger_detects_it(env, tmp_path, chemistry):
+    if chemistry is not None:
+        env["CHEMISTRY"] = chemistry
+    assert "--chemistry" not in _count_args(env, tmp_path)
+
+
+@pytest.mark.parametrize("chemistry", ["ARC-v1", ""])
+def test_the_check_after_the_count_records_the_named_chemistry(env, tmp_path, chemistry):
+    env["CHEMISTRY"] = chemistry
+    env["QC_ARGS"] = str(tmp_path / "qc_args")
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    args = (tmp_path / "qc_args").read_text()
+    assert f"--expect-chemistry {chemistry} --whitelist-dir" in args
+
+
+def test_the_qc_and_count_steps_get_the_runs_chemistry():
+    import yaml
+
+    doc = yaml.safe_load((CELLRANGER / "cellranger-count-template.yaml").read_text())
+    templates = {t["name"]: t for t in doc["spec"]["templates"]}
+    pipeline_inputs = {p["name"]: p for p in templates["sample-pipeline"]["inputs"]["parameters"]}
+    assert pipeline_inputs["chemistry"]["value"] == "", "empty: Cell Ranger detects it"
+    tasks = {t["name"]: t for t in templates["sample-pipeline"]["dag"]["tasks"]}
+    for step in ("qc", "count"):
+        passed = {p["name"]: p["value"] for p in tasks[step]["arguments"]["parameters"]}
+        assert passed["chemistry"] == "{{inputs.parameters.chemistry}}", step
+        env = {e["name"]: e["value"] for e in templates[step]["container"]["env"]}
+        assert env["CHEMISTRY"] == "{{inputs.parameters.chemistry}}", step

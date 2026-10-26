@@ -171,7 +171,7 @@ def build_cellranger_body(run: dict) -> dict:
     can't be built. A
     run naming a dataset passes its name and species, which the load-dataset step loads the
     result into Bloom under, and the run's id, which the step tags the dataset with so the
-    run is linked to it."""
+    run is linked to it. A run naming its chemistry passes it to the qc and count steps."""
     genome = run.get("genome")
     if not genome:
         raise UnrunnableRun(NO_GENOME_VERSION)
@@ -213,6 +213,10 @@ def build_cellranger_body(run: dict) -> dict:
         # fetch-sra reads the run IDs comma-separated, in lane order.
         parameters.append({"name": "sra-runs", "value": ",".join(sra_runs)})
         sample_inputs |= {"sra-runs": "sra-runs"}
+    # A named chemistry (a 10x Multiome RNA library's ARC-v1); none: Cell Ranger detects it.
+    if run["params"].get("chemistry"):
+        parameters.append({"name": "chemistry", "value": run["params"]["chemistry"]})
+        sample_inputs |= {"chemistry": "chemistry"}
     tasks = [_task("sample", "sample-pipeline", sample_inputs)]
     return {
         "apiVersion": "argoproj.io/v1alpha1",
