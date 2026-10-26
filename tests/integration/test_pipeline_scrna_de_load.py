@@ -23,6 +23,12 @@ psycopg = pytest.importorskip("psycopg")
 MIGRATION = _find_one("migrations", "*_let_pipeline_load_default_de.sql")
 ROLLBACK = _find_one("rollbacks", "*_let_pipeline_load_default_de_rollback.sql")
 REQUEST_FN = (
+    "public.request_scrna_cellranger_run(text, text, uuid, jsonb, text[], text, jsonb, bigint, text)"
+)
+# This migration and its rollback name the request function as it was before it took a chemistry;
+# re-applying them needs that function back first.
+CHEMISTRY_ROLLBACK = _find_one("rollbacks", "*_add_chemistry_to_cellranger_runs_rollback.sql")
+REQUEST_FN_BEFORE_CHEMISTRY = (
     "public.request_scrna_cellranger_run(text, text, uuid, jsonb, text[], text, jsonb, bigint)"
 )
 # The rule a write must pass: the 20261005220000 function, applied to the row's dataset.
@@ -191,6 +197,7 @@ def test_only_the_pipeline_may_start_a_run(cur, role, allowed):
 
 def test_the_migration_can_be_run_again(cur, loading):
     cur.execute("RESET ROLE")
+    cur.execute(_sql_body(CHEMISTRY_ROLLBACK))
     cur.execute(_sql_body(MIGRATION))
     cur.execute("SET LOCAL ROLE bloom_workflows")
     load.add_de(cur, loading)
@@ -198,12 +205,15 @@ def test_the_migration_can_be_run_again(cur, loading):
 
 
 def test_the_rollback_puts_the_earlier_rights_back(cur, scientist, species):
+    cur.execute(_sql_body(CHEMISTRY_ROLLBACK))
     cur.execute(_sql_body(ROLLBACK))
     for table in ("scrna_de", "scrna_cluster_stats"):
         assert _privileges(cur, table) == (True, False, False, False), table
     for table in ("scrna_de_runs", "scrna_de_genes"):
         assert _privileges(cur, table) == (False, False, False, False), table
-    cur.execute("SELECT has_function_privilege('service_role', %s, 'EXECUTE')", (REQUEST_FN,))
+    cur.execute(
+        "SELECT has_function_privilege('service_role', %s, 'EXECUTE')", (REQUEST_FN_BEFORE_CHEMISTRY,)
+    )
     assert cur.fetchone()[0] is True
     run_id = load.run(cur, scientist, species)
     load.refused(cur, "UPDATE public.rnaseq_runs SET current_step = 'de' WHERE id = %s",
