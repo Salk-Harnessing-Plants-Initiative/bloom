@@ -27,6 +27,8 @@ WHITELISTS = [
 ]
 BARCODE_LENGTH = 16
 MIN_SHARE_FOR_GUESS = 0.5
+# Chemistries Cell Ranger's auto-detection can't pick, with the form's name for each.
+MUST_BE_NAMED = {"ARC-v1": "10x Multiome — RNA part"}
 
 # <prefix>_S1_L001_R1_001.fastq.gz
 FASTQ_NAME = re.compile(r"^(.+)_S\d+_L(\d{3})_(R1|R2|I1|I2)_001\.fastq\.gz$")
@@ -104,10 +106,25 @@ def expected_chemistry(chemistry, scores):
     if named["share_of_barcodes"] >= MIN_SHARE_FOR_GUESS:
         return named, None
     best = scores[0]
+    if best is not named and best["share_of_barcodes"] >= MIN_SHARE_FOR_GUESS:
+        matched = f"the reads match {best['kit']} ({best['share_of_barcodes']:.0%})"
+    else:
+        matched = "no 10x barcode list matches half of them"
     return None, (
         f"the run names {chemistry} ({named['kit']}), but only {named['share_of_barcodes']:.0%} "
-        f"of barcodes are on its list; best match: {best['kit']} ({best['share_of_barcodes']:.0%})"
+        f"of barcodes are on its list; {matched}"
     )
+
+
+def undetectable_guess(guess):
+    """A problem when the guess is a chemistry Cell Ranger can't detect, so the run must name it."""
+    if guess and guess["chemistry"] in MUST_BE_NAMED:
+        return (
+            f"the reads look like {guess['kit']} ({guess['share_of_barcodes']:.0%} of barcodes), which "
+            f"Cell Ranger can't detect; start the run again with the library type set to "
+            f"{MUST_BE_NAMED[guess['chemistry']]}"
+        )
+    return None
 
 
 def cellranger_chemistry(detect_outs_path, guess):
@@ -163,6 +180,8 @@ def main():
             problems.append(mismatch)
     elif not guess:
         problems.append("could not guess the chemistry: no barcode list matched half the reads")
+    elif undetectable_guess(guess):
+        problems.append(undetectable_guess(guess))
     shortest_r1 = min((r["min_len"] for r in r1), default=0)
     if guess and shortest_r1 < guess["r1_needed"]:
         problems.append(f"shortest R1 is {shortest_r1} bp but {guess['kit']} needs {guess['r1_needed']} bp")

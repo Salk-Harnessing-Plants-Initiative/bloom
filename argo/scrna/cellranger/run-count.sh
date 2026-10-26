@@ -119,7 +119,7 @@ cellranger count \
   || { echo "ERROR: cellranger count failed; Cell Ranger's errors are in the log"; exit "${EXIT_CELLRANGER_FAILED}"; }
 
 echo "Comparing Cell Ranger's chemistry with the QC prediction..."
-fastq-qc --fastq-dir "${FASTQ_DIR}" --quick \
+fastq-qc --fastq-dir "${FASTQ_DIR}" --quick --expect-chemistry "${CHEMISTRY}" \
   --whitelist-dir "${CELLRANGER_HOME:?set by the image}/lib/python/cellranger/barcodes" \
   --cellranger-chemistry "${CR_ID}/SC_RNA_COUNTER_CS/SC_MULTI_CORE/MULTI_CHEMISTRY_DETECTOR/DETECT_COUNT_CHEMISTRY/fork0/_outs" \
   --out-dir "${CR_ID}/outs/qc" \

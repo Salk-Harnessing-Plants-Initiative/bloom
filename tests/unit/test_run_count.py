@@ -28,6 +28,7 @@ echo metrics > "${id}/outs/metrics_summary.csv"
 echo bam > "${id}/outs/web_summary.html"
 """,
     "fastq-qc": """#!/usr/bin/env bash
+[ -z "${QC_ARGS:-}" ] || echo "$*" >> "${QC_ARGS}"
 while [ $# -gt 0 ]; do [ "$1" = --out-dir ] && out="$2"; shift; done
 mkdir -p "${out}" && echo '{"chemistry": "SC3Pv3"}' > "${out}/qc_summary.json"
 """,
@@ -309,6 +310,16 @@ def test_without_a_named_chemistry_cellranger_detects_it(env, tmp_path, chemistr
     if chemistry is not None:
         env["CHEMISTRY"] = chemistry
     assert "--chemistry" not in _count_args(env, tmp_path)
+
+
+@pytest.mark.parametrize("chemistry", ["ARC-v1", ""])
+def test_the_check_after_the_count_records_the_named_chemistry(env, tmp_path, chemistry):
+    env["CHEMISTRY"] = chemistry
+    env["QC_ARGS"] = str(tmp_path / "qc_args")
+    result = count(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    args = (tmp_path / "qc_args").read_text()
+    assert f"--expect-chemistry {chemistry} --whitelist-dir" in args
 
 
 def test_the_qc_and_count_steps_get_the_runs_chemistry():
