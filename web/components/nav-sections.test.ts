@@ -64,9 +64,15 @@ describe("navSections", () => {
           },
           { name: "Translation", href: "/app/translation" },
           { name: "Software", href: "/app/software" },
+          { name: "Species", href: "/app/species" },
         ],
       },
     ]);
+  });
+
+  it("lists Species under Resources, after Software", () => {
+    const resources = navSections.find((s) => s.heading === "Resources")!.items;
+    expect(resources.at(-1)).toEqual({ name: "Species", href: "/app/species" });
   });
 
   it("has no entry for /app/pipelines", () => {

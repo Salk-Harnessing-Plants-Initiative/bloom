@@ -48,6 +48,7 @@ export const navSections: NavSection[] = [
       },
       { name: "Translation", href: "/app/translation" },
       { name: "Software", href: "/app/software" },
+      { name: "Species", href: "/app/species" },
     ],
   },
 ];

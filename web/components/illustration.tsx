@@ -4,9 +4,11 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { toPublicStorageUrl } from '@/lib/supabase/storage-url'
 import { promises as fs } from 'fs'
 import path from 'path'
+import { DEFAULT_SPECIES_IMAGE } from '@/lib/species-image'
 
 const ICON_DIR = path.join(process.cwd(), 'public', 'species-icons')
-const DEFAULT_ICON = '/species-icons/_default.svg'
+
+const DEFAULT_ICON = DEFAULT_SPECIES_IMAGE
 
 async function getObjectUrl(storagePath: string): Promise<string | null> {
   if (!storagePath) return null
@@ -47,6 +49,20 @@ async function resolveFallbackIcon(
     }
   }
   return DEFAULT_ICON
+}
+
+/**
+ * The image a species shows: its uploaded illustration, else its icon in
+ * public/species-icons, else the placeholder (`placeholder: true`).
+ */
+export async function speciesImage(
+  storagePath: string | null | undefined,
+  commonName: string | null | undefined,
+): Promise<{ url: string; placeholder: boolean }> {
+  const objectUrl = storagePath ? await getObjectUrl(storagePath) : null
+  if (objectUrl) return { url: objectUrl, placeholder: false }
+  const icon = await resolveFallbackIcon(commonName)
+  return { url: icon, placeholder: icon === DEFAULT_ICON }
 }
 
 export default async function Illustration({
