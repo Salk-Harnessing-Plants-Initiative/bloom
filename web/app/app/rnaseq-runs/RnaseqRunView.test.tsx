@@ -85,10 +85,10 @@ describe("RnaseqRunView", () => {
     expect(screen.getByText(/Reads from/)).toBeTruthy();
   });
 
-  it("shows the library type: 10x 3' when the run named no chemistry", () => {
+  it("shows the library type as detected by Cell Ranger when the run named no chemistry", () => {
     renderView();
     expect(screen.getByText("Library type")).toBeTruthy();
-    expect(screen.getByText("10x 3′ gene expression")).toBeTruthy();
+    expect(screen.getByText("10x gene expression (detected by Cell Ranger)")).toBeTruthy();
   });
 
   it("shows a Multiome RNA run's library type", () => {

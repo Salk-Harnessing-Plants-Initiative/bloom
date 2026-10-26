@@ -91,6 +91,7 @@ async function enterFolder(url = FOLDER_URL) {
 
 async function choose(genomeVersion = "3") {
   await enterFolder();
+  type(/Library type/, "auto");
   type("Reference genome", genomeVersion);
   type("Species", "1");
   type("Dataset name", "Col-0 root tip");
@@ -146,6 +147,7 @@ describe("the form", () => {
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     await enterFolder();
+    type(/Library type/, "auto");
     type("Reference genome", "3");
     expect(start.disabled).toBe(true);
     expect(screen.getByText("Choose a species.")).toBeTruthy();
@@ -169,6 +171,7 @@ describe("the form", () => {
     expect(problem?.textContent).toBe(nameProblem);
     expect(problem?.getAttribute("role")).toBe("alert");
     await enterFolder();
+    type(/Library type/, "auto");
     type("Reference genome", "3");
     type("Species", "1");
     const start = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
@@ -287,15 +290,26 @@ describe("starting a run", () => {
     });
   });
 
-  it("offers 10x 3' by default and sends a Multiome choice as ARC-v1", async () => {
+  it("has no library type until one is picked, and won't start without one", async () => {
+    openForm();
+    const library = screen.getByLabelText(/Library type/) as HTMLSelectElement;
+    expect(library.value).toBe("");
+    expect(Array.from(library.options).map((o) => o.textContent)).toEqual([
+      "Choose the library type",
+      "10x gene expression (kit detected automatically)",
+      "10x Multiome — RNA part",
+    ]);
+    await choose();
+    fireEvent.change(library, { target: { value: "" } });
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(library, { target: { value: "auto" } });
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("sends a Multiome choice as ARC-v1", async () => {
     respond({ run_id: 14, sample: "tinygex", genome_version_id: 3, reference: "tiny_ref.v1", run_key: "k" });
     openForm();
     const library = screen.getByLabelText(/Library type/) as HTMLSelectElement;
-    expect(library.value).toBe("auto");
-    expect(Array.from(library.options).map((o) => o.textContent)).toEqual([
-      "10x 3′ gene expression",
-      "10x Multiome — RNA part",
-    ]);
     await choose();
     fireEvent.change(library, { target: { value: "ARC-v1" } });
     fireEvent.click(screen.getByRole("button", { name: "Start run" }));
@@ -452,6 +466,7 @@ describe("starting a run", () => {
     openForm();
     type("S3 folder URL", "s3://lab-data/tinygex");
     await screen.findByText(FOLDER_SUMMARY);
+    type(/Library type/, "auto");
     type("Reference genome", "3");
     type("Species", "1");
     type("Dataset name", "Col-0 root tip");

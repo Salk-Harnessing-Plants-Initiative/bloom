@@ -65,7 +65,8 @@ export default function ScrnaJobSubmit({
   const [newName, setNewName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [genomeVersionId, setGenomeVersionId] = useState<number | null>(null);
-  const [chemistry, setChemistry] = useState<Chemistry>("auto");
+  // No default: the library type must be picked.
+  const [chemistry, setChemistry] = useState<Chemistry | null>(null);
   const [speciesId, setSpeciesId] = useState<number | null>(null);
   const [datasetName, setDatasetName] = useState("");
   const [accession, setAccession] = useState("");
@@ -110,7 +111,11 @@ export default function ScrnaJobSubmit({
       : !sra.problem &&
         !newSampleNameProblem(newName.trim());
   const canSubmit =
-    sampleReady && genomeVersionId !== null && !detailsProblem && !submitting;
+    sampleReady &&
+    chemistry !== null &&
+    genomeVersionId !== null &&
+    !detailsProblem &&
+    !submitting;
 
   function changeSource(next: SampleSource) {
     if (next === source) return;
@@ -312,9 +317,10 @@ export default function ScrnaJobSubmit({
                 Library type
                 <select
                   className={fieldClass}
-                  value={chemistry}
-                  onChange={(e) => setChemistry(e.target.value as Chemistry)}
+                  value={chemistry ?? ""}
+                  onChange={(e) => setChemistry((e.target.value || null) as Chemistry | null)}
                 >
+                  <option value="">Choose the library type</option>
                   {LIBRARY_TYPES.map((t) => (
                     <option key={t.chemistry} value={t.chemistry}>
                       {t.label}

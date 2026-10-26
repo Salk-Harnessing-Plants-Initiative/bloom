@@ -53,16 +53,17 @@ export type AttributeRow = { key: string; value: string };
 export type Chemistry = "auto" | "ARC-v1";
 
 export const LIBRARY_TYPES: readonly { chemistry: Chemistry; label: string }[] = [
-  { chemistry: "auto", label: "10x 3′ gene expression" },
+  { chemistry: "auto", label: "10x gene expression (kit detected automatically)" },
   { chemistry: "ARC-v1", label: "10x Multiome — RNA part" },
 ];
 
-/** A run's library type as the form names it; a run without a chemistry is 10x 3′. */
+/** How the run page names a run that left the kit to Cell Ranger. */
+const DETECTED_LIBRARY_LABEL = "10x gene expression (detected by Cell Ranger)";
+
+/** A run's library type for the run page. */
 export function libraryTypeLabel(chemistry: string | null | undefined): string {
-  return (
-    LIBRARY_TYPES.find((t) => t.chemistry === (chemistry || "auto"))?.label ??
-    `Chemistry ${chemistry}`
-  );
+  if (!chemistry || chemistry === "auto") return DETECTED_LIBRARY_LABEL;
+  return LIBRARY_TYPES.find((t) => t.chemistry === chemistry)?.label ?? `Chemistry ${chemistry}`;
 }
 
 /** What the form collects about the dataset the run will produce. */

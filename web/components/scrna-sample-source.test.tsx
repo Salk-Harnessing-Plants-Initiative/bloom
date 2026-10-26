@@ -38,6 +38,7 @@ function type(label: string, value: string) {
 }
 
 function fillTheRest() {
+  type(/Library type/, "auto");
   type("Reference genome", "3");
   type("Species", "1");
   type("Dataset name", "Root tip sc_71");
