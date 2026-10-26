@@ -1,4 +1,4 @@
--- 20261023120000_add_chemistry_to_cellranger_runs.sql
+-- 20261026120000_add_chemistry_to_cellranger_runs.sql
 --
 -- request_scrna_cellranger_run takes an optional p_chemistry: NULL lets Cell Ranger detect the
 -- chemistry (standard 10x 3' gene expression, as before); 'ARC-v1' is the RNA library of a 10x

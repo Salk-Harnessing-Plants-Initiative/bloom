@@ -1,4 +1,4 @@
--- Rollback for 20261023120000_add_chemistry_to_cellranger_runs.sql: restores the 8-argument
+-- Rollback for 20261026120000_add_chemistry_to_cellranger_runs.sql: restores the 8-argument
 -- request_scrna_cellranger_run from 20261013230000 and the params check from 20261001230000. The
 -- check is refused while a run has params.chemistry; remove that key from those runs first.
 
