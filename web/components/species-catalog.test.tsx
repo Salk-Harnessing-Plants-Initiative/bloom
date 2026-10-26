@@ -6,14 +6,15 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { liveChannels, queriesFor, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
-// Adding goes through the server action (which also sends the new-species email).
-vi.mock("@/app/app/species/actions", () => ({ addSpeciesAction: vi.fn() }));
+vi.mock("@/lib/species-options", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/species-options")>()),
+  addSpecies: vi.fn(),
+}));
 
 import SpeciesCatalog from "./species-catalog";
-import type { SpeciesListItem } from "@/lib/species-options";
-import { addSpeciesAction } from "@/app/app/species/actions";
+import { addSpecies, type SpeciesListItem } from "@/lib/species-options";
 
-const mockedAdd = vi.mocked(addSpeciesAction);
+const mockedAdd = vi.mocked(addSpecies);
 
 const ME = "4965b3af-ccfe-40f5-814b-447e1f726e1b";
 const OTHER = "1a2b3c4d-0000-4000-8000-000000000002";
@@ -131,7 +132,7 @@ describe("adding a species", () => {
     addPennycress();
 
     expect(await screen.findByText("Added Pennycress (Thlaspi arvense).")).toBeTruthy();
-    expect(mockedAdd.mock.calls[0][0]).toEqual({ genus: "thlaspi", species: "arvense", commonName: "Pennycress" });
+    expect(mockedAdd.mock.calls[0][1]).toEqual({ genus: "Thlaspi", species: "arvense", common_name: "Pennycress" });
     expect(listed()).toEqual([
       "Arabidopsis (Arabidopsis thaliana)",
       "Pennycress (Thlaspi arvense)",

@@ -3,13 +3,17 @@
 /**
  * The fields for adding a species (genus, species name, common name), with a preview of
  * how it will be stored. Used by the job form's species picker and the Species page.
- * Adding goes through addSpeciesAction on the server (add_species, which returns the species
- * already stored under the same name instead of a duplicate, plus the new-species email).
+ * Adding goes through add_species, which returns the species already stored under the
+ * same name instead of a duplicate.
  */
 
 import { useState } from "react";
-import { normalizeNewSpecies, type SpeciesOption } from "@/lib/species-options";
-import { addSpeciesAction } from "@/app/app/species/actions";
+import { createClientSupabaseClient } from "@/lib/supabase/client";
+import {
+  addSpecies,
+  normalizeNewSpecies,
+  type SpeciesOption,
+} from "@/lib/species-options";
 
 export type SpeciesAdded = { kind: "added" | "existing"; option: SpeciesOption };
 
@@ -55,8 +59,7 @@ export default function SpeciesAddForm({
     if ("problem" in preview) return;
     setProblem("");
     setSavingState(true);
-    // The server checks and normalizes the names again, so it gets what was typed.
-    const result = await addSpeciesAction({ genus, species: epithet, commonName });
+    const result = await addSpecies(createClientSupabaseClient(), preview.value);
     setSavingState(false);
     if (result.kind === "error") {
       setProblem(result.message);

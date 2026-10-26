@@ -144,14 +144,6 @@ services:
       SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
-      # The new-species email (web/lib/species-added-email.ts), through Salk's relay, as
-      # GoTrue's sign-in emails and the run-finished emails; SITE_URL for its link.
-      SMTP_HOST: ${SMTP_HOST}
-      SMTP_PORT: ${SMTP_PORT}
-      SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
-      SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
-      SITE_URL: ${SITE_URL}
-      SPECIES_NOTIFY_EMAIL: ${SPECIES_NOTIFY_EMAIL}
       # Starting cylinder pipeline runs from Bloom; "true" in staging, "false" in
       # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
       # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).

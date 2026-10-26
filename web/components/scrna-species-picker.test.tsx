@@ -8,14 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("@/lib/supabase/client", () => ({ createClientSupabaseClient: () => ({}) }));
-// Adding goes through the server action (which also sends the new-species email).
-vi.mock("@/app/app/species/actions", () => ({ addSpeciesAction: vi.fn() }));
+vi.mock("@/lib/species-options", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/species-options")>()),
+  addSpecies: vi.fn(),
+}));
 
 import ScrnaSpeciesPicker from "./scrna-species-picker";
-import type { SpeciesOption } from "@/lib/species-options";
-import { addSpeciesAction } from "@/app/app/species/actions";
+import { addSpecies, type SpeciesOption } from "@/lib/species-options";
 
-const mockedAdd = vi.mocked(addSpeciesAction);
+const mockedAdd = vi.mocked(addSpecies);
 
 const SPECIES: SpeciesOption[] = [
   { id: 1, label: "Arabidopsis (Arabidopsis thaliana)" },
@@ -141,11 +142,10 @@ describe("adding a species", () => {
     expect((await screen.findByRole("status")).textContent).toBe(
       "Added Pennycress (Thlaspi arvense)."
     );
-    // What was typed; the server action normalizes it again.
-    expect(mockedAdd.mock.calls[0][0]).toEqual({
-      genus: "thlaspi",
-      species: "Arvense",
-      commonName: "Pennycress",
+    expect(mockedAdd.mock.calls[0][1]).toEqual({
+      genus: "Thlaspi",
+      species: "arvense",
+      common_name: "Pennycress",
     });
     expect(onChange).toHaveBeenLastCalledWith(9);
     expect(onAdded).toHaveBeenCalledWith({ id: 9, label: "Pennycress (Thlaspi arvense)" });
