@@ -80,8 +80,11 @@ export default function ScrnaSpeciesPicker({
           <option value={ADD_NEW}>+ Add a species…</option>
         </select>
       </label>
+      {/* A new tab, so a half-filled job form isn't lost. */}
       <Link
         href="/app/species"
+        target="_blank"
+        rel="noopener noreferrer"
         className="mt-1 inline-block text-xs text-stone-500 hover:text-lime-700 hover:underline"
       >
         See all species

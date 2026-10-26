@@ -61,11 +61,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("choosing", () => {
-  it("links to the Species page", () => {
+  it("links to the Species page in a new tab, so the job form isn't lost", () => {
     renderPicker();
-    expect(screen.getByRole("link", { name: "See all species" }).getAttribute("href")).toBe(
-      "/app/species"
-    );
+    const link = screen.getByRole("link", { name: "See all species" });
+    expect(link.getAttribute("href")).toBe("/app/species");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
   });
 
   it("lists the species and an option to add one", () => {
