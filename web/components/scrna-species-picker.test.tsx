@@ -61,6 +61,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("choosing", () => {
+  it("links to the Species page in a new tab, so the job form isn't lost", () => {
+    renderPicker();
+    const link = screen.getByRole("link", { name: "See all species" });
+    expect(link.getAttribute("href")).toBe("/app/species");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
   it("lists the species and an option to add one", () => {
     renderPicker();
     expect(screen.getByRole("option", { name: "Rice (Oryza sativa)" })).toBeTruthy();
@@ -93,7 +101,7 @@ describe("adding a species", () => {
     type("Species name", "ARVENSE");
     type("Common name", "field   pennycress");
     expect(screen.getByText(/Will be added as/).textContent).toBe(
-      "Will be added as Field pennycress (Thlaspi arvense), for everyone, and shown on the Expression page."
+      "Will be added as Field pennycress (Thlaspi arvense), for everyone to use."
     );
     expect(
       (screen.getByRole("button", { name: "Add species" }) as HTMLButtonElement).disabled
@@ -193,6 +201,8 @@ describe("adding a species", () => {
       (screen.getByRole("button", { name: "Adding…" }) as HTMLButtonElement).disabled
     ).toBe(true);
     expect((screen.getByLabelText("Genus") as HTMLInputElement).disabled).toBe(true);
+    // The species list too, so another choice can't be overwritten when the add returns.
+    expect((screen.getByLabelText("Species") as HTMLSelectElement).disabled).toBe(true);
   });
 
   it("closes the fields on Cancel and restores the species chosen before", () => {
