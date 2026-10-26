@@ -1,5 +1,5 @@
 /**
- * Species as the job form lists them, and adding a new one with the add_species function,
+ * Species as the job form and the Species page list them, and adding a new one with the add_species function,
  * which returns the species already stored under the same genus and species, or the same
  * common name (compared in lower case), instead of a duplicate.
  */
@@ -47,6 +47,54 @@ export function speciesOption(row: SpeciesRow): SpeciesOption {
 
 export function sortedSpeciesOptions(rows: SpeciesRow[]): SpeciesOption[] {
   return rows.map(speciesOption).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** A species on the Species page, with who added it: `created_by`, null from before that was recorded. */
+export type SpeciesListItem = SpeciesOption & {
+  addedBy: string | null;
+  /** Its image, worked out on the server; absent for one that arrived live (shown as the placeholder). */
+  image?: { url: string; placeholder: boolean };
+};
+
+type SpeciesListRow = SpeciesRow & { created_by?: string | null };
+
+export function speciesListItem(row: SpeciesListRow): SpeciesListItem {
+  return { ...speciesOption(row), addedBy: row.created_by ?? null };
+}
+
+export function sortedSpeciesList(rows: SpeciesListRow[]): SpeciesListItem[] {
+  return rows.map(speciesListItem).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * Who added a species, as the pipeline-run views name a requester: "you", or "another
+ * member · <first 8 characters of their user id>". Species from before `created_by` was
+ * recorded were added by Bloom's admins.
+ */
+export function addedByText(addedBy: string | null, currentUserId: string | null): string {
+  if (!addedBy) return "Bloom admin";
+  if (currentUserId && addedBy === currentUserId) return "you";
+  return `another member · ${addedBy.slice(0, 8)}`;
+}
+
+/** The list with `item` in it, sorted, replacing the same species if it was there. */
+export function withSpeciesOption<T extends SpeciesOption>(list: T[], item: T): T[] {
+  return [...list.filter((s) => s.id !== item.id), item].sort((a, b) =>
+    a.label.localeCompare(b.label)
+  );
+}
+
+/** A species row as a Realtime change carries it. */
+export type SpeciesChangeRow = Partial<SpeciesListRow> & { deleted_at?: string | null };
+
+/**
+ * The list after a realtime change to a species row: an added or edited species is
+ * (re)listed, and one marked deleted is dropped.
+ */
+export function applySpeciesChange(list: SpeciesListItem[], row: SpeciesChangeRow): SpeciesListItem[] {
+  if (typeof row.id !== "number") return list;
+  if (row.deleted_at) return list.filter((s) => s.id !== row.id);
+  return withSpeciesOption(list, speciesListItem(row as SpeciesListRow));
 }
 
 /** The species as add_species stores it (Genus, epithet, Common name), or why not. */
