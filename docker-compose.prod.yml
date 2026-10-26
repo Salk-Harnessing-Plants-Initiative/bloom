@@ -151,6 +151,7 @@ services:
       SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
       SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
       SITE_URL: ${SITE_URL}
+      SPECIES_NOTIFY_EMAIL: ${SPECIES_NOTIFY_EMAIL}
       # Starting cylinder pipeline runs from Bloom; "true" in staging, "false" in
       # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
       # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).

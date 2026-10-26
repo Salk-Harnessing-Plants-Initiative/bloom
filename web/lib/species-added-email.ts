@@ -2,23 +2,16 @@
  * The email sent when someone adds a new species (from the Species page or the scRNA job
  * form), so its image can be added: until then it shows the placeholder.
  *
- * It goes to every Bloom user flagged `notify_new_species: true` in their raw_app_meta_data,
- * which only the service role can change (like is_admin), so no address lives in the repo.
- * Set it once in Supabase for whoever should hear about new species. It's sent through
- * Salk's mail relay: the SMTP_* settings GoTrue's sign-in emails and the run-finished emails
- * use. Without SMTP_HOST (dev) nothing is sent. Sending never changes the species, and a
- * failure is only logged.
+ * It goes to SPECIES_NOTIFY_EMAIL (in .env.*.defaults), through Salk's mail relay: the SMTP_*
+ * settings GoTrue's sign-in emails and the run-finished emails use. Without SMTP_HOST or a
+ * recipient (dev) nothing is sent. Sending never changes the species, and a failure is only
+ * logged.
  */
 
 import nodemailer from "nodemailer";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 /** How long to wait for the relay before giving up (it's on Salk's network). */
 export const SMTP_TIMEOUT_MS = 15_000;
-/** The flag, in a user's raw_app_meta_data, that asks for these emails. */
-export const NOTIFY_FLAG = "notify_new_species";
-/** Users listed per request when looking up who to tell. */
-export const USER_LOOKUP_PAGE_SIZE = 200;
 
 export interface SpeciesAddedEmail {
   to: string[];
@@ -56,37 +49,18 @@ export function buildSpeciesAddedEmail({
   };
 }
 
-/** The email addresses of every user flagged to hear about new species. */
-export async function recipientEmails(admin: SupabaseClient): Promise<string[]> {
-  const emails: string[] = [];
-  for (let page = 1; ; page += 1) {
-    const { data, error } = await admin.auth.admin.listUsers({
-      page,
-      perPage: USER_LOOKUP_PAGE_SIZE,
-    });
-    if (error) throw new Error(`Couldn't list Bloom's users: ${error.message}`);
-    for (const user of data.users) {
-      if (user.app_metadata?.[NOTIFY_FLAG] === true && user.email) emails.push(user.email);
-    }
-    if (data.users.length < USER_LOOKUP_PAGE_SIZE) break;
-  }
-  return [...new Set(emails)];
+/** Who gets the email: SPECIES_NOTIFY_EMAIL, which may list several addresses separated by commas. */
+export function recipients(env: NodeJS.ProcessEnv): string[] {
+  return (env.SPECIES_NOTIFY_EMAIL ?? "")
+    .split(",")
+    .map((a) => a.trim())
+    .filter((a) => a !== "");
 }
 
 export interface NotifyDeps {
   env?: NodeJS.ProcessEnv;
-  /** A service-role client, to look up who to tell. */
-  adminClient?: () => SupabaseClient;
   send?: (message: SpeciesAddedEmail, env: NodeJS.ProcessEnv) => Promise<void>;
   log?: (message: string) => void;
-}
-
-function serviceClient(env: NodeJS.ProcessEnv): SupabaseClient {
-  const url = env.SUPABASE_URL ?? env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!url || !env.SERVICE_ROLE_KEY) throw new Error("SUPABASE_URL or SERVICE_ROLE_KEY is not set");
-  return createClient(url, env.SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
 }
 
 /** Send through the relay: TLS 1.2 on port 25, IP-whitelisted, no auth. */
@@ -109,23 +83,16 @@ async function sendThroughRelay(message: SpeciesAddedEmail, env: NodeJS.ProcessE
   });
 }
 
-/**
- * Email everyone flagged notify_new_species that a species was added. Returns whether a
- * message was sent; never throws.
- */
+/** Email SPECIES_NOTIFY_EMAIL that a species was added. Returns whether a message was sent; never throws. */
 export async function notifySpeciesAdded(
   species: { label: string; addedBy: string | null },
   deps: NotifyDeps = {}
 ): Promise<boolean> {
   const env = deps.env ?? process.env;
   const log = deps.log ?? ((m: string) => console.error(m));
-  if (!env.SMTP_HOST) return false;
+  const to = recipients(env);
+  if (!env.SMTP_HOST || to.length === 0) return false;
   try {
-    const to = await recipientEmails((deps.adminClient ?? (() => serviceClient(env)))());
-    if (to.length === 0) {
-      log(`[species] Nobody is flagged ${NOTIFY_FLAG} to hear that ${species.label} was added.`);
-      return false;
-    }
     const message = buildSpeciesAddedEmail({
       label: species.label,
       addedBy: species.addedBy,

@@ -36,6 +36,7 @@ services:
       SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-}
       SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-Bloom}
       SITE_URL: ${SITE_URL:-http://localhost:3000}
+      SPECIES_NOTIFY_EMAIL: ${SPECIES_NOTIFY_EMAIL:-}
     volumes:
       - ./web:/app/web
       - ./packages:/app/packages

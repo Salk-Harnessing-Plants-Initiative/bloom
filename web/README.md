@@ -35,14 +35,4 @@ Routes, all under `/api/cyl/trait-export/`:
 
 ## New-species email
 
-When someone adds a species that wasn't in Bloom yet (on the Species page or the scRNA job form), Bloom emails everyone flagged to hear about it, so the species' image can be added: until then it shows the placeholder (`public/species-icons/_default.svg`). See `lib/species-added-email.ts`.
-
-To get these emails, set the flag on your Bloom account. Only the service role can change `raw_app_meta_data`, so run this in Supabase Studio's SQL editor:
-
-```sql
-UPDATE auth.users
-SET raw_app_meta_data = raw_app_meta_data || '{"notify_new_species": true}'::jsonb
-WHERE email = '<your email>';
-```
-
-Use `- 'notify_new_species'` instead of `|| …` to stop them. The email goes through Salk's mail relay (`SMTP_*`); without `SMTP_HOST`, as in dev, nothing is sent.
+When someone adds a species that wasn't in Bloom yet (on the Species page or the scRNA job form), Bloom emails `SPECIES_NOTIFY_EMAIL` (set in `.env.prod.defaults` and `.env.staging.defaults`; several addresses can be separated by commas), so the species' image can be added: until then it shows the placeholder (`public/species-icons/_default.svg`). See `lib/species-added-email.ts`. The email goes through Salk's mail relay (`SMTP_*`); without `SMTP_HOST`, as in dev, nothing is sent.
