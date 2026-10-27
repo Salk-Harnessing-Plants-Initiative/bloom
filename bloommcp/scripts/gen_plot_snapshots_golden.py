@@ -58,6 +58,7 @@ import matplotlib
 import PIL
 import sleap_roots_analyze as sra
 from matplotlib.testing.compare import compare_images
+from matplotlib.testing.exceptions import ImageComparisonFailure
 
 import bloom_mcp.manifest.manifest as _manifest
 import bloom_mcp.supabase_client as _sc
@@ -102,6 +103,15 @@ _TOOLS = [
 ]
 
 
+def _dimensions(path: Path) -> str:
+    """``"WxH"`` for a PNG, or ``"unknown"`` if it cannot be read."""
+    try:
+        with PIL.Image.open(path) as image:
+            return f"{image.width}x{image.height}"
+    except Exception:  # pragma: no cover - diagnostic string only
+        return "unknown"
+
+
 def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
     """Return the print-worthy message for overwriting (or first-writing) one baseline.
 
@@ -110,7 +120,21 @@ def _report_regeneration(target: Path, produced: Path, rel: Path) -> str:
     """
     if not target.is_file():
         return f"wrote {rel} (new baseline, no prior version to diff against)"
-    diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+    try:
+        diff = compare_images(str(target), str(produced), tol=0, in_decorator=True)
+    except ImageComparisonFailure:
+        # `compare_images` RAISES on a canvas-size change rather than scoring it, and this
+        # helper runs for every baseline BEFORE any file is copied -- so without this branch
+        # one deliberately resized render aborts the whole regeneration, writing nothing, for
+        # all baselines (#748: adding a sample-size note to the boxplots grew that canvas
+        # from 1912x2757 to 2234x3408). RMS is undefined across a resize, so report the
+        # dimensions instead; they are what the PR description should quote.
+        old_size, new_size = _dimensions(target), _dimensions(produced)
+        return (
+            f"REGENERATED {rel}: canvas size changed {old_size} -> {new_size}, so no RMS "
+            "is defined -- the PR description should say what changed the layout and why "
+            "(see this script's module docstring)"
+        )
     rms = diff["rms"] if diff else 0.0
     return (
         f"REGENERATED {rel}: old-vs-new RMS={rms:.1f} -- if this is not ~0, "
