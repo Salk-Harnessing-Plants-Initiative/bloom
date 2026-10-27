@@ -33,6 +33,14 @@
       Must have a cleaned version..." → "Experiment identifier to {cluster,analyze}.
       Must have a cleaned version..." (keep the rest of each sentence — the cleaned-version
       requirement — unchanged).
+      > **This box was checked before the change was made.** A `git log -L` check during
+      > PR #823's review showed these four descriptions still read "Experiment (CSV
+      > filename)" long after this task was marked done; the edit actually landed in
+      > #823's commit `4881133`, which also caught a fifth file this task never listed
+      > (`heritability_analysis.py`). Left checked because it is true *now*, annotated so
+      > it does not read as accurate-by-coincidence — and
+      > `bloommcp/tests/test_llm_facing_wording.py` now fails on the literal phrasing, so
+      > a checkbox is no longer the only thing asserting this.
 - [x] 2.4 `cross_experiment_correlations.py:142,154` — `experiment_1`: "First experiment
       (CSV filename)." → "First experiment identifier."; `experiment_2`: "Second
       experiment (CSV filename)." → "Second experiment identifier." **Keep** the `'@'`/`'|'`

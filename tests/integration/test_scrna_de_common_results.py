@@ -373,17 +373,21 @@ def _rollback_body() -> str:
 
 
 def _later_rollback_body() -> str:
-    """The rollback for the migration layered on top of this one."""
+    """The rollbacks for the migrations layered on top of this one, newest first."""
     import re
     from pathlib import Path
 
-    matches = sorted((Path(__file__).parent.parent.parent / "supabase" / "rollbacks")
-                     .glob("*_scrna_de_results_belong_to_runs_rollback.sql"))
-    assert matches, "later rollback script not found"
-    return "\n".join(
-        line for line in matches[-1].read_text().splitlines()
-        if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
-    )
+    bodies = []
+    for name in ("add_scrna_enrichment_uploads", "add_scrna_enrichment",
+                 "scrna_de_results_belong_to_runs"):
+        matches = sorted((Path(__file__).parent.parent.parent / "supabase" / "rollbacks")
+                         .glob(f"*_{name}_rollback.sql"))
+        assert matches, f"rollback for {name} not found"
+        bodies.append("\n".join(
+            line for line in matches[-1].read_text().splitlines()
+            if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
+        ))
+    return "\n".join(bodies)
 
 
 def test_rollback_refuses_while_an_analysis_exists(pg_conn):
@@ -726,7 +730,8 @@ def test_row_level_security_is_on(pg_conn, table):
 @pytest.mark.parametrize("table", ["scrna_de_runs", "scrna_de_genes"])
 def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
     """Deliberately without anon, and with writing limited to submitting: a
-    writer may insert, and only the admin role may change what is there. The
+    writer may insert, the pipeline may insert for a dataset it is loading
+    (20261012230000), and only the admin role may change what is there. The
     set is asserted whole rather than by absence."""
     with pg_conn.cursor() as cur:
         cur.execute(
@@ -739,6 +744,8 @@ def test_the_policies_are_the_ones_scrna_de_has(pg_conn, table):
             (f"agent_read_scrna_de_{suffix}", "{bloom_agent}", "SELECT"),
             (f"user_read_scrna_de_{suffix}", "{bloom_user}", "SELECT"),
             (f"writer_insert_scrna_de_{suffix}", "{bloom_writer}", "INSERT"),
+            (f"workflows_select_scrna_de_{suffix}", "{bloom_workflows}", "SELECT"),
+            (f"workflows_insert_scrna_de_{suffix}", "{bloom_workflows}", "INSERT"),
         }
 
 

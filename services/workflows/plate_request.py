@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Why a render did not happen, and what to answer. A refusal is not a bug — the
 # caller asked a reasonable question and the answer is no.
-_REFUSAL_STATUS = {
+REFUSAL_STATUS = {
     "storage_unavailable": 503,  # transient; the same request may succeed later
     "database_unavailable": 503,  # the same, one read further back
     "no_frames": 404,  # nothing to render for this plate and wave
@@ -116,7 +116,7 @@ def render(experiment_id: int, body: dict) -> dict:
 
     if outcome["action"] == "refuse":
         raise HTTPException(
-            status_code=_REFUSAL_STATUS.get(outcome.get("code"), 409),
+            status_code=REFUSAL_STATUS.get(outcome.get("code"), 409),
             detail=outcome["reason"],
         )
 

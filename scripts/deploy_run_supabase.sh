@@ -18,7 +18,7 @@
 #   scripts/deploy_run_supabase.sh <env> <supabase-subcommand-with-flags>
 # Examples:
 #   scripts/deploy_run_supabase.sh staging "migration list --debug"
-#   scripts/deploy_run_supabase.sh prod    "db push --debug --yes"
+#   scripts/deploy_run_supabase.sh prod    "db push --debug --yes --include-all"
 #
 # Must be run from the deploy directory (where docker-compose.prod.yml and
 # .env.{prod,staging} live), with `supabase` CLI on PATH.

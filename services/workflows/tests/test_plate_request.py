@@ -76,6 +76,7 @@ def test_a_mixed_frame_size_names_the_frame_and_the_sizes(monkeypatch):
     """This message is the service's own -- two dimensions -- not the storage
     client's, so it is the one frame failure safe to send whole. A scientist can
     act on it: this plate's captures are not all the same size."""
+
     def mismatched(*a, **k):
         raise pr.FrameSizeMismatch(
             "12/wave-1/P7_40.tif does not match the rest of the plate: "
@@ -136,8 +137,11 @@ def test_a_storage_failure_on_upload_says_come_back_not_stop(monkeypatch):
     """The same storage blip during planning already answers 503. One call later
     it said 500, which reads as "do not retry" -- for the more likely of the two,
     since the upload takes longer than the check."""
+
     def wont_store(*a, **k):
-        raise pr.VideoNotStored("12/wave-1/P7.mp4 could not be stored: 502", "12/wave-1/P7.mp4")
+        raise pr.VideoNotStored(
+            "12/wave-1/P7.mp4 could not be stored: 502", "12/wave-1/P7.mp4"
+        )
 
     monkeypatch.setattr(pr, "render_plate_video", wont_store)
     with pytest.raises(HTTPException) as ei:
@@ -244,7 +248,12 @@ def test_a_keep_with_no_recorded_count_says_so_rather_than_claiming_zero(monkeyp
     "outcome,expected",
     [
         (_rendered(frames=[{}] * 9, recorded={"frame_count": 7}), 7),
-        (_rendered(action="keep", reason="covers 86", frames=[{}] * 5, stored_frames=86), 86),
+        (
+            _rendered(
+                action="keep", reason="covers 86", frames=[{}] * 5, stored_frames=86
+            ),
+            86,
+        ),
     ],
 )
 def test_a_known_count_is_never_flagged_unknown(monkeypatch, outcome, expected):
@@ -619,6 +628,7 @@ def test_a_denied_grant_gets_the_one_message_and_no_internals(monkeypatch):
 def test_an_unhandled_failure_gets_the_same_message(monkeypatch):
     """One sentence for anything out of the caller's reach, wherever it came
     from — a storage upload, a bug, a read. Two wordings meant guessing which."""
+
     def boom(*a, **k):
         raise RuntimeError("storage upload failed: 502 Bad Gateway")
 
@@ -628,7 +638,6 @@ def test_an_unhandled_failure_gets_the_same_message(monkeypatch):
 
     assert ei.value.detail == pr.UNAVAILABLE
     assert "502" not in ei.value.detail
-
 
 
 def test_every_code_the_planner_emits_has_a_status(monkeypatch):
@@ -645,5 +654,5 @@ def test_every_code_the_planner_emits_has_a_status(monkeypatch):
     emitted = set(re.findall(r'"?code"?\s*[=:]\s*"([a-z_]+)"', source))
 
     assert emitted, "no codes found — the pattern this reads has changed"
-    missing = emitted - set(pr._REFUSAL_STATUS)
+    missing = emitted - set(pr.REFUSAL_STATUS)
     assert not missing, f"{sorted(missing)} would answer 409 Conflict"

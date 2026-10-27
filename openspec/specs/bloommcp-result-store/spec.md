@@ -206,84 +206,258 @@ gate's presence and ordering so it cannot be silently deleted or hollowed out.
 
 `ResultStore.commit(run, outputs)` SHALL return a `StoredRun` whose `output_links: dict[str,
 OutputLink]` carries one entry per `outputs` entry, keyed identically, each an `OutputLink` with
-the artifact's storage `key`, a signed/served `url` from the active `StorageBackend`'s
-`create_signed_url`, its `sha256` (matching `output_sha256`), and its non-negative `size_bytes`
-(a legitimate zero-byte artifact is not rejected — only an empty `outputs` dict is). This field
-SHALL be populated only by `commit` — `get_run` and `list_runs` SHALL return `output_links` as an
-empty dict (including when the resolved run was recorded before this capability existed, e.g. a
-legacy v2 manifest entry with no `output_sha256`/`output_keys`), so that resolving or listing
+the artifact's storage `key`, its `sha256` (matching `output_sha256`), and its non-negative
+`size_bytes` (a legitimate zero-byte artifact is not rejected — only an empty `outputs` dict is).
+Exactly one of `url`/`path` SHALL be populated, never both and never neither: for every backend
+except the local backend, `url` SHALL be a signed/served URL from the active `StorageBackend`'s
+`create_signed_url`, and `path` SHALL be `None`; for the local backend (`BLOOM_STORAGE_BACKEND=
+local`), `commit` SHALL NOT call `create_signed_url` at all — `path` SHALL instead be the
+resolved absolute filesystem path (the active `LocalStorageBackend`'s own traversal-guarded
+`resolve_path(key)`, via `storage_backend.active_backend()`), and `url` SHALL be `None`. This holds for every local-backend configuration (the granular
+explicit-override tier included), not only the `BLOOM_LOCAL_ROOT` tier. This field SHALL be
+populated only by `commit` — `get_run` and `list_runs` SHALL return `output_links` as an empty
+dict (including when the resolved run was recorded before this capability existed, e.g. a legacy
+v2 manifest entry with no `output_sha256`/`output_keys`), so that resolving or listing
 potentially many historical runs never eagerly generates signed URLs for artifacts other than the
-one a caller's own `commit` call just produced. A failure to generate or extract a usable signed
-URL for any output — including a signing-client response that carries none of its expected URL
-keys — SHALL fail the whole `commit` call (surfacing as `CommitFailedError`, following the same
-best-effort-cleanup path an upload failure already takes) rather than committing with a partial or
-`None` URL. None of `output_links` SHALL be persisted into the manifest `VersionEntry` — it is
-computed at request time from data already in hand (the freshly hashed staged bytes, the freshly
-uploaded key) and a fresh signing call, so existing manifest/provenance fields and cross-backend
-manifest-byte-identity are unaffected.
+one a caller's own `commit` call just produced. On the non-local path, a failure to generate or
+extract a usable signed URL for any output — including a signing-client response that carries
+none of its expected URL keys, or one that returns an empty/`None` URL — SHALL fail the whole
+`commit` call (surfacing as `CommitFailedError`, following the same best-effort-cleanup path an
+upload failure already takes) rather than committing with a partial or `None` URL. None of
+`output_links` SHALL be persisted into the manifest `VersionEntry` — it is computed at request
+time from data already in hand (the freshly hashed staged bytes, the freshly uploaded key, and
+for the local backend, the already-known local root) rather than a fresh signing call, so
+existing manifest/provenance fields and cross-backend manifest-byte-identity are unaffected.
 
-Before signing any output, `commit` SHALL verify that every key it is about to sign falls within
-the prefix `commit` itself computed for this run (`{output_root}/{tool_class}_{stem}/
-{version_dir}/`) — the same prefix its own `key_for` closure used to build every `output_keys`
-entry and to upload the corresponding bytes moments earlier. A key outside that prefix indicates a
-structural bug (never a caller-input condition, since `outputs` names only relative paths within
-the run's own staging directory) and SHALL fail the whole `commit` call via the same
-`CommitFailedError` fail-closed/cleanup path a signing failure already takes — never a bare
-signed URL for an unverified key. This guarantee SHALL hold identically for `FakeResultStore`,
-which SHALL compute and check the equivalent prefix from its own `key_for` construction, so a test
-against the fake exercises the same structural guarantee the real adapter provides.
+Before signing (or, for the local backend, pathing) any output, `commit` SHALL verify that every
+key it is about to use falls within the prefix `commit` itself computed for this run
+(`{output_root}/{tool_class}_{stem}/{version_dir}/`) — the same prefix its own `key_for` closure
+used to build every `output_keys` entry and to upload the corresponding bytes moments earlier. A
+key outside that prefix indicates a structural bug (never a caller-input condition, since
+`outputs` names only relative paths within the run's own staging directory) and SHALL fail the
+whole `commit` call via the same `CommitFailedError` fail-closed/cleanup path a signing failure
+already takes — never a bare signed URL or resolved path for an unverified key. This guarantee
+SHALL hold identically for `FakeResultStore`, which SHALL compute and check the equivalent prefix
+from its own `key_for` construction, so a test against the fake exercises the same structural
+guarantee the real adapter provides. `FakeResultStore` is unaffected by the local-backend path
+branch above — it never uploads real bytes or calls `storage_backend.active_backend()`, so it
+always synthesizes a `url` exactly as before, regardless of the selected backend.
 
-#### Scenario: Commit returns a signed link per output
+#### Scenario: Commit returns a signed link per output on the default (non-local) backend
 
 - **WHEN** a consumer writes outputs into the run's staging directory and calls
-  `commit(run, outputs)`
+  `commit(run, outputs)` on the default (Supabase) backend
 - **THEN** the returned `StoredRun.output_links` has one entry per `outputs` entry, each
-  carrying a non-empty `url`, the same `sha256` as `output_sha256` for that name, and a
-  non-negative `size_bytes`
+  carrying a non-empty `url`, a `None` `path`, the same `sha256` as `output_sha256` for that
+  name, and a non-negative `size_bytes`
 
-#### Scenario: get_run and list_runs do not carry signed links
+#### Scenario: Commit returns a resolved path per output on the local backend
+
+- **WHEN** a consumer writes outputs into the run's staging directory and calls
+  `commit(run, outputs)` with `BLOOM_STORAGE_BACKEND=local`
+- **THEN** the returned `StoredRun.output_links` has one entry per `outputs` entry, each
+  carrying a `None` `url` and a non-empty `path` equal to
+  `str(storage_backend.active_backend().resolve_path(key))` for that output's key, and
+  `create_signed_url` is never called
+
+#### Scenario: get_run and list_runs do not carry signed links or paths
 
 - **WHEN** `get_run(experiment, tool_class, run_ref)` or `list_runs(experiment, tool_class)` is
   called for a previously committed run — including a legacy run recorded before this
   capability existed (e.g. a v2 manifest entry with no `output_sha256`/`output_keys`)
 - **THEN** the returned `StoredRun`(s) have `output_links == {}`, regardless of how many
-  historical versions or outputs exist
+  historical versions or outputs exist, and regardless of the active backend
 
-#### Scenario: A signing failure fails the whole commit
+#### Scenario: A signing failure fails the whole commit on the non-local path
 
-- **WHEN** the active backend's `create_signed_url` raises, or returns a response with no
-  extractable URL, for any one output during `commit`
+- **WHEN** the active (non-local) backend's `create_signed_url` raises, or returns a response
+  with no extractable URL, for any one output during `commit`
 - **THEN** `commit` raises `CommitFailedError`, best-effort cleans up any objects already
   uploaded for this call, and records no new version — mirroring an upload failure
 
+#### Scenario: A None/empty URL from url_for fails the whole commit
+
+- **WHEN** `url_for` (not `path_for`) is the closure in use and it returns `None` or an empty
+  string for any one output
+- **THEN** `build_output_links` raises before constructing any `OutputLink`, and `commit`
+  converts this to `CommitFailedError` via the same fail-closed/cleanup path
+
 #### Scenario: The fake store returns a shape-equivalent link without touching a real backend
 
-- **WHEN** `FakeResultStore.commit(...)` is called
+- **WHEN** `FakeResultStore.commit(...)` is called, with any value of `BLOOM_STORAGE_BACKEND`
 - **THEN** the returned `StoredRun.output_links` has the same keys, `sha256`, and `size_bytes` a
-  real commit would produce, with a synthesized (non-network) URL — no call to
-  `storage_backend.active_backend()` is made
+  real commit would produce, with a synthesized (non-network) `url` and a `None` `path` — no
+  call to `storage_backend.active_backend()` is made
 
 #### Scenario: Manifest bytes are unaffected
 
 - **WHEN** a run commits and `output_links` is populated on the returned `StoredRun`
 - **THEN** the written `manifest.json`'s `VersionEntry` for this run contains no `output_links`,
-  URL, or size key, and every other field matches the same commit's pre-change golden/fixture
-  manifest byte-for-byte (no schema version change)
+  URL, path, or size key, and every other field matches the same commit's pre-change
+  golden/fixture manifest byte-for-byte (no schema version change)
 
-#### Scenario: A key outside this run's own prefix is never signed
+#### Scenario: A key outside this run's own prefix is never signed or pathed
 
-- **WHEN** `commit` is (by test injection — no legitimate call path produces this) about to sign a
+- **WHEN** `commit` is (by test injection — no legitimate call path produces this) about to use a
   key that does not start with this run's own `{output_root}/{tool_class}_{stem}/{version_dir}/`
-  prefix
-- **THEN** `commit` raises (never calling `create_signed_url` for that key), the failure surfaces
-  as `CommitFailedError` via the same fail-closed/cleanup path a signing failure already takes,
-  and no version is recorded
+  prefix, on either the signing or the pathing branch
+- **THEN** `commit` raises (never calling `create_signed_url` or `path_for` for that key), the
+  failure surfaces as `CommitFailedError` via the same fail-closed/cleanup path a signing failure
+  already takes, and no version is recorded
 
 #### Scenario: Every real call site's keys satisfy the scoping check
 
 - **WHEN** any of the 8 consumer tools (`qc_clean`, `qc_inspect`, `pca_analysis`,
   `remove_outliers`, `descriptive_stats`, `cross_experiment_correlations`, `umap_analysis`,
-  `clustering`) commits a run through either `SupabaseResultStore` or `FakeResultStore`
+  `clustering`) commits a run through either `SupabaseResultStore` or `FakeResultStore`, on any
+  backend
 - **THEN** the scoping check passes for every output with no behavior change from before this
   requirement — the existing test suite for each tool requires no modification
+
+### Requirement: Re-Signing An Already-Committed Run's Download Links
+
+The `ResultStore` Protocol SHALL provide `get_download_links(experiment, tool_class,
+run_ref="latest") -> StoredRun`, resolving a previously committed run through the same
+manifest/record lookup `get_run` uses and returning it with a freshly built `output_links`
+populated — unlike `list_runs`, which always returns `output_links == {}`. This is a
+deliberate, caller-opted-in exception to that existing behavior, not a change to it: a caller
+must call `get_download_links` by name to get signed links for a run it did not just commit
+itself. This capability SHALL NOT persist anything, and SHALL NOT change the manifest,
+`Provenance`, or `VersionEntry` schema in any way — every value it returns is either already
+persisted (`output_sha256`, `output_keys`, `manifest_path`, `params`, `based_on_version`) or
+resolved fresh at call time (`url`, `size_bytes`).
+
+Before signing or sizing any output, `get_download_links` SHALL recompute the expected
+object-key prefix fresh from `(experiment, tool_class, the resolved run's version_dir)` and
+verify every persisted `output_key` falls within it, for both the `create_signed_url` and
+`get_object_size` calls that follow; a key outside that prefix indicates corrupt manifest
+data or a resolution bug (never a caller-input condition) and SHALL raise
+`CorruptRunLinksError` rather than looking it up or signing it. This check is independent of,
+and SHALL NOT depend on the merge order of, `add-bloommcp-signed-url-key-scoping`'s (#598)
+analogous write-side guard on `commit`.
+
+For a resolved run whose `output_keys` is empty (a legacy entry recorded before per-artifact
+keys existed — e.g. a v2 manifest entry), `get_download_links` SHALL return `output_links == {}`
+rather than raising, since there is no key to sign or size. For a resolved run with populated
+`output_keys`, each output's `sha256` SHALL come from the persisted `output_sha256`, `url`
+SHALL come from the active `StorageBackend`'s `create_signed_url` (the same fixed
+`SIGNED_URL_EXPIRES_SECONDS` expiry `commit` already signs with — no per-call expiry
+parameter), and `size_bytes` SHALL be resolved live via `StorageBackend.get_object_size` for
+every output on every call — uniformly for a run committed a moment ago or long before this
+capability existed, with no persisted size field of any kind. A failure to sign or size any
+one output SHALL fail the whole call (propagating a clear error) rather than returning a
+partially-populated `output_links` with no indication some outputs were silently skipped.
+
+`get_run` (and therefore `get_download_links`, which calls it internally) SHALL also attach the
+resolved run's own `params` (its exact recorded tool-call kwargs) and `based_on_version` to the
+returned `StoredRun`, sourced from the same single `VersionEntry` the rest of the resolution
+already reads — never from any other run for the same `(experiment, tool_class)`.
+**`list_runs` and `commit` SHALL leave `params == {}` and `based_on_version == ""`** (their
+`StoredRun`s' dataclass defaults): these two fields are populated only inside `get_run` itself,
+never inside `StoredRun.from_version_entry`, specifically so `list_runs` — which backs
+`list_existing_analyses`, an always-included discovery tool that returns every historical run's
+`StoredRun` verbatim — never discloses one run's `params` while resolving a different one, nor
+turns an always-on tool into a cross-run params leak. This SHALL hold regardless of whether
+`output_keys` is populated — a run's `params`/`based_on_version` were part of the manifest
+schema from the start (unlike `seed`/`agent`/`environment`, `output_sha256`/`output_keys`, all
+v3-additive), so even the oldest recorded run has them.
+
+**A signed link to the run's own `manifest.json` (a prior design of this same requirement,
+`manifest_url`) SHALL NOT be provided by this method.** `manifest.json` is keyed only by
+`(experiment, tool_class)` — never by `run_ref` — so a signed link to it cannot be scoped to
+the single resolved run: it would expose every run ever committed for that pair, including each
+one's own `params`/`source_id`/`source_name`/`based_on_version`, not just the one the caller
+asked about. `params`/`based_on_version` above exist specifically to serve the same
+provenance-verification need without that cross-run exposure.
+
+`FakeResultStore` SHALL implement the same resolution, prefix guard, empty-`output_keys`
+short-circuit for `output_links`, and single-run-scoped `params`/`based_on_version` attachment
+in `get_run`, and SHALL produce a real (not fabricated) `size_bytes` for any run it itself
+recorded via its own private, in-memory record of each output's byte size captured at commit
+time (identical `hash_outputs` computation the real adapter also performs) — without making any
+call to `StorageBackend`, since it never uploads real bytes for a live lookup to meaningfully
+target. Because this adapter's `list_runs`/`get_run` share one in-memory list populated once at
+`commit()` time (unlike the real adapter, which re-reads the manifest fresh on every call), it
+SHALL keep `params`/`based_on_version` out of that shared list and instead resolve them for
+`get_run` from a private, commit-time-populated side table keyed by
+`(experiment, tool_class, run_ref)` — the same pattern its existing `size_bytes` bookkeeping
+already uses — so `list_runs` never gains them by construction, not by convention.
+
+An unresolvable `(experiment, tool_class, run_ref)` SHALL raise `RunNotFoundError`, identically
+to `get_run`.
+
+#### Scenario: A caller gets fresh links for a run committed in a prior session
+
+- **WHEN** `get_download_links(experiment, tool_class, "latest")` is called for a run that was
+  committed and whose signed URLs have since expired
+- **THEN** it returns a `StoredRun` whose `output_links` carries a fresh, working `url` per
+  output, each with the correct `sha256` and a live-resolved `size_bytes`, and whose `params`/
+  `based_on_version` match that run's own recorded values
+
+#### Scenario: An explicit run_ref resolves the same as get_run
+
+- **WHEN** `get_download_links(experiment, tool_class, run_ref)` is called with a specific
+  version id (not `"latest"`)
+- **THEN** it resolves the same run `get_run(experiment, tool_class, run_ref)` would, with
+  freshly signed `output_links` and that same run's `params`/`based_on_version` attached
+
+#### Scenario: size_bytes is always resolved live, never persisted
+
+- **WHEN** `get_download_links` resolves any run with populated `output_keys` — regardless of
+  when it was committed
+- **THEN** every `size_bytes` comes from a live `StorageBackend.get_object_size` call, and no
+  manifest, `Provenance`, or `VersionEntry` field is read, written, or created for this
+  purpose
+
+#### Scenario: A legacy run with no recorded keys yields no output links, but still its own params
+
+- **WHEN** `get_download_links` resolves a run whose `output_keys` is empty (e.g. a v2 manifest
+  entry recorded before per-artifact keys existed)
+- **THEN** it returns the resolved `StoredRun` with `output_links == {}`, without raising, and
+  with that run's own `params`/`based_on_version` still populated — these fields were recorded
+  regardless of manifest schema version, unlike the v3-only fields absent from a v2 entry
+
+#### Scenario: A retired tool_class is still resolvable
+
+- **WHEN** `get_download_links` is called with a `tool_class` that has since been retired from
+  active use (e.g. `"stats"`) but still has historical runs recorded
+- **THEN** it resolves and re-signs that run's links exactly as it would for an active
+  tool_class
+
+#### Scenario: Unknown run reference is reported through the contract
+
+- **WHEN** `get_download_links(experiment, tool_class, run_ref)` is called for a reference or
+  tool_class with no recorded run
+- **THEN** it raises `RunNotFoundError`, identically to `get_run`
+
+#### Scenario: A key outside the run's own scope is never signed or sized
+
+- **WHEN** `get_download_links` resolves a run whose persisted `output_keys` includes a key (by
+  test injection — no legitimate call path produces this) that does not fall under the freshly
+  recomputed `(experiment, tool_class, version_dir)` prefix
+- **THEN** it raises `CorruptRunLinksError` without calling `create_signed_url` or
+  `get_object_size` for that key
+
+#### Scenario: A single output's failure aborts the whole call
+
+- **WHEN** any one output's `create_signed_url` or `get_object_size` call raises (for example,
+  the object was deleted from storage after the manifest still lists it)
+- **THEN** `get_download_links` raises rather than returning a partially-populated
+  `output_links` for the other outputs
+
+#### Scenario: get_run and list_runs never disclose params across runs
+
+- **WHEN** two runs exist for the same `(experiment, tool_class)`, each committed with distinct
+  `params`
+- **THEN** `get_run(experiment, tool_class, run_ref=<either>)` returns only that run's own
+  `params`/`based_on_version`, never the other's, and `list_runs(experiment, tool_class)`
+  returns `params == {}`/`based_on_version == ""` for every entry regardless of which run each
+  entry describes
+
+#### Scenario: The fake store never calls StorageBackend
+
+- **WHEN** `FakeResultStore.get_download_links(...)` is called for any run it has recorded
+- **THEN** every `size_bytes` comes from that run's own recorded byte size (captured
+  internally at commit time, identically to the real adapter's `hash_outputs` computation), and
+  no call to `StorageBackend` of any kind is made
 

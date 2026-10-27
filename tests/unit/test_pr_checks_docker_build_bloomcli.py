@@ -2,8 +2,8 @@
 
 pr-checks.yml's docker-build job is not a single reusable Trivy step per
 image — each of the five existing images gets three separate step blocks
-(build, report-only scan, and a *separate* blocking CVE gate) plus two
-"for img in ..." loops inside the "Generate Trivy report" step. It's easy to
+(build, report-only scan, and a *separate* blocking CVE gate) plus the
+"for img in ..." loop inside the "Generate Trivy report" step. It's easy to
 wire only some of these for a new image and leave its CVE gate silently
 non-enforcing. This test locks in that bloomcli gets the full treatment, and
 that its build context/dockerfile stay identical to whatever
@@ -72,15 +72,15 @@ def test_bloomcli_has_a_separate_blocking_critical_cve_gate() -> None:
     assert str(with_["exit-code"]) == "1"
 
 
-def test_bloomcli_appears_in_both_trivy_report_loops() -> None:
+def test_bloomcli_appears_in_the_trivy_report_loop() -> None:
     job = _docker_build_job()
     report_step = _step_named(job, "Generate Trivy report")
     run = str(report_step["run"])
     loop_lines = [
         line for line in run.splitlines() if line.strip().startswith("for img in ")
     ]
-    assert len(loop_lines) == 2, (
-        f"expected exactly 2 'for img in ...' loops in the Trivy report step, "
+    assert len(loop_lines) == 1, (
+        f"expected exactly 1 'for img in ...' loop in the Trivy report step, "
         f"found {len(loop_lines)}"
     )
     for line in loop_lines:

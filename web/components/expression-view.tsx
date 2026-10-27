@@ -21,7 +21,12 @@ import { ExpressionClusterDetailPanel } from "@/components/expression-cluster-de
 import { TransgeneSummary } from "@/components/transgene-summary";
 import { TransgeneToggle } from "@/components/transgene-toggle";
 import { topGroups, transgeneByCluster } from "@/components/expression-lib/transgene";
+import {
+  cellTypeLabelKeys,
+  predictedCellTypes,
+} from "@/components/expression-lib/cell-type-labels";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import type { DeFocus } from "@/components/expression-lib/de-types";
 import type { Database } from "@/lib/database.types";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
@@ -32,6 +37,8 @@ const DEFAULT_UNITS_FALLBACK = "log-normalized";
 export interface ExpressionViewProps {
   datasetId: number;
   datasetName?: string;
+  /** Opens a cluster's one-vs-rest comparison in the DE tab. */
+  onShowDe?: (target: DeFocus) => void;
 }
 
 interface LoadedMeta {
@@ -52,7 +59,7 @@ const NOTHING_HIDDEN: ReadonlySet<string> = new Set();
 const NOTHING_FOCUSED: ReadonlySet<string> = new Set();
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
-export function ExpressionView({ datasetId }: ExpressionViewProps) {
+export function ExpressionView({ datasetId, onShowDe }: ExpressionViewProps) {
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
@@ -188,6 +195,21 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
   // the map shows them.
   const transgene = useMemo(() => (meta ? transgeneByCluster(meta.cells) : null), [meta]);
   const [showTransgene, setShowTransgene] = useState(true);
+
+  // Cell labels the dataset marks as predicted cell types: summarised per
+  // cluster in the sidebar rather than offered as filter buttons.
+  const cellTypeKeys = useMemo(
+    () => (meta ? cellTypeLabelKeys(meta.dataset.metadata) : []),
+    [meta],
+  );
+  const predicted = useMemo(
+    () => (meta ? predictedCellTypes(meta.cells, cellTypeKeys) : undefined),
+    [meta, cellTypeKeys],
+  );
+  const filterRows = useMemo(
+    () => (meta ? meta.filters.filter((f) => !cellTypeKeys.includes(f)) : []),
+    [meta, cellTypeKeys],
+  );
   const transgeneTotal = transgene
     ? [...transgene.values()].reduce((sum, t) => sum + t.positive, 0)
     : 0;
@@ -243,6 +265,7 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
         hiddenOrdinals={hidden}
         cellCounts={counts}
         transgene={showTransgene ? transgene ?? undefined : undefined}
+        predicted={predicted}
         onVisibilityChange={handleVisibilityChange}
         onSolo={handleSolo}
         onShowAll={handleShowAll}
@@ -347,9 +370,9 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
           </div>
         )}
 
-        {meta && meta.filters.length > 0 && (
+        {meta && filterRows.length > 0 && (
           <Box sx={{ pb: 1, display: "flex", flexDirection: "column", gap: 1 }}>
-            {meta.filters.map((filter) => (
+            {filterRows.map((filter) => (
               <ExpressionSampleToggles
                 key={filter}
                 label={filter === SAMPLE_FILTER ? "Samples" : filter}
@@ -428,6 +451,8 @@ export function ExpressionView({ datasetId }: ExpressionViewProps) {
               clusterName={soloCluster.name}
               clusterColor={soloCluster.color}
               transgene={showTransgene ? transgene?.get(soloCluster.ordinal) : undefined}
+              cellCount={counts?.[soloCluster.ordinal]}
+              onShowFullList={onShowDe}
             />
           );
         })()}

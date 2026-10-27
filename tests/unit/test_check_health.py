@@ -8,6 +8,7 @@ case a naive "tracking table is non-empty" check would pass.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -158,3 +159,117 @@ def test_parse_env_ignores_comments_and_blanks():
     text = "# comment\n\nPOSTGRES_USER=supabase_admin\nPOSTGRES_HOST_PORT=5433\n"
     env = check_health.parse_env(text)
     assert env == {"POSTGRES_USER": "supabase_admin", "POSTGRES_HOST_PORT": "5433"}
+
+
+# --------------------------------------------------------------------------- #
+# Id sequences behind their data (bloom#1022, fix-prod-sequences-behind §3)
+# --------------------------------------------------------------------------- #
+
+SEQUENCES_BEHIND_SQL = REPO_ROOT / "scripts" / "sql" / "sequences_behind.sql"
+
+
+def test_sequence_problems_names_each_behind_sequence():
+    rows = [("cyl_scanners", "id", 1, 1), ("species", "id", 16, 2)]
+    problems = check_health.sequence_problems(rows)
+    assert len(problems) == 2
+    assert "public.cyl_scanners.id" in problems[0]
+    assert "max 1" in problems[0] and "next value 1" in problems[0]
+    assert "public.species.id" in problems[1]
+    assert "max 16" in problems[1] and "next value 2" in problems[1]
+
+
+def test_no_behind_sequences_means_no_problems():
+    assert check_health.sequence_problems([]) == []
+
+
+def test_main_fails_when_a_sequence_is_behind(monkeypatch):
+    class _Conn:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(check_health, "_connect", lambda: _Conn())
+    monkeypatch.setattr(check_health, "wait_for_auth_uid", lambda conn: True)
+    for name in ("check_roles", "check_schemas", "check_migrations", "check_schema_usage"):
+        monkeypatch.setattr(check_health, name, lambda conn: [])
+    called = []
+
+    def fake_check_sequences(conn):
+        called.append(conn)
+        return ["id sequence behind its data: public.t.id"]
+
+    monkeypatch.setattr(check_health, "check_sequences", fake_check_sequences)
+    assert check_health.main(["--skip-services"]) == 1
+    assert called, "main() must run check_sequences"
+
+
+def _sql_code(text: str) -> str:
+    """Comments dropped and string literals blanked."""
+    code = "\n".join(line.split("--", 1)[0] for line in text.splitlines())
+    return re.sub(r"'(?:[^']|'')*'", "''", code)
+
+
+def test_sequences_behind_sql_is_a_single_read_only_select():
+    code = _sql_code(SEQUENCES_BEHIND_SQL.read_text(encoding="utf-8")).strip()
+    assert code.upper().startswith("SELECT"), code[:40]
+    assert code.count(";") == 1 and code.endswith(";")
+    forbidden = r"\b(CREATE|DO|FUNCTION|INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE|setval|nextval)\b"
+    assert not re.search(forbidden, code, re.IGNORECASE)
+    assert "pg_sequences" not in code, "pg_sequences.last_value is NULL until first call"
+
+
+def test_check_health_and_deploy_reference_the_sql_file_not_a_copy():
+    script = (REPO_ROOT / "scripts" / "check_health.py").read_text(encoding="utf-8")
+    deploy = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    assert "sequences_behind.sql" in script
+    assert deploy.count("< scripts/sql/sequences_behind.sql") == 2
+    assert "query_to_xml" not in script and "query_to_xml" not in deploy
+
+
+class _Cursor:
+    def __init__(self, rows=None, error=None):
+        self.rows, self.error, self.executed = rows or [], error, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql):
+        self.executed.append(sql)
+        if self.error:
+            raise self.error
+
+    def fetchall(self):
+        return self.rows
+
+
+class _Conn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def rollback(self):
+        pass
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_check_sequences_runs_the_sql_file_and_formats_its_rows():
+    cursor = _Cursor(rows=[("t", "id", 5, 1)])
+    problems = check_health.check_sequences(_Conn(cursor))
+    assert cursor.executed == [SEQUENCES_BEHIND_SQL.read_text(encoding="utf-8")]
+    assert len(problems) == 1 and "public.t.id" in problems[0]
+
+
+def test_check_sequences_reports_a_query_error_instead_of_raising():
+    cursor = _Cursor(error=RuntimeError("canceling statement due to statement timeout"))
+    problems = check_health.check_sequences(_Conn(cursor))
+    assert len(problems) == 1
+    assert "could not run the id-sequence check" in problems[0]
+    assert "statement timeout" in problems[0]
+
+
+def test_check_sequences_reports_a_missing_sql_file(tmp_path):
+    problems = check_health.check_sequences(_Conn(_Cursor()), sql_path=tmp_path / "missing.sql")
+    assert len(problems) == 1 and "could not run the id-sequence check" in problems[0]

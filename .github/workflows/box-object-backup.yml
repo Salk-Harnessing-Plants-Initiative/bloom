@@ -19,8 +19,8 @@ name: Nightly Box object mirror
 #
 # The job UPLOADS ONLY. It never deletes anything on Box.
 #
-# Three things carried over from refresh-cyl-experiment-trait-counts.yml, all
-# of which were learned the hard way:
+# Three things carried over from an earlier scheduled workflow in this repo,
+# all of which were learned the hard way:
 #
 #   0. The FIRST scheduled run with an empty ledger has no watermark to work
 #      from, so it enumerates everything — all 8M objects — inside a job with a

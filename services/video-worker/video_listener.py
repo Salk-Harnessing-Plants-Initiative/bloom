@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Video Generation Listener Service
+Video Generation Listener Service — RETIRED, does not run.
+
+Cyl videos are rendered by the workflows service, on the request the button makes.
+This module's entry point is commented out, so running it does nothing and exits 0.
 
 Listens for PostgreSQL notifications and processes video generation jobs.
 Connects directly to PostgreSQL and uses pg_notify for real-time job processing.
 
 Usage:
-    python video_listener.py
+    Retired. Uncomment the entry point at the foot of this file to revive it.
 
 Environment Variables:
     DATABASE_URL: PostgreSQL connection string
@@ -61,7 +64,7 @@ if not AWS_SECRET_ACCESS_KEY:
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 
 # Video processing settings
-DECIMATE_FACTOR = 4 
+DECIMATE_FACTOR = 4
 
 
 def get_db_connection():
@@ -317,5 +320,7 @@ def listen_for_jobs():
     logger.info("Listener stopped")
 
 
-if __name__ == "__main__":
-    listen_for_jobs()
+# Retired: the workflows service renders cyl videos. Reviving this would put a
+# third unlocked writer on the same object keys, fed by an anon-writable table.
+# if __name__ == "__main__":
+#     listen_for_jobs()

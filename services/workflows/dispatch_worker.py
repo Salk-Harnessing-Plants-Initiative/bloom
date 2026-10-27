@@ -14,6 +14,11 @@ dispatch_worker.py`.
 
 Env:
     WORKFLOWS_WORKER_POLL_SECONDS  idle sleep between empty polls (default 5)
+
+    CYL_PIPELINE_TRIGGER_ENABLED and WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT /
+    _SECRET_NAME are read by k8s_client: unless the switch is exactly "true"
+    and both values are valid, every claimed batch is failed at once with a
+    fixed message and nothing is submitted (bloom#863).
 """
 
 import logging
@@ -23,6 +28,7 @@ import time
 
 from k8s_client import (
     K8sConfigError,
+    K8sDispatchRefusedError,
     K8sSubmissionError,
     build_workflow_body,
     submit_workflow,
@@ -45,6 +51,13 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = float(os.environ.get("WORKFLOWS_WORKER_POLL_SECONDS", "5"))
 
+# The error_message a refused batch's scans get, keyed by
+# K8sDispatchRefusedError.reason. Fixed text: it is user-facing.
+_REFUSAL_MESSAGES = {
+    "off": "Pipeline dispatch is turned off in this environment",
+    "unconfigured": "Pipeline dispatch is not configured in this environment",
+}
+
 _running = True
 
 
@@ -62,7 +75,8 @@ def _stop(signum, _frame):
 
 def process_one(client) -> bool:
     """Claim and process a single batch. Returns True if a batch was handled
-    (including a K8sConfigError, which is a no-op left for redelivery)."""
+    (including a K8sConfigError, which is a no-op left for redelivery, and a
+    K8sDispatchRefusedError, which fails the batch at once)."""
     try:
         batch = claim_batch(client)
     except Exception as exc:
@@ -88,6 +102,32 @@ def process_one(client) -> bool:
     try:
         body = build_workflow_body(run_id, batch_index, scan_ids)
         workflow_name = submit_workflow(body)
+    except K8sDispatchRefusedError as exc:
+        # This environment may not dispatch (bloom#863). A deliberate state,
+        # so settle it now: left unsettled it would only be dead-lettered
+        # minutes later as a "poison message". The detail (which variable,
+        # why) is for the log; the scans get a fixed message.
+        logger.warning(
+            "dispatch_worker: run %s batch %s refused (%s): %s",
+            run_id,
+            batch_index,
+            exc.reason,
+            exc.detail,
+        )
+        # Looked up outside the try, so a lookup error could never be logged
+        # as a failed fail RPC. K8sDispatchRefusedError only takes these keys.
+        message = _REFUSAL_MESSAGES[exc.reason]
+        try:
+            fail_batch(client, run_id, batch_index, msg_id, scan_ids, message)
+        except Exception as fail_exc:
+            logger.error(
+                "dispatch_worker: run %s batch %s was refused and the fail RPC "
+                "errored; leaving for redelivery: %s",
+                run_id,
+                batch_index,
+                fail_exc,
+            )
+        return True
     except K8sConfigError as exc:
         # A service misconfiguration, not a genuine submission attempt — leave
         # the claim unsettled so it's reclaimable once fixed (via the

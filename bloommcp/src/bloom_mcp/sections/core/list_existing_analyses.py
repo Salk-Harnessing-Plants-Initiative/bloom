@@ -137,7 +137,9 @@ def list_existing_analyses(experiment: str) -> str:
     tool rather than only in a log line they can't see.
 
     Args:
-        experiment: experiment identifier, e.g. "alfalfa_gwas_wave2.csv"
+        experiment: experiment identifier — under the default `supabase`
+            backend the numeric experiment id (e.g. "7206207"); under
+            `BLOOM_STORAGE_BACKEND=local`, the input file's stem
     """
     cached = _RESPONSE_CACHE.get(experiment)
     if cached is not None and _now() - cached[0] < _CACHE_TTL_SECONDS:

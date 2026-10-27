@@ -10,3 +10,5 @@ contracts/generated/
 contracts/schema/
 # Drawn by tbls and drift-checked byte for byte in CI.
 _WIKI/SUPABASE/erd.md
+# Trait-export golden fixtures are compared byte for byte (add-cyl-trait-csv-export).
+web/lib/cyl-trait-export/__fixtures__/

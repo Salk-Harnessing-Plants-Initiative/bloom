@@ -110,6 +110,18 @@ describe("describeCell", () => {
   it("returns nothing for a cell that is not there", () => {
     expect(describeCell(99, cells, ordinals, CLUSTERS)).toBeNull();
   });
+
+  it("adds the cell's own predicted cell types when the dataset marks them", () => {
+    const labelled = [cell("pFACT", { periderm_atlas: "Phellogen", shahan_atlas: "Columella" })];
+    expect(describeCell(0, labelled, ordinals, CLUSTERS, ["periderm_atlas", "shahan_atlas"])?.detail)
+      .toBe("pFACT · Periderm atlas: Phellogen · Shahan atlas: Columella");
+  });
+
+  it("leaves out a cell type the cell has no label for", () => {
+    const labelled = [cell("pFACT", { periderm_atlas: "Phellogen" })];
+    expect(describeCell(0, labelled, ordinals, CLUSTERS, ["periderm_atlas", "shahan_atlas"])?.detail)
+      .toBe("pFACT · Periderm atlas: Phellogen");
+  });
 });
 
 describe("isClick", () => {

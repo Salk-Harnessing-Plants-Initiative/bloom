@@ -39,10 +39,9 @@ jobs:
     # fail (GitHub-hosted runners have no route to the Salk server), but
     # it fails fast instead of queuing for 24h.
     #
-    # bloom#736: refresh-cyl-experiment-trait-counts.yml also depends on this same
-    # self-hosted salk-network runner (unconditionally, no escape hatch). It uses a
-    # different concurrency.group than this job, so a deploy occupying this single
-    # runner for up to timeout-minutes below can make that refresh job queue behind it.
+    # Any other workflow on this same self-hosted salk-network runner with a
+    # different concurrency.group queues behind a deploy holding it for up to
+    # timeout-minutes below.
     runs-on: ${{ github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "salk-network"]') }}
     timeout-minutes: 30
     environment: production
@@ -139,6 +138,9 @@ jobs:
           WORKFLOWS_K8S_TOKEN=${{ secrets.PROD_WORKFLOWS_K8S_TOKEN }}
           WORKFLOWS_K8S_CA_CERT=${{ secrets.PROD_WORKFLOWS_K8S_CA_CERT }}
           WORKFLOWS_K8S_API_URL=${{ secrets.PROD_WORKFLOWS_K8S_API_URL }}
+          WANDB_API_KEY=${{ secrets.PROD_WANDB_API_KEY }}
+          WORKFLOWS_S3_READER_ACCESS_KEY_ID=${{ secrets.PROD_WORKFLOWS_S3_READER_ACCESS_KEY_ID }}
+          WORKFLOWS_S3_READER_SECRET_ACCESS_KEY=${{ secrets.PROD_WORKFLOWS_S3_READER_SECRET_ACCESS_KEY }}
           DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
@@ -317,6 +319,17 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            # bloom-web stamps this into trait-export sidecars (bloom#1007): the
+            # last commit that changed the code its image is built from (the
+            # Dockerfile's COPY sources), not HEAD, so a deploy that leaves that
+            # code alone does not recreate bloom-web and drop its in-memory
+            # exports. Build args and untracked host files are not covered.
+            # Taken on the host (escaped); assigned, then checked non-empty (git log
+            # exits 0 when nothing matches), then exported, so a failure stops
+            # the deploy instead of stamping an empty SHA.
+            BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+            test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+            export BLOOM_WEB_BUILD_SHA
             docker compose -f docker-compose.prod.yml --env-file .env.prod \
               up -d --build --remove-orphans --wait --wait-timeout 600
             echo 'Production deployed successfully!'
@@ -661,7 +674,9 @@ jobs:
               echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
               exit 1
             fi
-            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes'
+            # --include-all: staging sets the order, so a promotion can bring a migration
+            # dated before one an earlier promotion already applied to prod.
+            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes --include-all'
           " || {
             echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -882,6 +897,11 @@ jobs:
               # broken. Shorter 300s timeout (vs 600s forward) because rollback
               # reuses already-built images — cold-build is not in the critical
               # path.
+              # After the reset, so bloom-web names the code rolled back to; see
+              # the production deploy step's comment (bloom#1007).
+              BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+              test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+              export BLOOM_WEB_BUILD_SHA
               docker compose -f docker-compose.prod.yml --env-file .env.prod \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
@@ -952,9 +972,78 @@ jobs:
             fi
           "
 
+      # bloom#1022: fail the deploy, but keep the new code, when any public id sequence is
+      # behind its data (a default-id insert would collide). This step MUST stay after
+      # "Rollback on failure": rollback reverts code, which can't fix a sequence. With no
+      # `if:`, an earlier failure skips it and rolls back as before. Read-only.
+      - name: Check id sequences are not behind (production)
+        timeout-minutes: 5
+        run: |
+          out=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+            docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
+              db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < scripts/sql/sequences_behind.sql
+          ") || {
+            echo '::error title=Sequence check could not run (production)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
+            exit 1
+          }
+          if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
+            n=$(printf '%s\n' "$out" | wc -l)
+            echo "::error title=Id sequence behind its data (production)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (production)::$(esc "$row")"
+            done
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
+            exit 1
+          fi
+          echo "No public id sequence is behind its data."
+
       - name: Cleanup
         if: always()
         run: rm -f ~/.ssh/deploy_key
+
+  # A staging run left waiting for approval holds the deploy-bloom slot, and
+  # every later push then queues behind it and gets cancelled. Cancelling the
+  # older waiting runs lets the newest push through to the approval gate.
+  supersede-stale-staging-waits:
+    name: Cancel older staging runs awaiting approval
+    # Only a run from the staging branch can pass the staging gate, so only it may supersede.
+    if: github.ref == 'refs/heads/staging' && (github.event_name == 'push' || github.event.inputs.environment == 'staging')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel older runs waiting at the staging gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api "repos/$REPO/actions/workflows/deploy.yml/runs?status=waiting&per_page=100" \
+            --jq '.workflow_runs[] | select(.id < (env.RUN_ID | tonumber)) | .id')
+          for id in $ids; do
+            # Production waits are left alone; only the staging gate is superseded.
+            envs=$(gh api "repos/$REPO/actions/runs/$id/pending_deployments" \
+              --jq '[.[].environment.name] | join(",")')
+            if [[ "$envs" == "staging" ]]; then
+              if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" --silent; then
+                echo "::notice::Cancelled run $id: it was waiting for staging approval and run $RUN_ID supersedes it"
+              else
+                echo "::error::Could not cancel run $id, which is waiting for staging approval; it may still be holding the deploy queue"
+                failed=1
+              fi
+            fi
+          done
+          exit "${failed:-0}"
 
   deploy-staging:
     name: Deploy to Staging
@@ -973,6 +1062,9 @@ jobs:
       # time across the whole repo (single Salk server, single docker daemon).
       group: deploy-bloom
       cancel-in-progress: false
+    env:
+      # A push deploys its own commit, not whatever staging's tip is by approval time.
+      DEPLOY_REF: ${{ github.event_name == 'push' && github.sha || 'origin/staging' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -984,6 +1076,45 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
+
+      # Every refusal happens here, before anything on the server changes, so
+      # "Rollback on failure" skips a run this step stopped.
+      - name: Check the commit can be deployed
+        id: preflight_staging
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              echo '::error::Working tree is dirty on staging server — deploy aborted'
+              echo 'Uncommitted changes detected:'
+              git status --short
+              echo ''
+              echo 'Someone made local changes on the server. Resolve before deploying:'
+              echo '  1. SSH to the server and commit + push the changes, or'
+              echo '  2. Discard them: git checkout -- .'
+              echo 'Previous deployment remains running.'
+              exit 1
+            fi
+            git fetch origin staging
+            # \$DEPLOY_REF is expanded on the runner.
+            git cat-file -e '$DEPLOY_REF^{commit}' 2>/dev/null \
+              || { echo \"::error::$DEPLOY_REF not found after fetching staging — it may have been force-pushed away. Run Deploy manually from the staging branch to deploy the tip.\"; exit 1; }
+            if [ '$DEPLOY_REF' != origin/staging ] && ! git merge-base --is-ancestor HEAD '$DEPLOY_REF'; then
+              echo \"::error::$DEPLOY_REF is not a descendant of the deployed commit \$(git rev-parse HEAD) — refusing to move staging backwards. Run Deploy manually from the staging branch to redeploy the tip.\"
+              exit 1
+            fi
+            echo \"OK to deploy $DEPLOY_REF over \$(git rev-parse HEAD)\"
+          "
+
+      - name: Save previous SHA for rollback
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            mkdir -p '${{ secrets.STAGING_DEPLOY_PATH }}.state'
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            git rev-parse HEAD > '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha'
+            echo \"Saved previous SHA: \$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')\"
+          "
 
       # The runner is co-located with the deploy target (same host, running as
       # bloom-deploy). Env-file assembly uses direct local filesystem commands
@@ -1040,6 +1171,9 @@ jobs:
           WORKFLOWS_K8S_TOKEN=${{ secrets.STAGING_WORKFLOWS_K8S_TOKEN }}
           WORKFLOWS_K8S_CA_CERT=${{ secrets.STAGING_WORKFLOWS_K8S_CA_CERT }}
           WORKFLOWS_K8S_API_URL=${{ secrets.STAGING_WORKFLOWS_K8S_API_URL }}
+          WANDB_API_KEY=${{ secrets.STAGING_WANDB_API_KEY }}
+          WORKFLOWS_S3_READER_ACCESS_KEY_ID=${{ secrets.STAGING_WORKFLOWS_S3_READER_ACCESS_KEY_ID }}
+          WORKFLOWS_S3_READER_SECRET_ACCESS_KEY=${{ secrets.STAGING_WORKFLOWS_S3_READER_SECRET_ACCESS_KEY }}
           DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
@@ -1066,43 +1200,28 @@ jobs:
             "test -r ${{ secrets.STAGING_DEPLOY_PATH }}/.env.staging" \
             || { echo "::error::DEPLOY_USER cannot read .env.staging — runner-user and DEPLOY_USER must match, or group-readable perms needed"; exit 1; }
 
-      - name: Save previous SHA for rollback
-        run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
-            mkdir -p '${{ secrets.STAGING_DEPLOY_PATH }}.state'
-            cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            git rev-parse HEAD > '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha'
-            echo \"Saved previous SHA: \$(cat '${{ secrets.STAGING_DEPLOY_PATH }}.state/previous_sha')\"
-          "
-
-      - name: Pull latest code
+      - name: Check out the commit to deploy
         id: pull_staging
         run: |
+          set -o pipefail
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            if ! git diff --quiet || ! git diff --cached --quiet; then
-              echo '::error::Working tree is dirty on staging server — deploy aborted'
-              echo 'Uncommitted changes detected:'
-              git status --short
-              echo ''
-              echo 'Someone made local changes on the server. Resolve before deploying:'
-              echo '  1. SSH to the server and commit + push the changes, or'
-              echo '  2. Discard them: git checkout -- .'
-              echo 'Previous deployment remains running.'
-              exit 1
-            fi
             BEFORE=\$(git rev-parse HEAD)
-            git fetch origin staging
-            git reset --hard origin/staging
+            # \$DEPLOY_REF is expanded on the runner; the preflight step already fetched and checked it.
+            git reset --hard '$DEPLOY_REF'
             AFTER=\$(git rev-parse HEAD)
+            [ \"\$AFTER\" = \"\$(git rev-parse '$DEPLOY_REF^{commit}')\" ] \
+              || { echo \"::error::Reset landed on \$AFTER, not $DEPLOY_REF\"; exit 1; }
+            echo \"Deployed \$AFTER (was \$BEFORE)\"
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- caddy/Caddyfile \
               && echo 'CADDYFILE_CHANGED=false' || echo 'CADDYFILE_CHANGED=true'
             git diff --quiet \"\$BEFORE\" \"\$AFTER\" -- volumes/api/kong.yml \
               && echo 'KONGFILE_CHANGED=false' || echo 'KONGFILE_CHANGED=true'
           " | tee /tmp/pull_staging.out
-          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          changed=$(grep '^CADDYFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2 || true)
           echo "caddyfile_changed=${changed:-true}" >> "$GITHUB_OUTPUT"
-          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2)
+          kong_changed=$(grep '^KONGFILE_CHANGED=' /tmp/pull_staging.out | tail -1 | cut -d= -f2 || true)
           echo "kongfile_changed=${kong_changed:-true}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Docker Compose version (>= 2.17 required for --wait-timeout)
@@ -1188,6 +1307,10 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            # See the matching comment in the production deploy step (bloom#1007).
+            BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+            test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+            export BLOOM_WEB_BUILD_SHA
             docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
               up -d --build --remove-orphans --wait --wait-timeout 600
             echo 'Staging deployed successfully!'
@@ -1660,7 +1783,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rollback on failure
-        if: failure()
+        # A run the preflight stopped changed nothing on the server, so there is nothing to roll back.
+        if: failure() && steps.preflight_staging.outcome == 'success'
         run: |
           # DB state is NOT rolled back by this step. See the matching comment
           # on the production rollback step above and issue #177.
@@ -1683,6 +1807,11 @@ jobs:
               # Symmetric --wait with forward deploy — see prod rollback for
               # rationale. Shorter 300s timeout since rollback reuses built
               # images.
+              # After the reset, so bloom-web names the code rolled back to; see
+              # the production deploy step's comment (bloom#1007).
+              BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+              test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+              export BLOOM_WEB_BUILD_SHA
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
@@ -1735,6 +1864,39 @@ jobs:
               exit 1
             fi
           "
+
+      # bloom#1022: fail the deploy, but keep the new code, when any public id sequence is
+      # behind its data (a default-id insert would collide). This step MUST stay after
+      # "Rollback on failure": rollback reverts code, which can't fix a sequence. With no
+      # `if:`, an earlier failure skips it and rolls back as before. Read-only.
+      - name: Check id sequences are not behind (staging)
+        timeout-minutes: 5
+        run: |
+          out=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
+              db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < scripts/sql/sequences_behind.sql
+          ") || {
+            echo '::error title=Sequence check could not run (staging)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
+            exit 1
+          }
+          if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
+            n=$(printf '%s\n' "$out" | wc -l)
+            echo "::error title=Id sequence behind its data (staging)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (staging)::$(esc "$row")"
+            done
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
+            exit 1
+          fi
+          echo "No public id sequence is behind its data."
 
       - name: Cleanup
         if: always()

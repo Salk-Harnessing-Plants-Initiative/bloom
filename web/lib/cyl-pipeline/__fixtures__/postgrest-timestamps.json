@@ -1,0 +1,17 @@
+{
+  "_about": "PostgREST renderings of created_at values inserted as 10:00:10.123400, 10:00:10 and 10:00:10.5 (UTC), read as bloom_user on the dev stack on 2026-09-28 (task 0.3).",
+  "rows": [
+    {
+      "id": 706,
+      "created_at": "2026-09-28T10:00:10.1234+00:00"
+    },
+    {
+      "id": 707,
+      "created_at": "2026-09-28T10:00:10+00:00"
+    },
+    {
+      "id": 708,
+      "created_at": "2026-09-28T10:00:10.5+00:00"
+    }
+  ]
+}

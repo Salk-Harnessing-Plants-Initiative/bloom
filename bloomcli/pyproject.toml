@@ -1,6 +1,6 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a6"
+version = "0.1.0a19"
 description = "Bloom command-line tool for Bloom Database"
 # The PyPI landing page. README.md is the fuller in-repo doc.
 readme = "README.pypi.md"
@@ -19,14 +19,24 @@ dependencies = [
     # something we import, so a --pre install picks them up and nothing runs (#629).
     # Lifted once those ship stable (#645).
     "httpx>=0.27,<1.0",
-    "supabase>=2.0.0,<3",
+    # 2.31+: `scrna hdf5 upload` opens a storage handle per thread through the client's
+    # _init_storage_client, storage_url and options, as tested on 2.31.
+    "supabase>=2.31.0,<3",
     "python-dotenv>=1.0.0",
     # Floors, not caps: a cap here would only keep the next security fix out.
     "cryptography>=50.0.0",  # CVE-2026-69247
-    # a5+: pydantic models for `cyl ingest`. a7+: RunManifest/RUN_MANIFEST_FILENAME for
-    # `cyl batch-download-for-predict`'s manifest write (#653).
-    "sleap-roots-contracts>=0.1.0a7",
+    # a5+: pydantic models for `cyl ingest`. a7+: RunManifest/RUN_MANIFEST_FILENAME (#653).
+    # a9+: per-run run-manifest naming and `load_run_manifest` for the writer
+    # (`batch-download-for-predict`) and reader (`batch-ingest-result`) (#934). The Docker
+    # image builds with `uv sync --frozen`, so raising this floor takes effect only with a
+    # matching `uv.lock` re-lock.
+    "sleap-roots-contracts>=0.1.0a9",
     "h2>=4.4.1",  # CVE-2026-71554
+    # `scrna hdf5 upload` reads the file's HDF5 to check its structure.
+    "h5py>=3.10",
+    "numpy>=1.26",
+    # `scrna hdf5 upload` reads the cells' labels and coordinates to load the dataset.
+    "anndata>=0.10",
 ]
 
 [project.urls]
@@ -42,6 +52,9 @@ bloomctl = "bloomctl.errors:main"
 [project.optional-dependencies]
 test = [
     "pytest>=8.3",
+    "pyyaml>=6",
+    "h5py>=3.10",
+    "numpy>=1.26",
 ]
 
 [build-system]

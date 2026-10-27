@@ -1,0 +1,65 @@
+# A Cell Ranger run started by hand, loaded into prod's Bloom: each sample becomes a dataset
+# named after it, under `species` (a species' common name), and builds its reference from
+# `reference`, a genome version in Bloom written <genome>.v<N> (bloomctl genome list shows them).
+# Each sample gives its reads as SRA run IDs or an S3 folder, with the other left empty:
+#   {"sample": "root_tip", "sra_runs": "SRR28503597,SRR28503598", "fastq_url": "", "fastq_files": ""}
+#   {"sample": "col0", "sra_runs": "", "fastq_url": "s3://bucket/folder/",
+#    "fastq_files": "[{\"name\": \"col0_S1_L001_R1_001.fastq.gz\", \"size\": 123, \"etag\": \"...\"}, ...]"}
+# argo/scrna/README.md has the command, and the staging variant.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: cellranger-count-
+  namespace: runai-busch-lab
+  labels:
+    project: busch-lab
+spec:
+  entrypoint: main
+  # Step pods report results as bloom-workflow; without it every step fails on workflowtaskresults.
+  serviceAccountName: bloom-workflow
+  imagePullSecrets:
+    - name: dockerregistry-bloom-ghcr-pull   # from the busch-lab Run:ai credential bloom-ghcr-pull
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  arguments:
+    parameters:
+      - name: samples
+        value: '[]'
+      # A genome version in Bloom, e.g. athaliana_col0.v2.
+      - name: reference
+        value: ""
+      # Required: the species every sample's dataset is loaded under.
+      - name: species
+  # The pipeline's Bloom login: load-dataset loads with it and run-with-log uploads the logs.
+  volumes:
+    - name: bloom-credentials
+      secret:
+        secretName: genericsecret-bloom-prod-pipeline-credentials
+        optional: true
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: sample
+            templateRef:
+              name: cellranger-count-template
+              template: sample-pipeline
+            withParam: "{{workflow.parameters.samples}}"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{item.sample}}"
+                - name: reference
+                  value: "{{workflow.parameters.reference}}"
+                - name: run-id
+                  value: "{{item.sample}}"
+                - name: sra-runs
+                  value: "{{item.sra_runs}}"
+                - name: fastq-url
+                  value: "{{item.fastq_url}}"
+                - name: fastq-files
+                  value: "{{item.fastq_files}}"
+                - name: dataset-name
+                  value: "{{item.sample}}"
+                - name: species-name
+                  value: "{{workflow.parameters.species}}"

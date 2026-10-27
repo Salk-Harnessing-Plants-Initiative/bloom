@@ -28,7 +28,7 @@ psycopg = pytest.importorskip("psycopg")
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 RPC = "public.insert_cyl_result_envelope"
-PINNED_VERSION = "0.1.0a7"
+PINNED_VERSION = "0.1.0a9"
 
 
 # --------------------------------------------------------------------------- #
@@ -65,13 +65,16 @@ def _blob(*, kind="predictions_slp", root_type="primary", scan_key="SK1",
 
 def _envelope(image_ids, *, contract_version=PINNED_VERSION, scan_key="SK1",
               idempotency_key="key-1", pipeline_run_id=None, traits=None, blobs=None,
-              drop_provenance=False, drop_inputs=False, drop_contract_version=False):
+              drop_provenance=False, drop_inputs=False, drop_contract_version=False,
+              provenance_extra=None):
     prov = {
         "contract_version": contract_version,
         "scan_key": scan_key,
         "idempotency_key": idempotency_key,
         "inputs": {"image_ids": [str(i) for i in image_ids]},
     }
+    if provenance_extra:
+        prov.update(provenance_extra)
     if pipeline_run_id is not None:
         prov["pipeline_run_id"] = pipeline_run_id
     if drop_inputs:
@@ -274,7 +277,7 @@ def test_bare_contract_version_accepted(pg_conn):
     # The emitter stamps the bare PEP 440 package version; it must be accepted.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        res = _call(cur, _envelope(imgs, contract_version="0.1.0a7", idempotency_key="cvbare"))
+        res = _call(cur, _envelope(imgs, contract_version="0.1.0a9", idempotency_key="cvbare"))
         assert res["was_noop"] is False
     pg_conn.rollback()
 
@@ -283,7 +286,7 @@ def test_v_prefixed_contract_version_accepted(pg_conn):
     # The v-prefixed git-tag/$id form normalizes to the same pinned version.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        res = _call(cur, _envelope(imgs, contract_version="v0.1.0a7", idempotency_key="cvvpref"))
+        res = _call(cur, _envelope(imgs, contract_version="v0.1.0a9", idempotency_key="cvvpref"))
         assert res["was_noop"] is False
     pg_conn.rollback()
 
@@ -296,7 +299,7 @@ def test_a2_contract_version_rejected(pg_conn, ver):
     # fails if the a3 migration is reverted; bare `0.1.0a2` rejects either way.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva2"))
     pg_conn.rollback()
 
@@ -310,8 +313,23 @@ def test_a3_contract_version_rejected(pg_conn, ver):
     # migration is reverted; bare `0.1.0a3` rejects either way.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva3"))
+    pg_conn.rollback()
+
+
+@pytest.mark.parametrize("ver", ["0.1.0a7", "v0.1.0a7"])
+def test_a7_contract_version_rejected(pg_conn, ver):
+    # Hard cutover (repin-cyl-contract-a9, bloom#895): the previous pin (a7, either
+    # form) is refused with the mismatch error bloomctl classifies. The a7 RPC accepted
+    # both forms (it is prefix-tolerant), so either case fails if the a9 migration is
+    # reverted. ("Nothing is written" needs no separate assertion: a raising plpgsql
+    # call undoes its own writes; the source-gate ordering is proven by the raise
+    # itself, since a gate-first body would return was_noop instead.)
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
+            _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cva7"))
     pg_conn.rollback()
 
 
@@ -319,18 +337,19 @@ def test_contract_version_mismatch_rejected(pg_conn):
     # An arbitrary unrelated version is rejected.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version="v0.0.0a0", idempotency_key="cv"))
     pg_conn.rollback()
 
 
-@pytest.mark.parametrize("ver", ["V0.1.0a7", "0.1.0a7 ", "0.1.0a70", "vv0.1.0a7"])
+@pytest.mark.parametrize("ver", ["V0.1.0a9", "0.1.0a9 ", "0.1.0a90", "vv0.1.0a9", "0.1.0a8"])
 def test_version_boundary_forms_rejected(pg_conn, ver):
     # Normalization strips a single lowercase leading `v` only: uppercase V, a
-    # doubled vv, trailing whitespace, and near-miss versions all reject.
+    # doubled vv, trailing whitespace, and near-miss versions all reject, as does the
+    # never-pinned 0.1.0a8 (skipped between a7 and a9).
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvbound"))
     pg_conn.rollback()
 
@@ -342,7 +361,7 @@ def test_non_string_contract_version_rejected(pg_conn, ver):
     # accept.
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, contract_version=ver, idempotency_key="cvns"))
     pg_conn.rollback()
 
@@ -355,7 +374,7 @@ def test_absent_or_empty_contract_version_rejected(pg_conn, kwargs):
     # match rather than passing (the one way a naive `= pinned` would get wrong).
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
             _call(cur, _envelope(imgs, idempotency_key="cvae", **kwargs))
     pg_conn.rollback()
 
@@ -837,10 +856,11 @@ def test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id(pg_conn):
     during /review-pr, PR #880): there, both re-delivered scans' ORIGINAL
     delivery was a hand-submitted `argo submit`, which never inserts a
     cyl_pipeline_run_scans row at all (only services/workflows/pipeline.py's
-    dispatch path does) — so source_id was never stamped anywhere for those
-    sources, and this fallback has nothing to resolve scan_id from. See
-    design.md's Verification section for that scope limit;
-    test_fallback_finds_nothing_for_a_never_dispatched_workflow pins it."""
+    dispatch path does). #880's fallback had nothing to resolve scan_id from in
+    that shape; since fix-cyl-noop-redelivery-scan-resolution (bloom#900) it
+    reads the source's own cyl_trait_sources.scan_id first, and
+    tests/integration/test_cyl_noop_redelivery_scan.py covers the hand-submitted
+    and manual shapes."""
     with pg_conn.cursor() as cur:
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-a")
@@ -862,10 +882,14 @@ def test_noop_redelivery_under_new_workflow_name_falls_back_to_scan_id(pg_conn):
 
 
 def test_noop_redelivery_under_never_dispatched_workflow_reports_no_match(pg_conn):
-    """Negative control: if this source's ONLY prior delivery never supplied an
-    argo_workflow_name at all, no cyl_pipeline_run_scans row anywhere carries
-    its source_id, so the fallback lookup finds nothing and must not invent a
-    match — status_update_matched stays False, unchanged from before this fix."""
+    """Negative control: this source's ONLY prior delivery never supplied an
+    argo_workflow_name, and "wf-orphan" has no cyl_pipeline_run_scans row at all.
+    Since bloom#900 the fallback resolves the scan from the source's own
+    cyl_trait_sources.scan_id, but its targeted UPDATE (scoped to "wf-orphan")
+    finds no row and must not invent a match — status_update_matched is False.
+    It now exercises the same branch as
+    test_fallback_finds_nothing_for_a_never_dispatched_workflow; they differ only in
+    how the source was first written (no workflow name here, a Bloom run there)."""
     with pg_conn.cursor() as cur:
         _, imgs = _seed_scan(cur)
         env = _envelope(imgs, idempotency_key="redeliver-orphan")
@@ -933,10 +957,11 @@ def test_fallback_chains_across_a_third_workflow_redelivery(pg_conn):
     """/review-pr behavioral-correctness finding: after wf-b's fallback succeeds,
     TWO cyl_pipeline_run_scans rows now carry this source_id (wf-a's and wf-b's).
     A THIRD re-delivery under yet another new workflow name must still resolve
-    correctly -- the fallback's un-ordered `LIMIT 1` is safe here only because
-    every row ever stamped with this source_id is guaranteed to share the same
-    scan_id (the no-op branch never re-derives scan_id from a redelivery's own
-    image_ids), so which of the two candidate rows it picks cannot matter."""
+    correctly. Since bloom#900 the fallback reads the source's own
+    cyl_trait_sources.scan_id first; #880's un-ordered `LIMIT 1` over the carrying
+    rows is only the backup when that is NULL, and is safe because every row ever
+    stamped with this source_id shares the same scan_id (the no-op branch never
+    re-derives scan_id from a redelivery's own image_ids)."""
     with pg_conn.cursor() as cur:
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-chain-a")
@@ -959,12 +984,13 @@ def test_fallback_chains_across_a_third_workflow_redelivery(pg_conn):
 
 
 def test_fallback_finds_nothing_for_a_never_dispatched_workflow(pg_conn):
-    """/review-pr behavioral-correctness finding: distinct from
-    test_noop_redelivery_under_never_dispatched_workflow_reports_no_match (where
-    the ORIGINAL delivery never had a workflow name at all, so v_scan_id never
-    resolves and the fallback UPDATE never even runs). Here the original delivery
-    DID have a workflow name (so the fallback's scan_id lookup succeeds), but the
-    NEW workflow's own cyl_pipeline_run_scans row was never seeded at all -- not
+    """/review-pr behavioral-correctness finding. Under #880 this was distinct from
+    test_noop_redelivery_under_never_dispatched_workflow_reports_no_match, whose
+    original delivery had no workflow name, so #880's lookup found no scan at all.
+    Since bloom#900 both resolve the scan from the source's own scan_id and differ only
+    in how the source was first written. Here the original delivery DID have a
+    workflow name, but the NEW workflow's own cyl_pipeline_run_scans row was never
+    seeded at all -- not
     just source_id NULL, but no row for (new workflow, scan) exists at all. The
     fallback UPDATE must still degrade cleanly: it matches zero rows, not an
     error, and status_update_matched reports False."""
@@ -1052,6 +1078,52 @@ def test_writeback_and_rollup_connect_end_to_end(pg_conn):
         )
         run_status, run_done, run_failed = cur.fetchone()
         assert (run_status, run_done, run_failed) == ("partial", 2, 1)
+    pg_conn.rollback()
+
+
+def test_a_concluded_run_keeps_its_first_status_and_counts(pg_conn):
+    """fix-cyl-poller-unconcluded-runs (bloom#1042): reconcile, write the run's
+    terminal status once, then a later write — as the old poller made when a GC'd
+    Succeeded batch dropped out of its rollup — changes nothing: the run stays
+    'partial' with the counts first written."""
+    with pg_conn.cursor() as cur:
+        scan_ok, imgs_ok = _seed_scan(cur)
+        scan_fail, _ = _seed_scan(cur)
+        wf = "wf-final"
+        run_id = _seed_run_scan_for_writeback(cur, scan_ok, wf)
+        cur.execute(
+            "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status) "
+            "VALUES (%s, %s, %s, 'queued')",
+            (run_id, scan_fail, wf),
+        )
+        cur.execute("UPDATE cyl_pipeline_runs SET status = 'running' WHERE id = %s", (run_id,))
+
+        _call(cur, _envelope(imgs_ok, idempotency_key="final-1"), argo_workflow_name=wf)
+        cur.execute(f"SELECT {FAIL_RPC}(%s, %s)", (wf, "no envelope produced"))
+        assert _run_scan_status(cur, wf, scan_ok)[0] == "written"
+        assert _run_scan_status(cur, wf, scan_fail)[0] == "failed"
+        cur.execute(
+            "SELECT "
+            "  count(*) FILTER (WHERE status IN ('written', 'reused')), "
+            "  count(*) FILTER (WHERE status = 'failed') "
+            "FROM cyl_pipeline_run_scans WHERE run_id = %s",
+            (run_id,),
+        )
+        done_count, failed_count = cur.fetchone()
+        assert (done_count, failed_count) == (1, 1)
+        cur.execute(
+            "SELECT update_cyl_pipeline_run_status(%s, 'partial', %s, %s)",
+            (run_id, done_count, failed_count),
+        )
+        cur.execute(
+            "SELECT update_cyl_pipeline_run_status(%s, 'failed', 0, 2)", (run_id,)
+        )
+        cur.execute(
+            "SELECT status, done_count, failed_count, poller_concluded_at IS NOT NULL "
+            "FROM cyl_pipeline_runs WHERE id = %s",
+            (run_id,),
+        )
+        assert cur.fetchone() == ("partial", 1, 1, True)
     pg_conn.rollback()
 
 
@@ -1219,22 +1291,43 @@ def test_function_is_hardened(pg_conn):
     pg_conn.rollback()
 
 
+# The owner appears in the ACL once it is non-default; the other four are the only
+# sanctioned callers (cyl-trait-writeback: "EXECUTE SHALL be granted only to ...").
+SANCTIONED_EXECUTE = {"postgres", "bloom_writer", "service_role", "bloom_admin", "bloom_workflows"}
+
+
 def test_execute_grants_are_exactly_the_sanctioned_roles(pg_conn):
     # Signature is (jsonb, text) as of fix-cyl-pipeline-run-scan-status — the
     # 1-arg overload no longer exists (dropped by the new migration), so
     # has_function_privilege against the old signature would raise, not fail.
+    #
+    # Compares the WHOLE grantee set (repin-cyl-contract-a9). The earlier version
+    # checked only chosen roles, so it never noticed that Supabase's default
+    # privileges had also granted EXECUTE to anon and authenticated directly — a
+    # REVOKE ... FROM PUBLIC does not remove those.
+    sig = f"{RPC}(jsonb, text)"
     with pg_conn.cursor() as cur:
-        cur.execute("SELECT has_function_privilege('public', %s, 'EXECUTE')",
-                    (f"{RPC}(jsonb, text)",))
-        assert cur.fetchone()[0] is False, "PUBLIC must not execute the RPC"
-        for role in ["bloom_writer", "service_role", "bloom_admin", "bloom_workflows"]:
-            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')",
-                        (role, f"{RPC}(jsonb, text)"))
-            assert cur.fetchone()[0] is True, f"{role} should hold EXECUTE"
-        for role in ["bloom_user", "bloom_agent"]:
-            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')",
-                        (role, f"{RPC}(jsonb, text)"))
+        cur.execute("SELECT proacl IS NULL FROM pg_proc WHERE oid = %s::regprocedure", (sig,))
+        assert cur.fetchone()[0] is False, "NULL proacl is the default ACL: PUBLIC may execute"
+        cur.execute(
+            "SELECT coalesce(r.rolname, 'PUBLIC') "
+            "FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) a "
+            "LEFT JOIN pg_roles r ON r.oid = a.grantee "
+            "WHERE p.oid = %s::regprocedure AND a.privilege_type = 'EXECUTE'",
+            (sig,),
+        )
+        grantees = {row[0] for row in cur.fetchall()}
+        assert grantees == SANCTIONED_EXECUTE, (
+            f"unexpected EXECUTE grantees {sorted(grantees - SANCTIONED_EXECUTE)}, "
+            f"missing {sorted(SANCTIONED_EXECUTE - grantees)}"
+        )
+        # Effective privilege too (catches grants reached through role membership).
+        for role in ["public", "anon", "authenticated", "bloom_user", "bloom_agent"]:
+            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig))
             assert cur.fetchone()[0] is False, f"{role} must not hold EXECUTE"
+        for role in ["bloom_writer", "service_role", "bloom_admin", "bloom_workflows"]:
+            cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, sig))
+            assert cur.fetchone()[0] is True, f"{role} should hold EXECUTE"
     pg_conn.rollback()
 
 
@@ -1340,7 +1433,7 @@ def _sql_body(path: Path) -> str:
     """The migration/rollback body minus its BEGIN;/COMMIT; wrapper, applied inside
     the fixture's uncommitted transaction (CRLF-safe, matching the change-C pattern)."""
     return "\n".join(
-        line for line in path.read_text().splitlines()
+        line for line in path.read_text(encoding="utf-8").splitlines()
         if not re.match(r"^\s*(BEGIN|COMMIT)\s*;\s*$", line, re.IGNORECASE)
     )
 
@@ -1504,9 +1597,12 @@ def test_scan_status_rollback_restores_1arg_signature(pg_conn):
         assert cur.fetchone() is not None, "rollback did not restore the 1-arg signature"
         cur.execute("SELECT 1 FROM pg_proc WHERE proname='fail_cyl_pipeline_run_scans_without_result'")
         assert cur.fetchone() is None, "rollback did not drop the new RPC"
-        # the restored 1-arg signature is genuinely callable via the old shape
+        # the restored 1-arg signature is genuinely callable via the old shape. Explicit
+        # 0.1.0a7: ROLLBACK_SCAN_STATUS restores an a7-pinned body, whatever PINNED_VERSION
+        # the live RPC has since moved to.
         _, imgs = _seed_scan(cur)
-        cur.execute(f"SELECT {RPC}(%s::jsonb)", (json.dumps(_envelope(imgs, idempotency_key="rb1")),))
+        env = _envelope(imgs, contract_version="0.1.0a7", idempotency_key="rb1")
+        cur.execute(f"SELECT {RPC}(%s::jsonb)", (json.dumps(env),))
         res = cur.fetchone()[0]
         res = json.loads(res) if isinstance(res, str) else res
         assert res["was_noop"] is False
@@ -1649,7 +1745,9 @@ def test_redelivery_status_fallback_migration_is_idempotent(pg_conn):
         # the fallback is genuinely present and callable, not just non-erroring
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-idem-a")
-        env = _envelope(imgs, idempotency_key="idem-875")
+        # Explicit 0.1.0a7: this migration's body is a7-pinned, whatever PINNED_VERSION the
+        # live RPC has since moved to.
+        env = _envelope(imgs, contract_version="0.1.0a7", idempotency_key="idem-875")
         _call(cur, env, argo_workflow_name="wf-idem-a")
         _seed_run_scan_for_writeback(cur, scan_id, "wf-idem-b")
         res = _call(cur, env, argo_workflow_name="wf-idem-b")
@@ -1671,7 +1769,8 @@ def test_redelivery_status_fallback_rollback_restores_prior_body(pg_conn):
 
         scan_id, imgs = _seed_scan(cur)
         _seed_run_scan_for_writeback(cur, scan_id, "wf-rb-a")
-        env = _envelope(imgs, idempotency_key="rb-875")
+        # Explicit 0.1.0a7: the migration and its rollback are both a7-pinned.
+        env = _envelope(imgs, contract_version="0.1.0a7", idempotency_key="rb-875")
         _call(cur, env, argo_workflow_name="wf-rb-a")
         _seed_run_scan_for_writeback(cur, scan_id, "wf-rb-b")
         res = _call(cur, env, argo_workflow_name="wf-rb-b")
@@ -1680,4 +1779,470 @@ def test_redelivery_status_fallback_rollback_restores_prior_body(pg_conn):
             "the rollback must remove the fallback -- a cross-workflow no-op "
             "redelivery reverts to the pre-fix, unmatched behavior"
         )
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# repin-cyl-contract-a9 (bloom#895) -- a9 re-pin migration: idempotent re-apply,
+# rollback restores the a7 body WITH the bloom#875 fallback, and no cutover guard.
+#
+# CI's ambient DB already has the a9 migration applied, so every test below first
+# restores the pre-a9 (a7) body, MIGRATION_REDELIVERY_STATUS_FALLBACK, inside its own
+# uncommitted transaction -- otherwise re-applying a9 would be a
+# no-op over a9 and the tests could never fail. Nothing here commits.
+# --------------------------------------------------------------------------- #
+
+_TS_A9 = "20260928130000_cyl_writeback_contract_a9"
+MIGRATION_A9 = REPO_ROOT / "supabase" / "migrations" / f"{_TS_A9}.sql"
+ROLLBACK_A9 = REPO_ROOT / "supabase" / "rollbacks" / f"{_TS_A9}_rollback.sql"
+
+
+def _rpc_overload_arg_counts(cur):
+    cur.execute(
+        "SELECT pronargs FROM pg_proc WHERE proname = 'insert_cyl_result_envelope' "
+        "AND pronamespace = 'public'::regnamespace ORDER BY pronargs"
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+def _source_snapshot(cur, idem):
+    """Everything a re-pin must leave untouched for one source: the source row itself
+    (whole row as jsonb), its trait rows, and its intermediates rows."""
+    cur.execute(
+        "SELECT to_jsonb(s) FROM cyl_trait_sources s WHERE s.idempotency_key = %s", (idem,)
+    )
+    source = cur.fetchone()[0]
+    cur.execute(
+        "SELECT to_jsonb(st) FROM cyl_scan_traits st WHERE st.source_id = %s "
+        "ORDER BY st.trait_id",
+        (source["id"],),
+    )
+    traits = [r[0] for r in cur.fetchall()]
+    cur.execute(
+        "SELECT to_jsonb(ci) FROM cyl_scan_intermediates ci WHERE ci.source_id = %s "
+        "ORDER BY ci.id",
+        (source["id"],),
+    )
+    blobs = [r[0] for r in cur.fetchall()]
+    return {"source": source, "traits": traits, "blobs": blobs}
+
+
+def test_a9_migration_body_is_idempotent(pg_conn):
+    # Re-applying the a9 migration over itself is a clean no-op: same 2-arg signature,
+    # CREATE OR REPLACE only, no stale 1-arg overload recreated.
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK))  # the pre-a9 (a7) body
+        cur.execute(_sql_body(MIGRATION_A9))
+        cur.execute(_sql_body(MIGRATION_A9))  # second apply: must be a no-op, not an error
+        assert _rpc_overload_arg_counts(cur) == [2], "a9 must not recreate the (jsonb) overload"
+        _, imgs = _seed_scan(cur)
+        res = _call(cur, _envelope(imgs, contract_version="0.1.0a9", idempotency_key="a9idem"))
+        assert res["was_noop"] is False
+        _, imgs2 = _seed_scan(cur)
+        cur.execute("SAVEPOINT expect_a7_rejected")
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
+            _call(cur, _envelope(imgs2, contract_version="0.1.0a7", idempotency_key="a9idem-a7"))
+        cur.execute("ROLLBACK TO SAVEPOINT expect_a7_rejected")
+    pg_conn.rollback()
+
+
+def test_a9_rollback_restores_a7_with_redelivery_fallback(pg_conn):
+    """Apply a9 then its rollback: a9 is rejected again, a7 is accepted, AND the
+    bloom#875 cross-workflow no-op fallback still matches -- proving the rollback
+    restored 20260917140000's body, not the older pre-fallback 20260912110000 body
+    that 20260917140000's own rollback restores."""
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK))
+        cur.execute(_sql_body(MIGRATION_A9))
+        cur.execute(_sql_body(ROLLBACK_A9))
+        assert _rpc_overload_arg_counts(cur) == [2], "rollback is body-only"
+        scan_id, imgs = _seed_scan(cur)
+        cur.execute("SAVEPOINT expect_a9_rejected")
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
+            _call(cur, _envelope(imgs, contract_version="0.1.0a9", idempotency_key="a9rb-a9"))
+        cur.execute("ROLLBACK TO SAVEPOINT expect_a9_rejected")
+
+        env = _envelope(imgs, contract_version="0.1.0a7", idempotency_key="a9rb-875")
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-a9rb-a")
+        first = _call(cur, env, argo_workflow_name="wf-a9rb-a")
+        assert first["was_noop"] is False
+        _seed_run_scan_for_writeback(cur, scan_id, "wf-a9rb-b")
+        res = _call(cur, env, argo_workflow_name="wf-a9rb-b")
+        assert res["was_noop"] is True
+        assert res["status_update_matched"] is True, (
+            "the a9 rollback must restore the bloom#875 fallback body, not the pre-fallback one"
+        )
+    pg_conn.rollback()
+
+
+def test_a9_migration_applies_over_existing_a7_rows(pg_conn):
+    """No cutover guard (bloom#685/#787 regression): the a9 migration applies over a
+    real a7-stamped source row without raising, and leaves that row, its traits and its
+    blobs byte-for-byte unchanged and still readable. A same-key a7 re-delivery is then
+    rejected before the source gate (it raises; it is NOT reported as a no-op)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(_sql_body(MIGRATION_REDELIVERY_STATUS_FALLBACK))  # the pre-a9 (a7) body
+        scan_id, imgs = _seed_scan(cur)
+        env = _envelope(
+            imgs, contract_version="0.1.0a7", idempotency_key="a9-over-a7",
+            traits=[_trait("t_a9_over_a7", 1.5)], blobs=[_blob()],
+        )
+        assert _call(cur, env)["was_noop"] is False
+        before = _source_snapshot(cur, "a9-over-a7")
+        assert before["source"]["metadata"]["contract_version"] == "0.1.0a7"
+        assert len(before["traits"]) == 1 and len(before["blobs"]) == 1
+
+        def visible_via_read_path():
+            cur.execute(
+                "SELECT value FROM cyl_scan_traits_source "
+                "WHERE scan_id = %s AND trait_name = 't_a9_over_a7' AND source_id = %s",
+                (scan_id, before["source"]["id"]),
+            )
+            return cur.fetchall()
+
+        assert visible_via_read_path() == [(1.5,)]
+
+        cur.execute(_sql_body(MIGRATION_A9))  # must not raise: there is no guard
+        assert _source_snapshot(cur, "a9-over-a7") == before
+        assert visible_via_read_path() == [(1.5,)]
+
+        cur.execute("SAVEPOINT expect_a7_redelivery_rejected")
+        with pytest.raises(psycopg.errors.RaiseException, match="contract_version mismatch"):
+            _call(cur, env)  # same idempotency key
+        cur.execute("ROLLBACK TO SAVEPOINT expect_a7_redelivery_rejected")
+        assert _source_snapshot(cur, "a9-over-a7") == before
+
+        # Recovery: the bumped traits image delivers an a9 envelope for the same scan
+        # under a new key (new traits_code_sha). It becomes the scan's latest source;
+        # the a7 row stays, unchanged, as superseded history.
+        recomputed = _call(cur, _envelope(
+            imgs, contract_version="0.1.0a9", idempotency_key="a9-over-a7-recomputed",
+            traits=[_trait("t_a9_over_a7", 2.5)],
+            blobs=[_blob(s3_location="s3://bloom/p-a9-recomputed.slp")],
+        ))
+        assert recomputed["was_noop"] is False and recomputed["scan_id"] == scan_id
+        cur.execute(
+            "SELECT source_id, value, is_latest FROM cyl_scan_traits_source "
+            "WHERE scan_id = %s AND trait_name = 't_a9_over_a7' ORDER BY source_id",
+            (scan_id,),
+        )
+        assert cur.fetchall() == [
+            (before["source"]["id"], 1.5, False),
+            (recomputed["source_id"], 2.5, True),
+        ]
+        assert _source_snapshot(cur, "a9-over-a7") == before
+    pg_conn.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# add-cyl-trait-recipe-key: write-back stamps the recipe, scan, Workflow and run
+# (cyl-trait-writeback "Write-back stamps each new source with its recipe, scan,
+# Workflow and run"; migration 2)
+# --------------------------------------------------------------------------- #
+
+import uuid  # noqa: E402
+
+from tests.integration.cyl_recipe_helpers import (  # noqa: E402
+    acl_set,
+    apply_recipe_rollbacks,
+    migration,
+    recipe_columns,
+    rollback,
+    sql_body,
+)
+
+_REALISTIC = {
+    "predict_models": [
+        {"registry_id": "org/reg/canola-primary", "version": "v0", "sleap_nn_version": "0.3.0",
+         "root_type": "primary", "weights_checksum": "a6b2"},
+        {"registry_id": "org/reg/canola-lateral", "version": "v0", "sleap_nn_version": "0.3.0",
+         "root_type": "lateral", "weights_checksum": "75e1"},
+    ],
+    "predict_code_sha": "9a6f20c0",
+    "traits_code_sha": "e373b0f9",
+    "predict_output_params": {"peak_threshold": 0.2},
+}
+
+
+def _wf():
+    return f"wf-{uuid.uuid4().hex[:10]}"
+
+
+def _deliver(cur, *, workflow=None, extra=_REALISTIC, idem=None, scan=None):
+    scan_id, imgs = scan or _seed_scan(cur)
+    idem = idem or f"recipe-{uuid.uuid4().hex}"
+    res = _call(cur, _envelope(imgs, idempotency_key=idem, provenance_extra=extra),
+                argo_workflow_name=workflow)
+    return scan_id, imgs, idem, res
+
+
+def _helper_key(cur, source_id):
+    cur.execute("SELECT public.cyl_trait_recipe_key_v1(metadata) FROM cyl_trait_sources "
+                "WHERE id = %s", (source_id,))
+    return cur.fetchone()[0]
+
+
+@pytest.mark.parametrize("extra", [_REALISTIC, None], ids=["realistic", "no-model-fields"])
+def test_fresh_delivery_stamps_recipe_key_and_scan_id(pg_conn, extra):
+    with pg_conn.cursor() as cur:
+        scan_id, _, _, res = _deliver(cur, extra=extra)
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["recipe_key"] == _helper_key(cur, res["source_id"])
+        assert cols["recipe_key_version"] == 1
+        assert cols["scan_id"] == res["scan_id"] == scan_id
+
+
+def test_dispatched_delivery_stamps_workflow_and_run(pg_conn):
+    with pg_conn.cursor() as cur:
+        scan = _seed_scan(cur)
+        wf = _wf()
+        run_id = _seed_run_scan_for_writeback(cur, scan[0], wf)
+        _, _, _, res = _deliver(cur, workflow=wf, scan=scan)
+        cols = recipe_columns(cur, res["source_id"])
+        assert (cols["argo_workflow_name"], cols["cyl_pipeline_run_id"]) == (wf, run_id)
+        assert res["status_update_matched"] is True
+
+
+def test_unrequested_scan_still_stamps_run(pg_conn):
+    with pg_conn.cursor() as cur:
+        other_scan, _ = _seed_scan(cur)
+        wf = _wf()
+        run_id = _seed_run_scan_for_writeback(cur, other_scan, wf)
+        cur.execute("SELECT count(*) FROM cyl_pipeline_run_scans")
+        before = cur.fetchone()[0]
+        _, _, _, res = _deliver(cur, workflow=wf)
+        cur.execute("SELECT count(*) FROM cyl_pipeline_run_scans")
+        assert cur.fetchone()[0] == before
+        assert recipe_columns(cur, res["source_id"])["cyl_pipeline_run_id"] == run_id
+        assert res["status_update_matched"] is False
+
+
+def test_batch_workflow_stamps_its_one_run(pg_conn):
+    # One Argo Workflow per batch: several run-scan rows of ONE run share the name, so
+    # the lookup must count distinct runs, not rows.
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        scans = [_seed_scan(cur) for _ in range(3)]
+        run_id = _seed_run_scan_for_writeback(cur, scans[0][0], wf)
+        for scan_id, _ in scans[1:]:
+            cur.execute(
+                "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status)"
+                " VALUES (%s, %s, %s, 'queued')",
+                (run_id, scan_id, wf),
+            )
+        _, _, _, res = _deliver(cur, workflow=wf, scan=scans[1])
+        assert recipe_columns(cur, res["source_id"])["cyl_pipeline_run_id"] == run_id
+        _, _, _, unrequested = _deliver(cur, workflow=wf)
+        assert (
+            recipe_columns(cur, unrequested["source_id"])["cyl_pipeline_run_id"] == run_id
+        )
+
+
+def test_hand_submitted_delivery_stamps_workflow_only(pg_conn):
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        _, _, _, res = _deliver(cur, workflow=wf)
+        cols = recipe_columns(cur, res["source_id"])
+        assert (cols["argo_workflow_name"], cols["cyl_pipeline_run_id"]) == (wf, None)
+
+
+def test_ambiguous_workflow_name_stamps_no_run(pg_conn):
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        a, _ = _seed_scan(cur)
+        b, _ = _seed_scan(cur)
+        _seed_run_scan_for_writeback(cur, a, wf)
+        _seed_run_scan_for_writeback(cur, b, wf)
+        _, _, _, res = _deliver(cur, workflow=wf)
+        cols = recipe_columns(cur, res["source_id"])
+        assert (cols["argo_workflow_name"], cols["cyl_pipeline_run_id"]) == (wf, None)
+
+
+def test_no_workflow_name_stamps_neither(pg_conn):
+    with pg_conn.cursor() as cur:
+        _, _, _, res = _deliver(cur)
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["argo_workflow_name"] is None and cols["cyl_pipeline_run_id"] is None
+        assert cols["recipe_key"] is not None and cols["scan_id"] is not None
+
+
+def _stamps_across_redelivery(cur):
+    """Deliver under W1 (dispatched), then re-deliver the same envelope under W2
+    (another run's row for the same scan). Returns the stamps before and after."""
+    scan = _seed_scan(cur)
+    w1, w2 = _wf(), _wf()
+    _seed_run_scan_for_writeback(cur, scan[0], w1)
+    _seed_run_scan_for_writeback(cur, scan[0], w2)
+    _, _, idem, res = _deliver(cur, workflow=w1, scan=scan)
+    before = recipe_columns(cur, res["source_id"])
+    again = _call(cur, _envelope(scan[1], idempotency_key=idem, provenance_extra=_REALISTIC),
+                  argo_workflow_name=w2)
+    assert again["was_noop"] is True
+    return before, recipe_columns(cur, res["source_id"])
+
+
+def test_noop_redelivery_leaves_stamps_unchanged(pg_conn):
+    with pg_conn.cursor() as cur:
+        before, after = _stamps_across_redelivery(cur)
+        assert after == before
+
+
+def test_noop_stamp_guard_detects_mutation(pg_conn):
+    # Proves the test above can fail: a no-op branch that rewrote the stamps is caught.
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT pg_get_functiondef("
+                    "'public.insert_cyl_result_envelope(jsonb,text)'::regprocedure)")
+        body = cur.fetchone()[0]
+        marker = "v_was_noop := true;"
+        assert body.count(marker) == 1
+        cur.execute(body.replace(marker, marker + " UPDATE public.cyl_trait_sources SET "
+                                 "argo_workflow_name = p_argo_workflow_name WHERE id = v_source_id;"))
+        before, after = _stamps_across_redelivery(cur)
+        assert after["argo_workflow_name"] != before["argo_workflow_name"]
+
+
+@pytest.mark.parametrize("breakage", ["image_ids", "grain", "file_size"])
+def test_failed_delivery_leaves_no_source(pg_conn, breakage):
+    with pg_conn.cursor() as cur:
+        _, imgs = _seed_scan(cur)
+        idem = f"recipe-fail-{uuid.uuid4().hex}"
+        env = _envelope(imgs, idempotency_key=idem, provenance_extra=_REALISTIC)
+        if breakage == "image_ids":
+            env["provenance"]["inputs"]["image_ids"] = ["999999999999"]
+        elif breakage == "grain":
+            env["traits"] = [_trait("t", 1.0, grain="plant")]
+        else:
+            env["blobs"] = [_blob(file_size="12.5")]
+        cur.execute("SAVEPOINT f")
+        with pytest.raises(psycopg.errors.RaiseException):
+            _call(cur, env)
+        cur.execute("ROLLBACK TO SAVEPOINT f")
+        assert _source_id(cur, idem) is None
+
+
+def test_redelivery_fallback_with_stamped_source(pg_conn):
+    with pg_conn.cursor() as cur:
+        scan = _seed_scan(cur)
+        wa, wb = _wf(), _wf()
+        _seed_run_scan_for_writeback(cur, scan[0], wa)
+        _, _, idem, res = _deliver(cur, workflow=wa, scan=scan)
+        stamped = recipe_columns(cur, res["source_id"])
+        _seed_run_scan_for_writeback(cur, scan[0], wb)
+        again = _call(cur, _envelope(scan[1], idempotency_key=idem, provenance_extra=_REALISTIC),
+                      argo_workflow_name=wb)
+        assert again["was_noop"] is True and again["status_update_matched"] is True
+        assert _run_scan_status(cur, wb, scan[0]) == ("written", res["source_id"])
+        assert recipe_columns(cur, res["source_id"]) == stamped
+
+
+def test_source_written_between_migrations_is_backfilled(pg_conn):
+    with pg_conn.cursor() as cur:
+        apply_recipe_rollbacks(cur, down_to=2)
+        _, _, _, res = _deliver(cur)
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["recipe_key"] is None and cols["scan_id"] is None
+        cur.execute(sql_body(migration(2)))
+        cols = recipe_columns(cur, res["source_id"])
+        assert cols["recipe_key"] is not None and cols["scan_id"] == res["scan_id"]
+
+
+def _arg_counts(cur):
+    cur.execute("SELECT array_agg(pronargs) FROM pg_proc "
+                "WHERE proname = 'insert_cyl_result_envelope'")
+    return cur.fetchone()[0]
+
+
+def test_migration_2_body_is_idempotent(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(sql_body(migration(2)))
+        cur.execute(sql_body(migration(2)))
+        assert _arg_counts(cur) == [2]
+        _, _, _, res = _deliver(cur)
+        assert recipe_columns(cur, res["source_id"])["recipe_key"] is not None
+
+
+_RPC_ACL = {(r, "EXECUTE") for r in
+            ("postgres", "service_role", "bloom_writer", "bloom_admin", "bloom_workflows")}
+
+
+def test_rollback_2_restores_a9_body_and_grants(pg_conn):
+    with pg_conn.cursor() as cur:
+        apply_recipe_rollbacks(cur, down_to=2)
+        _, _, _, res = _deliver(cur, workflow=_wf())
+        cols = recipe_columns(cur, res["source_id"])
+        assert all(v is None for v in cols.values()), cols
+        scan = _seed_scan(cur)
+        wa, wb = _wf(), _wf()
+        _seed_run_scan_for_writeback(cur, scan[0], wa)
+        _, _, idem, _ = _deliver(cur, workflow=wa, scan=scan)
+        _seed_run_scan_for_writeback(cur, scan[0], wb)
+        again = _call(cur, _envelope(scan[1], idempotency_key=idem), argo_workflow_name=wb)
+        assert again["status_update_matched"] is True
+        assert acl_set(cur, "public.insert_cyl_result_envelope(jsonb,text)") == _RPC_ACL
+        assert _arg_counts(cur) == [2]
+
+
+def test_rpc_acl_is_the_sanctioned_set(pg_conn):
+    with pg_conn.cursor() as cur:
+        assert acl_set(cur, "public.insert_cyl_result_envelope(jsonb,text)") == _RPC_ACL
+
+
+def test_rollback_1_refuses_while_stamping_body_is_live(pg_conn):
+    if migration(2) is None:
+        pytest.skip("migration 2 not written yet")
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT r1")
+        with pytest.raises(psycopg.errors.RaiseException, match="insert_cyl_result_envelope"):
+            cur.execute(sql_body(rollback(1)))
+        cur.execute("ROLLBACK TO SAVEPOINT r1")
+
+
+# --------------------------------------------------------------------------- #
+# fix-cyl-writeback-retry-reconcile (bloom #1034): the DB contract bloomctl's
+# deferred reconciliation relies on. Contrast
+# test_late_delivery_after_already_failed_does_not_resurrect: there the row was
+# closed before the delivery, so the guard keeps it 'failed'. With no reconcile
+# between attempts, a retried delivery marks it 'written'.
+# --------------------------------------------------------------------------- #
+
+
+def test_retry_attempt_sequence_without_an_intervening_reconcile_ends_written(pg_conn):
+    with pg_conn.cursor() as cur:
+        wf = _wf()
+        (s1, imgs1), (s2, imgs2), (s3, _) = (_seed_scan(cur) for _ in range(3))
+        run_id = _seed_run_scan_for_writeback(cur, s1, wf)
+        for scan_id in (s2, s3):
+            cur.execute(
+                "INSERT INTO cyl_pipeline_run_scans (run_id, scan_id, argo_workflow_name, status)"
+                " VALUES (%s, %s, %s, 'queued')",
+                (run_id, scan_id, wf),
+            )
+        key1, key2 = f"retry-{uuid.uuid4().hex}", f"retry-{uuid.uuid4().hex}"
+
+        # Attempt 1: scan 1 is written; scan 2's delivery is rejected and rolled back.
+        first = _call(cur, _envelope(imgs1, idempotency_key=key1), argo_workflow_name=wf)
+        assert first["status_update_matched"] is True
+        with pg_conn.transaction():
+            with pytest.raises(psycopg.errors.RaiseException):
+                with pg_conn.transaction():
+                    _call(
+                        cur,
+                        _envelope(imgs2, contract_version="v0.0.0a0", idempotency_key=key2),
+                        argo_workflow_name=wf,
+                    )
+            assert _run_scan_status(cur, wf, s2) == ("queued", None)
+        # No reconciliation: bloomctl defers it because scan 2 failed retriably.
+
+        # Attempt 2 (Argo's retry, same workflow name): scan 1 is a no-op re-delivery.
+        again = _call(cur, _envelope(imgs1, idempotency_key=key1), argo_workflow_name=wf)
+        assert again["was_noop"] is True and again["status_update_matched"] is True
+        second = _call(cur, _envelope(imgs2, idempotency_key=key2), argo_workflow_name=wf)
+        assert second["was_noop"] is False and second["status_update_matched"] is True
+
+        cur.execute(f"SELECT {FAIL_RPC}(%s, 'no result produced')", (wf,))
+        assert cur.fetchone()[0] == 1  # only scan 3, which never had an envelope
+
+        assert _run_scan_status(cur, wf, s1)[0] == "written"
+        assert _run_scan_status(cur, wf, s2) == ("written", second["source_id"])
+        assert _run_scan_status(cur, wf, s3) == ("failed", None)
     pg_conn.rollback()

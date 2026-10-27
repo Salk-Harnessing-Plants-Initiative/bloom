@@ -6,20 +6,38 @@ main.py's `/pipeline` endpoint using FastAPI's `TestClient` + `dependency_overri
 correctly without duplicating auth.py's own already-covered test_auth.py logic.
 """
 
+import random
+
 import pipeline
+import postgrest_batches
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 # --------------------------------------------------------------------------- #
 # Fake supabase client — routes by table name; tracks every table() call so
-# tests can assert call counts (e.g. "one batched query, not a per-scan loop").
+# tests can assert call counts (e.g. "batched by id-list length, not a per-scan
+# loop"), and records every .in_() id list.
 # --------------------------------------------------------------------------- #
 
 
 class _Result:
     def __init__(self, data):
         self.data = data
+
+
+# The dev gateway answered 200 at 1,312 ids and 414 at 1,343, about 5.4 KB of id list
+# (measured for PR #650). The fake refuses a longer list the way the gateway does, so an
+# unbatched filter fails a test instead of passing silently.
+_GATEWAY_ID_LIST_LIMIT_CHARS = 5400
+
+
+class _UriTooLong(Exception):
+    pass
+
+
+def _rendered(vals):
+    return ",".join(str(v) for v in vals)
 
 
 def _apply_filters(rows, filters):
@@ -49,7 +67,13 @@ class _Query:
         return self
 
     def in_(self, key, vals):
-        self._filters.append(("in_", key, list(vals)))
+        vals = list(vals)
+        self._client.in_calls.append((self._table, key, vals))
+        if len(_rendered(vals)) > _GATEWAY_ID_LIST_LIMIT_CHARS:
+            raise _UriTooLong(
+                f"414 URI Too Long: {self._table}.{key} in.({len(vals)} ids)"
+            )
+        self._filters.append(("in_", key, vals))
         return self
 
     def limit(self, *a, **k):
@@ -108,6 +132,7 @@ class _FakeClient:
             "cyl_trait_sources": cyl_trait_sources or [],
         }
         self.calls: list[str] = []
+        self.in_calls: list[tuple] = []
         self.order_calls: list[tuple] = []
         self.rpc_calls: list[tuple] = []
         self.inserted_runs: list[dict] = []
@@ -459,7 +484,7 @@ def test_enumerate_experiment_orders_by_scan_id(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Dedup preview — informational only, checks ALL sources, one batched query
+# Dedup preview — informational only, checks ALL sources, batched by id-list length
 # --------------------------------------------------------------------------- #
 
 
@@ -571,6 +596,48 @@ def test_dedup_preview_works_for_wave_level_trigger_with_mixed_matches(monkeypat
     assert len(client.inserted_run_scans) == 3  # all still written/enqueued
 
 
+def test_dedup_preview_ignores_trait_rows_with_a_null_source(monkeypatch):
+    # (characterization) cyl_scan_traits.source_id is nullable (older rows). A NULL
+    # must be dropped, not sorted against ints or sent as `id=in.(None)`.
+    h = _hash_of({"age": 14})
+    client = _FakeClient(
+        cyl_scans_extended=[{"scan_id": 1}, {"scan_id": 2}],
+        cyl_scan_traits=[
+            {"scan_id": 1, "source_id": None},
+            {"scan_id": 1, "source_id": 5},
+            {"scan_id": 2, "source_id": None},
+        ],
+        cyl_trait_sources=[_source(5, h)],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": [1, 2],
+        "params": {"age": 14},
+    }
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    assert result["reused_count"] == 1
+    assert _in_lists(client, "cyl_trait_sources") == [[5]]
+
+
+def test_dedup_preview_skips_the_source_query_when_every_source_is_null(monkeypatch):
+    # (characterization)
+    client = _FakeClient(
+        cyl_scans_extended=[{"scan_id": 1}],
+        cyl_scan_traits=[{"scan_id": 1, "source_id": None}],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {"target_level": "scan", "target_id": 1, "params": {"age": 14}}
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    assert result["reused_count"] == 0
+    assert "cyl_trait_sources" not in client.calls
+
+
 def test_all_scans_matching_prior_source_still_all_enqueued_not_short_circuited(
     monkeypatch,
 ):
@@ -599,7 +666,9 @@ def test_all_scans_matching_prior_source_still_all_enqueued_not_short_circuited(
 
 
 def test_dedup_preview_issues_one_batched_query_not_a_per_scan_loop(monkeypatch):
-    h = _hash_of({})
+    # Non-empty params: the preview is skipped outright for `{}` (see
+    # test_empty_params_skips_the_dedup_preview_entirely).
+    h = _hash_of({"age": 14})
 
     def _run_with(n_scans):
         scans = [{"scan_id": i} for i in range(1, n_scans + 1)]
@@ -617,7 +686,7 @@ def test_dedup_preview_issues_one_batched_query_not_a_per_scan_loop(monkeypatch)
             "target_level": "scan_ids",
             "target_id": None,
             "scan_ids": [s["scan_id"] for s in scans],
-            "params": {},
+            "params": {"age": 14},
         }
         pipeline.trigger_pipeline(body, "user-1")
         return client.calls.count("cyl_scan_traits") + client.calls.count(
@@ -626,7 +695,185 @@ def test_dedup_preview_issues_one_batched_query_not_a_per_scan_loop(monkeypatch)
 
     small = _run_with(3)
     large = _run_with(30)
-    assert small == large == 2  # exactly one query per table, regardless of scan count
+    # Both id lists fit in one batch, so one query per table regardless of scan count.
+    assert small == large == 2
+
+
+# --------------------------------------------------------------------------- #
+# Id-list filters are batched under the gateway's URL limit (bloom#901)
+# --------------------------------------------------------------------------- #
+
+_BUDGET = postgrest_batches.ID_FILTER_BUDGET_CHARS
+
+
+def _in_lists(client, table):
+    return [vals for t, _key, vals in client.in_calls if t == table]
+
+
+def _assert_within_budget(lists):
+    for vals in lists:
+        assert len(_rendered(vals)) <= _BUDGET
+
+
+def test_large_scan_ids_request_is_existence_checked_in_batches(monkeypatch):
+    ids = list(range(1000, 4000))  # 3000 four-digit ids
+    client = _FakeClient(cyl_scans_extended=[{"scan_id": i} for i in ids])
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": ids,
+        "params": {},
+    }
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    checks = _in_lists(client, "cyl_scans_extended")
+    # 3000 ids x 5 characters (4 digits + comma) = 15,000, so 4 requests: batched by
+    # length, not one per id.
+    assert len(checks) == 4
+    _assert_within_budget(checks)
+    assert [v for vals in checks for v in vals] == ids
+    assert result["scan_count"] == 3000
+    assert [r["scan_id"] for r in client.inserted_run_scans] == ids
+
+
+def test_scan_ids_are_batched_by_rendered_length_not_by_count(monkeypatch):
+    # bigint ids can have 19 digits: 500 of them render 9,999 characters, which a
+    # fixed-count batch would send in one request. By length it is 200 per request.
+    base = 9_000_000_000_000_000_000
+    ids = [base + i for i in range(600)]
+    client = _FakeClient(cyl_scans_extended=[{"scan_id": i} for i in ids])
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": ids,
+        "params": {},
+    }
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    checks = _in_lists(client, "cyl_scans_extended")
+    assert [len(vals) for vals in checks] == [200, 200, 200]
+    _assert_within_budget(checks)
+    assert result["scan_count"] == 600
+
+
+def test_missing_scan_id_in_the_last_batch_is_still_a_404_with_no_rows(monkeypatch):
+    ids = list(range(1000, 4000))
+    missing = ids[-1]
+    client = _FakeClient(cyl_scans_extended=[{"scan_id": i} for i in ids[:-1]])
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": ids,
+        "params": {},
+    }
+
+    with pytest.raises(HTTPException) as ei:
+        pipeline.trigger_pipeline(body, "user-1")
+
+    assert ei.value.status_code == 404
+    assert str(missing) in ei.value.detail
+    checks = _in_lists(client, "cyl_scans_extended")
+    assert len(checks) > 1 and missing in checks[-1] and missing not in checks[0]
+    assert client.inserted_runs == []
+    assert client.inserted_run_scans == []
+    assert client.rpc_calls == []
+
+
+def test_large_experiment_dedup_preview_is_batched_and_counts_the_same(monkeypatch):
+    params = {"age": 14}
+    match, other = _hash_of(params), _hash_of({"age": 21})
+    scan_ids = list(range(1000, 3500))  # 2500 scans
+    # Two sources per scan (six-digit ids), so the source list is ~2x the scan list
+    # and is batched too. Source ids are shuffled against scan order, so a scan's
+    # sources land in unrelated source batches. Every third scan has one match.
+    source_ids = list(range(100_000, 105_000))
+    random.Random(901).shuffle(source_ids)
+    traits, sources, expected_reused = [], [], set()
+    for n, sid in enumerate(scan_ids):
+        older, newer = source_ids[2 * n], source_ids[2 * n + 1]
+        traits += [
+            {"scan_id": sid, "source_id": older},
+            {"scan_id": sid, "source_id": newer},
+        ]
+        sources += [
+            _source(older, match if n % 3 == 0 else other),
+            _source(newer, other),
+        ]
+        if n % 3 == 0:
+            expected_reused.add(sid)
+    client = _FakeClient(
+        cyl_experiments=[{"id": 9}],
+        cyl_scans_extended=[{"scan_id": s, "experiment_id": 9} for s in scan_ids],
+        cyl_scan_traits=traits,
+        cyl_trait_sources=sources,
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {"target_level": "experiment", "target_id": 9, "params": params}
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    trait_lists = _in_lists(client, "cyl_scan_traits")
+    source_lists = _in_lists(client, "cyl_trait_sources")
+    assert len(trait_lists) > 1 and len(source_lists) > 1
+    _assert_within_budget(trait_lists + source_lists)
+    assert sorted(v for vals in trait_lists for v in vals) == scan_ids
+    assert result["reused_count"] == len(expected_reused) == 834
+    assert result["scan_count"] == 2500
+    assert all(r["status"] == "queued" for r in client.inserted_run_scans)
+
+
+def test_empty_params_skips_the_dedup_preview_entirely(monkeypatch):
+    # Even a stored hash of `{}` is not consulted. Every pipeline producer hashes the
+    # full resolved {species, mode, age}, so `{}` matches no source it writes, and the
+    # preview is skipped outright.
+    h = _hash_of({})
+    scans = [{"scan_id": i} for i in range(1, 4)]
+    client = _FakeClient(
+        cyl_scans_extended=scans,
+        cyl_scan_traits=[{"scan_id": s["scan_id"], "source_id": 100} for s in scans],
+        cyl_trait_sources=[_source(100, h)],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+    body = {
+        "target_level": "scan_ids",
+        "target_id": None,
+        "scan_ids": [1, 2, 3],
+        "params": {},
+    }
+
+    result = pipeline.trigger_pipeline(body, "user-1")
+
+    assert "cyl_scan_traits" not in client.calls
+    assert "cyl_trait_sources" not in client.calls
+    assert result["reused_count"] == 0
+    assert client.inserted_runs[0]["reused_count"] == 0
+    assert [r["status"] for r in client.inserted_run_scans] == ["queued"] * 3
+    assert len(client.rpc_calls) == 1
+
+
+def test_omitted_params_also_skips_the_dedup_preview(monkeypatch):
+    # An absent `params` is treated as `{}` by _validate_request.
+    client = _FakeClient(
+        cyl_scans_extended=[{"scan_id": 1}],
+        cyl_scan_traits=[{"scan_id": 1, "source_id": 100}],
+        cyl_trait_sources=[_source(100, _hash_of({}))],
+    )
+    monkeypatch.setattr(pipeline, "app_client", lambda: client)
+
+    result = pipeline.trigger_pipeline(
+        {"target_level": "scan", "target_id": 1}, "user-1"
+    )
+
+    assert "cyl_scan_traits" not in client.calls
+    assert "cyl_trait_sources" not in client.calls
+    assert result["reused_count"] == 0
+    assert client.inserted_run_scans[0]["status"] == "queued"
+    assert len(client.rpc_calls) == 1
 
 
 # --------------------------------------------------------------------------- #
