@@ -3,11 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   addSpecies,
   addedByText,
-  applySpeciesChange,
   normalizeNewSpecies,
   sortedSpeciesOptions,
   speciesOption,
-  withSpeciesOption,
 } from "./species-options";
 
 const ROW = { id: 1, common_name: "Arabidopsis", genus: "arabidopsis", species: "Thaliana" };
@@ -46,41 +44,6 @@ describe("speciesOption", () => {
       ROW,
     ];
     expect(sortedSpeciesOptions(rows).map((o) => o.id)).toEqual([1, 2]);
-  });
-});
-
-describe("withSpeciesOption", () => {
-  const LIST = [
-    { id: 1, label: "Arabidopsis (Arabidopsis thaliana)" },
-    { id: 4, label: "Rice (Oryza sativa)" },
-  ];
-
-  it("adds a species in order", () => {
-    expect(withSpeciesOption(LIST, { id: 7, label: "Maize (Zea mays)" }).map((s) => s.id)).toEqual([1, 7, 4]);
-  });
-
-  it("replaces the same species instead of listing it twice", () => {
-    expect(withSpeciesOption(LIST, { id: 4, label: "Asian rice (Oryza sativa)" })).toEqual([
-      { id: 1, label: "Arabidopsis (Arabidopsis thaliana)" },
-      { id: 4, label: "Asian rice (Oryza sativa)" },
-    ]);
-  });
-});
-
-describe("applySpeciesChange", () => {
-  const LIST = [{ ...speciesOption(ROW), addedBy: null }];
-
-  it("lists a new or edited row with who added it, and drops one marked deleted", () => {
-    const rice = { id: 4, common_name: "Rice", genus: "Oryza", species: "sativa", created_by: "u-2", deleted_at: null };
-    expect(applySpeciesChange(LIST, rice)).toEqual([
-      { id: 1, label: "Arabidopsis (Arabidopsis thaliana)", addedBy: null },
-      { id: 4, label: "Rice (Oryza sativa)", addedBy: "u-2" },
-    ]);
-    expect(applySpeciesChange(LIST, { ...ROW, deleted_at: "2026-10-24T10:00:00Z" })).toEqual([]);
-  });
-
-  it("ignores a row without an id", () => {
-    expect(applySpeciesChange(LIST, {})).toBe(LIST);
   });
 });
 
