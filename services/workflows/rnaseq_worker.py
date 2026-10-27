@@ -12,6 +12,8 @@ Env:
     WORKFLOWS_WORKER_POLL_SECONDS  idle sleep when the queue is empty (default 5)
     WORKFLOWS_DISPATCH_VT_SECONDS  seconds a claimed run is hidden (default 60)
     WORKFLOWS_DISPATCH_MAX_READS   deliveries before a run is failed (default 5)
+    WORKFLOWS_K8S_PIPELINE_SECRET_NAME  Secret added to every workflow as the optional
+                                   bloom-credentials volume; unset gives an empty folder
 """
 
 import logging
@@ -19,14 +21,23 @@ import os
 import signal
 import time
 
+import k8s_client
 from k8s_client import (
     K8sAlreadyExistsError,
     K8sConfigError,
+    K8sStatusError,
     K8sSubmissionError,
+    get_workflow,
     submit_workflow,
 )
 from pipeline_queue import MAX_READS, VISIBILITY_TIMEOUT
-from rnaseq_workflows import CLAIM_FN, COMPLETE_FN, FAIL_FN, WORKFLOW_TYPES
+from rnaseq_workflows import (
+    CLAIM_FN,
+    COMPLETE_FN,
+    FAIL_FN,
+    WORKFLOW_TYPES,
+    UnrunnableRun,
+)
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS
 from supabase_client import app_client as _app_client
 
@@ -36,6 +47,10 @@ POLL_INTERVAL = float(os.environ.get("WORKFLOWS_WORKER_POLL_SECONDS", "5"))
 
 # Shown to users in the run's message; the detail is only in this service's log.
 SUBMISSION_FAILED = "Argo Workflow submission failed"
+RUNS_TABLE = "rnaseq_runs"
+SPECIES_TABLE = "species"
+
+_PIPELINE_SECRET_ENV = "WORKFLOWS_K8S_PIPELINE_SECRET_NAME"
 
 _running = True
 
@@ -107,6 +122,63 @@ def _fail_logged(client, run: dict, message: str) -> None:
         )
 
 
+def _dataset(client, run: dict) -> dict | None:
+    """The dataset the run loads into Bloom when it finishes: the form's dataset name, the
+    species' common name, as bloomctl takes them, and the species' KEGG organism code for its
+    GO and pathway annotation (None when it has none). None when the run names no dataset."""
+    rows = (
+        client.table(RUNS_TABLE)
+        .select("metadata")
+        .eq("id", run["run_id"])
+        .execute()
+        .data
+        or []
+    )
+    metadata = (rows[0].get("metadata") if rows else None) or {}
+    name, species_id = metadata.get("dataset_name"), metadata.get("species_id")
+    if not isinstance(name, str) or not name.strip() or type(species_id) is not int:
+        return None
+    # Every column, so a server without species.kegg_org yet still answers.
+    species = (
+        client.table(SPECIES_TABLE)
+        .select("*")
+        .eq("id", species_id)
+        .execute()
+        .data
+        or []
+    )
+    if not species:
+        logger.warning(
+            "rnaseq_worker: run %s names species %s, which doesn't exist; it won't be loaded",
+            run["run_id"],
+            species_id,
+        )
+        return None
+    return {
+        "name": name.strip(),
+        "species": species[0]["common_name"],
+        "kegg_org": species[0].get("kegg_org"),
+    }
+
+
+def _genome(client, run: dict) -> str | None:
+    """The run's recorded genome version as <genome>.v<N>, the name bloomctl downloads, read
+    from the version itself rather than the run's reference name. None when it has none."""
+    rows = (
+        client.table(RUNS_TABLE)
+        .select("genome_reference_versions(version, genome_references(name))")
+        .eq("id", run["run_id"])
+        .execute()
+        .data
+        or []
+    )
+    version = (rows[0].get("genome_reference_versions") if rows else None) or {}
+    name = (version.get("genome_references") or {}).get("name")
+    if not name or type(version.get("version")) is not int:
+        return None
+    return f"{name}.v{version['version']}"
+
+
 def process_one(client) -> bool:
     """Claim and dispatch one run. Returns True if a run was claimed."""
     try:
@@ -133,8 +205,33 @@ def process_one(client) -> bool:
     logger.info("rnaseq_worker: claimed %s run %s", wf.name, run_id)
 
     try:
+        run = {**run, "dataset": _dataset(client, run), "genome": _genome(client, run)}
+    except Exception as exc:
+        # A database blip, not a bad run: it comes back when its message is visible again.
+        logger.warning(
+            "rnaseq_worker: couldn't read run %s's dataset or genome, leaving it queued: %s",
+            run_id,
+            exc,
+        )
+        return True
+
+    try:
         body = wf.build_body(run)
-        workflow_name = submit_workflow(body)
+        workflow_name = _submitted_earlier(wf, run) or submit_workflow(body)
+    except K8sStatusError as exc:
+        # Argo couldn't be asked about an earlier submission: leave it to come back.
+        logger.warning(
+            "rnaseq_worker: couldn't check %s run %s for an earlier submission, "
+            "leaving it queued: %s",
+            wf.name,
+            run_id,
+            exc,
+        )
+        return True
+    except UnrunnableRun as exc:
+        logger.warning("rnaseq_worker: %s run %s can't run: %s", wf.name, run_id, exc)
+        _fail_logged(client, run, str(exc))
+        return True
     except K8sConfigError as exc:
         # A deploy mistake, not a bad run: leave it to come back once fixed.
         logger.error(
@@ -189,6 +286,24 @@ def process_one(client) -> bool:
     return True
 
 
+def _submitted_earlier(wf, run: dict) -> str | None:
+    """The name of a Workflow an earlier worker submitted for this run under a name this one no
+    longer builds, or None. Argo only refuses a repeated name, so without this a run submitted
+    but never recorded before a rename would be started a second time."""
+    for name in wf.earlier_names(run):
+        found = get_workflow(name)
+        labels = (found or {}).get("metadata", {}).get("labels") or {}
+        if found is not None and labels.get("rnaseq-run-id") == str(run["run_id"]):
+            logger.info(
+                "rnaseq_worker: %s run %s was already submitted as %s",
+                wf.name,
+                run["run_id"],
+                name,
+            )
+            return name
+    return None
+
+
 def _connect_with_retry():
     """Keeps retrying a Supabase connection at startup instead of crash-looping."""
     client = None
@@ -205,7 +320,18 @@ def _connect_with_retry():
     return client
 
 
+def _warn_if_pipeline_secret_invalid():
+    """A set but invalid Secret name becomes an empty folder, so steps upload nothing."""
+    if os.environ.get(_PIPELINE_SECRET_ENV) and not k8s_client.PIPELINE_SECRET_NAME:
+        logger.warning(
+            "rnaseq_worker: WORKFLOWS_K8S_PIPELINE_SECRET_NAME is not a valid Kubernetes "
+            "object name; workflows get an empty bloom-credentials folder, so their steps "
+            "won't upload logs"
+        )
+
+
 def run():
+    _warn_if_pipeline_secret_invalid()
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     client = _connect_with_retry()

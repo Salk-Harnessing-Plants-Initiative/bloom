@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import ScanTraitBoxplot from "@/components/scan-trait-boxplot";
+import { TraitExportButton } from "@/components/cyl-trait-export/TraitExportButton";
 import type { TraitData } from "@/lib/custom.types";
 import { resolveSelection, type Selection } from "./initial-selection";
 
@@ -172,6 +173,11 @@ export default function TraitExplorer({
             ))}
           </select>
         </Field>
+
+        <TraitExportButton
+          target={{ experimentId, wave: waveNumber, age: plantAge, waves: waves.map((w) => w.waveNumber), ages: plantAges }}
+          disabled={isLoading}
+        />
       </div>
 
       {/* Always mounted, so screen readers announce the note when it appears. */}

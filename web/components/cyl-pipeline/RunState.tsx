@@ -4,7 +4,7 @@
  * A run's counts-first display state, as every pipeline-run view shows it:
  * the label (its tooltip explains the stage), the raw status as secondary
  * text, and a failed run's error message. With `failedHref`, the "F failed"
- * part of the label links there.
+ * part of the label links there when F > 0; "0 failed" stays plain text.
  */
 
 import Link from "next/link";
@@ -24,13 +24,14 @@ const TONE: Record<RunTone, string> = {
 export function RunState({ run, failedHref }: { run: RunCounts; failedHref?: string }) {
   const display = runDisplay(run);
   const parts = display.label.split(" · ");
+  const linkFailed = failedHref !== undefined && display.counts.F > 0;
   return (
     <span className="inline-flex flex-col">
       <span className={`font-medium ${TONE[display.tone]}`} title={display.tooltip}>
         {parts.map((part, i) => (
           <span key={i}>
             {i > 0 && " · "}
-            {failedHref && /^\d+ failed$/.test(part) ? (
+            {linkFailed && /^\d+ failed$/.test(part) ? (
               <Link href={failedHref} className="underline hover:no-underline">
                 {part}
               </Link>

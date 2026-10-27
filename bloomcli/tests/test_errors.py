@@ -636,7 +636,7 @@ def test_the_dependency_caps_that_made_the_cli_installable_are_still_there():
     deps = " ".join(_pyproject()["project"]["dependencies"])
 
     assert "httpx>=0.27,<1.0" in deps
-    assert "supabase>=2.0.0,<3" in deps
+    assert "supabase>=2.31.0,<3" in deps
 
 
 def test_the_credentials_secrets_stay_out_of_their_repr():

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Illustration from "@/components/illustration";
+import ScrnaJobSubmit from "@/components/scrna-job-submit";
 import {
   createServerSupabaseClient,
   getUser,
@@ -7,6 +8,12 @@ import {
 import Mixpanel from "mixpanel";
 
 import type { SpeciesWithRNADatasets } from "@/lib/custom.types";
+import {
+  genomeVersionOptions,
+  type GenomeVersionOption,
+  type ReadyVersionRow,
+} from "@/lib/scrna-jobs";
+import { sortedSpeciesOptions } from "@/lib/species-options";
 
 export default async function AllSpecies() {
   const user = await getUser();
@@ -20,7 +27,10 @@ export default async function AllSpecies() {
     url: "/app/expression",
   });
 
-  const speciesList = await getSpeciesList();
+  const [speciesList, { genomeVersions }] = await Promise.all([
+    getSpeciesList(),
+    getJobChoices(),
+  ]);
 
   return (
     <div>
@@ -30,11 +40,22 @@ export default async function AllSpecies() {
       <div className="text-3xl font-serif italic mb-2 select-none">
         All species
       </div>
-      <p className="mb-8 max-w-2xl text-sm text-stone-500">
+      <p className="mb-6 max-w-2xl text-sm text-stone-500">
         Single-cell expression atlases across every species in the Salk HPI
         pipeline. Pick a species to browse its datasets, UMAPs, and marker
         genes.
       </p>
+
+      <div className="mb-8">
+        <ScrnaJobSubmit
+          genomeVersions={genomeVersions}
+          species={sortedSpeciesOptions(speciesList)}
+          startedBy={user?.email ?? null}
+          // Bloom's AWS user (bloomv2-workflows-job), for a folder a scientist shares with it; unset, the
+          // form offers public folders only.
+          readerArn={process.env.SCRNA_FOLDER_READER_ARN || null}
+        />
+      </div>
 
       <ul className="divide-y divide-stone-200 border-y border-stone-200">
         {speciesList.map((species) => {
@@ -116,4 +137,15 @@ async function getSpeciesList(): Promise<SpeciesWithRNADatasets[]> {
   });
 
   return (data ?? []) as SpeciesWithRNADatasets[];
+}
+
+// The ready genome versions a scRNA job can be started on; an empty list if they can't be read.
+// They come from the same tables `bloomctl genome list` reads.
+async function getJobChoices(): Promise<{ genomeVersions: GenomeVersionOption[] }> {
+  const supabase = await createServerSupabaseClient();
+  const versions = await supabase
+    .from("genome_reference_versions")
+    .select("id, version, assembly, annotation, genome_references(name)")
+    .eq("status", "ready");
+  return { genomeVersions: genomeVersionOptions((versions.data ?? []) as ReadyVersionRow[]) };
 }

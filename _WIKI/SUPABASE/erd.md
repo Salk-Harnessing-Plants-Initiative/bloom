@@ -35,12 +35,15 @@ erDiagram
 "public.gene_candidate_scientists" }o--|| "public.people" : "FOREIGN KEY (scientist_id) REFERENCES people(id)"
 "public.scrna_datasets" }o--|| "public.species" : "FOREIGN KEY (species_id) REFERENCES species(id)"
 "public.scrna_datasets" }o--o| "public.people" : "FOREIGN KEY (scientist_id) REFERENCES people(id)"
+"public.scrna_datasets" }o--o| "public.genome_reference_versions" : "FOREIGN KEY (genome_version_id) REFERENCES genome_reference_versions(id)"
 "public.scrna_cells" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_cells" }o--|| "public.scrna_clusters" : "FOREIGN KEY (dataset_id, cluster_id) REFERENCES scrna_clusters(dataset_id, cluster_id) ON UPDATE CASCADE ON DELETE RESTRICT NOT VALID"
 "public.scrna_cells" }o--|| "public.scrna_genotypes" : "FOREIGN KEY (dataset_id, genotype_id) REFERENCES scrna_genotypes(dataset_id, id) ON DELETE RESTRICT"
 "public.scrna_genes" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_counts" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_counts" }o--|| "public.scrna_genes" : "FOREIGN KEY (gene_id) REFERENCES scrna_genes(id)"
+"public.cyl_trait_sources" }o--o| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id) ON DELETE SET NULL"
+"public.cyl_trait_sources" }o--o| "public.cyl_pipeline_runs" : "FOREIGN KEY (cyl_pipeline_run_id) REFERENCES cyl_pipeline_runs(id) ON DELETE SET NULL"
 "public.cyl_qc_codes" }o--|| "public.cyl_plants" : "FOREIGN KEY (plant_id) REFERENCES cyl_plants(id)"
 "public.cyl_qc_sets" }o--o| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id)"
 "public.cyl_qc_set_codes" }o--|| "public.cyl_qc_codes" : "FOREIGN KEY (code_id) REFERENCES cyl_qc_codes(id)"
@@ -98,8 +101,8 @@ erDiagram
 "public.cyl_pipeline_run_scans" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
 "public.cyl_scan_latest_source" |o--|| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_counts" |o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
+"public.scrna_genotypes" }o--o| "public.accessions" : "FOREIGN KEY (accession_id) REFERENCES accessions(id)"
 "public.scrna_genotypes" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
-"public.scrna_genotypes" }o--o| "public.arabidopsis_accessions" : "FOREIGN KEY (accession_id) REFERENCES arabidopsis_accessions(id)"
 "public.scrna_de_runs" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
 "public.scrna_de_genes" }o--|| "public.scrna_de" : "FOREIGN KEY (dataset_id, de_id) REFERENCES scrna_de(dataset_id, id) ON DELETE CASCADE"
 "public.scrna_de_genes" }o--|| "public.scrna_genes" : "FOREIGN KEY (dataset_id, gene_id) REFERENCES scrna_genes(dataset_id, id)"
@@ -110,6 +113,16 @@ erDiagram
 "public.scrna_embedding_points" }o--|| "public.scrna_cells" : "FOREIGN KEY (dataset_id, cell_id) REFERENCES scrna_cells(dataset_id, id) ON DELETE RESTRICT"
 "public.scrna_embedding_points" }o--|| "public.scrna_embedding_dataset_members" : "FOREIGN KEY (embedding_id, dataset_id) REFERENCES scrna_embedding_dataset_members(embedding_id, dataset_id) ON DELETE CASCADE"
 "public.cyl_experiment_trait_count_changes" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id) ON DELETE CASCADE"
+"public.rnaseq_runs" |o--o| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id) ON DELETE SET NULL"
+"public.rnaseq_runs" }o--o| "public.genome_reference_versions" : "FOREIGN KEY (genome_version_id) REFERENCES genome_reference_versions(id)"
+"public.cyl_pipeline_run_workflows" }o--|| "public.cyl_pipeline_runs" : "FOREIGN KEY (run_id) REFERENCES cyl_pipeline_runs(id)"
+"public.genome_references" }o--|| "public.species" : "FOREIGN KEY (species_id) REFERENCES species(id)"
+"public.genome_reference_versions" }o--|| "public.genome_references" : "FOREIGN KEY (genome_id) REFERENCES genome_references(id)"
+"public.genome_annotation_builds" }o--|| "public.genome_reference_versions" : "FOREIGN KEY (version_id) REFERENCES genome_reference_versions(id)"
+"public.scrna_enrichment_runs" }o--|| "public.scrna_datasets" : "FOREIGN KEY (dataset_id) REFERENCES scrna_datasets(id)"
+"public.scrna_enrichment_runs" }o--|| "public.scrna_de_runs" : "FOREIGN KEY (dataset_id, de_run_id) REFERENCES scrna_de_runs(dataset_id, id)"
+"public.scrna_enrichment_runs" }o--o| "public.rnaseq_runs" : "FOREIGN KEY (rnaseq_run_id) REFERENCES rnaseq_runs(id)"
+"public.scrna_enrichment_runs" }o--|| "public.genome_annotation_builds" : "FOREIGN KEY (annotation_build_id) REFERENCES genome_annotation_builds(id)"
 
 "public.species" {
   bigint id
@@ -119,6 +132,7 @@ erDiagram
   text illustration_path
   uuid created_by FK
   timestamp_with_time_zone deleted_at
+  text kegg_org
 }
 "public.phenotypers" {
   bigint id
@@ -345,6 +359,7 @@ erDiagram
   timestamp_with_time_zone ingested_at
   text markers_method
   text kind
+  bigint genome_version_id FK
 }
 "public.scrna_cells" {
   bigint id
@@ -398,6 +413,11 @@ erDiagram
   text name
   jsonb metadata
   text idempotency_key
+  text recipe_key
+  smallint recipe_key_version
+  bigint scan_id FK
+  text argo_workflow_name
+  bigint cyl_pipeline_run_id FK
 }
 "public.cyl_qc_codes" {
   bigint id
@@ -425,6 +445,7 @@ erDiagram
   jsonb timepoints
   bigint trait_source_id FK
   bigint cyl_qc_set_id FK
+  text recipe_key
 }
 "public.cyl_dataset_traits" {
   bigint dataset_id FK
@@ -473,12 +494,13 @@ erDiagram
 }
 "public.cyl_camera_settings" {
   uuid id
-  integer scanner_exposure_time
-  integer scanner_gain
-  integer scanner_brightness
-  integer scanner_contrast
+  double_precision scanner_exposure_time
+  double_precision scanner_gain
+  double_precision scanner_brightness
+  double_precision scanner_contrast
   double_precision scanner_gamma
-  integer scanner_seconds_per_rot
+  double_precision scanner_seconds_per_rot
+  integer scanner_num_frames
 }
 "public.cyl_plant_metadata" {
   uuid id
@@ -910,6 +932,7 @@ erDiagram
   timestamp_with_time_zone submitted_at
   timestamp_with_time_zone completed_at
   text error_message
+  timestamp_with_time_zone poller_concluded_at
 }
 "public.cyl_pipeline_run_scans" {
   bigint id
@@ -1045,5 +1068,120 @@ erDiagram
   bigint run_id
   bigint experiment_id
   timestamp_with_time_zone created_at
+}
+"public.rnaseq_runs" {
+  bigint id
+  text run_key
+  uuid requested_by
+  text status
+  text current_step
+  integer exit_code
+  text message
+  jsonb step_pods
+  text argo_workflow_name
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone submitted_at
+  timestamp_with_time_zone completed_at
+  timestamp_with_time_zone updated_at
+  text workflow_type
+  jsonb params
+  jsonb metadata
+  bigint dataset_id FK
+  bigint genome_version_id FK
+}
+"public.rnaseq_samples" {
+  bigint id
+  text name
+  text source
+  text source_ref
+  integer fastq_count
+  bigint total_bytes
+  uuid registered_by
+  timestamp_with_time_zone created_at
+}
+"public.rnaseq_references" {
+  bigint id
+  text name
+  text description
+  timestamp_with_time_zone created_at
+}
+"public.gravi_scan_timeline" {
+  date date_scanned
+  text species_name
+  text experiment_name
+  integer wave_number
+  bigint count
+}
+"public.cyl_pipeline_run_workflows" {
+  bigint run_id FK
+  text argo_workflow_name
+  text phase
+  timestamp_with_time_zone observed_at
+}
+"public.genome_references" {
+  bigint id
+  text name
+  bigint species_id FK
+  text description
+  integer next_version
+  uuid created_by
+  timestamp_with_time_zone created_at
+}
+"public.genome_reference_versions" {
+  bigint id
+  bigint genome_id FK
+  integer version
+  text status
+  text fasta_path
+  text gtf_path
+  text fasta_sha256
+  bigint fasta_bytes
+  text gtf_sha256
+  bigint gtf_bytes
+  text assembly
+  text annotation
+  text source_url
+  text notes
+  uuid created_by
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone ready_at
+  text withdrawn_reason
+  timestamp_with_time_zone withdrawn_at
+}
+"public.genome_annotation_builds" {
+  bigint id
+  bigint version_id FK
+  text source
+  integer build
+  text status
+  jsonb tool_versions
+  text file_path
+  text file_sha256
+  bigint file_bytes
+  integer gene_count
+  bigint term_count
+  uuid created_by
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone ready_at
+  text withdrawn_reason
+  timestamp_with_time_zone withdrawn_at
+}
+"public.scrna_enrichment_runs" {
+  bigint id
+  bigint dataset_id FK
+  bigint de_run_id FK
+  bigint annotation_build_id FK
+  bigint rnaseq_run_id FK
+  text status
+  jsonb params
+  text file_path
+  text file_sha256
+  bigint file_bytes
+  integer term_count
+  integer background_genes
+  integer annotated_genes
+  uuid created_by
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone ready_at
 }
 ```

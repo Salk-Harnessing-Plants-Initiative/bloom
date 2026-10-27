@@ -82,7 +82,7 @@ interface MockState {
   respond: Responder;
   removeChannel: Mock<(channel: MockChannel) => Promise<string>>;
   /** The session auth.getSession() answers; null for signed out. */
-  session: { access_token: string } | null;
+  session: { access_token: string; user?: { id: string } } | null;
   setAuth: Mock<(token?: string | null) => Promise<void>>;
   /** Ordered record of setAuth and subscribe calls, to check which came first. */
   log: string[];

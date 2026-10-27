@@ -1,5 +1,11 @@
-import Link from "next/link";
 import Illustration from "@/components/illustration";
+import {
+  IncompleteUploadNotice,
+  isIncompleteUpload,
+} from "@/components/expression-upload-status";
+import { DatasetReads, readsSource, type ReadsSource } from "@/components/expression-dataset-reads";
+import { datasetRunId } from "@/components/expression-dataset-origin";
+import { fetchRun } from "@/lib/rnaseq-runs";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 type Props = {
@@ -7,7 +13,6 @@ type Props = {
   speciesId: number;
 };
 
-type SiblingDataset = { id: number; name: string };
 
 async function fetchBannerData(datasetId: number) {
   const supabase = await createServerSupabaseClient();
@@ -15,7 +20,7 @@ async function fetchBannerData(datasetId: number) {
   const { data: dataset } = await supabase
     .from("scrna_datasets")
     .select(
-      "id, name, n_cells, assembly, annotation, strain, metadata, species_id, species(common_name, genus, species, illustration_path), people:scientist_id(name)",
+      "id, name, n_cells, assembly, annotation, strain, metadata, species_id, source_checksum, ingested_at, species(common_name, genus, species, illustration_path), people:scientist_id(name)",
     )
     .eq("id", datasetId)
     .single();
@@ -25,36 +30,35 @@ async function fetchBannerData(datasetId: number) {
   const species = Array.isArray(dataset.species) ? dataset.species[0] : dataset.species;
   const scientist = Array.isArray(dataset.people) ? dataset.people[0] : dataset.people;
 
-  const [siblingsRes, cellsRes] = await Promise.all([
-    supabase
-      .from("scrna_datasets")
-      .select("id, name")
-      .eq("species_id", dataset.species_id)
-      .is("deleted_at", null)
-      .neq("id", datasetId)
-      .neq("name", "NULL_DATASET")
-      // A reference atlas has no cells of its own; it is only seen on an integration map.
-      .neq("kind", "reference")
-      .order("name"),
-    supabase
-      .from("scrna_cells")
-      .select("cluster_id")
-      .eq("dataset_id", datasetId)
-      .limit(500000),
-  ]);
-
-  const siblings: SiblingDataset[] = (siblingsRes.data ?? []).map((r) => ({
-    id: r.id,
-    name: r.name,
-  }));
+  const cellsRes = await supabase
+    .from("scrna_cells")
+    .select("cluster_id")
+    .eq("dataset_id", datasetId)
+    .limit(500000);
 
   const clusterIds = new Set<string>();
   for (const row of cellsRes.data ?? []) {
     if (row.cluster_id) clusterIds.add(row.cluster_id);
   }
   const clusters = clusterIds.size || null;
+  const reads = await fetchReadsSource(supabase, datasetRunId(dataset));
 
-  return { dataset, species, scientist, siblings, clusters };
+  return { dataset, species, scientist, clusters, reads, incomplete: isIncompleteUpload(dataset) };
+}
+
+/** Where the reads of the run that made the dataset came from; null for a dataset no run made,
+ * or when the run can't be read. */
+async function fetchReadsSource(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  runId: number | null,
+): Promise<ReadsSource | null> {
+  if (runId === null) return null;
+  try {
+    const run = await fetchRun(supabase, runId);
+    return run ? readsSource(run) : null;
+  } catch {
+    return null;
+  }
 }
 
 function formatCount(n: number | null | undefined): string {
@@ -76,11 +80,11 @@ function renderJsonValue(v: unknown): React.ReactNode {
   );
 }
 
-export default async function ExpressionDatasetBanner({ datasetId, speciesId }: Props) {
+export default async function ExpressionDatasetBanner({ datasetId }: Props) {
   const data = await fetchBannerData(datasetId);
   if (!data) return null;
 
-  const { dataset, species, scientist, siblings, clusters } = data;
+  const { dataset, species, scientist, clusters, reads, incomplete } = data;
   const assemblyAnnotation =
     dataset.assembly || dataset.annotation
       ? `${dataset.assembly ?? "—"} / ${dataset.annotation ?? "—"}`
@@ -90,6 +94,7 @@ export default async function ExpressionDatasetBanner({ datasetId, speciesId }: 
     <section
       className="mb-8 p-6 rounded-xl border border-lime-200 bg-gradient-to-br from-lime-50 via-lime-50/40 to-white shadow-xl shadow-lime-300/35"
     >
+      {incomplete ? <IncompleteUploadNotice /> : null}
       <div className="flex items-start gap-6">
         <div className="shrink-0 w-14 h-14 flex items-center justify-center">
           <Illustration
@@ -104,7 +109,7 @@ export default async function ExpressionDatasetBanner({ datasetId, speciesId }: 
           </div>
           <div className="flex items-baseline gap-3 flex-wrap">
             <h1
-              className="text-xl font-semibold text-stone-900 truncate"
+              className="text-xl font-semibold text-stone-900 break-words"
               title={dataset.name}
             >
               {dataset.name}
@@ -127,26 +132,11 @@ export default async function ExpressionDatasetBanner({ datasetId, speciesId }: 
             <StatPill label="strain" value={dataset.strain ?? "—"} />
           </div>
 
+          {reads ? <DatasetReads source={reads} /> : null}
+
           <MetadataDisclosure metadata={dataset.metadata} />
         </div>
 
-        {siblings.length > 0 ? (
-          <div className="shrink-0 flex flex-col gap-2 items-end">
-            <div className="text-xs uppercase tracking-widest text-stone-500">
-              Dataset
-            </div>
-            <div className="flex gap-2 flex-wrap justify-end max-w-md">
-              <DatasetPill name={dataset.name} active />
-              {siblings.map((s) => (
-                <DatasetPill
-                  key={s.id}
-                  name={s.name}
-                  href={`/app/expression/${speciesId}/${s.id}`}
-                />
-              ))}
-            </div>
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -160,31 +150,6 @@ function StatPill({ label, value }: { label: string; value: string }) {
       </span>
       <span className="text-xs text-stone-500">{label}</span>
     </span>
-  );
-}
-
-function DatasetPill({
-  name,
-  href,
-  active = false,
-}: {
-  name: string;
-  href?: string;
-  active?: boolean;
-}) {
-  const classes = active
-    ? "bg-lime-700 text-stone-50 border border-lime-700 cursor-default"
-    : "border border-stone-300 text-stone-600 hover:bg-stone-50 hover:border-stone-400";
-  const base =
-    "rounded-full px-3 py-1 text-xs font-medium tabular-nums transition-colors";
-
-  if (active || !href) {
-    return <span className={`${base} ${classes}`}>{name}</span>;
-  }
-  return (
-    <Link href={href} className={`${base} ${classes}`}>
-      {name}
-    </Link>
   );
 }
 

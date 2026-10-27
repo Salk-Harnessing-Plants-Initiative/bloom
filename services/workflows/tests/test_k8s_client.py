@@ -102,6 +102,14 @@ def _configured(monkeypatch, sample_pem_cert):
     monkeypatch.setattr(k8s_client, "API_URL", "https://10.7.30.173:6443")
     monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
     monkeypatch.setattr(k8s_client, "TTL_SECONDS", 3600)
+    # Switched on, with staging's root and Secret (which equal the vendored
+    # file's own values), so every test below builds today's body unless it
+    # sets these itself (bloom#863).
+    monkeypatch.setattr(k8s_client, "PIPELINE_DISPATCH_ENABLED", True)
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", _STAGING_ROOT)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", _STAGING_SECRET)
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT_INVALID", None)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME_INVALID", None)
 
 
 # --- Eager credential validation --------------------------------------------
@@ -567,12 +575,15 @@ def test_build_workflow_body_pins_the_fields_no_other_dag_assertion_covers():
     assert isinstance(spec.get("volumes"), list) and spec["volumes"], (
         "spec.volumes is missing or empty"
     )
-    # Paths pinned as literals too, not just names and types: the cluster-side
+    # Paths pinned as literals too, not just names and types: staging's
     # skip-if-done dedup depends on these exact shared paths (the vendored
     # file's own comment says so), and an upstream re-pin that moved them would
-    # otherwise reach production unchallenged.
+    # otherwise reach staging unchallenged. Pinned on the vendored file, not
+    # the built body: since bloom#863 the body's paths and Secret come from
+    # each environment's config, and staging's config is pinned to equal these.
     _A4 = "/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc"
-    host_paths = {v["name"]: v["hostPath"] for v in spec["volumes"] if "hostPath" in v}
+    vendored_volumes = k8s_client._load_vendored_workflow()["spec"]["volumes"]
+    host_paths = {v["name"]: v["hostPath"] for v in vendored_volumes if "hostPath" in v}
     assert host_paths == {
         "images-input-dir": {"path": f"{_A4}/input", "type": "Directory"},
         "predictions-output-dir": {
@@ -581,11 +592,15 @@ def test_build_workflow_body_pins_the_fields_no_other_dag_assertion_covers():
         },
         "traits-output-dir": {"path": f"{_A4}/traits", "type": "Directory"},
     }
-    secrets = {v["name"]: v["secret"] for v in spec["volumes"] if "secret" in v}
+    secrets = {v["name"]: v["secret"] for v in vendored_volumes if "secret" in v}
     assert secrets == {
         "bloom-credentials": {
             "secretName": "genericsecret-bloom-staging-pipeline-credentials"
         }
+    }
+    # Whatever root the body gets, every stage volume stays type: Directory.
+    assert {v["hostPath"]["type"] for v in spec["volumes"] if "hostPath" in v} == {
+        "Directory"
     }
 
     allowed = {"name", "templateRef", "dependencies", "continueOn", "arguments"}
@@ -724,11 +739,24 @@ def test_the_dag_shape_assertions_reject_a_wrongly_shaped_vendored_file(
 # --- build_workflow_body: loaded from the vendored canonical source (bloom #737) --
 
 
-def test_build_workflow_body_volumes_match_the_vendored_file_exactly(vendored_workflow):
-    """Direct regression test for the bug this change fixes: the hand-built
-    body silently dropped spec.volumes entirely."""
+def test_build_workflow_body_volumes_match_the_vendored_file_exactly(
+    monkeypatch, vendored_workflow
+):
+    """Direct regression test for bloom#737: the hand-built body silently
+    dropped spec.volumes entirely. Under staging's values the volumes are the
+    vendored file's exactly; under any values, the same names, order and
+    types."""
     body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
     assert body["spec"]["volumes"] == vendored_workflow["spec"]["volumes"]
+
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", _PROD_ROOT)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", _PROD_SECRET)
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+    def shape(volumes):
+        return [(v["name"], sorted(set(v) - {"name"})) for v in volumes]
+
+    assert shape(body["spec"]["volumes"]) == shape(vendored_workflow["spec"]["volumes"])
 
 
 def test_build_workflow_body_preserves_entrypoint_and_service_account_from_vendored_file(
@@ -746,22 +774,26 @@ def test_build_workflow_body_preserves_entrypoint_and_service_account_from_vendo
 # here (#56's vendoring). It compared the built body's DAG against the same file
 # the body was built from, so it could not fail on any mutation of the vendored
 # file — mutation testing caught 0 of 58 with it. Its real content (build_workflow_body
-# modifies nothing outside its four overrides) is already covered, strictly more
-# tightly, by `..._only_changes_the_four_documented_overrides`'s whole-body diff
+# modifies nothing outside its documented overrides) is already covered, strictly more
+# tightly, by `..._only_changes_the_six_documented_overrides`'s whole-body diff
 # below, and the DAG's actual shape is now asserted against literals in the
 # five-template/leaf/continueOn/gate-params tests above. It did incidentally catch a
 # `steps` template nested ahead of the `dag` — by KeyError on `templates[0]` — and
 # `_dag_tasks`'s entrypoint resolution now catches that deliberately.
 
 
-def test_build_workflow_body_only_changes_the_four_documented_overrides(
+def test_build_workflow_body_only_changes_the_six_documented_overrides(
     monkeypatch, vendored_workflow
 ):
     """Proves the 'no other field modified' requirement via a full-structure
-    diff — the field-specific tests above only spot-check individual paths."""
+    diff — the field-specific tests above only spot-check individual paths.
+    Built with prod's root and Secret, so overrides 5 and 6 really change
+    something and the comparison can't pass vacuously."""
     monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
-    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "prod")
     monkeypatch.setattr(k8s_client, "TTL_SECONDS", 3600)
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", _PROD_ROOT)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", _PROD_SECRET)
 
     body = k8s_client.build_workflow_body(
         run_id=42, batch_index=3, scan_ids=[12, 47, 9]
@@ -774,11 +806,17 @@ def test_build_workflow_body_only_changes_the_four_documented_overrides(
             "submitted-by": "bloom-pipeline",
             "pipeline-run-id": "42",
             "batch-index": "3",
-            "environment": "staging",
+            "environment": "prod",
         }
     )
     expected["spec"]["ttlStrategy"] = {"secondsAfterCompletion": 3600}
     expected["metadata"]["namespace"] = "runai-busch-lab"
+    for volume in expected["spec"]["volumes"]:
+        if volume["name"] in k8s_client._STAGE_SUBDIRS:
+            subdir = k8s_client._STAGE_SUBDIRS[volume["name"]]
+            volume["hostPath"]["path"] = f"{_PROD_ROOT}/{subdir}"
+        elif volume["name"] == "bloom-credentials":
+            volume["secret"]["secretName"] = _PROD_SECRET
 
     assert body == expected
 
@@ -968,12 +1006,159 @@ def test_get_workflow_status_returns_the_phase_on_success(monkeypatch):
     assert k8s_client.get_workflow_status("wf-abc") == "Succeeded"
 
 
-def test_get_workflow_status_returns_none_on_404(monkeypatch):
-    resp = _FakeResp(404, {}, text="not found")
+def _not_found(name, **details_overrides):
+    """The body the Kubernetes API returns for a GET of a Workflow that doesn't
+    exist (fix-cyl-poller-unconcluded-runs, bloom#1042)."""
+    details = {"name": name, "group": "argoproj.io", "kind": "workflows"}
+    details.update(details_overrides)
+    return {
+        "kind": "Status",
+        "apiVersion": "v1",
+        "status": "Failure",
+        "message": f'workflows.argoproj.io "{name}" not found',
+        "reason": "NotFound",
+        "details": details,
+        "code": 404,
+    }
+
+
+class _UnparseableResp(_FakeResp):
+    def json(self):
+        raise ValueError("not json")
+
+
+def _serve(monkeypatch, resp):
     monkeypatch.setattr(
         k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=resp)
     )
+
+
+def test_get_workflow_status_returns_none_on_verified_not_found(monkeypatch):
+    _serve(monkeypatch, _FakeResp(404, _not_found("wf-gone")))
     assert k8s_client.get_workflow_status("wf-gone") is None
+
+
+_UNVERIFIED_404S = {
+    "html-proxy-page": _UnparseableResp(404, text="<html>404 Not Found</html>"),
+    "empty-object": _FakeResp(404, {}, text="not found"),
+    "json-list": _FakeResp(404, ["not", "an", "object"]),
+    "other-reason": _FakeResp(404, {**_not_found("wf-a"), "reason": "Forbidden"}),
+    "not-a-status": _FakeResp(404, {**_not_found("wf-a"), "kind": "Workflow"}),
+    "details-null": _FakeResp(404, {**_not_found("wf-a"), "details": None}),
+    "details-string": _FakeResp(404, {**_not_found("wf-a"), "details": "wf-a"}),
+    "missing-crd-no-name": _FakeResp(
+        404, {**_not_found("wf-a"), "details": {"group": "argoproj.io"}}
+    ),
+    "another-workflow": _FakeResp(404, _not_found("wf-b")),
+    "another-kind": _FakeResp(404, _not_found("wf-a", kind="pods")),
+    "another-group": _FakeResp(404, _not_found("wf-a", group="example.com")),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNVERIFIED_404S))
+def test_get_workflow_status_raises_on_unverified_404(monkeypatch, caplog, case):
+    """A 404 whose body is not Kubernetes saying "this Workflow does not exist"
+    (a proxy page, a missing CRD, a wrong API path) is not evidence the
+    workflow is gone: it is a failed lookup."""
+    _serve(monkeypatch, _UNVERIFIED_404S[case])
+    with (
+        caplog.at_level("WARNING", logger="k8s_client"),
+        pytest.raises(K8sStatusError) as exc,
+    ):
+        k8s_client.get_workflow_status("wf-a")
+    assert str(exc.value) == "Argo Workflow status check failed"
+    assert any("404" in r.getMessage() for r in caplog.records)
+    body = _UNVERIFIED_404S[case].text
+    if body:
+        assert any(body[:40] in r.getMessage() for r in caplog.records), "body logged"
+        assert body[:40] not in str(exc.value), "never in the error message"
+
+
+@pytest.mark.parametrize("case", sorted(_UNVERIFIED_404S))
+def test_get_workflow_raises_on_unverified_404(monkeypatch, caplog, case):
+    """The RNA-seq poller fails a run as removed only when its Workflow is really gone;
+    any other 404 is a failed read, tried again at the next poll (bloom#1049)."""
+    _serve(monkeypatch, _UNVERIFIED_404S[case])
+    with (
+        caplog.at_level("WARNING", logger="k8s_client"),
+        pytest.raises(K8sStatusError) as exc,
+    ):
+        k8s_client.get_workflow("wf-a")
+    assert str(exc.value) == "Argo Workflow status check failed"
+    assert any("404" in r.getMessage() for r in caplog.records)
+    body = _UNVERIFIED_404S[case].text
+    if body:
+        assert body[:40] not in str(exc.value), "never in the error message"
+
+
+def _workflow(phase, run_label=None, env_label=None):
+    labels = {} if run_label is None else {"pipeline-run-id": run_label}
+    if env_label is not None:
+        labels["environment"] = env_label
+    return {"metadata": {"name": "wf-a", "labels": labels}, "status": {"phase": phase}}
+
+
+def test_get_workflow_status_returns_none_for_another_environments_workflow(
+    monkeypatch,
+):
+    """Prod and staging share a namespace and both number runs from 1, so the run
+    id alone can't tell their workflows apart (PR #1048 review)."""
+    other = "prod" if k8s_client.ENV_LABEL != "prod" else "staging"
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", "7", env_label=other)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) is None
+
+
+def test_get_workflow_status_accepts_its_own_environment(monkeypatch):
+    own = k8s_client.ENV_LABEL
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", "7", env_label=own)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Running"
+
+
+@pytest.mark.parametrize("metadata", [None, "x", {"labels": None}, {"labels": "x"}])
+def test_get_workflow_status_with_run_id_tolerates_odd_metadata(monkeypatch, metadata):
+    _serve(
+        monkeypatch,
+        _FakeResp(200, {"metadata": metadata, "status": {"phase": "Failed"}}),
+    )
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Failed"
+
+
+@pytest.mark.parametrize("phase", ["", "Unknown", "Skipped", None, 3])
+def test_get_workflow_status_refuses_an_unexpected_phase(monkeypatch, phase):
+    """A terminal conclusion built on an unknown phase would be final."""
+    _serve(monkeypatch, _FakeResp(200, {"status": {"phase": phase}}))
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow_status("wf-a")
+
+
+def test_get_workflow_status_reads_the_dispatchers_own_labels(monkeypatch):
+    """Round trip: the labels build_workflow_body stamps are the ones the
+    ownership check reads."""
+    body = k8s_client.build_workflow_body(run_id=7, batch_index=0, scan_ids=[1])
+    body["status"] = {"phase": "Succeeded"}
+    _serve(monkeypatch, _FakeResp(200, body))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Succeeded"
+    assert k8s_client.get_workflow_status("wf-a", run_id=8) is None
+
+
+def test_get_workflow_status_returns_none_for_another_runs_label(monkeypatch):
+    """A garbage-collected Workflow's generated name can be reused by a later
+    dispatch; that Workflow is not this run's."""
+    _serve(monkeypatch, _FakeResp(200, _workflow("Running", run_label="9")))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) is None
+
+
+@pytest.mark.parametrize("label", ["7", None])
+def test_get_workflow_status_returns_phase_for_own_or_missing_label(
+    monkeypatch, label
+):
+    _serve(monkeypatch, _FakeResp(200, _workflow("Succeeded", run_label=label)))
+    assert k8s_client.get_workflow_status("wf-a", run_id=7) == "Succeeded"
+
+
+def test_get_workflow_status_ignores_the_label_without_a_run_id(monkeypatch):
+    _serve(monkeypatch, _FakeResp(200, _workflow("Failed", run_label="9")))
+    assert k8s_client.get_workflow_status("wf-a") == "Failed"
 
 
 def test_get_workflow_status_raises_k8sstatuserror_on_5xx(monkeypatch):
@@ -1038,3 +1223,647 @@ def test_get_workflow_status_requests_the_exact_resource_path(monkeypatch):
         "runai-busch-lab/workflows/sleap-roots-pipeline-abc12"
     )
     assert capture["headers"]["Authorization"] == "Bearer test-token"
+
+
+# --------------------------------------------------------------------------- #
+# get_workflow
+# --------------------------------------------------------------------------- #
+
+
+def test_get_workflow_returns_the_whole_workflow(monkeypatch):
+    body = {"metadata": {"name": "wf-1"}, "status": {"phase": "Running", "nodes": {}}}
+    capture = {}
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(200, body), capture=capture),
+    )
+    assert k8s_client.get_workflow("wf-1") == body
+    assert capture["url"].endswith("/namespaces/runai-busch-lab/workflows/wf-1")
+
+
+def test_get_workflow_returns_none_when_the_workflow_is_gone(monkeypatch):
+    _serve(monkeypatch, _FakeResp(404, _not_found("wf-1")))
+    assert k8s_client.get_workflow("wf-1") is None
+
+
+@pytest.mark.parametrize("payload", [["a", "list"], "text"])
+def test_get_workflow_refuses_a_body_that_is_not_an_object(monkeypatch, payload):
+    class _Resp(_FakeResp):
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=_Resp(200))
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow("wf-1")
+
+
+def test_get_workflow_refuses_an_unparseable_body(monkeypatch):
+    class _Resp(_FakeResp):
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: _FakeClient(resp=_Resp(200))
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow("wf-1")
+
+
+def test_get_workflow_status_is_the_workflows_phase(monkeypatch):
+    _serve(monkeypatch, _FakeResp(200, {"status": {"phase": "Succeeded"}}))
+    assert k8s_client.get_workflow_status("wf-1") == "Succeeded"
+
+
+def test_get_workflow_status_refuses_a_workflow_without_a_phase(monkeypatch):
+    _serve(monkeypatch, _FakeResp(200, {"metadata": {}}))
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_workflow_status("wf-1")
+
+
+# --------------------------------------------------------------------------- #
+# get_pod_log
+# --------------------------------------------------------------------------- #
+
+
+def test_get_pod_log_asks_for_the_containers_last_lines(monkeypatch):
+    capture = {}
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(
+            resp=_FakeResp(200, text="step output\n"), capture=capture
+        ),
+    )
+    assert k8s_client.get_pod_log("pod-1", "main", 2000, 1048576) == "step output\n"
+    assert capture["url"].endswith("/api/v1/namespaces/runai-busch-lab/pods/pod-1/log")
+    assert capture["kwargs"]["params"] == {
+        "container": "main",
+        "tailLines": "2000",
+        "limitBytes": "1048576",
+    }
+
+
+def test_get_pod_log_returns_none_when_the_pod_is_gone(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(404, text="not found")),
+    )
+    assert k8s_client.get_pod_log("pod-1", "main", 10, 100) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'container "main" in pod "p" is waiting to start: ContainerCreating',
+        'pod "p" does not have a host assigned',
+    ],
+)
+def test_get_pod_log_says_a_waiting_pod_is_not_running(monkeypatch, text):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(400, text=text)),
+    )
+    with pytest.raises(k8s_client.K8sPodNotRunningError) as exc:
+        k8s_client.get_pod_log("pod-1", "main", 10, 100)
+    assert isinstance(exc.value, K8sStatusError)
+
+
+def test_get_pod_log_sends_the_token_to_the_exact_url(monkeypatch):
+    capture = {}
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(200, text="x"), capture=capture),
+    )
+    k8s_client.get_pod_log("pod-1", "main", 10, 100)
+    assert capture["url"] == (
+        "https://10.7.30.173:6443/api/v1/namespaces/runai-busch-lab/pods/pod-1/log"
+    )
+    assert capture["headers"] == {"Authorization": "Bearer test-token"}
+
+
+def test_get_pod_log_needs_the_cluster_settings(monkeypatch):
+    monkeypatch.setattr(k8s_client, "TOKEN", None)
+    monkeypatch.setattr(
+        k8s_client.httpx, "Client", lambda *a, **k: pytest.fail("no request expected")
+    )
+    with pytest.raises(K8sConfigError):
+        k8s_client.get_pod_log("pod-1", "main", 10, 100)
+
+
+def test_get_pod_log_raises_a_generic_error_otherwise(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(resp=_FakeResp(403, text="forbidden at https://x")),
+    )
+    with pytest.raises(K8sStatusError) as exc:
+        k8s_client.get_pod_log("pod-1", "main", 10, 100)
+    assert str(exc.value) == "Pod log read failed"
+
+
+def test_get_pod_log_raises_a_generic_error_on_a_network_failure(monkeypatch):
+    monkeypatch.setattr(
+        k8s_client.httpx,
+        "Client",
+        lambda *a, **k: _FakeClient(raise_exc=RuntimeError("connection refused")),
+    )
+    with pytest.raises(K8sStatusError):
+        k8s_client.get_pod_log("pod-1", "main", 10, 100)
+
+
+# --- Per-environment root, secret and dispatch switch (bloom#863) -----------
+#
+# Resolved from env at import, like ENV_LABEL. The resolvers are called
+# directly after setenv/delenv; the module is never importlib.reload()-ed,
+# since that would rebind the exception classes dispatch_worker and the
+# pollers import by name.
+
+_STAGING_ROOT = "/hpi/hpi_dev/users/eberrigan/pipeline_orchestration_tests/a4_poc"
+_PROD_ROOT = "/hpi/hpi_dev/users/eberrigan/bloom_cyl_pipeline/prod"
+_STAGING_SECRET = "genericsecret-bloom-staging-pipeline-credentials"
+_PROD_SECRET = "genericsecret-bloom-prod-pipeline-credentials"
+
+
+@pytest.mark.parametrize("root", [_STAGING_ROOT, _PROD_ROOT])
+def test_pipeline_hostpath_root_accepts_both_committed_roots(monkeypatch, root):
+    """Judged as a POSIX path on every OS: on Windows,
+    pathlib.Path('/hpi/x').is_absolute() is False, so a Path-based check would
+    reject the real roots on a dev box and accept them in CI."""
+    monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT", root)
+    assert k8s_client._resolve_pipeline_hostpath_root() == (root, None)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "",
+        "   ",
+        "hpi/x",
+        "/",
+        "/hpi/x/",
+        "/hpi//x",
+        "/hpi/x y",
+        "/hpi/x\n",
+        "/hpi/x\t",
+        # DEL, a control character; NUL can't be put in an env var at all.
+        "/hpi/\x7fx",
+        "/hpi/./x",
+        "/hpi/../x",
+        "/hpi/..",
+        "/hpi/.",
+    ],
+)
+def test_pipeline_hostpath_root_rejects_malformed_values_without_raising(
+    monkeypatch, raw
+):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT", raw)
+    value, reason = k8s_client._resolve_pipeline_hostpath_root()
+    assert value is None
+    assert reason
+
+
+@pytest.mark.parametrize(
+    "name", [_STAGING_SECRET, _PROD_SECRET, "a.b", "a" * 253, "a" * 251 + ".b"]
+)
+def test_pipeline_secret_name_accepts_valid_k8s_names(monkeypatch, name):
+    monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", name)
+    assert k8s_client._resolve_pipeline_secret_name() == (name, None)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "",
+        "   ",
+        "Bloom",
+        "bloom_x",
+        "-a",
+        "a-",
+        ".a",
+        "a.",
+        "a..b",
+        "name\n",
+        "a" * 254,
+    ],
+)
+def test_pipeline_secret_name_rejects_malformed_values_without_raising(
+    monkeypatch, raw
+):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raw)
+    value, reason = k8s_client._resolve_pipeline_secret_name()
+    assert value is None
+    assert reason
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("true", True),
+        (None, False),
+        ("false", False),
+        ("TRUE", False),
+        ("1", False),
+        (" true", False),
+        ("true ", False),
+        ("true\n", False),
+    ],
+)
+def test_pipeline_dispatch_is_enabled_only_for_exactly_true(monkeypatch, raw, expected):
+    """Same rule as bloom-web's isPipelineTriggerEnabled, which reads the same
+    CYL_PIPELINE_TRIGGER_ENABLED switch."""
+    if raw is None:
+        monkeypatch.delenv("CYL_PIPELINE_TRIGGER_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("CYL_PIPELINE_TRIGGER_ENABLED", raw)
+    assert k8s_client._resolve_pipeline_dispatch_enabled() is expected
+
+
+def test_importing_with_invalid_pipeline_values_does_not_raise(tmp_path):
+    """An exception at import would crash-loop the worker before it installs
+    its signal handlers; an invalid value must surface as a refusal instead."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = dict(os.environ)
+    env.update(
+        WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT="relative/../x\n",
+        WORKFLOWS_K8S_PIPELINE_SECRET_NAME="Not_A_Name",
+        CYL_PIPELINE_TRIGGER_ENABLED="yes please",
+    )
+    service_dir = Path(k8s_client.__file__).resolve().parent
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import k8s_client as k;"
+            "assert k.PIPELINE_HOSTPATH_ROOT is None and k.PIPELINE_HOSTPATH_ROOT_INVALID;"
+            "assert k.PIPELINE_SECRET_NAME is None and k.PIPELINE_SECRET_NAME_INVALID;"
+            "assert k.PIPELINE_DISPATCH_ENABLED is False",
+        ],
+        cwd=service_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_dispatch_refused_error_carries_its_cause_and_is_its_own_class():
+    exc = k8s_client.K8sDispatchRefusedError("off")
+    assert exc.reason == "off"
+    assert k8s_client.K8sDispatchRefusedError("unconfigured").reason == "unconfigured"
+    # A refusal is neither a config error left unsettled for redelivery nor a
+    # submission attempt recorded as "Argo Workflow submission failed".
+    assert not issubclass(k8s_client.K8sDispatchRefusedError, K8sConfigError)
+    assert not issubclass(k8s_client.K8sDispatchRefusedError, K8sSubmissionError)
+
+
+@pytest.mark.parametrize("defaults", [".env.staging.defaults", ".env.prod.defaults"])
+def test_each_environments_committed_root_and_secret_pass_validation(
+    monkeypatch, defaults
+):
+    """A typo in prod's committed value would otherwise surface only after
+    prod is switched on, as every batch failing "not configured"."""
+    from pathlib import Path
+
+    path = Path(k8s_client.__file__).resolve().parents[2] / defaults
+    values = dict(
+        line.split("=", 1)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+    for key in (
+        "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT",
+        "WORKFLOWS_K8S_PIPELINE_SECRET_NAME",
+    ):
+        monkeypatch.setenv(key, values[key])
+    assert k8s_client._resolve_pipeline_hostpath_root()[1] is None
+    assert k8s_client._resolve_pipeline_secret_name()[1] is None
+
+
+# --- build_workflow_body: refusal and per-environment isolation (bloom#863) --
+
+
+def _with_vendored(monkeypatch, tmp_path, workflow):
+    path = tmp_path / "mutated.yaml"
+    path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
+    monkeypatch.setattr(k8s_client, "_VENDORED_WORKFLOW_PATH", path)
+
+
+def _refusal(**kw):
+    with pytest.raises(k8s_client.K8sDispatchRefusedError) as exc:
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1], **kw)
+    return exc.value
+
+
+def test_a_switched_off_environment_is_refused_before_the_vendored_file_is_read(
+    monkeypatch, tmp_path
+):
+    """A missing vendored file would be a K8sConfigError; getting the refusal
+    instead proves the file was never read."""
+    monkeypatch.setattr(k8s_client, "PIPELINE_DISPATCH_ENABLED", False)
+    monkeypatch.setattr(
+        k8s_client, "_VENDORED_WORKFLOW_PATH", tmp_path / "missing.yaml"
+    )
+    exc = _refusal()
+    assert exc.reason == "off"
+    assert "CYL_PIPELINE_TRIGGER_ENABLED" in exc.detail
+
+
+@pytest.mark.parametrize(
+    ("root", "secret", "named"),
+    [
+        (None, _STAGING_SECRET, ["WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT"]),
+        (_STAGING_ROOT, None, ["WORKFLOWS_K8S_PIPELINE_SECRET_NAME"]),
+        (
+            None,
+            None,
+            [
+                "WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT",
+                "WORKFLOWS_K8S_PIPELINE_SECRET_NAME",
+            ],
+        ),
+    ],
+)
+def test_an_unconfigured_environment_is_refused_before_the_vendored_file_is_read(
+    monkeypatch, tmp_path, root, secret, named
+):
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", root)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", secret)
+    monkeypatch.setattr(
+        k8s_client, "PIPELINE_HOSTPATH_ROOT_INVALID", "is unset or blank"
+    )
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME_INVALID", "is unset or blank")
+    monkeypatch.setattr(
+        k8s_client, "_VENDORED_WORKFLOW_PATH", tmp_path / "missing.yaml"
+    )
+    exc = _refusal()
+    assert exc.reason == "unconfigured"
+    for name in named:
+        assert f"{name} is unset or blank" in exc.detail
+
+
+def test_an_unconfigured_environment_is_refused_ahead_of_vendored_drift(
+    monkeypatch, tmp_path, vendored_workflow
+):
+    mutated = copy.deepcopy(vendored_workflow)
+    mutated["metadata"].setdefault("labels", {})["environment"] = "prod"
+    _with_vendored(monkeypatch, tmp_path, mutated)
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", None)
+    assert _refusal().reason == "unconfigured"
+
+
+def test_off_and_unconfigured_reports_off(monkeypatch):
+    monkeypatch.setattr(k8s_client, "PIPELINE_DISPATCH_ENABLED", False)
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", None)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
+    assert _refusal().reason == "off"
+
+
+def test_staging_values_give_the_vendored_volumes_exactly(vendored_workflow):
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    assert body["spec"]["volumes"] == vendored_workflow["spec"]["volumes"]
+
+
+def test_prod_values_give_prods_directories_and_secret(monkeypatch, vendored_workflow):
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", _PROD_ROOT)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", _PROD_SECRET)
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    volumes = {v["name"]: v for v in body["spec"]["volumes"]}
+    vendored = {v["name"]: v for v in vendored_workflow["spec"]["volumes"]}
+    for name, subdir in (
+        ("images-input-dir", "input"),
+        ("predictions-output-dir", "predictions"),
+        ("traits-output-dir", "traits"),
+    ):
+        assert volumes[name]["hostPath"] == {
+            "path": f"{_PROD_ROOT}/{subdir}",
+            "type": "Directory",
+        }
+        assert volumes[name]["hostPath"]["path"] != vendored[name]["hostPath"]["path"]
+    assert volumes["bloom-credentials"]["secret"] == {"secretName": _PROD_SECRET}
+    assert _PROD_SECRET != vendored["bloom-credentials"]["secret"]["secretName"]
+
+
+def test_the_same_scan_in_two_environments_is_staged_in_two_places(monkeypatch):
+    """bloom#863: prod's scan 42 and staging's scan 42 must never share a
+    stage directory, or one environment's stage-in skips the other's scan."""
+    staging = k8s_client.build_workflow_body(run_id=7, batch_index=0, scan_ids=[42])
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", _PROD_ROOT)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", _PROD_SECRET)
+    prod = k8s_client.build_workflow_body(run_id=7, batch_index=0, scan_ids=[42])
+
+    for body, root in ((staging, _STAGING_ROOT), (prod, _PROD_ROOT)):
+        for v in body["spec"]["volumes"]:
+            if "hostPath" in v:
+                assert v["hostPath"]["path"].startswith(f"{root}/")
+
+    def without_isolation(body):
+        body = copy.deepcopy(body)
+        for v in body["spec"]["volumes"]:
+            if "hostPath" in v:
+                v["hostPath"]["path"] = None
+            if "secret" in v:
+                v["secret"]["secretName"] = None
+        return body
+
+    assert without_isolation(staging) == without_isolation(prod)
+
+
+def test_every_run_in_one_environment_shares_its_directories():
+    first = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    second = k8s_client.build_workflow_body(run_id=2, batch_index=5, scan_ids=[9])
+    assert first["spec"]["volumes"] == second["spec"]["volumes"]
+
+
+def _add_volume(volumes, volume):
+    volumes.append(volume)
+
+
+def _drop(name):
+    def mutate(volumes):
+        volumes[:] = [v for v in volumes if v["name"] != name]
+
+    return mutate
+
+
+def _rename(volumes):
+    next(v for v in volumes if v["name"] == "traits-output-dir")["name"] = "traits-dir"
+
+
+def _duplicate(volumes):
+    volumes.append(copy.deepcopy(next(v for v in volumes if "hostPath" in v)))
+
+
+def _credentials_as_hostpath(volumes):
+    v = next(v for v in volumes if v["name"] == "bloom-credentials")
+    del v["secret"]
+    v["hostPath"] = {"path": "/x", "type": "Directory"}
+
+
+def _hostpath_without_path(volumes):
+    del next(v for v in volumes if v["name"] == "images-input-dir")["hostPath"]["path"]
+
+
+def _stage(volumes, name="predictions-output-dir"):
+    return next(v for v in volumes if v["name"] == name)
+
+
+def _stage_as_pvc(volumes):
+    v = _stage(volumes)
+    del v["hostPath"]
+    v["persistentVolumeClaim"] = {"claimName": "pipeline"}
+
+
+def _stage_with_a_second_source(volumes):
+    _stage(volumes)["nfs"] = {"server": "nfs", "path": "/x"}
+
+
+def _stage_directory_or_create(volumes):
+    _stage(volumes)["hostPath"]["type"] = "DirectoryOrCreate"
+
+
+def _stage_without_type(volumes):
+    del _stage(volumes)["hostPath"]["type"]
+
+
+def _stage_hostpath_extra_key(volumes):
+    _stage(volumes)["hostPath"]["readOnly"] = True
+
+
+def _credentials_optional(volumes):
+    _stage(volumes, "bloom-credentials")["secret"]["optional"] = True
+
+
+def _credentials_with_items(volumes):
+    _stage(volumes, "bloom-credentials")["secret"]["items"] = [
+        {"key": "credentials.txt", "path": "credentials.txt"}
+    ]
+
+
+def _credentials_with_a_second_source(volumes):
+    _stage(volumes, "bloom-credentials")["emptyDir"] = {}
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda vs: _add_volume(
+            vs, {"name": "extra", "hostPath": {"path": "/x", "type": "Directory"}}
+        ),
+        lambda vs: _add_volume(vs, {"name": "extra", "secret": {"secretName": "s"}}),
+        lambda vs: _add_volume(
+            vs, {"name": "extra", "nfs": {"server": "nfs", "path": "/x"}}
+        ),
+        lambda vs: _add_volume(
+            vs, {"name": "extra", "projected": {"sources": [{"secret": {"name": "s"}}]}}
+        ),
+        lambda vs: _add_volume(vs, {"name": "extra", "emptyDir": {}}),
+        _drop("images-input-dir"),
+        _drop("predictions-output-dir"),
+        _drop("traits-output-dir"),
+        _drop("bloom-credentials"),
+        _rename,
+        _duplicate,
+        _credentials_as_hostpath,
+        _hostpath_without_path,
+        _stage_as_pvc,
+        _stage_with_a_second_source,
+        _stage_directory_or_create,
+        _stage_without_type,
+        _stage_hostpath_extra_key,
+        _credentials_optional,
+        _credentials_with_items,
+        _credentials_with_a_second_source,
+    ],
+    ids=[
+        "extra-hostPath",
+        "extra-secret",
+        "extra-nfs",
+        "extra-projected",
+        "extra-emptyDir",
+        "no-images-input-dir",
+        "no-predictions-output-dir",
+        "no-traits-output-dir",
+        "no-bloom-credentials",
+        "renamed",
+        "duplicated",
+        "credentials-as-hostPath",
+        "hostPath-without-path",
+        # type: Directory is what makes a missing directory leave the pod
+        # Pending; DirectoryOrCreate would silently create it on the node's
+        # local disk, and the run's output would vanish.
+        "stage-as-pvc",
+        "stage-with-a-second-source",
+        "stage-DirectoryOrCreate",
+        "stage-without-type",
+        "stage-hostPath-extra-key",
+        # optional: true would let pods start with an empty mount when this
+        # environment's Secret doesn't exist, instead of sitting Pending.
+        "credentials-optional",
+        "credentials-with-items",
+        "credentials-with-a-second-source",
+    ],
+)
+def test_the_vendored_volume_set_is_closed(
+    monkeypatch, tmp_path, vendored_workflow, mutate
+):
+    """Any volume other than the four, of any type, could point at shared
+    storage and pass through un-isolated."""
+    mutated = copy.deepcopy(vendored_workflow)
+    mutate(mutated["spec"]["volumes"])
+    _with_vendored(monkeypatch, tmp_path, mutated)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+@pytest.mark.parametrize("volumes", [None, "not-a-list", ["not-a-mapping"]])
+def test_a_wrongly_shaped_volume_list_is_a_configuration_error(
+    monkeypatch, tmp_path, vendored_workflow, volumes
+):
+    mutated = copy.deepcopy(vendored_workflow)
+    if volumes is None:
+        del mutated["spec"]["volumes"]
+    else:
+        mutated["spec"]["volumes"] = volumes
+    _with_vendored(monkeypatch, tmp_path, mutated)
+    with pytest.raises(K8sConfigError):
+        k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+
+
+def test_reordered_volumes_are_overridden_by_name(
+    monkeypatch, tmp_path, vendored_workflow
+):
+    mutated = copy.deepcopy(vendored_workflow)
+    mutated["spec"]["volumes"].reverse()
+    _with_vendored(monkeypatch, tmp_path, mutated)
+    monkeypatch.setattr(k8s_client, "PIPELINE_HOSTPATH_ROOT", _PROD_ROOT)
+    body = k8s_client.build_workflow_body(run_id=1, batch_index=0, scan_ids=[1])
+    names = [v["name"] for v in body["spec"]["volumes"]]
+    assert names == [v["name"] for v in mutated["spec"]["volumes"]]
+    volumes = {v["name"]: v for v in body["spec"]["volumes"]}
+    assert volumes["traits-output-dir"]["hostPath"]["path"] == f"{_PROD_ROOT}/traits"
+    assert volumes["images-input-dir"]["hostPath"]["path"] == f"{_PROD_ROOT}/input"
+
+
+def test_a_refusal_can_only_carry_one_of_the_two_known_causes():
+    """The worker maps the cause to a fixed user-facing message; an unknown
+    cause would have nothing to map to."""
+    with pytest.raises(ValueError):
+        k8s_client.K8sDispatchRefusedError("paused")

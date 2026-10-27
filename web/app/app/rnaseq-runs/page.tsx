@@ -1,0 +1,36 @@
+import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
+import { fetchRuns, type RnaseqRun } from "@/lib/rnaseq-runs";
+import { speciesLabelMap } from "./species-labels";
+import RnaseqRunsLive from "./RnaseqRunsLive";
+
+/** Every member's RNA-seq pipeline runs, newest first, updated live. */
+export default async function RnaseqRunsPage() {
+  const [supabase, user] = await Promise.all([createServerSupabaseClient(), getUser()]);
+  let runs: RnaseqRun[] = [];
+  let failed = false;
+  try {
+    runs = await fetchRuns(supabase);
+  } catch {
+    failed = true;
+  }
+  const speciesLabels = await speciesLabelMap(supabase);
+  return (
+    <div>
+      <h1 className="text-xl mb-2">RNA-seq pipeline runs</h1>
+      <p className="mb-6 max-w-prose text-sm text-stone-500">
+        Every member&apos;s RNA-seq pipeline runs, updated live. Start one from the Expression page.
+      </p>
+      {failed ? (
+        <p role="alert" className="text-sm text-red-700">
+          Couldn&apos;t load RNA-seq runs.
+        </p>
+      ) : (
+        <RnaseqRunsLive
+          initialRuns={runs}
+          speciesLabels={speciesLabels}
+          currentUserId={user?.id ?? null}
+        />
+      )}
+    </div>
+  );
+}

@@ -30,7 +30,10 @@ beforeEach(() => {
   resetSupabaseMock();
   detail.props = null;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
 
 describe("the run drill-down page", () => {
   it.each(["abc", "0", "-1", "1.5", "0x10", "1e2", "9007199254740993", ""])(
@@ -75,5 +78,15 @@ describe("the run drill-down page", () => {
     cleanup();
     render(await page("91", { status: "bogus" }));
     expect(detail.props?.initialFilter).toBe("all");
+  });
+
+  it("tells the drill-down whether starting runs is switched on", async () => {
+    vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "true");
+    render(await page("91"));
+    expect(detail.props?.triggerEnabled).toBe(true);
+    cleanup();
+    vi.stubEnv("CYL_PIPELINE_TRIGGER_ENABLED", "false");
+    render(await page("91"));
+    expect(detail.props?.triggerEnabled).toBe(false);
   });
 });

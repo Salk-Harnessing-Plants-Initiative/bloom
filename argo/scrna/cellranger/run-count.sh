@@ -1,69 +1,105 @@
 #!/usr/bin/env bash
-# Run `cellranger count` on one sample from S3 and upload the outputs; safe to re-run.
+# Run `cellranger count` on one sample staged in the run's shared folder (the stage steps copy the
+# reads and reference there) and keep what the analysis steps need in RESULTS_DIR. Touches no S3.
+# Safe to re-run.
 set -euo pipefail
 
 # Exit codes: 0 done or already done, 3 no reference, 4 no FASTQs, 5 cellranger count failed,
-# 6 the sample name cannot be a Cell Ranger run id.
+# 6 the sample name cannot be a Cell Ranger run id, 7 the FASTQs aren't named the Illumina way
+# or a lane lacks R1 or R2.
 readonly EXIT_NO_REFERENCE=3
 readonly EXIT_NO_FASTQS=4
 readonly EXIT_CELLRANGER_FAILED=5
 readonly EXIT_BAD_SAMPLE_NAME=6
+readonly EXIT_BAD_FASTQ_NAMES=7
 
-: "${SAMPLE:?set SAMPLE (folder under raw_reads/)}"
+: "${SAMPLE:?set SAMPLE (the sample, its folder under fastq/)}"
 : "${REFERENCE:?set REFERENCE (folder under reference_genome/)}"
-BUCKET="${BUCKET:-bloomv2-workflows}"
 RUN_ID="${RUN_ID:-$SAMPLE}"
-FASTQ_SAMPLE="${FASTQ_SAMPLE:-$SAMPLE}"
+# The FASTQs' name prefix for --sample; read from the file names unless set.
+FASTQ_SAMPLE="${FASTQ_SAMPLE:-}"
 CORES="${CORES:?set CORES to the CPU request of the job}"
 MEM_GB="${MEM_GB:?set MEM_GB a little below the memory limit of the job}"
-CREATE_BAM="${CREATE_BAM:-true}"
+CREATE_BAM="${CREATE_BAM:-false}"
+# The chemistry to tell Cell Ranger, e.g. ARC-v1 for a 10x Multiome RNA library; empty: it detects it.
+CHEMISTRY="${CHEMISTRY:-}"
 WORK_DIR="${WORK_DIR:-/work}"
 REF_DIR="${REF_DIR:-${WORK_DIR}/ref/${REFERENCE}}"
 FASTQ_DIR="${FASTQ_DIR:-${WORK_DIR}/fastq/${SAMPLE}}"
 
-OUT_URI="s3://${BUCKET}/runs_output/${RUN_ID}"
+RESULTS_DIR="${RESULTS_DIR:?set RESULTS_DIR (the run folder on the share)}"
+# Kept for the analysis steps: the matrix, Cell Ranger's metrics and the chemistry check.
+KEEP=(filtered_feature_bc_matrix.h5 metrics_summary.csv qc/qc_summary.json)
+# Cell Ranger's report and metrics, stored in Bloom's scrna bucket
+# at reports/<run's Bloom id, or the workflow's name for a run started by hand>/.
+REPORTS=(web_summary.html:text/html metrics_summary.csv:text/csv)
+REPORT_KEY_RULE='^[a-z0-9][a-z0-9.-]{0,252}$'
+BLOOM_RUN_ID="${BLOOM_RUN_ID:-}"
+WORKFLOW_NAME="${WORKFLOW_NAME:-}"
 
 # Cell Ranger's run id is the sample, so its report is titled with it; RUN_ID (which can be
-# longer) names the S3 and NFS folders and goes in the report's description.
+# longer) names the run's folders and goes in the report's description.
 CR_ID="${SAMPLE}"
 if [[ ! "${CR_ID}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
   echo "ERROR: sample '${SAMPLE}' cannot be a Cell Ranger run id (letters, digits, '_' or '-', at most 64)"
   exit "${EXIT_BAD_SAMPLE_NAME}"
 fi
 
-if aws s3 ls "${OUT_URI}/_SUCCESS" >/dev/null 2>&1; then
-  echo "Already done: ${OUT_URI}/_SUCCESS exists, nothing to do."
+# Stores the report and metrics kept in the run's reports/ in Bloom, under this run; never
+# fails the step, since a refused upload is noted in the log.
+store_reports() {
+  local key="${BLOOM_RUN_ID:-${WORKFLOW_NAME}}" entry name
+  for entry in "${REPORTS[@]}"; do
+    name="${entry%%:*}"
+    [ -f "${RESULTS_DIR}/reports/${name}" ] || continue
+    if [[ "${key}" =~ ${REPORT_KEY_RULE} ]]; then
+      run-with-log --put "${RESULTS_DIR}/reports/${name}" --bucket scrna \
+        --path "reports/${key}/${name}" --content-type "${entry#*:}" || true
+    else
+      echo "WARNING: no run id or workflow name to store ${name} under; it is not stored in Bloom"
+    fi
+  done
+}
+
+if [ -f "${RESULTS_DIR}/outs/_SUCCESS" ]; then
+  # A new run on a failed run's folder skips the count; its report still belongs to this run.
+  echo "Already done: ${RESULTS_DIR}/outs/_SUCCESS exists; storing its report for this run."
+  store_reports
   exit 0
 fi
 
 mkdir -p "${WORK_DIR}" "${FASTQ_DIR}" "${REF_DIR}"
 cd "${WORK_DIR}"
 
-# Keep a log; on failure upload it with Cell Ranger's _errors so the reason is in S3.
+# Keep a log; on failure copy it with Cell Ranger's _errors to the run's folder, which is kept.
 LOG="${WORK_DIR}/count.log"
 exec > >(tee -a "${LOG}") 2>&1
-upload_log_on_failure() {
+keep_log_on_failure() {
   local status=$?
   if [ "${status}" -ne 0 ]; then
     find "${WORK_DIR}/${CR_ID}" -name _errors -exec cat {} + >> "${LOG}" 2>/dev/null || true
-    aws s3 cp "${LOG}" "${OUT_URI}/logs/count.log" || true
-    echo "count failed (exit ${status}); log at ${OUT_URI}/logs/count.log"
+    mkdir -p "${RESULTS_DIR}/logs" && cp -- "${LOG}" "${RESULTS_DIR}/logs/count.log" || true
+    echo "count failed (exit ${status}); log at ${RESULTS_DIR}/logs/count.log"
   fi
 }
-trap upload_log_on_failure EXIT
+trap keep_log_on_failure EXIT
 
-echo "Downloading reads and reference (skips files already present)..."
-aws s3 sync "s3://${BUCKET}/raw_reads/${SAMPLE}/" "${FASTQ_DIR}/"
-aws s3 sync "s3://${BUCKET}/reference_genome/${REFERENCE}/" "${REF_DIR}/"
-
-# sync from a missing prefix copies nothing and still exits 0
 if [ ! -f "${REF_DIR}/reference.json" ]; then
-  echo "ERROR: no Cell Ranger reference at s3://${BUCKET}/reference_genome/${REFERENCE}/ (expected reference.json)"
+  echo "ERROR: no staged Cell Ranger reference at ${REF_DIR} (expected reference.json)"
   exit "${EXIT_NO_REFERENCE}"
 fi
-if ! ls "${FASTQ_DIR}"/*.fastq.gz >/dev/null 2>&1; then
-  echo "ERROR: no FASTQs at s3://${BUCKET}/raw_reads/${SAMPLE}/"
+if ! compgen -G "${FASTQ_DIR}/*.fastq*" >/dev/null; then
+  echo "ERROR: no staged FASTQs at ${FASTQ_DIR}"
   exit "${EXIT_NO_FASTQS}"
+fi
+if [ -z "${FASTQ_SAMPLE}" ]; then
+  FASTQ_SAMPLE="$(fastq-sample-prefix "${FASTQ_DIR}")" || exit "${EXIT_BAD_FASTQ_NAMES}"
+fi
+echo "FASTQ prefix: ${FASTQ_SAMPLE}"
+chemistry_args=()
+if [ -n "${CHEMISTRY}" ]; then
+  chemistry_args=(--chemistry="${CHEMISTRY}")
+  echo "Chemistry: ${CHEMISTRY} (named by the run)"
 fi
 
 # A killed pod leaves Martian's lock behind; only this job uses this folder.
@@ -77,21 +113,36 @@ cellranger count \
   --fastqs="${FASTQ_DIR}" \
   --sample="${FASTQ_SAMPLE}" \
   --create-bam="${CREATE_BAM}" \
+  ${chemistry_args[@]+"${chemistry_args[@]}"} \
   --localcores="${CORES}" \
   --localmem="${MEM_GB}" \
   || { echo "ERROR: cellranger count failed; Cell Ranger's errors are in the log"; exit "${EXIT_CELLRANGER_FAILED}"; }
 
 echo "Comparing Cell Ranger's chemistry with the QC prediction..."
-fastq-qc --fastq-dir "${FASTQ_DIR}" --quick \
+fastq-qc --fastq-dir "${FASTQ_DIR}" --quick --expect-chemistry "${CHEMISTRY}" \
   --whitelist-dir "${CELLRANGER_HOME:?set by the image}/lib/python/cellranger/barcodes" \
   --cellranger-chemistry "${CR_ID}/SC_RNA_COUNTER_CS/SC_MULTI_CORE/MULTI_CHEMISTRY_DETECTOR/DETECT_COUNT_CHEMISTRY/fork0/_outs" \
   --out-dir "${CR_ID}/outs/qc" \
   || echo "WARNING: chemistry check reported problems; see outs/qc/qc_summary.json"
 
-echo "Uploading outputs..."
-aws s3 sync "${CR_ID}/outs/" "${OUT_URI}/outs/"
+echo "Keeping the matrix and metrics in ${RESULTS_DIR}/outs/..."
+mkdir -p "${RESULTS_DIR}/outs"
+for name in "${KEEP[@]}"; do
+  if [ -f "${CR_ID}/outs/${name}" ]; then
+    cp -- "${CR_ID}/outs/${name}" "${RESULTS_DIR}/outs/${name##*/}"
+  fi
+done
+for entry in "${REPORTS[@]}"; do
+  name="${entry%%:*}"
+  [ -f "${CR_ID}/outs/${name}" ] || continue
+  mkdir -p "${RESULTS_DIR}/reports"
+  cp -- "${CR_ID}/outs/${name}" "${RESULTS_DIR}/reports/${name}"
+done
+store_reports
+
+# Written last: its presence means the files above are in place.
 printf 'run_id=%s\ncellranger=%s\nfinished=%s\n' \
   "${RUN_ID}" "$(cellranger --version | tail -1)" "$(date -u +%FT%TZ)" \
-  | aws s3 cp - "${OUT_URI}/_SUCCESS"
+  > "${RESULTS_DIR}/outs/_SUCCESS"
 
-echo "DONE -> ${OUT_URI}"
+echo "DONE -> ${RESULTS_DIR}/outs/"

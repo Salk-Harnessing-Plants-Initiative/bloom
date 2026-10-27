@@ -77,6 +77,14 @@ vi.mock("@/components/scan-trait-boxplot", () => ({
   ),
 }));
 
+vi.mock("@/components/cyl-trait-export/TraitExportButton", () => ({
+  TraitExportButton: (props: { target: unknown; disabled?: boolean }) => (
+    <button type="button" data-testid="export" disabled={props.disabled} data-target={JSON.stringify(props.target)}>
+      Download traits
+    </button>
+  ),
+}));
+
 import TraitExplorer from "./TraitExplorer";
 
 afterEach(() => {
@@ -271,5 +279,53 @@ describe("TraitExplorer's initial wave and age", () => {
     await act(async () => {
       release();
     });
+  });
+});
+
+describe("TraitExplorer's Download traits button", () => {
+  const exportButton = () => screen.getByTestId("export") as HTMLButtonElement;
+  const exportTarget = () => JSON.parse(exportButton().dataset.target!);
+
+  it("is disabled until the first trait's waves and ages have loaded", async () => {
+    let release!: () => void;
+    gate.next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await renderExplorer();
+    expect(exportButton().disabled).toBe(true);
+    await act(async () => {
+      release();
+    });
+    expect(exportButton().disabled).toBe(false);
+  });
+
+  it("passes the experiment, the current wave and age, and the loaded lists", async () => {
+    await renderExplorer();
+    expect(exportTarget()).toEqual({ experimentId: 5, wave: 3, age: 21, waves: [1, 2, 3], ages: [7, 14, 21] });
+    await act(async () => {
+      fireEvent.change(selects().wave, { target: { value: "1" } });
+    });
+    expect(exportTarget()).toMatchObject({ wave: 1 });
+  });
+
+  it("is disabled again while a trait change reloads", async () => {
+    await renderExplorer();
+    let release!: () => void;
+    gate.next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await changeTrait("trait_b");
+    expect(exportButton().disabled).toBe(true);
+    await act(async () => {
+      release();
+    });
+    expect(exportButton().disabled).toBe(false);
+    expect(exportTarget()).toMatchObject({ waves: [2, 3], ages: [21] });
+  });
+
+  it("is enabled with empty lists for a trait with no data", async () => {
+    await renderExplorer({ traitNames: ["empty"] });
+    expect(exportButton().disabled).toBe(false);
+    expect(exportTarget()).toEqual({ experimentId: 5, wave: 0, age: 0, waves: [], ages: [] });
   });
 });

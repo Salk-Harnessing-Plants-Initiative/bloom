@@ -64,7 +64,10 @@ the wiki pages linked at the bottom of this doc.
    story.
 
 6. **GitHub Secrets** in the repo settings under the `Production`
-   environment. The deploy workflow refuses to run without all of these:
+   environment. The authoritative list is the prod env heredoc in
+   [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) (kept in step with
+   staging by `scripts/verify_env_parity.py`); the deploy refuses to run without any
+   of them. The core ones:
 
    | Secret                      | Purpose                                                   |
    | --------------------------- | --------------------------------------------------------- |
@@ -83,6 +86,10 @@ the wiki pages linked at the bottom of this doc.
    | `PROD_LANGCHAIN_API_KEY`    | LangSmith tracing key                                     |
    | `PROD_BLOOM_AGENT_KEY`      | Service role for the agent's Supabase access              |
    | `PROD_CLOUDFLARE_API_TOKEN` | Caddy DNS-01 ACME token (zone: `bloom-acme.talmolab.org`) |
+
+   Service-specific secrets (for example `PROD_WORKFLOWS_*` and `PROD_WANDB_API_KEY`)
+   are described in each service's README, e.g.
+   [`services/workflows/README.md`](services/workflows/README.md) → Provisioning.
 
    Non-sensitive values (domains, ports, URLs, flags) live in
    [`.env.prod.defaults`](.env.prod.defaults), which is committed and read

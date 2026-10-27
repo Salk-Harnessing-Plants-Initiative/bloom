@@ -1,0 +1,1493 @@
+{
+  "_about": "Recorded by tests/integration/cyl_trait_export_fixture.py from #976's RPCs on a migrated DB, as bloom_user, in fixture id space. Do not edit by hand; the integration test checks it against the live functions.",
+  "experiment": {
+    "id": 1,
+    "name": "Fixture Diversity Screen"
+  },
+  "scans_extended": [
+    {
+      "scan_id": 9,
+      "date_scanned": "2026-03-02",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 0,
+      "uploaded_at": "2026-03-02T17:00:00+00:00",
+      "plant_id": 1,
+      "qr_code": "FX-P1",
+      "accession_id": 1,
+      "germ_day": 3,
+      "germ_day_color": "Purple",
+      "wave_id": 1,
+      "wave_number": 1,
+      "wave_name": "Wave 1",
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    },
+    {
+      "scan_id": 10,
+      "date_scanned": "2026-03-09",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 7,
+      "uploaded_at": "2026-03-09T17:00:00+00:00",
+      "plant_id": 1,
+      "qr_code": "FX-P1",
+      "accession_id": 1,
+      "germ_day": 3,
+      "germ_day_color": "Purple",
+      "wave_id": 1,
+      "wave_number": 1,
+      "wave_name": "Wave 1",
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    },
+    {
+      "scan_id": 100,
+      "date_scanned": "2026-03-09",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 7,
+      "uploaded_at": null,
+      "plant_id": 2,
+      "qr_code": "FX-P2",
+      "accession_id": 2,
+      "germ_day": 3,
+      "germ_day_color": null,
+      "wave_id": 1,
+      "wave_number": 1,
+      "wave_name": "Wave 1",
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    },
+    {
+      "scan_id": 101,
+      "date_scanned": "2026-03-09",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 7,
+      "uploaded_at": null,
+      "plant_id": 3,
+      "qr_code": "FX-P3",
+      "accession_id": 3,
+      "germ_day": 4,
+      "germ_day_color": null,
+      "wave_id": 1,
+      "wave_number": 1,
+      "wave_name": "Wave 1",
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    },
+    {
+      "scan_id": 102,
+      "date_scanned": "2026-03-02",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 0,
+      "uploaded_at": null,
+      "plant_id": 4,
+      "qr_code": "FX-P4",
+      "accession_id": 1,
+      "germ_day": 4,
+      "germ_day_color": null,
+      "wave_id": 1,
+      "wave_number": 1,
+      "wave_name": "Wave 1",
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    },
+    {
+      "scan_id": 103,
+      "date_scanned": "2026-03-09",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 7,
+      "uploaded_at": null,
+      "plant_id": 5,
+      "qr_code": "FX-P5",
+      "accession_id": 2,
+      "germ_day": 3,
+      "germ_day_color": null,
+      "wave_id": 1,
+      "wave_number": 1,
+      "wave_name": "Wave 1",
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    },
+    {
+      "scan_id": 200,
+      "date_scanned": "2026-04-01",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 0,
+      "uploaded_at": null,
+      "plant_id": 6,
+      "qr_code": "FX-P6",
+      "accession_id": 3,
+      "germ_day": 2,
+      "germ_day_color": null,
+      "wave_id": 2,
+      "wave_number": 2,
+      "wave_name": null,
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    },
+    {
+      "scan_id": 201,
+      "date_scanned": "2026-04-03",
+      "scanner_id": null,
+      "phenotyper_id": null,
+      "plant_age_days": 2,
+      "uploaded_at": null,
+      "plant_id": 7,
+      "qr_code": "FX-P7",
+      "accession_id": 1,
+      "germ_day": 2,
+      "germ_day_color": null,
+      "wave_id": 2,
+      "wave_number": 2,
+      "wave_name": null,
+      "experiment_id": 1,
+      "experiment_name": "Fixture Diversity Screen",
+      "experiment_description": null,
+      "species_id": 1,
+      "species_name": "fixture-plant",
+      "species_genus": "Fixturia",
+      "species_species": "exportii"
+    }
+  ],
+  "genotypes": {
+    "1": "FIXTURE-ACC-A",
+    "2": "FIXTURE-ACC-B",
+    "3": "FIXTURE-ACC-C"
+  },
+  "sources": [
+    {
+      "id": 9,
+      "name": "legacy-fixture-9",
+      "scan_id": null,
+      "recipe_key": "legacy:9",
+      "recipe_key_version": null,
+      "metadata": null
+    },
+    {
+      "id": 20,
+      "name": "fixture-k-old",
+      "scan_id": 100,
+      "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+      "recipe_key_version": 1,
+      "metadata": {
+        "predict_models": [
+          {
+            "registry_id": "lateral-root",
+            "version": "v3",
+            "weights_checksum": "sha256:lat3",
+            "root_type": "lateral",
+            "sleap_nn_version": "0.0.9"
+          },
+          {
+            "registry_id": "primary-root",
+            "version": "v2",
+            "weights_checksum": "sha256:pri2",
+            "root_type": "primary",
+            "sleap_nn_version": "0.0.9"
+          }
+        ],
+        "predict_code_sha": "abc1234",
+        "traits_code_sha": "def4567",
+        "contract_version": "0.1.0a8",
+        "traits_sleap_roots_version": "0.2.1",
+        "predict_container_digest": "sha256:predict1",
+        "traits_container_digest": "sha256:traits1",
+        "predict_inference_config": {
+          "device": "cuda",
+          "batch_size": 4
+        }
+      }
+    },
+    {
+      "id": 21,
+      "name": "fixture-k-9",
+      "scan_id": 9,
+      "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+      "recipe_key_version": 1,
+      "metadata": {
+        "predict_models": [
+          {
+            "registry_id": "lateral-root",
+            "version": "v3",
+            "weights_checksum": "sha256:lat3",
+            "root_type": "lateral",
+            "sleap_nn_version": "0.1.0"
+          },
+          {
+            "registry_id": "primary-root",
+            "version": "v2",
+            "weights_checksum": "sha256:pri2",
+            "root_type": "primary",
+            "sleap_nn_version": "0.1.0"
+          }
+        ],
+        "predict_code_sha": "abc1234",
+        "traits_code_sha": "def4567",
+        "contract_version": "0.1.0a9",
+        "traits_sleap_roots_version": "0.2.1",
+        "predict_container_digest": "sha256:predict1",
+        "traits_container_digest": "sha256:traits1",
+        "predict_inference_config": {
+          "device": "cuda",
+          "batch_size": 4
+        }
+      }
+    },
+    {
+      "id": 22,
+      "name": "fixture-k-10",
+      "scan_id": 10,
+      "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+      "recipe_key_version": 1,
+      "metadata": {
+        "predict_models": [
+          {
+            "registry_id": "lateral-root",
+            "version": "v3",
+            "weights_checksum": "sha256:lat3",
+            "root_type": "lateral",
+            "sleap_nn_version": "0.1.0"
+          },
+          {
+            "registry_id": "primary-root",
+            "version": "v2",
+            "weights_checksum": "sha256:pri2",
+            "root_type": "primary",
+            "sleap_nn_version": "0.1.0"
+          }
+        ],
+        "predict_code_sha": "abc1234",
+        "traits_code_sha": "def4567",
+        "contract_version": "0.1.0a9",
+        "traits_sleap_roots_version": "0.2.1",
+        "predict_container_digest": "sha256:predict1",
+        "traits_container_digest": "sha256:traits1",
+        "predict_inference_config": {
+          "device": "cuda",
+          "batch_size": 4
+        }
+      }
+    },
+    {
+      "id": 30,
+      "name": "fixture-k-100",
+      "scan_id": 100,
+      "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+      "recipe_key_version": 1,
+      "metadata": {
+        "predict_models": [
+          {
+            "registry_id": "lateral-root",
+            "version": "v3",
+            "weights_checksum": "sha256:lat3",
+            "root_type": "lateral",
+            "sleap_nn_version": "0.1.0"
+          },
+          {
+            "registry_id": "primary-root",
+            "version": "v2",
+            "weights_checksum": "sha256:pri2",
+            "root_type": "primary",
+            "sleap_nn_version": "0.1.0"
+          }
+        ],
+        "predict_code_sha": "abc1234",
+        "traits_code_sha": "def4567",
+        "contract_version": "0.1.0a9",
+        "traits_sleap_roots_version": "0.2.1",
+        "predict_container_digest": "sha256:predict1",
+        "traits_container_digest": "sha256:traits1",
+        "predict_inference_config": {
+          "device": "cuda",
+          "batch_size": 4
+        }
+      }
+    },
+    {
+      "id": 40,
+      "name": "fixture-k2-101",
+      "scan_id": 101,
+      "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+      "recipe_key_version": 1,
+      "metadata": {
+        "predict_models": [
+          {
+            "registry_id": "lateral-root",
+            "version": "v3",
+            "weights_checksum": "sha256:lat3",
+            "root_type": "lateral",
+            "sleap_nn_version": "0.1.0"
+          },
+          {
+            "registry_id": "primary-root",
+            "version": "v2",
+            "weights_checksum": "sha256:pri2",
+            "root_type": "primary",
+            "sleap_nn_version": "0.1.0"
+          }
+        ],
+        "predict_code_sha": "abc1234",
+        "traits_code_sha": "def7890",
+        "contract_version": "0.1.0a9",
+        "traits_sleap_roots_version": "0.2.1",
+        "predict_container_digest": "sha256:predict1",
+        "traits_container_digest": "sha256:traits1",
+        "predict_inference_config": {
+          "device": "cuda",
+          "batch_size": 4
+        }
+      }
+    },
+    {
+      "id": 41,
+      "name": "fixture-k2-201",
+      "scan_id": 201,
+      "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+      "recipe_key_version": 1,
+      "metadata": {
+        "predict_models": [
+          {
+            "registry_id": "lateral-root",
+            "version": "v3",
+            "weights_checksum": "sha256:lat3",
+            "root_type": "lateral",
+            "sleap_nn_version": "0.1.0"
+          },
+          {
+            "registry_id": "primary-root",
+            "version": "v2",
+            "weights_checksum": "sha256:pri2",
+            "root_type": "primary",
+            "sleap_nn_version": "0.1.0"
+          }
+        ],
+        "predict_code_sha": "abc1234",
+        "traits_code_sha": "def7890",
+        "contract_version": "0.1.0a9",
+        "traits_sleap_roots_version": "0.2.1",
+        "predict_container_digest": "sha256:predict1",
+        "traits_container_digest": "sha256:traits1",
+        "predict_inference_config": {
+          "device": "cuda",
+          "batch_size": 4
+        }
+      }
+    }
+  ],
+  "keys": {
+    "K": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+    "K2": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+    "legacy:9": "legacy:9",
+    "unattributed": "unattributed"
+  },
+  "chunk_listings": {
+    "1": [
+      {
+        "scan_ids": [
+          9
+        ],
+        "rows": [
+          {
+            "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def4567",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 21,
+            "is_default": true
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          10
+        ],
+        "rows": [
+          {
+            "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def4567",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 22,
+            "is_default": true
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          100
+        ],
+        "rows": [
+          {
+            "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def4567",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 30,
+            "is_default": true
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          101
+        ],
+        "rows": [
+          {
+            "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def7890",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 40,
+            "is_default": true
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          102
+        ],
+        "rows": [
+          {
+            "recipe_key": "legacy:9",
+            "recipe_key_version": null,
+            "recipe_kind": "legacy",
+            "definition": {
+              "source_id": 9,
+              "source_name": "legacy-fixture-9"
+            },
+            "n_scans": 1,
+            "newest_source_id": 9,
+            "is_default": true
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          103
+        ],
+        "rows": [
+          {
+            "recipe_key": "unattributed",
+            "recipe_key_version": null,
+            "recipe_kind": "unattributed",
+            "definition": null,
+            "n_scans": 1,
+            "newest_source_id": null,
+            "is_default": true
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          200
+        ],
+        "rows": []
+      },
+      {
+        "scan_ids": [
+          201
+        ],
+        "rows": [
+          {
+            "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def7890",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 41,
+            "is_default": true
+          }
+        ]
+      }
+    ],
+    "2": [
+      {
+        "scan_ids": [
+          9,
+          10
+        ],
+        "rows": [
+          {
+            "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def4567",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 2,
+            "newest_source_id": 22,
+            "is_default": true
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          100,
+          101
+        ],
+        "rows": [
+          {
+            "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def7890",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 40,
+            "is_default": true
+          },
+          {
+            "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def4567",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 30,
+            "is_default": false
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          102,
+          103
+        ],
+        "rows": [
+          {
+            "recipe_key": "legacy:9",
+            "recipe_key_version": null,
+            "recipe_kind": "legacy",
+            "definition": {
+              "source_id": 9,
+              "source_name": "legacy-fixture-9"
+            },
+            "n_scans": 1,
+            "newest_source_id": 9,
+            "is_default": true
+          },
+          {
+            "recipe_key": "unattributed",
+            "recipe_key_version": null,
+            "recipe_kind": "unattributed",
+            "definition": null,
+            "n_scans": 1,
+            "newest_source_id": null,
+            "is_default": false
+          }
+        ]
+      },
+      {
+        "scan_ids": [
+          200,
+          201
+        ],
+        "rows": [
+          {
+            "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def7890",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 1,
+            "newest_source_id": 41,
+            "is_default": true
+          }
+        ]
+      }
+    ],
+    "8": [
+      {
+        "scan_ids": [
+          9,
+          10,
+          100,
+          101,
+          102,
+          103,
+          200,
+          201
+        ],
+        "rows": [
+          {
+            "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def7890",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 2,
+            "newest_source_id": 41,
+            "is_default": true
+          },
+          {
+            "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+            "recipe_key_version": 1,
+            "recipe_kind": "pipeline",
+            "definition": {
+              "models": [
+                [
+                  "lateral-root",
+                  "v3",
+                  "sha256:lat3"
+                ],
+                [
+                  "primary-root",
+                  "v2",
+                  "sha256:pri2"
+                ]
+              ],
+              "traits_code_sha": "def4567",
+              "predict_code_sha": "abc1234"
+            },
+            "n_scans": 3,
+            "newest_source_id": 30,
+            "is_default": false
+          },
+          {
+            "recipe_key": "legacy:9",
+            "recipe_key_version": null,
+            "recipe_kind": "legacy",
+            "definition": {
+              "source_id": 9,
+              "source_name": "legacy-fixture-9"
+            },
+            "n_scans": 1,
+            "newest_source_id": 9,
+            "is_default": false
+          },
+          {
+            "recipe_key": "unattributed",
+            "recipe_key_version": null,
+            "recipe_kind": "unattributed",
+            "definition": null,
+            "n_scans": 1,
+            "newest_source_id": null,
+            "is_default": false
+          }
+        ]
+      }
+    ]
+  },
+  "selection_listings": {
+    "wave=2": {
+      "filters": {
+        "wave_number": 2
+      },
+      "scan_ids": [
+        200,
+        201
+      ],
+      "rows": [
+        {
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "recipe_key_version": 1,
+          "recipe_kind": "pipeline",
+          "definition": {
+            "models": [
+              [
+                "lateral-root",
+                "v3",
+                "sha256:lat3"
+              ],
+              [
+                "primary-root",
+                "v2",
+                "sha256:pri2"
+              ]
+            ],
+            "traits_code_sha": "def7890",
+            "predict_code_sha": "abc1234"
+          },
+          "n_scans": 1,
+          "newest_source_id": 41,
+          "is_default": true
+        }
+      ]
+    },
+    "age=0": {
+      "filters": {
+        "plant_age_days": 0
+      },
+      "scan_ids": [
+        9,
+        102,
+        200
+      ],
+      "rows": [
+        {
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "recipe_key_version": 1,
+          "recipe_kind": "pipeline",
+          "definition": {
+            "models": [
+              [
+                "lateral-root",
+                "v3",
+                "sha256:lat3"
+              ],
+              [
+                "primary-root",
+                "v2",
+                "sha256:pri2"
+              ]
+            ],
+            "traits_code_sha": "def4567",
+            "predict_code_sha": "abc1234"
+          },
+          "n_scans": 1,
+          "newest_source_id": 21,
+          "is_default": true
+        },
+        {
+          "recipe_key": "legacy:9",
+          "recipe_key_version": null,
+          "recipe_kind": "legacy",
+          "definition": {
+            "source_id": 9,
+            "source_name": "legacy-fixture-9"
+          },
+          "n_scans": 1,
+          "newest_source_id": 9,
+          "is_default": false
+        }
+      ]
+    }
+  },
+  "recipes": {
+    "K": {
+      "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+      "coverage": [
+        {
+          "scan_id": 9,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "included",
+          "source_id": 21,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 10,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "included",
+          "source_id": 22,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 100,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P2",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "included",
+          "source_id": 30,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 101,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P3",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        },
+        {
+          "scan_id": 102,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P4",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "legacy_only",
+          "source_id": null,
+          "available_recipes": [
+            "legacy:9"
+          ]
+        },
+        {
+          "scan_id": 103,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P5",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "legacy_only",
+          "source_id": null,
+          "available_recipes": [
+            "unattributed"
+          ]
+        },
+        {
+          "scan_id": 200,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P6",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "no_traits",
+          "source_id": null,
+          "available_recipes": []
+        },
+        {
+          "scan_id": 201,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P7",
+          "recipe_key": "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        }
+      ],
+      "traits": [
+        {
+          "scan_id": 9,
+          "trait_name": "Zeta_depth",
+          "source_id": 21,
+          "trait_value": 3.40282346638529e+38
+        },
+        {
+          "scan_id": 9,
+          "trait_name": "curve_index_median",
+          "source_id": 21,
+          "trait_value": "Infinity"
+        },
+        {
+          "scan_id": 9,
+          "trait_name": "lateral_count_min",
+          "source_id": 21,
+          "trait_value": null
+        },
+        {
+          "scan_id": 9,
+          "trait_name": "lateral_length_mean",
+          "source_id": 21,
+          "trait_value": "NaN"
+        },
+        {
+          "scan_id": 9,
+          "trait_name": "primary_length",
+          "source_id": 21,
+          "trait_value": "-Infinity"
+        },
+        {
+          "scan_id": 9,
+          "trait_name": "Ångström_width",
+          "source_id": 21,
+          "trait_value": 0
+        },
+        {
+          "scan_id": 9,
+          "trait_name": "～tilde_score",
+          "source_id": 21,
+          "trait_value": 2.5
+        },
+        {
+          "scan_id": 9,
+          "trait_name": "𝛼_angle",
+          "source_id": 21,
+          "trait_value": 0.100000001490116
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "Zeta_depth",
+          "source_id": 22,
+          "trait_value": -2.5
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "curve_index_median",
+          "source_id": 22,
+          "trait_value": 0.75
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "lateral_count_min",
+          "source_id": 22,
+          "trait_value": 4
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "lateral_length_mean",
+          "source_id": 22,
+          "trait_value": 12.5
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "primary_length",
+          "source_id": 22,
+          "trait_value": 85.25
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "Ångström_width",
+          "source_id": 22,
+          "trait_value": 1.5
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "～tilde_score",
+          "source_id": 22,
+          "trait_value": 3.25
+        },
+        {
+          "scan_id": 10,
+          "trait_name": "𝛼_angle",
+          "source_id": 22,
+          "trait_value": 45
+        },
+        {
+          "scan_id": 100,
+          "trait_name": "Zeta_depth",
+          "source_id": 30,
+          "trait_value": 1.0000000116861e-07
+        },
+        {
+          "scan_id": 100,
+          "trait_name": "lateral_count_min",
+          "source_id": 30,
+          "trait_value": 7
+        },
+        {
+          "scan_id": 100,
+          "trait_name": "lateral_length_mean",
+          "source_id": 30,
+          "trait_value": 10.125
+        },
+        {
+          "scan_id": 100,
+          "trait_name": "primary_length",
+          "source_id": 30,
+          "trait_value": 90
+        },
+        {
+          "scan_id": 100,
+          "trait_name": "Ångström_width",
+          "source_id": 30,
+          "trait_value": 2
+        },
+        {
+          "scan_id": 100,
+          "trait_name": "𝛼_angle",
+          "source_id": 30,
+          "trait_value": 30.5
+        }
+      ]
+    },
+    "K2": {
+      "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+      "coverage": [
+        {
+          "scan_id": 9,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 10,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 100,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P2",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 101,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P3",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "included",
+          "source_id": 40,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        },
+        {
+          "scan_id": 102,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P4",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "legacy_only",
+          "source_id": null,
+          "available_recipes": [
+            "legacy:9"
+          ]
+        },
+        {
+          "scan_id": 103,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P5",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "legacy_only",
+          "source_id": null,
+          "available_recipes": [
+            "unattributed"
+          ]
+        },
+        {
+          "scan_id": 200,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P6",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "no_traits",
+          "source_id": null,
+          "available_recipes": []
+        },
+        {
+          "scan_id": 201,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P7",
+          "recipe_key": "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96",
+          "status": "included",
+          "source_id": 41,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        }
+      ],
+      "traits": [
+        {
+          "scan_id": 101,
+          "trait_name": "lateral_count_min",
+          "source_id": 40,
+          "trait_value": 3
+        },
+        {
+          "scan_id": 101,
+          "trait_name": "primary_length",
+          "source_id": 40,
+          "trait_value": 70
+        },
+        {
+          "scan_id": 201,
+          "trait_name": "lateral_count_min",
+          "source_id": 41,
+          "trait_value": 5
+        },
+        {
+          "scan_id": 201,
+          "trait_name": "primary_length",
+          "source_id": 41,
+          "trait_value": 60
+        }
+      ]
+    },
+    "legacy:9": {
+      "recipe_key": "legacy:9",
+      "coverage": [
+        {
+          "scan_id": 9,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "legacy:9",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 10,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "legacy:9",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 100,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P2",
+          "recipe_key": "legacy:9",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 101,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P3",
+          "recipe_key": "legacy:9",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        },
+        {
+          "scan_id": 102,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P4",
+          "recipe_key": "legacy:9",
+          "status": "included",
+          "source_id": 9,
+          "available_recipes": [
+            "legacy:9"
+          ]
+        },
+        {
+          "scan_id": 103,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P5",
+          "recipe_key": "legacy:9",
+          "status": "legacy_only",
+          "source_id": null,
+          "available_recipes": [
+            "unattributed"
+          ]
+        },
+        {
+          "scan_id": 200,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P6",
+          "recipe_key": "legacy:9",
+          "status": "no_traits",
+          "source_id": null,
+          "available_recipes": []
+        },
+        {
+          "scan_id": 201,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P7",
+          "recipe_key": "legacy:9",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        }
+      ],
+      "traits": [
+        {
+          "scan_id": 102,
+          "trait_name": "crown_count_min",
+          "source_id": 9,
+          "trait_value": 6
+        },
+        {
+          "scan_id": 102,
+          "trait_name": "crown_length_mean",
+          "source_id": 9,
+          "trait_value": 20.5
+        }
+      ]
+    },
+    "unattributed": {
+      "recipe_key": "unattributed",
+      "coverage": [
+        {
+          "scan_id": 9,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "unattributed",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 10,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P1",
+          "recipe_key": "unattributed",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 100,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P2",
+          "recipe_key": "unattributed",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "1bad3d73baf3961fad971247006876e3ae551c74ca494ae1039ee267d09e25fa"
+          ]
+        },
+        {
+          "scan_id": 101,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P3",
+          "recipe_key": "unattributed",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        },
+        {
+          "scan_id": 102,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P4",
+          "recipe_key": "unattributed",
+          "status": "legacy_only",
+          "source_id": null,
+          "available_recipes": [
+            "legacy:9"
+          ]
+        },
+        {
+          "scan_id": 103,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P5",
+          "recipe_key": "unattributed",
+          "status": "included",
+          "source_id": null,
+          "available_recipes": [
+            "unattributed"
+          ]
+        },
+        {
+          "scan_id": 200,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P6",
+          "recipe_key": "unattributed",
+          "status": "no_traits",
+          "source_id": null,
+          "available_recipes": []
+        },
+        {
+          "scan_id": 201,
+          "experiment_id": 1,
+          "plant_qr_code": "FX-P7",
+          "recipe_key": "unattributed",
+          "status": "other_recipe",
+          "source_id": null,
+          "available_recipes": [
+            "2dde535d26774eedab8f04f10814d33933136c41d35013e32abe39000432ba96"
+          ]
+        }
+      ],
+      "traits": [
+        {
+          "scan_id": 103,
+          "trait_name": "primary_length",
+          "source_id": null,
+          "trait_value": 55
+        }
+      ]
+    }
+  }
+}
