@@ -27,6 +27,8 @@ WHITELISTS = [
 ]
 BARCODE_LENGTH = 16
 MIN_SHARE_FOR_GUESS = 0.5
+# Chemistries Cell Ranger's auto-detection can't pick, with the form's name for each.
+MUST_BE_NAMED = {"ARC-v1": "10x Multiome — RNA part"}
 
 # <prefix>_S1_L001_R1_001.fastq.gz
 FASTQ_NAME = re.compile(r"^(.+)_S\d+_L(\d{3})_(R1|R2|I1|I2)_001\.fastq\.gz$")
@@ -47,8 +49,8 @@ def find_fastqs(fastq_dir, s3_prefix):
     return found
 
 
-def read_stats(path, max_reads):
-    """Count reads and lengths; stop after max_reads if given. Also return the R1 barcodes seen."""
+def read_stats(path, max_reads, keep_barcodes=0):
+    """Count reads and lengths; stop after max_reads if given. Also return the first keep_barcodes barcodes."""
     if path.startswith("s3://"):
         command = f"aws s3 cp {shlex.quote(path)} - | gzip -dc"
     else:
@@ -64,7 +66,8 @@ def read_stats(path, max_reads):
         total_length += len(sequence)
         shortest = len(sequence) if shortest is None else min(shortest, len(sequence))
         longest = max(longest, len(sequence))
-        barcodes.append(sequence[:BARCODE_LENGTH])
+        if len(barcodes) < keep_barcodes:
+            barcodes.append(sequence[:BARCODE_LENGTH])
         if max_reads and reads == max_reads:
             break
 
@@ -94,6 +97,36 @@ def guess_chemistry(barcodes, whitelist_dir):
     return guess, scores
 
 
+def expected_chemistry(chemistry, scores):
+    """The named chemistry's list as the guess when it holds at least half the barcodes; else a
+    problem naming the chemistry and the list that matched best."""
+    named = next((s for s in scores if s["chemistry"] == chemistry), None)
+    if named is None:
+        return None, f"no barcode list for the chemistry the run names ({chemistry})"
+    if named["share_of_barcodes"] >= MIN_SHARE_FOR_GUESS:
+        return named, None
+    best = scores[0]
+    if best is not named and best["share_of_barcodes"] >= MIN_SHARE_FOR_GUESS:
+        matched = f"the reads match {best['kit']} ({best['share_of_barcodes']:.0%})"
+    else:
+        matched = "no 10x barcode list matches half of them"
+    return None, (
+        f"the run names {chemistry} ({named['kit']}), but only {named['share_of_barcodes']:.0%} "
+        f"of barcodes are on its list; {matched}"
+    )
+
+
+def undetectable_guess(guess):
+    """A problem when the guess is a chemistry Cell Ranger can't detect, so the run must name it."""
+    if guess and guess["chemistry"] in MUST_BE_NAMED:
+        return (
+            f"the reads look like {guess['kit']} ({guess['share_of_barcodes']:.0%} of barcodes), which "
+            f"Cell Ranger can't detect; start the run again with the library type set to "
+            f"{MUST_BE_NAMED[guess['chemistry']]}"
+        )
+    return None
+
+
 def cellranger_chemistry(detect_outs_path, guess):
     """Read the chemistry Cell Ranger picked and say whether it matches our guess."""
     with open(detect_outs_path) as f:
@@ -113,6 +146,8 @@ def main():
     parser.add_argument("--sample-reads", type=int, default=200_000, help="R1 reads used to guess the chemistry")
     parser.add_argument("--quick", action="store_true", help="read only the first --sample-reads of each R1/R2 file")
     parser.add_argument("--cellranger-chemistry", help="Cell Ranger's DETECT_COUNT_CHEMISTRY/fork0/_outs")
+    parser.add_argument("--expect-chemistry", default="",
+                        help="the chemistry the run names (e.g. ARC-v1), checked instead of guessed")
     args = parser.parse_args()
 
     fastqs = find_fastqs(args.fastq_dir, args.s3_prefix.rstrip("/") if args.s3_prefix else None)
@@ -123,10 +158,11 @@ def main():
         if args.quick and read not in ("R1", "R2"):
             continue
         print(f"reading {os.path.basename(path)}", flush=True)
-        stats, file_barcodes = read_stats(path, args.sample_reads if args.quick else None)
+        # Only R1's first --sample-reads barcodes are kept; keeping every read's would not fit in memory.
+        keep = args.sample_reads - len(barcodes) if read == "R1" else 0
+        stats, file_barcodes = read_stats(path, args.sample_reads if args.quick else None, keep)
         rows.append({"file": os.path.basename(path), "prefix": prefix, "lane": lane, "read": read, **stats})
-        if read == "R1":
-            barcodes += file_barcodes[: args.sample_reads - len(barcodes)]
+        barcodes += file_barcodes
 
     r1 = [r for r in rows if r["read"] == "R1"]
     r2 = [r for r in rows if r["read"] == "R2"]
@@ -138,11 +174,17 @@ def main():
                 problems.append(f"lane {lane}: R1 has {r1_reads} reads but R2 has {r2_reads}")
 
     guess, scores = guess_chemistry(barcodes, args.whitelist_dir)
+    if args.expect_chemistry:
+        guess, mismatch = expected_chemistry(args.expect_chemistry, scores)
+        if mismatch:
+            problems.append(mismatch)
+    elif not guess:
+        problems.append("could not guess the chemistry: no barcode list matched half the reads")
+    elif undetectable_guess(guess):
+        problems.append(undetectable_guess(guess))
     shortest_r1 = min((r["min_len"] for r in r1), default=0)
     if guess and shortest_r1 < guess["r1_needed"]:
         problems.append(f"shortest R1 is {shortest_r1} bp but {guess['kit']} needs {guess['r1_needed']} bp")
-    if not guess:
-        problems.append("could not guess the chemistry: no barcode list matched half the reads")
 
     detected = cellranger_chemistry(args.cellranger_chemistry, guess) if args.cellranger_chemistry else None
     prefixes = sorted({r["prefix"] for r in rows})
@@ -152,6 +194,7 @@ def main():
         "read_pairs": None if args.quick else sum(r["reads"] for r in r1),
         "r1_length": {"min": shortest_r1, "max": max((r["max_len"] for r in r1), default=0)},
         "r2_length": {"min": min((r["min_len"] for r in r2), default=0), "max": max((r["max_len"] for r in r2), default=0)},
+        "chemistry_named": args.expect_chemistry or None,
         "chemistry_guess": guess,
         "whitelist_scores": scores,
         "cellranger_chemistry": detected,
@@ -168,6 +211,10 @@ def main():
         json.dump(summary, f, indent=2)
 
     print("read pairs:", summary["read_pairs"], "| R1:", summary["r1_length"], "| R2:", summary["r2_length"])
+    for score in scores:
+        print(f"barcode list {score['file']} ({score['kit']}): {score['share_of_barcodes']:.1%} of barcodes")
+    if args.expect_chemistry:
+        print("chemistry named by the run:", args.expect_chemistry)
     print("chemistry guess:", f"{guess['kit']} ({guess['share_of_barcodes']:.0%} of barcodes)" if guess else "none")
     if detected:
         print("cellranger picked:", detected["name"], "- matches guess" if detected["matches_guess"] else "- DOES NOT match guess")

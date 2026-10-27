@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { fetchRun } from "@/lib/cyl-pipeline/queries";
+import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
 import { parseId } from "@/lib/route-params";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { Breadcrumbs } from "./Breadcrumbs";
@@ -39,7 +40,7 @@ export default async function RunPage({
     <div>
       <Breadcrumbs runId={id} />
       <h1 className="text-xl mb-4">Run {id}</h1>
-      <RunDetailLive initialRun={run} initialFilter={parseStatusFilter(status)} />
+      <RunDetailLive initialRun={run} initialFilter={parseStatusFilter(status)} triggerEnabled={isPipelineTriggerEnabled()} />
     </div>
   );
 }

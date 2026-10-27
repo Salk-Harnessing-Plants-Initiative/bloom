@@ -83,6 +83,10 @@ Only needed for specific features / conflicts:
   the LLM agent. Without them, `langchain-agent` won't become healthy (it builds
   a model at startup); that's expected and `make check` treats it as an optional
   warning, not a failure. The core stack (incl. `bloommcp`) is unaffected.
+- `WANDB_API_KEY` — a wandb key that can read the `sleap-roots-models` registry.
+  With it, the cylinder pipeline's confirm dialog warns about scans past their
+  models' validated age or with no model; without it the dialog shows
+  "Couldn't check the models' age ranges." and still lets you start the run.
 - **Port conflict:** if host port `5432` is already in use (commonly a
   WSL-relayed Postgres from another project), set a free port in `.env.dev`:
   ```bash
@@ -294,12 +298,16 @@ make upload-images
 
 **Kong Gateway** (http://localhost:8000) routes to:
 
-| Path            | Routes To     | Description    |
-| --------------- | ------------- | -------------- |
-| /auth/v1/\*     | auth:9999     | Authentication |
-| /rest/v1/\*     | rest:3000     | Database API   |
-| /realtime/v1/\* | realtime:4000 | Subscriptions  |
-| /storage/v1/\*  | storage:5000  | File storage   |
+| Path            | Routes To                           | Description    |
+| --------------- | ----------------------------------- | -------------- |
+| /auth/v1/\*     | auth:9999                           | Authentication |
+| /rest/v1/\*     | rest:3000                           | Database API   |
+| /realtime/v1/\* | realtime-dev.supabase-realtime:4000 | Subscriptions  |
+| /storage/v1/\*  | storage:5000                        | File storage   |
+
+Kong reaches Realtime by the `realtime-dev.supabase-realtime` alias because Realtime
+takes the tenant name (`realtime-dev`) from the first label of the Host header.
+Its REST API (`/realtime/v1/api/*`) takes the service-role key only; the anon key gets `403`.
 
 **LangChain Agent** (http://localhost:5002):
 

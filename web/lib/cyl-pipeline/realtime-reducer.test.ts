@@ -47,6 +47,7 @@ function run(id: number, created_at: string, overrides: Partial<RunRow> = {}): R
     error_message: null,
     failed_count: 0,
     params: {},
+    poller_concluded_at: null,
     requested_by: "4965b3af-ccfe-40f5-814b-447e1f726e1b",
     reused_count: 0,
     scan_count: 40,

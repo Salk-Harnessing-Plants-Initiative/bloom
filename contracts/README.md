@@ -45,16 +45,18 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
 > naming helpers shared by writers and readers (`run_manifest_filename`, `pipeline_run_id_from_env`,
 > `run_manifest_name_for_writing`) and the reader entry
 > point `load_run_manifest`. It is additive (`RunManifest`/`RUN_MANIFEST_FILENAME` are unchanged).
-> `bloomctl` still writes and reads the legacy `run_manifest.json`, which the a9 traits reader
-> accepts via `allow_legacy=True` until `talmolab/sleap-roots-pipeline#82`. The write-back RPC's
+> With `ARGO_WORKFLOW_NAME` set, `bloomctl` (bloom #934) writes and reads `run_manifest.<id>.json` (reads fall back to a legacy `run_manifest.json`
+> only when it names this run, via `allow_legacy=True`, until `talmolab/sleap-roots-pipeline#82`); without it, it uses
+> `run_manifest.json`. The write-back RPC's
 > literal moved to `a9` in the same change — see
 > `supabase/migrations/20260928130000_cyl_writeback_contract_a9.sql`.
 
 > Note on `v0.1.0a8` (skipped by Bloom's re-pins; documented for completeness): an **`$id`-only
 > structural no-op for the JSON Schema**. The change is predict-side and **BREAKING** on the Python
 > package side: `ModelCard` reshaped from flat `species`/`mode`/`age_min`/`age_max` to a non-empty
-> `selectors` tuple of the new `Selector` type (no tolerant read of the old shape). Bloom imports
-> neither `ModelCard` nor `Selector`.
+> `selectors` tuple of the new `Selector` type (no tolerant read of the old shape). Bloom's
+> `services/workflows` validates production model cards as `ModelCard` (with `Selector`) to serve
+> `GET /model-cards`; it needs `>=0.1.0a9`, because the `selectors` shape arrived in a8.
 
 > Note on `v0.1.0a7`: re-pinned from `v0.1.0a5` for Bloom change `repin-cyl-contract-a7` (bloom
 > #685) — an **`$id`-only structural no-op for the JSON Schema** (verified by diffing the fetched
@@ -88,7 +90,9 @@ from the Supabase `database.types.ts` (generated from the database by `make gen-
 > was removed or retyped and `BlobRef` is unchanged. Because `Provenance` is a plain object with
 > `properties`, the generated TS **does** surface the two new optional fields (unlike the `BlobRef`
 > `anyOf` caveat below) — an expected, reviewed drift-guard diff. Both fields ride inside the opaque
-> `cyl_trait_sources.metadata` jsonb, so no Bloom DB column or migration is needed. The bare-vs-`v`
+> `cyl_trait_sources.metadata` jsonb, so no Bloom DB column or migration is needed (since
+> `add-cyl-trait-recipe-key`, `predict_output_params` is also one of the four fields the recipe key
+> v1 hashes — see `_WIKI/SUPABASE/trait-recipes.md`). The bare-vs-`v`
 > `contract_version` convention (the write-back RPC now matches prefix-tolerantly) is tracked upstream
 > in [`talmolab/sleap-roots-contracts#14`](https://github.com/talmolab/sleap-roots-contracts/issues/14);
 > once it settles on the canonical byte, Bloom can drop the tolerance and pin it exactly.
@@ -161,6 +165,11 @@ field change produces a TS diff and fails the drift guard — that is the signal
    staging/production secrets (they are scoped behind `environment: staging`/
    `environment: production`, reachable only from a `push` to `staging`/`main` or an explicit
    `workflow_dispatch`, never a `pull_request` event) — nothing today blocks a PR that skips it.
+7. **Check the recipe key.** `cyl_trait_recipe_key_v1` hashes four Provenance fields:
+   `predict_models` (`registry_id`, `version`, `weights_checksum`), `predict_code_sha`,
+   `traits_code_sha` and `predict_output_params`. If the revision renames, retypes or reshapes
+   any of them, decide whether a `recipe_key_version = 2` (new helpers, v1 values untouched) is
+   needed before merging. See `_WIKI/SUPABASE/trait-recipes.md`, "Changing the key".
 
 ## Gotchas
 

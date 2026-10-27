@@ -2,8 +2,11 @@
 submit, and complete or fail, with a fake Supabase client and a fake submission (no
 database or cluster)."""
 
+import logging
+
 import pytest
 
+import k8s_client
 import rnaseq_worker as worker
 from k8s_client import K8sAlreadyExistsError, K8sConfigError, K8sSubmissionError
 from rnaseq_workflows import WorkflowType
@@ -11,7 +14,11 @@ from rnaseq_workflows import WorkflowType
 RUN = {
     "run_id": 7,
     "workflow_type": "scrna-cellranger",
-    "params": {"sample": "tinygex", "reference": "tiny_ref"},
+    "params": {
+        "sample": "tinygex",
+        "reference": "tiny_ref",
+        "sra_runs": ["SRR28503597"],
+    },
     "run_key": "tinygex__tiny_ref__u",
     "msg_id": 12,
 }
@@ -26,13 +33,50 @@ class _Result:
 
 class FakeClient:
     """Records RPC calls. Claim returns the next queued result; complete and fail
-    return `changed`."""
+    return `changed`. Table reads return `tables[name]`, filtered by eq (none by default).
+    A read whose selected columns contain one of `fail_select` raises."""
 
-    def __init__(self, claims=(), fail_on=(), changed=True):
+    def __init__(
+        self, claims=(), fail_on=(), changed=True, tables=None, fail_select=()
+    ):
         self.claims = list(claims)
         self.fail_on = set(fail_on)
+        self.fail_select = tuple(fail_select)
         self.changed = changed
+        self.tables = tables or {}
         self.calls = []
+
+    def table(self, name):
+        client = self
+
+        class _Query:
+            def __init__(self):
+                self.filters = {}
+                self.cols = ""
+
+            def select(self, cols):
+                self.cols = cols
+                return self
+
+            def eq(self, col, value):
+                self.filters[col] = value
+                return self
+
+            def execute(self):
+                if name in client.fail_on or any(
+                    part in self.cols for part in client.fail_select
+                ):
+                    raise RuntimeError(f"{name} unavailable")
+                rows = client.tables.get(name, [])
+                return _Result(
+                    [
+                        r
+                        for r in rows
+                        if all(r.get(k) == v for k, v in self.filters.items())
+                    ]
+                )
+
+        return _Query()
 
     def rpc(self, name, params):
         self.calls.append((name, params))
@@ -52,6 +96,10 @@ class FakeClient:
         return [name for name, _ in self.calls]
 
 
+def _no_status(workflow, run):
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _reset_running():
     worker._running = True
@@ -68,7 +116,9 @@ def types(monkeypatch):
         built.append(run)
         return dict(BODY)
 
-    registry = {"scrna-cellranger": WorkflowType("scrna-cellranger", _build)}
+    registry = {
+        "scrna-cellranger": WorkflowType("scrna-cellranger", _build, _no_status)
+    }
     monkeypatch.setattr(worker, "WORKFLOW_TYPES", registry)
     return built
 
@@ -135,7 +185,7 @@ def test_a_claimed_run_is_submitted_and_recorded(types, submitted):
 
 def test_the_body_is_built_by_the_runs_workflow_type(types, submitted):
     worker.process_one(FakeClient(claims=[[RUN]]))
-    assert types == [RUN]
+    assert types == [{**RUN, "dataset": None, "genome": None}]
 
 
 def test_a_run_of_an_unhandled_type_is_failed_without_submitting(types, submitted):
@@ -161,6 +211,80 @@ def test_an_already_existing_workflow_is_recorded_as_submitted(types, monkeypatc
     assert worker.process_one(client) is True
     assert client.names() == [CLAIM, COMPLETE]
     assert client.calls[1][1]["p_argo_workflow_name"] == BODY["metadata"]["name"]
+
+
+# --------------------------------------------------------------------------- #
+# A run submitted under a name the worker no longer builds
+# --------------------------------------------------------------------------- #
+
+OLD_NAME = "scrna-cellranger-dev-7-abcd1234"
+
+
+@pytest.fixture
+def renamed(monkeypatch):
+    """The run's type names the Workflow differently now; OLD_NAME is its earlier name."""
+    registry = {
+        "scrna-cellranger": WorkflowType(
+            "scrna-cellranger",
+            lambda run: {"metadata": {"name": "scrna-dev-7-abcd1234"}},
+            _no_status,
+            earlier_names=lambda run: [OLD_NAME],
+        )
+    }
+    monkeypatch.setattr(worker, "WORKFLOW_TYPES", registry)
+
+
+def _argo(monkeypatch, found):
+    """get_workflow answers with `found` (a Workflow, None, or an exception to raise)."""
+    asked = []
+
+    def _get(name):
+        asked.append(name)
+        if isinstance(found, Exception):
+            raise found
+        return found
+
+    monkeypatch.setattr(worker, "get_workflow", _get)
+    return asked
+
+
+def test_a_run_already_submitted_under_its_earlier_name_is_recorded_not_resubmitted(
+    renamed, submitted, monkeypatch
+):
+    asked = _argo(monkeypatch, {"metadata": {"labels": {"rnaseq-run-id": "7"}}})
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert asked == [OLD_NAME]
+    assert submitted == []
+    assert client.calls[1] == (
+        COMPLETE,
+        {"p_run_id": 7, "p_msg_id": 12, "p_argo_workflow_name": OLD_NAME},
+    )
+
+
+@pytest.mark.parametrize(
+    "found",
+    [None, {"metadata": {"labels": {"rnaseq-run-id": "8"}}}, {"metadata": {}}],
+    ids=["no-such-workflow", "another-runs-workflow", "unlabelled"],
+)
+def test_a_run_with_no_earlier_workflow_of_its_own_is_submitted_under_its_name(
+    renamed, submitted, monkeypatch, found
+):
+    _argo(monkeypatch, found)
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert [b["metadata"]["name"] for b in submitted] == ["scrna-dev-7-abcd1234"]
+    assert client.calls[1][1]["p_argo_workflow_name"] == "scrna-dev-7-abcd1234"
+
+
+def test_a_run_whose_earlier_submission_cant_be_checked_stays_queued(
+    renamed, submitted, monkeypatch
+):
+    _argo(monkeypatch, k8s_client.K8sStatusError("Argo Workflow status check failed"))
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert submitted == []
+    assert client.names() == [CLAIM], "neither recorded nor failed; it comes back"
 
 
 def test_a_rejected_submission_fails_the_run_with_a_generic_message(types, monkeypatch):
@@ -196,7 +320,7 @@ def test_a_config_error_leaves_the_run_for_redelivery(monkeypatch, where):
     monkeypatch.setattr(
         worker,
         "WORKFLOW_TYPES",
-        {"scrna-cellranger": WorkflowType("scrna-cellranger", build)},
+        {"scrna-cellranger": WorkflowType("scrna-cellranger", build, _no_status)},
     )
     client = FakeClient(claims=[[RUN]])
     assert worker.process_one(client) is True
@@ -304,3 +428,204 @@ def test_a_stop_signal_while_waiting_to_connect_exits_cleanly(monkeypatch):
     monkeypatch.setattr(worker, "app_client", _connect)
     monkeypatch.setattr(worker.time, "sleep", lambda s: None)
     assert worker._connect_with_retry() is None
+
+
+def test_a_set_but_invalid_secret_name_warns_at_startup(monkeypatch, caplog):
+    monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", "Bloom-Secret ")
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", None)
+    with caplog.at_level(logging.WARNING, logger="rnaseq_worker"):
+        worker._warn_if_pipeline_secret_invalid()
+    assert "is not a valid Kubernetes object name" in caplog.text
+
+
+@pytest.mark.parametrize("raw, name", [(None, None), ("bloom-secret", "bloom-secret")])
+def test_an_unset_or_valid_secret_name_does_not_warn(monkeypatch, caplog, raw, name):
+    if raw is None:
+        monkeypatch.delenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raising=False)
+    else:
+        monkeypatch.setenv("WORKFLOWS_K8S_PIPELINE_SECRET_NAME", raw)
+    monkeypatch.setattr(k8s_client, "PIPELINE_SECRET_NAME", name)
+    with caplog.at_level(logging.WARNING, logger="rnaseq_worker"):
+        worker._warn_if_pipeline_secret_invalid()
+    assert caplog.text == ""
+
+
+def test_the_secret_name_is_checked_when_the_worker_starts(monkeypatch):
+    checked = []
+    monkeypatch.setattr(
+        worker, "_warn_if_pipeline_secret_invalid", lambda: checked.append(True)
+    )
+    monkeypatch.setattr(worker, "_connect_with_retry", lambda: None)
+    monkeypatch.setattr(worker.signal, "signal", lambda *a: None)
+    worker.run()
+    assert checked == [True]
+
+
+# --------------------------------------------------------------------------- #
+# The dataset a run loads into Bloom
+# --------------------------------------------------------------------------- #
+
+
+def _with_metadata(metadata, species=({"id": 3, "common_name": "Arabidopsis"},)):
+    return {
+        "rnaseq_runs": [{"id": RUN["run_id"], "metadata": metadata}],
+        "species": list(species),
+    }
+
+
+def test_a_run_naming_a_dataset_passes_its_name_and_species(types, submitted):
+    tables = _with_metadata({"dataset_name": "  Root atlas ", "species_id": 3})
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["dataset"] == {"name": "Root atlas", "species": "Arabidopsis",
+                                   "kegg_org": None}
+
+
+def test_a_species_kegg_code_goes_with_the_dataset(types, submitted):
+    tables = _with_metadata({"dataset_name": "Root atlas", "species_id": 3},
+                            species=({"id": 3, "common_name": "Sorghum", "kegg_org": "sbi"},))
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["dataset"]["kegg_org"] == "sbi"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {},
+        {"dataset_name": "", "species_id": 3},
+        {"dataset_name": "Root atlas"},
+        {"dataset_name": "Root atlas", "species_id": "3"},
+        {"dataset_name": "Root atlas", "species_id": True},
+    ],
+    ids=[
+        "no-metadata",
+        "empty",
+        "blank-name",
+        "no-species",
+        "species-as-text",
+        "species-as-bool",
+    ],
+)
+def test_a_run_without_a_usable_dataset_is_submitted_without_one(
+    types, submitted, metadata
+):
+    worker.process_one(FakeClient(claims=[[RUN]], tables=_with_metadata(metadata)))
+    assert types[0]["dataset"] is None
+    assert submitted, "the run is still submitted, just not loaded"
+
+
+def test_a_species_that_doesnt_exist_is_submitted_without_a_dataset(
+    types, submitted, caplog
+):
+    tables = _with_metadata({"dataset_name": "Root atlas", "species_id": 99})
+    with caplog.at_level(logging.WARNING, logger="rnaseq_worker"):
+        worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["dataset"] is None and "won't be loaded" in caplog.text
+
+
+@pytest.mark.parametrize("table", ["rnaseq_runs", "species"])
+def test_a_failed_lookup_leaves_the_run_queued(types, submitted, table):
+    tables = _with_metadata({"dataset_name": "Root atlas", "species_id": 3})
+    client = FakeClient(claims=[[RUN]], tables=tables, fail_on={table})
+    assert worker.process_one(client) is True
+    assert submitted == [] and types == []
+    assert COMPLETE not in client.names() and FAIL not in client.names()
+
+
+# --------------------------------------------------------------------------- #
+# The genome version a run builds its reference from
+# --------------------------------------------------------------------------- #
+
+
+def _with_genome(version):
+    return {
+        "rnaseq_runs": [{"id": RUN["run_id"], "genome_reference_versions": version}]
+    }
+
+
+def test_a_run_passes_its_recorded_genome_version(types, submitted):
+    tables = _with_genome(
+        {"version": 2, "genome_references": {"name": "athaliana_col0"}}
+    )
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert types[0]["genome"] == "athaliana_col0.v2"
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        {},
+        {"version": 2},
+        {"version": "2", "genome_references": {"name": "g"}},
+        {"version": 2, "genome_references": None},
+    ],
+    ids=["none", "empty", "no-genome", "version-as-text", "genome-missing"],
+)
+def test_a_run_without_a_usable_genome_version_passes_none(types, submitted, version):
+    worker.process_one(FakeClient(claims=[[RUN]], tables=_with_genome(version)))
+    assert types[0]["genome"] is None
+
+
+def test_a_run_that_cant_be_built_is_failed_with_its_reason(monkeypatch, submitted):
+    def _build(run):
+        raise worker.UnrunnableRun("no genome version from Bloom")
+
+    monkeypatch.setattr(
+        worker,
+        "WORKFLOW_TYPES",
+        {"scrna-cellranger": WorkflowType("scrna-cellranger", _build, _no_status)},
+    )
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert submitted == []
+    assert client.calls[1][0] == FAIL
+    assert client.calls[1][1]["p_message"] == "no genome version from Bloom"
+
+
+def test_a_failed_genome_lookup_leaves_the_run_queued(types, submitted):
+    client = FakeClient(claims=[[RUN]], fail_select={"genome_reference_versions"})
+    assert worker.process_one(client) is True
+    assert submitted == [] and types == []
+    assert COMPLETE not in client.names() and FAIL not in client.names()
+
+
+def test_a_run_without_a_genome_version_is_failed_by_the_real_builder(
+    monkeypatch, submitted
+):
+    import rnaseq_workflows
+
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
+    monkeypatch.setattr(worker, "WORKFLOW_TYPES", rnaseq_workflows.WORKFLOW_TYPES)
+    client = FakeClient(claims=[[RUN]])
+    assert worker.process_one(client) is True
+    assert submitted == []
+    assert client.calls[1] == (
+        FAIL,
+        {
+            "p_run_id": RUN["run_id"],
+            "p_msg_id": RUN["msg_id"],
+            "p_message": rnaseq_workflows.NO_GENOME_VERSION,
+        },
+    )
+
+
+def test_a_run_with_a_genome_version_is_submitted_by_the_real_builder(
+    monkeypatch, submitted
+):
+    import rnaseq_workflows
+
+    monkeypatch.setattr(k8s_client, "ENV_LABEL", "staging")
+    monkeypatch.setattr(k8s_client, "NAMESPACE", "runai-busch-lab")
+    monkeypatch.setattr(worker, "WORKFLOW_TYPES", rnaseq_workflows.WORKFLOW_TYPES)
+    asked = _argo(monkeypatch, None)
+    tables = _with_genome(
+        {"version": 2, "genome_references": {"name": "athaliana_col0"}}
+    )
+    worker.process_one(FakeClient(claims=[[RUN]], tables=tables))
+    assert asked == rnaseq_workflows.CELLRANGER.earlier_names(RUN)
+    params = {
+        p["name"]: p["value"] for p in submitted[0]["spec"]["arguments"]["parameters"]
+    }
+    assert params["reference"] == "athaliana_col0.v2"

@@ -138,6 +138,9 @@ jobs:
           WORKFLOWS_K8S_TOKEN=${{ secrets.PROD_WORKFLOWS_K8S_TOKEN }}
           WORKFLOWS_K8S_CA_CERT=${{ secrets.PROD_WORKFLOWS_K8S_CA_CERT }}
           WORKFLOWS_K8S_API_URL=${{ secrets.PROD_WORKFLOWS_K8S_API_URL }}
+          WANDB_API_KEY=${{ secrets.PROD_WANDB_API_KEY }}
+          WORKFLOWS_S3_READER_ACCESS_KEY_ID=${{ secrets.PROD_WORKFLOWS_S3_READER_ACCESS_KEY_ID }}
+          WORKFLOWS_S3_READER_SECRET_ACCESS_KEY=${{ secrets.PROD_WORKFLOWS_S3_READER_SECRET_ACCESS_KEY }}
           DASHBOARD_USERNAME=${{ secrets.PROD_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.PROD_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.PROD_BLOOMMCP_API_KEY }}
@@ -316,6 +319,17 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.PROD_DEPLOY_PATH }}
+            # bloom-web stamps this into trait-export sidecars (bloom#1007): the
+            # last commit that changed the code its image is built from (the
+            # Dockerfile's COPY sources), not HEAD, so a deploy that leaves that
+            # code alone does not recreate bloom-web and drop its in-memory
+            # exports. Build args and untracked host files are not covered.
+            # Taken on the host (escaped); assigned, then checked non-empty (git log
+            # exits 0 when nothing matches), then exported, so a failure stops
+            # the deploy instead of stamping an empty SHA.
+            BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+            test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+            export BLOOM_WEB_BUILD_SHA
             docker compose -f docker-compose.prod.yml --env-file .env.prod \
               up -d --build --remove-orphans --wait --wait-timeout 600
             echo 'Production deployed successfully!'
@@ -660,7 +674,9 @@ jobs:
               echo \"::error::Supabase CLI version mismatch on server: expected $EXPECTED_CLI_VERSION, got \$ACTUAL_CLI_VERSION\"
               exit 1
             fi
-            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes'
+            # --include-all: staging sets the order, so a promotion can bring a migration
+            # dated before one an earlier promotion already applied to prod.
+            bash scripts/deploy_run_supabase.sh prod 'db push --debug --yes --include-all'
           " || {
             echo '::error title=Migration failed (production)::See the Migration summary at top of run and the Show-migration-status step for applied vs pending state.'
             exit 1
@@ -881,6 +897,11 @@ jobs:
               # broken. Shorter 300s timeout (vs 600s forward) because rollback
               # reuses already-built images — cold-build is not in the critical
               # path.
+              # After the reset, so bloom-web names the code rolled back to; see
+              # the production deploy step's comment (bloom#1007).
+              BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+              test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+              export BLOOM_WEB_BUILD_SHA
               docker compose -f docker-compose.prod.yml --env-file .env.prod \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
@@ -950,6 +971,39 @@ jobs:
               exit 1
             fi
           "
+
+      # bloom#1022: fail the deploy, but keep the new code, when any public id sequence is
+      # behind its data (a default-id insert would collide). This step MUST stay after
+      # "Rollback on failure": rollback reverts code, which can't fix a sequence. With no
+      # `if:`, an earlier failure skips it and rolls back as before. Read-only.
+      - name: Check id sequences are not behind (production)
+        timeout-minutes: 5
+        run: |
+          out=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.prod | cut -d= -f2-)
+            docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
+              db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < scripts/sql/sequences_behind.sql
+          ") || {
+            echo '::error title=Sequence check could not run (production)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
+            exit 1
+          }
+          if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
+            n=$(printf '%s\n' "$out" | wc -l)
+            echo "::error title=Id sequence behind its data (production)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (production)::$(esc "$row")"
+            done
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
+            exit 1
+          fi
+          echo "No public id sequence is behind its data."
 
       - name: Cleanup
         if: always()
@@ -1117,6 +1171,9 @@ jobs:
           WORKFLOWS_K8S_TOKEN=${{ secrets.STAGING_WORKFLOWS_K8S_TOKEN }}
           WORKFLOWS_K8S_CA_CERT=${{ secrets.STAGING_WORKFLOWS_K8S_CA_CERT }}
           WORKFLOWS_K8S_API_URL=${{ secrets.STAGING_WORKFLOWS_K8S_API_URL }}
+          WANDB_API_KEY=${{ secrets.STAGING_WANDB_API_KEY }}
+          WORKFLOWS_S3_READER_ACCESS_KEY_ID=${{ secrets.STAGING_WORKFLOWS_S3_READER_ACCESS_KEY_ID }}
+          WORKFLOWS_S3_READER_SECRET_ACCESS_KEY=${{ secrets.STAGING_WORKFLOWS_S3_READER_SECRET_ACCESS_KEY }}
           DASHBOARD_USERNAME=${{ secrets.STAGING_DASHBOARD_USERNAME }}
           DASHBOARD_PASSWORD=${{ secrets.STAGING_DASHBOARD_PASSWORD }}
           BLOOMMCP_API_KEY=${{ secrets.STAGING_BLOOMMCP_API_KEY }}
@@ -1250,6 +1307,10 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
             cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            # See the matching comment in the production deploy step (bloom#1007).
+            BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+            test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+            export BLOOM_WEB_BUILD_SHA
             docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
               up -d --build --remove-orphans --wait --wait-timeout 600
             echo 'Staging deployed successfully!'
@@ -1746,6 +1807,11 @@ jobs:
               # Symmetric --wait with forward deploy — see prod rollback for
               # rationale. Shorter 300s timeout since rollback reuses built
               # images.
+              # After the reset, so bloom-web names the code rolled back to; see
+              # the production deploy step's comment (bloom#1007).
+              BLOOM_WEB_BUILD_SHA=\$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore)
+              test -n \"\$BLOOM_WEB_BUILD_SHA\" || { echo \"::error::no commit touches bloom-web image inputs; cannot stamp its build\"; exit 1; }
+              export BLOOM_WEB_BUILD_SHA
               docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging \
                 up -d --build --remove-orphans --wait --wait-timeout 300 \
                 || { echo \"::error::Rollback reset to \$PREV succeeded but docker compose --wait failed — previous-version stack is also unhealthy, manual inspection required\"; exit 1; }
@@ -1798,6 +1864,39 @@ jobs:
               exit 1
             fi
           "
+
+      # bloom#1022: fail the deploy, but keep the new code, when any public id sequence is
+      # behind its data (a default-id insert would collide). This step MUST stay after
+      # "Rollback on failure": rollback reverts code, which can't fix a sequence. With no
+      # `if:`, an earlier failure skips it and rolls back as before. Read-only.
+      - name: Check id sequences are not behind (staging)
+        timeout-minutes: 5
+        run: |
+          out=$(ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            PG_PASSWORD=\$(grep '^POSTGRES_PASSWORD=' .env.staging | cut -d= -f2-)
+            docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging exec -T \
+              -e PGPASSWORD=\"\$PG_PASSWORD\" \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=60s -c lock_timeout=5s' \
+              db-prod psql -X -At -F ' | ' -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+              < scripts/sql/sequences_behind.sql
+          ") || {
+            echo '::error title=Sequence check could not run (staging)::ssh or psql failed, so the id-sequence state is unknown. See this step log, and re-check by hand (_WIKI/SUPABASE/README.md, "Id sequences behind their data"). The deployed code was not rolled back.'
+            exit 1
+          }
+          if [ -n "$out" ]; then
+            # Rows are table names: escape them so none can be read as a workflow command.
+            esc() { local s=${1//'%'/%25}; s=${s//$'\r'/%0D}; printf '%s' "${s//$'\n'/%0A}"; }
+            n=$(printf '%s\n' "$out" | wc -l)
+            echo "::error title=Id sequence behind its data (staging)::$n id sequence(s) behind their data: default-id inserts into these tables fail until they are advanced. The deployed code was NOT rolled back. See _WIKI/SUPABASE/README.md, \"Id sequences behind their data\"."
+            printf '%s\n' "$out" | sed -n 1,9p | while IFS= read -r row; do
+              echo "::error title=Id sequence behind its data (staging)::$(esc "$row")"
+            done
+            printf '%s\n' "$out" | sed -e 's/\r/%0D/g' -e 's/^/  behind: /'
+            exit 1
+          fi
+          echo "No public id sequence is behind its data."
 
       - name: Cleanup
         if: always()

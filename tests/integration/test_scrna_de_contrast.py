@@ -66,6 +66,9 @@ EXPECTED_PRIVILEGES = {
     # and correcting one is loading it again. bloom_admin keeps it for a
     # developer repairing the database deliberately.
     "bloom_writer": {"SELECT", "INSERT"},
+    # The pipeline reads it to check a resumed load built nothing later on the dataset.
+    # The pipeline loads a run's default DE with its dataset (20261012230000).
+    "bloom_workflows": {"INSERT", "SELECT"},
 }
 
 
@@ -475,12 +478,13 @@ def _table_privileges(cur, table: str) -> dict[str, set[str]]:
 
 def test_privileges_match_an_untouched_sibling_apart_from_the_one_revoke(pg_conn):
     """This migration grants nothing, so any difference from a sibling would mean
-    it re-granted something -- except the one difference put there on purpose.
+    it re-granted something -- except the two differences put there on purpose.
 
     20260911000000 revoked UPDATE from the roles a person arrives as, because a
-    submitted result is not edited. Subtracting exactly that from the sibling and
-    requiring the rest to match still catches a stray regrant, which is what this
-    test is for."""
+    submitted result is not edited. The pipeline inserts both cells (20261005220000)
+    and results (20261012230000), as its sibling grants. Subtracting exactly those
+    differences from the sibling and requiring the rest to match still catches a
+    stray regrant, which is what this test is for."""
     with pg_conn.cursor() as cur:
         expected = {
             role: privs - {"UPDATE", "DELETE"}
@@ -735,7 +739,12 @@ def _migration_body() -> str:
 
 
 # Later migrations on scrna_de, newest first; their rollbacks run before this one's.
-LATER_LAYERS = ("scrna_de_results_belong_to_runs", "scrna_de_common_results")
+LATER_LAYERS = (
+    "add_scrna_enrichment_uploads",
+    "add_scrna_enrichment",
+    "scrna_de_results_belong_to_runs",
+    "scrna_de_common_results",
+)
 
 
 def _later_rollback_body() -> str:

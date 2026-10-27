@@ -138,7 +138,7 @@ jobs:
           subs = [
               (r'/tree/[^/]+/bloomcli', f'/tree/{tag}/bloomcli'),
               (r'/blob/[^/]+/bloomcli/CHANGELOG\.md', f'/blob/{tag}/bloomcli/CHANGELOG.md'),
-              (r'bloomctl==[^"\s]+', f'bloomctl=={version}'),
+              (r'bloomctl(\[[^\]]+\])?==[^"\s]+', rf'bloomctl\g<1>=={version}'),
               (r'bloomctl@[^\s]+', f'bloomctl@{version}'),
           ]
           for name in ("pyproject.toml", "README.pypi.md"):

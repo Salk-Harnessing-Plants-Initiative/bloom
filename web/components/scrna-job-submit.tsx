@@ -1,0 +1,499 @@
+"use client";
+
+import { useEffect, useId, useRef, useState } from "react";
+import Tooltip from "@mui/material/Tooltip";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import {
+  buildRunMetadata,
+  datasetDetailsProblem,
+  DATASET_NAME_ALLOWED,
+  datasetNameProblem,
+  isStartedRun,
+  startRunErrorMessage,
+  type AttributeRow,
+  type Chemistry,
+  type DataOrigin,
+  genomeVersionLabel,
+  LIBRARY_TYPES,
+  type GenomeVersionOption,
+  type StartedRun,
+} from "@/lib/scrna-jobs";
+import { isFolderChangedRefusal, normaliseFolderUrl, type FolderCheck } from "@/lib/s3-folder";
+import type { SpeciesOption } from "@/lib/species-options";
+import { newSampleNameProblem, parseSraRuns, sraRunUrl } from "@/lib/sra-runs";
+import ScrnaDataOrigin from "./scrna-data-origin";
+import ScrnaJobQueued from "./scrna-job-queued";
+import ScrnaOtherDetails from "./scrna-other-details";
+import ScrnaSampleSource, { type SampleSource } from "./scrna-sample-source";
+import ScrnaSpeciesPicker from "./scrna-species-picker";
+
+type Status = "idle" | "submitting" | "done" | "error";
+
+const fieldClass =
+  "mt-1 block w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-800 focus:border-lime-700 focus:outline-none focus:ring-1 focus:ring-lime-700 disabled:bg-stone-100";
+const labelClass = "block text-sm font-medium text-stone-700";
+const groupHeadingClass =
+  "mb-3 text-xs uppercase tracking-widest text-stone-500";
+
+export default function ScrnaJobSubmit({
+  genomeVersions,
+  species,
+  startedBy,
+  readerArn = null,
+}: {
+  // Ready genome versions, which the run builds its reference from.
+  genomeVersions: GenomeVersionOption[];
+  species: SpeciesOption[];
+  // The signed-in user's email, shown on the confirmation.
+  startedBy: string | null;
+  // Bloom's AWS user (bloomv2-workflows-job), which a private folder can be shared with.
+  readerArn?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  // Species added from the form stay listed after it is closed and reopened.
+  const [speciesOptions, setSpeciesOptions] = useState(species);
+  const [source, setSource] = useState<SampleSource>("folder");
+  const [folderUrl, setFolderUrl] = useState("");
+  // The passed check for the folder now entered; Start run waits for it.
+  const [folderCheck, setFolderCheck] = useState<FolderCheck | null>(null);
+  // Bumped when the service says the folder changed since its check, to check it again.
+  const [folderRecheck, setFolderRecheck] = useState(0);
+  // A refused start is focused, so a keyboard user lands on the reason.
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  const [sraText, setSraText] = useState("");
+  // The new sample's name follows the first run ID until it's edited.
+  const [newName, setNewName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
+  const [genomeVersionId, setGenomeVersionId] = useState<number | null>(null);
+  // No default: the library type must be picked.
+  const [chemistry, setChemistry] = useState<Chemistry | null>(null);
+  const [speciesId, setSpeciesId] = useState<number | null>(null);
+  const [datasetName, setDatasetName] = useState("");
+  const [accession, setAccession] = useState("");
+  const [experimentName, setExperimentName] = useState("");
+  const [origin, setOrigin] = useState<DataOrigin>("hpi");
+  // The origin chosen before switching to SRA, restored when switching back.
+  const [originBeforeSra, setOriginBeforeSra] = useState<DataOrigin | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
+  // For an SRA import the source link follows the first run until it's edited.
+  const [sourceEdited, setSourceEdited] = useState(false);
+  const [citation, setCitation] = useState("");
+  const [attributes, setAttributes] = useState<AttributeRow[]>([
+    { key: "", value: "" },
+  ]);
+  const [status, setStatus] = useState<Status>("idle");
+  const [message, setMessage] = useState("");
+  const [started, setStarted] = useState<StartedRun | null>(null);
+
+  const submitting = status === "submitting";
+  useEffect(() => {
+    if (status === "error") errorRef.current?.focus();
+  }, [status]);
+  const details = {
+    speciesId,
+    datasetName,
+    accession,
+    experimentName,
+    origin,
+    sourceUrl,
+    citation,
+    attributes,
+  };
+  const detailsProblem = datasetDetailsProblem(details);
+  // Shown as the name is typed, not only when the run is ready to start.
+  const nameProblem = datasetNameProblem(datasetName);
+  const nameId = useId();
+  const nameProblemId = useId();
+  const sra = parseSraRuns(sraText);
+  const sampleReady =
+    source === "folder"
+      ? folderCheck !== null && folderCheck.fastq_url === normaliseFolderUrl(folderUrl)
+      : !sra.problem &&
+        !newSampleNameProblem(newName.trim());
+  const canSubmit =
+    sampleReady &&
+    chemistry !== null &&
+    genomeVersionId !== null &&
+    !detailsProblem &&
+    !submitting;
+
+  function changeSource(next: SampleSource) {
+    if (next === source) return;
+    setSource(next);
+    if (next === "sra") {
+      // Data imported from SRA is public.
+      setOriginBeforeSra(origin);
+      setOrigin("public");
+      return;
+    }
+    // Undo what the import filled in, so it isn't saved with a folder's run.
+    if (originBeforeSra !== null) setOrigin(originBeforeSra);
+    setOriginBeforeSra(null);
+    if (!sourceEdited) setSourceUrl("");
+  }
+
+  function changeSraText(text: string) {
+    setSraText(text);
+    const first = parseSraRuns(text).runs[0] ?? "";
+    if (!nameEdited) setNewName(first);
+    if (!sourceEdited) setSourceUrl(first ? sraRunUrl(first) : "");
+  }
+
+  function changeNewName(name: string) {
+    setNewName(name);
+    setNameEdited(true);
+  }
+
+  function changeSourceUrl(url: string) {
+    setSourceUrl(url);
+    setSourceEdited(true);
+  }
+
+  function addSpeciesOption(option: SpeciesOption) {
+    setSpeciesOptions((current) =>
+      current.some((o) => o.id === option.id)
+        ? current
+        : [...current, option].sort((a, b) => a.label.localeCompare(b.label))
+    );
+  }
+
+  // Ready for the next sample: the per-sample fields are cleared, the rest kept.
+  // A refusal is about the folder that was started, so it goes once the URL changes.
+  function changeFolderUrl(url: string) {
+    setFolderUrl(url);
+    if (status === "error") {
+      setStatus("idle");
+      setMessage("");
+    }
+  }
+
+  function startAnother() {
+    setFolderUrl("");
+    setFolderCheck(null);
+    setSraText("");
+    setNewName("");
+    setNameEdited(false);
+    // An import's source link belongs to that sample's runs.
+    if (source === "sra") {
+      setSourceUrl("");
+      setSourceEdited(false);
+    }
+    setDatasetName("");
+    setStarted(null);
+    setMessage("");
+    setStatus("idle");
+  }
+
+  function close() {
+    if (started) startAnother();
+    setOpen(false);
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canSubmit) return;
+    // canSubmit already requires a passed check for a folder; this keeps the type honest.
+    const check = folderCheck;
+    if (source === "folder" && !check) return;
+    setStatus("submitting");
+    setMessage("");
+    setStarted(null);
+
+    let response: Response;
+    try {
+      response = await fetch("/api/scrna/cellranger/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          source === "folder"
+            ? {
+                fastq_url: check?.fastq_url,
+                fastq_files: check?.files,
+                genome_version_id: genomeVersionId,
+                metadata: buildRunMetadata(details),
+                chemistry,
+              }
+            : {
+                sample: newName.trim(),
+                genome_version_id: genomeVersionId,
+                metadata: buildRunMetadata(details),
+                sra_runs: sra.runs,
+                chemistry,
+              }
+        ),
+      });
+    } catch {
+      setMessage("Could not reach the job service.");
+      setStatus("error");
+      return;
+    }
+
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = (body as { detail?: unknown } | null)?.detail;
+      if (source === "folder" && isFolderChangedRefusal(response.status, detail)) {
+        // Checking again is the fix, so the form does it and says so.
+        setMessage(
+          "The folder changed since it was checked, so it's being checked again. Review the files shown above, then start the run."
+        );
+        setFolderRecheck((n) => n + 1);
+      } else {
+        setMessage(startRunErrorMessage(response.status, detail));
+      }
+      setStatus("error");
+      return;
+    }
+    if (!isStartedRun(body)) {
+      setMessage("The job service returned an unexpected response.");
+      setStatus("error");
+      return;
+    }
+    setStarted(body);
+    setStatus("done");
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="rounded-md bg-lime-700 px-4 py-2.5 text-sm font-medium text-stone-50 hover:bg-lime-800"
+      >
+        Submit scRNA job
+      </button>
+    );
+  }
+
+  return (
+    <section
+      aria-labelledby="scrna-job-heading"
+      className="max-w-2xl rounded-md border border-stone-200 bg-stone-50 p-6"
+    >
+      <div className="mb-4 flex items-baseline justify-between gap-4">
+        <h2 id="scrna-job-heading" className="text-xl font-serif italic">
+          Submit scRNA job
+        </h2>
+        <button
+          type="button"
+          onClick={close}
+          className="text-sm text-stone-500 hover:text-stone-800"
+        >
+          Close
+        </button>
+      </div>
+      {started ? (
+        <ScrnaJobQueued
+          run={started}
+          datasetName={datasetName.trim()}
+          speciesLabel={speciesOptions.find((o) => o.id === speciesId)?.label ?? null}
+          startedBy={startedBy}
+          onStartAnother={startAnother}
+        />
+      ) : (
+        <>
+          <p className="mb-5 text-sm text-stone-500">
+            Runs the Cell Ranger protocol (cellranger count) on one sample&apos;s
+            FASTQs: it aligns the reads to the chosen reference genome, calls cells
+            from their barcodes, and counts UMIs per gene in each cell, then
+            clusters the cells and computes a UMAP. The result is one AnnData file
+            (.h5ad) with the counts, clusters and UMAP. The reads come from an S3
+            folder, which is checked as soon as you enter it, or are imported from
+            SRA. Reads from an S3 folder aren&apos;t copied into Bloom&apos;s storage;
+            only the results are saved.
+          </p>
+
+          <form onSubmit={submit} className="space-y-6">
+            <fieldset className="space-y-4" disabled={submitting}>
+              <legend className={groupHeadingClass}>Run</legend>
+
+              <label className={labelClass}>
+                Job type
+                <select className={fieldClass} value="cellranger-count" disabled>
+                  <option value="cellranger-count">Cell Ranger count</option>
+                </select>
+              </label>
+
+              <label className={labelClass}>
+                Library type
+                <select
+                  className={fieldClass}
+                  value={chemistry ?? ""}
+                  onChange={(e) => setChemistry((e.target.value || null) as Chemistry | null)}
+                >
+                  <option value="">Choose the library type</option>
+                  {LIBRARY_TYPES.map((t) => (
+                    <option key={t.chemistry} value={t.chemistry}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-xs font-normal text-stone-500">
+                  Multiome: the RNA library of a 10x Multiome (ATAC + RNA) experiment. ATAC
+                  libraries can&apos;t be run.
+                </span>
+              </label>
+
+              <ScrnaSampleSource
+                source={source}
+                onSource={changeSource}
+                folderUrl={folderUrl}
+                folderRecheck={folderRecheck}
+                readerArn={readerArn}
+                onFolderUrl={changeFolderUrl}
+                onFolderChecked={setFolderCheck}
+                sraText={sraText}
+                onSraText={changeSraText}
+                newName={newName}
+                onNewName={changeNewName}
+                fieldClass={fieldClass}
+                labelClass={labelClass}
+              />
+
+              <label className={labelClass}>
+                Reference genome
+                <select
+                  className={fieldClass}
+                  value={genomeVersionId ?? ""}
+                  onChange={(e) =>
+                    setGenomeVersionId(e.target.value ? Number(e.target.value) : null)
+                  }
+                  disabled={genomeVersions.length === 0}
+                >
+                  <option value="">
+                    {genomeVersions.length
+                      ? "Choose a genome version"
+                      : "No reference genomes are ready yet"}
+                  </option>
+                  {genomeVersions.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {genomeVersionLabel(g)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {genomeVersions.length === 0 ? (
+                <p className="text-sm text-stone-500">
+                  Genomes are added to Bloom with <code>bloomctl genome upload</code>; a
+                  run can start once one is ready.
+                </p>
+              ) : null}
+            </fieldset>
+
+            <fieldset className="space-y-4" disabled={submitting}>
+              <legend className={groupHeadingClass}>Dataset details</legend>
+              <p className="-mt-1 text-sm text-stone-500">
+                Used to add the results to the Expression pages when the run
+                finishes.
+              </p>
+
+              <ScrnaSpeciesPicker
+                species={speciesOptions}
+                value={speciesId}
+                onChange={setSpeciesId}
+                onAdded={addSpeciesOption}
+                fieldClass={fieldClass}
+                labelClass={labelClass}
+              />
+
+              <div>
+                <div className="flex items-center gap-1">
+                  <label htmlFor={nameId} className={labelClass}>
+                    Dataset name
+                  </label>
+                  <Tooltip title={DATASET_NAME_ALLOWED}>
+                    <InfoOutlinedIcon
+                      fontSize="small"
+                      color="action"
+                      tabIndex={0}
+                      aria-label={`Allowed: ${DATASET_NAME_ALLOWED}`}
+                    />
+                  </Tooltip>
+                </div>
+                <input
+                  id={nameId}
+                  className={`${fieldClass} aria-[invalid=true]:border-red-600 aria-[invalid=true]:focus:ring-red-600`}
+                  value={datasetName}
+                  onChange={(e) => setDatasetName(e.target.value)}
+                  placeholder="e.g. Col-0 root tip 7 DAG"
+                  aria-invalid={nameProblem ? true : undefined}
+                  aria-describedby={nameProblem ? nameProblemId : undefined}
+                />
+                {nameProblem ? (
+                  <p id={nameProblemId} role="alert" className="mt-1 text-sm text-red-700">
+                    {nameProblem}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className={labelClass}>
+                  Accession or genotype{" "}
+                  <span className="font-normal text-stone-400">(optional)</span>
+                  <input
+                    className={fieldClass}
+                    value={accession}
+                    onChange={(e) => setAccession(e.target.value)}
+                    placeholder="e.g. Col-0"
+                  />
+                </label>
+                <label className={labelClass}>
+                  Experiment{" "}
+                  <span className="font-normal text-stone-400">(optional)</span>
+                  <input
+                    className={fieldClass}
+                    value={experimentName}
+                    onChange={(e) => setExperimentName(e.target.value)}
+                    placeholder="e.g. Root salt stress 2026"
+                  />
+                </label>
+              </div>
+
+              <ScrnaDataOrigin
+                origin={origin}
+                sourceUrl={sourceUrl}
+                citation={citation}
+                onOrigin={setOrigin}
+                onSourceUrl={changeSourceUrl}
+                onCitation={setCitation}
+                fieldClass={fieldClass}
+                labelClass={labelClass}
+              />
+
+              <ScrnaOtherDetails
+                rows={attributes}
+                onChange={setAttributes}
+                fieldClass={fieldClass}
+                labelClass={labelClass}
+              />
+            </fieldset>
+
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="rounded-md bg-lime-700 px-4 py-2.5 text-sm font-medium text-stone-50 hover:bg-lime-800 disabled:opacity-50"
+              >
+                {submitting ? "Starting…" : "Start run"}
+              </button>
+              {status === "error" ? (
+                <p
+                  ref={errorRef}
+                  tabIndex={-1}
+                  role="alert"
+                  className="text-sm text-red-700 [overflow-wrap:anywhere] focus:outline-none"
+                >
+                  {message}
+                </p>
+              ) : sampleReady && genomeVersionId === null ? (
+                <p className="text-sm text-stone-500">Choose a genome version to start.</p>
+              ) : sampleReady && genomeVersionId !== null && detailsProblem ? (
+                <p className="text-sm text-stone-500">{detailsProblem}</p>
+              ) : null}
+            </div>
+          </form>
+        </>
+      )}
+    </section>
+  );
+}

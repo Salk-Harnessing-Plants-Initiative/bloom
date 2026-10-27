@@ -23,6 +23,13 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 # limit scales with workers/replicas until a shared store is warranted).
 RATE_LIMIT = int(os.environ.get("WORKFLOWS_RATE_LIMIT", "5"))
 RATE_WINDOW_SECONDS = int(os.environ.get("WORKFLOWS_RATE_WINDOW_SECONDS", "60"))
+# The form checks an S3 folder as the scientist types, so it gets its own, larger allowance.
+FOLDER_CHECK_RATE_LIMIT = int(os.environ.get("WORKFLOWS_FOLDER_CHECK_RATE_LIMIT", "30"))
+FOLDER_CHECK_SCOPE = "folder-check"
+# GET /model-cards (bloom#971) is read on every pipeline confirm-dialog open, so it
+# gets its own, larger allowance rather than spending the shared one.
+MODEL_CARDS_RATE_LIMIT = int(os.environ.get("WORKFLOWS_MODEL_CARDS_RATE_LIMIT", "60"))
+MODEL_CARDS_SCOPE = "model-cards"
 _hits: dict[str, list[float]] = defaultdict(list)
 _hits_lock = threading.Lock()
 # Timestamp of the last stale-key sweep; keeps _hits from growing one dead entry
@@ -79,21 +86,34 @@ def require_supabase_user(authorization: str = Header(default=None)) -> str:
     return user_id
 
 
-def enforce_rate_limit(user_id: str) -> None:
-    """Raise 429 if the user has exceeded RATE_LIMIT calls in the window."""
+def enforce_rate_limit(user_id: str, limit: int | None = None, scope: str = "") -> None:
+    """Raise 429 if the user has made `limit` (default RATE_LIMIT) calls in the window.
+    A `scope` counts separately, so one route can't use up another's allowance."""
     global _last_sweep
+    limit = RATE_LIMIT if limit is None else limit
+    key = f"{scope}:{user_id}" if scope else user_id
     now = time.time()
     with _hits_lock:
         # Evict stale users at most once per window (cheap, bounds memory).
         if now - _last_sweep >= RATE_WINDOW_SECONDS:
             _sweep_expired(now)
             _last_sweep = now
-        recent = [t for t in _hits[user_id] if now - t < RATE_WINDOW_SECONDS]
-        if len(recent) >= RATE_LIMIT:
+        recent = [t for t in _hits[key] if now - t < RATE_WINDOW_SECONDS]
+        if len(recent) >= limit:
             raise HTTPException(
                 status_code=429,
-                detail=f"Rate limit exceeded ({RATE_LIMIT}/{RATE_WINDOW_SECONDS}s); retry later",
+                detail=f"Rate limit exceeded ({limit}/{RATE_WINDOW_SECONDS}s); retry later",
                 headers={"Retry-After": str(RATE_WINDOW_SECONDS)},
             )
         recent.append(now)
-        _hits[user_id] = recent
+        _hits[key] = recent
+
+
+def enforce_folder_check_limit(user_id: str) -> None:
+    """Raise 429 if the user has checked FOLDER_CHECK_RATE_LIMIT folders in the window."""
+    enforce_rate_limit(user_id, limit=FOLDER_CHECK_RATE_LIMIT, scope=FOLDER_CHECK_SCOPE)
+
+
+def enforce_model_cards_limit(user_id: str) -> None:
+    """Raise 429 if the user has read the model cards MODEL_CARDS_RATE_LIMIT times in the window."""
+    enforce_rate_limit(user_id, limit=MODEL_CARDS_RATE_LIMIT, scope=MODEL_CARDS_SCOPE)

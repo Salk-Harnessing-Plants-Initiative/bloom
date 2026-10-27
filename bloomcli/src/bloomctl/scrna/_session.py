@@ -9,7 +9,8 @@ from typing import Any
 
 from ._transfer import Endpoint
 
-WRITE_ROLES = ("bloom_writer", "bloom_admin")
+# bloom_workflows is the pipeline's account, which loads a Cell Ranger run's dataset.
+WRITE_ROLES = ("bloom_writer", "bloom_admin", "bloom_workflows")
 
 
 @dataclass(frozen=True)

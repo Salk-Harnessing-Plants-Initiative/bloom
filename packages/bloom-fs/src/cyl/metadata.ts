@@ -4,9 +4,8 @@ import * as glob from 'glob'
 import * as fs from 'fs'
 import * as yaml from 'js-yaml'
 import Ajv from 'ajv'
-import { findConfigFile } from 'typescript'
-import { FileUploader } from '@salk-hpi/bloom-js/dist/types/file-uploader'
-import { DataStore } from '@salk-hpi/bloom-js/dist/types/data-store'
+import { FileUploader } from '@salk-harnessing-plants-initiative/bloom-js/dist/types/file-uploader'
+import { DataStore } from '@salk-harnessing-plants-initiative/bloom-js/dist/types/data-store'
 import * as uuid from 'uuid'
 import * as xlsx from 'xlsx'
 
@@ -26,6 +25,14 @@ export type CylImageMetadata = {
   phenotyper_email: string | undefined
   scientist_name: string | undefined
   scientist_email: string | undefined
+  // Camera settings, recorded with each image (0 when not given).
+  num_frames?: number
+  exposure_time?: number
+  gain?: number
+  brightness?: number
+  contrast?: number
+  gamma?: number
+  seconds_per_rot?: number
 }
 
 type CylMetadataSummary = {
@@ -202,7 +209,7 @@ export async function getImageMetadata(
 
 function findMetadataFile(dir: string) {
   // search for metadata file in dir or ancestor directories
-  let metadataFile = findConfigFile(dir, fs.existsSync, 'cyl-metadata.yml')
+  const metadataFile = findUp(dir, 'cyl-metadata.yml')
   if (!metadataFile) {
     console.error(
       'Error: Could not find cyl-metadata.yml file in directory or ancestor directories'
@@ -212,6 +219,17 @@ function findMetadataFile(dir: string) {
   const metadataRoot = path.dirname(metadataFile)
   const rootToTargetDir = path.relative(metadataRoot, dir)
   return { metadataFile, metadataRoot, rootToTargetDir }
+}
+
+function findUp(dir: string, fileName: string): string | undefined {
+  let current = path.resolve(dir)
+  while (true) {
+    const candidate = path.join(current, fileName)
+    if (fs.existsSync(candidate)) return candidate
+    const parent = path.dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
 }
 
 type ReplacementMap = { [key: string]: string }
@@ -272,6 +290,14 @@ function parseFields(obj: { [x: string]: string }): CylImageMetadata {
     phenotyper_email: obj.phenotyper_email,
     scientist_name: obj.scientist_name,
     scientist_email: obj.scientist_email,
+    // Folder paths and cyl-metadata.yml carry no camera settings.
+    num_frames: 0,
+    exposure_time: 0,
+    gain: 0,
+    brightness: 0,
+    contrast: 0,
+    gamma: 0,
+    seconds_per_rot: 0,
   }
 }
 

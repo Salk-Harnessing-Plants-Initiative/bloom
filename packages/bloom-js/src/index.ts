@@ -5,5 +5,12 @@ export { createSpecies, createSpeciesBulk, loadSpeciesData } from './core/specie
 export type { SpeciesData } from './core/species/create'
 
 export type { TypedSupabaseClient } from './core/supabase/file-uploader'
+export type {
+  CylImageMetadata,
+  GraviImageMetadata,
+  GraviScannersRow,
+  GraviScanMetadataParams,
+  GraviScanSessionParams,
+} from './types/data-store'
 
 export { encryptToken, decryptToken } from './core/oauth/oauth'

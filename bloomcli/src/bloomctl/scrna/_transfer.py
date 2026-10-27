@@ -288,6 +288,34 @@ def send(
     return offset
 
 
+def _stream_ok(response: httpx.Response, bucket: str, path: str) -> None:
+    """Raise unless a streamed object read answered 200."""
+    if response.status_code != 200:
+        response.read()  # a streamed response holds nothing until it is read
+        _refuse_if_refused(response)
+        if response.status_code in (400, 404):
+            raise NotStored(f"{bucket}/{path}")
+        raise TransferError(f"storage answered {response.status_code} for {bucket}/{path}")
+
+
+def download_raw_to(
+    http: httpx.Client, ep: Endpoint, bucket: str, path: str, dest: Path
+) -> tuple[str, int]:
+    """Stream an object into ``dest`` as stored; return the SHA-256 and size of its bytes."""
+    digest = hashlib.sha256()
+    size = 0
+    with http.stream(
+        "GET", ep.url(f"object/authenticated/{bucket}/{path}"), headers=ep.headers()
+    ) as response:
+        _stream_ok(response, bucket, path)
+        with dest.open("wb") as out:
+            for block in response.iter_bytes():
+                digest.update(block)
+                size += len(block)
+                out.write(block)
+    return digest.hexdigest(), size
+
+
 def download_to(http: httpx.Client, ep: Endpoint, bucket: str, path: str, dest: Path) -> str:
     """Stream an object into ``dest`` decompressed; return the SHA-256 of what was written."""
     decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
@@ -295,12 +323,7 @@ def download_to(http: httpx.Client, ep: Endpoint, bucket: str, path: str, dest: 
     with http.stream(
         "GET", ep.url(f"object/authenticated/{bucket}/{path}"), headers=ep.headers()
     ) as response:
-        if response.status_code != 200:
-            response.read()  # a streamed response holds nothing until it is read
-            _refuse_if_refused(response)
-            if response.status_code in (400, 404):
-                raise NotStored(f"{bucket}/{path}")
-            raise TransferError(f"storage answered {response.status_code} for {bucket}/{path}")
+        _stream_ok(response, bucket, path)
         try:
             with dest.open("wb") as out:
                 for block in response.iter_bytes():

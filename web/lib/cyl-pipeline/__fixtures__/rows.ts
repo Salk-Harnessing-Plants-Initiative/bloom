@@ -22,6 +22,7 @@ export function runRow(id: number, created_at: string, overrides: Partial<RunRow
     error_message: null,
     failed_count: 0,
     params: {},
+    poller_concluded_at: null,
     requested_by: ME,
     reused_count: 0,
     scan_count: 40,

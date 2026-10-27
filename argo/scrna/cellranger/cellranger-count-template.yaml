@@ -2,8 +2,9 @@
 # After changes: kubectl replace -f argo/scrna/cellranger/cellranger-count-template.yaml -n runai-busch-lab
 #
 # Every step mounts the same NFS folder at /shared:
-#   /shared/ref/<reference>/  references, downloaded once and kept
-#   /shared/runs/<run-id>/    one sample's reads and QC files, deleted after success
+#   /shared/runs/<run-id>/         one sample's reads and results, deleted after success
+#   /shared/runs/<run-id>.genome/  its genome and Cell Ranger reference, deleted with it; next to
+#                                  the run's folder, which stage clears of an earlier run's files
 # The share does not support symlinks, so Cell Ranger's working folder is the count pod's own /work.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -13,43 +14,127 @@ metadata:
     project: busch-lab
 spec:
   templates:
-    # One sample: stage -> qc -> count -> cleanup. Skips everything if the run already finished.
+    # One sample: download-genome -> build-reference alongside [fetch-sra ->] stage -> qc, then
+    # count -> preprocess -> cluster -> de -> build-h5ad -> load-dataset -> cleanup, all in
+    # /shared/runs/<run-id>/ so runs never share files. The reference is built from the run's
+    # genome version in Bloom every run. The result leaves the cluster only through
+    # load-dataset, into Bloom.
     - name: sample-pipeline
       inputs:
         parameters:
           - name: sample
+          # The genome version in Bloom, as <genome>.v<N>; also the built reference's name.
           - name: reference
           - name: run-id
+          # SRA run IDs, comma-separated in lane order, for a run that imports its sample from SRA;
+          # empty skips fetch-sra.
+          - name: sra-runs
+            value: ""
+          # An S3 folder run reads exactly these files from the folder; a run gives this or sra-runs.
+          - name: fastq-url
+            value: ""
+          - name: fastq-files
+            value: ""
+          # The dataset to load the result into Bloom as, and its species' common name (from the
+          # run's form); empty loads nothing.
+          - name: dataset-name
+            value: ""
+          - name: species-name
+            value: ""
+          # The run's rnaseq_runs id, tagged on the dataset so the run is linked to it; empty for
+          # a run started by hand.
+          - name: bloom-run-id
+            value: ""
           - name: cores
             value: "16"
           - name: memory
             value: "64Gi"
           - name: mem-gb
             value: "60"
+          - name: n-top-genes
+            value: "2000"
+          # cellranger mkref's resources, sized for Arabidopsis; a larger genome passes more.
+          - name: ref-cores
+            value: "8"
+          - name: ref-memory
+            value: "32Gi"
+          - name: ref-mem-gb
+            value: "28"
+          # The species' KEGG organism code (species.kegg_org) for its pathways; empty: GO only.
+          - name: kegg-org
+            value: ""
+          # The library's Cell Ranger chemistry, e.g. ARC-v1 for a 10x Multiome RNA library;
+          # empty: Cell Ranger detects it.
+          - name: chemistry
+            value: ""
       dag:
+        # A failed GO step mustn't stop the steps that load the dataset from being started.
+        failFast: false
         tasks:
+          - name: download-genome
+            template: download-genome
+            arguments:
+              parameters:
+                - name: genome
+                  value: "{{inputs.parameters.reference}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: build-reference
+            template: build-reference
+            depends: download-genome
+            arguments:
+              parameters:
+                - name: genome
+                  value: "{{inputs.parameters.reference}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: cores
+                  value: "{{inputs.parameters.ref-cores}}"
+                - name: memory
+                  value: "{{inputs.parameters.ref-memory}}"
+                - name: mem-gb
+                  value: "{{inputs.parameters.ref-mem-gb}}"
+          - name: fetch-sra
+            template: fetch-sra
+            when: "'{{inputs.parameters.sra-runs}}' != ''"
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: sra-runs
+                  value: "{{inputs.parameters.sra-runs}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          # Exactly one of fetch-sra and stage runs, chosen by sra-runs: a run with SRA run IDs
+          # downloads them, any other is staged from its S3 folder (and refused without one).
           - name: stage
             template: stage-sample
+            when: "'{{inputs.parameters.sra-runs}}' == ''"
             arguments:
               parameters:
                 - name: sample
                   value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+                - name: fastq-url
+                  value: "{{inputs.parameters.fastq-url}}"
+                - name: fastq-files
+                  value: "{{inputs.parameters.fastq-files}}"
+          # After whichever of fetch-sra and stage ran; a skipped task counts as done.
           - name: qc
             template: qc
-            depends: stage
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            depends: fetch-sra && stage
             arguments:
               parameters:
                 - name: sample
                   value: "{{inputs.parameters.sample}}"
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+                - name: chemistry
+                  value: "{{inputs.parameters.chemistry}}"
           - name: count
             template: count
-            depends: qc
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            depends: qc && build-reference
             arguments:
               parameters:
                 - name: sample
@@ -64,148 +149,206 @@ spec:
                   value: "{{inputs.parameters.memory}}"
                 - name: mem-gb
                   value: "{{inputs.parameters.mem-gb}}"
+                - name: bloom-run-id
+                  value: "{{inputs.parameters.bloom-run-id}}"
+                - name: chemistry
+                  value: "{{inputs.parameters.chemistry}}"
+          # GO and pathways (go-pathways-template), in /shared/runs/<run-id>.go/ beside the run's
+          # folder, which fetch-sra and stage clear. The genome version's annotation comes from Bloom,
+          # or is built here alongside the reads and count; then the dataset's enrichment is recorded.
+          # Neither fails the run: cleanup depends on each one's failure too (below).
+          - name: find-annotation
+            templateRef: {name: go-pathways-template, template: find-annotation}
+            arguments:
+              parameters:
+                - {name: genome, value: "{{inputs.parameters.reference}}"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+          - name: fetch-references
+            templateRef: {name: go-pathways-template, template: fetch-references}
+            depends: find-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: source, value: eggnog}
+                - {name: kegg-org, value: "{{inputs.parameters.kegg-org}}"}
+          - name: proteins
+            templateRef: {name: go-pathways-template, template: proteins}
+            depends: download-genome && find-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: genome-run-id, value: "{{inputs.parameters.run-id}}"}
+          - name: eggnog-db
+            templateRef: {name: go-pathways-template, template: eggnog-db}
+            depends: find-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: eggnog-db, value: "5.0.2"}
+          - name: emapper
+            templateRef: {name: go-pathways-template, template: emapper}
+            depends: proteins && eggnog-db
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: eggnog-db, value: "5.0.2"}
+          - name: build-annotation
+            templateRef: {name: go-pathways-template, template: build-annotation}
+            depends: emapper && fetch-references
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: genome, value: "{{inputs.parameters.reference}}"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: genome-run-id, value: "{{inputs.parameters.run-id}}"}
+                - {name: source, value: eggnog}
+                - {name: eggnog-db, value: "5.0.2"}
+          - name: upload-annotation
+            templateRef: {name: go-pathways-template, template: upload-annotation}
+            depends: build-annotation
+            when: "'{{tasks.find-annotation.outputs.parameters.decision}}' == 'build'"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: source, value: eggnog}
+                - {name: genome, value: "{{inputs.parameters.reference}}"}
+          # proteins, eggnog-db and emapper write their logs to the .go folder, not run-logs;
+          # copy them there once those steps end, before cleanup deletes the folder.
+          - name: upload-annotation-logs
+            templateRef: {name: go-pathways-template, template: upload-logs}
+            depends: >-
+              (proteins.Succeeded || proteins.Failed || proteins.Errored || proteins.Skipped || proteins.Omitted) && (eggnog-db.Succeeded || eggnog-db.Failed || eggnog-db.Errored || eggnog-db.Skipped || eggnog-db.Omitted) && (emapper.Succeeded || emapper.Failed || emapper.Errored || emapper.Skipped || emapper.Omitted)
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+          - name: fetch-de
+            templateRef: {name: go-pathways-template, template: fetch-de}
+            depends: load-dataset
+            when: "'{{tasks.load-dataset.outputs.parameters.dataset-id}}' != ''"
+            arguments:
+              parameters:
+                - {name: dataset-id, value: "{{tasks.load-dataset.outputs.parameters.dataset-id}}"}
+                - {name: de-run-id, value: ""}
+                - {name: fdr-max, value: "0.05"}
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+          - name: enrich
+            templateRef: {name: go-pathways-template, template: enrich}
+            depends: "fetch-de && find-annotation && (upload-annotation.Succeeded || upload-annotation.Skipped)"
+            when: "'{{tasks.load-dataset.outputs.parameters.dataset-id}}' != ''"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: top-n, value: "300"}
+                - {name: fdr-max, value: "0.05"}
+                - {name: lfc-min, value: "0.25"}
+                - {name: min-term, value: "5"}
+                - {name: max-term, value: "500"}
+                - {name: min-list, value: "3"}
+          - name: upload-enrichment
+            templateRef: {name: go-pathways-template, template: upload-enrichment}
+            depends: enrich
+            when: "'{{tasks.load-dataset.outputs.parameters.dataset-id}}' != ''"
+            arguments:
+              parameters:
+                - {name: run-id, value: "{{inputs.parameters.run-id}}.go"}
+                - {name: rnaseq-run-id, value: "{{inputs.parameters.bloom-run-id}}"}
+          # Waits for every GO step whatever its outcome; depending on a step's .Failed is how Argo
+          # lets a step fail without failing the run (continueOn isn't allowed with depends).
           - name: cleanup
             template: cleanup
-            depends: count
-            when: "{{tasks.stage.outputs.parameters.done}} == false"
+            depends: >-
+              load-dataset && (find-annotation.Succeeded || find-annotation.Failed || find-annotation.Errored || find-annotation.Skipped || find-annotation.Omitted) && (fetch-references.Succeeded || fetch-references.Failed || fetch-references.Errored || fetch-references.Skipped || fetch-references.Omitted) && (proteins.Succeeded || proteins.Failed || proteins.Errored || proteins.Skipped || proteins.Omitted) && (eggnog-db.Succeeded || eggnog-db.Failed || eggnog-db.Errored || eggnog-db.Skipped || eggnog-db.Omitted) && (emapper.Succeeded || emapper.Failed || emapper.Errored || emapper.Skipped || emapper.Omitted) && (build-annotation.Succeeded || build-annotation.Failed || build-annotation.Errored || build-annotation.Skipped || build-annotation.Omitted) && (upload-annotation.Succeeded || upload-annotation.Failed || upload-annotation.Errored || upload-annotation.Skipped || upload-annotation.Omitted) && (fetch-de.Succeeded || fetch-de.Failed || fetch-de.Errored || fetch-de.Skipped || fetch-de.Omitted) && (enrich.Succeeded || enrich.Failed || enrich.Errored || enrich.Skipped || enrich.Omitted) && (upload-enrichment.Succeeded || upload-enrichment.Failed || upload-enrichment.Errored || upload-enrichment.Skipped || upload-enrichment.Omitted) && (upload-annotation-logs.Succeeded || upload-annotation-logs.Failed || upload-annotation-logs.Errored || upload-annotation-logs.Skipped || upload-annotation-logs.Omitted)
             arguments:
               parameters:
                 - name: run-id
                   value: "{{inputs.parameters.run-id}}"
+          - name: preprocess
+            template: preprocess
+            depends: count
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: n-top-genes
+                  value: "{{inputs.parameters.n-top-genes}}"
+          # Analyses: each reads the base and writes its own part. A new one is one more task
+          # here, and one more name in build-h5ad's depends.
+          - name: cluster
+            template: cluster
+            depends: preprocess
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          # Each cluster against the rest, on the cluster step's labels.
+          - name: de
+            template: de
+            depends: cluster
+            arguments:
+              parameters:
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: build-h5ad
+            template: build-h5ad
+            depends: cluster && de
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+          - name: load-dataset
+            template: load-dataset
+            depends: build-h5ad
+            arguments:
+              parameters:
+                - name: sample
+                  value: "{{inputs.parameters.sample}}"
+                - name: run-id
+                  value: "{{inputs.parameters.run-id}}"
+                - name: dataset-name
+                  value: "{{inputs.parameters.dataset-name}}"
+                - name: species-name
+                  value: "{{inputs.parameters.species-name}}"
+                - name: bloom-run-id
+                  value: "{{inputs.parameters.bloom-run-id}}"
 
-    # Once per workflow: stage the reference at /shared/ref/<reference>/, or reuse it if already there.
-    - name: stage-reference
+    # The run's genome version from Bloom, checked against Bloom's record, into
+    # /shared/runs/<run-id>.genome/genome/ as genome.fa and genes.gtf (argo/scrna/analysis/download-genome.sh).
+    - name: download-genome
       inputs:
         parameters:
-          - name: reference
-      schedulerName: runai-scheduler
-      priorityClassName: high
-      retryStrategy:
-        limit: 2
-        retryPolicy: Always
-        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
-      container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
-        command: [bash, -c]
-        args:
-          - |
-            set -euo pipefail
-            case "${REFERENCE}" in
-              ""|.|..|*/*) echo "ERROR: bad reference name '${REFERENCE}'"; exit 3 ;;
-            esac
-            ref="/shared/ref/${REFERENCE}"
-            # References never change once uploaded, so a staged copy is reused as-is.
-            if [ -f "${ref}/reference.json" ]; then
-              echo "Reference ${REFERENCE} already staged at ${ref}; nothing to download."
-              exit 0
-            fi
-            tmp="/shared/ref/.partial-${REFERENCE}-${WORKFLOW_NAME}"
-            rm -rf -- "${tmp}"
-            mkdir -p "${tmp}"
-            aws s3 sync "s3://bloomv2-workflows/reference_genome/${REFERENCE}/" "${tmp}/"
-            # sync from a missing prefix copies nothing and still exits 0
-            if [ ! -f "${tmp}/reference.json" ]; then
-              echo "ERROR: no Cell Ranger reference at s3://bloomv2-workflows/reference_genome/${REFERENCE}/ (expected reference.json)"
-              rm -rf -- "${tmp}"
-              exit 3
-            fi
-            # Publish with one rename so a half-copied reference never looks complete.
-            if [ -f "${ref}/reference.json" ]; then
-              echo "Reference ${REFERENCE} was staged by another run meanwhile; keeping that copy."
-              rm -rf -- "${tmp}"
-            else
-              rm -rf -- "${ref}"
-              mv -- "${tmp}" "${ref}"
-              echo "Reference ${REFERENCE} staged at ${ref}"
-            fi
-        env:
-          - name: REFERENCE
-            value: "{{inputs.parameters.reference}}"
-          - name: WORKFLOW_NAME
-            value: "{{workflow.name}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
-        resources:
-          requests: {cpu: "2", memory: 4Gi}
-          limits: {cpu: "2", memory: 4Gi}
-        volumeMounts:
-          - name: shared
-            mountPath: /shared
-      volumes:
-        - name: shared
-          hostPath:
-            path: /hpi/hpi_dev/users/bfernando/scrna
-            type: Directory
-
-    # Create /shared/runs/<run-id>/ and download the reads; outputs done=true if the run already finished.
-    - name: stage-sample
-      inputs:
-        parameters:
-          - name: sample
+          - name: genome
           - name: run-id
-      outputs:
-        parameters:
-          - name: done
-            valueFrom:
-              path: /tmp/done
       schedulerName: runai-scheduler
       priorityClassName: high
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference) and 4 (no FASTQs) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4"
+        backoff: {duration: "2m", factor: 2}
+        # Only 1 (a network or storage error) may be a blip; 3 (not available, or a file
+        # doesn't match Bloom's record), 6 (bad input) and 16 (no credentials) won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
-        command: [bash, -c]
-        args:
-          - |
-            set -euo pipefail
-            if aws s3 ls "s3://bloomv2-workflows/runs_output/${RUN_ID}/_SUCCESS" >/dev/null 2>&1; then
-              echo "Already done: runs_output/${RUN_ID}/_SUCCESS exists, nothing to do."
-              echo true > /tmp/done
-              exit 0
-            fi
-            mkdir -p "/shared/runs/${RUN_ID}/fastq/${SAMPLE}"
-            aws s3 sync "s3://bloomv2-workflows/raw_reads/${SAMPLE}/" "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"
-            # sync from a missing prefix copies nothing and still exits 0
-            if ! ls "/shared/runs/${RUN_ID}/fastq/${SAMPLE}/"*.fastq.gz >/dev/null 2>&1; then
-              echo "ERROR: no FASTQs at s3://bloomv2-workflows/raw_reads/${SAMPLE}/"
-              exit 4
-            fi
-            echo false > /tmp/done
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/download-genome.log", --, download-genome]
         env:
-          - name: SAMPLE
-            value: "{{inputs.parameters.sample}}"
+          - name: GENOME
+            value: "{{inputs.parameters.genome}}"
           - name: RUN_ID
             value: "{{inputs.parameters.run-id}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
         resources:
-          requests: {cpu: "2", memory: 4Gi}
-          limits: {cpu: "2", memory: 4Gi}
+          requests: {cpu: "1", memory: 2Gi}
+          limits: {cpu: "1", memory: 2Gi}
         volumeMounts:
+          # bloomctl's credentials.txt: run-with-log uploads the log, and bloomctl downloads the genome
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -214,20 +357,234 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # QC on the staged reads (run-qc's download finds them already there); uploads runs_output/<run-id>/qc/.
-    - name: qc
+    # cellranger mkref on the downloaded genome, built on the pod's own disk and moved into
+    # /shared/runs/<run-id>.genome/ref/<genome>/ in one rename, so a half-built reference never looks done.
+    - name: build-reference
+      inputs:
+        parameters:
+          - name: genome
+          - name: run-id
+          - name: cores
+          - name: memory
+          - name: mem-gb
+      schedulerName: runai-scheduler
+      podSpecPatch: |
+        containers:
+          - name: main
+            resources:
+              requests:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
+              limits:
+                cpu: "{{inputs.parameters.cores}}"
+                memory: "{{inputs.parameters.memory}}"
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        # 3 (no downloaded genome), 6 (bad input) and 17 (mkref refused the files) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 17"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/build-reference.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            case "${GENOME}" in
+              ""|.|..|*/*) echo "ERROR: bad genome name '${GENOME}'"; exit 6 ;;
+            esac
+            case "${RUN_ID}" in
+              ""|.|..|*/*) echo "ERROR: bad run id '${RUN_ID}'"; exit 6 ;;
+            esac
+            src="/shared/runs/${RUN_ID}.genome/genome"
+            ref="/shared/runs/${RUN_ID}.genome/ref/${GENOME}"
+            if [ -f "${ref}/reference.json" ]; then
+              echo "Reference ${GENOME} already built at ${ref}; nothing to do."
+              exit 0
+            fi
+            for f in genome.fa genes.gtf; do
+              if [ ! -s "${src}/${f}" ]; then
+                echo "ERROR: no downloaded ${f} at ${src}"
+                exit 3
+              fi
+            done
+            cd /work
+            rm -rf -- "${GENOME}"
+            cellranger --version
+            if ! cellranger mkref --genome="${GENOME}" --fasta="${src}/genome.fa" \
+                --genes="${src}/genes.gtf" --nthreads="${CORES}" --memgb="${MEM_GB}"; then
+              echo "ERROR: cellranger mkref couldn't build a reference from ${GENOME}"
+              exit 17
+            fi
+            # Named for this workflow, so two runs on one run key never fill the same folder.
+            tmp="/shared/runs/${RUN_ID}.genome/ref/.partial-${GENOME}-${WORKFLOW_NAME}"
+            rm -rf -- "${tmp}"
+            mkdir -p "$(dirname "${ref}")"
+            cp -r -- "/work/${GENOME}" "${tmp}"
+            rm -rf -- "${ref}"
+            mv -- "${tmp}" "${ref}"
+            echo "Reference ${GENOME} built at ${ref}"
+        env:
+          - name: GENOME
+            value: "{{inputs.parameters.genome}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: CORES
+            value: "{{inputs.parameters.cores}}"
+          - name: MEM_GB
+            value: "{{inputs.parameters.mem-gb}}"
+          - name: WORKFLOW_NAME
+            value: "{{workflow.name}}"
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+          - name: work
+            mountPath: /work
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+        - name: work
+          emptyDir:
+            sizeLimit: 100Gi
+
+    # For a run that imports its sample from SRA: download the runs into the run's folder
+    # (fastq/<sample>/) as Illumina-named .fastq.gz files, alongside the genome steps. ENA's
+    # files when usable, otherwise converted from SRA; nothing uncompressed is written.
+    - name: fetch-sra
       inputs:
         parameters:
           - name: sample
+          - name: sra-runs
           - name: run-id
       schedulerName: runai-scheduler
       priorityClassName: high
       retryStrategy:
         limit: 1
-        retryPolicy: OnError
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        # only a lost pod (-1) or a failed download (10) may be a blip; bad input (6),
+        # misnamed files (7) and unusable reads (11) will not fix themselves
+        expression: "asInt(lastRetry.exitCode) == -1 || asInt(lastRetry.exitCode) == 10"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
-        command: [run-qc]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/fetch-sra.log", --, fetch-sra]
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: SRA_RUNS
+            value: "{{inputs.parameters.sra-runs}}"
+          # The reads go to RUN_DIR/fastq/<sample>/; nothing is written to S3.
+          - name: RUN_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}"
+          - name: THREADS
+            value: "8"
+        resources:
+          requests: {cpu: "8", memory: 16Gi}
+          limits: {cpu: "8", memory: 16Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Create /shared/runs/<run-id>/ and copy an S3 folder run's reads there.
+    - name: stage-sample
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+          - name: fastq-url
+            value: ""
+          - name: fastq-files
+            value: ""
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        # exits 4 (no FASTQs), 6 (bad input), 7 (misnamed FASTQs), 8 (the folder changed) and
+        # 9 (FASTQs for another sample) will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7 && asInt(lastRetry.exitCode) != 8 && asInt(lastRetry.exitCode) != 9"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/stage.log", --, bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            # Fails here, before QC, if a file isn't Illumina-named, a lane lacks R1 or R2, or
+            # the run's S3 folder changed since the run was started.
+            RUN_DIR="/shared/runs/${RUN_ID}" DEST_DIR="/shared/runs/${RUN_ID}/fastq/${SAMPLE}" stage-fastqs
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: FASTQ_URL
+            value: "{{inputs.parameters.fastq-url}}"
+          - name: FASTQ_FILES
+            value: "{{inputs.parameters.fastq-files}}"
+          - name: AWS_DEFAULT_REGION
+            value: us-west-2
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: genericsecret-bloomv2-s3
+                key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests: {cpu: "2", memory: 4Gi}
+          limits: {cpu: "2", memory: 4Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # QC on the reads fetch-sra or stage put in the run's folder; the report stays there too.
+    - name: qc
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+          # The chemistry the run names, whose barcode list the reads must match; empty: guessed.
+          - name: chemistry
+            value: ""
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        expression: "asInt(lastRetry.exitCode) == -1"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/qc.log", --, run-qc]
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
@@ -237,22 +594,16 @@ spec:
             value: "4"
           - name: WORK_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
+          - name: CHEMISTRY
+            value: "{{inputs.parameters.chemistry}}"
         resources:
           requests: {cpu: "4", memory: 8Gi}
           limits: {cpu: "4", memory: 8Gi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -261,7 +612,7 @@ spec:
             path: /hpi/hpi_dev/users/bfernando/scrna
             type: Directory
 
-    # cellranger count on the staged reads and shared reference; working files on the pod's own disk.
+    # cellranger count on the staged reads and the run's built reference; working files on the pod's own disk.
     - name: count
       inputs:
         parameters:
@@ -271,6 +622,12 @@ spec:
           - name: cores
           - name: memory
           - name: mem-gb
+          # The run's Bloom id, which its report is stored under; empty for a run started by hand.
+          - name: bloom-run-id
+            value: ""
+          # The chemistry cellranger count is told; empty: it detects the chemistry.
+          - name: chemistry
+            value: ""
       schedulerName: runai-scheduler
       # CPU and memory come from parameters, so they are set when the pod starts, not at registration.
       podSpecPatch: |
@@ -288,11 +645,13 @@ spec:
       retryStrategy:
         limit: 2
         retryPolicy: Always
-        # exit 3 (no reference), 4 (no FASTQs) and 6 (unusable sample name) will not fix themselves on a retry
-        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6"
+        backoff: {duration: "2m", factor: 2}
+        # exit 3 (no built reference), 4 (no FASTQs), 6 (unusable sample name) and 7 (misnamed FASTQs)
+        # will not fix themselves on a retry
+        expression: "asInt(lastRetry.exitCode) != 3 && asInt(lastRetry.exitCode) != 4 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 7"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
-        command: [run-count]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/count.log", --, run-count]
         env:
           - name: SAMPLE
             value: "{{inputs.parameters.sample}}"
@@ -306,23 +665,23 @@ spec:
             value: "{{inputs.parameters.mem-gb}}"
           - name: WORK_DIR
             value: /work
+          - name: RESULTS_DIR
+            value: "/shared/runs/{{inputs.parameters.run-id}}"
           - name: FASTQ_DIR
             value: "/shared/runs/{{inputs.parameters.run-id}}/fastq/{{inputs.parameters.sample}}"
           - name: REF_DIR
-            value: "/shared/ref/{{inputs.parameters.reference}}"
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
+            value: "/shared/runs/{{inputs.parameters.run-id}}.genome/ref/{{inputs.parameters.reference}}"
+          - name: BLOOM_RUN_ID
+            value: "{{inputs.parameters.bloom-run-id}}"
+          - name: WORKFLOW_NAME
+            value: "{{workflow.name}}"
+          - name: CHEMISTRY
+            value: "{{inputs.parameters.chemistry}}"
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
           - name: work
@@ -336,25 +695,34 @@ spec:
           emptyDir:
             sizeLimit: 500Gi
 
-    # Delete /shared/runs/<run-id>/ after a successful count; results and raw reads stay in S3.
+    # Delete /shared/runs/<run-id>/ and <run-id>.genome/ once its result is in Bloom; the raw reads
+    # stay where they came from.
     - name: cleanup
       inputs:
         parameters:
           - name: run-id
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
-        command: [bash, -c]
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/cleanup.log", --, bash, -c]
         args:
           - |
             set -euo pipefail
             case "${RUN_ID}" in
               ""|.|..|*/*) echo "refusing to delete: bad run id '${RUN_ID}'"; exit 1 ;;
             esac
-            target="/shared/runs/${RUN_ID}"
-            if [ -d "${target}" ]; then rm -rf -- "${target}"; fi
-            echo "removed ${target}"
+            # The run's folder and its genome folder next to it.
+            for target in "/shared/runs/${RUN_ID}" "/shared/runs/${RUN_ID}.genome" "/shared/runs/${RUN_ID}.go"; do
+              if [ -d "${target}" ]; then rm -rf -- "${target}"; fi
+              echo "removed ${target}"
+            done
         env:
           - name: RUN_ID
             value: "{{inputs.parameters.run-id}}"
@@ -362,6 +730,211 @@ spec:
           requests: {cpu: "0.5", memory: 512Mi}
           limits: {cpu: "0.5", memory: 512Mi}
         volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # /shared/runs/<run-id>/: count matrix -> analysis/preprocess/base.h5ad (filter, normalise, variable genes, PCA).
+    - name: preprocess
+      inputs:
+        parameters:
+          - name: run-id
+          - name: n-top-genes
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/preprocess.log", --, scrna-analysis]
+        args: [preprocess, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--n-top-genes", "{{inputs.parameters.n-top-genes}}"]
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base -> analysis/cluster/part.h5ad: neighbour graph, Leiden clusters, UMAP.
+    - name: cluster
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/cluster.log", --, scrna-analysis]
+        args: [cluster, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
+        resources:
+          requests: {cpu: "4", memory: 8Gi}
+          limits: {cpu: "4", memory: 8Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base + cluster labels -> analysis/de/part.h5ad: each cluster against the rest (scanpy's
+    # rank_genes_groups, Wilcoxon, pts), which load-dataset loads as the dataset's DE.
+    - name: de
+      inputs:
+        parameters:
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/de.log", --, scrna-analysis]
+        args: [de, "--root", "/shared/runs/{{inputs.parameters.run-id}}"]
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Base + every finished part -> h5ad/<sample>.h5ad and summary.json, in the run's folder.
+    - name: build-h5ad
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      retryStrategy:
+        limit: 1
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        # 13 (too few cells), 14 (no count matrix) and 15 (parts don't fit) won't fix themselves
+        expression: "asInt(lastRetry.exitCode) != 13 && asInt(lastRetry.exitCode) != 14 && asInt(lastRetry.exitCode) != 15"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
+        # Named here: Argo can't read the private image's entrypoint without the pull secret.
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/build-h5ad.log", --, scrna-analysis]
+        args: [build-h5ad, "--root", "/shared/runs/{{inputs.parameters.run-id}}", "--sample", "{{inputs.parameters.sample}}"]
+        resources:
+          requests: {cpu: "4", memory: 16Gi}
+          limits: {cpu: "4", memory: 16Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt, for run-with-log to upload the step's log
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
+          - name: shared
+            mountPath: /shared
+      volumes:
+        - name: shared
+          hostPath:
+            path: /hpi/hpi_dev/users/bfernando/scrna
+            type: Directory
+
+    # Loads the final .h5ad into Bloom as the run's dataset, with bloomctl signed in as the
+    # pipeline (argo/scrna/analysis/load-dataset.sh). A run naming no dataset loads nothing.
+    - name: load-dataset
+      inputs:
+        parameters:
+          - name: sample
+          - name: run-id
+          - name: dataset-name
+          - name: species-name
+          - name: bloom-run-id
+      # The dataset the step loaded, which the status poller links the run to.
+      outputs:
+        parameters:
+          - name: dataset-id
+            valueFrom:
+              path: /tmp/outputs/dataset-id
+              default: ""
+      schedulerName: runai-scheduler
+      priorityClassName: high
+      # About 30,000 gene counts files for a typical run, uploaded 8 at a time.
+      activeDeadlineSeconds: 21600
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        # bloomctl refuses to resume for 330 s after a write it couldn't confirm.
+        backoff:
+          duration: "6m"
+          factor: 1
+        # A retry resumes the load. 2 (usage), 6 (bad input) and 16 (no credentials) won't fix themselves.
+        expression: "asInt(lastRetry.exitCode) != 2 && asInt(lastRetry.exitCode) != 6 && asInt(lastRetry.exitCode) != 16"
+      container:
+        image: ghcr.io/salk-harnessing-plants-initiative/scrna-analysis:0.1.15
+        command: [run-with-log, --path, "scrna/{{workflow.name}}/load-dataset.log", --, load-dataset]
+        env:
+          - name: SAMPLE
+            value: "{{inputs.parameters.sample}}"
+          - name: RUN_ID
+            value: "{{inputs.parameters.run-id}}"
+          - name: DATASET_NAME
+            value: "{{inputs.parameters.dataset-name}}"
+          - name: SPECIES_NAME
+            value: "{{inputs.parameters.species-name}}"
+          - name: BLOOM_RUN_ID
+            value: "{{inputs.parameters.bloom-run-id}}"
+          - name: OUTPUT_DIR
+            value: /tmp/outputs
+        resources:
+          requests: {cpu: "2", memory: 8Gi}
+          limits: {cpu: "2", memory: 8Gi}
+        volumeMounts:
+          # bloomctl's credentials.txt: run-with-log uploads the log, and bloomctl loads the dataset
+          - name: bloom-credentials
+            mountPath: /etc/bloom
+            readOnly: true
           - name: shared
             mountPath: /shared
       volumes:
@@ -374,30 +947,21 @@ spec:
     - name: testrun
       schedulerName: runai-scheduler
       priorityClassName: high
+      # A pod that never ran (exit -1: the cluster rejected or lost it) is tried again.
+      retryStrategy:
+        limit: 2
+        retryPolicy: Always
+        backoff: {duration: "2m", factor: 2}
+        expression: "asInt(lastRetry.exitCode) == -1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-4
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [bash, -c]
         args:
           - |
             set -euo pipefail
             cd /work
             cellranger testrun --id=check_install --localcores=4 --localmem=14
-            OUT="s3://bloomv2-workflows/runs_output/argo_testrun_{{workflow.name}}"
-            aws s3 sync check_install/outs "$OUT/outs/"
-            echo "DONE -> $OUT"
-        env:
-          - name: AWS_DEFAULT_REGION
-            value: us-west-2
-          - name: AWS_ACCESS_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_ACCESS_KEY_ID
-          - name: AWS_SECRET_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: genericsecret-bloomv2-s3
-                key: AWS_SECRET_ACCESS_KEY
+            echo "Cell Ranger testrun passed"
         resources:
           requests:
             cpu: "4"

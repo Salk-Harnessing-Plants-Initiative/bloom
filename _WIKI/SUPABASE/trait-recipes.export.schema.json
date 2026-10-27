@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Salk-Harnessing-Plants-Initiative/bloom/_WIKI/SUPABASE/trait-recipes.export.schema.json",
+  "title": "Bloom cyl trait export sidecar v1",
+  "description": "The <stem>.export.json that accompanies a cyl traits CSV. It records the one recipe the export holds and every selected scan it left out. See _WIKI/SUPABASE/trait-recipes.md.",
+  "type": "object",
+  "required": [
+    "export_schema_version",
+    "generated_at",
+    "generated_by",
+    "selection",
+    "recipe",
+    "included",
+    "excluded",
+    "other_recipes_in_selection"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "export_schema_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "generated_by": {
+      "type": "object",
+      "required": ["tool", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": { "enum": ["bloom-web", "bloomctl", "bloommcp"] },
+        "version": { "type": "string" }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "required": ["experiment_ids", "scan_ids_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "experiment_ids": { "type": "array", "items": { "type": "integer" } },
+        "scan_ids": { "type": ["array", "null"], "items": { "type": "integer" } },
+        "filters": { "type": "object" },
+        "scan_ids_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "required": ["recipe_key", "recipe_key_version", "recipe_kind", "chosen_by", "definition"],
+      "additionalProperties": false,
+      "properties": {
+        "recipe_key": { "type": "string" },
+        "recipe_key_version": { "type": ["integer", "null"] },
+        "recipe_kind": { "enum": ["pipeline", "legacy", "unattributed"] },
+        "chosen_by": { "enum": ["default", "user"] },
+        "definition": { "type": ["object", "null"] },
+        "observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "contract_versions": { "type": "array", "items": { "type": "string" } },
+            "traits_sleap_roots_versions": { "type": "array", "items": { "type": "string" } },
+            "sleap_nn_versions": { "type": "array", "items": { "type": "string" } },
+            "predict_container_digests": { "type": "array", "items": { "type": "string" } },
+            "traits_container_digests": { "type": "array", "items": { "type": "string" } },
+            "inference_configs": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+    "included": {
+      "type": "object",
+      "required": ["n_scans", "source_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "n_scans": { "type": "integer", "minimum": 0 },
+        "source_ids": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scan_id", "plant_qr_code", "reason", "available_recipes"],
+        "additionalProperties": false,
+        "properties": {
+          "scan_id": { "type": "integer" },
+          "plant_qr_code": { "type": "string" },
+          "reason": { "enum": ["other_recipe", "legacy_only", "no_traits"] },
+          "available_recipes": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "other_recipes_in_selection": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["recipe_key", "n_scans"],
+        "additionalProperties": false,
+        "properties": {
+          "recipe_key": { "type": "string" },
+          "n_scans": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}
