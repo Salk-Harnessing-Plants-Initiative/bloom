@@ -643,6 +643,10 @@ def test_persists_labels_and_returns_links_not_the_vector(injected_ports):
     stored = store.get_run(_EXPERIMENT, "clustering", "latest")
     assert set(stored.output_keys) == {"labels.csv", "cluster_result.json"}
     assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
 
     # bloom#581: a signed link + hash + size per output — ClusteringResult

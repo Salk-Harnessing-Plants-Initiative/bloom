@@ -20,7 +20,8 @@ Installable `uv` package under `src/bloom_mcp/`:
   `docs/2026-06-29-bloom-mcp-contributor-namespacing.md`). `sections.sleap_roots` wraps
   `sleap-roots-analyze` (PCA, QC, clustering, outlier removal, plotting);
   `sections.core` holds the cross-cutting discovery tools.
-- `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
+- `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`,
+  `_inline_input` — the ephemeral `csv_content` input path every tool resolves through),
   not tools themselves
 - `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping
 - `bloom_mcp.supabase_client` — single point of Supabase access

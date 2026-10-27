@@ -464,6 +464,10 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
     assert stored.tool == "plot_trait_boxplots"
     assert stored.seed is None
 
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
     assert set(result.output_links) == set(result.outputs)
     for name, key in result.outputs.items():
