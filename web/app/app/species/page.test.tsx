@@ -2,10 +2,11 @@
 /** The Species page lists the non-deleted species with who added them, and shows an error when it can't. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { mockClient, queriesFor, resetSupabaseMock, supabaseMock } from "@/lib/cyl-pipeline/__fixtures__/supabase-mock";
 
 vi.mock("@/lib/supabase/client", async () => (await import("@/lib/cyl-pipeline/__fixtures__/supabase-mock")).clientModule);
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 // Images come from storage and public/species-icons; here, Arabidopsis has one and Rice doesn't.
 vi.mock("@/components/illustration", () => ({
   speciesImage: vi.fn(async (path: string | null, name: string) =>
@@ -56,6 +57,24 @@ describe("the Species page", () => {
     );
     expect(images).toEqual(["signed/arabidopsis.png", "/species-icons/_default.svg"]);
     expect(query.arg("is")).toEqual(["deleted_at", null]);
+  });
+
+  it("keeps the server's list with its images once the page is running in the browser", async () => {
+    supabaseMock.respond = () => ({
+      data: [{ id: 1, common_name: "Arabidopsis", genus: "Arabidopsis", species: "thaliana", created_by: null, illustration_path: "arabidopsis.png" }],
+      error: null,
+    });
+    render(await SpeciesPage());
+    // Let any effects and their requests run: before this fix, the browser fetched the
+    // species again without their images and replaced the list with placeholders.
+    await act(async () => {});
+    await act(async () => {});
+
+    expect(queriesFor("species")).toHaveLength(1);
+    const images = [...screen.getByRole("table", { name: "Species" }).querySelectorAll("img")].map((img) =>
+      img.getAttribute("src")
+    );
+    expect(images).toEqual(["signed/arabidopsis.png"]);
   });
 
   it("shows a friendly error, not an empty list, when the species can't be loaded", async () => {

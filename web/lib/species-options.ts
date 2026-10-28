@@ -49,17 +49,19 @@ export function sortedSpeciesOptions(rows: SpeciesRow[]): SpeciesOption[] {
   return rows.map(speciesOption).sort((a, b) => a.label.localeCompare(b.label));
 }
 
+export type SpeciesImage = { url: string; placeholder: boolean };
+
 /** A species on the Species page, with who added it: `created_by`, null from before that was recorded. */
 export type SpeciesListItem = SpeciesOption & {
   addedBy: string | null;
-  /** Its image, worked out on the server; absent for one that arrived live (shown as the placeholder). */
-  image?: { url: string; placeholder: boolean };
+  /** Its image, worked out on the server: its own, or the placeholder. */
+  image: SpeciesImage;
 };
 
-type SpeciesListRow = SpeciesRow & { created_by?: string | null };
+type SpeciesListRow = SpeciesRow & { created_by?: string | null; image: SpeciesImage };
 
 export function speciesListItem(row: SpeciesListRow): SpeciesListItem {
-  return { ...speciesOption(row), addedBy: row.created_by ?? null };
+  return { ...speciesOption(row), addedBy: row.created_by ?? null, image: row.image };
 }
 
 export function sortedSpeciesList(rows: SpeciesListRow[]): SpeciesListItem[] {
@@ -75,26 +77,6 @@ export function addedByText(addedBy: string | null, currentUserId: string | null
   if (!addedBy) return "Bloom admin";
   if (currentUserId && addedBy === currentUserId) return "you";
   return `another member · ${addedBy.slice(0, 8)}`;
-}
-
-/** The list with `item` in it, sorted, replacing the same species if it was there. */
-export function withSpeciesOption<T extends SpeciesOption>(list: T[], item: T): T[] {
-  return [...list.filter((s) => s.id !== item.id), item].sort((a, b) =>
-    a.label.localeCompare(b.label)
-  );
-}
-
-/** A species row as a Realtime change carries it. */
-export type SpeciesChangeRow = Partial<SpeciesListRow> & { deleted_at?: string | null };
-
-/**
- * The list after a realtime change to a species row: an added or edited species is
- * (re)listed, and one marked deleted is dropped.
- */
-export function applySpeciesChange(list: SpeciesListItem[], row: SpeciesChangeRow): SpeciesListItem[] {
-  if (typeof row.id !== "number") return list;
-  if (row.deleted_at) return list.filter((s) => s.id !== row.id);
-  return withSpeciesOption(list, speciesListItem(row as SpeciesListRow));
 }
 
 /** The species as add_species stores it (Genus, epithet, Common name), or why not. */
