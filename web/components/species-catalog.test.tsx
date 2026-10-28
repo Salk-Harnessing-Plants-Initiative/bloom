@@ -135,6 +135,36 @@ describe("adding a species", () => {
     expect(screen.queryByLabelText("Genus")).toBeNull();
   });
 
+  it("shows the reloaded list the server sends, with the new species and its image", async () => {
+    mockedAdd.mockResolvedValue({ kind: "added", option: { id: 9, label: "Pennycress (Thlaspi arvense)" } });
+    const { rerender } = mount();
+    addPennycress();
+    expect(await screen.findByText("Added Pennycress (Thlaspi arvense).")).toBeTruthy();
+
+    // The refresh re-renders the page on the server, which passes the new list down.
+    const pennycress: SpeciesListItem = {
+      id: 9,
+      label: "Pennycress (Thlaspi arvense)",
+      addedBy: ME,
+      image: { url: "/species-icons/pennycress.png", placeholder: false },
+    };
+    rerender(<SpeciesCatalog species={[...SPECIES, pennycress]} currentUserId={ME} />);
+
+    expect(listed()).toEqual([
+      "Arabidopsis (Arabidopsis thaliana)",
+      "Rice (Oryza sativa)",
+      "Pennycress (Thlaspi arvense)",
+    ]);
+    expect(screen.getByText("3 species in Bloom")).toBeTruthy();
+    expect(rows()[2][1]).toBe("you");
+    const images = [...screen.getByRole("table", { name: "Species" }).querySelectorAll("img")].map((img) =>
+      img.getAttribute("src")
+    );
+    expect(images[2]).toBe("/species-icons/pennycress.png");
+    // The notice stays.
+    expect(screen.getByText("Added Pennycress (Thlaspi arvense).")).toBeTruthy();
+  });
+
   it("reloads the list when a species found already in Bloom isn't listed yet", async () => {
     mockedAdd.mockResolvedValue({ kind: "existing", option: { id: 9, label: "Pennycress (Thlaspi arvense)" } });
     mount();

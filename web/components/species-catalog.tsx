@@ -6,7 +6,7 @@
  * here: uploads find a species by its common name.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { addedByText, type SpeciesListItem } from "@/lib/species-options";
 import SpeciesAddForm, { type SpeciesAdded } from "@/components/species-add-form";
@@ -24,6 +24,8 @@ export default function SpeciesCatalog({
   currentUserId: string | null;
 }) {
   const router = useRouter();
+  // While the list reloads from the server, say so, and hold the notice until it's in.
+  const [reloading, startReload] = useTransition();
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState("");
   // Back to the Add a species button when the form closes, so keyboard users keep their place.
@@ -36,7 +38,9 @@ export default function SpeciesCatalog({
 
   function added({ kind, option }: SpeciesAdded) {
     // A new species, or one already in Bloom but added since the page loaded: reload the list.
-    if (kind === "added" || !list.some((s) => s.id === option.id)) router.refresh();
+    if (kind === "added" || !list.some((s) => s.id === option.id)) {
+      startReload(() => router.refresh());
+    }
     setNotice(kind === "added" ? `Added ${option.label}.` : `${option.label} is already in Bloom.`);
     setAdding(false);
   }
@@ -67,11 +71,11 @@ export default function SpeciesCatalog({
         )}
         {/* Always mounted, so screen readers announce a new notice. */}
         <p role="status" className="mt-2 min-h-5 text-sm text-stone-600">
-          {adding ? "" : notice}
+          {adding ? "" : reloading ? "Updating the list…" : notice}
         </p>
       </div>
 
-      <div>
+      <div aria-busy={reloading}>
         <div className="mb-2 text-sm text-stone-500">{list.length} species in Bloom</div>
         {list.length === 0 ? (
           <p className="text-sm text-stone-500">No species yet.</p>
