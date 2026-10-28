@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   failureSentence,
+  runChemistry,
   runFastqUrl,
   runSraRuns,
   runSteps,
@@ -408,6 +409,15 @@ describe("runFastqUrl", () => {
     expect(runFastqUrl(run({ params: { sample: "s", reference: "r", fastq_url: url } }))).toBe(url);
     expect(runFastqUrl(run())).toBeNull();
     expect(runFastqUrl(run({ params: null }))).toBeNull();
+  });
+});
+
+describe("runChemistry", () => {
+  it("reads the chemistry the run named, or null when Cell Ranger detected it", () => {
+    expect(runChemistry(run({ params: { sample: "s", reference: "r", chemistry: "ARC-v1" } }))).toBe("ARC-v1");
+    expect(runChemistry(run())).toBeNull();
+    expect(runChemistry(run({ params: { sample: "s", reference: "r", chemistry: "" } }))).toBeNull();
+    expect(runChemistry(run({ params: null }))).toBeNull();
   });
 });
 

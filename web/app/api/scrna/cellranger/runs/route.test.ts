@@ -249,6 +249,36 @@ describe("forwarding", () => {
     });
   });
 
+  it.each([["ARC-v1"], ["auto"]])("forwards the library type %j", async (chemistry) => {
+    await callRoute({ sample: "sc71", genome_version_id: 3, sra_runs: RUNS, chemistry });
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
+      sample: "sc71",
+      genome_version_id: 3,
+      sra_runs: RUNS,
+      chemistry,
+    });
+  });
+
+  it("forwards the library type with an S3 folder", async () => {
+    const files = [{ name: "col0_S1_L001_R1_001.fastq.gz", size: 1, etag: '"a"' }];
+    await callRoute({
+      fastq_url: "s3://lab-data/run42/",
+      fastq_files: files,
+      genome_version_id: 3,
+      chemistry: "ARC-v1",
+    });
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body).chemistry).toBe("ARC-v1");
+  });
+
+  it.each([[null], [1], [["ARC-v1"]], [{ name: "ARC-v1" }]])(
+    "refuses library type %j without calling upstream",
+    async (chemistry) => {
+      const res = await callRoute({ sample: "sc71", genome_version_id: 3, sra_runs: RUNS, chemistry });
+      expect(res.status).toBe(400);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
+  );
+
   it.each([[null], ["SRR28503597"], [[1]], [{ 0: "SRR28503597" }]])(
     "refuses SRA run IDs %j without calling upstream",
     async (sra_runs) => {

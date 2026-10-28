@@ -180,6 +180,12 @@ export function runFastqUrl(run: RnaseqRun): string | null {
   return typeof url === "string" ? url : null;
 }
 
+/** The chemistry the run named to Cell Ranger (e.g. ARC-v1), or null when Cell Ranger detected it. */
+export function runChemistry(run: RnaseqRun): string | null {
+  const chemistry = field(run.params, "chemistry");
+  return typeof chemistry === "string" && chemistry ? chemistry : null;
+}
+
 // Steps the pipeline no longer has, and the steps that replaced them.
 const RETIRED_STEPS: ReadonlySet<StepId> = new Set(["stage-reference"]);
 const GENOME_STEPS: ReadonlySet<StepId> = new Set(["download-genome", "build-reference"]);

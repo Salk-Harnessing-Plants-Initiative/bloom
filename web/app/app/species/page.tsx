@@ -26,13 +26,11 @@ export default async function SpeciesPage() {
   if (error) console.error("[species] Couldn't load the species:", error.message);
 
   // Each species' image, or the placeholder until someone adds one.
-  const rows = data ?? [];
-  const images = new Map(
+  const withImages = sortedSpeciesList(
     await Promise.all(
-      rows.map(async (r) => [r.id, await speciesImage(r.illustration_path, r.common_name)] as const)
+      (data ?? []).map(async (r) => ({ ...r, image: await speciesImage(r.illustration_path, r.common_name) }))
     )
   );
-  const withImages = sortedSpeciesList(rows).map((s) => ({ ...s, image: images.get(s.id) }));
 
   return (
     <div>

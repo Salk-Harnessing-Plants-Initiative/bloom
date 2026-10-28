@@ -1,63 +1,31 @@
 "use client";
 
 /**
- * The Species page's list and its Add a species form. The list stays live through
- * Realtime once species is in the supabase_realtime publication (the migration
- * 20261024120000_enable_realtime_for_species.sql); until then the channel still joins
- * and shows "Live", but no changes arrive, and the list updates on reload. With it, a
- * species added or edited anywhere in Bloom shows up without a reload. A removed one
- * disappears on the next reload or rejoin, since row-level security keeps removed
- * species (and so their change events) from signed-in users; admins, who can read them,
- * see it go straight away. A species added here, or found already in Bloom,
- * is listed straight away too. Species aren't renamed or removed here: uploads find a
- * species by its common name.
+ * The Species page's list and its Add a species form. The list is the server's, with each
+ * species' image; adding one reloads it from the server. Species aren't renamed or removed
+ * here: uploads find a species by its common name.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { createClientSupabaseClient } from "@/lib/supabase/client";
-import { useLiveSync } from "@/lib/cyl-pipeline/use-live-sync";
-import {
-  addedByText,
-  applySpeciesChange,
-  sortedSpeciesList,
-  withSpeciesOption,
-  type SpeciesChangeRow,
-  type SpeciesListItem,
-} from "@/lib/species-options";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { addedByText, type SpeciesListItem } from "@/lib/species-options";
 import SpeciesAddForm, { type SpeciesAdded } from "@/components/species-add-form";
-import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
-import { DEFAULT_SPECIES_IMAGE } from "@/lib/species-image";
 
 const FIELD_CLASS =
   "mt-1 block w-full rounded-md border border-stone-300 px-2 py-1.5 text-sm text-stone-900";
 const LABEL_CLASS = "block text-sm font-medium text-stone-700";
 
-/** The species that haven't been removed, as the list shows them. */
-async function loadSpecies(): Promise<SpeciesListItem[]> {
-  const { data, error } = await createClientSupabaseClient()
-    .from("species")
-    .select("id, common_name, genus, species, created_by")
-    .is("deleted_at", null);
-  if (error) throw new Error(error.message);
-  return sortedSpeciesList(data ?? []);
-}
-
-/** `species` is the server's snapshot, already sorted; `currentUserId` is who's signed in. */
+/** `species` is the server's list, already sorted; `currentUserId` is who's signed in. */
 export default function SpeciesCatalog({
-  species,
+  species: list,
   currentUserId,
 }: {
   species: SpeciesListItem[];
   currentUserId: string | null;
 }) {
-  const live = useLiveSync<SpeciesListItem[]>({
-    topic: "species",
-    bindings: [{ table: "species", event: "*" }],
-    initial: species,
-    snapshot: loadSpecies,
-    apply: (list, change) => applySpeciesChange(list, change.new as SpeciesChangeRow),
-  });
-  const list = live.view;
+  const router = useRouter();
+  // While the list reloads from the server, say so, and hold the notice until it's in.
+  const [reloading, startReload] = useTransition();
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState("");
   // Back to the Add a species button when the form closes, so keyboard users keep their place.
@@ -67,17 +35,11 @@ export default function SpeciesCatalog({
     if (wasAdding.current && !adding) addButton.current?.focus();
     wasAdding.current = adding;
   }, [adding]);
-  useEffect(() => {
-    if (live.error) console.error("[species] Couldn't refresh the species:", live.error);
-  }, [live.error]);
 
   function added({ kind, option }: SpeciesAdded) {
-    if (kind === "added") {
-      live.update((current) => withSpeciesOption(current, { ...option, addedBy: currentUserId }));
-    } else if (!live.current().some((s) => s.id === option.id)) {
-      // Already in Bloom but not listed: added since the page loaded. Reload the list to
-      // show it with who added it.
-      live.refresh();
+    // A new species, or one already in Bloom but added since the page loaded: reload the list.
+    if (kind === "added" || !list.some((s) => s.id === option.id)) {
+      startReload(() => router.refresh());
     }
     setNotice(kind === "added" ? `Added ${option.label}.` : `${option.label} is already in Bloom.`);
     setAdding(false);
@@ -109,20 +71,12 @@ export default function SpeciesCatalog({
         )}
         {/* Always mounted, so screen readers announce a new notice. */}
         <p role="status" className="mt-2 min-h-5 text-sm text-stone-600">
-          {adding ? "" : notice}
+          {adding ? "" : reloading ? "Updating the list…" : notice}
         </p>
       </div>
 
-      <div>
-        <div className="mb-2 flex items-center justify-between gap-4 text-sm text-stone-500">
-          <span>{list.length} species in Bloom</span>
-          <LiveIndicator state={live.connection} onRefresh={live.refresh} />
-        </div>
-        {live.error ? (
-          <p role="alert" className="mb-2 text-sm text-red-700">
-            Couldn&apos;t refresh the species, so this list may be out of date. Reload the page to try again.
-          </p>
-        ) : null}
+      <div aria-busy={reloading}>
+        <div className="mb-2 text-sm text-stone-500">{list.length} species in Bloom</div>
         {list.length === 0 ? (
           <p className="text-sm text-stone-500">No species yet.</p>
         ) : (
@@ -151,11 +105,11 @@ export default function SpeciesCatalog({
                     <span className="flex items-center gap-2 text-xs text-stone-500">
                       {/* eslint-disable-next-line @next/next/no-img-element -- a small local or signed image, like Illustration's */}
                       <img
-                        src={s.image?.url ?? DEFAULT_SPECIES_IMAGE}
+                        src={s.image.url}
                         alt=""
                         className="h-8 w-8 object-contain"
                       />
-                      {(s.image?.placeholder ?? true) ? "No image yet" : null}
+                      {s.image.placeholder ? "No image yet" : null}
                     </span>
                   </td>
                 </tr>
