@@ -228,13 +228,7 @@ export interface Deferred<T> {
   reject(reason: unknown): void;
 }
 
-/** A promise with its settle functions (not `Promise.withResolvers`, which Node 20 lacked). */
+/** A promise with its settle functions. */
 export function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
+  return Promise.withResolvers<T>();
 }

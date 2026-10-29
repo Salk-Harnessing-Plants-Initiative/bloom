@@ -114,7 +114,7 @@ def test_bloom_web_has_a_memory_limit_that_swap_cannot_lift():
     assert "mem_limit" in service, f"{SERVICE} is uncapped"
     assert _bytes(service["mem_limit"]) == MEMORY_LIMIT_BYTES, (
         f"{SERVICE} is capped at {service['mem_limit']!r}; Node sizes its heap at "
-        "about half the limit, so a change here changes the export's heap too"
+        "about 56% of the limit, so a change here changes the export's heap too"
     )
     assert (
         "memswap_limit" in service
