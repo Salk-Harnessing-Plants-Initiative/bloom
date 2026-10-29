@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useVideoJobPoll } from "@/components/use-video-job-poll";
 import {
   PLATE_FAILURES,
+  POLL_LOST,
+  POLL_SIGNED_OUT,
   countedFrames,
   isActiveJob,
   jobFailureMessage,
@@ -101,13 +103,17 @@ export function PlateVideo({
   const [failure, setFailure] = useState(FAILED);
   const [job, setJob] = useState<VideoJob | null>(null);
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
-  // The job this page is waiting on; an older job's outcome must not end the wait.
-  const expectedJob = useRef<string | null>(null);
+  // The job this page is waiting on. The poll asks for it by id, so a newer job
+  // on the same plate can neither end the wait nor hide this one's outcome.
+  const [expectedJob, setExpectedJob] = useState<string | null>(null);
 
   const endpoint = `/api/gravi/experiments/${experimentId}/plate-video`;
   const query = new URLSearchParams({ plate_id: plateId });
   if (waveNumber !== null) query.set("wave_number", String(waveNumber));
   const pollUrl = `${endpoint}?${query}`;
+  const jobPollUrl = expectedJob
+    ? `${pollUrl}&${new URLSearchParams({ job_id: expectedJob })}`
+    : pollUrl;
   const busy = action === "queuing" || action === "waiting";
 
   const show = useCallback((next: Stored) => {
@@ -124,7 +130,7 @@ export function PlateVideo({
       if (next.player.status !== "unknown") show(next);
       else setPlayer(next.player);
       if (isActiveJob(next.job)) {
-        expectedJob.current = next.job.id;
+        setExpectedJob(next.job.id);
         setJob(next.job);
         setAction((a) => (a === "idle" ? "waiting" : a));
       }
@@ -134,21 +140,27 @@ export function PlateVideo({
     };
   }, [pollUrl, objectPath, storedFrames, show]);
 
-  useVideoJobPoll(pollUrl, action === "waiting", (body) => {
-    const next = readStored(body);
-    const current = next.job;
-    if (!current || (expectedJob.current && current.id !== expectedJob.current)) {
-      return;
-    }
-    setJob(current);
-    if (current.status === "failed") {
-      setFailure(jobFailureMessage(current, PLATE_FAILURES));
+  useVideoJobPoll(
+    jobPollUrl,
+    action === "waiting" && expectedJob !== null,
+    (body) => {
+      const next = readStored(body);
+      const current = next.job;
+      if (!current || current.id !== expectedJob) return;
+      setJob(current);
+      if (current.status === "failed") {
+        setFailure(jobFailureMessage(current, PLATE_FAILURES));
+        setAction("error");
+      } else if (current.status === "rendered" || current.status === "kept") {
+        show(next);
+        setAction("idle");
+      }
+    },
+    (why) => {
+      setFailure(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);
       setAction("error");
-    } else if (current.status === "rendered" || current.status === "kept") {
-      show(next);
-      setAction("idle");
     }
-  });
+  );
 
   // `disabled` is what stops a second click; two requests that do get through
   // share one job anyway, since the database allows one active job per plate.
@@ -176,7 +188,7 @@ export function PlateVideo({
         return;
       }
       // Created or shared with someone else's click: either way, wait for it.
-      expectedJob.current = body.job_id;
+      setExpectedJob(body.job_id);
       setAction("waiting");
     } catch {
       setFailure(FAILED);

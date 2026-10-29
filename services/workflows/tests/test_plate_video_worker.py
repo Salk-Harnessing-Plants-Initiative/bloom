@@ -327,11 +327,13 @@ def test_a_job_renders_its_own_plate_with_the_progress_callback(monkeypatch):
     assert seen == {"args": (client, 12, "P7", 3), "progress": progress}
 
 
-def test_a_kept_plate_completes_as_kept(monkeypatch):
-    _stub_render(
-        monkeypatch, outcome={"action": "keep", "reason": "covers every frame"}
-    )
-    assert worker.render_job(object(), JOB, None) == "kept"
+def test_a_kept_plate_completes_as_kept_and_logs_why(monkeypatch, caplog):
+    """Two of the planner's keeps are anomalies, and the log is the only place they show."""
+    reason = "the stored video covers 86 frames; only 80 are in the database now"
+    _stub_render(monkeypatch, outcome={"action": "keep", "reason": reason})
+    with caplog.at_level("INFO", logger="plate_video_worker"):
+        assert worker.render_job(object(), JOB, None) == "kept"
+    assert reason in caplog.text
 
 
 @pytest.mark.parametrize(

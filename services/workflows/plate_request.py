@@ -16,8 +16,8 @@ from video_queue import PLATE_QUEUE, enqueue as enqueue_job
 
 logger = logging.getLogger(__name__)
 
-# The status each planner refusal would answer over HTTP. The worker's render
-# command reads them as exit codes. A refusal is not a bug — the caller asked a
+# The HTTP-style status of each planner refusal, which the worker's `render`
+# command reads as an exit code. A refusal is not a bug — the caller asked a
 # reasonable question and the answer is no.
 REFUSAL_STATUS = {
     "storage_unavailable": 503,  # transient; the same request may succeed later

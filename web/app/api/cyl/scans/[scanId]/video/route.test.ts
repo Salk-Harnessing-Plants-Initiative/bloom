@@ -19,17 +19,18 @@ vi.mock("@/lib/supabase/scan-video", () => ({
   getStoredScanVideo: vi.fn(),
 }));
 
-vi.mock("@/lib/supabase/video-jobs", () => ({
-  getLatestScanVideoJob: vi.fn(),
+vi.mock("@/lib/supabase/video-jobs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/supabase/video-jobs")>()),
+  getScanVideoJob: vi.fn(),
 }));
 
 import { getSession } from "@/lib/supabase/server";
 import { getStoredScanVideo } from "@/lib/supabase/scan-video";
-import { getLatestScanVideoJob } from "@/lib/supabase/video-jobs";
+import { getScanVideoJob } from "@/lib/supabase/video-jobs";
 
 const mockedGetSession = vi.mocked(getSession);
 const mockedStoredVideo = vi.mocked(getStoredScanVideo);
-const mockedJob = vi.mocked(getLatestScanVideoJob);
+const mockedJob = vi.mocked(getScanVideoJob);
 
 const JOB = {
   id: "1a2b3c4d-0000-0000-0000-000000000000",
@@ -47,8 +48,8 @@ const STORED_URL = "https://storage.test/cyl-videos/5.mp4?token=a";
 
 let fetchSpy: ReturnType<typeof vi.fn>;
 
-function callGet(scanId: string) {
-  return routeModule.GET(new Request("http://localhost/api"), {
+function callGet(scanId: string, search = "") {
+  return routeModule.GET(new Request(`http://localhost/api${search}`), {
     params: Promise.resolve({ scanId }),
   });
 }
@@ -99,8 +100,20 @@ describe("GET — has the video landed yet?", () => {
 
     const body = await (await callGet("5")).json();
 
-    expect(mockedJob).toHaveBeenCalledWith(5);
+    expect(mockedJob).toHaveBeenCalledWith(5, null);
     expect(body.job).toEqual(JOB);
+  });
+
+  it("reads the job a button names, so a newer job cannot hide its outcome", async () => {
+    await callGet("5", "?job_id=1a2b3c4d-0000-0000-0000-000000000000");
+
+    expect(mockedJob).toHaveBeenCalledWith(5, "1a2b3c4d-0000-0000-0000-000000000000");
+  });
+
+  it("ignores a job id that is not a uuid", async () => {
+    await callGet("5", "?job_id=nope");
+
+    expect(mockedJob).toHaveBeenCalledWith(5, null);
   });
 
   it("does not read the job when storage could not say", async () => {

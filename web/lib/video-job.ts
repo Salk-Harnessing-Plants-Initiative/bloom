@@ -83,6 +83,7 @@ const BLOOM_TEAM = "let the Bloom team know";
 // Shared by both kinds of video.
 const COMMON_FAILURES: Record<string, string> = {
   storage_unavailable: "Storage could not be reached, so nothing was changed. Try again shortly.",
+  database_unavailable: "The database could not be reached, so nothing was changed. Try again shortly.",
   encode_failed: `The video could not be encoded. Try again — if it keeps happening, ${BLOOM_TEAM}.`,
   redelivered: `The render stopped three times without finishing. Please ${BLOOM_TEAM}.`,
   stalled: `The render stopped making progress and was abandoned. Try again — if it keeps happening, ${BLOOM_TEAM}.`,
@@ -94,13 +95,12 @@ export const PLATE_FAILURES: Record<string, string> = {
   no_frames: "This plate has no captures with an image for this wave yet.",
   too_large: `This plate has more captures than one video can hold. Please ${BLOOM_TEAM}.`,
   unusable_plate: "This plate's name cannot be used to store a video.",
-  database_unavailable: "The database could not be reached, so nothing was changed. Try again shortly.",
   frame_too_large: `One of this plate's images is too large to render. Please ${BLOOM_TEAM}.`,
   frame_depth_unsupported: `One of this plate's images has a bit depth the video cannot use. Please ${BLOOM_TEAM}.`,
   frame_size_mismatch: `This plate's images are not all the same size. Please ${BLOOM_TEAM}.`,
-  frame_unreadable: "One of this plate's images could not be read. Try again shortly.",
+  frame_unreadable: `One of this plate's images could not be read. Try again — if it keeps happening, ${BLOOM_TEAM}.`,
   not_stored: "The video was made but could not be saved. Try again shortly.",
-  not_recorded: "The video was saved but not recorded. Try again to repair it.",
+  not_recorded: `The video may not have been saved or recorded. Try again — if it keeps happening, ${BLOOM_TEAM}.`,
   plate_mismatch: `The video could not be stored for this plate. Please ${BLOOM_TEAM}.`,
 };
 
@@ -124,7 +124,13 @@ export function jobFailureMessage(
   return `${sentence} (job ${job.id.slice(0, 8)})`;
 }
 
+// Why a button stopped asking before its job finished.
+export const POLL_SIGNED_OUT = "Your session has expired. Sign in again to see how this video turned out.";
+export const POLL_LOST = "Lost track of this video. Reload the page to check on it.";
+
 // How often a button asks how its job is going, and how long one ask may take.
 // The timeout stays under the interval so a hung ask never overlaps the next.
 export const VIDEO_JOB_POLL_INTERVAL_MS = 3_000;
 export const VIDEO_JOB_POLL_TIMEOUT_MS = 2_500;
+// Asks that may fail in a row before a button stops and says so: about 30 s.
+export const VIDEO_JOB_MAX_FAILED_POLLS = 10;

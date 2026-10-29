@@ -19,11 +19,9 @@ export function videoErrorMessage(
   if (status === 404) return "This scan was not found in this experiment.";
   if (status === 429)
     return "Too many video requests. Wait a minute and try again.";
-  // A 503 is a refusal, not a failure: the service could not confirm what is already stored,
-  // so it declined rather than risk replacing it. Saying "failed" would invite the reader to
-  // assume something broke, or that a half-made video is now sitting there.
+  // The route words its own 503s; one with no detail is the service unable to queue the job.
   if (status === 503)
-    return "Could not check this scan's video, so nothing was changed. Try again shortly.";
+    return "The video could not be queued right now, so nothing was changed. Try again shortly.";
   if (status >= 500) return "Video generation failed. Try again in a moment.";
   return `Could not generate the video (HTTP ${status}).`;
 }

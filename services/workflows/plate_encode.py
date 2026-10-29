@@ -17,7 +17,6 @@ import logging
 import math
 import os
 import tempfile
-from typing import Callable
 
 import numpy as np
 from PIL import Image
@@ -29,7 +28,13 @@ from plate_video_path import (
     GRAVISCAN_VIDEOS_BUCKET,
     plate_video_path,
 )
-from video_queue import STAGE_DOWNLOADING, STAGE_ENCODING, STAGE_UPLOADING
+from video_progress import (
+    STAGE_DOWNLOADING,
+    STAGE_ENCODING,
+    STAGE_UPLOADING,
+    ProgressCallback,
+    no_progress,
+)
 from video_writer import ENCODE_TIMEOUT_SECONDS, VideoWriter
 
 logger = logging.getLogger(__name__)
@@ -67,13 +72,6 @@ DEEP_MIN_PEAK = DEEP_FULL_SCALE // 2
 # cyl path has the same gap. A whole plate is deliberately unbounded either
 # way: 86 frames measured at 0.68s each, and a longer run should take longer
 # rather than be truncated.
-
-# A render's progress callback: (stage, frames done, frames total).
-Progress = Callable[[str, int | None, int | None], None]
-
-
-def _no_progress(stage: str, done: int | None = None, total: int | None = None) -> None:
-    pass
 
 
 def decoded_bytes(width: int, height: int, mode: str) -> int:
@@ -232,7 +230,7 @@ class FrameSizeMismatch(FrameUnreadable):
 
 
 def encode_plate_video(
-    client, frames: list[dict], out_path: str, progress: Progress = _no_progress
+    client, frames: list[dict], out_path: str, progress: ProgressCallback = no_progress
 ) -> int:
     """Encode `frames` into an MP4 at `out_path`. Returns the frames written.
 
@@ -478,7 +476,7 @@ def render_plate_video(
     experiment_id: int,
     plate_id: str,
     wave_number: int | None,
-    progress: Progress = _no_progress,
+    progress: ProgressCallback = no_progress,
 ) -> dict:
     """Decide, encode, store, record. The one call a render makes.
 

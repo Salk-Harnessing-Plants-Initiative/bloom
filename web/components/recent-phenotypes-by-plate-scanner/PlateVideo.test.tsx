@@ -19,6 +19,9 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import { PlateVideo } from "./PlateVideo";
 import {
+  POLL_LOST,
+  POLL_SIGNED_OUT,
+  VIDEO_JOB_MAX_FAILED_POLLS,
   VIDEO_JOB_POLL_INTERVAL_MS,
   VIDEO_JOB_POLL_TIMEOUT_MS,
   type VideoJob,
@@ -575,7 +578,7 @@ describe("a queued render, and the poll that follows", () => {
     timeout.mockRestore();
   });
 
-  it("polls the plate and wave the page is showing", async () => {
+  it("polls for its own job on the plate and wave the page is showing", async () => {
     const calls = queue([absent(), absent(job())]);
     await act(async () => {
       renderPlate({ waveNumber: null });
@@ -584,7 +587,9 @@ describe("a queued render, and the poll that follows", () => {
     await tick();
 
     const polls = calls.filter((c) => c.method === "GET");
-    expect(polls.at(-1)?.url).toBe("/api/gravi/experiments/12/plate-video?plate_id=P7");
+    expect(polls.at(-1)?.url).toBe(
+      `/api/gravi/experiments/12/plate-video?plate_id=P7&job_id=${JOB_ID}`
+    );
   });
 
   it("stops polling once unmounted", async () => {
@@ -645,5 +650,64 @@ describe("a stored video that will not play", () => {
     expect(screen.getByText(/could not be loaded/)).toBeTruthy();
     expect(screen.queryByText(/No time-lapse video/)).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+describe("a poll that cannot follow its job", () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it("finishes on its own job even after a colleague queues an Update", async () => {
+    const newer = job({ id: "ffffffff-0000-0000-0000-000000000000", status: "rendering" });
+    let latest = 0;
+    serve((method, url) => {
+      if (method === "POST") return json(QUEUED, 202);
+      if (url.includes(`job_id=${JOB_ID}`)) return json(present(40, RENDERED));
+      // Nothing queued when the page opens; the newer job comes after the click.
+      latest += 1;
+      return json(absent(latest === 1 ? null : newer));
+    });
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(document.querySelector("video source")?.getAttribute("src")).toBe(URL_B);
+    expect(screen.queryByText("Generating…")).toBeNull();
+  });
+
+  it("says to sign in again when the session has expired, and stops asking", async () => {
+    let i = 0;
+    const calls = serve((method) => {
+      if (method === "POST") return json(QUEUED, 202);
+      i += 1;
+      return i === 1 ? json(absent()) : json({ detail: "Sign in" }, 401);
+    });
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick();
+    const asked = calls.length;
+    await tick(3);
+
+    expect(document.body.textContent).toContain(POLL_SIGNED_OUT);
+    expect(calls.length).toBe(asked);
+  });
+
+  it("says it lost track after a run of failed asks", async () => {
+    let i = 0;
+    serve((method) => {
+      if (method === "POST") return json(QUEUED, 202);
+      i += 1;
+      return i === 1 ? json(absent()) : json({ detail: "busy" }, 503);
+    });
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick(VIDEO_JOB_MAX_FAILED_POLLS);
+
+    expect(document.body.textContent).toContain(POLL_LOST);
   });
 });

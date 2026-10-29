@@ -8,6 +8,9 @@ import { act, cleanup, render, screen, within } from "@testing-library/react";
 
 import ScanVideoButton from "./scan-video-button";
 import {
+  POLL_LOST,
+  POLL_SIGNED_OUT,
+  VIDEO_JOB_MAX_FAILED_POLLS,
   VIDEO_JOB_POLL_INTERVAL_MS,
   VIDEO_JOB_POLL_TIMEOUT_MS,
   type VideoJob,
@@ -223,7 +226,7 @@ describe("ScanVideoButton queuing a render", () => {
     expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
   });
 
-  it("polls the scan's own endpoint, each ask bounded below the interval", async () => {
+  it("polls for its own job on the scan's endpoint, each ask bounded below the interval", async () => {
     expect(VIDEO_JOB_POLL_TIMEOUT_MS).toBeLessThan(VIDEO_JOB_POLL_INTERVAL_MS);
     const timeout = vi.spyOn(AbortSignal, "timeout");
     const fetchMock = serve(() => json(QUEUED, 202), [poll(null, null), poll(null, job())]);
@@ -233,7 +236,7 @@ describe("ScanVideoButton queuing a render", () => {
     await tick();
 
     const last = fetchMock.mock.calls.at(-1)!;
-    expect(last[0]).toBe("/api/cyl/scans/5/video");
+    expect(last[0]).toBe(`/api/cyl/scans/5/video?job_id=${QUEUED.job_id}`);
     expect(timeout).toHaveBeenCalledWith(VIDEO_JOB_POLL_TIMEOUT_MS);
   });
 
@@ -403,5 +406,81 @@ describe("ScanVideoButton on a scan the page is calling incomplete", () => {
     await tick();
 
     expect(document.body.textContent).toContain("Encoded 60 of 72 frames");
+  });
+});
+
+describe("ScanVideoButton when a poll cannot follow its job", () => {
+  it("finishes on its own job even after a newer one is queued for the scan", async () => {
+    // Asked without a job id, the route would answer with the newer job.
+    const newer = job({ id: "ffffffff-0000-0000-0000-000000000000", status: "queued" });
+    let latest = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") return json(QUEUED, 202);
+        if (String(url).includes(`job_id=${JOB_ID}`))
+          return json({ download_url: VIDEO_URL, job: RENDERED }, 200);
+        // Nothing queued when the page opens; the newer job comes after the click.
+        latest += 1;
+        return json({ download_url: null, job: latest === 1 ? null : newer }, 200);
+      })
+    );
+
+    await mount();
+    await click("Generate video");
+    await tick();
+
+    expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
+  });
+
+  it("says to sign in again when the session has expired, and stops asking", async () => {
+    const fetchMock = serve(() => json(QUEUED, 202), [
+      poll(null, null),
+      () => json({ detail: "Sign in to view this video." }, 401),
+    ]);
+
+    await mount();
+    await click("Generate video");
+    await tick();
+    const asked = fetchMock.mock.calls.length;
+    await tick(3);
+
+    expect(screen.getByRole("alert").textContent).toBe(POLL_SIGNED_OUT);
+    expect(fetchMock.mock.calls.length).toBe(asked);
+  });
+
+  it("says it lost track after a run of failed asks, and stops asking", async () => {
+    const fetchMock = serve(() => json(QUEUED, 202), [
+      poll(null, null),
+      () => json({ detail: "busy" }, 503),
+    ]);
+
+    await mount();
+    await click("Generate video");
+    await tick(VIDEO_JOB_MAX_FAILED_POLLS - 1);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await tick();
+    const asked = fetchMock.mock.calls.length;
+    await tick(3);
+
+    expect(screen.getByRole("alert").textContent).toBe(POLL_LOST);
+    expect(fetchMock.mock.calls.length).toBe(asked);
+  });
+
+  it("keeps waiting through a few failed asks", async () => {
+    serve(() => json(QUEUED, 202), [
+      poll(null, null),
+      () => json({ detail: "busy" }, 503),
+      () => json({ detail: "busy" }, 503),
+      poll(VIDEO_URL, RENDERED),
+    ]);
+
+    await mount();
+    await click("Generate video");
+    await tick(3);
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
   });
 });

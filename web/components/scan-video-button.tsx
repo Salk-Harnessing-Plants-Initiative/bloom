@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { videoErrorMessage, videoResultSummary } from "./scan-video.helpers";
 import { useVideoJobPoll } from "./use-video-job-poll";
 import {
+  POLL_LOST,
+  POLL_SIGNED_OUT,
   SCAN_FAILURES,
   countedFrames,
   isActiveJob,
@@ -42,13 +44,17 @@ export default function ScanVideoButton({
   const [videoUrl, setVideoUrl] = useState<string | null>(initialVideoUrl);
   const [job, setJob] = useState<VideoJob | null>(null);
   const [message, setMessage] = useState<string>("");
-  // The job this page queued; an older job's outcome must not end the wait.
-  const expectedJob = useRef<string | null>(null);
+  // The job this page is waiting on. The poll asks for it by id, so a newer job
+  // on the same scan can neither end the wait nor hide this one's outcome.
+  const [expectedJob, setExpectedJob] = useState<string | null>(null);
 
   const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
   // A stored video is keyed by scan alone, so asking how it is going doesn't go
   // through the experiment-scoped generate route.
   const pollEndpoint = `/api/cyl/scans/${scanId}/video`;
+  const jobPollUrl = expectedJob
+    ? `${pollEndpoint}?${new URLSearchParams({ job_id: expectedJob })}`
+    : pollEndpoint;
   const busy = status === "queuing" || status === "waiting";
 
   // Someone may already have queued this scan; their progress is shown here too.
@@ -61,7 +67,7 @@ export default function ScanVideoButton({
         if (cancelled || !body) return;
         const { job: current } = readPoll(body);
         if (isActiveJob(current)) {
-          expectedJob.current = current.id;
+          setExpectedJob(current.id);
           setJob(current);
           setStatus((s) => (s === "idle" ? "waiting" : s));
         }
@@ -72,20 +78,26 @@ export default function ScanVideoButton({
     };
   }, [pollEndpoint, initialVideoUrl]);
 
-  useVideoJobPoll(pollEndpoint, status === "waiting", (body) => {
-    const { url, job: current } = readPoll(body);
-    if (!current || (expectedJob.current && current.id !== expectedJob.current)) {
-      return;
-    }
-    setJob(current);
-    if (current.status === "failed") {
-      setMessage(jobFailureMessage(current, SCAN_FAILURES));
+  useVideoJobPoll(
+    jobPollUrl,
+    status === "waiting" && expectedJob !== null,
+    (body) => {
+      const { url, job: current } = readPoll(body);
+      if (!current || current.id !== expectedJob) return;
+      setJob(current);
+      if (current.status === "failed") {
+        setMessage(jobFailureMessage(current, SCAN_FAILURES));
+        setStatus("error");
+      } else if (current.status === "rendered" || current.status === "kept") {
+        if (url) setVideoUrl(url);
+        setStatus("done");
+      }
+    },
+    (why) => {
+      setMessage(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);
       setStatus("error");
-    } else if (current.status === "rendered" || current.status === "kept") {
-      if (url) setVideoUrl(url);
-      setStatus("done");
     }
-  });
+  );
 
   // A partial scan may be all there will ever be, so this is a confirmation rather than a
   // refusal — but the video it produces is the one everyone sees, and the product offers no
@@ -145,7 +157,7 @@ export default function ScanVideoButton({
     }
 
     // Created or shared with someone else's click: either way, wait for it.
-    expectedJob.current = body.job_id;
+    setExpectedJob(body.job_id);
     setStatus("waiting");
   }
 

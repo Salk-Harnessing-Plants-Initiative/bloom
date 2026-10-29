@@ -13,8 +13,15 @@ import sys
 from fastapi import HTTPException
 
 from supabase_client import app_client
-from video import NO_FRAMES_ENCODED, NOT_SIGNED, generate_experiment_scan_video
-from video_queue import CYL_QUEUE, KEPT, RENDERED, RenderFailed, Worker
+from video import (
+    NO_FRAMES_ENCODED,
+    NOT_IN_EXPERIMENT,
+    NOT_SIGNED,
+    RECORD_UNREADABLE,
+    generate_experiment_scan_video,
+)
+from video_queue import CYL_QUEUE, KEPT, RENDERED, RenderFailed
+from video_worker_loop import Worker
 from video_worker_cli import (
     EXIT_FAILED,
     EXIT_OK,
@@ -36,13 +43,14 @@ def code_for_refusal(exc: HTTPException) -> str:
     detail = str(exc.detail)
     if exc.status_code == 404:
         # The route checks the pair before queueing, so a 404 here is a scan with no images.
-        return (
-            "scan_not_in_experiment"
-            if "not found in experiment" in detail
-            else "no_images"
-        )
+        return "scan_not_in_experiment" if NOT_IN_EXPERIMENT in detail else "no_images"
     if exc.status_code == 503:
-        return "storage_unavailable"
+        # The record table is a database read; everything else at 503 is storage.
+        return (
+            "database_unavailable"
+            if detail.startswith(RECORD_UNREADABLE)
+            else "storage_unavailable"
+        )
     if detail.startswith(NO_FRAMES_ENCODED):
         return "no_frames_encoded"
     if detail.startswith(NOT_SIGNED):

@@ -16,14 +16,14 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { getStoredScanVideo } from "@/lib/supabase/scan-video";
-import { getLatestScanVideoJob } from "@/lib/supabase/video-jobs";
+import { getScanVideoJob, parseJobId } from "@/lib/supabase/video-jobs";
 import { parseId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ scanId: string }> }
 ) {
   const { scanId } = await params;
@@ -55,7 +55,9 @@ export async function GET(
       { status: 503 }
     );
   }
-  const job = await getLatestScanVideoJob(scan);
+  // The button names the job it waits on, so a newer one cannot hide its outcome.
+  const jobId = parseJobId(new URL(request.url).searchParams.get("job_id"));
+  const job = await getScanVideoJob(scan, jobId);
 
   return NextResponse.json({
     download_url: stored.status === "present" ? stored.url : null,

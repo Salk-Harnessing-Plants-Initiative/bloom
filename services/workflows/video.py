@@ -14,14 +14,20 @@ import io
 import logging
 import os
 import tempfile
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 import numpy as np
 from PIL import Image
 from fastapi import HTTPException
 
 from supabase_client import app_client
-from video_queue import STAGE_DOWNLOADING, STAGE_ENCODING, STAGE_UPLOADING
+from video_progress import (
+    STAGE_DOWNLOADING,
+    STAGE_ENCODING,
+    STAGE_UPLOADING,
+    ProgressCallback,
+    no_progress,
+)
 from video_writer import VideoWriter, VideoEncodeError
 
 logger = logging.getLogger(__name__)
@@ -34,14 +40,8 @@ DOWNLOAD_URL_TTL = 3600  # 1h signed URL, matching the app-wide convention
 # Openings of the failure details the worker reads to name a job's error code.
 NO_FRAMES_ENCODED = "No frames could be encoded"
 NOT_SIGNED = "Could not create a download URL"
-
-# A render's progress callback: (stage, frames done, frames total).
-Progress = Callable[[str, int | None, int | None], None]
-
-
-def _no_progress(stage: str, done: int | None = None, total: int | None = None) -> None:
-    pass
-
+RECORD_UNREADABLE = "Could not check the recorded video"
+NOT_IN_EXPERIMENT = "not found in experiment"
 
 # Storage buckets + optional record table — configurable to match the Supabase
 # setup the app user has access to.
@@ -193,7 +193,7 @@ def _recorded_frames(client, scan_id: int) -> RecordedVideo:
         logger.warning("scan %s: could not read the video record: %s", scan_id, exc)
         raise HTTPException(
             status_code=503,
-            detail=f"Could not check the recorded video for scan {scan_id}. Nothing was changed.",
+            detail=f"{RECORD_UNREADABLE} for scan {scan_id}. Nothing was changed.",
         ) from exc
     if not rows:
         return RecordedVideo(row_exists=False, frames=None)
@@ -215,7 +215,7 @@ def generate_scan_video(
     client,
     scan_id: int,
     decimate: int = DECIMATE_FACTOR,
-    progress: Progress = _no_progress,
+    progress: ProgressCallback = no_progress,
 ) -> dict:
     """Build the scan's MP4, upload to the videos bucket, return {frames, download_url}."""
     # Fetch one past the cap so we can tell a truncated (>MAX_IMAGES) scan apart
@@ -439,15 +439,18 @@ def _record_video(client, scan_id: int, result: dict):
 
 
 def generate_experiment_scan_video(
-    experiment_id: int, scan_id: int, client=None, progress: Progress = _no_progress
+    experiment_id: int,
+    scan_id: int,
+    client=None,
+    progress: ProgressCallback = no_progress,
 ) -> dict:
     """Validate the scan belongs to the experiment, then generate its video."""
-    # The worker renders with the client it built; the route lets this default.
+    # The worker passes the client it built; a caller without one gets the app user.
     client = client or app_client()
     if not scan_in_experiment(client, experiment_id, scan_id):
         raise HTTPException(
             status_code=404,
-            detail=f"Scan {scan_id} not found in experiment {experiment_id}",
+            detail=f"Scan {scan_id} {NOT_IN_EXPERIMENT} {experiment_id}",
         )
     # One render per scan at a time is the queue's to guarantee: one active job per scan.
     result = generate_scan_video(client, scan_id, progress=progress)

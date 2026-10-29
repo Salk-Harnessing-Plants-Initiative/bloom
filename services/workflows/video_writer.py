@@ -16,7 +16,7 @@ import time
 import numpy as np
 
 # Hard ceiling on a single encode; a stuck ffmpeg is killed rather than pinning
-# the synchronous request's worker thread indefinitely.
+# the worker indefinitely.
 ENCODE_TIMEOUT_SECONDS = 120.0
 
 # How much of ffmpeg's stderr is kept for the error message. Bounded because

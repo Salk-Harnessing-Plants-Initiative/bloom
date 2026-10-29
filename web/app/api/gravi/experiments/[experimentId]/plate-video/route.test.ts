@@ -15,11 +15,14 @@ import * as routeModule from "@/app/api/gravi/experiments/[experimentId]/plate-v
 
 vi.mock("@/lib/supabase/server", () => ({ getSession: vi.fn() }));
 vi.mock("@/lib/supabase/plate-video", () => ({ getStoredPlateVideo: vi.fn() }));
-vi.mock("@/lib/supabase/video-jobs", () => ({ getLatestPlateVideoJob: vi.fn() }));
+vi.mock("@/lib/supabase/video-jobs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/supabase/video-jobs")>()),
+  getPlateVideoJob: vi.fn(),
+}));
 
 import { getSession } from "@/lib/supabase/server";
 import { getStoredPlateVideo } from "@/lib/supabase/plate-video";
-import { getLatestPlateVideoJob } from "@/lib/supabase/video-jobs";
+import { getPlateVideoJob } from "@/lib/supabase/video-jobs";
 
 const mockedGetSession = vi.mocked(getSession);
 
@@ -27,7 +30,7 @@ const GENERIC_SENTENCE =
   "This video could not be made right now. Try again shortly — if it keeps " +
   "happening, let the Bloom team know.";
 const mockedStored = vi.mocked(getStoredPlateVideo);
-const mockedJob = vi.mocked(getLatestPlateVideoJob);
+const mockedJob = vi.mocked(getPlateVideoJob);
 
 const RESULT = { job_id: "1a2b3c4d-0000-0000-0000-000000000000", created: true };
 
@@ -786,14 +789,26 @@ describe("GET", () => {
 
     const body = await (await get("plate_id=P7&wave_number=1")).json();
 
-    expect(mockedJob).toHaveBeenCalledWith(12, "P7", 1);
+    expect(mockedJob).toHaveBeenCalledWith(12, "P7", 1, null);
     expect(body.job).toEqual(JOB);
+  });
+
+  it("reads the job a button names, so a newer job cannot hide its outcome", async () => {
+    await get("plate_id=P7&wave_number=1&job_id=1a2b3c4d-0000-0000-0000-000000000000");
+
+    expect(mockedJob).toHaveBeenCalledWith(12, "P7", 1, "1a2b3c4d-0000-0000-0000-000000000000");
+  });
+
+  it("ignores a job id that is not a uuid", async () => {
+    await get("plate_id=P7&wave_number=1&job_id=nope");
+
+    expect(mockedJob).toHaveBeenCalledWith(12, "P7", 1, null);
   });
 
   it("asks for the job of a plate with no wave as no wave", async () => {
     await get("plate_id=P7");
 
-    expect(mockedJob).toHaveBeenCalledWith(12, "P7", null);
+    expect(mockedJob).toHaveBeenCalledWith(12, "P7", null, null);
   });
 
   it("answers job null when there is none", async () => {

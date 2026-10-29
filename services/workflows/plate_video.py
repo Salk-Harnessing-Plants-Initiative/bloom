@@ -281,11 +281,11 @@ def source_bytes(frames: list[dict]) -> tuple[int, int]:
 def too_large_to_render(
     frames: list[dict], limit: int = MAX_SOURCE_BYTES
 ) -> str | None:
-    """Why this plate cannot be rendered in a request, or None.
+    """Why this plate is too large to render, or None.
 
-    Checked before anything is downloaded: the render is synchronous behind a
-    240s proxy timeout, and a long plate is tens of gigabytes. The deadline
-    would stop it eventually — this stops it in a millisecond, with a reason.
+    Checked before anything is downloaded: a long plate is tens of gigabytes,
+    which one render should not pull. The encode deadline would stop it
+    eventually — this stops it in a millisecond, with a reason.
 
     A frame that recorded no size is estimated rather than counted as zero,
     from this plate's own frames where it can be, and never below the nominal.

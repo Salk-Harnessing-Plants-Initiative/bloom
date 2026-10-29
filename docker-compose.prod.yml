@@ -540,7 +540,7 @@ services:
       - db-prod
     restart: unless-stopped
     # Each poll and progress report touches the heartbeat; older than
-    # HEARTBEAT_STALE_SECONDS (video_queue.py) means the loop has stalled.
+    # HEARTBEAT_STALE_SECONDS (video_worker_loop.py) marks it unhealthy; a stalled render exits on its own.
     healthcheck:
       test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/video-worker-heartbeat') > 600)"]
       interval: 60s
@@ -583,7 +583,7 @@ services:
       - db-prod
     restart: unless-stopped
     # Each poll and progress report touches the heartbeat; older than
-    # HEARTBEAT_STALE_SECONDS (video_queue.py) means the loop has stalled.
+    # HEARTBEAT_STALE_SECONDS (video_worker_loop.py) marks it unhealthy; a stalled render exits on its own.
     healthcheck:
       test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/video-worker-heartbeat') > 600)"]
       interval: 60s

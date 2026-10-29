@@ -1,4 +1,5 @@
-// The latest render job for a plate or a scan, read with the caller's session.
+// A plate's or scan's render job, read with the caller's session: the one a
+// button is waiting on when it names it, else the latest.
 //
 // Advisory to the poll that uses it: a lookup that fails answers null and
 // warns, so the stored video is still served.
@@ -36,19 +37,22 @@ async function withQueuePosition(
   return { ...job, queued_ahead: count ?? 0 };
 }
 
-export async function getLatestPlateVideoJob(
+export async function getPlateVideoJob(
   experimentId: number,
   plateId: string,
-  waveNumber: number | null
+  waveNumber: number | null,
+  jobId: string | null = null
 ): Promise<VideoJob | null> {
   const label = `plate ${experimentId}/${plateId}/wave ${waveNumber}`;
   try {
     const supabase = await createServerSupabaseClient();
-    const base = supabase
+    const item = supabase
       .from("gravi_plate_video_jobs")
       .select(JOB_COLUMNS)
       .eq("experiment_id", experimentId)
       .eq("plate_id", plateId);
+    // Still scoped to the plate, so a job id cannot read another item's job.
+    const base = jobId === null ? item : item.eq("id", jobId);
     // A plate with no wave is a real case, and `= NULL` matches nothing.
     const { data, error } = await (waveNumber === null
       ? base.is("wave_number", null)
@@ -68,14 +72,15 @@ export async function getLatestPlateVideoJob(
   }
 }
 
-export async function getLatestScanVideoJob(scanId: number): Promise<VideoJob | null> {
+export async function getScanVideoJob(
+  scanId: number,
+  jobId: string | null = null
+): Promise<VideoJob | null> {
   const label = `scan ${scanId}`;
   try {
     const supabase = await createServerSupabaseClient();
-    const { data, error } = await supabase
-      .from("cyl_video_jobs")
-      .select(JOB_COLUMNS)
-      .eq("scan_id", scanId)
+    const item = supabase.from("cyl_video_jobs").select(JOB_COLUMNS).eq("scan_id", scanId);
+    const { data, error } = await (jobId === null ? item : item.eq("id", jobId))
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -88,4 +93,11 @@ export async function getLatestScanVideoJob(scanId: number): Promise<VideoJob | 
     console.warn(`could not read the video job for ${label}`, err);
     return null;
   }
+}
+
+// A job id from a query string: a uuid, or null when absent or malformed.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function parseJobId(raw: string | null): string | null {
+  return raw !== null && UUID.test(raw) ? raw : null;
 }

@@ -22,7 +22,8 @@ from plate_encode import (
 from video_writer import VideoEncodeError
 from plate_request import MAX_EXPERIMENT_ID, MAX_WAVE_NUMBER, REFUSAL_STATUS
 from supabase_client import app_client
-from video_queue import KEPT, PLATE_QUEUE, RENDERED, RenderFailed, UNEXPECTED, Worker
+from video_queue import KEPT, PLATE_QUEUE, RENDERED, RenderFailed, UNEXPECTED
+from video_worker_loop import Worker
 from video_worker_cli import (
     EXIT_FAILED,
     EXIT_OK,
@@ -38,13 +39,12 @@ HOLD = (
     "run one for a plate the queue may be rendering."
 )
 
-# The status the route answers for each of these, so one classification serves
-# both. Subclasses first, as in plate_request's own chain.
+# The HTTP-style status each of these reads as, for `render`'s exit code: a 4xx
+# refuses, a 5xx says retry. Subclasses first.
 #
-# `PlateMismatch` is the one deliberate divergence: the route answers 500, but
-# its own docstring says there is nothing to repair and nothing to retry — the
-# key and the identity cannot both be right, and they will not become right on
-# a second attempt. A caller reading 500 would retry it forever.
+# `PlateMismatch` is 409 rather than 500: there is nothing to repair and nothing
+# to retry — the key and the identity cannot both be right, and they will not
+# become right on a second attempt.
 STATUS_BY_EXCEPTION = (
     (FrameDepthUnsupported, 422),
     (FrameSizeMismatch, 422),
@@ -97,6 +97,8 @@ def render_job(client, job: dict, progress) -> str:
             outcome.get("code") or UNEXPECTED, outcome.get("reason") or ""
         )
     if action == "keep":
+        # The reason says why: current, no frames visible, or frames gone missing.
+        logger.info("plate job %s kept: %s", job["job_id"], outcome.get("reason"))
         return KEPT
     if action == "rendered":
         return RENDERED
@@ -116,7 +118,7 @@ def wave(value: str) -> int | None:
 
 
 def experiment(value: str) -> int:
-    """The route's own bounds, so an out-of-range id is refused by name here
+    """The column's own bounds, so an out-of-range id is refused by name here
     rather than reaching the database and reporting itself as an outage."""
     number = int(value)
     if number < 1 or number > MAX_EXPERIMENT_ID:
@@ -153,7 +155,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def frames_in(outcome: dict) -> int | None:
     """What the video holds: the encoder's count when one was made, the stored
-    video's own when it was kept. Mirrors the route's own fallback order."""
+    video's own when it was kept."""
     recorded = outcome.get("recorded") or {}
     held = recorded.get("frame_count", outcome.get("stored_frames"))
     if held is None and outcome.get("action") == "rendered":
@@ -204,8 +206,8 @@ def main(argv=None) -> int:
     action = outcome.get("action")
     if action == "refuse":
         code = outcome.get("code")
-        # Two of the five refusals are the route's own 503s — storage or the
-        # database not answering. Those are this service failing, not the
+        # Two of the five refusals are 503s — storage or the database not
+        # answering. Those are this service failing, not the
         # renderer declining, so both the word and the code have to say retry.
         exit_code = exit_for_status(REFUSAL_STATUS.get(code, 409))
         print(f"{label_for(exit_code)} ({code}): {outcome.get('reason')}")

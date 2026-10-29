@@ -24,7 +24,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { getStoredPlateVideo } from "@/lib/supabase/plate-video";
-import { getLatestPlateVideoJob } from "@/lib/supabase/video-jobs";
+import { getPlateVideoJob, parseJobId } from "@/lib/supabase/video-jobs";
 import { isValidPlateId } from "@/lib/supabase/plate-video-path";
 import { parseId } from "@/lib/route-params";
 
@@ -252,7 +252,8 @@ export async function GET(
     );
   }
 
-  const job = await getLatestPlateVideoJob(experiment, plateId, wave);
+  // The button names the job it waits on, so a newer one cannot hide its outcome.
+  const job = await getPlateVideoJob(experiment, plateId, wave, parseJobId(query.get("job_id")));
 
   // `frames` is null both when nothing is stored and when a stored video's row
   // is missing. The caller has `download_url` to tell those apart.

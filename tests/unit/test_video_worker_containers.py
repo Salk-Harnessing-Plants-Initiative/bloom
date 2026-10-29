@@ -194,7 +194,7 @@ def test_the_worker_restarts_unless_stopped(compose_file, worker):
 
 
 def _heartbeat_constants() -> tuple[str, int]:
-    source = (REPO_ROOT / "services" / "workflows" / "video_queue.py").read_text()
+    source = (REPO_ROOT / "services" / "workflows" / "video_worker_loop.py").read_text()
     path = re.search(r'"WORKFLOWS_VIDEO_HEARTBEAT", "([^"]+)"', source)
     stale = re.search(r"^HEARTBEAT_STALE_SECONDS = (\d+)$", source, re.MULTILINE)
     assert path and stale, "the heartbeat constants are no longer plain literals"
@@ -204,7 +204,7 @@ def _heartbeat_constants() -> tuple[str, int]:
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
 @pytest.mark.parametrize("worker", VIDEO_WORKERS)
 def test_the_healthcheck_reads_the_heartbeat_the_loop_touches(compose_file, worker):
-    """Read from video_queue.py, so the file and the age cannot drift from the loop."""
+    """Read from video_worker_loop.py, so the file and the age cannot drift from the loop."""
     path, stale = _heartbeat_constants()
     test = " ".join(_services(compose_file)[worker]["healthcheck"]["test"])
 

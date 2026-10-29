@@ -286,6 +286,11 @@ def test_a_kept_scan_completes_as_kept(monkeypatch):
             "Could not confirm whether scan 5 already has a video.",
             "storage_unavailable",
         ),
+        (
+            503,
+            "Could not check the recorded video for scan 5. Nothing was changed.",
+            "database_unavailable",
+        ),
         (500, "No frames could be encoded for scan 5", "no_frames_encoded"),
         (500, "Could not create a download URL for scan 5", "not_signed"),
         (500, "Video encoding failed for scan 5", "encode_failed"),
@@ -304,6 +309,8 @@ def test_the_codes_read_the_renderer_s_own_wording():
 
     assert worker.NO_FRAMES_ENCODED is video.NO_FRAMES_ENCODED
     assert worker.NOT_SIGNED is video.NOT_SIGNED
+    assert worker.RECORD_UNREADABLE is video.RECORD_UNREADABLE
+    assert worker.NOT_IN_EXPERIMENT is video.NOT_IN_EXPERIMENT
 
 
 def test_an_unclassified_failure_reaches_the_loop_unchanged(monkeypatch):

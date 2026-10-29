@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getLatestPlateVideoJob, getLatestScanVideoJob } from "./video-jobs";
+import { getPlateVideoJob, getScanVideoJob, parseJobId } from "./video-jobs";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -55,11 +55,11 @@ beforeEach(() => {
 });
 afterEach(() => warn.mockRestore());
 
-describe("getLatestPlateVideoJob", () => {
+describe("getPlateVideoJob", () => {
   it("returns the job field by field, without columns the browser may not read", async () => {
     clientReturning({ data: ROW });
 
-    const job = await getLatestPlateVideoJob(7, "P1", 2);
+    const job = await getPlateVideoJob(7, "P1", 2);
 
     expect(job).toEqual({
       id: ROW.id,
@@ -77,14 +77,14 @@ describe("getLatestPlateVideoJob", () => {
 
   it("selects only the readable columns", async () => {
     const { select } = clientReturning({ data: ROW });
-    await getLatestPlateVideoJob(7, "P1", 2);
+    await getPlateVideoJob(7, "P1", 2);
     const cols = select.mock.calls[0][0] as string;
     expect(cols).not.toMatch(/\berror\b(?!_code)|msg_id|reads|\*/);
   });
 
   it("matches the plate and wave, newest first", async () => {
     const { from, eq, is, order, limit } = clientReturning({ data: ROW });
-    await getLatestPlateVideoJob(7, "P1", 2);
+    await getPlateVideoJob(7, "P1", 2);
     expect(from).toHaveBeenCalledWith("gravi_plate_video_jobs");
     expect(eq).toHaveBeenCalledWith("experiment_id", 7);
     expect(eq).toHaveBeenCalledWith("plate_id", "P1");
@@ -96,7 +96,7 @@ describe("getLatestPlateVideoJob", () => {
 
   it("matches a plate with no wave by IS NULL", async () => {
     const { eq, is } = clientReturning({ data: ROW });
-    await getLatestPlateVideoJob(7, "P1", null);
+    await getPlateVideoJob(7, "P1", null);
     expect(is).toHaveBeenCalledWith("wave_number", null);
     expect(eq).not.toHaveBeenCalledWith("wave_number", expect.anything());
   });
@@ -106,7 +106,7 @@ describe("getLatestPlateVideoJob", () => {
       { data: { ...ROW, status: "queued", stage: null } },
       { count: 2 }
     );
-    const job = await getLatestPlateVideoJob(7, "P1", 2);
+    const job = await getPlateVideoJob(7, "P1", 2);
     expect(countEq).toHaveBeenCalledWith("status", "queued");
     expect(lt).toHaveBeenCalledWith("created_at", ROW.created_at);
     expect(job?.queued_ahead).toBe(2);
@@ -114,7 +114,7 @@ describe("getLatestPlateVideoJob", () => {
 
   it("does not count for a job that is not queued", async () => {
     const { lt } = clientReturning({ data: ROW });
-    const job = await getLatestPlateVideoJob(7, "P1", 2);
+    const job = await getPlateVideoJob(7, "P1", 2);
     expect(lt).not.toHaveBeenCalled();
     expect(job?.queued_ahead).toBeNull();
   });
@@ -124,7 +124,7 @@ describe("getLatestPlateVideoJob", () => {
       { data: { ...ROW, status: "queued" } },
       { count: null, error: { message: "boom" } }
     );
-    const job = await getLatestPlateVideoJob(7, "P1", 2);
+    const job = await getPlateVideoJob(7, "P1", 2);
     expect(job?.status).toBe("queued");
     expect(job?.queued_ahead).toBeNull();
     expect(warn).toHaveBeenCalled();
@@ -132,30 +132,30 @@ describe("getLatestPlateVideoJob", () => {
 
   it("answers null when there is no job", async () => {
     clientReturning({ data: null });
-    await expect(getLatestPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
+    await expect(getPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
   });
 
   it("answers null and warns when the lookup fails, rather than failing the poll", async () => {
     clientReturning({ data: null, error: { message: "permission denied" } });
-    await expect(getLatestPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
+    await expect(getPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
     expect(warn).toHaveBeenCalled();
   });
 
   it("answers null when the client itself throws", async () => {
     mockedClient.mockRejectedValue(new Error("no cookies"));
-    await expect(getLatestPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
+    await expect(getPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
   });
 
   it("refuses a row whose status is not one the service writes", async () => {
     clientReturning({ data: { ...ROW, status: "paused" } });
-    await expect(getLatestPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
+    await expect(getPlateVideoJob(7, "P1", 2)).resolves.toBeNull();
   });
 });
 
-describe("getLatestScanVideoJob", () => {
+describe("getScanVideoJob", () => {
   it("reads the scan's newest job", async () => {
     const { from, eq, order } = clientReturning({ data: ROW });
-    const job = await getLatestScanVideoJob(5);
+    const job = await getScanVideoJob(5);
     expect(from).toHaveBeenCalledWith("cyl_video_jobs");
     expect(eq).toHaveBeenCalledWith("scan_id", 5);
     expect(order).toHaveBeenCalledWith("created_at", { ascending: false });
@@ -164,7 +164,47 @@ describe("getLatestScanVideoJob", () => {
 
   it("answers null and warns when the lookup fails", async () => {
     clientReturning({ data: null, error: { message: "boom" } });
-    await expect(getLatestScanVideoJob(5)).resolves.toBeNull();
+    await expect(getScanVideoJob(5)).resolves.toBeNull();
     expect(warn).toHaveBeenCalled();
   });
+});
+
+describe("looking up the job a button waits on", () => {
+  const JOB_ID = "1a2b3c4d-0000-0000-0000-000000000000";
+
+  it("reads that job, still scoped to the plate, instead of the latest", async () => {
+    const { eq } = clientReturning({ data: ROW, error: null });
+    await getPlateVideoJob(7, "P1", 2, JOB_ID);
+    expect(eq).toHaveBeenCalledWith("experiment_id", 7);
+    expect(eq).toHaveBeenCalledWith("plate_id", "P1");
+    expect(eq).toHaveBeenCalledWith("id", JOB_ID);
+  });
+
+  it("reads that job, still scoped to the scan", async () => {
+    const { eq } = clientReturning({ data: ROW, error: null });
+    await getScanVideoJob(5, JOB_ID);
+    expect(eq).toHaveBeenCalledWith("scan_id", 5);
+    expect(eq).toHaveBeenCalledWith("id", JOB_ID);
+  });
+
+  it("asks for no particular job when none is named", async () => {
+    const { eq } = clientReturning({ data: ROW, error: null });
+    await getScanVideoJob(5);
+    expect(eq).not.toHaveBeenCalledWith("id", expect.anything());
+  });
+});
+
+describe("parseJobId", () => {
+  it("accepts a uuid", () => {
+    expect(parseJobId("1A2B3C4D-0000-0000-0000-000000000000")).toBe(
+      "1A2B3C4D-0000-0000-0000-000000000000"
+    );
+  });
+
+  it.each([null, "", "job-1", "1a2b3c4d", "1a2b3c4d-0000-0000-0000-000000000000;drop"])(
+    "refuses %s",
+    (raw) => {
+      expect(parseJobId(raw)).toBeNull();
+    }
+  );
 });

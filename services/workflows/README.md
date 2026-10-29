@@ -532,9 +532,8 @@ uv run python status_poller.py
 caller's **Supabase user JWT** (`Authorization: Bearer`). The service validates
 it by delegating to Supabase (`GET /auth/v1/user`), so it **never needs
 `JWT_SECRET`**. A coarse per-user rate limit (`429` when exceeded) is shared
-across every application route except three: `folder-check` and `GET /model-cards`,
-which each have their own limit, and the plate-video progress poll, which pages
-call repeatedly and has none; it is
+across every application route except two: `folder-check` and `GET /model-cards`,
+which each have their own limit. It is
 enforced per process, so the effective limit scales with workers/replicas
 rather than being a hard global quota.
 `/health` is internal-only and not publicly exposed.
@@ -647,7 +646,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 | `WORKFLOWS_IMAGES_BUCKET`       | `images`                | Storage bucket to read frames from                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEOS_BUCKET`       | `videos`                | Storage bucket to write the MP4 to                                                                                                                                                                                                                                                                           |
 | `WORKFLOWS_VIDEO_TABLE`         | `cyl_scan_videos`       | Record table (`scan_id -> path`)                                                                                                                                                                                                                                                                             |
-| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes but `folder-check` and `GET /model-cards` (their own limits) and the plate-video progress poll (none) (429 over)                                                                                                                                                                                                               |
+| `WORKFLOWS_RATE_LIMIT`          | `5`                     | Max requests per user per window, per process, shared across all application routes but `folder-check` and `GET /model-cards` (their own limits) (429 over)                                                                                                                                                                                                               |
 | `WORKFLOWS_RATE_WINDOW_SECONDS` | `60`                    | Rate-limit window                                                                                                                                                                                                                                                                                            |
 | `WORKFLOWS_FOLDER_CHECK_RATE_LIMIT` | `30` | Max S3 folder checks per user per window, per process, counted apart from the other routes. Like `WORKFLOWS_RATE_LIMIT`, not passed in either compose file, so the code default applies |
 | `WORKFLOWS_MODEL_CARDS_RATE_LIMIT` | `60` | Max `GET /model-cards` reads per user per window, per process, counted apart from the other routes. Not passed in either compose file, so the code default applies |
