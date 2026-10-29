@@ -141,6 +141,22 @@ GRANT SELECT (
   error_code, requested_by, created_at, started_at, updated_at, finished_at
 ) ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 
+-- Realtime, so the pages update as a job moves. It sends each change only with the
+-- columns the subscriber may SELECT, so the withheld ones above stay withheld.
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.gravi_plate_video_jobs;
+EXCEPTION WHEN duplicate_object THEN
+  NULL;
+END$$;
+
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.cyl_video_jobs;
+EXCEPTION WHEN duplicate_object THEN
+  NULL;
+END$$;
+
 -- 4. Wrappers --------------------------------------------------------------
 -- SECURITY DEFINER, owned by postgres (section 5), EXECUTE for bloom_workflows only.
 --
