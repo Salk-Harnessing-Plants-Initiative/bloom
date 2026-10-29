@@ -12,11 +12,11 @@ BEGIN;
 -- 1. Queues ----------------------------------------------------------------
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'gravi_plate_video') THEN
-    PERFORM pgmq.create('gravi_plate_video');
+  IF NOT EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'gravi_plate_video_dispatch') THEN
+    PERFORM pgmq.create('gravi_plate_video_dispatch');
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'cyl_video_generation') THEN
-    PERFORM pgmq.create('cyl_video_generation');
+  IF NOT EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'cyl_video_dispatch') THEN
+    PERFORM pgmq.create('cyl_video_dispatch');
   END IF;
 END
 $$;
@@ -30,10 +30,10 @@ $$;
 -- warn and continue, and the wrappers would then fail at first use rather than at deploy.
 -- test_postgres_can_reach_the_pgmq_tables_the_wrappers_use asserts each one, so that
 -- failure surfaces in CI instead.
-GRANT SELECT, INSERT, UPDATE, DELETE ON pgmq.q_gravi_plate_video TO postgres;
-GRANT SELECT, INSERT ON pgmq.a_gravi_plate_video TO postgres;
-GRANT SELECT, INSERT, UPDATE, DELETE ON pgmq.q_cyl_video_generation TO postgres;
-GRANT SELECT, INSERT ON pgmq.a_cyl_video_generation TO postgres;
+GRANT SELECT, INSERT, UPDATE, DELETE ON pgmq.q_gravi_plate_video_dispatch TO postgres;
+GRANT SELECT, INSERT ON pgmq.a_gravi_plate_video_dispatch TO postgres;
+GRANT SELECT, INSERT, UPDATE, DELETE ON pgmq.q_cyl_video_dispatch TO postgres;
+GRANT SELECT, INSERT ON pgmq.a_cyl_video_dispatch TO postgres;
 
 -- 2. Job tables ------------------------------------------------------------
 -- A pgmq message is invisible while claimed and gone once deleted, so it cannot back a
@@ -42,7 +42,11 @@ GRANT SELECT, INSERT ON pgmq.a_cyl_video_generation TO postgres;
 CREATE TABLE IF NOT EXISTS public.gravi_plate_video_jobs (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   experiment_id bigint NOT NULL REFERENCES public.gravi_experiments(id),
-  plate_id      text NOT NULL,
+  -- The rule the service and the web both apply (plate_video_path.PLATE_ID_PATTERN),
+  -- held here too so a direct caller cannot store a key the renderer would refuse.
+  plate_id      text NOT NULL
+                CONSTRAINT gravi_plate_video_jobs_plate_id_format
+                CHECK (plate_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
   -- gravi_scans.wave_number, the column the renderer filters frames by — not the
   -- metadata wave the plate list reads.
   wave_number   integer,
@@ -52,15 +56,16 @@ CREATE TABLE IF NOT EXISTS public.gravi_plate_video_jobs (
   frames_done   integer,
   frames_total  integer,
   error_code    text,
-  error         text,
+  error_message text,
   requested_by  uuid,
   msg_id        bigint,
   reads         integer NOT NULL DEFAULT 0,
   created_at    timestamptz NOT NULL DEFAULT now(),
   started_at    timestamptz,
-  -- Last write by a wrapper; a rendering job whose updated_at is old has a stalled worker.
+  -- Last write by a wrapper. Encoding reports nothing for up to the visibility timeout,
+  -- so only a rendering job older than that has a stalled worker.
   updated_at    timestamptz NOT NULL DEFAULT now(),
-  finished_at   timestamptz
+  completed_at  timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS public.cyl_video_jobs (
@@ -73,15 +78,16 @@ CREATE TABLE IF NOT EXISTS public.cyl_video_jobs (
   frames_done   integer,
   frames_total  integer,
   error_code    text,
-  error         text,
+  error_message text,
   requested_by  uuid,
   msg_id        bigint,
   reads         integer NOT NULL DEFAULT 0,
   created_at    timestamptz NOT NULL DEFAULT now(),
   started_at    timestamptz,
-  -- Last write by a wrapper; a rendering job whose updated_at is old has a stalled worker.
+  -- Last write by a wrapper. Encoding reports nothing for up to the visibility timeout,
+  -- so only a rendering job older than that has a stalled worker.
   updated_at    timestamptz NOT NULL DEFAULT now(),
-  finished_at   timestamptz
+  completed_at  timestamptz
 );
 
 CREATE INDEX IF NOT EXISTS idx_gravi_plate_video_jobs_status
@@ -127,18 +133,18 @@ REVOKE ALL ON public.cyl_video_jobs
 -- Granted by column rather than by table, and stated here rather than inherited from a
 -- default privilege whose grantor varies by environment.
 --
--- `error` is withheld: it is the renderer's own failure text, which carries the internal
+-- `error_message` is withheld: it is the renderer's own failure text, which carries the internal
 -- gateway host and port, the database role and PostgREST's codes — the same content
 -- services/workflows/tests/test_plate_request.py asserts must never reach a caller. The UI
 -- reads `error_code`, the short code the worker records, instead. `msg_id` and `reads` are queue
 -- plumbing that nothing outside the wrappers needs.
 GRANT SELECT (
   id, experiment_id, plate_id, wave_number, status, stage, frames_done, frames_total,
-  error_code, requested_by, created_at, started_at, updated_at, finished_at
+  error_code, requested_by, created_at, started_at, updated_at, completed_at
 ) ON public.gravi_plate_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 GRANT SELECT (
   id, scan_id, experiment_id, status, stage, frames_done, frames_total,
-  error_code, requested_by, created_at, started_at, updated_at, finished_at
+  error_code, requested_by, created_at, started_at, updated_at, completed_at
 ) ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 
 -- Realtime, so the pages update as a job moves. It sends each change only with the
@@ -233,7 +239,7 @@ BEGIN
     RETURN;
   END;
 
-  SELECT pgmq.send('gravi_plate_video', jsonb_build_object('job_id', v_job_id)) INTO v_msg_id;
+  SELECT pgmq.send('gravi_plate_video_dispatch', jsonb_build_object('job_id', v_job_id)) INTO v_msg_id;
   UPDATE public.gravi_plate_video_jobs SET msg_id = v_msg_id WHERE id = v_job_id;
   RETURN QUERY SELECT v_job_id, true;
 END;
@@ -270,7 +276,7 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
-  SELECT * INTO r FROM pgmq.read('gravi_plate_video', p_vt, 1);
+  SELECT * INTO r FROM pgmq.read('gravi_plate_video_dispatch', p_vt, 1);
   IF NOT FOUND THEN
     RETURN;
   END IF;
@@ -280,8 +286,8 @@ BEGIN
   BEGIN
     v_job_id := (r.message->>'job_id')::uuid;
   EXCEPTION WHEN others THEN
-    RAISE WARNING 'gravi_plate_video: discarding unreadable message %', r.msg_id;
-    PERFORM pgmq.archive('gravi_plate_video', r.msg_id);
+    RAISE WARNING 'gravi_plate_video_dispatch: discarding unreadable message %', r.msg_id;
+    PERFORM pgmq.archive('gravi_plate_video_dispatch', r.msg_id);
     RETURN;
   END;
 
@@ -290,10 +296,12 @@ BEGIN
     SET updated_at = now(),
         status = 'failed',
         error_code = 'redelivered',
-        error = format('redelivered %s times without completing', r.read_ct),
-        finished_at = now()
+        error_message = format('redelivered %s times without completing', r.read_ct),
+        stage = NULL,
+        reads = r.read_ct,
+        completed_at = now()
     WHERE id = v_job_id AND status IN ('queued', 'rendering');
-    PERFORM pgmq.archive('gravi_plate_video', r.msg_id);
+    PERFORM pgmq.archive('gravi_plate_video_dispatch', r.msg_id);
     RETURN;
   END IF;
 
@@ -304,6 +312,10 @@ BEGIN
   SET updated_at = now(),
       status = 'rendering',
       started_at = COALESCE(started_at, now()),
+      -- A redelivery starts over, so the dead attempt's progress goes with it.
+      stage = NULL,
+      frames_done = NULL,
+      frames_total = NULL,
       msg_id = r.msg_id,
       reads = r.read_ct
   WHERE id = v_job_id AND status IN ('queued', 'rendering')
@@ -313,7 +325,7 @@ BEGIN
   INTO v_experiment_id, v_plate_id, v_wave_number;
   IF NOT FOUND THEN
     -- A settled job with a stray live message — archive rather than re-run it.
-    PERFORM pgmq.archive('gravi_plate_video', r.msg_id);
+    PERFORM pgmq.archive('gravi_plate_video_dispatch', r.msg_id);
     RETURN;
   END IF;
 
@@ -351,7 +363,7 @@ BEGIN
   IF NOT FOUND THEN
     RETURN false;
   END IF;
-  PERFORM pgmq.set_vt('gravi_plate_video', p_msg_id, p_vt);
+  PERFORM pgmq.set_vt('gravi_plate_video_dispatch', p_msg_id, p_vt);
   RETURN true;
 END;
 $fn$;
@@ -375,12 +387,12 @@ BEGIN
   END IF;
   UPDATE public.gravi_plate_video_jobs
   SET updated_at = now(),
-      status = p_outcome, stage = NULL, finished_at = now()
+      status = p_outcome, stage = NULL, completed_at = now()
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
   IF NOT FOUND THEN
     RETURN false;
   END IF;
-  PERFORM pgmq.delete('gravi_plate_video', p_msg_id);
+  PERFORM pgmq.delete('gravi_plate_video_dispatch', p_msg_id);
   RETURN true;
 END;
 $fn$;
@@ -407,14 +419,14 @@ BEGIN
   SET updated_at = now(),
       status = 'failed',
       error_code = left(p_error_code, 64),
-      error = left(p_error, 2000),
+      error_message = left(p_error, 2000),
       stage = NULL,
-      finished_at = now()
+      completed_at = now()
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
   IF NOT FOUND THEN
     RETURN false;
   END IF;
-  PERFORM pgmq.archive('gravi_plate_video', p_msg_id);
+  PERFORM pgmq.archive('gravi_plate_video_dispatch', p_msg_id);
   RETURN true;
 END;
 $fn$;
@@ -448,8 +460,10 @@ BEGIN
       AND w.experiment_id IS NOT NULL
       AND w.experiment_id IS DISTINCT FROM p_experiment_id
   ) THEN
+    -- Its own code: the caller answers this 404, and an active job under another
+    -- experiment (check_violation below) 409.
     RAISE EXCEPTION 'scan % does not belong to experiment %', p_scan_id, p_experiment_id
-      USING ERRCODE = 'check_violation';
+      USING ERRCODE = 'foreign_key_violation';
   END IF;
 
   SELECT j.id, j.experiment_id INTO v_job_id, v_active_experiment
@@ -490,7 +504,7 @@ BEGIN
     RETURN;
   END;
 
-  SELECT pgmq.send('cyl_video_generation', jsonb_build_object('job_id', v_job_id)) INTO v_msg_id;
+  SELECT pgmq.send('cyl_video_dispatch', jsonb_build_object('job_id', v_job_id)) INTO v_msg_id;
   UPDATE public.cyl_video_jobs SET msg_id = v_msg_id WHERE id = v_job_id;
   RETURN QUERY SELECT v_job_id, true;
 END;
@@ -524,7 +538,7 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
-  SELECT * INTO r FROM pgmq.read('cyl_video_generation', p_vt, 1);
+  SELECT * INTO r FROM pgmq.read('cyl_video_dispatch', p_vt, 1);
   IF NOT FOUND THEN
     RETURN;
   END IF;
@@ -532,8 +546,8 @@ BEGIN
   BEGIN
     v_job_id := (r.message->>'job_id')::uuid;
   EXCEPTION WHEN others THEN
-    RAISE WARNING 'cyl_video_generation: discarding unreadable message %', r.msg_id;
-    PERFORM pgmq.archive('cyl_video_generation', r.msg_id);
+    RAISE WARNING 'cyl_video_dispatch: discarding unreadable message %', r.msg_id;
+    PERFORM pgmq.archive('cyl_video_dispatch', r.msg_id);
     RETURN;
   END;
 
@@ -542,10 +556,12 @@ BEGIN
     SET updated_at = now(),
         status = 'failed',
         error_code = 'redelivered',
-        error = format('redelivered %s times without completing', r.read_ct),
-        finished_at = now()
+        error_message = format('redelivered %s times without completing', r.read_ct),
+        stage = NULL,
+        reads = r.read_ct,
+        completed_at = now()
     WHERE id = v_job_id AND status IN ('queued', 'rendering');
-    PERFORM pgmq.archive('cyl_video_generation', r.msg_id);
+    PERFORM pgmq.archive('cyl_video_dispatch', r.msg_id);
     RETURN;
   END IF;
 
@@ -553,13 +569,17 @@ BEGIN
   SET updated_at = now(),
       status = 'rendering',
       started_at = COALESCE(started_at, now()),
+      -- A redelivery starts over, so the dead attempt's progress goes with it.
+      stage = NULL,
+      frames_done = NULL,
+      frames_total = NULL,
       msg_id = r.msg_id,
       reads = r.read_ct
   WHERE id = v_job_id AND status IN ('queued', 'rendering')
   RETURNING cyl_video_jobs.scan_id, cyl_video_jobs.experiment_id
   INTO v_scan_id, v_experiment_id;
   IF NOT FOUND THEN
-    PERFORM pgmq.archive('cyl_video_generation', r.msg_id);
+    PERFORM pgmq.archive('cyl_video_dispatch', r.msg_id);
     RETURN;
   END IF;
 
@@ -595,7 +615,7 @@ BEGIN
   IF NOT FOUND THEN
     RETURN false;
   END IF;
-  PERFORM pgmq.set_vt('cyl_video_generation', p_msg_id, p_vt);
+  PERFORM pgmq.set_vt('cyl_video_dispatch', p_msg_id, p_vt);
   RETURN true;
 END;
 $fn$;
@@ -617,12 +637,12 @@ BEGIN
   END IF;
   UPDATE public.cyl_video_jobs
   SET updated_at = now(),
-      status = p_outcome, stage = NULL, finished_at = now()
+      status = p_outcome, stage = NULL, completed_at = now()
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
   IF NOT FOUND THEN
     RETURN false;
   END IF;
-  PERFORM pgmq.delete('cyl_video_generation', p_msg_id);
+  PERFORM pgmq.delete('cyl_video_dispatch', p_msg_id);
   RETURN true;
 END;
 $fn$;
@@ -648,14 +668,14 @@ BEGIN
   SET updated_at = now(),
       status = 'failed',
       error_code = left(p_error_code, 64),
-      error = left(p_error, 2000),
+      error_message = left(p_error, 2000),
       stage = NULL,
-      finished_at = now()
+      completed_at = now()
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
   IF NOT FOUND THEN
     RETURN false;
   END IF;
-  PERFORM pgmq.archive('cyl_video_generation', p_msg_id);
+  PERFORM pgmq.archive('cyl_video_dispatch', p_msg_id);
   RETURN true;
 END;
 $fn$;

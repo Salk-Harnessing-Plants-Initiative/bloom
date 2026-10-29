@@ -33,11 +33,11 @@ DROP TABLE IF EXISTS public.cyl_video_jobs;
 
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'gravi_plate_video') THEN
-    PERFORM pgmq.drop_queue('gravi_plate_video');
+  IF EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'gravi_plate_video_dispatch') THEN
+    PERFORM pgmq.drop_queue('gravi_plate_video_dispatch');
   END IF;
-  IF EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'cyl_video_generation') THEN
-    PERFORM pgmq.drop_queue('cyl_video_generation');
+  IF EXISTS (SELECT 1 FROM pgmq.list_queues() WHERE queue_name = 'cyl_video_dispatch') THEN
+    PERFORM pgmq.drop_queue('cyl_video_dispatch');
   END IF;
 END
 $$;
