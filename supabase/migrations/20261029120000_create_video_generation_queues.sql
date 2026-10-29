@@ -130,7 +130,7 @@ REVOKE ALL ON public.cyl_video_jobs
 -- `error` is withheld: it is the renderer's own failure text, which carries the internal
 -- gateway host and port, the database role and PostgREST's codes — the same content
 -- services/workflows/tests/test_plate_request.py asserts must never reach a caller. The UI
--- reads `error_code`, a controlled vocabulary, instead. `msg_id` and `reads` are queue
+-- reads `error_code`, the short code the worker records, instead. `msg_id` and `reads` are queue
 -- plumbing that nothing outside the wrappers needs.
 GRANT SELECT (
   id, experiment_id, plate_id, wave_number, status, stage, frames_done, frames_total,
@@ -149,9 +149,10 @@ GRANT SELECT (
 -- job, and with two workers the slow one can settle a job the other is still rendering.
 -- Before running a second worker on either queue, fence the guards on the delivery count
 -- that claim already returns: take p_reads and add `AND reads = p_reads`.
+--
 -- p_vt defaults are longer than one encode plus the upload and the recording that
 -- follow it, so the one stage that reports no progress cannot outlive its visibility.
--- PR 3's worker passes the value it computes from ENCODE_TIMEOUT_SECONDS.
+-- The worker passes the value it computes from ENCODE_TIMEOUT_SECONDS.
 --
 -- A differing arity adds an overload rather than replacing, so drop first.
 DROP FUNCTION IF EXISTS public.enqueue_gravi_plate_video(bigint, text, integer, uuid);
@@ -381,10 +382,15 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
+  -- The code is all a signed-in user is shown of a failure, so a failed job always has one.
+  IF p_error_code IS NULL OR btrim(p_error_code) = '' THEN
+    RAISE EXCEPTION 'error_code must be given'
+      USING ERRCODE = 'check_violation';
+  END IF;
   UPDATE public.gravi_plate_video_jobs
   SET updated_at = now(),
       status = 'failed',
-      error_code = p_error_code,
+      error_code = left(p_error_code, 64),
       error = left(p_error, 2000),
       stage = NULL,
       finished_at = now()
@@ -617,10 +623,15 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
+  -- The code is all a signed-in user is shown of a failure, so a failed job always has one.
+  IF p_error_code IS NULL OR btrim(p_error_code) = '' THEN
+    RAISE EXCEPTION 'error_code must be given'
+      USING ERRCODE = 'check_violation';
+  END IF;
   UPDATE public.cyl_video_jobs
   SET updated_at = now(),
       status = 'failed',
-      error_code = p_error_code,
+      error_code = left(p_error_code, 64),
       error = left(p_error, 2000),
       stage = NULL,
       finished_at = now()
