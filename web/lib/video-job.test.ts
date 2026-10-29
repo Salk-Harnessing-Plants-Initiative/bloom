@@ -120,11 +120,11 @@ describe("jobFailureMessage", () => {
       "no_frames", "too_large", "unusable_plate", "storage_unavailable",
       "database_unavailable", "frame_too_large", "frame_depth_unsupported",
       "frame_size_mismatch", "frame_unreadable", "not_stored", "not_recorded",
-      "encode_failed", "plate_mismatch", "unexpected", "redelivered",
+      "encode_failed", "plate_mismatch", "unexpected", "redelivered", "stalled",
     ];
     const scan = [
       "no_images", "scan_not_in_experiment", "storage_unavailable",
-      "no_frames_encoded", "encode_failed", "not_signed", "unexpected", "redelivered",
+      "no_frames_encoded", "encode_failed", "not_signed", "unexpected", "redelivered", "stalled",
     ];
     for (const code of plate) expect(PLATE_FAILURES[code], code).toBeTruthy();
     for (const code of scan) expect(SCAN_FAILURES[code], code).toBeTruthy();

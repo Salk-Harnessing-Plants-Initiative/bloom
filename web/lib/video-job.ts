@@ -85,6 +85,7 @@ const COMMON_FAILURES: Record<string, string> = {
   storage_unavailable: "Storage could not be reached, so nothing was changed. Try again shortly.",
   encode_failed: `The video could not be encoded. Try again — if it keeps happening, ${BLOOM_TEAM}.`,
   redelivered: `The render stopped three times without finishing. Please ${BLOOM_TEAM}.`,
+  stalled: `The render stopped making progress and was abandoned. Try again — if it keeps happening, ${BLOOM_TEAM}.`,
   unexpected: `The video could not be made. Try again — if it keeps happening, ${BLOOM_TEAM}.`,
 };
 

@@ -80,7 +80,9 @@ renews the message's visibility timeout (`VISIBILITY_TIMEOUT_SECONDS` in
 `video_queue.py`, derived from the encoder's own timeout). A worker that dies
 stops renewing, so its job is handed out again; after `MAX_READS` deliveries it is
 failed as `redelivered`. On SIGTERM a worker finishes the job in hand and claims
-no more, within its 5-minute `stop_grace_period`.
+no more, within its 5-minute `stop_grace_period`. A render that reports nothing for
+`RENDER_STALL_SECONDS` (10 minutes) is failed as `stalled` and the worker exits,
+so Docker restarts it and the queue moves on.
 
 The renderer's raw failure text goes to the job's `error` column, which signed-in
 roles cannot read; the pages show `error_code` and the job id, and the id is what

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,12 @@ HEARTBEAT_PATH = Path(
 )
 # Longer than the encode, the one stretch that touches nothing.
 HEARTBEAT_STALE_SECONDS = 600
+
+# A render that reports nothing for this long is stalled. Well past the silent
+# encode, so only a hang trips it; a long plate that keeps reporting never does.
+RENDER_STALL_SECONDS = float(os.environ.get("WORKFLOWS_VIDEO_STALL_SECONDS", "600"))
+WATCHDOG_CHECK_SECONDS = 15.0
+STALLED = "stalled"
 
 # Outcomes complete accepts.
 RENDERED = "rendered"
@@ -200,11 +207,14 @@ class Progress:
         self._stage: str | None = None
         self._last: float | None = None
         self.lost = False
+        # Every call counts, throttled or not: the watchdog asks whether the render moves.
+        self.last_activity = clock()
 
     def __call__(
         self, stage: str, done: int | None = None, total: int | None = None
     ) -> None:
         now = self._clock()
+        self.last_activity = now
         if (
             stage == self._stage
             and self._last is not None
@@ -223,6 +233,47 @@ class Progress:
             # Settled elsewhere, e.g. failed as redelivered; complete will say so too.
             logger.warning("progress refused: the job is no longer rendering")
             self.lost = True
+
+
+class Watchdog:
+    """Calls `on_stall` once if `progress` goes quiet for longer than `stall_seconds`.
+
+    A thread cannot be interrupted, so the worker's answer to a stall is to give
+    up the job and exit; Docker restarts it and the queue moves on.
+    """
+
+    def __init__(
+        self,
+        progress: Progress,
+        on_stall: Callable[[float], None],
+        *,
+        stall_seconds: float = RENDER_STALL_SECONDS,
+        check_seconds: float = WATCHDOG_CHECK_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._progress = progress
+        self._on_stall = on_stall
+        self._stall = stall_seconds
+        self._check = check_seconds
+        self._clock = clock
+        self._done = threading.Event()
+        self._thread = threading.Thread(
+            target=self._watch, name="render-watchdog", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._done.set()
+        self._thread.join()
+
+    def _watch(self) -> None:
+        while not self._done.wait(self._check):
+            quiet = self._clock() - self._progress.last_activity
+            if quiet > self._stall:
+                self._on_stall(quiet)
+                return
 
 
 # --- the claim loop ----------------------------------------------------------
@@ -245,11 +296,17 @@ class Worker:
         client_factory: Callable[[], object],
         *,
         sleep: Callable[[float], None] = time.sleep,
+        exit: Callable[[int], None] = os._exit,
+        stall_seconds: float = RENDER_STALL_SECONDS,
+        check_seconds: float = WATCHDOG_CHECK_SECONDS,
     ):
         self.queue = queue
         self.render = render
         self.client_factory = client_factory
         self.sleep = sleep
+        self.exit = exit
+        self.stall_seconds = stall_seconds
+        self.check_seconds = check_seconds
         self.running = True
 
     def stop(self, signum=None, _frame=None) -> None:
@@ -279,6 +336,22 @@ class Worker:
             )
         )
 
+        watchdog = Watchdog(
+            progress,
+            lambda quiet: self._abandon(client, job, quiet),
+            stall_seconds=self.stall_seconds,
+            check_seconds=self.check_seconds,
+        )
+        watchdog.start()
+        try:
+            self._run_job(client, job, progress)
+        finally:
+            watchdog.stop()
+        return True
+
+    def _run_job(self, client, job: dict, progress: Progress) -> None:
+        """Render one claimed job and settle it as its outcome says."""
+        job_id = job["job_id"]
         try:
             outcome = self.render(client, job, progress)
         except RenderFailed as exc:
@@ -292,10 +365,23 @@ class Worker:
         else:
             logger.info("%s: job %s %s", self.queue.name, job_id, outcome)
             self._settle(job_id, lambda: complete(client, self.queue, job, outcome))
-            return True
+            return
 
         self._settle(job_id, lambda: fail(client, self.queue, job, code, error))
-        return True
+
+    def _abandon(self, client, job: dict, quiet: float) -> None:
+        """Fail a stalled job so it is not handed out again, then exit for a restart."""
+        logger.error(
+            "%s: job %s made no progress for %.0fs; failing it and restarting",
+            self.queue.name,
+            job["job_id"],
+            quiet,
+        )
+        error = f"no progress for {quiet:.0f}s"
+        self._settle(
+            job["job_id"], lambda: fail(client, self.queue, job, STALLED, error)
+        )
+        self.exit(1)
 
     def _settle(self, job_id, call: Callable[[], bool]) -> None:
         try:
