@@ -37,7 +37,7 @@ class Queue:
 
 
 PLATE_QUEUE = Queue(
-    name="gravi_plate_video",
+    name="gravi_plate_video_dispatch",
     enqueue="enqueue_gravi_plate_video",
     claim="claim_gravi_plate_video_job",
     progress="report_gravi_plate_video_progress",
@@ -46,7 +46,7 @@ PLATE_QUEUE = Queue(
 )
 
 CYL_QUEUE = Queue(
-    name="cyl_video_generation",
+    name="cyl_video_dispatch",
     enqueue="enqueue_cyl_video",
     claim="claim_cyl_video_job",
     progress="report_cyl_video_progress",

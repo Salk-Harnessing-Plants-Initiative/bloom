@@ -1555,10 +1555,10 @@ export type Database = {
       cyl_video_jobs: {
         Row: {
           created_at: string
-          error: string | null
+          error_message: string | null
           error_code: string | null
           experiment_id: number
-          finished_at: string | null
+          completed_at: string | null
           frames_done: number | null
           frames_total: number | null
           id: string
@@ -1573,10 +1573,10 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          error?: string | null
+          error_message?: string | null
           error_code?: string | null
           experiment_id: number
-          finished_at?: string | null
+          completed_at?: string | null
           frames_done?: number | null
           frames_total?: number | null
           id?: string
@@ -1591,10 +1591,10 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          error?: string | null
+          error_message?: string | null
           error_code?: string | null
           experiment_id?: number
-          finished_at?: string | null
+          completed_at?: string | null
           frames_done?: number | null
           frames_total?: number | null
           id?: string
@@ -2408,10 +2408,10 @@ export type Database = {
       gravi_plate_video_jobs: {
         Row: {
           created_at: string
-          error: string | null
+          error_message: string | null
           error_code: string | null
           experiment_id: number
-          finished_at: string | null
+          completed_at: string | null
           frames_done: number | null
           frames_total: number | null
           id: string
@@ -2427,10 +2427,10 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          error?: string | null
+          error_message?: string | null
           error_code?: string | null
           experiment_id: number
-          finished_at?: string | null
+          completed_at?: string | null
           frames_done?: number | null
           frames_total?: number | null
           id?: string
@@ -2446,10 +2446,10 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          error?: string | null
+          error_message?: string | null
           error_code?: string | null
           experiment_id?: number
-          finished_at?: string | null
+          completed_at?: string | null
           frames_done?: number | null
           frames_total?: number | null
           id?: string

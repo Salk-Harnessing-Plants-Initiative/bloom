@@ -396,4 +396,4 @@ def test_run_starts_the_plate_queue_loop(monkeypatch):
 
     monkeypatch.setattr(worker, "Worker", FakeWorker)
     assert worker.main(["run"]) == worker.EXIT_OK
-    assert started == [("gravi_plate_video", worker.render_job), "ran"]
+    assert started == [("gravi_plate_video_dispatch", worker.render_job), "ran"]

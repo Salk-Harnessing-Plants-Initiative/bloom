@@ -210,6 +210,22 @@ def test_cyl_video_route_404s_a_scan_outside_the_experiment(monkeypatch, signed_
     assert calls == [], "a scan outside the experiment was queued"
 
 
+def test_cyl_video_route_404s_when_the_database_says_the_scan_is_elsewhere(
+    monkeypatch, signed_in
+):
+    """The membership check and the enqueue can disagree only in a race; the
+    database's own answer is the same 404."""
+
+    def elsewhere(client, queue, params):
+        raise APIError(
+            {"code": "23503", "message": "scan 44 does not belong to experiment 3"}
+        )
+
+    _cyl_stubs(monkeypatch, enqueue=elsewhere)
+    resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
+    assert resp.status_code == 404
+
+
 def test_cyl_video_route_409s_a_job_filed_under_another_experiment(
     monkeypatch, signed_in
 ):

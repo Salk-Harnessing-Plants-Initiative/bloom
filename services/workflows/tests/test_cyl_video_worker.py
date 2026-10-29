@@ -331,4 +331,4 @@ def test_run_starts_the_cyl_queue_loop(monkeypatch):
 
     monkeypatch.setattr(worker, "Worker", FakeWorker)
     assert worker.main(["run"]) == worker.EXIT_OK
-    assert started == [("cyl_video_generation", worker.render_job), "ran"]
+    assert started == [("cyl_video_dispatch", worker.render_job), "ran"]

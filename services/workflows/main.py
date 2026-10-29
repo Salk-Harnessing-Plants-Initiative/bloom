@@ -157,6 +157,12 @@ def cyl_experiment_scan_video(
             },
         )
     except APIError as exc:
+        # foreign_key_violation: the scan is not in this experiment, or does not exist.
+        if exc.code == "23503":
+            raise HTTPException(
+                status_code=404,
+                detail=f"Scan {scan_id} not found in experiment {experiment_id}",
+            ) from exc
         # check_violation: the scan's active job is filed under another experiment.
         if exc.code == "23514":
             raise HTTPException(
