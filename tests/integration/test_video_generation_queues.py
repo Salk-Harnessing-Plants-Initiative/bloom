@@ -191,7 +191,9 @@ def test_job_tables_are_read_only_for_signed_in_roles(cur, queue, privilege, rol
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 @pytest.mark.parametrize("role", ["bloom_user", "bloom_writer", "bloom_admin"])
-@pytest.mark.parametrize("column", ["status", "stage", "frames_done", "error_code", "created_at"])
+@pytest.mark.parametrize(
+    "column", ["status", "stage", "frames_done", "error_code", "created_at", "updated_at"]
+)
 def test_signed_in_roles_may_read_the_progress_columns(cur, queue, role, column):
     cur.execute(
         "SELECT has_column_privilege(%s, %s, %s, 'SELECT')",
@@ -484,6 +486,28 @@ def test_progress_pushes_the_visibility_forward(cur, queue):
     cur.execute(f"SELECT vt FROM pgmq.q_{queue.name} WHERE msg_id = %s", (msg_id,))
     assert cur.fetchone()[0] > before
     assert _claim(cur, queue, vt=0) is None, "a renewed message must not be redelivered"
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_progress_records_the_stage_and_frames_and_when_it_was_reported(cur, queue):
+    """updated_at is how a stalled worker is told from a live one, so every report moves it.
+    now() is fixed within the test's transaction, so the row is backdated first."""
+    args = _target(cur, queue)
+    job_id, _ = _enqueue(cur, queue, args)
+    claimed = _claim(cur, queue)
+    msg_id = claimed[queue.claim_cols.index("msg_id")]
+    cur.execute(
+        f"UPDATE public.{queue.table} SET updated_at = now() - interval '1 hour' WHERE id = %s",
+        (job_id,),
+    )
+    cur.execute(f"SELECT public.{queue.progress}(%s, %s, 'encoding', 4, 9, 300)", (job_id, msg_id))
+    assert cur.fetchone()[0] is True
+    cur.execute(
+        f"SELECT stage, frames_done, frames_total, updated_at = now() "
+        f"FROM public.{queue.table} WHERE id = %s",
+        (job_id,),
+    )
+    assert cur.fetchone() == ("encoding", 4, 9, True)
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)

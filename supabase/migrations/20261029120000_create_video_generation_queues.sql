@@ -5,7 +5,7 @@
 -- 'rendering') -> report progress (renews the message's visibility) -> complete
 -- ('rendered' or 'kept' + pgmq.delete) or fail ('failed' + pgmq.archive).
 --
--- Rollback: supabase/rollbacks/20260928220000_create_video_generation_queues_rollback.sql
+-- Rollback: supabase/rollbacks/20261029120000_create_video_generation_queues_rollback.sql
 
 BEGIN;
 
@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS public.gravi_plate_video_jobs (
   reads         integer NOT NULL DEFAULT 0,
   created_at    timestamptz NOT NULL DEFAULT now(),
   started_at    timestamptz,
+  -- Last write by a wrapper; a rendering job whose updated_at is old has a stalled worker.
+  updated_at    timestamptz NOT NULL DEFAULT now(),
   finished_at   timestamptz
 );
 
@@ -77,6 +79,8 @@ CREATE TABLE IF NOT EXISTS public.cyl_video_jobs (
   reads         integer NOT NULL DEFAULT 0,
   created_at    timestamptz NOT NULL DEFAULT now(),
   started_at    timestamptz,
+  -- Last write by a wrapper; a rendering job whose updated_at is old has a stalled worker.
+  updated_at    timestamptz NOT NULL DEFAULT now(),
   finished_at   timestamptz
 );
 
@@ -130,11 +134,11 @@ REVOKE ALL ON public.cyl_video_jobs
 -- plumbing that nothing outside the wrappers needs.
 GRANT SELECT (
   id, experiment_id, plate_id, wave_number, status, stage, frames_done, frames_total,
-  error_code, requested_by, created_at, started_at, finished_at
+  error_code, requested_by, created_at, started_at, updated_at, finished_at
 ) ON public.gravi_plate_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 GRANT SELECT (
   id, scan_id, experiment_id, status, stage, frames_done, frames_total,
-  error_code, requested_by, created_at, started_at, finished_at
+  error_code, requested_by, created_at, started_at, updated_at, finished_at
 ) ON public.cyl_video_jobs TO bloom_user, bloom_writer, bloom_admin;
 
 -- 4. Wrappers --------------------------------------------------------------
@@ -203,6 +207,11 @@ BEGIN
       AND j.plate_id = p_plate_id
       AND COALESCE(j.wave_number, -1) = COALESCE(p_wave_number, -1)
       AND j.status IN ('queued', 'rendering');
+    -- The winner settled before this read; the caller retries rather than get no job.
+    IF v_job_id IS NULL THEN
+      RAISE EXCEPTION 'plate video job settled during enqueue; retry'
+        USING ERRCODE = 'serialization_failure';
+    END IF;
     RETURN QUERY SELECT v_job_id, false;
     RETURN;
   END;
@@ -261,7 +270,8 @@ BEGIN
 
   IF r.read_ct > p_max_reads THEN
     UPDATE public.gravi_plate_video_jobs
-    SET status = 'failed',
+    SET updated_at = now(),
+        status = 'failed',
         error_code = 'redelivered',
         error = format('redelivered %s times without completing', r.read_ct),
         finished_at = now()
@@ -274,7 +284,8 @@ BEGIN
   -- message becomes visible again. started_at is kept, so it means when work first began
   -- and is not reset by every redelivery.
   UPDATE public.gravi_plate_video_jobs
-  SET status = 'rendering',
+  SET updated_at = now(),
+      status = 'rendering',
       started_at = COALESCE(started_at, now()),
       msg_id = r.msg_id,
       reads = r.read_ct
@@ -315,7 +326,8 @@ BEGIN
   END IF;
 
   UPDATE public.gravi_plate_video_jobs
-  SET stage = left(p_stage, 200),
+  SET updated_at = now(),
+      stage = left(p_stage, 200),
       frames_done = COALESCE(p_frames_done, frames_done),
       frames_total = COALESCE(p_frames_total, frames_total)
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
@@ -345,7 +357,8 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
   UPDATE public.gravi_plate_video_jobs
-  SET status = p_outcome, stage = NULL, finished_at = now()
+  SET updated_at = now(),
+      status = p_outcome, stage = NULL, finished_at = now()
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
   IF NOT FOUND THEN
     RETURN false;
@@ -369,7 +382,8 @@ SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
   UPDATE public.gravi_plate_video_jobs
-  SET status = 'failed',
+  SET updated_at = now(),
+      status = 'failed',
       error_code = p_error_code,
       error = left(p_error, 2000),
       stage = NULL,
@@ -441,7 +455,11 @@ BEGIN
     SELECT j.id, j.experiment_id INTO v_job_id, v_active_experiment
     FROM public.cyl_video_jobs j
     WHERE j.scan_id = p_scan_id AND j.status IN ('queued', 'rendering');
-    IF v_job_id IS NOT NULL AND v_active_experiment IS DISTINCT FROM p_experiment_id THEN
+    IF v_job_id IS NULL THEN
+      RAISE EXCEPTION 'scan video job settled during enqueue; retry'
+        USING ERRCODE = 'serialization_failure';
+    END IF;
+    IF v_active_experiment IS DISTINCT FROM p_experiment_id THEN
       RAISE EXCEPTION 'scan % has an active video job under experiment %, not %',
         p_scan_id, v_active_experiment, p_experiment_id
         USING ERRCODE = 'check_violation';
@@ -499,7 +517,8 @@ BEGIN
 
   IF r.read_ct > p_max_reads THEN
     UPDATE public.cyl_video_jobs
-    SET status = 'failed',
+    SET updated_at = now(),
+        status = 'failed',
         error_code = 'redelivered',
         error = format('redelivered %s times without completing', r.read_ct),
         finished_at = now()
@@ -509,7 +528,8 @@ BEGIN
   END IF;
 
   UPDATE public.cyl_video_jobs
-  SET status = 'rendering',
+  SET updated_at = now(),
+      status = 'rendering',
       started_at = COALESCE(started_at, now()),
       msg_id = r.msg_id,
       reads = r.read_ct
@@ -545,7 +565,8 @@ BEGIN
   END IF;
 
   UPDATE public.cyl_video_jobs
-  SET stage = left(p_stage, 200),
+  SET updated_at = now(),
+      stage = left(p_stage, 200),
       frames_done = COALESCE(p_frames_done, frames_done),
       frames_total = COALESCE(p_frames_total, frames_total)
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
@@ -573,7 +594,8 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
   UPDATE public.cyl_video_jobs
-  SET status = p_outcome, stage = NULL, finished_at = now()
+  SET updated_at = now(),
+      status = p_outcome, stage = NULL, finished_at = now()
   WHERE id = p_job_id AND msg_id = p_msg_id AND status = 'rendering';
   IF NOT FOUND THEN
     RETURN false;
@@ -596,7 +618,8 @@ SET search_path = pg_catalog, public, pgmq, pg_temp
 AS $fn$
 BEGIN
   UPDATE public.cyl_video_jobs
-  SET status = 'failed',
+  SET updated_at = now(),
+      status = 'failed',
       error_code = p_error_code,
       error = left(p_error, 2000),
       stage = NULL,
