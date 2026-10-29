@@ -6,6 +6,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 
+const push = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
+
 import ScanVideoButton from "./scan-video-button";
 import {
   POLL_LOST,
@@ -482,5 +485,27 @@ describe("ScanVideoButton when a poll cannot follow its job", () => {
 
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
+  });
+});
+
+describe("ScanVideoButton after queuing", () => {
+  it("takes the visitor to the Video Jobs page, on their job", async () => {
+    push.mockClear();
+    serve(() => json(QUEUED, 202), [poll(null, null)]);
+
+    await mount();
+    await click("Generate video");
+
+    expect(push).toHaveBeenCalledWith(`/app/video-jobs?job=${JOB_ID}`);
+  });
+
+  it("stays put when the request was refused", async () => {
+    push.mockClear();
+    serve(() => json({ detail: "Too many video requests." }, 429), [poll(null, null)]);
+
+    await mount();
+    await click("Generate video");
+
+    expect(push).not.toHaveBeenCalled();
   });
 });
