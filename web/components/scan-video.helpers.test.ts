@@ -1,54 +1,21 @@
 import { describe, it, expect } from "vitest";
-import {
-  isScanVideoResult,
-  videoErrorMessage,
-  videoResultSummary,
-  type ScanVideoResult,
-} from "./scan-video.helpers";
+import { videoErrorMessage, videoResultSummary } from "./scan-video.helpers";
+import type { VideoJob } from "@/lib/video-job";
 
-function result(overrides: Partial<ScanVideoResult> = {}): ScanVideoResult {
+function job(overrides: Partial<VideoJob> = {}): VideoJob {
   return {
-    scan_id: 5,
-    experiment_id: 1,
-    frames: 72,
-    frames_expected: 72,
-    truncated: false,
-    regenerated: true,
-    path: "cyl-videos/5.mp4",
-    download_url: "https://x/cyl-videos/5.mp4?token=a",
+    id: "1a2b3c4d-0000-0000-0000-000000000000",
+    status: "rendered",
+    stage: null,
+    frames_done: 72,
+    frames_total: 72,
+    error_code: null,
+    queued_ahead: null,
+    created_at: "2026-10-29T10:00:00Z",
+    updated_at: "2026-10-29T10:00:00Z",
     ...overrides,
   };
 }
-
-describe("isScanVideoResult", () => {
-  it("accepts a full result", () => {
-    expect(isScanVideoResult(result())).toBe(true);
-  });
-
-  it("rejects the shapes that would render as undefined", () => {
-    // "Encoded undefined frames." reached the user before this guard existed.
-    expect(isScanVideoResult({ frames: 72 })).toBe(false);
-    expect(isScanVideoResult({ ...result(), frames: undefined })).toBe(false);
-    expect(isScanVideoResult({ ...result(), truncated: undefined })).toBe(false);
-  });
-
-  it("rejects a result with no usable download_url", () => {
-    expect(isScanVideoResult({ ...result(), download_url: "" })).toBe(false);
-    expect(isScanVideoResult({ ...result(), download_url: "  " })).toBe(false);
-    expect(isScanVideoResult({ ...result(), download_url: null })).toBe(false);
-  });
-
-  it("rejects non-objects", () => {
-    expect(isScanVideoResult(null)).toBe(false);
-    expect(isScanVideoResult(undefined)).toBe(false);
-    expect(isScanVideoResult("ok")).toBe(false);
-    expect(isScanVideoResult([])).toBe(false);
-  });
-
-  it("rejects numeric fields sent as strings", () => {
-    expect(isScanVideoResult({ ...result(), frames: "72" })).toBe(false);
-  });
-});
 
 describe("videoErrorMessage", () => {
   it("prefers the upstream detail when there is one", () => {
@@ -104,40 +71,26 @@ describe("videoErrorMessage", () => {
 
 describe("videoResultSummary", () => {
   it("reports a clean full encode", () => {
-    expect(videoResultSummary(result())).toBe("Encoded 72 frames.");
+    expect(videoResultSummary(job())).toBe("Encoded 72 frames.");
   });
 
   it("reports frames that could not be read", () => {
-    expect(
-      videoResultSummary(result({ frames: 70, frames_expected: 72 }))
-    ).toBe("Encoded 70 of 72 frames (2 could not be read).");
-  });
-
-  it("says when a long scan was capped", () => {
-    const summary = videoResultSummary(result({ truncated: true }));
-
-    expect(summary).toContain("Encoded 72 frames.");
-    expect(summary).toContain("more than 72 frames");
-  });
-
-  it("says the stored video was kept, without claiming a re-encode", () => {
-    const summary = videoResultSummary(
-      result({ regenerated: false, frames: 72 })
+    expect(videoResultSummary(job({ frames_done: 70, frames_total: 72 }))).toBe(
+      "Encoded 70 of 72 frames (2 could not be read)."
     );
+  });
+
+  it("says the stored video was kept, quoting no frame count", () => {
+    const summary = videoResultSummary(job({ status: "kept", frames_done: 72, frames_total: 60 }));
 
     expect(summary).toContain("already has a video");
-    expect(summary).not.toContain("Encoded");
-  });
-
-  it("quotes no frame count when nothing was written", () => {
-    // `frames` on a kept result is the stored video's count on one upstream branch and the
-    // discarded encode's on the other, and the response does not say which. Quoting it
-    // states a number for a video the caller did not get.
-    const summary = videoResultSummary(
-      result({ regenerated: false, frames: 72, frames_expected: 60 })
-    );
-
     expect(summary).not.toContain("72");
     expect(summary).not.toContain("60");
+  });
+
+  it("claims no count it was not given", () => {
+    expect(videoResultSummary(job({ frames_done: null, frames_total: null }))).toBe(
+      "The video is ready."
+    );
   });
 });

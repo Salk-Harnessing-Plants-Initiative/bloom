@@ -1,25 +1,22 @@
 /**
- * Has this scan's video landed yet?
+ * Has this scan's video landed yet, and how is its latest render going?
  *
  * A video is stored at `cyl-videos/{scan_id}.mp4`, so the scan id is the whole
  * key and this route is scoped to it alone. Generation lives at
  * `/api/cyl/experiments/{id}/scans/{id}/video`, where the experiment id is
- * load-bearing — `scan_in_experiment` checks the pair upstream before encoding.
+ * load-bearing — `scan_in_experiment` checks the pair upstream before queuing.
  * Asking whether a video exists needs no such pair, and a URL that carried one
  * without checking it would claim a scoping this lookup does not do.
  *
- * POST there can time out at 240s while the encode carries on (the upstream
- * handler is synchronous, so a client disconnect doesn't cancel it), leaving
- * the browser with a 504 and no handle on the work. This is how it finds out
- * how that ended.
- *
- * The URL is signed with the caller's own credentials, so this hands back only
- * what they could sign for themselves.
+ * The button polls this after queuing a render. The URL is signed with the
+ * caller's own credentials, so this hands back only what they could sign for
+ * themselves.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { getStoredScanVideo } from "@/lib/supabase/scan-video";
+import { getLatestScanVideoJob } from "@/lib/supabase/video-jobs";
 import { parseId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
@@ -58,12 +55,10 @@ export async function GET(
       { status: 503 }
     );
   }
-  if (stored.status === "absent") {
-    return NextResponse.json(
-      { detail: "No video is stored for this scan yet." },
-      { status: 404 }
-    );
-  }
+  const job = await getLatestScanVideoJob(scan);
 
-  return NextResponse.json({ download_url: stored.url });
+  return NextResponse.json({
+    download_url: stored.status === "present" ? stored.url : null,
+    job,
+  });
 }

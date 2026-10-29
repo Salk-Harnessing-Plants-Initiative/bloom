@@ -3,8 +3,6 @@ storage, or supabase client needed — a fake fluent client is used)."""
 
 import io
 import subprocess
-import threading
-import time
 
 import pytest
 from fastapi import HTTPException
@@ -404,41 +402,40 @@ def test_generate_scan_video_flags_truncation(monkeypatch):
     assert result["frames"] == video.MAX_IMAGES
 
 
-def test_two_requests_for_one_scan_do_not_overlap(monkeypatch):
-    """Without the lock both read "nothing recorded" and the loser's video wins."""
+def test_generate_scan_video_reports_each_stage(monkeypatch):
+    """Every report renews the job's visibility, so the encode and the upload report too."""
+    monkeypatch.setattr(video, "VideoWriter", _FakeWriter)
+    images = [{"object_path": f"o{i}", "frame_number": i} for i in range(3)]
+    reports = []
+
+    video.generate_scan_video(
+        _GenClient(images), 5, progress=lambda *report: reports.append(report)
+    )
+
+    assert reports == [
+        ("downloading", 0, 3),
+        ("downloading", 1, 3),
+        ("downloading", 2, 3),
+        ("encoding", 3, 3),
+        ("uploading", 3, 3),
+    ]
+
+
+def test_the_progress_callback_reaches_the_render(monkeypatch):
     monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: True)
-    monkeypatch.setattr(video, "app_client", lambda: object())
     monkeypatch.setattr(video, "_record_video", lambda *a, **k: None)
+    seen = {}
 
-    inside = 0
-    overlapped = False
-
-    def _slow(_client, scan_id):
-        nonlocal inside, overlapped
-        inside += 1
-        if inside > 1:
-            overlapped = True
-        time.sleep(0.05)
-        inside -= 1
+    def render(client, scan_id, progress=None):
+        seen["progress"] = progress
         return {"regenerated": False}
 
-    monkeypatch.setattr(video, "generate_scan_video", _slow)
+    monkeypatch.setattr(video, "generate_scan_video", render)
+    progress = object()
 
-    threads = [
-        threading.Thread(target=video.generate_experiment_scan_video, args=(1, 5))
-        for _ in range(2)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    video.generate_experiment_scan_video(1, 5, client=object(), progress=progress)
 
-    assert overlapped is False
-
-
-def test_two_scans_still_encode_in_parallel(monkeypatch):
-    assert video._scan_lock(1) is not video._scan_lock(2)
-    assert video._scan_lock(1) is video._scan_lock(1)
+    assert seen["progress"] is progress
 
 
 def test_generate_scan_video_keeps_a_stored_video_it_cannot_compare(monkeypatch):

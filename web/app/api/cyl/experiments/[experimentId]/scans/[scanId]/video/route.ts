@@ -11,32 +11,28 @@
  * about what this app does, not about what the service permits. Authorization
  * lives upstream (`require_supabase_user`, then `scan_in_experiment`).
  *
- * Generation is synchronous upstream — encoding a full rotation takes a while,
- * so callers should expect this request to stay open.
+ * Upstream queues the render and answers 202 with the job at once; a worker
+ * renders it, and the button polls `/api/cyl/scans/{id}/video` for the outcome.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { getStoredScanVideo } from "@/lib/supabase/scan-video";
-import { isScanVideoResult } from "@/components/scan-video.helpers";
 import { parseId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Under undici's 300s header timeout, so a slow encode surfaces as our own 504
-// rather than an opaque UND_ERR — the encode itself carries on upstream.
-const UPSTREAM_TIMEOUT_MS = 240_000;
+// Queuing is one insert upstream, so a slow answer means the service is unwell.
+const UPSTREAM_TIMEOUT_MS = 15_000;
 
 // Upstream failure details are written for operators, not callers: the 5xx ones
 // carry the internal gateway URL and the names of the service account's env
-// keys. Only 404 says something the caller needs ("No images found for scan 5");
-// every other status falls back to the client's own wording.
-// Only 404. Upstream also answers 503 for its own refusals, whose wording would be worth
-// showing — but `require_supabase_user` returns 503 too, carrying the internal gateway URL in
-// its message, so the status alone cannot tell a safe detail from a leaky one. The client
-// words 503 for itself instead (`videoErrorMessage`).
-const DETAIL_PASSTHROUGH_STATUSES = new Set([404]);
+// keys. 404 (scan not in this experiment) and 409 (an active job under another
+// experiment) are the service's own sentences; every other status falls back to
+// the client's own wording. 503 is excluded because `require_supabase_user`
+// answers it with the internal gateway URL in its message.
+const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 409]);
 
 function callerSafeDetail(status: number, parsed: unknown): string | null {
   if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return null;
@@ -132,18 +128,7 @@ export async function POST(
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       }
     );
-  } catch (err) {
-    // A timeout is not a failure — the encode is still running, so say that
-    // rather than sending the user back to click Generate again.
-    if (err instanceof Error && err.name === "TimeoutError") {
-      return NextResponse.json(
-        {
-          detail:
-            "Still encoding — this scan is taking longer than expected. Check back shortly.",
-        },
-        { status: 504 }
-      );
-    }
+  } catch {
     // Unreachable service — don't leak the internal host into the response.
     return NextResponse.json(
       { detail: "The video service is unavailable." },
@@ -167,15 +152,6 @@ export async function POST(
     );
   }
 
-  // A success whose shape we don't recognise is a failure — the client renders
-  // these fields directly.
-  if (upstream.ok && !isScanVideoResult(parsed)) {
-    return NextResponse.json(
-      { detail: "Unexpected response from the video service." },
-      { status: 502 }
-    );
-  }
-
   // Forward only the detail, and only where it is meant for the caller —
   // the rest of an upstream error body is operator diagnostics.
   if (!upstream.ok) {
@@ -185,5 +161,16 @@ export async function POST(
     );
   }
 
-  return NextResponse.json(parsed, { status: upstream.status });
+  // The button polls by scan, so the job is all it needs; anything else stays here.
+  const queued = parsed as { job_id?: unknown; created?: unknown } | null;
+  if (typeof queued?.job_id !== "string" || typeof queued?.created !== "boolean") {
+    return NextResponse.json(
+      { detail: "Unexpected response from the video service." },
+      { status: 502 }
+    );
+  }
+  return NextResponse.json(
+    { job_id: queued.job_id, created: queued.created },
+    { status: 202 }
+  );
 }

@@ -94,128 +94,158 @@ def test_get_run_rate_limited_returns_429(monkeypatch):
         main.app.dependency_overrides.clear()
 
 
-# --- the plate video route ---------------------------------------------------
+# --- the video routes --------------------------------------------------------
 #
-# The handler must not be reached when auth or the rate limit refuses. A 401 or
-# a 429 alone does not prove that: it proves only what the client was told.
+# Both queue a render and answer 202 with the job. The handler must not be
+# reached when auth or the rate limit refuses: a 401 or a 429 alone proves only
+# what the client was told.
+
+import pytest  # noqa: E402
+from postgrest import APIError  # noqa: E402
 
 
-def test_plate_video_route_calls_the_renderer(monkeypatch):
+@pytest.fixture
+def signed_in(monkeypatch):
     import main
-    import plate_request
     from auth import require_supabase_user
 
-    monkeypatch.setattr(
-        plate_request,
-        "render",
-        lambda experiment_id, body: {
-            "experiment_id": experiment_id,
-            "plate_id": body["plate_id"],
-            "wave_number": body.get("wave_number"),
-            "action": "rendered",
-            "reason": "encoded 3 frames",
-            "object_path": "12/wave-1/P7.mp4",
-            "frames": 3,
-            "coverage": None,
-        },
-    )
     monkeypatch.setattr(main, "enforce_rate_limit", lambda user_id: None)
     main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
-    try:
-        resp = TestClient(main.app).post(
+    yield main
+    main.app.dependency_overrides.clear()
+
+
+def test_plate_video_route_answers_202_with_the_job(monkeypatch, signed_in):
+    import plate_request
+
+    seen = []
+    monkeypatch.setattr(
+        plate_request,
+        "enqueue",
+        lambda experiment_id, body, user_id: seen.append((experiment_id, body, user_id))
+        or {"job_id": "job-1", "created": True},
+    )
+    resp = TestClient(signed_in.app).post(
+        "/gravi/experiments/12/plate-video", json={"plate_id": "P7", "wave_number": 1}
+    )
+    assert resp.status_code == 202
+    assert resp.json() == {"job_id": "job-1", "created": True}
+    assert seen == [(12, {"plate_id": "P7", "wave_number": 1}, "user-1")]
+
+
+def test_a_refused_plate_video_is_logged(monkeypatch, signed_in, caplog):
+    """The answer a caller sees when the button seems to do nothing leaves a record."""
+    import plate_request
+
+    def refuse(experiment_id, body, user_id):
+        raise HTTPException(status_code=400, detail="plate_id must be 1-64 characters")
+
+    monkeypatch.setattr(plate_request, "enqueue", refuse)
+    with caplog.at_level("INFO", logger="main"):
+        resp = TestClient(signed_in.app).post(
             "/gravi/experiments/12/plate-video",
             json={"plate_id": "P7", "wave_number": 1},
         )
-        assert resp.status_code == 200
-        assert resp.json()["action"] == "rendered"
-        assert resp.json()["object_path"] == "12/wave-1/P7.mp4"
-    finally:
-        main.app.dependency_overrides.clear()
 
-
-def test_a_refused_plate_video_is_logged_like_one_that_worked(caplog):
-    """The answer a caller actually sees when the button seems to do nothing.
-    Logged only on the way out, it left no record of who asked for what."""
-    import main
-    import plate_request
-    from auth import require_supabase_user
-
-    def _no_frames(experiment_id, body):
-        raise HTTPException(status_code=404, detail="this plate has no captures")
-
-    main.plate_request = plate_request
-    original = plate_request.render
-    plate_request.render = _no_frames
-    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
-    try:
-        with caplog.at_level("INFO", logger="main"):
-            resp = TestClient(main.app).post(
-                "/gravi/experiments/12/plate-video",
-                json={"plate_id": "P7", "wave_number": 1},
-            )
-    finally:
-        plate_request.render = original
-        main.app.dependency_overrides.clear()
-
-    assert resp.status_code == 404
+    assert resp.status_code == 400
     assert "experiment 12" in caplog.text
     assert "'P7'" in caplog.text
     assert "user-1" in caplog.text
-    assert "404" in caplog.text
 
 
-def test_a_refusal_reason_is_logged_without_being_echoed_back(caplog):
-    """The plate id is escaped on this line; the reason beside it carries
-    `gravi_images.object_path`, which is free text the desktop writes."""
-    import main
-    import plate_request
-    from auth import require_supabase_user
-
-    forged = "12/wave-1/P7.tif\n2026-09-05 - INFO - plate ADMIN: rendered"
-
-    def unreadable(experiment_id, body):
-        raise HTTPException(status_code=502, detail=f"{forged} could not be read")
-
-    original = plate_request.render
-    plate_request.render = unreadable
-    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
-    try:
-        with caplog.at_level("INFO", logger="main"):
-            resp = TestClient(main.app).post(
-                "/gravi/experiments/12/plate-video",
-                json={"plate_id": "P7", "wave_number": 1},
-            )
-    finally:
-        plate_request.render = original
-        main.app.dependency_overrides.clear()
-
-    assert resp.status_code == 502
-    assert "\\n" in caplog.text, "the newline reached the log unescaped"
-    assert "\nplate ADMIN" not in caplog.text
-
-
-def test_a_rejected_body_is_logged_without_being_echoed_back(caplog):
+def test_a_rejected_body_is_logged_without_being_echoed_back(signed_in, caplog):
     """A plate id is caller-supplied text going into a log a person reads. A
     newline in it would put a second, invented line under a real one."""
-    import main
-    from auth import require_supabase_user
-
-    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
-    try:
-        with caplog.at_level("INFO", logger="main"):
-            resp = TestClient(main.app).post(
-                "/gravi/experiments/12/plate-video",
-                json={"plate_id": "P7\nplate video for experiment 99: rendered"},
-            )
-    finally:
-        main.app.dependency_overrides.clear()
+    with caplog.at_level("INFO", logger="main"):
+        resp = TestClient(signed_in.app).post(
+            "/gravi/experiments/12/plate-video",
+            json={"plate_id": "P7\nplate video for experiment 99: rendered"},
+        )
 
     assert resp.status_code == 400
     assert "\\n" in caplog.text, "the newline reached the log unescaped"
     assert "\nplate video for experiment 99" not in caplog.text
 
 
-def test_plate_video_route_401_without_auth(monkeypatch):
+def test_the_plate_progress_route_is_gone(signed_in):
+    """Progress is read from the job row now; the in-memory route would answer nothing."""
+    resp = TestClient(signed_in.app).get(
+        "/gravi/experiments/12/plate-video/progress", params={"plate_id": "P7"}
+    )
+    assert resp.status_code in (404, 405)
+
+
+def _cyl_stubs(monkeypatch, *, belongs=True, enqueue=None):
+    import main
+
+    calls = []
+    monkeypatch.setattr(main, "app_client", lambda **kwargs: object())
+    monkeypatch.setattr(main, "scan_in_experiment", lambda c, e, s: belongs)
+
+    def default(client, queue, params):
+        calls.append((queue.enqueue, params))
+        return {"job_id": "job-9", "created": False}
+
+    monkeypatch.setattr(main, "enqueue", enqueue or default)
+    return calls
+
+
+def test_cyl_video_route_answers_202_with_the_job(monkeypatch, signed_in):
+    calls = _cyl_stubs(monkeypatch)
+    resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
+    assert resp.status_code == 202
+    assert resp.json() == {"job_id": "job-9", "created": False}
+    assert calls == [
+        (
+            "enqueue_cyl_video",
+            {"p_scan_id": 44, "p_experiment_id": 3, "p_requested_by": "user-1"},
+        )
+    ]
+
+
+def test_cyl_video_route_404s_a_scan_outside_the_experiment(monkeypatch, signed_in):
+    calls = _cyl_stubs(monkeypatch, belongs=False)
+    resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
+    assert resp.status_code == 404
+    assert calls == [], "a scan outside the experiment was queued"
+
+
+def test_cyl_video_route_409s_a_job_filed_under_another_experiment(
+    monkeypatch, signed_in
+):
+    def mismatch(client, queue, params):
+        raise APIError(
+            {
+                "code": "23514",
+                "message": "scan 44 has an active video job under experiment 2",
+            }
+        )
+
+    _cyl_stubs(monkeypatch, enqueue=mismatch)
+    resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
+    assert resp.status_code == 409
+
+
+def test_cyl_video_route_503s_without_naming_the_database(monkeypatch, signed_in):
+    def down(client, queue, params):
+        raise APIError(
+            {"code": "42501", "message": "permission denied for bloom_workflows"}
+        )
+
+    _cyl_stubs(monkeypatch, enqueue=down)
+    resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
+    assert resp.status_code == 503
+    assert "bloom_workflows" not in resp.text
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/gravi/experiments/12/plate-video", {"plate_id": "P7"}),
+        ("/cyl/experiments/3/scans/44/video", None),
+    ],
+)
+def test_video_routes_401_before_any_work(monkeypatch, path, body):
     import main
     import plate_request
     from auth import require_supabase_user
@@ -223,87 +253,26 @@ def test_plate_video_route_401_without_auth(monkeypatch):
     def _raise_401():
         raise HTTPException(status_code=401, detail="missing token")
 
-    called = {"n": 0}
-    monkeypatch.setattr(
-        plate_request,
-        "render",
-        lambda *a, **k: called.__setitem__("n", called["n"] + 1),
-    )
+    reached = []
+    monkeypatch.setattr(plate_request, "enqueue", lambda *a: reached.append(a))
+    monkeypatch.setattr(main, "enqueue", lambda *a: reached.append(a))
     main.app.dependency_overrides[require_supabase_user] = _raise_401
     try:
-        resp = TestClient(main.app).post(
-            "/gravi/experiments/12/plate-video", json={"plate_id": "P7"}
-        )
-        assert resp.status_code == 401
-        assert called["n"] == 0, "the renderer ran for an unauthenticated request"
+        resp = TestClient(main.app).post(path, json=body)
     finally:
         main.app.dependency_overrides.clear()
+    assert resp.status_code == 401
+    assert reached == [], "a job was queued for an unauthenticated request"
 
 
-def test_progress_route_401_without_auth(monkeypatch):
-    import main
-    import plate_progress
-    from auth import require_supabase_user
-
-    def _raise_401():
-        raise HTTPException(status_code=401, detail="missing token")
-
-    plate_progress.start(12, "P7", 1)
-    main.app.dependency_overrides[require_supabase_user] = _raise_401
-    try:
-        resp = TestClient(main.app).get(
-            "/gravi/experiments/12/plate-video/progress",
-            params={"plate_id": "P7", "wave_number": 1},
-        )
-        assert resp.status_code == 401
-    finally:
-        main.app.dependency_overrides.clear()
-        plate_progress.finish()
-
-
-def test_progress_route_answers_the_running_render(monkeypatch):
-    import main
-    import plate_progress
-    from auth import require_supabase_user
-
-    plate_progress.start(12, "P7", 1)
-    plate_progress.advance("downloading", 47, 86)
-    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
-    try:
-        resp = TestClient(main.app).get(
-            "/gravi/experiments/12/plate-video/progress",
-            params={"plate_id": "P7", "wave_number": 1},
-        )
-        assert resp.status_code == 200
-        assert resp.json() == {"stage": "downloading", "done": 47, "total": 86}
-    finally:
-        main.app.dependency_overrides.clear()
-        plate_progress.finish()
-
-
-def test_progress_route_says_nothing_about_another_plate(monkeypatch):
-    import main
-    import plate_progress
-    from auth import require_supabase_user
-
-    plate_progress.start(12, "P7", 1)
-    plate_progress.advance("downloading", 47, 86)
-    main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
-    try:
-        resp = TestClient(main.app).get(
-            "/gravi/experiments/12/plate-video/progress",
-            params={"plate_id": "P8", "wave_number": 1},
-        )
-        assert resp.status_code == 200
-        assert resp.json() is None
-    finally:
-        main.app.dependency_overrides.clear()
-        plate_progress.finish()
-
-
-def test_plate_video_route_429_before_any_work(monkeypatch):
-    """The button can be clicked repeatedly. The limit has to bite before a
-    render starts, or clicking five times starts five encodes."""
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/gravi/experiments/12/plate-video", {"plate_id": "P7"}),
+        ("/cyl/experiments/3/scans/44/video", None),
+    ],
+)
+def test_video_routes_429_before_any_work(monkeypatch, path, body):
     import main
     import plate_request
     from auth import require_supabase_user
@@ -311,22 +280,17 @@ def test_plate_video_route_429_before_any_work(monkeypatch):
     def _rate_limited(user_id):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
-    called = {"n": 0}
-    monkeypatch.setattr(
-        plate_request,
-        "render",
-        lambda *a, **k: called.__setitem__("n", called["n"] + 1),
-    )
+    reached = []
+    monkeypatch.setattr(plate_request, "enqueue", lambda *a: reached.append(a))
+    monkeypatch.setattr(main, "enqueue", lambda *a: reached.append(a))
     monkeypatch.setattr(main, "enforce_rate_limit", _rate_limited)
     main.app.dependency_overrides[require_supabase_user] = lambda: "user-1"
     try:
-        resp = TestClient(main.app).post(
-            "/gravi/experiments/12/plate-video", json={"plate_id": "P7"}
-        )
-        assert resp.status_code == 429
-        assert called["n"] == 0, "a render started for a rate-limited request"
+        resp = TestClient(main.app).post(path, json=body)
     finally:
         main.app.dependency_overrides.clear()
+    assert resp.status_code == 429
+    assert reached == [], "a job was queued for a rate-limited request"
 
 
 # --- GET /model-cards (bloom#971 phase 1) ------------------------------------

@@ -1,16 +1,15 @@
 /**
- * Server-side proxy for on-demand plate time-lapse generation, and the poll
- * that follows when a render outlives the request.
+ * Server-side proxy for queuing a plate time-lapse, and the poll that follows.
  *
- * POST renders. GET reports whether a video is stored yet — a POST can time out
- * at 240s while the encode carries on upstream (the handler is synchronous, so
- * a client disconnect does not cancel it), leaving the browser with a 504 and
- * no handle on the work.
+ * POST asks the service to queue a render and answers 202 with the job at once;
+ * a worker renders it. GET reports the stored video and the plate's latest job,
+ * which the button polls until the job settles.
  *
  * `plate_id` travels in the body, not the path: it is free text, and the
  * cylinder route's integer-only path defence does not transfer to it. The poll
  * takes it as a query parameter, which never reaches an upstream URL path — it
- * only builds a storage key, and `plateVideoPath` refuses one it cannot make.
+ * only builds a storage key and a job filter, and `plateVideoPath` refuses a
+ * key it cannot make.
  *
  * Not a security boundary: Caddy also publishes the service at `/workflows/*`,
  * so the checks here are about what this app does, not what the service
@@ -18,23 +17,22 @@
  *
  * Unlike the cylinder route, this does not refuse a plate that already has a
  * video. A plate keeps gaining captures, so a stored video is usually not
- * wrong — just short. Whether to re-render is the service's decision, and it
+ * wrong — just short. Whether to re-render is the worker's decision, and it
  * has the recorded frame count to make it with.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase/server";
 import { getStoredPlateVideo } from "@/lib/supabase/plate-video";
+import { getLatestPlateVideoJob } from "@/lib/supabase/video-jobs";
 import { isValidPlateId } from "@/lib/supabase/plate-video-path";
 import { parseId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Under undici's 300s header timeout, so a slow encode surfaces as our own 504
-// rather than an opaque UND_ERR — the encode itself carries on upstream.
-const UPSTREAM_TIMEOUT_MS = 240_000;
-const PROGRESS_TIMEOUT_MS = 3_000;
+// Queuing is one insert upstream, so a slow answer means the service is unwell.
+const UPSTREAM_TIMEOUT_MS = 15_000;
 const workflowsUrl = () =>
   process.env.WORKFLOWS_URL ?? "http://workflows:5100";
 
@@ -44,9 +42,9 @@ const workflowsUrl = () =>
 // already read one.
 //
 // 503 fails the test: `auth.py` answers it with the auth client's error, which
-// names the internal gateway. 502 carries the storage client's. Anything
-// unlisted gets our own wording.
-const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 413, 422, 429]);
+// names the internal gateway. 400 is the service's own validation wording.
+// Anything unlisted gets our own wording.
+const DETAIL_PASSTHROUGH_STATUSES = new Set([400, 404, 409, 429]);
 
 // Answered in our own words rather than the service's or the generic sentence.
 // The service says "Invalid or expired token", and "try again shortly, and tell
@@ -93,15 +91,6 @@ const badWave = () =>
 function noStore(response: NextResponse): NextResponse {
   response.headers.set("Cache-Control", "no-store");
   return response;
-}
-
-// One vocabulary for a frame count across both answers: a number, or null when
-// it is not known. The service says that second case as zero with a flag beside
-// it, and zero is a claim about the video rather than a missing record.
-function withFrameCount(parsed: unknown): unknown {
-  if (typeof parsed !== "object" || parsed === null) return parsed;
-  const { frames_unknown: notKnown, ...rest } = parsed as Record<string, unknown>;
-  return notKnown ? { ...rest, frames: null } : rest;
 }
 
 /** A wave from the request: a whole number, null, or invalid. */
@@ -167,18 +156,6 @@ export async function POST(
       }
     );
   } catch (err) {
-    // A timeout is not a failure — the encode is still running, so say that
-    // rather than sending the user back to click Generate again.
-    if (err instanceof Error && err.name === "TimeoutError") {
-      return NextResponse.json(
-        {
-          detail:
-            "Still encoding — this plate is taking longer than expected. " +
-            "Check back shortly.",
-        },
-        { status: 504 }
-      );
-    }
     console.error("plate video: the workflows service could not be reached", err);
     return NextResponse.json(
       { detail: "The video service is unavailable." },
@@ -186,9 +163,8 @@ export async function POST(
     );
   }
 
-  // Only one plate encodes at a time, so 429 is the ordinary answer to a second
-  // click rather than a rare one. Without Retry-After the button has to guess
-  // how long to wait, so it is read before anything can return without it.
+  // A rate-limited caller is told how long to wait, so it is read before
+  // anything can return without it.
   const retryAfter = upstream.headers.get("retry-after");
   const waitHint = retryAfter ? { "Retry-After": retryAfter } : undefined;
 
@@ -217,39 +193,18 @@ export async function POST(
     );
   }
 
-  return NextResponse.json(withFrameCount(parsed), { status: 200 });
-}
-
-/** How far a running render has got, or null. Advisory: never fails the poll. */
-async function renderProgress(
-  experiment: number,
-  plateId: string,
-  wave: number | null
-): Promise<{ stage: string; done: number; total: number } | null> {
-  try {
-    const session = await getSession();
-    if (!session?.access_token) return null;
-
-    const query = new URLSearchParams({ plate_id: plateId });
-    if (wave !== null) query.set("wave_number", String(wave));
-
-    const res = await fetch(
-      `${workflowsUrl()}/gravi/experiments/${experiment}/plate-video/progress?${query}`,
-      {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-        signal: AbortSignal.timeout(PROGRESS_TIMEOUT_MS),
-      }
+  const queued = parsed as { job_id?: unknown; created?: unknown } | null;
+  if (typeof queued?.job_id !== "string" || typeof queued?.created !== "boolean") {
+    console.error("plate video: the service queued a job but answered an unexpected shape");
+    return NextResponse.json(
+      { detail: "Unexpected response from the video service." },
+      { status: 502 }
     );
-    if (!res.ok) return null;
-    const body = await res.json();
-    return typeof body?.stage === "string" &&
-      typeof body?.done === "number" &&
-      typeof body?.total === "number"
-      ? { stage: body.stage, done: body.done, total: body.total }
-      : null;
-  } catch {
-    return null;
   }
+  return NextResponse.json(
+    { job_id: queued.job_id, created: queued.created },
+    { status: 202 }
+  );
 }
 
 export async function GET(
@@ -297,15 +252,15 @@ export async function GET(
     );
   }
 
+  const job = await getLatestPlateVideoJob(experiment, plateId, wave);
+
   // `frames` is null both when nothing is stored and when a stored video's row
   // is missing. The caller has `download_url` to tell those apart.
   return noStore(
     NextResponse.json({
-      ...(stored.status === "present" || query.get("progress") !== "1"
-        ? {}
-        : { progress: await renderProgress(experiment, plateId, wave) }),
       download_url: stored.status === "present" ? stored.url : null,
       frames: stored.status === "present" ? stored.frames : null,
+      job,
     })
   );
 }

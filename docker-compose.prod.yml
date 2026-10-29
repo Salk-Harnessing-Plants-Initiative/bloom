@@ -249,11 +249,8 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # Bounds a runaway render to this container, so the OOM killer takes the
-    # uvicorn worker rather than choosing by resident size across the stack.
-    # Generous on purpose: a real plate does not fit the ~1.4 GB that
-    # tests/unit/test_workflows_single_worker.py derives from the frame
-    # ceilings and the tmpfs, and 8g is about 1% of this host.
+    # The size it had while videos rendered here; lower it once measured
+    # without them. The render budget now sits with plate-video-worker.
     mem_limit: 8g
     # Without this Docker allows twice mem_limit in swap, so a runaway render
     # would grind against disk indefinitely instead of being killed. Equal
@@ -296,15 +293,8 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # One worker: the per-scan lock in video.py and the per-plate lock in
-    # plate_encode.py both hold only within a single process, so raising this reopens the
-    # overwrite race they close — the object keys are deterministic and unversioned, so two
-    # workers would race to write the same one. The encode semaphore bounds concurrency but
-    # not that. Start here and watch — raise it when this one is actually saturated, or once
-    # the encode moves to a worker container and the database enforces the serialisation
-    # instead, whichever comes first.
-    # The worker containers now exist; the database half does not, so they are profiled
-    # off and dev-only until it does.
+    # One worker: start here and watch. Videos render in plate-video-worker and
+    # cyl-video-worker, so the count no longer guards their object keys.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -522,14 +512,11 @@ services:
     stop_grace_period: 60s
     command: ["python", "rnaseq_status_poller.py"]
 
-  # Renders one plate on command. Behind a profile, so `up -d` never starts it.
-  # Dev-only until the render queue lands; see services/workflows/README.md.
+  # Consumes the gravi_plate_video queue: one render at a time.
   plate-video-worker:
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
-    profiles:
-      - plate-video-worker
     read_only: true
     tmpfs:
       - /tmp:mode=1777,size=512m
@@ -551,20 +538,27 @@ services:
     depends_on:
       - kong
       - db-prod
-    # Rendering takes its arguments, so the default command only says how.
+    restart: unless-stopped
+    # Each poll and progress report touches the heartbeat; older than
+    # HEARTBEAT_STALE_SECONDS (video_queue.py) means the loop has stalled.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/video-worker-heartbeat') > 600)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes.
+    stop_grace_period: 5m
     command:
       - python
       - plate_video_worker.py
-      - --help
+      - run
 
-  # Renders one cyl scan on command. Behind a profile, so `up -d` never starts it.
-  # Dev-only until the render queue lands; see services/workflows/README.md.
+  # Consumes the cyl_video_generation queue: one render at a time.
   cyl-video-worker:
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
-    profiles:
-      - cyl-video-worker
     read_only: true
     tmpfs:
       - /tmp:mode=1777,size=512m
@@ -587,10 +581,21 @@ services:
     depends_on:
       - kong
       - db-prod
+    restart: unless-stopped
+    # Each poll and progress report touches the heartbeat; older than
+    # HEARTBEAT_STALE_SECONDS (video_queue.py) means the loop has stalled.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/video-worker-heartbeat') > 600)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes.
+    stop_grace_period: 5m
     command:
       - python
       - cyl_video_worker.py
-      - --help
+      - run
 
   # -------------------
   # Bloom MCP Server

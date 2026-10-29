@@ -1,8 +1,7 @@
-"""The HTTP shape of a plate-video request: validate, render, choose a status.
+"""The HTTP shape of a plate-video request: validate, then queue a render.
 
-Kept out of `main.py` so the validation and the status mapping can be tested
-without a TestClient, and out of `plate_encode.py` so that module stays free of
-HTTP.
+Kept out of `main.py` so the validation can be tested without a TestClient,
+and out of `plate_encode.py` so that module stays free of HTTP.
 """
 
 from __future__ import annotations
@@ -11,26 +10,15 @@ import logging
 
 from fastapi import HTTPException
 
-from plate_encode import (
-    EncoderBusy,
-    FrameDepthUnsupported,
-    FrameSizeMismatch,
-    FrameTooLarge,
-    FrameUnreadable,
-    NotRecorded,
-    VideoNotStored,
-    PlateMismatch,
-    render_plate_video,
-)
-from plate_video import UNAVAILABLE
 from plate_video_path import is_valid_plate_id
-from video_writer import VideoEncodeError
-from supabase_client import app_client
+from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS, app_client
+from video_queue import PLATE_QUEUE, enqueue as enqueue_job
 
 logger = logging.getLogger(__name__)
 
-# Why a render did not happen, and what to answer. A refusal is not a bug — the
-# caller asked a reasonable question and the answer is no.
+# The status each planner refusal would answer over HTTP. The worker's render
+# command reads them as exit codes. A refusal is not a bug — the caller asked a
+# reasonable question and the answer is no.
 REFUSAL_STATUS = {
     "storage_unavailable": 503,  # transient; the same request may succeed later
     "database_unavailable": 503,  # the same, one read further back
@@ -43,9 +31,12 @@ REFUSAL_STATUS = {
 MAX_WAVE_NUMBER = 2**31 - 1
 MAX_EXPERIMENT_ID = 2**31 - 1
 
+# The database's own error names the role and PostgREST's codes, so callers get this.
+NOT_QUEUED = "The video could not be queued right now. Try again shortly."
 
-def render(experiment_id: int, body: dict) -> dict:
-    """Render one plate's time-lapse, or explain why not."""
+
+def enqueue(experiment_id: int, body: dict, user_id: str) -> dict:
+    """Queue a render of one plate, or join the one already queued: {job_id, created}."""
     plate_id, wave_number = _read(body)
 
     if experiment_id < 1 or experiment_id > MAX_EXPERIMENT_ID:
@@ -55,94 +46,20 @@ def render(experiment_id: int, body: dict) -> dict:
         )
 
     try:
-        outcome = render_plate_video(app_client(), experiment_id, plate_id, wave_number)
-    except EncoderBusy as exc:
-        raise HTTPException(
-            status_code=429, detail=str(exc), headers={"Retry-After": "30"}
-        ) from exc
-    except FrameDepthUnsupported as exc:
-        # Before FrameUnreadable, which it subclasses. The file is intact.
-        logger.warning("plate video refused an unsupported frame depth: %r", exc)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except FrameSizeMismatch as exc:
-        # Before FrameUnreadable, which it subclasses. This message is this
-        # service's own -- two frame sizes -- so it is safe to send whole.
-        logger.warning("plate video refused a mixed frame size: %r", exc)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except FrameTooLarge as exc:
-        # Before FrameUnreadable, which it subclasses. The size is safe to send.
-        logger.warning("plate video refused an oversized frame: %r", exc)
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
-    except FrameUnreadable as exc:
-        # The path only: the rest is the storage client's error, which names
-        # internal hosts and roles and reaches the caller unfiltered.
-        logger.warning("plate video render failed: %r", exc)
-        named = (
-            f"{exc.path} could not be read" if exc.path else "a frame could not be read"
+        client = app_client(timeout_seconds=SINGLE_ROW_RPC_TIMEOUT_SECONDS)
+        return enqueue_job(
+            client,
+            PLATE_QUEUE,
+            {
+                "p_experiment_id": experiment_id,
+                "p_plate_id": plate_id,
+                "p_wave_number": wave_number,
+                "p_requested_by": user_id,
+            },
         )
-        raise HTTPException(status_code=502, detail=named) from exc
-    except VideoNotStored as exc:
-        # A storage read that fails during planning already answers 503. The
-        # same failure one call later said 500, which reads as "do not retry".
-        logger.warning("plate video could not be stored: %r", exc)
-        raise HTTPException(status_code=503, detail=UNAVAILABLE) from exc
-    except NotRecorded as exc:
-        # The key only, for the reason above.
-        logger.error("plate video stored but not recorded: %r", exc)
-        named = (
-            f"the video for {exc.key} was not recorded"
-            if exc.key
-            else "the video was not recorded"
-        )
-        raise HTTPException(status_code=500, detail=named) from exc
-    except (VideoEncodeError, BrokenPipeError) as exc:
-        # The encoder's own failures: a stall, a non-zero exit, a broken pipe.
-        logger.error("plate video encode failed: %r", exc)
-        raise HTTPException(
-            status_code=500, detail="the video could not be encoded"
-        ) from exc
-    except PlateMismatch as exc:
-        # A crossed key and identity. Nothing the caller can act on.
-        logger.error("plate video refused a crossed plate identity: %r", exc)
-        raise HTTPException(
-            status_code=500, detail="the video could not be stored"
-        ) from exc
-    except HTTPException:
-        raise
     except Exception as exc:
-        # Same answer the planner gives, for the same reason.
-        logger.exception("plate video failed for an unhandled reason")
-        raise HTTPException(status_code=500, detail=UNAVAILABLE) from exc
-
-    if outcome["action"] == "refuse":
-        raise HTTPException(
-            status_code=REFUSAL_STATUS.get(outcome.get("code"), 409),
-            detail=outcome["reason"],
-        )
-
-    # What the video holds: the encoder's count when one was made, the stored
-    # video's own when it was kept. A kept video whose row never recorded a
-    # count is the one case with no answer -- the plate's own frames are not
-    # what it holds, and saying zero of a playable video is worse than saying
-    # nothing. `frames` still carries a number because the client's shape guard
-    # requires one, exactly as the cyl route does; `frames_unknown` is what says
-    # not to trust it.
-    recorded = outcome.get("recorded") or {}
-    held = recorded.get("frame_count", outcome.get("stored_frames"))
-    if held is None and outcome["action"] != "keep":
-        held = len(outcome.get("frames") or [])
-
-    return {
-        "experiment_id": experiment_id,
-        "plate_id": plate_id,
-        "wave_number": wave_number,
-        "action": outcome["action"],
-        "reason": outcome["reason"],
-        "object_path": outcome["key"],
-        "frames": held if held is not None else 0,
-        "frames_unknown": held is None,
-        "coverage": outcome.get("coverage"),
-    }
+        logger.error("plate video could not be queued: %r", exc)
+        raise HTTPException(status_code=503, detail=NOT_QUEUED) from exc
 
 
 def _read(body: dict) -> tuple[str, int | None]:
@@ -160,7 +77,7 @@ def _read(body: dict) -> tuple[str, int | None]:
         raise HTTPException(
             status_code=400,
             detail="plate_id must be 1-64 characters of letters, digits, dot, "
-            "dash or underscore, and may not begin with a dot",
+            "dash or underscore, and must begin with a letter or digit",
         )
 
     wave_number = body.get("wave_number")

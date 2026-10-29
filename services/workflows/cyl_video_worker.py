@@ -1,12 +1,9 @@
-"""Render one cylinder scan's video from the container.
+"""Render cylinder scan videos from the container.
 
-`render` renders a single scan through the same `generate_experiment_scan_video`
-the route calls, so a video made here is the video the button would have made.
-The claim loop that consumes the queue arrives with the queue itself.
-
-Not to be run against staging or production until the render queue lands: the
-per-scan lock lives in the service's own process and does not hold against this
-one. See services/workflows/README.md.
+`run` consumes the cyl video queue: claim a job, render it, complete or fail
+it. `render` renders a single scan on command, through the same
+`generate_experiment_scan_video`, for an operator. See
+services/workflows/README.md.
 """
 
 import argparse
@@ -16,7 +13,8 @@ import sys
 from fastapi import HTTPException
 
 from supabase_client import app_client
-from video import generate_experiment_scan_video
+from video import NO_FRAMES_ENCODED, NOT_SIGNED, generate_experiment_scan_video
+from video_queue import CYL_QUEUE, KEPT, RENDERED, RenderFailed, Worker
 from video_worker_cli import (
     EXIT_FAILED,
     EXIT_OK,
@@ -27,13 +25,40 @@ from video_worker_cli import (
 
 logger = logging.getLogger(__name__)
 
-# video.py raises this after uploading, when it cannot sign the URL.
-POST_UPLOAD_FAILURE = "Could not create a download URL"
-
 HOLD = (
-    "Not to be run against staging or production until the render queue lands: "
-    "the service renders the same scans, and neither process can see the other's lock."
+    "A `render` here does not take the queue's one-job-per-scan hold, so do not "
+    "run one for a scan the queue may be rendering."
 )
+
+
+def code_for_refusal(exc: HTTPException) -> str:
+    """The job's error code for one of video.py's refusals."""
+    detail = str(exc.detail)
+    if exc.status_code == 404:
+        # The route checks the pair before queueing, so a 404 here is a scan with no images.
+        return (
+            "scan_not_in_experiment"
+            if "not found in experiment" in detail
+            else "no_images"
+        )
+    if exc.status_code == 503:
+        return "storage_unavailable"
+    if detail.startswith(NO_FRAMES_ENCODED):
+        return "no_frames_encoded"
+    if detail.startswith(NOT_SIGNED):
+        return "not_signed"
+    return "encode_failed"
+
+
+def render_job(client, job: dict, progress) -> str:
+    """One claimed job, rendered: 'rendered' or 'kept', or RenderFailed."""
+    try:
+        result = generate_experiment_scan_video(
+            job["experiment_id"], job["scan_id"], client=client, progress=progress
+        )
+    except HTTPException as exc:
+        raise RenderFailed(code_for_refusal(exc), str(exc.detail)) from exc
+    return RENDERED if result.get("regenerated", True) else KEPT
 
 
 def identifier(value: str) -> int:
@@ -47,10 +72,11 @@ def identifier(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Render one cyl scan's video.",
+        description="Render cyl scan videos.",
         epilog=f"{HOLD} Exit codes: 0 rendered or kept, 1 failed, 3 refused.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("run", help="consume the cyl video queue until stopped")
     render = commands.add_parser(
         "render", help="render one scan and exit", epilog=parser.epilog
     )
@@ -67,6 +93,10 @@ def main(argv=None) -> int:
     configure_logging()
     args = parse_args(argv)
 
+    if args.command == "run":
+        Worker(CYL_QUEUE, render_job, app_client).run()
+        return EXIT_OK
+
     try:
         result = generate_experiment_scan_video(
             args.experiment, args.scan, client=app_client()
@@ -78,7 +108,7 @@ def main(argv=None) -> int:
             return exit_code
         logger.error("scan %s could not be rendered: %s", args.scan, exc.detail)
         print(f"failed ({exc.status_code}): {exc.detail}")
-        if POST_UPLOAD_FAILURE in exc.detail:
+        if NOT_SIGNED in exc.detail:
             # The only failure raised after the object is written: signing its
             # URL is the last step before the row. Every other 5xx stops before
             # anything is stored, and saying otherwise cries wolf on a re-render.

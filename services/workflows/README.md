@@ -2,24 +2,20 @@
 
 A small FastAPI service intended to host workflow-related HTTP endpoints.
 
-## On-demand vs queued generation
+## Video generation is queued
 
-This service's video endpoint is the **on-demand** path: a user action (e.g. a
-"generate video" button, or a CLI call) triggers `POST …/scans/{id}/video`, the
-video is generated **synchronously in the request**, and the signed URL is
-returned right away. Best for a single scan a user is looking at now.
-
-**Batch / workflow-driven** generation (cyl scan, graviscan, or any pipeline
-producing many videos) is a separate, **job-queue-based** mechanism (submit a
-job → a worker processes it → poll/subscribe for the result), not this route.
-That async path is intentionally kept out of this endpoint. `services/video-worker`
-and its `video_jobs` queue were the first attempt at it and are retired, commented
-out in place.
+A "generate video" click queues a job and returns at once; a worker container
+renders it. Two pgmq queues feed two workers, one render at a time each:
+`gravi_plate_video` → `plate-video-worker` and `cyl_video_generation` →
+`cyl-video-worker`. A job row per item (`gravi_plate_video_jobs`,
+`cyl_video_jobs`) carries its status, stage and frame counts, which the pages
+read. `services/video-worker` and its `video_jobs` queue were an earlier attempt
+and are retired, commented out in place.
 
 This service also hosts a **third**, distinct dispatch path: `POST /pipeline`
 (the A4 sleap-roots pipeline trigger, bloom #11/#404 — see below) enumerates
 scans and enqueues work via a new `pgmq`-backed queue (`cyl_pipeline_dispatch`),
-not the `video_jobs`/`pg_notify` mechanism above. Phase 1 enumerates/enqueues;
+not the retired `video_jobs`/`pg_notify` mechanism above. Phase 1 enumerates/enqueues;
 Phase 2 (`dispatch_worker.py`, a separate process — see "Pipeline dispatch
 worker" below) claims each enqueued batch and submits it to Argo as a
 Kubernetes `Workflow` CRD, via the K8s API directly (not the `argo` CLI, not
@@ -52,96 +48,72 @@ internal-only and not exposed through the public proxy.
 | Method | Path                                                     | Auth                 | Purpose                                                                                                |
 | ------ | -------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ |
 | GET    | `/health`                                                | none (internal-only) | Liveness — kept for the in-container probe; **not** exposed via the public proxy                       |
-| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT    | Generate a scan's video, upload to Storage                                                             |
+| POST   | `/cyl/experiments/{experiment_id}/scans/{scan_id}/video` | Supabase user JWT    | Queue a render of a scan's video; 202 with the job                                                     |
+| POST   | `/gravi/experiments/{experiment_id}/plate-video`         | Supabase user JWT    | Queue a render of one plate's time-lapse for one wave; 202 with the job                               |
 | POST   | `/pipeline` (external: `/workflows/pipeline`)            | Supabase user JWT    | Trigger an A4 sleap-roots pipeline run for a scan/wave/experiment/explicit scan list                   |
 | GET    | `/runs/{run_id}` (external: `/workflows/runs/{run_id}`)  | Supabase user JWT    | Read a pipeline run's current status + its scans — a plain DB read, does **not** itself query Argo/K8s |
 | GET    | `/model-cards` (external: `/workflows/model-cards`)      | Supabase user JWT    | The production model cards from the wandb registry, for the confirm dialog's model warnings (its own rate limit) |
 
 ### Video generation
 
-A video is **per scan** — one cylinder scan has many frames (~72 rotation
-images), and that set of frames is one video. An experiment has _many_ scans, so
-the route takes **both** ids: `scan_id` identifies the video, and `experiment_id`
-scopes it (the scan must belong to that experiment, else 404).
-
-`POST /experiments/{experiment_id}/scans/{scan_id}/video` logs in as a dedicated
-**least-privilege Supabase app user** (see below), then validates the scan
-belongs to the experiment (`cyl_scans_extended`), reads the scan's images
-(`cyl_images`, capped at 72), downloads each frame from the images bucket,
-decimates, encodes H.264 with ffmpeg, uploads the MP4 to the videos bucket,
-returns a signed download URL, and (if configured) inserts a record row.
-Synchronous — mirrors `services/video-worker` but runs in the request.
+A cylinder video is **per scan** (~72 rotation images); a plate time-lapse is
+**per plate and wave**. Both POSTs validate the request, enqueue through the
+`enqueue_*` wrapper as the app user, and answer `202 {"job_id", "created"}`.
+`created` is false when the item already had a queued or rendering job, which the
+request then shares: the database allows one active job per item.
 
 ```bash
-# Request: experiment 123, scan 456 — requires the caller's Supabase user JWT
 curl -X POST http://localhost:5100/cyl/experiments/123/scans/456/video \
-  -H "Authorization: Bearer <supabase-user-jwt>" \
-  -H "apikey: <anon-key>"
+  -H "Authorization: Bearer <supabase-user-jwt>"
+# 202 {"job_id": "1a2b3c4d-…", "created": true}
 
-# Response:
-# {"experiment_id": 123, "scan_id": 456, "frames": 72, "path": "cyl-videos/456.mp4", "download_url": "https://.../456.mp4?..."}
+curl -X POST http://localhost:5100/gravi/experiments/1886/plate-video \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -d '{"plate_id": "Plate_19", "wave_number": 13}'
 ```
+
+Each worker (`python plate_video_worker.py run`, `python cyl_video_worker.py run`)
+loops: claim → render → complete (`rendered` or `kept`) or fail with an
+`error_code`. Progress is written to the job row at most once a second and on
+every stage change (`downloading`, `encoding`, `uploading`), and each report
+renews the message's visibility timeout (`VISIBILITY_TIMEOUT_SECONDS` in
+`video_queue.py`, derived from the encoder's own timeout). A worker that dies
+stops renewing, so its job is handed out again; after `MAX_READS` deliveries it is
+failed as `redelivered`. On SIGTERM a worker finishes the job in hand and claims
+no more, within its 5-minute `stop_grace_period`.
+
+The renderer's raw failure text goes to the job's `error` column, which signed-in
+roles cannot read; the pages show `error_code` and the job id, and the id is what
+a support request quotes.
 
 ### Rendering one video from a container
 
-`plate_video_worker.py` and `cyl_video_worker.py` render a single item through the
-same code these routes call, from a container built on this image. Both sit behind a
-compose profile, so `docker compose up -d` never starts them — and never builds them
-either, which is why the commands below pass `--build`.
-
-> **Dev only until the render queue lands.** These commands are not approved to run
-> against staging or production before then — not even for an item nobody appears to be
-> using. The per-plate and per-scan locks that keep two renders off one object key live
-> in the service's own process and do not hold against a second container, so a container
-> render alongside a click on the same item can leave the recorded frame count describing
-> the other render's file, and the page then treats that video as current and never offers
-> to remake it. Nobody can see the collision coming either: the plate page's progress
-> endpoint reads a record held in the service's process, so it shows nothing while a
-> container render runs, and a scientist seeing no progress is being invited to click.
+The same images also render a single item on command, for an operator:
 
 ```bash
-# Dev — the only environment these are approved for until the queue lands.
 docker compose -f docker-compose.dev.yml --env-file .env.dev \
-  run --rm --no-deps --build plate-video-worker \
+  run --rm --no-deps plate-video-worker \
   python plate_video_worker.py render --experiment 1886 --plate Plate_19 --wave 13
 
 docker compose -f docker-compose.dev.yml --env-file .env.dev \
-  run --rm --no-deps --build cyl-video-worker \
+  run --rm --no-deps cyl-video-worker \
   python cyl_video_worker.py render --experiment 1 --scan 456
 ```
 
-Once the queue lands and the hold is lifted, the same commands take the stack's own
-project name and env file — `-p bloom_v2_prod … --env-file .env.prod` from
-`/data/bloom/production`, `-p bloom_v2_staging … --env-file .env.staging` from
-`/data/bloom/staging`, both against `-f docker-compose.prod.yml`. The project name is
-not optional there: the compose file pins the production name, so a staging run without
-`-p` reaches the production stack. A render outlives an SSH session, so run it under
-`tmux` or `nohup`.
+On staging and production use the stack's own project name and env file —
+`-p bloom_v2_prod … --env-file .env.prod` from `/data/bloom/production`,
+`-p bloom_v2_staging … --env-file .env.staging` from `/data/bloom/staging`, both
+against `-f docker-compose.prod.yml`. The compose file pins the production name, so
+a staging run without `-p` reaches the production stack.
 
-Each flag earns its place. `--no-deps` because the stack is already up, and `run` would
-otherwise start — and can recreate — Kong and Postgres. `--build` because a deploy never
-builds a profiled service, so without it a render uses whatever image the first run
-happened to bake. With the stack down, the render fails at its first request; bring the
-stack up rather than retrying.
+A `render` does not take the queue's one-job-per-item hold, so do not run one for
+an item the queue may be rendering.
 
 Use `--wave none` for a plate with no wave; omitting `--wave` means the same thing.
 
-**Exit codes.** `0` rendered or kept, `1` failed — this service, storage or the database
-did not answer, or something else holds the item, so a retry may help — and `3` refused,
-meaning the renderer declined and retrying will not change that. `2` is argparse's own
-usage error, which is why refusal is not 2. The word a command prints is derived from
-the code it exits with, so the two always agree.
-
-Both take the classification from the route, with one deliberate exception: a plate whose
-stored key and identity disagree is answered 500 by the route, but it cannot come right on
-a second attempt, so the command refuses it rather than inviting a retry.
-
-One cylinder failure is raised after the object was uploaded — signing its URL is the last
-step before the row is written. Only that one adds a line saying the video was stored and
-its record was not updated.
-
-While a container render runs, the plate page's progress endpoint shows nothing: it
-reads a record held in the service's own process.
+**Exit codes.** `0` rendered or kept, `1` failed — this service, storage or the
+database did not answer, so a retry may help — and `3` refused, meaning the renderer
+declined and retrying will not change that. `2` is argparse's own usage error.
 
 #### Where the frame ceilings come from
 

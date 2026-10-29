@@ -19,11 +19,29 @@ vi.mock("@/lib/supabase/scan-video", () => ({
   getStoredScanVideo: vi.fn(),
 }));
 
+vi.mock("@/lib/supabase/video-jobs", () => ({
+  getLatestScanVideoJob: vi.fn(),
+}));
+
 import { getSession } from "@/lib/supabase/server";
 import { getStoredScanVideo } from "@/lib/supabase/scan-video";
+import { getLatestScanVideoJob } from "@/lib/supabase/video-jobs";
 
 const mockedGetSession = vi.mocked(getSession);
 const mockedStoredVideo = vi.mocked(getStoredScanVideo);
+const mockedJob = vi.mocked(getLatestScanVideoJob);
+
+const JOB = {
+  id: "1a2b3c4d-0000-0000-0000-000000000000",
+  status: "queued" as const,
+  stage: null,
+  frames_done: null,
+  frames_total: null,
+  error_code: null,
+  queued_ahead: 1,
+  created_at: "2026-10-29T10:00:00Z",
+  updated_at: "2026-10-29T10:00:00Z",
+};
 
 const STORED_URL = "https://storage.test/cyl-videos/5.mp4?token=a";
 
@@ -38,6 +56,7 @@ function callGet(scanId: string) {
 beforeEach(() => {
   mockedGetSession.mockResolvedValue({ access_token: "tok" } as never);
   mockedStoredVideo.mockResolvedValue({ status: "absent" } as never);
+  mockedJob.mockResolvedValue(null);
   fetchSpy = vi.fn();
   vi.stubGlobal("fetch", fetchSpy);
 });
@@ -68,8 +87,28 @@ describe("GET — has the video landed yet?", () => {
     expect((await res.json()).download_url).toBe(STORED_URL);
   });
 
-  it("404s while no video is stored, so a poll keeps waiting", async () => {
-    expect((await callGet("5")).status).toBe(404);
+  it("answers no url while no video is stored, so a poll keeps waiting", async () => {
+    const res = await callGet("5");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ download_url: null, job: null });
+  });
+
+  it("reports the scan's latest job, so anyone on the page sees it", async () => {
+    mockedJob.mockResolvedValue(JOB);
+
+    const body = await (await callGet("5")).json();
+
+    expect(mockedJob).toHaveBeenCalledWith(5);
+    expect(body.job).toEqual(JOB);
+  });
+
+  it("does not read the job when storage could not say", async () => {
+    mockedStoredVideo.mockResolvedValue({ status: "unknown", reason: "x" } as never);
+
+    await callGet("5");
+
+    expect(mockedJob).not.toHaveBeenCalled();
   });
 
   it("503s when storage could not say, rather than claiming there is none", async () => {

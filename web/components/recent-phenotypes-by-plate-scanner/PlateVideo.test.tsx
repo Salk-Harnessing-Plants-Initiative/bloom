@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * The three states a plate can be in, the 504 recovery, and what a scientist
- * is told when something goes wrong.
+ * The states a plate can be in, the queued render and its poll, and what a
+ * scientist is told when something goes wrong.
  *
  * A plate keeps gaining captures, so unlike a cylinder scan a stored video is
  * usually not wrong — just short. "Stale" is the state that exists for that,
@@ -18,20 +18,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { PlateVideo } from "./PlateVideo";
+import {
+  VIDEO_JOB_POLL_INTERVAL_MS,
+  VIDEO_JOB_POLL_TIMEOUT_MS,
+  type VideoJob,
+} from "@/lib/video-job";
 
 const URL_A = "https://signed.test/graviscan-videos/12/wave-1/P7.mp4?token=a";
 const URL_B = "https://signed.test/graviscan-videos/12/wave-1/P7.mp4?token=b";
 
-const RENDERED = {
-  experiment_id: 12,
-  plate_id: "P7",
-  wave_number: 1,
-  action: "rendered",
-  reason: "no video stored; encoding 40 frames",
-  object_path: "12/wave-1/P7.mp4",
-  frames: 40,
-  coverage: null,
-};
+const JOB_ID = "1a2b3c4d-0000-0000-0000-000000000000";
+const QUEUED = { job_id: JOB_ID, created: true };
+
+function job(overrides: Partial<VideoJob> = {}): VideoJob {
+  return {
+    id: JOB_ID,
+    status: "queued",
+    stage: null,
+    frames_done: null,
+    frames_total: null,
+    error_code: null,
+    queued_ahead: 0,
+    created_at: "2026-10-29T10:00:00Z",
+    updated_at: "2026-10-29T10:00:00Z",
+    ...overrides,
+  };
+}
+
+const RENDERED = job({ status: "rendered", frames_done: 40, frames_total: 40 });
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
@@ -53,11 +67,12 @@ function serve(handler: (method: string, url: string) => Response) {
 }
 
 /** The common case: the poll answers, nothing is stored. */
-const nothingStored = () => serve(() => json({ download_url: null, frames: null }));
+const nothingStored = () =>
+  serve(() => json({ download_url: null, frames: null, job: null }));
 
 /** The common case: the poll answers with a video holding `frames`. */
 const storedWith = (frames: number | null, url = URL_A) =>
-  serve(() => json({ download_url: url, frames }));
+  serve(() => json({ download_url: url, frames, job: null }));
 
 function renderPlate(props: Partial<Parameters<typeof PlateVideo>[0]> = {}) {
   return render(
@@ -211,7 +226,7 @@ describe("when the check itself fails", () => {
 describe("generating", () => {
   it("sends the plate and wave the page is showing", async () => {
     const calls = serve((method) =>
-      method === "POST" ? json(RENDERED) : json({ download_url: null, frames: null })
+      method === "POST" ? json(QUEUED, 202) : json({ download_url: null, frames: null, job: null })
     );
     await act(async () => {
       renderPlate();
@@ -230,7 +245,7 @@ describe("generating", () => {
 
   it("omits nothing for a plate with no wave — it sends null", async () => {
     const calls = serve((method) =>
-      method === "POST" ? json(RENDERED) : json({ download_url: null, frames: null })
+      method === "POST" ? json(QUEUED, 202) : json({ download_url: null, frames: null, job: null })
     );
     await act(async () => {
       renderPlate({ waveNumber: null });
@@ -243,58 +258,10 @@ describe("generating", () => {
     expect(JSON.parse(String(post?.init?.body)).wave_number).toBeNull();
   });
 
-  it("asks the route for the link once the render lands", async () => {
-    // A 200 carries no playable URL, only the object path, so the poll is the
-    // success path as well as the timeout path.
-    let stored = false;
-    const calls = serve((method) => {
-      if (method === "POST") {
-        stored = true;
-        return json(RENDERED);
-      }
-      return json({ download_url: stored ? URL_B : null, frames: stored ? 40 : null });
-    });
-    await act(async () => {
-      renderPlate();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-
-    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
-  });
-
-  it("keeps offering Update when the render covered fewer frames than exist", async () => {
-    // More captures can land while the encode runs. Assuming the new video
-    // covers everything available would hide the ones it missed.
-    let encoded = false;
-    serve((method) => {
-      if (method === "POST") {
-        encoded = true;
-        return json({ ...RENDERED, frames: 30 });
-      }
-      return json({
-        download_url: encoded ? URL_B : null,
-        frames: encoded ? 30 : null,
-      });
-    });
-    await act(async () => {
-      renderPlate({ availableFrames: 40 });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-
-    expect(screen.getByRole("button").textContent).toContain("Update");
-    expect(screen.getByText("10 new frames since this was made.")).toBeTruthy();
-  });
-
   it("does not fire a second request while one is in flight", async () => {
     let release: (r: Response) => void = () => {};
     const calls = serve((method) => {
-      if (method === "GET") return json({ download_url: null, frames: null });
+      if (method === "GET") return json({ download_url: null, frames: null, job: null });
       return new Promise<Response>((r) => (release = r)) as unknown as Response;
     });
     await act(async () => {
@@ -311,7 +278,7 @@ describe("generating", () => {
     expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
     expect(button.hasAttribute("disabled")).toBe(true);
     await act(async () => {
-      release(json(RENDERED));
+      release(json(QUEUED, 202));
     });
   });
 });
@@ -323,7 +290,7 @@ describe("what a refusal tells the scientist", () => {
     serve((method) =>
       method === "POST"
         ? json({ detail: "none of this plate's images have finished uploading yet" }, 404)
-        : json({ download_url: null, frames: null })
+        : json({ download_url: null, frames: null, job: null })
     );
     await act(async () => {
       renderPlate();
@@ -339,11 +306,11 @@ describe("what a refusal tells the scientist", () => {
     serve((method) =>
       method === "POST"
         ? json(
-            { detail: "another plate video is already encoding" },
+            { detail: "Rate limit exceeded; retry later" },
             429,
             { "Retry-After": "30" }
           )
-        : json({ download_url: null, frames: null })
+        : json({ download_url: null, frames: null, job: null })
     );
     await act(async () => {
       renderPlate();
@@ -352,15 +319,15 @@ describe("what a refusal tells the scientist", () => {
       fireEvent.click(screen.getByRole("button"));
     });
 
-    expect(screen.getByText(/already encoding/)).toBeTruthy();
+    expect(screen.getByText(/Rate limit exceeded/)).toBeTruthy();
     expect(screen.getByText(/Try again in 30 seconds/)).toBeTruthy();
   });
 
   it("shows the detail as text, never as markup", async () => {
     serve((method) =>
       method === "POST"
-        ? json({ detail: "<img src=x onerror=alert(1)> failed" }, 422)
-        : json({ download_url: null, frames: null })
+        ? json({ detail: "<img src=x onerror=alert(1)> failed" }, 400)
+        : json({ download_url: null, frames: null, job: null })
     );
     await act(async () => {
       renderPlate();
@@ -377,7 +344,7 @@ describe("what a refusal tells the scientist", () => {
     serve((method) =>
       method === "POST"
         ? new Response("<html>502</html>", { status: 502 })
-        : json({ download_url: null, frames: null })
+        : json({ download_url: null, frames: null, job: null })
     );
     await act(async () => {
       renderPlate();
@@ -386,13 +353,13 @@ describe("what a refusal tells the scientist", () => {
       fireEvent.click(screen.getByRole("button"));
     });
 
-    expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
+    expect(screen.getByText(/Could not queue the video/)).toBeTruthy();
     expect(screen.queryByText(/html/)).toBeNull();
   });
 
-  it("reports a response that carries no object path", async () => {
+  it("reports a response that carries no job", async () => {
     serve((method) =>
-      method === "POST" ? json({ ok: true }) : json({ download_url: null, frames: null })
+      method === "POST" ? json({ ok: true }, 202) : json({ download_url: null, frames: null, job: null })
     );
     await act(async () => {
       renderPlate();
@@ -401,13 +368,13 @@ describe("what a refusal tells the scientist", () => {
       fireEvent.click(screen.getByRole("button"));
     });
 
-    expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
+    expect(screen.getByText(/Could not queue the video/)).toBeTruthy();
   });
 
   it("reports a network failure outright", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(json({ download_url: null, frames: null }))
+      .mockResolvedValueOnce(json({ download_url: null, frames: null, job: null }))
       .mockRejectedValue(new TypeError("fetch failed"));
     vi.stubGlobal("fetch", fetchMock);
     await act(async () => {
@@ -417,408 +384,266 @@ describe("what a refusal tells the scientist", () => {
       fireEvent.click(screen.getByRole("button"));
     });
 
-    expect(screen.getByText(/Could not generate the video/)).toBeTruthy();
+    expect(screen.getByText(/Could not queue the video/)).toBeTruthy();
   });
 });
 
-describe("what a scientist is told while it renders", () => {
-  const rendering = (progress: unknown) =>
-    serve((method) =>
-      method === "POST"
-        ? json({}, 504)
-        : json({ download_url: null, frames: null, progress })
-    );
+/** POST queues; GETs take `polls` in order, repeating the last. */
+function queue(polls: unknown[], post: () => Response = () => json(QUEUED, 202)) {
+  let i = 0;
+  return serve((method) => {
+    if (method === "POST") return post();
+    const answer = polls[Math.min(i, polls.length - 1)];
+    i += 1;
+    return json(answer);
+  });
+}
 
-  async function clickAndPoll(ticks = 1) {
+const absent = (j: VideoJob | null = null) => ({ download_url: null, frames: null, job: j });
+const present = (frames: number | null, j: VideoJob | null = null, url = URL_B) => ({
+  download_url: url,
+  frames,
+  job: j,
+});
+
+async function tick(times = 1) {
+  for (let n = 0; n < times; n += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(VIDEO_JOB_POLL_INTERVAL_MS);
+    });
+  }
+}
+
+async function clickGenerate() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button"));
+  });
+}
+
+describe("a queued render, and the poll that follows", () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it("polls until the job is rendered, then plays the new video", async () => {
+    queue([absent(), absent(job()), present(40, RENDERED)]);
     await act(async () => {
       renderPlate();
     });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-    for (let i = 0; i < ticks; i++) {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
-    }
-  }
+    await clickGenerate();
+    await tick(2);
 
-  /** The bar with nothing to measure: no value, a segment crossing the track. */
-  function expectSweeping() {
-    const bar = screen.getByRole("progressbar");
-    expect(bar.getAttribute("aria-valuenow")).toBeNull();
-    expect((bar.firstElementChild as HTMLElement).className).toContain(
-      "animate-sweep"
-    );
-  }
-
-  it("counts the frames as they download", async () => {
-    // Downloading is ~96% of a render, so this is the number they watch.
-    vi.useFakeTimers();
-    rendering({ stage: "downloading", done: 47, total: 86 });
-
-    await clickAndPoll();
-
-    expect(screen.getByText("Downloading frame 47 of 86")).toBeTruthy();
+    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("fills the bar to the fraction downloaded", async () => {
-    vi.useFakeTimers();
-    rendering({ stage: "downloading", done: 21, total: 86 });
+  it("takes the frame count from the answer, not from what is available", async () => {
+    // More captures can land while it renders; the answer says what it holds.
+    queue([absent(), present(30, job({ status: "rendered", frames_done: 30 }))]);
+    await act(async () => {
+      renderPlate({ availableFrames: 40 });
+    });
+    await clickGenerate();
+    await tick();
 
-    await clickAndPoll();
+    expect(screen.getByRole("button").textContent).toContain("Update");
+    expect(screen.getByText("10 new frames since this was made.")).toBeTruthy();
+  });
 
+  it("says how many are ahead while queued", async () => {
+    queue([absent(), absent(job({ queued_ahead: 3 }))]);
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(screen.getByText("Queued — 3 ahead")).toBeTruthy();
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("says next up when nothing is ahead", async () => {
+    queue([absent(), absent(job({ queued_ahead: 0 }))]);
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(screen.getByText("Queued — next up")).toBeTruthy();
+  });
+
+  it("counts the frames as they download, and fills the bar to match", async () => {
+    queue([
+      absent(),
+      absent(job({ status: "rendering", stage: "downloading", frames_done: 10, frames_total: 40 })),
+    ]);
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(screen.getByText("Downloading frame 10 of 40")).toBeTruthy();
     const bar = screen.getByRole("progressbar");
-    expect(bar.getAttribute("aria-valuenow")).toBe("21");
-    expect(bar.getAttribute("aria-valuemax")).toBe("86");
-    const fill = bar.firstElementChild as HTMLElement;
-    expect(fill!.style.width).toBe(`${(21 / 86) * 100}%`);
+    expect(bar.getAttribute("aria-valuenow")).toBe("10");
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe("25%");
   });
 
   it("sweeps while encoding rather than inventing a fraction", async () => {
-    // Encoding reports nothing inside itself, and a still bar reads as stuck.
-    vi.useFakeTimers();
-    rendering({ stage: "encoding", done: 86, total: 86 });
-
-    await clickAndPoll();
-
-    expectSweeping();
-  });
-
-  it("says the video is being made once the frames are in", async () => {
-    vi.useFakeTimers();
-    rendering({ stage: "encoding", done: 86, total: 86 });
-
-    await clickAndPoll();
-
-    expect(screen.getByText(/please stay on this page/)).toBeTruthy();
-  });
-
-  it("falls back to the plain wait when the service reports nothing", async () => {
-    // An older service, a restarted one, or the seconds before the first frame.
-    vi.useFakeTimers();
-    rendering(undefined);
-
-    await clickAndPoll();
-
-    expect(
-      screen.getByText(/Encoding — this can take a few minutes/)
-    ).toBeTruthy();
-  });
-
-  it("stops counting when the render stops reporting", async () => {
-    // An OOM kill, a restart, or a raised frame. The count would otherwise sit
-    // there for the whole ten-minute poll window describing a dead render.
-    vi.useFakeTimers();
-    let polls = 0;
-    serve((method) =>
-      method === "POST"
-        ? json({}, 504)
-        : json({
-            download_url: null,
-            frames: null,
-            progress:
-              polls++ === 1
-                ? { stage: "downloading", done: 61, total: 86 }
-                : undefined,
-          })
-    );
-
-    await clickAndPoll(2);
-
-    expect(
-      screen.getByText(/Encoding — this can take a few minutes/)
-    ).toBeTruthy();
-    expectSweeping();
-  });
-
-  it("does not open a new render on the last one's count", async () => {
-    // The plate keeps gaining captures, so Update after a render is the
-    // designed path — and the old count would be pinned there by the
-    // backwards guard until the new render passed it.
-    vi.useFakeTimers();
-    let landed = false;
-    serve((method) => {
-      if (method === "POST") return json({}, 504);
-      return landed
-        ? json({ download_url: "https://x/y.mp4", frames: 86 })
-        : json({
-            download_url: null,
-            frames: null,
-            progress: { stage: "downloading", done: 61, total: 86 },
-          });
-    });
-    await act(async () => {
-      renderPlate({ availableFrames: 120 });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    expect(screen.getByText("Downloading frame 61 of 86")).toBeTruthy();
-
-    landed = true;
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-
-    expect(screen.queryByText(/Downloading frame/)).toBeNull();
-    expectSweeping();
-  });
-
-  it("takes the bar away once it gives up waiting", async () => {
-    vi.useFakeTimers();
-    rendering({ stage: "downloading", done: 61, total: 86 });
-
-    await clickAndPoll();
-    expect(screen.queryByRole("progressbar")).toBeTruthy();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(610_000);
-    });
-
-    expect(screen.getByText(/Still encoding/)).toBeTruthy();
-    expect(screen.queryByRole("progressbar")).toBeNull();
-  });
-
-  it("sweeps before the first frame is counted", async () => {
-    // The service seeds {0, 0} the moment a render starts; a poll can land there.
-    vi.useFakeTimers();
-    rendering({ stage: "downloading", done: 0, total: 0 });
-
-    await clickAndPoll();
-
-    expectSweeping();
-    expect(screen.queryByText(/Downloading frame/)).toBeNull();
-  });
-
-  it("lets the stage change through on an unchanged count", async () => {
-    // The last frame reports downloading 86/86, then encoding 86/86 — the same
-    // count. A guard that rejected it would leave the download text up for the
-    // whole encode.
-    vi.useFakeTimers();
-    let asked = false;
-    let polls = 0;
-    serve((method) => {
-      if (method === "POST") {
-        asked = true;
-        return json({}, 504);
-      }
-      if (!asked) return json({ download_url: null, frames: null });
-      return json({
-        download_url: null,
-        frames: null,
-        progress: {
-          stage: polls++ === 0 ? "downloading" : "encoding",
-          done: 86,
-          total: 86,
-        },
-      });
-    });
-
-    await clickAndPoll(2);
-
-    expect(screen.getByText(/please stay on this page/)).toBeTruthy();
-  });
-
-  it("keeps the count when a poll fails, rather than blanking it", async () => {
-    // A dropped request says nothing about the render. Blanking would flicker
-    // on the exact failure the count exists to describe.
-    vi.useFakeTimers();
-    let asked = false;
-    let polls = 0;
-    serve((method) => {
-      if (method === "POST") {
-        asked = true;
-        return json({}, 504);
-      }
-      if (!asked) return json({ download_url: null, frames: null });
-      return polls++ === 0
-        ? json({
-            download_url: null,
-            frames: null,
-            progress: { stage: "downloading", done: 47, total: 86 },
-          })
-        : json({ detail: "Could not check" }, 503);
-    });
-
-    await clickAndPoll(2);
-
-    expect(screen.getByText("Downloading frame 47 of 86")).toBeTruthy();
-  });
-
-  it("asks the poll for progress, and only the poll", async () => {
-    // The mount does not read progress and the call costs a round trip, so the
-    // flag is what separates them. Without this, dropping it ships the feature
-    // dead with every test green.
-    vi.useFakeTimers();
-    const calls = serve((method) =>
-      method === "POST" ? json({}, 504) : json({ download_url: null, frames: null })
-    );
-
-    await clickAndPoll();
-
-    const gets = calls.filter((c) => c.method === "GET").map((c) => c.url);
-    expect(gets[0]).not.toContain("progress=1");
-    expect(gets[gets.length - 1]).toContain("progress=1");
-  });
-
-  it("ignores a progress answer that is not shaped like one", async () => {
-    vi.useFakeTimers();
-    rendering({ stage: 7, done: 47, total: 86 });
-
-    await clickAndPoll();
-
-    expectSweeping();
-    expect(
-      screen.getByText(/Encoding — this can take a few minutes/)
-    ).toBeTruthy();
-  });
-
-  it("cannot be pushed past the end of the plate", async () => {
-    // Only reachable if the service breaks its own contract, but the count and
-    // the bar are two places to get it wrong and both are on screen.
-    vi.useFakeTimers();
-    rendering({ stage: "downloading", done: 9999, total: 86 });
-
-    await clickAndPoll();
-
-    expect(screen.getByText("Downloading frame 86 of 86")).toBeTruthy();
-    const fill = screen.getByRole("progressbar").firstElementChild as HTMLElement;
-    expect(fill.style.width).toBe("100%");
-  });
-
-  it("never lets the count go backwards", async () => {
-    // Two polls can land out of order; a count that jumps back reads as broken.
-    vi.useFakeTimers();
-    let asked = false;
-    let n = 0;
-    const counts = [61, 21];
-    serve((method) => {
-      if (method === "POST") {
-        asked = true;
-        return json({}, 504);
-      }
-      if (!asked) return json({ download_url: null, frames: null });
-      return json({
-        download_url: null,
-        frames: null,
-        progress: { stage: "downloading", done: counts[n++] ?? 21, total: 86 },
-      });
-    });
-
-    await clickAndPoll(2);
-
-    expect(screen.getByText("Downloading frame 61 of 86")).toBeTruthy();
-  });
-});
-
-describe("a 504, and the poll that follows", () => {
-  it("polls until the video appears, then shows it", async () => {
-    vi.useFakeTimers();
-    let polls = 0;
-    const calls = serve((method) => {
-      if (method === "POST") return json({ detail: "Still encoding" }, 504);
-      polls += 1;
-      return json({ download_url: polls >= 3 ? URL_B : null, frames: polls >= 3 ? 40 : null });
-    });
+    queue([
+      absent(),
+      absent(job({ status: "rendering", stage: "encoding", frames_done: 40, frames_total: 40 })),
+    ]);
     await act(async () => {
       renderPlate();
     });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-    expect(screen.getByText(/Encoding/)).toBeTruthy();
+    await clickGenerate();
+    await tick();
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    expect(screen.getByText(/Encoding/)).toBeTruthy();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    expect(screen.queryByText(/Encoding/)).toBeNull();
-    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
-
-    const poll = calls.find((c) => c.method === "GET");
-    expect(poll?.url).toBe(
-      "/api/gravi/experiments/12/plate-video?plate_id=P7&wave_number=1"
-    );
+    expect(screen.getByText("Encoding the video…")).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBeNull();
   });
 
-  it("omits the wave from the poll when there is none", async () => {
-    vi.useFakeTimers();
-    let encoded = false;
-    const calls = serve((method) => {
-      if (method === "POST") {
-        encoded = true;
-        return json({}, 504);
-      }
-      return json({
-        download_url: encoded ? URL_B : null,
-        frames: encoded ? 40 : null,
-      });
-    });
+  it("shows a failed job's reason as text, with a job reference", async () => {
+    queue([absent(), absent(job({ status: "failed", error_code: "frame_too_large" }))]);
     await act(async () => {
-      renderPlate({ waveNumber: null });
+      renderPlate();
     });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
+    await clickGenerate();
+    await tick();
 
-    const poll = calls.find((c) => c.method === "GET");
-    expect(poll?.url).toBe("/api/gravi/experiments/12/plate-video?plate_id=P7");
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("too large to render");
+    expect(alert.textContent).toContain("(job 1a2b3c4d)");
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("ignores an older job's outcome while waiting for its own", async () => {
+    queue([absent(), absent(job({ id: "ffffffff-old", status: "failed", error_code: "unexpected" }))]);
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("keeps the video it had when the job keeps it", async () => {
+    queue([present(16, null, URL_A), present(16, job({ status: "kept" }), URL_A)]);
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 16 });
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_A);
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
   });
 
   it("keeps asking through a failed poll rather than giving up", async () => {
-    vi.useFakeTimers();
-    let polls = 0;
+    let i = 0;
     serve((method) => {
-      if (method === "POST") return json({}, 504);
-      polls += 1;
-      if (polls === 2) return json({ detail: "Could not check" }, 503);
-      return json({ download_url: polls >= 3 ? URL_B : null, frames: polls >= 3 ? 40 : null });
+      if (method === "POST") return json(QUEUED, 202);
+      i += 1;
+      if (i === 1) return json(absent());
+      if (i === 2) return json({ detail: "x" }, 503);
+      return json(present(40, RENDERED));
     });
     await act(async () => {
       renderPlate();
     });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
-    });
+    await clickGenerate();
+    await tick();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await tick();
 
     expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
   });
 
-  it("stops asking after the budget, without re-offering Generate", async () => {
-    // The encode it was waiting on is still running upstream; a second one
-    // would race it.
-    vi.useFakeTimers();
-    serve((method) =>
-      method === "POST" ? json({}, 504) : json({ download_url: null, frames: null })
-    );
+  it("bounds each poll below its interval", async () => {
+    expect(VIDEO_JOB_POLL_TIMEOUT_MS).toBeLessThan(VIDEO_JOB_POLL_INTERVAL_MS);
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    queue([absent(), absent(job())]);
     await act(async () => {
       renderPlate();
     });
+    await clickGenerate();
+    await tick();
+
+    expect(timeout).toHaveBeenCalledWith(VIDEO_JOB_POLL_TIMEOUT_MS);
+    timeout.mockRestore();
+  });
+
+  it("polls the plate and wave the page is showing", async () => {
+    const calls = queue([absent(), absent(job())]);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button"));
+      renderPlate({ waveNumber: null });
     });
+    await clickGenerate();
+    await tick();
+
+    const polls = calls.filter((c) => c.method === "GET");
+    expect(polls.at(-1)?.url).toBe("/api/gravi/experiments/12/plate-video?plate_id=P7");
+  });
+
+  it("stops polling once unmounted", async () => {
+    const calls = queue([absent(), absent(job())]);
+    let view!: ReturnType<typeof render>;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(610_000);
+      view = renderPlate();
+    });
+    await clickGenerate();
+    view.unmount();
+    const before = calls.length;
+    await tick(3);
+
+    expect(calls.length).toBe(before);
+  });
+});
+
+describe("someone else's render", () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it("is shown on arrival, without a click", async () => {
+    queue([
+      present(16, job({ status: "rendering", stage: "downloading", frames_done: 5, frames_total: 40 }), URL_A),
+      present(40, RENDERED),
+    ]);
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 16 });
     });
 
-    expect(screen.getByText(/Still encoding/)).toBeTruthy();
+    expect(screen.getByText("Downloading frame 5 of 40")).toBeTruthy();
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+
+    await tick();
+    expect(document.querySelector("source")?.getAttribute("src")).toBe(URL_B);
+  });
+
+  it("is not waited on once it has settled", async () => {
+    queue([absent(job({ status: "failed", error_code: "unexpected" }))]);
+    await act(async () => {
+      renderPlate();
+    });
+
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("a stored video that will not play", () => {
+  it("says the link could not be loaded, not that there is no video", async () => {
+    storedWith(40);
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 40, availableFrames: 40 });
+    });
+    await act(async () => {
+      fireEvent.error(document.querySelector("video")!);
+    });
+
+    expect(screen.getByText(/could not be loaded/)).toBeTruthy();
+    expect(screen.queryByText(/No time-lapse video/)).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
   });
 });

@@ -15,9 +15,11 @@ import * as routeModule from "@/app/api/gravi/experiments/[experimentId]/plate-v
 
 vi.mock("@/lib/supabase/server", () => ({ getSession: vi.fn() }));
 vi.mock("@/lib/supabase/plate-video", () => ({ getStoredPlateVideo: vi.fn() }));
+vi.mock("@/lib/supabase/video-jobs", () => ({ getLatestPlateVideoJob: vi.fn() }));
 
 import { getSession } from "@/lib/supabase/server";
 import { getStoredPlateVideo } from "@/lib/supabase/plate-video";
+import { getLatestPlateVideoJob } from "@/lib/supabase/video-jobs";
 
 const mockedGetSession = vi.mocked(getSession);
 
@@ -25,17 +27,20 @@ const GENERIC_SENTENCE =
   "This video could not be made right now. Try again shortly — if it keeps " +
   "happening, let the Bloom team know.";
 const mockedStored = vi.mocked(getStoredPlateVideo);
+const mockedJob = vi.mocked(getLatestPlateVideoJob);
 
-const RESULT = {
-  experiment_id: 12,
-  plate_id: "P7",
-  wave_number: 1,
-  action: "rendered",
-  reason: "no video stored; encoding 86 frames",
-  object_path: "12/wave-1/P7.mp4",
-  frames: 86,
-  frames_unknown: false,
-  coverage: null,
+const RESULT = { job_id: "1a2b3c4d-0000-0000-0000-000000000000", created: true };
+
+const JOB = {
+  id: "1a2b3c4d-0000-0000-0000-000000000000",
+  status: "rendering" as const,
+  stage: "downloading",
+  frames_done: 47,
+  frames_total: 86,
+  error_code: null,
+  queued_ahead: null,
+  created_at: "2026-10-29T10:00:00Z",
+  updated_at: "2026-10-29T10:00:05Z",
 };
 
 // A real session, not one field cast past the type checker: the route reads
@@ -87,6 +92,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedGetSession.mockResolvedValue(SESSION);
   mockedStored.mockResolvedValue({ status: "absent" });
+  mockedJob.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -100,27 +106,24 @@ it("runs in the runtime these tests run in", () => {
 });
 
 describe("POST", () => {
-  it("passes the plate through and returns what was rendered", async () => {
-    const fetchMock = upstreamReturns(200, RESULT);
+  it("passes the plate through and returns the queued job", async () => {
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await post({ plate_id: "P7", wave_number: 1 });
 
-    expect(res.status).toBe(200);
-    // Everything the service sent except `frames_unknown`, which the caller is
-    // told as `frames: null` instead.
-    const { frames_unknown: _unused, ...expected } = RESULT;
-    expect(await res.json()).toEqual(expected);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual(RESULT);
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("http://workflows:5100/gravi/experiments/12/plate-video");
     expect(JSON.parse(init.body)).toEqual({ plate_id: "P7", wave_number: 1 });
   });
 
-  it("asks the service to make a video, as JSON", async () => {
-    // The verb and the content type are what make this a render rather than a
+  it("asks the service to queue a video, as JSON", async () => {
+    // The verb and the content type are what make this a request rather than a
     // read. Neither was pinned, so either could be changed without a test noticing.
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     await post({ plate_id: "P7", wave_number: 1 });
@@ -134,7 +137,7 @@ describe("POST", () => {
     // Every other test runs with the variable unset, so only the compose default
     // was ever exercised and the setting could stop being read unnoticed.
     vi.stubEnv("WORKFLOWS_URL", "http://workflows.internal:9000");
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     await post({ plate_id: "P7", wave_number: 1 });
@@ -144,21 +147,19 @@ describe("POST", () => {
     );
   });
 
-  it("gives up before undici does, so a slow encode is our own 504", async () => {
-    // Without this the wait runs to undici's 300s header timeout and surfaces as
-    // an opaque UND_ERR, which is the answer the 504 branch exists to replace.
+  it("gives up quickly, since queuing is one insert upstream", async () => {
     const timeout = vi.spyOn(AbortSignal, "timeout");
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     await post({ plate_id: "P7", wave_number: 1 });
 
-    expect(timeout).toHaveBeenCalledWith(240_000);
+    expect(timeout).toHaveBeenCalledWith(15_000);
     expect(fetchMock.mock.calls[0][1].signal).toBe(timeout.mock.results[0].value);
   });
 
   it("refuses a body that is not JSON without reaching upstream", async () => {
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await post("{not json");
@@ -170,19 +171,19 @@ describe("POST", () => {
 
   it("treats an omitted wave as no wave", async () => {
     // A client that simply leaves the field out, rather than sending null.
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await post({ plate_id: "P7" });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).wave_number).toBeNull();
   });
 
   it("names the rule the plate id is actually held to", async () => {
     // The pattern requires an alphanumeric first character, so a leading dash or
     // underscore is refused. A message about dots leaves that caller stuck.
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     for (const plateId of ["_A1", "-A1", ".A1"]) {
@@ -195,7 +196,7 @@ describe("POST", () => {
 
   it("says one sentence when a passthrough status carries no readable detail", async () => {
     // The arm that decides an upstream body is unusable. A validation failure
-    // sends a list, not a sentence, and 422 is on the passthrough list.
+    // can send a list, not a sentence, and 400 is on the passthrough list.
     const unreadable = [
       { detail: [{ loc: ["body", "plate_id"], ctx: { db: "postgresql://bloom:pw@db:5432" } }] },
       { detail: "   " },
@@ -204,7 +205,7 @@ describe("POST", () => {
     ];
 
     for (const payload of unreadable) {
-      vi.stubGlobal("fetch", upstreamReturns(422, payload));
+      vi.stubGlobal("fetch", upstreamReturns(400, payload));
       const { detail } = await (await post({ plate_id: "P7", wave_number: 1 })).json();
 
       expect(detail).toBe(GENERIC_SENTENCE);
@@ -225,7 +226,7 @@ describe("POST", () => {
   });
 
   it("sends the token upstream rather than exposing it to the browser", async () => {
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     await post({ plate_id: "P7", wave_number: 1 });
@@ -234,16 +235,16 @@ describe("POST", () => {
 
   it("does not refuse a plate that already has a video", async () => {
     // A plate keeps gaining captures, so a stored video is usually not wrong,
-    // just short. Whether to re-render is the service's decision.
+    // just short. Whether to re-render is the worker's decision.
     mockedStored.mockResolvedValue({
       status: "present",
       url: "https://x/y.mp4",
       frames: 86,
     });
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
-    expect((await post({ plate_id: "P7", wave_number: 1 })).status).toBe(200);
+    expect((await post({ plate_id: "P7", wave_number: 1 })).status).toBe(202);
     expect(fetchMock).toHaveBeenCalled();
   });
 
@@ -279,7 +280,7 @@ describe("POST", () => {
   );
 
   it("accepts a plate with no wave", async () => {
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     await post({ plate_id: "P7", wave_number: null });
@@ -288,7 +289,7 @@ describe("POST", () => {
 
   it("treats wave zero as a wave", async () => {
     // The scanner app sends 0 when none is set, so it arrives in practice.
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     await post({ plate_id: "P7", wave_number: 0 });
@@ -299,7 +300,7 @@ describe("POST", () => {
     // `parseId` accepts /^\d+$/, so "007" is valid and parses to 7. Swapping
     // the parsed integer for the raw param at the interpolation site would be
     // an SSRF that every other test in this file still passes.
-    const fetchMock = upstreamReturns(200, RESULT);
+    const fetchMock = upstreamReturns(202, RESULT);
     vi.stubGlobal("fetch", fetchMock);
 
     await post({ plate_id: "P7", wave_number: 1 }, "007");
@@ -343,18 +344,6 @@ describe("POST", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("reports a timeout as still encoding, not as a failure", async () => {
-    // The encode carries on upstream; telling the user it failed would have
-    // them click Generate again and start a second one.
-    const timeout = new DOMException("timed out", "TimeoutError");
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
-
-    const res = await post({ plate_id: "P7", wave_number: 1 });
-
-    expect(res.status).toBe(504);
-    expect((await res.json()).detail).toContain("Still encoding");
-  });
-
   it("still explains itself on a second bad request", async () => {
     // A Response carries its body as a stream that is spent when it is sent, so
     // one built once and shared answered the first caller and left every later
@@ -378,7 +367,7 @@ describe("POST", () => {
     expect((await second.json()).detail).toContain("waveNumber must be");
   });
 
-  it.each([[404], [413], [422], [429]])(
+  it.each([[400], [404], [409], [429]])(
     "passes an upstream %i detail through, because it is written for the caller",
     async (status) => {
       vi.stubGlobal(
@@ -394,13 +383,11 @@ describe("POST", () => {
   );
 
   it("hands back the upstream Retry-After, so the button need not guess", async () => {
-    // One plate encodes at a time, so a second click gets 429 as the ordinary
-    // answer. Without the header the caller has no idea how long to wait.
     vi.stubGlobal(
       "fetch",
       upstreamReturns(
         429,
-        { detail: "another plate video is already encoding; try again shortly" },
+        { detail: "Rate limit exceeded; retry later" },
         { "Retry-After": "30" }
       )
     );
@@ -409,7 +396,7 @@ describe("POST", () => {
 
     expect(res.status).toBe(429);
     expect(res.headers.get("Retry-After")).toBe("30");
-    expect((await res.json()).detail).toContain("already encoding");
+    expect((await res.json()).detail).toContain("Rate limit");
   });
 
   it("omits Retry-After when upstream sends none", async () => {
@@ -468,9 +455,6 @@ describe("POST", () => {
   });
 
   it("passes a rate limit through, though it is not about this plate", async () => {
-    // 429 has two sources: this plate is already rendering, and the caller is
-    // clicking too fast. Both are safe to read, which is the whole test for the
-    // list -- not whether the message is about the plate.
     vi.stubGlobal(
       "fetch",
       upstreamReturns(429, { detail: "Rate limit exceeded (30/60s); retry later" }, {
@@ -484,7 +468,7 @@ describe("POST", () => {
     expect(res.headers.get("Retry-After")).toBe("60");
   });
 
-  it.each([[404], [413], [422]])(
+  it.each([[400], [404], [409]])(
     "passes an object key through on %i, which a signed-in user can read anyway",
     async (status) => {
       // Named deliberately: the key is not internal infrastructure, and the path
@@ -499,30 +483,6 @@ describe("POST", () => {
       expect(detail).toContain("12/wave-1/P7.mp4");
     }
   );
-
-  it("says null when the service cannot say how many frames a kept video holds", async () => {
-    // The service says this as zero with a flag beside it. Zero is a claim about
-    // the video -- an empty one -- and a kept video is never empty. Null is the
-    // same word the poll uses, so a caller reads one shape from both.
-    vi.stubGlobal(
-      "fetch",
-      upstreamReturns(200, { ...RESULT, action: "keep", frames: 0, frames_unknown: true })
-    );
-
-    const body = await (await post({ plate_id: "P7", wave_number: 1 })).json();
-
-    expect(body.frames).toBeNull();
-    expect(body).not.toHaveProperty("frames_unknown");
-  });
-
-  it("keeps a real count, and never mentions the flag", async () => {
-    vi.stubGlobal("fetch", upstreamReturns(200, RESULT));
-
-    const body = await (await post({ plate_id: "P7", wave_number: 1 })).json();
-
-    expect(body.frames).toBe(86);
-    expect(body).not.toHaveProperty("frames_unknown");
-  });
 
   it("reports the video service being unreachable without naming it", async () => {
     // The commonest real failure: the container is down, so `fetch` rejects
@@ -543,19 +503,6 @@ describe("POST", () => {
     expect(detail).not.toContain("5100");
   });
 
-  it("distinguishes a service that is down from one that is still working", async () => {
-    // A timeout means the encode is still running upstream; a refused connection
-    // means there is nothing to wait for. Told apart, the button waits or stops.
-    const timeout = new DOMException("timed out", "TimeoutError");
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
-
-    expect((await post({ plate_id: "P7", wave_number: 1 })).status).toBe(504);
-
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
-
-    expect((await post({ plate_id: "P7", wave_number: 1 })).status).toBe(502);
-  });
-
   it("answers a reply that is not JSON, rather than passing the page on", async () => {
     // A proxy or gateway in front of the service answers with an HTML error
     // page. Handed on, it reaches the browser as the body of a JSON API.
@@ -574,18 +521,42 @@ describe("POST", () => {
     expect(detail).not.toContain("workflows");
   });
 
-  it("does not report success when a 200 body cannot be read", async () => {
-    // A truncated or non-JSON 200 is not a rendered video. Answered 200, the
-    // button would report a video that does not exist.
+  it("does not report success when a 202 body cannot be read", async () => {
+    // A non-JSON answer is not a queued job, and the button would poll for nothing.
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(new Response("not json at all", { status: 200 }))
+      vi.fn().mockResolvedValue(new Response("not json at all", { status: 202 }))
     );
 
     const res = await post({ plate_id: "P7", wave_number: 1 });
 
     expect(res.status).toBe(502);
     expect((await res.json()).detail).toContain("Unexpected response");
+  });
+
+  it.each([
+    [{}],
+    [{ job_id: 7, created: true }],
+    [{ job_id: "x", created: "yes" }],
+    [null],
+  ])("refuses a success that is not a job: %j", async (payload) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", upstreamReturns(202, payload));
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(res.status).toBe(502);
+  });
+
+  it("passes on the job and nothing else the service sent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      upstreamReturns(202, { ...RESULT, created: false, internal: "kong:8000" })
+    );
+
+    const res = await post({ plate_id: "P7", wave_number: 1 });
+
+    expect(await res.json()).toEqual({ job_id: RESULT.job_id, created: false });
   });
 
   it("keeps the wait hint even when the reply is not JSON", async () => {
@@ -798,7 +769,7 @@ describe("GET", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("answers with the download link and the count, and nothing else", async () => {
+  it("answers with the download link, the count and the job, and nothing else", async () => {
     mockedStored.mockResolvedValue({
       status: "present",
       url: "https://x/y.mp4",
@@ -807,121 +778,37 @@ describe("GET", () => {
 
     const body = await (await get("plate_id=P7&wave_number=1")).json();
 
-    expect(Object.keys(body).sort()).toEqual(["download_url", "frames"]);
+    expect(Object.keys(body).sort()).toEqual(["download_url", "frames", "job"]);
   });
 
-  it("asks the service for this plate's progress, and passes it on", async () => {
-    // Nothing else pins the upstream request: without this, renaming the query
-    // parameter or dropping the token ships the feature dead with CI green.
-    mockedStored.mockResolvedValue({ status: "absent" });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ stage: "downloading", done: 47, total: 86 }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        })
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const body = await (await get("plate_id=P7&wave_number=1&progress=1")).json();
-
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/gravi/experiments/12/plate-video/progress");
-    expect(String(url)).toContain("plate_id=P7");
-    expect(String(url)).toContain("wave_number=1");
-    expect(init.headers.Authorization).toBe("Bearer token");
-    expect(body.progress).toEqual({ stage: "downloading", done: 47, total: 86 });
-  });
-
-  it("omits the wave for a wave-less plate rather than sending null", async () => {
-    mockedStored.mockResolvedValue({ status: "absent" });
-    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await get("plate_id=P7&progress=1");
-
-    expect(String(fetchMock.mock.calls[0][0])).not.toContain("wave_number");
-  });
-
-  it("keeps a refused progress answer out of the poll's reply", async () => {
-    // The status decides, not the shape: a refusal whose body happens to be
-    // well-formed progress must not reach the page.
-    for (const bad of [
-      new Response("upstream exploded", { status: 500 }),
-      new Response(JSON.stringify({ stage: "downloading", done: 3, total: 9 }), {
-        status: 503,
-      }),
-      new Response(JSON.stringify({ stage: "downloading", done: 3 }), { status: 200 }),
-    ]) {
-      mockedStored.mockResolvedValue({ status: "absent" });
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(bad));
-
-      const res = await get("plate_id=P7&wave_number=1&progress=1");
-      const body = await res.json();
-
-      expect(res.status).toBe(200);
-      expect(body.download_url).toBeNull();
-      expect(body.progress).toBeNull();
-    }
-  });
-
-  it("passes on only the three fields the page reads", async () => {
-    mockedStored.mockResolvedValue({ status: "absent" });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({ stage: "downloading", done: 3, total: 9, secret: "x" }),
-          { status: 200 }
-        )
-      )
-    );
-
-    const body = await (await get("plate_id=P7&wave_number=1&progress=1")).json();
-
-    expect(Object.keys(body.progress).sort()).toEqual(["done", "stage", "total"]);
-  });
-
-  it("still answers the poll when the session cannot be read", async () => {
-    // The poll's job is to say whether the video is there. A session read that
-    // throws must not take the whole answer down with it.
-    mockedStored.mockResolvedValue({ status: "absent" });
-    mockedGetSession.mockRejectedValue(new Error("cookie jar exploded"));
-
-    const res = await get("plate_id=P7&wave_number=1&progress=1");
-
-    expect(res.status).toBe(200);
-    expect((await res.json()).progress).toBeNull();
-  });
-
-  it("does not ask the service for progress unless the caller wants it", async () => {
-    // The page's first look does not read progress, and the call costs an
-    // authenticated round trip to the service.
-    mockedStored.mockResolvedValue({ status: "absent" });
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+  it("reports the plate's latest job, so anyone on the page sees it rendering", async () => {
+    mockedJob.mockResolvedValue(JOB);
 
     const body = await (await get("plate_id=P7&wave_number=1")).json();
 
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(body).not.toHaveProperty("progress");
+    expect(mockedJob).toHaveBeenCalledWith(12, "P7", 1);
+    expect(body.job).toEqual(JOB);
   });
 
-  it("does not fail the poll when progress cannot be read", async () => {
-    // Progress is decoration. A poll that fails because of it would stop the
-    // button ever learning the video is ready.
-    mockedStored.mockResolvedValue({ status: "absent" });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new TypeError("fetch failed"))
-    );
+  it("asks for the job of a plate with no wave as no wave", async () => {
+    await get("plate_id=P7");
 
-    const res = await get("plate_id=P7&wave_number=1&progress=1");
-    const body = await res.json();
+    expect(mockedJob).toHaveBeenCalledWith(12, "P7", null);
+  });
 
-    expect(res.status).toBe(200);
-    expect(body.progress).toBeNull();
+  it("answers job null when there is none", async () => {
+    const body = await (await get("plate_id=P7&wave_number=1")).json();
+
+    expect(body.job).toBeNull();
+  });
+
+  it("never reaches the video service", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await get("plate_id=P7&wave_number=1");
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("forbids storing the answer that carries the download link", async () => {

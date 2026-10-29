@@ -1,6 +1,6 @@
 """Readers for compose values that more than one guard needs.
 
-Extracted from test_workflows_single_worker.py so the video-worker guards can
+Extracted from the workflows memory tests so the video-worker guards can
 reuse them without a test-module-imports-test-module coupling, matching
 _workflow_helpers.py's precedent.
 """

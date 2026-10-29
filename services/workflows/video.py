@@ -14,24 +14,34 @@ import io
 import logging
 import os
 import tempfile
-import threading
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import numpy as np
 from PIL import Image
 from fastapi import HTTPException
 
 from supabase_client import app_client
+from video_queue import STAGE_DOWNLOADING, STAGE_ENCODING, STAGE_UPLOADING
 from video_writer import VideoWriter, VideoEncodeError
 
 logger = logging.getLogger(__name__)
 
 DECIMATE_FACTOR = 4
-# Hard cap on frames for the synchronous route (a cyl scan is ~72). Guards
-# against a huge scan blowing the request timeout; revisit when we measure the
-# real max a sync request can handle.
+# Hard cap on frames per video (a cyl scan is ~72).
 MAX_IMAGES = 72
 DOWNLOAD_URL_TTL = 3600  # 1h signed URL, matching the app-wide convention
+
+# Openings of the failure details the worker reads to name a job's error code.
+NO_FRAMES_ENCODED = "No frames could be encoded"
+NOT_SIGNED = "Could not create a download URL"
+
+# A render's progress callback: (stage, frames done, frames total).
+Progress = Callable[[str, int | None, int | None], None]
+
+
+def _no_progress(stage: str, done: int | None = None, total: int | None = None) -> None:
+    pass
+
 
 # Storage buckets + optional record table — configurable to match the Supabase
 # setup the app user has access to.
@@ -100,22 +110,6 @@ def get_scan_images(client, scan_id: int, limit: int = MAX_IMAGES) -> list[dict]
         .data
         or []
     )
-
-
-# Deciding whether to keep the stored video and then uploading is a read-modify-write on an
-# unversioned object. This lock holds only within one process, so it depends on the service
-# running a single uvicorn worker — `--workers 1` in docker-compose.prod.yml. Raising that
-# reopens the race, and closing it across processes needs a lock in the database instead.
-# The cyl video worker is a second process this does not reach, which is why it is
-# dev-only until the queue enforces one active job per scan.
-_scan_locks: dict[int, threading.Lock] = {}
-_scan_locks_guard = threading.Lock()
-
-
-def _scan_lock(scan_id: int) -> threading.Lock:
-    """The lock for one scan, created on first use."""
-    with _scan_locks_guard:
-        return _scan_locks.setdefault(scan_id, threading.Lock())
 
 
 def _stored_video_exists(vids, key: str) -> bool | None:
@@ -217,7 +211,12 @@ def _signed_url(bucket, path: str) -> str:
     return _to_public_url(url)
 
 
-def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -> dict:
+def generate_scan_video(
+    client,
+    scan_id: int,
+    decimate: int = DECIMATE_FACTOR,
+    progress: Progress = _no_progress,
+) -> dict:
     """Build the scan's MP4, upload to the videos bucket, return {frames, download_url}."""
     # Fetch one past the cap so we can tell a truncated (>MAX_IMAGES) scan apart
     # from one that is exactly at the cap.
@@ -298,6 +297,7 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
         writer = VideoWriter(filename=video_path)
 
         for image in images:
+            progress(STAGE_DOWNLOADING, frames_written, frames_expected)
             object_path = image.get("object_path")
             if not object_path:
                 continue
@@ -321,12 +321,14 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
 
         if frames_written == 0:
             raise HTTPException(
-                status_code=500, detail=f"No frames could be encoded for scan {scan_id}"
+                status_code=500, detail=f"{NO_FRAMES_ENCODED} for scan {scan_id}"
             )
 
         # A non-zero/stuck ffmpeg raises here — so a truncated MP4 is never
         # uploaded to the canonical path the web trusts. Log the real reason;
         # keep the HTTP detail generic (ffmpeg stderr can leak internal paths).
+        # Reported before the one stage that cannot report, to renew the job's visibility.
+        progress(STAGE_ENCODING, frames_written, frames_expected)
         try:
             writer.close()
         except VideoEncodeError as exc:
@@ -379,6 +381,7 @@ def generate_scan_video(client, scan_id: int, decimate: int = DECIMATE_FACTOR) -
             regenerated=False,
         )
 
+    progress(STAGE_UPLOADING, frames_written, frames_expected)
     vids.upload(key, video_bytes, {"content-type": "video/mp4", "upsert": "true"})
     return _result(
         scan_id, vids, key, frames_written, frames_expected, truncated, regenerated=True
@@ -394,7 +397,7 @@ def _result(
         # A response without a usable URL is a failure, not a success.
         raise HTTPException(
             status_code=500,
-            detail=f"Could not create a download URL for scan {scan_id}",
+            detail=f"{NOT_SIGNED} for scan {scan_id}",
         )
     return {
         "frames": frames,
@@ -436,7 +439,7 @@ def _record_video(client, scan_id: int, result: dict):
 
 
 def generate_experiment_scan_video(
-    experiment_id: int, scan_id: int, client=None
+    experiment_id: int, scan_id: int, client=None, progress: Progress = _no_progress
 ) -> dict:
     """Validate the scan belongs to the experiment, then generate its video."""
     # The worker renders with the client it built; the route lets this default.
@@ -446,16 +449,15 @@ def generate_experiment_scan_video(
             status_code=404,
             detail=f"Scan {scan_id} not found in experiment {experiment_id}",
         )
-    # Held across the encode and the record so two requests for one scan cannot interleave.
-    with _scan_lock(scan_id):
-        result = generate_scan_video(client, scan_id)
-        result["scan_id"] = scan_id
-        # Only (re)record when we actually wrote a new video — a kept-existing result
-        # must not overwrite the recorded frame count with a lower one. The one exception
-        # is a kept video that had no row at all: recording the path with no count claims
-        # nothing, and without it the scan can never leave that branch.
-        if result.pop("stored_frames_unknown", False):
-            _record_video(client, scan_id, {**result, "frames": None})
-        elif result.get("regenerated", True):
-            _record_video(client, scan_id, result)
+    # One render per scan at a time is the queue's to guarantee: one active job per scan.
+    result = generate_scan_video(client, scan_id, progress=progress)
+    result["scan_id"] = scan_id
+    # Only (re)record when we actually wrote a new video — a kept-existing result
+    # must not overwrite the recorded frame count with a lower one. The one exception
+    # is a kept video that had no row at all: recording the path with no count claims
+    # nothing, and without it the scan can never leave that branch.
+    if result.pop("stored_frames_unknown", False):
+        _record_video(client, scan_id, {**result, "frames": None})
+    elif result.get("regenerated", True):
+        _record_video(client, scan_id, result)
     return result
