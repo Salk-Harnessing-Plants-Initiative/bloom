@@ -42,11 +42,7 @@ GRANT SELECT, INSERT ON pgmq.a_cyl_video_dispatch TO postgres;
 CREATE TABLE IF NOT EXISTS public.gravi_plate_video_jobs (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   experiment_id bigint NOT NULL REFERENCES public.gravi_experiments(id),
-  -- The rule the service and the web both apply (plate_video_path.PLATE_ID_PATTERN),
-  -- held here too so a direct caller cannot store a key the renderer would refuse.
-  plate_id      text NOT NULL
-                CONSTRAINT gravi_plate_video_jobs_plate_id_format
-                CHECK (plate_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
+  plate_id      text NOT NULL,
   -- gravi_scans.wave_number, the column the renderer filters frames by — not the
   -- metadata wave the plate list reads.
   wave_number   integer,
@@ -89,6 +85,14 @@ CREATE TABLE IF NOT EXISTS public.cyl_video_jobs (
   updated_at    timestamptz NOT NULL DEFAULT now(),
   completed_at  timestamptz
 );
+
+-- The rule the service and the web both apply (plate_video_path.PLATE_ID_PATTERN), held
+-- here too so a direct caller cannot store a key the renderer would refuse.
+ALTER TABLE public.gravi_plate_video_jobs
+  DROP CONSTRAINT IF EXISTS gravi_plate_video_jobs_plate_id_format;
+ALTER TABLE public.gravi_plate_video_jobs
+  ADD CONSTRAINT gravi_plate_video_jobs_plate_id_format
+  CHECK (plate_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$');
 
 CREATE INDEX IF NOT EXISTS idx_gravi_plate_video_jobs_status
   ON public.gravi_plate_video_jobs(status);
