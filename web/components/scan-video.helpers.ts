@@ -1,34 +1,8 @@
-// Pure helpers for on-demand cyl scan video generation, split out so the shape
-// check and the user-facing messaging are unit-testable without a network
-// round-trip or a rendered component.
+// Pure helpers for on-demand cyl scan video generation, split out so the
+// user-facing messaging is unit-testable without a network round-trip or a
+// rendered component.
 
-// The workflows endpoint's success payload.
-export type ScanVideoResult = {
-  scan_id: number;
-  experiment_id: number;
-  frames: number;
-  frames_expected: number;
-  truncated: boolean;
-  regenerated: boolean;
-  path: string;
-  download_url: string;
-};
-
-// A 200 is not enough — the fields below get rendered straight to the user, so
-// a shape drift would surface as "Encoded undefined frames" or a link with no
-// href rather than an error.
-export function isScanVideoResult(value: unknown): value is ScanVideoResult {
-  if (typeof value !== "object" || value === null) return false;
-  const r = value as Record<string, unknown>;
-  return (
-    typeof r.frames === "number" &&
-    typeof r.frames_expected === "number" &&
-    typeof r.truncated === "boolean" &&
-    typeof r.regenerated === "boolean" &&
-    typeof r.download_url === "string" &&
-    r.download_url.trim() !== ""
-  );
-}
+import type { VideoJob } from "@/lib/video-job";
 
 // What to tell the user when generation fails. The upstream detail is specific
 // ("No images found for scan 5") and safe to surface, so prefer it; fall back to
@@ -45,43 +19,25 @@ export function videoErrorMessage(
   if (status === 404) return "This scan was not found in this experiment.";
   if (status === 429)
     return "Too many video requests. Wait a minute and try again.";
-  // A 503 is a refusal, not a failure: the service could not confirm what is already stored,
-  // so it declined rather than risk replacing it. Saying "failed" would invite the reader to
-  // assume something broke, or that a half-made video is now sitting there.
+  // The route words its own 503s; one with no detail is the service unable to queue the job.
   if (status === 503)
-    return "Could not check this scan's video, so nothing was changed. Try again shortly.";
+    return "The video could not be queued right now, so nothing was changed. Try again shortly.";
   if (status >= 500) return "Video generation failed. Try again in a moment.";
   return `Could not generate the video (HTTP ${status}).`;
 }
 
-// One line describing what generation actually produced. Frames can go missing
-// (an unreadable frame is skipped, not fatal) and very long scans are capped,
-// so "done" on its own would overstate the result.
-export function videoResultSummary(result: ScanVideoResult): string {
-  const { frames, frames_expected, truncated, regenerated } = result;
-
-  // Nothing was written this run, so there is no frame count to report — `frames` here
-  // describes the stored video or the discarded encode depending on which upstream branch
-  // refused, and the response does not say which. The button is not offered for a scan
-  // that already has a video, so this is only the storage-probe race.
-  if (!regenerated) {
+// One line describing what a finished job produced. An unreadable frame is
+// skipped, not fatal, so "done" on its own would overstate the result.
+export function videoResultSummary(job: VideoJob): string {
+  // Nothing was written, so there is no frame count to report.
+  if (job.status === "kept") {
     return "This scan already has a video — the stored one was kept.";
   }
-
-  const parts: string[] = [];
-  if (frames < frames_expected) {
-    parts.push(
-      `Encoded ${frames} of ${frames_expected} frames (${
-        frames_expected - frames
-      } could not be read).`
-    );
-  } else {
-    parts.push(`Encoded ${frames} frames.`);
+  const done = job.frames_done;
+  const total = job.frames_total;
+  if (done === null) return "The video is ready.";
+  if (total !== null && done < total) {
+    return `Encoded ${done} of ${total} frames (${total - done} could not be read).`;
   }
-  if (truncated) {
-    parts.push(
-      `The scan has more than ${frames_expected} frames; only the first ${frames_expected} were used.`
-    );
-  }
-  return parts.join(" ");
+  return `Encoded ${done} frames.`;
 }

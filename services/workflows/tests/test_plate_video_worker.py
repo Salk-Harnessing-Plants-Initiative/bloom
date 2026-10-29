@@ -1,23 +1,22 @@
-"""Unit tests for the plate video worker's `render` command (stubs the render
-seam — no DB, storage or ffmpeg), matching test_dispatch_worker.py's convention."""
+"""Unit tests for the plate video worker's `render` command and its job renderer
+(stubs the render seam — no DB, storage or ffmpeg), matching
+test_dispatch_worker.py's convention."""
 
 import pytest
 
 import plate_video_worker as worker
-import pathlib
 
 from plate_encode import (
-    EncoderBusy,
     FrameUnreadable,
     FrameDepthUnsupported,
     FrameSizeMismatch,
     FrameTooLarge,
     NotRecorded,
-    PlateBusy,
     PlateMismatch,
     VideoNotStored,
 )
 from plate_request import MAX_EXPERIMENT_ID, MAX_WAVE_NUMBER
+from video_queue import RenderFailed
 from video_writer import VideoEncodeError
 
 
@@ -34,7 +33,7 @@ def stub_client(monkeypatch):
 
 
 def _stub_render(monkeypatch, outcome=None, raises=None, seen=None):
-    def fake(client, experiment_id, plate_id, wave_number):
+    def fake(client, experiment_id, plate_id, wave_number, progress=None):
         if seen is not None:
             seen.update(
                 client=client,
@@ -161,19 +160,6 @@ def test_an_encoder_failure_exits_failed(monkeypatch, stub_client):
     assert worker.main(_argv("--wave", "13")) == worker.EXIT_FAILED
 
 
-@pytest.mark.parametrize(
-    "busy", [EncoderBusy("an encode is running"), PlateBusy("mine")]
-)
-def test_a_busy_renderer_is_reported_as_busy_not_refused(
-    monkeypatch, stub_client, capsys, busy
-):
-    """`EncoderBusy` is documented as "not a failure — a reason to come back",
-    so it must not carry the code that says do not retry."""
-    _stub_render(monkeypatch, raises=busy)
-    assert worker.main(_argv("--wave", "13")) == worker.EXIT_FAILED
-    assert "busy" in capsys.readouterr().out
-
-
 def test_an_action_this_command_does_not_know_is_not_a_success(
     monkeypatch, stub_client, capsys
 ):
@@ -231,41 +217,6 @@ def test_a_crossed_plate_identity_is_not_retried(monkeypatch, stub_client, capsy
     _stub_render(monkeypatch, raises=PlateMismatch("key names Plate_2"))
     assert worker.main(_argv("--wave", "13")) == worker.EXIT_REFUSED
     assert capsys.readouterr().out.startswith("refused")
-
-
-def test_every_exception_the_route_classifies_is_classified_here(monkeypatch):
-    """The table claims to carry the route's own answers. Reading the route's
-    source keeps that true when someone adds a clause to it."""
-    import re
-
-    source = pathlib.Path(worker.__file__).with_name("plate_request.py").read_text()
-    chain = source[source.index("def render(") : source.index("def _read(")]
-    # Each `except X as exc:` and the status of the HTTPException it raises.
-    clauses = re.findall(
-        r"except \(?([\w., ]+?)\)? as exc:.*?status_code=(\d+)", chain, re.S
-    )
-    routed = {
-        name.strip(): int(status)
-        for names, status in clauses
-        for name in names.split(",")
-    }
-    assert routed, (
-        "no except clauses were found — the markers this reads between have "
-        "moved, and the check is silently measuring nothing"
-    )
-
-    # Handled by their own branch or deliberately reclassified, with a reason
-    # in the source next to each.
-    exempt = {"EncoderBusy", "PlateMismatch", "HTTPException", "Exception"}
-    table = {kind.__name__: status for kind, status in worker.STATUS_BY_EXCEPTION}
-
-    missing = {
-        name: status
-        for name, status in routed.items()
-        if name not in exempt and table.get(name) != status
-    }
-
-    assert not missing, f"the route classifies these differently: {missing}"
 
 
 @pytest.mark.parametrize(
@@ -330,12 +281,119 @@ def test_help_exits_zero_and_carries_the_hold(argv, capsys):
         worker.parse_args(argv)
 
     assert exit_info.value.code == 0
-    assert "until the render queue lands" in capsys.readouterr().out
+    assert "one-job-per-plate hold" in capsys.readouterr().out
 
 
 def test_the_hold_is_stated_where_help_will_print_it():
     """The module docstring is not what argparse shows; the epilog is."""
     epilog = worker.build_parser().epilog
 
-    assert "until the render queue lands" in epilog
+    assert "one-job-per-plate hold" in epilog
     assert "3 refused" in epilog
+
+
+# --- the job renderer --------------------------------------------------------
+
+JOB = {
+    "job_id": "job-1",
+    "msg_id": 7,
+    "experiment_id": 12,
+    "plate_id": "P7",
+    "wave_number": 3,
+}
+
+
+def test_every_exception_with_an_exit_code_has_a_job_code():
+    """The command and the queue classify the same failures; neither may drop one."""
+    exit_kinds = {kind for kind, _ in worker.STATUS_BY_EXCEPTION}
+    job_kinds = {kind for kind, _ in worker.CODE_BY_EXCEPTION}
+    assert exit_kinds == job_kinds
+
+
+def test_a_job_renders_its_own_plate_with_the_progress_callback(monkeypatch):
+    seen = {}
+    progress = object()
+
+    def render(client, experiment_id, plate_id, wave_number, progress=None):
+        seen.update(
+            args=(client, experiment_id, plate_id, wave_number), progress=progress
+        )
+        return {"action": "rendered"}
+
+    monkeypatch.setattr(worker, "render_plate_video", render)
+    client = object()
+
+    assert worker.render_job(client, JOB, progress) == "rendered"
+    assert seen == {"args": (client, 12, "P7", 3), "progress": progress}
+
+
+def test_a_kept_plate_completes_as_kept_and_logs_why(monkeypatch, caplog):
+    """Two of the planner's keeps are anomalies, and the log is the only place they show."""
+    reason = "the stored video covers 86 frames; only 80 are in the database now"
+    _stub_render(monkeypatch, outcome={"action": "keep", "reason": reason})
+    with caplog.at_level("INFO", logger="plate_video_worker"):
+        assert worker.render_job(object(), JOB, None) == "kept"
+    assert reason in caplog.text
+
+
+@pytest.mark.parametrize(
+    "code", ["no_frames", "too_large", "unusable_plate", "storage_unavailable"]
+)
+def test_a_refusal_fails_the_job_with_the_planner_s_code(monkeypatch, code):
+    _stub_render(
+        monkeypatch, outcome={"action": "refuse", "code": code, "reason": "why"}
+    )
+    with pytest.raises(RenderFailed) as ei:
+        worker.render_job(object(), JOB, None)
+    assert (ei.value.code, ei.value.error) == (code, "why")
+
+
+@pytest.mark.parametrize(
+    "exc,code",
+    [
+        (FrameDepthUnsupported("x"), "frame_depth_unsupported"),
+        (FrameSizeMismatch("x"), "frame_size_mismatch"),
+        (FrameTooLarge("x"), "frame_too_large"),
+        (FrameUnreadable("x"), "frame_unreadable"),
+        (VideoNotStored("x"), "not_stored"),
+        (NotRecorded("x"), "not_recorded"),
+        (VideoEncodeError("x"), "encode_failed"),
+        (BrokenPipeError(), "encode_failed"),
+        (PlateMismatch("x"), "plate_mismatch"),
+    ],
+)
+def test_each_render_failure_gets_its_own_code(monkeypatch, exc, code):
+    """Subclasses are matched before FrameUnreadable, so each keeps its own name."""
+    _stub_render(monkeypatch, raises=exc)
+    with pytest.raises(RenderFailed) as ei:
+        worker.render_job(object(), JOB, None)
+    assert ei.value.code == code
+
+
+def test_an_unclassified_failure_reaches_the_loop_unchanged(monkeypatch):
+    """The loop fails it as 'unexpected' with its class name; wrapping here would lose it."""
+    _stub_render(monkeypatch, raises=KeyError("frames"))
+    with pytest.raises(KeyError):
+        worker.render_job(object(), JOB, None)
+
+
+def test_an_unknown_action_fails_the_job(monkeypatch):
+    _stub_render(monkeypatch, outcome={"action": "later"})
+    with pytest.raises(RenderFailed) as ei:
+        worker.render_job(object(), JOB, None)
+    assert ei.value.code == "unexpected"
+
+
+def test_run_starts_the_plate_queue_loop(monkeypatch):
+    started = []
+
+    class FakeWorker:
+        def __init__(self, queue, render, client_factory):
+            started.append((queue.name, render))
+
+        def run(self):
+            started.append("ran")
+
+    monkeypatch.setattr(worker, "Worker", FakeWorker)
+    assert worker.main(["run"]) == worker.EXIT_OK
+    assert started == [("gravi_plate_video_dispatch", worker.render_job), "ran"]

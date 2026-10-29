@@ -14,7 +14,6 @@ import pytest
 
 from video_writer import VideoWriter, VideoEncodeError, _StderrTail
 
-
 # --- even-dimension padding -------------------------------------------------
 
 
@@ -305,8 +304,7 @@ def _encode_off_thread(writer, frames, close_timeout=10.0):
 def test_a_flooding_ffmpeg_does_not_block_the_encode(monkeypatch, tmp_path):
     """A child that fills its stderr pipe stops reading stdin, and add() then
     blocks in write() with no timeout on it. The encode hangs for the life of
-    the process, and whatever the caller wrapped around it — an encode slot, a
-    plate's lock — is held just as long, while /health still passes.
+    the process, and the worker's job is held just as long.
     -loglevel error makes that unlikely, not impossible.
     """
     _stub_ffmpeg(monkeypatch, _FLOOD_THEN_DRAIN_STDIN)
@@ -404,10 +402,8 @@ def test_an_ffmpeg_that_never_reads_is_killed_rather_than_blocking_forever(
     The sibling test above feeds a child that drains stdin before sleeping, so
     `add` never blocks and only close()'s wait is exercised. Here the child
     never reads at all. Before the writer had its own deadline this pinned the
-    calling thread for the life of the worker — and because the caller releases
-    its encode slot and plate lock in a `finally`, a body that never returns
-    meant the slot and the lock were never handed back: capacity lost, and that
-    plate unrenderable, until the container restarted.
+    calling thread for the life of the worker, and its job with it, until the
+    container restarted.
     """
     _stub_ffmpeg(monkeypatch, "import time\ntime.sleep(120)\n")
 

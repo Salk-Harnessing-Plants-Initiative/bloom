@@ -9,19 +9,16 @@ Run:
 Endpoints:
     GET  /health                                     - liveness (internal-only)
     POST /cyl/experiments/{experiment_id}/scans/{scan_id}/video
-                                                     - on-demand: generate the cyl
-                                                       scan's video, upload it to
-                                                       Storage, return a signed
-                                                       download URL
+                                                     - queue a render of the cyl
+                                                       scan's video for
+                                                       cyl_video_worker.py; answers
+                                                       202 with the job
                                                        (requires a Supabase user JWT)
-    GET  /gravi/experiments/{experiment_id}/plate-video/progress
-                                                    - how far a running render
-                                                       has got, for the page to
-                                                       show while it waits
     POST /gravi/experiments/{experiment_id}/plate-video
-                                                     - on-demand: render one plate's
-                                                       time-lapse for one wave, store
-                                                       it and record it
+                                                     - queue a render of one plate's
+                                                       time-lapse for one wave for
+                                                       plate_video_worker.py; answers
+                                                       202 with the job
                                                        (requires a Supabase user JWT)
     POST /pipeline                                  - externally reachable as
                                                        POST /workflows/pipeline
@@ -66,10 +63,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from postgrest import APIError
 
 import model_cards
 import pipeline
-import plate_progress
 import plate_request
 import scrna_cellranger
 import scrna_cellranger_logs
@@ -79,7 +76,9 @@ from auth import (
     enforce_rate_limit,
     require_supabase_user,
 )
-from video import generate_experiment_scan_video
+from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS, app_client
+from video import scan_in_experiment
+from video_queue import CYL_QUEUE, enqueue
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -120,70 +119,87 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/cyl/experiments/{experiment_id}/scans/{scan_id}/video")
+# The database's own error names the role and PostgREST's codes, so callers get this.
+VIDEO_NOT_QUEUED = "The video could not be queued right now. Try again shortly."
+
+
+@app.post("/cyl/experiments/{experiment_id}/scans/{scan_id}/video", status_code=202)
 def cyl_experiment_scan_video(
     experiment_id: int,
     scan_id: int,
     user_id: str = Depends(require_supabase_user),
 ):
-    """On-demand: generate a cyl scan's video (validated against the experiment).
+    """Queue a render of a cyl scan's video, or join the one already queued.
 
     Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
     """
     enforce_rate_limit(user_id)
-    result = generate_experiment_scan_video(experiment_id, scan_id)
-    # Split, because most requests for a scan that already has a video generate nothing. Saying
-    # "Generated" either way, with a count describing the scan rather than the stored file,
-    # would make the operator log assert work that never happened — and this log is the only
-    # signal for exactly the cases the keep guards exist to handle.
-    if result.get("regenerated", True):
-        logger.info(
-            "Generated video for experiment %s scan %s (%d frames)",
-            experiment_id,
-            scan_id,
-            result["frames"],
+    try:
+        client = app_client(timeout_seconds=SINGLE_ROW_RPC_TIMEOUT_SECONDS)
+        belongs = scan_in_experiment(client, experiment_id, scan_id)
+    except Exception as exc:
+        logger.error("scan video for scan %s could not be checked: %r", scan_id, exc)
+        raise HTTPException(status_code=503, detail=VIDEO_NOT_QUEUED) from exc
+    if not belongs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Scan {scan_id} not found in experiment {experiment_id}",
         )
-    else:
-        logger.info(
-            "Kept the stored video for experiment %s scan %s",
-            experiment_id,
-            scan_id,
+
+    try:
+        job = enqueue(
+            client,
+            CYL_QUEUE,
+            {
+                "p_scan_id": scan_id,
+                "p_experiment_id": experiment_id,
+                "p_requested_by": user_id,
+            },
         )
-    return {"experiment_id": experiment_id, **result}
+    except APIError as exc:
+        # foreign_key_violation: the scan is not in this experiment, or does not exist.
+        if exc.code == "23503":
+            raise HTTPException(
+                status_code=404,
+                detail=f"Scan {scan_id} not found in experiment {experiment_id}",
+            ) from exc
+        # check_violation: the scan's active job is filed under another experiment.
+        if exc.code == "23514":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Scan {scan_id} is already being rendered under another experiment",
+            ) from exc
+        logger.error("scan video for scan %s could not be queued: %r", scan_id, exc)
+        raise HTTPException(status_code=503, detail=VIDEO_NOT_QUEUED) from exc
+    except Exception as exc:
+        logger.error("scan video for scan %s could not be queued: %r", scan_id, exc)
+        raise HTTPException(status_code=503, detail=VIDEO_NOT_QUEUED) from exc
+
+    logger.info(
+        "scan video for experiment %s scan %s requested by %s: job %s (%s)",
+        experiment_id,
+        scan_id,
+        user_id,
+        job["job_id"],
+        "queued" if job["created"] else "already queued",
+    )
+    return job
 
 
-@app.get("/gravi/experiments/{experiment_id}/plate-video/progress")
-def gravi_plate_video_progress(
-    experiment_id: int,
-    plate_id: str,
-    wave_number: int | None = None,
-    user_id: str = Depends(require_supabase_user),
-):
-    """How far the running render for this plate has got, or nothing.
-
-    No rate limit: the page polls this every 10s while it waits, which the
-    5-per-60s limiter on the other routes would refuse.
-    """
-    return plate_progress.current(experiment_id, plate_id, wave_number)
-
-
-@app.post("/gravi/experiments/{experiment_id}/plate-video")
+@app.post("/gravi/experiments/{experiment_id}/plate-video", status_code=202)
 def gravi_plate_video(
     experiment_id: int,
     body: dict,
     user_id: str = Depends(require_supabase_user),
 ):
-    """On-demand: render one plate's time-lapse for one wave.
+    """Queue a render of one plate's time-lapse for one wave, or join the one
+    already queued.
 
     `plate_id` and `wave_number` travel in the body, not the path — `plate_id`
     is free text, and the cylinder route's integer-only path defence does not
     transfer to it.
 
-    Requires a valid Supabase user JWT (Bearer). Rate-limited per user, which
-    bounds how fast one account can ask — not how often a plate is rendered:
-    five clicks inside the window are five renders. What absorbs a repeated
-    click is the plate lock and the second look at the plan, both in
-    `render_plate_video`.
+    Requires a valid Supabase user JWT (Bearer). Rate-limited per user.
     """
     # Read before anything can refuse, so a rejected body is still recorded as
     # a request for something. `%r` below because neither has been validated on
@@ -192,12 +208,8 @@ def gravi_plate_video(
 
     try:
         enforce_rate_limit(user_id)
-        result = plate_request.render(experiment_id, body)
+        job = plate_request.enqueue(experiment_id, body, user_id)
     except HTTPException as exc:
-        # A refusal is what a caller sees when the button appears to do nothing,
-        # and it used to leave no trace: the line below is reached only when a
-        # render returns, so the log held every request that worked and none of
-        # the ones anyone would look up.
         logger.info(
             "plate video for experiment %s plate %r wave %r requested by %s: %s refused — %r",
             experiment_id,
@@ -210,14 +222,15 @@ def gravi_plate_video(
         raise
 
     logger.info(
-        "plate video for experiment %s plate %s wave %s requested by %s: %s",
+        "plate video for experiment %s plate %r wave %r requested by %s: job %s (%s)",
         experiment_id,
-        result.get("plate_id"),
-        result.get("wave_number"),
+        asked.get("plate_id"),
+        asked.get("wave_number"),
         user_id,
-        result["action"],
+        job["job_id"],
+        "queued" if job["created"] else "already queued",
     )
-    return result
+    return job
 
 
 @app.post("/pipeline")

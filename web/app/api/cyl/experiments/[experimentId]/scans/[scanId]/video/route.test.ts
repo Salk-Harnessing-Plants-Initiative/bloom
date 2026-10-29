@@ -33,16 +33,7 @@ const mockedStoredVideo = vi.mocked(getStoredScanVideo);
 
 const STORED_URL = "https://storage.test/cyl-videos/5.mp4?token=a";
 
-const RESULT = {
-  scan_id: 5,
-  experiment_id: 1,
-  frames: 72,
-  frames_expected: 72,
-  truncated: false,
-  regenerated: true,
-  path: "cyl-videos/5.mp4",
-  download_url: "https://storage.test/cyl-videos/5.mp4?token=abc",
-};
+const RESULT = { job_id: "1a2b3c4d-0000-0000-0000-000000000000", created: true };
 
 let fetchSpy: ReturnType<typeof vi.fn>;
 
@@ -52,7 +43,7 @@ function callRoute(experimentId: string, scanId: string) {
   });
 }
 
-function upstreamJson(body: unknown, status = 200) {
+function upstreamJson(body: unknown, status = 202) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
@@ -207,10 +198,10 @@ describe("a stored video is never overwritten", () => {
     expect(text).not.toContain("ECONNREFUSED");
   });
 
-  it("generates when nothing is stored", async () => {
+  it("queues when nothing is stored", async () => {
     const res = await callRoute("1", "5");
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(fetchSpy).toHaveBeenCalled();
   });
 
@@ -224,11 +215,34 @@ describe("a stored video is never overwritten", () => {
 });
 
 describe("upstream passthrough", () => {
-  it("returns a valid result verbatim", async () => {
+  it("returns the queued job", async () => {
     const res = await callRoute("1", "5");
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(await res.json()).toEqual(RESULT);
+  });
+
+  it("passes on the job and nothing else the service sent", async () => {
+    fetchSpy.mockResolvedValue(
+      upstreamJson({ ...RESULT, created: false, internal: "kong:8000" })
+    );
+
+    expect(await (await callRoute("1", "5")).json()).toEqual({
+      job_id: RESULT.job_id,
+      created: false,
+    });
+  });
+
+  it("passes an upstream 409 and its detail through", async () => {
+    // An active job under another experiment: the service's own sentence.
+    fetchSpy.mockResolvedValue(
+      upstreamJson({ detail: "scan 5 has an active video job under experiment 2" }, 409)
+    );
+
+    const res = await callRoute("1", "5");
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).detail).toContain("experiment 2");
   });
 
   it("passes an upstream 404 and its detail through", async () => {
@@ -313,7 +327,7 @@ describe("upstream diagnostics stay server-side", () => {
 
 describe("bad upstream responses", () => {
   it("turns a non-JSON success body into a 502", async () => {
-    fetchSpy.mockResolvedValue(new Response("<html>ok</html>", { status: 200 }));
+    fetchSpy.mockResolvedValue(new Response("<html>ok</html>", { status: 202 }));
 
     const res = await callRoute("1", "5");
 
@@ -324,7 +338,7 @@ describe("bad upstream responses", () => {
   });
 
   it("treats an empty success body as a 502", async () => {
-    fetchSpy.mockResolvedValue(new Response("", { status: 200 }));
+    fetchSpy.mockResolvedValue(new Response("", { status: 202 }));
 
     expect((await callRoute("1", "5")).status).toBe(502);
   });
@@ -338,24 +352,13 @@ describe("bad upstream responses", () => {
     expect((await res.json()).detail).toBeNull();
   });
 
-  it("rejects a 200 whose shape would render as undefined", async () => {
-    fetchSpy.mockResolvedValue(upstreamJson({ frames: 72 }, 200));
-
-    const res = await callRoute("1", "5");
-
-    expect(res.status).toBe(502);
-  });
-
-  it("rejects a 200 carrying JSON null", async () => {
-    fetchSpy.mockResolvedValue(upstreamJson(null, 200));
-
-    expect((await callRoute("1", "5")).status).toBe(502);
-  });
-
-  it("rejects a 200 with no usable download_url", async () => {
-    fetchSpy.mockResolvedValue(
-      upstreamJson({ ...RESULT, download_url: "" }, 200)
-    );
+  it.each([
+    [{}],
+    [null],
+    [{ job_id: 7, created: true }],
+    [{ job_id: "x", created: "yes" }],
+  ])("rejects a success that is not a job: %j", async (payload) => {
+    fetchSpy.mockResolvedValue(upstreamJson(payload));
 
     expect((await callRoute("1", "5")).status).toBe(502);
   });
@@ -372,24 +375,24 @@ describe("transport failures", () => {
     expect(body).not.toContain("workflows");
   });
 
-  // Asserting only the 504 branch would let the timeout itself be deleted: the
-  // test below fabricates a TimeoutError, so nothing there proves the request
-  // is ever given one. Without it a stalled encode holds the connection open.
-  it("gives the upstream request an abort signal", async () => {
+  it("gives up quickly, since queuing is one insert upstream", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+
     await callRoute("1", "5");
 
-    expect(fetchSpy.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    expect(timeout).toHaveBeenCalledWith(15_000);
+    expect(fetchSpy.mock.calls[0][1].signal).toBe(timeout.mock.results[0].value);
+    timeout.mockRestore();
   });
 
-  it("reports a timeout as still-encoding, not as a failure", async () => {
+  it("reports a timeout as the service being unavailable", async () => {
     const timeout = new Error("timed out");
     timeout.name = "TimeoutError";
     fetchSpy.mockRejectedValue(timeout);
 
     const res = await callRoute("1", "5");
 
-    expect(res.status).toBe(504);
-    expect((await res.json()).detail).toContain("Still encoding");
+    expect(res.status).toBe(502);
   });
 });
 
