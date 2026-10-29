@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   addSpecies,
+  addedByText,
   normalizeNewSpecies,
   sortedSpeciesOptions,
   speciesOption,
@@ -43,6 +44,21 @@ describe("speciesOption", () => {
       ROW,
     ];
     expect(sortedSpeciesOptions(rows).map((o) => o.id)).toEqual([1, 2]);
+  });
+});
+
+describe("addedByText", () => {
+  const ME = "4965b3af-ccfe-40f5-814b-447e1f726e1b";
+  const OTHER = "1a2b3c4d-0000-4000-8000-000000000002";
+
+  it("names who added a species as the run views name a requester", () => {
+    expect(addedByText(ME, ME)).toBe("you");
+    expect(addedByText(OTHER, ME)).toBe("another member · 1a2b3c4d");
+    expect(addedByText(OTHER, null)).toBe("another member · 1a2b3c4d");
+  });
+
+  it("says Bloom admin for a species from before who added it was recorded", () => {
+    expect(addedByText(null, ME)).toBe("Bloom admin");
   });
 });
 

@@ -120,3 +120,96 @@ def test_a_lane_with_mismatched_read_counts_is_a_problem(tmp_path, whitelists):
     write_fastq(fastqs / "s_S1_L001_R2_001.fastq.gz", 90, 91)
     summary = run_qc(fastqs, whitelists, tmp_path / "out", "--sample-reads", "50")
     assert "lane 001: R1 has 100 reads but R2 has 90" in summary["problems"]
+
+
+# --------------------------------------------------------------------------- #
+# A chemistry the run names (a 10x Multiome RNA library: ARC-v1)
+# --------------------------------------------------------------------------- #
+
+
+def barcode_lists(tmp_path: Path, holding: str) -> Path:
+    """Every list QC reads, with BARCODE only on the list named `holding`."""
+    folder = tmp_path / "barcodes"
+    folder.mkdir()
+    for whitelist in fastq_qc.WHITELISTS:
+        path = folder / whitelist["file"]
+        text = f"{BARCODE}\n" if whitelist["file"] == holding else "GGGGGGGGGGGGGGGG\n"
+        if path.suffix == ".gz":
+            with gzip.open(path, "wt") as f:
+                f.write(text)
+        else:
+            path.write_text(text)
+    return folder
+
+
+def one_lane(tmp_path: Path) -> Path:
+    fastqs = tmp_path / "fastq"
+    fastqs.mkdir()
+    write_fastq(fastqs / "s_S1_L001_R1_001.fastq.gz", 100, 28, BARCODE)
+    write_fastq(fastqs / "s_S1_L001_R2_001.fastq.gz", 100, 90)
+    return fastqs
+
+
+def test_multiome_reads_named_as_multiome_pass(tmp_path):
+    lists = barcode_lists(tmp_path, "737K-arc-v1.txt.gz")
+    summary = run_qc(one_lane(tmp_path), lists, tmp_path / "out", "--expect-chemistry", "ARC-v1")
+    assert summary["passed"], summary["problems"]
+    assert summary["chemistry_named"] == "ARC-v1"
+    assert summary["chemistry_guess"]["chemistry"] == "ARC-v1"
+
+
+def test_reads_off_the_named_list_fail_naming_the_choice_and_the_best_match(tmp_path):
+    lists = barcode_lists(tmp_path, "3M-february-2018_TRU.txt.gz")
+    summary = run_qc(one_lane(tmp_path), lists, tmp_path / "out", "--expect-chemistry", "ARC-v1")
+    assert not summary["passed"]
+    assert summary["problems"] == [
+        "the run names ARC-v1 (Multiome GEX), but only 0% of barcodes are on its list; "
+        "the reads match 3' v3/v3.1 (100%)"
+    ]
+    assert summary["chemistry_guess"] is None
+
+
+def test_reads_on_no_list_say_so_rather_than_name_a_best_match(tmp_path):
+    lists = barcode_lists(tmp_path, "none")
+    summary = run_qc(one_lane(tmp_path), lists, tmp_path / "out", "--expect-chemistry", "ARC-v1")
+    assert summary["problems"] == [
+        "the run names ARC-v1 (Multiome GEX), but only 0% of barcodes are on its list; "
+        "no 10x barcode list matches half of them"
+    ]
+
+
+def test_a_chemistry_without_a_list_is_a_problem(tmp_path):
+    lists = barcode_lists(tmp_path, "737K-arc-v1.txt.gz")
+    summary = run_qc(one_lane(tmp_path), lists, tmp_path / "out", "--expect-chemistry", "SFRP")
+    assert summary["problems"] == ["no barcode list for the chemistry the run names (SFRP)"]
+
+
+def test_without_a_named_chemistry_it_still_guesses(tmp_path):
+    lists = barcode_lists(tmp_path, "3M-february-2018_TRU.txt.gz")
+    summary = run_qc(one_lane(tmp_path), lists, tmp_path / "out", "--expect-chemistry", "")
+    assert summary["passed"], summary["problems"]
+    assert summary["chemistry_named"] is None
+    assert summary["chemistry_guess"]["chemistry"] == "SC3Pv3-polyA"
+
+
+def test_multiome_reads_not_named_as_multiome_fail_before_the_count(tmp_path):
+    lists = barcode_lists(tmp_path, "737K-arc-v1.txt.gz")
+    summary = run_qc(one_lane(tmp_path), lists, tmp_path / "out", "--expect-chemistry", "")
+    assert not summary["passed"]
+    assert summary["problems"] == [
+        "the reads look like Multiome GEX (100% of barcodes), which Cell Ranger can't detect; "
+        "start the run again with the library type set to 10x Multiome — RNA part"
+    ]
+
+
+def test_every_lists_share_is_printed(tmp_path):
+    lists = barcode_lists(tmp_path, "3M-february-2018_TRU.txt.gz")
+    out = subprocess.run(
+        [sys.executable, str(SCRIPT), "--fastq-dir", str(one_lane(tmp_path)),
+         "--whitelist-dir", str(lists), "--out-dir", str(tmp_path / "out")],
+        capture_output=True, text=True, check=False,
+    ).stdout
+    printed = [line for line in out.splitlines() if line.startswith("barcode list ")]
+    assert len(printed) == len(fastq_qc.WHITELISTS)
+    assert "barcode list 3M-february-2018_TRU.txt.gz (3' v3/v3.1): 100.0% of barcodes" in printed
+    assert "barcode list 737K-arc-v1.txt.gz (Multiome GEX): 0.0% of barcodes" in printed

@@ -6,6 +6,7 @@ import { type AccessionGeneRow } from "./accession-gene-picker";
 import { AccessionProteinPicker, type Accession } from "./accession-protein-picker";
 import { BestMatchPanel } from "./best-match-panel";
 import { AccessionKnn } from "./accession-knn";
+import InfoTip from "@/components/info-tip";
 import {
   ACCESSION_DISCLAIMER,
   DEFAULT_K,
@@ -37,21 +38,10 @@ type Pivot = {
 
 function InfoDot({ text }: { text: string }) {
   return (
-    <span className="group/info absolute right-2 top-2">
-      <span
-        tabIndex={0}
-        role="img"
-        aria-label={text}
-        className="flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-stone-300 text-[10px] font-semibold italic text-neutral-400 outline-none focus:ring-1 focus:ring-blue-500"
-      >
-        i
-      </span>
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute right-0 top-6 z-20 w-64 rounded-md border border-stone-200 bg-white px-3 py-2 text-xs font-normal leading-snug text-neutral-600 opacity-0 shadow-lg transition-opacity group-hover/info:opacity-100 group-focus-within/info:opacity-100"
-      >
+    <span className="absolute right-2 top-2 leading-none">
+      <InfoTip label="About this tab" align="right">
         {text}
-      </span>
+      </InfoTip>
     </span>
   );
 }

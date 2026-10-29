@@ -67,8 +67,8 @@ The 10x licence does not allow redistributing Cell Ranger, so the image is built
 ```bash
 docker buildx build --platform linux/amd64 \
   --build-context cellranger=$HOME/Downloads \
-  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14 argo/scrna
-docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+  -t ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15 argo/scrna
+docker push ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
 gh api orgs/Salk-Harnessing-Plants-Initiative/packages/container/cellranger --jq .visibility   # must print: private
 ```
 
@@ -116,9 +116,9 @@ The count workflow runs each sample as a chain of pods that share one NFS folder
 - `run.log`: everything the QC step printed.
 - `fastqc/`: a FastQC report for every R1 and R2 file. Judge quality on R2; R1 is barcode + UMI and always fails FastQC's base-content checks.
 
-The guess checks the first 16 bases of R1 against each 10x barcode whitelist bundled with Cell Ranger (the table in `fastq_qc.py` comes from Cell Ranger's `chemistry_defs.json`) and picks the list with the most exact matches: `3M-february-2018` is 3' v3/v3.1, `3M-3pgex-may-2023` is 3' v4, `3M-5pgex-jan-2023` is 5' v3, and `737K-august-2016` is 3' v2 or 5' v1/v2 (the whitelist cannot tell those two apart). QC fails if R1 is shorter than the barcode plus UMI (28 bp for v3 and later), if a lane's R1 and R2 read counts differ, or if no barcode list matches half the reads.
+The guess checks the first 16 bases of R1 against each 10x barcode whitelist bundled with Cell Ranger (the table in `fastq_qc.py` comes from Cell Ranger's `chemistry_defs.json`) and picks the list with the most exact matches: `3M-february-2018` is 3' v3/v3.1, `3M-3pgex-may-2023` is 3' v4, `3M-5pgex-jan-2023` is 5' v3, `737K-august-2016` is 3' v2 or 5' v1/v2 (the whitelist cannot tell those two apart), and `737K-arc-v1` is the RNA library of a 10x Multiome experiment. When the run names a chemistry (`ARC-v1`), QC checks the reads against that chemistry's list instead of guessing. QC fails if R1 is shorter than the barcode plus UMI (28 bp for v3 and later), if a lane's R1 and R2 read counts differ, if no barcode list matches half the reads, if the named chemistry's list holds under half of them, or if a run that names no chemistry looks like Multiome RNA, which Cell Ranger can't detect.
 
-Cell Ranger itself runs with `--chemistry auto`. After each count, `run-count` compares the chemistry Cell Ranger picked with the same guess and writes the result to `qc_summary.json` (`cellranger_chemistry.matches_guess`), which ends up in the final file's `uns['qc_summary']`; a mismatch is logged as a warning and does not fail the run.
+Cell Ranger runs with `--chemistry auto`, or with the chemistry the run names (`--chemistry=ARC-v1`). After each count, `run-count` compares the chemistry Cell Ranger picked with the same guess and writes the result to `qc_summary.json` (`cellranger_chemistry.matches_guess`), which ends up in the final file's `uns['qc_summary']`; a mismatch is logged as a warning and does not fail the run.
 
 ## The reference, from Bloom
 

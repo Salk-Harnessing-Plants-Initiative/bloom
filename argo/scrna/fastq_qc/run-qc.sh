@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # FASTQ QC for one sample's reads, already in WORK_DIR/fastq/<sample>/ (put there by fetch-sra or
 # stage): counts, lengths, chemistry guess, FastQC and a README, in WORK_DIR/qc/<run-id>/.
+# CHEMISTRY, when the run names one (e.g. ARC-v1), is checked against the reads instead of guessed.
 # The report stays there; nothing is read from or written to S3.
 set -euo pipefail
 
@@ -17,6 +18,7 @@ exec > >(tee -a "${OUT_DIR}/run.log") 2>&1
 
 status=0
 fastq-qc --fastq-dir "${FASTQ_DIR}" --out-dir "${OUT_DIR}" --sample-reads "${SAMPLE_READS}" \
+  --expect-chemistry "${CHEMISTRY:-}" \
   --whitelist-dir "${CELLRANGER_HOME:?set by the image}/lib/python/cellranger/barcodes" || status=$?
 
 # R1 always fails FastQC's base-content checks on 10x data (it is barcode + UMI); judge quality on R2.

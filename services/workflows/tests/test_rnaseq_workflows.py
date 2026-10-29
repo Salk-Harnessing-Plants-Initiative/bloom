@@ -467,6 +467,21 @@ def test_a_species_without_one_passes_none_so_the_run_annotates_go_only():
     assert declared["kegg-org"] == "", "the pipeline's default is GO only"
 
 
+def test_a_run_naming_its_chemistry_passes_it_to_the_pipeline():
+    run = {**RUN, "params": {**RUN["params"], "chemistry": "ARC-v1"}}
+    body = wfs.build_cellranger_body(run)
+    params = {p["name"]: p["value"] for p in body["spec"]["arguments"]["parameters"]}
+    assert params["chemistry"] == "ARC-v1"
+    assert _params(_task(body, "sample"))["chemistry"] == "{{workflow.parameters.chemistry}}"
+
+
+def test_a_run_without_one_passes_none_so_cell_ranger_detects_it():
+    params = {p["name"] for p in wfs.build_cellranger_body(RUN)["spec"]["arguments"]["parameters"]}
+    assert "chemistry" not in params
+    declared = {p["name"]: p.get("value") for p in _template("sample-pipeline")["inputs"]["parameters"]}
+    assert declared["chemistry"] == "", "the pipeline's default is to detect it"
+
+
 @pytest.mark.parametrize("dataset", [None, {}], ids=["none", "empty"])
 def test_a_run_without_a_dataset_passes_only_its_run_id(dataset):
     body = wfs.build_cellranger_body({**RUN, "dataset": dataset})

@@ -89,7 +89,7 @@ spec:
         backoff: {duration: "2m", factor: 2}
         expression: "asInt(lastRetry.exitCode) == -1"
       container:
-        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-14
+        image: ghcr.io/salk-harnessing-plants-initiative/cellranger:10.1.0-15
         command: [bash, -c]
         args:
           - rm -rf -- "/shared/runs/qc-{{workflow.name}}/fastq" "/shared/runs/qc-{{workflow.name}}/sra"
