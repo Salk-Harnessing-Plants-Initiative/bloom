@@ -3,7 +3,7 @@
 # ------------------------
 
 # ---- Builder Stage ----
-FROM node:20-bookworm@sha256:a4545fc6f4f1483384ad5f4c71d34d71781c3779da407173ec6058079a718520 AS builder
+FROM node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a AS builder
 
 
 ARG NEXT_PUBLIC_SUPABASE_URL
@@ -47,14 +47,13 @@ RUN rm -rf /app/node_modules/supabase /app/node_modules/@supabase/cli-* \
            /app/node_modules/.bin/supabase
 
 # ---- Runner Stage ----
-FROM node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c AS runner
+FROM node:24.22.1-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS runner
 
-# node:20-alpine's bundled global npm (10.8.2) vendors its own tar@6.2.1
-# (CVE-2026-59873, gzip-bomb DoS) at /usr/local/lib/node_modules/npm/node_modules/tar —
-# unrelated to this app's own package-lock.json/node_modules. `npm run start`
-# (the CMD below) invokes this global npm at runtime, so pin it forward to a
-# version that vendors the fixed tar (confirmed: npm@11.18.0 -> tar@7.5.19).
-RUN npm install -g npm@11.18.0
+# node:24.22.1-alpine's bundled global npm (11.19.1) vendors brace-expansion@5.0.9 and
+# undici@6.28.0 (CVE-2026-102276, CVE-2026-102278, CVE-2026-19534). `npm run start`
+# (the CMD below) invokes this global npm at runtime, so pin it forward to a version
+# that vendors the fixed copies (confirmed: npm@11.21.1 -> brace-expansion@5.0.12, undici@6.29.0).
+RUN npm install -g npm@11.21.1
 
 RUN addgroup -S bloom && adduser -S -G bloom bloom
 

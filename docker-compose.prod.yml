@@ -109,8 +109,8 @@ services:
     restart: unless-stopped
     # Bounds a runaway export to this container, and with the restart policy
     # turns an out-of-memory kill into a restart instead of a dead site.
-    # - Node 20 sizes its JS heap at about half this limit (node:20-alpine,
-    #   measured 2026-10-01: 1536m -> 792 MiB heap, 3g -> 1584 MiB). Two running
+    # - Node 24 sizes its JS heap at about 56% of this limit (node:24.22.1-alpine,
+    #   measured 2026-10-23: 1536m -> 864 MiB heap, 3g -> 1728 MiB). Two running
     #   exports (MAX_RUNNING_JOBS) plus the Next.js baseline are estimated at
     #   ~1 GB of heap; at 1536m V8 would abort before the container limit.
     # - Outside the heap, in the same limit: up to MAX_HELD_BYTES (768 MiB) of
@@ -171,7 +171,7 @@ services:
     depends_on:
       - kong
     healthcheck:
-      # node:20-alpine has BusyBox wget (supports --spider). curl is not installed.
+      # node:24-alpine has BusyBox wget (supports --spider). curl is not installed.
       # 127.0.0.1 (not localhost) — BusyBox tries IPv6 first; Next.js binds
       # IPv4 only, so localhost resolves to ::1 and the probe fails.
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
