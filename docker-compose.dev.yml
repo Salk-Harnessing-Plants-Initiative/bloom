@@ -26,6 +26,10 @@ services:
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      # Starting cylinder pipeline runs from Bloom (web/lib/cyl-pipeline/trigger-enabled.ts).
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
+      # Bloom's AWS user (bloomv2-workflows-job), shown on the scRNA job form (optional).
+      SCRNA_FOLDER_READER_ARN: ${SCRNA_FOLDER_READER_ARN:-}
     volumes:
       - ./web:/app/web
       - ./packages:/app/packages
@@ -107,6 +111,12 @@ services:
       # Public base for rewriting signed URLs off the internal kong host so
       # download_url is usable by outside callers.
       WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      # Optional in dev: without it GET /model-cards answers 503 and the pipeline
+      # confirm dialog shows "Couldn't check the models' age ranges." (bloom#971).
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      # Bloom's AWS user (bloomv2-workflows-job), for a folder a scientist shared with it (optional).
+      WORKFLOWS_S3_READER_ACCESS_KEY_ID: ${WORKFLOWS_S3_READER_ACCESS_KEY_ID:-}
+      WORKFLOWS_S3_READER_SECRET_ACCESS_KEY: ${WORKFLOWS_S3_READER_SECRET_ACCESS_KEY:-}
     volumes:
       - ./services/workflows:/app
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--reload"]
@@ -154,6 +164,13 @@ services:
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
       WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
       WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
+      # Blank by default: dev numbers its scans independently, so it must not
+      # share staging's directories. Unset, every claimed batch fails "not
+      # configured" (bloom#863); set both to a dev-only tree to dispatch.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT:-}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME:-}
+      WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE: ${WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE:-}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
     volumes:
       - ./services/workflows:/app
     command: ["python", "dispatch_worker.py"]
@@ -172,9 +189,15 @@ services:
   # and progresses cyl_pipeline_runs.status past dispatch outcome (bloom #11
   # Phase 3) — a separate process from cyl-pipeline-worker above (event-driven
   # dispatch vs. this poller's fixed wall-clock sweep). Same image; read-only
-  # use of the K8s API (get, not create), so only four of the five
-  # WORKFLOWS_K8S_* vars are needed — TTL_SECONDS/ENV_LABEL are
-  # submission-only (build_workflow_body), never read by this poller.
+  # use of the K8s API (get, not create), so only TOKEN/CA_CERT/API_URL/
+  # NAMESPACE are needed, plus TTL_SECONDS: the poller never treats a workflow
+  # as removed sooner than that after the workflow was dispatched, because Argo
+  # can't have garbage-collected it yet (bloom#1042). It also needs ENV_LABEL:
+  # it trusts a Workflow as a run's own only if its `environment` label matches,
+  # so this must be the value cyl-pipeline-worker stamps (prod and staging share
+  # a namespace). The PIPELINE_* pair is submission-only (build_workflow_body). Like the poll
+  # interval below, WORKFLOWS_NOT_FOUND_GRACE_SECONDS is left to its code
+  # default (600s).
   # WORKFLOWS_STATUS_POLL_SECONDS is deliberately NOT referenced here — its
   # Python-side default (15s) governs it, matching WORKFLOWS_WORKER_POLL_SECONDS's
   # own precedent above; adding it here without a real default-file entry would
@@ -183,7 +206,9 @@ services:
   # worker above: each sweep is an idempotent recompute from Argo's current
   # state (see design.md's "rollup computation happens in Python" decision),
   # not a claimed, exactly-once event — redundant concurrent sweeps just
-  # mean harmless, wasted-work overlap, not a correctness risk.
+  # mean harmless, wasted-work overlap, not a correctness risk. Each replica
+  # keeps its own in-memory count of a workflow's NotFound lookups, so each
+  # must see a workflow's removal conditions for itself before closing its rows.
   cyl-status-poller:
     build:
       context: ./services/workflows
@@ -208,6 +233,8 @@ services:
       WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
       WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
       WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
     volumes:
       - ./services/workflows:/app
     command: ["python", "status_poller.py"]
@@ -221,6 +248,91 @@ services:
     # distinct workflow name across EVERY candidate run this cycle, not a
     # single call per claim, so 30s isn't necessarily enough headroom for
     # _stop()'s documented "let the in-flight sweep finish" guarantee.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # Sends queued RNA-seq runs (Cell Ranger first) to Argo; see rnaseq_workflows.py.
+  # Same image, credentials and limits as cyl-pipeline-worker, with its own queues.
+  rnaseq-worker:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    mem_limit: 1g
+    memswap_limit: 1g
+    tmpfs:
+      - /tmp:mode=1777,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
+      # The three keys below are cyl-pipeline-worker's; this worker ignores
+      # them (RNA-seq dispatch is not gated by them). They're here because
+      # this environment must equal cyl-pipeline-worker's.
+      WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT: ${WORKFLOWS_K8S_PIPELINE_HOSTPATH_ROOT:-}
+      WORKFLOWS_K8S_PIPELINE_SECRET_NAME: ${WORKFLOWS_K8S_PIPELINE_SECRET_NAME:-}
+      WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE: ${WORKFLOWS_RNASEQ_CELLRANGER_TEMPLATE:-}
+      CYL_PIPELINE_TRIGGER_ENABLED: ${CYL_PIPELINE_TRIGGER_ENABLED:-true}
+    command: ["python", "rnaseq_worker.py"]
+    networks:
+      - supanet
+    depends_on:
+      - db-dev
+      - kong
+    # Lets a submission in progress (up to 15s) finish on shutdown.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Follows submitted and running RNA-seq runs on Argo and records their status.
+  # Same image, credentials and limits as cyl-status-poller; read-only use of the K8s API.
+  rnaseq-status-poller:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    mem_limit: 1g
+    memswap_limit: 1g
+    tmpfs:
+      - /tmp:mode=1777,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      WORKFLOWS_SUPABASE_EMAIL: ${WORKFLOWS_SUPABASE_EMAIL}
+      WORKFLOWS_SUPABASE_PASSWORD: ${WORKFLOWS_SUPABASE_PASSWORD}
+      WORKFLOWS_K8S_TOKEN: ${WORKFLOWS_K8S_TOKEN}
+      WORKFLOWS_K8S_CA_CERT: ${WORKFLOWS_K8S_CA_CERT}
+      WORKFLOWS_K8S_API_URL: ${WORKFLOWS_K8S_API_URL}
+      WORKFLOWS_K8S_NAMESPACE: ${WORKFLOWS_K8S_NAMESPACE:-runai-busch-lab}
+      WORKFLOWS_K8S_TTL_SECONDS: ${WORKFLOWS_K8S_TTL_SECONDS:-3600}
+      WORKFLOWS_K8S_ENV_LABEL: ${WORKFLOWS_K8S_ENV_LABEL:-dev}
+      # The run-finished email; unset in dev, so nothing is sent.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-}
+      SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-}
+      SITE_URL: ${SITE_URL:-}
+    command: ["python", "rnaseq_status_poller.py"]
+    networks:
+      - supanet
+    depends_on:
+      - db-dev
+      - kong
+    # Lets the run in progress (a 15 s status read plus its update) finish on shutdown.
     stop_grace_period: 60s
     restart: unless-stopped
 
@@ -542,7 +654,10 @@ services:
   realtime:
     image: ghcr.io/salk-harnessing-plants-initiative/supabase-realtime:v2.34.47@sha256:4d2460cb6eb081b7cfec0e6b0af57f547497f60cf897621555303992d299f6e8
     networks:
-      - supanet
+      supanet:
+        # realtime-dev is the seeded tenant; Realtime reads it from the Host header's first label.
+        aliases:
+          - realtime-dev.supabase-realtime
     restart: unless-stopped
     depends_on:
       db-dev:

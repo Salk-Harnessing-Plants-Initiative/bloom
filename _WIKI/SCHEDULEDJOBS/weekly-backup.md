@@ -269,12 +269,12 @@ sudo -u bloom-deploy rclone lsl box:bloom-backups/prod
 
 ### Exit codes
 
-| Code | Meaning                                                               |
-| ---- | --------------------------------------------------------------------- |
-| 0    | Verified backup uploaded                                              |
-| 1    | Subprocess failed (docker / pg_dump / gzip / rclone)                  |
-| 2    | Configuration problem, the stack is not running, or `--env` is not a known environment |
-| 3    | An artifact is missing, or too small to be a real dump                |
+| Code | Meaning                                                                                          |
+| ---- | ------------------------------------------------------------------------------------------------ |
+| 0    | Verified backup uploaded                                                                         |
+| 1    | Subprocess failed (docker / pg_dump / gzip / rclone)                                             |
+| 2    | Configuration problem, the stack is not running, or `--env` is not a known environment           |
+| 3    | An artifact is missing, or too small to be a real dump                                           |
 | 4    | The run was terminated by a signal — see below, it is not what a cancelled workflow run produces |
 
 Code 2 also covers a deploy host with too little free space for a dump. That
@@ -357,6 +357,15 @@ The dump contains `auth.users`. Do not leave a copy on disk.
 
 ## Notes on what this does not do
 
+- **A restore brings back the dumped sequence state, including a behind one.** The
+  plain dump restores every id sequence exactly as dumped. Dumps from before the
+  bloom#1022 fix reached prod carry about 21–22 sequences behind their data (the
+  exact number depends on the dump's date). After any restore, run
+  `scripts/sql/sequences_behind.sql` and trust its output, not this number. Such a
+  dump also lacks the fix's migration-history row, so the next deploy re-applies the
+  advance migration on its own. See `_WIKI/SUPABASE/README.md`, "Id sequences behind
+  their data". A partial or table-level load that keeps the ids (`COPY`, CSV,
+  PostgREST upserts) has the same effect, without the automatic re-apply.
 - **A full Box quota, or a partial upload, is not verified against.** The job
   checks what it produced, not what arrived. If Box fills or the transfer dies
   after the retries are exhausted, the run fails and the summary shows the

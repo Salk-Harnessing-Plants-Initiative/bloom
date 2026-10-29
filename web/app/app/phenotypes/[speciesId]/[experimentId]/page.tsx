@@ -6,6 +6,11 @@ import {
 import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import ExperimentDescription from "@/components/experiment-description";
+import { ExperimentRunsPanel } from "@/components/cyl-pipeline/ExperimentRunsPanel";
+import { RunPipelineButton } from "@/components/cyl-pipeline/RunPipelineButton";
+import { StartedRunsProvider } from "@/components/cyl-pipeline/started-runs";
+import { isPipelineTriggerEnabled } from "@/lib/cyl-pipeline/trigger-enabled";
+import { parseId } from "@/lib/route-params";
 
 type Plant = {
   created_at: string;
@@ -63,6 +68,9 @@ export default async function Experiment({
   params: Promise<{ experimentId: string; speciesId: string }>;
 }) {
   const { experimentId, speciesId } = await params;
+  const runsPanelId = parseId(experimentId);
+  // Off in prod until bloom#863; the runs panel shows either way.
+  const canRun = runsPanelId !== null && isPipelineTriggerEnabled();
   const experiment : any = await getExperimentWithPlants(Number(experimentId));
   console.log("Experiment data:", experiment);
   const experimentName = capitalizeFirstLetter(
@@ -82,6 +90,8 @@ export default async function Experiment({
   });
 
   return (
+    // Runs started here are handed to the runs panel from the trigger response.
+    <StartedRunsProvider>
     <div className="">
       <div className="text-xl mb-8 select-none">
         <span className="text-stone-400">
@@ -104,6 +114,15 @@ export default async function Experiment({
       <div className="mb-4">
         {experiment?.people && <ScientistBadge person={experiment.people} />}
       </div>
+      {canRun && experiment && (
+        <div className="mb-4">
+          <RunPipelineButton
+            target={{ target_level: "experiment", target_id: runsPanelId }}
+            label="Run experiment"
+            title={`experiment ${experimentName}`}
+          />
+        </div>
+      )}
       <div className="text-lg align-middle">
         {/* <span className="">Accessions</span> */}
         <div
@@ -130,7 +149,15 @@ export default async function Experiment({
                       <div className="table-cell pt-4 pb-2 text-neutral-400">
                         Wave {wave.number}
                       </div>
-                      <div className="table-cell"></div>
+                      <div className="table-cell pt-4 pb-2 pl-8">
+                        {canRun && (
+                          <RunPipelineButton
+                            target={{ target_level: "wave", target_id: wave.id }}
+                            label="Run wave"
+                            title={`wave ${wave.number} of ${experimentName}`}
+                          />
+                        )}
+                      </div>
                     </div>
                   )}
                   {getAccessions(safeWave).map(({ name, count, id }) => (
@@ -156,7 +183,10 @@ export default async function Experiment({
             })}
         </div>
       </div>
+
+      {runsPanelId !== null && <ExperimentRunsPanel experimentId={runsPanelId} />}
     </div>
+    </StartedRunsProvider>
   );
 }
 

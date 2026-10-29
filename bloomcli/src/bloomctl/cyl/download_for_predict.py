@@ -21,7 +21,12 @@ from uuid import uuid4
 
 import click
 from pydantic import ValidationError
-from sleap_roots_contracts import RUN_MANIFEST_FILENAME, RunManifest
+from sleap_roots_contracts import (
+    PIPELINE_RUN_ID_ENV_VAR,
+    RunManifest,
+    pipeline_run_id_from_env,
+    run_manifest_name_for_writing,
+)
 
 from .._download import (
     DEFAULT_WORKERS,
@@ -442,69 +447,76 @@ def stage_one_scan(
         return ScanResult(scan_key, "failed", str(exc))
 
 
-# --- batch: RunManifest write + merge (bloom #653) ----------------------------
+# --- batch: RunManifest write (bloom #653; per-run name + overwrite, bloom #934) ----
 
 
-def resolve_pipeline_run_id() -> str:
-    """`ARGO_WORKFLOW_NAME` when set (inside Argo), else a freshly generated local placeholder.
+def stamped_pipeline_run_id(run_id: str | None) -> str:
+    """The `pipeline_run_id` to stamp inside the manifest: `run_id` (the run identity from
+    `pipeline_run_id_from_env()`) when there is one, else a freshly generated local placeholder.
 
     The placeholder is distinct per invocation (not a fixed sentinel) so separate manual/dev
-    runs are distinguishable from each other in the manifest — useful precisely because manual
-    runs are the case where `ARGO_WORKFLOW_NAME` is absent.
+    runs are distinguishable from each other in the manifest. It is only ever stamped inside
+    the file, never used to name it: a reader cannot reproduce another process's placeholder,
+    so a file named after it would be invisible to every reader (sleap-roots-pipeline#71
+    design section 2.3). This function reads no environment itself, so the stamped id and the
+    file name can never disagree (design section 3.2).
     """
-    return os.environ.get("ARGO_WORKFLOW_NAME") or f"local-{uuid4().hex[:8]}"
+    return run_id or f"local-{uuid4().hex[:8]}"
 
 
-def write_run_manifest(out_dir: Path, result: BatchResult, *, staleness_seconds: float) -> None:
-    """Merge this invocation's usable scan_keys into `out_dir`'s `RunManifest` and write it back.
+def resolve_manifest_name(run_id: str | None) -> str:
+    """The manifest file name for `run_id`, or a `click.ClickException` naming the value when
+    the contract rejects it (an id that is not a safe path component, or is too long)."""
+    try:
+        return run_manifest_name_for_writing(run_id)
+    except ValueError as exc:
+        raise click.ClickException(
+            f"{PIPELINE_RUN_ID_ENV_VAR}={run_id!r} (whitespace-stripped) cannot name a run "
+            f"manifest: {exc}"
+        ) from exc
+
+
+def write_run_manifest(
+    out_dir: Path,
+    result: BatchResult,
+    *,
+    manifest_name: str,
+    pipeline_run_id: str | None,
+    staleness_seconds: float,
+) -> None:
+    """Write this invocation's usable scan_keys to `out_dir / manifest_name`, replacing it.
 
     Usable scan_keys are every scan whose result was `ok` or `skipped` this run (excludes
-    `failed`). Merges with any existing manifest (union of scan_keys, this invocation's
-    pipeline_run_id wins) rather than overwriting — required because the pipeline chunks one
-    logical request across multiple invocations sharing one `out_dir` with disjoint scan_ids
-    (see design.md). Skips the write entirely if the merged scan_keys would be empty (nothing
-    usable to record — `RunManifest` itself rejects an empty list). Raises `click.ClickException`
-    for every failure mode here — manifest-lock contention, a corrupt existing manifest, an
+    `failed`). The write overwrites rather than unions: an existing manifest is never read, so
+    a retry of the same run cannot latch a key from a failed earlier attempt, and a stale
+    legacy `run_manifest.json` beside a per-run file is never touched (sleap-roots-pipeline#71
+    design section 2.4). Skips the write entirely if there is nothing usable to record
+    (`RunManifest` itself rejects an empty list), leaving any existing file of that name alone.
+    Raises `click.ClickException` for every failure mode here — manifest-lock contention, an
     `OSError` from the lock's own file operations or from `atomic_write_bytes`, or a
     `RunManifest` construction failure — rather than letting any of them surface as a raw
-    traceback or silently dropping scan_keys.
+    traceback.
     """
-    this_run_scan_keys = {s.scan_key for s in result.scans if s.status in ("ok", "skipped")}
+    scan_keys = sorted({s.scan_key for s in result.scans if s.status in ("ok", "skipped")})
+    if not scan_keys:
+        return
 
-    manifest_path = Path(out_dir) / RUN_MANIFEST_FILENAME
+    manifest_path = Path(out_dir) / manifest_name
     lock_path = Path(out_dir) / LOCKS_DIRNAME / MANIFEST_LOCK_FILENAME
 
     try:
         with acquire_lock(lock_path, staleness_seconds=staleness_seconds):
-            existing_scan_keys: set[str] = set()
-            if manifest_path.is_file():
-                try:
-                    existing = RunManifest.model_validate_json(
-                        manifest_path.read_text(encoding="utf-8")
-                    )
-                except (OSError, ValidationError) as exc:
-                    raise click.ClickException(
-                        f"{manifest_path} exists but is not a valid RunManifest: {exc}"
-                    ) from exc
-                existing_scan_keys = set(existing.scan_keys)
-
-            merged_scan_keys = sorted(existing_scan_keys | this_run_scan_keys)
-            if not merged_scan_keys:
-                return
-
             manifest = RunManifest(
-                pipeline_run_id=resolve_pipeline_run_id(), scan_keys=merged_scan_keys
+                pipeline_run_id=stamped_pipeline_run_id(pipeline_run_id), scan_keys=scan_keys
             )
             atomic_write_bytes(manifest_path, manifest.model_dump_json().encode("utf-8"))
     except (LockContendedError, OSError, ValidationError) as exc:
         # OSError covers disk-full/permission failures from the lock's own file operations or
         # from atomic_write_bytes. ValidationError guards the RunManifest(...) construction
-        # itself — practically unreachable today (merged_scan_keys is deduplicated via a set
-        # union and every entry comes from scan_key_for()'s fixed format, so RunManifest's own
-        # empty/duplicate/blank checks can't trip), but kept here so a future change to either
-        # invariant fails loud via ClickException rather than silently regaining a raw
-        # traceback. Every manifest-write failure mode this design commits to should exit via
-        # a clean, actionable click.ClickException, not a raw traceback.
+        # itself — practically unreachable (scan_keys is deduplicated via a set and every
+        # entry comes from scan_key_for()'s fixed format, so RunManifest's own
+        # empty/duplicate/blank checks can't trip), but kept so a future change to either
+        # invariant fails loud via ClickException rather than a raw traceback.
         raise click.ClickException(str(exc)) from exc
 
 
@@ -575,18 +587,18 @@ def batch_download_for_predict(
     sleap_roots_predict/trait_extractor's own `0`/`3` convention) if at least one scan failed
     — one scan or every scan; 3 only means "not every scan succeeded," never "some scan did"
     (check the written RunManifest or --json output for which scans actually staged). A usage
-    error or manifest-lock/write failure still exits 2/1 respectively, independent of any
-    scan's outcome (bloom #772).
+    error still exits 2, and a manifest-lock/write failure or an ARGO_WORKFLOW_NAME that
+    cannot name a run manifest exits 1, independent of any scan's outcome (bloom #772).
 
     Each scan's frames download via up to `--workers` concurrent threads (bloom #652); scans
     themselves are still staged one at a time.
 
-    After every scan is processed, writes/merges a `sleap_roots_contracts.RunManifest`
-    recording every usable (`ok` or `skipped`) scan_key into OUT_DIR, under a lock separate
-    from the per-scan locks `stage_one_scan` holds — closing bloom #533's race and giving
-    bloom #481's deferred cross-command lock design its first concrete implementation.
-    `--lock-staleness-seconds` controls the age at which both kinds of lock are considered
-    abandoned and reclaimable.
+    After every scan is processed, writes a `sleap_roots_contracts.RunManifest` recording
+    every usable (`ok` or `skipped`) scan_key into OUT_DIR, replacing any existing file of the
+    same name: `run_manifest.<ARGO_WORKFLOW_NAME>.json` inside Argo, `run_manifest.json`
+    without it (bloom #934). The write happens under a lock separate from the per-scan locks
+    `stage_one_scan` holds (bloom #533, #481). `--lock-staleness-seconds` controls the age at
+    which both kinds of lock are considered abandoned and reclaimable.
 
     NB: an early draft took the scan_ids source as a positional argument alongside OUT_DIR, but
     Click cannot disambiguate an omitted optional positional from a required one that follows
@@ -623,6 +635,12 @@ def batch_download_for_predict(
         click.echo("No scan_ids given; nothing to stage.")
         return
 
+    # Resolved once, before any authentication or staging, so an unusable run identity fails
+    # fast (exit 1) instead of after a full batch — and so the file name and the id stamped
+    # inside it come from the same single read of the environment.
+    pipeline_run_id = pipeline_run_id_from_env()
+    manifest_name = resolve_manifest_name(pipeline_run_id)
+
     from ..cli import _authed_client
 
     client = _authed_client(profile)
@@ -641,6 +659,12 @@ def batch_download_for_predict(
     else:
         click.echo(format_summary(result, verb="Staged", noun="scan", destination=str(out_dir)))
 
-    write_run_manifest(out_dir, result, staleness_seconds=lock_staleness_seconds)
+    write_run_manifest(
+        out_dir,
+        result,
+        manifest_name=manifest_name,
+        pipeline_run_id=pipeline_run_id,
+        staleness_seconds=lock_staleness_seconds,
+    )
 
     ctx.exit(0 if result.ok else 3)

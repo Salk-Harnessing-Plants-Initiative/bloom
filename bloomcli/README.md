@@ -41,11 +41,25 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 ## Commands
 
 `login` is flat; assay-specific commands are grouped by data type (`cyl`,
-`plate`, `scrna`). Each command is tagged **[read]** or **[write]** — see
+`genome`, `plate`, `scrna`). Each command is tagged **[read]** or **[write]** — see
 [Access & roles](#access--roles).
 
 - `bloomctl login` — bootstrap client config from the Bloom server and store
   credentials per profile.
+- **[write]** `bloomctl genome upload <name> --fasta … --gtf …` — store a reference
+  genome's FASTA and GTF as its next version, for the Cell Ranger workflow. See
+  [below](#bloomctl-genome-upload).
+- **[read]** `bloomctl genome list` / `bloomctl genome download <name>[.vN]` — see which
+  genomes and versions Bloom holds, and fetch a ready version's FASTA and GTF, checked
+  against Bloom's record. See [below](#bloomctl-genome-list-and-download).
+- **[write]** `bloomctl genome annotation upload <file>` / **[read]** `bloomctl genome
+  annotation download <name>.vN --out <file>` — record a genome version's GO and pathway
+  annotation (a `bloom-annotation/1` file from the GO and pathway workflow) as its next build, or
+  fetch its ready build, checked against Bloom's record. Download exits 4 while a build is still
+  uploading and 3 when there is none.
+- **[write]** `bloomctl scrna enrichment upload <file> --build-id N [--run-id R]` — record a
+  dataset's GO and pathway enrichment (`bloom-enrichment/1`) against an annotation build, linking
+  the dataset to the build's genome version when it has none.
 - **[read]** `bloomctl cyl download <out_dir> …` — download a cylinder experiment
   or single scan (metadata `scans.csv` + per-frame images). Select the experiment
   by `--experiment-id N`, `--scan-id N`, or `--experiment-name "<text>"` (a
@@ -81,7 +95,10 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl datasets get <name>` — show one dataset's details and the
   unique traits it contains, via the `cyl_dataset_trait_names` view (`--json` output).
 - **[write]** `bloomctl cyl datasets create <name> <experiment_id> <trait_source_name>` —
-  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`).
+  create a trait dataset (`--qc-set-name` to exclude a QC set, `--timepoints`). For pipeline
+  data a source name selects **one scan's** rows (write-back stores one source per scan);
+  a dataset built from a recipe across many scans needs `create_cyl_dataset`'s recipe mode,
+  which bloomctl does not expose yet (#481).
 - **[read]** `bloomctl cyl experiments list` — list cylinder experiments (species,
   name, id), sorted by species then name. Filter with `--species NAME` (scriptable) or
   `--species-menu` to **pick a species from a menu** (needs a terminal). Choose the output
@@ -99,9 +116,10 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl cyl qc list-sets` — list cylinder QC sets (name, species,
   experiment, number of QC codes). Prints a table by default; `--output csv|json`
   for machine-readable output.
-- **[write]** `bloomctl scrna hdf5 upload <file.h5ad>` — store a single-cell dataset's
-  AnnData file, gzipped and named by its SHA-256, after checking its structure
-  (see below).
+- **[write]** `bloomctl scrna hdf5 upload <file.h5ad> --name … --species … --annotation …`
+  — store a single-cell dataset's AnnData file, gzipped and named by its SHA-256, and load
+  its cells into Bloom, after checking both and showing what will happen; asks first
+  (`--yes` in scripts, `--dry-run` to check only). See below.
 - **[read]** `bloomctl scrna hdf5 download <dataset>` — fetch a dataset's AnnData file,
   by name, id or `--checksum`, checked against its fingerprint (see below).
 - **[read]** `bloomctl scrna hdf5 list [search]` — the dataset files storage holds, each
@@ -116,7 +134,9 @@ These apply across the `cyl` commands, so the per-command sections below stay sh
 
 - **Profiles** — every command takes `-p/--profile <name>` (default `prod`). `bloomctl login`
   writes a profile; use separate profiles to keep prod / staging / local logins side by side
-  (`bloomctl login --server <url> -p staging`, then `… -p staging` on any command).
+  (`bloomctl login --server https://staging.bloom.salk.edu -p staging`, then `… -p staging` on
+  any command). Staging is for the Bloom team only. `-p` only names the saved login: without
+  `--server`, `login` signs in to prod whatever the profile is called.
 - **Machine-readable output** — the `list` commands take `--output csv|json` (with `--json` as a
   back-compat alias for `--output json`); the default is a human table. Pipe it: e.g.
   `cyl experiments list --output json | jq '.[].experiment_id'`.
@@ -358,9 +378,6 @@ of being treated as complete forever. If the recorded size is itself wrong, the 
 succeeds and the log carries a `note=` saying so — otherwise that object would be re-fetched on
 every run with no explanation.
 
-> `plate download` requires the `gravi_scans_extended` view and, for `--experiment-name`, the
-> `gravi_experiment_search` function to be applied on the server you're pointed at.
-
 ## Finding what to download
 
 The read commands help you go from "which experiment?" to an id you can feed `cyl download`:
@@ -456,17 +473,24 @@ bloomctl cyl batch-download-for-predict <out_dir>
 - **Skips an already-staged scan** — if `<out_dir>/scan_<scan_id>/` already has
   a valid sidecar (parses, `scan_key` matches), that scan is reported
   `skipped` and not re-downloaded.
-- **Writes a `RunManifest`** — after every scan is processed, writes/merges a
-  `sleap_roots_contracts.RunManifest` into `<out_dir>/run_manifest.json`,
-  recording every usable (`ok` or `skipped`) `scan_key` this and any prior
-  invocation staged into this directory (`pipeline_run_id` from
-  `ARGO_WORKFLOW_NAME`, or a generated `local-<8 hex chars>` placeholder
-  outside Argo). A downstream consumer reads this to know which scans in
-  `<out_dir>` are safe to process.
+- **Writes a `RunManifest`** — after every scan is processed, writes a
+  `sleap_roots_contracts.RunManifest` recording every usable (`ok` or
+  `skipped`) `scan_key` *this invocation* found. The file is named per run:
+  `<out_dir>/run_manifest.<ARGO_WORKFLOW_NAME>.json` inside Argo (whitespace
+  stripped), and `<out_dir>/run_manifest.json` when `ARGO_WORKFLOW_NAME` is
+  unset or blank. Its `pipeline_run_id` is that same run id, or a generated
+  `local-<8 hex chars>` placeholder outside Argo (stamped inside the file,
+  never used to name it). The write **replaces** any existing file of that
+  name — it never merges with an earlier manifest, so running twice into the
+  same `out_dir` without `ARGO_WORKFLOW_NAME` keeps only the second run's keys,
+  and a legacy `run_manifest.json` next to a per-run file is never touched. A
+  downstream consumer reads this to know which scans in `<out_dir>` are this
+  run's to process (bloom #934).
 - **Locks against concurrent invocations** — a per-scan lock
   (`<out_dir>/.locks/{scan_key}.lock`) guards each scan's skip-check through
   its sidecar write, and a separate lock (`<out_dir>/.locks/manifest.lock`)
-  guards the manifest read-merge-write, so two invocations targeting the same
+  guards the manifest write (one lock per `out_dir`, whatever the manifest's
+  name), so two invocations targeting the same
   `out_dir` can't corrupt each other. `--lock-staleness-seconds` (default
   `900`) controls how old an abandoned lock must be before it's reclaimed
   rather than treated as still held.
@@ -476,10 +500,11 @@ bloomctl cyl batch-download-for-predict <out_dir>
   empty; `3` if at least one scan failed — whether that's one scan out of many
   or every scan in the batch, since `3` only means "not every scan succeeded,"
   never "some scan did" (mirrors `sleap_roots_predict`/`trait_extractor`'s own
-  `0`/`3` convention, bloom #772). Check `run_manifest.json` or `--json`
-  output to see which scans, if any, actually staged. A usage error or
-  manifest-lock/write failure still exits `2`/`1` respectively, independent
-  of any scan's outcome.
+  `0`/`3` convention, bloom #772). Check the written manifest or `--json`
+  output to see which scans, if any, actually staged. A usage error exits
+  `2`; a manifest-lock/write failure, or an `ARGO_WORKFLOW_NAME` that cannot
+  name a manifest file (checked before any scan is staged), exits `1` —
+  independent of any scan's outcome. Empty input still exits `0`.
 
 Auth: same saved login profile as other `cyl` commands.
 
@@ -499,9 +524,8 @@ finds its file with no lookup table, and the same file uploaded twice is one
 object.
 
 ```bash
-pip install 'bloomctl[scrna]'                   # upload's structure check needs h5py
-
-bloomctl scrna hdf5 upload myb41_transgene_load.h5ad -p staging
+bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
+  --species Arabidopsis --annotation cell_type --create -p staging    # store and load
 bloomctl scrna hdf5 download "MYB41 transgene" -p staging            # → MYB41_transgene.h5ad
 bloomctl scrna hdf5 download 14 --out myb41.h5ad -p staging          # by id
 bloomctl scrna hdf5 download --checksum 82278a…a54f -p staging       # by fingerprint
@@ -510,14 +534,16 @@ bloomctl scrna hdf5 list myb41 -p staging                            # by datase
 bloomctl scrna hdf5 list --file myb41_transgene_load.h5ad -p staging # is this one stored?
 ```
 
-**Upload** needs a writer or admin login. Before sending anything it checks the
-file's structure:
+**Upload** stores the file and loads the dataset from it — its cells and each gene's counts —
+so the explorer can show them and colour them by any gene. It needs a writer or admin login, or the pipeline's (`bloom_workflows`).
+Before sending anything it checks the file's structure:
 
 - every cell has an ID and none repeats (a barcode shared across samples cannot
   be the index); the same for genes, in whatever form the species' annotation
   writes them
 - `X` holds only finite values
-- `obsm['X_umap']` has two columns and a row per cell, holds only finite coordinates small
+- the UMAP (`obsm['X_umap']`, or the array `--umap-key` names) is there, has two columns
+  and a row per cell, holds only finite coordinates small
   enough for the explorer to store, and does not pile more than a thousandth of the cells on
   a single point — an array allocated and never filled passes every other check and draws the
   whole dataset as one dot. These two limits are the loader's own, so a UMAP this accepts is a
@@ -534,7 +560,109 @@ file's structure:
   optionally `counts_layer`. A file a dataset was loaded from before this existed
   is accepted without the block when that dataset records it.
 
-It then gzips the file and sends it through storage's resumable upload. Because an object is
+A file with no UMAP is refused: the explorer plots stored coordinates and never computes
+them. A file with no `obsm['X_umap']` but another array with two columns and a row per cell
+is refused naming it; pass `--umap-key NAME` if that array is the UMAP.
+
+Next it reads the cells and the gene names, the way the load will. Only the cell table
+(`obs`), the UMAP, the gene table (`var`) and the matrix's shape are read — no expression
+matrix or layer, except the genes `--expect-nonzero` names — so the memory this takes does
+not grow with the size of the data:
+
+- `--annotation` names the obs column holding the cell-type or cluster label assigned to
+  each cell — annotated types such as `Cortex`, or cluster ids such as Leiden's `0`, `1`, … —
+  which the map colours by (one colour each: 23 set colours, then generated ones for more
+  labels); `--sample-column` (default `sample`) names the column holding each cell's sample
+- every cell has a barcode, a type and a sample; a blank, or a value that reads as missing
+  (`nan`, `None`, …), is refused rather than stored as a cell type
+- `--expect-cells N` refuses a file holding any other number of cells
+- sample names are at most 100 characters, the most the database holds
+- gene names lose an `.Araport11.N` suffix, and then have to be unique and usable in an
+  object path (no `/`, no `..`)
+- `--expect-nonzero GENE=COUNT` (repeatable) refuses the file unless that gene is non-zero in
+  exactly that many cells — a way to pin a gene whose count is known independently, such as
+  a transgene's
+- the file does not change while it is read; one re-saved part-way is refused. The same check
+  runs again while the gene counts are read, after the file is stored: if the file changes
+  then, the load stops with nothing from the changed file written, and either the original
+  file is put back and the same command continues it, or the new file is uploaded as a new
+  dataset with another `--name` and `--create`
+
+Then it gzips the file, which also fingerprints it, and checks what needs that: the gzipped
+size is within 500 MB, and a file without `uns['normalization']` is one a dataset already
+records the normalization for. Last, it looks the dataset up by `--name` within `--species`
+(a common name, matched ignoring case and surrounding spaces) and decides what the load
+will do. Surrounding spaces are ignored in dataset names, and a name that differs from an existing
+dataset's only in capital letters is refused, asking for the exact name or a new one, so
+`myb41` cannot quietly stand in for, or sit beside, `MYB41`:
+
+- **no such dataset**: registered, but only with `--create`, so a mistyped name is refused
+  rather than loaded as a second copy
+- **a load from this file that stopped**: continued from what is stored, given the same
+  options it was started with
+- **finished from this file without its gene counts** (loaded before the upload wrote them):
+  the stored cells have to be this file's, in its order, and then the missing counts are
+  added
+- **finished from this file**: nothing to load — "already loaded". Given a label option or an
+  `--annotation` the dataset was not loaded with, it is refused instead, pointing to
+  `--add-labels`, rather than reporting success and writing nothing
+- **finished from another file**, or a dataset that records no file: refused. A loaded
+  dataset is not replaced; the refusal suggests a new name to load the file under, such as
+  `MYB41_v2`
+
+Only once every check has passed does it show what the file holds and what the load will
+do, and ask. For the MYB41 file on staging, already loaded as dataset 14:
+
+```text
+myb41_transgene_load.h5ad
+  cells          8,683
+  genes          27,656
+  UMAP           obsm['X_umap']
+  layers         counts
+  normalization  none in the file; recorded on dataset MYB41 transgene (id 14)
+  obs columns    barcode, sample, n_genes_by_counts, total_counts, total_counts_organellar,
+                 pct_counts_organellar, is_cell, dev_label, saturn_Celltype, saturn_Celltype_knn,
+                 saturn_Celltype_conf, saturn_Celltype_agree, saturn_celltype_fine,
+                 saturn_celltype_fine_knn, saturn_celltype_fine_conf, saturn_celltype_fine_agree,
+                 saturn_time_celltype, saturn_time_celltype_knn, saturn_time_celltype_conf,
+                 saturn_time_celltype_agree, saturn_timezone, saturn_timezone_knn,
+                 saturn_timezone_conf, saturn_timezone_agree, transgene_umi, transgene_pos,
+                 saturn_nuc_Celltype, saturn_nuc_Celltype_knn, saturn_nuc_Celltype_conf,
+                 saturn_nuc_Celltype_agree, singler, singler_score, sr_Atrichoblast (elongation),
+                 sr_Atrichoblast (mature), sr_Cortex (elongation_maturation),
+                 sr_Cortex (maturation), sr_Cortex maturation, sr_Cortex_Atrichoblast (maturation),
+                 sr_Endodermis (elongation_maturation), sr_LRC, sr_Meristem, sr_Pericycle,
+                 sr_Pericycle_endodermis (elongation), sr_Periderm_endodermis, sr_Phellem,
+                 sr_Phellogen, sr_Phloem, sr_QC, sr_Trichoblast (elongation_maturation),
+                 sr_Trichoblast (mature), sr_Unknown_1, sr_Xylem, nn_label, nn_label_plain,
+                 nn_source, nn_conf, nn_pct_shahan
+  dataset        MYB41 transgene (id 14) — already loaded from this file
+  cell types     23: Atrichoblast, Atrichoblast (elongation), Atrichoblast (mature), Columella,
+                 Cortex, Cortex (elongation/maturation), Cortex (maturation), Cortex maturation,
+                 Cortex/Atrichoblast (maturation), Endodermis (elongation/maturation), LRC,
+                 Lateral Root Cap, Meristem, Pericycle, Pericycle/endodermis (elongation), Phellem,
+                 Phloem, Procambium, QC, Trichoblast, Trichoblast (elongation/maturation),
+                 Unknown_1, Xylem
+  samples        Col-0 2,442, pFACT 3,304, pHORST 2,937
+  units          log1p normalised counts
+Upload this file? Its dataset is already loaded [y/N]:
+```
+
+For a new dataset the dataset line reads `— new, registered by this upload`, a `gene counts`
+line says how many genes' counts will be written and where (`27,656 genes, one object each
+under scrna/counts/My_dataset_<new id>_/`), and the question is
+`Upload this file and load its cells into '<name>'?`.
+
+The summary and the question are written to the terminal (stderr), so they still appear
+when the output is redirected to a file. Every name read from the file is shown with its
+control characters escaped (`\x1b`, `\n`), so the file cannot alter the summary being
+confirmed. Pressing Enter answers no.
+
+`--yes` goes ahead without asking; without a terminal to ask in, the command refuses unless
+`--yes` is given. `--dry-run` signs in and runs every check, shows the summary, and stops
+before sending or writing anything.
+
+Once confirmed, it sends the gzipped file through storage's resumable upload. Because an object is
 named by the fingerprint of its contents, storage already holding that name means it holds
 this very file, byte for byte: the command says so and sends nothing. If the connection
 drops, run the same command again: the gzipped copy and what identifies the upload wait in
@@ -554,6 +682,86 @@ storage took. It does that once — a second expiry is not a token running out, 
 reported. A login that is refused outright is reported at once instead, since signing in
 again does nothing about a permission the account does not have.
 
+Once the file is stored, the cells are written: the dataset row (recording the file's
+fingerprint, the load's options and how many cells the file holds), its cell-type catalogue
+(each type with its colour), and one row per cell with its UMAP position, type and sample.
+Then each gene's counts: a row per gene, numbered by its position in the file, and one object
+per gene under `counts/<name>_<dataset id>_/<gene>.json` holding its value in every cell that
+has one, keyed by the cell's position. The matrix is read a block of genes at a time, so the
+memory this takes stays bounded whatever the file's size.
+
+The dataset is marked finished last, after every cell is read back and every gene's counts
+are recorded, with the file's `uns['normalization']`; until then a dataset that records a
+file but no finish time is an unfinished load. A dataset finished before the counts were
+part of the upload gets the ones it is missing when the same command is run again; it is
+marked unfinished while they are written, and finished again once they are all there. The
+colour-bar units follow the normalization (`log1p normalised counts`,
+`log2(x+1) normalised counts`, …) unless `--expression-units` says otherwise.
+
+On a terminal, the slow steps — preparing (fingerprinting and gzipping) the file, uploading
+it, writing the cells and writing the genes — each show a progress bar with how much is
+done, e.g. `Uploading my_dataset.h5ad ━━━━━━━━╺━━━━━━ 75.0/182.4 MB 41% 0:00:38`; a log or CI run gets
+only the result lines.
+
+Each write is one request sent once; if one fails the command says the file is stored and
+the load stopped, and running the same command again continues it. The exception is a
+gene's counts file, which only replaces itself: when the connection drops or storage answers
+with a server error, it is sent again, up to three times, 2, 5 and 15 seconds apart. A write whose outcome
+is unknown (a timeout, or Ctrl-C or a closed terminal while it was being sent) may still be finishing on the
+server, so the next run waits that out first, about six minutes, saying how many seconds
+are left. Load a dataset from one terminal at a time.
+
+`--name`, `--species` and `--annotation` (the column of cell-type or cluster labels) are all
+a load needs; `--create` is added the first time, to register the dataset. A dataset name
+holds letters, digits, spaces, `.`, `_` and `-`. Anything else the file records per cell can
+come along too. Each of these options names an `obs` column:
+
+- `--genotype-column COLUMN` makes each of its values a genotype the cells point at.
+  `--control GENOTYPE` names the control (it is never guessed), and `--construct
+  GENOTYPE=NAME` (repeatable) the construct a line carries.
+- `--facet COLUMN` (repeatable) turns the column's values into filters on the map: a
+  treatment, a timepoint, a batch, whether a transgene was detected. A column may have at
+  most 12 values of at most 200 characters, a column name at most 64, and a load at most 32
+  such columns; a column with more values, such as a count or a score, is refused as a
+  measurement rather than a label.
+- `--source-column COLUMN` records, per cell type, where its label came from, such as the
+  reference atlas it was transferred from.
+
+```bash
+bloomctl scrna hdf5 upload my_dataset.h5ad --name "My dataset" \
+  --species Arabidopsis --annotation cell_type --create \
+  --genotype-column genotype --control Col-0 --construct line1=35S:GENE \
+  --facet treatment --facet timepoint --source-column label_source -p staging
+```
+
+On a dataset already loaded from this file, `--add-labels` with any of these adds them to its
+cells, which stay as they are. Labels it already has are kept: a new `--facet` joins them,
+and one of a column it already has replaces that column's values.
+
+`--run-id ID` is for the RNA-seq pipeline, which loads each Cell Ranger run's result signed in
+as `bloom_workflows`. It records the run on the dataset it creates, so the run can be linked to
+it, and refuses to continue a dataset another run, or a person, started. An upload without it
+works as before.
+
+`--de-key KEY` loads a differential expression stored in the file with the dataset: each
+`--annotation` cluster against the rest, as scanpy's `sc.tl.rank_genes_groups(adata,
+groupby=<annotation>, reference="rest")` stores it in `uns[KEY]` (with `pts=True`, each gene's
+share of expressing cells is kept too). It becomes:
+
+- one DE run;
+- a comparison per cluster (`<cluster>_vs_rest`);
+- every tested gene's fold change, p-value and FDR;
+- each cluster's size, centre and top 25 up-regulated markers (FDR < 0.05), shown on the
+  expression page's cluster panel and Genes tab.
+
+Notes:
+
+- A result against a chosen cluster, or grouped by another column, is refused before
+  anything is sent.
+- The DE is written after the counts and before the dataset is finished, so a stopped load
+  continues it.
+- The Cell Ranger pipeline passes `--de-key de`.
+
 **List** needs any login. It reports what the bucket holds — each object's fingerprint,
 its size in bytes, when it arrived, and the dataset recording that fingerprint, where one
 does; an object can be stored before any dataset points at it, so an unnamed row is
@@ -568,6 +776,74 @@ its SHA-256 as it goes, and moves the file into place only when the fingerprint
 matches; a mismatch leaves nothing behind. A file already at the destination with
 the right fingerprint is left alone, and a different one is never overwritten.
 
+
+## `bloomctl genome upload`
+
+Reference genomes for the Cell Ranger workflow are kept in Bloom with numbered
+versions. Each version is one gzipped FASTA and one gzipped GTF in the
+`genome-references` bucket, at `<genome>/v<N>/genome.fa.gz` and
+`<genome>/v<N>/genes.gtf.gz`, with their SHA-256 and size recorded. A version's
+files never change once uploaded; a different FASTA or GTF is a new version.
+
+```bash
+# A new genome: --species (the common name) is required.
+bloomctl genome upload tair10_araport11 \
+  --fasta TAIR10.fa --gtf Araport11.gtf --species Arabidopsis \
+  --assembly TAIR10 --annotation Araport11 \
+  --source-url https://www.arabidopsis.org/ -p staging
+# → tair10_araport11 v1: ready
+
+# The next version of the same genome (writers only).
+bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_2024.gtf.gz -p staging
+# → tair10_araport11 v2: ready
+```
+
+- The genome name is 1 to 64 lowercase letters, digits, `.`, `_` or `-`, starting with a
+  letter or digit, with no `__` and not ending in `.v` and a number (that is how a version is
+  written). It can never be changed.
+- The files can be plain or gzipped. A plain file is gzipped into a temporary
+  folder first; the original is never changed. A gzipped file is read to the end
+  to check it is intact, then sent as it is.
+- Before anything is sent, the FASTA must start with a `>` line, the GTF's first
+  record must have 9 tab-separated columns, and each gzipped file must be at most
+  500 MB.
+- The upload is described on the terminal and goes ahead once confirmed; `--yes`
+  skips the question.
+- Any signed-in member (`bloom_user`) may upload a **new** genome, as its v1.
+  Adding a version to an existing genome needs a writer login (`bloom_writer`); a
+  member is refused before anything is prepared or sent.
+- If a writer's upload stops part-way, the version is marked abandoned and is never
+  offered for a run; run the same command again to upload it as a new version. A
+  member's unfinished upload can't be abandoned: it is never offered for a run, the
+  name stays taken, and an admin can clear it.
+
+## `bloomctl genome list` and `download`
+
+```bash
+bloomctl genome list -p staging                  # every genome, version and status
+bloomctl genome download tair10_araport11 --to ref/ -p staging       # newest ready version
+bloomctl genome download tair10_araport11.v1 --to ref/ -p staging    # a named version
+# For building a Cell Ranger reference (what the workflow runs, with the exact version):
+bloomctl genome download tair10_araport11.v2 --to ref/ --unzip --version-file ref/VERSION
+```
+
+- A version is **ready** once its upload finished. `uploading`, `abandoned` (the upload
+  failed) and `withdrawn` (pulled by an admin, with a reason) versions are listed but never
+  downloaded; asking for one says which it is.
+- `download` writes `genome.fa.gz` and `genes.gtf.gz`, or `genome.fa` and `genes.gtf` with
+  `--unzip`. Each file is streamed to a hidden name and checked against the SHA-256 and size
+  Bloom recorded at upload before it is moved into place; `--unzip` unzips only a checked file.
+  A file that doesn't match is not saved; files already checked stay in place.
+- Run it again and a file already in place with the right content is kept, so only what is
+  missing is fetched; a different file there is never overwritten.
+- The only line on stdout is the exact version, as `tair10_araport11.v2` (the form the command
+  takes); `--version-file` also writes it to a file.
+- Exit codes: `0` done; `3` the version isn't available (unknown, not ready) or a file doesn't
+  match Bloom's record, which running again won't fix; `1` anything else, such as a network or
+  storage error, worth retrying; `2` a usage error.
+- `list --output json` (or `csv`) gives one record per version.
+- Any login can run both, including the pipeline's (`bloom_workflows`).
+
 ## Access & roles
 
 Commands run **as the logged-in user** — every query and mutation is RLS-enforced
@@ -576,8 +852,8 @@ profile maps to determines what works:
 
 | Command tag                                                                                    | Required role                         | Intended user                                                                             |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
-| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`)                        | `bloom_writer` / `bloom_admin`        | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`, `genome list`, `genome download`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`, `genome upload`)                        | `bloom_writer` / `bloom_admin` (`genome upload`: `bloom_writer`, or a member for a new genome) | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the
@@ -598,7 +874,8 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
 - **Validates** it against `sleap-roots-contracts` before the call (fails fast with
   a readable message) and sends the original JSON unchanged.
 - **Idempotent:** re-ingesting the same envelope is a no-op (first-writer-wins on
-  the envelope's `idempotency_key`), reported as "already ingested" — not an error.
+  the envelope's `idempotency_key`), reported as "already ingested" — not an error,
+  with one exception: see `ARGO_WORKFLOW_NAME` below.
 - `--json` prints the RPC's result object (including `source_id`) to stdout for
   scripting; without it, a human-readable summary line.
 - `--predictions-dir DIR`: construct and upload the envelope's `blobs`. Reads
@@ -625,16 +902,31 @@ bloomctl cyl ingest-result <envelope.json | ->   [-p/--profile PROFILE] [--json]
   automatically inside the write-back container — see
   `sleap-roots-write-back-template.yaml`), also links the matching
   `cyl_pipeline_run_scans` row to this write-back (`'written'`), so the
-  pipeline run's `done_count`/`failed_count` can reflect it. Omit or unset it
-  for the existing manual/ad-hoc invocation shape, which is unaffected.
+  pipeline run's `done_count`/`failed_count` can reflect it. The value is sent
+  whitespace-stripped (`pipeline_run_id_from_env()`, the same run id
+  `batch-ingest-result` scopes and reconciles with). Omit, unset or blank it for
+  the existing manual/ad-hoc invocation shape, which is unaffected.
+
+  If the RPC then reports that it updated no row of this workflow
+  (`status_update_matched: false`), the command prints the outcome and exits
+  non-zero. For a written delivery the message says the data was written but
+  the row was not updated. For an already-ingested envelope (a no-op) it says
+  nothing was written and this workflow's row for the source's scan was not
+  updated: the source's scan could not be resolved (no recorded scan and no
+  run row carrying the source), this workflow did not dispatch that scan, the
+  row is already `'failed'`, or the row is already linked to a different
+  source. A no-op whose row was updated, under this workflow name
+  or a new one, still exits zero.
 
 The most common real-world error is `inputs.image_ids` not resolving to exactly
 one scan on the target server — the command explains that the scan's images must
 already exist in `cyl_images` on the Bloom you're pointed at.
 
-Auth: uses your saved login profile, which must have write access
-(`bloom_writer` / `bloom_admin`). Non-interactive / scoped credentials for
-cluster/CI use are tracked separately (#398).
+Auth: uses your saved login profile, which must be allowed to run the write-back
+RPC (`bloom_writer` / `bloom_admin`, or `bloom_workflows` for the cluster
+pipeline). The pipeline's write-back pods don't run `bloomctl login`: they read
+`credentials.txt` from a mounted Secret. See `services/workflows/README.md`
+"Provisioning (per environment)" step 6. Other non-interactive use is #398.
 
 Examples:
 
@@ -657,18 +949,43 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
 - Ingests every `{scan_key}.result.json` file directly under `envelopes_dir`
   (non-recursive — the flat layout `trait_extractor.extract_batch`'s
   output produces), via the same validation + RPC path as `ingest-result`.
-  If `envelopes_dir` contains a `run_manifest.json`, discovery is scoped to
-  its `scan_keys`: out-of-scope files are excluded (and logged at debug
-  level), and a declared `scan_key` with no matching file is reported as a
-  batch failure — unless a differently-named file's own content actually
-  reports that scan_key (a filename/body mismatch), in which case the real
-  outcome wins and the failure is dropped. With no manifest present,
-  discovery is fully unscoped, as above.
+  Discovery is scoped to the run's manifest, resolved with
+  `sleap_roots_contracts.load_run_manifest` (bloom #934):
+  - **With `ARGO_WORKFLOW_NAME` set** (whitespace stripped — the same run id
+    is sent as `p_argo_workflow_name` and used for the reconciliation below):
+    `run_manifest.<ARGO_WORKFLOW_NAME>.json`, else a legacy `run_manifest.json`
+    **only if it names this run** (accepted during the rollout;
+    sleap-roots-pipeline#82 removes the fallback). If there is **no manifest
+    for this run** — neither file, or only a legacy file naming a different
+    run (stale, or another run's) — nothing is ingested: the batch reports a
+    failed `scan_key="<run-manifest>"` entry naming the files (and both run
+    ids), still makes the reconciliation call below, recording that no run
+    manifest reached write-back, and exits `1`. It never falls back to
+    ingesting every envelope in a directory that other runs share, or to
+    another run's scope. A per-run file naming a different run, or an
+    `ARGO_WORKFLOW_NAME` the contract rejects, fails before anything is
+    ingested.
+  - **Without it** (unset or blank): `run_manifest.json` scopes discovery when
+    present; with no manifest, discovery is fully unscoped, as above.
+
+  Don't recover a failed pipeline batch by running `batch-ingest-result` by
+  hand over the pipeline's shared `a4_poc` directories: with
+  `ARGO_WORKFLOW_NAME` set it fails the same way, and without it, once the
+  stale legacy manifests are gone, discovery is unscoped and ingests every
+  run's envelopes. Re-dispatch the run instead.
+
+  When a manifest scopes discovery, out-of-scope files are excluded (and
+  logged at debug level), and a declared `scan_key` with no matching file is
+  reported as a batch failure — unless a differently-named file's own content
+  actually reports that scan_key (a filename/body mismatch), in which case the
+  real outcome wins and the failure is dropped.
 - **Isolates per-envelope failures** — an unreadable/malformed file, a
   contract-validation failure, or a mapped RPC error is recorded and reported,
   but does not abort the rest of the batch.
 - **No-op re-deliveries are reported `skipped`**, not `failed` — same
-  first-writer-wins idempotency as `ingest-result`.
+  first-writer-wins idempotency as `ingest-result`. The exception is the same
+  as `ingest-result`'s: with `ARGO_WORKFLOW_NAME` set, a no-op whose row was
+  not updated is reported `failed`, non-retriable, with the same message.
 - `--predictions-dir DIR`: predict's own nested batch output root
   (`DIR/{scan_key}/{scan_key}.predictions.json` + `.slp` files per scan).
   Constructs, verifies, and uploads blobs per envelope from its own scan_key's
@@ -683,23 +1000,36 @@ bloomctl cyl batch-ingest-result <envelopes_dir>
   plus one line per failure and one `WARNING` line per degraded item. `warning`
   is non-empty when the idempotency-gate check could not run and the command
   fell back to uploading — most likely a missing column grant.
-- **Exit code:** non-zero if any envelope in the batch failed; zero if every
-  envelope succeeded, was a no-op re-delivery, or the directory was empty
-  (a directory containing only a manifest with no matching files is not the
-  empty case — it exits non-zero).
-- When `ARGO_WORKFLOW_NAME` is set, after every discovered envelope has been
+- **Exit code:** non-zero if any failed entry in the batch is retriable (an
+  envelope, a missing `scan_key`, a missing run manifest, or the
+  reconciliation call); zero if every envelope succeeded, was a no-op
+  re-delivery, or failed only non-retriably, or if there was nothing to ingest
+  and no manifest was needed (`ARGO_WORKFLOW_NAME` unset, empty directory, no
+  `run_manifest.json`). A directory containing only a manifest with no
+  matching files is not the empty case — it exits non-zero. A missing or
+  unreadable `envelopes_dir`, or a manifest that can't be read, or a per-run
+  manifest naming the wrong run, exits `1` before anything is ingested.
+- When `ARGO_WORKFLOW_NAME` is set (and not blank), after every discovered envelope has been
   processed, marks every scan dispatched under that workflow name that never
   produced a result as `'failed'` (one call, regardless of batch size —
   including a batch of zero envelopes, since every scan under that workflow
   name having failed prediction before producing any file is exactly the
-  case this closes out). Skipped entirely when the env var is unset (manual/
+  case this closes out). Skipped entirely when the env var is unset or blank (manual/
   local runs, unaffected). A failure of this call is isolated, not a crash —
   it's reported as its own failed entry (`scan_key="<reconciliation>"`) in the
   batch's summary/`--json` output and reflected in the exit code, alongside
   every real envelope's own outcome; a successful call logs how many scans it
-  closed out. An unreadable envelope file at any earlier stage (e.g. a
-  truncated file left by an OOM-killed producer) is isolated the same way and
-  never prevents this call from running.
+  closed out. **Exception (bloom #1034):** when an envelope the batch tried to
+  ingest failed retriably, the call is skipped and stderr says
+  `reconciliation deferred to the status poller: N envelope(s) failed
+  retriably`. Argo retries the write-back step in the same Workflow, and
+  closing those scans now would keep them `'failed'` even after the retry
+  ingests them. The status poller closes whatever is still `'queued'` once
+  the Workflow ends. A missing declared file, a missing run manifest and a
+  non-retriable failure don't count, since a retry can't change them. An
+  unreadable envelope file (e.g. a truncated file left by an OOM-killed
+  producer) is isolated without aborting the batch, and, being retriable,
+  defers the call too.
 
 Auth: same saved login profile as `ingest-result` (must have write access).
 

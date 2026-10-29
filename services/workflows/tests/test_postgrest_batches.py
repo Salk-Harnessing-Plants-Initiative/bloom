@@ -1,0 +1,136 @@
+"""Unit tests for postgrest_batches.id_batches, the trigger's copy of bloomctl's id-filter
+batching (bloom#901)."""
+
+import ast
+from pathlib import Path
+
+import postgrest_batches
+from postgrest_batches import ID_FILTER_BUDGET_CHARS, id_batches
+
+
+def _bloomctl_postgrest():
+    """bloomctl's module, parsed. Resolved here rather than at import, so a layout
+    where the path can't resolve (e.g. /app/tests, where parents[3] raises IndexError)
+    or a checkout without bloomcli/ fails these tests alone, not the whole file."""
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "bloomcli"
+        / "src"
+        / "bloomctl"
+        / "_postgrest.py"
+    )
+    return ast.parse(path.read_text(encoding="utf-8"))
+
+
+def _function_body_without_docstring(tree, name):
+    fn = next(
+        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name),
+        None,
+    )
+    assert fn is not None, f"no top-level function {name!r}"
+    body = fn.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    return [ast.dump(stmt) for stmt in body]
+
+
+def _rendered(batch):
+    """The id list exactly as it appears inside `in.(…)`."""
+    return ",".join(str(v) for v in batch)
+
+
+def test_empty_input_gives_no_batches():
+    assert id_batches([]) == []
+
+
+def test_every_batch_renders_within_the_budget_counting_separators():
+    ids = list(range(1000, 4000))  # 3000 four-digit ids: 14,999 rendered characters
+    batches = id_batches(ids)
+    assert len(batches) > 1
+    for batch in batches:
+        assert len(_rendered(batch)) <= ID_FILTER_BUDGET_CHARS
+
+
+def test_a_small_budget_is_respected_too():
+    batches = id_batches(list(range(100, 200)), budget=20)
+    assert len(batches) > 1
+    for batch in batches:
+        assert len(_rendered(batch)) <= 20
+
+
+def test_order_is_preserved_with_no_loss_or_duplication():
+    ids = [7, 3, 12345, 3, 99, 1, 400000]
+    flat = [v for batch in id_batches(ids, budget=8) for v in batch]
+    assert flat == ids
+
+
+def test_order_is_preserved_across_many_batches():
+    ids = list(range(5000, 1000, -1))
+    flat = [v for batch in id_batches(ids) for v in batch]
+    assert flat == ids
+
+
+def test_a_batch_stops_at_the_budget_edge():
+    # Each id counts its digits plus one comma, the last included, so a rendered batch
+    # is at most budget - 1. "1111,2222" (9) fits a budget of 10; ",3" would not.
+    assert id_batches([1111, 2222, 3], budget=10) == [[1111, 2222], [3]]
+    # "12345,6789" would render exactly 10, but counts as 11, so it splits.
+    assert id_batches([12345, 6789], budget=10) == [[12345], [6789]]
+
+
+def test_an_id_longer_than_the_budget_gets_its_own_batch():
+    long_id = 10**30
+    batches = id_batches([1, long_id, 2], budget=10)
+    assert [long_id] in batches
+    assert [v for batch in batches for v in batch] == [1, long_id, 2]
+
+
+def test_nineteen_digit_ids_batch_within_the_budget():
+    base = 9_000_000_000_000_000_000  # bigint-sized, 19 digits
+    ids = [base + i for i in range(1000)]
+    batches = id_batches(ids)
+    assert len(batches) > 1
+    for batch in batches:
+        assert len(_rendered(batch)) <= ID_FILTER_BUDGET_CHARS
+    assert [v for batch in batches for v in batch] == ids
+
+
+def test_ids_that_fit_stay_in_one_batch():
+    assert id_batches([1, 2, 3]) == [[1, 2, 3]]
+
+
+def test_default_budget_is_the_module_constant():
+    ids = list(range(1000, 4000))
+    assert id_batches(ids) == id_batches(ids, budget=ID_FILTER_BUDGET_CHARS)
+
+
+def test_budget_matches_bloomctl_so_the_two_cannot_drift():
+    """(characterization) The service copies bloomctl's helper instead of importing it (design
+    D9); this reads bloomctl's source so a change to either budget fails here."""
+    tree = _bloomctl_postgrest()
+    values = [
+        node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "ID_FILTER_BUDGET_CHARS"
+            for t in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+    ]
+    assert values == [postgrest_batches.ID_FILTER_BUDGET_CHARS]
+
+
+def test_algorithm_matches_bloomctl_so_the_two_cannot_drift():
+    """(characterization) Design D9 says the same budget *and algorithm*: the body of
+    id_batches, docstring aside, must stay statement-for-statement identical to
+    bloomctl's."""
+    ours = ast.parse(Path(postgrest_batches.__file__).read_text(encoding="utf-8"))
+    assert _function_body_without_docstring(
+        ours, "id_batches"
+    ) == _function_body_without_docstring(_bloomctl_postgrest(), "id_batches")

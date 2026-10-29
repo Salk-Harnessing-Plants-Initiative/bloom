@@ -8,6 +8,175 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a19] - 2026-10-21 — parallel gene uploads no longer collide
+
+### Fixed
+
+- `scrna hdf5 upload` no longer stops with "deque mutated during iteration" while uploading gene
+  counts. Each upload thread now sends through its own storage connection; sharing one HTTP/2
+  connection between threads corrupted its header table.
+
+### Changed
+
+- Needs `supabase` 2.31 or newer (was 2.0), the version the per-thread connections were tested with.
+
+## [0.1.0a18] - 2026-10-21 — resend dropped gene uploads
+
+### Fixed
+
+- `scrna hdf5 upload` sends a gene's counts file again, up to three times, when the connection
+  drops or storage answers with a server error, instead of stopping the whole load. Re-sending
+  only replaces the same file; other writes still stop at once when their outcome is unknown.
+
+## [0.1.0a17] - 2026-10-20 — GO and pathway results
+
+### Added
+
+- `genome annotation upload` records a genome version's GO and pathway annotation file as its
+  next build (abandoned if the upload or finish fails); `genome annotation download` fetches its
+  ready build, checked against Bloom's record, exiting 4 while one is still uploading and 3 when
+  there is none.
+- `scrna enrichment upload` records a dataset's GO and pathway enrichment against an annotation
+  build, with the pipeline job that made it, linking the dataset to the build's genome version
+  when it has none.
+- When a failed annotation or enrichment upload can't be cancelled, both commands keep the
+  upload's own error and say to ask a Bloom admin to clear the partial upload.
+
+## [0.1.0a16] - 2026-10-15 — members upload new genomes
+
+### Changed
+
+- `genome upload` accepts any signed-in member (`bloom_user`) for a new genome, uploaded as its
+  first version. Adding a version to an existing genome still needs a writer login; a member is
+  refused before anything is prepared or sent. A member's failed upload is not abandoned: the
+  command says the name is now taken and an admin can clear it, or, when Bloom can't report the
+  version's state, says to check it with `genome list` rather than guessing.
+- On a Bloom server that doesn't yet let members upload genomes, a member is told so, with
+  nothing sent, instead of a raw permission error.
+
+## [0.1.0a15] - 2026-10-14 — faster gene counts
+
+### Changed
+
+- `scrna hdf5 upload` uploads the per-gene counts 8 at a time instead of one by one, so a
+  dataset with tens of thousands of genes loads in minutes rather than over an hour. A gene is
+  still recorded only once its object is stored, and a stopped load continues with the genes
+  not yet recorded.
+
+## [0.1.0a14] - 2026-10-13 — any number of clusters
+
+### Changed
+
+- `scrna hdf5 upload` no longer refuses a file whose `--annotation` has more than 23 labels.
+  The first 23 keep their colours, and each further one gets a generated colour of its own,
+  the same every time, so a pipeline run's finer Leiden clustering loads.
+
+## [0.1.0a13] - 2026-10-12 — each cluster's differential expression
+
+### Added
+
+- `scrna hdf5 upload --de-key KEY` loads a one-vs-rest differential expression from the file's
+  `uns[KEY]` (scanpy's `rank_genes_groups`, each `--annotation` cluster against the rest) with
+  the dataset: one DE run, a comparison per cluster, every tested gene, and each cluster's
+  size, centre and top markers, so the expression page's cluster panel and Genes tab are
+  filled. It is refused unless it compares the annotation's clusters with the rest; a stopped
+  load continues it. The pipeline passes `--de-key de`.
+
+## [0.1.0a12] - 2026-10-12 — reference genomes: upload, list and download
+
+### Added
+
+- `genome upload NAME --fasta FILE --gtf FILE` stores a reference genome's FASTA and GTF in
+  Bloom as the genome's next version, for the Cell Ranger workflow. Both files are checked and
+  gzipped before anything is sent, and a version whose upload stops part-way is abandoned.
+- `genome list` shows every reference genome with its species and versions, and each
+  version's status (`ready`, `uploading`, `abandoned`, `withdrawn`); `--output json|csv` gives
+  one record per version.
+- `genome download NAME[.vN]` fetches a ready version's FASTA and GTF (the newest ready one by
+  default), checked against the SHA-256 and size Bloom recorded; `--unzip` writes them unzipped
+  for `cellranger mkref`, and `--version-file` records the exact version. A file already in
+  place is kept, and a different one is never overwritten. It prints the version as `NAME.vN`,
+  and exits `3` when the version isn't available or a file doesn't match (not worth retrying)
+  and `1` for other failures.
+
+## [0.1.0a11] - 2026-10-07 — each dataset knows the run that generated it
+
+### Added
+
+- `scrna hdf5 upload --run-id ID` records the RNA-seq run a dataset is loaded for, so the
+  pipeline can link the run to its own dataset, and refuses to continue a dataset another run
+  or a person started. Uploads without it are unchanged.
+
+## [0.1.0a10] - 2026-10-06 — the pipeline can load its datasets
+
+### Changed
+
+- `scrna hdf5 upload` also accepts the pipeline's login (`bloom_workflows`), so a Cell Ranger
+  run can load its own dataset.
+
+## [0.1.0a9] - 2026-10-05 — single-cell upload loads the dataset
+
+### Changed
+
+- `scrna hdf5 upload` runs every check first, then shows what the file holds (cells, genes,
+  UMAP, layers, normalization, `obs` columns) on the terminal and asks before sending it.
+  **Scripts must now pass `--yes`**: without a terminal the command refuses rather than
+  waiting for an answer. `--dry-run` signs in, runs every check including the size and the
+  normalization record, and stops before sending (bloom #1053).
+- `scrna hdf5 upload` loads the dataset it stores. After the file, it registers or continues
+  the dataset named by `--name` within `--species` and writes its cell types and cells (with
+  their UMAP positions), plus genotypes, labels and label sources when `--genotype-column`,
+  `--facet` and `--source-column` name them. **`--name`, `--species` and `--annotation` are
+  now required**, so scripts that upload need them as well as `--yes`. `--create` registers
+  a new dataset. `--add-labels` adds labels to one already loaded from the file, keeping the
+  labels it has. The file's `uns['normalization']` is recorded with the dataset and sets the
+  colour-bar units unless `--expression-units` is given. A stopped or interrupted load
+  continues when the same command is run again. bloomctl now depends on `anndata`
+  (bloom #1057).
+- `scrna hdf5 upload` writes each gene's counts after the cells: a row per gene and one object
+  per gene under `counts/<name>_<dataset id>_/`, read from the matrix a block of genes at a
+  time. The dataset is finished only once the counts are in, and one finished without them
+  gets them on the next run, showing as unfinished until they are all in.
+  `--expect-nonzero GENE=COUNT` pins a gene's non-zero cell count (bloom #1061).
+- `scrna hdf5 upload --umap-key NAME` names a UMAP stored under another name than
+  `obsm['X_umap']` (bloom #1057).
+
+## [0.1.0a8] - 2026-10-02 — one-command install + PyPI page by data type
+
+### Changed
+
+- `h5py` and `numpy` are regular dependencies, so a plain install can run `scrna hdf5 upload`.
+  The `scrna` extra is gone; an old `bloomctl[scrna]` install command still works and installs
+  the same thing, with a warning that the extra no longer exists.
+- If h5py or numpy is missing or broken, `scrna hdf5 upload` names the installed bloomctl
+  version and the command that reinstalls it.
+- The PyPI page is reorganised into numbered sections (Install, Log in, Cylinder, Plate,
+  Single-cell, Pipelines), each with its own quickstart, tips and commands. Staging login moved
+  to a Bloom team section; examples say what they refer to and name their output folder.
+
+### Fixed
+
+- `cyl ingest-result`/`cyl batch-ingest-result`: when `ARGO_WORKFLOW_NAME` is set and an
+  already-ingested envelope's re-delivery could not update this workflow's
+  `cyl_pipeline_run_scans` row (`was_noop: true`, `status_update_matched: false`), the failure
+  message now says what happened: already ingested as `source_id` N, nothing was written, and
+  this workflow's row for that source's scan was not updated. It used to reuse the message for a
+  written delivery, which said "write-back succeeded" and that the trait/blob data was correct,
+  and that the row might still be queued, though it can already be `'written'` with another
+  source. The outcome is unchanged: `failed` and non-retriable in a batch, a non-zero exit for
+  `ingest-result` (bloom #900).
+- A re-delivery under a new `ARGO_WORKFLOW_NAME` of a source first written outside any Bloom
+  run (a manual `cyl ingest-result`, or a hand-submitted Workflow) now reports the benign
+  `skipped` no-op, as one first written by a Bloom run already did, provided the source's scan
+  can be resolved and this Workflow's row for that scan is neither `'failed'` nor linked to another
+  source; otherwise it reports the failure above. The fix is server-side (the write-back RPC now
+  finds the scan from the source's own record, bloom PR #1001) and needs no newer `bloomctl`.
+  This corrects 0.1.0a7's bloom #875 entry below, which said such re-deliveries reported
+  `skipped` unconditionally; until that RPC change it held only when an earlier Bloom run's row
+  carried the source (bloom #900).
+
+## [0.1.0a7] - 2026-09-30 — single-cell dataset files + per-run manifests
+
 ### Added
 
 - `scrna hdf5 upload`, `scrna hdf5 download` and `scrna hdf5 list`: a single-cell dataset's whole
@@ -39,6 +208,38 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
   produced a result as `'failed'` once the batch is done. Feeds
   `cyl_pipeline_runs.done_count`/`failed_count` (bloom #716/#696). Manual/
   ad-hoc invocation with the variable unset is unaffected.
+
+- `cyl create-test-scan --poison | --good --frames-dir <dir>`: a developer tool that creates one
+  synthetic cylinder scan in the staging test experiment `A4-PIPELINE-E2E-TEST` only, either one
+  that fails to download (`--poison`) or a real one from frame images you supply (`--good`).
+
+- The PyPI project page documents `scrna hdf5 upload`, `download` and `list`, and the
+  `bloomctl[scrna]` extra that upload needs.
+
+### Changed
+
+- **Breaking:** `cyl batch-download-for-predict` names its `RunManifest` per run and
+  replaces it instead of merging. Inside Argo the file is
+  `run_manifest.<ARGO_WORKFLOW_NAME>.json`; without `ARGO_WORKFLOW_NAME` it stays
+  `run_manifest.json`. Either way it now holds only the `scan_key`s *this* invocation
+  staged or skipped, so running twice into one `out_dir` keeps only the second run's keys,
+  and an older `run_manifest.json` beside a per-run file is left alone. An
+  `ARGO_WORKFLOW_NAME` that cannot name a file exits `1` before anything is staged
+  (bloom #934).
+- **Breaking:** `cyl batch-ingest-result` reads the run's manifest by name
+  (`run_manifest.<ARGO_WORKFLOW_NAME>.json`, falling back, with
+  `ARGO_WORKFLOW_NAME` set, to a `run_manifest.json` only if that file names this run). When `ARGO_WORKFLOW_NAME` is set and there is no manifest for
+  this run — neither file, or only a legacy file naming another run — it ingests nothing
+  (instead of every envelope in the directory, or another run's scope), reports a failed
+  `<run-manifest>` entry, still closes out the workflow's unresolved scans with a message
+  saying no run manifest reached write-back, and exits `1`. Without `ARGO_WORKFLOW_NAME`,
+  behavior is unchanged (bloom #934).
+- **Breaking:** `cyl ingest-result` and `cyl batch-ingest-result` use one whitespace-stripped
+  run id (`pipeline_run_id_from_env()`) for the run manifest, `p_argo_workflow_name` and the
+  reconciliation call, so they can never target different workflow names. A blank
+  `ARGO_WORKFLOW_NAME` is now the same as unset (bloom #934).
+- Bumped the `sleap-roots-contracts` floor to `>=0.1.0a9` for per-run run-manifest naming
+  and `load_run_manifest` (#934).
 
 ### Fixed
 

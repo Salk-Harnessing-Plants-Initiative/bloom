@@ -1,0 +1,259 @@
+"""Writing a dataset's per-gene expression: a row per gene, and one object per gene holding
+its value in every cell, recorded once the object is stored.
+
+The object is written before its row, so a stopped load leaves at most an object nothing
+points at, which the next run writes again. A gene already recorded is skipped.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import threading
+from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from pathlib import Path
+from typing import Callable, Iterable
+
+from . import _genes
+from ._text import listed, visible
+from ._writer import DOTS_ONLY, LoadError, UnreadableReply, Writer, insert, read_all
+
+BUCKET = "scrna"
+
+# The shape the bloom-js CLI writes: the id keeps datasets that share a name apart, the name
+# keeps a bucket listing readable. Readers follow the path each scrna_counts row records.
+COUNTS_PATH = "counts/{dataset}_{dataset_id}_/{gene}.json"
+
+# What each part of an object path may hold.
+SAFE_PART = re.compile(r"[A-Za-z0-9._-]+")
+
+# Genes registered per request.
+GENE_BATCH = 5000
+
+# Genes recorded per request; each object is uploaded on its own and a row follows it.
+RECORD_BATCH = 500
+
+# Gene objects uploaded at once by one load. Storage records each object through its own pool
+# of 20 database connections, shared with every image and report the website serves, and
+# refuses a request that waits 3 s for one; 8 per load, so loads running together add up.
+UPLOAD_WORKERS = 8
+
+# Genes read ahead of the uploads, per worker: enough to keep every worker busy without
+# holding much of the file in memory.
+READ_AHEAD = 2
+
+
+def clean_dataset_name(name: str) -> str:
+    """The dataset name as the bloom-js CLI puts it in a path."""
+    name = re.sub(r"^\\+", "", name.strip())
+    name = re.sub(r"\s+", "_", name)
+    name = re.sub(r'[<>:"|?*\\%]', "", name)
+    return re.sub(r"\.json$", "", name)
+
+
+def object_path(dataset_name: str, dataset_id: int, gene: str) -> str:
+    """The gene's object, refused unless every part of the path is a plain name."""
+    folder = clean_dataset_name(dataset_name)
+    if not SAFE_PART.fullmatch(folder) or DOTS_ONLY.fullmatch(folder):
+        raise LoadError(f"dataset {dataset_id}'s name {visible(dataset_name)!r} cannot be part of "
+                        "a storage path; an admin has to rename it")
+    return COUNTS_PATH.format(dataset=folder, dataset_id=dataset_id, gene=gene)
+
+
+def missing(writer: Writer, dataset_id: int, names: list[str]) -> int:
+    """How many of the file's genes the dataset has no counts for yet, refusing a record
+    that does not describe this file."""
+    rows = _stored_genes(writer, dataset_id)
+    check_genes(dataset_id, rows, names)
+    ids = {r["gene_name"]: r["id"] for r in rows}
+    return len(names) - len(_recorded(writer, dataset_id, ids))
+
+
+def write(
+    writer: Writer, dataset_id: int, dataset_name: str, path: Path, names: list[str],
+    on_progress: Callable[[int, int], None] | None = None,
+    unchanged: Callable[[], None] | None = None,
+) -> int:
+    """Register the genes, then write every gene's object and row not already recorded.
+
+    ``unchanged`` is checked after each block of genes is read, before its objects are
+    written. Objects are uploaded UPLOAD_WORKERS at a time; a gene's row is recorded, on this
+    thread, only once its object is stored. Returns how many genes were written. Afterwards
+    every gene in the file is recorded once.
+    """
+    ids = _register(writer, dataset_id, names)
+    done = _recorded(writer, dataset_id, ids)
+    todo = [i for i, gene in enumerate(names) if gene not in done]
+    pending: list[dict] = []
+    uploading: dict[Future, tuple[str, str]] = {}
+    stored = 0
+    failed: Exception | None = None
+
+    def collect(finished: Iterable[Future]) -> None:
+        nonlocal pending, stored, failed
+        for future in finished:
+            gene, object_at = uploading.pop(future)
+            if future.cancelled():
+                continue
+            error = future.exception()
+            if error is not None:
+                if not isinstance(error, Exception):
+                    raise error  # an interrupt stops at once
+                failed = failed or error
+                continue
+            pending.append({"dataset_id": dataset_id, "gene_id": ids[gene],
+                            "counts_object_path": object_at})
+            stored += 1
+            if len(pending) >= RECORD_BATCH:
+                _record(writer, pending)
+                pending = []
+            if on_progress:
+                on_progress(stored, len(todo))
+
+    storages = ThreadStorages()
+    pool = ThreadPoolExecutor(max_workers=UPLOAD_WORKERS)
+    try:
+        for column, values in _genes.gene_values(path, names, only=todo, after_block=unchanged):
+            gene = names[column]
+            object_at = object_path(dataset_name, dataset_id, gene)
+            upload = pool.submit(_upload, writer, storages, object_at,
+                                 json.dumps(values).encode())
+            uploading[upload] = (gene, object_at)
+            if len(uploading) >= UPLOAD_WORKERS * READ_AHEAD:
+                collect(wait(uploading, return_when=FIRST_COMPLETED).done)
+            if failed:
+                break
+        # After a failed upload, queued ones are dropped and running ones finish.
+        if failed:
+            for future in uploading:
+                future.cancel()
+        while uploading:
+            collect(wait(uploading, return_when=FIRST_COMPLETED).done)
+    except KeyboardInterrupt:
+        # Uploads still in flight may finish after the interrupt.
+        writer.record_unknown("upload gene counts")
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        storages.close()
+    # Every stored gene is recorded, even when another upload failed, so a rerun redoes less.
+    if pending:
+        _record(writer, pending)
+    if failed:
+        raise failed
+    recorded = _recorded(writer, dataset_id, ids)
+    if len(recorded) != len(names):
+        raise LoadError(f"dataset {dataset_id} records counts for {len(recorded):,} of "
+                        f"{len(names):,} genes; it is not finished")
+    return len(todo)
+
+
+def check_genes(dataset_id: int, rows: list[dict], names: list[str]) -> None:
+    """Registered genes have to be this file's, each once, at its position in the file."""
+    seen = Counter(r["gene_name"] for r in rows)
+    twice = sorted(g for g, n in seen.items() if n > 1)
+    if twice:
+        raise LoadError(f"dataset {dataset_id} has {listed(twice[:5])} registered more than "
+                        "once; an admin has to remove the extra rows")
+    position = {g: i for i, g in enumerate(names)}
+    foreign = sorted(g for g in seen if g not in position)
+    if foreign:
+        raise LoadError(f"dataset {dataset_id} has {len(foreign)} genes registered that this "
+                        f"file does not hold, e.g. {listed(foreign[:3])}")
+    for r in rows:
+        if r["gene_number"] != position[r["gene_name"]]:
+            raise LoadError(f"{visible(r['gene_name'])} is gene {r['gene_number']} in dataset "
+                            f"{dataset_id} and {position[r['gene_name']]} in this file")
+
+
+def _stored_genes(writer: Writer, dataset_id: int) -> list[dict]:
+    return read_all(writer, "scrna_genes", "id,gene_number,gene_name",
+                    filters=[("eq", "dataset_id", dataset_id)])
+
+
+def _register(writer: Writer, dataset_id: int, names: list[str]) -> dict[str, int]:
+    """Every gene's row, numbered by its position in the file; a re-run lands on the rows
+    the first run made. Returns each gene's id."""
+    rows = _stored_genes(writer, dataset_id)
+    check_genes(dataset_id, rows, names)
+    known = {r["gene_name"] for r in rows}
+    new = [(i, g) for i, g in enumerate(names) if g not in known]
+    for start in range(0, len(new), GENE_BATCH):
+        chunk = new[start:start + GENE_BATCH]
+        insert(writer, f"register genes {chunk[0][0]}–{chunk[-1][0]}", "scrna_genes",
+               [{"dataset_id": dataset_id, "gene_number": i, "gene_name": g} for i, g in chunk])
+    if new:
+        rows = _stored_genes(writer, dataset_id)
+        check_genes(dataset_id, rows, names)
+    if len(rows) != len(names):
+        raise LoadError(f"dataset {dataset_id} has {len(rows):,} genes registered but the "
+                        f"file holds {len(names):,}")
+    return {r["gene_name"]: r["id"] for r in rows}
+
+
+def _recorded(writer: Writer, dataset_id: int, ids: dict[str, int]) -> set[str]:
+    """Genes whose object is already recorded, refusing one recorded twice."""
+    rows = read_all(writer, "scrna_counts", "id,gene_id",
+                    filters=[("eq", "dataset_id", dataset_id)])
+    name_of = {v: k for k, v in ids.items()}
+    recorded = Counter(r["gene_id"] for r in rows)
+    twice = sorted(name_of.get(g, str(g)) for g, n in recorded.items() if n > 1)
+    if twice:
+        raise LoadError(f"dataset {dataset_id} records {listed(twice[:5])} more than once; "
+                        "an admin has to remove the extra rows")
+    return {name_of[g] for g in recorded if g in name_of}
+
+
+class ThreadStorages:
+    """A storage handle per upload thread and login. The client's own handle sends every request
+    over one HTTP/2 connection, whose header table breaks ("deque mutated during iteration")
+    when several threads send on it at once."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._opened: list = []
+
+    def get(self, client):
+        """This thread's handle for the client and its current login, opened on first use."""
+        login = client.options.headers.get("Authorization")
+        held = getattr(self._local, "held", None)
+        if held is None or held[0] is not client or held[1] != login:
+            storage = client._init_storage_client(
+                storage_url=str(client.storage_url), headers=dict(client.options.headers),
+                storage_client_timeout=client.options.storage_client_timeout)
+            with self._lock:
+                self._opened.append(storage)
+            held = self._local.held = (client, login, storage)
+        return held[2]
+
+    def close(self) -> None:
+        """Close every handle opened; call once the uploads have stopped."""
+        with self._lock:
+            opened, self._opened = self._opened, []
+        for storage in opened:
+            storage.session.close()
+
+
+def _upload(writer: Writer, storages: ThreadStorages, path: str, payload: bytes) -> None:
+    """One gene's values, replacing what is there, so a re-run repairs a stopped upload. The
+    storage handle is this thread's, for the current client, on each request."""
+    def send(client):
+        # Outside the try: a failure opening the handle is not a reply from storage.
+        storage = storages.get(client)
+        try:
+            return storage.from_(BUCKET).upload(
+                path=path, file=payload,
+                file_options={"content-type": "application/json", "upsert": "true"})
+        except (ValueError, KeyError, AttributeError) as exc:
+            # The storage library fails this way on a reply it cannot parse, e.g. an error page.
+            raise UnreadableReply(
+                "the storage server answered with an error page instead of a reply") from exc
+
+    # Upserted, so sending it again after a dropped connection is harmless.
+    writer.write(f"upload {path}", send, repeatable=True)
+
+
+def _record(writer: Writer, rows: list[dict]) -> None:
+    insert(writer, f"record {len(rows)} genes", "scrna_counts", rows)

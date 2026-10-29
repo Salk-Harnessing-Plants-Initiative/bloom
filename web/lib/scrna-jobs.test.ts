@@ -1,0 +1,280 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  buildRunMetadata,
+  datasetDetailsProblem,
+  datasetNameProblem,
+  formatBytes,
+  genomeVersionLabel,
+  genomeVersionOptions,
+  isStartedRun,
+  libraryTypeLabel,
+  LIBRARY_TYPES,
+  startRunErrorMessage,
+  type DatasetDetails,
+} from "./scrna-jobs";
+
+const DETAILS: DatasetDetails = {
+  speciesId: 1,
+  datasetName: "Col-0 root tip",
+  accession: "",
+  experimentName: "",
+  origin: "hpi",
+  sourceUrl: "",
+  citation: "",
+  attributes: [{ key: "", value: "" }],
+};
+
+const PUBLIC: DatasetDetails = {
+  ...DETAILS,
+  origin: "public",
+  sourceUrl: " https://doi.org/10.1016/j.devcel.2022.01.008 ",
+  citation: " Shahan et al. 2022 ",
+};
+
+describe("datasetDetailsProblem", () => {
+  it("accepts the required fields alone", () => {
+    expect(datasetDetailsProblem(DETAILS)).toBeNull();
+  });
+
+  it.each([
+    [{ speciesId: null }, "Choose a species."],
+    [{ datasetName: "  " }, "Enter a dataset name."],
+    [{ attributes: [{ key: " ", value: "root" }] }, "Every extra field needs a name."],
+    [
+      { attributes: [{ key: "tissue", value: "a" }, { key: " tissue ", value: "b" }] },
+      'The field "tissue" is listed twice.',
+    ],
+  ])("refuses %j", (change, problem) => {
+    expect(datasetDetailsProblem({ ...DETAILS, ...change })).toBe(problem);
+  });
+
+  it("refuses a dataset name the loader would refuse", () => {
+    expect(
+      datasetDetailsProblem({
+        ...DETAILS,
+        datasetName: "Arabidopsis root tip, all cell types (Shahan lab, GSM8180251)",
+      })
+    ).toBe("Not allowed: , ( )");
+  });
+
+  it("accepts a public dataset with a web link", () => {
+    expect(datasetDetailsProblem(PUBLIC)).toBeNull();
+    expect(datasetDetailsProblem({ ...PUBLIC, citation: "" })).toBeNull();
+  });
+
+  it.each([
+    ["", "Enter the public dataset's source link."],
+    ["   ", "Enter the public dataset's source link."],
+    ["doi.org/10.1016/x", "The source link must be a web address starting with https://."],
+    ["ftp://ftp.ncbi.nlm.nih.gov/geo", "The source link must be a web address starting with https://."],
+    ["javascript:alert(1)", "The source link must be a web address starting with https://."],
+    [`https://example.org/${"x".repeat(2000)}`, "The source link must be a web address starting with https://."],
+  ])("refuses the public source link %j", (sourceUrl, problem) => {
+    expect(datasetDetailsProblem({ ...PUBLIC, sourceUrl })).toBe(problem);
+  });
+
+  it("refuses a citation over 500 characters", () => {
+    expect(datasetDetailsProblem({ ...PUBLIC, citation: "x".repeat(501) })).toBe(
+      "The citation is at most 500 characters."
+    );
+  });
+
+  it("ignores the source fields for HPI data", () => {
+    expect(
+      datasetDetailsProblem({ ...DETAILS, sourceUrl: "not a link", citation: "x".repeat(501) })
+    ).toBeNull();
+  });
+
+  it("ignores blank extra rows", () => {
+    expect(
+      datasetDetailsProblem({
+        ...DETAILS,
+        attributes: [{ key: " ", value: " " }, { key: "", value: "" }],
+      })
+    ).toBeNull();
+  });
+});
+
+describe("datasetNameProblem", () => {
+  it.each(["Col-0 root tip 7 DAG", "MYB41_v2", "a.b", ". .", "  Shahan lab - GSM8180251  ", "", "   "])(
+    "accepts %j",
+    (name) => {
+      expect(datasetNameProblem(name)).toBeNull();
+    }
+  );
+
+  it.each([
+    ["root, tip", "Not allowed: ,"],
+    ["WT (Col-0), 7 DAG", "Not allowed: ( ) ,"],
+    ["35S:MYB41/2", "Not allowed: : /"],
+    ["10 μM ABA", "Not allowed: μ"],
+    ["Root\u00a0atlas", "Not allowed: U+00A0"],
+    ["root\ttip", "Not allowed: U+0009"],
+  ])("names what isn't allowed in %j", (name, problem) => {
+    expect(datasetNameProblem(name)).toBe(problem);
+  });
+
+  it.each([".", "..", " .. "])("refuses dots alone in %j", (name) => {
+    expect(datasetNameProblem(name)).toBe("Can't be only dots");
+  });
+});
+
+describe("buildRunMetadata", () => {
+  it("keeps only the required fields when nothing else is given", () => {
+    expect(buildRunMetadata(DETAILS)).toEqual({
+      species_id: 1,
+      dataset_name: "Col-0 root tip",
+      origin: "hpi",
+    });
+  });
+
+  it("adds a public dataset's source link and citation, trimmed", () => {
+    expect(buildRunMetadata(PUBLIC)).toEqual({
+      species_id: 1,
+      dataset_name: "Col-0 root tip",
+      origin: "public",
+      source_url: "https://doi.org/10.1016/j.devcel.2022.01.008",
+      citation: "Shahan et al. 2022",
+    });
+    expect(buildRunMetadata({ ...PUBLIC, citation: " " })).not.toHaveProperty("citation");
+  });
+
+  it("leaves the source fields out for HPI data, even if typed before switching", () => {
+    const metadata = buildRunMetadata({ ...DETAILS, sourceUrl: "https://x.org", citation: "X" });
+    expect(metadata).not.toHaveProperty("source_url");
+    expect(metadata).not.toHaveProperty("citation");
+  });
+
+  it("trims every value and keeps named rows, even with an empty value", () => {
+    expect(
+      buildRunMetadata({
+        speciesId: 4,
+        datasetName: " Rice leaf ",
+        accession: " Nipponbare ",
+        experimentName: " Drought 2026 ",
+        origin: "hpi",
+        sourceUrl: "",
+        citation: "",
+        attributes: [
+          { key: " tissue ", value: " leaf " },
+          { key: "notes", value: "" },
+          { key: "", value: "" },
+        ],
+      })
+    ).toEqual({
+      species_id: 4,
+      dataset_name: "Rice leaf",
+      accession: "Nipponbare",
+      experiment_name: "Drought 2026",
+      origin: "hpi",
+      attributes: { tissue: "leaf", notes: "" },
+    });
+  });
+
+  it("throws without a species", () => {
+    expect(() => buildRunMetadata({ ...DETAILS, speciesId: null })).toThrow();
+  });
+});
+
+describe("isStartedRun", () => {
+  it("accepts the service's answer", () => {
+    expect(
+      isStartedRun({ run_id: 1, sample: "s", genome_version_id: 3, reference: "r.v1", run_key: "k" })
+    ).toBe(true);
+  });
+
+  it.each([
+    [null],
+    ["ok"],
+    [{ run_id: "1", sample: "s", genome_version_id: 3, reference: "r.v1", run_key: "k" }],
+    [{ run_id: 1, sample: "s", genome_version_id: 3, reference: "r.v1" }],
+    [{ run_id: 1, sample: "s", reference: "r.v1", run_key: "k" }],
+  ])("refuses %j", (value) => {
+    expect(isStartedRun(value)).toBe(false);
+  });
+});
+
+describe("startRunErrorMessage", () => {
+  it("prefers the service's detail", () => {
+    expect(startRunErrorMessage(422, "Sample names can't contain '__'")).toBe(
+      "Sample names can't contain '__'"
+    );
+  });
+
+  it.each([
+    [401, "Sign in to start a job."],
+    [409, "This sample already has a run on that genome, or these reads were already run on it. Choose another sample name or genome."],
+    [422, "The sample name or the genome version can't be used."],
+    [429, "Too many requests. Wait a minute and try again."],
+    [503, "The job service isn't available right now."],
+    [500, "Couldn't start the job. Try again shortly."],
+  ])("has a fixed message for %i", (status, message) => {
+    expect(startRunErrorMessage(status, null)).toBe(message);
+    expect(startRunErrorMessage(status, "  ")).toBe(message);
+  });
+});
+
+describe("formatBytes", () => {
+  it.each([
+    [null, null],
+    [undefined, null],
+    [0, "0 B"],
+    [999, "999 B"],
+    [1000, "1.0 KB"],
+    [31_400_000_000, "31.4 GB"],
+    [2_500_000_000_000_000, "2500.0 TB"],
+  ])("formats %s as %s", (bytes, expected) => {
+    expect(formatBytes(bytes)).toBe(expected);
+  });
+});
+
+describe("genome versions on the form", () => {
+  const row = (id: number, name: string | null, version: number, assembly: string | null = null) => ({
+    id,
+    version,
+    assembly,
+    annotation: assembly ? "Araport11" : null,
+    genome_references: name ? { name } : null,
+  });
+
+  it("lists each genome's versions newest first, genomes by name", () => {
+    const options = genomeVersionOptions([
+      row(1, "tomato", 1),
+      row(2, "athaliana_col0", 1),
+      row(3, "athaliana_col0", 2),
+    ]);
+    expect(options.map((o) => [o.genome, o.version])).toEqual([
+      ["athaliana_col0", 2],
+      ["athaliana_col0", 1],
+      ["tomato", 1],
+    ]);
+  });
+
+  it("leaves out a row whose genome can't be read", () => {
+    expect(genomeVersionOptions([row(1, null, 1)])).toEqual([]);
+  });
+
+  it("names a version with its assembly and annotation when recorded", () => {
+    const [withDetail, plain] = genomeVersionOptions([
+      row(1, "athaliana_col0", 2, "TAIR10"),
+      row(2, "athaliana_col0", 1),
+    ]);
+    expect(genomeVersionLabel(withDetail)).toBe("athaliana_col0 v2 — TAIR10 / Araport11");
+    expect(genomeVersionLabel(plain)).toBe("athaliana_col0 v1");
+  });
+});
+
+describe("library types", () => {
+  it("offers 10x gene expression (Cell Ranger detects the kit) and Multiome RNA (ARC-v1)", () => {
+    expect(LIBRARY_TYPES.map((t) => t.chemistry)).toEqual(["auto", "ARC-v1"]);
+  });
+
+  it("names a run's library type, detected by Cell Ranger when it named no chemistry", () => {
+    expect(libraryTypeLabel("ARC-v1")).toBe("10x Multiome — RNA part");
+    expect(libraryTypeLabel(null)).toBe("10x gene expression (detected by Cell Ranger)");
+    expect(libraryTypeLabel("")).toBe("10x gene expression (detected by Cell Ranger)");
+    expect(libraryTypeLabel("auto")).toBe("10x gene expression (detected by Cell Ranger)");
+    expect(libraryTypeLabel("SC5P-R2")).toBe("Chemistry SC5P-R2");
+  });
+});

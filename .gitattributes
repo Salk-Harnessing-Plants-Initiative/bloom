@@ -74,3 +74,7 @@ README text eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+
+# Trait-export golden fixtures (add-cyl-trait-csv-export): byte-exact, CRLF CSVs.
+# Must stay after the *.csv/*.json eol=lf lines above; the last match wins.
+web/lib/cyl-trait-export/__fixtures__/** -text -eol

@@ -8,13 +8,19 @@ import Mixpanel from "mixpanel";
 import ScientistBadge from "@/components/scientist-badge";
 import { ExpressionCockpit } from "@/components/expression-cockpit";
 import ExpressionDatasetBanner from "@/components/expression-dataset-banner";
+import ExpressionDatasetQc from "@/components/expression-dataset-qc";
+import { datasetRunId } from "@/components/expression-dataset-origin";
+import { METRICS_SUMMARY, WEB_SUMMARY, keyMetrics, parseMetrics, readReport, storedReports } from "@/lib/rnaseq-reports";
 
 export default async function Dataset({
   params,
+  searchParams,
 }: {
   params: Promise<{ datasetId: string; speciesId: string }>;
+  searchParams?: Promise<{ tab?: string | string[] }>;
 }) {
   const { datasetId, speciesId } = await params;
+  const { tab } = (await searchParams) ?? {};
   const datasetIdNum = Number(datasetId);
   const speciesIdNum = Number(speciesId);
   if (!Number.isFinite(datasetIdNum) || !Number.isFinite(speciesIdNum)) notFound();
@@ -62,6 +68,7 @@ export default async function Dataset({
   }
 
   const speciesName = dataset.species?.common_name ?? "";
+  const qc = await getRunQc(datasetRunId(dataset));
 
   return (
     <div>
@@ -91,7 +98,14 @@ export default async function Dataset({
         </div>
       )}
 
-      <ExpressionCockpit datasetId={datasetIdNum} datasetName={dataset.name} />
+      {qc ? <ExpressionDatasetQc {...qc} /> : null}
+
+      <ExpressionCockpit
+        datasetId={datasetIdNum}
+        datasetName={dataset.name}
+        initialTab={typeof tab === "string" ? tab : undefined}
+        reportRunId={qc?.hasReport ? qc.runId : null}
+      />
     </div>
   );
 }
@@ -104,4 +118,19 @@ async function getDataset(datasetId: number) {
     .select("*, people(*), species(*)")
     .eq("id", datasetId)
     .maybeSingle();
+}
+
+/** The Cell Ranger metrics and report of the run that made the dataset, or null for a dataset
+ * no run made (or one whose run stored none). */
+async function getRunQc(runId: number | null) {
+  if (runId === null) return null;
+  const supabase = await createServerSupabaseClient();
+  const stored = await storedReports(supabase, runId);
+  if (stored.size === 0) return null;
+  const csv = stored.has(METRICS_SUMMARY) ? await readReport(supabase, runId, METRICS_SUMMARY) : null;
+  return {
+    runId,
+    metrics: csv && "text" in csv ? keyMetrics(parseMetrics(csv.text)) : [],
+    hasReport: stored.has(WEB_SUMMARY),
+  };
 }

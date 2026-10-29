@@ -1,0 +1,100 @@
+name: version-npm
+
+# Bumps @salk-harnessing-plants-initiative/bloom-js or /bloom-fs and opens a PR with the
+# change. Run it from staging: the PR targets the branch it was dispatched from.
+# `prerelease` gives X.Y.Z-dev.N for the dev channel; patch/minor/major give a stable
+# version, which ships from main once staging is promoted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to bump"
+        required: true
+        type: choice
+        options:
+          - bloom-js
+          - bloom-fs
+      bump_type:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+      custom_version:
+        description: "Custom version (optional, overrides bump_type)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: version-npm
+  cancel-in-progress: false
+
+jobs:
+  bump-version:
+    name: Bump npm package version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Bump version
+        id: bump
+        env:
+          PACKAGE: ${{ inputs.package }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          CUSTOM_VERSION: ${{ inputs.custom_version }}
+        run: |
+          DIR="packages/$PACKAGE"
+          echo "previous=$(node -p "require('./$DIR/package.json').version")" >> "$GITHUB_OUTPUT"
+          if [ -n "$CUSTOM_VERSION" ]; then
+            npm version "$CUSTOM_VERSION" --no-git-tag-version --no-workspaces-update --workspace "$DIR"
+          elif [ "$BUMP_TYPE" = "prerelease" ]; then
+            npm version prerelease --preid dev --no-git-tag-version --no-workspaces-update --workspace "$DIR"
+          else
+            npm version "$BUMP_TYPE" --no-git-tag-version --no-workspaces-update --workspace "$DIR"
+          fi
+          NEW_VERSION=$(node -p "require('./$DIR/package.json').version")
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      # bloom-fs depends on bloom-js; keep its range on the new bloom-js version.
+      - name: Point bloom-fs at the new bloom-js
+        if: inputs.package == 'bloom-js'
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: npm pkg set "dependencies.@salk-harnessing-plants-initiative/bloom-js=^$NEW_VERSION" --workspace packages/bloom-fs
+
+      - name: Sync package-lock.json
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Open version-bump PR
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          add-paths: |
+            packages/bloom-js/package.json
+            packages/bloom-fs/package.json
+            package-lock.json
+          commit-message: "chore(${{ inputs.package }}): bump version to ${{ steps.bump.outputs.new_version }}"
+          title: "chore(${{ inputs.package }}): bump version to ${{ steps.bump.outputs.new_version }}"
+          body: |
+            Automated `${{ inputs.package }}` version bump.
+
+            - Previous: `${{ steps.bump.outputs.previous }}`
+            - New: `${{ steps.bump.outputs.new_version }}`
+
+            Before releasing: add a `## [${{ steps.bump.outputs.new_version }}]` entry to
+            `packages/${{ inputs.package }}/CHANGELOG.md`, then publish a GitHub Release
+            tagged `${{ inputs.package }}-v${{ steps.bump.outputs.new_version }}`: from staging
+            marked pre-release for a `-dev.N` version, from main for a stable one.
+          branch: ${{ inputs.package }}-version-bump-${{ steps.bump.outputs.new_version }}
+          delete-branch: true
+          labels: version

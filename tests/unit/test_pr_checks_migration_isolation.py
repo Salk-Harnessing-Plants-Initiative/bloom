@@ -13,7 +13,7 @@ import yaml
 REPO_ROOT = Path(__file__).parent.parent.parent
 PR_CHECKS = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
 JOB = "lint-migration-isolation"
-BASE_SHA = "${{ github.event.pull_request.base.sha }}"
+BASE_SHA = '"$BASE_SHA"'
 
 
 def _job() -> dict:

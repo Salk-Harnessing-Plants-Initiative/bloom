@@ -3,6 +3,8 @@ name: PR Checks
 on:
   pull_request:
     branches: [main, staging]
+  merge_group:
+    types: [checks_requested]
 
 # Minimum required across jobs. Read-only by default; individual jobs that
 # need to post sticky PR comments (Trivy reports) rely on pull-requests: write.
@@ -21,6 +23,9 @@ env:
   # Supabase CLI version — matched to what's installed on the Salk deploy
   # server (documented in #135). Change here + on the server together.
   SUPABASE_VERSION: "2.92.1"
+  # Base commit and branch, from the PR or from the merge queue's group.
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+  BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
 
 jobs:
   build-and-audit:
@@ -67,6 +72,12 @@ jobs:
         run: |
           cd packages/bloom-js && npx tsc -p tsconfig.json
           cd ../../packages/bloom-fs && npx tsc -p tsconfig.json
+
+      # Unit tests for bloom-js and bloom-fs (mocked Supabase client)
+      - name: Test shared packages
+        run: |
+          cd packages/bloom-js && npm test
+          cd ../../packages/bloom-fs && npm test
 
       # Checks all frontend code for type errors
       - name: TypeScript type check
@@ -236,10 +247,7 @@ jobs:
 
       # Checks bloomcli (bloomctl CLI) Python packages for vulnerabilities
       - name: Audit bloomcli dependencies
-        # --extra scrna: `uv export` drops optional dependencies, so without it the scrna
-        # extra's h5py/numpy ship to PyPI audited by nothing. Named rather than --all-extras,
-        # which would audit the test extra too.
-        run: cd bloomcli && uv export --frozen --no-hashes --extra scrna | uvx pip-audit@2.10.0 -r /dev/stdin
+        run: cd bloomcli && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
   # bloom #737: the vendored copy of sleap-roots-pipeline's canonical
   # sleap-roots-pipeline.yaml (services/workflows/vendored/) must stay in sync
@@ -264,7 +272,7 @@ jobs:
       - name: Check for relevant path changes
         id: filter
         run: |
-          if git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+          if git diff --quiet "$BASE_SHA" "${{ github.sha }}" -- \
             services/workflows/vendored services/workflows/k8s_client.py services/workflows/pyproject.toml; then
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           else
@@ -305,7 +313,7 @@ jobs:
       - name: Check for changes to the backup job
         id: filter
         run: |
-          if git diff --quiet "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+          if git diff --quiet "$BASE_SHA" "${{ github.sha }}" -- \
             scheduled-jobs/box-object-backup; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -477,6 +485,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-bloom-web.txt'
           trivyignores: '.trivyignore'
 
@@ -487,6 +496,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-langchain.txt'
           trivyignores: '.trivyignore'
 
@@ -497,6 +507,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-bloommcp.txt'
           trivyignores: '.trivyignore'
 
@@ -507,6 +518,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-caddy.txt'
           trivyignores: '.trivyignore'
 
@@ -517,6 +529,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-workflows.txt'
           trivyignores: '.trivyignore'
 
@@ -527,6 +540,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-bloomcli.txt'
           trivyignores: '.trivyignore'
 
@@ -541,24 +555,14 @@ jobs:
             for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
-                crit=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "CRITICAL" || echo 0)
-                high=$(grep -P 'CVE-\d+-\d+' "$file" 2>/dev/null | grep -c "HIGH" || echo 0)
+                # Sum Trivy's per-target Total lines; the table leaves repeated severity cells blank.
+                crit=$(grep '^Total:' "$file" | grep -oE 'CRITICAL: [0-9]+' | awk '{s += $2} END {print s + 0}')
+                high=$(grep '^Total:' "$file" | grep -oE 'HIGH: [0-9]+' | awk '{s += $2} END {print s + 0}')
                 echo "| ${img} | ${crit} | ${high} |"
               fi
             done
             echo ""
-            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
-              file="trivy-${img}.txt"
-              if [ -f "$file" ] && [ -s "$file" ]; then
-                cves=$(grep -oP 'CVE-\d+-\d+' "$file" | sort -u | tr '\n' ', ' | sed 's/,$//')
-                if [ -n "$cves" ]; then
-                  echo "**${img}:** ${cves}"
-                  echo ""
-                fi
-              fi
-            done
-            echo ""
-            echo "> Full scan output available in the [trivy-built-images-report](../actions/artifacts) artifact."
+            echo "> Full CVE lists are in the [trivy-built-images-report](../actions/artifacts) artifact."
           } > trivy-report.md
 
       - name: Upload Trivy report artifact
@@ -566,7 +570,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-built-images-report
-          path: trivy-report.md
+          # The raw per-image scans carry the full CVE lists.
+          path: |
+            trivy-report.md
+            trivy-*.txt
 
       - name: Check bloom-web for critical CVEs
         uses: aquasecurity/trivy-action@v0.35.0
@@ -618,7 +625,7 @@ jobs:
 
       # Post after the CVE gates so the comment only appears once a pass/fail exists.
       - name: Post Trivy report as PR comment
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-docker-build
@@ -635,12 +642,14 @@ jobs:
           fetch-depth: 0
 
       - name: Run migration lint
-        run: ./scripts/lint_migrations.sh origin/${{ github.base_ref }}
+        run: ./scripts/lint_migrations.sh "origin/${BASE_REF#refs/heads/}"
 
   lint-migration-isolation:
     name: Lint migration changes are isolated
     # Both bases: the script counts only migrations not already on staging, so a
     # promotion has nothing to check and a hotfix straight to main still does.
+    # PRs only: a queued group can hold several PRs, so isolation is judged per PR.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -652,7 +661,7 @@ jobs:
       # Warning mode until the rollout makes it blocking.
       - name: Enforce migration PR isolation
         continue-on-error: true
-        run: python3 scripts/lint_migration_isolation.py ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/lint_migration_isolation.py "$BASE_SHA"
 
   lint-cve-isolation:
     name: Lint CVE changes are isolated
@@ -674,7 +683,7 @@ jobs:
       # Pass the base SHA directly (no fetch needed) — origin/<branch> requires
       # an extra fetch that can fail with "no merge base" in shallow checkouts.
       - name: Enforce CVE-change PR isolation
-        run: ./scripts/lint_cve_isolation.sh ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/lint_cve_isolation.sh "$BASE_SHA"
 
   # Runs the new web/ Vitest suite added by the openspec change
   # add-ghcr-image-publishing (proposal/tasks/specs already on this branch).
@@ -1314,7 +1323,7 @@ jobs:
       - name: make migrate-local (apply all migrations; waits for storage schema)
         run: make migrate-local
 
-      - name: make check (verify services, roles, schemas, migrations)
+      - name: make check (verify services, roles, schemas, migrations, id sequences)
         run: make check
 
       # bloom#551 round-2 review: SupabaseReader's raw tier is DB-only now, so
@@ -1440,14 +1449,16 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'table'
+          scanners: 'vuln'
           output: 'trivy-result.txt'
           trivyignores: '.trivyignore'
 
       - name: Generate summary
         if: always()
         run: |
-          crit=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "CRITICAL" || echo 0)
-          high=$(grep -P 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | grep -c "HIGH" || echo 0)
+          # Sum Trivy's per-target Total lines; the table leaves repeated severity cells blank.
+          crit=$(grep '^Total:' trivy-result.txt 2>/dev/null | grep -oE 'CRITICAL: [0-9]+' | awk '{s += $2} END {print s + 0}')
+          high=$(grep '^Total:' trivy-result.txt 2>/dev/null | grep -oE 'HIGH: [0-9]+' | awk '{s += $2} END {print s + 0}')
           cves=$(grep -oP 'CVE-\d+-\d+' trivy-result.txt 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//' || echo "")
           echo "${{ matrix.image }}|${crit}|${high}|${cves}" > summary.txt
 
@@ -1486,21 +1497,20 @@ jobs:
           {
             echo "## Pinned Image CVE Report"
             echo ""
-            echo "| Image | Critical | High | CVEs |"
-            echo "|-------|----------|------|------|"
+            echo "| Image | Critical | High |"
+            echo "|-------|----------|------|"
             for file in results/trivy-pinned-*/summary.txt; do
               if [ -f "$file" ]; then
-                IFS='|' read -r img crit high cves < "$file"
-                if [ -n "$cves" ]; then
-                  echo "| ${img} | ${crit} | ${high} | ${cves} |"
-                else
-                  echo "| ${img} | ${crit} | ${high} | — |"
-                fi
+                IFS='|' read -r img crit high _ < "$file"
+                echo "| ${img} | ${crit} | ${high} |"
               fi
             done
+            echo ""
+            echo "> Per-image CVE lists are in the trivy-pinned-* artifacts."
           } > pinned-report.md
 
       - name: Post as PR comment
+        if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-pinned-images

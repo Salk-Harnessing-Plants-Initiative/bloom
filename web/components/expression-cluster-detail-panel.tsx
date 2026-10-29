@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import {
   fetchClusterStats,
+  fetchDeMarkers,
+  findOneVsRest,
+  type ClusterMarkers,
   type ClusterStatsRow,
+  type OneVsRest,
 } from "@/components/expression-lib/cluster-markers";
 import type { TransgeneCount } from "@/components/expression-lib/transgene";
 
@@ -14,6 +18,10 @@ export interface ExpressionClusterDetailPanelProps {
   clusterColor: string | null;
   /** The cluster's transgene-positive cells; absent when the dataset records none. */
   transgene?: TransgeneCount;
+  /** The cluster's cells, for a dataset with no stored statistics. */
+  cellCount?: number;
+  /** Opens the cluster's one-vs-rest comparison in the DE tab. */
+  onShowFullList?: (target: OneVsRest & { clusterId: string }) => void;
 }
 
 /**
@@ -27,21 +35,37 @@ export function ExpressionClusterDetailPanel({
   clusterName,
   clusterColor,
   transgene,
+  cellCount,
+  onShowFullList,
 }: ExpressionClusterDetailPanelProps) {
   const [stats, setStats] = useState<ClusterStatsRow | null>(null);
+  // Without stored markers, the top of the dataset's one-vs-rest analysis.
+  const [deMarkers, setDeMarkers] = useState<ClusterMarkers | null>(null);
+  const [oneVsRest, setOneVsRest] = useState<OneVsRest | null>(null);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setStats(null);
+    setDeMarkers(null);
+    setOneVsRest(null);
     setFailed(false);
     setLoading(true);
 
     (async () => {
       try {
-        const row = await fetchClusterStats(datasetId, clusterId);
-        if (!cancelled) setStats(row);
+        const [row, comparison] = await Promise.all([
+          fetchClusterStats(datasetId, clusterId),
+          findOneVsRest(datasetId, clusterId),
+        ]);
+        if (cancelled) return;
+        setStats(row);
+        setOneVsRest(comparison);
+        if (!row?.markers?.top.length && comparison) {
+          const found = await fetchDeMarkers(comparison.deId);
+          if (!cancelled) setDeMarkers(found);
+        }
       } catch {
         if (!cancelled) setFailed(true);
       } finally {
@@ -55,17 +79,15 @@ export function ExpressionClusterDetailPanel({
   }, [datasetId, clusterId]);
 
   const name = clusterName ?? clusterId;
-  const markers = stats?.markers ?? null;
+  const markers = stats?.markers?.top.length ? stats.markers : deMarkers;
   // A cell type labelled from two atlases has markers from each; say which is which.
   const mixedSources =
     new Set((markers?.top ?? []).map((m) => m.source).filter(Boolean)).size > 1;
   // pct is stored as a percentage (0..100) per the column name; render directly.
   const pctHuman =
     stats?.pct != null ? stats.pct.toFixed(1) : "—";
-  const cellsHuman =
-    stats?.cell_count != null
-      ? new Intl.NumberFormat("en-US").format(stats.cell_count)
-      : "—";
+  const cells = stats?.cell_count ?? cellCount;
+  const cellsHuman = cells != null ? new Intl.NumberFormat("en-US").format(cells) : "—";
 
   return (
     <aside className="w-80 shrink-0 border-l border-stone-200 bg-white overflow-y-auto">
@@ -188,6 +210,19 @@ export function ExpressionClusterDetailPanel({
               ))}
             </tbody>
           </table>
+        )}
+
+        {oneVsRest && onShowFullList && !loading && !failed && (
+          <button
+            type="button"
+            onClick={() => onShowFullList({ ...oneVsRest, clusterId })}
+            className="mt-4 w-full rounded-md border border-lime-600 px-3 py-2 text-xs font-medium text-lime-700 hover:bg-lime-50"
+          >
+            Get the full list →
+            <span className="block text-[10px] font-normal text-stone-500">
+              every gene tested, with a CSV download, in Differential expression
+            </span>
+          </button>
         )}
       </div>
 

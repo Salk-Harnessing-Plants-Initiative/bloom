@@ -2,6 +2,7 @@
 
 import type { Database } from "@/lib/database.types";
 import type { TransgeneCount } from "@/components/expression-lib/transgene";
+import { sourceName, type PredictedSource } from "@/components/expression-lib/cell-type-labels";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
 
@@ -13,6 +14,9 @@ export interface ExpressionClusterSidebarProps {
   /** Per cluster ordinal, its transgene-positive cells; absent when the
    *  dataset records no transgene status. */
   transgene?: ReadonlyMap<number, TransgeneCount>;
+  /** Per cluster ordinal, its predicted cell types by source; absent when the
+   *  dataset marks no cell labels as cell types. */
+  predicted?: ReadonlyMap<number, readonly PredictedSource[]>;
   onVisibilityChange: (ordinal: number, visible: boolean) => void;
   /** Hide all clusters except this one. Clicking again restores full visibility. */
   onSolo: (ordinal: number) => void;
@@ -20,13 +24,15 @@ export interface ExpressionClusterSidebarProps {
   onHideAll: () => void;
 }
 
-/** Cluster list: bullet, name, where its label came from, count, visibility dot.
+/** Cluster list: bullet, name, where its label came from or its predicted cell types,
+ *  count, visibility dot.
  *  Row click solos; dot toggles visibility. */
 export function ExpressionClusterSidebar({
   clusters,
   hiddenOrdinals,
   cellCounts,
   transgene,
+  predicted,
   onVisibilityChange,
   onSolo,
   onShowAll,
@@ -37,7 +43,7 @@ export function ExpressionClusterSidebar({
   return (
     <div
       data-testid="expression-cluster-sidebar"
-      className="w-72 h-full overflow-y-auto border-r border-stone-200 bg-white"
+      className="w-72 self-start sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto overscroll-contain border-r border-stone-200 bg-white"
     >
       <div className="flex items-baseline justify-between px-4 pt-4 pb-2">
         <div className="text-xs uppercase tracking-widest text-stone-500">
@@ -70,6 +76,7 @@ export function ExpressionClusterSidebar({
           const label = c.name ?? c.cluster_id;
           const source = c.source?.trim() || null;
           const carriers = transgene?.get(c.ordinal);
+          const predictions = predicted?.get(c.ordinal);
 
           return (
             <li key={c.ordinal}>
@@ -108,6 +115,21 @@ export function ExpressionClusterSidebar({
                       title={`Label transferred from ${source}`}
                     >
                       from {source}
+                    </span>
+                  )}
+                  {predictions && predictions.length > 0 && (
+                    <span
+                      className="mt-0.5 flex flex-col text-[11px] text-stone-400"
+                      aria-label="Predicted cell types"
+                    >
+                      {predictions.map((p) => {
+                        const line = `${p.label} (${sourceName(p.key)})`;
+                        return (
+                          <span key={p.key} className="truncate" title={line}>
+                            {line}
+                          </span>
+                        );
+                      })}
                     </span>
                   )}
                   {carriers && carriers.positive > 0 && (
