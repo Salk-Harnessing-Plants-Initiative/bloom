@@ -17,6 +17,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
+const push = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
+
 import { PlateVideo } from "./PlateVideo";
 import {
   POLL_LOST,
@@ -709,5 +712,31 @@ describe("a poll that cannot follow its job", () => {
     await tick(VIDEO_JOB_MAX_FAILED_POLLS);
 
     expect(document.body.textContent).toContain(POLL_LOST);
+  });
+});
+
+describe("after queuing", () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it("takes the visitor to the Video Jobs page, on their job", async () => {
+    push.mockClear();
+    queue([absent()]);
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+
+    expect(push).toHaveBeenCalledWith(`/app/video-jobs?job=${JOB_ID}`);
+  });
+
+  it("stays put when the request was refused", async () => {
+    push.mockClear();
+    queue([absent()], () => json({ detail: "Too many video requests." }, 429));
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+
+    expect(push).not.toHaveBeenCalled();
   });
 });

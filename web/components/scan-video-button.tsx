@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { videoErrorMessage, videoResultSummary } from "./scan-video.helpers";
 import { useVideoJobPoll } from "./use-video-job-poll";
 import {
@@ -47,6 +48,7 @@ export default function ScanVideoButton({
   // The job this page is waiting on. The poll asks for it by id, so a newer job
   // on the same scan can neither end the wait nor hide this one's outcome.
   const [expectedJob, setExpectedJob] = useState<string | null>(null);
+  const router = useRouter();
 
   const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
   // A stored video is keyed by scan alone, so asking how it is going doesn't go
@@ -159,6 +161,8 @@ export default function ScanVideoButton({
     // Created or shared with someone else's click: either way, wait for it.
     setExpectedJob(body.job_id);
     setStatus("waiting");
+    // Follow it where every job's progress is shown; that row links back here.
+    router.push(`/app/video-jobs?${new URLSearchParams({ job: body.job_id })}`);
   }
 
   const counted = countedFrames(job);

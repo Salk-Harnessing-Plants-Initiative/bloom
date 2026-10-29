@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useVideoJobPoll } from "@/components/use-video-job-poll";
 import {
   PLATE_FAILURES,
@@ -106,6 +107,7 @@ export function PlateVideo({
   // The job this page is waiting on. The poll asks for it by id, so a newer job
   // on the same plate can neither end the wait nor hide this one's outcome.
   const [expectedJob, setExpectedJob] = useState<string | null>(null);
+  const router = useRouter();
 
   const endpoint = `/api/gravi/experiments/${experimentId}/plate-video`;
   const query = new URLSearchParams({ plate_id: plateId });
@@ -190,6 +192,8 @@ export function PlateVideo({
       // Created or shared with someone else's click: either way, wait for it.
       setExpectedJob(body.job_id);
       setAction("waiting");
+      // Follow it where every job's progress is shown; that row links back here.
+      router.push(`/app/video-jobs?${new URLSearchParams({ job: body.job_id })}`);
     } catch {
       setFailure(FAILED);
       setAction("error");
