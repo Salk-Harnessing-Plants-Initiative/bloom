@@ -4,10 +4,9 @@ CVE-2023-30533
 CVE-2024-22363
 
 # Upstream vendor image CVEs. Our own images (bloom-web, langchain-agent,
-# bloommcp, bloomcli, workflows, box-object-backup) have none of the entries
-# below; caddy has only CVE-2026-56854, explained in its entry. Each entry lists
-# the pinned upstream images that still carry it, and those fixes arrive with
-# newer upstream images.
+# bloommcp, bloomcli, workflows, caddy, box-object-backup) have none of the
+# entries below. Each entry lists the pinned upstream images that still carry
+# it, and those fixes arrive with newer upstream images.
 
 # zlib1g (Debian) - affects: postgres-meta, realtime, studio, supavisor
 # Trivy status: will_not_fix | Fixed version: none
@@ -87,25 +86,11 @@ CVE-2026-11940
 # services extracts uploaded tar archives.
 CVE-2026-59873
 
-# golang.org/x/crypto/ssh — affects: caddy, gotrue, imgproxy, minio, minio-mc
+# golang.org/x/crypto/ssh - affects: gotrue, imgproxy, minio, minio-mc
 # Auth bypass: an SSH server can fail to enforce a certificate's critical
 # `source-address` option, letting a client connect from an address the certificate was
-# meant to exclude. Reaching it needs something speaking SSH. Caddy is used here only as
-# an HTTPS reverse proxy + ACME client (see caddy/Caddyfile): it serves :80, :443 and
-# :2021 and runs no SSH server or client, so the affected code path is unreachable.
-# The ssh code IS compiled in, rather than absent — it arrives with
-# github.com/smallstep/certificates, the certificate-issuing library Caddy embeds for its
-# PKI and ACME-server apps, which covers web and SSH certificates in one piece. This
-# deployment enables neither app, and Caddy exposes no SSH certificate feature to enable
-# in the first place. No caddy release declares a patched x/crypto yet: 2.11.3 (what we
-# build) declares 0.50.0, 2.11.4 declares 0.52.0, unreleased `master` is on 0.54.0; the
-# fix ships in 0.55.0. It CAN be forced at build time with
-# `xcaddy build --with golang.org/x/crypto/bcrypt@v0.55.0` — a subpackage path, because
-# xcaddy imports whatever path it is given and golang.org/x/crypto has no code at its
-# root; that spelling was verified to build and to link 0.55.0. Not taken deliberately:
-# it pins the library ahead of what Caddy is tested against, for no exposure this
-# deployment can reach. Reassess when a caddy release declares
-# golang.org/x/crypto >= 0.55.0. See bloom#775.
+# meant to exclude. Reaching it needs something speaking SSH. gotrue and imgproxy are
+# HTTP services that run no SSH server, and minio-mc is a one-shot setup client.
 # MinIO (ghcr.io/salk-harnessing-plants-initiative/minio:RELEASE.2025-01-20T14-49-07Z) links
 # the same package (golang.org/x/crypto v0.32.0, with github.com/pkg/sftp) for its optional
 # SFTP server, which starts only when SFTP settings are given: the `--sftp` flag, or an
