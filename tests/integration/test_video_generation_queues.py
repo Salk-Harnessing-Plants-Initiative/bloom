@@ -250,6 +250,17 @@ def test_job_tables_are_closed_to_unprivileged_roles(cur, queue, role):
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_job_tables_publish_their_changes_to_realtime(cur, queue):
+    """The pages follow a job live rather than polling it."""
+    cur.execute(
+        "SELECT 1 FROM pg_publication_tables "
+        "WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = %s",
+        (queue.table,),
+    )
+    assert cur.fetchone() is not None, f"{queue.table} is not in supabase_realtime"
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 def test_row_level_security_is_enabled(cur, queue):
     cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = %s::regclass", (f"public.{queue.table}",))
     assert cur.fetchone()[0] is True
