@@ -139,7 +139,7 @@ def cur(pg_conn):
 
 
 # --------------------------------------------------------------------------- #
-# Definer identity (2.3.6)
+# Definer identity
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("signature", WRAPPERS)
 def test_wrapper_is_definer_owned_by_postgres_with_a_pinned_search_path(cur, signature):
@@ -157,10 +157,12 @@ def test_wrapper_is_definer_owned_by_postgres_with_a_pinned_search_path(cur, sig
 
 
 # --------------------------------------------------------------------------- #
-# Privilege (2.3.5) — asserted, never invoked
+# Privilege — asserted, never invoked
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("signature", WRAPPERS)
-@pytest.mark.parametrize("role", DENIED_ROLES + ["bloom_user"])
+@pytest.mark.parametrize(
+    "role", DENIED_ROLES + ["bloom_user", "bloom_writer", "bloom_admin", "bloom_agent"]
+)
 def test_wrapper_execute_is_denied_to_client_roles(cur, signature, role):
     """These live in the PostgREST-exposed public schema; EXECUTE for a client role would
     make them callable over /rest/v1/rpc."""
@@ -187,6 +189,17 @@ def test_job_tables_are_read_only_for_signed_in_roles(cur, queue, privilege, rol
         "SELECT has_table_privilege(%s, %s, %s)", (role, f"public.{queue.table}", privilege)
     )
     assert cur.fetchone()[0] is False, f"{role} has {privilege} on {queue.table}"
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("privilege", ["INSERT", "UPDATE", "DELETE", "TRUNCATE"])
+def test_bloom_workflows_writes_jobs_only_through_the_wrappers(cur, queue, privilege):
+    """Its password lives in several containers; a direct write would skip every guard."""
+    cur.execute(
+        "SELECT has_table_privilege('bloom_workflows', %s, %s)",
+        (f"public.{queue.table}", privilege),
+    )
+    assert cur.fetchone()[0] is False, f"bloom_workflows has {privilege} on {queue.table}"
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
@@ -256,7 +269,7 @@ def test_postgres_can_reach_the_pgmq_tables_the_wrappers_use(cur, queue):
 
 
 # --------------------------------------------------------------------------- #
-# Enqueue (2.3.1)
+# Enqueue
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 def test_enqueue_creates_a_queued_job_and_a_message(cur, queue):
@@ -315,15 +328,18 @@ def test_one_active_job_per_item_is_enforced_by_an_index(cur, queue):
 
 
 # --------------------------------------------------------------------------- #
-# Claim (2.3.2)
+# Claim
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 def test_claim_marks_the_job_rendering_and_returns_it(cur, queue):
+    """The worker renders whatever claim hands it, so every field is the job's own."""
     args = _target(cur, queue)
     job_id, _ = _enqueue(cur, queue, args)
+    cur.execute(f"SELECT msg_id FROM public.{queue.table} WHERE id = %s", (job_id,))
+    msg_id = cur.fetchone()[0]
     claimed = _claim(cur, queue)
-    assert claimed is not None
-    assert claimed[queue.claim_cols.index("job_id")] == job_id
+    item = (args[0], args[1], args[2]) if queue is PLATE else (args[0], args[1])
+    assert claimed == (job_id, *item, msg_id, 1)
     assert _status(cur, queue, job_id) == "rendering"
 
 
@@ -347,8 +363,15 @@ def test_claim_records_the_delivery_count_and_keeps_the_first_start_time(cur, qu
     job_id, _ = _enqueue(cur, queue, args)
     _claim(cur, queue, vt=0)
     cur.execute(f"SELECT reads, started_at FROM public.{queue.table} WHERE id = %s", (job_id,))
-    reads, started_at = cur.fetchone()
+    reads, _ = cur.fetchone()
     assert reads == 1
+    # now() is fixed within the transaction, so push the first start into the past.
+    cur.execute(
+        f"UPDATE public.{queue.table} SET started_at = now() - interval '1 hour' "
+        "WHERE id = %s RETURNING started_at",
+        (job_id,),
+    )
+    started_at = cur.fetchone()[0]
     _claim(cur, queue, vt=0)
     cur.execute(f"SELECT reads, started_at FROM public.{queue.table} WHERE id = %s", (job_id,))
     reads_again, started_again = cur.fetchone()
@@ -357,7 +380,7 @@ def test_claim_records_the_delivery_count_and_keeps_the_first_start_time(cur, qu
 
 
 # --------------------------------------------------------------------------- #
-# Status guards (2.3.3)
+# Status guards
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 def test_progress_is_refused_before_the_job_is_claimed(cur, queue):
@@ -405,15 +428,23 @@ def test_settled_jobs_cannot_be_moved_again(cur, queue, verb):
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
-def test_settling_requires_the_matching_message(cur, queue):
+@pytest.mark.parametrize("verb", ["progress", "complete", "fail"])
+def test_settling_requires_the_matching_message(cur, queue, verb):
     """A mismatched pair would otherwise destroy an unrelated message."""
     args = _target(cur, queue)
     job_id, _ = _enqueue(cur, queue, args)
     claimed = _claim(cur, queue)
-    msg_id = claimed[queue.claim_cols.index("msg_id")]
-    cur.execute(f"SELECT public.{queue.complete}(%s, %s, 'rendered')", (job_id, msg_id + 1000))
+    wrong = claimed[queue.claim_cols.index("msg_id")] + 1000
+    depth, archived = _queue_depth(cur, queue), _archive_depth(cur, queue)
+    if verb == "progress":
+        cur.execute(f"SELECT public.{queue.progress}(%s, %s, 'encoding', 1, 2, 300)", (job_id, wrong))
+    elif verb == "complete":
+        cur.execute(f"SELECT public.{queue.complete}(%s, %s, 'rendered')", (job_id, wrong))
+    else:
+        cur.execute(f"SELECT public.{queue.fail}(%s, %s, 'unusable', 'x')", (job_id, wrong))
     assert cur.fetchone()[0] is False
     assert _status(cur, queue, job_id) == "rendering"
+    assert (_queue_depth(cur, queue), _archive_depth(cur, queue)) == (depth, archived)
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
@@ -424,7 +455,7 @@ def test_complete_rejects_an_outcome_that_is_not_rendered_or_kept(cur, queue):
     job_id, _ = _enqueue(cur, queue, args)
     claimed = _claim(cur, queue)
     msg_id = claimed[queue.claim_cols.index("msg_id")]
-    with pytest.raises(psycopg.errors.CheckViolation):
+    with pytest.raises(psycopg.errors.CheckViolation, match="outcome must be rendered or kept"):
         cur.execute(f"SELECT public.{queue.complete}(%s, %s, 'finished')", (job_id, msg_id))
 
 
@@ -435,11 +466,12 @@ def test_complete_records_the_outcome_and_drops_the_message(cur, queue, outcome)
     job_id, _ = _enqueue(cur, queue, args)
     claimed = _claim(cur, queue)
     msg_id = claimed[queue.claim_cols.index("msg_id")]
-    depth = _queue_depth(cur, queue)
+    depth, archived = _queue_depth(cur, queue), _archive_depth(cur, queue)
     cur.execute(f"SELECT public.{queue.complete}(%s, %s, %s)", (job_id, msg_id, outcome))
     assert cur.fetchone()[0] is True
     assert _status(cur, queue, job_id) == outcome
     assert _queue_depth(cur, queue) == depth - 1
+    assert _archive_depth(cur, queue) == archived, "a finished job's message is deleted"
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
@@ -458,7 +490,7 @@ def test_fail_records_the_code_and_archives_the_message(cur, queue):
 
 
 # --------------------------------------------------------------------------- #
-# Redelivery (2.3.4)
+# Redelivery
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 def test_a_message_is_redelivered_once_its_visibility_lapses(cur, queue):
@@ -516,13 +548,13 @@ def test_a_job_fails_as_redelivered_past_the_maximum_deliveries(cur, queue):
     job_id, _ = _enqueue(cur, queue, args)
     for _ in range(2):
         assert _claim(cur, queue, vt=0, max_reads=2) is not None
-    archived = _archive_depth(cur, queue)
+    depth, archived = _queue_depth(cur, queue), _archive_depth(cur, queue)
 
     assert _claim(cur, queue, vt=0, max_reads=2) is None, "a poison message must not be handed out"
     cur.execute(f"SELECT status, error_code FROM public.{queue.table} WHERE id = %s", (job_id,))
     assert cur.fetchone() == ("failed", "redelivered")
     assert _archive_depth(cur, queue) == archived + 1
-    assert _queue_depth(cur, queue) == 0
+    assert _queue_depth(cur, queue) == depth - 1
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
@@ -536,8 +568,28 @@ def test_a_settled_job_with_a_stray_message_is_archived_not_rerun(cur, queue):
     cur.execute(
         "SELECT pgmq.send(%s, jsonb_build_object('job_id', %s::text))", (queue.name, str(job_id))
     )
+    depth, archived = _queue_depth(cur, queue), _archive_depth(cur, queue)
     assert _claim(cur, queue, vt=0) is None
     assert _status(cur, queue, job_id) == "rendered"
+    assert (_queue_depth(cur, queue), _archive_depth(cur, queue)) == (depth - 1, archived + 1)
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_an_unreadable_message_is_archived_not_handed_out(cur, queue):
+    cur.execute("SELECT pgmq.send(%s, '{\"job_id\": \"not-a-uuid\"}'::jsonb)", (queue.name,))
+    depth, archived = _queue_depth(cur, queue), _archive_depth(cur, queue)
+    assert _claim(cur, queue, vt=0) is None
+    assert (_queue_depth(cur, queue), _archive_depth(cur, queue)) == (depth - 1, archived + 1)
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_claims_take_jobs_oldest_first_and_one_at_a_time(cur, queue):
+    first, _ = _enqueue(cur, queue, _target(cur, queue))
+    second, _ = _enqueue(cur, queue, _target(cur, queue))
+    job = queue.claim_cols.index("job_id")
+    assert _claim(cur, queue)[job] == first
+    assert _status(cur, queue, second) == "queued", "one claim took two jobs"
+    assert _claim(cur, queue)[job] == second
 
 # --------------------------------------------------------------------------- #
 # Input guards
@@ -584,6 +636,7 @@ def test_claim_refuses_a_delivery_limit_below_one(cur, queue, bad_max):
 def test_a_rejected_claim_leaves_the_job_queued(cur, queue):
     args = _target(cur, queue)
     job_id, _ = _enqueue(cur, queue, args)
+    depth = _queue_depth(cur, queue)
     cur.execute("SAVEPOINT before_bad_claim")
     import psycopg
 
@@ -591,7 +644,7 @@ def test_a_rejected_claim_leaves_the_job_queued(cur, queue):
         cur.execute(f"SELECT * FROM public.{queue.claim}(%s, 3)", (999999,))
     cur.execute("ROLLBACK TO SAVEPOINT before_bad_claim")
     assert _status(cur, queue, job_id) == "queued"
-    assert _queue_depth(cur, queue) == 1
+    assert _queue_depth(cur, queue) == depth
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
@@ -647,3 +700,158 @@ def test_a_scan_whose_chain_is_broken_cannot_be_refiled_under_another_experiment
     assert created_again is False and same_job == job_id
     cur.execute("SELECT experiment_id FROM public.cyl_video_jobs WHERE id = %s", (job_id,))
     assert cur.fetchone()[0] == first_experiment
+
+
+# --------------------------------------------------------------------------- #
+# Error codes
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("bad_code", [None, "", "   "], ids=["null", "empty", "blank"])
+def test_fail_refuses_a_job_without_an_error_code(cur, queue, bad_code):
+    """The code is all a signed-in user is shown of a failure."""
+    import psycopg
+
+    args = _target(cur, queue)
+    job_id, _ = _enqueue(cur, queue, args)
+    msg_id = _claim(cur, queue)[queue.claim_cols.index("msg_id")]
+    cur.execute("SAVEPOINT before_bad_fail")
+    with pytest.raises(psycopg.errors.CheckViolation, match="error_code must be given"):
+        cur.execute(f"SELECT public.{queue.fail}(%s, %s, %s, 'why')", (job_id, msg_id, bad_code))
+    cur.execute("ROLLBACK TO SAVEPOINT before_bad_fail")
+    assert _status(cur, queue, job_id) == "rendering"
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_a_long_error_code_is_capped(cur, queue):
+    args = _target(cur, queue)
+    job_id, _ = _enqueue(cur, queue, args)
+    msg_id = _claim(cur, queue)[queue.claim_cols.index("msg_id")]
+    cur.execute(f"SELECT public.{queue.fail}(%s, %s, %s, 'why')", (job_id, msg_id, "x" * 500))
+    cur.execute(f"SELECT length(error_code) FROM public.{queue.table} WHERE id = %s", (job_id,))
+    assert cur.fetchone()[0] == 64
+
+
+# --------------------------------------------------------------------------- #
+# One active job per item, not per experiment
+# --------------------------------------------------------------------------- #
+def test_each_plate_and_wave_gets_its_own_job(cur):
+    """The key is plate and wave together; a NULL wave is a wave of its own."""
+    experiment, plate, wave = _target(cur, PLATE)
+    first, _ = _enqueue(cur, PLATE, (experiment, plate, wave))
+    others = [
+        _enqueue(cur, PLATE, (experiment, plate, wave + 1)),
+        _enqueue(cur, PLATE, (experiment, plate, None)),
+        _enqueue(cur, PLATE, (experiment, "P2", wave)),
+    ]
+    assert all(created for _, created in others), "a different plate or wave joined a job"
+    assert len({first, *(job for job, _ in others)}) == 4
+    assert _enqueue(cur, PLATE, (experiment, plate, None)) == (others[1][0], False)
+
+
+def test_each_scan_gets_its_own_job(cur):
+    first_scan = _target(cur, CYL)
+    second_scan = _target(cur, CYL)
+    first, _ = _enqueue(cur, CYL, first_scan)
+    second, created = _enqueue(cur, CYL, second_scan)
+    assert created is True
+    assert second != first
+
+
+# --------------------------------------------------------------------------- #
+# updated_at moves on every wrapper write
+# --------------------------------------------------------------------------- #
+def _backdate(cur, queue, job_id):
+    """now() is fixed within the test's transaction, so a fresh value is only visible
+    against a row pushed into the past first."""
+    cur.execute(
+        f"UPDATE public.{queue.table} SET updated_at = now() - interval '1 hour' WHERE id = %s",
+        (job_id,),
+    )
+
+
+def _updated_now(cur, queue, job_id) -> bool:
+    cur.execute(f"SELECT updated_at = now() FROM public.{queue.table} WHERE id = %s", (job_id,))
+    return cur.fetchone()[0]
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_claim_moves_updated_at(cur, queue):
+    job_id, _ = _enqueue(cur, queue, _target(cur, queue))
+    _backdate(cur, queue, job_id)
+    _claim(cur, queue)
+    assert _updated_now(cur, queue, job_id)
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+@pytest.mark.parametrize("verb", ["complete", "fail"])
+def test_settling_moves_updated_at(cur, queue, verb):
+    job_id, _ = _enqueue(cur, queue, _target(cur, queue))
+    msg_id = _claim(cur, queue)[queue.claim_cols.index("msg_id")]
+    _backdate(cur, queue, job_id)
+    if verb == "complete":
+        cur.execute(f"SELECT public.{queue.complete}(%s, %s, 'rendered')", (job_id, msg_id))
+    else:
+        cur.execute(f"SELECT public.{queue.fail}(%s, %s, 'unusable', 'x')", (job_id, msg_id))
+    assert cur.fetchone()[0] is True
+    assert _updated_now(cur, queue, job_id)
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_failing_as_redelivered_moves_updated_at(cur, queue):
+    job_id, _ = _enqueue(cur, queue, _target(cur, queue))
+    _claim(cur, queue, vt=0, max_reads=1)
+    _backdate(cur, queue, job_id)
+    assert _claim(cur, queue, vt=0, max_reads=1) is None
+    assert _status(cur, queue, job_id) == "failed"
+    assert _updated_now(cur, queue, job_id)
+
+
+# --------------------------------------------------------------------------- #
+# Through the real callers' roles
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_bloom_workflows_can_run_a_job_end_to_end(cur, queue):
+    """The worker's own role, not a superuser: a wrapper that only worked as one would
+    pass every other test here. bloom_workflows holds EXECUTE, so calling as it is safe."""
+    args = _target(cur, queue)
+    cur.execute("SET LOCAL ROLE bloom_workflows")
+    job_id, created = _enqueue(cur, queue, args)
+    claimed = _claim(cur, queue)
+    msg_id = claimed[queue.claim_cols.index("msg_id")]
+    cur.execute(f"SELECT public.{queue.progress}(%s, %s, 'encoding', 2, 3, 300)", (job_id, msg_id))
+    progressed = cur.fetchone()[0]
+    cur.execute(f"SELECT public.{queue.complete}(%s, %s, 'rendered')", (job_id, msg_id))
+    completed = cur.fetchone()[0]
+    cur.execute("RESET ROLE")
+    assert (created, progressed, completed) == (True, True, True)
+    assert _status(cur, queue, job_id) == "rendered"
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_a_signed_in_user_reads_the_job_but_not_its_error_text(cur, queue):
+    """Read as the role itself, so a policy that hid every row would fail here. A plain
+    table read, not a definer call."""
+    import psycopg
+
+    job_id, _ = _enqueue(cur, queue, _target(cur, queue))
+    msg_id = _claim(cur, queue)[queue.claim_cols.index("msg_id")]
+    cur.execute(f"SELECT public.{queue.fail}(%s, %s, 'unusable', 'kong:8000')", (job_id, msg_id))
+    cur.execute("SET LOCAL ROLE bloom_user")
+    cur.execute(f"SELECT status, error_code FROM public.{queue.table} WHERE id = %s", (job_id,))
+    assert cur.fetchone() == ("failed", "unusable")
+    cur.execute("SAVEPOINT before_error_read")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        cur.execute(f"SELECT error FROM public.{queue.table} WHERE id = %s", (job_id,))
+    cur.execute("ROLLBACK TO SAVEPOINT before_error_read")
+    cur.execute("RESET ROLE")
+
+
+def test_a_scan_is_not_queued_under_an_experiment_it_does_not_belong_to(cur):
+    """The foreign key proves the experiment exists, not that the scan is in it."""
+    import psycopg
+
+    scan_id, _ = _target(cur, CYL)
+    cur.execute("INSERT INTO cyl_experiments (name) VALUES ('queue-test-other') RETURNING id")
+    other = cur.fetchone()[0]
+    with pytest.raises(psycopg.errors.CheckViolation, match="does not belong to experiment"):
+        _enqueue(cur, CYL, (scan_id, other))
