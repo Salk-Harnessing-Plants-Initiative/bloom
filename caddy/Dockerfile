@@ -21,8 +21,9 @@
 #   well-maintained caddy-dns/cloudflare plugin, pinned to known digests.
 #
 # Version + digest pinning rationale:
-#   caddy 2.11.3       latest stable patch release as of 2026-05. Notable
-#                      security fixes inherited from earlier 2.11.x:
+#   caddy 2.11.7       latest stable patch release as of 2026-10. It links
+#                      golang.org/x/crypto 0.57.0 (CVE-2026-56854 fixed in
+#                      0.55.0). Notable security fixes from earlier 2.11.x:
 #                        - CVE-2026-30851 (forward_auth copy_headers fails
 #                          to strip client-supplied identity headers,
 #                          allowing privilege escalation; fixed in 2.11.2)
@@ -50,10 +51,10 @@
 # -----------------------------------------------------------------------------
 # Stage 1 — build a Caddy binary with the Cloudflare DNS plugin compiled in.
 #
-# The official caddy:2.11.3-builder-alpine image already ships xcaddy paired
+# The official caddy:2.11.7-builder-alpine image already ships xcaddy paired
 # with the matching Caddy version, so we don't pin xcaddy separately.
 # -----------------------------------------------------------------------------
-FROM caddy:2.11.3-builder-alpine@sha256:3eae6b351ecdb05da6d16e341261a457692d344a435764c5ece7a60cf03a23f3 AS builder
+FROM caddy:2.11.7-builder-alpine@sha256:ef9b65adf9a224770c6d5f6d1ae1bf99bc3caaa78d8c4bae3ea949ee6984f301 AS builder
 RUN xcaddy build \
     --with github.com/caddy-dns/cloudflare@fd0213c5482b3dd2a1f14fbce832fcff8e1ac4f8
 
@@ -63,7 +64,7 @@ RUN xcaddy build \
 # Same slim Alpine base as the stock caddy image; we just swap in our binary.
 # Image size delta vs. stock: ~5 MB (the linked-in Cloudflare API client).
 # -----------------------------------------------------------------------------
-FROM caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
+FROM caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 # The base ships brotli-libs 1.2.0 (CVE-2026-111497). Fails the build if Alpine
 # lacks the fix; drop once the caddy base itself ships brotli-libs >= 1.2.1-r0.
