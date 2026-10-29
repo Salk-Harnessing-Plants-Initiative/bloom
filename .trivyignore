@@ -4,9 +4,10 @@ CVE-2023-30533
 CVE-2024-22363
 
 # Upstream vendor image CVEs. Our own images (bloom-web, langchain-agent,
-# bloommcp, bloomcli, workflows, caddy, box-object-backup) have none of the
-# entries below; each lists the pinned upstream images that still carry it.
-# The fixes arrive with newer upstream images, not with anything built here.
+# bloommcp, bloomcli, workflows, box-object-backup) have none of the entries
+# below; caddy has only CVE-2026-56854, explained in its entry. Each entry lists
+# the pinned upstream images that still carry it, and those fixes arrive with
+# newer upstream images.
 
 # zlib1g (Debian) - affects: postgres-meta, realtime, studio, supavisor
 # Trivy status: will_not_fix | Fixed version: none
@@ -27,7 +28,7 @@ CVE-2025-68121
 # libssl3 / libcrypto3 / openssl - affects: gotrue, postgres, storage-api
 # (Alpine 3.5.5-r0) and postgres-meta, realtime, studio (Debian 12 3.0.x).
 # Heap overflow on 32-bit platforms during X.509 OCTET STRING hex conversion
-# of inputs over ~1.4 GiB. Every service runs on x86_64.
+# of inputs over ~1.4 GiB. No service runs on a 32-bit platform.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-31789
 CVE-2026-31789
 

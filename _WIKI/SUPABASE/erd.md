@@ -1197,14 +1197,14 @@ erDiagram
   integer frames_done
   integer frames_total
   text error_code
-  text error
+  text error_message
   uuid requested_by
   bigint msg_id
   integer reads
   timestamp_with_time_zone created_at
   timestamp_with_time_zone started_at
   timestamp_with_time_zone updated_at
-  timestamp_with_time_zone finished_at
+  timestamp_with_time_zone completed_at
 }
 "public.cyl_video_jobs" {
   uuid id
@@ -1215,13 +1215,13 @@ erDiagram
   integer frames_done
   integer frames_total
   text error_code
-  text error
+  text error_message
   uuid requested_by
   bigint msg_id
   integer reads
   timestamp_with_time_zone created_at
   timestamp_with_time_zone started_at
   timestamp_with_time_zone updated_at
-  timestamp_with_time_zone finished_at
+  timestamp_with_time_zone completed_at
 }
 ```
