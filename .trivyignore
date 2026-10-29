@@ -3,137 +3,90 @@
 CVE-2023-30533
 CVE-2024-22363
 
-# Upstream vendor image CVEs — all images already on latest stable versions
+# Upstream vendor image CVEs. Our own images (bloom-web, langchain-agent,
+# bloommcp, bloomcli, workflows, caddy, box-object-backup) have none of the
+# entries below; each lists the pinned upstream images that still carry it.
+# The fixes arrive with newer upstream images, not with anything built here.
 
-# zlib1g (Debian) - affects: realtime, studio, postgres-meta
+# zlib1g (Debian) - affects: postgres-meta, realtime, studio, supavisor
 # Trivy status: will_not_fix | Fixed version: none
 CVE-2023-45853
 
-# libsqlite3 (Debian) - affects: realtime, studio
+# libsqlite3 (Debian) - affects: studio
 # Trivy status: affected | Fixed version: none
 CVE-2025-7458
 
-# grpc-go authz bypass - affects: gotrue, imgproxy
-# Fix exists in grpc-go 1.79.3 but official supabase/gotrue and
-# darthsim/imgproxy images have not been rebuilt with it yet
-# Trivy status: fixed in 1.79.3
+# grpc-go authz bypass - affects: gotrue, imgproxy, minio, minio-mc
+# Fixed in grpc-go 1.79.3; these images have not been rebuilt with it.
 CVE-2026-33186
 
-# Go stdlib crypto/tls session resumption - affects: supabase CLI binary
-# bundled in node_modules/supabase/bin/supabase (compiled with Go 1.25.5)
-# Fix available in Go 1.25.7 but supabase npm package not yet rebuilt
+# Go stdlib crypto/tls session resumption - affects: minio, minio-mc
+# Fixed in Go 1.24.13 / 1.25.7; both binaries were built with older Go.
 CVE-2025-68121
 
-# smallstep/certificates SCEP provisioner bypass — affects: caddy
-# Only exploitable if Caddy's internal SCEP provisioner is enabled
-# (we use Caddy only as a reverse proxy/ACME client, not as a CA)
-# TODO: Remove when Caddy ships a build with smallstep/certificates >= v0.30.0
-CVE-2026-30836
-
-# libcrypto3 / libssl3 (Alpine 3.23.3 in node:20-alpine base) — affects: bloom-web
-# OpenSSL heap overflow on 32-bit platforms during X.509 OCTET STRING hex
-# conversion (input_len * 3 overflows for inputs > ~1.4 GiB). Bloom-web runs
-# on x86_64 only, does not process untrusted X.509 certs, and does not print
-# cert contents — none of the three exploit preconditions hold.
-# Fix available in alpine libcrypto3 3.5.6-r0; pinned node:20-alpine SHA
-# not yet rebuilt with it. Reassess on next node:20-alpine SHA bump.
+# libssl3 / libcrypto3 / openssl - affects: gotrue, postgres, storage-api
+# (Alpine 3.5.5-r0) and postgres-meta, realtime, studio (Debian 12 3.0.x).
+# Heap overflow on 32-bit platforms during X.509 OCTET STRING hex conversion
+# of inputs over ~1.4 GiB. Every service runs on x86_64.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-31789
 CVE-2026-31789
 
-# libgnutls30t64 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
-# DTLS handshake parsing — out-of-bounds read on malformed fragments,
-# DoS-only (Red Hat CVSS A:H, C:N, I:N). The langchain agent runs uvicorn/
-# FastAPI over TCP only (port 5002), exposes no UDP listener, and has no
-# DTLS client code; libgnutls30t64 is a transitive Debian base package,
-# not used by the application. None of the three exploit preconditions hold.
-# Reassess on next python:3.11-slim SHA bump or when Debian publishes a fix.
+# libgnutls30 (Debian) - affects: postgres-meta, realtime, studio, supavisor
+# DTLS handshake out-of-bounds read (DoS only). None of these services runs a
+# DTLS listener; GnuTLS is a base OS package.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-33845
 CVE-2026-33845
 
-# libgnutls30t64 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
-# GnuTLS authentication bypass via NUL character in username. The langchain
-# agent does not authenticate clients via GnuTLS (FastAPI uses Supabase JWT
-# over plain TCP), so the affected code path is not reachable. Transitive
-# Debian base package, no fix available upstream. Reassess on next SHA bump.
+# libgnutls30 (Debian) - affects: postgres-meta, realtime, studio, supavisor
+# Authentication bypass via a NUL character in the username. None of these
+# services authenticates clients through GnuTLS.
 CVE-2026-42010
 
-# libpython3.13 / python3.13 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
-# xml.parsers.expat / xml.etree.ElementTree insufficient hash randomization
-# entropy. The agent runs python3.11 (not 3.13); python3.13 ships as a base
-# Debian package but is never executed. Agent input is JSON via FastAPI, no
-# untrusted XML parsing. No fix available. Reassess on next SHA bump.
+# python3 (OS package) - affects: storage-api, studio, supavisor
+# xml.parsers.expat hash randomization entropy. The services do not run the
+# OS Python on untrusted XML.
 CVE-2026-7210
 
-# libssh2-1t64 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
-# Integer overflow on large username/password arguments. The agent does not
-# use libssh2 / SSH at runtime; transitive Debian base package. No fix
-# available upstream. Reassess on next SHA bump.
+# libssh2-1 (Debian) - affects: realtime, studio, supavisor
+# Integer overflow on large username/password arguments. No service uses SSH.
 CVE-2026-7598
 
-# perl-base 5.40.1-6 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
-# Heap buffer overflow / code execution via crafted regex in Perl regex engine.
-# The langchain agent does not execute Perl at runtime; perl-base is a transitive
-# Debian base package included by python:3.11-slim, never invoked by application
-# code. No fix available upstream. Reassess on next python:3.11-slim SHA bump.
+# perl-base (Debian) - affects: postgres-meta, realtime, studio, supavisor
+# Heap overflow / code execution via a crafted regex. No service runs Perl on
+# untrusted input; perl-base is a base OS package.
 CVE-2026-13221
 
-# perl-base 5.40.1-6 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
-# Archive::Tar symlink extraction. The agent does not extract tar archives
-# at runtime; perl-base is a transitive Debian base package only, no
-# application code path invokes it. No fix available upstream.
-# Reassess on next python:3.11-slim SHA bump.
+# perl-base (Debian) - affects: postgres-meta, realtime, studio, supavisor
+# Archive::Tar symlink extraction. No service extracts tar archives with Perl.
 CVE-2026-42496
 
-# perl-base 5.40.1-6 (Debian 13.4 in python:3.11-slim) — affects: langchain-agent
-# Heap buffer overflow when Perl compiles certain regex patterns. The agent
-# does not execute Perl at runtime; perl-base is a transitive Debian base
-# package included by python:3.11-slim. No fix available upstream.
-# Reassess on next python:3.11-slim SHA bump.
+# perl-base (Debian) - affects: postgres-meta, realtime, studio, supavisor
+# Heap overflow when Perl compiles certain regex patterns. No service runs Perl.
 CVE-2026-8376
 
-# perl-base 5.40.1-6 (Debian 13.6 in python:3.11-slim) — affects: langchain-agent
-# Signed integer overflow in Perl's Storable module (pre-3.41) during
-# deserialization. The agent does not execute Perl or deserialize Perl Storable
-# data at runtime; perl-base is a transitive Debian base package included by
-# python:3.11-slim, never invoked by application code. No fix available
-# upstream. Reassess on next python:3.11-slim SHA bump.
+# perl-base (Debian) - affects: postgres-meta, realtime, studio, supavisor
+# Signed integer overflow in Storable (pre-3.41) during deserialization. No
+# service deserializes Perl Storable data.
 CVE-2026-57433
 
-# linux-libc-dev (Debian 13 in python:3.11-slim) — affects: langchain-agent / bloommcp
-# kernel: ksmbd signedness bug. Kernel headers are a build-time-only transitive base
-# package; the container runs no kernel and uses no in-kernel SMB server (ksmbd), so the
-# affected code path is unreachable at runtime. No fix available upstream. Reassess on the
-# next python:3.11-slim SHA bump. Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-43185
+# linux-libc-dev - affects: postgrest, studio
+# ksmbd signedness bug in kernel headers. Containers run the host's kernel, so
+# the headers are never executed.
+# Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-43185
 CVE-2026-43185
 
-# linux-libc-dev (Debian 13 in python:3.11-slim) — affects: langchain-agent / bloommcp
-# kernel: TCP request-socket refcount underflow in reqsk_queue_hash_req() (use-after-free),
-# only reachable on PREEMPT_RT kernels. Kernel headers are a build-time-only transitive base
-# package; the container runs no kernel of its own (uses the host's), so the affected in-kernel
-# path is unreachable at runtime. No fixed Debian version available upstream. Reassess on the
-# next python:3.11-slim SHA bump. Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-53260
-CVE-2026-53260
-
-# libpython3.13-* / python3.13-* (Debian 13.4 in python:3.11-slim) — affects: langchain-agent / bloommcp
-# tarfile.extractall() filter bypass (data/tar filters). The services run python3.11 (not 3.13);
-# python3.13 ships as a transitive Debian base package but is never executed, and the app does not
-# extract untrusted tar archives via python3.13 at runtime. No fixed Debian version available
-# upstream. Reassess on the next python:3.11-slim SHA bump.
+# python3 (OS package) - affects: storage-api, studio, supavisor
+# tarfile.extractall() filter bypass. The services do not extract untrusted
+# tar archives with the OS Python.
 # Upstream: https://nvd.nist.gov/vuln/detail/CVE-2026-11940
 CVE-2026-11940
 
-# tar / node-tar (bloom-web) — CVE-2026-59873, gzip-bomb DoS.
-# Two copies exist in the bloom-web runtime image: npm's bundled tar (build
-# tooling; already forwarded to fixed 7.5.19 via `npm install -g npm@11.18.0`
-# in the runner stage) and next/dist/compiled/tar, a copy vendored INSIDE
-# Next.js (16.2.0). Neither is reachable: the Next production server
-# (`next start`) does not extract untrusted, attacker-supplied gzip'd tar
-# archives, so the gzip-bomb precondition never holds at runtime. Next's
-# vendored copy has no fix short of a Next upgrade that re-vendors tar >=7.5.19.
-# Reassess when Next ships a build with the patched vendored tar.
+# tar / node-tar - affects: postgres-meta, storage-api, studio
+# Gzip-bomb DoS when extracting an attacker-supplied archive. None of these
+# services extracts uploaded tar archives.
 CVE-2026-59873
 
-# golang.org/x/crypto/ssh (compiled into the caddy and minio binaries) — affects: caddy, minio
+# golang.org/x/crypto/ssh — affects: caddy, gotrue, imgproxy, minio, minio-mc
 # Auth bypass: an SSH server can fail to enforce a certificate's critical
 # `source-address` option, letting a client connect from an address the certificate was
 # meant to exclude. Reaching it needs something speaking SSH. Caddy is used here only as
