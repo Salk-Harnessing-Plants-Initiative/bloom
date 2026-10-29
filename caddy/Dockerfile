@@ -65,8 +65,9 @@ RUN xcaddy build \
 # -----------------------------------------------------------------------------
 FROM caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
-# The base still ships brotli-libs 1.2.0 (CVE-2026-111497); Alpine has the fix.
-RUN apk upgrade --no-cache brotli-libs
+# The base ships brotli-libs 1.2.0 (CVE-2026-111497). Fails the build if Alpine
+# lacks the fix; drop once the caddy base itself ships brotli-libs >= 1.2.1-r0.
+RUN apk add --no-cache 'brotli-libs>=1.2.1-r0'
 
 # When bumping the Caddy version: re-verify that a routed hostname still gets a
 # 308 on :80. Automatic HTTPS prepends its redirect routes at runtime, ahead of
