@@ -1,4 +1,4 @@
-"""The two video-generation queues: gravi_plate_video and cyl_video_generation.
+"""The two video-generation queues: gravi_plate_video_dispatch and cyl_video_dispatch.
 
 Every test runs against both queues, so the cylinder half is read against the plate half
 rather than reviewed on its own. Security is asserted with `has_*_privilege`, never by
@@ -28,7 +28,7 @@ class Queue:
 
 
 PLATE = Queue(
-    name="gravi_plate_video",
+    name="gravi_plate_video_dispatch",
     table="gravi_plate_video_jobs",
     enqueue="enqueue_gravi_plate_video",
     claim="claim_gravi_plate_video_job",
@@ -40,7 +40,7 @@ PLATE = Queue(
 )
 
 CYL = Queue(
-    name="cyl_video_generation",
+    name="cyl_video_dispatch",
     table="cyl_video_jobs",
     enqueue="enqueue_cyl_video",
     claim="claim_cyl_video_job",
@@ -217,9 +217,9 @@ def test_signed_in_roles_may_read_the_progress_columns(cur, queue, role, column)
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 @pytest.mark.parametrize("role", ["bloom_user", "bloom_writer", "bloom_admin"])
-@pytest.mark.parametrize("column", ["error", "msg_id", "reads"])
+@pytest.mark.parametrize("column", ["error_message", "msg_id", "reads"])
 def test_internal_columns_are_withheld_from_signed_in_roles(cur, queue, role, column):
-    """`error` is the renderer's own failure text and carries the internal gateway host,
+    """`error_message` is the renderer's own failure text and carries the internal gateway host,
     the database role and PostgREST's codes; msg_id and reads are queue plumbing."""
     cur.execute(
         "SELECT has_column_privilege(%s, %s, %s, 'SELECT')",
@@ -231,7 +231,7 @@ def test_internal_columns_are_withheld_from_signed_in_roles(cur, queue, role, co
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 @pytest.mark.parametrize("role", DENIED_ROLES + ["bloom_agent"])
 def test_denied_roles_cannot_read_any_column(cur, queue, role):
-    for column in ("status", "error_code", "error", "id"):
+    for column in ("status", "error_code", "error_message", "id"):
         cur.execute(
             "SELECT has_column_privilege(%s, %s, %s, 'SELECT')",
             (role, f"public.{queue.table}", column),
@@ -494,7 +494,7 @@ def test_fail_records_the_code_and_archives_the_message(cur, queue):
     depth, archived = _queue_depth(cur, queue), _archive_depth(cur, queue)
     cur.execute(f"SELECT public.{queue.fail}(%s, %s, 'unusable', 'no frames')", (job_id, msg_id))
     assert cur.fetchone()[0] is True
-    cur.execute(f"SELECT status, error_code, error FROM public.{queue.table} WHERE id = %s", (job_id,))
+    cur.execute(f"SELECT status, error_code, error_message FROM public.{queue.table} WHERE id = %s", (job_id,))
     assert cur.fetchone() == ("failed", "unusable", "no frames")
     assert _queue_depth(cur, queue) == depth - 1
     assert _archive_depth(cur, queue) == archived + 1
@@ -852,7 +852,7 @@ def test_a_signed_in_user_reads_the_job_but_not_its_error_text(cur, queue):
     assert cur.fetchone() == ("failed", "unusable")
     cur.execute("SAVEPOINT before_error_read")
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        cur.execute(f"SELECT error FROM public.{queue.table} WHERE id = %s", (job_id,))
+        cur.execute(f"SELECT error_message FROM public.{queue.table} WHERE id = %s", (job_id,))
     cur.execute("ROLLBACK TO SAVEPOINT before_error_read")
     cur.execute("RESET ROLE")
 
@@ -864,5 +864,57 @@ def test_a_scan_is_not_queued_under_an_experiment_it_does_not_belong_to(cur):
     scan_id, _ = _target(cur, CYL)
     cur.execute("INSERT INTO cyl_experiments (name) VALUES ('queue-test-other') RETURNING id")
     other = cur.fetchone()[0]
-    with pytest.raises(psycopg.errors.CheckViolation, match="does not belong to experiment"):
+    with pytest.raises(psycopg.errors.ForeignKeyViolation, match="does not belong to experiment"):
         _enqueue(cur, CYL, (scan_id, other))
+
+
+# --------------------------------------------------------------------------- #
+# The plate id rule, and a redelivery starting over
+# --------------------------------------------------------------------------- #
+def test_the_plate_id_rule_is_the_one_the_service_applies(cur):
+    """Read from the service's own constant, so the two cannot drift apart."""
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "services" / "workflows" / "plate_video_path.py"
+    ).read_text()
+    pattern = re.search(r'^PLATE_ID_PATTERN = "(.+)"$', source, re.MULTILINE).group(1)
+    cur.execute(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = 'gravi_plate_video_jobs_plate_id_format'"
+    )
+    assert pattern in cur.fetchone()[0]
+
+
+@pytest.mark.parametrize("plate_id", ["../x", ".hidden", "-x", "a b", "P" * 65])
+def test_a_plate_id_the_renderer_would_refuse_is_not_stored(cur, plate_id):
+    import psycopg
+
+    experiment, _, wave = _target(cur, PLATE)
+    with pytest.raises(psycopg.errors.CheckViolation, match="plate_id_format"):
+        _enqueue(cur, PLATE, (experiment, plate_id, wave))
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_a_redelivered_job_starts_its_progress_over(cur, queue):
+    """Otherwise the page shows the dead attempt's frames until the new one reports."""
+    job_id, _ = _enqueue(cur, queue, _target(cur, queue))
+    msg_id = _claim(cur, queue, vt=0)[queue.claim_cols.index("msg_id")]
+    cur.execute(f"SELECT public.{queue.progress}(%s, %s, 'encoding', 80, 100, 0)", (job_id, msg_id))
+    assert _claim(cur, queue, vt=0) is not None
+    cur.execute(
+        f"SELECT stage, frames_done, frames_total FROM public.{queue.table} WHERE id = %s",
+        (job_id,),
+    )
+    assert cur.fetchone() == (None, None, None)
+
+
+@pytest.mark.parametrize("queue", QUEUES, ids=IDS)
+def test_failing_as_redelivered_clears_the_stage(cur, queue):
+    job_id, _ = _enqueue(cur, queue, _target(cur, queue))
+    msg_id = _claim(cur, queue, vt=0, max_reads=1)[queue.claim_cols.index("msg_id")]
+    cur.execute(f"SELECT public.{queue.progress}(%s, %s, 'encoding', 1, 2, 0)", (job_id, msg_id))
+    assert _claim(cur, queue, vt=0, max_reads=1) is None
+    cur.execute(f"SELECT status, stage, reads FROM public.{queue.table} WHERE id = %s", (job_id,))
+    assert cur.fetchone() == ("failed", None, 2)
