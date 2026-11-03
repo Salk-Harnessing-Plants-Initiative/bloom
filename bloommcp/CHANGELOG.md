@@ -8,6 +8,12 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- `--experiment IDENTIFIER` filter for the outlier audit scripts, so a targeted audit never
+  lists the shared `bloommcp_output/` root, plus `experiment_scope`/`unevaluated` report
+  fields and the `bloom_mcp.audit_scope` helper (#919).
+
 ## [0.1.0a1] - 2026-09-02
 
 ### Added

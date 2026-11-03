@@ -237,3 +237,30 @@ def write_outlier_trim_manifest(
         latest=version_id,
     )
     write_manifest(prefix, manifest)
+
+
+def spy_backend_listings(monkeypatch) -> list[str]:
+    """Record every prefix the cached active storage backend is asked to list.
+
+    Wraps the backend instance itself, so it sees calls from every module (an
+    audit script's own `list_prefix` binding, `manifest.read_manifest`,
+    `trim_staleness`) -- used to prove a scoped audit never lists the shared
+    `bloommcp_output/` root (#919). Install it after seeding fixtures.
+    """
+    import bloom_mcp.storage_backend as sb
+
+    backend = sb.active_backend()
+    original = backend.list_prefix
+    calls: list[str] = []
+
+    def _spy(prefix):
+        calls.append(prefix)
+        return original(prefix)
+
+    monkeypatch.setattr(backend, "list_prefix", _spy)
+    return calls
+
+
+def is_root_listing(prefix: str) -> bool:
+    """Whether `prefix` lists the bucket root or the shared `bloommcp_output/` root."""
+    return prefix.strip("/") in ("", "bloommcp_output")
