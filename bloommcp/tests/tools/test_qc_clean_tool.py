@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import io
 import json
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -22,7 +24,9 @@ import pytest
 from bloom_mcp.contract import BloomMCPError
 from bloom_mcp.data_access import FakeReader, SupabaseReader
 from bloom_mcp.result_store import FakeResultStore, RunStateError, SupabaseResultStore
-from bloom_mcp.tools import _ports
+from bloom_mcp.tools import _inline_input, _ports
+from bloom_mcp.data_access.columns import resolve_columns
+from bloom_mcp.experiment_utils import CLEANED_CSV_NAME
 from bloom_mcp.tools._inline_input import compute_input_sha256
 from bloom_mcp.sections.sleap_roots.analysis import qc_clean as qc_clean_tool
 from bloom_mcp.sections.sleap_roots.analysis.qc_clean import (
@@ -163,6 +167,10 @@ def test_provenance_stamped_seed_none_and_links_returned(injected_ports):
     assert set(stored.output_keys) == {"_cleaned.csv", "cleanup_log.json"}
 
     # Result returns links (run ref + manifest + object keys), never the table.
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
     assert set(result.outputs) == {"_cleaned.csv", "cleanup_log.json"}
@@ -1325,9 +1333,24 @@ def _capture_all_logs():
     for lg in loggers:
         lg.addHandler(handler)
         lg.setLevel(logging.DEBUG)
+
+    # Raising *root* to DEBUG is this harness's capture mechanism, and the MCP
+    # dispatcher logger inherits its effective level from root. The inline path
+    # disables itself when that dispatcher would log at DEBUG (it records whole
+    # request bodies there), so without this pin the helper would put the server
+    # into the very state that guard exists to refuse — and every test using it
+    # would fail with "disabled at DEBUG" instead of exercising what it means to.
+    #
+    # Pinning the dispatcher above DEBUG says "this is a test harness, not a
+    # DEBUG deployment". The guard's own behaviour is exercised directly in
+    # test_inline_input.py rather than incidentally here.
+    dispatch_logger = logging.getLogger(_inline_input._MCP_DISPATCH_LOGGER)
+    dispatch_level = dispatch_logger.level
+    dispatch_logger.setLevel(logging.WARNING)
     try:
         yield records
     finally:
+        dispatch_logger.setLevel(dispatch_level)
         for lg in loggers:
             lg.removeHandler(handler)
             lg.setLevel(old_levels[lg])
@@ -1460,9 +1483,34 @@ def test_single_source_experiment_gets_no_advisory_note(injected_ports):
     assert result.source_note is None
 
 
-def test_csv_content_path_never_surfaces_a_source_note(injected_ports):
+def test_csv_content_path_states_that_nothing_was_recorded(injected_ports):
+    """The inline result has to say it is ephemeral, not merely imply it.
+
+    Supersedes an earlier assertion that `source_note` is None here. Everything
+    marking this result as ephemeral was a *null* — run_ref, version_dir,
+    manifest_path — so a client that drops null fields rendered it as an
+    ordinary complete qc_clean summary. These numbers get pasted into notebooks
+    and methods sections; the spec already requires this disclaimer of
+    `load_experiment_data`, and the structured tools whose output actually gets
+    cited should not be the ones that omit it.
+
+    It must not name a source pin: the multi-source advisory this field carries
+    on the experiment path has no meaning without a registered experiment.
+    """
     csv_text = _RAW.read_text(encoding="utf-8")
     result = qc_clean(QCCleanParams(csv_content=csv_text, max_nans_per_trait=_MNT))
+
+    assert result.source_note is not None
+    assert "not registered" in result.source_note
+    assert "no run was recorded" in result.source_note
+    assert result.input_sha256 in result.source_note
+    assert "core_list_experiment_sources" not in result.source_note
+
+
+def test_experiment_path_source_note_is_unchanged(injected_ports):
+    """The registered path keeps its own meaning for this field: None unless the
+    experiment really has more than one source."""
+    result = _run()
     assert result.source_note is None
 
 
@@ -1497,3 +1545,549 @@ def test_pinned_source_is_traceable_from_the_committed_runs_provenance(
     stored = store.get_run(_EXPERIMENT, "qc", "latest")
     assert stored.source_id == 9
     assert stored.source_name == "run-9"
+
+
+# ── return_cleaned_csv — the opt-in table return (#582) ─────────────────────
+#
+# Without this, five of the seven inline paths this rollout adds are unusable on
+# real data: they need finite, analysis-ready traits, and qc_clean's inline
+# result is a summary by design. This closes the loop *client-side* — the caller
+# holds the bytes and chooses to pass them on. Nothing is persisted and the
+# server records no lineage between the two calls.
+
+
+def _inline_clean(**kwargs) -> QCCleanResult:
+    return qc_clean(
+        QCCleanParams(
+            csv_content=_RAW.read_text(encoding="utf-8"),
+            max_nans_per_trait=_MNT,
+            **kwargs,
+        )
+    )
+
+
+def test_return_cleaned_csv_returns_the_cleaned_table(injected_ports):
+    result = _inline_clean(return_cleaned_csv=True)
+    restored = pd.read_csv(io.StringIO(result.cleaned_csv))
+
+    assert list(restored.columns) == list(
+        pd.read_csv(io.StringIO(result.cleaned_csv)).columns
+    )
+    # Every kept trait column survives the round trip, and no index column is added.
+    for col in result.kept_trait_columns:
+        assert col in restored.columns
+    assert "Unnamed: 0" not in restored.columns
+    assert len(restored) == result.n_samples_out
+
+
+def test_returned_cleaned_csv_sha256_matches_an_independent_digest(injected_ports):
+    result = _inline_clean(return_cleaned_csv=True)
+    expected = hashlib.sha256(result.cleaned_csv.encode("utf-8")).hexdigest()
+    assert result.cleaned_csv_sha256 == expected
+
+
+def test_returned_cleaned_csv_is_platform_independent(injected_ports):
+    """pandas defaults `lineterminator` to os.linesep, which would make the digest
+    a caller records depend on which platform bloommcp happens to run on."""
+    result = _inline_clean(return_cleaned_csv=True)
+    assert "\r" not in result.cleaned_csv
+    again = _inline_clean(return_cleaned_csv=True)
+    assert again.cleaned_csv_sha256 == result.cleaned_csv_sha256
+
+
+def test_returned_cleaned_csv_re_resolves_to_the_same_analysis_shape(injected_ports):
+    """The invariant that makes client-side chaining sound: a consumer handed this
+    text re-derives its own trait set by running `resolve_columns` over the
+    re-parsed frame, so that set must equal what qc_clean certified.
+
+    What this actually exercises is **idempotent role detection** — that
+    `resolve_columns` classifies the cleaned table the same way it classified the
+    raw one, e.g. numeric metadata like `Computation.Time.s` staying excluded
+    rather than being promoted to a trait on the second pass.
+
+    It does *not* exercise a removed-but-serialized NaN-bearing column, which an
+    earlier version of this docstring claimed. Measured against the real fixture:
+    `clean_traits_for_analysis` physically drops removed traits (23 columns in,
+    21 out) and leaves zero NaN cells anywhere in the frame, so there is nothing
+    for re-resolution to re-detect. That agreement is a coincidence between
+    upstream's removal criteria and `resolve_columns`' detection heuristic, not a
+    guarantee — which is why `serialize_table_csv(verify_trait_cols=...)` now
+    checks it at runtime instead of leaving it to this test.
+    See `test_serialized_table_that_would_lose_a_certified_trait_is_rejected` for
+    the failure mode itself."""
+    result = _inline_clean(return_cleaned_csv=True)
+    reparsed = pd.read_csv(io.StringIO(result.cleaned_csv))
+    roles = resolve_columns(reparsed)
+
+    assert set(roles.trait_cols) == set(result.kept_trait_columns)
+    assert roles.genotype == result.genotype_column
+    assert roles.sample_id == result.sample_id_column
+    assert roles.replicate == result.replicate_column
+
+
+def test_serialized_table_that_would_lose_a_certified_trait_is_rejected(
+    injected_ports, monkeypatch
+):
+    """The failure mode the round-trip guard exists for, forced rather than hoped
+    for: a serialized table whose re-detected trait set disagrees with the
+    certified one.
+
+    Upstream drops removed traits today, so no real fixture reaches this state —
+    which is exactly why it is worth pinning. If a future upstream release
+    started *retaining* a removed column (or a dtype shifted on re-parse and
+    changed what `resolve_columns` sees), the five consumers PR 2 puts on this
+    path would silently analyze a different column set than the one qc_clean just
+    reported. Here that surfaces as a structured error instead."""
+    real = qc_clean_tool._inline_input.serialize_table_csv
+
+    def _drop_a_certified_trait(
+        df, *, field="csv", verify_trait_cols=None, verify_roles=None
+    ):
+        # Serialize a frame missing one certified trait, while still claiming the
+        # full certified set — the shape a retained-but-undetected column produces
+        # from the guard's point of view.
+        victim = sorted(verify_trait_cols)[0]
+        return real(
+            df.drop(columns=[victim]),
+            field=field,
+            verify_trait_cols=verify_trait_cols,
+            verify_roles=verify_roles,
+        )
+
+    monkeypatch.setattr(
+        qc_clean_tool._inline_input, "serialize_table_csv", _drop_a_certified_trait
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        _inline_clean(return_cleaned_csv=True)
+
+    assert exc.value.code == "assumption_violated"
+    assert "would be lost" in exc.value.message
+    assert "cleaned_csv" in exc.value.message
+
+
+def test_returned_cleaned_csv_carries_no_nans_in_its_detected_traits(injected_ports):
+    """The property the downstream inline paths actually depend on."""
+    result = _inline_clean(return_cleaned_csv=True)
+    reparsed = pd.read_csv(io.StringIO(result.cleaned_csv))
+    roles = resolve_columns(reparsed)
+    assert not reparsed[list(roles.trait_cols)].isna().any().any()
+
+
+def test_return_cleaned_csv_is_rejected_with_a_registered_experiment(injected_ports):
+    """The registered path already persists the cleaned table as a linkable
+    artifact; returning it a second time inline would duplicate a durable output
+    into the response for no benefit."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, return_cleaned_csv=True))
+    assert exc.value.code == "invalid_input"
+    assert "return_cleaned_csv" in exc.value.message
+
+
+def test_omitting_return_cleaned_csv_returns_no_table(injected_ports):
+    result = _inline_clean()
+    assert result.cleaned_csv is None
+    assert result.cleaned_csv_sha256 is None
+
+
+def test_return_cleaned_csv_false_returns_no_table(injected_ports):
+    result = _inline_clean(return_cleaned_csv=False)
+    assert result.cleaned_csv is None
+    assert result.cleaned_csv_sha256 is None
+
+
+def test_return_cleaned_csv_leaves_the_rest_of_the_response_unchanged(injected_ports):
+    with_table = _inline_clean(return_cleaned_csv=True).model_dump()
+    without = _inline_clean().model_dump()
+    for field in ("cleaned_csv", "cleaned_csv_sha256"):
+        with_table.pop(field)
+        without.pop(field)
+    assert with_table == without
+
+
+def test_oversized_cleaned_table_is_rejected_not_truncated(injected_ports, monkeypatch):
+    """The size cap is enforced by the shared serializer, so this asserts the tool
+    routes through it and propagates its structured error rather than truncating.
+
+    A *real* oversized cleaned table is unreachable from here: cleaning only ever
+    removes rows and columns, so a cleaned table over MAX_INLINE_CSV_BYTES implies
+    an input already over it, which the input guard rejects first (lowering the
+    shared constant to force the case trips that guard, not this one). The cap's
+    own boundary behavior is pinned directly in test_inline_input.py; what this
+    test owns is that qc_clean does not serialize the table itself and thereby
+    bypass it."""
+    calls: list[str] = []
+
+    def _refuse(df, *, field="csv", verify_trait_cols=None, verify_roles=None):
+        calls.append(field)
+        raise BloomMCPError(
+            code="invalid_input",
+            message=f"The table requested via {field} serializes to too many bytes.",
+            remedy="Register the data as an experiment.",
+        )
+
+    monkeypatch.setattr(qc_clean_tool._inline_input, "serialize_table_csv", _refuse)
+    with pytest.raises(BloomMCPError) as exc:
+        _inline_clean(return_cleaned_csv=True)
+
+    assert calls == ["cleaned_csv"], "qc_clean must delegate to the shared serializer"
+    assert exc.value.code == "invalid_input"
+    assert "cleaned_csv" in exc.value.message
+
+
+def test_return_cleaned_csv_still_persists_nothing(injected_ports):
+    reader, store = injected_ports
+    with (
+        patch.object(
+            store,
+            "create_run",
+            side_effect=AssertionError("create_run must not be called"),
+        ),
+        patch.object(
+            store, "commit", side_effect=AssertionError("commit must not be called")
+        ),
+    ):
+        result = _inline_clean(return_cleaned_csv=True)
+
+    assert result.run_ref is None
+    assert result.version_dir is None
+    assert result.manifest_path is None
+    assert result.outputs == {}
+
+
+def test_returned_cleaned_csv_never_appears_in_logs(injected_ports):
+    """The returned table is derived from caller content, so it carries the same
+    non-disclosure obligation the input does."""
+    marker = "MARKER_" + "R" * 64
+    csv_text = f"Barcode,geno,traitA,traitB\nS1,{marker},1.0,2.0\nS2,g2,3.0,4.0\n"
+    with _capture_all_logs() as records:
+        result = qc_clean(
+            QCCleanParams(
+                csv_content=csv_text, min_samples_per_trait=1, return_cleaned_csv=True
+            )
+        )
+    assert marker in result.cleaned_csv  # sanity: the marker really is in the table
+    assert marker not in "\n".join(r.getMessage() for r in records)
+
+
+# ── user_label is registered-only (#582 roster) ─────────────────────────────
+
+
+def test_user_label_with_csv_content_is_rejected_not_silently_dropped(injected_ports):
+    """user_label names the version directory a run is committed into. The inline
+    path creates none, so accepting it would leave the caller believing they had
+    labelled something."""
+    csv_text = _RAW.read_text(encoding="utf-8")
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(csv_content=csv_text, user_label="my-run"))
+    assert exc.value.code == "invalid_input"
+    assert "user_label" in exc.value.message
+    assert "csv_content" in exc.value.message
+
+
+def test_both_inputs_plus_return_cleaned_csv_reports_the_input_conflict_first(
+    injected_ports,
+):
+    """A call invalid two ways must report the exactly-one-of conflict, not the
+    narrower return_cleaned_csv one.
+
+    qc_clean rejects return_cleaned_csv+experiment *before* the resolver runs, to
+    avoid paying a full raw read for a call it can rule out from the params
+    alone. That pre-check has to stay narrow enough not to pre-empt the
+    resolver's documented "exactly-one-of comes first" rule, or two tools would
+    tell a caller different things about the same broken call."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                experiment=_EXPERIMENT,
+                csv_content=_RAW.read_text(encoding="utf-8"),
+                return_cleaned_csv=True,
+            )
+        )
+    assert "Exactly one" in exc.value.message
+    assert "return_cleaned_csv" not in exc.value.message
+
+
+def test_return_cleaned_csv_with_experiment_alone_still_rejects_before_reading(
+    injected_ports, monkeypatch
+):
+    """The optimization the narrow pre-check preserves: the unambiguous registered
+    case is still refused without paying the raw read."""
+    reader, _store = injected_ports
+    monkeypatch.setattr(
+        reader,
+        "load_experiment",
+        lambda *a, **k: pytest.fail("must reject before reading"),
+    )
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment=_EXPERIMENT, return_cleaned_csv=True))
+    assert "return_cleaned_csv" in exc.value.message
+
+
+# ── ±inf is not NaN (PR #778 round 5, blocking) ─────────────────────────────
+#
+# `isna()` returns False for infinity, so a table carrying ±inf passed the
+# no-NaN guarantee with cleaned_nan_cells_remaining == 0 and no warning, was
+# certified analysis-ready, and then failed in every downstream consumer with
+# "Input X contains infinity". That closed a loop this change's own spec opens:
+# a non-finite consumer's remedy points the caller at
+# qc_clean(csv_content=..., return_cleaned_csv=true), qc_clean certifies the
+# inf-bearing table, and the consumer rejects it again.
+#
+# The guard applies to BOTH paths — a deliberate registered-path behaviour
+# change in a PR that otherwise holds that path byte-identical — so both are
+# covered here rather than only the new one.
+
+
+def _trait_table(bad_value: float | None = None, *, n: int = 40) -> pd.DataFrame:
+    """A minimal clean-able table, optionally with one poisoned trait cell.
+
+    `bad_value` is a float, not a string: a mixed Python list would make the
+    column object-dtype, which `resolve_columns` then excludes from `trait_cols`
+    — so the poisoned column would never reach the guard and the test would pass
+    for the wrong reason. The registered path reads a frame directly, so the
+    dtype has to be right at construction.
+    """
+    return pd.DataFrame(
+        {
+            "Barcode": [f"B{i}" for i in range(n)],
+            "genotype": [f"g{i % 4}" for i in range(n)],
+            "trait.a": [
+                bad_value if (bad_value is not None and i == 3) else float(i)
+                for i in range(n)
+            ],
+            "trait.b": [float(i * 2) for i in range(n)],
+        },
+    ).astype({"trait.a": "float64", "trait.b": "float64"})
+
+
+def _as_csv(df: pd.DataFrame) -> str:
+    return df.to_csv(index=False, lineterminator="\n")
+
+
+def _csv_with_sentinel(sentinel: str, *, n: int = 40) -> str:
+    """CSV *text* carrying a literal infinity spelling, for the inline path —
+    where `read_csv` is what turns the token into a float64 infinity."""
+    rows = [
+        f"B{i},g{i % 4},{sentinel if i == 3 else float(i)},{float(i * 2)}"
+        for i in range(n)
+    ]
+    return "Barcode,genotype,trait.a,trait.b\n" + "\n".join(rows) + "\n"
+
+
+@pytest.mark.parametrize("sentinel", ["inf", "-inf", "Infinity", "-Infinity"])
+def test_inf_in_a_kept_trait_is_refused_not_certified(injected_ports, sentinel):
+    """Every spelling pandas parses as an infinity must be refused."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_csv_with_sentinel(sentinel), min_samples_per_trait=1
+            )
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "±inf" in exc.value.message
+    assert "trait.a" in exc.value.message
+    assert "divide-by-zero" in exc.value.remedy
+
+
+def test_every_tested_sentinel_really_parses_to_an_infinity(injected_ports):
+    """Guards the guard: if a spelling above did not parse to an infinity, its
+    test would pass only because the column was dropped for some other reason."""
+    import numpy as np
+
+    for sentinel in ("inf", "-inf", "Infinity", "-Infinity"):
+        parsed = pd.read_csv(io.StringIO(_csv_with_sentinel(sentinel)))["trait.a"]
+        assert parsed.dtype.kind == "f", sentinel
+        assert bool(np.isinf(parsed).any()), sentinel
+
+
+def test_inf_is_refused_on_the_registered_path_too(injected_ports):
+    """The deliberate registered-path change. An experiment whose cleanup leaves
+    ±inf previously committed a run; it now fails, and no run is written."""
+    reader, store = injected_ports
+    reader.add_experiment("inf_exp.csv", _trait_table(float("inf")))
+
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(QCCleanParams(experiment="inf_exp.csv", min_samples_per_trait=1))
+
+    assert exc.value.code == "assumption_violated"
+    assert "±inf" in exc.value.message
+    assert store.list_runs("inf_exp.csv", "qc") == [], "no run may be committed"
+
+
+def test_a_finite_table_is_unaffected_by_the_inf_guard(injected_ports):
+    """The guard must not become a refusal of ordinary data."""
+    result = qc_clean(
+        QCCleanParams(csv_content=_as_csv(_trait_table()), min_samples_per_trait=1)
+    )
+    assert result.cleaned_nan_cells_remaining == 0
+    assert "trait.a" in result.kept_trait_columns
+
+
+def test_non_numeric_garbage_is_not_misreported_as_inf(injected_ports):
+    """`to_numeric(errors="coerce")` turns unparseable text into NaN, which fails
+    the same finiteness test a real ±inf does — so both would be reported as
+    "found ±inf", and "recompute the ratio that divided by zero" is useless
+    advice for a cell that says "banana".
+
+    Exercised at the guard's own expression rather than through the tool,
+    because `resolve_columns` keeps an object-dtype column out of `kept_cols`,
+    so the tool cannot currently reach this branch. The coercion call is what
+    anticipates such a column; the diagnosis has to match it.
+    """
+    import numpy as np
+
+    kept = ["trait.a"]
+    frame = pd.DataFrame({"trait.a": pd.Series([1.0, "banana", 3.0], dtype=object)})
+    numeric = frame[kept].apply(pd.to_numeric, errors="coerce")
+
+    infinite = [
+        c
+        for c, h in zip(kept, np.isinf(numeric.to_numpy(dtype=float)).any(axis=0))
+        if bool(h)
+    ]
+    coerced = [
+        c
+        for c, h in zip(kept, (numeric.isna() & ~frame[kept].isna()).any(axis=0))
+        if bool(h)
+    ]
+    assert infinite == [], "garbage must not be reported as an infinity"
+    assert coerced == ["trait.a"], "garbage must be reported as non-numeric"
+
+
+def test_the_remedy_loop_terminates(injected_ports):
+    """The failure this guard exists to prevent, end to end.
+
+    A consumer's non-finite remedy sends the caller to
+    `qc_clean(csv_content=..., return_cleaned_csv=true)`. Before the guard, that
+    returned a certified table still carrying the infinity, which the consumer
+    rejected again — an instruction loop with no exit. It must now stop with an
+    actionable error instead.
+    """
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_as_csv(_trait_table(float("inf"))),
+                min_samples_per_trait=1,
+                return_cleaned_csv=True,
+            )
+        )
+    assert exc.value.code == "assumption_violated"
+    assert "exclude_columns" in exc.value.remedy
+
+
+def test_inf_would_have_passed_the_nan_only_check(injected_ports):
+    """Pins *why* the guard is needed, so removing it fails loudly rather than
+    quietly: `isna()` does not see an infinity, so the pre-existing no-NaN
+    check counts zero and certifies the table."""
+    poisoned = _trait_table(float("inf"))
+    numeric = poisoned[["trait.a", "trait.b"]].apply(pd.to_numeric, errors="coerce")
+    assert int(numeric.isna().sum().sum()) == 0, (
+        "isna() sees nothing wrong with this table — which is the bug"
+    )
+
+
+def test_the_persisted_cleaned_csv_pins_its_line_terminator(injected_ports):
+    """The ephemeral copy's terminator was pinned and tested; the *committed*
+    file's was pinned and not.
+
+    It matters more here, not less: this file is content-hashed into the
+    manifest, so an unpinned `os.linesep` would make the recorded digest depend
+    on which platform produced the run. Read at commit time, because that is
+    exactly the byte sequence `hash_outputs` sees — and the staging directory is
+    removed immediately afterwards.
+    """
+    _reader, store = injected_ports
+    captured: dict[str, bytes] = {}
+    real_commit = store.commit
+
+    def _capture(run, outputs):
+        captured["bytes"] = (run.staging_dir / CLEANED_CSV_NAME).read_bytes()
+        return real_commit(run, outputs)
+
+    with patch.object(store, "commit", side_effect=_capture):
+        _run()
+
+    written = captured["bytes"]
+    assert written, "the cleaned CSV should have been written before commit"
+    assert b"\r" not in written, (
+        "the committed, manifest-hashed artifact must not inherit the "
+        "platform's line terminator"
+    )
+    assert written.endswith(b"\n")
+
+
+# ── the literal "NA" accession trap (PR #778 round 6) ──────────────────────
+#
+# pandas' default `na_values` converts a set of literal strings to NaN, so an
+# accession genuinely named NA becomes missing data in a file with zero blank
+# cells — and the upstream contract then reports the *role* it validated, not
+# the column the caller wrote. Free-text inline CSV is exactly where a
+# researcher hand-types such a value.
+
+
+def _na_accession_csv(geno_header: str) -> str:
+    rows = "\n".join(
+        f"B{i},{'NA' if i % 2 else 'Col-0'},{i}.0,{i * 2}.0" for i in range(40)
+    )
+    return f"Barcode,{geno_header},trait.a,trait.b\n{rows}\n"
+
+
+def test_a_literal_na_accession_names_the_sentinel_in_the_remedy(injected_ports):
+    """ "Ensure the genotype column has no blank/NaN values" is advice the caller
+    cannot act on: their file has no blank cells. Naming the sentinel actually
+    present turns a contradictory-looking error into a fixable one."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_na_accession_csv("genotype"), min_samples_per_trait=1
+            )
+        )
+    assert "'NA'" in exc.value.remedy
+    assert "parsed as missing data" in exc.value.remedy
+    assert "not blank" in exc.value.remedy
+
+
+def test_the_error_names_the_callers_column_not_just_the_role(injected_ports):
+    """The upstream contract reports the role it validated. With
+    `genotype_column="accession"` that sends the caller looking for a column
+    named 'genotype', which does not exist in their file."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_na_accession_csv("accession"),
+                genotype_column="accession",
+                min_samples_per_trait=1,
+            )
+        )
+    assert "'accession'" in exc.value.message, (
+        "the caller's own column name must appear, or they are sent looking for "
+        "a column that is not in their file"
+    )
+    # The upstream wording is kept rather than rewritten, so it stays clear which
+    # contract rule fired.
+    assert "contains missing values" in exc.value.message
+
+
+def test_no_redundant_clause_when_the_column_is_named_after_its_role(
+    injected_ports,
+):
+    """Nothing to disambiguate when the caller's column *is* called 'genotype'."""
+    with pytest.raises(BloomMCPError) as exc:
+        qc_clean(
+            QCCleanParams(
+                csv_content=_na_accession_csv("genotype"), min_samples_per_trait=1
+            )
+        )
+    assert "is your column" not in exc.value.message
+
+
+def test_a_clean_table_with_no_sentinels_is_unaffected(injected_ports):
+    """The hint is a failure-path addition only."""
+    rows = "\n".join(f"B{i},Col-0,{i}.0,{i * 2}.0" for i in range(40))
+    result = qc_clean(
+        QCCleanParams(
+            csv_content=f"Barcode,genotype,trait.a,trait.b\n{rows}\n",
+            min_samples_per_trait=1,
+        )
+    )
+    assert result.n_samples_out > 0

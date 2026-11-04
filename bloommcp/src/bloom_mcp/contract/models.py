@@ -52,20 +52,36 @@ class OutputLink(BaseModel):
 class RunLinks(BaseModel):
     """Base result model for consumer tools.
 
-    Carries the four run-link fields returned by every consumer tool result
-    (``pca_analysis``, ``remove_outliers``, and forthcoming consumers). Tool-
-    specific result models inherit this class rather than redeclaring the fields.
+    Carries the four run-link fields a consumer tool result returns **when it
+    persists a run** (``pca_analysis``, ``remove_outliers``, and the other
+    consumers). Tool-specific result models inherit this class rather than
+    redeclaring the fields.
 
     ``output_links`` (bloom#581) is additive: one ``OutputLink`` per ``outputs``
     entry, populated only when the result comes from a fresh ``ResultStore.commit()``
     (never from ``get_run``/``list_runs``, which leave it empty) — see
     ``bloommcp-result-store``'s "Per-Output Signed Links And Size At Commit".
+
+    **All four default to "nothing was persisted" (#582).** The three run-link
+    fields are ``Optional[str]`` defaulting to ``None`` and ``outputs`` defaults
+    to empty, because a tool invoked with inline ``csv_content`` creates no run:
+    there is no run reference, no version directory, and no manifest to name. A
+    placeholder string would be worse than ``None`` — it would name an object
+    that does not exist, and any caller treating a ``run_ref`` as a lookup key
+    would follow it.
+
+    This widening is deliberately **not** permission for a persisting call to
+    omit them. On any path that commits a run all three are populated; Pydantic
+    can no longer enforce that at construction, so each consumer tool carries its
+    own test asserting its registered path returns them (see the
+    ``bloommcp-tool-contract`` delta in ``add-bloommcp-inline-csv-all-tools``,
+    which replaces the lost validation rather than merely dropping it).
     """
 
-    run_ref: str
-    version_dir: str
-    manifest_path: str
-    outputs: dict[str, str]
+    run_ref: Optional[str] = None
+    version_dir: Optional[str] = None
+    manifest_path: Optional[str] = None
+    outputs: dict[str, str] = Field(default_factory=dict)
     output_links: dict[str, OutputLink] = Field(default_factory=dict)
 
 

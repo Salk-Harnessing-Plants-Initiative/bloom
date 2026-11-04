@@ -5,7 +5,8 @@ Maps the spec "RunLinks Base Model" scenarios under bloommcp-tool-contract:
   2. Consumer result models inherit RunLinks without redeclaring fields
      (PCAAnalysisResult and RemoveOutliersResult — both must be guarded)
   3. RunLinks fields survive round-trip serialization
-  4. Missing / wrong-typed run-link fields are rejected at construction
+  4. Wrong-typed run-link fields are rejected at construction; null ones are
+     accepted (#582 — an ephemeral inline call creates no run)
 """
 
 from __future__ import annotations
@@ -227,9 +228,24 @@ def test_run_links_output_links_round_trip_via_pca_result():
 # ---------------------------------------------------------------------------
 
 
-def test_run_ref_required():
+def test_run_links_accepts_null_run_links_for_an_ephemeral_result():
+    """#582: an inline `csv_content` call creates no run, so there is no run
+    reference, version directory, or manifest to name. The three run-link fields
+    are Optional and `outputs` defaults to empty — a placeholder string would name
+    an object that does not exist. Supersedes the former `test_run_ref_required`."""
+    links = RunLinks()
+    assert links.run_ref is None
+    assert links.version_dir is None
+    assert links.manifest_path is None
+    assert links.outputs == {}
+    assert links.output_links == {}
+
+
+def test_run_ref_wrong_type_is_still_rejected():
+    """Widening to Optional[str] must not weaken type checking: `None` is valid,
+    an int is not."""
     with pytest.raises(ValidationError) as exc_info:
-        RunLinks(version_dir="v1", manifest_path="m.json", outputs={})
+        RunLinks(run_ref=42, version_dir="v1", manifest_path="m.json", outputs={})
     errors = {e["loc"][0] for e in exc_info.value.errors()}
     assert "run_ref" in errors
 
@@ -278,3 +294,64 @@ def test_remove_outliers_result_run_link_fields_appear_first_in_model_dump():
     assert max(run_link_positions) < min(tool_specific_positions), (
         "RunLinks fields must precede tool-specific fields in model_dump() key order"
     )
+
+
+# ── the widening must be uniform, and stay that way (#582, round-5 review) ──
+#
+# Widening the three run-link fields to Optional removed Pydantic's
+# construction-time guarantee that a *persisting* tool populates them. Each
+# tool's own suite replaces that behaviourally; this replaces the structural
+# half — that every subclass shares one definition of the fields, so a future
+# tool cannot quietly redeclare them required (breaking the inline path) or
+# redeclare them at all (breaking the tool-contract requirement that they are
+# inherited, not repeated).
+
+
+def _run_links_subclasses() -> list[type]:
+    """Every RunLinks subclass reachable from the tool sections."""
+    import importlib
+    import inspect
+    import pkgutil
+
+    import bloom_mcp.sections as sections
+
+    found: dict[str, type] = {}
+    for module_info in pkgutil.walk_packages(
+        sections.__path__, sections.__name__ + "."
+    ):
+        try:
+            module = importlib.import_module(module_info.name)
+        except Exception:  # pragma: no cover - optional/absent tool modules
+            continue
+        for _name, obj in inspect.getmembers(module, inspect.isclass):
+            if issubclass(obj, RunLinks) and obj is not RunLinks:
+                found[obj.__name__] = obj
+    return [found[k] for k in sorted(found)]
+
+
+def test_there_are_run_links_subclasses_to_check():
+    """Guards the guard: an import failure that emptied the roster would make
+    every parametrized assertion below vacuously pass."""
+    assert len(_run_links_subclasses()) >= 9
+
+
+@pytest.mark.parametrize("model", _run_links_subclasses(), ids=lambda m: m.__name__)
+def test_every_subclass_accepts_null_run_links(model):
+    """The shape an inline call returns. A subclass that redeclared these as
+    required `str` would reject it — and the tool's inline path would fail
+    output validation at runtime rather than here."""
+    for field in ("run_ref", "version_dir", "manifest_path"):
+        assert field not in model.__annotations__, (
+            f"{model.__name__} redeclares {field!r} instead of inheriting it "
+            f"from RunLinks; the inline path needs one definition, not nine"
+        )
+        assert not model.model_fields[field].is_required(), (
+            f"{model.__name__}.{field} is required — an inline call has no run "
+            f"to name, so it could not construct this result at all"
+        )
+
+
+@pytest.mark.parametrize("model", _run_links_subclasses(), ids=lambda m: m.__name__)
+def test_every_subclass_defaults_outputs_to_empty(model):
+    assert not model.model_fields["outputs"].is_required()
+    assert not model.model_fields["output_links"].is_required()

@@ -243,9 +243,9 @@ def test_golden_variance_components_through_the_tool(injected_ports):
     for trait, golden in _GOLDEN["per_trait"].items():
         got = _trait(result, trait)
         assert got.var_genetic == pytest.approx(golden["var_genetic"], rel=1e-5), trait
-        assert got.var_residual == pytest.approx(
-            golden["var_residual"], rel=1e-5
-        ), trait
+        assert got.var_residual == pytest.approx(golden["var_residual"], rel=1e-5), (
+            trait
+        )
         assert got.n_genotypes == golden["n_genotypes"], trait
         assert got.n_observations == golden["n_observations"], trait
         assert got.model_type == golden["model_type"], trait
@@ -328,6 +328,10 @@ def test_provenance_and_links(real_store_ports):
     assert stored.tool == "heritability_analysis"
     assert stored.seed is None
     assert stored.based_on_version == "v1_cleaned" == result.source
+    # #582 widened RunLinks' run-link fields to Optional, so Pydantic no longer
+    # rejects a persisting tool that leaves them unset. `==` alone would pass
+    # vacuously if a regression made BOTH sides None, so pin non-null explicitly.
+    assert result.run_ref is not None
     assert result.run_ref == stored.run_ref
     assert result.manifest_path == stored.manifest_path
     assert set(result.outputs) >= {"heritability.csv", "heritability_result.json"}
