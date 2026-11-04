@@ -630,3 +630,73 @@ def test_create_run_guard_does_not_swallow_a_next_version_id_bug(
     store = SupabaseResultStore()
     with pytest.raises(TypeError, match="boom: not a manifest read failure"):
         store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+
+
+# ─── #396: an un-enumerable listing is permanent, not "transient — retry" ─────
+
+
+def test_commit_listing_error_is_labelled_do_not_retry(
+    fake_supabase_storage, monkeypatch
+):
+    """A `StorageListingError` must not be sold to the caller as retryable.
+
+    `commit()` re-reads the manifest twice through the *unguarded*
+    `adir.read_manifest()` (the id-allocation loop and the pre-write freshness
+    check), so a listing the backend cannot enumerate surfaces in commit's own
+    handler. Both of pagination's synthetic failures are deterministic — the
+    backend ignored `offset`, or the prefix blew past the request backstop — so
+    the identical retry fails identically. Before this branch existed they fell
+    through to the generic "(transient — retry)" message, inviting a retry loop
+    that could never succeed.
+    """
+    import bloom_mcp.manifest.analysis_dir as _adir_mod
+    from bloom_mcp.storage_backend import StorageListingError
+
+    store = SupabaseResultStore()
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "o.csv").write_bytes(b"x")
+
+    def _boom(prefix):
+        raise StorageListingError(
+            f"listing for prefix {prefix} made no progress at offset 100; "
+            f"the storage backend appears to ignore pagination"
+        )
+
+    monkeypatch.setattr(_adir_mod, "read_manifest", _boom)
+
+    with pytest.raises(CommitFailedError) as excinfo:
+        store.commit(run, {"o": "o.csv"})
+
+    msg = str(excinfo.value)
+    assert "do not retry" in msg.lower()
+    assert "transient" not in msg.lower()
+    assert "listing" in msg.lower()
+    # Same redaction contract as every other commit failure message.
+    assert "supabase" not in msg.lower()
+    assert "http" not in msg.lower()
+
+
+def test_commit_generic_storage_failure_stays_transient(
+    fake_supabase_storage, monkeypatch
+):
+    """The new branch is narrow: an ordinary storage error is still retryable.
+
+    Guards against over-broadening — a raw client error mid-sweep (a network
+    blip) is deliberately *not* a `StorageListingError`, so it must keep landing
+    in the transient bucket that a retry can actually clear.
+    """
+    import bloom_mcp.manifest.analysis_dir as _adir_mod
+
+    store = SupabaseResultStore()
+    run = store.create_run(experiment="exp.csv", tool_class="qc", provenance=_prov())
+    (run.staging_dir / "o.csv").write_bytes(b"x")
+
+    def _boom(prefix):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(_adir_mod, "read_manifest", _boom)
+
+    with pytest.raises(CommitFailedError) as excinfo:
+        store.commit(run, {"o": "o.csv"})
+
+    assert "transient" in str(excinfo.value).lower()
