@@ -71,7 +71,9 @@ def _bucket(cur, bucket="scrna"):
     ("scrna_datasets", (True, True)),
     *((t, (True, False)) for t in load.CHILD_TABLES),
     *((t, (True, False)) for t in load.DE_TABLES),
-    *((t, (False, False)) for t in load.READ_ONLY_TABLES),
+    *((t, (False, False)) for t in load.READ_ONLY_TABLES if t != "species"),
+    # Only species.team_notified_at, for the new-species email (test_species_notifications.py).
+    ("species", (False, True)),
 ])
 def test_the_pipeline_reads_writes_only_what_the_load_does_and_never_deletes(cur, table, writes):
     t = f"public.{table}"
