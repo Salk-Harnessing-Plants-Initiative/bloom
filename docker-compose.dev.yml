@@ -444,6 +444,9 @@ services:
       BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-http://localhost:8000/auth/v1}
       # Set once Supabase signs asymmetrically; unset falls back to JWT_SECRET.
       BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
+      # Salk connector tunnel; unset in dev, which turns the tunnel path off.
+      BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET:-}
+      SITE_URL: ${SITE_URL:-}
       # Storage backend (opt-in, default off — empty here behaves exactly like
       # unset). Set BLOOM_STORAGE_BACKEND=local in your own .env.dev, or run
       # `make dev-up-local`, to run FULLY LOCAL (offline) — reads inputs via

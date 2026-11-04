@@ -39,6 +39,7 @@ which also moved every surviving tool into the sections/ layout above.)
 """
 
 import logging
+import os
 import sys
 
 from fastmcp import FastMCP
@@ -61,6 +62,7 @@ from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
 from bloom_mcp.auth import API_KEY, AUTHORIZATION_SERVER, PUBLIC_URL, auth_provider
 from bloom_mcp.identity import IdentityMiddleware
+from bloom_mcp.tunnel import validate_env as validate_tunnel_env
 
 from bloom_mcp.sections import SECTIONS
 
@@ -212,6 +214,7 @@ def main() -> None:
         validate_experiment_local_root()
     else:
         validate_supabase_env()
+    validate_tunnel_env()
 
     # Composition root: inject the persistence adapters into the tools layer.
     # Tools depend on the ports (bloom_mcp.tools._ports), never on Supabase
@@ -238,6 +241,8 @@ def main() -> None:
             api_key=API_KEY, oauth_configured=bool(PUBLIC_URL and AUTHORIZATION_SERVER)
         )
     )
+    tunnel_on = bool(os.environ.get("BLOOMMCP_TUNNEL_SECRET"))
+    print(f"Salk connector tunnel: {'enabled' if tunnel_on else 'disabled'}")
 
     import uvicorn
 

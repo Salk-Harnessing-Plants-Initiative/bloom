@@ -155,12 +155,14 @@ The `:8880` site:
 * drops any incoming `X-Bloom-Tunnel` and sets its own from `BLOOMMCP_TUNNEL_SECRET`, so bloommcp can tell the request came through this entrance;
 * forwards every path unchanged to `bloommcp:8811`, unbuffered and uncompressed so MCP streaming works.
 
+This is bloommcp's only way in from outside. The public site has no bloommcp route, and it strips `X-Salk-User` and `X-Bloom-Tunnel` from every incoming request, so neither can reach bloommcp except through `:8880`. bloommcp reads `X-Salk-User` only when `X-Bloom-Tunnel` matches its own copy of the secret; see the [bloommcp README](../../bloommcp/README.md#salk-connector-tunnel).
+
 `cloudflared` runs only where the `tunnel` compose profile is on. `COMPOSE_PROFILES=tunnel` in [.env.prod.defaults](../../.env.prod.defaults) and [.env.staging.defaults](../../.env.staging.defaults) turns it on for prod and staging; CI and dev leave it off, since they have no tunnel token.
 
 | Secret | Purpose |
 | --- | --- |
 | `PROD_CLOUDFLARE_TUNNEL_TOKEN` / `STAGING_CLOUDFLARE_TUNNEL_TOKEN` | Token for that environment's tunnel, from AIRC. Written into the env file as `CLOUDFLARE_TUNNEL_TOKEN`. |
-| `PROD_BLOOMMCP_TUNNEL_SECRET` / `STAGING_BLOOMMCP_TUNNEL_SECRET` | Random value Caddy sends to bloommcp as `X-Bloom-Tunnel`. Written as `BLOOMMCP_TUNNEL_SECRET`. Use a different value per environment. |
+| `PROD_BLOOMMCP_TUNNEL_SECRET` / `STAGING_BLOOMMCP_TUNNEL_SECRET` | Random value Caddy sends to bloommcp as `X-Bloom-Tunnel`; bloommcp gets the same value. Written as `BLOOMMCP_TUNNEL_SECRET`. Generate with `openssl rand -hex 32` (bloommcp refuses to start on fewer than 32 characters); use a different value per environment. |
 
 The deploy refuses to start if either is missing or empty.
 

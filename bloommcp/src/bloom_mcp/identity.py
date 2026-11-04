@@ -207,6 +207,10 @@ class IdentityMiddleware:
     wired in regardless of whether any real client sends the header yet.
     Gating on the response status closes that off: an unauthenticated hit
     still gets a `401` from FastMCP as before, but is no longer recorded.
+
+    A request carrying the tunnel secret takes the Salk connector path instead
+    (`bloom_mcp.tunnel`): `X-Bloom-Identity` is not read and usage is recorded
+    under the Bloom account the `X-Salk-User` email maps to.
     """
 
     def __init__(self, app) -> None:
@@ -217,29 +221,44 @@ class IdentityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        from bloom_mcp import tunnel
+
         headers = scope.get("headers") or []
-        matches = [v for k, v in headers if k == b"x-bloom-identity"]
-        if len(matches) > 1:
-            await _json_response(
-                scope,
-                receive,
-                send,
-                status=401,
-                error="multiple X-Bloom-Identity headers present",
-            )
-            return
-        value = matches[0].decode("latin-1") if matches else None
-
-        try:
-            identity = verify_identity_header(value)
-        except IdentityConfigError as exc:
-            await _json_response(scope, receive, send, status=500, error=str(exc))
-            return
-        except IdentityVerificationError as exc:
-            await _json_response(scope, receive, send, status=401, error=str(exc))
-            return
-
         path = scope.get("path", "")
+
+        # Salk connector: a matching tunnel secret replaces the token check's input.
+        if path != "/health" and tunnel.is_tunnel_request(headers):
+            try:
+                key = tunnel.api_key()
+                identity = await tunnel.bloom_user(tunnel.salk_user(headers))
+            except tunnel.TunnelRefusal as exc:
+                await _json_response(
+                    scope, receive, send, status=exc.status, error=exc.message
+                )
+                return
+            scope = tunnel.with_api_key(scope, key)
+        else:
+            matches = [v for k, v in headers if k == b"x-bloom-identity"]
+            if len(matches) > 1:
+                await _json_response(
+                    scope,
+                    receive,
+                    send,
+                    status=401,
+                    error="multiple X-Bloom-Identity headers present",
+                )
+                return
+            value = matches[0].decode("latin-1") if matches else None
+
+            try:
+                identity = verify_identity_header(value)
+            except IdentityConfigError as exc:
+                await _json_response(scope, receive, send, status=500, error=str(exc))
+                return
+            except IdentityVerificationError as exc:
+                await _json_response(scope, receive, send, status=401, error=str(exc))
+                return
+
         should_record = path != "/health"
         response_status: dict[str, int] = {}
 

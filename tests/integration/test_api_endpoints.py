@@ -69,8 +69,6 @@ HEADER_ROUTES = [
     "/api/rest/v1/",  # /api/* -> kong -> postgrest
     "/api/storage/v1/bucket",  # /api/* -> kong -> storage-api
     "/langchain/models",  # /langchain/* -> agent (prefix preserved)
-    "/.well-known/oauth-protected-resource/bloommcp/mcp",  # RFC 9728 -> bloommcp
-    "/bloommcp/mcp",  # /bloommcp/* -> bloommcp (prefix stripped)
     "/workflows/health",  # Caddy's own `respond 404`
     "/workflows/runs",  # /workflows/* -> workflows
     "/",  # catch-all -> bloom-web
@@ -319,6 +317,20 @@ def test_kong_routes_auth(api, anon_key):
     assert status == 200
 
 
+# --- bloommcp: tunnel only ---
+
+
+@pytest.mark.parametrize(
+    "path", ["/bloommcp/health", "/.well-known/oauth-protected-resource/bloommcp/mcp"]
+)
+def test_bloommcp_is_not_served_on_the_public_site(api, path):
+    """bloommcp is reached only through the Salk connector's tunnel. These paths
+    fall through to bloom-web, so bloommcp's `ok` and discovery document never answer."""
+    status, body = api(path)
+    assert status != 200 or body != "ok", f"{path} reached bloommcp"
+    assert not (isinstance(body, dict) and body.get("resource")), f"{path} reached bloommcp"
+
+
 # --- OAuth 2.1 login routing (bloommcp#613) ---------------------------------
 # The discovery/registration routes a client hits before it holds any
 # credential, so — unlike every other Kong/Caddy route in this file — these
@@ -337,30 +349,6 @@ def test_kong_routes_auth(api, anon_key):
 # against — so these provide real coverage the moment any job runs this file
 # against a dev/staging-shaped compose, without falsely asserting that
 # coverage exists in `compose-health-check` as configured today.
-
-
-def test_caddy_routes_bloommcp_oauth_discovery_with_no_credential(api):
-    """Caddy's `/.well-known/oauth-protected-resource/bloommcp/*` route
-    reaches bloommcp directly (not Kong) — RFC 9728 places this at the origin
-    root, so it can't sit under the stripped `/bloommcp` prefix. Path
-    confirmed empirically against a real `build_app()` in
-    `bloommcp/tests/test_oauth_discovery.py`, not assumed.
-
-    On `compose-health-check`'s stack (OAuth disabled, `BLOOMMCP_PUBLIC_URL`
-    unset), bloommcp never registers this route at all — observed in CI as a
-    `502` (Caddy's own upstream-error response for the unmatched path), not
-    a clean `404` as first assumed. Skip on either; a real routing/config
-    break on an OAuth-enabled stack would still show up as neither."""
-    status, body = api("/.well-known/oauth-protected-resource/bloommcp/mcp")
-    if status in (404, 502):
-        pytest.skip(
-            f"OAuth is not enabled on this stack (BLOOMMCP_PUBLIC_URL unset) — "
-            f"bloommcp never registers this route, observed here as {status}. "
-            "Run against a dev/staging-shaped compose to exercise it."
-        )
-    assert status == 200, f"expected 200, got {status} (Caddy route missing or misconfigured)"
-    assert isinstance(body, dict)
-    assert body.get("resource"), "protected-resource metadata must name the resource"
 
 
 def test_kong_routes_auth_well_known_with_no_apikey(api):

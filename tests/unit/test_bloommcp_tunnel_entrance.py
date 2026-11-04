@@ -4,7 +4,8 @@ Outside traffic for bloommcp arrives through a Cloudflare tunnel: a `cloudflared
 container in each stack connects out to Cloudflare and forwards to Caddy's
 `:8880` site, which refuses requests without `X-Salk-User`, replaces
 `X-Bloom-Tunnel` with this stack's secret, and proxies to `bloommcp:8811`.
-Neither publishes a port on the host.
+Neither publishes a port on the host. The tunnel is bloommcp's only way in from
+outside: the public site has no bloommcp route and strips both headers.
 """
 
 from __future__ import annotations
@@ -16,10 +17,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.unit._caddyfile_helpers import block_after, strip_comments, text
+from tests.unit._caddyfile_helpers import block_after, site_block, strip_comments, text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
+DEV_COMPOSE = REPO_ROOT / "docker-compose.dev.yml"
 DEPLOY = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 PROD_DEFAULTS = REPO_ROOT / ".env.prod.defaults"
 STAGING_DEFAULTS = REPO_ROOT / ".env.staging.defaults"
@@ -192,6 +194,19 @@ def test_caddy_gets_the_tunnel_secret():
     assert caddy["environment"]["BLOOMMCP_TUNNEL_SECRET"] == "${BLOOMMCP_TUNNEL_SECRET}"
 
 
+def test_bloommcp_gets_the_tunnel_secret_and_site_url():
+    env = _services()["bloommcp"]["environment"]
+    assert env["BLOOMMCP_TUNNEL_SECRET"] == "${BLOOMMCP_TUNNEL_SECRET}"
+    assert env["SITE_URL"] == "${SITE_URL}"
+
+
+def test_dev_bloommcp_leaves_the_tunnel_off_by_default():
+    services = yaml.safe_load(DEV_COMPOSE.read_text(encoding="utf-8"))["services"]
+    env = services["bloommcp"]["environment"]
+    assert env["BLOOMMCP_TUNNEL_SECRET"] == "${BLOOMMCP_TUNNEL_SECRET:-}"
+    assert env["SITE_URL"] == "${SITE_URL:-}"
+
+
 # --- Profile: on for prod and staging, off in CI ---------------------------
 
 
@@ -283,6 +298,41 @@ def test_tunnel_site_forwards_paths_unchanged_and_uncompressed():
     assert "handle_path" not in site
     assert not re.search(r"^\s*(uri|rewrite)\b", site, re.M)
     assert not re.search(r"^\s*encode\b", site, re.M)
+
+
+# --- Public site: no bloommcp route, tunnel headers stripped ---------------
+
+
+def _public_site() -> str:
+    site = site_block(strip_comments(text()))
+    assert site is not None, "missing `{$CADDY_SITE_ADDRESSES}` site block"
+    return site
+
+
+def _site_level_lines(block: str) -> list[str]:
+    lines, depth = [], 0
+    for line in block.splitlines():
+        if depth == 0 and line.strip():
+            lines.append(line.strip())
+        depth += line.count("{") - line.count("}")
+    return lines
+
+
+def test_public_site_has_no_bloommcp_route():
+    site = _public_site()
+    assert "bloommcp" not in site
+    assert "oauth-protected-resource" not in site
+
+
+def test_only_the_tunnel_site_reaches_bloommcp():
+    everywhere = strip_comments(text()).count("bloommcp:8811")
+    assert everywhere == _tunnel_site().count("bloommcp:8811") == 1
+
+
+@pytest.mark.parametrize("header", ["X-Salk-User", "X-Bloom-Tunnel"])
+def test_public_site_strips_the_tunnel_headers(header: str):
+    """Site level, so every hostname and route in the block drops them."""
+    assert f"request_header -{header}" in _site_level_lines(_public_site())
 
 
 # --- Deploy workflow -------------------------------------------------------

@@ -1,76 +1,49 @@
-# Connecting Claude Code to bloommcp
+# Connecting Claude to bloommcp
 
-This guide gets Claude Code talking to the hosted bloommcp MCP server, so you can run plant
-phenotyping analyses (QC, PCA, clustering, and more) directly from a Claude Code conversation
-against Bloom's real data.
+bloommcp lets Claude run plant phenotyping analyses (QC, PCA, clustering, and more) against
+Bloom's data from a conversation. You reach it through the Bloom connector that Salk provides for
+Claude.
 
-## Before you connect: what this token actually grants
+## What you need
 
-**Read this before running any command below.** The token behind either environment is a single
-shared credential (`BLOOMMCP_API_KEY`), used by everyone who connects. It is not scoped to you, your
-lab, or your experiments:
+- **A Salk account.** The connector signs you in with Salk.
+- **A Bloom account with the same Salk email.** If you don't have one, sign up on the Bloom
+  website first. Without one, the connector refuses with "No Bloom account for <your email>.
+  Create one at <Bloom's address>, or reach out to the Bloom team." If you already have an
+  account and see this, reach out to the Bloom team.
 
-- **Read access spans virtually every table in the scientific database by default** — cylinder
-  scan traits, scRNA-seq data, gene candidates, experiment metadata, and anything else in the
-  `public` schema, including tables created after this guide was written. There is no
-  per-user/per-lab/per-experiment filtering on this default: if the schema-wide grant covers a
-  table, everyone holding the shared token can read every row in it.
-- **Row-level security can, and in at least one confirmed case does, narrow that default.** A
-  table's own security policy can restrict it to a different role than the one this token uses —
-  `gene_patents` (patent status, government ID) is a confirmed example: it is not actually readable
-  through this token today, despite the general rule above. Don't treat "virtually every table" as
-  an unconditional guarantee of full database access — it's the default, not an absolute.
-- **Write access is confined to one Storage bucket, plus one narrow database-table exception.** In
-  the `bloommcp-data` bucket, insert, update, and delete are all possible (delete only for
-  previously-uploaded analysis outputs, never your raw input files). The one exception: this token
-  can also insert and update a single database table, `public.bloommcp_usage` — an internal, rolling
-  per-caller usage aggregate (identity, first/last seen, request count, last tool called) upserted
-  once per tool call for operational tracking. It holds no scientific data. This token cannot write
-  to any other database table.
-- Verifying who ran a request (a separate, prior change) does **not** change the read/write scope
-  above — it's an audit trail, not a data-access restriction. Every request still reads/writes
-  scientific data with the same shared permissions regardless of who's identified as making it; the
-  `bloommcp_usage` write above is what records that identity, not a new door into anything else.
+## Connecting
 
-If you'd rather not connect to the shared server at all — so no experiment data leaves your
-machine, and you have no access to Bloom's live data — skip to [No shared server? Run bloommcp
-fully locally](#no-shared-server-run-bloommcp-fully-locally) below.
+1. In claude.ai or Claude Desktop, open the connectors settings and add the **Bloom** connector.
+   Salk's AIRC team publishes it; there is also **Bloom staging** for testing. If you can't find
+   either, ask AIRC or Salk IT for it.
+2. Sign in with Salk when asked.
+3. Start a conversation and ask for an analysis; Claude calls bloommcp's tools.
 
-## Prerequisite: Salk wifi or VPN
+Claude Code signed in with the same Claude account can use connectors added there; run `/mcp` in
+Claude Code to check that Bloom is listed.
 
-bloommcp is only reachable from Salk's network. Connect to Salk wifi, or Salk VPN if you're
-off-campus, before running the commands below. If a connect command below hangs or times out
-instead of returning an error, this is the first thing to check — an unreachable host looks like a
-hang, not a clean failure.
+Within a minute of a Bloom account being removed, the connector stops working for that person.
 
-## Connecting to production
+bloommcp is not served on the Bloom website (`bloom.salk.edu/bloommcp`); the connector is the only
+way in from outside.
 
-```bash
-claude mcp add --transport http bloommcp-prod https://bloom.salk.edu/bloommcp/mcp --header "Authorization: Bearer <token>"
-```
+## What the connector can see and change
 
-## Connecting to staging
+Signing in tells bloommcp who you are, and your usage is recorded under your Bloom account. It
+does not narrow what bloommcp can do: every request reads and writes with the same shared
+permissions (the `bloom_agent` role), whoever made it.
 
-```bash
-claude mcp add --transport http bloommcp-staging https://staging.bloom.salk.edu:8443/bloommcp/mcp --header "Authorization: Bearer <token>"
-```
+- **Reads cover virtually every table in the scientific database** — cylinder scan traits,
+  scRNA-seq data, gene candidates, experiment metadata, and anything else in the `public` schema.
+  There is no per-user, per-lab or per-experiment filtering.
+- **Row-level security can narrow that.** `gene_patents` is one confirmed table bloommcp cannot
+  read, because its policy targets a different role.
+- **Writes are confined to the `bloommcp-data` Storage bucket**, plus `public.bloommcp_usage`, an
+  internal per-person usage count with no scientific data. In the bucket, outputs can be added,
+  updated and deleted; your raw input files are never deleted.
 
-**The `:8443` is not optional — don't drop it.** Staging and production share the same host
-(`*.bloom.salk.edu`) and the same TLS certificate. If you connect to
-`https://staging.bloom.salk.edu` on the default port 443 (i.e., without `:8443`), the TLS handshake
-still succeeds — the certificate covers that hostname too — but the request actually lands on
-**production's** server, which has no route for the staging hostname and silently returns a blank
-`200` response instead of an error. You won't get a clean failure telling you the port is wrong; you
-just won't be talking to staging. Always include `:8443` for the staging endpoint.
-
-**Replace `<token>` with your actual key, angle brackets and all removed** — pasting the placeholder
-literally (`Bearer <token>`) produces a header that looks fine and `claude mcp add` will still accept
-it, but every request then fails with no obvious error pointing at the token.
-
-## Where to get `<token>`
-
-`<TODO: name the BLOOMMCP_API_KEY contact/process — not yet determined at the time this guide was
-written. There is no self-service lookup for this token today.>`
+If you'd rather no experiment data leave your machine, run bloommcp locally instead (next section).
 
 ## No shared server? Run bloommcp fully locally
 
@@ -127,12 +100,3 @@ One thing to know when reading a wide experiment: the bar plot orders traits by 
 descending, while `per_trait` and the persisted table keep the experiment's own trait
 order. Same numbers, different slice — so the inline top-50 of a truncated result is not
 the first plotted page.
-
-## Claude Desktop / Claude Enterprise
-
-**Not yet written.** Claude Desktop and Claude Enterprise custom connectors work differently from
-Claude Code — they connect from Anthropic's own cloud infrastructure rather than from your device,
-which raises separate questions (network allowlisting, authentication mode) that haven't been
-decided yet. Track that discussion at
-[#522](https://github.com/Salk-Harnessing-Plants-Initiative/bloom/issues/522); this section will be
-written once it resolves.
