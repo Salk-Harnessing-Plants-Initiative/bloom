@@ -133,6 +133,7 @@ erDiagram
   uuid created_by FK
   timestamp_with_time_zone deleted_at
   text kegg_org
+  timestamp_with_time_zone team_notified_at
 }
 "public.phenotypers" {
   bigint id
@@ -1183,5 +1184,11 @@ erDiagram
   uuid created_by
   timestamp_with_time_zone created_at
   timestamp_with_time_zone ready_at
+}
+"public.notification_recipients" {
+  bigint id
+  text email
+  text description
+  timestamp_with_time_zone created_at
 }
 ```
