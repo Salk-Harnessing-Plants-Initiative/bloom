@@ -2651,6 +2651,27 @@ export type Database = {
           },
         ]
       }
+      notification_recipients: {
+        Row: {
+          created_at: string
+          description: string
+          email: string
+          id: number
+        }
+        Insert: {
+          created_at?: string
+          description: string
+          email: string
+          id?: number
+        }
+        Update: {
+          created_at?: string
+          description?: string
+          email?: string
+          id?: number
+        }
+        Relationships: []
+      }
       ortho_gene_id_map: {
         Row: {
           gene_ids: Json | null
@@ -4345,6 +4366,7 @@ export type Database = {
           illustration_path: string | null
           kegg_org: string | null
           species: string | null
+          team_notified_at: string | null
         }
         Insert: {
           common_name?: string | null
@@ -4355,6 +4377,7 @@ export type Database = {
           illustration_path?: string | null
           kegg_org?: string | null
           species?: string | null
+          team_notified_at?: string | null
         }
         Update: {
           common_name?: string | null
@@ -4365,6 +4388,7 @@ export type Database = {
           illustration_path?: string | null
           kegg_org?: string | null
           species?: string | null
+          team_notified_at?: string | null
         }
         Relationships: []
       }
