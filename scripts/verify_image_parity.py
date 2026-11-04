@@ -35,7 +35,8 @@ DB_SERVICE_ALIASES = {"db-dev": "db-prod"}
 # is reported as informational, so a new service does not silently escape the check.
 ALLOWED_ONLY_IN = {
     "dev": {"swagger-ui"},
-    "prod": {"caddy"},
+    # cloudflared fronts caddy:8880, and dev has no Caddy.
+    "prod": {"caddy", "cloudflared"},
 }
 
 _SERVICE_RE = re.compile(r"^  ([a-zA-Z0-9_.-]+):\s*$")

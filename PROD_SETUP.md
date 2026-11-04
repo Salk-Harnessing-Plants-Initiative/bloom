@@ -86,6 +86,11 @@ the wiki pages linked at the bottom of this doc.
    | `PROD_LANGCHAIN_API_KEY`    | LangSmith tracing key                                     |
    | `PROD_BLOOM_AGENT_KEY`      | Service role for the agent's Supabase access              |
    | `PROD_CLOUDFLARE_API_TOKEN` | Caddy DNS-01 ACME token (zone: `bloom-acme.talmolab.org`) |
+   | `PROD_CLOUDFLARE_TUNNEL_TOKEN` | Token for bloommcp's Salk connector tunnel, from AIRC |
+   | `PROD_BLOOMMCP_TUNNEL_SECRET` | Caddy's tunnel-entrance secret for bloommcp (`openssl rand -hex 32`) |
+
+   Staging uses the same names with `STAGING_`. The tunnel and its `cloudflared`
+   container are described on the [Caddy wiki page](_WIKI/CADDY/README.md#tunnel-entrance-bloommcps-salk-connector).
 
    Service-specific secrets (for example `PROD_WORKFLOWS_*` and `PROD_WANDB_API_KEY`)
    are described in each service's README, e.g.

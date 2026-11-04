@@ -12,6 +12,7 @@
 #                              `dashboard` service basic-auth — Studio has none of
 #                              its own, so Kong is in its availability path)
 #   {DOMAIN_MINIO}             → minio console
+#   :8880 (Docker network only) → bloommcp, for cloudflared's tunnel
 #
 # TLS strategy:
 #
@@ -56,6 +57,9 @@
 #                         containing `bloom-acme.talmolab.org`. Populated at
 #                         deploy time from PROD_/STAGING_CLOUDFLARE_API_TOKEN
 #                         secrets.
+#
+#   BLOOMMCP_TUNNEL_SECRET  sent to bloommcp as X-Bloom-Tunnel on the :8880
+#                         tunnel entrance. From PROD_/STAGING_BLOOMMCP_TUNNEL_SECRET.
 # =============================================================================
 
 {$CADDY_SITE_ADDRESSES} {
@@ -290,6 +294,28 @@
 # they keep their HTTP-to-HTTPS redirect.
 :80 {
 	respond "not reachable" 404
+}
+
+# -------------------
+# Tunnel entrance — cloudflared → bloommcp
+# -------------------
+# Reached only by cloudflared on the Docker network; 8880 is not published.
+:8880 {
+	# A request without the Salk user header is refused.
+	@no_salk_user not header X-Salk-User *
+	handle @no_salk_user {
+		respond 403
+	}
+
+	# Every path forwarded unchanged; streaming, so no compression and no buffering.
+	handle {
+		# Drop any caller-sent tunnel header; only Caddy sets it.
+		request_header -X-Bloom-Tunnel
+		reverse_proxy bloommcp:8811 {
+			header_up X-Bloom-Tunnel {env.BLOOMMCP_TUNNEL_SECRET}
+			flush_interval -1
+		}
+	}
 }
 
 # -------------------

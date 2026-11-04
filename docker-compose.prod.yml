@@ -16,7 +16,7 @@
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
-#   meta, db-prod, supavisor, studio)
+#   meta, db-prod, supavisor, studio, cloudflared in the `tunnel` profile)
 #
 # Host-exposed ports:
 #   80/443  - caddy (reverse proxy, auto HTTPS)
@@ -64,6 +64,8 @@ services:
       # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
       # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      # Sent to bloommcp as X-Bloom-Tunnel on the tunnel entrance (:8880).
+      BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Break-glass path: if ACME issuance fails catastrophically, drop
@@ -663,6 +665,30 @@ services:
       - supanet
     depends_on:
       - kong
+    restart: unless-stopped
+
+  # -------------------
+  # Cloudflare tunnel → caddy:8880 (bloommcp's Salk connector)
+  # -------------------
+  cloudflared:
+    image: ghcr.io/salk-harnessing-plants-initiative/cloudflare-cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    # Started only where COMPOSE_PROFILES includes tunnel (prod and staging, not CI).
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    read_only: true
+    mem_limit: 256m
+    memswap_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Outbound only; nothing is published on the host.
+    networks:
+      - supanet
+    depends_on:
+      - caddy
     restart: unless-stopped
 
   # -------------------

@@ -50,6 +50,9 @@ SENSITIVE_INVENTORY = {
     "LANGCHAIN_API_KEY",
     "BLOOM_AGENT_KEY",
     "CLOUDFLARE_API_TOKEN",
+    # bloommcp's Salk connector: the tunnel token and Caddy's internal secret.
+    "CLOUDFLARE_TUNNEL_TOKEN",
+    "BLOOMMCP_TUNNEL_SECRET",
     "DEPLOY_PATH",
     "MINIO_DATA_PATH",
     "WORKFLOWS_SUPABASE_EMAIL",

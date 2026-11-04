@@ -141,6 +141,25 @@ The same applies to a deeper name such as `deep.sub.bloom.salk.edu`: a wildcard 
 
 **Adding a subdomain?** Give it a `handle @host` block *above* the fall-through, and add it to the Hostnames table. Forgetting the route no longer produces a misleading `200` — the name returns 404 until it is routed.
 
+## Tunnel entrance (bloommcp's Salk connector)
+
+Salk's AIRC service signs people in with Salk Entra and sends their requests for bloommcp through a Cloudflare tunnel, with the person's email in `X-Salk-User`. Each stack runs its own `cloudflared` container, which connects out to Cloudflare and forwards to `http://caddy:8880`. Nothing is published on the host: `cloudflared` has no ports and `8880` is reachable only on the stack's Docker network.
+
+The `:8880` site:
+
+* refuses a request without `X-Salk-User` with `403`;
+* drops any incoming `X-Bloom-Tunnel` and sets its own from `BLOOMMCP_TUNNEL_SECRET`, so bloommcp can tell the request came through this entrance;
+* forwards every path unchanged to `bloommcp:8811`, unbuffered and uncompressed so MCP streaming works.
+
+`cloudflared` runs only where the `tunnel` compose profile is on. `COMPOSE_PROFILES=tunnel` in [.env.prod.defaults](../../.env.prod.defaults) and [.env.staging.defaults](../../.env.staging.defaults) turns it on for prod and staging; CI and dev leave it off, since they have no tunnel token.
+
+| Secret | Purpose |
+| --- | --- |
+| `PROD_CLOUDFLARE_TUNNEL_TOKEN` / `STAGING_CLOUDFLARE_TUNNEL_TOKEN` | Token for that environment's tunnel, from AIRC. Written into the env file as `CLOUDFLARE_TUNNEL_TOKEN`. |
+| `PROD_BLOOMMCP_TUNNEL_SECRET` / `STAGING_BLOOMMCP_TUNNEL_SECRET` | Random value Caddy sends to bloommcp as `X-Bloom-Tunnel`. Written as `BLOOMMCP_TUNNEL_SECRET`. Generate with `openssl rand -hex 32`; use a different value per environment. |
+
+The deploy refuses to start if either is missing. The `cloudflared` image is a pinned copy under `ghcr.io/salk-harnessing-plants-initiative/`; Cloudflare supports only recent releases, so bump it at least yearly.
+
 ## Cert persistence across redeploys
 
 The `caddy` service mounts two named volumes:
