@@ -143,3 +143,139 @@ def test_resolve_trait_columns_explicit_all_nan_trait_is_honored():
     assert _viz_shared.resolve_trait_columns(
         frame, ["t1", "all_nan"], "resolve_nan.csv"
     ) == ["t1", "all_nan"]
+
+
+# ── sample-size disclosure helpers (#748) ────────────────────────────────────
+
+
+def test_min_plotted_samples_is_owned_not_aliased():
+    """#748: the floor is this module's own constant, not an alias for the QC per-trait
+    completeness convention. The two answer different questions -- "enough samples to keep a
+    trait during cleaning" vs "enough points for a box to be made of data" -- and aliasing
+    would let a QC-side retune silently move which boxes these tools flag.
+
+    Deliberately does NOT assert any relationship to _CANONICAL_MIN_SAMPLES_PER_TRAIT:
+    independence is the point, and pinning an equality would turn the next legitimate QC
+    retune into a failure whose cheapest fix is to re-alias.
+    """
+    assert _viz_shared.MIN_PLOTTED_SAMPLES == 5
+    # Owned = defined here, not re-exported from somewhere else.
+    assert "MIN_PLOTTED_SAMPLES" in _viz_shared.__dict__
+    # The regression this guards is a future `from _qc_shared import
+    # _CANONICAL_MIN_SAMPLES_PER_TRAIT` -- the module already imports _validate_trait_subset
+    # from there, so the import path itself is live.
+    assert not hasattr(_viz_shared, "_CANONICAL_MIN_SAMPLES_PER_TRAIT")
+
+
+def test_five_is_the_first_sample_size_whose_quartiles_are_order_statistics():
+    """Pins Decision 3's rationale as a property, not a comment: n=5 is the smallest n>1 at
+    which Q1, the median and Q3 all land exactly on observations rather than on
+    interpolations between them. Below it the drawn box is made of the interpolation rule.
+    """
+    import numpy as np
+
+    def all_on_order_statistics(n: int) -> bool:
+        x = np.arange(1.0, n + 1)
+        return all(
+            any(abs(q - v) < 1e-12 for v in x) for q in np.percentile(x, [25, 50, 75])
+        )
+
+    assert not any(all_on_order_statistics(n) for n in range(2, 5))
+    assert all_on_order_statistics(_viz_shared.MIN_PLOTTED_SAMPLES)
+
+
+def test_caps_are_defined_and_ordered():
+    assert _viz_shared.MAX_FLAGGED_REPORTED == 20
+    assert _viz_shared.MAX_NOTE_NAMES == 10
+    assert _viz_shared.MAX_NOTE_NAMES <= _viz_shared.MAX_FLAGGED_REPORTED
+
+
+def test_native_coerces_numpy_scalars():
+    """np.int64/np.float64 in a run's params raise PydanticSerializationError at the
+    manifest write (design.md Decision 9) -- every stamped value goes through this."""
+    import numpy as np
+
+    assert type(_viz_shared.native(np.int64(3))) is int
+    assert type(_viz_shared.native(np.float64(1.5))) is float
+    assert _viz_shared.native(None) is None
+    assert _viz_shared.native(float("nan")) is None
+    assert _viz_shared.native(float("inf")) is None
+
+
+def _sample_frame():
+    return pd.DataFrame(
+        {
+            "geno": ["A", "A", "A", "B", "B", None],
+            "t_full": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "t_gappy": [1.0, None, None, 4.0, None, 6.0],
+            "t_inf": [1.0, float("inf"), 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+
+
+def test_trait_sample_size_table_counts_and_fractions():
+    table = _viz_shared.trait_sample_size_table(
+        _sample_frame(), ["t_full", "t_gappy", "t_inf"]
+    )
+    rows = {r["trait"]: r for r in table.to_dict("records")}
+    assert rows["t_full"]["n_plotted"] == 6
+    assert rows["t_full"]["n_missing"] == 0
+    assert rows["t_gappy"]["n_plotted"] == 3
+    assert rows["t_gappy"]["n_missing"] == 3
+    assert rows["t_gappy"]["nan_fraction"] == pytest.approx(0.5)
+    # count() treats +/-inf as present -- pinned deliberately (design.md Decision 5).
+    assert rows["t_inf"]["n_plotted"] == 6
+    assert rows["t_inf"]["n_non_finite"] == 1
+    assert rows["t_inf"]["n_finite"] == 5
+
+
+def test_group_sample_size_table_counts_per_trait_per_genotype():
+    table = _viz_shared.group_sample_size_table(
+        _sample_frame(), ["t_full", "t_gappy", "t_inf"], "geno"
+    )
+    rows = {(r["trait"], r["genotype"]): r for r in table.to_dict("records")}
+    # The null-genotype row is dropped from every box, matching the delegate.
+    assert {g for _, g in rows} == {"A", "B"}
+    assert rows[("t_full", "A")]["n_plotted"] == 3
+    assert rows[("t_full", "A")]["n_rows_in_group"] == 3
+    assert rows[("t_gappy", "A")]["n_plotted"] == 1
+    assert rows[("t_gappy", "A")]["n_missing"] == 2
+    assert rows[("t_gappy", "B")]["n_plotted"] == 1
+    assert rows[("t_inf", "A")]["n_plotted"] == 3
+    assert rows[("t_inf", "A")]["n_non_finite"] == 1
+    assert rows[("t_inf", "A")]["n_finite"] == 2
+    # Every (trait, genotype) cell is present, including ones with no data.
+    assert len(rows) == 3 * 2
+
+
+def test_group_sample_size_table_includes_absent_cells_as_zero():
+    df = pd.DataFrame({"geno": ["A", "A", "B", "B"], "t": [1.0, 2.0, None, None]})
+    rows = {
+        (r["trait"], r["genotype"]): r
+        for r in _viz_shared.group_sample_size_table(df, ["t"], "geno").to_dict(
+            "records"
+        )
+    }
+    assert rows[("t", "B")]["n_plotted"] == 0
+    assert rows[("t", "B")]["n_rows_in_group"] == 2
+    assert rows[("t", "B")]["nan_fraction"] == pytest.approx(1.0)
+
+
+def test_group_sample_size_table_on_an_all_null_genotype_column_is_empty():
+    """Reachable today: the tool guards only `genotype_col is None`, and the delegate renders
+    an all-null genotype column successfully. The table must come back empty rather than
+    raising, so the caller can report null summaries instead of crashing (Decision 8).
+    """
+    df = pd.DataFrame({"geno": [None, None], "t": [1.0, 2.0]})
+    table = _viz_shared.group_sample_size_table(df, ["t"], "geno")
+    assert list(table.columns) == [
+        "trait",
+        "genotype",
+        "n_rows_in_group",
+        "n_plotted",
+        "n_finite",
+        "n_non_finite",
+        "n_missing",
+        "nan_fraction",
+    ]
+    assert table.empty
