@@ -49,6 +49,12 @@ def _salk(name="jdoe") -> str:
     return f"{name}.{uuid.uuid4().hex[:8]}@salk.edu"
 
 
+def _upper_local(email: str) -> str:
+    """The same address with the local part upper-cased; check_email_trigger needs `@salk.edu`."""
+    local, domain = email.split("@")
+    return f"{local.upper()}@{domain}"
+
+
 @pytest.fixture
 def cur(pg_conn):
     with pg_conn.cursor() as c:
@@ -118,6 +124,8 @@ def test_wildcards_match_no_one(cur, pattern):
 
 
 def test_another_domain_never_matches_even_with_an_account(cur):
+    """Accounts from before check_email_trigger (2023-07-12) can have other domains."""
+    cur.execute("ALTER TABLE auth.users DISABLE TRIGGER check_email_trigger")
     email = f"jdoe.{uuid.uuid4().hex[:8]}@example.org"
     _add_user(cur, email)
     assert _lookup(cur, email) is None
@@ -165,14 +173,14 @@ def test_two_accounts_with_one_address_return_null(cur):
     """An SSO account can share an address with a password account; never pick one."""
     email = _salk()
     _add_user(cur, email)
-    _add_user(cur, email.upper(), is_sso_user=True)
+    _add_user(cur, _upper_local(email), is_sso_user=True)
     assert _lookup(cur, email) is None
 
 
 def test_a_removed_duplicate_does_not_hide_the_active_account(cur):
     email = _salk()
     uid = _add_user(cur, email)
-    _add_user(cur, email.upper(), is_sso_user=True, deleted_at="2026-11-01T00:00:00Z")
+    _add_user(cur, _upper_local(email), is_sso_user=True, deleted_at="2026-11-01T00:00:00Z")
     assert _lookup(cur, email) == uid
 
 
