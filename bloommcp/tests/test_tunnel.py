@@ -317,6 +317,39 @@ def test_lookup_failure_is_503_and_not_cached(monkeypatch, recorded_usage):
     assert app.called == 1
 
 
+def test_lookup_failure_log_names_postgrests_code_and_message(monkeypatch, caplog):
+    """A missing function, a bad key and a lost grant are all APIError; the code tells them apart."""
+    from postgrest.exceptions import APIError
+
+    missing = APIError(
+        {
+            "code": "PGRST202",
+            "message": "Could not find the function public.bloom_user_for_email",
+        }
+    )
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(error=missing))
+    with caplog.at_level("ERROR", logger="bloom_mcp.tunnel"):
+        assert (
+            _get(
+                IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL)
+            ).status_code
+            == 503
+        )
+    assert "PGRST202" in caplog.text
+    assert "Could not find the function public.bloom_user_for_email" in caplog.text
+
+
+def test_lookup_failure_log_keeps_other_errors_text(monkeypatch, caplog):
+    monkeypatch.setattr(
+        supabase_client,
+        "call_rpc",
+        _FakeLookup(error=ConnectionError("database unreachable")),
+    )
+    with caplog.at_level("ERROR", logger="bloom_mcp.tunnel"):
+        _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
+    assert "ConnectionError" in caplog.text and "database unreachable" in caplog.text
+
+
 def test_unexpected_lookup_result_is_503(monkeypatch):
     monkeypatch.setattr(
         supabase_client, "call_rpc", _FakeLookup(accounts={EMAIL: "not-a-uuid"})

@@ -38,6 +38,8 @@ CACHE_MAX_ENTRIES = 1024
 REFUSAL_CODE = -32001
 # Larger POST bodies are not read for a request id; they get the plain JSON refusal.
 MAX_REFUSAL_BODY_BYTES = 1024 * 1024
+# Longest error description written to the log for a failed lookup.
+MAX_LOGGED_ERROR_CHARS = 300
 
 # Printable ASCII without space: rules out whitespace and control characters.
 _FIRST_ALLOWED, _LAST_ALLOWED = 0x21, 0x7E
@@ -178,6 +180,13 @@ def _query(email: str) -> str | None:
     raise ValueError(f"unexpected {LOOKUP_RPC} result type {type(result).__name__}")
 
 
+def _describe_failure(exc: Exception) -> str:
+    """The error's type plus PostgREST's code and message (or the error's text); no secrets."""
+    code, message = getattr(exc, "code", None), getattr(exc, "message", None)
+    detail = f"{code} {message}" if code or message else str(exc)
+    return f"{type(exc).__name__}: {detail}"[:MAX_LOGGED_ERROR_CHARS]
+
+
 def _no_account_message(email: str) -> str:
     site_url = (os.environ.get("SITE_URL") or "").rstrip("/")
     where = f" at {site_url}" if site_url else ""
@@ -192,7 +201,7 @@ async def bloom_user(email: str) -> str:
     try:
         user_id = await anyio.to_thread.run_sync(_query, email)
     except Exception as exc:
-        logger.error("tunnel lookup failed for %s: %s", email, type(exc).__name__)
+        logger.error("tunnel lookup failed for %s: %s", email, _describe_failure(exc))
         raise TunnelRefusal(
             503, "Could not check your Bloom account; try again shortly."
         )
