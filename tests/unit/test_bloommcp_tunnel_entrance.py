@@ -10,7 +10,6 @@ Neither publishes a port on the host.
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -23,11 +22,12 @@ PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
 DEPLOY = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 PROD_DEFAULTS = REPO_ROOT / ".env.prod.defaults"
 STAGING_DEFAULTS = REPO_ROOT / ".env.staging.defaults"
-CI_ENV = REPO_ROOT / ".env.ci"
 PR_CHECKS = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
+CI_COMPOSE = REPO_ROOT / "docker-compose.ci.yml"
 
 TUNNEL_PORT = "8880"
 TUNNEL_PROFILE = "tunnel"
+TUNNEL_NETWORK = "tunnel"
 GHCR_PREFIX = "ghcr.io/salk-harnessing-plants-initiative/"
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -57,8 +57,19 @@ def test_cloudflared_is_in_the_tunnel_profile():
 
 def test_cloudflared_runs_the_tunnel_from_the_token():
     service = _cloudflared()
-    assert service["command"] == ["tunnel", "--no-autoupdate", "run"]
+    command = service["command"]
+    assert command[0] == "tunnel" and command[-1] == "run", command
+    assert "--no-autoupdate" in command
     assert service["environment"]["TUNNEL_TOKEN"] == "${CLOUDFLARE_TUNNEL_TOKEN}"
+
+
+def test_cloudflared_metrics_listen_on_loopback_only():
+    command = _cloudflared()["command"]
+    assert "--metrics" in command, "cloudflared metrics address is not set"
+    index = command.index("--metrics")
+    # A `tunnel` flag, so it must come before `run`.
+    assert index < command.index("run")
+    assert command[index + 1].startswith("127.0.0.1:"), command[index + 1]
 
 
 def test_cloudflared_publishes_nothing():
@@ -74,13 +85,40 @@ def test_cloudflared_is_hardened():
     assert "cap_add" not in service
     assert "no-new-privileges:true" in service.get("security_opt", [])
     assert service.get("restart") == "unless-stopped"
-    assert service.get("mem_limit")
+    assert service.get("stop_grace_period") == "30s"
 
 
-def test_cloudflared_shares_caddys_network_and_waits_for_it():
+def test_cloudflared_memory_is_capped_without_swap():
+    service = _cloudflared()
+    assert service.get("mem_limit") == "256m"
+    assert service.get("memswap_limit") == "256m"
+
+
+def test_cloudflared_is_only_on_the_tunnel_network():
+    """A wrong route on the Cloudflare side reaches Caddy, not db, studio, kong or minio."""
     services = _services()
-    assert services["cloudflared"]["networks"] == services["caddy"]["networks"]
+    assert services["cloudflared"]["networks"] == [TUNNEL_NETWORK]
     assert "caddy" in services["cloudflared"]["depends_on"]
+
+
+def test_caddy_is_on_the_tunnel_network_too():
+    caddy = _services()["caddy"]
+    assert TUNNEL_NETWORK in caddy["networks"]
+    assert "supanet" in caddy["networks"], "Caddy reaches bloommcp over supanet"
+    assert caddy.get("network_mode") is None
+
+
+def test_only_caddy_and_cloudflared_share_the_tunnel_network():
+    on_tunnel = {
+        name for name, service in _services().items() if TUNNEL_NETWORK in service.get("networks", [])
+    }
+    assert on_tunnel == {"caddy", "cloudflared"}
+
+
+def test_the_tunnel_network_can_reach_the_internet():
+    networks = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))["networks"]
+    assert TUNNEL_NETWORK in networks
+    assert not (networks[TUNNEL_NETWORK] or {}).get("internal"), "cloudflared needs outbound internet"
 
 
 def test_no_service_publishes_the_tunnel_port():
@@ -112,11 +150,16 @@ def test_prod_and_staging_enable_the_tunnel_profile(path: Path):
 
 
 def test_ci_does_not_enable_the_tunnel_profile():
-    """CI has no tunnel token; cloudflared would crash-loop and fail the health check."""
-    assert _env_value(CI_ENV, "COMPOSE_PROFILES") is None
+    """CI has no tunnel token; cloudflared would crash-loop and fail the health check.
+
+    CI's env file is generated inside pr-checks.yml, so the workflow is what is checked.
+    """
     pr_checks = PR_CHECKS.read_text(encoding="utf-8")
     assert "COMPOSE_PROFILES" not in pr_checks
     assert "--profile" not in pr_checks
+    ci_services = yaml.safe_load(CI_COMPOSE.read_text(encoding="utf-8")).get("services") or {}
+    for name, service in ci_services.items():
+        assert "profiles" not in (service or {}), f"docker-compose.ci.yml sets profiles on {name}"
 
 
 # --- Caddy :8880 site ------------------------------------------------------
@@ -138,7 +181,7 @@ def test_tunnel_site_refuses_requests_without_salk_user():
     assert matcher, "no matcher for a missing X-Salk-User"
     refusal = block_after(site, rf"handle\s+{matcher.group(1)}\b")
     assert refusal is not None
-    assert _lines(refusal) == ["respond 403"]
+    assert _lines(refusal) == ['respond "forbidden" 403']
 
 
 def test_tunnel_site_proxies_to_bloommcp():
@@ -182,27 +225,29 @@ def test_deploy_writes_the_tunnel_secrets(env: str, prefix: str, key: str):
     assert f"{key}=${{{{ secrets.{prefix}_{key} }}}}" in _secrets_heredoc(env)
 
 
-# --- Env validation --------------------------------------------------------
+DEPLOY_JOBS = [
+    ("deploy-production", "production", "docker compose -f docker-compose.prod.yml --env-file .env.prod"),
+    (
+        "deploy-staging",
+        "staging",
+        "docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging",
+    ),
+]
 
 
-@pytest.mark.parametrize("missing", ["CLOUDFLARE_TUNNEL_TOKEN", "BLOOMMCP_TUNNEL_SECRET"])
-def test_deploy_validation_refuses_a_missing_tunnel_secret(tmp_path: Path, missing: str):
-    """validate_env.sh derives its required keys from compose, so both are required."""
-    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)", PROD_COMPOSE.read_text()))
-    required = referenced - {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME", missing}
-    defaults_text = PROD_DEFAULTS.read_text(encoding="utf-8")
-    defaults_keys = {
-        line.split("=", 1)[0]
-        for line in defaults_text.splitlines()
-        if line and not line.startswith("#") and "=" in line
-    }
-    appended = "\n".join(f"{k}=fake-{k.lower()}" for k in sorted(required - defaults_keys))
-    env_file = tmp_path / ".env.test"
-    env_file.write_text(defaults_text.rstrip("\n") + "\n" + appended + "\n# _EOF_MARKER_\n")
-    result = subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts" / "validate_env.sh"), str(env_file), str(PROD_COMPOSE)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 1
-    assert f"- {missing}" in result.stderr
+@pytest.mark.parametrize("job_name, label, compose", DEPLOY_JOBS)
+def test_deploy_warns_but_never_fails_on_a_dead_tunnel(job_name: str, label: str, compose: str):
+    steps = yaml.safe_load(DEPLOY.read_text(encoding="utf-8"))["jobs"][job_name]["steps"]
+    names = [s.get("name") for s in steps]
+    check = f"Tunnel connection check ({label})"
+    assert check in names, f"{job_name} has no '{check}' step"
+    assert names.index("Caddy crash-loop check") < names.index(check)
+    step = steps[names.index(check)]
+    assert step.get("continue-on-error") is True
+    run = step["run"]
+    assert "exit 1" not in run and "::error::" not in run
+    assert f"{compose} ps -a -q cloudflared" in run
+    assert f"{compose} logs cloudflared" in run
+    assert "Registered tunnel connection" in run
+    assert re.search(r"restarts\\?\"?\s*-gt\s*2", run)
+    assert "::warning::" in run

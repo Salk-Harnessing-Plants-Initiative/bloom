@@ -378,6 +378,33 @@ jobs:
             echo \"caddy restart count: \$restarts\"
           "
 
+      # Warns, never fails: Cloudflare may be slow or down, and the rest of the
+      # stack is unaffected. Skipped where the tunnel profile is off.
+      - name: Tunnel connection check (production)
+        continue-on-error: true
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -u
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+            cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -a -q cloudflared 2>/dev/null || true)
+            if [ -z \"\$cid\" ]; then
+              echo 'cloudflared is not part of this stack; skipping'
+              exit 0
+            fi
+            sleep 30
+            restarts=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\" 2>/dev/null || echo 0)
+            if [ \"\$restarts\" -gt 2 ] 2>/dev/null; then
+              echo \"::warning::cloudflared restarted \$restarts times since deploy; the Salk connector tunnel is likely down. Check its token.\"
+            fi
+            if ! docker compose -f docker-compose.prod.yml --env-file .env.prod logs cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
+              echo '::warning::cloudflared has not registered a tunnel connection; the tunnel is not connected.'
+              echo '::group::cloudflared logs'
+              docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=50 cloudflared || true
+              echo '::endgroup::'
+            fi
+            echo \"cloudflared restart count: \$restarts\"
+          " || echo "::warning::tunnel connection check could not run"
+
       # Restart Kong so bind-mounted kong.yml changes take effect — `up -d`
       # won't recreate kong when its image/env is unchanged, so route/plugin
       # edits are otherwise ignored. Unlike Caddy, a full restart (not
@@ -1358,6 +1385,33 @@ jobs:
             fi
             echo \"caddy restart count: \$restarts\"
           "
+
+      # Warns, never fails: Cloudflare may be slow or down, and the rest of the
+      # stack is unaffected. Skipped where the tunnel profile is off.
+      - name: Tunnel connection check (staging)
+        continue-on-error: true
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -u
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+            cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -a -q cloudflared 2>/dev/null || true)
+            if [ -z \"\$cid\" ]; then
+              echo 'cloudflared is not part of this stack; skipping'
+              exit 0
+            fi
+            sleep 30
+            restarts=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\" 2>/dev/null || echo 0)
+            if [ \"\$restarts\" -gt 2 ] 2>/dev/null; then
+              echo \"::warning::cloudflared restarted \$restarts times since deploy; the Salk connector tunnel is likely down. Check its token.\"
+            fi
+            if ! docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
+              echo '::warning::cloudflared has not registered a tunnel connection; the tunnel is not connected.'
+              echo '::group::cloudflared logs'
+              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=50 cloudflared || true
+              echo '::endgroup::'
+            fi
+            echo \"cloudflared restart count: \$restarts\"
+          " || echo "::warning::tunnel connection check could not run"
 
       # Restart Kong so bind-mounted kong.yml changes take effect. See
       # deploy-production's equivalent step for rationale.

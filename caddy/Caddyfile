@@ -12,7 +12,7 @@
 #                              `dashboard` service basic-auth — Studio has none of
 #                              its own, so Kong is in its availability path)
 #   {DOMAIN_MINIO}             → minio console
-#   :8880 (Docker network only) → bloommcp, for cloudflared's tunnel
+#   :8880 (Docker networks only) → bloommcp, for cloudflared's tunnel
 #
 # TLS strategy:
 #
@@ -299,12 +299,13 @@
 # -------------------
 # Tunnel entrance — cloudflared → bloommcp
 # -------------------
-# Reached only by cloudflared on the Docker network; 8880 is not published.
+# 8880 is not published. cloudflared reaches it on the `tunnel` network; Caddy
+# listens on all its interfaces, so supanet containers can reach caddy:8880 too.
 :8880 {
 	# A request without the Salk user header is refused.
 	@no_salk_user not header X-Salk-User *
 	handle @no_salk_user {
-		respond 403
+		respond "forbidden" 403
 	}
 
 	# Every path forwarded unchanged; streaming, so no compression and no buffering.

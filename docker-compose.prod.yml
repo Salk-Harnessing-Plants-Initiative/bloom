@@ -87,6 +87,8 @@ services:
       start_period: 20s
     networks:
       - supanet
+      # Shared only with cloudflared; the tunnel entrance (:8880).
+      - tunnel
 
   #-------------------
   # BLOOM WEB
@@ -670,26 +672,33 @@ services:
   # -------------------
   # Cloudflare tunnel → caddy:8880 (bloommcp's Salk connector)
   # -------------------
+  # Behind a profile, so `up -d` starts it only where COMPOSE_PROFILES includes
+  # tunnel (prod and staging, not CI).
   cloudflared:
     image: ghcr.io/salk-harnessing-plants-initiative/cloudflare-cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
-    # Started only where COMPOSE_PROFILES includes tunnel (prod and staging, not CI).
-    profiles: ["tunnel"]
-    command: ["tunnel", "--no-autoupdate", "run"]
+    profiles:
+      - tunnel
+    # Metrics on loopback only, so nothing else on the network can read them.
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     read_only: true
+    # Not yet measured here; cloudflared usually runs in well under 100 MB.
     mem_limit: 256m
     memswap_limit: 256m
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Outbound only; nothing is published on the host.
+    # Outbound only, and only on the tunnel network, so a wrong route on the
+    # Cloudflare side can reach Caddy and nothing else in the stack.
     networks:
-      - supanet
+      - tunnel
     depends_on:
       - caddy
     restart: unless-stopped
+    # cloudflared's own default grace period for closing tunnel connections.
+    stop_grace_period: 30s
 
   # -------------------
   #  Kong Gateway
@@ -1191,4 +1200,7 @@ volumes:
 
 networks:
   supanet:
+    driver: bridge
+  # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
+  tunnel:
     driver: bridge
