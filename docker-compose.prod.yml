@@ -682,6 +682,8 @@ services:
     command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    # The image's own non-root user, pinned so a new image can't switch to root.
+    user: "65532:65532"
     read_only: true
     # Not yet measured here; cloudflared usually runs in well under 100 MB.
     mem_limit: 256m

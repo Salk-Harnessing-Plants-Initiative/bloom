@@ -876,7 +876,7 @@ jobs:
           # token-format check at startup. No real Cloudflare API call is ever
           # made in CI because port 443 isn't bound.
           echo "CLOUDFLARE_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> .env.ci
-          # Caddy's tunnel-entrance header value; CI runs no tunnel.
+          # Caddy's tunnel-entrance header value; no tunnel token, since cloudflared does not run in CI.
           echo "BLOOMMCP_TUNNEL_SECRET=ci-tunnel-secret-not-real-0000000000000000" >> .env.ci
           echo "KONG_PORT=8000" >> .env.ci
           echo "BLOOM_WEB_PORT=3000" >> .env.ci

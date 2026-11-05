@@ -175,7 +175,7 @@ dev-logs: logs
 
 .PHONY: prod-logs
 prod-logs:
-	docker compose -f docker-compose.prod.yml logs -f
+	docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f
 
 .PHONY: staging-logs
 staging-logs:

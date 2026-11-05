@@ -24,6 +24,7 @@ PROD_DEFAULTS = REPO_ROOT / ".env.prod.defaults"
 STAGING_DEFAULTS = REPO_ROOT / ".env.staging.defaults"
 PR_CHECKS = REPO_ROOT / ".github" / "workflows" / "pr-checks.yml"
 CI_COMPOSE = REPO_ROOT / "docker-compose.ci.yml"
+MAKEFILE = REPO_ROOT / "Makefile"
 
 TUNNEL_PORT = "8880"
 TUNNEL_PROFILE = "tunnel"
@@ -86,6 +87,15 @@ def test_cloudflared_is_hardened():
     assert "no-new-privileges:true" in service.get("security_opt", [])
     assert service.get("restart") == "unless-stopped"
     assert service.get("stop_grace_period") == "30s"
+    # The image's own non-root user, pinned so a new image can't switch to root.
+    assert service.get("user") == "65532:65532"
+
+
+@pytest.mark.parametrize("target, env_file", [("prod-logs", ".env.prod"), ("staging-logs", ".env.staging")])
+def test_log_targets_read_the_env_file_so_cloudflared_is_included(target: str, env_file: str):
+    recipe = re.search(rf"(?m)^{target}:\n\t(.+)$", MAKEFILE.read_text(encoding="utf-8"))
+    assert recipe, f"no {target} target in the Makefile"
+    assert f"--env-file {env_file}" in recipe.group(1)
 
 
 def test_cloudflared_memory_is_capped_without_swap():
