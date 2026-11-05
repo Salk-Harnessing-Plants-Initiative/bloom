@@ -537,9 +537,8 @@ def is_local_backend() -> bool:
 def self_serve_base_url() -> str:
     """bloommcp's own address, for defaulting local-mode served URLs (#642).
 
-    ``BLOOMMCP_PUBLIC_URL`` when set (the same var already used for OAuth
-    discovery in ``bloom_mcp.auth`` — reused here rather than adding a second
-    "how do I reach myself" var); otherwise the hardcoded ``http://localhost:8811``,
+    ``BLOOMMCP_PUBLIC_URL`` when set (local mode only); otherwise the hardcoded
+    ``http://localhost:8811``,
     since the server's bind port is itself hardcoded (``server.main()``) and no
     env var configures it.
     """

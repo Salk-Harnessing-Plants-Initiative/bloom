@@ -60,7 +60,7 @@ from bloom_mcp import __version__
 from bloom_mcp.supabase_client import validate_env as validate_supabase_env
 from bloom_mcp.experiment_utils import validate_env as validate_data_env
 
-from bloom_mcp.auth import API_KEY, AUTHORIZATION_SERVER, PUBLIC_URL, auth_provider
+from bloom_mcp.auth import API_KEY, auth_provider
 from bloom_mcp.identity import IdentityMiddleware
 from bloom_mcp.tunnel import validate_env as validate_tunnel_env
 
@@ -89,21 +89,8 @@ async def health(_: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
 
 
-def _startup_banner(*, api_key: str | None, oauth_configured: bool) -> str:
-    """The one-line startup banner describing which auth mode(s) are active.
-
-    Matches `build_auth_provider()`'s own condition
-    (`bloom_mcp.auth`, `PUBLIC_URL and AUTHORIZATION_SERVER`) directly, kept
-    explicit here rather than duplicated by feel — an earlier version of
-    this banner checked only `api_key`, so OAuth-configured-with-no-API-key
-    (a real, enforced auth mode — `MultiAuth` with an empty API-key verifier
-    list) fell into the "no authentication" branch and logged a false
-    "dev mode" claim while OAuth enforcement was actually active.
-    """
-    if oauth_configured and api_key:
-        return "Bloom MCP Server starting with OAuth login and API key authentication"
-    if oauth_configured:
-        return "Bloom MCP Server starting with OAuth login (no API key configured)"
+def _startup_banner(*, api_key: str | None) -> str:
+    """The one-line startup banner describing the auth mode."""
     if api_key:
         return "Bloom MCP Server starting with API key authentication"
     return "Bloom MCP Server starting without authentication (dev mode)"
@@ -236,11 +223,7 @@ def main() -> None:
 
         _ports.configure(reader=SupabaseReader(), store=SupabaseResultStore())
 
-    print(
-        _startup_banner(
-            api_key=API_KEY, oauth_configured=bool(PUBLIC_URL and AUTHORIZATION_SERVER)
-        )
-    )
+    print(_startup_banner(api_key=API_KEY))
     tunnel_on = bool(os.environ.get("BLOOMMCP_TUNNEL_SECRET"))
     print(f"Salk connector tunnel: {'enabled' if tunnel_on else 'disabled'}")
 

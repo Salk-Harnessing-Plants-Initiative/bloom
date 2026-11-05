@@ -20,6 +20,10 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 - The public route at `https://bloom.salk.edu/bloommcp` (and staging's `/bloommcp`). bloommcp is
   reached only through the Salk connector now. If you added it to Claude Code, remove it with
   `claude mcp remove bloommcp-prod` (or `bloommcp-staging`) and use the Salk connector instead.
+- bloommcp's own Bloom login: it no longer accepts a Bloom OAuth access token or serves the
+  OAuth discovery document, and `BLOOMMCP_PUBLIC_URL` (now local mode only),
+  `BLOOMMCP_OAUTH_AUTHORIZATION_SERVER` and `BLOOMMCP_OAUTH_JWKS_URI` no longer configure a login.
+  Usage is recorded from `X-Bloom-Identity` or the Salk connector only.
 
 ## [0.1.0a1] - 2026-09-02
 
