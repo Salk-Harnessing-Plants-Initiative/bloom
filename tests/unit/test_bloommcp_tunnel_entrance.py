@@ -171,7 +171,9 @@ def test_every_other_caddy_site_drops_tunnel_traffic():
     assert globals_block is not None and "order abort first" in _lines(globals_block), (
         "abort runs after handle by default, so it must be ordered first"
     )
-    sites = re.findall(r"(?m)^(\S[^\n{]*?)\s*\{\s*$", caddyfile)
+    # A site line may hold placeholders ({$X}); only the global block is a bare `{`.
+    sites = re.findall(r"(?m)^(?!\{\s*$)(\S.*?)\s*\{\s*$", caddyfile)
+    assert not re.search(r"(?m),\s*$", caddyfile), "site addresses must stay on one line"
     others = [s for s in sites if s != f":{TUNNEL_PORT}"]
     assert set(others) >= {"{$CADDY_SITE_ADDRESSES}", ":443", ":80", ":2021"}
     for site in others:

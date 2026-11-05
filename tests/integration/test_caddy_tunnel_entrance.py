@@ -1,13 +1,12 @@
 """Live assertion: Caddy's `:8880` tunnel entrance refuses requests without
-`X-Salk-User` and forwards the rest to bloommcp.
+`X-Salk-User` and forwards the rest to bloommcp, which looks the user up.
 
 Config-shape counterpart: tests/unit/test_bloommcp_tunnel_entrance.py.
 
-8880 is not published on the host, so each request runs inside the Caddy
-container with its busybox `wget`. Busybox stops at the status line on a 4xx
-(no headers, no body), so the status code is the discriminator: the `:8880`
-site answers 403 by itself and never 401, so a 401 can only come from
-bloommcp refusing the missing bearer token.
+8880 is not published on the host, so requests run inside the containers. Caddy's
+own answers are checked with busybox `wget` in the Caddy container, which stops at
+the status line on a 4xx; bloommcp's are read with Python in its container, since
+its refusals are also 403 and only the body tells them apart.
 """
 
 from __future__ import annotations
@@ -75,12 +74,76 @@ def test_request_without_salk_user_is_refused_by_caddy(caddy_container, path):
     assert _status(caddy_container, path) == 403
 
 
-def test_request_with_salk_user_reaches_bloommcp(caddy_container):
-    status = _status(caddy_container, "/mcp", "X-Salk-User: ci@salk.edu")
-    assert status == 401, (
-        f"expected bloommcp's 401 for a missing bearer token, got {status}; "
-        "403 means Caddy refused the header, 502 means bloommcp was not reached"
+# Sent from bloommcp's container with Python, which reads the body of an error response;
+# busybox wget cannot, and both Caddy and bloommcp answer 403.
+_PY_GET = """
+import sys, urllib.request, urllib.error
+url, headers = sys.argv[1], dict(h.split(": ", 1) for h in sys.argv[2:])
+try:
+    response = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=10)
+    print(response.status); print(response.read(2000).decode(errors="replace"))
+except urllib.error.HTTPError as error:
+    print(error.code); print(error.read(2000).decode(errors="replace"))
+"""
+NO_ACCOUNT = "nobody-ci@salk.edu"
+
+
+@pytest.fixture(scope="module")
+def bloommcp_container() -> str:
+    result = subprocess.run(
+        ["docker", "ps", "-q", "--filter", "label=com.docker.compose.service=bloommcp"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    ids = result.stdout.split()
+    if len(ids) != 1:
+        _unavailable(f"expected one running bloommcp container, found {len(ids)}")
+    return ids[0]
+
+
+def _from_bloommcp(container: str, url: str, *headers: str) -> tuple[int, str]:
+    result = subprocess.run(
+        ["docker", "exec", container, "python", "-c", _PY_GET, url, *headers],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    status, _, body = result.stdout.partition("\n")
+    assert status.strip().isdigit(), f"no HTTP status: {result.stdout!r} {result.stderr!r}"
+    return int(status), body
+
+
+def test_a_salk_user_without_an_account_gets_bloommcps_refusal(bloommcp_container):
+    status, body = _from_bloommcp(
+        bloommcp_container, "http://caddy:8880/mcp", f"X-Salk-User: {NO_ACCOUNT}"
+    )
+    assert status == 403
+    assert f"No Bloom account for {NO_ACCOUNT}" in body, body
+
+
+def test_a_forged_tunnel_header_through_caddy_is_replaced(bloommcp_container):
+    status, body = _from_bloommcp(
+        bloommcp_container,
+        "http://caddy:8880/mcp",
+        f"X-Salk-User: {NO_ACCOUNT}",
+        "X-Bloom-Tunnel: forged",
+    )
+    assert status == 403
+    assert f"No Bloom account for {NO_ACCOUNT}" in body, body
+
+
+def test_a_forged_tunnel_header_straight_to_bloommcp_is_ignored(bloommcp_container):
+    forged = _from_bloommcp(
+        bloommcp_container,
+        "http://bloommcp:8811/mcp",
+        f"X-Salk-User: {NO_ACCOUNT}",
+        "X-Bloom-Tunnel: forged",
+    )
+    plain = _from_bloommcp(bloommcp_container, "http://bloommcp:8811/mcp")
+    assert forged[0] == plain[0] == 401
+    assert "No Bloom account" not in forged[1]
 
 
 @pytest.fixture(scope="module")
@@ -109,8 +172,17 @@ def test_tunnel_traffic_still_reaches_the_entrance(caddy_container, caddy_tunnel
     assert _request(caddy_container, f"http://{caddy_tunnel_ip}:8880/mcp") == 403
 
 
-@pytest.mark.parametrize("port, path", [(80, "/"), (2021, "/caddy-health")])
-def test_tunnel_traffic_is_dropped_on_every_other_site(caddy_container, caddy_tunnel_ip, port, path):
+# localhost and studio.localhost are main-site addresses in CI; a bare IP lands on the :80 catch-all.
+@pytest.mark.parametrize(
+    "port, path, headers",
+    [
+        (80, "/", ()),
+        (80, "/", ("Host: localhost",)),
+        (80, "/", ("Host: studio.localhost",)),
+        (2021, "/caddy-health", ()),
+    ],
+)
+def test_tunnel_traffic_is_dropped_on_every_other_site(caddy_container, caddy_tunnel_ip, port, path, headers):
     # The same request from loopback is answered, so a missing answer is the drop, not a dead port.
-    assert _request(caddy_container, f"http://localhost:{port}{path}") is not None
-    assert _request(caddy_container, f"http://{caddy_tunnel_ip}:{port}{path}") is None
+    assert _request(caddy_container, f"http://localhost:{port}{path}", *headers) is not None
+    assert _request(caddy_container, f"http://{caddy_tunnel_ip}:{port}{path}", *headers) is None
