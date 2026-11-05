@@ -81,6 +81,12 @@ def test_it_matches_in_any_casing(cur):
     assert _lookup(cur, email.replace("@salk.edu", "@Salk.EDU")) == uid
 
 
+def test_a_mixed_case_stored_address_is_found_in_lower_case(cur):
+    stored = _upper_local(_salk())
+    uid = _add_user(cur, stored)
+    assert _lookup(cur, stored.lower()) == uid
+
+
 def test_an_unknown_email_returns_null(cur):
     assert _lookup(cur, _salk("nobody")) is None
 
@@ -117,10 +123,61 @@ def test_malformed_or_other_domain_input_returns_null(cur, email):
     assert _lookup(cur, email) is None
 
 
-@pytest.mark.parametrize("pattern", ["%@salk.edu", "_doe@salk.edu", "j%@salk.edu"])
-def test_wildcards_match_no_one(cur, pattern):
-    _add_user(cur, _salk())
-    assert _lookup(cur, pattern) is None
+def _refusable(kind: str) -> str:
+    """A storable address (it ends in `@salk.edu`) that only the named check refuses."""
+    tag = uuid.uuid4().hex[:8]
+    return {
+        "leading space": f" jdoe.{tag}@salk.edu",
+        "inner space": f"jd oe.{tag}@salk.edu",
+        "tab": f"j\tdoe.{tag}@salk.edu",
+        "control character": f"j\x01doe.{tag}@salk.edu",
+        "line break": f"jdoe.{tag}\r\n@salk.edu",
+        "no local part": "@salk.edu",
+        "two addresses": f"a.{tag}@salk.edu,b.{tag}@salk.edu",
+        # auth.users.email is varchar(255); 255 is one over the limit.
+        "255 characters": f"{tag}{'a' * (255 - len('@salk.edu') - len(tag))}@salk.edu",
+    }[kind]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "leading space",
+        "inner space",
+        "tab",
+        "control character",
+        "line break",
+        "no local part",
+        "two addresses",
+        "255 characters",
+    ],
+)
+def test_refused_input_stays_refused_when_an_account_has_it(cur, kind):
+    """Each input is stored as an account, so only the function's own check refuses it."""
+    email = _refusable(kind)
+    _add_user(cur, email)
+    assert _lookup(cur, email) is None
+
+
+def test_a_254_character_address_is_found(cur):
+    tag = uuid.uuid4().hex[:8]
+    email = f"{tag}{'a' * (254 - len('@salk.edu') - len(tag))}@salk.edu"
+    assert len(email) == 254
+    uid = _add_user(cur, email)
+    assert _lookup(cur, email) == uid
+
+
+def test_wildcards_match_no_one(cur):
+    """Each pattern would match only the stored account under LIKE or ILIKE."""
+    local = f"jdoe.{uuid.uuid4().hex[:8]}"
+    _add_user(cur, f"{local}@salk.edu")
+    for pattern in (
+        f"_{local[1:]}@salk.edu",
+        f"%{local[1:]}@salk.edu",
+        f"{local[:-2]}%@salk.edu",
+        f"{local[:-1]}_@salk.edu",
+    ):
+        assert _lookup(cur, pattern) is None, pattern
 
 
 def test_another_domain_never_matches_even_with_an_account(cur):
