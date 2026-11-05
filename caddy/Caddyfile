@@ -304,7 +304,7 @@
 	abort @not_tunnel
 
 	# A request without AIRC's bearer token is refused; bloommcp verifies the token.
-	@no_bearer not header Authorization "Bearer *"
+	@no_bearer not header Authorization "Bearer *" "bearer *"
 	handle @no_bearer {
 		respond "forbidden" 403
 	}

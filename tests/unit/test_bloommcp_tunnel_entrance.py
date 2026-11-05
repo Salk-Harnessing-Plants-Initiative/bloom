@@ -191,6 +191,20 @@ def test_no_service_publishes_the_tunnel_port():
             assert TUNNEL_PORT not in str(mapping), f"{name} publishes {mapping}"
 
 
+@pytest.mark.parametrize(
+    "name", ["BLOOMMCP_TUNNEL_JWKS_URL", "BLOOMMCP_TUNNEL_JWT_ISSUER", "BLOOMMCP_TUNNEL_JWT_AUDIENCE"]
+)
+def test_bloommcp_gets_the_jwt_settings(name: str):
+    assert _services()["bloommcp"]["environment"][name] == "${" + name + "}"
+
+
+def test_staging_and_prod_expect_their_own_audience():
+    audiences = {
+        path.name: _env_value(path, "BLOOMMCP_TUNNEL_JWT_AUDIENCE") for path in (PROD_DEFAULTS, STAGING_DEFAULTS)
+    }
+    assert audiences == {".env.prod.defaults": "bloom-prod", ".env.staging.defaults": "bloom-staging"}
+
+
 def test_caddy_gets_the_tunnel_secret():
     caddy = _services()["caddy"]
     assert caddy["environment"]["BLOOMMCP_TUNNEL_SECRET"] == "${BLOOMMCP_TUNNEL_SECRET}"
@@ -267,7 +281,7 @@ def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
     assert _top_level(_tunnel_site()) == [
         "@not_tunnel not remote_ip {$TUNNEL_SUBNET}",
         "abort @not_tunnel",
-        '@no_bearer not header Authorization "Bearer *"',
+        '@no_bearer not header Authorization "Bearer *" "bearer *"',
         "handle @no_bearer {",
         "handle {",
     ]
@@ -275,7 +289,7 @@ def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
 
 def test_tunnel_site_refuses_requests_without_a_bearer_token():
     site = _tunnel_site()
-    matcher = re.search(r'^\s*(@\w+)\s+not\s+header\s+Authorization\s+"Bearer \*"\s*$', site, re.M)
+    matcher = re.search(r'^\s*(@\w+)\s+not\s+header\s+Authorization\s+"Bearer \*"\s+"bearer \*"\s*$', site, re.M)
     assert matcher, "no matcher for a missing bearer token"
     refusal = block_after(site, rf"handle\s+{matcher.group(1)}\b")
     assert refusal is not None

@@ -38,8 +38,6 @@ test = [
     # tests/unit/test_init_dev.py, which mints + verifies the ANON/SERVICE/AGENT
     # JWTs signed with JWT_SECRET.
     "pyjwt>=2.8",
-    # ES256 signing for the tunnel JWT integration tests.
-    "cryptography>=42",
     "python-dotenv>=1.0",
     # required by scripts/generate_jwt_keys.py (the ES256 signing-key
     # generator for JWT_KEYS/JWT_JWKS) and tests/unit/test_generate_jwt_keys.py.

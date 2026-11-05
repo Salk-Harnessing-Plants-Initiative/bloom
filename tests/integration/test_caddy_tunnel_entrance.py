@@ -75,7 +75,7 @@ def _status(container: str, tunnel_ip: str, path: str, *headers: str) -> int:
 
 # A path-specific route added to the site would be ordered before the refusal.
 @pytest.mark.parametrize("path", ["/", "/health", "/mcp", "/mcp/x"])
-def test_request_without_salk_user_is_refused_by_caddy(caddy_container, caddy_tunnel_ip, path):
+def test_request_without_a_bearer_token_is_refused_by_caddy(caddy_container, caddy_tunnel_ip, path):
     assert _status(caddy_container, caddy_tunnel_ip, path) == 403
 
 
@@ -98,7 +98,7 @@ NO_ACCOUNT = "nobody-ci@salk.edu"
 CI_TUNNEL_KEY = Path(__file__).resolve().parents[2] / ".ci-tunnel" / "key.pem"
 
 
-def _bearer(email: str) -> str:
+def _bearer(email: str, **overrides) -> str:
     """An Authorization header with a token shaped like AIRC's, signed with CI's key."""
     import jwt
 
@@ -109,6 +109,7 @@ def _bearer(email: str) -> str:
         "aud": "bloom-ci",
         "email": email,
         "exp": int(time.time()) + 300,
+        **overrides,
     }
     token = jwt.encode(claims, CI_TUNNEL_KEY.read_text(), algorithm="ES256", headers={"kid": "ci-tunnel"})
     return f"Authorization: Bearer {token}"
@@ -200,6 +201,13 @@ def test_a_refused_mcp_post_is_a_jsonrpc_error_with_the_message(tunnel_client):
     assert response["id"] == 1
     assert response["error"]["data"] == {"status": 403}
     assert f"No Bloom account for {NO_ACCOUNT}" in response["error"]["message"]
+
+
+def test_a_token_for_another_audience_is_refused_live(tunnel_client):
+    # Proves the deployed bloommcp verifies the token: a valid signature for prod is not enough.
+    status, body = _through_tunnel(tunnel_client, _bearer(NO_ACCOUNT, aud="bloom-prod"))
+    assert status == 403
+    assert "could not be verified" in body, body
 
 
 def test_a_forged_tunnel_header_through_caddy_is_replaced(tunnel_client):

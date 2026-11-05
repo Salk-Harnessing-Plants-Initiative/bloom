@@ -42,6 +42,9 @@ JWT_ALGORITHMS = ["ES256"]
 EMAIL_CLAIM = "email"
 # How long AIRC's public keys are cached, and the clock skew allowed on expiry.
 JWKS_CACHE_SECONDS = 300
+# AIRC's Cloudflare refuses Python's default User-Agent; a hung fetch waits at most this long.
+JWKS_USER_AGENT = "bloommcp"
+JWKS_FETCH_TIMEOUT_SECONDS = 5
 JWT_LEEWAY_SECONDS = 30
 NOT_VERIFIED_MESSAGE = (
     "Your Salk sign-in could not be verified; try reconnecting the Bloom connector."
@@ -166,7 +169,14 @@ def _bearer_token(headers: list[tuple[bytes, bytes]]) -> str:
 
 @functools.lru_cache(maxsize=4)
 def _jwks_client(url: str) -> jwt.PyJWKClient:
-    return jwt.PyJWKClient(url, cache_keys=True, lifespan=JWKS_CACHE_SECONDS)
+    # The key set is cached for JWKS_CACHE_SECONDS; no per-key cache, so a removed key stops working.
+    return jwt.PyJWKClient(
+        url,
+        cache_keys=False,
+        lifespan=JWKS_CACHE_SECONDS,
+        headers={"User-Agent": JWKS_USER_AGENT},
+        timeout=JWKS_FETCH_TIMEOUT_SECONDS,
+    )
 
 
 @functools.lru_cache(maxsize=4)
@@ -201,6 +211,12 @@ def _verified_email(token: str) -> str:
     except jwt.PyJWTError as exc:
         logger.warning("tunnel refused: token key not usable: %s", type(exc).__name__)
         raise TunnelRefusal(403, NOT_VERIFIED_MESSAGE)
+    except Exception as exc:
+        # A key set that isn't JSON, a dropped connection, an unreadable keys file.
+        logger.error("tunnel: AIRC's keys not usable: %s", _describe_failure(exc))
+        raise TunnelRefusal(
+            503, "Could not verify your Salk sign-in; try again shortly."
+        )
     try:
         claims = jwt.decode(
             token,

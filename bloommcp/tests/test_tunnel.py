@@ -38,11 +38,18 @@ _KEY = ec.generate_private_key(ec.SECP256R1())
 def _token(
     email: str | None = EMAIL, *, key=_KEY, algorithm="ES256", kid=KID, **claims
 ) -> str:
-    """A JWT shaped like AIRC's: ES256, iss/aud/exp, and the user in `email`."""
-    payload = {"iss": ISSUER, "aud": AUDIENCE, "exp": int(time.time()) + 300}
+    """A JWT shaped like AIRC's: ES256, iss/aud/exp, and the user in `email` (and
+    an unrelated `sub`, so reading `sub` instead would be caught)."""
+    payload = {
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "exp": int(time.time()) + 300,
+        "sub": "entra-object-id",
+    }
     if email is not None:
         payload["email"] = email
     payload.update(claims)
+    payload = {k: v for k, v in payload.items() if v is not None}
     return jwt.encode(payload, key, algorithm=algorithm, headers={"kid": kid})
 
 
@@ -203,6 +210,8 @@ _OTHER_KEY = ec.generate_private_key(ec.SECP256R1())
         _token(aud="bloom-prod"),
         _token(iss="someone-else"),
         _token(exp=int(time.time()) - 3600),
+        _token(exp=int(time.time()) - 60),
+        _token(exp=None),
         _token(email=None),
         _token(email=["jdoe@salk.edu"]),
         _token(key=_OTHER_KEY),
@@ -225,6 +234,8 @@ _OTHER_KEY = ec.generate_private_key(ec.SECP256R1())
         "other-audience",
         "other-issuer",
         "expired",
+        "expired-past-the-leeway",
+        "no-expiry",
         "no-email",
         "email-not-a-string",
         "signed-by-another-key",
@@ -276,6 +287,78 @@ def test_unreachable_keys_url_is_503(monkeypatch, lookup):
     resp = _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
     assert resp.status_code == 503
     assert "try again shortly" in resp.json()["error"]
+    assert lookup.calls == []
+
+
+@pytest.fixture
+def key_server(monkeypatch):
+    """Serves the test JWKS over HTTP, recording each fetch's User-Agent."""
+    import http.server
+    import threading
+
+    jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(_KEY.public_key()))
+    body = json.dumps(
+        {"keys": [{**jwk, "kid": KID, "alg": "ES256", "use": "sig"}]}
+    ).encode()
+    agents: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            agents.append(self.headers.get("User-Agent", ""))
+            # Like AIRC's Cloudflare: Python's default agent is refused.
+            if agents[-1].startswith("Python-urllib"):
+                self.send_response(403)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.delenv("BLOOMMCP_TUNNEL_JWKS_FILE")
+    monkeypatch.setenv(
+        "BLOOMMCP_TUNNEL_JWKS_URL", f"http://127.0.0.1:{server.server_port}/jwks.json"
+    )
+    _clear_key_caches()
+    yield agents
+    server.shutdown()
+
+
+def test_the_keys_url_is_fetched_with_bloommcps_own_user_agent(key_server, lookup):
+    """AIRC's Cloudflare refuses Python's default User-Agent."""
+    resp = _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
+    assert resp.status_code == 200
+    assert key_server and all(a == tunnel.JWKS_USER_AGENT for a in key_server)
+
+
+def test_the_key_set_is_fetched_once_for_many_requests(key_server, lookup):
+    middleware = IdentityMiddleware(_RecordingApp())
+    for _ in range(3):
+        assert _get(middleware, _tunnel_headers(EMAIL)).status_code == 200
+    assert len(key_server) == 1
+
+
+def test_a_lowercase_bearer_scheme_is_accepted(lookup):
+    headers = [("X-Bloom-Tunnel", SECRET), ("Authorization", f"bearer {_token()}")]
+    assert _get(IdentityMiddleware(_RecordingApp()), headers).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "contents", ["not json", None], ids=["not-json", "missing-file"]
+)
+def test_unusable_keys_file_is_503(monkeypatch, tmp_path, lookup, contents):
+    path = tmp_path / "keys.json"
+    if contents is not None:
+        path.write_text(contents)
+    monkeypatch.setenv("BLOOMMCP_TUNNEL_JWKS_FILE", str(path))
+    _clear_key_caches()
+    resp = _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
+    assert resp.status_code == 503
     assert lookup.calls == []
 
 
