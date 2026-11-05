@@ -61,7 +61,6 @@ SECURITY_HEADERS = {
 # the paths serving trait tables, stored objects and signed URLs unguarded.
 HEADER_ROUTES = [
     "/api/client-info",  # exact path -> bloom-web
-    "/api/oauth/consent",  # exact path -> bloom-web
     "/api/cyl/scans/1/video",  # /api/cyl/* -> bloom-web (prefix preserved)
     "/api/gravi/experiments/1/plate-video",  # /api/gravi/* -> bloom-web (prefix preserved)
     "/api/scrna/cellranger/runs",  # /api/scrna/* -> bloom-web (prefix preserved)
