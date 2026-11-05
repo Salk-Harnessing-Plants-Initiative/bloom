@@ -304,9 +304,13 @@
 # -------------------
 # Tunnel entrance — cloudflared → bloommcp
 # -------------------
-# 8880 is not published. cloudflared reaches it on the `tunnel` network; Caddy
-# listens on all its interfaces, so supanet containers can reach caddy:8880 too.
+# 8880 is not published. cloudflared reaches it on the `tunnel` network; requests
+# from anywhere else (supanet containers, the host) are dropped.
 :8880 {
+	# Only cloudflared, on the tunnel network, may use this entrance.
+	@not_tunnel not remote_ip {$TUNNEL_SUBNET}
+	abort @not_tunnel
+
 	# A request without the Salk user header is refused.
 	@no_salk_user not header X-Salk-User *
 	handle @no_salk_user {

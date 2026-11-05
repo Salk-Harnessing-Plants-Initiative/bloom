@@ -265,6 +265,8 @@ def _top_level(body: str) -> list[str]:
 def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
     """A path-specific handle is ordered before both and would skip the X-Salk-User check."""
     assert _top_level(_tunnel_site()) == [
+        "@not_tunnel not remote_ip {$TUNNEL_SUBNET}",
+        "abort @not_tunnel",
         "@no_salk_user not header X-Salk-User *",
         "handle @no_salk_user {",
         "handle {",

@@ -147,10 +147,11 @@ The same applies to a deeper name such as `deep.sub.bloom.salk.edu`: a wildcard 
 
 Salk's AIRC service signs people in with Salk Entra and sends their requests for bloommcp through a Cloudflare tunnel, with the person's email in `X-Salk-User`. Each stack runs its own `cloudflared` container, which connects out to Cloudflare and forwards to `http://caddy:8880`.
 
-`cloudflared` sits alone with Caddy on a `tunnel` Docker network, so it cannot reach the database, Studio, Kong or MinIO directly. Caddy also drops any request from that network on every site except `:8880` (the network has a fixed subnet per environment, `TUNNEL_SUBNET` in `.env.<env>.defaults`), so a route to `caddy:443` or `caddy:80` gets nothing. Port 8880 is not published on the host. cloudflared can still reach the internet and the host's network, as it must to connect out, so a route to a public Bloom hostname would come in through Caddy's published ports like any Salk request; AIRC's tunnel routes only to `http://caddy:8880`. Containers on `supanet` can also reach `caddy:8880`, since Caddy listens on all its networks.
+`cloudflared` sits alone with Caddy on a `tunnel` Docker network, so it cannot reach the database, Studio, Kong or MinIO directly. Caddy also drops any request from that network on every site except `:8880` (the network has a fixed subnet per environment, `TUNNEL_SUBNET` in `.env.<env>.defaults`), so a route to `caddy:443` or `caddy:80` gets nothing. Port 8880 is not published on the host. cloudflared can still reach the internet and the host's network, as it must to connect out, so a route to a public Bloom hostname would come in through Caddy's published ports like any Salk request; AIRC's tunnel routes only to `http://caddy:8880`. In the other direction, `:8880` accepts requests only from the tunnel network: a request from a `supanet` container or the host is dropped, so only cloudflared can use the entrance.
 
 The `:8880` site:
 
+* drops any request that does not come from the tunnel network;
 * refuses a request without `X-Salk-User` with `403`;
 * drops any incoming `X-Bloom-Tunnel` and sets its own from `BLOOMMCP_TUNNEL_SECRET`, so bloommcp can tell the request came through this entrance;
 * forwards every path unchanged to `bloommcp:8811`, unbuffered and uncompressed so MCP streaming works.
