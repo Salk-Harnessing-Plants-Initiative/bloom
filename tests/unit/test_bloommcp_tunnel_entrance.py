@@ -281,7 +281,7 @@ def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
     assert _top_level(_tunnel_site()) == [
         "@not_tunnel not remote_ip {$TUNNEL_SUBNET}",
         "abort @not_tunnel",
-        '@no_bearer not header Authorization "Bearer *" "bearer *"',
+        '@no_bearer not header_regexp Authorization "(?i)^bearer "',
         "handle @no_bearer {",
         "handle {",
     ]
@@ -289,7 +289,8 @@ def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
 
 def test_tunnel_site_refuses_requests_without_a_bearer_token():
     site = _tunnel_site()
-    matcher = re.search(r'^\s*(@\w+)\s+not\s+header\s+Authorization\s+"Bearer \*"\s+"bearer \*"\s*$', site, re.M)
+    # One value per matcher: Caddy refuses a header matcher with two values.
+    matcher = re.search(r'^\s*(@\w+)\s+not\s+header_regexp\s+Authorization\s+"\(\?i\)\^bearer "\s*$', site, re.M)
     assert matcher, "no matcher for a missing bearer token"
     refusal = block_after(site, rf"handle\s+{matcher.group(1)}\b")
     assert refusal is not None
