@@ -21,7 +21,7 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-TUNNEL_URL = "http://localhost:8880/mcp"
+TUNNEL_URL = "http://localhost:8880"
 STATUS_LINE = re.compile(r"HTTP/\d(?:\.\d)?\s+(\d{3})")
 IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 
@@ -51,13 +51,13 @@ def caddy_container() -> str:
     return ids[0]
 
 
-def _status(container: str, *headers: str) -> int:
+def _status(container: str, path: str, *headers: str) -> int:
     """Status code of a GET to the tunnel entrance from inside the Caddy container."""
     command = ["docker", "exec", container, "wget", "-S", "-q", "-O", "/dev/null", "-T", "10"]
     for header in headers:
         command += ["--header", header]
     result = subprocess.run(
-        [*command, TUNNEL_URL], capture_output=True, text=True, timeout=30, check=False
+        [*command, f"{TUNNEL_URL}{path}"], capture_output=True, text=True, timeout=30, check=False
     )
     # -S prints the status line on stderr; wget exits non-zero on a 4xx.
     codes = STATUS_LINE.findall(result.stderr)
@@ -65,12 +65,14 @@ def _status(container: str, *headers: str) -> int:
     return int(codes[-1])
 
 
-def test_request_without_salk_user_is_refused_by_caddy(caddy_container):
-    assert _status(caddy_container) == 403
+# A path-specific route added to the site would be ordered before the refusal.
+@pytest.mark.parametrize("path", ["/", "/health", "/mcp", "/mcp/x"])
+def test_request_without_salk_user_is_refused_by_caddy(caddy_container, path):
+    assert _status(caddy_container, path) == 403
 
 
 def test_request_with_salk_user_reaches_bloommcp(caddy_container):
-    status = _status(caddy_container, "X-Salk-User: ci@salk.edu")
+    status = _status(caddy_container, "/mcp", "X-Salk-User: ci@salk.edu")
     assert status == 401, (
         f"expected bloommcp's 401 for a missing bearer token, got {status}; "
         "403 means Caddy refused the header, 502 means bloommcp was not reached"

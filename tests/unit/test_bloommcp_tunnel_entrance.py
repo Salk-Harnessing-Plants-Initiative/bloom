@@ -175,6 +175,25 @@ def _lines(body: str) -> list[str]:
     return [line.strip() for line in body.splitlines() if line.strip()]
 
 
+def _top_level(body: str) -> list[str]:
+    """The site's own lines, without what is inside its nested blocks."""
+    lines, depth = [], 0
+    for line in _lines(body):
+        if depth == 0:
+            lines.append(line)
+        depth += line.count("{") - line.count("}")
+    return [line for line in lines if line != "}"]
+
+
+def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
+    """A path-specific handle is ordered before both and would skip the X-Salk-User check."""
+    assert _top_level(_tunnel_site()) == [
+        "@no_salk_user not header X-Salk-User *",
+        "handle @no_salk_user {",
+        "handle {",
+    ]
+
+
 def test_tunnel_site_refuses_requests_without_salk_user():
     site = _tunnel_site()
     matcher = re.search(r"^\s*(@\w+)\s+not\s+header\s+X-Salk-User\s+\*\s*$", site, re.M)
