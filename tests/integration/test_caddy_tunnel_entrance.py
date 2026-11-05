@@ -51,18 +51,22 @@ def caddy_container() -> str:
     return ids[0]
 
 
-def _status(container: str, path: str, *headers: str) -> int:
-    """Status code of a GET to the tunnel entrance from inside the Caddy container."""
+def _request(container: str, url: str, *headers: str) -> int | None:
+    """Status code of a GET from inside the Caddy container; None if no response came back."""
     command = ["docker", "exec", container, "wget", "-S", "-q", "-O", "/dev/null", "-T", "10"]
     for header in headers:
         command += ["--header", header]
-    result = subprocess.run(
-        [*command, f"{TUNNEL_URL}{path}"], capture_output=True, text=True, timeout=30, check=False
-    )
+    result = subprocess.run([*command, url], capture_output=True, text=True, timeout=30, check=False)
     # -S prints the status line on stderr; wget exits non-zero on a 4xx.
     codes = STATUS_LINE.findall(result.stderr)
-    assert codes, f"no HTTP status from wget (exit {result.returncode}): {result.stderr}"
-    return int(codes[-1])
+    return int(codes[-1]) if codes else None
+
+
+def _status(container: str, path: str, *headers: str) -> int:
+    """Status code of a GET to the tunnel entrance."""
+    status = _request(container, f"{TUNNEL_URL}{path}", *headers)
+    assert status is not None, f"no HTTP status from the tunnel entrance for {path}"
+    return status
 
 
 # A path-specific route added to the site would be ordered before the refusal.
@@ -77,3 +81,36 @@ def test_request_with_salk_user_reaches_bloommcp(caddy_container):
         f"expected bloommcp's 401 for a missing bearer token, got {status}; "
         "403 means Caddy refused the header, 502 means bloommcp was not reached"
     )
+
+
+@pytest.fixture(scope="module")
+def caddy_tunnel_ip(caddy_container) -> str:
+    """Caddy's address on the tunnel network; a request to it from inside Caddy comes from it."""
+    result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range $name, $net := .NetworkSettings.Networks}}{{$name}} {{$net.IPAddress}}\n{{end}}",
+            caddy_container,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        name, _, ip = line.partition(" ")
+        if name.endswith("_tunnel") and ip:
+            return ip
+    _unavailable(f"caddy is not on a tunnel network: {result.stdout!r}")
+
+
+def test_tunnel_traffic_still_reaches_the_entrance(caddy_container, caddy_tunnel_ip):
+    assert _request(caddy_container, f"http://{caddy_tunnel_ip}:8880/mcp") == 403
+
+
+@pytest.mark.parametrize("port, path", [(80, "/"), (2021, "/caddy-health")])
+def test_tunnel_traffic_is_dropped_on_every_other_site(caddy_container, caddy_tunnel_ip, port, path):
+    # The same request from loopback is answered, so a missing answer is the drop, not a dead port.
+    assert _request(caddy_container, f"http://localhost:{port}{path}") is not None
+    assert _request(caddy_container, f"http://{caddy_tunnel_ip}:{port}{path}") is None

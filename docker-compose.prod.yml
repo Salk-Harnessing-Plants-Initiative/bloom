@@ -66,6 +66,7 @@ services:
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
       # Sent to bloommcp as X-Bloom-Tunnel on the tunnel entrance (:8880).
       BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
+      TUNNEL_SUBNET: ${TUNNEL_SUBNET}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Break-glass path: if ACME issuance fails catastrophically, drop
@@ -693,7 +694,7 @@ services:
     cap_drop:
       - ALL
     # Outbound only, and only on the tunnel network, so a wrong route on the
-    # Cloudflare side can reach Caddy and nothing else in the stack.
+    # Cloudflare side can reach only Caddy's :8880 entrance (Caddy drops it elsewhere).
     networks:
       - tunnel
     depends_on:
@@ -1204,5 +1205,9 @@ networks:
   supanet:
     driver: bridge
   # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
+  # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880.
   tunnel:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${TUNNEL_SUBNET}

@@ -9,6 +9,7 @@ Neither publishes a port on the host.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
 
@@ -129,6 +130,55 @@ def test_the_tunnel_network_can_reach_the_internet():
     networks = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))["networks"]
     assert TUNNEL_NETWORK in networks
     assert not (networks[TUNNEL_NETWORK] or {}).get("internal"), "cloudflared needs outbound internet"
+
+
+def _env_value(path: Path, key: str) -> str | None:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def test_the_tunnel_network_has_a_fixed_subnet_caddy_knows():
+    networks = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))["networks"]
+    assert networks[TUNNEL_NETWORK]["ipam"]["config"] == [{"subnet": "${TUNNEL_SUBNET}"}]
+    assert _services()["caddy"]["environment"]["TUNNEL_SUBNET"] == "${TUNNEL_SUBNET}"
+
+
+def test_tunnel_subnets_are_distinct_and_clear_of_salk_and_existing_networks():
+    ci = re.search(r'TUNNEL_SUBNET=([0-9./]+)', PR_CHECKS.read_text(encoding="utf-8"))
+    assert ci, "pr-checks.yml does not set TUNNEL_SUBNET in .env.ci"
+    subnets = {
+        "prod": _env_value(PROD_DEFAULTS, "TUNNEL_SUBNET"),
+        "staging": _env_value(STAGING_DEFAULTS, "TUNNEL_SUBNET"),
+        "ci": ci.group(1),
+    }
+    nets = {name: ipaddress.ip_network(value) for name, value in subnets.items()}
+    # Salk's network, and the bridge and supanet ranges already on bloom-dev.
+    taken = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.17.0.0/16", "172.18.0.0/16", "172.19.0.0/16")]
+    names = list(nets)
+    for i, name in enumerate(names):
+        assert not any(nets[name].overlaps(t) for t in taken), f"{name} tunnel subnet overlaps {taken}"
+        for other in names[i + 1 :]:
+            assert not nets[name].overlaps(nets[other]), f"{name} and {other} tunnel subnets overlap"
+
+
+def test_every_other_caddy_site_drops_tunnel_traffic():
+    caddyfile = strip_comments(text())
+    globals_block = block_after(caddyfile, r"\A\s*")
+    assert globals_block is not None and "order abort first" in _lines(globals_block), (
+        "abort runs after handle by default, so it must be ordered first"
+    )
+    sites = re.findall(r"(?m)^(\S[^\n{]*?)\s*\{\s*$", caddyfile)
+    others = [s for s in sites if s != f":{TUNNEL_PORT}"]
+    assert set(others) >= {"{$CADDY_SITE_ADDRESSES}", ":443", ":80", ":2021"}
+    for site in others:
+        body = block_after(caddyfile, rf"(?m)^{re.escape(site)}\s")
+        assert body is not None, site
+        top = _top_level(body)
+        assert "@from_tunnel remote_ip {$TUNNEL_SUBNET}" in top, f"{site} does not match the tunnel subnet"
+        assert "abort @from_tunnel" in top, f"{site} does not drop tunnel traffic"
+    assert "@from_tunnel" not in _tunnel_site()
 
 
 def test_no_service_publishes_the_tunnel_port():

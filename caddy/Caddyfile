@@ -60,9 +60,21 @@
 #
 #   BLOOMMCP_TUNNEL_SECRET  sent to bloommcp as X-Bloom-Tunnel on the :8880
 #                         tunnel entrance. From PROD_/STAGING_BLOOMMCP_TUNNEL_SECRET.
+#
+#   TUNNEL_SUBNET         the `tunnel` network's subnet. Every site but :8880
+#                         drops requests from it. From .env.<env>.defaults.
 # =============================================================================
 
+{
+	# abort runs after handle by default; first, so tunnel traffic is dropped before any route.
+	order abort first
+}
+
 {$CADDY_SITE_ADDRESSES} {
+	# Tunnel traffic may only use the :8880 entrance.
+	@from_tunnel remote_ip {$TUNNEL_SUBNET}
+	abort @from_tunnel
+
 	# Multi-SAN cert covering all the subjects listed in CADDY_SITE_ADDRESSES,
 	# issued via ACME DNS-01 against Cloudflare's API. Prod's cert carries
 	# 2 SANs (bloom.salk.edu + *.bloom.salk.edu); staging's carries 1
@@ -276,6 +288,10 @@
 # a coalesced request would get 421, and Safari does not retry. Not worth it
 # for a request that reaches no backend either way.
 :443 {
+	# Tunnel traffic may only use the :8880 entrance.
+	@from_tunnel remote_ip {$TUNNEL_SUBNET}
+	abort @from_tunnel
+
 	respond "not reachable" 404
 }
 
@@ -293,6 +309,10 @@
 # route on :80 for each of them, and those take precedence over this block, so
 # they keep their HTTP-to-HTTPS redirect.
 :80 {
+	# Tunnel traffic may only use the :8880 entrance.
+	@from_tunnel remote_ip {$TUNNEL_SUBNET}
+	abort @from_tunnel
+
 	respond "not reachable" 404
 }
 
@@ -326,6 +346,10 @@
 # not published in docker-compose). Bind to :2021 on a fresh listener
 # so it doesn't collide with the public 80/443 block above.
 :2021 {
+	# Tunnel traffic may only use the :8880 entrance.
+	@from_tunnel remote_ip {$TUNNEL_SUBNET}
+	abort @from_tunnel
+
 	# Both arms are `handle` blocks on purpose: Caddy sorts `handle` ahead of a
 	# bare `respond`, so a matcher-less handle beside a bare respond would
 	# swallow the health path itself.
