@@ -305,9 +305,10 @@
 # Tunnel entrance — cloudflared → bloommcp
 # -------------------
 # 8880 is not published. cloudflared reaches it on the `tunnel` network; requests
-# from anywhere else (supanet containers, the host) are dropped.
+# from supanet containers are dropped. The host can still reach it through the
+# network's gateway, which is inside TUNNEL_SUBNET.
 :8880 {
-	# Only cloudflared, on the tunnel network, may use this entrance.
+	# Only the tunnel network (cloudflared, and the host via its gateway) may use this entrance.
 	@not_tunnel not remote_ip {$TUNNEL_SUBNET}
 	abort @not_tunnel
 
