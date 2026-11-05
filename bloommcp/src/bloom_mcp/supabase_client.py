@@ -165,8 +165,11 @@ def read_input_csv(name: str) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(payload))
 
 
-def call_rpc(function_name: str, params: dict) -> list[dict]:
-    """Call a Postgres RPC function via PostgREST as bloom_agent, return its rows.
+def call_rpc(function_name: str, params: dict) -> list[dict] | str | None:
+    """Call a Postgres RPC function via PostgREST as bloom_agent, return its result.
+
+    A set-returning function gives its rows; one returning a single value (e.g.
+    `bloom_user_for_email`) gives that value, or None for SQL NULL.
 
     Args:
         function_name: a `bloom_agent`-granted RPC (e.g. `get_experiment_traits`,

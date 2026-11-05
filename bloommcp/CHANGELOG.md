@@ -8,6 +8,19 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+### Added
+
+- Salk connector: with `BLOOMMCP_TUNNEL_SECRET` set, a request from Caddy's tunnel entrance is
+  admitted for the Bloom account matching its `X-Salk-User` email, and usage is recorded under
+  that account. Startup fails on a secret under 32 characters or without `BLOOMMCP_API_KEY`.
+  A refused POST gets a JSON-RPC error carrying the reason, so MCP clients can show it.
+
+### Removed
+
+- The public route at `https://bloom.salk.edu/bloommcp` (and staging's `/bloommcp`). bloommcp is
+  reached only through the Salk connector now. If you added it to Claude Code, remove it with
+  `claude mcp remove bloommcp-prod` (or `bloommcp-staging`) and use the Salk connector instead.
+
 ## [0.1.0a1] - 2026-09-02
 
 ### Added

@@ -6,7 +6,7 @@ bloom Supabase database. Every analysis/plotting tool delegates to
 [`sleap-roots-analyze`](https://github.com/talmolab/sleap-roots-analyze) — bloom-mcp is a thin
 MCP surface over it, not a second home for analysis code.
 
-**Connecting an AI client (Claude Code) to the hosted server?** See
+**Connecting Claude to the hosted server?** See
 [docs/connecting-claude-code.md](docs/connecting-claude-code.md) — this README covers running and
 developing the server itself, not connecting a client to it.
 
@@ -33,6 +33,31 @@ uv run bloom-mcp          # or: python -m bloom_mcp
 
 `SUPABASE_URL` and `BLOOM_AGENT_KEY` are validated at startup (and lazily on
 first Supabase access); `import bloom_mcp` itself requires no environment.
+
+### Salk connector (tunnel)
+
+Outside callers reach bloommcp only through the Salk connector: AIRC signs people in with Salk
+and forwards requests through a Cloudflare tunnel to Caddy's tunnel entrance (`caddy:8880`),
+which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on the person's email in
+`X-Salk-User` (`bloom_mcp.tunnel`).
+
+- bloommcp reads `X-Salk-User` only when the request carries exactly one `X-Bloom-Tunnel` equal
+  to the secret. Otherwise the request is handled as before and `X-Salk-User` is ignored.
+- The email must be one `@salk.edu` address and belong to an active Bloom account
+  (`bloom_user_for_email`, called as `bloom_agent`; cached 60 s). Otherwise: 403, or 503 if the
+  lookup fails. A POST holding one JSON-RPC request gets the refusal as a JSON-RPC error instead
+  (HTTP 200, code `-32001`, `data.status` 403 or 503), since MCP clients show its message.
+- An admitted request runs with `BLOOMMCP_API_KEY` in place of a caller token, and its usage is
+  recorded under the Bloom account's id. Queries still run as `bloom_agent`.
+
+What this trusts: Caddy's tunnel entrance, which only Caddy and bloommcp hold the secret for; it
+never leaves the stack. Any container on the stack's network can still reach `caddy:8880` and set
+`X-Salk-User` there; those are our own services.
+
+| Variable | Purpose |
+| --- | --- |
+| `BLOOMMCP_TUNNEL_SECRET` | Turns the tunnel path on. At least 32 characters, and needs `BLOOMMCP_API_KEY`; startup fails otherwise. Unset (dev, CI): off. |
+| `SITE_URL` | Bloom's address, named in the "create an account" refusal. |
 
 ## Development
 

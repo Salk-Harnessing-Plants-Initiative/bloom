@@ -7,12 +7,11 @@
 #                              CLI bootstrap — exact path, ahead of /api/*)
 #   {DOMAIN_MAIN}/api/*        → kong (Supabase API gateway, /api prefix stripped)
 #   {DOMAIN_MAIN}/langchain/*  → langchain-agent (FastAPI, prefix preserved)
-#   {DOMAIN_MAIN}/bloommcp/*   → bloommcp (MCP server, /bloommcp prefix stripped)
 #   {DOMAIN_STUDIO}            → kong → studio (Supabase Studio, gated by Kong's
 #                              `dashboard` service basic-auth — Studio has none of
 #                              its own, so Kong is in its availability path)
 #   {DOMAIN_MINIO}             → minio console
-#   :8880 (Docker networks only) → bloommcp, for cloudflared's tunnel
+#   :8880 (Docker networks only) → bloommcp, for cloudflared's tunnel; its only way in
 #
 # TLS strategy:
 #
@@ -102,8 +101,12 @@
 		Cross-Origin-Resource-Policy same-origin
 	}
 
-	# Compress these text types, except on the stream routes: encode holds headers until the first body byte.
-	@compress not path /langchain/* /bloommcp/*
+	# Only the tunnel entrance may set these; bloommcp trusts them from it alone.
+	request_header -X-Salk-User
+	request_header -X-Bloom-Tunnel
+
+	# Compress these text types, except on the stream route: encode holds headers until the first body byte.
+	@compress not path /langchain/*
 	encode @compress zstd gzip {
 		match {
 			header Content-Type application/json*
@@ -168,24 +171,6 @@
 		# flush_interval -1 forwards SSE chunks immediately without buffering.
 		handle /langchain/* {
 			reverse_proxy langchain-agent:5002 {
-				flush_interval -1
-			}
-		}
-
-		# OAuth discovery for the MCP server. RFC 9728 places this at the origin
-		# root with the resource path appended, so it cannot sit under
-		# /bloommcp/*. `handle`, not `handle_path` — bloommcp serves this exact
-		# path and the prefix must survive.
-		handle /.well-known/oauth-protected-resource/bloommcp/* {
-			reverse_proxy bloommcp:8811
-		}
-
-		# Bloommcp MCP server — strip /bloommcp prefix, proxy to FastMCP on 8811.
-		# Auth is enforced by bloommcp itself (Bearer token — BLOOMMCP_API_KEY or,
-		# where configured, a Supabase OAuth access token) so Caddy doesn't need
-		# to do auth here. Salk-network-internal only.
-		handle_path /bloommcp/* {
-			reverse_proxy bloommcp:8811 {
 				flush_interval -1
 			}
 		}
@@ -319,9 +304,14 @@
 # -------------------
 # Tunnel entrance — cloudflared → bloommcp
 # -------------------
-# 8880 is not published. cloudflared reaches it on the `tunnel` network; Caddy
-# listens on all its interfaces, so supanet containers can reach caddy:8880 too.
+# 8880 is not published. cloudflared reaches it on the `tunnel` network; requests
+# from supanet containers are dropped. The host can still reach it through the
+# network's gateway, which is inside TUNNEL_SUBNET.
 :8880 {
+	# Only the tunnel network (cloudflared, and the host via its gateway) may use this entrance.
+	@not_tunnel not remote_ip {$TUNNEL_SUBNET}
+	abort @not_tunnel
+
 	# A request without the Salk user header is refused.
 	@no_salk_user not header X-Salk-User *
 	handle @no_salk_user {
