@@ -694,7 +694,7 @@ services:
     cap_drop:
       - ALL
     # Outbound only, and only on the tunnel network, so a wrong route on the
-    # Cloudflare side can reach only Caddy's :8880 entrance (Caddy drops it elsewhere).
+    # Cloudflare side to caddy:<port> reaches only the :8880 entrance (Caddy drops it elsewhere).
     networks:
       - tunnel
     depends_on:
