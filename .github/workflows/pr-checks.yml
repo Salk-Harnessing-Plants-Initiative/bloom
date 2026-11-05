@@ -714,7 +714,8 @@ jobs:
     # It formerly `needs: docker-build`, which serialized the two jobs and gave
     # fail-fast — a failing CVE build skipped this expensive job. Dropping it
     # trades that saving for parallelism (both build their own stacks anyway).
-    runs-on: ubuntu-latest
+    # Pinned until Playwright installs Chromium on ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     # Cap the job. The GitHub default is 6h; a "No space left on device" fill
     # once left this job hanging for the full 6h before failing (issue #334).
     # Normal runtime is ~8-15 min, so 30 fails fast on any future hang.
