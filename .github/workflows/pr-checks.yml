@@ -149,7 +149,8 @@ jobs:
   # Scans Python dependencies for known CVEs via lockfile export
   python-audit:
     name: Python Security Audit for CVEs
-    runs-on: ubuntu-latest
+    # Pinned: test_postgrest_client_timeout_is_enforced_end_to_end times out on ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     # A hang anywhere in this job's chain (unit tests, the bloommcp/bloomcli
     # suites, the wheel build, or pip-audit itself) would otherwise run until
     # GitHub Actions' 360-minute default cap with zero output (#454). Matches

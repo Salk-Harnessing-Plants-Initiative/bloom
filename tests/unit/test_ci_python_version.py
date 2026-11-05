@@ -1,5 +1,5 @@
 """CI runs the repo's Python tests on the same Python the services run, and keeps the
-Playwright job on a runner Playwright supports."""
+Playwright and Python-audit jobs on Ubuntu 24.04, where both pass."""
 
 from pathlib import Path
 
@@ -18,6 +18,7 @@ def test_the_root_python_matches_the_services():
         assert _version(REPO_ROOT / service / ".python-version") == root, service
 
 
-def test_the_playwright_job_runs_on_a_supported_ubuntu():
+def test_the_playwright_and_audit_jobs_run_on_ubuntu_24_04():
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/pr-checks.yml").read_text())
-    assert workflow["jobs"]["compose-health-check"]["runs-on"] == "ubuntu-24.04"
+    for job in ("compose-health-check", "python-audit"):
+        assert workflow["jobs"][job]["runs-on"] == "ubuntu-24.04", job
