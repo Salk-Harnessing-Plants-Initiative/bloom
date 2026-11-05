@@ -385,24 +385,32 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -u
-            cd ${{ secrets.PROD_DEPLOY_PATH }}
-            cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -a -q cloudflared 2>/dev/null || true)
+            cd ${{ secrets.PROD_DEPLOY_PATH }} || { echo '::warning::deploy directory missing; tunnel check skipped'; exit 0; }
+            cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -a -q cloudflared)
             if [ -z \"\$cid\" ]; then
-              echo 'cloudflared is not part of this stack; skipping'
+              if grep -Eq '^COMPOSE_PROFILES=.*tunnel' .env.prod; then
+                echo '::warning::the tunnel profile is on but there is no cloudflared container; the Salk connector is down.'
+              else
+                echo 'tunnel profile is off; skipping'
+              fi
               exit 0
             fi
-            sleep 30
-            restarts=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\" 2>/dev/null || echo 0)
-            if [ \"\$restarts\" -gt 2 ] 2>/dev/null; then
-              echo \"::warning::cloudflared restarted \$restarts times since deploy; the Salk connector tunnel is likely down. Check its token.\"
-            fi
-            if ! docker compose -f docker-compose.prod.yml --env-file .env.prod logs cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
-              echo '::warning::cloudflared has not registered a tunnel connection; the tunnel is not connected.'
-              echo '::group::cloudflared logs'
-              docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=50 cloudflared || true
-              echo '::endgroup::'
-            fi
-            echo \"cloudflared restart count: \$restarts\"
+            # Asks cloudflared whether it is connected now; a fresh container gets up to ready_wait seconds.
+            ready_wait=60
+            waited=0
+            until docker exec \"\$cid\" cloudflared tunnel --metrics 127.0.0.1:20241 ready >/dev/null 2>&1; do
+              if [ \"\$waited\" -ge \"\$ready_wait\" ]; then
+                echo \"::warning::cloudflared has no live connection to Cloudflare after \${ready_wait}s; the Salk connector is down. Check its token and outbound port 7844.\"
+                started=\$(docker inspect --format='{{.State.StartedAt}}' \"\$cid\")
+                echo '::group::cloudflared logs since it started'
+                docker compose -f docker-compose.prod.yml --env-file .env.prod logs --since \"\$started\" --tail=50 cloudflared || true
+                echo '::endgroup::'
+                exit 0
+              fi
+              sleep 5
+              waited=\$((waited + 5))
+            done
+            echo \"cloudflared is connected (after \${waited}s)\"
           " || echo "::warning::tunnel connection check could not run"
 
       # Restart Kong so bind-mounted kong.yml changes take effect — `up -d`
@@ -1393,24 +1401,32 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -u
-            cd ${{ secrets.STAGING_DEPLOY_PATH }}
-            cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -a -q cloudflared 2>/dev/null || true)
+            cd ${{ secrets.STAGING_DEPLOY_PATH }} || { echo '::warning::deploy directory missing; tunnel check skipped'; exit 0; }
+            cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -a -q cloudflared)
             if [ -z \"\$cid\" ]; then
-              echo 'cloudflared is not part of this stack; skipping'
+              if grep -Eq '^COMPOSE_PROFILES=.*tunnel' .env.staging; then
+                echo '::warning::the tunnel profile is on but there is no cloudflared container; the Salk connector is down.'
+              else
+                echo 'tunnel profile is off; skipping'
+              fi
               exit 0
             fi
-            sleep 30
-            restarts=\$(docker inspect --format='{{.RestartCount}}' \"\$cid\" 2>/dev/null || echo 0)
-            if [ \"\$restarts\" -gt 2 ] 2>/dev/null; then
-              echo \"::warning::cloudflared restarted \$restarts times since deploy; the Salk connector tunnel is likely down. Check its token.\"
-            fi
-            if ! docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
-              echo '::warning::cloudflared has not registered a tunnel connection; the tunnel is not connected.'
-              echo '::group::cloudflared logs'
-              docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --tail=50 cloudflared || true
-              echo '::endgroup::'
-            fi
-            echo \"cloudflared restart count: \$restarts\"
+            # Asks cloudflared whether it is connected now; a fresh container gets up to ready_wait seconds.
+            ready_wait=60
+            waited=0
+            until docker exec \"\$cid\" cloudflared tunnel --metrics 127.0.0.1:20241 ready >/dev/null 2>&1; do
+              if [ \"\$waited\" -ge \"\$ready_wait\" ]; then
+                echo \"::warning::cloudflared has no live connection to Cloudflare after \${ready_wait}s; the Salk connector is down. Check its token and outbound port 7844.\"
+                started=\$(docker inspect --format='{{.State.StartedAt}}' \"\$cid\")
+                echo '::group::cloudflared logs since it started'
+                docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --since \"\$started\" --tail=50 cloudflared || true
+                echo '::endgroup::'
+                exit 0
+              fi
+              sleep 5
+              waited=\$((waited + 5))
+            done
+            echo \"cloudflared is connected (after \${waited}s)\"
           " || echo "::warning::tunnel connection check could not run"
 
       # Restart Kong so bind-mounted kong.yml changes take effect. See

@@ -183,7 +183,7 @@ The deploy refuses to start if either is missing or empty.
 
 Run compose by hand from the deploy directory, and always pass `--env-file` (without it compose reads no profile and no secrets). Prod uses `docker compose -f docker-compose.prod.yml --env-file .env.prod`; staging uses `docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging`. Shown below as `docker compose ...`.
 
-* **Did it connect?** `docker compose ... logs cloudflared | grep "Registered tunnel connection"`. A green deploy does not prove the tunnel is up: the deploy only warns if `cloudflared` keeps restarting or never registers a connection.
+* **Is it connected?** `docker compose ... exec cloudflared cloudflared tunnel --metrics 127.0.0.1:20241 ready` exits 0 only while it has a live connection to Cloudflare. Each deploy runs the same check and warns, without failing, when it does not.
 * **Off now:** `docker compose ... stop cloudflared`. It comes back on the next deploy.
 * **Off until further notice:** ask AIRC to disable the route or revoke the token.
 * **Off for good:** remove `tunnel` from `COMPOSE_PROFILES` in the defaults file, then run `docker compose ... rm -sf cloudflared` once. Do not just delete the GitHub secrets: the deploy requires them while `cloudflared` is in the compose file, so every deploy would fail.

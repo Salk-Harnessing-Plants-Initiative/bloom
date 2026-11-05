@@ -243,11 +243,32 @@ def test_deploy_warns_but_never_fails_on_a_dead_tunnel(job_name: str, label: str
     assert check in names, f"{job_name} has no '{check}' step"
     assert names.index("Caddy crash-loop check") < names.index(check)
     step = steps[names.index(check)]
+    assert "if" not in step, "the check must run on every deploy"
     assert step.get("continue-on-error") is True
     run = step["run"]
     assert "exit 1" not in run and "::error::" not in run
     assert f"{compose} ps -a -q cloudflared" in run
-    assert f"{compose} logs cloudflared" in run
-    assert "Registered tunnel connection" in run
-    assert re.search(r"restarts\\?\"?\s*-gt\s*2", run)
     assert "::warning::" in run
+
+
+@pytest.mark.parametrize("job_name, label, compose", DEPLOY_JOBS)
+def test_deploy_asks_cloudflared_whether_it_is_connected_now(job_name: str, label: str, compose: str):
+    """The container usually outlives the deploy, so its log history and restart count
+    say nothing about now; cloudflared's own ready check does."""
+    steps = yaml.safe_load(DEPLOY.read_text(encoding="utf-8"))["jobs"][job_name]["steps"]
+    run = next(s for s in steps if s.get("name") == f"Tunnel connection check ({label})")["run"]
+    metrics = _cloudflared()["command"][_cloudflared()["command"].index("--metrics") + 1]
+    assert f"cloudflared tunnel --metrics {metrics} ready" in run
+    assert "Registered tunnel connection" not in run
+    assert "RestartCount" not in run
+    assert "{{.State.StartedAt}}" in run and "logs --since" in run, "logs shown start at this container's start"
+    assert "sleep 30" not in run, "poll up to a named limit instead of a fixed wait"
+
+
+@pytest.mark.parametrize("job_name, label, compose", DEPLOY_JOBS)
+def test_deploy_warns_when_the_profile_is_on_but_cloudflared_is_missing(job_name: str, label: str, compose: str):
+    steps = yaml.safe_load(DEPLOY.read_text(encoding="utf-8"))["jobs"][job_name]["steps"]
+    run = next(s for s in steps if s.get("name") == f"Tunnel connection check ({label})")["run"]
+    env_file = compose.split("--env-file ")[1]
+    assert f"COMPOSE_PROFILES=.*tunnel' {env_file}" in run
+    assert "ps -a -q cloudflared 2>/dev/null" not in run, "a compose error must not read as 'no tunnel'"
