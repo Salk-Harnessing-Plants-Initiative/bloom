@@ -192,6 +192,107 @@ def test_create_account_message_without_site_url(monkeypatch):
     }
 
 
+# --- Refusals as JSON-RPC errors on POST -------------------------------------
+# MCP clients show a JSON-RPC error's message; a bare 403 body is usually dropped.
+
+NO_ACCOUNT_MESSAGE = f"No Bloom account for newperson@salk.edu. Create one at {SITE_URL}, or reach out to the Bloom team."
+
+
+def _post(app, headers, body, path="/mcp"):
+    return TestClient(app).post(path, headers=headers, content=body)
+
+
+def _rpc(request_id) -> bytes:
+    import json
+
+    return json.dumps(
+        {"jsonrpc": "2.0", "id": request_id, "method": "initialize", "params": {}}
+    ).encode()
+
+
+@pytest.mark.parametrize("request_id", [7, "abc"])
+def test_post_refusal_is_a_jsonrpc_error_with_the_message(monkeypatch, request_id):
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    app = _RecordingApp()
+    resp = _post(
+        IdentityMiddleware(app), _tunnel_headers("newperson@salk.edu"), _rpc(request_id)
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {
+            "code": tunnel.REFUSAL_CODE,
+            "message": NO_ACCOUNT_MESSAGE,
+            "data": {"status": 403},
+        },
+    }
+    assert app.called == 0
+
+
+def test_post_lookup_failure_is_a_jsonrpc_error_with_status_503(monkeypatch):
+    monkeypatch.setattr(
+        supabase_client, "call_rpc", _FakeLookup(error=RuntimeError("down"))
+    )
+    resp = _post(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL), _rpc(1))
+    assert resp.status_code == 200
+    error = resp.json()["error"]
+    assert error["data"] == {"status": 503}
+    assert "try again shortly" in error["message"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"jsonrpc": "2.0", "method": "notifications/initialized"}',
+        b"not json",
+        b'[{"jsonrpc": "2.0", "id": 1, "method": "ping"}]',
+        b"",
+    ],
+    ids=["notification", "not-json", "batch", "empty"],
+)
+def test_post_without_a_single_request_id_keeps_the_plain_403(monkeypatch, body):
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    resp = _post(
+        IdentityMiddleware(_RecordingApp()), _tunnel_headers("newperson@salk.edu"), body
+    )
+    assert resp.status_code == 403
+    assert resp.json() == {"error": NO_ACCOUNT_MESSAGE}
+
+
+def test_oversized_post_keeps_the_plain_403(monkeypatch):
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    body = _rpc(1)[:-1] + b', "pad": "' + b"x" * tunnel.MAX_REFUSAL_BODY_BYTES + b'"}'
+    resp = _post(
+        IdentityMiddleware(_RecordingApp()), _tunnel_headers("newperson@salk.edu"), body
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("method", ["GET", "DELETE"])
+def test_get_and_delete_refusals_stay_plain_403(monkeypatch, method):
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    resp = TestClient(IdentityMiddleware(_RecordingApp())).request(
+        method, "/mcp", headers=_tunnel_headers("newperson@salk.edu")
+    )
+    assert resp.status_code == 403
+    assert resp.json() == {"error": NO_ACCOUNT_MESSAGE}
+
+
+def test_admitted_post_reaches_the_app_with_its_body(lookup):
+    received = {}
+
+    async def app(scope, receive, send):
+        message = await receive()
+        received["body"] = message.get("body", b"")
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    resp = _post(IdentityMiddleware(app), _tunnel_headers(EMAIL), _rpc(1))
+    assert resp.status_code == 200
+    assert received["body"] == _rpc(1)
+
+
 def test_unknown_account_is_not_cached(monkeypatch):
     fake = _FakeLookup(accounts={})
     monkeypatch.setattr(supabase_client, "call_rpc", fake)

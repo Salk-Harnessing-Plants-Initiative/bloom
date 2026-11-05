@@ -45,7 +45,8 @@ which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on the person
   to the secret. Otherwise the request is handled as before and `X-Salk-User` is ignored.
 - The email must be one `@salk.edu` address and belong to an active Bloom account
   (`bloom_user_for_email`, called as `bloom_agent`; cached 60 s). Otherwise: 403, or 503 if the
-  lookup fails.
+  lookup fails. A POST holding one JSON-RPC request gets the refusal as a JSON-RPC error instead
+  (HTTP 200, code `-32001`, `data.status` 403 or 503), since MCP clients show its message.
 - An admitted request runs with `BLOOMMCP_API_KEY` in place of a caller token, and its usage is
   recorded under the Bloom account's id. Queries still run as `bloom_agent`.
 

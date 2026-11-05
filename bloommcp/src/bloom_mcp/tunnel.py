@@ -14,6 +14,7 @@ usage is recorded under the account's id. Queries still run as ``bloom_agent``.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import threading
@@ -33,6 +34,10 @@ MAX_EMAIL_LENGTH = 254
 LOOKUP_RPC = "bloom_user_for_email"
 CACHE_TTL_SECONDS = 60
 CACHE_MAX_ENTRIES = 1024
+# JSON-RPC server-error code for a refused tunnel request; `data.status` holds the HTTP status.
+REFUSAL_CODE = -32001
+# Larger POST bodies are not read for a request id; they get the plain JSON refusal.
+MAX_REFUSAL_BODY_BYTES = 1024 * 1024
 
 # Printable ASCII without space: rules out whitespace and control characters.
 _FIRST_ALLOWED, _LAST_ALLOWED = 0x21, 0x7E
@@ -49,6 +54,26 @@ class TunnelRefusal(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def jsonrpc_refusal(body: bytes, refusal: TunnelRefusal) -> bytes | None:
+    """A JSON-RPC error carrying ``refusal`` for a body holding one request; None otherwise."""
+    try:
+        request = json.loads(body)
+    except ValueError:
+        return None
+    request_id = request.get("id") if isinstance(request, dict) else None
+    # A notification has no id; a bool is not a valid one.
+    if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
+        return None
+    error = {
+        "code": REFUSAL_CODE,
+        "message": refusal.message,
+        "data": {"status": refusal.status},
+    }
+    return json.dumps({"jsonrpc": "2.0", "id": request_id, "error": error}).encode(
+        "utf-8"
+    )
 
 
 def validate_env() -> None:

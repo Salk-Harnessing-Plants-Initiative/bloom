@@ -232,9 +232,7 @@ class IdentityMiddleware:
                 key = tunnel.api_key()
                 identity = await tunnel.bloom_user(tunnel.salk_user(headers))
             except tunnel.TunnelRefusal as exc:
-                await _json_response(
-                    scope, receive, send, status=exc.status, error=exc.message
-                )
+                await _refuse_tunnel_request(scope, receive, send, exc)
                 return
             scope = tunnel.with_api_key(scope, key)
         else:
@@ -285,6 +283,45 @@ class IdentityMiddleware:
                     identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
                     _action_from_path(path),
                 )
+
+
+async def _read_body(receive, limit: int) -> bytes | None:
+    """The request body, or None if it is larger than ``limit`` or the client went away."""
+    chunks, size = [], 0
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            return None
+        chunk = message.get("body", b"")
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+        if not message.get("more_body"):
+            return b"".join(chunks)
+
+
+async def _refuse_tunnel_request(scope, receive, send, refusal) -> None:
+    """A POST holding one JSON-RPC request gets a JSON-RPC error, whose message MCP
+    clients show; anything else gets the plain JSON error with the refusal's status."""
+    from bloom_mcp import tunnel
+
+    if scope.get("method") == "POST":
+        body = await _read_body(receive, tunnel.MAX_REFUSAL_BODY_BYTES)
+        payload = tunnel.jsonrpc_refusal(body, refusal) if body is not None else None
+        if payload is not None:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": payload})
+            return
+    await _json_response(
+        scope, receive, send, status=refusal.status, error=refusal.message
+    )
 
 
 async def _json_response(scope, receive, send, *, status: int, error: str) -> None:

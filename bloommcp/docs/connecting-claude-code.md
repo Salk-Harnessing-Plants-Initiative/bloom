@@ -9,8 +9,9 @@ Claude.
 - **A Salk account.** The connector signs you in with Salk.
 - **A Bloom account with the same Salk email.** If you don't have one, sign up on the Bloom
   website first. Without one, the connector refuses with "No Bloom account for <your email>.
-  Create one at <Bloom's address>, or reach out to the Bloom team." If you already have an
-  account and see this, reach out to the Bloom team.
+  Create one at <Bloom's address>, or reach out to the Bloom team." Claude may instead show
+  only that it couldn't connect to Bloom; the usual cause is the same. If you already have
+  an account and see either, reach out to the Bloom team.
 
 ## Connecting
 

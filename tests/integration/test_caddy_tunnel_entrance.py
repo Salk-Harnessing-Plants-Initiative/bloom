@@ -78,10 +78,12 @@ def test_request_without_salk_user_is_refused_by_caddy(caddy_container, caddy_tu
 # Sent with Python, which reads the body of an error response; busybox wget cannot, and
 # both Caddy and bloommcp answer 403. Prints nothing if no response came back.
 _PY_GET = """
-import sys, urllib.request, urllib.error
+import os, sys, urllib.request, urllib.error
 url, headers = sys.argv[1], dict(h.split(": ", 1) for h in sys.argv[2:])
+data = os.environ.get("POST_BODY", "").encode() or None
 try:
-    response = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=10)
+    request = urllib.request.Request(url, data=data, headers=headers)
+    response = urllib.request.urlopen(request, timeout=10)
     print(response.status); print(response.read(2000).decode(errors="replace"))
 except urllib.error.HTTPError as error:
     print(error.code); print(error.read(2000).decode(errors="replace"))
@@ -157,6 +159,21 @@ def test_a_salk_user_without_an_account_gets_bloommcps_refusal(tunnel_client):
     status, body = _through_tunnel(tunnel_client, f"X-Salk-User: {NO_ACCOUNT}")
     assert status == 403
     assert f"No Bloom account for {NO_ACCOUNT}" in body, body
+
+
+def test_a_refused_mcp_post_is_a_jsonrpc_error_with_the_message(tunnel_client):
+    import json
+
+    request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    client = [*tunnel_client[:-1], "-e", f"POST_BODY={json.dumps(request)}", tunnel_client[-1]]
+    status, body = _through_tunnel(
+        client, f"X-Salk-User: {NO_ACCOUNT}", "Content-Type: application/json"
+    )
+    assert status == 200, body
+    response = json.loads(body)
+    assert response["id"] == 1
+    assert response["error"]["data"] == {"status": 403}
+    assert f"No Bloom account for {NO_ACCOUNT}" in response["error"]["message"]
 
 
 def test_a_forged_tunnel_header_through_caddy_is_replaced(tunnel_client):
