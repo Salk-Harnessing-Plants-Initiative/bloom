@@ -16,7 +16,7 @@
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
-#   meta, db-prod, supavisor, studio)
+#   meta, db-prod, supavisor, studio, cloudflared in the `tunnel` profile)
 #
 # Host-exposed ports:
 #   80/443  - caddy (reverse proxy, auto HTTPS)
@@ -64,6 +64,9 @@ services:
       # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
       # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      # Sent to bloommcp as X-Bloom-Tunnel on the tunnel entrance (:8880).
+      BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
+      TUNNEL_SUBNET: ${TUNNEL_SUBNET}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Break-glass path: if ACME issuance fails catastrophically, drop
@@ -85,6 +88,8 @@ services:
       start_period: 20s
     networks:
       - supanet
+      # Shared only with cloudflared; the tunnel entrance (:8880).
+      - tunnel
 
   #-------------------
   # BLOOM WEB
@@ -666,6 +671,39 @@ services:
     restart: unless-stopped
 
   # -------------------
+  # Cloudflare tunnel → caddy:8880 (bloommcp's Salk connector)
+  # -------------------
+  # Behind a profile, so `up -d` starts it only where COMPOSE_PROFILES includes
+  # tunnel (prod and staging, not CI).
+  cloudflared:
+    image: ghcr.io/salk-harnessing-plants-initiative/cloudflare-cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    profiles:
+      - tunnel
+    # Metrics on loopback only, so nothing else on the network can read them.
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    # The image's own non-root user, pinned so a new image can't switch to root.
+    user: "65532:65532"
+    read_only: true
+    # Not yet measured here; cloudflared usually runs in well under 100 MB.
+    mem_limit: 256m
+    memswap_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Outbound only, and only on the tunnel network, so a wrong route on the
+    # Cloudflare side to caddy:<port> reaches only the :8880 entrance (Caddy drops it elsewhere).
+    networks:
+      - tunnel
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    # cloudflared's own default grace period for closing tunnel connections.
+    stop_grace_period: 30s
+
+  # -------------------
   #  Kong Gateway
   # -------------------
   kong:
@@ -1166,3 +1204,10 @@ volumes:
 networks:
   supanet:
     driver: bridge
+  # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
+  # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880.
+  tunnel:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${TUNNEL_SUBNET}

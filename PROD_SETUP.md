@@ -69,23 +69,32 @@ the wiki pages linked at the bottom of this doc.
    staging by `scripts/verify_env_parity.py`); the deploy refuses to run without any
    of them. The core ones:
 
-   | Secret                      | Purpose                                                   |
-   | --------------------------- | --------------------------------------------------------- |
-   | `PROD_POSTGRES_PASSWORD`    | Postgres superuser password                               |
-   | `PROD_JWT_SECRET`           | Signs all Supabase JWTs                                   |
-   | `PROD_ANON_KEY`             | Anonymous client key                                      |
-   | `PROD_SERVICE_ROLE_KEY`     | Server-side service role key                              |
-   | `PROD_DB_ENC_KEY`           | Database column encryption key                            |
-   | `PROD_MINIO_PASSWORD`       | MinIO root password                                       |
-   | `PROD_VAULT_ENC_KEY`        | Supabase vault encryption key                             |
-   | `PROD_SUPAVISOR_ENC_KEY`    | Supavisor pooler encryption key                           |
-   | `PROD_SECRET_KEY_BASE`      | Realtime / phoenix secret base                            |
-   | `PROD_DASHBOARD_PASSWORD`   | Supabase Studio dashboard password                        |
-   | `PROD_BLOOMMCP_API_KEY`     | bloommcp tool-auth key                                    |
-   | `PROD_OPENAI_API_KEY`       | OpenAI for langchain-agent                                |
-   | `PROD_LANGCHAIN_API_KEY`    | LangSmith tracing key                                     |
-   | `PROD_BLOOM_AGENT_KEY`      | Service role for the agent's Supabase access              |
-   | `PROD_CLOUDFLARE_API_TOKEN` | Caddy DNS-01 ACME token (zone: `bloom-acme.talmolab.org`) |
+   | Secret                         | Purpose                                                              |
+   | ------------------------------ | -------------------------------------------------------------------- |
+   | `PROD_POSTGRES_PASSWORD`       | Postgres superuser password                                          |
+   | `PROD_JWT_SECRET`              | Signs all Supabase JWTs                                              |
+   | `PROD_ANON_KEY`                | Anonymous client key                                                 |
+   | `PROD_SERVICE_ROLE_KEY`        | Server-side service role key                                         |
+   | `PROD_DB_ENC_KEY`              | Database column encryption key                                       |
+   | `PROD_MINIO_PASSWORD`          | MinIO root password                                                  |
+   | `PROD_VAULT_ENC_KEY`           | Supabase vault encryption key                                        |
+   | `PROD_SUPAVISOR_ENC_KEY`       | Supavisor pooler encryption key                                      |
+   | `PROD_SECRET_KEY_BASE`         | Realtime / phoenix secret base                                       |
+   | `PROD_DASHBOARD_PASSWORD`      | Supabase Studio dashboard password                                   |
+   | `PROD_BLOOMMCP_API_KEY`        | bloommcp tool-auth key                                               |
+   | `PROD_OPENAI_API_KEY`          | OpenAI for langchain-agent                                           |
+   | `PROD_LANGCHAIN_API_KEY`       | LangSmith tracing key                                                |
+   | `PROD_BLOOM_AGENT_KEY`         | Service role for the agent's Supabase access                         |
+   | `PROD_CLOUDFLARE_API_TOKEN`    | Caddy DNS-01 ACME token (zone: `bloom-acme.talmolab.org`)            |
+   | `PROD_CLOUDFLARE_TUNNEL_TOKEN` | Token for bloommcp's Salk connector tunnel, from AIRC                |
+   | `PROD_BLOOMMCP_TUNNEL_SECRET`  | Caddy's tunnel-entrance secret for bloommcp (`openssl rand -hex 32`) |
+
+   Staging uses the same names with `STAGING_`. Prod and staging need separate
+   tunnels from AIRC: never reuse a tunnel token across environments, or prod
+   traffic is split onto staging. Use a different tunnel secret per environment
+   too. Setup (the GHCR image copy, the tunnel target), checking that the tunnel
+   connected, and turning it off are on the
+   [Caddy wiki page](_WIKI/CADDY/README.md#tunnel-entrance-bloommcps-salk-connector).
 
    Service-specific secrets (for example `PROD_WORKFLOWS_*` and `PROD_WANDB_API_KEY`)
    are described in each service's README, e.g.
