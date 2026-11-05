@@ -61,7 +61,6 @@ SECURITY_HEADERS = {
 # the paths serving trait tables, stored objects and signed URLs unguarded.
 HEADER_ROUTES = [
     "/api/client-info",  # exact path -> bloom-web
-    "/api/oauth/consent",  # exact path -> bloom-web
     "/api/cyl/scans/1/video",  # /api/cyl/* -> bloom-web (prefix preserved)
     "/api/gravi/experiments/1/plate-video",  # /api/gravi/* -> bloom-web (prefix preserved)
     "/api/scrna/cellranger/runs",  # /api/scrna/* -> bloom-web (prefix preserved)
@@ -328,50 +327,20 @@ def test_bloommcp_is_not_served_on_the_public_site(api):
     assert status != 200 or body != "ok", "/bloommcp/health reached bloommcp"
 
 
-# --- OAuth 2.1 login routing (bloommcp#613) ---------------------------------
-# The discovery/registration routes a client hits before it holds any
-# credential, so — unlike every other Kong/Caddy route in this file — these
-# must be reachable with NO apikey. Previously verified only by a one-time
-# manual recording; a routing typo in either Caddyfile or kong.yml would
-# otherwise silently break the entire OAuth login flow with nothing in CI to
-# catch it.
-#
-# Disclosed gap this doesn't fully close: `compose-health-check` (this file's
-# real CI runner) targets `docker-compose.prod.yml`, where
-# `GOTRUE_OAUTH_SERVER_ENABLED` defaults `false` and `BLOOMMCP_PUBLIC_URL` is
-# unset (`.env.ci` sets neither — confirmed by reading `pr-checks.yml`'s
-# `.env.ci` generation step directly, not assumed). OAuth is only actually
-# enabled on dev and staging today. Each test below skips itself, with a
-# clear reason, when it observes OAuth is off on whatever stack it's run
-# against — so these provide real coverage the moment any job runs this file
-# against a dev/staging-shaped compose, without falsely asserting that
-# coverage exists in `compose-health-check` as configured today.
+# --- Auth signing keys -------------------------------------------------------
 
 
-def test_kong_routes_auth_well_known_with_no_apikey(api):
-    """`/auth/v1/.well-known/*` must be reachable pre-credential — a client
-    performs OIDC discovery before it holds any key."""
-    status, body = api("/api/auth/v1/.well-known/openid-configuration")
-    if status == 404:
-        pytest.skip("GoTrue's OAuth server is not enabled on this stack.")
-    assert status == 200, f"expected 200, got {status} (Kong route missing or still key-gated)"
-    assert isinstance(body, dict)
-    assert body.get("issuer"), "discovery document must have a non-empty issuer"
-
-
-def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api):
+def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api, anon_key):
     """`JWT_KEYS`/`JWT_JWKS` (`scripts/generate_jwt_keys.py`) embed the raw
     `JWT_SECRET` as a symmetric (`oct`) JWK so pre-migration HS256 tokens keep
     verifying. That's safe only because GoTrue's `/.well-known/jwks.json`
     handler filters `oct`-type keys out of what it serves *publicly* — this
     repo doesn't control that filter and nothing else pins it. A future
-    GoTrue upgrade that changes it, or a misconfigured
-    `BLOOMMCP_OAUTH_JWKS_URI`, would leak the same secret that also signs
+    GoTrue upgrade that changes it would leak the same secret that also signs
     PostgREST/Storage/Realtime tokens: full RLS-bypass blast radius.
 
-    Not gated on the OAuth-server flag specifically — GoTrue serves this for
-    its own normal session tokens regardless — but still skips cleanly if
-    Kong hasn't opened the route at all (pre-migration environments).
+    GoTrue serves this for its own session tokens; reached through Kong's key-gated
+    auth route with the public anon key.
 
     Deliberately does NOT assert `keys` is non-empty: on a stack with no
     ES256 pair provisioned yet (`GOTRUE_JWT_KEYS` at its own default
@@ -380,9 +349,7 @@ def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api):
     so `keys: []` here is the correct, secret-safe answer, not evidence of a
     broken endpoint. The only invariant this test actually owns is that
     whatever *is* published never includes an `oct` entry."""
-    status, body = api("/api/auth/v1/.well-known/jwks.json")
-    if status == 404:
-        pytest.skip("Kong has not opened /auth/v1/.well-known/* on this stack.")
+    status, body = api("/api/auth/v1/.well-known/jwks.json", api_key=anon_key)
     assert status == 200, f"expected 200, got {status}"
     keys = body.get("keys", [])
     oct_keys = [k for k in keys if k.get("kty") == "oct"]
@@ -391,22 +358,6 @@ def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api):
         "this would publish JWT_SECRET, which also signs PostgREST/Storage/"
         f"Realtime tokens: {oct_keys}"
     )
-
-
-def test_kong_routes_oauth_with_no_apikey(api):
-    """`/auth/v1/oauth/*` must be reachable pre-credential too. A bare GET
-    to `authorize` with no query params is safe to call against a live
-    stack (GoTrue rejects it for missing params, registering nothing) while
-    still proving the route reaches GoTrue rather than 404ing at Kong — so a
-    404 here is ambiguous (route missing vs. OAuth server disabled) and
-    treated as a skip, not a failure, on this endpoint specifically."""
-    status, _ = api("/api/auth/v1/oauth/authorize")
-    if status == 404:
-        pytest.skip(
-            "Either Kong has not opened /auth/v1/oauth/* on this stack, or "
-            "GoTrue's OAuth server is disabled — cannot distinguish the two "
-            "from a bare GET with no params."
-        )
 
 
 def test_kong_routes_rest(api, anon_key):

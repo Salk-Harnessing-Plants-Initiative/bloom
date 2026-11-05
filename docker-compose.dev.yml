@@ -434,16 +434,8 @@ services:
       # actually carries the header), so leaving it set here has no effect
       # until a client sends that header.
       JWT_SECRET: ${JWT_SECRET}
-      # OAuth login for external MCP clients. Both URLs must be reachable by
-      # the *client* (which runs outside Docker), so they use host-facing
-      # addresses, not the internal kong hostname. Setting both turns on the
-      # /.well-known/oauth-protected-resource. Also reused (bloom#642) as the
-      # self-serve base for local-backend /plots URLs below — see
-      # bloommcp/docs/storage-backends.md.
+      # Self-serve base for local-backend /plots URLs (see bloommcp/docs/storage-backends.md).
       BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-http://localhost:8811}
-      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-http://localhost:8000/auth/v1}
-      # Set once Supabase signs asymmetrically; unset falls back to JWT_SECRET.
-      BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
       # Salk connector tunnel; unset in dev, which turns the tunnel path off.
       BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET:-}
       SITE_URL: ${SITE_URL:-}
@@ -621,17 +613,9 @@ services:
       # Deliberately NOT ${API_EXTERNAL_URL}/auth/v1 (http://localhost:9999/auth/v1
       # by default): that's GoTrue's own direct port, which this compose file
       # never publishes to the host (no `ports:` on the `auth` service, only
-      # reachable container-to-container via `supanet`). An MCP client
-      # validating `iss` per RFC 9207 would reject every dev-issued token
-      # against an issuer it cannot even resolve. Routed through Kong's
-      # published port instead, matching BLOOMMCP_OAUTH_AUTHORIZATION_SERVER's
-      # own default (http://localhost:8000/auth/v1) below — both must name the
-      # same externally-reachable authorization server.
+      # reachable container-to-container via `supanet`), so a client validating
+      # `iss` could not resolve it. Routed through Kong's published port instead.
       GOTRUE_JWT_ISSUER: http://localhost:${KONG_HTTP_PORT}/auth/v1
-      GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-true}
-      GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
-      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-true}
-      GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL:-600s}
 
   rest:
     image: ghcr.io/salk-harnessing-plants-initiative/postgrest:v12.2.12@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2

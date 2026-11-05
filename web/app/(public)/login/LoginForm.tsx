@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
-import { safeNextPath } from "@/lib/oauth-consent";
+import { safeNextPath } from "@/lib/safe-next-path";
 import styles from "./login.module.css";
 
 const LOCAL_PART = /[^A-Za-z0-9._+\-]/g;
@@ -26,7 +26,7 @@ export default function LoginForm() {
   const searchParams = useSearchParams();
   const supabase = createClientSupabaseClient();
 
-  // Send the user back where they came from (e.g. a pending OAuth consent).
+  // Send the user back where they came from.
   const destination = safeNextPath(searchParams.get("next")) ?? "/app";
 
   const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {

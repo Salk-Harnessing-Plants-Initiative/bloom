@@ -12,7 +12,6 @@ monkeypatched here; `fake_bloommcp_rpc` (conftest.py) monkeypatches
 from __future__ import annotations
 
 import ast
-import asyncio
 import inspect
 import time
 import uuid
@@ -21,7 +20,6 @@ from pathlib import Path
 import jwt
 
 import bloom_mcp.supabase_client as sc
-from bloom_mcp.auth import SupabaseOAuthVerifier
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "bloom_mcp"
 
@@ -194,16 +192,9 @@ def test_no_function_in_supabase_client_accepts_a_caller_credential_parameter():
     )
 
 
-def test_postgrest_client_ignores_an_authenticated_callers_oauth_token(monkeypatch):
-    """Verifying a caller's OAuth token (admission) must have zero effect on
-    which credentials the resulting DB client carries (authority).
-
-    Simulates the case PR #613 introduced: a fully verified caller identity —
-    a different subject, a different role — sitting in scope right before the
-    DB client is built. `get_postgrest_client` takes no argument and reads
-    only the server's own env, so the client must come back keyed as
-    `bloom_agent` regardless of that caller.
-    """
+def test_postgrest_client_is_keyed_as_bloom_agent_whatever_the_caller(monkeypatch):
+    """A caller's token (a different subject and role) never becomes the DB
+    client's credential: `get_postgrest_client` reads only the server's own env."""
     secret = "test-jwt-secret"
     monkeypatch.setenv("JWT_SECRET", secret)
     monkeypatch.setenv("SUPABASE_URL", "http://x")
@@ -220,9 +211,6 @@ def test_postgrest_client_ignores_an_authenticated_callers_oauth_token(monkeypat
         secret,
         algorithm="HS256",
     )
-    caller = asyncio.run(SupabaseOAuthVerifier().verify_token(caller_token))
-    assert caller is not None  # the caller really is authenticated
-
     captured = {}
 
     def _fake_create_client(url, key, options=None):
@@ -236,4 +224,3 @@ def test_postgrest_client_ignores_an_authenticated_callers_oauth_token(monkeypat
 
     assert captured["key"] == "bloom-agent-key"
     assert captured["key"] != caller_token
-    assert captured["key"] != caller.token

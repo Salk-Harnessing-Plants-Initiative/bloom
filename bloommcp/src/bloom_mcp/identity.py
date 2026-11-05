@@ -76,10 +76,10 @@ class IdentityConfigError(Exception):
 def is_valid_identity(sub: str) -> bool:
     """Is this token's ``sub`` claim safe to record as a caller identity?
 
-    Call it with the ``sub`` of an already-verified token, before writing that
-    value to ``bloommcp_usage.identity``. Both credential paths use it —
-    ``verify_identity_header`` for ``X-Bloom-Identity``, ``bloom_mcp.auth`` for
-    OAuth access tokens — so one rule guards the column.
+    Call it before writing a value to ``bloommcp_usage.identity``. Both identity
+    sources use it — ``verify_identity_header`` for ``X-Bloom-Identity``'s
+    ``sub``, and ``bloom_mcp.tunnel`` for the account id its lookup returns — so
+    one rule guards the column.
 
     Rejects two things: a ``sub`` that is not a complete UUID, and the reserved
     ``anonymous`` sentinel, which no real user may claim. ``fullmatch`` rather
@@ -149,27 +149,6 @@ def _action_from_path(path: str) -> str:
 
     first_segment = path.strip("/").split("/", 1)[0]
     return first_segment if first_segment in SECTIONS else "combined"
-
-
-def _oauth_subject_from_scope(scope: dict) -> str | None:
-    """The verified caller's OAuth subject, if FastMCP's own bearer-auth layer
-    authenticated one for this request — read from ``scope["user"]``, set by
-    Starlette's ``AuthenticationMiddleware`` deeper in the same ASGI call this
-    middleware wraps (see openspec add-bloommcp-oauth-usage-attribution
-    design.md Decision 1 for why this is safe to read here, including for a
-    reused streamable-http session).
-
-    Returns ``None`` for every "nothing to attribute" shape — no
-    ``scope["user"]`` at all (no ``auth`` configured), a non-authenticated
-    value, or an ``AccessToken`` with no ``subject`` (the shared
-    ``BLOOMMCP_API_KEY`` credential, via ``ApiKeyVerifier``, never sets one —
-    see ``bloom_mcp.auth``) — rather than raising, mirroring
-    ``verify_identity_header``'s own "absent means anonymous" contract.
-    """
-    user = scope.get("user")
-    access_token = getattr(user, "access_token", None)
-    subject = getattr(access_token, "subject", None)
-    return subject or None
 
 
 class IdentityMiddleware:
@@ -279,10 +258,7 @@ class IdentityMiddleware:
             if not is_local_backend():
                 from bloom_mcp.usage import record_usage_async
 
-                record_usage_async(
-                    identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
-                    _action_from_path(path),
-                )
+                record_usage_async(identity or ANONYMOUS, _action_from_path(path))
 
 
 async def _read_body(receive, limit: int) -> bytes | None:
@@ -307,7 +283,11 @@ async def _refuse_tunnel_request(scope, receive, send, refusal) -> None:
     from bloom_mcp import tunnel
 
     if scope.get("method") == "POST":
-        body = await _read_body(receive, tunnel.MAX_REFUSAL_BODY_BYTES)
+        import anyio
+
+        body = None
+        with anyio.move_on_after(tunnel.REFUSAL_BODY_READ_SECONDS):
+            body = await _read_body(receive, tunnel.MAX_REFUSAL_BODY_BYTES)
         payload = tunnel.jsonrpc_refusal(body, refusal) if body is not None else None
         if payload is not None:
             await send(

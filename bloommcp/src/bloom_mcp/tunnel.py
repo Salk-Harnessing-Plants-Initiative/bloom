@@ -35,9 +35,12 @@ LOOKUP_RPC = "bloom_user_for_email"
 CACHE_TTL_SECONDS = 60
 CACHE_MAX_ENTRIES = 1024
 # JSON-RPC server-error code for a refused tunnel request; `data.status` holds the HTTP status.
-REFUSAL_CODE = -32001
+# Not -32001, which the TypeScript MCP SDK uses for a request timeout.
+REFUSAL_CODE = -32003
 # Larger POST bodies are not read for a request id; they get the plain JSON refusal.
 MAX_REFUSAL_BODY_BYTES = 1024 * 1024
+# A refused request's body not read within this many seconds gets the plain JSON refusal.
+REFUSAL_BODY_READ_SECONDS = 10
 # Longest error description written to the log for a failed lookup.
 MAX_LOGGED_ERROR_CHARS = 300
 
@@ -62,9 +65,11 @@ def jsonrpc_refusal(body: bytes, refusal: TunnelRefusal) -> bytes | None:
     """A JSON-RPC error carrying ``refusal`` for a body holding one request; None otherwise."""
     try:
         request = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
-    request_id = request.get("id") if isinstance(request, dict) else None
+    if not isinstance(request, dict) or not isinstance(request.get("method"), str):
+        return None
+    request_id = request.get("id")
     # A notification has no id; a bool is not a valid one.
     if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
         return None
