@@ -283,7 +283,11 @@ async def _refuse_tunnel_request(scope, receive, send, refusal) -> None:
     from bloom_mcp import tunnel
 
     if scope.get("method") == "POST":
-        body = await _read_body(receive, tunnel.MAX_REFUSAL_BODY_BYTES)
+        import anyio
+
+        body = None
+        with anyio.move_on_after(tunnel.REFUSAL_BODY_READ_SECONDS):
+            body = await _read_body(receive, tunnel.MAX_REFUSAL_BODY_BYTES)
         payload = tunnel.jsonrpc_refusal(body, refusal) if body is not None else None
         if payload is not None:
             await send(

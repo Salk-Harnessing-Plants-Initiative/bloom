@@ -76,7 +76,7 @@ def test_request_without_salk_user_is_refused_by_caddy(caddy_container, caddy_tu
 
 
 # Sent with Python, which reads the body of an error response; busybox wget cannot, and
-# both Caddy and bloommcp answer 403. Prints nothing if no response came back.
+# both Caddy and bloommcp answer 403. With no response, prints an empty status line and the error.
 _PY_GET = """
 import os, sys, urllib.request, urllib.error
 url, headers = sys.argv[1], dict(h.split(": ", 1) for h in sys.argv[2:])
@@ -87,8 +87,8 @@ try:
     print(response.status); print(response.read(2000).decode(errors="replace"))
 except urllib.error.HTTPError as error:
     print(error.code); print(error.read(2000).decode(errors="replace"))
-except OSError:
-    pass
+except OSError as error:
+    print(); print(f"{type(error).__name__}: {error}")
 """
 NO_ACCOUNT = "nobody-ci@salk.edu"
 
@@ -118,7 +118,7 @@ def _python_get(command: list[str], url: str, *headers: str) -> tuple[int | None
     status, _, body = result.stdout.partition("\n")
     if not status.strip():
         assert result.returncode == 0, f"request did not run: {result.stderr!r}"
-        return None, ""
+        return None, body.strip()
     return int(status), body
 
 
@@ -148,11 +148,16 @@ def _through_tunnel(client: list[str], *headers: str) -> tuple[int, str]:
 
 
 def test_the_entrance_drops_requests_from_supanet(bloommcp_container):
+    # Control: Caddy is reachable from this container, so a dropped call below is the rule.
+    reachable, _ = _from_bloommcp(bloommcp_container, "http://caddy:80/")
+    assert reachable is not None, "caddy:80 did not answer from the bloommcp container"
     # Without the tunnel-only rule this would be bloommcp's 403 "No Bloom account".
-    status, _ = _from_bloommcp(
+    status, error = _from_bloommcp(
         bloommcp_container, f"http://caddy:{TUNNEL_PORT}/mcp", f"X-Salk-User: {NO_ACCOUNT}"
     )
     assert status is None
+    # Caddy's abort closes the connection; a DNS failure, refusal or timeout would not.
+    assert any(s in error for s in ("RemoteDisconnected", "ConnectionReset", "reset by peer")), error
 
 
 def test_a_salk_user_without_an_account_gets_bloommcps_refusal(tunnel_client):

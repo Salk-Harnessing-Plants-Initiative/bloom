@@ -222,7 +222,7 @@ def test_post_refusal_is_a_jsonrpc_error_with_the_message(monkeypatch, request_i
         "jsonrpc": "2.0",
         "id": request_id,
         "error": {
-            "code": tunnel.REFUSAL_CODE,
+            "code": -32003,
             "message": NO_ACCOUNT_MESSAGE,
             "data": {"status": 403},
         },
@@ -248,8 +248,19 @@ def test_post_lookup_failure_is_a_jsonrpc_error_with_status_503(monkeypatch):
         b"not json",
         b'[{"jsonrpc": "2.0", "id": 1, "method": "ping"}]',
         b"",
+        b'{"jsonrpc": "2.0", "id": true, "method": "ping"}',
+        b'{"jsonrpc": "2.0", "id": 5, "result": {}}',
+        b"[" * 200_000,
     ],
-    ids=["notification", "not-json", "batch", "empty"],
+    ids=[
+        "notification",
+        "not-json",
+        "batch",
+        "empty",
+        "bool-id",
+        "a-response",
+        "deeply-nested",
+    ],
 )
 def test_post_without_a_single_request_id_keeps_the_plain_403(monkeypatch, body):
     monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
@@ -272,18 +283,87 @@ def test_oversized_post_keeps_the_plain_403(monkeypatch):
 @pytest.mark.parametrize("method", ["GET", "DELETE"])
 def test_get_and_delete_refusals_stay_plain_403(monkeypatch, method):
     monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    # Sent with a JSON-RPC body, so only the method keeps it a plain 403.
     resp = TestClient(IdentityMiddleware(_RecordingApp())).request(
-        method, "/mcp", headers=_tunnel_headers("newperson@salk.edu")
+        method, "/mcp", headers=_tunnel_headers("newperson@salk.edu"), content=_rpc(1)
     )
     assert resp.status_code == 403
     assert resp.json() == {"error": NO_ACCOUNT_MESSAGE}
+
+
+def _raw_post(middleware, chunks: list[bytes]) -> list[dict]:
+    """A POST whose body arrives in ``chunks``, through raw ASGI."""
+    import anyio
+
+    sent, pending = [], list(chunks)
+
+    async def receive():
+        if not pending:
+            return {"type": "http.disconnect"}
+        chunk = pending.pop(0)
+        return {"type": "http.request", "body": chunk, "more_body": bool(pending)}
+
+    async def send(message):
+        sent.append(message)
+
+    headers = [
+        (k.lower().encode(), v.encode())
+        for k, v in _tunnel_headers("newperson@salk.edu")
+    ]
+    scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": headers}
+    anyio.run(middleware, scope, receive, send)
+    return sent
+
+
+def test_a_body_in_several_chunks_still_gets_the_jsonrpc_error(monkeypatch):
+    import json
+
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    body = _rpc(9)
+    sent = _raw_post(
+        IdentityMiddleware(_RecordingApp()), [body[:10], body[10:30], body[30:]]
+    )
+    assert sent[0]["status"] == 200
+    assert json.loads(sent[1]["body"])["id"] == 9
+
+
+def test_a_body_that_never_finishes_gets_the_plain_403(monkeypatch):
+    import anyio
+
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    monkeypatch.setattr(tunnel, "REFUSAL_BODY_READ_SECONDS", 0.1)
+    middleware = IdentityMiddleware(_RecordingApp())
+    sent = []
+
+    async def receive():
+        await anyio.sleep(10)
+
+    async def send(message):
+        sent.append(message)
+
+    headers = [
+        (k.lower().encode(), v.encode())
+        for k, v in _tunnel_headers("newperson@salk.edu")
+    ]
+    scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": headers}
+
+    async def bounded():
+        with anyio.fail_after(2):
+            await middleware(scope, receive, send)
+
+    anyio.run(bounded)
+    assert sent[0]["status"] == 403
 
 
 def test_admitted_post_reaches_the_app_with_its_body(lookup):
     received = {}
 
     async def app(scope, receive, send):
-        message = await receive()
+        import anyio
+
+        # Bounded, so a middleware that already consumed the body fails instead of hanging.
+        with anyio.fail_after(2):
+            message = await receive()
         received["body"] = message.get("body", b"")
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"ok"})
@@ -348,6 +428,16 @@ def test_lookup_failure_log_keeps_other_errors_text(monkeypatch, caplog):
     with caplog.at_level("ERROR", logger="bloom_mcp.tunnel"):
         _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
     assert "ConnectionError" in caplog.text and "database unreachable" in caplog.text
+
+
+def test_lookup_failure_log_is_capped(monkeypatch, caplog):
+    monkeypatch.setattr(
+        supabase_client, "call_rpc", _FakeLookup(error=RuntimeError("x" * 1000))
+    )
+    with caplog.at_level("ERROR", logger="bloom_mcp.tunnel"):
+        _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
+    (record,) = [r for r in caplog.records if "tunnel lookup failed" in r.getMessage()]
+    assert len(record.args[1]) <= tunnel.MAX_LOGGED_ERROR_CHARS
 
 
 def test_unexpected_lookup_result_is_503(monkeypatch):
