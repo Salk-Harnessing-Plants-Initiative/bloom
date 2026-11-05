@@ -327,23 +327,10 @@ def test_bloommcp_is_not_served_on_the_public_site(api):
     assert status != 200 or body != "ok", "/bloommcp/health reached bloommcp"
 
 
-# --- Auth discovery and signing keys ----------------------------------------
-# `/auth/v1/.well-known/*` is reachable with no apikey. CI's stack may not serve
-# the OIDC document, so that test skips on a 404.
+# --- Auth signing keys -------------------------------------------------------
 
 
-def test_kong_routes_auth_well_known_with_no_apikey(api):
-    """`/auth/v1/.well-known/*` must be reachable pre-credential — a client
-    performs OIDC discovery before it holds any key."""
-    status, body = api("/api/auth/v1/.well-known/openid-configuration")
-    if status == 404:
-        pytest.skip("GoTrue does not serve the OIDC discovery document on this stack.")
-    assert status == 200, f"expected 200, got {status} (Kong route missing or still key-gated)"
-    assert isinstance(body, dict)
-    assert body.get("issuer"), "discovery document must have a non-empty issuer"
-
-
-def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api):
+def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api, anon_key):
     """`JWT_KEYS`/`JWT_JWKS` (`scripts/generate_jwt_keys.py`) embed the raw
     `JWT_SECRET` as a symmetric (`oct`) JWK so pre-migration HS256 tokens keep
     verifying. That's safe only because GoTrue's `/.well-known/jwks.json`
@@ -352,8 +339,8 @@ def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api):
     GoTrue upgrade that changes it would leak the same secret that also signs
     PostgREST/Storage/Realtime tokens: full RLS-bypass blast radius.
 
-    GoTrue serves this for its own session tokens; the test skips cleanly if
-    Kong hasn't opened the route at all (pre-migration environments).
+    GoTrue serves this for its own session tokens; reached through Kong's key-gated
+    auth route with the public anon key.
 
     Deliberately does NOT assert `keys` is non-empty: on a stack with no
     ES256 pair provisioned yet (`GOTRUE_JWT_KEYS` at its own default
@@ -362,9 +349,7 @@ def test_gotrue_jwks_endpoint_never_serves_the_embedded_symmetric_secret(api):
     so `keys: []` here is the correct, secret-safe answer, not evidence of a
     broken endpoint. The only invariant this test actually owns is that
     whatever *is* published never includes an `oct` entry."""
-    status, body = api("/api/auth/v1/.well-known/jwks.json")
-    if status == 404:
-        pytest.skip("Kong has not opened /auth/v1/.well-known/* on this stack.")
+    status, body = api("/api/auth/v1/.well-known/jwks.json", api_key=anon_key)
     assert status == 200, f"expected 200, got {status}"
     keys = body.get("keys", [])
     oct_keys = [k for k in keys if k.get("kty") == "oct"]

@@ -41,8 +41,9 @@ def test_kong_has_no_oauth_route():
         for route in service.get("routes") or []
         for path in route.get("paths") or []
     ]
-    assert not [p for p in paths if p.startswith("/auth/v1/oauth")], paths
-    assert "/auth/v1/.well-known" in paths, "the discovery and JWKS route stays"
+    assert not [p for p in paths if "/auth/v1/oauth" in p], paths
+    # Discovery was read only by OAuth clients; the key-gated auth-v1 route still serves it.
+    assert "/auth/v1/.well-known" not in paths, paths
 
 
 def test_caddy_has_no_consent_route():
