@@ -11,11 +11,11 @@ database is left unchanged.
 import uuid
 
 import pytest
-from psycopg.types.json import Jsonb
 
 from tests.integration.test_rnaseq_runs import _find_one, _sql_body
 
 psycopg = pytest.importorskip("psycopg")
+from psycopg.types.json import Jsonb  # noqa: E402
 
 MIGRATION = _find_one("migrations", "*_add_bloom_user_for_email.sql")
 ROLLBACK = _find_one("rollbacks", "*_add_bloom_user_for_email_rollback.sql")
@@ -132,6 +132,8 @@ def _refusable(kind: str) -> str:
         "tab": f"j\tdoe.{tag}@salk.edu",
         "control character": f"j\x01doe.{tag}@salk.edu",
         "line break": f"jdoe.{tag}\r\n@salk.edu",
+        "non-breaking space": f"jdoe.{tag}\u00a0@salk.edu",
+        "zero-width space": f"jdoe.{tag}\u200b@salk.edu",
         "no local part": "@salk.edu",
         "two addresses": f"a.{tag}@salk.edu,b.{tag}@salk.edu",
         # auth.users.email is varchar(255); 255 is one over the limit.
@@ -147,6 +149,8 @@ def _refusable(kind: str) -> str:
         "tab",
         "control character",
         "line break",
+        "non-breaking space",
+        "zero-width space",
         "no local part",
         "two addresses",
         "255 characters",
@@ -157,6 +161,13 @@ def test_refused_input_stays_refused_when_an_account_has_it(cur, kind):
     email = _refusable(kind)
     _add_user(cur, email)
     assert _lookup(cur, email) is None
+
+
+def test_a_non_ascii_letter_folding_to_ascii_matches_no_one(cur):
+    """lower() turns the Kelvin sign into k; non-ASCII input is refused before that."""
+    local = f"jdoe.{uuid.uuid4().hex[:8]}"
+    _add_user(cur, f"{local}@salk.edu")
+    assert _lookup(cur, f"{local}@sal\u212a.edu") is None
 
 
 def test_a_254_character_address_is_found(cur):
@@ -220,10 +231,25 @@ def test_an_anonymous_account_returns_null(cur):
     assert _lookup(cur, email) is None
 
 
-def test_a_service_login_returns_null(cur):
+@pytest.mark.parametrize("flag", [True, "true", "yes", 1, "abc", {}])
+def test_the_workflows_login_or_an_unreadable_flag_returns_null(cur, flag):
     email = _salk("workflows")
-    _add_user(cur, email, meta={"is_workflows": True})
+    _add_user(cur, email, meta={"is_workflows": flag})
     assert _lookup(cur, email) is None
+
+
+@pytest.mark.parametrize("meta", [{"is_workflows": False}, {"is_workflows": "false"}, {}, None])
+def test_an_account_without_the_workflows_flag_is_found(cur, meta):
+    email = _salk()
+    uid = _add_user(cur, email, raw_app_meta_data=None if meta is None else Jsonb(meta))
+    assert _lookup(cur, email) == uid
+
+
+def test_an_unreadable_flag_on_another_account_breaks_no_lookup(cur):
+    _add_user(cur, _salk("odd"), meta={"is_workflows": "abc"})
+    email = _salk()
+    uid = _add_user(cur, email)
+    assert _lookup(cur, email) == uid
 
 
 def test_two_accounts_with_one_address_return_null(cur):
@@ -268,16 +294,17 @@ def test_no_other_role_may_call_it(cur, role):
     assert cur.fetchone()[0] is False
 
 
-def test_it_runs_as_its_owner_with_an_empty_search_path(cur):
+def test_it_runs_as_postgres_with_an_empty_search_path(cur):
     cur.execute(
-        "SELECT p.prosecdef, p.provolatile, p.proconfig FROM pg_proc p "
-        "WHERE p.oid = %s::regprocedure",
+        "SELECT p.prosecdef, p.provolatile, p.proconfig, pg_get_userbyid(p.proowner) "
+        "FROM pg_proc p WHERE p.oid = %s::regprocedure",
         (FUNCTION,),
     )
-    definer, volatility, config = cur.fetchone()
+    definer, volatility, config, owner = cur.fetchone()
     assert definer is True
     assert volatility == "s"
     assert config == ['search_path=""']
+    assert owner == "postgres"
 
 
 def test_it_returns_only_an_id(cur):
@@ -290,6 +317,12 @@ def test_reapplying_the_migration_keeps_it_working(cur):
     uid = _add_user(cur, email)
     cur.execute(_sql_body(MIGRATION))
     assert _lookup(cur, email) == uid
+    cur.execute(
+        "SELECT has_function_privilege('bloom_agent', %s, 'EXECUTE'), "
+        "has_function_privilege('authenticated', %s, 'EXECUTE')",
+        (FUNCTION, FUNCTION),
+    )
+    assert cur.fetchone() == (True, False)
 
 
 def test_the_rollback_drops_it_and_can_run_twice(cur):

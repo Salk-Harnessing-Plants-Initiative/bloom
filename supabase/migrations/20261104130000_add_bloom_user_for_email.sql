@@ -2,10 +2,12 @@
 --
 -- bloom_user_for_email(p_email): the one active Bloom account with this Salk email, or NULL.
 -- bloommcp calls it to admit people who signed in with Salk through the Claude connector, and
--- refuses on NULL, so anything unexpected returns NULL: malformed input, a domain other than
--- salk.edu, no account, a deleted, banned, unconfirmed, anonymous or service account, or two
--- accounts with the address. Matching is equality in lower case, never a pattern. It returns
--- only the id. bloom_agent, which can't read auth.users, is the only role that may call it.
+-- refuses on NULL, so anything unexpected returns NULL: input that isn't one printable-ASCII
+-- address, a domain other than salk.edu, no account, a deleted, banned, unconfirmed or
+-- anonymous account, the workflows login (is_workflows), or two accounts with the address.
+-- Matching is equality ignoring case, never a pattern. It returns the account's id, which
+-- bloommcp records usage under. bloom_agent, which can't read auth.users, is the only role
+-- that may call it.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -18,16 +20,18 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 DECLARE
+    -- RFC 5321's maximum address length.
     v_max_length CONSTANT INTEGER := 254;
-    v_domain CONSTANT TEXT := 'salk.edu';
-    v_email TEXT;
-    v_ids UUID[];
+    -- The domain check_email_domain allows for every auth.users email.
+    v_domain CONSTANT pg_catalog.text := 'salk.edu';
+    v_email pg_catalog.text;
+    v_ids pg_catalog.uuid[];
 BEGIN
-    IF p_email IS NULL OR p_email = '' OR pg_catalog.char_length(p_email) > v_max_length THEN
+    IF p_email IS NULL OR pg_catalog.char_length(p_email) > v_max_length THEN
         RETURN NULL;
     END IF;
-    -- One address: no whitespace or control characters, exactly one '@'.
-    IF p_email ~ '[[:space:][:cntrl:]]' OR p_email !~ '^[^@]+@[^@]+$' THEN
+    -- One address: printable ASCII only (no spaces), exactly one '@'.
+    IF p_email ~ '[^\x21-\x7E]' OR p_email !~ '^[^@]+@[^@]+$' THEN
         RETURN NULL;
     END IF;
     v_email := pg_catalog.lower(p_email);
@@ -42,7 +46,9 @@ BEGIN
       AND (u.banned_until IS NULL OR u.banned_until <= pg_catalog.now())
       AND u.email_confirmed_at IS NOT NULL
       AND NOT COALESCE(u.is_anonymous, false)
-      AND NOT COALESCE((u.raw_app_meta_data ->> 'is_workflows')::boolean, false);
+      -- Admitted only without the flag or with a false value; any other value never raises.
+      AND COALESCE(pg_catalog.lower(u.raw_app_meta_data ->> 'is_workflows'), 'false')
+          IN ('false', 'f', 'no', 'n', 'off', '0');
 
     -- Two accounts with one address are ambiguous; never pick one.
     IF pg_catalog.cardinality(v_ids) = 1 THEN
@@ -51,6 +57,9 @@ BEGIN
     RETURN NULL;
 END;
 $$;
+
+-- Owned by postgres, which can read auth.users, like the other definer functions.
+ALTER FUNCTION public.bloom_user_for_email(TEXT) OWNER TO postgres;
 
 REVOKE ALL ON FUNCTION public.bloom_user_for_email(TEXT)
     FROM PUBLIC, anon, authenticated, service_role;
