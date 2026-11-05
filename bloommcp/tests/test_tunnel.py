@@ -487,6 +487,15 @@ def test_secret_unset_disables_the_tunnel_path(monkeypatch, lookup):
     assert lookup.calls == []
 
 
+def test_empty_secret_keeps_the_tunnel_off(monkeypatch, lookup):
+    """Compose passes an unset secret as "", and "" must not match an empty X-Bloom-Tunnel."""
+    monkeypatch.setenv("BLOOMMCP_TUNNEL_SECRET", "")
+    app = _RecordingApp(status=401)
+    resp = _get(IdentityMiddleware(app), _tunnel_headers(EMAIL, secret=""))
+    assert resp.status_code == 401
+    assert lookup.calls == []
+
+
 def test_health_needs_neither_header(lookup):
     app = _RecordingApp()
     assert _get(IdentityMiddleware(app), [], path="/health").status_code == 200

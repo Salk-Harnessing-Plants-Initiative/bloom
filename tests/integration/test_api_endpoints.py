@@ -320,15 +320,12 @@ def test_kong_routes_auth(api, anon_key):
 # --- bloommcp: tunnel only ---
 
 
-@pytest.mark.parametrize(
-    "path", ["/bloommcp/health", "/.well-known/oauth-protected-resource/bloommcp/mcp"]
-)
-def test_bloommcp_is_not_served_on_the_public_site(api, path):
-    """bloommcp is reached only through the Salk connector's tunnel. These paths
-    fall through to bloom-web, so bloommcp's `ok` and discovery document never answer."""
-    status, body = api(path)
-    assert status != 200 or body != "ok", f"{path} reached bloommcp"
-    assert not (isinstance(body, dict) and body.get("resource")), f"{path} reached bloommcp"
+def test_bloommcp_is_not_served_on_the_public_site(api):
+    """bloommcp is reached only through the Salk connector's tunnel, so its `ok` never
+    answers on the public site. (The OAuth discovery route can't be told apart live, since
+    OAuth is off in CI; test_bloommcp_tunnel_entrance.py checks the Caddyfile has neither.)"""
+    status, body = api("/bloommcp/health")
+    assert status != 200 or body != "ok", "/bloommcp/health reached bloommcp"
 
 
 # --- OAuth 2.1 login routing (bloommcp#613) ---------------------------------
