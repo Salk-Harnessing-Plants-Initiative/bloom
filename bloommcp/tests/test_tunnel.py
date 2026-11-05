@@ -1,9 +1,10 @@
 """The Salk connector's tunnel path through `IdentityMiddleware`.
 
 Caddy's tunnel entrance sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and
-passes on the person's `X-Salk-User`. With a matching secret, bloommcp maps that
-email to a Bloom account through `bloom_user_for_email`, or refuses. Without
-it, the request is handled exactly as before and `X-Salk-User` is ignored.
+passes on AIRC's bearer JWT. With a matching secret, bloommcp verifies the token
+against AIRC's keys (here a test key, served from a `file://` JWKS) and maps its
+`email` claim to a Bloom account through `bloom_user_for_email`, or refuses.
+Without the secret, the request is handled exactly as before.
 
 Tests here wrap a dummy ASGI app; test_tunnel_startup.py covers startup
 validation and the real app.
@@ -11,9 +12,13 @@ validation and the real app.
 
 from __future__ import annotations
 
+import json
+import time
 import uuid
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from starlette.testclient import TestClient
 
 from bloom_mcp import auth, supabase_client, tunnel
@@ -24,6 +29,24 @@ API_KEY = "test-api-key"
 SITE_URL = "https://bloom.example.org"
 USER_ID = str(uuid.uuid4())
 EMAIL = "jdoe@salk.edu"
+ISSUER = "bloom-mcp"
+AUDIENCE = "bloom-test"
+KID = "test-key"
+_KEY = ec.generate_private_key(ec.SECP256R1())
+
+
+def _token(
+    email: str | None = EMAIL, *, key=_KEY, algorithm="ES256", kid=KID, **claims
+) -> str:
+    """A JWT shaped like AIRC's: ES256, iss/aud/exp, and the user in `email`."""
+    payload = {"iss": ISSUER, "aud": AUDIENCE, "exp": int(time.time()) + 300}
+    if email is not None:
+        payload["email"] = email
+    payload.update(claims)
+    return jwt.encode(payload, key, algorithm=algorithm, headers={"kid": kid})
+
+
+_PASSED_THROUGH_TOKEN = _token()
 
 
 class _RecordingApp:
@@ -63,14 +86,29 @@ class _FakeLookup:
         return self.accounts.get(params["p_email"])
 
 
+def _clear_key_caches():
+    tunnel.clear_cache()
+    tunnel._jwks_client.cache_clear()
+    tunnel._jwks_from_file.cache_clear()
+
+
 @pytest.fixture(autouse=True)
-def _tunnel_env(monkeypatch):
+def _tunnel_env(monkeypatch, tmp_path):
+    jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(_KEY.public_key()))
+    jwks = tmp_path / "jwks.json"
+    jwks.write_text(
+        json.dumps({"keys": [{**jwk, "kid": KID, "alg": "ES256", "use": "sig"}]})
+    )
     monkeypatch.setenv("BLOOMMCP_TUNNEL_SECRET", SECRET)
+    monkeypatch.setenv("BLOOMMCP_TUNNEL_JWKS_FILE", str(jwks))
+    monkeypatch.delenv("BLOOMMCP_TUNNEL_JWKS_URL", raising=False)
+    monkeypatch.setenv("BLOOMMCP_TUNNEL_JWT_ISSUER", ISSUER)
+    monkeypatch.setenv("BLOOMMCP_TUNNEL_JWT_AUDIENCE", AUDIENCE)
     monkeypatch.setenv("SITE_URL", SITE_URL)
     monkeypatch.setattr(auth, "API_KEY", API_KEY)
-    tunnel.clear_cache()
+    _clear_key_caches()
     yield
-    tunnel.clear_cache()
+    _clear_key_caches()
 
 
 @pytest.fixture
@@ -90,8 +128,12 @@ def recorded_usage(monkeypatch):
     return calls
 
 
-def _tunnel_headers(*salk_users: str, secret: str = SECRET) -> list[tuple[str, str]]:
-    return [("X-Bloom-Tunnel", secret), *(("X-Salk-User", u) for u in salk_users)]
+def _tunnel_headers(*emails: str, secret: str = SECRET) -> list[tuple[str, str]]:
+    """The tunnel secret plus one AIRC bearer token per email."""
+    return [
+        ("X-Bloom-Tunnel", secret),
+        *(("Authorization", f"Bearer {_token(e)}") for e in emails),
+    ]
 
 
 def _get(app, headers, path="/mcp"):
@@ -137,31 +179,103 @@ def test_bad_salk_user_is_refused_with_403(lookup, recorded_usage, salk_users):
     assert recorded_usage == []
 
 
-def test_control_character_in_salk_user_is_refused(lookup):
-    """Sent as raw ASGI bytes; an HTTP client would refuse to send it."""
+def test_control_character_in_the_email_claim_is_refused(lookup):
     app = _RecordingApp()
-    middleware = IdentityMiddleware(app)
-    sent = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message):
-        sent.append(message)
-
-    scope = {
-        "type": "http",
-        "path": "/mcp",
-        "headers": [
-            (b"x-bloom-tunnel", SECRET.encode()),
-            (b"x-salk-user", b"jdoe@salk.edu\x00"),
-        ],
-    }
-    import anyio
-
-    anyio.run(middleware, scope, receive, send)
-    assert sent[0]["status"] == 403
+    resp = _get(IdentityMiddleware(app), _tunnel_headers("jdoe@salk.edu\x00"))
+    assert resp.status_code == 403
     assert app.called == 0
+    assert lookup.calls == []
+
+
+# --- The token itself -------------------------------------------------------
+
+
+def _token_headers(token: str) -> list[tuple[str, str]]:
+    return [("X-Bloom-Tunnel", SECRET), ("Authorization", f"Bearer {token}")]
+
+
+_OTHER_KEY = ec.generate_private_key(ec.SECP256R1())
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        _token(aud="bloom-prod"),
+        _token(iss="someone-else"),
+        _token(exp=int(time.time()) - 3600),
+        _token(email=None),
+        _token(email=["jdoe@salk.edu"]),
+        _token(key=_OTHER_KEY),
+        _token(kid="unknown-key"),
+        _token(key="a-shared-secret-that-is-long-enough-for-hs256", algorithm="HS256"),
+        jwt.encode(
+            {
+                "iss": ISSUER,
+                "aud": AUDIENCE,
+                "email": EMAIL,
+                "exp": int(time.time()) + 300,
+            },
+            None,
+            algorithm="none",
+            headers={"kid": KID},
+        ),
+        "not-a-jwt",
+    ],
+    ids=[
+        "other-audience",
+        "other-issuer",
+        "expired",
+        "no-email",
+        "email-not-a-string",
+        "signed-by-another-key",
+        "unknown-kid",
+        "hs256",
+        "alg-none",
+        "garbage",
+    ],
+)
+def test_a_token_that_does_not_verify_is_refused(lookup, recorded_usage, token):
+    app = _RecordingApp()
+    resp = _get(IdentityMiddleware(app), _token_headers(token))
+    assert resp.status_code == 403
+    assert (
+        "could not be verified" in resp.json()["error"]
+        or "@salk.edu" in resp.json()["error"]
+    )
+    assert app.called == 0
+    assert lookup.calls == []
+    assert recorded_usage == []
+
+
+@pytest.mark.parametrize("authorization", [f"Basic {_token()}", "Bearer ", _token()])
+def test_authorization_that_is_not_a_bearer_token_is_refused(lookup, authorization):
+    headers = [("X-Bloom-Tunnel", SECRET), ("Authorization", authorization)]
+    assert _get(IdentityMiddleware(_RecordingApp()), headers).status_code == 403
+    assert lookup.calls == []
+
+
+def test_x_salk_user_alone_no_longer_admits(lookup):
+    headers = [("X-Bloom-Tunnel", SECRET), ("X-Salk-User", EMAIL)]
+    assert _get(IdentityMiddleware(_RecordingApp()), headers).status_code == 403
+    assert lookup.calls == []
+
+
+def test_the_token_names_the_user_not_x_salk_user(lookup, recorded_usage):
+    headers = [*_tunnel_headers(EMAIL), ("X-Salk-User", "director@salk.edu")]
+    assert _get(IdentityMiddleware(_RecordingApp()), headers).status_code == 200
+    assert lookup.calls == [("bloom_user_for_email", {"p_email": EMAIL})]
+
+
+def test_unreachable_keys_url_is_503(monkeypatch, lookup):
+    """The production path: AIRC's keys URL, here a closed local port."""
+    monkeypatch.delenv("BLOOMMCP_TUNNEL_JWKS_FILE")
+    monkeypatch.setenv(
+        "BLOOMMCP_TUNNEL_JWKS_URL", "http://127.0.0.1:9/.well-known/jwks.json"
+    )
+    _clear_key_caches()
+    resp = _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
+    assert resp.status_code == 503
+    assert "try again shortly" in resp.json()["error"]
     assert lookup.calls == []
 
 
@@ -461,11 +575,11 @@ def test_known_account_is_admitted_with_the_api_key(lookup, recorded_usage):
     assert recorded_usage == [(USER_ID, "combined")]
 
 
-def test_callers_own_authorization_is_replaced(lookup):
+def test_a_second_authorization_header_is_refused(lookup):
     app = _RecordingApp()
     headers = [*_tunnel_headers(EMAIL), ("Authorization", "Bearer something-else")]
-    _get(IdentityMiddleware(app), headers)
-    assert app.header(b"authorization") == [f"Bearer {API_KEY}".encode()]
+    assert _get(IdentityMiddleware(app), headers).status_code == 403
+    assert app.called == 0
 
 
 def test_usage_is_recorded_per_section(lookup, recorded_usage):
@@ -546,17 +660,20 @@ def test_cache_is_bounded(monkeypatch):
 @pytest.mark.parametrize(
     "headers",
     [
-        [("X-Salk-User", EMAIL)],
-        [("X-Bloom-Tunnel", "w" * 40), ("X-Salk-User", EMAIL)],
+        [("Authorization", f"Bearer {_PASSED_THROUGH_TOKEN}")],
+        [
+            ("X-Bloom-Tunnel", "w" * 40),
+            ("Authorization", f"Bearer {_PASSED_THROUGH_TOKEN}"),
+        ],
         [
             ("X-Bloom-Tunnel", SECRET),
             ("X-Bloom-Tunnel", SECRET),
-            ("X-Salk-User", EMAIL),
+            ("Authorization", f"Bearer {_PASSED_THROUGH_TOKEN}"),
         ],
     ],
     ids=["no-secret", "wrong-secret", "two-secrets"],
 )
-def test_without_a_matching_secret_salk_user_is_ignored(
+def test_without_a_matching_secret_the_token_is_not_trusted(
     lookup, recorded_usage, headers
 ):
     """Handled as before: passed on untouched for FastMCP's own token check."""
@@ -564,7 +681,7 @@ def test_without_a_matching_secret_salk_user_is_ignored(
     resp = _get(IdentityMiddleware(app), headers)
     assert resp.status_code == 401
     assert app.called == 1
-    assert app.header(b"authorization") == []
+    assert app.header(b"authorization") == [f"Bearer {_PASSED_THROUGH_TOKEN}".encode()]
     assert lookup.calls == []
     assert recorded_usage == []
 

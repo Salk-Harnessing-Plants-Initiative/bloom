@@ -11,8 +11,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 ### Added
 
 - Salk connector: with `BLOOMMCP_TUNNEL_SECRET` set, a request from Caddy's tunnel entrance is
-  admitted for the Bloom account matching its `X-Salk-User` email, and usage is recorded under
-  that account. Startup fails on a secret under 32 characters or without `BLOOMMCP_API_KEY`.
+  admitted for the Bloom account matching the `email` in AIRC's verified JWT, and usage is recorded under
+  that account. Startup fails on a secret under 32 characters, or without `BLOOMMCP_API_KEY`
+  or the JWT's keys URL, issuer and audience.
   A refused POST gets a JSON-RPC error carrying the reason, so MCP clients can show it.
 
 ### Removed

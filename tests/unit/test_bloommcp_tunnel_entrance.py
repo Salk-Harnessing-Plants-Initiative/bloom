@@ -2,10 +2,10 @@
 
 Outside traffic for bloommcp arrives through a Cloudflare tunnel: a `cloudflared`
 container in each stack connects out to Cloudflare and forwards to Caddy's
-`:8880` site, which refuses requests without `X-Salk-User`, replaces
+`:8880` site, which refuses requests without AIRC's bearer token, replaces
 `X-Bloom-Tunnel` with this stack's secret, and proxies to `bloommcp:8811`.
 Neither publishes a port on the host. The tunnel is bloommcp's only way in from
-outside: the public site has no bloommcp route and strips both headers.
+outside: the public site has no bloommcp route and strips `X-Bloom-Tunnel`.
 """
 
 from __future__ import annotations
@@ -263,20 +263,20 @@ def _top_level(body: str) -> list[str]:
 
 
 def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
-    """A path-specific handle is ordered before both and would skip the X-Salk-User check."""
+    """A path-specific handle is ordered before both and would skip the bearer check."""
     assert _top_level(_tunnel_site()) == [
         "@not_tunnel not remote_ip {$TUNNEL_SUBNET}",
         "abort @not_tunnel",
-        "@no_salk_user not header X-Salk-User *",
-        "handle @no_salk_user {",
+        '@no_bearer not header Authorization "Bearer *"',
+        "handle @no_bearer {",
         "handle {",
     ]
 
 
-def test_tunnel_site_refuses_requests_without_salk_user():
+def test_tunnel_site_refuses_requests_without_a_bearer_token():
     site = _tunnel_site()
-    matcher = re.search(r"^\s*(@\w+)\s+not\s+header\s+X-Salk-User\s+\*\s*$", site, re.M)
-    assert matcher, "no matcher for a missing X-Salk-User"
+    matcher = re.search(r'^\s*(@\w+)\s+not\s+header\s+Authorization\s+"Bearer \*"\s*$', site, re.M)
+    assert matcher, "no matcher for a missing bearer token"
     refusal = block_after(site, rf"handle\s+{matcher.group(1)}\b")
     assert refusal is not None
     assert _lines(refusal) == ['respond "forbidden" 403']
@@ -333,10 +333,9 @@ def test_only_the_tunnel_site_reaches_bloommcp():
     assert everywhere == _tunnel_site().count("bloommcp:8811") == 1
 
 
-@pytest.mark.parametrize("header", ["X-Salk-User", "X-Bloom-Tunnel"])
-def test_public_site_strips_the_tunnel_headers(header: str):
-    """Site level, so every hostname and route in the block drops them."""
-    assert f"request_header -{header}" in _site_level_lines(_public_site())
+def test_public_site_strips_the_tunnel_header():
+    """Site level, so every hostname and route in the block drops it."""
+    assert "request_header -X-Bloom-Tunnel" in _site_level_lines(_public_site())
 
 
 # --- Deploy workflow -------------------------------------------------------

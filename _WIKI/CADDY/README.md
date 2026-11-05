@@ -145,18 +145,18 @@ The same applies to a deeper name such as `deep.sub.bloom.salk.edu`: a wildcard 
 
 ## Tunnel entrance (bloommcp's Salk connector)
 
-Salk's AIRC service signs people in with Salk Entra and sends their requests for bloommcp through a Cloudflare tunnel, with the person's email in `X-Salk-User`. Each stack runs its own `cloudflared` container, which connects out to Cloudflare and forwards to `http://caddy:8880`.
+Salk's AIRC service signs people in with Salk Entra and sends their requests for bloommcp through a Cloudflare tunnel, with the signed-in person carried in a JWT signed by AIRC (`Authorization: Bearer`). Each stack runs its own `cloudflared` container, which connects out to Cloudflare and forwards to `http://caddy:8880`.
 
 `cloudflared` sits alone with Caddy on a `tunnel` Docker network, so it cannot reach the database, Studio, Kong or MinIO directly. Caddy also drops any request from that network on every site except `:8880` (the network has a fixed subnet per environment, `TUNNEL_SUBNET` in `.env.<env>.defaults`), so a route to `caddy:443` or `caddy:80` gets nothing. Port 8880 is not published on the host. cloudflared can still reach the internet and the host's network, as it must to connect out, so a route to a public Bloom hostname would come in through Caddy's published ports like any Salk request; AIRC's tunnel routes only to `http://caddy:8880`. In the other direction, `:8880` accepts requests only from the tunnel network, so a request from a `supanet` container is dropped. The host is not: it reaches the tunnel network through the network's gateway, whose address is inside `TUNNEL_SUBNET`.
 
 The `:8880` site:
 
 * drops any request that does not come from the tunnel network;
-* refuses a request without `X-Salk-User` with `403`;
+* refuses a request without a bearer token with `403`;
 * drops any incoming `X-Bloom-Tunnel` and sets its own from `BLOOMMCP_TUNNEL_SECRET`, so bloommcp can tell the request came through this entrance;
 * forwards every path unchanged to `bloommcp:8811`, unbuffered and uncompressed so MCP streaming works.
 
-This is bloommcp's only way in from outside. The public site has no bloommcp route, and it strips `X-Salk-User` and `X-Bloom-Tunnel` from every incoming request, so neither can reach bloommcp except through `:8880`. bloommcp reads `X-Salk-User` only when `X-Bloom-Tunnel` matches its own copy of the secret; see the [bloommcp README](../../bloommcp/README.md#salk-connector-tunnel).
+This is bloommcp's only way in from outside. The public site has no bloommcp route, and it strips `X-Bloom-Tunnel` from every incoming request, so the secret can reach bloommcp only through `:8880`. bloommcp trusts the bearer token only when `X-Bloom-Tunnel` matches its own copy of the secret, and verifies it against AIRC's keys; see the [bloommcp README](../../bloommcp/README.md#salk-connector-tunnel).
 
 `cloudflared` runs only where the `tunnel` compose profile is on. `COMPOSE_PROFILES=tunnel` in [.env.prod.defaults](../../.env.prod.defaults) and [.env.staging.defaults](../../.env.staging.defaults) turns it on for prod and staging; CI and dev leave it off, since they have no tunnel token.
 

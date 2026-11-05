@@ -634,8 +634,11 @@ services:
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
-      # Salk connector: trust X-Salk-User only with Caddy's tunnel secret; SITE_URL is for the sign-up hint.
+      # Salk connector: with Caddy's tunnel secret, verify AIRC's JWT; SITE_URL is for the sign-up hint.
       BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
+      BLOOMMCP_TUNNEL_JWKS_URL: ${BLOOMMCP_TUNNEL_JWKS_URL}
+      BLOOMMCP_TUNNEL_JWT_ISSUER: ${BLOOMMCP_TUNNEL_JWT_ISSUER}
+      BLOOMMCP_TUNNEL_JWT_AUDIENCE: ${BLOOMMCP_TUNNEL_JWT_AUDIENCE}
       SITE_URL: ${SITE_URL}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
