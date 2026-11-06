@@ -101,8 +101,7 @@
 		Cross-Origin-Resource-Policy same-origin
 	}
 
-	# Only the tunnel entrance may set these; bloommcp trusts them from it alone.
-	request_header -X-Salk-User
+	# Only the tunnel entrance may set this; bloommcp trusts a token only with it.
 	request_header -X-Bloom-Tunnel
 
 	# Compress these text types, except on the stream route: encode holds headers until the first body byte.
@@ -304,9 +303,9 @@
 	@not_tunnel not remote_ip {$TUNNEL_SUBNET}
 	abort @not_tunnel
 
-	# A request without the Salk user header is refused.
-	@no_salk_user not header X-Salk-User *
-	handle @no_salk_user {
+	# A request without AIRC's bearer token is refused; bloommcp verifies the token.
+	@no_bearer not header_regexp Authorization "(?i)^bearer "
+	handle @no_bearer {
 		respond "forbidden" 403
 	}
 

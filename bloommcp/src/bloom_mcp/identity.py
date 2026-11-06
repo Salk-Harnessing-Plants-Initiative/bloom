@@ -189,7 +189,7 @@ class IdentityMiddleware:
 
     A request carrying the tunnel secret takes the Salk connector path instead
     (`bloom_mcp.tunnel`): `X-Bloom-Identity` is not read and usage is recorded
-    under the Bloom account the `X-Salk-User` email maps to.
+    under the Bloom account the verified token's email maps to.
     """
 
     def __init__(self, app) -> None:
@@ -209,7 +209,7 @@ class IdentityMiddleware:
         if path != "/health" and tunnel.is_tunnel_request(headers):
             try:
                 key = tunnel.api_key()
-                identity = await tunnel.bloom_user(tunnel.salk_user(headers))
+                identity = await tunnel.bloom_user(await tunnel.salk_user(headers))
             except tunnel.TunnelRefusal as exc:
                 await _refuse_tunnel_request(scope, receive, send, exc)
                 return

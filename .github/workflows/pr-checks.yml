@@ -880,6 +880,10 @@ jobs:
           # Caddy's tunnel-entrance header value; no tunnel token, since cloudflared does not run in CI.
           echo "BLOOMMCP_TUNNEL_SECRET=ci-tunnel-secret-not-real-0000000000000000" >> .env.ci
           echo "TUNNEL_SUBNET=172.30.252.0/28" >> .env.ci
+          # Required by compose; CI's bloommcp reads a local keys file instead (docker-compose.ci.yml).
+          echo "BLOOMMCP_TUNNEL_JWKS_URL=https://ci.invalid/.well-known/jwks.json" >> .env.ci
+          echo "BLOOMMCP_TUNNEL_JWT_ISSUER=bloom-mcp" >> .env.ci
+          echo "BLOOMMCP_TUNNEL_JWT_AUDIENCE=bloom-ci" >> .env.ci
           echo "KONG_PORT=8000" >> .env.ci
           echo "BLOOM_WEB_PORT=3000" >> .env.ci
           echo "STUDIO_PORT=3000" >> .env.ci
@@ -919,6 +923,11 @@ jobs:
           : "${JWT_JWKS:?generate_jwt_keys.py emitted no JWT_JWKS}"
           echo "JWT_KEYS=$JWT_KEYS" >> .env.ci
           echo "JWT_JWKS=$JWT_JWKS" >> .env.ci
+
+      # Stands in for AIRC's tunnel JWT keys: bloommcp reads the public half, the
+      # tunnel integration tests sign with the private half. Per run, never stored.
+      - name: Provision tunnel test keys
+        run: uv run --no-project --with cryptography --with pyjwt python scripts/generate_ci_tunnel_keys.py .ci-tunnel
 
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci

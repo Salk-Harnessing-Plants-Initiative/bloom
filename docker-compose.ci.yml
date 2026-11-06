@@ -61,3 +61,8 @@ services:
     build:
       context: ./bloommcp
       dockerfile: Dockerfile
+    # The tunnel tests sign tokens with a per-run key; bloommcp reads its public half.
+    environment:
+      BLOOMMCP_TUNNEL_JWKS_FILE: /run/tunnel-test/jwks.json
+    volumes:
+      - ./.ci-tunnel/jwks.json:/run/tunnel-test/jwks.json:ro

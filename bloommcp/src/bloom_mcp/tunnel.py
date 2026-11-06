@@ -1,18 +1,21 @@
 """Admits people who reach bloommcp through the Salk connector's tunnel.
 
 AIRC signs people in with Salk and forwards their requests through a Cloudflare
-tunnel to Caddy's tunnel entrance, which requires ``X-Salk-User`` and sets
+tunnel to Caddy's tunnel entrance, which requires a bearer token and sets
 ``X-Bloom-Tunnel`` to ``BLOOMMCP_TUNNEL_SECRET``. Only a request carrying that
-secret is a tunnel request; on any other request ``X-Salk-User`` is never read.
+secret is a tunnel request.
 
-A tunnel request must name one ``@salk.edu`` address that belongs to an active
-Bloom account (``public.bloom_user_for_email``, called as ``bloom_agent``). It
-is then admitted with the shared API key in place of a caller token, and its
-usage is recorded under the account's id. Queries still run as ``bloom_agent``.
+A tunnel request's bearer token must be a JWT signed by AIRC (ES256, keys from
+``BLOOMMCP_TUNNEL_JWKS_URL``) for this environment's issuer and audience. Its
+``email`` claim must be one ``@salk.edu`` address that belongs to an active Bloom
+account (``public.bloom_user_for_email``, called as ``bloom_agent``). The request
+is then admitted with the shared API key in place of the token, and its usage is
+recorded under the account's id. Queries still run as ``bloom_agent``.
 """
 
 from __future__ import annotations
 
+import functools
 import hmac
 import json
 import logging
@@ -22,13 +25,30 @@ import time
 from collections import OrderedDict
 
 import anyio
+import jwt
 
 logger = logging.getLogger(__name__)
 
 SECRET_ENV = "BLOOMMCP_TUNNEL_SECRET"
 MIN_SECRET_LENGTH = 32
 TUNNEL_HEADER = b"x-bloom-tunnel"
-SALK_USER_HEADER = b"x-salk-user"
+AUTHORIZATION_HEADER = b"authorization"
+JWKS_URL_ENV = "BLOOMMCP_TUNNEL_JWKS_URL"
+# A local keys file instead of the URL, for CI and tests (no network).
+JWKS_FILE_ENV = "BLOOMMCP_TUNNEL_JWKS_FILE"
+ISSUER_ENV = "BLOOMMCP_TUNNEL_JWT_ISSUER"
+AUDIENCE_ENV = "BLOOMMCP_TUNNEL_JWT_AUDIENCE"
+JWT_ALGORITHMS = ["ES256"]
+EMAIL_CLAIM = "email"
+# How long AIRC's public keys are cached, and the clock skew allowed on expiry.
+JWKS_CACHE_SECONDS = 300
+# AIRC's Cloudflare refuses Python's default User-Agent; a hung fetch waits at most this long.
+JWKS_USER_AGENT = "bloommcp"
+JWKS_FETCH_TIMEOUT_SECONDS = 5
+JWT_LEEWAY_SECONDS = 30
+NOT_VERIFIED_MESSAGE = (
+    "Your Salk sign-in could not be verified; try reconnecting the Bloom connector."
+)
 SALK_DOMAIN = "@salk.edu"
 MAX_EMAIL_LENGTH = 254
 LOOKUP_RPC = "bloom_user_for_email"
@@ -98,6 +118,14 @@ def validate_env() -> None:
             f"{SECRET_ENV} is set but BLOOMMCP_API_KEY is not; tunnel requests "
             "are admitted with the API key."
         )
+    missing = [name for name in (ISSUER_ENV, AUDIENCE_ENV) if not os.environ.get(name)]
+    if not os.environ.get(JWKS_URL_ENV) and not os.environ.get(JWKS_FILE_ENV):
+        missing.insert(0, JWKS_URL_ENV)
+    if missing:
+        raise RuntimeError(
+            f"{SECRET_ENV} is set but {', '.join(missing)} is not; tunnel requests "
+            "carry AIRC's JWT."
+        )
 
 
 def is_tunnel_request(headers: list[tuple[bytes, bytes]]) -> bool:
@@ -127,19 +155,95 @@ def _is_salk_address(value: str) -> bool:
     return lowered.endswith(SALK_DOMAIN) and len(lowered) > len(SALK_DOMAIN)
 
 
-def salk_user(headers: list[tuple[bytes, bytes]]) -> str:
-    """The one ``@salk.edu`` address in ``X-Salk-User``, in lower case."""
-    values = [v for k, v in headers if k == SALK_USER_HEADER]
+def _bearer_token(headers: list[tuple[bytes, bytes]]) -> str:
+    values = [v for k, v in headers if k == AUTHORIZATION_HEADER]
     if len(values) != 1:
-        logger.warning("tunnel refused: %d X-Salk-User headers", len(values))
-        raise TunnelRefusal(403, "Expected exactly one X-Salk-User header.")
-    value = values[0].decode("latin-1")
-    if not _is_salk_address(value):
-        logger.warning(
-            "tunnel refused: X-Salk-User %r is not one @salk.edu address", value
+        logger.warning("tunnel refused: %d Authorization headers", len(values))
+        raise TunnelRefusal(403, NOT_VERIFIED_MESSAGE)
+    scheme, _, token = values[0].decode("latin-1").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        logger.warning("tunnel refused: Authorization is not a bearer token")
+        raise TunnelRefusal(403, NOT_VERIFIED_MESSAGE)
+    return token.strip()
+
+
+@functools.lru_cache(maxsize=4)
+def _jwks_client(url: str) -> jwt.PyJWKClient:
+    # The key set is cached for JWKS_CACHE_SECONDS; no per-key cache, so a removed key stops working.
+    return jwt.PyJWKClient(
+        url,
+        cache_keys=False,
+        lifespan=JWKS_CACHE_SECONDS,
+        headers={"User-Agent": JWKS_USER_AGENT},
+        timeout=JWKS_FETCH_TIMEOUT_SECONDS,
+    )
+
+
+@functools.lru_cache(maxsize=4)
+def _jwks_from_file(path: str) -> jwt.PyJWKSet:
+    with open(path, encoding="utf-8") as handle:
+        return jwt.PyJWKSet.from_json(handle.read())
+
+
+def _signing_key(token: str):
+    path = os.environ.get(JWKS_FILE_ENV)
+    if not path:
+        return (
+            _jwks_client(os.environ[JWKS_URL_ENV]).get_signing_key_from_jwt(token).key
         )
-        raise TunnelRefusal(403, "X-Salk-User must be one @salk.edu address.")
-    return value.lower()
+    kid = jwt.get_unverified_header(token).get("kid")
+    for key in _jwks_from_file(path).keys:
+        if key.key_id == kid:
+            return key.key
+    raise jwt.PyJWKClientError(f"no key with kid {kid!r}")
+
+
+def _verified_email(token: str) -> str:
+    """The ``email`` claim of AIRC's verified JWT, in lower case. Blocking: the key
+    fetch is a network call."""
+    try:
+        key = _signing_key(token)
+    except jwt.PyJWKClientConnectionError as exc:
+        logger.error("tunnel: could not fetch AIRC's keys: %s", _describe_failure(exc))
+        raise TunnelRefusal(
+            503, "Could not verify your Salk sign-in; try again shortly."
+        )
+    except jwt.PyJWTError as exc:
+        logger.warning("tunnel refused: token key not usable: %s", type(exc).__name__)
+        raise TunnelRefusal(403, NOT_VERIFIED_MESSAGE)
+    except Exception as exc:
+        # A key set that isn't JSON, a dropped connection, an unreadable keys file.
+        logger.error("tunnel: AIRC's keys not usable: %s", _describe_failure(exc))
+        raise TunnelRefusal(
+            503, "Could not verify your Salk sign-in; try again shortly."
+        )
+    try:
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=JWT_ALGORITHMS,
+            audience=os.environ[AUDIENCE_ENV],
+            issuer=os.environ[ISSUER_ENV],
+            leeway=JWT_LEEWAY_SECONDS,
+            options={"require": ["exp", "iss", "aud", EMAIL_CLAIM]},
+        )
+    except jwt.PyJWTError as exc:
+        logger.warning("tunnel refused: token not valid: %s", type(exc).__name__)
+        raise TunnelRefusal(403, NOT_VERIFIED_MESSAGE)
+    email = claims[EMAIL_CLAIM]
+    if not isinstance(email, str) or not _is_salk_address(email):
+        logger.warning(
+            "tunnel refused: email claim %r is not one @salk.edu address",
+            str(email)[:MAX_EMAIL_LENGTH],
+        )
+        raise TunnelRefusal(403, "Your Salk sign-in did not include a @salk.edu email.")
+    return email.lower()
+
+
+async def salk_user(headers: list[tuple[bytes, bytes]]) -> str:
+    """The ``@salk.edu`` address in AIRC's verified bearer token, in lower case."""
+    token = _bearer_token(headers)
+    return await anyio.to_thread.run_sync(_verified_email, token)
 
 
 def _cached(email: str) -> str | None:

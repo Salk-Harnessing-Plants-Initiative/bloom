@@ -1,5 +1,7 @@
 """Live assertion: Caddy's `:8880` tunnel entrance refuses requests without
-`X-Salk-User` and forwards the rest to bloommcp, which looks the user up.
+AIRC's bearer token and forwards the rest to bloommcp, which verifies the token
+and looks the user up. CI signs tokens with a throwaway key
+(scripts/generate_ci_tunnel_keys.py) whose public half bloommcp reads.
 
 Config-shape counterpart: tests/unit/test_bloommcp_tunnel_entrance.py.
 
@@ -16,6 +18,8 @@ import os
 import re
 import shutil
 import subprocess
+import time
+from pathlib import Path
 
 import pytest
 
@@ -71,7 +75,7 @@ def _status(container: str, tunnel_ip: str, path: str, *headers: str) -> int:
 
 # A path-specific route added to the site would be ordered before the refusal.
 @pytest.mark.parametrize("path", ["/", "/health", "/mcp", "/mcp/x"])
-def test_request_without_salk_user_is_refused_by_caddy(caddy_container, caddy_tunnel_ip, path):
+def test_request_without_a_bearer_token_is_refused_by_caddy(caddy_container, caddy_tunnel_ip, path):
     assert _status(caddy_container, caddy_tunnel_ip, path) == 403
 
 
@@ -91,6 +95,24 @@ except OSError as error:
     print(); print(f"{type(error).__name__}: {error}")
 """
 NO_ACCOUNT = "nobody-ci@salk.edu"
+CI_TUNNEL_KEY = Path(__file__).resolve().parents[2] / ".ci-tunnel" / "key.pem"
+
+
+def _bearer(email: str, **overrides) -> str:
+    """An Authorization header with a token shaped like AIRC's, signed with CI's key."""
+    import jwt
+
+    if not CI_TUNNEL_KEY.exists():
+        _unavailable(f"no CI tunnel key at {CI_TUNNEL_KEY}")
+    claims = {
+        "iss": "bloom-mcp",
+        "aud": "bloom-ci",
+        "email": email,
+        "exp": int(time.time()) + 300,
+        **overrides,
+    }
+    token = jwt.encode(claims, CI_TUNNEL_KEY.read_text(), algorithm="ES256", headers={"kid": "ci-tunnel"})
+    return f"Authorization: Bearer {token}"
 
 
 @pytest.fixture(scope="module")
@@ -153,7 +175,7 @@ def test_the_entrance_drops_requests_from_supanet(bloommcp_container):
     assert reachable is not None, "caddy:80 did not answer from the bloommcp container"
     # Without the tunnel-only rule this would be bloommcp's 403 "No Bloom account".
     status, error = _from_bloommcp(
-        bloommcp_container, f"http://caddy:{TUNNEL_PORT}/mcp", f"X-Salk-User: {NO_ACCOUNT}"
+        bloommcp_container, f"http://caddy:{TUNNEL_PORT}/mcp", _bearer(NO_ACCOUNT)
     )
     assert status is None
     # Caddy's abort closes the connection; a DNS failure, refusal or timeout would not.
@@ -161,7 +183,7 @@ def test_the_entrance_drops_requests_from_supanet(bloommcp_container):
 
 
 def test_a_salk_user_without_an_account_gets_bloommcps_refusal(tunnel_client):
-    status, body = _through_tunnel(tunnel_client, f"X-Salk-User: {NO_ACCOUNT}")
+    status, body = _through_tunnel(tunnel_client, _bearer(NO_ACCOUNT))
     assert status == 403
     assert f"No Bloom account for {NO_ACCOUNT}" in body, body
 
@@ -172,7 +194,7 @@ def test_a_refused_mcp_post_is_a_jsonrpc_error_with_the_message(tunnel_client):
     request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     client = [*tunnel_client[:-1], "-e", f"POST_BODY={json.dumps(request)}", tunnel_client[-1]]
     status, body = _through_tunnel(
-        client, f"X-Salk-User: {NO_ACCOUNT}", "Content-Type: application/json"
+        client, _bearer(NO_ACCOUNT), "Content-Type: application/json"
     )
     assert status == 200, body
     response = json.loads(body)
@@ -181,9 +203,16 @@ def test_a_refused_mcp_post_is_a_jsonrpc_error_with_the_message(tunnel_client):
     assert f"No Bloom account for {NO_ACCOUNT}" in response["error"]["message"]
 
 
+def test_a_token_for_another_audience_is_refused_live(tunnel_client):
+    # Proves the deployed bloommcp verifies the token: a valid signature for prod is not enough.
+    status, body = _through_tunnel(tunnel_client, _bearer(NO_ACCOUNT, aud="bloom-prod"))
+    assert status == 403
+    assert "could not be verified" in body, body
+
+
 def test_a_forged_tunnel_header_through_caddy_is_replaced(tunnel_client):
     status, body = _through_tunnel(
-        tunnel_client, f"X-Salk-User: {NO_ACCOUNT}", "X-Bloom-Tunnel: forged"
+        tunnel_client, _bearer(NO_ACCOUNT), "X-Bloom-Tunnel: forged"
     )
     assert status == 403
     assert f"No Bloom account for {NO_ACCOUNT}" in body, body
@@ -193,7 +222,7 @@ def test_a_forged_tunnel_header_straight_to_bloommcp_is_ignored(bloommcp_contain
     forged = _from_bloommcp(
         bloommcp_container,
         "http://bloommcp:8811/mcp",
-        f"X-Salk-User: {NO_ACCOUNT}",
+        _bearer(NO_ACCOUNT),
         "X-Bloom-Tunnel: forged",
     )
     plain = _from_bloommcp(bloommcp_container, "http://bloommcp:8811/mcp")
