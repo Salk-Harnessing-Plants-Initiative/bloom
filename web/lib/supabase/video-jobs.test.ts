@@ -36,16 +36,15 @@ function clientReturning(
   Object.assign(latest, { eq, is, order, limit, maybeSingle });
 
   const counted: Record<string, unknown> = {};
-  const countEq = vi.fn().mockReturnValue(counted);
-  const lt = vi.fn().mockResolvedValue(count);
-  Object.assign(counted, { eq: countEq, lt });
+  const or = vi.fn().mockResolvedValue(count);
+  Object.assign(counted, { or });
 
   select.mockImplementation((_cols: string, opts?: { head?: boolean }) =>
     opts?.head ? counted : latest
   );
   const from = vi.fn().mockReturnValue({ select });
   mockedClient.mockResolvedValue({ from } as never);
-  return { from, select, eq, is, order, limit, countEq, lt };
+  return { from, select, eq, is, order, limit, or };
 }
 
 let warn: ReturnType<typeof vi.spyOn>;
@@ -102,20 +101,22 @@ describe("getPlateVideoJob", () => {
   });
 
   it("counts the queued jobs created before a queued one", async () => {
-    const { countEq, lt } = clientReturning(
+    const { or } = clientReturning(
       { data: { ...ROW, status: "queued", stage: null } },
       { count: 2 }
     );
     const job = await getPlateVideoJob(7, "P1", 2);
-    expect(countEq).toHaveBeenCalledWith("status", "queued");
-    expect(lt).toHaveBeenCalledWith("created_at", ROW.created_at);
+    // The job being rendered is ahead too, not only those queued earlier.
+    expect(or).toHaveBeenCalledWith(
+      `status.eq.rendering,and(status.eq.queued,created_at.lt."${ROW.created_at}")`
+    );
     expect(job?.queued_ahead).toBe(2);
   });
 
   it("does not count for a job that is not queued", async () => {
-    const { lt } = clientReturning({ data: ROW });
+    const { or } = clientReturning({ data: ROW });
     const job = await getPlateVideoJob(7, "P1", 2);
-    expect(lt).not.toHaveBeenCalled();
+    expect(or).not.toHaveBeenCalled();
     expect(job?.queued_ahead).toBeNull();
   });
 

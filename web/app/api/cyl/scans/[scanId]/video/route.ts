@@ -23,6 +23,13 @@ import { parseId } from "@/lib/route-params";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+// Never reusable: the answer carries a signed link made for one reader, and a job
+// state the next poll is meant to contradict.
+function noStore(response: NextResponse): NextResponse {
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ scanId: string }> }
@@ -31,18 +38,14 @@ export async function GET(
 
   const scan = parseId(scanId);
   if (scan === null) {
-    return NextResponse.json(
-      { detail: "scanId must be a positive integer" },
-      { status: 400 }
+    return noStore(
+      NextResponse.json({ detail: "scanId must be a positive integer" }, { status: 400 })
     );
   }
 
   const session = await getSession();
   if (!session?.access_token) {
-    return NextResponse.json(
-      { detail: "Sign in to view this video." },
-      { status: 401 }
-    );
+    return noStore(NextResponse.json({ detail: "Sign in to view this video." }, { status: 401 }));
   }
 
   // A lookup that failed is not an absence. Answering 404 for a storage outage
@@ -51,17 +54,21 @@ export async function GET(
   // getStoredScanVideo's three-state answer exists to prevent.
   const stored = await getStoredScanVideo(scan);
   if (stored.status === "unknown") {
-    return NextResponse.json(
-      { detail: "Could not check whether this scan has a video. Try again shortly." },
-      { status: 503 }
+    return noStore(
+      NextResponse.json(
+        { detail: "Could not check whether this scan has a video. Try again shortly." },
+        { status: 503 }
+      )
     );
   }
   // The button names the job it waits on, so a newer one cannot hide its outcome.
   const jobId = parseJobId(new URL(request.url).searchParams.get("job_id"));
   const job = await getScanVideoJob(scan, jobId);
 
-  return NextResponse.json({
-    download_url: stored.status === "present" ? stored.url : null,
-    job,
-  });
+  return noStore(
+    NextResponse.json({
+      download_url: stored.status === "present" ? stored.url : null,
+      job,
+    })
+  );
 }

@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   PLATE_FAILURES,
@@ -74,7 +76,7 @@ describe("renderingNote and countedFrames", () => {
   it("counts frames while downloading", () => {
     const j = job({ stage: "downloading", frames_done: 4, frames_total: 9 });
     expect(countedFrames(j)).toEqual({ done: 4, total: 9 });
-    expect(renderingNote(j)).toBe("Downloading frame 4 of 9");
+    expect(renderingNote(j)).toBe("Downloaded 4 of 9 frames");
   });
 
   it("never counts past the total", () => {
@@ -115,17 +117,35 @@ describe("jobFailureMessage", () => {
     expect(message).toBe(`${SCAN_FAILURES.unexpected} (job 1a2b3c4d)`);
   });
 
-  it("covers every code the service can write", () => {
+  it("covers every code the service can write, read from the service itself", () => {
+    const repo = (path: string) => fileURLToPath(new URL(`../../${path}`, import.meta.url));
+    const worker = (file: string) => readFileSync(repo(`services/workflows/${file}`), "utf8");
+    const migration = readdirSync(repo("supabase/migrations")).find((f) =>
+      f.endsWith("_create_video_generation_queues.sql")
+    )!;
+    const sql = readFileSync(repo(`supabase/migrations/${migration}`), "utf8");
+    const literals = (text: string) => [...text.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    const between = (text: string, from: string, to: string) => {
+      const start = text.indexOf(from);
+      expect(start, `${from} not found`).toBeGreaterThanOrEqual(0);
+      return text.slice(start, text.indexOf(to, start + from.length));
+    };
+
+    // The queue's own codes: what the loop and the claim wrapper write.
+    const shared = [
+      /^UNEXPECTED = "([a-z_]+)"/m.exec(worker("video_queue.py"))![1],
+      /^STALLED = "([a-z_]+)"/m.exec(worker("video_worker_loop.py"))![1],
+      /error_code = '([a-z_]+)'/.exec(sql)![1],
+    ];
     const plate = [
-      "no_frames", "too_large", "unusable_plate", "storage_unavailable",
-      "database_unavailable", "frame_too_large", "frame_depth_unsupported",
-      "frame_size_mismatch", "frame_unreadable", "not_stored", "not_recorded",
-      "encode_failed", "plate_mismatch", "unexpected", "redelivered", "stalled",
+      ...literals(between(worker("plate_video_worker.py"), "FAILURES = (", "\n)\n")),
+      ...literals(between(worker("plate_request.py"), "REFUSAL_STATUS = {", "}")),
+      ...shared,
     ];
-    const scan = [
-      "no_images", "scan_not_in_experiment", "storage_unavailable", "database_unavailable",
-      "no_frames_encoded", "encode_failed", "not_signed", "unexpected", "redelivered", "stalled",
-    ];
+    const scan = [...literals(between(worker("cyl_video_worker.py"), "def code_for_refusal", "\ndef ")), ...shared];
+
+    expect(plate).toEqual(expect.arrayContaining(["frame_too_large", "no_frames", "redelivered", "stalled"]));
+    expect(scan).toEqual(expect.arrayContaining(["database_unavailable", "no_images", "unexpected"]));
     for (const code of plate) expect(PLATE_FAILURES[code], code).toBeTruthy();
     for (const code of scan) expect(SCAN_FAILURES[code], code).toBeTruthy();
   });

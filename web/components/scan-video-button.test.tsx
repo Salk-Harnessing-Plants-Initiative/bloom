@@ -140,7 +140,7 @@ describe("ScanVideoButton queuing a render", () => {
     await click("Generate video");
     await tick();
 
-    expect(document.body.textContent).toContain("Downloading frame 30 of 72");
+    expect(document.body.textContent).toContain("Downloaded 30 of 72 frames");
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("30");
   });
 
@@ -178,13 +178,43 @@ describe("ScanVideoButton queuing a render", () => {
     serve(() => json(QUEUED, 202), [
       poll(null, null),
       poll(null, job({ id: "ffffffff-old", status: "failed", error_code: "unexpected" })),
+      poll(VIDEO_URL, RENDERED),
+    ]);
+
+    await mount();
+    await click("Generate video");
+    await tick();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Its own job still ends the wait.
+    await tick();
+    expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
+  });
+
+  it("offers the stored video when only its link could not be made", async () => {
+    serve(() => json(QUEUED, 202), [
+      poll(null, null),
+      poll(VIDEO_URL, job({ status: "failed", error_code: "not_signed" })),
     ]);
 
     await mount();
     await click("Generate video");
     await tick();
 
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("link", { name: "Open video" }).getAttribute("href")).toBe(VIDEO_URL);
+    expect(screen.getByRole("alert").textContent).toContain("(job 1a2b3c4d)");
+  });
+
+  it("starts over when it is shown another scan", async () => {
+    serve(() => json(QUEUED, 202), [poll(null, null)]);
+    const view = await mount();
+    await click("Generate video");
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+
+    await act(async () => {
+      view.rerender(<ScanVideoButton experimentId={1} scanId={6} />);
+    });
+    expect(screen.getByRole("button", { name: "Generate video" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("says the stored video was kept", async () => {
@@ -441,7 +471,8 @@ describe("ScanVideoButton when a poll cannot follow its job", () => {
 
     await mount();
     await click("Generate video");
-    await tick();
+    // One 401 can be a token refresh; two in a row end the wait.
+    await tick(2);
     const asked = fetchMock.mock.calls.length;
     await tick(3);
 

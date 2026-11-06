@@ -33,6 +33,23 @@ HEARTBEAT_STALE_SECONDS = 600
 RENDER_STALL_SECONDS = float(os.environ.get("WORKFLOWS_VIDEO_STALL_SECONDS", "600"))
 WATCHDOG_CHECK_SECONDS = 15.0
 STALLED = "stalled"
+# A Supabase outage is waited out at a growing interval, so two workers do not
+# hammer sign-in every couple of seconds; capped so recovery is still prompt.
+MAX_BACKOFF_SECONDS = 60.0
+
+
+def backoff(attempt: int) -> float:
+    """Seconds to wait before retry number `attempt` (counted from 0)."""
+    return min(POLL_SECONDS * 2**attempt, MAX_BACKOFF_SECONDS)
+
+
+def healthy(now: float | None = None) -> bool:
+    """Whether the loop has touched its heartbeat recently: the compose healthcheck."""
+    try:
+        age = (time.time() if now is None else now) - HEARTBEAT_PATH.stat().st_mtime
+    except OSError:
+        return False
+    return age <= HEARTBEAT_STALE_SECONDS
 
 
 def beat() -> None:
@@ -201,12 +218,14 @@ class Worker:
         )
         watchdog.start()
         try:
-            self._run_job(client, job, progress)
+            self._run_job(client, job, progress, watchdog)
         finally:
             watchdog.stop()
         return True
 
-    def _run_job(self, client, job: dict, progress: ProgressReporter) -> None:
+    def _run_job(
+        self, client, job: dict, progress: ProgressReporter, watchdog: Watchdog
+    ) -> None:
         """Render one claimed job and settle it as its outcome says."""
         job_id = job["job_id"]
         try:
@@ -220,10 +239,13 @@ class Worker:
             code, error = UNEXPECTED, f"{type(exc).__name__}: {exc}"
             logger.exception("%s: job %s failed unexpectedly", self.queue.name, job_id)
         else:
+            # The render is over: a stall can no longer fail a job whose video is made.
+            watchdog.stop()
             logger.info("%s: job %s %s", self.queue.name, job_id, outcome)
             self._settle(job_id, lambda: complete(client, self.queue, job, outcome))
             return
 
+        watchdog.stop()
         self._settle(job_id, lambda: fail(client, self.queue, job, code, error))
 
     def _abandon(self, client, job: dict, quiet: float) -> None:
@@ -258,16 +280,22 @@ class Worker:
 
     def _connect(self):
         """Retry until connected or stopped, so a Supabase outage at start does not crash-loop."""
+        attempt = 0
         while self.running:
             # Alive while waiting out an outage, or the deploy's --wait reads it as dead.
             beat()
             try:
                 return self.client_factory()
             except Exception as exc:
+                wait = backoff(attempt)
                 logger.error(
-                    "%s: could not connect, retrying: %s", self.queue.name, exc
+                    "%s: could not connect, retrying in %.0fs: %s",
+                    self.queue.name,
+                    wait,
+                    exc,
                 )
-                self.sleep(POLL_SECONDS)
+                self.sleep(wait)
+                attempt += 1
         return None
 
     def run(self) -> None:
@@ -275,14 +303,32 @@ class Worker:
         signal.signal(signal.SIGINT, self.stop)
         client = self._connect()
         logger.info("%s worker started (poll=%ss)", self.queue.name, POLL_SECONDS)
+        failures = 0
         while self.running and client is not None:
             try:
                 handled = self.process_one(client)
             except Exception as exc:
-                logger.error("%s: claim failed, reconnecting: %s", self.queue.name, exc)
-                self.sleep(POLL_SECONDS)
+                wait = backoff(failures)
+                logger.error(
+                    "%s: claim failed, reconnecting in %.0fs: %s",
+                    self.queue.name,
+                    wait,
+                    exc,
+                )
+                self.sleep(wait)
+                failures += 1
                 client = self._connect()
                 continue
+            failures = 0
             if not handled:
                 self.sleep(POLL_SECONDS)
         logger.info("%s worker stopped", self.queue.name)
+
+
+if __name__ == "__main__":
+    import sys
+
+    # `python video_worker_loop.py healthcheck`: the compose healthcheck, reading this module's constants.
+    if sys.argv[1:] != ["healthcheck"]:
+        sys.exit("usage: video_worker_loop.py healthcheck")
+    sys.exit(0 if healthy() else 1)

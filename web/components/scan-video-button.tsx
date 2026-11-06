@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { videoErrorMessage, videoResultSummary } from "./scan-video.helpers";
-import { useVideoJobPoll } from "./use-video-job-poll";
+import { useFollowedVideoJob } from "./use-followed-video-job";
 import {
   POLL_LOST,
   POLL_SIGNED_OUT,
@@ -42,20 +42,44 @@ export default function ScanVideoButton({
 }) {
   const [status, setStatus] = useState<Status>("idle");
   const [videoUrl, setVideoUrl] = useState<string | null>(initialVideoUrl);
-  const [job, setJob] = useState<VideoJob | null>(null);
   const [message, setMessage] = useState<string>("");
-  // The job this page is waiting on. The poll asks for it by id, so a newer job
-  // on the same scan can neither end the wait nor hide this one's outcome.
-  const [expectedJob, setExpectedJob] = useState<string | null>(null);
 
   const endpoint = `/api/cyl/experiments/${experimentId}/scans/${scanId}/video`;
   // A stored video is keyed by scan alone, so asking how it is going doesn't go
   // through the experiment-scoped generate route.
   const pollEndpoint = `/api/cyl/scans/${scanId}/video`;
-  const jobPollUrl = expectedJob
-    ? `${pollEndpoint}?${new URLSearchParams({ job_id: expectedJob })}`
-    : pollEndpoint;
   const busy = status === "queuing" || status === "waiting";
+
+  const followed = useFollowedVideoJob({
+    pollUrl: pollEndpoint,
+    waiting: status === "waiting",
+    onSettled: (_job, body) => {
+      const { url } = readPoll(body);
+      if (url) setVideoUrl(url);
+      setStatus("done");
+    },
+    onFailed: (failed, body) => {
+      // Stored but unsigned: the video exists, so offer it rather than only the failure.
+      const { url } = readPoll(body);
+      if (failed.error_code === "not_signed" && url) setVideoUrl(url);
+      setMessage(jobFailureMessage(failed, SCAN_FAILURES));
+      setStatus("error");
+    },
+    onLost: (why) => {
+      setMessage(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);
+      setStatus("error");
+    },
+  });
+  const job = followed.job;
+
+  // Another scan in the same instance starts from nothing.
+  const shownScan = useRef(scanId);
+  useEffect(() => {
+    if (shownScan.current === scanId) return;
+    shownScan.current = scanId;
+    setStatus("idle");
+    setMessage("");
+  }, [scanId]);
 
   // Someone may already have queued this scan; their progress is shown here too.
   useEffect(() => {
@@ -67,8 +91,7 @@ export default function ScanVideoButton({
         if (cancelled || !body) return;
         const { job: current } = readPoll(body);
         if (isActiveJob(current)) {
-          setExpectedJob(current.id);
-          setJob(current);
+          followed.follow(current);
           setStatus((s) => (s === "idle" ? "waiting" : s));
         }
       })
@@ -77,29 +100,6 @@ export default function ScanVideoButton({
       cancelled = true;
     };
   }, [pollEndpoint, initialVideoUrl]);
-
-  useVideoJobPoll(
-    jobPollUrl,
-    status === "waiting" && expectedJob !== null,
-    (body) => {
-      const { url, job: current } = readPoll(body);
-      // Job rows are never deleted: no job here means it could not be read.
-      if (!current || current.id !== expectedJob) return false;
-      setJob(current);
-      if (current.status === "failed") {
-        setMessage(jobFailureMessage(current, SCAN_FAILURES));
-        setStatus("error");
-      } else if (current.status === "rendered" || current.status === "kept") {
-        if (url) setVideoUrl(url);
-        setStatus("done");
-      }
-      return true;
-    },
-    (why) => {
-      setMessage(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);
-      setStatus("error");
-    }
-  );
 
   // A partial scan may be all there will ever be, so this is a confirmation rather than a
   // refusal — but the video it produces is the one everyone sees, and the product offers no
@@ -118,7 +118,7 @@ export default function ScanVideoButton({
     if (busy) return;
     setStatus("queuing");
     setMessage("");
-    setJob(null);
+    followed.clear();
 
     let response: Response;
     try {
@@ -159,7 +159,7 @@ export default function ScanVideoButton({
     }
 
     // Created or shared with someone else's click: either way, wait for it.
-    setExpectedJob(body.job_id);
+    followed.follow(body.job_id);
     setStatus("waiting");
   }
 

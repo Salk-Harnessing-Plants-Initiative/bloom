@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useVideoJobPoll } from "@/components/use-video-job-poll";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useFollowedVideoJob } from "@/components/use-followed-video-job";
 import {
   PLATE_FAILURES,
   POLL_LOST,
@@ -101,25 +101,48 @@ export function PlateVideo({
   const [player, setPlayer] = useState<Player>({ status: "loading" });
   const [action, setAction] = useState<Action>("idle");
   const [failure, setFailure] = useState(FAILED);
-  const [job, setJob] = useState<VideoJob | null>(null);
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
-  // The job this page is waiting on. The poll asks for it by id, so a newer job
-  // on the same plate can neither end the wait nor hide this one's outcome.
-  const [expectedJob, setExpectedJob] = useState<string | null>(null);
+  // Set when the last job ended kept: the stored video already had every frame it could.
+  const [kept, setKept] = useState(false);
 
   const endpoint = `/api/gravi/experiments/${experimentId}/plate-video`;
   const query = new URLSearchParams({ plate_id: plateId });
   if (waveNumber !== null) query.set("wave_number", String(waveNumber));
   const pollUrl = `${endpoint}?${query}`;
-  const jobPollUrl = expectedJob
-    ? `${pollUrl}&${new URLSearchParams({ job_id: expectedJob })}`
-    : pollUrl;
   const busy = action === "queuing" || action === "waiting";
 
   const show = useCallback((next: Stored) => {
     setPlayer(next.player);
     setFrames(next.player.status === "ready" ? next.frames : null);
   }, []);
+
+  const followed = useFollowedVideoJob({
+    pollUrl,
+    waiting: action === "waiting",
+    onSettled: (settled, body) => {
+      show(readStored(body));
+      setKept(settled.status === "kept");
+      setAction("idle");
+    },
+    onFailed: (failed) => {
+      setFailure(jobFailureMessage(failed, PLATE_FAILURES));
+      setAction("error");
+    },
+    onLost: (why) => {
+      setFailure(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);
+      setAction("error");
+    },
+  });
+  const job = followed.job;
+
+  // Another plate in the same instance starts from nothing.
+  const shownPlate = useRef(pollUrl);
+  useEffect(() => {
+    if (shownPlate.current === pollUrl) return;
+    shownPlate.current = pollUrl;
+    setAction("idle");
+    setKept(false);
+  }, [pollUrl]);
 
   // Asked once per plate. Someone else's running job is shown here too.
   useEffect(() => {
@@ -130,8 +153,7 @@ export function PlateVideo({
       if (next.player.status !== "unknown") show(next);
       else setPlayer(next.player);
       if (isActiveJob(next.job)) {
-        setExpectedJob(next.job.id);
-        setJob(next.job);
+        followed.follow(next.job);
         setAction((a) => (a === "idle" ? "waiting" : a));
       }
     });
@@ -140,36 +162,13 @@ export function PlateVideo({
     };
   }, [pollUrl, objectPath, storedFrames, show]);
 
-  useVideoJobPoll(
-    jobPollUrl,
-    action === "waiting" && expectedJob !== null,
-    (body) => {
-      const next = readStored(body);
-      const current = next.job;
-      // Job rows are never deleted: no job here means it could not be read.
-      if (!current || current.id !== expectedJob) return false;
-      setJob(current);
-      if (current.status === "failed") {
-        setFailure(jobFailureMessage(current, PLATE_FAILURES));
-        setAction("error");
-      } else if (current.status === "rendered" || current.status === "kept") {
-        show(next);
-        setAction("idle");
-      }
-      return true;
-    },
-    (why) => {
-      setFailure(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);
-      setAction("error");
-    }
-  );
-
   // `disabled` is what stops a second click; two requests that do get through
   // share one job anyway, since the database allows one active job per plate.
   async function generate() {
     setAction("queuing");
     setRetryAfter(null);
-    setJob(null);
+    setKept(false);
+    followed.clear();
     try {
       const res = await fetch(endpoint, {
         method: "POST",
@@ -190,7 +189,7 @@ export function PlateVideo({
         return;
       }
       // Created or shared with someone else's click: either way, wait for it.
-      setExpectedJob(body.job_id);
+      followed.follow(body.job_id);
       setAction("waiting");
     } catch {
       setFailure(FAILED);
@@ -217,9 +216,11 @@ export function PlateVideo({
             : job
               ? queuedNote(job)
               : "Queued…"
-          : stale && newFrames
-            ? `${newFrames} new ${newFrames === 1 ? "frame" : "frames"} since this was made.`
-            : "";
+          : kept
+            ? "Nothing new to add — the stored video already has every frame the service can see."
+            : stale && newFrames
+              ? `${newFrames} new ${newFrames === 1 ? "frame" : "frames"} since this was made.`
+              : "";
 
   return (
     <div>

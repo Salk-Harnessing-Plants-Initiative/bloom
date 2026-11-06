@@ -325,6 +325,23 @@ describe("upstream diagnostics stay server-side", () => {
   });
 });
 
+describe("the rate limit", () => {
+  it("passes the limit's own sentence and wait through", async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Rate limit exceeded; try again in 30 seconds" }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", "Retry-After": "30" },
+      })
+    );
+
+    const res = await callRoute("1", "5");
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("30");
+    expect((await res.json()).detail).toBe("Rate limit exceeded; try again in 30 seconds");
+  });
+});
+
 describe("bad upstream responses", () => {
   it("turns a non-JSON success body into a 502", async () => {
     fetchSpy.mockResolvedValue(new Response("<html>ok</html>", { status: 202 }));

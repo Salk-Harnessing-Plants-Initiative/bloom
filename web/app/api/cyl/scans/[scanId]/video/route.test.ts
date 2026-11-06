@@ -88,6 +88,13 @@ describe("GET — has the video landed yet?", () => {
     expect((await res.json()).download_url).toBe(STORED_URL);
   });
 
+  it("is never cached, signed out or in, since it carries a per-reader link", async () => {
+    mockedStoredVideo.mockResolvedValue({ status: "present", url: STORED_URL } as never);
+    expect((await callGet("5")).headers.get("Cache-Control")).toBe("no-store");
+    mockedGetSession.mockResolvedValue(null as never);
+    expect((await callGet("5")).headers.get("Cache-Control")).toBe("no-store");
+  });
+
   it("answers no url while no video is stored, so a poll keeps waiting", async () => {
     const res = await callGet("5");
 

@@ -547,15 +547,16 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # Each poll and progress report touches the heartbeat; older than
-    # HEARTBEAT_STALE_SECONDS (video_worker_loop.py) marks it unhealthy; a stalled render exits on its own.
+    # Unhealthy once the loop has not touched its heartbeat for HEARTBEAT_STALE_SECONDS;
+    # Docker only reports it, and a stalled render exits on its own.
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/video-worker-heartbeat') > 600)"]
+      test: ["CMD", "python", "video_worker_loop.py", "healthcheck"]
       interval: 60s
       timeout: 5s
       retries: 3
       start_period: 30s
-    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes.
+    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes. A render
+    # still going after this is killed and handed out again, at most three times.
     stop_grace_period: 5m
     command:
       - python
@@ -590,15 +591,16 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # Each poll and progress report touches the heartbeat; older than
-    # HEARTBEAT_STALE_SECONDS (video_worker_loop.py) marks it unhealthy; a stalled render exits on its own.
+    # Unhealthy once the loop has not touched its heartbeat for HEARTBEAT_STALE_SECONDS;
+    # Docker only reports it, and a stalled render exits on its own.
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/video-worker-heartbeat') > 600)"]
+      test: ["CMD", "python", "video_worker_loop.py", "healthcheck"]
       interval: 60s
       timeout: 5s
       retries: 3
       start_period: 30s
-    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes.
+    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes. A render
+    # still going after this is killed and handed out again, at most three times.
     stop_grace_period: 5m
     command:
       - python

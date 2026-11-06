@@ -1,13 +1,11 @@
-"""Unit tests for the claim loop both video workers run: the progress throttle,
-the watchdog and the Worker (a recording RPC stub — no DB)."""
+"""Unit tests for the claim loop both video workers run (a recording RPC stub — no DB)."""
 
 import pytest
 
 import video_progress as vp
 import video_queue as vq
 import video_worker_loop as loop
-from test_video_queue import JOB, Q, FakeClient, _queued, _settled
-from video_writer import ENCODE_TIMEOUT_SECONDS
+from video_fakes import JOB, Q, FakeClient, queued, settled
 
 
 @pytest.fixture(autouse=True)
@@ -27,67 +25,6 @@ def test_the_heartbeat_outlives_the_encode():
     assert loop.HEARTBEAT_STALE_SECONDS > vq.VISIBILITY_TIMEOUT_SECONDS
 
 
-# --- progress throttle -------------------------------------------------------
-
-
-class Clock:
-    def __init__(self):
-        self.now = 0.0
-
-    def __call__(self):
-        return self.now
-
-
-def _progress(clock, sent, answer=True):
-    def send(stage, done, total):
-        sent.append((stage, done, total))
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-
-    return loop.ProgressReporter(send, clock=clock, interval=1.0)
-
-
-def test_progress_reports_at_most_once_per_interval_within_a_stage():
-    clock, sent = Clock(), []
-    progress = _progress(clock, sent)
-    for frame in range(5):
-        progress("downloading", frame, 86)
-        clock.now += 0.3
-    assert sent == [("downloading", 0, 86), ("downloading", 4, 86)]
-
-
-def test_a_stage_change_is_always_reported():
-    clock, sent = Clock(), []
-    progress = _progress(clock, sent)
-    progress("downloading", 86, 86)
-    progress("encoding", 86, 86)
-    progress("uploading", 86, 86)
-    assert [stage for stage, _, _ in sent] == ["downloading", "encoding", "uploading"]
-
-
-def test_a_failed_report_does_not_stop_the_render(caplog):
-    clock, sent = Clock(), []
-    progress = _progress(clock, sent, answer=RuntimeError("db blip"))
-    progress("downloading", 0, 3)
-    progress("encoding", 3, 3)
-    assert len(sent) == 2
-    assert "db blip" in caplog.text
-
-
-def test_a_refused_report_is_noted_once():
-    clock, sent = Clock(), []
-    progress = _progress(clock, sent, answer=False)
-    progress("downloading", 0, 3)
-    progress("encoding", 3, 3)
-    assert progress.lost is True
-
-
-def test_a_report_touches_the_heartbeat():
-    _progress(Clock(), [])("downloading", 0, 3)
-    assert loop.HEARTBEAT_PATH.exists()
-
-
 # --- the claim loop ----------------------------------------------------------
 
 
@@ -103,7 +40,7 @@ def test_an_empty_queue_handles_nothing():
 
 @pytest.mark.parametrize("outcome", ["rendered", "kept"])
 def test_a_finished_render_completes_with_its_outcome(outcome):
-    client = FakeClient(**_settled(**{Q.claim: [JOB]}))
+    client = FakeClient(**settled(**{Q.claim: [JOB]}))
     assert _worker(lambda *a: outcome, client).process_one(client) is True
     assert client.calls[-1] == (
         Q.complete,
@@ -112,7 +49,7 @@ def test_a_finished_render_completes_with_its_outcome(outcome):
 
 
 def test_the_render_is_handed_the_client_the_job_and_a_reporter():
-    client = FakeClient(**_settled(**{Q.claim: [JOB]}))
+    client = FakeClient(**settled(**{Q.claim: [JOB]}))
     seen = {}
 
     def render(c, job, progress):
@@ -127,7 +64,7 @@ def test_the_render_is_handed_the_client_the_job_and_a_reporter():
 
 
 def test_a_refusal_fails_the_job_with_its_code():
-    client = FakeClient(**_settled(**{Q.claim: [JOB]}))
+    client = FakeClient(**settled(**{Q.claim: [JOB]}))
 
     def render(*a):
         raise vq.RenderFailed("no_images", "No images found for scan 5")
@@ -146,7 +83,7 @@ def test_a_refusal_fails_the_job_with_its_code():
 
 
 def test_an_unexpected_error_fails_the_job_naming_its_class():
-    client = FakeClient(**_settled(**{Q.claim: [JOB]}))
+    client = FakeClient(**settled(**{Q.claim: [JOB]}))
 
     def render(*a):
         raise ZeroDivisionError("division by zero")
@@ -188,7 +125,7 @@ def test_a_claim_error_reaches_the_loop():
 
 def test_jobs_are_rendered_one_at_a_time_in_claim_order(monkeypatch):
     second = {**JOB, "job_id": "job-2", "msg_id": 8}
-    client = FakeClient(**_settled(**{Q.claim: _queued(JOB, second)}))
+    client = FakeClient(**settled(**{Q.claim: queued(JOB, second)}))
     rendered = []
     worker = _worker(
         lambda c, job, p: rendered.append(job["job_id"]) or "rendered", client
@@ -203,7 +140,7 @@ def test_jobs_are_rendered_one_at_a_time_in_claim_order(monkeypatch):
 
 def test_a_stop_during_a_render_finishes_it_and_claims_no_more(monkeypatch):
     second = {**JOB, "job_id": "job-2", "msg_id": 8}
-    client = FakeClient(**_settled(**{Q.claim: _queued(JOB, second)}))
+    client = FakeClient(**settled(**{Q.claim: queued(JOB, second)}))
     worker = _worker(None, client)
 
     def render(c, job, p):
@@ -269,119 +206,6 @@ def test_sigterm_and_sigint_both_stop_the_loop(monkeypatch):
     assert all(handler == worker.stop for handler in installed.values())
 
 
-# --- stall watchdog ----------------------------------------------------------
-
-
-def test_a_stall_is_far_longer_than_the_silent_encode():
-    """Only a hang may trip it: encoding reports nothing for up to its own timeout."""
-    assert (
-        loop.RENDER_STALL_SECONDS
-        > vq.VISIBILITY_TIMEOUT_SECONDS
-        > ENCODE_TIMEOUT_SECONDS
-    )
-
-
-def test_a_throttled_report_still_counts_as_activity():
-    clock = Clock()
-    progress = _progress(clock, [])
-    progress("downloading", 0, 86)
-    clock.now += 0.5
-    progress("downloading", 1, 86)
-    assert progress.last_activity == 0.5
-
-
-def _wait_for(event, seconds=2.0):
-    assert event.wait(seconds), "the watchdog never answered"
-
-
-def test_the_watchdog_fires_once_when_the_render_goes_quiet():
-    import threading
-
-    clock, fired = Clock(), []
-    done = threading.Event()
-    progress = _progress(clock, [])
-    clock.now = 100.0
-
-    def on_stall(quiet):
-        fired.append(quiet)
-        done.set()
-
-    watchdog = loop.Watchdog(
-        progress, on_stall, stall_seconds=10, check_seconds=0.01, clock=clock
-    )
-    watchdog.start()
-    _wait_for(done)
-    watchdog.stop()
-    assert fired == [100.0]
-
-
-def test_the_watchdog_stays_quiet_while_the_render_moves():
-    import time
-
-    clock, fired = Clock(), []
-    progress = _progress(clock, [])
-    watchdog = loop.Watchdog(
-        progress, fired.append, stall_seconds=10, check_seconds=0.01, clock=clock
-    )
-    watchdog.start()
-    for frame in range(20):
-        clock.now += 5
-        progress("downloading", frame, 20)
-        time.sleep(0.005)
-    watchdog.stop()
-    assert fired == []
-
-
-def test_a_stalled_job_is_failed_and_the_worker_exits():
-    """A thread cannot be interrupted; failing the job and exiting lets Docker restart
-    the worker and the queue move on, rather than every later job waiting."""
-    import threading
-
-    client = FakeClient(**_settled(**{Q.claim: [JOB]}))
-    exited = threading.Event()
-    codes = []
-
-    def exit(code):
-        codes.append(code)
-        exited.set()
-
-    def hangs(c, job, progress):
-        _wait_for(exited)
-        return "rendered"
-
-    worker = loop.Worker(
-        Q,
-        hangs,
-        lambda: client,
-        sleep=lambda s: None,
-        exit=exit,
-        stall_seconds=0.05,
-        check_seconds=0.01,
-    )
-    worker.process_one(client)
-
-    failed = [params for name, params in client.calls if name == Q.fail]
-    assert failed and failed[0]["p_error_code"] == loop.STALLED
-    assert codes == [1]
-
-
-def test_a_render_that_finishes_leaves_the_worker_running():
-    client = FakeClient(**_settled(**{Q.claim: [JOB]}))
-    codes = []
-    worker = loop.Worker(
-        Q,
-        lambda *a: "rendered",
-        lambda: client,
-        sleep=lambda s: None,
-        exit=codes.append,
-        stall_seconds=60,
-        check_seconds=0.01,
-    )
-    worker.process_one(client)
-    assert codes == []
-    assert Q.fail not in client.names()
-
-
 def test_an_idle_poll_touches_the_heartbeat():
     """An idle worker must still look alive, or the healthcheck finds no file."""
     client = FakeClient(**{Q.claim: []})
@@ -403,22 +227,63 @@ def test_waiting_to_connect_touches_the_heartbeat(monkeypatch):
     assert attempts and loop.HEARTBEAT_PATH.exists()
 
 
-def test_the_watchdog_is_stopped_once_the_job_is_settled():
-    """A watchdog left running would fail and exit the worker long after its job."""
-    import time
+# --- backoff and health ------------------------------------------------------
 
-    client = FakeClient(**_settled(**{Q.claim: [JOB]}))
-    codes = []
-    worker = loop.Worker(
-        Q,
-        lambda *a: "rendered",
-        lambda: client,
-        sleep=lambda s: None,
-        exit=codes.append,
-        stall_seconds=0.05,
-        check_seconds=0.01,
-    )
-    worker.process_one(client)
-    time.sleep(0.2)
-    assert codes == [], "the watchdog outlived its job"
-    assert Q.fail not in client.names()
+
+def test_reconnects_wait_longer_each_time_up_to_a_cap():
+    waits = [loop.backoff(n) for n in range(10)]
+    assert waits[0] == loop.POLL_SECONDS
+    assert waits == sorted(waits)
+    assert max(waits) == loop.MAX_BACKOFF_SECONDS
+
+
+def test_waiting_to_connect_backs_off_and_beats_on_every_try(monkeypatch):
+    beats, waits = [], []
+    monkeypatch.setattr(loop, "beat", lambda: beats.append(1))
+
+    def connect():
+        raise RuntimeError("auth down")
+
+    worker = loop.Worker(Q, lambda *a: "rendered", connect)
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 4:
+            worker.stop()
+
+    worker.sleep = sleep
+    assert worker._connect() is None
+    assert waits == [loop.backoff(n) for n in range(4)]
+    assert len(beats) == 4, "an outage longer than the stale age would read as dead"
+
+
+def test_the_claim_backoff_starts_over_after_a_good_claim(monkeypatch):
+    answers = iter([RuntimeError("blip"), [], RuntimeError("blip")])
+
+    def claim():
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    client = FakeClient(**{Q.claim: claim})
+    worker = loop.Worker(Q, lambda *a: "rendered", lambda: client)
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 3:
+            worker.stop()
+
+    worker.sleep = sleep
+    monkeypatch.setattr(loop.signal, "signal", lambda *a: None)
+    worker.run()
+    assert waits == [loop.backoff(0), loop.POLL_SECONDS, loop.backoff(0)]
+
+
+def test_the_healthcheck_reads_the_heartbeat_age():
+    assert loop.healthy() is False, "no heartbeat yet reads as unhealthy"
+    loop.beat()
+    stamp = loop.HEARTBEAT_PATH.stat().st_mtime
+    assert loop.healthy(now=stamp + loop.HEARTBEAT_STALE_SECONDS) is True
+    assert loop.healthy(now=stamp + loop.HEARTBEAT_STALE_SECONDS + 1) is False

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import re
 
 import pytest
 import yaml
@@ -122,7 +121,9 @@ def test_the_dev_worker_runs_its_built_image_not_the_mounted_source(worker):
 
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
-@pytest.mark.parametrize("worker", VIDEO_WORKERS + ("cyl-pipeline-worker", "cyl-status-poller"))
+@pytest.mark.parametrize(
+    "worker", VIDEO_WORKERS + ("cyl-pipeline-worker", "cyl-status-poller")
+)
 def test_the_ram_backed_tmpfs_fits_well_inside_the_memory_limit(compose_file, worker):
     """The same rule the workflows service is held to. tmpfs pages are charged to
     the container's own cgroup, so a limit that merely exceeds the mount turns a
@@ -183,7 +184,9 @@ def test_the_worker_is_on_the_services_network(compose_file, worker):
 def test_the_default_command_runs_the_claim_loop(compose_file, worker, script):
     command = _services(compose_file)[worker]["command"]
 
-    assert command == ["python", script, "run"], f"{worker} runs {command!r} in {compose_file}"
+    assert command == ["python", script, "run"], (
+        f"{worker} runs {command!r} in {compose_file}"
+    )
 
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
@@ -193,23 +196,12 @@ def test_the_worker_restarts_unless_stopped(compose_file, worker):
     assert _services(compose_file)[worker].get("restart") == "unless-stopped"
 
 
-def _heartbeat_constants() -> tuple[str, int]:
-    source = (REPO_ROOT / "services" / "workflows" / "video_worker_loop.py").read_text()
-    path = re.search(r'"WORKFLOWS_VIDEO_HEARTBEAT", "([^"]+)"', source)
-    stale = re.search(r"^HEARTBEAT_STALE_SECONDS = (\d+)$", source, re.MULTILINE)
-    assert path and stale, "the heartbeat constants are no longer plain literals"
-    return path.group(1), int(stale.group(1))
-
-
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
 @pytest.mark.parametrize("worker", VIDEO_WORKERS)
-def test_the_healthcheck_reads_the_heartbeat_the_loop_touches(compose_file, worker):
-    """Read from video_worker_loop.py, so the file and the age cannot drift from the loop."""
-    path, stale = _heartbeat_constants()
-    test = " ".join(_services(compose_file)[worker]["healthcheck"]["test"])
-
-    assert f"'{path}'" in test, f"{worker}'s healthcheck reads another file in {compose_file}"
-    assert f"> {stale})" in test, f"{worker}'s healthcheck age differs from the loop's"
+def test_the_healthcheck_is_the_loop_s_own(compose_file, worker):
+    """The loop's own command reads its heartbeat path and age, so compose copies neither."""
+    test = _services(compose_file)[worker]["healthcheck"]["test"]
+    assert test == ["CMD", "python", "video_worker_loop.py", "healthcheck"], test
 
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)

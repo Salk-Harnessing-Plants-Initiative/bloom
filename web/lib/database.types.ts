@@ -1554,11 +1554,11 @@ export type Database = {
       }
       cyl_video_jobs: {
         Row: {
-          created_at: string
-          error_message: string | null
-          error_code: string | null
-          experiment_id: number
           completed_at: string | null
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          experiment_id: number
           frames_done: number | null
           frames_total: number | null
           id: string
@@ -1572,11 +1572,11 @@ export type Database = {
           updated_at: string
         }
         Insert: {
-          created_at?: string
-          error_message?: string | null
-          error_code?: string | null
-          experiment_id: number
           completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id: number
           frames_done?: number | null
           frames_total?: number | null
           id?: string
@@ -1590,11 +1590,11 @@ export type Database = {
           updated_at?: string
         }
         Update: {
-          created_at?: string
-          error_message?: string | null
-          error_code?: string | null
-          experiment_id?: number
           completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id?: number
           frames_done?: number | null
           frames_total?: number | null
           id?: string
@@ -2407,11 +2407,11 @@ export type Database = {
       }
       gravi_plate_video_jobs: {
         Row: {
-          created_at: string
-          error_message: string | null
-          error_code: string | null
-          experiment_id: number
           completed_at: string | null
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          experiment_id: number
           frames_done: number | null
           frames_total: number | null
           id: string
@@ -2426,11 +2426,11 @@ export type Database = {
           wave_number: number | null
         }
         Insert: {
-          created_at?: string
-          error_message?: string | null
-          error_code?: string | null
-          experiment_id: number
           completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id: number
           frames_done?: number | null
           frames_total?: number | null
           id?: string
@@ -2445,11 +2445,11 @@ export type Database = {
           wave_number?: number | null
         }
         Update: {
-          created_at?: string
-          error_message?: string | null
-          error_code?: string | null
-          experiment_id?: number
           completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id?: number
           frames_done?: number | null
           frames_total?: number | null
           id?: string
@@ -5343,6 +5343,27 @@ export type Database = {
           scan_ids: number[]
         }[]
       }
+      claim_cyl_video_job: {
+        Args: { p_max_reads?: number; p_vt?: number }
+        Returns: {
+          experiment_id: number
+          job_id: string
+          msg_id: number
+          reads: number
+          scan_id: number
+        }[]
+      }
+      claim_gravi_plate_video_job: {
+        Args: { p_max_reads?: number; p_vt?: number }
+        Returns: {
+          experiment_id: number
+          job_id: string
+          msg_id: number
+          plate_id: string
+          reads: number
+          wave_number: number
+        }[]
+      }
       claim_rnaseq_run: {
         Args: { p_max_reads?: number; p_vt?: number }
         Returns: {
@@ -5385,6 +5406,14 @@ export type Database = {
           p_scan_ids: number[]
         }
         Returns: undefined
+      }
+      complete_cyl_video_job: {
+        Args: { p_job_id: string; p_msg_id: number; p_outcome: string }
+        Returns: boolean
+      }
+      complete_gravi_plate_video_job: {
+        Args: { p_job_id: string; p_msg_id: number; p_outcome: string }
+        Returns: boolean
       }
       complete_rnaseq_run: {
         Args: {
@@ -5479,6 +5508,29 @@ export type Database = {
         Args: { p_batch_index: number; p_run_id: number; p_scan_ids: number[] }
         Returns: number
       }
+      enqueue_cyl_video: {
+        Args: {
+          p_experiment_id: number
+          p_requested_by?: string
+          p_scan_id: number
+        }
+        Returns: {
+          created: boolean
+          job_id: string
+        }[]
+      }
+      enqueue_gravi_plate_video: {
+        Args: {
+          p_experiment_id: number
+          p_plate_id: string
+          p_requested_by?: string
+          p_wave_number?: number
+        }
+        Returns: {
+          created: boolean
+          job_id: string
+        }[]
+      }
       fail_cyl_pipeline_batch: {
         Args: {
           p_batch_index: number
@@ -5492,6 +5544,24 @@ export type Database = {
       fail_cyl_pipeline_run_scans_without_result: {
         Args: { p_argo_workflow_name: string; p_error_message?: string }
         Returns: number
+      }
+      fail_cyl_video_job: {
+        Args: {
+          p_error: string
+          p_error_code: string
+          p_job_id: string
+          p_msg_id: number
+        }
+        Returns: boolean
+      }
+      fail_gravi_plate_video_job: {
+        Args: {
+          p_error: string
+          p_error_code: string
+          p_job_id: string
+          p_msg_id: number
+        }
+        Returns: boolean
       }
       fail_rnaseq_run: {
         Args: { p_message: string; p_msg_id: number; p_run_id: number }
@@ -5845,6 +5915,28 @@ export type Database = {
         Returns: undefined
       }
       refresh_cyl_experiment_trait_counts: { Args: never; Returns: undefined }
+      report_cyl_video_progress: {
+        Args: {
+          p_frames_done?: number
+          p_frames_total?: number
+          p_job_id: string
+          p_msg_id: number
+          p_stage: string
+          p_vt?: number
+        }
+        Returns: boolean
+      }
+      report_gravi_plate_video_progress: {
+        Args: {
+          p_frames_done?: number
+          p_frames_total?: number
+          p_job_id: string
+          p_msg_id: number
+          p_stage: string
+          p_vt?: number
+        }
+        Returns: boolean
+      }
       request_scrna_cellranger_run: {
         Args: {
           p_chemistry?: string

@@ -13,7 +13,7 @@ STAGE_ENCODING = "encoding"
 STAGE_UPLOADING = "uploading"
 
 # (stage, frames done, frames total)
-ProgressCallback = Callable[[str, "int | None", "int | None"], None]
+ProgressCallback = Callable[[str, int | None, int | None], None]
 
 
 def no_progress(stage: str, done: int | None = None, total: int | None = None) -> None:

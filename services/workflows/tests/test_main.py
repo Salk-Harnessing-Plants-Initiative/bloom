@@ -224,6 +224,31 @@ def test_cyl_video_route_404s_when_the_database_says_the_scan_is_elsewhere(
     _cyl_stubs(monkeypatch, enqueue=elsewhere)
     resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
     assert resp.status_code == 404
+    assert resp.json()["detail"] == "Scan 44 not found in experiment 3"
+
+
+def test_cyl_video_route_503s_when_the_membership_check_fails(monkeypatch, signed_in):
+    """The check is a database read; its failure is not "no such scan"."""
+    import main
+
+    _cyl_stubs(monkeypatch)
+
+    def down(client, experiment_id, scan_id):
+        raise RuntimeError("PostgREST unavailable at kong:8000")
+
+    monkeypatch.setattr(main, "scan_in_experiment", down)
+    resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
+    assert resp.status_code == 503
+    assert "kong" not in resp.text
+
+
+def test_a_huge_plate_id_is_cut_short_in_the_log(signed_in, caplog):
+    with caplog.at_level("INFO", logger="main"):
+        TestClient(signed_in.app).post(
+            "/gravi/experiments/12/plate-video", json={"plate_id": "P" * 100_000}
+        )
+    assert "P" * 100 not in caplog.text
+    assert "…" in caplog.text
 
 
 def test_cyl_video_route_409s_a_job_filed_under_another_experiment(
