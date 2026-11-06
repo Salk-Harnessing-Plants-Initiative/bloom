@@ -93,6 +93,7 @@ NO_ACCOUNT = "nobody-ci@salk.edu"
 # One client at a time holds cloudflared's address; named so a timed-out one can be removed.
 TUNNEL_CLIENT_NAME = "bloom-ci-tunnel-client"
 CI_TUNNEL_KEY = Path(__file__).resolve().parents[2] / ".ci-tunnel" / "key.pem"
+ENV_CI = Path(__file__).resolve().parents[2] / ".env.ci"
 
 
 def _bearer(email: str, **overrides) -> str:
@@ -291,8 +292,18 @@ def _caddy_env(caddy_container: str, key: str) -> str:
     _unavailable(f"caddy has no {key}")
 
 
-def test_caddy_has_its_fixed_tunnel_address(caddy_container, caddy_tunnel_ip):
-    assert caddy_tunnel_ip == _caddy_env(caddy_container, "TUNNEL_CADDY_IP")
+def _env_ci(key: str) -> str:
+    """A value from the env file CI started the stack with; Caddy gets this one only as its address."""
+    if not ENV_CI.exists():
+        _unavailable(f"no {ENV_CI}")
+    for line in ENV_CI.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    _unavailable(f"{ENV_CI} has no {key}")
+
+
+def test_caddy_has_its_fixed_tunnel_address(caddy_tunnel_ip):
+    assert caddy_tunnel_ip == _env_ci("TUNNEL_CADDY_IP")
 
 
 def test_other_tunnel_network_addresses_are_dropped(tunnel_client, caddy_container, caddy_tunnel_ip):
