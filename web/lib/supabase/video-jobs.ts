@@ -68,7 +68,7 @@ export async function getPlateVideoJob(
     }
     return data ? withQueuePosition(supabase, "gravi_plate_video_jobs", data, label) : null;
   } catch (err) {
-    console.warn(`could not read the video job for ${label}`, err);
+    console.warn("could not read the video job for %s", label, err);
     return null;
   }
 }
@@ -91,7 +91,7 @@ export async function getScanVideoJob(
     }
     return data ? withQueuePosition(supabase, "cyl_video_jobs", data, label) : null;
   } catch (err) {
-    console.warn(`could not read the video job for ${label}`, err);
+    console.warn("could not read the video job for %s", label, err);
     return null;
   }
 }
