@@ -16,7 +16,7 @@
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
-#   meta, db-prod, supavisor, studio)
+#   meta, db-prod, supavisor, studio, cloudflared in the `tunnel` profile)
 #
 # Host-exposed ports:
 #   80/443  - caddy (reverse proxy, auto HTTPS)
@@ -64,6 +64,10 @@ services:
       # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
       # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      # Sent to bloommcp as X-Bloom-Tunnel on the tunnel entrance (:8880).
+      BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
+      TUNNEL_SUBNET: ${TUNNEL_SUBNET}
+      TUNNEL_CLOUDFLARED_IP: ${TUNNEL_CLOUDFLARED_IP}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Break-glass path: if ACME issuance fails catastrophically, drop
@@ -84,7 +88,11 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - supanet
+      supanet: {}
+      # Shared only with cloudflared; the tunnel entrance (:8880). Fixed, so Docker
+      # never hands cloudflared's address to Caddy.
+      tunnel:
+        ipv4_address: ${TUNNEL_CADDY_IP}
 
   #-------------------
   # BLOOM WEB
@@ -634,15 +642,12 @@ services:
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
-      # OAuth login for external MCP clients. The URLs are set per environment
-      # in the defaults files; whether a login can actually complete is
-      # governed by GOTRUE_OAUTH_SERVER_ENABLED on the auth service. Where that
-      # is false, bloommcp still serves its discovery document but no client
-      # can register, so the flow ends in a clean 404 rather than a broken
-      # login. The API-key path is unaffected either way.
-      BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-}
-      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-}
-      BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
+      # Salk connector: with Caddy's tunnel secret, verify AIRC's JWT; SITE_URL is for the sign-up hint.
+      BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
+      BLOOMMCP_TUNNEL_JWKS_URL: ${BLOOMMCP_TUNNEL_JWKS_URL}
+      BLOOMMCP_TUNNEL_JWT_ISSUER: ${BLOOMMCP_TUNNEL_JWT_ISSUER}
+      BLOOMMCP_TUNNEL_JWT_AUDIENCE: ${BLOOMMCP_TUNNEL_JWT_AUDIENCE}
+      SITE_URL: ${SITE_URL}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
@@ -669,6 +674,41 @@ services:
     depends_on:
       - kong
     restart: unless-stopped
+
+  # -------------------
+  # Cloudflare tunnel → caddy:8880 (bloommcp's Salk connector)
+  # -------------------
+  # Behind a profile, so `up -d` starts it only where COMPOSE_PROFILES includes
+  # tunnel (prod and staging, not CI).
+  cloudflared:
+    image: ghcr.io/salk-harnessing-plants-initiative/cloudflare-cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    profiles:
+      - tunnel
+    # Metrics on loopback only, so nothing else on the network can read them.
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    # The image's own non-root user, pinned so a new image can't switch to root.
+    user: "65532:65532"
+    read_only: true
+    # Not yet measured here; cloudflared usually runs in well under 100 MB.
+    mem_limit: 256m
+    memswap_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Outbound only, and only on the tunnel network, so a wrong route on the
+    # Cloudflare side to caddy:<port> reaches only the :8880 entrance (Caddy drops it elsewhere).
+    # A fixed address, the only one :8880 accepts.
+    networks:
+      tunnel:
+        ipv4_address: ${TUNNEL_CLOUDFLARED_IP}
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    # cloudflared's own default grace period for closing tunnel connections.
+    stop_grace_period: 30s
 
   # -------------------
   #  Kong Gateway
@@ -748,20 +788,11 @@ services:
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
 
-      # OAuth 2.1 server — lets MCP clients log in as a real user via bloom-web
-      # OAuth discovery must advertise absolute URLs. Without an issuer GoTrue
-      # emits relative endpoints a conforming client cannot resolve — discovery
-      # returns 200 and the flow dead-ends before registration.
-      # Asymmetric signing keys, required for ID tokens (the `openid`
-      # scope) — a shared HS256 secret cannot sign one. Empty array
-      # keeps GoTrue on the legacy secret, which is the default here.
+      # Token issuer and signing keys. An empty key array keeps GoTrue on the
+      # legacy HS256 secret, which is the default here.
       GOTRUE_JWT_KEYS: ${JWT_KEYS:-[]}
       GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL}
       GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}/auth/v1
-      GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-false}
-      GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
-      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-false}
-      GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL:-600s}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/health"]
       interval: 10s
@@ -1171,3 +1202,15 @@ volumes:
 networks:
   supanet:
     driver: bridge
+  # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
+  # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880,
+  # and fixed addresses for both (TUNNEL_CADDY_IP, TUNNEL_CLOUDFLARED_IP). Any other container
+  # gets an address from TUNNEL_AUTO_RANGE, which leaves out both fixed addresses.
+  tunnel:
+    driver: bridge
+    # Caddy's tunnel rules match IPv4 addresses only; off even if a Docker-wide default turns it on.
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: ${TUNNEL_SUBNET}
+          ip_range: ${TUNNEL_AUTO_RANGE}

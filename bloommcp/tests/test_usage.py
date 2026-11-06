@@ -138,9 +138,9 @@ def test_record_usage_async_drops_when_too_many_in_flight(monkeypatch, caplog):
 
 
 # --- Identity redaction in log output (CodeQL: clear-text logging) ---------
-# `identity` can be a real Supabase user id sourced from a verified OAuth
-# caller (add-bloommcp-oauth-usage-attribution), not only ever the
-# X-Bloom-Identity header's sub or the literal "anonymous" — CodeQL flags the
+# `identity` can be a real Supabase user id (the Salk connector user's Bloom
+# account, or the X-Bloom-Identity header's sub), not only the literal
+# "anonymous" — CodeQL flags the
 # raw value reaching these log calls as a credential-shaped source landing in
 # a clear-text sink. `_redact_identity` breaks that direct flow.
 

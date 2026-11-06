@@ -20,6 +20,8 @@ One `caddy` container per environment(staging and prod), built from a project-ow
 | Container declaration          | `caddy` service in [docker-compose.prod.yml](../../docker-compose.prod.yml)                                                                               |
 | Per-env site addresses + token | `CADDY_SITE_ADDRESSES` + `CLOUDFLARE_API_TOKEN` in [.env.prod.defaults](../../.env.prod.defaults) and [.env.staging.defaults](../../.env.staging.defaults) |
 | Deploy-time secret injection   | `PROD_/STAGING_CLOUDFLARE_API_TOKEN` heredocs in [.github/workflows/deploy.yml](../../.github/workflows/deploy.yml)                                       |
+| Tunnel entrance                | `:8880` site in [caddy/Caddyfile](../../caddy/Caddyfile) and the `cloudflared` service (`tunnel` profile and network) — see [Tunnel entrance](#tunnel-entrance-bloommcps-salk-connector) |
+| Tunnel secrets                 | `PROD_/STAGING_CLOUDFLARE_TUNNEL_TOKEN` and `PROD_/STAGING_BLOOMMCP_TUNNEL_SECRET` heredocs in [.github/workflows/deploy.yml](../../.github/workflows/deploy.yml) |
 
 ## TLS strategy
 
@@ -141,6 +143,54 @@ The same applies to a deeper name such as `deep.sub.bloom.salk.edu`: a wildcard 
 
 **Adding a subdomain?** Give it a `handle @host` block *above* the fall-through, and add it to the Hostnames table. Forgetting the route no longer produces a misleading `200` — the name returns 404 until it is routed.
 
+## Tunnel entrance (bloommcp's Salk connector)
+
+Salk's AIRC service signs people in with Salk Entra and sends their requests for bloommcp through a Cloudflare tunnel, with the signed-in person carried in a JWT signed by AIRC (`Authorization: Bearer`). Each stack runs its own `cloudflared` container, which connects out to Cloudflare and forwards to `http://caddy:8880`.
+
+`cloudflared` sits alone with Caddy on a `tunnel` Docker network, so it cannot reach the database, Studio, Kong or MinIO directly. Caddy also drops any request from that network on every site except `:8880` (the network has a fixed subnet per environment, `TUNNEL_SUBNET` in `.env.<env>.defaults`), so a route to `caddy:443` or `caddy:80` gets nothing. Port 8880 is not published on the host. cloudflared can still reach the internet and the host's network, as it must to connect out, so a route to a public Bloom hostname would come in through Caddy's published ports like any Salk request; AIRC's tunnel routes only to `http://caddy:8880`. In the other direction, `:8880` accepts requests only from cloudflared's fixed address (`TUNNEL_CLOUDFLARED_IP`), so a request from a `supanet` container, or from the host through the tunnel network's gateway, is dropped. Caddy has a fixed address on that network too (`TUNNEL_CADDY_IP`), so Docker never gives it cloudflared's.
+
+The `:8880` site:
+
+* drops any request that does not come from the tunnel network;
+* refuses a request without a bearer token with `403`;
+* drops any incoming `X-Bloom-Tunnel` and sets its own from `BLOOMMCP_TUNNEL_SECRET`, so bloommcp can tell the request came through this entrance;
+* forwards every path unchanged to `bloommcp:8811`, unbuffered and uncompressed so MCP streaming works.
+
+This is bloommcp's only way in from outside. The public site has no bloommcp route, and it strips `X-Bloom-Tunnel` from every incoming request, so the secret can reach bloommcp only through `:8880`. bloommcp trusts the bearer token only when `X-Bloom-Tunnel` matches its own copy of the secret, and verifies it against AIRC's keys; see the [bloommcp README](../../bloommcp/README.md#salk-connector-tunnel).
+
+`cloudflared` runs only where the `tunnel` compose profile is on. `COMPOSE_PROFILES=tunnel` in [.env.prod.defaults](../../.env.prod.defaults) and [.env.staging.defaults](../../.env.staging.defaults) turns it on for prod and staging; CI and dev leave it off, since they have no tunnel token.
+
+| Secret | Purpose |
+| --- | --- |
+| `PROD_CLOUDFLARE_TUNNEL_TOKEN` / `STAGING_CLOUDFLARE_TUNNEL_TOKEN` | Token for that environment's tunnel, from AIRC. Written into the env file as `CLOUDFLARE_TUNNEL_TOKEN`. |
+| `PROD_BLOOMMCP_TUNNEL_SECRET` / `STAGING_BLOOMMCP_TUNNEL_SECRET` | Random value Caddy sends to bloommcp as `X-Bloom-Tunnel`; bloommcp gets the same value. Written as `BLOOMMCP_TUNNEL_SECRET`. Generate with `openssl rand -hex 32` (bloommcp refuses to start on fewer than 32 characters); use a different value per environment. |
+
+The deploy refuses to start if either is missing or empty.
+
+### Setting it up
+
+1. **One tunnel per environment.** Prod and staging must be separate tunnels with separate tokens. Never reuse a token: two stacks running one tunnel split its traffic between them, so some prod requests would land on staging.
+2. **Target.** The tunnel's target, `http://caddy:8880`, is set on AIRC's Cloudflare side (a token-run tunnel is managed remotely), once for each environment.
+3. **Image.** The deploy pulls a pinned GHCR copy anonymously. Make the copy once, then set the package to **public** like the other copies:
+
+   ```bash
+   crane copy cloudflare/cloudflared@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba \
+     ghcr.io/salk-harnessing-plants-initiative/cloudflare-cloudflared:2026.10.7
+   ```
+
+   Cloudflare supports only recent releases, so bump it at least yearly.
+4. **Secret.** Generate each environment's `BLOOMMCP_TUNNEL_SECRET` with `openssl rand -hex 32`. It must be at least 32 characters; bloommcp will refuse a shorter one.
+5. **Deploy at a quiet time.** The first deploy, and every rotation of the secret, restarts Caddy for a few seconds.
+
+### Checking and turning it off
+
+Run compose by hand from the deploy directory, and always pass `--env-file` (without it compose reads no profile and no secrets). Prod uses `docker compose -f docker-compose.prod.yml --env-file .env.prod`; staging uses `docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging`. Shown below as `docker compose ...`.
+
+* **Is it connected?** `docker compose ... exec cloudflared cloudflared tunnel --metrics 127.0.0.1:20241 ready` exits 0 only while it has a live connection to Cloudflare. Each deploy runs the same check and warns, without failing, when it does not.
+* **Off now:** `docker compose ... stop cloudflared` lets open requests finish (up to 30 seconds); `docker compose ... kill cloudflared` cuts them at once. Either way it comes back on the next deploy.
+* **Off until further notice:** ask AIRC to disable the route or revoke the token.
+* **Off for good:** remove `tunnel` from `COMPOSE_PROFILES` in the defaults file, merge and deploy that change, then run `docker compose ... rm -sf cloudflared` once. Removing it before the deploy does nothing: the next deploy starts it again. Do not just delete the GitHub secrets: the deploy requires them while `cloudflared` is in the compose file, so every deploy would fail.
+
 ## Cert persistence across redeploys
 
 The `caddy` service mounts two named volumes:
@@ -198,6 +248,13 @@ These three must be in place before either environment can issue a cert:
 | Salk DNS CNAME                   | `_acme-challenge.bloom.salk.edu CNAME _acme-challenge.bloom-acme.talmolab.org`. Covers both prod and staging Caddy containers because wildcard ACME challenges all land at the parent name. |
 
 The token is consumed at runtime by the `caddy-dns/cloudflare` plugin via the `CLOUDFLARE_API_TOKEN` env var, injected from the per-environment GitHub secret in the deploy workflow's heredoc.
+
+The tunnel entrance needs two more per environment; the deploy fails without them:
+
+| Requirement | Where it lives |
+| --- | --- |
+| `PROD_CLOUDFLARE_TUNNEL_TOKEN` / `STAGING_CLOUDFLARE_TUNNEL_TOKEN` | GitHub Actions repo secrets, from AIRC. A different tunnel, and token, per environment. |
+| `PROD_BLOOMMCP_TUNNEL_SECRET` / `STAGING_BLOOMMCP_TUNNEL_SECRET` | GitHub Actions repo secrets. `openssl rand -hex 32`, a different value per environment. |
 
 ## Hostnames
 

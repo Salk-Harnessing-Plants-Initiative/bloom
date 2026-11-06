@@ -205,7 +205,9 @@ def test_bloom_workflows_writes_jobs_only_through_the_wrappers(cur, queue, privi
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
 @pytest.mark.parametrize("role", ["bloom_user", "bloom_writer", "bloom_admin"])
 @pytest.mark.parametrize(
-    "column", ["status", "stage", "frames_done", "error_code", "created_at", "updated_at"]
+    "column",
+    # Every column the web selects, so a lost grant fails here rather than as a silent null.
+    ["id", "status", "stage", "frames_done", "frames_total", "error_code", "created_at", "updated_at"],
 )
 def test_signed_in_roles_may_read_the_progress_columns(cur, queue, role, column):
     cur.execute(

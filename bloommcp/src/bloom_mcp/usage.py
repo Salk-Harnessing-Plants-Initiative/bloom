@@ -35,12 +35,10 @@ def _redact_identity(identity: str) -> str:
     """A short, non-reversible token for correlating log lines, not the raw
     identity.
 
-    `identity` can now be a real Supabase user id — sourced from a verified
-    OAuth caller via `bloom_mcp.identity._oauth_subject_from_scope`
-    (add-bloommcp-oauth-usage-attribution) — rather than only ever the
-    `X-Bloom-Identity` header's `sub` or the literal `anonymous`. CodeQL
-    flags the raw value reaching the log calls below as clear-text logging
-    of a credential-shaped source once that path exists.
+    `identity` is a real Supabase user id — the Salk connector user's Bloom
+    account (`bloom_mcp.tunnel`) or the `X-Bloom-Identity` header's `sub` —
+    or the literal `anonymous`. CodeQL flags the raw value reaching the log
+    calls below as clear-text logging of a credential-shaped source.
 
     Uses PBKDF2-HMAC-SHA256 — a real key-derivation function — rather than a
     bare `hashlib.sha256(...)` call, which trips a *second*, different

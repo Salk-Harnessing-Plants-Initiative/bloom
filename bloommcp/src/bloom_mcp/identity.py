@@ -76,10 +76,10 @@ class IdentityConfigError(Exception):
 def is_valid_identity(sub: str) -> bool:
     """Is this token's ``sub`` claim safe to record as a caller identity?
 
-    Call it with the ``sub`` of an already-verified token, before writing that
-    value to ``bloommcp_usage.identity``. Both credential paths use it —
-    ``verify_identity_header`` for ``X-Bloom-Identity``, ``bloom_mcp.auth`` for
-    OAuth access tokens — so one rule guards the column.
+    Call it before writing a value to ``bloommcp_usage.identity``. Both identity
+    sources use it — ``verify_identity_header`` for ``X-Bloom-Identity``'s
+    ``sub``, and ``bloom_mcp.tunnel`` for the account id its lookup returns — so
+    one rule guards the column.
 
     Rejects two things: a ``sub`` that is not a complete UUID, and the reserved
     ``anonymous`` sentinel, which no real user may claim. ``fullmatch`` rather
@@ -151,27 +151,6 @@ def _action_from_path(path: str) -> str:
     return first_segment if first_segment in SECTIONS else "combined"
 
 
-def _oauth_subject_from_scope(scope: dict) -> str | None:
-    """The verified caller's OAuth subject, if FastMCP's own bearer-auth layer
-    authenticated one for this request — read from ``scope["user"]``, set by
-    Starlette's ``AuthenticationMiddleware`` deeper in the same ASGI call this
-    middleware wraps (see openspec add-bloommcp-oauth-usage-attribution
-    design.md Decision 1 for why this is safe to read here, including for a
-    reused streamable-http session).
-
-    Returns ``None`` for every "nothing to attribute" shape — no
-    ``scope["user"]`` at all (no ``auth`` configured), a non-authenticated
-    value, or an ``AccessToken`` with no ``subject`` (the shared
-    ``BLOOMMCP_API_KEY`` credential, via ``ApiKeyVerifier``, never sets one —
-    see ``bloom_mcp.auth``) — rather than raising, mirroring
-    ``verify_identity_header``'s own "absent means anonymous" contract.
-    """
-    user = scope.get("user")
-    access_token = getattr(user, "access_token", None)
-    subject = getattr(access_token, "subject", None)
-    return subject or None
-
-
 class IdentityMiddleware:
     """Raw-ASGI middleware: verifies ``X-Bloom-Identity`` and records usage.
 
@@ -207,6 +186,10 @@ class IdentityMiddleware:
     wired in regardless of whether any real client sends the header yet.
     Gating on the response status closes that off: an unauthenticated hit
     still gets a `401` from FastMCP as before, but is no longer recorded.
+
+    A request carrying the tunnel secret takes the Salk connector path instead
+    (`bloom_mcp.tunnel`): `X-Bloom-Identity` is not read and usage is recorded
+    under the Bloom account the verified token's email maps to.
     """
 
     def __init__(self, app) -> None:
@@ -217,29 +200,42 @@ class IdentityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        from bloom_mcp import tunnel
+
         headers = scope.get("headers") or []
-        matches = [v for k, v in headers if k == b"x-bloom-identity"]
-        if len(matches) > 1:
-            await _json_response(
-                scope,
-                receive,
-                send,
-                status=401,
-                error="multiple X-Bloom-Identity headers present",
-            )
-            return
-        value = matches[0].decode("latin-1") if matches else None
-
-        try:
-            identity = verify_identity_header(value)
-        except IdentityConfigError as exc:
-            await _json_response(scope, receive, send, status=500, error=str(exc))
-            return
-        except IdentityVerificationError as exc:
-            await _json_response(scope, receive, send, status=401, error=str(exc))
-            return
-
         path = scope.get("path", "")
+
+        # Salk connector: a matching tunnel secret replaces the token check's input.
+        if path != "/health" and tunnel.is_tunnel_request(headers):
+            try:
+                key = tunnel.api_key()
+                identity = await tunnel.bloom_user(await tunnel.salk_user(headers))
+            except tunnel.TunnelRefusal as exc:
+                await _refuse_tunnel_request(scope, receive, send, exc)
+                return
+            scope = tunnel.with_api_key(scope, key)
+        else:
+            matches = [v for k, v in headers if k == b"x-bloom-identity"]
+            if len(matches) > 1:
+                await _json_response(
+                    scope,
+                    receive,
+                    send,
+                    status=401,
+                    error="multiple X-Bloom-Identity headers present",
+                )
+                return
+            value = matches[0].decode("latin-1") if matches else None
+
+            try:
+                identity = verify_identity_header(value)
+            except IdentityConfigError as exc:
+                await _json_response(scope, receive, send, status=500, error=str(exc))
+                return
+            except IdentityVerificationError as exc:
+                await _json_response(scope, receive, send, status=401, error=str(exc))
+                return
+
         should_record = path != "/health"
         response_status: dict[str, int] = {}
 
@@ -262,10 +258,50 @@ class IdentityMiddleware:
             if not is_local_backend():
                 from bloom_mcp.usage import record_usage_async
 
-                record_usage_async(
-                    identity or _oauth_subject_from_scope(scope) or ANONYMOUS,
-                    _action_from_path(path),
-                )
+                record_usage_async(identity or ANONYMOUS, _action_from_path(path))
+
+
+async def _read_body(receive, limit: int) -> bytes | None:
+    """The request body, or None if it is larger than ``limit`` or the client went away."""
+    chunks, size = [], 0
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            return None
+        chunk = message.get("body", b"")
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+        if not message.get("more_body"):
+            return b"".join(chunks)
+
+
+async def _refuse_tunnel_request(scope, receive, send, refusal) -> None:
+    """A POST holding one JSON-RPC request gets a JSON-RPC error, whose message MCP
+    clients show; anything else gets the plain JSON error with the refusal's status."""
+    from bloom_mcp import tunnel
+
+    if scope.get("method") == "POST":
+        import anyio
+
+        body = None
+        with anyio.move_on_after(tunnel.REFUSAL_BODY_READ_SECONDS):
+            body = await _read_body(receive, tunnel.MAX_REFUSAL_BODY_BYTES)
+        payload = tunnel.jsonrpc_refusal(body, refusal) if body is not None else None
+        if payload is not None:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": payload})
+            return
+    await _json_response(
+        scope, receive, send, status=refusal.status, error=refusal.message
+    )
 
 
 async def _json_response(scope, receive, send, *, status: int, error: str) -> None:
