@@ -68,6 +68,8 @@ WRAPPERS = [
 ]
 
 DENIED_ROLES = ["anon", "authenticated", "service_role"]
+# Read the progress columns: the signed-in roles, and bloom_agent for the assistant.
+READERS = ["bloom_user", "bloom_writer", "bloom_admin", "bloom_agent"]
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +205,7 @@ def test_bloom_workflows_writes_jobs_only_through_the_wrappers(cur, queue, privi
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
-@pytest.mark.parametrize("role", ["bloom_user", "bloom_writer", "bloom_admin"])
+@pytest.mark.parametrize("role", READERS)
 @pytest.mark.parametrize(
     "column",
     # Every column the web selects, so a lost grant fails here rather than as a silent null.
@@ -218,7 +220,7 @@ def test_signed_in_roles_may_read_the_progress_columns(cur, queue, role, column)
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
-@pytest.mark.parametrize("role", ["bloom_user", "bloom_writer", "bloom_admin"])
+@pytest.mark.parametrize("role", READERS)
 @pytest.mark.parametrize("column", ["error_message", "msg_id", "reads"])
 def test_internal_columns_are_withheld_from_signed_in_roles(cur, queue, role, column):
     """`error_message` is the renderer's own failure text and carries the internal gateway host,
@@ -231,7 +233,7 @@ def test_internal_columns_are_withheld_from_signed_in_roles(cur, queue, role, co
 
 
 @pytest.mark.parametrize("queue", QUEUES, ids=IDS)
-@pytest.mark.parametrize("role", DENIED_ROLES + ["bloom_agent"])
+@pytest.mark.parametrize("role", DENIED_ROLES)
 def test_denied_roles_cannot_read_any_column(cur, queue, role):
     for column in ("status", "error_code", "error_message", "id"):
         cur.execute(

@@ -1,10 +1,12 @@
-"""Unit tests for the cyl video worker's `render` command (stubs the render
-seam — no DB, storage or ffmpeg), matching test_dispatch_worker.py's convention."""
+"""Unit tests for the cyl video worker's `render` command and its job renderer
+(stubs the render seam — no DB, storage or ffmpeg), matching
+test_dispatch_worker.py's convention."""
 
 import pytest
 from fastapi import HTTPException
 
 import cyl_video_worker as worker
+from video_queue import RenderFailed
 
 
 def _argv(*extra):
@@ -19,7 +21,7 @@ def stub_client(monkeypatch):
 
 
 def _stub_render(monkeypatch, result=None, raises=None, seen=None):
-    def fake(experiment_id, scan_id, client=None):
+    def fake(experiment_id, scan_id, client=None, progress=None):
         if seen is not None:
             seen.update(experiment_id=experiment_id, scan_id=scan_id, client=client)
         if raises is not None:
@@ -232,7 +234,7 @@ def test_help_carries_the_hold_at_both_levels(argv, capsys):
         worker.parse_args(argv)
 
     assert exit_info.value.code == 0
-    assert "until the render queue lands" in capsys.readouterr().out
+    assert "one-job-per-scan hold" in capsys.readouterr().out
 
 
 def test_only_a_failure_after_the_upload_mentions_the_record(
@@ -247,3 +249,86 @@ def test_only_a_failure_after_the_upload_mentions_the_record(
     worker.main(_argv())
 
     assert "its record was not updated" not in capsys.readouterr().out
+
+
+# --- the job renderer --------------------------------------------------------
+
+JOB = {"job_id": "job-1", "msg_id": 7, "scan_id": 5, "experiment_id": 1}
+
+
+def test_a_job_renders_its_own_scan_with_the_progress_callback(monkeypatch):
+    seen = {}
+    progress = object()
+
+    def render(experiment_id, scan_id, client=None, progress=None):
+        seen.update(args=(experiment_id, scan_id, client), progress=progress)
+        return _rendered()
+
+    monkeypatch.setattr(worker, "generate_experiment_scan_video", render)
+    client = object()
+
+    assert worker.render_job(client, JOB, progress) == "rendered"
+    assert seen == {"args": (1, 5, client), "progress": progress}
+
+
+def test_a_kept_scan_completes_as_kept(monkeypatch):
+    _stub_render(monkeypatch, result=_rendered(regenerated=False))
+    assert worker.render_job(object(), JOB, None) == "kept"
+
+
+@pytest.mark.parametrize(
+    "status,detail,code",
+    [
+        (404, "No images found for scan 5", "no_images"),
+        (404, "Scan 5 not found in experiment 1", "scan_not_in_experiment"),
+        (
+            503,
+            "Could not confirm whether scan 5 already has a video.",
+            "storage_unavailable",
+        ),
+        (
+            503,
+            "Could not check the recorded video for scan 5. Nothing was changed.",
+            "database_unavailable",
+        ),
+        (500, "No frames could be encoded for scan 5", "no_frames_encoded"),
+        (500, "Could not create a download URL for scan 5", "not_signed"),
+        (500, "Video encoding failed for scan 5", "encode_failed"),
+    ],
+)
+def test_each_refusal_gets_its_own_code(monkeypatch, status, detail, code):
+    _stub_render(monkeypatch, raises=HTTPException(status_code=status, detail=detail))
+    with pytest.raises(RenderFailed) as ei:
+        worker.render_job(object(), JOB, None)
+    assert (ei.value.code, ei.value.error) == (code, detail)
+
+
+def test_the_codes_read_the_renderer_s_own_wording():
+    """The worker matches on these openings; they come from video.py, not a copy."""
+    import video
+
+    assert worker.NO_FRAMES_ENCODED is video.NO_FRAMES_ENCODED
+    assert worker.NOT_SIGNED is video.NOT_SIGNED
+    assert worker.RECORD_UNREADABLE is video.RECORD_UNREADABLE
+    assert worker.NOT_IN_EXPERIMENT is video.NOT_IN_EXPERIMENT
+
+
+def test_an_unclassified_failure_reaches_the_loop_unchanged(monkeypatch):
+    _stub_render(monkeypatch, raises=KeyError("frames"))
+    with pytest.raises(KeyError):
+        worker.render_job(object(), JOB, None)
+
+
+def test_run_starts_the_cyl_queue_loop(monkeypatch):
+    started = []
+
+    class FakeWorker:
+        def __init__(self, queue, render, client_factory):
+            started.append((queue.name, render))
+
+        def run(self):
+            started.append("ran")
+
+    monkeypatch.setattr(worker, "Worker", FakeWorker)
+    assert worker.main(["run"]) == worker.EXIT_OK
+    assert started == [("cyl_video_dispatch", worker.render_job), "ran"]
