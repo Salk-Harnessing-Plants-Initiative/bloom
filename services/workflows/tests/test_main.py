@@ -227,6 +227,16 @@ def test_cyl_video_route_404s_when_the_database_says_the_scan_is_elsewhere(
     assert resp.json()["detail"] == "Scan 44 not found in experiment 3"
 
 
+def test_cyl_video_route_says_a_deleted_experiment_is_deleted(monkeypatch, signed_in):
+    def deleted(client, queue, params):
+        raise APIError({"code": "P0002", "message": "experiment 3 has been deleted"})
+
+    _cyl_stubs(monkeypatch, enqueue=deleted)
+    resp = TestClient(signed_in.app).post("/cyl/experiments/3/scans/44/video")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Experiment 3 has been deleted"
+
+
 def test_cyl_video_route_503s_when_the_membership_check_fails(monkeypatch, signed_in):
     """The check is a database read; its failure is not "no such scan"."""
     import main

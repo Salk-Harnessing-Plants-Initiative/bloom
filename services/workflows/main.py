@@ -169,6 +169,12 @@ def cyl_experiment_scan_video(
                 status_code=404,
                 detail=f"Scan {scan_id} {NOT_IN_EXPERIMENT} {experiment_id}",
             ) from exc
+        # no_data_found: the experiment has been deleted.
+        if exc.code == "P0002":
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment {experiment_id} has been deleted",
+            ) from exc
         # check_violation: the scan's active job is filed under another experiment.
         if exc.code == "23514":
             raise HTTPException(
