@@ -123,6 +123,9 @@ erDiagram
 "public.scrna_enrichment_runs" }o--|| "public.scrna_de_runs" : "FOREIGN KEY (dataset_id, de_run_id) REFERENCES scrna_de_runs(dataset_id, id)"
 "public.scrna_enrichment_runs" }o--o| "public.rnaseq_runs" : "FOREIGN KEY (rnaseq_run_id) REFERENCES rnaseq_runs(id)"
 "public.scrna_enrichment_runs" }o--|| "public.genome_annotation_builds" : "FOREIGN KEY (annotation_build_id) REFERENCES genome_annotation_builds(id)"
+"public.gravi_plate_video_jobs" }o--|| "public.gravi_experiments" : "FOREIGN KEY (experiment_id) REFERENCES gravi_experiments(id)"
+"public.cyl_video_jobs" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id)"
+"public.cyl_video_jobs" }o--|| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id)"
 
 "public.species" {
   bigint id
@@ -1183,5 +1186,42 @@ erDiagram
   uuid created_by
   timestamp_with_time_zone created_at
   timestamp_with_time_zone ready_at
+}
+"public.gravi_plate_video_jobs" {
+  uuid id
+  bigint experiment_id FK
+  text plate_id
+  integer wave_number
+  text status
+  text stage
+  integer frames_done
+  integer frames_total
+  text error_code
+  text error_message
+  uuid requested_by
+  bigint msg_id
+  integer reads
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone started_at
+  timestamp_with_time_zone updated_at
+  timestamp_with_time_zone completed_at
+}
+"public.cyl_video_jobs" {
+  uuid id
+  bigint scan_id FK
+  bigint experiment_id FK
+  text status
+  text stage
+  integer frames_done
+  integer frames_total
+  text error_code
+  text error_message
+  uuid requested_by
+  bigint msg_id
+  integer reads
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone started_at
+  timestamp_with_time_zone updated_at
+  timestamp_with_time_zone completed_at
 }
 ```
