@@ -1203,6 +1203,8 @@ networks:
   # gets an address from TUNNEL_AUTO_RANGE, which leaves out both fixed addresses.
   tunnel:
     driver: bridge
+    # Caddy's tunnel rules match IPv4 addresses only; off even if a Docker-wide default turns it on.
+    enable_ipv6: false
     ipam:
       config:
         - subnet: ${TUNNEL_SUBNET}

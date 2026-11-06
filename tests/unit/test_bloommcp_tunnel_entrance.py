@@ -144,6 +144,12 @@ def _env_value(path: Path, key: str) -> str | None:
     return None
 
 
+def test_the_tunnel_network_has_no_ipv6():
+    """Caddy's drop rules match IPv4 only; an IPv6 address from cloudflared would pass them."""
+    networks = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))["networks"]
+    assert networks[TUNNEL_NETWORK].get("enable_ipv6") is False
+
+
 def test_the_tunnel_network_has_a_fixed_subnet_caddy_knows():
     networks = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))["networks"]
     assert networks[TUNNEL_NETWORK]["ipam"]["config"] == [

@@ -328,7 +328,11 @@ def test_the_host_is_dropped_at_the_entrance(tunnel_client, caddy_tunnel_ip):
         (2021, "/caddy-health", ()),
     ],
 )
-def test_tunnel_traffic_is_dropped_on_every_other_site(caddy_container, caddy_tunnel_ip, port, path, headers):
+def test_tunnel_traffic_is_dropped_on_every_other_site(
+    caddy_container, caddy_tunnel_ip, tunnel_client, port, path, headers
+):
     # The same request from loopback is answered, so a missing answer is the drop, not a dead port.
     assert _request(caddy_container, f"http://localhost:{port}{path}", *headers) is not None
     assert _request(caddy_container, f"http://{caddy_tunnel_ip}:{port}{path}", *headers) is None
+    # From cloudflared's address, where a wrong route on the Cloudflare side would send it.
+    assert _python_get(tunnel_client, f"http://caddy:{port}{path}", *headers)[0] is None
