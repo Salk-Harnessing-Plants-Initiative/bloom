@@ -125,6 +125,11 @@ previously-uploaded outputs only, never input CSVs), plus one narrow database-ta
 See [connecting-claude-code.md](../../bloommcp/docs/connecting-claude-code.md) for the
 researcher-facing version of this same disclosure.
 
+People reach bloommcp through the Salk connector only (Salk sign-in, then a Cloudflare tunnel to
+Caddy's `:8880` entrance); it is not served on the Bloom website. Signing in identifies the person
+for `bloommcp_usage` and does not change the scope above. See the
+[bloommcp README](../../bloommcp/README.md#salk-connector-tunnel).
+
 The helper's `get_postgrest_client()` returns a fully authenticated
 PostgREST client:
 

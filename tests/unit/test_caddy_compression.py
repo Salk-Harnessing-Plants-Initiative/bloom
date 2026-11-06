@@ -1,7 +1,7 @@
 """Config-shape test for response compression in `caddy/Caddyfile`.
 
 The type list is explicit because Caddy's default covers every `text/*` type,
-event streams included. The stream routes skip `encode` entirely, since it holds
+event streams included. The stream route skips `encode` entirely, since it holds
 a response's headers until the first body byte.
 """
 
@@ -22,7 +22,7 @@ from tests.unit._caddyfile_helpers import (
 EXPECTED_FORMATS = ["zstd", "gzip"]
 
 ENCODE_MATCHER = "@compress"
-STREAM_ROUTES = {"/langchain/*", "/bloommcp/*"}
+STREAM_ROUTES = {"/langchain/*"}
 
 # JSON, HTML, JavaScript, CSS and plain text.
 EXPECTED_TYPES = {
