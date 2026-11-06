@@ -728,6 +728,21 @@ def test_a_failed_record_lookup_does_not_read_as_no_record(monkeypatch):
         video._recorded_frames(_Broken(), 5)
 
     assert excinfo.value.status_code == 503
+    # Read through the worker's own mapping, so a reworded message cannot slip past it.
+    import cyl_video_worker
+
+    assert cyl_video_worker.code_for_refusal(excinfo.value) == "database_unavailable"
+
+
+def test_a_scan_outside_the_experiment_is_named_as_such_to_the_worker(monkeypatch):
+    monkeypatch.setattr(video, "scan_in_experiment", lambda *a, **k: False)
+    import cyl_video_worker
+
+    with pytest.raises(HTTPException) as excinfo:
+        video.generate_experiment_scan_video(1, 5, client=object())
+
+    assert excinfo.value.status_code == 404
+    assert cyl_video_worker.code_for_refusal(excinfo.value) == "scan_not_in_experiment"
 
 
 def test_a_kept_video_with_no_row_is_recorded_without_a_count(monkeypatch):

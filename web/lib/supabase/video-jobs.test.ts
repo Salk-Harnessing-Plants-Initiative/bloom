@@ -18,7 +18,7 @@ const ROW = {
   created_at: "2026-10-29T10:00:00Z",
   updated_at: "2026-10-29T10:00:05Z",
   // Not a column the browser should see; must not come through.
-  error: "kong:8000 bloom_workflows",
+  error_message: "kong:8000 bloom_workflows",
 };
 
 /** A client answering the latest-job read with `row`, and the count with `count`. */
@@ -72,14 +72,14 @@ describe("getPlateVideoJob", () => {
       created_at: ROW.created_at,
       updated_at: ROW.updated_at,
     });
-    expect(job).not.toHaveProperty("error");
+    expect(job).not.toHaveProperty("error_message");
   });
 
   it("selects only the readable columns", async () => {
     const { select } = clientReturning({ data: ROW });
     await getPlateVideoJob(7, "P1", 2);
     const cols = select.mock.calls[0][0] as string;
-    expect(cols).not.toMatch(/\berror\b(?!_code)|msg_id|reads|\*/);
+    expect(cols).not.toMatch(/error_message|msg_id|reads|\*/);
   });
 
   it("matches the plate and wave, newest first", async () => {

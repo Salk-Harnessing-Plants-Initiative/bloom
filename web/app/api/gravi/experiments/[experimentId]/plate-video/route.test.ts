@@ -618,6 +618,15 @@ describe("POST", () => {
 });
 
 describe("GET", () => {
+  it("answers 401 when signed out, so a waiting button stops instead of spinning", async () => {
+    mockedGetSession.mockResolvedValue(null as never);
+
+    const res = await get("plate_id=P7&wave_number=1");
+
+    expect(res.status).toBe(401);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
   it("reports the stored video's url", async () => {
     mockedStored.mockResolvedValue({
       status: "present",

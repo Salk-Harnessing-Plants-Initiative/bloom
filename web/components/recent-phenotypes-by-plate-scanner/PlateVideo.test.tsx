@@ -695,6 +695,23 @@ describe("a poll that cannot follow its job", () => {
     expect(calls.length).toBe(asked);
   });
 
+  it("counts an answer without its job as a failed ask, and stops asking", async () => {
+    const calls = queue([absent()]);
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick(VIDEO_JOB_MAX_FAILED_POLLS - 1);
+    expect(document.body.textContent).not.toContain(POLL_LOST);
+
+    await tick();
+    const asked = calls.length;
+    await tick(3);
+
+    expect(document.body.textContent).toContain(POLL_LOST);
+    expect(calls.length).toBe(asked);
+  });
+
   it("says it lost track after a run of failed asks", async () => {
     let i = 0;
     serve((method) => {

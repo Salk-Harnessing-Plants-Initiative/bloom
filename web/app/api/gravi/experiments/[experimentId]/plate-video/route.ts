@@ -2,8 +2,8 @@
  * Server-side proxy for queuing a plate time-lapse, and the poll that follows.
  *
  * POST asks the service to queue a render and answers 202 with the job at once;
- * a worker renders it. GET reports the stored video and the plate's latest job,
- * which the button polls until the job settles.
+ * a worker renders it. GET reports the stored video and the plate's job — the one
+ * named by `job_id`, else the latest — which the button polls until it settles.
  *
  * `plate_id` travels in the body, not the path: it is free text, and the
  * cylinder route's integer-only path defence does not transfer to it. The poll
@@ -229,6 +229,15 @@ export async function GET(
 
   const wave = parseWave(query.get("wave_number"));
   if (wave === undefined) return noStore(badWave());
+
+  // Signed out, storage and the job read both come back empty, which would read as
+  // "nothing yet" for ever; the button stops on this instead.
+  const session = await getSession();
+  if (!session?.access_token) {
+    return noStore(
+      NextResponse.json({ detail: "Sign in to view this video." }, { status: 401 })
+    );
+  }
 
   let stored: Awaited<ReturnType<typeof getStoredPlateVideo>>;
   try {

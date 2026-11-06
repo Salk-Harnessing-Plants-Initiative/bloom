@@ -123,7 +123,7 @@ describe("jobFailureMessage", () => {
       "encode_failed", "plate_mismatch", "unexpected", "redelivered", "stalled",
     ];
     const scan = [
-      "no_images", "scan_not_in_experiment", "storage_unavailable",
+      "no_images", "scan_not_in_experiment", "storage_unavailable", "database_unavailable",
       "no_frames_encoded", "encode_failed", "not_signed", "unexpected", "redelivered", "stalled",
     ];
     for (const code of plate) expect(PLATE_FAILURES[code], code).toBeTruthy();

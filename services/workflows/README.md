@@ -6,7 +6,7 @@ A small FastAPI service intended to host workflow-related HTTP endpoints.
 
 A "generate video" click queues a job and returns at once; a worker container
 renders it. Two pgmq queues feed two workers, one render at a time each:
-`gravi_plate_video` → `plate-video-worker` and `cyl_video_generation` →
+`gravi_plate_video_dispatch` → `plate-video-worker` and `cyl_video_dispatch` →
 `cyl-video-worker`. A job row per item (`gravi_plate_video_jobs`,
 `cyl_video_jobs`) carries its status, stage and frame counts, which the pages
 read. `services/video-worker` and its `video_jobs` queue were an earlier attempt
@@ -84,7 +84,7 @@ no more, within its 5-minute `stop_grace_period`. A render that reports nothing 
 `RENDER_STALL_SECONDS` (10 minutes) is failed as `stalled` and the worker exits,
 so Docker restarts it and the queue moves on.
 
-The renderer's raw failure text goes to the job's `error` column, which signed-in
+The renderer's raw failure text goes to the job's `error_message` column, which signed-in
 roles cannot read; the pages show `error_code` and the job id, and the id is what
 a support request quotes.
 

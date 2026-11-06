@@ -468,6 +468,36 @@ describe("ScanVideoButton when a poll cannot follow its job", () => {
     expect(fetchMock.mock.calls.length).toBe(asked);
   });
 
+  it("counts an answer without its job as a failed ask", async () => {
+    // A job read that keeps failing comes back as 200 with no job.
+    serve(() => json(QUEUED, 202), [poll(null, null)]);
+
+    await mount();
+    await click("Generate video");
+    await tick(VIDEO_JOB_MAX_FAILED_POLLS);
+
+    expect(screen.getByRole("alert").textContent).toBe(POLL_LOST);
+  });
+
+  it("starts the count over after a good answer", async () => {
+    const busy = () => json({ detail: "busy" }, 503);
+    const nine = Array.from({ length: VIDEO_JOB_MAX_FAILED_POLLS - 1 }, () => busy);
+    serve(() => json(QUEUED, 202), [
+      poll(null, null),
+      ...nine,
+      poll(null, job({ status: "rendering", stage: "encoding" })),
+      ...nine,
+      poll(VIDEO_URL, RENDERED),
+    ]);
+
+    await mount();
+    await click("Generate video");
+    await tick(2 * (VIDEO_JOB_MAX_FAILED_POLLS - 1) + 2);
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("link", { name: "Open video" })).toBeTruthy();
+  });
+
   it("keeps waiting through a few failed asks", async () => {
     serve(() => json(QUEUED, 202), [
       poll(null, null),

@@ -1,5 +1,6 @@
 /**
- * Has this scan's video landed yet, and how is its latest render going?
+ * Has this scan's video landed yet, and how is its render going — the job named
+ * by `job_id`, else the latest?
  *
  * A video is stored at `cyl-videos/{scan_id}.mp4`, so the scan id is the whole
  * key and this route is scoped to it alone. Generation lives at
