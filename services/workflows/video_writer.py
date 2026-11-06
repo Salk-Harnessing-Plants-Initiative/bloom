@@ -2,7 +2,7 @@
 VideoWriter - FFmpeg-based video encoding utility.
 
 Streams images to an FFmpeg subprocess for efficient H.264 MP4 encoding.
-Ported from services/video-worker so the workflows API can build videos inline.
+Ported from services/video-worker; the video workers encode through it.
 
 close() surfaces a failed encode as VideoEncodeError so a truncated MP4 is never
 mistaken for a good one — callers must not upload the output unless close()
@@ -16,7 +16,7 @@ import time
 import numpy as np
 
 # Hard ceiling on a single encode; a stuck ffmpeg is killed rather than pinning
-# the synchronous request's worker thread indefinitely.
+# the worker indefinitely.
 ENCODE_TIMEOUT_SECONDS = 120.0
 
 # How much of ffmpeg's stderr is kept for the error message. Bounded because

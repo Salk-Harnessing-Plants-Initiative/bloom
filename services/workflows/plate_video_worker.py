@@ -1,12 +1,8 @@
-"""Render one plate's time-lapse from the container.
+"""Render plate time-lapses from the container.
 
-`render` renders a single plate through the same `render_plate_video` the route
-calls, so a video made here is the video the button would have made. The claim
-loop that consumes the queue arrives with the queue itself.
-
-Not to be run against staging or production until the render queue lands: the
-per-plate lock lives in the service's own process and does not hold against
-this one. See services/workflows/README.md.
+`run` consumes the plate video queue: claim a job, render it, complete or fail
+it. `render` renders a single plate on command, through the same
+`render_plate_video`, for an operator. See services/workflows/README.md.
 """
 
 import argparse
@@ -14,7 +10,6 @@ import logging
 import sys
 
 from plate_encode import (
-    EncoderBusy,
     FrameDepthUnsupported,
     FrameSizeMismatch,
     FrameTooLarge,
@@ -27,6 +22,8 @@ from plate_encode import (
 from video_writer import VideoEncodeError
 from plate_request import MAX_EXPERIMENT_ID, MAX_WAVE_NUMBER, REFUSAL_STATUS
 from supabase_client import app_client
+from video_queue import KEPT, PLATE_QUEUE, RENDERED, RenderFailed, UNEXPECTED
+from video_worker_loop import Worker
 from video_worker_cli import (
     EXIT_FAILED,
     EXIT_OK,
@@ -38,28 +35,61 @@ from video_worker_cli import (
 logger = logging.getLogger(__name__)
 
 HOLD = (
-    "Not to be run against staging or production until the render queue lands: "
-    "the service renders the same plates, and neither process can see the other's lock."
+    "A `render` here does not take the queue's one-job-per-plate hold, so do not "
+    "run one for a plate the queue may be rendering."
 )
 
-# The status the route answers for each of these, so one classification serves
-# both. Subclasses first, as in plate_request's own chain.
+# Each failure the renderer can raise: the HTTP-style status `render` reads as its
+# exit code (a 4xx refuses, a 5xx says retry), and the job's error code, the
+# page's vocabulary. One table so the two cannot drift. Subclasses first.
 #
-# `PlateMismatch` is the one deliberate divergence: the route answers 500, but
-# its own docstring says there is nothing to repair and nothing to retry — the
-# key and the identity cannot both be right, and they will not become right on
-# a second attempt. A caller reading 500 would retry it forever.
-STATUS_BY_EXCEPTION = (
-    (FrameDepthUnsupported, 422),
-    (FrameSizeMismatch, 422),
-    (FrameTooLarge, 413),
-    (FrameUnreadable, 502),
-    (VideoNotStored, 503),
-    (NotRecorded, 500),
-    (VideoEncodeError, 500),
-    (BrokenPipeError, 500),
-    (PlateMismatch, 409),
+# `PlateMismatch` is 409 rather than 500: there is nothing to repair and nothing
+# to retry — the key and the identity cannot both be right, and they will not
+# become right on a second attempt.
+FAILURES = (
+    (FrameDepthUnsupported, 422, "frame_depth_unsupported"),
+    (FrameSizeMismatch, 422, "frame_size_mismatch"),
+    (FrameTooLarge, 413, "frame_too_large"),
+    (FrameUnreadable, 502, "frame_unreadable"),
+    (VideoNotStored, 503, "not_stored"),
+    (NotRecorded, 500, "not_recorded"),
+    (VideoEncodeError, 500, "encode_failed"),
+    (BrokenPipeError, 500, "encode_failed"),
+    (PlateMismatch, 409, "plate_mismatch"),
 )
+
+
+def code_for_exception(exc: Exception) -> str:
+    for kind, _, code in FAILURES:
+        if isinstance(exc, kind):
+            return code
+    return UNEXPECTED
+
+
+def render_job(client, job: dict, progress) -> str:
+    """One claimed job, rendered: 'rendered' or 'kept', or RenderFailed."""
+    try:
+        outcome = render_plate_video(
+            client, job["experiment_id"], job["plate_id"], job["wave_number"], progress
+        )
+    except Exception as exc:
+        code = code_for_exception(exc)
+        if code == UNEXPECTED:
+            raise
+        raise RenderFailed(code, str(exc)) from exc
+
+    action = outcome.get("action")
+    if action == "refuse":
+        raise RenderFailed(
+            outcome.get("code") or UNEXPECTED, outcome.get("reason") or ""
+        )
+    if action == "keep":
+        # The reason says why: current, no frames visible, or frames gone missing.
+        logger.info("plate job %s kept: %s", job["job_id"], outcome.get("reason"))
+        return KEPT
+    if action == "rendered":
+        return RENDERED
+    raise RenderFailed(UNEXPECTED, f"the renderer answered {action!r}")
 
 
 def wave(value: str) -> int | None:
@@ -75,7 +105,7 @@ def wave(value: str) -> int | None:
 
 
 def experiment(value: str) -> int:
-    """The route's own bounds, so an out-of-range id is refused by name here
+    """The column's own bounds, so an out-of-range id is refused by name here
     rather than reaching the database and reporting itself as an outage."""
     number = int(value)
     if number < 1 or number > MAX_EXPERIMENT_ID:
@@ -87,10 +117,11 @@ def experiment(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Render one plate's time-lapse.",
+        description="Render plate time-lapses.",
         epilog=f"{HOLD} Exit codes: 0 rendered or kept, 1 failed, 3 refused.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("run", help="consume the plate video queue until stopped")
     render = commands.add_parser(
         "render", help="render one plate and exit", epilog=parser.epilog
     )
@@ -111,7 +142,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def frames_in(outcome: dict) -> int | None:
     """What the video holds: the encoder's count when one was made, the stored
-    video's own when it was kept. Mirrors the route's own fallback order."""
+    video's own when it was kept."""
     recorded = outcome.get("recorded") or {}
     held = recorded.get("frame_count", outcome.get("stored_frames"))
     if held is None and outcome.get("action") == "rendered":
@@ -126,7 +157,7 @@ def label_for(exit_code: int) -> str:
 
 
 def exit_for_exception(exc: Exception) -> int:
-    for kind, status in STATUS_BY_EXCEPTION:
+    for kind, status, _ in FAILURES:
         if isinstance(exc, kind):
             return exit_for_status(status)
     return EXIT_FAILED
@@ -136,14 +167,15 @@ def main(argv=None) -> int:
     configure_logging()
     args = parse_args(argv)
 
+    if args.command == "run":
+        # The render's own reads use this client, so it keeps the default timeout.
+        Worker(PLATE_QUEUE, render_job, app_client).run()
+        return EXIT_OK
+
     try:
         outcome = render_plate_video(
             app_client(), args.experiment, args.plate, args.wave
         )
-    except EncoderBusy as exc:  # PlateBusy subclasses it
-        # Not a failure of this render: the in-process locks the queue replaces.
-        print(f"busy: {exc}")
-        return EXIT_FAILED
     except NotRecorded as exc:
         # The video is stored; only the row is missing. Naming that matters.
         logger.exception("plate %r was stored but not recorded", args.plate)
@@ -161,9 +193,9 @@ def main(argv=None) -> int:
     action = outcome.get("action")
     if action == "refuse":
         code = outcome.get("code")
-        # Two of the five refusals are the route's own 503s — storage or the
-        # database not answering. Those are this service failing, not the
-        # renderer declining, so both the word and the code have to say retry.
+        # Two of the five refusals are 503s — storage or the database not
+        # answering. Those are this service failing, not the renderer
+        # declining, so both the word and the code have to say retry.
         exit_code = exit_for_status(REFUSAL_STATUS.get(code, 409))
         print(f"{label_for(exit_code)} ({code}): {outcome.get('reason')}")
         return exit_code

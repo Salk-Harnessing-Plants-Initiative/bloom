@@ -1,15 +1,15 @@
-"""The video workers are containers off the workflows image that a deploy never starts.
+"""The video workers are containers off the workflows image that consume the queues.
 
 A render outgrew the request that asked for it: it holds gigabytes, outlives the
-proxy timeout, and dies with the web service on every deploy. Moving it into its
-own container is only safe if the container is hardened the way the service is,
-carries a limit of its own, and stays out of `docker compose up -d` until a queue
-exists to feed it.
+proxy timeout, and died with the web service on every deploy. In its own
+container it is hardened the way the service is, carries a limit of its own, and
+starts with every deploy so nothing queued is left without a consumer.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
 
 import pytest
 import yaml
@@ -40,14 +40,11 @@ def test_the_worker_is_defined(compose_file, worker):
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
 @pytest.mark.parametrize("worker", VIDEO_WORKERS)
-def test_a_deploy_does_not_start_the_worker(compose_file, worker):
-    """Deploys run `up -d` with no `--profile`, which skips a profiled service
-    entirely. Until a queue exists, a running worker would have nothing to claim."""
-    service = _services(compose_file)[worker]
-
-    assert service.get("profiles"), (
-        f"{worker} has no profile, so `up -d` would start it in {compose_file} — "
-        "with no queue to claim from, and no command but a usage message"
+def test_a_deploy_starts_the_worker(compose_file, worker):
+    """Deploys run `up -d` with no `--profile`, which skips a profiled service.
+    The buttons only enqueue, so a skipped worker strands every click."""
+    assert not _services(compose_file)[worker].get("profiles"), (
+        f"{worker} is profiled in {compose_file}, so a deploy would not start it"
     )
 
 
@@ -124,7 +121,9 @@ def test_the_dev_worker_runs_its_built_image_not_the_mounted_source(worker):
 
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
-@pytest.mark.parametrize("worker", VIDEO_WORKERS + ("cyl-pipeline-worker", "cyl-status-poller"))
+@pytest.mark.parametrize(
+    "worker", VIDEO_WORKERS + ("cyl-pipeline-worker", "cyl-status-poller")
+)
 def test_the_ram_backed_tmpfs_fits_well_inside_the_memory_limit(compose_file, worker):
     """The same rule the workflows service is held to. tmpfs pages are charged to
     the container's own cgroup, so a limit that merely exceeds the mount turns a
@@ -182,25 +181,33 @@ def test_the_worker_is_on_the_services_network(compose_file, worker):
         ("cyl-video-worker", "cyl_video_worker.py"),
     ),
 )
-def test_the_default_command_prints_usage_rather_than_rendering(
-    compose_file, worker, script
-):
-    """Rendering takes arguments, so there is no safe default render. A usage
-    message exits 0 immediately; anything long-running would make a profiled
-    start look like a working service."""
+def test_the_default_command_runs_the_claim_loop(compose_file, worker, script):
     command = _services(compose_file)[worker]["command"]
 
-    assert script in command, f"{worker} runs {command!r} in {compose_file}"
-    assert command[-1] == "--help", (
-        f"{worker}'s default command is {command!r}; it must not render or idle"
+    assert command == ["python", script, "run"], (
+        f"{worker} runs {command!r} in {compose_file}"
     )
 
 
 @pytest.mark.parametrize("compose_file", COMPOSE_FILES)
 @pytest.mark.parametrize("worker", VIDEO_WORKERS)
-def test_the_worker_does_not_restart(compose_file, worker):
-    """With a usage message as the default command, a restart policy would turn
-    a profiled start into a tight exit-0 loop."""
-    assert "restart" not in _services(compose_file)[worker], (
-        f"{worker} has a restart policy in {compose_file}"
-    )
+def test_the_worker_restarts_unless_stopped(compose_file, worker):
+    """A crashed worker leaves its queue filling with nobody to drain it."""
+    assert _services(compose_file)[worker].get("restart") == "unless-stopped"
+
+
+@pytest.mark.parametrize("compose_file", COMPOSE_FILES)
+@pytest.mark.parametrize("worker", VIDEO_WORKERS)
+def test_the_healthcheck_is_the_loop_s_own(compose_file, worker):
+    """The loop's own command reads its heartbeat path and age, so compose copies neither."""
+    test = _services(compose_file)[worker]["healthcheck"]["test"]
+    assert test == ["CMD", "python", "video_worker_loop.py", "healthcheck"], test
+
+
+@pytest.mark.parametrize("compose_file", COMPOSE_FILES)
+@pytest.mark.parametrize("worker", VIDEO_WORKERS)
+def test_a_deploy_lets_the_job_in_hand_finish(compose_file, worker):
+    """SIGTERM finishes the current render; Docker's 10s default would kill a
+    plate mid-encode and leave it to redelivery."""
+    grace = _services(compose_file)[worker].get("stop_grace_period")
+    assert grace == "5m", f"{worker} stops with {grace!r} in {compose_file}"
