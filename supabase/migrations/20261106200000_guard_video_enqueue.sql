@@ -4,7 +4,7 @@
 -- job under a retired experiment.
 -- Only the two enqueue functions change; signatures, owner and grants are unchanged.
 --
--- Rollback: supabase/rollbacks/20261106140000_guard_video_enqueue_rollback.sql
+-- Rollback: supabase/rollbacks/20261106200000_guard_video_enqueue_rollback.sql
 
 BEGIN;
 

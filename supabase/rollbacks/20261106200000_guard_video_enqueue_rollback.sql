@@ -1,12 +1,12 @@
--- Rollback for 20261106140000_guard_video_enqueue.sql: the two enqueue functions as
+-- Rollback for 20261106200000_guard_video_enqueue.sql: the two enqueue functions as
 -- 20261106120000_create_video_generation_queues.sql left them.
 --
 -- Nothing applies this automatically. Apply it by hand as supabase_admin:
 --   docker compose -f docker-compose.<env>.yml exec -T db \
 --     psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
---     < supabase/rollbacks/20261106140000_guard_video_enqueue_rollback.sql
+--     < supabase/rollbacks/20261106200000_guard_video_enqueue_rollback.sql
 --
--- A hand-apply leaves 20261106140000 recorded in supabase_migrations.schema_migrations, so a
+-- A hand-apply leaves 20261106200000 recorded in supabase_migrations.schema_migrations, so a
 -- fresh stack or the next promotion re-applies the migration. To roll back durably,
 -- delete that row as well.
 
