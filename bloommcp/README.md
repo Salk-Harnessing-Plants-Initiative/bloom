@@ -54,7 +54,7 @@ which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on AIRC's sig
   recorded under the Bloom account's id. Queries still run as `bloom_agent`.
 
 What this trusts: AIRC's signature on the JWT, and Caddy's tunnel entrance, which only Caddy and
-bloommcp hold the secret for and which accepts only the tunnel network.
+bloommcp hold the secret for and which accepts only cloudflared's fixed address.
 
 | Variable | Purpose |
 | --- | --- |

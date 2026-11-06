@@ -146,7 +146,9 @@ def _env_value(path: Path, key: str) -> str | None:
 
 def test_the_tunnel_network_has_a_fixed_subnet_caddy_knows():
     networks = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))["networks"]
-    assert networks[TUNNEL_NETWORK]["ipam"]["config"] == [{"subnet": "${TUNNEL_SUBNET}"}]
+    assert networks[TUNNEL_NETWORK]["ipam"]["config"] == [
+        {"subnet": "${TUNNEL_SUBNET}", "ip_range": "${TUNNEL_AUTO_RANGE}"}
+    ]
     assert _services()["caddy"]["environment"]["TUNNEL_SUBNET"] == "${TUNNEL_SUBNET}"
 
 
@@ -193,6 +195,24 @@ def test_fixed_tunnel_addresses_are_usable_hosts_in_the_subnet(env: str):
         assert address in subnet.hosts(), f"{env}: {address} is not a host address in {subnet}"
         assert address != gateway, f"{env}: {address} is the gateway, the host's address"
     assert caddy != cloudflared
+
+
+# Room for a debug container or the CI test client; only Caddy and cloudflared live here.
+MIN_AUTO_ADDRESSES = 4
+
+
+@pytest.mark.parametrize("env", ["prod", "staging", "ci"])
+def test_automatic_addresses_never_include_the_fixed_ones(env: str):
+    """Docker hands an unpinned container any free address in ip_range, so cloudflared's
+    must sit outside it, or a container joining while cloudflared is down could take it."""
+    subnet = ipaddress.ip_network(_tunnel_settings("TUNNEL_SUBNET")[env])
+    auto = ipaddress.ip_network(_tunnel_settings("TUNNEL_AUTO_RANGE")[env])
+    assert auto.subnet_of(subnet), f"{env}: {auto} is not inside {subnet}"
+    for key in ("TUNNEL_CADDY_IP", "TUNNEL_CLOUDFLARED_IP"):
+        address = ipaddress.ip_address(_tunnel_settings(key)[env])
+        assert address not in auto, f"{env}: {key} {address} is inside the automatic range {auto}"
+    usable = [a for a in auto if a in set(subnet.hosts()) and a != next(subnet.hosts())]
+    assert len(usable) >= MIN_AUTO_ADDRESSES, f"{env}: {auto} leaves only {len(usable)} addresses"
 
 
 def test_every_other_caddy_site_drops_tunnel_traffic():

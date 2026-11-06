@@ -90,6 +90,8 @@ except OSError as error:
     print(); print(f"{type(error).__name__}: {error}")
 """
 NO_ACCOUNT = "nobody-ci@salk.edu"
+# One client at a time holds cloudflared's address; named so a timed-out one can be removed.
+TUNNEL_CLIENT_NAME = "bloom-ci-tunnel-client"
 CI_TUNNEL_KEY = Path(__file__).resolve().parents[2] / ".ci-tunnel" / "key.pem"
 
 
@@ -127,13 +129,20 @@ def bloommcp_container() -> str:
 def _python_get(
     command: list[str], url: str, *headers: str, python: str = "python"
 ) -> tuple[int | None, str]:
-    result = subprocess.run(
-        [*command, python, "-c", _PY_GET, url, *headers],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [*command, python, "-c", _PY_GET, url, *headers],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        # Killing the CLI leaves the container running and holding its address.
+        if "--name" in command:
+            name = command[command.index("--name") + 1]
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+        raise
     status, _, body = result.stdout.partition("\n")
     if not status.strip():
         assert result.returncode == 0, f"request did not run: {result.stderr!r}"
@@ -157,7 +166,10 @@ def tunnel_client(bloommcp_container, caddy_tunnel_network, cloudflared_ip) -> l
     ).stdout.strip()
     if not image:
         _unavailable("could not read the bloommcp image")
-    return ["docker", "run", "--rm", "--network", caddy_tunnel_network, "--ip", cloudflared_ip, image]
+    return [
+        "docker", "run", "--rm", "--name", TUNNEL_CLIENT_NAME,
+        "--network", caddy_tunnel_network, "--ip", cloudflared_ip, image,
+    ]
 
 
 def _through_tunnel(client: list[str], *headers: str) -> tuple[int, str]:
@@ -230,7 +242,7 @@ def test_a_forged_tunnel_header_straight_to_bloommcp_is_ignored(bloommcp_contain
 @pytest.fixture(scope="module")
 def caddy_tunnel(caddy_container) -> tuple[str, str]:
     """Caddy's tunnel network and its address on it; a request to that address from inside
-    Caddy comes from it, as cloudflared's do."""
+    Caddy comes from Caddy's own address, which :8880 drops."""
     result = subprocess.run(
         [
             "docker",
@@ -263,6 +275,10 @@ def caddy_tunnel_network(caddy_tunnel) -> str:
 @pytest.fixture(scope="module")
 def cloudflared_ip(caddy_container) -> str:
     """The one address :8880 accepts, as Caddy was given it."""
+    return _caddy_env(caddy_container, "TUNNEL_CLOUDFLARED_IP")
+
+
+def _caddy_env(caddy_container: str, key: str) -> str:
     env = subprocess.run(
         ["docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", caddy_container],
         capture_output=True,
@@ -270,15 +286,25 @@ def cloudflared_ip(caddy_container) -> str:
         check=False,
     ).stdout.splitlines()
     for line in env:
-        if line.startswith("TUNNEL_CLOUDFLARED_IP="):
+        if line.startswith(f"{key}="):
             return line.split("=", 1)[1]
-    _unavailable("caddy has no TUNNEL_CLOUDFLARED_IP")
+    _unavailable(f"caddy has no {key}")
+
+
+def test_caddy_has_its_fixed_tunnel_address(caddy_container, caddy_tunnel_ip):
+    assert caddy_tunnel_ip == _caddy_env(caddy_container, "TUNNEL_CADDY_IP")
 
 
 def test_other_tunnel_network_addresses_are_dropped(tunnel_client, caddy_container, caddy_tunnel_ip):
+    url = f"http://caddy:{TUNNEL_PORT}/mcp"
     # Control: the same request from cloudflared's address is answered.
-    assert _python_get(tunnel_client, f"http://caddy:{TUNNEL_PORT}/mcp")[0] == 403
+    assert _python_get(tunnel_client, url)[0] == 403
+    # From Caddy's own fixed address.
     assert _request(caddy_container, f"http://{caddy_tunnel_ip}:{TUNNEL_PORT}/mcp") is None
+    # From a container Docker gave an automatic address (TUNNEL_AUTO_RANGE).
+    at = tunnel_client.index("--ip")
+    automatic = tunnel_client[:at] + tunnel_client[at + 2 :]
+    assert _python_get(automatic, url)[0] is None
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="only a Linux host reaches container addresses")

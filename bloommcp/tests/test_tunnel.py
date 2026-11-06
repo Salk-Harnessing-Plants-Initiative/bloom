@@ -362,8 +362,13 @@ def test_a_key_airc_removes_is_refused_once_the_key_set_cache_expires(
     middleware = IdentityMiddleware(_RecordingApp())
     assert _get(middleware, _tunnel_headers(EMAIL)).status_code == 200
     key_server.serve(_OTHER_KEY, "rotated-key")
-    later = time.monotonic() + tunnel.JWKS_CACHE_SECONDS + 1
-    monkeypatch.setattr(jwt.jwk_set_cache.time, "monotonic", lambda: later)
+    # Moves the clock on rather than freezing it; this is the global time module.
+    real = time.monotonic
+    monkeypatch.setattr(
+        jwt.jwk_set_cache.time,
+        "monotonic",
+        lambda: real() + tunnel.JWKS_CACHE_SECONDS + 1,
+    )
     resp = _get(middleware, _tunnel_headers(EMAIL))
     assert resp.status_code == 403
     assert tunnel.NOT_VERIFIED_MESSAGE in resp.text

@@ -1199,9 +1199,11 @@ networks:
     driver: bridge
   # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
   # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880,
-  # and fixed addresses for both (TUNNEL_CADDY_IP, TUNNEL_CLOUDFLARED_IP).
+  # and fixed addresses for both (TUNNEL_CADDY_IP, TUNNEL_CLOUDFLARED_IP). Any other container
+  # gets an address from TUNNEL_AUTO_RANGE, which leaves out both fixed addresses.
   tunnel:
     driver: bridge
     ipam:
       config:
         - subnet: ${TUNNEL_SUBNET}
+          ip_range: ${TUNNEL_AUTO_RANGE}
