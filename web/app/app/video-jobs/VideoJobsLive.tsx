@@ -6,8 +6,9 @@
  * SUBSCRIBED refetches it to close the gap before the subscription.
  *
  * Queue position and the "stopped worker" warning come from every queued or
- * rendering job, read and kept apart from the list, so a filter or the page
- * size cannot hide a job that is ahead in the line.
+ * rendering job, read apart from the list so a filter or the page size cannot
+ * hide a job that is ahead in the line. Both are held in the live view, so an
+ * event that lands during a resync is replayed onto each.
  *
  * Each row links to the page its video plays on. The ids that address needs are
  * looked up once per experiment or scan, and again after a lookup that failed.
@@ -62,6 +63,8 @@ export interface VideoJobsLiveProps {
 
 type Kind = JobKind | "all";
 type Filters = { mineOnly: boolean; kind: Kind; activeOnly: boolean };
+/** The listed jobs, and every queued or rendering job for queue position. */
+type View = { list: JobList; active: ActiveJob[] };
 
 const placeKey = (job: ListedJob) => (job.kind === "plate" ? `plate:${job.experiment_id}` : `scan:${job.scan_id}`);
 
@@ -91,7 +94,6 @@ export function VideoJobsLive({
   const [filters, setFilters] = useState<Filters>({ mineOnly: false, kind: "all", activeOnly: false });
   // Read by the snapshot and the event filter, which outlive a render.
   const held = useRef(filters);
-  const [active, setActive] = useState(initialActive);
   const [pinned, setPinned] = useState(highlightedJob);
   const [places, setPlaces] = useState(() => {
     const plates = new Map<number, PlatePlace>();
@@ -152,7 +154,7 @@ export function VideoJobsLive({
     }
   };
 
-  const live = useLiveSync<JobList>({
+  const live = useLiveSync<View>({
     topic: "video-jobs",
     bindings: [
       { table: PLATE_JOBS_TABLE, event: "INSERT" },
@@ -160,31 +162,32 @@ export function VideoJobsLive({
       { table: SCAN_JOBS_TABLE, event: "INSERT" },
       { table: SCAN_JOBS_TABLE, event: "UPDATE" },
     ],
-    initial: listFromSnapshot(initialJobs, initialHasOlder),
+    initial: { list: listFromSnapshot(initialJobs, initialHasOlder), active: initialActive },
     snapshot: async () => {
       const client = createClientSupabaseClient();
-      const [{ rows, hasOlder }, queue] = await Promise.all([fetchJobs(client, query()), fetchActiveJobs(client)]);
-      setActive(queue);
-      return listFromSnapshot(rows, hasOlder);
+      const [{ rows, hasOlder }, active] = await Promise.all([fetchJobs(client, query()), fetchActiveJobs(client)]);
+      return { list: listFromSnapshot(rows, hasOlder), active };
     },
-    apply: (list, change) => applyJobChange(list, change, accept),
-    onEvent: (change, list) => {
-      // Every event, filtered out of the list or not, moves the line.
-      setActive((queue) => applyActiveChange(queue, change));
+    // Every event, filtered out of the list or not, moves the line.
+    apply: (view, change) => ({
+      list: applyJobChange(view.list, change, accept),
+      active: applyActiveChange(view.active, change),
+    }),
+    onEvent: (change, { list }) => {
       setPinned((job) => (job ? (applyJobChange(listFromSnapshot([job], false), change).rows[0] ?? job) : job));
       const kind = changeKind(change);
       const id = (change as Change<{ id: string }>).new.id;
       const job = list.rows.find((r) => r.kind === kind && r.id === id);
       if (job) void loadPlaces([job]);
     },
-    onSnapshot: (list) => {
+    onSnapshot: ({ list }) => {
       setServerError(null);
       void loadPlaces(list.rows);
     },
   });
 
   const loadOlder = async () => {
-    const cursor = live.current().cursor;
+    const cursor = live.current().list.cursor;
     if (!cursor || live.isFetching()) return;
     const started = live.generation();
     setOlder({ loading: true, error: null });
@@ -194,7 +197,7 @@ export function VideoJobsLive({
         before: cursor,
       });
       if (live.generation() === started) {
-        live.update((list) => appendOlder(list, rows, hasOlder));
+        live.update((view) => ({ ...view, list: appendOlder(view.list, rows, hasOlder) }));
         void loadPlaces(rows);
       }
       setOlder({ loading: false, error: null });
@@ -211,16 +214,17 @@ export function VideoJobsLive({
 
   // Bring the job the visitor came for into view, once it is on the page.
   const scrolled = useRef(false);
-  const highlightedHere = live.view.rows.some((j) => j.id === highlightJobId);
+  const highlightedHere = live.view.list.rows.some((j) => j.id === highlightJobId);
   useEffect(() => {
     if (!highlightJobId || scrolled.current || !highlightedHere) return;
     scrolled.current = true;
     document.getElementById(`job-${highlightJobId}`)?.scrollIntoView?.({ block: "center" });
   }, [highlightJobId, highlightedHere]);
 
+  const { active } = live.view;
   const error = live.error ?? serverError;
   // A filter change hides what it rules out at once, not only when its snapshot lands.
-  const rows = live.view.rows.filter(accept);
+  const rows = live.view.list.rows.filter(accept);
   const row = (job: ListedJob, highlighted: boolean) => (
     <VideoJobRow
       key={jobKey(job)}
@@ -340,7 +344,7 @@ export function VideoJobsLive({
         </div>
       )}
 
-      {live.view.hasOlder && rows.length > 0 && (
+      {live.view.list.hasOlder && rows.length > 0 && (
         <div className="mt-4">
           <button
             type="button"

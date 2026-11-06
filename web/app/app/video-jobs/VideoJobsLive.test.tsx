@@ -281,6 +281,21 @@ describe("queue position", () => {
     expect(row(PLATE_ID).textContent).toContain("Queued — next up");
   });
 
+  it("keeps a job that finishes during a resync finished, not the resync's older read", async () => {
+    const theirs = plate({ id: "44444444-0000-0000-0000-000000000000", requested_by: OTHER, status: "rendering", created_at: at(10) });
+    plates = [plate(), theirs];
+    mount();
+    await subscribe();
+    const pending = deferred<Answer>();
+    override = { gravi_plate_video_jobs: () => pending.promise };
+    fireEvent.click(screen.getByRole("checkbox", { name: "Only mine" }));
+    // It finishes after the resync has read the line, before that read lands.
+    await emit("gravi_plate_video_jobs", "UPDATE", { id: theirs.id, status: "rendered" });
+    await act(async () => pending.resolve({ data: [strip(plate()), strip(theirs)], error: null }));
+    await tick();
+    expect(row(PLATE_ID).textContent).toContain("Queued — next up");
+  });
+
   it("says a worker may be stopped only when nothing of its kind is rendering", () => {
     plates = [plate({ created_at: at(20) })];
     scans = [];
