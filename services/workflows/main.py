@@ -77,7 +77,7 @@ from auth import (
     require_supabase_user,
 )
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS, app_client
-from video import scan_in_experiment
+from video import NOT_IN_EXPERIMENT, scan_in_experiment
 from video_queue import CYL_QUEUE, enqueue
 
 logging.basicConfig(
@@ -143,7 +143,7 @@ def cyl_experiment_scan_video(
     if not belongs:
         raise HTTPException(
             status_code=404,
-            detail=f"Scan {scan_id} not found in experiment {experiment_id}",
+            detail=f"Scan {scan_id} {NOT_IN_EXPERIMENT} {experiment_id}",
         )
 
     try:
@@ -161,7 +161,7 @@ def cyl_experiment_scan_video(
         if exc.code == "23503":
             raise HTTPException(
                 status_code=404,
-                detail=f"Scan {scan_id} not found in experiment {experiment_id}",
+                detail=f"Scan {scan_id} {NOT_IN_EXPERIMENT} {experiment_id}",
             ) from exc
         # check_violation: the scan's active job is filed under another experiment.
         if exc.code == "23514":

@@ -66,9 +66,7 @@ class _DummyApp:
     `user`, when given, is written to `scope["user"]` before responding —
     simulating what Starlette's real `AuthenticationMiddleware` would already
     have done, deeper in the real stack, by the time `IdentityMiddleware`'s
-    own `await self.app(...)` returns (see identity.py's
-    `_oauth_subject_from_scope` and openspec
-    add-bloommcp-oauth-usage-attribution design.md Decision 1)."""
+    own `await self.app(...)` returns."""
 
     def __init__(self, status: int = 200, user=None):
         self.called = 0
@@ -241,24 +239,18 @@ def test_supabase_backend_still_records_usage(monkeypatch, recorded_usage):
     assert recorded_usage == [("anonymous", "combined")]
 
 
-# ── OAuth AccessToken fallback (add-bloommcp-oauth-usage-attribution) ───────
-# A second identity source, consulted only when no X-Bloom-Identity header
-# resolved one. `_DummyApp(user=...)` simulates what Starlette's real
-# `AuthenticationMiddleware` writes into `scope["user"]`, deeper in the real
-# stack, without needing FastMCP/OAuth actually wired up (see
-# test_identity_middleware_records_a_real_oauth_callers_subject_live below for
-# the real end-to-end version).
+# ── A token's subject is never an identity source ───────────────────────────
+# `_DummyApp(user=...)` simulates what Starlette's `AuthenticationMiddleware`
+# writes into `scope["user"]`. Only `X-Bloom-Identity` and the tunnel name a caller.
 
 
-def test_oauth_authenticated_caller_with_no_header_is_recorded_under_their_subject(
-    monkeypatch, recorded_usage
-):
+def test_a_token_subject_in_scope_is_not_recorded(monkeypatch, recorded_usage):
     monkeypatch.setenv("JWT_SECRET", SECRET)
     downstream = _DummyApp(user=_authenticated_user(subject=A_UUID))
     client = TestClient(IdentityMiddleware(downstream))
     resp = client.get("/anything")
     assert resp.status_code == 200
-    assert recorded_usage == [(A_UUID, "combined")]
+    assert recorded_usage == [("anonymous", "combined")]
 
 
 def test_api_key_authenticated_caller_with_no_header_is_still_anonymous(
@@ -285,20 +277,6 @@ def test_no_auth_configured_with_no_header_is_still_anonymous(
     resp = client.get("/anything")
     assert resp.status_code == 200
     assert recorded_usage == [("anonymous", "combined")]
-
-
-def test_identity_header_takes_precedence_over_a_simultaneous_oauth_subject(
-    monkeypatch, recorded_usage
-):
-    """If both somehow resolve on one request, the header wins — see
-    design.md Decision 2."""
-    monkeypatch.setenv("JWT_SECRET", SECRET)
-    other_uuid = "22222222-2222-2222-2222-222222222222"
-    downstream = _DummyApp(user=_authenticated_user(subject=other_uuid))
-    client = TestClient(IdentityMiddleware(downstream))
-    resp = client.get("/anything", headers={"X-Bloom-Identity": _token()})
-    assert resp.status_code == 200
-    assert recorded_usage == [(A_UUID, "combined")]
 
 
 @pytest.mark.parametrize(
@@ -450,11 +428,13 @@ def test_identity_middleware_and_bearer_auth_are_independent_live():
     assert out["r2"] == 401, out
 
 
-# ── Live subprocess: a real OAuth-authenticated caller is recorded ──────────
+# ── Live subprocess: a Bloom OAuth token is refused ─────────────────────────
 
-_OAUTH_USAGE_SCRIPT = """
+_OAUTH_REFUSED_SCRIPT = """
 import os
 os.environ["JWT_SECRET"] = "test-jwt-secret"
+os.environ["BLOOMMCP_API_KEY"] = "test-api-key"
+# Leftover OAuth settings must not bring the Bloom login back.
 os.environ["BLOOMMCP_PUBLIC_URL"] = "http://bloommcp.test"
 os.environ["BLOOMMCP_OAUTH_AUTHORIZATION_SERVER"] = "http://auth.test"
 
@@ -472,10 +452,9 @@ usage.record_usage_async = lambda identity, action: recorded.append((identity, a
 
 from bloom_mcp import server
 
-sub = "33333333-3333-3333-3333-333333333333"
 oauth_token = jwt.encode(
     {
-        "sub": sub,
+        "sub": "33333333-3333-3333-3333-333333333333",
         "aud": "authenticated",
         "client_id": str(uuid.uuid4()),
         "exp": int(time.time()) + 3600,
@@ -485,34 +464,31 @@ oauth_token = jwt.encode(
 )
 
 with TestClient(server.build_app()) as client:
-    client.get("/mcp", headers={"Authorization": f"Bearer {oauth_token}"})
+    mcp = client.get("/mcp", headers={"Authorization": f"Bearer {oauth_token}"})
+    discovery = client.get("/.well-known/oauth-protected-resource/mcp")
 
-print(json.dumps({"recorded": recorded, "sub": sub}))
+print(json.dumps({"mcp": mcp.status_code, "discovery": discovery.status_code, "recorded": recorded}))
 """
 
 
-def test_identity_middleware_records_a_real_oauth_callers_subject_live():
-    """End-to-end proof, not a simulation: `bloom_mcp.auth.auth_provider`
-    (and its module-level `PUBLIC_URL`/`AUTHORIZATION_SERVER`) are built once
-    at import time from whatever OAuth env is set then — every other test in
-    this session already imported `bloom_mcp.server` with OAuth unconfigured,
-    so this needs a fresh interpreter, mirroring
-    `test_identity_middleware_and_bearer_auth_are_independent_live` above. No
-    `X-Bloom-Identity` header is sent — only a real Supabase-shaped OAuth
-    bearer token — and the request drives the actual
-    `AuthenticationMiddleware` -> `BearerAuthBackend` -> `SupabaseOAuthVerifier`
-    -> `scope["user"]` -> `IdentityMiddleware` chain for real, through
-    `server.build_app()`."""
+def test_a_bloom_oauth_token_is_refused_live():
+    """bloommcp's own Bloom login is gone: a real Supabase OAuth access token is
+    refused even with the old OAuth settings present, no discovery document is
+    served, and the token's subject is never recorded. Fresh interpreter, since ``auth_provider``
+    is built once at import."""
     import json
     import subprocess
     import sys
 
     result = subprocess.run(
-        [sys.executable, "-c", _OAUTH_USAGE_SCRIPT],
+        [sys.executable, "-c", _OAUTH_REFUSED_SCRIPT],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
 
     out = json.loads(result.stdout.strip().splitlines()[-1])
-    assert out["recorded"] == [[out["sub"], "combined"]], out
+    assert out["mcp"] == 401, out
+    assert out["discovery"] == 404, out
+    # The refused call is not recorded, and the token's subject never is.
+    assert all(identity == "anonymous" for identity, _ in out["recorded"]), out

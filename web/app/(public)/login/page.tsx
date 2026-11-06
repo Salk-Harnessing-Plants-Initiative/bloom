@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { getUser } from "@/lib/supabase/server";
-import { safeNextPath } from "@/lib/oauth-consent";
+import { safeNextPath } from "@/lib/safe-next-path";
 import LoginForm from "./LoginForm";
 import styles from "./login.module.css";
 
@@ -32,7 +32,7 @@ export default async function LoginPage({
   const { next } = await searchParams;
   const user = await getUser();
   if (user) {
-    // Already signed in — honour a pending destination (e.g. OAuth consent).
+    // Already signed in — honour a pending destination.
     redirect(safeNextPath(next) ?? "/app");
   }
 

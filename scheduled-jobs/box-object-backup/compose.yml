@@ -11,7 +11,7 @@ name: bloom-box-object-backup
 services:
   box-object-backup:
     # Pinned by digest, so production runs the image that was reviewed.
-    image: ghcr.io/salk-harnessing-plants-initiative/box-object-backup:sha-5a86d42@sha256:0bf6f3bf71ae816e4e9113bc2c8c32fcb93f41cf22bc9324a3e445e23ff8c167
+    image: ghcr.io/salk-harnessing-plants-initiative/box-object-backup:sha-8a5b7af@sha256:9a483eaca3782c96af23bd3aadf46a0714c9d33be554fabc25b78645b2746c4e
     init: true
     restart: "no"
     read_only: true

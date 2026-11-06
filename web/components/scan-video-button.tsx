@@ -85,7 +85,8 @@ export default function ScanVideoButton({
     status === "waiting" && expectedJob !== null,
     (body) => {
       const { url, job: current } = readPoll(body);
-      if (!current || current.id !== expectedJob) return;
+      // Job rows are never deleted: no job here means it could not be read.
+      if (!current || current.id !== expectedJob) return false;
       setJob(current);
       if (current.status === "failed") {
         setMessage(jobFailureMessage(current, SCAN_FAILURES));
@@ -94,6 +95,7 @@ export default function ScanVideoButton({
         if (url) setVideoUrl(url);
         setStatus("done");
       }
+      return true;
     },
     (why) => {
       setMessage(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);

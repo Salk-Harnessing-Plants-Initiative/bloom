@@ -48,7 +48,7 @@ const FAILED = "Could not queue the video. Try again in a moment.";
 const UNCHECKED = "Could not check whether this plate has a video.";
 const UNPLAYABLE = "The video could not be loaded. Reload the page to try again.";
 
-/** The stored video and the plate's latest job, from one answer.
+/** The stored video and the plate's job, from one answer.
  *
  * Storage decides whether the video exists and the route signs the link, so the
  * row is never trusted for presence and a lookup that failed comes back as
@@ -148,7 +148,8 @@ export function PlateVideo({
     (body) => {
       const next = readStored(body);
       const current = next.job;
-      if (!current || current.id !== expectedJob) return;
+      // Job rows are never deleted: no job here means it could not be read.
+      if (!current || current.id !== expectedJob) return false;
       setJob(current);
       if (current.status === "failed") {
         setFailure(jobFailureMessage(current, PLATE_FAILURES));
@@ -157,6 +158,7 @@ export function PlateVideo({
         show(next);
         setAction("idle");
       }
+      return true;
     },
     (why) => {
       setFailure(why === "signed_out" ? POLL_SIGNED_OUT : POLL_LOST);

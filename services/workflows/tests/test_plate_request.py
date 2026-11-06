@@ -148,6 +148,20 @@ def test_a_queue_failure_is_a_503_naming_no_internals(monkeypatch, queued, caplo
     assert "bloom_workflows" in caplog.text
 
 
+def test_an_experiment_that_does_not_exist_is_a_404(monkeypatch, queued):
+    """The foreign key's answer is permanent, so "try again shortly" would be wrong."""
+    from postgrest import APIError
+
+    def missing(*a):
+        raise APIError({"code": "23503", "message": "violates foreign key constraint"})
+
+    monkeypatch.setattr(pr, "enqueue_job", missing)
+    with pytest.raises(HTTPException) as ei:
+        pr.enqueue(99, {"plate_id": "P7"}, USER)
+    assert ei.value.status_code == 404
+    assert ei.value.detail == "Experiment 99 not found"
+
+
 def test_a_sign_in_failure_is_the_same_503(monkeypatch, queued):
     def no_client(**kwargs):
         raise RuntimeError("auth down")

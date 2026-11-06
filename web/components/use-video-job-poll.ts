@@ -12,11 +12,12 @@ export type PollLost = "signed_out" | "unreachable";
 
 /** Ask `url` every interval while `active`, handing each readable answer on.
  *  One failed ask says nothing about the job, so it is retried; a run of them,
- *  or an expired session, ends the poll through `onLost`. */
+ *  or an expired session, ends the poll through `onLost`. `onAnswer` returns
+ *  false for an answer without the job it waits on, which counts as a failed ask. */
 export function useVideoJobPoll(
   url: string,
   active: boolean,
-  onAnswer: (body: unknown) => void,
+  onAnswer: (body: unknown) => boolean,
   onLost: (why: PollLost) => void
 ) {
   const latest = useRef({ onAnswer, onLost });
@@ -46,8 +47,9 @@ export function useVideoJobPoll(
         if (res.status === 401) return stop("signed_out");
         if (!res.ok) throw new Error(`poll answered ${res.status}`);
         const body = await res.json();
+        if (!live) return;
+        if (!latest.current.onAnswer(body)) throw new Error("no job in the answer");
         failures = 0;
-        if (live) latest.current.onAnswer(body);
       } catch {
         // A blip mid-render is not an answer; a long run of them is.
         failures += 1;

@@ -1,7 +1,7 @@
 // A video job as the browser sees it, and the words for each of its states.
 // Client-safe: no Supabase import, so both buttons and both routes share it.
 
-// The service's stage names (STAGE_* in services/workflows/video_queue.py).
+// The service's stage names (STAGE_* in services/workflows/video_progress.py).
 export const VIDEO_JOB_STAGES = {
   downloading: "downloading",
   encoding: "encoding",

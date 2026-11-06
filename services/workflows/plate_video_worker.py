@@ -207,8 +207,8 @@ def main(argv=None) -> int:
     if action == "refuse":
         code = outcome.get("code")
         # Two of the five refusals are 503s — storage or the database not
-        # answering. Those are this service failing, not the
-        # renderer declining, so both the word and the code have to say retry.
+        # answering. Those are this service failing, not the renderer
+        # declining, so both the word and the code have to say retry.
         exit_code = exit_for_status(REFUSAL_STATUS.get(code, 409))
         print(f"{label_for(exit_code)} ({code}): {outcome.get('reason')}")
         return exit_code

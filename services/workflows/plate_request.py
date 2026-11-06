@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException
+from postgrest import APIError
 
 from plate_video_path import is_valid_plate_id
 from supabase_client import SINGLE_ROW_RPC_TIMEOUT_SECONDS, app_client
@@ -57,6 +58,14 @@ def enqueue(experiment_id: int, body: dict, user_id: str) -> dict:
                 "p_requested_by": user_id,
             },
         )
+    except APIError as exc:
+        # foreign_key_violation: no such experiment, which waiting cannot fix.
+        if exc.code == "23503":
+            raise HTTPException(
+                status_code=404, detail=f"Experiment {experiment_id} not found"
+            ) from exc
+        logger.error("plate video could not be queued: %r", exc)
+        raise HTTPException(status_code=503, detail=NOT_QUEUED) from exc
     except Exception as exc:
         logger.error("plate video could not be queued: %r", exc)
         raise HTTPException(status_code=503, detail=NOT_QUEUED) from exc

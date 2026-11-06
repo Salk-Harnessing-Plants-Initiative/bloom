@@ -7,7 +7,7 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { toVideoJob, type VideoJob } from "@/lib/video-job";
 
-// The columns signed-in roles may read; `error`, `msg_id` and `reads` are not.
+// The columns signed-in roles may read; `error_message`, `msg_id` and `reads` are not.
 const JOB_COLUMNS =
   "id, status, stage, frames_done, frames_total, error_code, created_at, updated_at";
 
