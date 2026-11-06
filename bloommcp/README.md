@@ -19,7 +19,10 @@ Installable `uv` package under `src/bloom_mcp/`:
   contributor/package, one file per tool (see
   `docs/2026-06-29-bloom-mcp-contributor-namespacing.md`). `sections.sleap_roots` wraps
   `sleap-roots-analyze` (PCA, QC, clustering, outlier removal, plotting);
-  `sections.core` holds the cross-cutting discovery tools.
+  `sections.core` holds the cross-cutting discovery tools. `sections.bloom_data` reads any
+  of Bloom's tables as `bloom_agent` (`list_tables`, `query_table`, `count_rows`), limited to
+  the allow-list in `data_access/table_access.py`: emails and internal tables are never
+  returned, rows are capped at 500 a page, and large tables get a labelled estimate.
 - `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
   not tools themselves
 - `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping
