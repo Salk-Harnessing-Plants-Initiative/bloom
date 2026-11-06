@@ -3,17 +3,18 @@
 
 import type { Change } from "@/lib/cyl-pipeline/realtime-reducer";
 import type { Database } from "@/lib/database.types";
+import { waveKey } from "@/app/app/plate-phenotypes/[speciesId]/[experimentId]/plateGrouping";
 
 export const PLATE_JOBS_TABLE = "gravi_plate_video_jobs";
 export const SCAN_JOBS_TABLE = "cyl_video_jobs";
 export const JOB_PAGE_SIZE = 50;
 
-// The worker renews a rendering job at least this often (the queue's
-// visibility timeout); a rendering job quieter than this may be stuck.
+// The queue's visibility timeout (VISIBILITY_TIMEOUT_SECONDS in video_queue.py):
+// a rendering job reports at least this often, so one quieter may be stuck.
 export const RENDERING_QUIET_MS = 5 * 60_000;
-// Longer than a few plates ahead would take; a job still queued after this is
-// waiting longer than usual, most likely on a stopped worker.
-export const QUEUED_LONG_MS = 15 * 60_000;
+// A free worker claims a queued job within seconds; one still unclaimed after
+// this, with nothing of its kind rendering, is waiting on a stopped worker.
+export const UNCLAIMED_LONG_MS = 2 * 60_000;
 
 type PlateRow = Database["public"]["Tables"]["gravi_plate_video_jobs"]["Row"];
 type ScanRow = Database["public"]["Tables"]["cyl_video_jobs"]["Row"];
@@ -33,6 +34,17 @@ export const PLATE_JOB_COLUMNS = `${SHARED_COLUMNS}, plate_id, wave_number`;
 export const SCAN_JOB_COLUMNS = `${SHARED_COLUMNS}, scan_id`;
 
 export const ACTIVE_STATUSES = ["queued", "rendering"] as const;
+const STATUSES: readonly string[] = ["queued", "rendering", "rendered", "kept", "failed"];
+
+/** A queued or rendering job as the queue sees it, whatever the page's filters. */
+export interface ActiveJob {
+  kind: JobKind;
+  id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+export const ACTIVE_JOB_COLUMNS = "id, status, created_at, updated_at";
 
 export interface JobList {
   /** Newest first. */
@@ -85,26 +97,43 @@ function kindOf(table: string): JobKind | null {
   return null;
 }
 
-/** A Realtime change as a job, keeping only the columns the page reads. */
+const str = (v: unknown) => (typeof v === "string" ? v : null);
+const num = (v: unknown) => (typeof v === "number" ? v : null);
+
+/** A Realtime row as a job, keeping only the columns the page reads; null if it is not one. */
 function jobFromChange(kind: JobKind, row: Record<string, unknown>): ListedJob | null {
-  if (typeof row.id !== "string" || typeof row.created_at !== "string") return null;
+  const id = str(row.id);
+  const status = str(row.status);
+  const created_at = str(row.created_at);
+  const updated_at = str(row.updated_at);
+  const experiment_id = num(row.experiment_id);
+  if (!id || !status || !STATUSES.includes(status) || !created_at || !updated_at) return null;
+  if (experiment_id === null) return null;
   const shared = {
-    id: row.id,
-    experiment_id: row.experiment_id as number,
-    status: row.status as string,
-    stage: (row.stage as string | null) ?? null,
-    frames_done: (row.frames_done as number | null) ?? null,
-    frames_total: (row.frames_total as number | null) ?? null,
-    error_code: (row.error_code as string | null) ?? null,
-    requested_by: (row.requested_by as string | null) ?? null,
-    created_at: row.created_at,
-    started_at: (row.started_at as string | null) ?? null,
-    updated_at: row.updated_at as string,
-    completed_at: (row.completed_at as string | null) ?? null,
+    id,
+    experiment_id,
+    status,
+    stage: str(row.stage),
+    frames_done: num(row.frames_done),
+    frames_total: num(row.frames_total),
+    error_code: str(row.error_code),
+    requested_by: str(row.requested_by),
+    created_at,
+    started_at: str(row.started_at),
+    updated_at,
+    completed_at: str(row.completed_at),
   };
-  return kind === "plate"
-    ? { ...shared, kind, plate_id: row.plate_id as string, wave_number: (row.wave_number as number | null) ?? null }
-    : { ...shared, kind, scan_id: row.scan_id as number };
+  if (kind === "plate") {
+    const plate_id = str(row.plate_id);
+    return plate_id === null ? null : { ...shared, kind, plate_id, wave_number: num(row.wave_number) };
+  }
+  const scan_id = num(row.scan_id);
+  return scan_id === null ? null : { ...shared, kind, scan_id };
+}
+
+/** Which table a change came from, as a job kind. */
+export function changeKind(change: Change<unknown>): JobKind | null {
+  return kindOf(change.table);
 }
 
 /**
@@ -133,25 +162,47 @@ export function applyJobChange(
   return { ...list, rows: [...list.rows, job].sort(compareJobsDesc) };
 }
 
-/** Queued jobs of the same kind created before this one: its place in its worker's line. */
-export function queuedAhead(rows: ListedJob[], job: ListedJob): number | null {
+/** The active set after a change: a queued or rendering job is held, any other dropped. */
+export function applyActiveChange(active: ActiveJob[], change: Change<unknown>): ActiveJob[] {
+  const kind = kindOf(change.table);
+  if (kind === null || (change.eventType !== "INSERT" && change.eventType !== "UPDATE")) return active;
+  const incoming = change.new as Record<string, unknown>;
+  const id = str(incoming.id);
+  if (!id) return active;
+  const held = active.find((a) => a.kind === kind && a.id === id);
+  const others = active.filter((a) => a !== held);
+  const status = str(incoming.status) ?? held?.status ?? null;
+  if (status === null || !(ACTIVE_STATUSES as readonly string[]).includes(status)) return others;
+  const created_at = str(incoming.created_at) ?? held?.created_at;
+  const updated_at = str(incoming.updated_at) ?? held?.updated_at ?? created_at;
+  if (!created_at || !updated_at) return others;
+  return [...others, { kind, id, status, created_at, updated_at }];
+}
+
+const earlier = (a: Pick<ActiveJob, "created_at" | "id">, b: Pick<ActiveJob, "created_at" | "id">) =>
+  a.created_at < b.created_at || (a.created_at === b.created_at && a.id < b.id);
+
+/** Queued jobs of the same kind asked for before this one: its place in its worker's line. */
+export function queuedAhead(active: ActiveJob[], job: ListedJob): number | null {
   if (job.status !== "queued") return null;
-  return rows.filter(
-    (r) => r.kind === job.kind && r.status === "queued" && compareJobsDesc(r, job) > 0
-  ).length;
+  return active.filter((a) => a.kind === job.kind && a.status === "queued" && earlier(a, job)).length;
 }
 
 /** Why an active job looks slow, or null. */
-export function overdue(job: ListedJob, now: number): "quiet" | "waiting" | null {
-  if (job.status === "rendering" && now - Date.parse(job.updated_at) > RENDERING_QUIET_MS) return "quiet";
-  if (job.status === "queued" && now - Date.parse(job.created_at) > QUEUED_LONG_MS) return "waiting";
-  return null;
+export function overdue(job: ListedJob, now: number, active: ActiveJob[]): "quiet" | "waiting" | null {
+  if (job.status === "rendering") {
+    return now - Date.parse(job.updated_at) > RENDERING_QUIET_MS ? "quiet" : null;
+  }
+  if (job.status !== "queued" || now - Date.parse(job.created_at) <= UNCLAIMED_LONG_MS) return null;
+  // Behind a render that is moving, a wait is just the line.
+  const moving = active.some(
+    (a) => a.kind === job.kind && a.status === "rendering" && now - Date.parse(a.updated_at) <= RENDERING_QUIET_MS
+  );
+  return moving ? null : "waiting";
 }
 
-/** The plate page's wave segment: the number, or "none" for a plate with no wave. */
-export function waveKey(waveNumber: number | null): string {
-  return waveNumber === null ? "none" : String(waveNumber);
-}
+// The plate page's own wave segment, so a link built here always lands on it.
+export { waveKey };
 
 // What the links back need beyond the job row.
 export interface PlatePlace {

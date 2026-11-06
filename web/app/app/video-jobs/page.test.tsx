@@ -62,9 +62,27 @@ describe("the Video Jobs page", () => {
     expect(screen.getByTestId(`job-${JOB}`).getAttribute("aria-current")).toBe("true");
   });
 
-  it("ignores a job reference that is not one", async () => {
+  it("finds the job named in the address when it is not on the first page", async () => {
+    const OLD = "22222222-0000-0000-0000-000000000000";
+    supabaseMock.respond = (q) => {
+      const byId = q.all("eq").find(([col]) => col === "id");
+      if (q.table === "gravi_plate_video_jobs")
+        return { data: byId ? [{ ...PLATE_JOB, id: OLD, created_at: "2026-10-01T10:00:00+00:00" }] : [PLATE_JOB], error: null };
+      if (q.table === "gravi_experiments") return { data: [{ id: 12, name: "Grav-12", species_id: 2 }], error: null };
+      return { data: [], error: null };
+    };
+    render(await VideoJobsPage({ searchParams: Promise.resolve({ job: OLD }) }));
+    const banner = screen.getByRole("status", { name: "Your video job" });
+    expect(banner.textContent).toContain("This is the video you asked for");
+    expect(screen.getByTestId(`job-${OLD}`).getAttribute("aria-current")).toBe("true");
+  });
+
+  it("ignores a job reference that is not one, and never looks it up", async () => {
     render(await VideoJobsPage({ searchParams: Promise.resolve({ job: "<script>" }) }));
     expect(screen.getByTestId(`job-${JOB}`).getAttribute("aria-current")).toBeNull();
+    expect(screen.queryByRole("status", { name: "Your video job" })).toBeNull();
+    const byId = queriesFor("gravi_plate_video_jobs").filter((q) => q.all("eq").some(([col]) => col === "id"));
+    expect(byId).toHaveLength(0);
   });
 
   it("says when the jobs could not be read", async () => {

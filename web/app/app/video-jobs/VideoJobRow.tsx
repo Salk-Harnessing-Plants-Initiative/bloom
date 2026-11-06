@@ -15,12 +15,22 @@ import {
   type VideoJob,
   type VideoJobStatus,
 } from "@/lib/video-job";
-import { overdue, type ListedJob, type PlatePlace, type ScanPlace } from "@/lib/video-jobs/list";
+import { videoResultSummary } from "@/components/scan-video.helpers";
+import {
+  overdue,
+  type ActiveJob,
+  type ListedJob,
+  type PlatePlace,
+  type ScanPlace,
+} from "@/lib/video-jobs/list";
 
-const DONE: Record<string, string> = {
-  rendered: "Video ready",
-  kept: "Already up to date — the stored video was kept",
-};
+/** What a finished job left behind, in the words its own button uses. */
+function doneNote(job: ListedJob, video: VideoJob): string | null {
+  if (job.status !== "rendered" && job.status !== "kept") return null;
+  if (job.kind === "scan") return videoResultSummary(video);
+  // A kept plate is current, or has frames the service cannot see; either way nothing changed.
+  return job.status === "rendered" ? "Video ready." : "Nothing new to add — the stored video was kept.";
+}
 
 function asVideoJob(job: ListedJob, ahead: number | null): VideoJob {
   return {
@@ -62,6 +72,7 @@ export function VideoJobRow({
   currentUserId,
   now,
   highlighted,
+  active,
 }: {
   job: ListedJob;
   ahead: number | null;
@@ -71,11 +82,14 @@ export function VideoJobRow({
   currentUserId: string | null;
   now: number | null;
   highlighted: boolean;
+  /** Every queued or rendering job, for telling a long line from a stopped worker. */
+  active: ActiveJob[];
 }) {
   const video = asVideoJob(job, ahead);
   const { label, title, experiment } = what(job, plate, scan);
   const counted = countedFrames(video);
-  const slow = now === null ? null : overdue(job, now);
+  const slow = now === null ? null : overdue(job, now, active);
+  const done = doneNote(job, video);
 
   return (
     <tr
@@ -130,9 +144,9 @@ export function VideoJobRow({
             {jobFailureMessage(video, job.kind === "plate" ? PLATE_FAILURES : SCAN_FAILURES)}
           </div>
         )}
-        {DONE[job.status] && (
+        {done && (
           <div>
-            {DONE[job.status]}
+            {done}
             {href && (
               <>
                 {" — "}
@@ -143,13 +157,15 @@ export function VideoJobRow({
             )}
           </div>
         )}
-        {slow === "quiet" && (
+        {slow === "quiet" && now !== null && (
           <div className="text-xs text-amber-700">
-            No update for {formatElapsed(job.updated_at, now!)} — the render may be stuck.
+            No update for {formatElapsed(job.updated_at, now)} — the render may be stuck.
           </div>
         )}
         {slow === "waiting" && (
-          <div className="text-xs text-amber-700">Waiting longer than usual.</div>
+          <div className="text-xs text-amber-700">
+            No worker has picked this up yet — the video worker may be stopped.
+          </div>
         )}
       </td>
     </tr>

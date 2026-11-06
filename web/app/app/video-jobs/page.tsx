@@ -1,21 +1,18 @@
 import { createServerSupabaseClient, getUser } from "@/lib/supabase/server";
+import { parseJobId } from "@/lib/supabase/video-jobs";
 import { loadJobsSnapshot } from "./load-jobs";
 import { VideoJobsLive } from "./VideoJobsLive";
 
-const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+type SearchParams = { job?: string | string[] };
 
-export default async function VideoJobsPage({
-  searchParams,
-}: {
-  searchParams?: Promise<{ job?: string | string[] }>;
-}) {
+export default async function VideoJobsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   const [client, user, params] = await Promise.all([
     createServerSupabaseClient(),
     getUser(),
-    searchParams ?? Promise.resolve({} as { job?: string | string[] }),
+    searchParams ?? Promise.resolve<SearchParams>({}),
   ]);
-  const { jobs, hasOlder, places, error } = await loadJobsSnapshot(client);
-  const asked = typeof params.job === "string" ? params.job : null;
+  const highlightJobId = parseJobId(typeof params.job === "string" ? params.job : null);
+  const { jobs, hasOlder, places, active, highlighted, error } = await loadJobsSnapshot(client, highlightJobId);
 
   return (
     <div>
@@ -28,9 +25,11 @@ export default async function VideoJobsPage({
         initialJobs={jobs}
         initialHasOlder={hasOlder}
         initialPlaces={places}
+        initialActive={active}
         currentUserId={user?.id ?? null}
         initialError={error}
-        highlightJobId={asked !== null && JOB_ID.test(asked) ? asked : null}
+        highlightJobId={highlightJobId}
+        highlightedJob={highlighted}
       />
     </div>
   );

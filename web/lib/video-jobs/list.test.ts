@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   JOB_PAGE_SIZE,
   PLATE_JOBS_TABLE,
-  QUEUED_LONG_MS,
   RENDERING_QUIET_MS,
   SCAN_JOBS_TABLE,
+  UNCLAIMED_LONG_MS,
   appendOlder,
+  applyActiveChange,
   applyJobChange,
   jobHref,
   listFromSnapshot,
@@ -15,6 +16,7 @@ import {
   overdue,
   queuedAhead,
   waveKey,
+  type ActiveJob,
   type ListedJob,
   type PlateJob,
   type ScanJob,
@@ -83,6 +85,18 @@ describe("one list for both kinds", () => {
     expect(merged.hasOlder).toBe(true);
   });
 
+  it("says more are older when one table alone filled its page", () => {
+    const plates = Array.from({ length: JOB_PAGE_SIZE }, (_, i) => plate(`p${i}`, i % 60));
+    expect(mergePages(plates, []).hasOlder).toBe(true);
+  });
+
+  it("says nothing is older when the two together fill exactly one page", () => {
+    const half = JOB_PAGE_SIZE / 2;
+    const plates = Array.from({ length: half }, (_, i) => plate(`p${i}`, i));
+    const scans = Array.from({ length: half }, (_, i) => scan(`s${i}`, i));
+    expect(mergePages(plates, scans).hasOlder).toBe(false);
+  });
+
   it("says nothing is older when both tables returned less than a page", () => {
     expect(mergePages([plate("p1", 1)], [scan("s1", 2)]).hasOlder).toBe(false);
   });
@@ -129,6 +143,23 @@ describe("live changes", () => {
     expect(next.rows.map((r) => r.id)).toEqual(["old"]);
   });
 
+  it("leaves out a new job older than the loaded range, for load older to bring", () => {
+    const list = listFromSnapshot([plate("p5", 5), plate("p4", 4)], true);
+    const next = applyJobChange(list, change(PLATE_JOBS_TABLE, "INSERT", plate("p1", 1)));
+    expect(next).toBe(list);
+  });
+
+  it.each([
+    ["an unknown status", { status: "paused" }],
+    ["no experiment", { experiment_id: null }],
+    ["no plate id", { plate_id: null }],
+    ["no updated_at", { updated_at: undefined }],
+  ])("drops a payload with %s rather than show a blank or broken row", (_what, bad) => {
+    const list = listFromSnapshot([], false);
+    const next = applyJobChange(list, change(PLATE_JOBS_TABLE, "INSERT", { ...plate("j1", 1), ...bad }));
+    expect(next.rows).toEqual([]);
+  });
+
   it("ignores another table's changes", () => {
     const list = listFromSnapshot([plate("j1", 1)], false);
     expect(applyJobChange(list, change("cyl_pipeline_runs", "INSERT", { id: 5 }))).toBe(list);
@@ -144,42 +175,69 @@ describe("live changes", () => {
   });
 });
 
+const active = (kind: "plate" | "scan", id: string, minute: number, status = "queued", updatedMinute = minute): ActiveJob => ({
+  kind,
+  id,
+  status,
+  created_at: at(minute),
+  updated_at: at(updatedMinute),
+});
+
 describe("queue place", () => {
-  it("counts the queued jobs of the same kind asked for earlier", () => {
-    const rows: ListedJob[] = [
-      plate("p3", 3),
-      scan("s2", 2),
-      plate("p2", 2, { status: "rendering" }),
-      plate("p1", 1),
-      plate("p0", 0),
-    ];
-    expect(queuedAhead(rows, rows[0])).toBe(2);
-    expect(queuedAhead(rows, rows[1])).toBe(0);
+  it("counts the queued jobs of the same kind asked for earlier, loaded or not", () => {
+    const line = [active("plate", "p0", 0), active("plate", "p1", 1), active("plate", "p2", 2, "rendering"), active("scan", "s2", 2)];
+    expect(queuedAhead(line, plate("p3", 3))).toBe(2);
+    expect(queuedAhead(line, plate("p1", 1))).toBe(1);
+    expect(queuedAhead(line, scan("s3", 3))).toBe(1);
   });
 
   it("has no place once the job is rendering", () => {
-    const job = plate("p1", 1, { status: "rendering" });
-    expect(queuedAhead([job], job)).toBeNull();
+    expect(queuedAhead([], plate("p1", 1, { status: "rendering" }))).toBeNull();
+  });
+
+  it("follows the line as jobs are claimed and finished", () => {
+    let line: ActiveJob[] = [];
+    line = applyActiveChange(line, change(PLATE_JOBS_TABLE, "INSERT", plate("p1", 1)));
+    line = applyActiveChange(line, change(PLATE_JOBS_TABLE, "INSERT", plate("p2", 2)));
+    expect(queuedAhead(line, plate("p2", 2))).toBe(1);
+    line = applyActiveChange(line, change(PLATE_JOBS_TABLE, "UPDATE", { id: "p1", status: "rendering" }));
+    expect(queuedAhead(line, plate("p2", 2))).toBe(0);
+    line = applyActiveChange(line, change(PLATE_JOBS_TABLE, "UPDATE", { id: "p1", status: "rendered" }));
+    expect(line.map((a) => a.id)).toEqual(["p2"]);
   });
 });
 
 describe("slow jobs", () => {
   const now = Date.parse(at(30));
+  const ago = (ms: number) => new Date(now - ms).toISOString();
 
   it("flags a rendering job that has not reported for longer than the worker renews it", () => {
-    const quiet = plate("p", 0, { status: "rendering", updated_at: new Date(now - RENDERING_QUIET_MS - 1).toISOString() });
-    const fresh = plate("p", 0, { status: "rendering", updated_at: new Date(now - 1000).toISOString() });
-    expect(overdue(quiet, now)).toBe("quiet");
-    expect(overdue(fresh, now)).toBeNull();
+    expect(overdue(plate("p", 0, { status: "rendering", updated_at: ago(RENDERING_QUIET_MS + 1) }), now, [])).toBe("quiet");
+    expect(overdue(plate("p", 0, { status: "rendering", updated_at: ago(RENDERING_QUIET_MS) }), now, [])).toBeNull();
   });
 
-  it("flags a job that has waited in the queue longer than usual", () => {
-    const long = scan("s", 0, { created_at: new Date(now - QUEUED_LONG_MS - 1).toISOString() });
-    expect(overdue(long, now)).toBe("waiting");
+  it("flags a job no worker has claimed when nothing of its kind is rendering", () => {
+    const waiting = scan("s", 0, { created_at: ago(UNCLAIMED_LONG_MS + 1) });
+    expect(overdue(waiting, now, [])).toBe("waiting");
+    expect(overdue(scan("s", 0, { created_at: ago(UNCLAIMED_LONG_MS) }), now, [])).toBeNull();
+  });
+
+  it("does not flag a job waiting its turn behind a render that is moving", () => {
+    const waiting = plate("p", 0, { created_at: ago(UNCLAIMED_LONG_MS * 10) });
+    const busy: ActiveJob = { kind: "plate", id: "r", status: "rendering", created_at: ago(UNCLAIMED_LONG_MS * 11), updated_at: ago(1000) };
+    expect(overdue(waiting, now, [busy])).toBeNull();
+    // A scan rendering says nothing about the plate worker.
+    expect(overdue(waiting, now, [{ ...busy, kind: "scan" }])).toBe("waiting");
+  });
+
+  it("flags the wait again when the render ahead has gone quiet", () => {
+    const waiting = plate("p", 0, { created_at: ago(UNCLAIMED_LONG_MS * 10) });
+    const stuck: ActiveJob = { kind: "plate", id: "r", status: "rendering", created_at: ago(UNCLAIMED_LONG_MS * 11), updated_at: ago(RENDERING_QUIET_MS + 1) };
+    expect(overdue(waiting, now, [stuck])).toBe("waiting");
   });
 
   it("never flags a finished job", () => {
-    expect(overdue(plate("p", 0, { status: "rendered" }), now)).toBeNull();
+    expect(overdue(plate("p", 0, { status: "rendered" }), now, [])).toBeNull();
   });
 });
 
@@ -213,5 +271,11 @@ describe("the page each video plays on", () => {
   it("has no link until the lookup has every part", () => {
     expect(jobHref(scan("s", 0, { scan_id: 99 }), plates, scans)).toBeNull();
     expect(jobHref(plate("p", 0, { experiment_id: 99 }), plates, scans)).toBeNull();
+    const partial = new Map([[44, { ...scans.get(44)!, wave_id: null }]]);
+    expect(jobHref(scan("s", 0), plates, partial)).toBeNull();
+    const noAccession = new Map([[44, { ...scans.get(44)!, accession_id: null }]]);
+    expect(jobHref(scan("s", 0), plates, noAccession)).toBeNull();
+    const hidden = new Map([[12, { experiment_id: 12, name: null, species_id: null }]]);
+    expect(jobHref(plate("p", 0), hidden, scans)).toBeNull();
   });
 });

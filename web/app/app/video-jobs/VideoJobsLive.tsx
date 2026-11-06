@@ -5,12 +5,18 @@
  * Realtime from both job tables. The server renders the first page; the first
  * SUBSCRIBED refetches it to close the gap before the subscription.
  *
- * Each row links to the page its video plays on. The ids that address needs
- * are looked up once per job, the way the runs list looks up experiment names.
+ * Queue position and the "stopped worker" warning come from every queued or
+ * rendering job, read and kept apart from the list, so a filter or the page
+ * size cannot hide a job that is ahead in the line.
+ *
+ * Each row links to the page its video plays on. The ids that address needs are
+ * looked up once per experiment or scan, and again after a lookup that failed.
  */
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { LiveIndicator } from "@/components/recent-phenotypes-by-cyl-scanner/LiveIndicator";
+import type { Change } from "@/lib/cyl-pipeline/realtime-reducer";
 import { useLiveSync } from "@/lib/cyl-pipeline/use-live-sync";
 import { useNow } from "@/lib/cyl-pipeline/use-now";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
@@ -18,19 +24,22 @@ import {
   PLATE_JOBS_TABLE,
   SCAN_JOBS_TABLE,
   appendOlder,
+  applyActiveChange,
   applyJobChange,
+  changeKind,
   isActive,
   jobHref,
   jobKey,
   listFromSnapshot,
   queuedAhead,
+  type ActiveJob,
   type JobKind,
   type JobList,
   type ListedJob,
   type PlatePlace,
   type ScanPlace,
 } from "@/lib/video-jobs/list";
-import { fetchJobPlaces, fetchJobs, type JobFilters } from "@/lib/video-jobs/queries";
+import { fetchActiveJobs, fetchJobPlaces, fetchJobs, type JobFilters } from "@/lib/video-jobs/queries";
 import { VideoJobRow } from "./VideoJobRow";
 
 export interface Places {
@@ -42,41 +51,62 @@ export interface VideoJobsLiveProps {
   initialJobs: ListedJob[];
   initialHasOlder: boolean;
   initialPlaces: Places;
+  /** Every queued or rendering job, unfiltered. */
+  initialActive: ActiveJob[];
   currentUserId: string | null;
   initialError: string | null;
-  /** The job the visitor came to follow, from `?job=`. */
+  /** The job the visitor came to follow, from `?job=`, and that job if it was found. */
   highlightJobId: string | null;
+  highlightedJob: ListedJob | null;
 }
 
 type Kind = JobKind | "all";
+type Filters = { mineOnly: boolean; kind: Kind; activeOnly: boolean };
+
+const placeKey = (job: ListedJob) => (job.kind === "plate" ? `plate:${job.experiment_id}` : `scan:${job.scan_id}`);
 
 function placesInto(places: Places, plates: Map<number, PlatePlace>, scans: Map<number, ScanPlace>) {
   for (const p of places.plates) plates.set(p.experiment_id, p);
   for (const s of places.scans) scans.set(s.scan_id, s);
 }
 
+function emptyText(f: Filters): string {
+  if (f.mineOnly && !f.activeOnly && f.kind === "all") return "You haven't asked for any videos";
+  const what = f.kind === "plate" ? "plate time-lapses" : f.kind === "scan" ? "cylinder scan videos" : "videos";
+  if (f.activeOnly) return `No ${what} queued or rendering right now`;
+  return f.mineOnly ? `You haven't asked for any ${what}` : f.kind === "all" ? "No video jobs yet" : `No ${what} yet`;
+}
+
 export function VideoJobsLive({
   initialJobs,
   initialHasOlder,
   initialPlaces,
+  initialActive,
   currentUserId,
   initialError,
   highlightJobId,
+  highlightedJob,
 }: VideoJobsLiveProps) {
   const now = useNow();
-  const [mineOnly, setMineOnly] = useState(false);
-  const [kind, setKind] = useState<Kind>("all");
-  const [activeOnly, setActiveOnly] = useState(false);
+  const [filters, setFilters] = useState<Filters>({ mineOnly: false, kind: "all", activeOnly: false });
   // Read by the snapshot and the event filter, which outlive a render.
-  const filters = useRef({ mineOnly: false, kind: "all" as Kind, activeOnly: false });
+  const held = useRef(filters);
+  const [active, setActive] = useState(initialActive);
+  const [pinned, setPinned] = useState(highlightedJob);
   const [places, setPlaces] = useState(() => {
     const plates = new Map<number, PlatePlace>();
     const scans = new Map<number, ScanPlace>();
     placesInto(initialPlaces, plates, scans);
     return { plates, scans };
   });
-  // Jobs whose place was read, or is being read; each is looked up at most once.
-  const looked = useRef(new Set(initialJobs.map(jobKey)));
+  // Places already read, by experiment or scan; and those being read now.
+  const looked = useRef(
+    new Set([
+      ...initialPlaces.plates.map((p) => `plate:${p.experiment_id}`),
+      ...initialPlaces.scans.map((s) => `scan:${s.scan_id}`),
+    ])
+  );
+  const reading = useRef(new Set<string>());
   const [serverError, setServerError] = useState(initialError);
   const [older, setOlder] = useState<{ loading: boolean; error: string | null }>({
     loading: false,
@@ -84,24 +114,31 @@ export function VideoJobsLive({
   });
 
   const query = (): JobFilters => ({
-    requestedBy: filters.current.mineOnly ? currentUserId : null,
-    kind: filters.current.kind === "all" ? null : filters.current.kind,
-    activeOnly: filters.current.activeOnly,
+    requestedBy: held.current.mineOnly ? currentUserId : null,
+    kind: held.current.kind === "all" ? null : held.current.kind,
+    activeOnly: held.current.activeOnly,
   });
 
   const accept = (job: ListedJob) => {
-    const f = filters.current;
+    const f = held.current;
     if (f.mineOnly && (currentUserId === null || job.requested_by !== currentUserId)) return false;
     if (f.kind !== "all" && job.kind !== f.kind) return false;
     return !f.activeOnly || isActive(job);
   };
 
   const loadPlaces = async (jobs: ListedJob[]) => {
-    const fresh = jobs.filter((j) => !looked.current.has(jobKey(j)));
-    if (fresh.length === 0) return;
-    fresh.forEach((j) => looked.current.add(jobKey(j)));
+    const fresh = new Map<string, ListedJob>();
+    for (const j of jobs) {
+      const key = placeKey(j);
+      if (!looked.current.has(key) && !reading.current.has(key)) fresh.set(key, j);
+    }
+    if (fresh.size === 0) return;
+    const keys = [...fresh.keys()];
+    keys.forEach((k) => reading.current.add(k));
     try {
-      const found = await fetchJobPlaces(createClientSupabaseClient(), fresh);
+      const found = await fetchJobPlaces(createClientSupabaseClient(), [...fresh.values()]);
+      // Read, even where nothing came back: an experiment the caller cannot see stays unlinked.
+      keys.forEach((k) => looked.current.add(k));
       setPlaces((prev) => {
         const plates = new Map(prev.plates);
         const scans = new Map(prev.scans);
@@ -109,7 +146,9 @@ export function VideoJobsLive({
         return { plates, scans };
       });
     } catch {
-      // A job without its place still shows its state; only the link waits.
+      // Only the links wait; the next snapshot or event asks again.
+    } finally {
+      keys.forEach((k) => reading.current.delete(k));
     }
   };
 
@@ -123,13 +162,25 @@ export function VideoJobsLive({
     ],
     initial: listFromSnapshot(initialJobs, initialHasOlder),
     snapshot: async () => {
-      const { rows, hasOlder } = await fetchJobs(createClientSupabaseClient(), query());
-      await loadPlaces(rows);
+      const client = createClientSupabaseClient();
+      const [{ rows, hasOlder }, queue] = await Promise.all([fetchJobs(client, query()), fetchActiveJobs(client)]);
+      setActive(queue);
       return listFromSnapshot(rows, hasOlder);
     },
     apply: (list, change) => applyJobChange(list, change, accept),
-    onEvent: (_change, list) => void loadPlaces(list.rows),
-    onSnapshot: () => setServerError(null),
+    onEvent: (change, list) => {
+      // Every event, filtered out of the list or not, moves the line.
+      setActive((queue) => applyActiveChange(queue, change));
+      setPinned((job) => (job ? (applyJobChange(listFromSnapshot([job], false), change).rows[0] ?? job) : job));
+      const kind = changeKind(change);
+      const id = (change as Change<{ id: string }>).new.id;
+      const job = list.rows.find((r) => r.kind === kind && r.id === id);
+      if (job) void loadPlaces([job]);
+    },
+    onSnapshot: (list) => {
+      setServerError(null);
+      void loadPlaces(list.rows);
+    },
   });
 
   const loadOlder = async () => {
@@ -142,19 +193,19 @@ export function VideoJobsLive({
         ...query(),
         before: cursor,
       });
-      await loadPlaces(rows);
-      if (live.generation() === started) live.update((list) => appendOlder(list, rows, hasOlder));
+      if (live.generation() === started) {
+        live.update((list) => appendOlder(list, rows, hasOlder));
+        void loadPlaces(rows);
+      }
       setOlder({ loading: false, error: null });
     } catch (e) {
       setOlder({ loading: false, error: e instanceof Error ? e.message : String(e) });
     }
   };
 
-  const setFilter = (change: Partial<typeof filters.current>) => {
-    filters.current = { ...filters.current, ...change };
-    setMineOnly(filters.current.mineOnly);
-    setKind(filters.current.kind);
-    setActiveOnly(filters.current.activeOnly);
+  const setFilter = (change: Partial<Filters>) => {
+    held.current = { ...held.current, ...change };
+    setFilters(held.current);
     live.refresh();
   };
 
@@ -170,15 +221,65 @@ export function VideoJobsLive({
   const error = live.error ?? serverError;
   // A filter change hides what it rules out at once, not only when its snapshot lands.
   const rows = live.view.rows.filter(accept);
+  const row = (job: ListedJob, highlighted: boolean) => (
+    <VideoJobRow
+      key={jobKey(job)}
+      job={job}
+      ahead={queuedAhead(active, job)}
+      href={jobHref(job, places.plates, places.scans)}
+      plate={job.kind === "plate" ? places.plates.get(job.experiment_id) : undefined}
+      scan={job.kind === "scan" ? places.scans.get(job.scan_id) : undefined}
+      currentUserId={currentUserId}
+      now={now}
+      highlighted={highlighted}
+      active={active}
+    />
+  );
+  const pinnedHref = pinned ? jobHref(pinned, places.plates, places.scans) : null;
 
   return (
     <div>
+      {highlightJobId && (
+        <div
+          role="status"
+          aria-label="Your video job"
+          className="mb-4 rounded-md border border-lime-200 bg-lime-50 p-3 text-sm text-stone-700"
+        >
+          {pinned ? (
+            <>
+              <p>
+                {pinned.requested_by !== null && pinned.requested_by !== currentUserId
+                  ? "Your request joined one already in the queue, highlighted below."
+                  : "This is the video you asked for, highlighted below."}{" "}
+                It carries on if you leave this page.
+                {pinnedHref && (
+                  <>
+                    {" "}
+                    <Link href={pinnedHref} className="text-lime-700 underline hover:no-underline">
+                      Back to its page
+                    </Link>
+                    , where it plays once it is ready.
+                  </>
+                )}
+              </p>
+              {!highlightedHere && (
+                <table className="mt-2 w-full text-sm">
+                  <tbody>{row(pinned, true)}</tbody>
+                </table>
+              )}
+            </>
+          ) : (
+            <p>That video job could not be found.</p>
+          )}
+        </div>
+      )}
+
       <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-4 text-sm text-stone-700">
           <label className="inline-flex items-center gap-2">
             <input
               type="checkbox"
-              checked={mineOnly}
+              checked={filters.mineOnly}
               onChange={(e) => setFilter({ mineOnly: e.target.checked })}
             />
             Only mine
@@ -186,7 +287,7 @@ export function VideoJobsLive({
           <label className="inline-flex items-center gap-2">
             <input
               type="checkbox"
-              checked={activeOnly}
+              checked={filters.activeOnly}
               onChange={(e) => setFilter({ activeOnly: e.target.checked })}
             />
             Only queued or rendering
@@ -194,7 +295,7 @@ export function VideoJobsLive({
           <label className="inline-flex items-center gap-2">
             Show
             <select
-              value={kind}
+              value={filters.kind}
               onChange={(e) => setFilter({ kind: e.target.value as Kind })}
               className="rounded-md border border-stone-300 px-2 py-1"
             >
@@ -217,11 +318,7 @@ export function VideoJobsLive({
       )}
 
       {rows.length === 0 ? (
-        !error && (
-          <p className="text-sm text-stone-500">
-            {mineOnly ? "You haven't asked for any videos" : "No video jobs yet"}
-          </p>
-        )
+        !error && <p className="text-sm text-stone-500">{emptyText(filters)}</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -238,21 +335,7 @@ export function VideoJobsLive({
                 </th>
               </tr>
             </thead>
-            <tbody>
-              {rows.map((job) => (
-                <VideoJobRow
-                  key={jobKey(job)}
-                  job={job}
-                  ahead={queuedAhead(live.view.rows, job)}
-                  href={jobHref(job, places.plates, places.scans)}
-                  plate={job.kind === "plate" ? places.plates.get(job.experiment_id) : undefined}
-                  scan={job.kind === "scan" ? places.scans.get(job.scan_id) : undefined}
-                  currentUserId={currentUserId}
-                  now={now}
-                  highlighted={job.id === highlightJobId}
-                />
-              ))}
-            </tbody>
+            <tbody>{rows.map((job) => row(job, job.id === highlightJobId))}</tbody>
           </table>
         </div>
       )}
