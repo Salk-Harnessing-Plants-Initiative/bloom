@@ -140,7 +140,6 @@ export async function POST(
     );
   }
 
-
   let upstream: Response;
   try {
     upstream = await fetch(

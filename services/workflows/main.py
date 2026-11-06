@@ -119,8 +119,14 @@ def health():
     return {"status": "ok"}
 
 
-# The database's own error names the role and PostgREST's codes, so callers get this.
-VIDEO_NOT_QUEUED = "The video could not be queued right now. Try again shortly."
+# A logged request field: repr'd so a newline cannot forge a line, and cut short so a
+# huge body cannot flood the log.
+LOGGED_FIELD_CHARS = 80
+
+
+def _clip(value) -> str:
+    text = repr(value)
+    return text if len(text) <= LOGGED_FIELD_CHARS else text[:LOGGED_FIELD_CHARS] + "…"
 
 
 @app.post("/cyl/experiments/{experiment_id}/scans/{scan_id}/video", status_code=202)
@@ -139,7 +145,7 @@ def cyl_experiment_scan_video(
         belongs = scan_in_experiment(client, experiment_id, scan_id)
     except Exception as exc:
         logger.error("scan video for scan %s could not be checked: %r", scan_id, exc)
-        raise HTTPException(status_code=503, detail=VIDEO_NOT_QUEUED) from exc
+        raise HTTPException(status_code=503, detail=plate_request.NOT_QUEUED) from exc
     if not belongs:
         raise HTTPException(
             status_code=404,
@@ -170,10 +176,10 @@ def cyl_experiment_scan_video(
                 detail=f"Scan {scan_id} is already being rendered under another experiment",
             ) from exc
         logger.error("scan video for scan %s could not be queued: %r", scan_id, exc)
-        raise HTTPException(status_code=503, detail=VIDEO_NOT_QUEUED) from exc
+        raise HTTPException(status_code=503, detail=plate_request.NOT_QUEUED) from exc
     except Exception as exc:
         logger.error("scan video for scan %s could not be queued: %r", scan_id, exc)
-        raise HTTPException(status_code=503, detail=VIDEO_NOT_QUEUED) from exc
+        raise HTTPException(status_code=503, detail=plate_request.NOT_QUEUED) from exc
 
     logger.info(
         "scan video for experiment %s scan %s requested by %s: job %s (%s)",
@@ -211,10 +217,10 @@ def gravi_plate_video(
         job = plate_request.enqueue(experiment_id, body, user_id)
     except HTTPException as exc:
         logger.info(
-            "plate video for experiment %s plate %r wave %r requested by %s: %s refused — %r",
+            "plate video for experiment %s plate %s wave %s requested by %s: %s refused — %r",
             experiment_id,
-            asked.get("plate_id"),
-            asked.get("wave_number"),
+            _clip(asked.get("plate_id")),
+            _clip(asked.get("wave_number")),
             user_id,
             exc.status_code,
             exc.detail,
@@ -222,10 +228,10 @@ def gravi_plate_video(
         raise
 
     logger.info(
-        "plate video for experiment %s plate %r wave %r requested by %s: job %s (%s)",
+        "plate video for experiment %s plate %s wave %s requested by %s: job %s (%s)",
         experiment_id,
-        asked.get("plate_id"),
-        asked.get("wave_number"),
+        _clip(asked.get("plate_id")),
+        _clip(asked.get("wave_number")),
         user_id,
         job["job_id"],
         "queued" if job["created"] else "already queued",

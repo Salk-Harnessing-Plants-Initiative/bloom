@@ -39,41 +39,28 @@ HOLD = (
     "run one for a plate the queue may be rendering."
 )
 
-# The HTTP-style status each of these reads as, for `render`'s exit code: a 4xx
-# refuses, a 5xx says retry. Subclasses first.
+# Each failure the renderer can raise: the HTTP-style status `render` reads as its
+# exit code (a 4xx refuses, a 5xx says retry), and the job's error code, the
+# page's vocabulary. One table so the two cannot drift. Subclasses first.
 #
 # `PlateMismatch` is 409 rather than 500: there is nothing to repair and nothing
 # to retry — the key and the identity cannot both be right, and they will not
 # become right on a second attempt.
-STATUS_BY_EXCEPTION = (
-    (FrameDepthUnsupported, 422),
-    (FrameSizeMismatch, 422),
-    (FrameTooLarge, 413),
-    (FrameUnreadable, 502),
-    (VideoNotStored, 503),
-    (NotRecorded, 500),
-    (VideoEncodeError, 500),
-    (BrokenPipeError, 500),
-    (PlateMismatch, 409),
-)
-
-
-# The job's error code for each failure, the page's vocabulary. Subclasses first.
-CODE_BY_EXCEPTION = (
-    (FrameDepthUnsupported, "frame_depth_unsupported"),
-    (FrameSizeMismatch, "frame_size_mismatch"),
-    (FrameTooLarge, "frame_too_large"),
-    (FrameUnreadable, "frame_unreadable"),
-    (VideoNotStored, "not_stored"),
-    (NotRecorded, "not_recorded"),
-    (VideoEncodeError, "encode_failed"),
-    (BrokenPipeError, "encode_failed"),
-    (PlateMismatch, "plate_mismatch"),
+FAILURES = (
+    (FrameDepthUnsupported, 422, "frame_depth_unsupported"),
+    (FrameSizeMismatch, 422, "frame_size_mismatch"),
+    (FrameTooLarge, 413, "frame_too_large"),
+    (FrameUnreadable, 502, "frame_unreadable"),
+    (VideoNotStored, 503, "not_stored"),
+    (NotRecorded, 500, "not_recorded"),
+    (VideoEncodeError, 500, "encode_failed"),
+    (BrokenPipeError, 500, "encode_failed"),
+    (PlateMismatch, 409, "plate_mismatch"),
 )
 
 
 def code_for_exception(exc: Exception) -> str:
-    for kind, code in CODE_BY_EXCEPTION:
+    for kind, _, code in FAILURES:
         if isinstance(exc, kind):
             return code
     return UNEXPECTED
@@ -170,7 +157,7 @@ def label_for(exit_code: int) -> str:
 
 
 def exit_for_exception(exc: Exception) -> int:
-    for kind, status in STATUS_BY_EXCEPTION:
+    for kind, status, _ in FAILURES:
         if isinstance(exc, kind):
             return exit_for_status(status)
     return EXIT_FAILED

@@ -182,10 +182,12 @@ export function applyActiveChange(active: ActiveJob[], change: Change<unknown>):
 const earlier = (a: Pick<ActiveJob, "created_at" | "id">, b: Pick<ActiveJob, "created_at" | "id">) =>
   a.created_at < b.created_at || (a.created_at === b.created_at && a.id < b.id);
 
-/** Queued jobs of the same kind asked for before this one: its place in its worker's line. */
+/** Ahead of this job in its worker's line: the one rendering, and those queued before it. */
 export function queuedAhead(active: ActiveJob[], job: ListedJob): number | null {
   if (job.status !== "queued") return null;
-  return active.filter((a) => a.kind === job.kind && a.status === "queued" && earlier(a, job)).length;
+  return active.filter(
+    (a) => a.kind === job.kind && (a.status === "rendering" || (a.status === "queued" && earlier(a, job)))
+  ).length;
 }
 
 /** Why an active job looks slow, or null. */

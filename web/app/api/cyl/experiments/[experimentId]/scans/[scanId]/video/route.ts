@@ -29,10 +29,10 @@ const UPSTREAM_TIMEOUT_MS = 15_000;
 // Upstream failure details are written for operators, not callers: the 5xx ones
 // carry the internal gateway URL and the names of the service account's env
 // keys. 404 (scan not in this experiment) and 409 (an active job under another
-// experiment) are the service's own sentences; every other status falls back to
-// the client's own wording. 503 is excluded because `require_supabase_user`
-// answers it with the internal gateway URL in its message.
-const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 409]);
+// experiment) are the service's own sentences, and so is 429 (the rate limit);
+// every other status falls back to the client's own wording. 503 is excluded
+// because `require_supabase_user` answers it with the internal gateway URL.
+const DETAIL_PASSTHROUGH_STATUSES = new Set([404, 409, 429]);
 
 function callerSafeDetail(status: number, parsed: unknown): string | null {
   if (!DETAIL_PASSTHROUGH_STATUSES.has(status)) return null;
@@ -139,6 +139,10 @@ export async function POST(
   // Pass the upstream status through so the client can tell a rate limit from a
   // missing scan. A non-JSON body (a proxy error page) becomes a generic detail
   // rather than a parse crash.
+  // How long the rate limit wants the caller to wait, kept on every answer below.
+  const retryAfter = upstream.headers.get("retry-after");
+  const waitHint = retryAfter ? { "Retry-After": retryAfter } : undefined;
+
   const body = await upstream.text();
   let parsed: unknown;
   try {
@@ -148,7 +152,7 @@ export async function POST(
       {
         detail: upstream.ok ? "Unexpected response from the video service." : null,
       },
-      { status: upstream.ok ? 502 : upstream.status }
+      { status: upstream.ok ? 502 : upstream.status, headers: waitHint }
     );
   }
 
@@ -157,7 +161,7 @@ export async function POST(
   if (!upstream.ok) {
     return NextResponse.json(
       { detail: callerSafeDetail(upstream.status, parsed) },
-      { status: upstream.status }
+      { status: upstream.status, headers: waitHint }
     );
   }
 

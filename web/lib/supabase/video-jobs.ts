@@ -25,11 +25,12 @@ async function withQueuePosition(
   const job = toVideoJob(row);
   if (!job || job.status !== "queued") return job;
 
+  // Ahead in the line: the job its worker is rendering, and those queued earlier.
+  const before = `"${job.created_at}"`;
   const { count, error } = await supabase
     .from(table)
     .select("id", { count: "exact", head: true })
-    .eq("status", "queued")
-    .lt("created_at", job.created_at);
+    .or(`status.eq.rendering,and(status.eq.queued,created_at.lt.${before})`);
   if (error) {
     console.warn(`could not count the jobs ahead of ${label}: ${error.message}`);
     return job;

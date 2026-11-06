@@ -303,11 +303,11 @@ JOB = {
 }
 
 
-def test_every_exception_with_an_exit_code_has_a_job_code():
-    """The command and the queue classify the same failures; neither may drop one."""
-    exit_kinds = {kind for kind, _ in worker.STATUS_BY_EXCEPTION}
-    job_kinds = {kind for kind, _ in worker.CODE_BY_EXCEPTION}
-    assert exit_kinds == job_kinds
+def test_every_failure_has_a_status_and_a_code():
+    """One table, so the command and the queue cannot classify a failure differently."""
+    for kind, status, code in worker.FAILURES:
+        assert 400 <= status < 600, kind
+        assert code and code != "unexpected", kind
 
 
 def test_a_job_renders_its_own_plate_with_the_progress_callback(monkeypatch):

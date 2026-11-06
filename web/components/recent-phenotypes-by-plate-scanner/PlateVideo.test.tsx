@@ -488,7 +488,7 @@ describe("a queued render, and the poll that follows", () => {
     await clickGenerate();
     await tick();
 
-    expect(screen.getByText("Downloading frame 10 of 40")).toBeTruthy();
+    expect(screen.getByText("Downloaded 10 of 40 frames")).toBeTruthy();
     const bar = screen.getByRole("progressbar");
     expect(bar.getAttribute("aria-valuenow")).toBe("10");
     expect((bar.firstElementChild as HTMLElement).style.width).toBe("25%");
@@ -524,7 +524,11 @@ describe("a queued render, and the poll that follows", () => {
   });
 
   it("ignores an older job's outcome while waiting for its own", async () => {
-    queue([absent(), absent(job({ id: "ffffffff-old", status: "failed", error_code: "unexpected" }))]);
+    queue([
+      absent(),
+      absent(job({ id: "ffffffff-old", status: "failed", error_code: "unexpected" })),
+      present(40, RENDERED),
+    ]);
     await act(async () => {
       renderPlate();
     });
@@ -533,6 +537,32 @@ describe("a queued render, and the poll that follows", () => {
 
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+
+    // Its own job still ends the wait.
+    await tick();
+    expect(document.querySelector("video source")?.getAttribute("src")).toBe(URL_B);
+  });
+
+  it("waits on a shared job just the same when someone else queued it", async () => {
+    queue([absent(), present(40, RENDERED)], () => json({ job_id: JOB_ID, created: false }, 202));
+    await act(async () => {
+      renderPlate();
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(document.querySelector("video source")?.getAttribute("src")).toBe(URL_B);
+  });
+
+  it("says why an Update kept the stored video", async () => {
+    queue([present(16, null, URL_A), present(16, job({ status: "kept" }), URL_A)]);
+    await act(async () => {
+      renderPlate({ ...STORED, storedFrames: 16 });
+    });
+    await clickGenerate();
+    await tick();
+
+    expect(document.body.textContent).toContain("Nothing new to add");
   });
 
   it("keeps the video it had when the job keeps it", async () => {
@@ -622,7 +652,7 @@ describe("someone else's render", () => {
       renderPlate({ ...STORED, storedFrames: 16 });
     });
 
-    expect(screen.getByText("Downloading frame 5 of 40")).toBeTruthy();
+    expect(screen.getByText("Downloaded 5 of 40 frames")).toBeTruthy();
     expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
 
     await tick();
@@ -690,7 +720,8 @@ describe("a poll that cannot follow its job", () => {
       renderPlate();
     });
     await clickGenerate();
-    await tick();
+    // One 401 can be a token refresh; two in a row end the wait.
+    await tick(2);
     const asked = calls.length;
     await tick(3);
 

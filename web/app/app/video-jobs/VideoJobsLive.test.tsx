@@ -170,7 +170,7 @@ describe("the list", () => {
     expect(row(PLATE_ID).textContent).toContain("you");
     expect(row(PLATE_ID).textContent).toContain("Queued — next up");
     expect(row(SCAN_ID).textContent).toContain("another member");
-    expect(row(SCAN_ID).textContent).toContain("Downloading frame 10 of 72");
+    expect(row(SCAN_ID).textContent).toContain("Downloaded 10 of 72 frames");
     expect(within(row(SCAN_ID)).getByRole("progressbar").getAttribute("aria-valuenow")).toBe("10");
   });
 
@@ -211,7 +211,7 @@ describe("live updates", () => {
     mount();
     await subscribe();
     await emit("cyl_video_jobs", "UPDATE", { id: SCAN_ID, frames_done: 50 });
-    expect(row(SCAN_ID).textContent).toContain("Downloading frame 50 of 72");
+    expect(row(SCAN_ID).textContent).toContain("Downloaded 50 of 72 frames");
   });
 
   it("adds a job someone just asked for", async () => {
@@ -269,12 +269,15 @@ describe("queue position", () => {
     expect(row(PLATE_ID).textContent).toContain("Queued — 1 ahead");
   });
 
-  it("moves up as the job ahead is claimed, whether or not it is listed", async () => {
+  it("moves up as the job ahead finishes, whether or not it is listed", async () => {
     const theirs = plate({ id: "44444444-0000-0000-0000-000000000000", requested_by: OTHER, created_at: at(10) });
     plates = [plate(), theirs];
     mount({ initialJobs: [plate()] });
     await subscribe();
+    // Rendering, it is still ahead; finished, the line moves.
     await emit("gravi_plate_video_jobs", "UPDATE", { id: theirs.id, status: "rendering" });
+    expect(row(PLATE_ID).textContent).toContain("Queued — 1 ahead");
+    await emit("gravi_plate_video_jobs", "UPDATE", { id: theirs.id, status: "rendered" });
     expect(row(PLATE_ID).textContent).toContain("Queued — next up");
   });
 

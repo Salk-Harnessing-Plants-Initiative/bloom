@@ -25,7 +25,7 @@ def exit_for_status(status: int) -> int:
     """The route's own answer, read as an exit code.
 
     A 4xx is the renderer declining what was asked, which a retry cannot change
-    — except 429, which means someone else is rendering and later will do. Every
+    — except 429, a rate limit, after which a retry will do. Every
     5xx is this service, storage or the database failing.
     """
     if status == 429:

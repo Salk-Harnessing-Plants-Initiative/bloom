@@ -7,46 +7,7 @@ import video_queue as vq
 from video_writer import ENCODE_TIMEOUT_SECONDS
 
 
-class _Rpc:
-    def __init__(self, data):
-        self._data = data
-
-    def execute(self):
-        return type("R", (), {"data": self._data})()
-
-
-class FakeClient:
-    """Answers each wrapper from `answers` and records every call."""
-
-    def __init__(self, **answers):
-        self.answers = answers
-        self.calls = []
-
-    def rpc(self, name, params):
-        self.calls.append((name, params))
-        answer = self.answers.get(name)
-        if isinstance(answer, Exception):
-            raise answer
-        if callable(answer):
-            answer = answer()
-        return _Rpc(answer)
-
-    def names(self):
-        return [name for name, _ in self.calls]
-
-
-JOB = {"job_id": "job-1", "msg_id": 7, "reads": 1, "scan_id": 5, "experiment_id": 1}
-Q = vq.CYL_QUEUE
-
-
-def _queued(*jobs):
-    """A claim that hands out `jobs` in order, then nothing."""
-    pending = list(jobs)
-    return lambda: [pending.pop(0)] if pending else []
-
-
-def _settled(**extra):
-    return {Q.complete: True, Q.fail: True, Q.progress: True, **extra}
+from video_fakes import JOB, Q, FakeClient
 
 
 # --- constants ---------------------------------------------------------------

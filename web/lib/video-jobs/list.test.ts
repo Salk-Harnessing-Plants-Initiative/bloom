@@ -184,10 +184,10 @@ const active = (kind: "plate" | "scan", id: string, minute: number, status = "qu
 });
 
 describe("queue place", () => {
-  it("counts the queued jobs of the same kind asked for earlier, loaded or not", () => {
+  it("counts the job rendering and those queued earlier, of the same kind, loaded or not", () => {
     const line = [active("plate", "p0", 0), active("plate", "p1", 1), active("plate", "p2", 2, "rendering"), active("scan", "s2", 2)];
-    expect(queuedAhead(line, plate("p3", 3))).toBe(2);
-    expect(queuedAhead(line, plate("p1", 1))).toBe(1);
+    expect(queuedAhead(line, plate("p3", 3))).toBe(3);
+    expect(queuedAhead(line, plate("p1", 1))).toBe(2);
     expect(queuedAhead(line, scan("s3", 3))).toBe(1);
   });
 
@@ -201,9 +201,10 @@ describe("queue place", () => {
     line = applyActiveChange(line, change(PLATE_JOBS_TABLE, "INSERT", plate("p2", 2)));
     expect(queuedAhead(line, plate("p2", 2))).toBe(1);
     line = applyActiveChange(line, change(PLATE_JOBS_TABLE, "UPDATE", { id: "p1", status: "rendering" }));
-    expect(queuedAhead(line, plate("p2", 2))).toBe(0);
+    expect(queuedAhead(line, plate("p2", 2))).toBe(1);
     line = applyActiveChange(line, change(PLATE_JOBS_TABLE, "UPDATE", { id: "p1", status: "rendered" }));
     expect(line.map((a) => a.id)).toEqual(["p2"]);
+    expect(queuedAhead(line, plate("p2", 2))).toBe(0);
   });
 });
 

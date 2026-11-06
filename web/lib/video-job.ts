@@ -72,7 +72,7 @@ export function countedFrames(
 /** What a rendering job is doing, in words. */
 export function renderingNote(job: VideoJob): string {
   const counted = countedFrames(job);
-  if (counted) return `Downloading frame ${counted.done} of ${counted.total}`;
+  if (counted) return `Downloaded ${counted.done} of ${counted.total} frames`;
   if (job.stage === VIDEO_JOB_STAGES.encoding) return "Encoding the video…";
   if (job.stage === VIDEO_JOB_STAGES.uploading) return "Saving the video…";
   return "Starting…";
