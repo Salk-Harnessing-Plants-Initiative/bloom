@@ -18,23 +18,29 @@ from bloom_mcp.data_access import (
     RawSourced,
     SupabaseReader,
 )
+from bloom_mcp.data_access.table_ports import BloomDataReader
+from bloom_mcp.data_access.table_reader import PostgrestTableReader
 from bloom_mcp.result_store import ResultStore, RunHandle, SupabaseResultStore
 
 _reader: ExperimentReader = SupabaseReader()
 _store: ResultStore = SupabaseResultStore()
+_table_reader: BloomDataReader = PostgrestTableReader()
 
 
 def configure(
     *,
     reader: Optional[ExperimentReader] = None,
     store: Optional[ResultStore] = None,
+    table_reader: Optional[BloomDataReader] = None,
 ) -> None:
     """Inject concrete adapters (server boot / tests). Unset args keep current."""
-    global _reader, _store
+    global _reader, _store, _table_reader
     if reader is not None:
         _reader = reader
     if store is not None:
         _store = store
+    if table_reader is not None:
+        _table_reader = table_reader
 
 
 def reader() -> ExperimentReader:
@@ -45,6 +51,11 @@ def reader() -> ExperimentReader:
 def store() -> ResultStore:
     """The injected result store."""
     return _store
+
+
+def table_reader() -> BloomDataReader:
+    """The injected table reader for the bloom_data tools."""
+    return _table_reader
 
 
 def raw_source_for(filename: str) -> Optional[Path]:

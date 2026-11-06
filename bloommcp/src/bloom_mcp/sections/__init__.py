@@ -12,11 +12,12 @@ tool) whose ``__init__`` exposes a ``section`` FastMCP instance, then add it to
 per tool.
 """
 
-from bloom_mcp.sections import core, phenotyping_segmentation, sleap_roots
+from bloom_mcp.sections import bloom_data, core, phenotyping_segmentation, sleap_roots
 
 # section name (also its URL path + tool-name prefix) -> sub-server
 SECTIONS = {
     "phenotyping_segmentation": phenotyping_segmentation.section,
     "sleap_roots": sleap_roots.section,
     "core": core.section,
+    "bloom_data": bloom_data.section,
 }
