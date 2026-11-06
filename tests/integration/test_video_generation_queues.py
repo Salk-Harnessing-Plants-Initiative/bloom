@@ -7,6 +7,7 @@ EXECUTE has crashed Postgres into recovery before.
 """
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import pytest
@@ -75,13 +76,29 @@ READERS = ["bloom_user", "bloom_writer", "bloom_admin", "bloom_agent"]
 # --------------------------------------------------------------------------- #
 # Fixture rows
 # --------------------------------------------------------------------------- #
+_CAPTURES = itertools.count()
+
+
+def _capture(cur, experiment_id: int, plate_id: str, wave_number: int | None) -> None:
+    """One capture of a plate in a wave: what a plate enqueue needs to accept it.
+    Each gets its own minute, so two never collide on the natural key."""
+    cur.execute(
+        "INSERT INTO gravi_scans "
+        "(experiment_id, plate_id, wave_number, capture_date, grid_mode, plate_index, resolution) "
+        "VALUES (%s, %s, %s, timestamptz '2026-01-01' + %s * interval '1 minute', 'single', '00', 600)",
+        (experiment_id, plate_id, wave_number, next(_CAPTURES)),
+    )
+
+
 def _target(cur, queue: Queue) -> tuple:
     """Create the row(s) a job points at, and return that queue's enqueue arguments."""
     if queue is PLATE:
         cur.execute(
             "INSERT INTO gravi_experiments (name) VALUES ('queue-test') RETURNING id"
         )
-        return (cur.fetchone()[0], "P1", 3)
+        experiment_id = cur.fetchone()[0]
+        _capture(cur, experiment_id, "P1", 3)
+        return (experiment_id, "P1", 3)
 
     cur.execute("INSERT INTO cyl_experiments (name) VALUES ('queue-test') RETURNING id")
     exp_id = cur.fetchone()[0]
@@ -281,6 +298,12 @@ def test_postgres_can_reach_the_pgmq_tables_the_wrappers_use(cur, queue):
         for privilege in privileges:
             cur.execute("SELECT has_table_privilege('postgres', %s, %s)", (table, privilege))
             assert cur.fetchone()[0] is True, f"postgres lacks {privilege} on {table}"
+
+
+@pytest.mark.parametrize("table", ["gravi_experiments", "gravi_scans", "cyl_experiments"])
+def test_postgres_can_read_the_tables_the_enqueue_checks_use(cur, table):
+    cur.execute("SELECT has_table_privilege('postgres', %s, 'SELECT')", (f"public.{table}",))
+    assert cur.fetchone()[0] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -752,6 +775,8 @@ def test_a_long_error_code_is_capped(cur, queue):
 def test_each_plate_and_wave_gets_its_own_job(cur):
     """The key is plate and wave together; a NULL wave is a wave of its own."""
     experiment, plate, wave = _target(cur, PLATE)
+    for other_plate, other_wave in ((plate, wave + 1), (plate, None), ("P2", wave)):
+        _capture(cur, experiment, other_plate, other_wave)
     first, _ = _enqueue(cur, PLATE, (experiment, plate, wave))
     others = [
         _enqueue(cur, PLATE, (experiment, plate, wave + 1)),
@@ -896,6 +921,8 @@ def test_a_plate_id_the_renderer_would_refuse_is_not_stored(cur, plate_id):
     import psycopg
 
     experiment, _, wave = _target(cur, PLATE)
+    # Captured under that id, so the job's own format rule is what refuses it.
+    _capture(cur, experiment, plate_id, wave)
     with pytest.raises(psycopg.errors.CheckViolation, match="plate_id_format"):
         _enqueue(cur, PLATE, (experiment, plate_id, wave))
 
@@ -922,3 +949,72 @@ def test_failing_as_redelivered_clears_the_stage(cur, queue):
     assert _claim(cur, queue, vt=0, max_reads=1) is None
     cur.execute(f"SELECT status, stage, reads FROM public.{queue.table} WHERE id = %s", (job_id,))
     assert cur.fetchone() == ("failed", None, 2)
+
+
+# --------------------------------------------------------------------------- #
+# Refused at enqueue
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "plate_id,wave",
+    [("P9", 3), ("P1", 4), ("P1", None)],
+    ids=["another-plate", "another-wave", "no-wave"],
+)
+def test_a_plate_with_no_capture_in_that_wave_is_refused(cur, plate_id, wave):
+    """Nothing to render, so it is answered at once rather than failing after its turn."""
+    import psycopg
+
+    experiment, _, _ = _target(cur, PLATE)
+    depth = _queue_depth(cur, PLATE)
+    cur.execute("SAVEPOINT before_missing_plate")
+    with pytest.raises(psycopg.errors.NoDataFound, match="no captures for plate"):
+        _enqueue(cur, PLATE, (experiment, plate_id, wave))
+    cur.execute("ROLLBACK TO SAVEPOINT before_missing_plate")
+    assert _queue_depth(cur, PLATE) == depth
+    cur.execute("SELECT count(*) FROM public.gravi_plate_video_jobs WHERE experiment_id = %s", (experiment,))
+    assert cur.fetchone()[0] == 0
+
+
+def test_a_plate_in_a_missing_experiment_is_named_as_missing(cur):
+    import psycopg
+
+    cur.execute("SELECT coalesce(max(id), 0) + 1000 FROM gravi_experiments")
+    missing = cur.fetchone()[0]
+    with pytest.raises(psycopg.errors.ForeignKeyViolation, match=f"experiment {missing} not found"):
+        _enqueue(cur, PLATE, (missing, "P1", 3))
+
+
+def test_a_capture_in_another_experiment_does_not_count(cur):
+    """The same plate and wave captured elsewhere is not this experiment's capture."""
+    import psycopg
+
+    other, plate_id, wave = _target(cur, PLATE)
+    cur.execute("INSERT INTO gravi_experiments (name) VALUES ('queue-test-empty') RETURNING id")
+    experiment = cur.fetchone()[0]
+    cur.execute("SAVEPOINT before_other_experiment")
+    with pytest.raises(psycopg.errors.NoDataFound, match="no captures for plate"):
+        _enqueue(cur, PLATE, (experiment, plate_id, wave))
+    cur.execute("ROLLBACK TO SAVEPOINT before_other_experiment")
+    cur.execute("SELECT count(*) FROM public.gravi_plate_video_jobs WHERE experiment_id = %s", (experiment,))
+    assert cur.fetchone()[0] == 0
+    assert other != experiment
+
+
+@pytest.mark.parametrize("how", ["deleted_at", "deleted"])
+def test_a_scan_in_a_deleted_experiment_is_refused(cur, how):
+    import psycopg
+
+    scan_id, experiment = _target(cur, CYL)
+    if how == "deleted_at":
+        cur.execute("UPDATE cyl_experiments SET deleted_at = now() WHERE id = %s", (experiment,))
+    else:
+        cur.execute("UPDATE cyl_experiments SET deleted = true WHERE id = %s", (experiment,))
+    with pytest.raises(psycopg.errors.NoDataFound, match="has been deleted"):
+        _enqueue(cur, CYL, (scan_id, experiment))
+
+
+@pytest.mark.parametrize("flag", [False, None], ids=["false", "null"])
+def test_a_scan_in_a_live_experiment_is_still_queued(cur, flag):
+    scan_id, experiment = _target(cur, CYL)
+    cur.execute("UPDATE cyl_experiments SET deleted = %s WHERE id = %s", (flag, experiment))
+    _, created = _enqueue(cur, CYL, (scan_id, experiment))
+    assert created is True
