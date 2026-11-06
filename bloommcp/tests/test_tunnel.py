@@ -292,15 +292,20 @@ def test_unreachable_keys_url_is_503(monkeypatch, lookup):
 
 @pytest.fixture
 def key_server(monkeypatch):
-    """Serves the test JWKS over HTTP, recording each fetch's User-Agent."""
+    """Serves the test JWKS over HTTP, recording each fetch's User-Agent; `serve`
+    swaps the key set, as AIRC does when it rotates a key."""
     import http.server
     import threading
+    import types
 
-    jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(_KEY.public_key()))
-    body = json.dumps(
-        {"keys": [{**jwk, "kid": KID, "alg": "ES256", "use": "sig"}]}
-    ).encode()
+    def key_set(key, kid: str) -> bytes:
+        jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
+        return json.dumps(
+            {"keys": [{**jwk, "kid": kid, "alg": "ES256", "use": "sig"}]}
+        ).encode()
+
     agents: list[str] = []
+    served = [key_set(_KEY, KID)]
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -313,7 +318,7 @@ def key_server(monkeypatch):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(served[0])
 
         def log_message(self, *args):
             pass
@@ -325,7 +330,11 @@ def key_server(monkeypatch):
         "BLOOMMCP_TUNNEL_JWKS_URL", f"http://127.0.0.1:{server.server_port}/jwks.json"
     )
     _clear_key_caches()
-    yield agents
+
+    def serve(key, kid: str) -> None:
+        served[0] = key_set(key, kid)
+
+    yield types.SimpleNamespace(agents=agents, serve=serve)
     server.shutdown()
 
 
@@ -333,14 +342,36 @@ def test_the_keys_url_is_fetched_with_bloommcps_own_user_agent(key_server, looku
     """AIRC's Cloudflare refuses Python's default User-Agent."""
     resp = _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
     assert resp.status_code == 200
-    assert key_server and all(a == tunnel.JWKS_USER_AGENT for a in key_server)
+    agents = key_server.agents
+    assert agents and all(a == tunnel.JWKS_USER_AGENT for a in agents)
 
 
 def test_the_key_set_is_fetched_once_for_many_requests(key_server, lookup):
     middleware = IdentityMiddleware(_RecordingApp())
     for _ in range(3):
         assert _get(middleware, _tunnel_headers(EMAIL)).status_code == 200
-    assert len(key_server) == 1
+    assert len(key_server.agents) == 1
+
+
+def test_a_key_airc_removes_is_refused_once_the_key_set_cache_expires(
+    monkeypatch, key_server, lookup
+):
+    """A key seen once must not stay trusted: PyJWT's cache_keys would keep it until restart."""
+    import jwt.jwk_set_cache
+
+    middleware = IdentityMiddleware(_RecordingApp())
+    assert _get(middleware, _tunnel_headers(EMAIL)).status_code == 200
+    key_server.serve(_OTHER_KEY, "rotated-key")
+    # Moves the clock on rather than freezing it; this is the global time module.
+    real = time.monotonic
+    monkeypatch.setattr(
+        jwt.jwk_set_cache.time,
+        "monotonic",
+        lambda: real() + tunnel.JWKS_CACHE_SECONDS + 1,
+    )
+    resp = _get(middleware, _tunnel_headers(EMAIL))
+    assert resp.status_code == 403
+    assert tunnel.NOT_VERIFIED_MESSAGE in resp.text
 
 
 def test_a_lowercase_bearer_scheme_is_accepted(lookup):

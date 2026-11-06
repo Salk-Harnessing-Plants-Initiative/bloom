@@ -67,6 +67,7 @@ services:
       # Sent to bloommcp as X-Bloom-Tunnel on the tunnel entrance (:8880).
       BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
       TUNNEL_SUBNET: ${TUNNEL_SUBNET}
+      TUNNEL_CLOUDFLARED_IP: ${TUNNEL_CLOUDFLARED_IP}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Break-glass path: if ACME issuance fails catastrophically, drop
@@ -87,9 +88,11 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - supanet
-      # Shared only with cloudflared; the tunnel entrance (:8880).
-      - tunnel
+      supanet: {}
+      # Shared only with cloudflared; the tunnel entrance (:8880). Fixed, so Docker
+      # never hands cloudflared's address to Caddy.
+      tunnel:
+        ipv4_address: ${TUNNEL_CADDY_IP}
 
   #-------------------
   # BLOOM WEB
@@ -692,8 +695,10 @@ services:
       - ALL
     # Outbound only, and only on the tunnel network, so a wrong route on the
     # Cloudflare side to caddy:<port> reaches only the :8880 entrance (Caddy drops it elsewhere).
+    # A fixed address, the only one :8880 accepts.
     networks:
-      - tunnel
+      tunnel:
+        ipv4_address: ${TUNNEL_CLOUDFLARED_IP}
     depends_on:
       - caddy
     restart: unless-stopped
@@ -1193,9 +1198,14 @@ networks:
   supanet:
     driver: bridge
   # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
-  # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880.
+  # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880,
+  # and fixed addresses for both (TUNNEL_CADDY_IP, TUNNEL_CLOUDFLARED_IP). Any other container
+  # gets an address from TUNNEL_AUTO_RANGE, which leaves out both fixed addresses.
   tunnel:
     driver: bridge
+    # Caddy's tunnel rules match IPv4 addresses only; off even if a Docker-wide default turns it on.
+    enable_ipv6: false
     ipam:
       config:
         - subnet: ${TUNNEL_SUBNET}
+          ip_range: ${TUNNEL_AUTO_RANGE}

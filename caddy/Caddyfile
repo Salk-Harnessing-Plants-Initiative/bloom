@@ -11,7 +11,7 @@
 #                              `dashboard` service basic-auth — Studio has none of
 #                              its own, so Kong is in its availability path)
 #   {DOMAIN_MINIO}             → minio console
-#   :8880 (Docker networks only) → bloommcp, for cloudflared's tunnel; its only way in
+#   :8880 (cloudflared only)   → bloommcp, for cloudflared's tunnel; its only way in
 #
 # TLS strategy:
 #
@@ -62,6 +62,9 @@
 #
 #   TUNNEL_SUBNET         the `tunnel` network's subnet. Every site but :8880
 #                         drops requests from it. From .env.<env>.defaults.
+#
+#   TUNNEL_CLOUDFLARED_IP cloudflared's fixed address; the only one :8880
+#                         accepts. From .env.<env>.defaults.
 # =============================================================================
 
 {
@@ -295,13 +298,11 @@
 # -------------------
 # Tunnel entrance — cloudflared → bloommcp
 # -------------------
-# 8880 is not published. cloudflared reaches it on the `tunnel` network; requests
-# from supanet containers are dropped. The host can still reach it through the
-# network's gateway, which is inside TUNNEL_SUBNET.
+# 8880 is not published. Only cloudflared's fixed address may use it; supanet
+# containers, and the host through the tunnel network's gateway, are dropped.
 :8880 {
-	# Only the tunnel network (cloudflared, and the host via its gateway) may use this entrance.
-	@not_tunnel not remote_ip {$TUNNEL_SUBNET}
-	abort @not_tunnel
+	@not_cloudflared not remote_ip {$TUNNEL_CLOUDFLARED_IP}/32
+	abort @not_cloudflared
 
 	# A request without AIRC's bearer token is refused; bloommcp verifies the token.
 	@no_bearer not header_regexp Authorization "(?i)^bearer "
