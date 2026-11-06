@@ -5333,6 +5333,13 @@ export type Database = {
           uid: string
         }[]
       }
+      bloom_table_row_estimates: {
+        Args: { p_tables: string[] }
+        Returns: {
+          row_estimate: number
+          table_name: string
+        }[]
+      }
       bloom_user_for_email: { Args: { p_email: string }; Returns: string }
       claim_cyl_pipeline_batch: {
         Args: { p_max_reads?: number; p_vt?: number }
