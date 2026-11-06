@@ -1,6 +1,7 @@
--- Two refusals at enqueue for the video queues: a plate with no capture for the wave
--- asked for, and a scan in a soft-deleted cylinder experiment. Both used to be
--- accepted and either fail later in the worker or file a job under a hidden experiment.
+-- Refusals at enqueue for the video queues: a plate with no capture for the wave asked
+-- for (after naming a missing experiment as missing), and a scan in a deleted cylinder
+-- experiment. Both used to be accepted and either fail later in the worker or file a
+-- job under a retired experiment.
 -- Only the two enqueue functions change; signatures, owner and grants are unchanged.
 --
 -- Rollback: supabase/rollbacks/20261106140000_guard_video_enqueue_rollback.sql
@@ -22,8 +23,15 @@ DECLARE
   v_job_id uuid;
   v_msg_id bigint;
 BEGIN
-  -- A plate with no capture for this wave has nothing to render. Refused here, so the
-  -- request is answered at once instead of failing as no_frames after its turn in line.
+  -- Checked first so a missing experiment is named as such, not as a plate without captures.
+  IF NOT EXISTS (SELECT 1 FROM public.gravi_experiments e WHERE e.id = p_experiment_id) THEN
+    RAISE EXCEPTION 'experiment % not found', p_experiment_id
+      USING ERRCODE = 'foreign_key_violation';
+  END IF;
+
+  -- A plate with no capture for this wave has nothing to render, so it is refused now
+  -- rather than failing as no_frames after its turn. The wave is gravi_scans.wave_number,
+  -- the column the renderer reads, not the wave the page may show from metadata.
   IF NOT EXISTS (
     SELECT 1
     FROM public.gravi_scans s
@@ -89,7 +97,8 @@ DECLARE
   v_msg_id bigint;
   v_active_experiment bigint;
 BEGIN
-  -- A soft-deleted experiment is hidden from its members, so it takes no new videos.
+  -- A deleted experiment takes no new videos: deleted_at hides it from members, and the
+  -- older V1 deleted flag marks it retired. Its own SQLSTATE so callers can say so.
   IF EXISTS (
     SELECT 1
     FROM public.cyl_experiments e
@@ -97,7 +106,7 @@ BEGIN
       AND (e.deleted_at IS NOT NULL OR e.deleted IS TRUE)
   ) THEN
     RAISE EXCEPTION 'experiment % has been deleted', p_experiment_id
-      USING ERRCODE = 'foreign_key_violation';
+      USING ERRCODE = 'no_data_found';
   END IF;
 
   -- The foreign key proves the experiment exists, not that it is this scan's. Every hop
