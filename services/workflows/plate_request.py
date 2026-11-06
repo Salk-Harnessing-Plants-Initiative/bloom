@@ -59,6 +59,12 @@ def enqueue(experiment_id: int, body: dict, user_id: str) -> dict:
             },
         )
     except APIError as exc:
+        # no_data_found: no capture of this plate in this wave, so nothing to render.
+        if exc.code == "P0002":
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plate {plate_id} has no captures in this wave yet",
+            ) from exc
         # foreign_key_violation: no such experiment, which waiting cannot fix.
         if exc.code == "23503":
             raise HTTPException(

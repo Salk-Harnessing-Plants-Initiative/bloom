@@ -162,6 +162,22 @@ def test_an_experiment_that_does_not_exist_is_a_404(monkeypatch, queued):
     assert ei.value.detail == "Experiment 99 not found"
 
 
+def test_a_plate_with_no_captures_in_the_wave_is_a_404(monkeypatch, queued):
+    """Refused by the database at once, rather than queued to fail as no_frames."""
+    from postgrest import APIError
+
+    def none(*a):
+        raise APIError(
+            {"code": "P0002", "message": "no captures for plate P7 in wave 3"}
+        )
+
+    monkeypatch.setattr(pr, "enqueue_job", none)
+    with pytest.raises(HTTPException) as ei:
+        pr.enqueue(12, {"plate_id": "P7", "wave_number": 3}, USER)
+    assert ei.value.status_code == 404
+    assert ei.value.detail == "Plate P7 has no captures in this wave yet"
+
+
 def test_a_sign_in_failure_is_the_same_503(monkeypatch, queued):
     def no_client(**kwargs):
         raise RuntimeError("auth down")
