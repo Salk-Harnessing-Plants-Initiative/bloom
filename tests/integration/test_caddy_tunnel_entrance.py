@@ -142,7 +142,9 @@ def _python_get(
         # Killing the CLI leaves the container running and holding its address.
         if "--name" in command:
             name = command[command.index("--name") + 1]
-            subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+            subprocess.run(
+                ["docker", "rm", "-f", name], capture_output=True, timeout=30, check=False
+            )
         raise
     status, _, body = result.stdout.partition("\n")
     if not status.strip():
@@ -173,6 +175,13 @@ def tunnel_client(bloommcp_container, caddy_tunnel_network, cloudflared_ip) -> l
     ]
 
 
+def _assert_reset(result: tuple[int | None, str]) -> None:
+    """No answer because Caddy's abort closed the connection; a DNS failure, refusal or timeout would not."""
+    status, error = result
+    assert status is None, f"answered with {status}"
+    assert any(s in error for s in ("RemoteDisconnected", "ConnectionReset", "reset by peer")), error
+
+
 def _through_tunnel(client: list[str], *headers: str) -> tuple[int, str]:
     status, body = _python_get(client, f"http://caddy:{TUNNEL_PORT}/mcp", *headers)
     assert status is not None, "no HTTP status from the tunnel entrance"
@@ -187,9 +196,7 @@ def test_the_entrance_drops_requests_from_supanet(bloommcp_container):
     status, error = _from_bloommcp(
         bloommcp_container, f"http://caddy:{TUNNEL_PORT}/mcp", _bearer(NO_ACCOUNT)
     )
-    assert status is None
-    # Caddy's abort closes the connection; a DNS failure, refusal or timeout would not.
-    assert any(s in error for s in ("RemoteDisconnected", "ConnectionReset", "reset by peer")), error
+    _assert_reset((status, error))
 
 
 def test_a_salk_user_without_an_account_gets_bloommcps_refusal(tunnel_client):
@@ -315,7 +322,7 @@ def test_other_tunnel_network_addresses_are_dropped(tunnel_client, caddy_contain
     # From a container Docker gave an automatic address (TUNNEL_AUTO_RANGE).
     at = tunnel_client.index("--ip")
     automatic = tunnel_client[:at] + tunnel_client[at + 2 :]
-    assert _python_get(automatic, url)[0] is None
+    _assert_reset(_python_get(automatic, url))
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="only a Linux host reaches container addresses")
@@ -325,8 +332,7 @@ def test_the_host_is_dropped_at_the_entrance(tunnel_client, caddy_tunnel_ip):
     status, error = _python_get(
         [], f"http://{caddy_tunnel_ip}:{TUNNEL_PORT}/mcp", python=sys.executable
     )
-    assert status is None
-    assert any(s in error for s in ("RemoteDisconnected", "ConnectionReset", "reset by peer")), error
+    _assert_reset((status, error))
 
 
 # localhost and studio.localhost are main-site addresses in CI; a bare IP lands on the :80 catch-all.
@@ -346,4 +352,4 @@ def test_tunnel_traffic_is_dropped_on_every_other_site(
     assert _request(caddy_container, f"http://localhost:{port}{path}", *headers) is not None
     assert _request(caddy_container, f"http://{caddy_tunnel_ip}:{port}{path}", *headers) is None
     # From cloudflared's address, where a wrong route on the Cloudflare side would send it.
-    assert _python_get(tunnel_client, f"http://caddy:{port}{path}", *headers)[0] is None
+    _assert_reset(_python_get(tunnel_client, f"http://caddy:{port}{path}", *headers))
