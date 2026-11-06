@@ -14,6 +14,18 @@ def test_chat_and_usage_tables_are_excluded():
         assert not table_access.is_readable(table)
 
 
+def test_tables_with_staff_emails_are_excluded():
+    for table in (
+        "experiment_progress_logs",
+        "rhizovision_accessions",
+        "rhizovision_experiments",
+        "rhizovision_images",
+        "rhizovision_results",
+        "rhizovision_settings",
+    ):
+        assert not table_access.is_readable(table)
+
+
 def test_hidden_columns_belong_to_readable_tables():
     assert set(table_access.HIDDEN_COLUMNS) <= table_access.READABLE_TABLES
 

@@ -2,6 +2,7 @@
 
 - Every public table and view is classified in bloommcp's allow-list (readable or excluded), and
   every readable name exists, so a new table is never silently invisible or a stale name kept.
+- No readable table has an email column that is not hidden.
 - The tools run inside the bloommcp container, reading PostgREST as bloom_agent: tables listed
   without the excluded ones, a page of rows, emails never returned, an exact count and a
   planner estimate.
@@ -67,6 +68,26 @@ def test_every_table_and_view_is_classified(pg_conn):
 def test_every_readable_table_exists(pg_conn):
     missing = _table_access().READABLE_TABLES - _public_relations(pg_conn)
     assert missing == set(), f"readable but not in the database: {sorted(missing)}"
+
+
+def test_every_email_column_on_a_readable_table_is_hidden(pg_conn):
+    """A new email column, or a newly readable table with one, fails here until it is hidden
+    or its table is excluded."""
+    access = _table_access()
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT table_name, column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND column_name ILIKE '%%email%%'
+            """
+        )
+        exposed = sorted(
+            f"{table}.{column}"
+            for table, column in cur.fetchall()
+            if table in access.READABLE_TABLES
+            and column not in access.HIDDEN_COLUMNS.get(table, frozenset())
+        )
+    assert exposed == [], f"hide these or exclude their tables: {exposed}"
 
 
 _SCRIPT = """

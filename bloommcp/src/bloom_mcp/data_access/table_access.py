@@ -1,13 +1,14 @@
 """Which tables and columns bloommcp's data tools may read.
 
 An allow-list: a table not named here is invisible to Claude even if bloom_agent can read it.
-tests/integration/test_bloommcp_table_classification.py fails when a database table is in
+tests/integration/test_bloommcp_data_tools.py fails when a database table is in
 neither list, so a new table is classified on purpose.
 """
 
 from __future__ import annotations
 
-# Chat and usage internals, and protein embedding vectors (thousands of numbers per row).
+# Chat and usage internals, protein embedding vectors (thousands of numbers per row), and
+# tables holding staff emails Claude has no use for yet (gene progress logs, RhizoVision).
 EXCLUDED_TABLES = frozenset(
     {
         "bloommcp_usage",
@@ -17,8 +18,14 @@ EXCLUDED_TABLES = frozenset(
         "checkpoint_writes",
         "checkpoints",
         "cyl_experiment_trait_count_changes",
+        "experiment_progress_logs",
         "protein_embeddings_esm2",
         "protein_embeddings_esm3",
+        "rhizovision_accessions",
+        "rhizovision_experiments",
+        "rhizovision_images",
+        "rhizovision_results",
+        "rhizovision_settings",
     }
 )
 
@@ -67,7 +74,6 @@ READABLE_TABLES = frozenset(
         "cyl_video_jobs",
         "cyl_wave_timeline",
         "cyl_waves",
-        "experiment_progress_logs",
         "gene_candidate_scientists",
         "gene_candidate_support",
         "gene_candidates",
@@ -105,11 +111,6 @@ READABLE_TABLES = frozenset(
         "proteins",
         "recent_experiments_by_cyl_scanner",
         "recent_phenotypes_by_plate_scanner",
-        "rhizovision_accessions",
-        "rhizovision_experiments",
-        "rhizovision_images",
-        "rhizovision_results",
-        "rhizovision_settings",
         "rnaseq_references",
         "rnaseq_runs",
         "rnaseq_samples",
