@@ -47,3 +47,25 @@
 
 GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_writer, bloom_workflows;
 GRANT USAGE ON SCHEMA auth TO bloom_writer;
+
+-- dblink: the first-boot script installs it into `public`, where PostgREST exposes it and
+-- Postgres lets PUBLIC execute it by default; no API role may call it (it opens connections
+-- from the database server). Here, not a migration: supabase_admin owns the functions, and
+-- `db push`'s postgres role can't revoke them. Idempotent; a no-op where dblink isn't installed.
+DO $$
+DECLARE
+    f regprocedure;
+BEGIN
+    FOR f IN
+        SELECT p.oid::regprocedure
+          FROM pg_proc p
+          JOIN pg_depend d ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
+          JOIN pg_extension e ON e.oid = d.refobjid AND e.extname = 'dblink'
+    LOOP
+        EXECUTE format(
+            'REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon, authenticated, service_role, '
+            'bloom_user, bloom_writer, bloom_admin, bloom_agent, bloom_workflows',
+            f
+        );
+    END LOOP;
+END $$;

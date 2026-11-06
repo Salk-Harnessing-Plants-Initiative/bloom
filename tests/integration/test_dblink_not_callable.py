@@ -1,10 +1,10 @@
 """
-Integration tests for migration 20261106210000_revoke_dblink_from_api_roles.sql.
+No API role may call dblink (revoked in supabase/grants/schema_grants.sql).
 
 The first-boot script installs the dblink extension into `public`, where PostgREST exposes every
-function as /rest/v1/rpc/<name> and Postgres lets PUBLIC execute it by default. No API role may
-call dblink: it opens connections from the database server to other hosts. The superuser that
-runs the first-boot script keeps it.
+function as /rest/v1/rpc/<name> and Postgres lets PUBLIC execute it by default. dblink opens
+connections from the database server to other hosts. The superuser that runs the first-boot
+script keeps it.
 
 Asserted with has_function_privilege, never by calling the functions.
 """
