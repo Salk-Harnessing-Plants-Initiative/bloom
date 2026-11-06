@@ -5,11 +5,11 @@ and looks the user up. CI signs tokens with a throwaway key
 
 Config-shape counterpart: tests/unit/test_bloommcp_tunnel_entrance.py.
 
-8880 is not published on the host, so requests run inside the containers. Caddy's
-own answers are checked with busybox `wget` in the Caddy container, sent to its
-tunnel-network address; bloommcp's are read with Python from a throwaway container
-on the tunnel network (where cloudflared sits), since its refusals are also 403 and
-only the body tells them apart. `:8880` drops everything else.
+8880 is not published on the host and accepts only cloudflared's fixed address.
+cloudflared does not run in CI, so requests are sent with Python from a throwaway
+container on the tunnel network at that address; both Caddy and bloommcp refuse
+with 403, and only the body tells them apart. Drops are checked with busybox
+`wget` from Caddy's own tunnel-network address, and from the host.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -66,17 +67,11 @@ def _request(container: str, url: str, *headers: str) -> int | None:
     return int(codes[-1]) if codes else None
 
 
-def _status(container: str, tunnel_ip: str, path: str, *headers: str) -> int:
-    """Status code of a GET to the tunnel entrance, sent from Caddy's tunnel-network address."""
-    status = _request(container, f"http://{tunnel_ip}:{TUNNEL_PORT}{path}", *headers)
-    assert status is not None, f"no HTTP status from the tunnel entrance for {path}"
-    return status
-
-
 # A path-specific route added to the site would be ordered before the refusal.
 @pytest.mark.parametrize("path", ["/", "/health", "/mcp", "/mcp/x"])
-def test_request_without_a_bearer_token_is_refused_by_caddy(caddy_container, caddy_tunnel_ip, path):
-    assert _status(caddy_container, caddy_tunnel_ip, path) == 403
+def test_request_without_a_bearer_token_is_refused_by_caddy(tunnel_client, path):
+    status, body = _python_get(tunnel_client, f"http://caddy:{TUNNEL_PORT}{path}")
+    assert (status, body.strip()) == (403, "forbidden")
 
 
 # Sent with Python, which reads the body of an error response; busybox wget cannot, and
@@ -129,9 +124,11 @@ def bloommcp_container() -> str:
     return ids[0]
 
 
-def _python_get(command: list[str], url: str, *headers: str) -> tuple[int | None, str]:
+def _python_get(
+    command: list[str], url: str, *headers: str, python: str = "python"
+) -> tuple[int | None, str]:
     result = subprocess.run(
-        [*command, "python", "-c", _PY_GET, url, *headers],
+        [*command, python, "-c", _PY_GET, url, *headers],
         capture_output=True,
         text=True,
         timeout=60,
@@ -150,8 +147,8 @@ def _from_bloommcp(container: str, url: str, *headers: str) -> tuple[int | None,
 
 
 @pytest.fixture(scope="module")
-def tunnel_client(bloommcp_container, caddy_tunnel_network) -> list[str]:
-    """A throwaway container on the tunnel network, where cloudflared sits, from bloommcp's image."""
+def tunnel_client(bloommcp_container, caddy_tunnel_network, cloudflared_ip) -> list[str]:
+    """A throwaway container at cloudflared's address on the tunnel network, from bloommcp's image."""
     image = subprocess.run(
         ["docker", "inspect", "-f", "{{.Config.Image}}", bloommcp_container],
         capture_output=True,
@@ -160,7 +157,7 @@ def tunnel_client(bloommcp_container, caddy_tunnel_network) -> list[str]:
     ).stdout.strip()
     if not image:
         _unavailable("could not read the bloommcp image")
-    return ["docker", "run", "--rm", "--network", caddy_tunnel_network, image]
+    return ["docker", "run", "--rm", "--network", caddy_tunnel_network, "--ip", cloudflared_ip, image]
 
 
 def _through_tunnel(client: list[str], *headers: str) -> tuple[int, str]:
@@ -263,8 +260,36 @@ def caddy_tunnel_network(caddy_tunnel) -> str:
     return caddy_tunnel[0]
 
 
-def test_tunnel_traffic_still_reaches_the_entrance(caddy_container, caddy_tunnel_ip):
-    assert _request(caddy_container, f"http://{caddy_tunnel_ip}:8880/mcp") == 403
+@pytest.fixture(scope="module")
+def cloudflared_ip(caddy_container) -> str:
+    """The one address :8880 accepts, as Caddy was given it."""
+    env = subprocess.run(
+        ["docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", caddy_container],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.splitlines()
+    for line in env:
+        if line.startswith("TUNNEL_CLOUDFLARED_IP="):
+            return line.split("=", 1)[1]
+    _unavailable("caddy has no TUNNEL_CLOUDFLARED_IP")
+
+
+def test_other_tunnel_network_addresses_are_dropped(tunnel_client, caddy_container, caddy_tunnel_ip):
+    # Control: the same request from cloudflared's address is answered.
+    assert _python_get(tunnel_client, f"http://caddy:{TUNNEL_PORT}/mcp")[0] == 403
+    assert _request(caddy_container, f"http://{caddy_tunnel_ip}:{TUNNEL_PORT}/mcp") is None
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="only a Linux host reaches container addresses")
+def test_the_host_is_dropped_at_the_entrance(tunnel_client, caddy_tunnel_ip):
+    """The host reaches the tunnel network through its gateway, an address inside the subnet."""
+    assert _python_get(tunnel_client, f"http://caddy:{TUNNEL_PORT}/mcp")[0] == 403
+    status, error = _python_get(
+        [], f"http://{caddy_tunnel_ip}:{TUNNEL_PORT}/mcp", python=sys.executable
+    )
+    assert status is None
+    assert any(s in error for s in ("RemoteDisconnected", "ConnectionReset", "reset by peer")), error
 
 
 # localhost and studio.localhost are main-site addresses in CI; a bare IP lands on the :80 catch-all.

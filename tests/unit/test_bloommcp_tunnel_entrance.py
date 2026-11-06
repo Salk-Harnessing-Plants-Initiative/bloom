@@ -110,13 +110,16 @@ def test_cloudflared_memory_is_capped_without_swap():
 def test_cloudflared_is_only_on_the_tunnel_network():
     """A wrong route on the Cloudflare side reaches Caddy, not db, studio, kong or minio."""
     services = _services()
-    assert services["cloudflared"]["networks"] == [TUNNEL_NETWORK]
+    assert services["cloudflared"]["networks"] == {
+        TUNNEL_NETWORK: {"ipv4_address": "${TUNNEL_CLOUDFLARED_IP}"}
+    }
     assert "caddy" in services["cloudflared"]["depends_on"]
 
 
 def test_caddy_is_on_the_tunnel_network_too():
     caddy = _services()["caddy"]
-    assert TUNNEL_NETWORK in caddy["networks"]
+    # Fixed, so Docker cannot give Caddy cloudflared's address when Caddy starts first.
+    assert caddy["networks"][TUNNEL_NETWORK] == {"ipv4_address": "${TUNNEL_CADDY_IP}"}
     assert "supanet" in caddy["networks"], "Caddy reaches bloommcp over supanet"
     assert caddy.get("network_mode") is None
 
@@ -163,6 +166,33 @@ def test_tunnel_subnets_are_distinct_and_clear_of_salk_and_existing_networks():
         assert not any(nets[name].overlaps(t) for t in taken), f"{name} tunnel subnet overlaps {taken}"
         for other in names[i + 1 :]:
             assert not nets[name].overlaps(nets[other]), f"{name} and {other} tunnel subnets overlap"
+
+
+def _tunnel_settings(key: str) -> dict[str, str | None]:
+    ci = re.search(rf"{key}=([0-9./]+)", PR_CHECKS.read_text(encoding="utf-8"))
+    assert ci, f"pr-checks.yml does not set {key} in .env.ci"
+    return {
+        "prod": _env_value(PROD_DEFAULTS, key),
+        "staging": _env_value(STAGING_DEFAULTS, key),
+        "ci": ci.group(1),
+    }
+
+
+def test_caddy_knows_cloudflareds_address():
+    assert _services()["caddy"]["environment"]["TUNNEL_CLOUDFLARED_IP"] == "${TUNNEL_CLOUDFLARED_IP}"
+
+
+@pytest.mark.parametrize("env", ["prod", "staging", "ci"])
+def test_fixed_tunnel_addresses_are_usable_hosts_in_the_subnet(env: str):
+    subnet = ipaddress.ip_network(_tunnel_settings("TUNNEL_SUBNET")[env])
+    caddy = ipaddress.ip_address(_tunnel_settings("TUNNEL_CADDY_IP")[env])
+    cloudflared = ipaddress.ip_address(_tunnel_settings("TUNNEL_CLOUDFLARED_IP")[env])
+    # Docker takes the first host address for the gateway, through which the host reaches the network.
+    gateway = next(subnet.hosts())
+    for address in (caddy, cloudflared):
+        assert address in subnet.hosts(), f"{env}: {address} is not a host address in {subnet}"
+        assert address != gateway, f"{env}: {address} is the gateway, the host's address"
+    assert caddy != cloudflared
 
 
 def test_every_other_caddy_site_drops_tunnel_traffic():
@@ -279,8 +309,8 @@ def _top_level(body: str) -> list[str]:
 def test_tunnel_site_has_only_the_refusal_and_one_catch_all():
     """A path-specific handle is ordered before both and would skip the bearer check."""
     assert _top_level(_tunnel_site()) == [
-        "@not_tunnel not remote_ip {$TUNNEL_SUBNET}",
-        "abort @not_tunnel",
+        "@not_cloudflared not remote_ip {$TUNNEL_CLOUDFLARED_IP}/32",
+        "abort @not_cloudflared",
         '@no_bearer not header_regexp Authorization "(?i)^bearer "',
         "handle @no_bearer {",
         "handle {",
