@@ -190,13 +190,19 @@ def test_caddy_knows_cloudflareds_address():
     assert _services()["caddy"]["environment"]["TUNNEL_CLOUDFLARED_IP"] == "${TUNNEL_CLOUDFLARED_IP}"
 
 
+def _gateway(env: str) -> ipaddress.IPv4Address:
+    """The host's address on the network; Docker takes the first address of ip_range, not .1."""
+    subnet = ipaddress.ip_network(_tunnel_settings("TUNNEL_SUBNET")[env])
+    auto = ipaddress.ip_network(_tunnel_settings("TUNNEL_AUTO_RANGE")[env])
+    return next(a for a in auto if a in set(subnet.hosts()))
+
+
 @pytest.mark.parametrize("env", ["prod", "staging", "ci"])
 def test_fixed_tunnel_addresses_are_usable_hosts_in_the_subnet(env: str):
     subnet = ipaddress.ip_network(_tunnel_settings("TUNNEL_SUBNET")[env])
     caddy = ipaddress.ip_address(_tunnel_settings("TUNNEL_CADDY_IP")[env])
     cloudflared = ipaddress.ip_address(_tunnel_settings("TUNNEL_CLOUDFLARED_IP")[env])
-    # Docker takes the first host address for the gateway, through which the host reaches the network.
-    gateway = next(subnet.hosts())
+    gateway = _gateway(env)
     for address in (caddy, cloudflared):
         assert address in subnet.hosts(), f"{env}: {address} is not a host address in {subnet}"
         assert address != gateway, f"{env}: {address} is the gateway, the host's address"
@@ -217,7 +223,7 @@ def test_automatic_addresses_never_include_the_fixed_ones(env: str):
     for key in ("TUNNEL_CADDY_IP", "TUNNEL_CLOUDFLARED_IP"):
         address = ipaddress.ip_address(_tunnel_settings(key)[env])
         assert address not in auto, f"{env}: {key} {address} is inside the automatic range {auto}"
-    usable = [a for a in auto if a in set(subnet.hosts()) and a != next(subnet.hosts())]
+    usable = [a for a in auto if a in set(subnet.hosts()) and a != _gateway(env)]
     assert len(usable) >= MIN_AUTO_ADDRESSES, f"{env}: {auto} leaves only {len(usable)} addresses"
 
 
