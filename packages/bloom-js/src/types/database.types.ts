@@ -1552,6 +1552,127 @@ export type Database = {
         }
         Relationships: []
       }
+      cyl_video_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          experiment_id: number
+          frames_done: number | null
+          frames_total: number | null
+          id: string
+          msg_id: number | null
+          reads: number
+          requested_by: string | null
+          scan_id: number
+          stage: string | null
+          started_at: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id: number
+          frames_done?: number | null
+          frames_total?: number | null
+          id?: string
+          msg_id?: number | null
+          reads?: number
+          requested_by?: string | null
+          scan_id: number
+          stage?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id?: number
+          frames_done?: number | null
+          frames_total?: number | null
+          id?: string
+          msg_id?: number | null
+          reads?: number
+          requested_by?: string | null
+          scan_id?: number
+          stage?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cyl_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiment_accessions"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plant_search"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_plants_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_trait_by_experiment_wave"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "recent_experiments_by_cyl_scanner"
+            referencedColumns: ["experiment_id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cyl_video_jobs_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "cyl_scans_extended"
+            referencedColumns: ["scan_id"]
+          },
+        ]
+      }
       cyl_waves: {
         Row: {
           experiment_id: number | null
@@ -2281,6 +2402,81 @@ export type Database = {
             isOneToOne: true
             referencedRelation: "gravi_scans_extended"
             referencedColumns: ["scan_id"]
+          },
+        ]
+      }
+      gravi_plate_video_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          experiment_id: number
+          frames_done: number | null
+          frames_total: number | null
+          id: string
+          msg_id: number | null
+          plate_id: string
+          reads: number
+          requested_by: string | null
+          stage: string | null
+          started_at: string | null
+          status: string
+          updated_at: string
+          wave_number: number | null
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id: number
+          frames_done?: number | null
+          frames_total?: number | null
+          id?: string
+          msg_id?: number | null
+          plate_id: string
+          reads?: number
+          requested_by?: string | null
+          stage?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          wave_number?: number | null
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          experiment_id?: number
+          frames_done?: number | null
+          frames_total?: number | null
+          id?: string
+          msg_id?: number | null
+          plate_id?: string
+          reads?: number
+          requested_by?: string | null
+          stage?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          wave_number?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "gravi_plate_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_experiments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gravi_plate_video_jobs_experiment_id_fkey"
+            columns: ["experiment_id"]
+            isOneToOne: false
+            referencedRelation: "gravi_scans_extended"
+            referencedColumns: ["experiment_id"]
           },
         ]
       }
@@ -5137,6 +5333,13 @@ export type Database = {
           uid: string
         }[]
       }
+      bloom_table_row_estimates: {
+        Args: { p_tables: string[] }
+        Returns: {
+          row_estimate: number
+          table_name: string
+        }[]
+      }
       bloom_user_for_email: { Args: { p_email: string }; Returns: string }
       claim_cyl_pipeline_batch: {
         Args: { p_max_reads?: number; p_vt?: number }
@@ -5145,6 +5348,27 @@ export type Database = {
           msg_id: number
           run_id: number
           scan_ids: number[]
+        }[]
+      }
+      claim_cyl_video_job: {
+        Args: { p_max_reads?: number; p_vt?: number }
+        Returns: {
+          experiment_id: number
+          job_id: string
+          msg_id: number
+          reads: number
+          scan_id: number
+        }[]
+      }
+      claim_gravi_plate_video_job: {
+        Args: { p_max_reads?: number; p_vt?: number }
+        Returns: {
+          experiment_id: number
+          job_id: string
+          msg_id: number
+          plate_id: string
+          reads: number
+          wave_number: number
         }[]
       }
       claim_rnaseq_run: {
@@ -5189,6 +5413,14 @@ export type Database = {
           p_scan_ids: number[]
         }
         Returns: undefined
+      }
+      complete_cyl_video_job: {
+        Args: { p_job_id: string; p_msg_id: number; p_outcome: string }
+        Returns: boolean
+      }
+      complete_gravi_plate_video_job: {
+        Args: { p_job_id: string; p_msg_id: number; p_outcome: string }
+        Returns: boolean
       }
       complete_rnaseq_run: {
         Args: {
@@ -5283,6 +5515,29 @@ export type Database = {
         Args: { p_batch_index: number; p_run_id: number; p_scan_ids: number[] }
         Returns: number
       }
+      enqueue_cyl_video: {
+        Args: {
+          p_experiment_id: number
+          p_requested_by?: string
+          p_scan_id: number
+        }
+        Returns: {
+          created: boolean
+          job_id: string
+        }[]
+      }
+      enqueue_gravi_plate_video: {
+        Args: {
+          p_experiment_id: number
+          p_plate_id: string
+          p_requested_by?: string
+          p_wave_number?: number
+        }
+        Returns: {
+          created: boolean
+          job_id: string
+        }[]
+      }
       fail_cyl_pipeline_batch: {
         Args: {
           p_batch_index: number
@@ -5296,6 +5551,24 @@ export type Database = {
       fail_cyl_pipeline_run_scans_without_result: {
         Args: { p_argo_workflow_name: string; p_error_message?: string }
         Returns: number
+      }
+      fail_cyl_video_job: {
+        Args: {
+          p_error: string
+          p_error_code: string
+          p_job_id: string
+          p_msg_id: number
+        }
+        Returns: boolean
+      }
+      fail_gravi_plate_video_job: {
+        Args: {
+          p_error: string
+          p_error_code: string
+          p_job_id: string
+          p_msg_id: number
+        }
+        Returns: boolean
       }
       fail_rnaseq_run: {
         Args: { p_message: string; p_msg_id: number; p_run_id: number }
@@ -5649,6 +5922,28 @@ export type Database = {
         Returns: undefined
       }
       refresh_cyl_experiment_trait_counts: { Args: never; Returns: undefined }
+      report_cyl_video_progress: {
+        Args: {
+          p_frames_done?: number
+          p_frames_total?: number
+          p_job_id: string
+          p_msg_id: number
+          p_stage: string
+          p_vt?: number
+        }
+        Returns: boolean
+      }
+      report_gravi_plate_video_progress: {
+        Args: {
+          p_frames_done?: number
+          p_frames_total?: number
+          p_job_id: string
+          p_msg_id: number
+          p_stage: string
+          p_vt?: number
+        }
+        Returns: boolean
+      }
       request_scrna_cellranger_run: {
         Args: {
           p_chemistry?: string
