@@ -219,8 +219,8 @@ _EMAIL = re.compile(
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"
 )
 
-# Above this many rows (the planner's estimate), counts are estimated instead of exact.
-LARGE_TABLE_ROWS = 200_000
+# When the planner guesses at least this many matching rows, a count is its estimate, not exact.
+LARGE_COUNT_ROWS = 200_000
 
 
 def is_readable(table: str) -> bool:

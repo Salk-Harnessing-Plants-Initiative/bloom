@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 from postgrest.exceptions import APIError
+from postgrest.types import CountMethod
 
 from bloom_mcp import supabase_client
 
@@ -105,23 +106,9 @@ class PostgrestTableReader:
         return _execute(query).data or []
 
     def count(self, table, column, filters, *, exact):
-        query = (
-            self._client_factory()
-            .table(table)
-            .select(column, count="exact" if exact else "planned", head=True)
-        )
+        # A GET of one row, not a HEAD: a HEAD's error has no body, so a timeout's code is lost.
+        mode = CountMethod.exact if exact else CountMethod.planned
+        query = self._client_factory().table(table).select(column, count=mode)
         for f in filters:
             query = _apply(query, f)
-        return _execute(query).count
-
-    def row_estimates(self, tables):
-        rows = (
-            _execute(
-                self._client_factory().rpc(
-                    "bloom_table_row_estimates", {"p_tables": list(tables)}
-                )
-            ).data
-            or []
-        )
-        found = {r["table_name"]: r["row_estimate"] for r in rows}
-        return {t: found.get(t) for t in tables}
+        return _execute(query.limit(1)).count

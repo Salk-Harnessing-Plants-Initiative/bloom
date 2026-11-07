@@ -27,6 +27,9 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
     }[f.op]
 
 
+FILTERED_GUESS = 70
+
+
 class FakeTableReader:
     """Tables as lists of dicts. `slow_tables` raise QueryTimedOut on select and exact count;
     `calls` records reads and `counts` records `(table, exact)` for each count."""
@@ -39,6 +42,8 @@ class FakeTableReader:
         self.tables = tables
         self.estimates = dict(estimates or {})
         self.slow_tables: set[str] = set()
+        # The planner's guess for a filtered count: positive even when nothing matches.
+        self.filtered_guess = FILTERED_GUESS
         self.calls: list[str] = []
         self.counts: list[tuple[str, bool]] = []
 
@@ -69,9 +74,8 @@ class FakeTableReader:
         self.counts.append((table, exact))
         if exact and table in self.slow_tables:
             raise QueryTimedOut("statement timeout")
-        if not exact and not filters and table in self.estimates:
-            return self.estimates[table]
-        return len(self._filtered(table, filters))
-
-    def row_estimates(self, tables):
-        return {t: self.estimates.get(t) for t in tables}
+        if exact:
+            return len(self._filtered(table, filters))
+        if filters:
+            return self.filtered_guess
+        return self.estimates.get(table, len(self.tables[table]))

@@ -65,7 +65,3 @@ class BloomDataReader(Protocol):
         with column-level grants.
         """
         ...
-
-    def row_estimates(self, tables: list[str]) -> dict[str, int | None]:
-        """Planner row estimate per table; None for a view or a never-analyzed table."""
-        ...

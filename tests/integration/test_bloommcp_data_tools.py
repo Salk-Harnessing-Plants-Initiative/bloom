@@ -151,6 +151,8 @@ out = {
     "people": query_table({"table": "people", "limit": 5}).model_dump(),
     "count_species": count_rows({"table": "species"}).model_dump(),
     "count_view": count_rows({"table": "cyl_scans_extended"}).model_dump(),
+    "count_missing": count_rows({"table": "cyl_scan_traits", "filters": [
+        {"column": "scan_id", "op": "eq", "value": -1}]}).model_dump(),
 }
 try:
     query_table({"table": "checkpoints"})
@@ -207,11 +209,15 @@ def test_query_table_reads_a_page(tool_results):
     assert page["offset"] == 0
 
 
-def test_count_rows_counts_exactly_and_estimates_a_view(tool_results):
+def test_count_rows_counts_tables_and_views_exactly(tool_results):
     assert tool_results["count_species"]["approximate"] is False
     assert isinstance(tool_results["count_species"]["count"], int)
-    # Views have no planner row estimate of their own, so the count is the planner's.
-    assert tool_results["count_view"]["approximate"] is True
+    assert tool_results["count_view"]["approximate"] is False
+
+
+def test_a_filtered_count_for_a_missing_id_is_an_exact_zero(tool_results):
+    assert tool_results["count_missing"]["count"] == 0
+    assert tool_results["count_missing"]["approximate"] is False
 
 
 def test_an_excluded_table_is_refused(tool_results):

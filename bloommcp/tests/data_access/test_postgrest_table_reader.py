@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from postgrest.types import CountMethod
 from postgrest.exceptions import APIError
 
 from bloom_mcp.data_access.table_ports import (
@@ -115,18 +116,21 @@ def test_other_database_errors_keep_internals_out_of_the_message():
     assert "42501" in str(err.value)
 
 
-def test_count_uses_a_visible_column_and_the_requested_mode():
+@pytest.mark.parametrize("exact", [True, False])
+def test_count_is_a_get_of_one_row_in_the_requested_mode(exact):
     client = _Client(_Result(data=[], count=7))
-    assert _reader(client).count("species", "id", [], exact=False) == 7
+    assert _reader(client).count("species", "id", [], exact=exact) == 7
     select = next(c for c in client.log if c[0] == "select")
-    assert select[1] == ("id",) and select[2] == {"count": "planned", "head": True}
+    mode = CountMethod.exact if exact else CountMethod.planned
+    assert select[1] == ("id",) and select[2] == {"count": mode}
+    assert ("limit", (1,)) in [(n, a) for n, a, _ in client.log]
 
 
-def test_row_estimates_call_the_rpc():
-    client = _Client(_Result(data=[{"table_name": "species", "row_estimate": 5}]))
-    estimates = _reader(client).row_estimates(["species", "views_have_none"])
-    assert estimates == {"species": 5, "views_have_none": None}
-    assert (
-        "rpc",
-        ("bloom_table_row_estimates", {"p_tables": ["species", "views_have_none"]}),
-    ) in [(n, a) for n, a, _ in client.log]
+def test_a_count_that_hits_the_statement_timeout_becomes_query_timed_out():
+    client = _Client(
+        error=APIError(
+            {"code": "57014", "message": "canceling statement due to timeout"}
+        )
+    )
+    with pytest.raises(QueryTimedOut):
+        _reader(client).count("cyl_scan_traits", "id", [], exact=True)
