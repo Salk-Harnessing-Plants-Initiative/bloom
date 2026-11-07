@@ -50,6 +50,7 @@ const BUILDER_METHODS = [
   "not",
   "is",
   "lt",
+  "lte",
   "gte",
   "order",
   "limit",

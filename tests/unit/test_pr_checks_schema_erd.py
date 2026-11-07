@@ -35,7 +35,7 @@ def _drift_step() -> tuple[list[dict], int]:
 
 def test_drift_step_runs_after_the_grants_step():
     steps, drift = _drift_step()
-    grants = _step_index(steps, "Apply bloom_* schema-USAGE grants")
+    grants = _step_index(steps, "Apply schema grants and function revokes")
     assert drift > grants
 
 

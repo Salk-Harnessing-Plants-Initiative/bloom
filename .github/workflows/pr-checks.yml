@@ -1041,12 +1041,12 @@ jobs:
             exit 1
           }
 
-      # bloom_* schema-USAGE grants (issue #333). `supabase db push` applies
+      # bloom_* schema-USAGE grants (issue #333) and function revokes (dblink). `supabase db push` applies
       # migrations as the downgraded `postgres`, which cannot grant on the
       # supabase_admin-owned storage/auth schemas (a raw grant there silently
       # no-ops). Apply the single-source grants file as supabase_admin, AFTER db
       # push has created the bloom_* roles. Same file `make migrate-local` applies.
-      - name: Apply bloom_* schema-USAGE grants
+      - name: Apply schema grants and function revokes
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
         run: |

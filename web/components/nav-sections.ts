@@ -34,6 +34,8 @@ export const navSections: NavSection[] = [
       // Named for its pipeline: each pipeline has runs of its own.
       { name: "Cylinder\nPipeline Runs", href: "/app/cyl-pipeline-runs" },
       { name: "RNA-seq\nPipeline Runs", href: "/app/rnaseq-runs" },
+      // Not a pipeline: a queue of plate and cylinder scan video requests.
+      { name: "Video Jobs", href: "/app/video-jobs" },
     ],
   },
   {
