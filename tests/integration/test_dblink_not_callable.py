@@ -4,13 +4,16 @@ Only the superuser may call dblink (revoked in supabase/grants/schema_grants.sql
 The first-boot script installs the dblink extension into `public`, where PostgREST exposes every
 function as /rest/v1/rpc/<name> and Postgres lets PUBLIC execute it by default. dblink opens
 connections from the database server to other hosts. The grants file moves it to `extensions`,
-which PostgREST doesn't serve, and revokes it from every role.
+which PostgREST doesn't serve, and revokes it from every grantee but the owner.
 
 Every non-superuser role is checked, so a new role or one that inherits access is caught too.
 Asserted with has_function_privilege, never by calling the functions.
 """
 
+import json
 import os
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -50,7 +53,14 @@ def test_no_non_superuser_role_can_call_dblink(pg_conn, dblink_functions):
             (dblink_functions,),
         )
         callable_by = cur.fetchall()
-    assert {"anon", "authenticated", "bloom_agent", "postgres"} <= checked
+    assert {
+        "anon",
+        "authenticated",
+        "service_role",
+        "bloom_agent",
+        "bloom_workflows",
+        "postgres",
+    } <= checked
     assert callable_by == [], f"non-superuser roles can execute dblink: {callable_by}"
 
 
@@ -76,3 +86,19 @@ def test_dblink_is_not_in_a_schema_postgrest_serves(pg_conn, dblink_functions):
             " WHERE e.extname = 'dblink'"
         )
         assert cur.fetchone()[0] == "extensions"
+
+
+def test_postgrest_does_not_serve_the_extensions_schema(base_url, service_role_key):
+    """An API test, so adding `extensions` to PGRST_DB_SCHEMAS can't slip past the DB checks."""
+    req = urllib.request.Request(
+        f"{base_url}/api/rest/v1/",  # /api/* -> kong -> postgrest
+        headers={
+            "apikey": service_role_key,
+            "Authorization": f"Bearer {service_role_key}",
+            "Accept-Profile": "extensions",
+        },
+    )
+    with pytest.raises(urllib.error.HTTPError) as err:
+        urllib.request.urlopen(req, timeout=10)
+    assert err.value.code == 406
+    assert json.loads(err.value.read().decode())["code"] == "PGRST106"

@@ -48,27 +48,35 @@ GRANT USAGE ON SCHEMA auth TO bloom_writer;
 
 -- dblink: the first-boot script installs it into `public`, where PostgREST exposes it and
 -- Postgres lets PUBLIC execute it by default; only the superuser may call it (it opens
--- connections from the database server). Moved to `extensions`, which PostgREST doesn't serve.
--- Here, not a migration: supabase_admin owns it, and `db push`'s postgres role can't alter or
--- revoke it. Idempotent; a no-op where dblink isn't installed.
+-- connections from the database server). Moved to `extensions`, which PostgREST doesn't serve,
+-- and revoked from every grantee in each function's ACL but the owner (CASCADE drops grants
+-- they passed on). Here, not a migration: supabase_admin owns it, and `db push`'s postgres
+-- role can't alter or revoke it. Idempotent; a no-op where dblink isn't installed.
 DO $$
 DECLARE
     f regprocedure;
+    grantee oid;
+    changed boolean := false;
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink'
                  AND extnamespace = 'public'::regnamespace) THEN
         ALTER EXTENSION dblink SET SCHEMA extensions;
+        changed := true;
     END IF;
-    FOR f IN
-        SELECT p.oid::regprocedure
+    FOR f, grantee IN
+        SELECT DISTINCT p.oid::regprocedure, a.grantee
           FROM pg_proc p
           JOIN pg_depend d ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
           JOIN pg_extension e ON e.oid = d.refobjid AND e.extname = 'dblink'
+          CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+         WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner
     LOOP
-        EXECUTE format(
-            'REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon, authenticated, service_role, '
-            'bloom_user, bloom_writer, bloom_admin, bloom_agent, bloom_workflows, postgres',
-            f
-        );
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM %s CASCADE', f,
+                       CASE WHEN grantee = 0 THEN 'PUBLIC' ELSE grantee::regrole::text END);
+        changed := true;
     END LOOP;
+    IF changed THEN
+        -- PostgREST's DDL watcher doesn't fire on ALTER EXTENSION or REVOKE.
+        PERFORM pg_notify('pgrst', 'reload schema');
+    END IF;
 END $$;

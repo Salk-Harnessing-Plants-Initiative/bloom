@@ -39,7 +39,7 @@ COMPOSE_FILE = REPO_ROOT / "docker-compose.dev.yml"
 ENV_DEV = REPO_ROOT / ".env.dev"
 # Single source of truth for the bloom_* schema-USAGE grants (issue #333):
 # the same .sql file applied (as supabase_admin) by `make migrate-local`, CI, and
-# the prod/staging manual step. check_schema_usage parses it for the expected set.
+# every prod/staging deploy. check_schema_usage parses it for the expected set.
 GRANT_FILE = REPO_ROOT / "supabase" / "grants" / "schema_grants.sql"
 # Read-only "id sequences behind their data" query (bloom#1022), also run by deploy.yml.
 SEQUENCES_BEHIND_SQL = REPO_ROOT / "scripts" / "sql" / "sequences_behind.sql"
