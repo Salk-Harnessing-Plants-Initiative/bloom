@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
+from bloom_mcp.data_access import table_access
 from bloom_mcp.data_access.table_access import LARGE_TABLE_ROWS
 from bloom_mcp.data_access.table_ports import QueryTimedOut
 from bloom_mcp.tools import _ports
@@ -57,7 +58,7 @@ def count_rows(params: CountRowsParams) -> CountRowsResult:
     check_filterable(params.table, [f.column for f in params.filters])
     filters = to_filters(params.filters)
     reader = _ports.table_reader()
-    column = "id" if "id" in allowed else allowed[0]
+    column = table_access.paging_key(params.table)[0]
 
     estimate = reader.row_estimates([params.table]).get(params.table)
     if estimate is not None and estimate < LARGE_TABLE_ROWS:

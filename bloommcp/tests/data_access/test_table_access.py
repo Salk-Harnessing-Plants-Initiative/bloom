@@ -70,3 +70,14 @@ def test_redacted_columns_are_readable_but_not_filterable():
     for column in ("status_logs", "legacy_progress_logs_jsonb"):
         assert column in table_access.EMAIL_REDACTED_COLUMNS["gene_candidates"]
         assert column in table_access.visible_columns("gene_candidates", [column])
+
+
+def test_paging_keys_name_readable_tables_and_default_to_id():
+    assert set(table_access.PAGING_KEYS) <= table_access.READABLE_TABLES
+    assert all(table_access.PAGING_KEYS.values())
+    assert table_access.paging_key("species") == ("id",)
+    assert table_access.paging_key("orthogroups") == (
+        "run_id",
+        "protein_uid",
+        "orthogroup",
+    )

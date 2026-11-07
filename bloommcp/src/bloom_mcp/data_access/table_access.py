@@ -151,6 +151,64 @@ HIDDEN_COLUMNS: dict[str, frozenset[str]] = {
     "gravi_plate_video_jobs": frozenset({"error_message", "msg_id", "reads"}),
 }
 
+# The unique key each read is sorted by, so pages never overlap or skip rows, in the order of
+# the index behind it so the database walks that index. Default ("id",): every other readable
+# table's primary key is `id`. Views have no key; theirs come from the table each row maps to.
+PAGING_KEYS: dict[str, tuple[str, ...]] = {
+    # Tables whose primary key isn't `id`.
+    "cyl_dataset_traits": ("dataset_id", "trait_id"),
+    "cyl_experiment_trait_counts": ("experiment_id",),
+    "cyl_pipeline_run_workflows": ("run_id", "argo_workflow_name"),
+    "cyl_qc_set_codes": ("set_id", "code_id"),
+    "cyl_scan_latest_source": ("scan_id",),
+    "gene_candidate_scientists": ("id", "gene_candidate_id", "scientist_id"),
+    "gene_candidate_support": ("primary_key",),
+    "gene_candidates": ("gene",),
+    "gene_orthologs": ("gene_x", "gene_y"),
+    "gene_patents": ("primary_key",),
+    "gene_progress_notes": ("primary_key",),
+    "genes": ("gene_id",),
+    "orthogroups": ("run_id", "protein_uid", "orthogroup"),
+    "protein_embedding_models": ("model_id",),
+    "proteins": ("uid",),
+    "scrna_cluster_neighbors": ("dataset_id", "cluster_id", "neighbor_cluster_id"),
+    "scrna_cluster_stats": ("dataset_id", "cluster_id"),
+    "scrna_embedding_dataset_members": ("embedding_id", "dataset_id"),
+    "scrna_embedding_labels": ("embedding_id", "key"),
+    "scrna_embedding_points": ("embedding_id", "ordinal"),
+    # Views: one row per scan or plant.
+    "cyl_scans_extended": ("scan_id",),
+    "cyl_plants_extended": ("plant_id",),
+    "cyl_plant_search": ("plant_id",),
+    "gravi_scans_extended": ("scan_id",),
+    # Views over cyl_scan_traits, in its unique (scan_id, source_id, trait_id) index order;
+    # `value` breaks ties between old rows whose source or trait is unset.
+    "cyl_scan_traits_source": ("scan_id", "source_id", "trait_id", "value"),
+    "cyl_scan_traits_latest": ("scan_id", "source_id", "trait_id", "value"),
+    # Grouped or distinct views: their grouping columns.
+    "cyl_accession_sample_counts": ("species_id", "accession_id"),
+    "cyl_dataset_trait_names": ("dataset_id", "trait_name"),
+    "cyl_experiment_accessions": ("experiment_id", "accession_id"),
+    "cyl_pipeline_run_experiments": ("run_id", "experiment_id"),
+    "cyl_scan_timeline": ("date_scanned",),
+    "cyl_scan_trait_names": ("name",),
+    "cyl_trait_by_experiment_wave": ("wave_id", "trait_name"),
+    "cyl_wave_timeline": (
+        "date_scanned",
+        "experiment_name",
+        "wave_number",
+        "species_name",
+    ),
+    "gravi_scan_timeline": (
+        "date_scanned",
+        "experiment_name",
+        "wave_number",
+        "species_name",
+    ),
+    "recent_experiments_by_cyl_scanner": ("scanner_id", "rank_on_scanner"),
+    "recent_phenotypes_by_plate_scanner": ("scanner_id", "rank_on_scanner"),
+}
+
 # Readable, but with email addresses replaced and never filtered or ordered on: the gene
 # candidate logs record the email of whoever changed a status.
 EMAIL_REDACTED_COLUMNS: dict[str, frozenset[str]] = {
@@ -187,3 +245,7 @@ def redact_emails(value: Any) -> Any:
     if isinstance(value, dict):
         return {redact_emails(k): redact_emails(v) for k, v in value.items()}
     return value
+
+
+def paging_key(table: str) -> tuple[str, ...]:
+    return PAGING_KEYS.get(table, ("id",))

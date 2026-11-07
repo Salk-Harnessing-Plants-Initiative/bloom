@@ -95,12 +95,12 @@ class PostgrestTableReader:
             name: list(spec.get("properties", {})) for name, spec in definitions.items()
         }
 
-    def select(self, table, columns, filters, order_by, descending, limit, offset):
+    def select(self, table, columns, filters, order, limit, offset):
         query = self._client_factory().table(table).select(",".join(columns))
         for f in filters:
             query = _apply(query, f)
-        if order_by:
-            query = query.order(order_by, desc=descending)
+        for s in order:
+            query = query.order(s.column, desc=s.descending)
         query = query.range(offset, offset + limit - 1)
         return _execute(query).data or []
 

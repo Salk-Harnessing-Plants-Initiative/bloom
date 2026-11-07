@@ -70,6 +70,53 @@ def test_every_readable_table_exists(pg_conn):
     assert missing == set(), f"readable but not in the database: {sorted(missing)}"
 
 
+def test_every_readable_table_pages_by_its_primary_key_in_index_order(pg_conn):
+    access = _table_access()
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relname,
+                   (SELECT array_agg(a.attname ORDER BY k.ord)
+                      FROM unnest(i.indkey) WITH ORDINALITY k(attnum, ord)
+                      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum)
+              FROM pg_class c JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary
+             WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY (%s)
+            """,
+            (sorted(access.READABLE_TABLES),),
+        )
+        keys = {name: tuple(cols) for name, cols in cur.fetchall()}
+    wrong = {
+        t: (access.paging_key(t), keys[t])
+        for t in keys
+        if access.paging_key(t) != keys[t]
+    }
+    assert not wrong, f"declared paging key differs from the primary key: {wrong}"
+
+
+def test_every_readable_view_has_a_paging_key_on_its_own_columns(pg_conn):
+    access = _table_access()
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relname, array_agg(a.attname)
+              FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0
+             WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('v', 'm')
+               AND c.relname = ANY (%s)
+             GROUP BY c.relname
+            """,
+            (sorted(access.READABLE_TABLES),),
+        )
+        views = {name: set(cols) for name, cols in cur.fetchall()}
+    missing = sorted(v for v in views if v not in access.PAGING_KEYS)
+    assert not missing, f"readable views with no paging key: {missing}"
+    bad = {
+        v: access.PAGING_KEYS[v]
+        for v in views
+        if not set(access.PAGING_KEYS[v]) <= views[v]
+    }
+    assert not bad, f"paging keys naming columns the view doesn't have: {bad}"
+
+
 def test_every_email_column_on_a_readable_table_is_hidden(pg_conn):
     """A new email column, or a newly readable table with one, fails here until it is hidden
     or its table is excluded."""

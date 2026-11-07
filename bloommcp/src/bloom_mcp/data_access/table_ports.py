@@ -23,6 +23,12 @@ class Filter:
     value: Any
 
 
+@dataclass(frozen=True)
+class Sort:
+    column: str
+    descending: bool = False
+
+
 class TableReadError(Exception):
     """A read failed; the message never carries hosts, SQL or table internals."""
 
@@ -43,8 +49,7 @@ class BloomDataReader(Protocol):
         table: str,
         columns: list[str],
         filters: list[Filter],
-        order_by: str | None,
-        descending: bool,
+        order: list[Sort],
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:

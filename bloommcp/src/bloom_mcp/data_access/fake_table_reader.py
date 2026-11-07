@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .table_ports import Filter, QueryTimedOut
+from .table_ports import Filter, QueryTimedOut, Sort
 
 
 def _matches(row: dict[str, Any], f: Filter) -> bool:
@@ -50,16 +50,17 @@ class FakeTableReader:
     def _filtered(self, table: str, filters: list[Filter]) -> list[dict[str, Any]]:
         return [r for r in self.tables[table] if all(_matches(r, f) for f in filters)]
 
-    def select(self, table, columns, filters, order_by, descending, limit, offset):
+    def select(self, table, columns, filters, order: list[Sort], limit, offset):
         self.calls.append(table)
         if table in self.slow_tables:
             raise QueryTimedOut("statement timeout")
         rows = self._filtered(table, filters)
-        if order_by:
+        # Stable sorts, last key first; nulls last ascending and first descending, as Postgres.
+        for s in reversed(order):
             rows = sorted(
                 rows,
-                key=lambda r: (r.get(order_by) is None, r.get(order_by)),
-                reverse=descending,
+                key=lambda r, c=s.column: (r.get(c) is None, r.get(c)),
+                reverse=s.descending,
             )
         return [{c: r.get(c) for c in columns} for r in rows[offset : offset + limit]]
 

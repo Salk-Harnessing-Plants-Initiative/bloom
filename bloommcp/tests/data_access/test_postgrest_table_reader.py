@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from postgrest.exceptions import APIError
 
-from bloom_mcp.data_access.table_ports import Filter, QueryTimedOut, TableReadError
+from bloom_mcp.data_access.table_ports import (
+    Filter,
+    QueryTimedOut,
+    Sort,
+    TableReadError,
+)
 from bloom_mcp.data_access.table_reader import PostgrestTableReader
 
 
@@ -68,8 +73,7 @@ def test_select_maps_filters_order_and_range():
             Filter("deleted_at", "is_null", True),
             Filter("common_name", "is_null", False),
         ],
-        order_by="id",
-        descending=True,
+        order=[Sort("dataset_id", descending=True), Sort("cluster_id")],
         limit=10,
         offset=20,
     )
@@ -81,7 +85,11 @@ def test_select_maps_filters_order_and_range():
     assert ("ilike", ("common_name", r"%a\_b\%%")) in calls
     assert ("is_", ("deleted_at", "null")) in calls
     assert ("not_", ()) in calls and ("is_", ("common_name", "null")) in calls
-    assert ("order", ("id",)) in calls
+    orders = [(args, kwargs) for name, args, kwargs in client.log if name == "order"]
+    assert orders == [
+        (("dataset_id",), {"desc": True}),
+        (("cluster_id",), {"desc": False}),
+    ]
     assert ("range", (20, 29)) in calls
 
 
@@ -92,7 +100,7 @@ def test_statement_timeout_becomes_query_timed_out():
         )
     )
     with pytest.raises(QueryTimedOut):
-        _reader(client).select("species", ["id"], [], None, False, 10, 0)
+        _reader(client).select("species", ["id"], [], [Sort("id")], 10, 0)
 
 
 def test_other_database_errors_keep_internals_out_of_the_message():
@@ -102,7 +110,7 @@ def test_other_database_errors_keep_internals_out_of_the_message():
         )
     )
     with pytest.raises(TableReadError) as err:
-        _reader(client).select("species", ["id"], [], None, False, 10, 0)
+        _reader(client).select("species", ["id"], [], [Sort("id")], 10, 0)
     assert "secret_x" not in str(err.value)
     assert "42501" in str(err.value)
 

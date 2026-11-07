@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
 from bloom_mcp.data_access import table_access
-from bloom_mcp.data_access.table_ports import QueryTimedOut
+from bloom_mcp.data_access.table_ports import QueryTimedOut, Sort
 from bloom_mcp.tools import _ports
 
 from ._common import (
@@ -40,8 +40,13 @@ class QueryTableParams(BaseModel):
     filters: list[FilterParam] = Field(
         default_factory=list, description="Conditions, all must hold."
     )
-    order_by: str | None = Field(default=None, description="Column to sort by.")
-    descending: bool = Field(default=False, description="Sort largest first.")
+    order_by: str | None = Field(
+        default=None,
+        description="Column to sort by; rows are always also sorted by the table's key.",
+    )
+    descending: bool = Field(
+        default=False, description="Largest first (order_by, or the key if none)."
+    )
     limit: int = Field(
         default=DEFAULT_LIMIT,
         ge=1,
@@ -77,6 +82,14 @@ def _cut(value: Any) -> tuple[Any, bool]:
     return value, False
 
 
+def _order(table: str, order_by: str | None, descending: bool) -> list[Sort]:
+    """Claude's column first, then the table's unique key, so pages never overlap."""
+    key = table_access.paging_key(table)
+    if order_by is None:
+        return [Sort(c, descending) for c in key]
+    return [Sort(order_by, descending)] + [Sort(c) for c in key if c != order_by]
+
+
 @as_mcp_tool(
     input_model=QueryTableParams, output_model=QueryTableResult, errors=DECLARED_ERRORS
 )
@@ -91,22 +104,18 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     columns = params.columns or allowed
     check_columns(params.table, columns, allowed)
     check_columns(params.table, [f.column for f in params.filters], allowed)
-    order_by = params.order_by or ("id" if "id" in allowed else None)
-    if order_by:
-        check_columns(params.table, [order_by], allowed)
-    check_filterable(
-        params.table,
-        [f.column for f in params.filters] + ([order_by] if order_by else []),
-    )
+    chosen = [params.order_by] if params.order_by else []
+    check_columns(params.table, chosen, allowed)
+    check_filterable(params.table, [f.column for f in params.filters] + chosen)
     filters = to_filters(params.filters)
+    order = _order(params.table, params.order_by, params.descending)
 
     try:
         rows = _ports.table_reader().select(
             params.table,
             columns,
             filters,
-            order_by,
-            params.descending,
+            order,
             params.limit + 1,
             params.offset,
         )

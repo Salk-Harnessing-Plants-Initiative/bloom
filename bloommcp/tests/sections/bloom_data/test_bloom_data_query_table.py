@@ -6,7 +6,11 @@ import pytest
 
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access.table_access import EMAIL_HIDDEN
-from bloom_mcp.sections.bloom_data.query_table import MAX_CELL_CHARS, query_table
+from bloom_mcp.sections.bloom_data.query_table import (
+    MAX_CELL_CHARS,
+    TRUNCATED,
+    query_table,
+)
 
 
 def test_default_page_is_50_rows_with_a_next_offset(reader):
@@ -116,10 +120,12 @@ def test_a_timeout_asks_to_narrow_the_query(reader):
 
 
 def test_long_values_are_cut(reader):
-    reader.tables["species"][0]["common_name"] = "x" * (MAX_CELL_CHARS + 50)
+    first = next(r for r in reader.tables["species"] if r["id"] == 1)
+    first["common_name"] = "x" * (MAX_CELL_CHARS + 50)
     result = query_table({"table": "species", "limit": 1})
-    assert len(result.rows[0]["common_name"]) <= MAX_CELL_CHARS + 20
+    assert result.rows[0]["common_name"] == "x" * MAX_CELL_CHARS + TRUNCATED
     assert result.truncated_values is True
+    assert query_table({"table": "species", "offset": 1}).truncated_values is False
 
 
 def test_emails_in_gene_candidate_logs_are_hidden(reader):
@@ -153,3 +159,64 @@ def test_log_columns_cannot_be_filtered_or_sorted(reader, column):
             query_table({"table": "gene_candidates", **call})
         assert err.value.code == "tool_error"
         assert column in err.value.message
+
+
+def _ids(rows, key):
+    return [r[key] for r in rows]
+
+
+def test_a_table_without_id_pages_by_its_primary_key_without_overlap(reader):
+    first = query_table({"table": "genes", "columns": ["gene_id"], "limit": 10})
+    second = query_table(
+        {
+            "table": "genes",
+            "columns": ["gene_id"],
+            "limit": 10,
+            "offset": first.next_offset,
+        }
+    )
+    assert _ids(first.rows, "gene_id") == [f"AT{i:05d}" for i in range(1, 11)]
+    assert _ids(second.rows, "gene_id") == [f"AT{i:05d}" for i in range(11, 21)]
+
+
+def test_a_composite_key_sorts_by_every_key_column_in_index_order(reader):
+    rows = query_table({"table": "scrna_cluster_stats"}).rows
+    assert [(r["dataset_id"], r["cluster_id"]) for r in rows] == [
+        (1, 1),
+        (1, 2),
+        (1, 3),
+        (2, 1),
+        (2, 2),
+        (2, 3),
+    ]
+
+
+def test_a_view_sorts_by_its_declared_key(reader):
+    rows = query_table({"table": "cyl_scans_extended"}).rows
+    assert _ids(rows, "scan_id") == [1, 2, 3, 4, 5]
+
+
+def test_descending_without_order_by_reverses_the_key(reader):
+    rows = query_table(
+        {"table": "genes", "columns": ["gene_id"], "descending": True}
+    ).rows
+    assert rows[0]["gene_id"] == "AT00030"
+
+
+def test_a_chosen_sort_column_is_tie_broken_by_the_key(reader):
+    rows = query_table(
+        {"table": "cyl_scans_extended", "order_by": "experiment_id", "descending": True}
+    ).rows
+    assert [(r["experiment_id"], r["scan_id"]) for r in rows] == [
+        (1, 1),
+        (1, 3),
+        (1, 5),
+        (0, 2),
+        (0, 4),
+    ]
+
+
+def test_the_peek_row_is_not_returned_when_exactly_limit_rows_remain(reader):
+    result = query_table({"table": "species", "offset": 70, "limit": 50})
+    assert result.returned == 50
+    assert result.has_more is False
