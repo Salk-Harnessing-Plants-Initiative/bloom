@@ -5477,40 +5477,6 @@ export type Database = {
       }
       cyl_trait_recipe_key_v1: { Args: { metadata: Json }; Returns: string }
       cyl_trait_recipe_payload_v1: { Args: { metadata: Json }; Returns: Json }
-      dblink: { Args: { "": string }; Returns: Record<string, unknown>[] }
-      dblink_cancel_query: { Args: { "": string }; Returns: string }
-      dblink_close: { Args: { "": string }; Returns: string }
-      dblink_connect: { Args: { "": string }; Returns: string }
-      dblink_connect_u: { Args: { "": string }; Returns: string }
-      dblink_current_query: { Args: never; Returns: string }
-      dblink_disconnect:
-        | { Args: never; Returns: string }
-        | { Args: { "": string }; Returns: string }
-      dblink_error_message: { Args: { "": string }; Returns: string }
-      dblink_exec: { Args: { "": string }; Returns: string }
-      dblink_fdw_validator: {
-        Args: { catalog: unknown; options: string[] }
-        Returns: undefined
-      }
-      dblink_get_connections: { Args: never; Returns: string[] }
-      dblink_get_notify:
-        | { Args: { conname: string }; Returns: Record<string, unknown>[] }
-        | { Args: never; Returns: Record<string, unknown>[] }
-      dblink_get_pkey: {
-        Args: { "": string }
-        Returns: Database["public"]["CompositeTypes"]["dblink_pkey_results"][]
-        SetofOptions: {
-          from: "*"
-          to: "dblink_pkey_results"
-          isOneToOne: false
-          isSetofReturn: true
-        }
-      }
-      dblink_get_result: {
-        Args: { "": string }
-        Returns: Record<string, unknown>[]
-      }
-      dblink_is_busy: { Args: { "": string }; Returns: number }
       enqueue_cyl_pipeline_batch: {
         Args: { p_batch_index: number; p_run_id: number; p_scan_ids: number[] }
         Returns: number
@@ -6101,10 +6067,7 @@ export type Database = {
       [_ in never]: never
     }
     CompositeTypes: {
-      dblink_pkey_results: {
-        position: number | null
-        colname: string | null
-      }
+      [_ in never]: never
     }
   }
 }
