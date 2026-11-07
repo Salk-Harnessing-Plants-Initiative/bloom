@@ -10,7 +10,7 @@ from bloom_mcp.sections.bloom_data.list_tables import list_tables
 
 def test_lists_only_allow_listed_tables(reader):
     result = list_tables({})
-    assert result.tables == ["cyl_scan_traits", "people", "species"]
+    assert result.tables == ["cyl_scan_traits", "gene_candidates", "people", "species"]
     assert result.columns is None
 
 

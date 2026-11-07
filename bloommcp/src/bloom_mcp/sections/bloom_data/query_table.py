@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
+from bloom_mcp.data_access import table_access
 from bloom_mcp.data_access.table_ports import QueryTimedOut
 from bloom_mcp.tools import _ports
 
@@ -15,6 +16,7 @@ from ._common import (
     DECLARED_ERRORS,
     FilterParam,
     check_columns,
+    check_filterable,
     readable_columns,
     to_filters,
     too_slow,
@@ -92,6 +94,10 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     order_by = params.order_by or ("id" if "id" in allowed else None)
     if order_by:
         check_columns(params.table, [order_by], allowed)
+    check_filterable(
+        params.table,
+        [f.column for f in params.filters] + ([order_by] if order_by else []),
+    )
     filters = to_filters(params.filters)
 
     try:
@@ -109,9 +115,12 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
 
     has_more = len(rows) > params.limit
     rows = rows[: params.limit]
+    redacted = table_access.unfilterable_columns(params.table)
     truncated = False
     for row in rows:
         for key, value in row.items():
+            if key in redacted:
+                value = table_access.redact_emails(value)
             row[key], cut = _cut(value)
             truncated = truncated or cut
     return QueryTableResult(

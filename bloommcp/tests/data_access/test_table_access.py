@@ -53,3 +53,20 @@ def test_visible_columns_drop_hidden_ones_and_keep_order():
 
 def test_an_unknown_table_is_not_readable():
     assert not table_access.is_readable("not_a_table")
+
+
+def test_redact_emails_reaches_nested_values_and_keys():
+    value = {"a@b.org": ["x c.d@e.co.uk y", {"k": "no email", "n": 3}], "z": None}
+    assert table_access.redact_emails(value) == {
+        table_access.EMAIL_HIDDEN: [
+            f"x {table_access.EMAIL_HIDDEN} y",
+            {"k": "no email", "n": 3},
+        ],
+        "z": None,
+    }
+
+
+def test_redacted_columns_are_readable_but_not_filterable():
+    for column in ("status_logs", "legacy_progress_logs_jsonb"):
+        assert column in table_access.EMAIL_REDACTED_COLUMNS["gene_candidates"]
+        assert column in table_access.visible_columns("gene_candidates", [column])

@@ -114,8 +114,7 @@ print(json.dumps(out, default=str))
 """
 
 
-@pytest.fixture(scope="module")
-def tool_results() -> dict:
+def _run_in_bloommcp(script: str) -> dict:
     ps = subprocess.run(
         ["docker", "ps", "-q", "--filter", "label=com.docker.compose.service=bloommcp"],
         capture_output=True,
@@ -126,7 +125,7 @@ def tool_results() -> dict:
     if len(ids) != 1:
         _unavailable(f"expected one running bloommcp container, found {len(ids)}")
     result = subprocess.run(
-        ["docker", "exec", ids[0], "python", "-c", _SCRIPT],
+        ["docker", "exec", ids[0], "python", "-c", script],
         capture_output=True,
         text=True,
         timeout=120,
@@ -134,6 +133,11 @@ def tool_results() -> dict:
     )
     assert result.returncode == 0, result.stderr[-2000:]
     return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+@pytest.fixture(scope="module")
+def tool_results() -> dict:
+    return _run_in_bloommcp(_SCRIPT)
 
 
 def test_list_tables_shows_data_tables_and_hides_chat_internals(tool_results):
@@ -165,3 +169,42 @@ def test_count_rows_counts_exactly_and_estimates_a_view(tool_results):
 
 def test_an_excluded_table_is_refused(tool_results):
     assert tool_results["excluded"] == "tool_error"
+
+
+_GENE = "TEST_BLOOMMCP_EMAIL_REDACTION"
+_GENE_SCRIPT = f"""
+import json
+from bloom_mcp.sections.bloom_data.query_table import query_table
+
+page = query_table({{"table": "gene_candidates", "filters": [
+    {{"column": "gene", "op": "eq", "value": "{_GENE}"}}]}})
+print(json.dumps(page.rows, default=str))
+"""
+
+
+@pytest.fixture
+def gene_candidate_with_emails(pg_conn):
+    logs = [{"userid": "ada@salk.edu", "status": "suspected", "date": "2026-01-02"}]
+    legacy = [{"user_email": "ben@salk.edu", "note": "sent"}]
+    with pg_conn.cursor() as cur:
+        cur.execute("INSERT INTO genes (gene_id) VALUES (%s)", (_GENE,))
+        cur.execute(
+            "INSERT INTO gene_candidates (gene, status_logs, legacy_progress_logs_jsonb)"
+            " VALUES (%s, %s::jsonb, %s::jsonb)",
+            (_GENE, json.dumps(logs), json.dumps(legacy)),
+        )
+    pg_conn.commit()
+    try:
+        yield
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM gene_candidates WHERE gene = %s", (_GENE,))
+            cur.execute("DELETE FROM genes WHERE gene_id = %s", (_GENE,))
+        pg_conn.commit()
+
+
+def test_emails_in_gene_candidate_logs_never_reach_claude(gene_candidate_with_emails):
+    rows = _run_in_bloommcp(_GENE_SCRIPT)
+    assert len(rows) == 1
+    assert rows[0]["status_logs"][0]["status"] == "suspected"
+    assert "@" not in json.dumps(rows)

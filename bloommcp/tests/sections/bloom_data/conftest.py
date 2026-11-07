@@ -15,6 +15,17 @@ PEOPLE = [
     {"id": 2, "name": "Ben", "email": "ben@salk.edu"},
 ]
 TRAITS = [{"id": 1, "scan_id": 10, "value": 0.5}]
+GENE_CANDIDATES = [
+    {
+        "gene": "AT1G01010",
+        "status": "validated",
+        "status_logs": [
+            {"userid": "ada@salk.edu", "status": "suspected", "date": "2026-01-02"},
+            {"userid": "Ben@Salk.EDU", "status": "validated", "date": "2026-02-03"},
+        ],
+        "legacy_progress_logs_jsonb": {"note": "sent to ben.f@salk.edu", "n": 1},
+    }
+]
 
 
 @pytest.fixture
@@ -24,6 +35,7 @@ def reader():
             "species": SPECIES,
             "people": PEOPLE,
             "cyl_scan_traits": TRAITS,
+            "gene_candidates": GENE_CANDIDATES,
             "checkpoints": [{"x": 1}],
         },
         estimates={"species": 120, "people": 2, "cyl_scan_traits": 31_800_000},

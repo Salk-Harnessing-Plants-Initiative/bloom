@@ -61,6 +61,15 @@ def check_columns(table: str, wanted: list[str], allowed: list[str]) -> None:
         )
 
 
+def check_filterable(table: str, wanted: list[str]) -> None:
+    blocked = [c for c in wanted if c in table_access.unfilterable_columns(table)]
+    if blocked:
+        raise fix_request(
+            f"'{table}' can't be filtered or sorted on {', '.join(repr(c) for c in blocked)}.",
+            "Read the column instead.",
+        )
+
+
 def to_filters(params: list[FilterParam]) -> list[Filter]:
     for p in params:
         if p.op == "in" and not isinstance(p.value, list):

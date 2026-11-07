@@ -49,3 +49,14 @@ def test_an_excluded_table_is_refused(reader):
     with pytest.raises(BloomMCPError) as err:
         count_rows({"table": "chat_threads"})
     assert err.value.code == "tool_error"
+
+
+def test_log_columns_cannot_be_filtered_in_a_count(reader):
+    with pytest.raises(BloomMCPError) as err:
+        count_rows(
+            {
+                "table": "gene_candidates",
+                "filters": [{"column": "status_logs", "op": "contains", "value": "@"}],
+            }
+        )
+    assert err.value.code == "tool_error"

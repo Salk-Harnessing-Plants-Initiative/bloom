@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from bloom_mcp.contract.errors import BloomMCPError
+from bloom_mcp.data_access.table_access import EMAIL_HIDDEN
 from bloom_mcp.sections.bloom_data.query_table import MAX_CELL_CHARS, query_table
 
 
@@ -119,3 +120,36 @@ def test_long_values_are_cut(reader):
     result = query_table({"table": "species", "limit": 1})
     assert len(result.rows[0]["common_name"]) <= MAX_CELL_CHARS + 20
     assert result.truncated_values is True
+
+
+def test_emails_in_gene_candidate_logs_are_hidden(reader):
+    row = query_table({"table": "gene_candidates"}).rows[0]
+    assert row["status"] == "validated"
+    assert row["status_logs"] == [
+        {"userid": EMAIL_HIDDEN, "status": "suspected", "date": "2026-01-02"},
+        {"userid": EMAIL_HIDDEN, "status": "validated", "date": "2026-02-03"},
+    ]
+    assert row["legacy_progress_logs_jsonb"] == {
+        "note": f"sent to {EMAIL_HIDDEN}",
+        "n": 1,
+    }
+
+
+def test_the_conftest_rows_are_left_unchanged(reader):
+    query_table({"table": "gene_candidates"})
+    assert (
+        reader.tables["gene_candidates"][0]["status_logs"][0]["userid"]
+        == "ada@salk.edu"
+    )
+
+
+@pytest.mark.parametrize("column", ["status_logs", "legacy_progress_logs_jsonb"])
+def test_log_columns_cannot_be_filtered_or_sorted(reader, column):
+    for call in (
+        {"filters": [{"column": column, "op": "contains", "value": "@salk"}]},
+        {"order_by": column},
+    ):
+        with pytest.raises(BloomMCPError) as err:
+            query_table({"table": "gene_candidates", **call})
+        assert err.value.code == "tool_error"
+        assert column in err.value.message

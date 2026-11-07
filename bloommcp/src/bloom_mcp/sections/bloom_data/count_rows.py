@@ -13,6 +13,7 @@ from ._common import (
     DECLARED_ERRORS,
     FilterParam,
     check_columns,
+    check_filterable,
     readable_columns,
     to_filters,
     too_slow,
@@ -53,6 +54,7 @@ def count_rows(params: CountRowsParams) -> CountRowsResult:
     """
     allowed = readable_columns(params.table)
     check_columns(params.table, [f.column for f in params.filters], allowed)
+    check_filterable(params.table, [f.column for f in params.filters])
     filters = to_filters(params.filters)
     reader = _ports.table_reader()
     column = "id" if "id" in allowed else allowed[0]

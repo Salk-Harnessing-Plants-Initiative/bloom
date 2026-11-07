@@ -7,6 +7,9 @@ neither list, so a new table is classified on purpose.
 
 from __future__ import annotations
 
+import re
+from typing import Any
+
 # Chat and usage internals, protein embedding vectors (thousands of numbers per row), and
 # tables holding staff emails Claude has no use for yet (gene progress logs, RhizoVision).
 EXCLUDED_TABLES = frozenset(
@@ -148,6 +151,16 @@ HIDDEN_COLUMNS: dict[str, frozenset[str]] = {
     "gravi_plate_video_jobs": frozenset({"error_message", "msg_id", "reads"}),
 }
 
+# Readable, but with email addresses replaced and never filtered or ordered on: the gene
+# candidate logs record the email of whoever changed a status.
+EMAIL_REDACTED_COLUMNS: dict[str, frozenset[str]] = {
+    "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
+}
+EMAIL_HIDDEN = "[email hidden]"
+_EMAIL = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"
+)
+
 # Above this many rows (the planner's estimate), counts are estimated instead of exact.
 LARGE_TABLE_ROWS = 200_000
 
@@ -159,3 +172,18 @@ def is_readable(table: str) -> bool:
 def visible_columns(table: str, columns: list[str]) -> list[str]:
     hidden = HIDDEN_COLUMNS.get(table, frozenset())
     return [c for c in columns if c not in hidden]
+
+
+def unfilterable_columns(table: str) -> frozenset[str]:
+    return EMAIL_REDACTED_COLUMNS.get(table, frozenset())
+
+
+def redact_emails(value: Any) -> Any:
+    """A copy of `value` with every email address in its strings and keys replaced."""
+    if isinstance(value, str):
+        return _EMAIL.sub(EMAIL_HIDDEN, value)
+    if isinstance(value, list):
+        return [redact_emails(v) for v in value]
+    if isinstance(value, dict):
+        return {redact_emails(k): redact_emails(v) for k, v in value.items()}
+    return value
