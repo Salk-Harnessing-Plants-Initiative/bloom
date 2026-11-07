@@ -18,8 +18,8 @@ export default async function VideoJobsPage({ searchParams }: { searchParams?: P
     <div>
       <h1 className="text-xl mb-2">Video jobs</h1>
       <p className="mb-6 max-w-prose text-sm text-stone-500">
-        Every member&apos;s plate time-lapse and cylinder scan video requests, updated live. Each
-        kind has its own worker, which makes one video at a time in the order they were asked for.
+        Video requests from everyone in the lab. Videos are made one at a time, in the order they
+        were requested.
       </p>
       <VideoJobsLive
         initialJobs={jobs}

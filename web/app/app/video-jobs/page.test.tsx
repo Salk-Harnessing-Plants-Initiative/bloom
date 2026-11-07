@@ -73,7 +73,7 @@ describe("the Video Jobs page", () => {
     };
     render(await VideoJobsPage({ searchParams: Promise.resolve({ job: OLD }) }));
     const banner = screen.getByRole("status", { name: "Your video job" });
-    expect(banner.textContent).toContain("This is the video you asked for");
+    expect(banner.textContent).toContain("Your video is highlighted below");
     expect(screen.getByTestId(`job-${OLD}`).getAttribute("aria-current")).toBe("true");
   });
 
