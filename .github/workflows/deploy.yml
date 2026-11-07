@@ -719,9 +719,9 @@ jobs:
             exit 1
           }
 
-      # Apply bloom_* schema-USAGE grants (supabase/grants/schema_grants.sql) as
-      # supabase_admin — schema grants no-op under `supabase db push`. Mirrors CI/make.
-      - name: Apply schema-USAGE grants (production)
+      # Apply supabase/grants/schema_grants.sql (schema grants, function revokes) as
+      # supabase_admin — both no-op under `supabase db push`. Mirrors CI/make.
+      - name: Apply schema grants and function revokes (production)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
@@ -1685,9 +1685,9 @@ jobs:
             exit 1
           }
 
-      # Apply bloom_* schema-USAGE grants (supabase/grants/schema_grants.sql) as
-      # supabase_admin — schema grants no-op under `supabase db push`. Mirrors CI/make.
-      - name: Apply schema-USAGE grants (staging)
+      # Apply supabase/grants/schema_grants.sql (schema grants, function revokes) as
+      # supabase_admin — both no-op under `supabase db push`. Mirrors CI/make.
+      - name: Apply schema grants and function revokes (staging)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail

@@ -1,11 +1,12 @@
 """
-No API role may call dblink (revoked in supabase/grants/schema_grants.sql).
+Only the superuser may call dblink (revoked in supabase/grants/schema_grants.sql).
 
 The first-boot script installs the dblink extension into `public`, where PostgREST exposes every
 function as /rest/v1/rpc/<name> and Postgres lets PUBLIC execute it by default. dblink opens
-connections from the database server to other hosts. The superuser that runs the first-boot
-script keeps it.
+connections from the database server to other hosts. The grants file moves it to `extensions`,
+which PostgREST doesn't serve, and revokes it from every role.
 
+Every non-superuser role is checked, so a new role or one that inherits access is caught too.
 Asserted with has_function_privilege, never by calling the functions.
 """
 
@@ -13,16 +14,6 @@ import os
 
 import pytest
 
-API_ROLES = (
-    "anon",
-    "authenticated",
-    "service_role",
-    "bloom_user",
-    "bloom_writer",
-    "bloom_admin",
-    "bloom_agent",
-    "bloom_workflows",
-)
 IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 
 
@@ -46,37 +37,42 @@ def dblink_functions(pg_conn):
     return functions
 
 
-@pytest.mark.parametrize("role", API_ROLES + ("public",))
-def test_no_api_role_can_call_dblink(pg_conn, dblink_functions, role):
+def test_no_non_superuser_role_can_call_dblink(pg_conn, dblink_functions):
     with pg_conn.cursor() as cur:
-        if role == "public":
-            cur.execute(
-                """
-                SELECT p.oid::regprocedure::text FROM pg_proc p
-                 WHERE p.oid::regprocedure::text = ANY (%s)
-                   AND EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
-                                WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')
-                """,
-                (dblink_functions,),
-            )
-        else:
-            cur.execute(
-                """
-                SELECT f FROM unnest(%s::text[]) AS f
-                 WHERE has_function_privilege(%s, f::regprocedure, 'EXECUTE')
-                """,
-                (dblink_functions, role),
-            )
-        callable_by_role = [r[0] for r in cur.fetchall()]
-    assert callable_by_role == [], f"{role} can execute {callable_by_role}"
-
-
-def test_the_superuser_keeps_dblink(pg_conn, dblink_functions):
-    """The first-boot script creates the _supabase database through dblink_exec as the superuser."""
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
-        assert cur.fetchone()[0] is True
+        cur.execute("SELECT rolname FROM pg_roles WHERE NOT rolsuper")
+        checked = {r[0] for r in cur.fetchall()}
         cur.execute(
-            "SELECT has_function_privilege('public.dblink_exec(text,text)', 'EXECUTE')"
+            """
+            SELECT r.rolname, f FROM pg_roles r CROSS JOIN unnest(%s::text[]) AS f
+             WHERE NOT r.rolsuper AND has_function_privilege(r.oid, f::regprocedure, 'EXECUTE')
+             ORDER BY 1, 2
+            """,
+            (dblink_functions,),
         )
-        assert cur.fetchone()[0] is True
+        callable_by = cur.fetchall()
+    assert {"anon", "authenticated", "bloom_agent", "postgres"} <= checked
+    assert callable_by == [], f"non-superuser roles can execute dblink: {callable_by}"
+
+
+def test_public_cannot_call_dblink(pg_conn, dblink_functions):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT p.oid::regprocedure::text FROM pg_proc p
+             WHERE p.oid = ANY (%s::regprocedure[])
+               AND EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                            WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')
+            """,
+            (dblink_functions,),
+        )
+        callable_by_public = [r[0] for r in cur.fetchall()]
+    assert callable_by_public == [], f"PUBLIC can execute {callable_by_public}"
+
+
+def test_dblink_is_not_in_a_schema_postgrest_serves(pg_conn, dblink_functions):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace"
+            " WHERE e.extname = 'dblink'"
+        )
+        assert cur.fetchone()[0] == "extensions"

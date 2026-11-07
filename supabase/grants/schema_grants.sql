@@ -1,4 +1,5 @@
--- SINGLE SOURCE OF TRUTH for bloom_* schema-level USAGE grants (issue #333).
+-- SINGLE SOURCE OF TRUTH for bloom_* schema-level USAGE grants (issue #333), and for
+-- revokes on supabase_admin-owned functions that `db push` can't make (dblink, below).
 --
 -- Keep this file updated whenever a bloom_* role needs USAGE on a new schema, and
 -- apply it as `supabase_admin` (the owner of schemas storage/auth, a superuser).
@@ -7,10 +8,7 @@
 --   * Local (fresh or ongoing): `make migrate-local` (and `make verify-dev`) run
 --     this automatically after `supabase db push`.
 --   * CI: the `compose-health-check` job applies it after migrations.
---   * Ongoing prod / staging: apply manually when grants change, e.g.
---       docker compose -f docker-compose.prod.yml exec -T db \
---         psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
---         < supabase/grants/schema_grants.sql
+--   * Prod / staging: the deploy workflow applies it after migrations on every deploy.
 --   Run it AFTER migrations have created the bloom_* roles (it grants directly, so
 --   a missing role raises rather than skipping).
 --
@@ -49,13 +47,18 @@ GRANT USAGE ON SCHEMA storage TO bloom_user, bloom_admin, bloom_agent, bloom_wri
 GRANT USAGE ON SCHEMA auth TO bloom_writer;
 
 -- dblink: the first-boot script installs it into `public`, where PostgREST exposes it and
--- Postgres lets PUBLIC execute it by default; no API role may call it (it opens connections
--- from the database server). Here, not a migration: supabase_admin owns the functions, and
--- `db push`'s postgres role can't revoke them. Idempotent; a no-op where dblink isn't installed.
+-- Postgres lets PUBLIC execute it by default; only the superuser may call it (it opens
+-- connections from the database server). Moved to `extensions`, which PostgREST doesn't serve.
+-- Here, not a migration: supabase_admin owns it, and `db push`'s postgres role can't alter or
+-- revoke it. Idempotent; a no-op where dblink isn't installed.
 DO $$
 DECLARE
     f regprocedure;
 BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink'
+                 AND extnamespace = 'public'::regnamespace) THEN
+        ALTER EXTENSION dblink SET SCHEMA extensions;
+    END IF;
     FOR f IN
         SELECT p.oid::regprocedure
           FROM pg_proc p
@@ -64,7 +67,7 @@ BEGIN
     LOOP
         EXECUTE format(
             'REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon, authenticated, service_role, '
-            'bloom_user, bloom_writer, bloom_admin, bloom_agent, bloom_workflows',
+            'bloom_user, bloom_writer, bloom_admin, bloom_agent, bloom_workflows, postgres',
             f
         );
     END LOOP;
