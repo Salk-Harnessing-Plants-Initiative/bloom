@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useFollowedVideoJob } from "@/components/use-followed-video-job";
 import {
   PLATE_FAILURES,
@@ -104,6 +105,7 @@ export function PlateVideo({
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
   // Set when the last job ended kept: the stored video already had every frame it could.
   const [kept, setKept] = useState(false);
+  const router = useRouter();
 
   const endpoint = `/api/gravi/experiments/${experimentId}/plate-video`;
   const query = new URLSearchParams({ plate_id: plateId });
@@ -191,6 +193,8 @@ export function PlateVideo({
       // Created or shared with someone else's click: either way, wait for it.
       followed.follow(body.job_id);
       setAction("waiting");
+      // Follow it where every job's progress is shown; that row links back here.
+      router.push(`/app/video-jobs?${new URLSearchParams({ job: body.job_id })}`);
     } catch {
       setFailure(FAILED);
       setAction("error");
