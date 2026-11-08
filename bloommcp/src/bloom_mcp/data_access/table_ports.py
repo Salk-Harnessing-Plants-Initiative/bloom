@@ -35,6 +35,19 @@ class Column:
 
 
 @dataclass(frozen=True)
+class Param:
+    name: str
+    type: str
+    required: bool
+
+
+@dataclass(frozen=True)
+class Function:
+    name: str
+    params: tuple[Param, ...]
+
+
+@dataclass(frozen=True)
 class Sort:
     column: str
     descending: bool = False
@@ -73,6 +86,21 @@ class BloomDataReader(Protocol):
 
     def refresh_columns(self) -> bool:
         """Reread the columns now, unless that was tried moments ago; True if reread."""
+        ...
+
+    def functions(self) -> dict[str, Function]:
+        """Every database function the API exposes, with its parameters."""
+        ...
+
+    def call(
+        self,
+        function: str,
+        args: dict[str, Any],
+        order: list[Sort],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        """Rows `offset` to `offset + limit - 1` of the function's ordered result."""
         ...
 
     def select(

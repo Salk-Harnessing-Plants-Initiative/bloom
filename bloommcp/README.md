@@ -23,7 +23,9 @@ Installable `uv` package under `src/bloom_mcp/`:
   of Bloom's tables as `bloom_agent` (`list_tables`, `query_table`, `count_rows`), limited to
   the allow-list in `data_access/table_access.py`: emails and internal tables are never
   returned, rows are capped at 500 a page, and counts are exact unless too many rows match
-  (then a labelled estimate).
+  (then a labelled estimate). `list_functions` and `call_function` call the read-only
+  database functions in `data_access/function_access.py`; PostgREST runs them in a
+  read-only transaction.
 - `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
   not tools themselves
 - `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping

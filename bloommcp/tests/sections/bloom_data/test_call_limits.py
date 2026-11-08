@@ -82,7 +82,7 @@ def test_a_small_page_is_not_cut_short(reader):
 
 
 def test_one_row_larger_than_the_budget_is_still_returned(reader, monkeypatch):
-    monkeypatch.setattr("bloom_mcp.sections.bloom_data.query_table.MAX_REPLY_CHARS", 10)
+    monkeypatch.setattr("bloom_mcp.sections.bloom_data._page.MAX_REPLY_CHARS", 10)
     result = query_table({"table": "species", "limit": 5})
     assert result.returned == 1 and result.cut_short and result.next_offset == 1
 

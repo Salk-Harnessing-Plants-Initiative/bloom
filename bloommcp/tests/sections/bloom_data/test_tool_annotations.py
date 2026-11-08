@@ -7,7 +7,7 @@ import asyncio
 from bloom_mcp import server
 
 
-def test_the_three_data_tools_are_marked_read_only():
+def test_every_data_tool_is_marked_read_only():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     names = [
         "bloom_data_list_tables",

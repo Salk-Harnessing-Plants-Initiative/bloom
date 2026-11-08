@@ -21,6 +21,8 @@ from .table_ports import (
     ColumnsChanged,
     DatabaseUnavailable,
     Filter,
+    Function,
+    Param,
     QueryTimedOut,
     RequestTooLong,
     Sort,
@@ -72,6 +74,30 @@ def _column(name: str, spec: dict[str, Any]) -> Column:
     )
 
 
+_RPC = "/rpc/"
+
+
+def _function(name: str, spec: dict[str, Any]) -> Function:
+    """A function from PostgREST's schema description: its parameters, from the POST body."""
+    body: dict[str, Any] = next(
+        (
+            p
+            for p in spec.get("post", {}).get("parameters", [])
+            if p.get("in") == "body"
+        ),
+        {},
+    )
+    schema = body.get("schema", {})
+    required = set(schema.get("required", []))
+    return Function(
+        name=name,
+        params=tuple(
+            Param(n, p.get("format") or p.get("type") or "unknown", n in required)
+            for n, p in schema.get("properties", {}).items()
+        ),
+    )
+
+
 def _apply(query: Any, f: Filter) -> Any:
     if f.op == "contains":
         return query.filter(f.column, "imatch", _regex_literal(f.value))
@@ -119,6 +145,7 @@ class PostgrestTableReader:
             )
         )
         self._columns: dict[str, list[Column]] | None = None
+        self._functions: dict[str, Function] = {}
         self._columns_at = 0.0
         self._tried_at = -float(COLUMNS_RETRY_SECONDS)
 
@@ -137,6 +164,10 @@ class PostgrestTableReader:
         self._reread(now)
         return True
 
+    def functions(self) -> dict[str, Function]:
+        self.table_columns()
+        return self._functions
+
     def _may_retry(self, now: float) -> bool:
         return now - self._tried_at >= COLUMNS_RETRY_SECONDS
 
@@ -144,28 +175,34 @@ class PostgrestTableReader:
         """Reread the columns; on failure keep the last good list, if there is one."""
         self._tried_at = now
         try:
-            self._columns = self._fetch_columns()
+            self._columns, self._functions = self._fetch_schema()
             self._columns_at = now
         except DatabaseUnavailable:
             if self._columns is None:
                 raise
             logger.warning("bloom_data kept the last column list; reread failed")
 
-    def _fetch_columns(self) -> dict[str, list[Column]]:
+    def _fetch_schema(self) -> tuple[dict[str, list[Column]], dict[str, Function]]:
         try:
             # PostgREST's root path serves its schema description, through the same session.
             response = self._client_factory().postgrest.session.get("")
             response.raise_for_status()
-            definitions = response.json().get("definitions", {})
+            schema = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning(
                 "bloom_data could not read the API schema: %s", type(exc).__name__
             )
             raise DatabaseUnavailable("schema unreadable") from None
-        return {
+        columns = {
             name: [_column(c, p) for c, p in spec.get("properties", {}).items()]
-            for name, spec in definitions.items()
+            for name, spec in schema.get("definitions", {}).items()
         }
+        functions = {
+            path.removeprefix(_RPC): _function(path.removeprefix(_RPC), spec)
+            for path, spec in schema.get("paths", {}).items()
+            if path.startswith(_RPC)
+        }
+        return columns, functions
 
     def select(
         self,
@@ -179,6 +216,21 @@ class PostgrestTableReader:
         query = self._client_factory().table(table).select(",".join(columns))
         for f in filters:
             query = _apply(query, f)
+        for s in order:
+            query = query.order(s.column, desc=s.descending)
+        query = query.range(offset, offset + limit - 1)
+        return _execute(query).data or []
+
+    def call(
+        self,
+        function: str,
+        args: dict[str, Any],
+        order: list[Sort],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        # A POST: array arguments need a JSON body. PostgREST runs a STABLE function read-only.
+        query = self._client_factory().rpc(function, args)
         for s in order:
             query = query.order(s.column, desc=s.descending)
         query = query.range(offset, offset + limit - 1)

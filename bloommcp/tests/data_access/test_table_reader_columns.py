@@ -38,9 +38,9 @@ def reader(monkeypatch):
         r.fetches += 1
         if r.fail:
             raise DatabaseUnavailable("schema unreadable")
-        return {"species": [Column("id", "bigint")] * r.fetches}
+        return {"species": [Column("id", "bigint")] * r.fetches}, {}
 
-    monkeypatch.setattr(r, "_fetch_columns", fetch)
+    monkeypatch.setattr(r, "_fetch_schema", fetch)
     return r
 
 

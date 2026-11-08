@@ -10,6 +10,7 @@ from .table_ports import (
     Column,
     ColumnsChanged,
     Filter,
+    Function,
     QueryTimedOut,
     Sort,
     TableReadError,
@@ -69,6 +70,7 @@ class FakeTableReader:
         tables: dict[str, list[dict[str, Any]]],
         estimates: dict[str, int | None] | None = None,
         references: dict[str, dict[str, str]] | None = None,
+        functions: dict[str, tuple[Function, list[dict[str, Any]]]] | None = None,
     ) -> None:
         self.tables = tables
         # {table: {column: "other_table.column"}}: the fake's foreign keys.
@@ -78,6 +80,9 @@ class FakeTableReader:
         self.fail_with: TableReadError | None = None
         # The planner's guess for a filtered count: positive even when nothing matches.
         self.filtered_guess = FILTERED_GUESS
+        # {name: (its parameters, the rows it returns)}; `called` records each call's args.
+        self.function_rows = dict(functions or {})
+        self.called: list[tuple[str, dict[str, Any]]] = []
         self.calls: list[str] = []
         self.counts: list[tuple[str, bool]] = []
         # Tables whose next read fails with ColumnsChanged, once; and refreshes asked for.
@@ -93,6 +98,25 @@ class FakeTableReader:
             ]
             for name, rows in self.tables.items()
         }
+
+    def functions(self) -> dict[str, Function]:
+        return {name: f for name, (f, _) in self.function_rows.items()}
+
+    def call(
+        self,
+        function: str,
+        args: dict[str, Any],
+        order: list[Sort],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        self.called.append((function, args))
+        if self.fail_with:
+            raise self.fail_with
+        rows = [dict(r) for r in self.function_rows[function][1]]
+        for s in reversed(order):
+            rows = sorted(rows, key=_sort_key(s.column), reverse=s.descending)
+        return rows[offset : offset + limit]
 
     def refresh_columns(self) -> bool:
         self.refreshes += 1

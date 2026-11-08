@@ -3,6 +3,7 @@ PostgREST's replies (Content-Range, error bodies), with only the network replace
 
 from __future__ import annotations
 
+import json
 from urllib.parse import parse_qsl
 
 import httpx
@@ -15,6 +16,8 @@ from bloom_mcp.data_access.table_ports import (
     ColumnsChanged,
     DatabaseUnavailable,
     Filter,
+    Function,
+    Param,
     QueryTimedOut,
     RequestTooLong,
     Sort,
@@ -33,6 +36,9 @@ class _Supabase:
 
     def table(self, name):
         return self.postgrest.from_(name)
+
+    def rpc(self, name, args):
+        return self.postgrest.rpc(name, args)
 
 
 def _reader(reply):
@@ -132,6 +138,30 @@ def test_postgrest_error_replies_map_to_their_errors(reply, error):
 
 
 _SCHEMA = {
+    "paths": {
+        "/rpc/get_experiment_traits": {
+            "post": {
+                "parameters": [
+                    {
+                        "in": "body",
+                        "name": "args",
+                        "schema": {
+                            "properties": {
+                                "experiment_id_": {
+                                    "format": "bigint",
+                                    "type": "integer",
+                                },
+                                "scan_ids_": {"format": "bigint[]", "type": "array"},
+                            },
+                            "required": ["experiment_id_"],
+                        },
+                    },
+                    {"$ref": "#/parameters/preferParams"},
+                ]
+            }
+        },
+        "/species": {"get": {}},
+    },
     "definitions": {
         "cyl_scans": {
             "properties": {
@@ -150,7 +180,7 @@ _SCHEMA = {
                 "odd": {},
             }
         }
-    }
+    },
 }
 
 
@@ -174,3 +204,37 @@ def test_an_unreadable_schema_is_database_unavailable(reply):
     reader, _ = _reader(reply)
     with pytest.raises(DatabaseUnavailable):
         reader.table_columns()
+
+
+def test_functions_are_read_from_the_schema_with_their_parameters():
+    reader, _ = _reader(httpx.Response(200, json=_SCHEMA))
+    assert reader.functions() == {
+        "get_experiment_traits": Function(
+            "get_experiment_traits",
+            (
+                Param("experiment_id_", "bigint", True),
+                Param("scan_ids_", "bigint[]", False),
+            ),
+        )
+    }
+
+
+def test_a_call_posts_its_inputs_and_sends_order_and_page():
+    reader, sent = _reader(httpx.Response(200, json=[{"scan_id": 1}]))
+    rows = reader.call(
+        "get_experiment_traits",
+        {"experiment_id_": 7, "scan_ids_": [1, 2]},
+        [Sort("scan_id"), Sort("similarity", descending=True)],
+        10,
+        20,
+    )
+    assert rows == [{"scan_id": 1}]
+    request = sent[0]
+    assert request.method == "POST"
+    assert request.url.path == "/rest/v1/rpc/get_experiment_traits"
+    assert json.loads(request.content) == {"experiment_id_": 7, "scan_ids_": [1, 2]}
+    assert _params(request) == [
+        ("order", "scan_id.asc,similarity.desc"),
+        ("offset", "20"),
+        ("limit", "10"),
+    ]

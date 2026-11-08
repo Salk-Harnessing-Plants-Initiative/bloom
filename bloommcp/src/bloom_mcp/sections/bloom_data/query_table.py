@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,16 +21,17 @@ from ._common import (
     reports_read_errors,
     to_filters,
 )
+from ._page import (
+    DEFAULT_LIMIT,
+    MAX_CELL_CHARS,
+    MAX_LIMIT,
+    MAX_OFFSET,
+    MAX_REPLY_CHARS,
+    TRUNCATED,
+    fit_page,
+)
 
-DEFAULT_LIMIT = 50
-MAX_LIMIT = 500
-# Longer text or JSON values are cut, so one row can't fill the reply.
-MAX_CELL_CHARS = 2000
-TRUNCATED = "…[cut]"
-# Skipping rows makes Postgres walk them all; past this, filter on the key instead.
-MAX_OFFSET = 10_000
-# A page stops early once its rows reach this many characters, so one reply stays small.
-MAX_REPLY_CHARS = 100_000
+__all__ = ["MAX_CELL_CHARS", "MAX_REPLY_CHARS", "TRUNCATED", "query_table"]
 
 
 class QueryTableParams(BaseModel):
@@ -78,19 +78,6 @@ class QueryTableResult(BaseModel):
         description="True if the page stopped before limit to keep the reply small; "
         "continue with next_offset."
     )
-
-
-def _cut(value: Any) -> tuple[Any, bool]:
-    if isinstance(value, (dict, list)):
-        text = json.dumps(value, default=str)
-        return (
-            (value, False)
-            if len(text) <= MAX_CELL_CHARS
-            else (text[:MAX_CELL_CHARS] + TRUNCATED, True)
-        )
-    if isinstance(value, str) and len(value) > MAX_CELL_CHARS:
-        return value[:MAX_CELL_CHARS] + TRUNCATED, True
-    return value, False
 
 
 def _order(table: str, order_by: str | None, descending: bool) -> list[Sort]:
@@ -143,32 +130,15 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
         params.table, columns, filters, order, params.limit + 1, params.offset
     )
 
-    has_more = len(rows) > params.limit
-    rows = rows[: params.limit]
-    redacted = table_access.unfilterable_columns(params.table)
-    truncated = cut_short = False
-    page: list[dict[str, Any]] = []
-    size = 0
-    for row in rows:
-        for key, value in row.items():
-            if key in redacted:
-                value = table_access.redact_emails(value)
-            row[key], cut = _cut(value)
-            truncated = truncated or cut
-        size += len(json.dumps(row, default=str))
-        if page and size > MAX_REPLY_CHARS:
-            has_more = cut_short = True
-            break
-        page.append(row)
-    rows = page
+    page = fit_page(rows, params.limit, table_access.unfilterable_columns(params.table))
     return QueryTableResult(
         table=params.table,
         columns=columns,
-        rows=rows,
-        returned=len(rows),
+        rows=page.rows,
+        returned=len(page.rows),
         offset=params.offset,
-        has_more=has_more,
-        next_offset=params.offset + len(rows) if has_more else None,
-        truncated_values=truncated,
-        cut_short=cut_short,
+        has_more=page.has_more,
+        next_offset=page.next_offset(params.offset),
+        truncated_values=page.truncated_values,
+        cut_short=page.cut_short,
     )

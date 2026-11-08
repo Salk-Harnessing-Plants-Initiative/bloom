@@ -233,7 +233,9 @@ def logs_call(func: Callable[..., _Result]) -> Callable[..., _Result]:
             usage_log.info(
                 "bloom_data tool=%s table=%s filters=%s rows=%s chars=%s ms=%d outcome=%s",
                 func.__name__,
-                getattr(params, "table", None) or "-",
+                getattr(params, "table", None)
+                or getattr(params, "function", None)
+                or "-",
                 filters,
                 rows,
                 chars,
