@@ -49,6 +49,10 @@ class BadFilterValue(TableReadError):
     """A filter doesn't fit its column's type: a wrong kind of value, or contains on non-text."""
 
 
+class ColumnsChanged(TableReadError):
+    """A column in the read no longer exists: a migration changed the table."""
+
+
 class RequestTooLong(TableReadError):
     """The request's URL (columns plus filters) is longer than the gateway accepts."""
 
@@ -62,6 +66,10 @@ class BloomDataReader(Protocol):
 
     def table_columns(self) -> dict[str, list[Column]]:
         """Every table and view the API exposes, with its columns in order."""
+        ...
+
+    def refresh_columns(self) -> bool:
+        """Reread the columns now, unless that was tried moments ago; True if reread."""
         ...
 
     def select(

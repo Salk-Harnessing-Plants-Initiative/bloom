@@ -17,6 +17,7 @@ from bloom_mcp import supabase_client
 from .table_ports import (
     BadFilterValue,
     Column,
+    ColumnsChanged,
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
@@ -33,10 +34,14 @@ STATEMENT_TIMEOUT_CODE = "57014"
 # A filter value of the wrong type for its column (text, number, date or time), and an
 # operator the column's type lacks (contains on a number).
 BAD_FILTER_CODES = frozenset({"22P02", "22003", "22007", "22008", "42883"})
+# A column named in the read doesn't exist.
+UNDEFINED_COLUMN_CODE = "42703"
 # The gateway's answer when the URL is over its limit (about 8 KB).
 URI_TOO_LONG_CODE = "414"
 # PostgREST's schema description; reread after this long so new tables appear.
 COLUMNS_CACHE_SECONDS = 300
+# The least time between two attempts to reread it, so failures and typos can't flood it.
+COLUMNS_RETRY_SECONDS = 30
 # How PostgREST's schema description marks a foreign key.
 _FOREIGN_KEY = re.compile(r"<fk table='([^']+)' column='([^']+)'/>")
 
@@ -86,6 +91,8 @@ def _execute(query: Any) -> Any:
         if code == STATEMENT_TIMEOUT_CODE:
             raise QueryTimedOut("statement timeout") from None
         logger.warning("bloom_data read failed: %s %s", exc.code, exc.message)
+        if code == UNDEFINED_COLUMN_CODE:
+            raise ColumnsChanged("column dropped") from None
         if code == URI_TOO_LONG_CODE:
             raise RequestTooLong("url too long") from None
         if code in BAD_FILTER_CODES:
@@ -111,13 +118,36 @@ class PostgrestTableReader:
         )
         self._columns: dict[str, list[Column]] | None = None
         self._columns_at = 0.0
+        self._tried_at = -COLUMNS_RETRY_SECONDS
 
     def table_columns(self) -> dict[str, list[Column]]:
         now = time.monotonic()
-        if self._columns is None or now - self._columns_at > COLUMNS_CACHE_SECONDS:
+        expired = now - self._columns_at > COLUMNS_CACHE_SECONDS
+        if self._columns is None or (expired and self._may_retry(now)):
+            self._reread(now)
+        assert self._columns is not None
+        return self._columns
+
+    def refresh_columns(self) -> bool:
+        now = time.monotonic()
+        if not self._may_retry(now):
+            return False
+        self._reread(now)
+        return True
+
+    def _may_retry(self, now: float) -> bool:
+        return now - self._tried_at >= COLUMNS_RETRY_SECONDS
+
+    def _reread(self, now: float) -> None:
+        """Reread the columns; on failure keep the last good list, if there is one."""
+        self._tried_at = now
+        try:
             self._columns = self._fetch_columns()
             self._columns_at = now
-        return self._columns
+        except DatabaseUnavailable:
+            if self._columns is None:
+                raise
+            logger.warning("bloom_data kept the last column list; reread failed")
 
     def _fetch_columns(self) -> dict[str, list[Column]]:
         url, key = supabase_client.require_env()

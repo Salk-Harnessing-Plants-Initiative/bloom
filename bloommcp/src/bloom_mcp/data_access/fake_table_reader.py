@@ -5,7 +5,14 @@ from __future__ import annotations
 import operator
 from typing import Any
 
-from .table_ports import Column, Filter, QueryTimedOut, Sort, TableReadError
+from .table_ports import (
+    Column,
+    ColumnsChanged,
+    Filter,
+    QueryTimedOut,
+    Sort,
+    TableReadError,
+)
 
 
 def _matches(row: dict[str, Any], f: Filter) -> bool:
@@ -65,6 +72,10 @@ class FakeTableReader:
         self.filtered_guess = FILTERED_GUESS
         self.calls: list[str] = []
         self.counts: list[tuple[str, bool]] = []
+        # Tables whose next read fails with ColumnsChanged, once; and refreshes asked for.
+        self.changed_tables: set[str] = set()
+        self.refreshes = 0
+        self.may_refresh = True
 
     def table_columns(self) -> dict[str, list[Column]]:
         return {
@@ -75,6 +86,10 @@ class FakeTableReader:
             for name, rows in self.tables.items()
         }
 
+    def refresh_columns(self) -> bool:
+        self.refreshes += 1
+        return self.may_refresh
+
     def _filtered(self, table: str, filters: list[Filter]) -> list[dict[str, Any]]:
         return [r for r in self.tables[table] if all(_matches(r, f) for f in filters)]
 
@@ -82,6 +97,9 @@ class FakeTableReader:
         self.calls.append(table)
         if self.fail_with:
             raise self.fail_with
+        if table in self.changed_tables:
+            self.changed_tables.discard(table)
+            raise ColumnsChanged("column dropped")
         if table in self.slow_tables:
             raise QueryTimedOut("statement timeout")
         rows = self._filtered(table, filters)

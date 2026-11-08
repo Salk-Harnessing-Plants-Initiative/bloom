@@ -240,6 +240,13 @@ try:
     out["too_long"] = None
 except BloomMCPError as exc:
     out["too_long"] = exc.to_dict()
+from bloom_mcp.data_access.table_ports import ColumnsChanged, Sort
+from bloom_mcp.data_access.table_reader import PostgrestTableReader
+try:
+    PostgrestTableReader().select("species", ["id", "no_such_column"], [], [Sort("id")], 1, 0)
+    out["dropped_column"] = None
+except ColumnsChanged:
+    out["dropped_column"] = "ColumnsChanged"
 print(json.dumps(out, default=str))
 """
 
@@ -370,6 +377,10 @@ def test_a_request_over_the_gateway_limit_asks_to_split_the_list(tool_results):
     error = tool_results["too_long"]
     assert error["code"] == "invalid_input"
     assert "Split" in error["remedy"]
+
+
+def test_a_missing_column_is_recognised_as_a_changed_table(tool_results):
+    assert tool_results["dropped_column"] == "ColumnsChanged"
 
 
 def test_an_excluded_table_is_refused(tool_results):

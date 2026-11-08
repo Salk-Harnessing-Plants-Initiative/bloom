@@ -16,6 +16,7 @@ from bloom_mcp.data_access import table_access
 from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
     Column,
+    ColumnsChanged,
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
@@ -61,6 +62,12 @@ def read_failed(exc: TableReadError) -> BloomMCPError:
             "a malformed date or id), or contains on a column that isn't text.",
             "Fix the filter's value, or use eq or in instead of contains on that column.",
         )
+    if isinstance(exc, ColumnsChanged):
+        return BloomMCPError(
+            code="tool_error",
+            message="The table's columns just changed.",
+            remedy="Call list_tables with this table for its current columns, then retry.",
+        )
     if isinstance(exc, RequestTooLong):
         return fix_request(
             "The request is too long to send: its filter values and columns don't fit "
@@ -87,7 +94,13 @@ def reports_read_errors(func: Callable[..., _R]) -> Callable[..., _R]:
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> _R:
         try:
-            return func(*args, **kwargs)
+            try:
+                return func(*args, **kwargs)
+            except ColumnsChanged:
+                # A migration dropped a cached column: reread the columns and try once more.
+                if not _ports.table_reader().refresh_columns():
+                    raise
+                return func(*args, **kwargs)
         except TableReadError as exc:
             raise read_failed(exc) from None
 
@@ -111,7 +124,10 @@ def readable_column_details(table: str) -> list[Column]:
     """The table's columns Claude may see; raises if the table isn't on the allow-list."""
     if not table_access.is_readable(table):
         raise fix_request(f"'{table}' is not a table Bloom's data tools can read.")
-    columns = _ports.table_reader().table_columns().get(table)
+    reader = _ports.table_reader()
+    columns = reader.table_columns().get(table)
+    if columns is None and reader.refresh_columns():
+        columns = reader.table_columns().get(table)
     if columns is None:
         raise fix_request(f"'{table}' is not a table Bloom's data tools can read.")
     visible = set(table_access.visible_columns(table, [c.name for c in columns]))
@@ -124,6 +140,9 @@ def readable_columns(table: str) -> list[str]:
 
 def check_columns(table: str, wanted: list[str], allowed: list[str]) -> None:
     unknown = [c for c in wanted if c not in allowed]
+    if unknown and _ports.table_reader().refresh_columns():
+        # Perhaps a migration just added them.
+        unknown = [c for c in wanted if c not in readable_columns(table)]
     if unknown:
         raise fix_request(
             f"'{table}' has no readable column {', '.join(repr(c) for c in unknown)}."
