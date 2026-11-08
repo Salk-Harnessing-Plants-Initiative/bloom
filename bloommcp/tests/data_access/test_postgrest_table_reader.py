@@ -85,8 +85,8 @@ def test_select_maps_filters_order_and_range():
     calls = [(name, args) for name, args, _ in client.log]
     assert ("select", ("id,common_name",)) in calls
     assert ("gte", ("id", 2)) in calls
-    assert ("in_", ("id", [2, 3])) in calls
-    assert ("ilike", ("common_name", r"%a\_b\%%")) in calls
+    assert ("filter", ("id", "in", '("2","3")')) in calls
+    assert ("filter", ("common_name", "imatch", r"a_b\%")) in calls
     assert ("is_", ("deleted_at", "null")) in calls
     assert ("not_", ()) in calls and ("is_", ("common_name", "null")) in calls
     orders = [(args, kwargs) for name, args, kwargs in client.log if name == "order"]
@@ -118,6 +118,29 @@ def test_other_database_errors_keep_internals_out_of_the_message():
     assert type(err.value) is TableReadError
     assert "secret_x" not in str(err.value)
     assert "42501" not in str(err.value)
+
+
+def test_contains_takes_every_symbol_literally():
+    client = _Client(_Result(data=[]))
+    _reader(client).select(
+        "species", ["id"], [Filter("common_name", "contains", "Col*0 (x).é")], [], 1, 0
+    )
+    calls = [(name, args) for name, args, _ in client.log]
+    assert ("filter", ("common_name", "imatch", r"Col\*0 \(x\)\.é")) in calls
+
+
+def test_in_quotes_each_value_and_escapes_quotes_and_backslashes():
+    client = _Client(_Result(data=[]))
+    _reader(client).select(
+        "species",
+        ["id"],
+        [Filter("common_name", "in", ['a"b', "c\\d", "e,f"])],
+        [],
+        1,
+        0,
+    )
+    calls = [(name, args) for name, args, _ in client.log]
+    assert ("filter", ("common_name", "in", r'("a\"b","c\\d","e,f")')) in calls
 
 
 @pytest.mark.parametrize("code", ["22P02", "22003", "22007", "22008", "42883"])

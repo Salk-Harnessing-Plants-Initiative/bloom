@@ -82,7 +82,7 @@ class FilterParam(BaseModel):
     op: Literal["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains", "is_null"] = (
         Field(
             description="eq, neq, gt, gte, lt, lte; in (value is a list); contains (case-insensitive "
-            "text match); is_null (value true for empty, false for not empty)."
+            "text match, every character taken literally); is_null (value true for empty, false for not empty)."
         )
     )
     value: Any = Field(description="Value to compare with.")
@@ -115,15 +115,36 @@ def check_filterable(table: str, wanted: list[str]) -> None:
         )
 
 
+# One filter value: what eq, gt, contains and the members of an in list take.
+_SCALARS = (str, int, float, bool)
+
+
 def to_filters(params: list[FilterParam]) -> list[Filter]:
     for p in params:
-        if p.op == "in" and not isinstance(p.value, list):
+        where = f"Filter '{p.op}' on '{p.column}'"
+        if p.op == "is_null":
+            if not isinstance(p.value, bool):
+                raise fix_request(
+                    f"{where} needs true or false.", "Pass true or false."
+                )
+        elif p.op == "in":
+            if not isinstance(p.value, list):
+                raise fix_request(f"{where} needs a list of values.", "Pass a list.")
+            if not all(isinstance(v, _SCALARS) for v in p.value):
+                raise fix_request(
+                    f"{where} takes only text, numbers or true/false.",
+                    _EMPTY_REMEDY,
+                )
+        elif p.value is None:
+            raise fix_request(f"{where} can't compare with null.", _EMPTY_REMEDY)
+        elif not isinstance(p.value, _SCALARS):
             raise fix_request(
-                f"Filter 'in' on '{p.column}' needs a list of values.", "Pass a list."
-            )
-        if p.op == "is_null" and not isinstance(p.value, bool):
-            raise fix_request(
-                f"Filter 'is_null' on '{p.column}' needs true or false.",
-                "Pass true or false.",
+                f"{where} needs one value: text, a number or true/false.",
+                "Pass a single value; use op in for a list.",
             )
     return [Filter(p.column, p.op, p.value) for p in params]
+
+
+_EMPTY_REMEDY = (
+    "To find empty values use op is_null with true (or false for values that are set)."
+)

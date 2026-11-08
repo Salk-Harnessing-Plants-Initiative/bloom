@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -34,16 +35,25 @@ BAD_FILTER_CODES = frozenset({"22P02", "22003", "22007", "22008", "42883"})
 COLUMNS_CACHE_SECONDS = 300
 
 
-def _like_pattern(value: Any) -> str:
-    escaped = str(value).replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-    return f"%{escaped}%"
+def _regex_literal(value: Any) -> str:
+    """A Postgres regex matching `value` itself. contains can't use ilike: PostgREST turns
+    every `*` in a like pattern into a wildcard, escaped or not."""
+    return re.sub(r"([^\w\s])", r"\\\1", str(value))
+
+
+def _in_list(values: list[Any]) -> str:
+    """PostgREST's in list, each value quoted with its quotes and backslashes escaped."""
+    quoted = (
+        '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"' for v in values
+    )
+    return f"({','.join(quoted)})"
 
 
 def _apply(query: Any, f: Filter) -> Any:
     if f.op == "contains":
-        return query.ilike(f.column, _like_pattern(f.value))
+        return query.filter(f.column, "imatch", _regex_literal(f.value))
     if f.op == "in":
-        return query.in_(f.column, list(f.value))
+        return query.filter(f.column, "in", _in_list(list(f.value)))
     if f.op == "is_null":
         return (
             query.is_(f.column, "null") if f.value else query.not_.is_(f.column, "null")

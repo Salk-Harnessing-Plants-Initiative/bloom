@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from typing import Any
 
 from .table_ports import Filter, QueryTimedOut, Sort, TableReadError
@@ -17,14 +18,15 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         return str(f.value).lower() in str(value).lower()
     if f.op == "in":
         return value in f.value
-    return {
-        "eq": value == f.value,
-        "neq": value != f.value,
-        "gt": value > f.value,
-        "gte": value >= f.value,
-        "lt": value < f.value,
-        "lte": value <= f.value,
+    compare = {
+        "eq": operator.eq,
+        "neq": operator.ne,
+        "gt": operator.gt,
+        "gte": operator.ge,
+        "lt": operator.lt,
+        "lte": operator.le,
     }[f.op]
+    return compare(value, f.value)
 
 
 FILTERED_GUESS = 70

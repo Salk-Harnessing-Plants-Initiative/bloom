@@ -306,6 +306,59 @@ def test_an_excluded_table_is_refused(tool_results):
     assert tool_results["excluded"] == "invalid_input"
 
 
+# Species names carrying every character a filter must take literally.
+_ODD_NAMES = {
+    -9101: "TEST_BLOOMMCP Col*0",
+    -9102: "TEST_BLOOMMCP Col%0",
+    -9103: "TEST_BLOOMMCP Col_0",
+    -9104: "TEST_BLOOMMCP ColA0",
+    -9105: 'TEST_BLOOMMCP Col"0',
+    -9106: "TEST_BLOOMMCP Col\\0",
+    -9107: "TEST_BLOOMMCP Col,0 (x)",
+}
+_ODD_SCRIPT = f"""
+import json
+from bloom_mcp.sections.bloom_data.query_table import query_table
+
+def names(op, value):
+    rows = query_table({{"table": "species", "columns": ["common_name"],
+        "filters": [{{"column": "common_name", "op": op, "value": value}}]}}).rows
+    return sorted(r["common_name"] for r in rows)
+
+odd = {list(_ODD_NAMES.values())!r}
+out = {{"contains": {{t: names("contains", t) for t in
+    ["col*0", "col%0", "col_0", 'col"0', "col\\\\0", "col,0 (x)"]}},
+    "in": names("in", odd[4:]),
+    "everything": names("contains", "TEST_BLOOMMCP Col")}}
+print(json.dumps(out))
+"""
+
+
+@pytest.fixture
+def species_with_odd_names(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO species (id, common_name) VALUES (%s, %s)",
+            list(_ODD_NAMES.items()),
+        )
+    pg_conn.commit()
+    try:
+        yield
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM species WHERE id = ANY(%s)", (list(_ODD_NAMES),))
+        pg_conn.commit()
+
+
+def test_filters_take_every_character_literally(species_with_odd_names):
+    out = _run_in_bloommcp(_ODD_SCRIPT)
+    names = list(_ODD_NAMES.values())
+    assert out["everything"] == sorted(names)
+    for text, found in out["contains"].items():
+        assert found == [n for n in sorted(names) if text in n.lower()], text
+    assert out["in"] == sorted(names[4:])
+
+
 _GENE = "TEST_BLOOMMCP_EMAIL_REDACTION"
 _GENE_SCRIPT = f"""
 import json
