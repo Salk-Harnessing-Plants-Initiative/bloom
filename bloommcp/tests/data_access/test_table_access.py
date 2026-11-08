@@ -129,3 +129,18 @@ def test_pipeline_error_text_and_pod_names_are_hidden(table, columns):
 )
 def test_the_joining_views_have_a_note(view):
     assert table_access.TABLE_NOTES[view]
+
+
+def test_the_scrna_notes_match_what_the_website_shows():
+    notes = table_access.TABLE_NOTES
+    assert "NULL_DATASET" in notes["scrna_datasets"]
+    assert "reference" in notes["scrna_datasets"]
+    assert "complete" in notes["scrna_de_runs"]
+    assert "newer run" in notes["scrna_de"] and "tested = false" in notes["scrna_de"]
+    assert "scrna_de" in notes["scrna_de_genes"]
+
+
+def test_the_wave_averages_say_they_mix_every_run():
+    assert (
+        "every pipeline run" in table_access.TABLE_NOTES["cyl_trait_by_experiment_wave"]
+    )

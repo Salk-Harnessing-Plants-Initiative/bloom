@@ -298,6 +298,31 @@ def test_every_reference_points_to_a_readable_table_and_column(tool_results):
     assert bad == [], bad
 
 
+# The columns each note tells Claude to filter or join on.
+_NOTE_COLUMNS = {
+    "scrna_datasets": {"name", "kind"},
+    "scrna_de_runs": {"status", "completed_at"},
+    "scrna_de": {"run_id", "cluster_id", "contrast", "tested"},
+    "scrna_de_genes": {"de_id"},
+    "cyl_experiments": {"deleted"},
+    "cyl_scan_traits_source": {"is_latest"},
+    "cyl_scans_extended": {"experiment_id"},
+    "cyl_plants_extended": {"experiment_id"},
+    "cyl_wave_timeline": {"experiment_name"},
+}
+
+
+def test_every_column_a_note_names_is_readable(tool_results):
+    described = tool_results["described"]
+    missing = sorted(
+        f"{table}.{column}"
+        for table, columns in _NOTE_COLUMNS.items()
+        for column in columns
+        if column not in {c["name"] for c in described.get(table, [])}
+    )
+    assert missing == [], f"notes name columns Claude can't read: {missing}"
+
+
 def test_people_email_is_never_listed_or_returned(tool_results):
     assert "email" not in tool_results["people_columns"]
     assert "email" not in tool_results["people"]["columns"]

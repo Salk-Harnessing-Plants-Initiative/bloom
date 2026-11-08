@@ -252,6 +252,25 @@ TABLE_NOTES: dict[str, str] = {
     "cyl_plant_search": (
         "Find cylinder plants by QR code, accession, species or experiment in one read."
     ),
+    "scrna_datasets": (
+        "Skip name = 'NULL_DATASET' (a placeholder with no data) and kind = 'reference' "
+        "(an atlas without cells) unless asked about them, as the website does."
+    ),
+    "scrna_de_runs": (
+        "Only status = 'complete' runs have results; the latest completed_at is current."
+    ),
+    "scrna_de": (
+        "Use only rows whose run_id is a complete run in scrna_de_runs; when two runs hold "
+        "the same cluster_id and contrast, the newer run's row is current. tested = false "
+        "means the comparison was skipped and has no genes."
+    ),
+    "scrna_de_genes": (
+        "Read through scrna_de: keep genes whose de_id is a current comparison there."
+    ),
+    "cyl_trait_by_experiment_wave": (
+        "Averages every pipeline run's values, not only the latest; for latest-run "
+        "figures, compute them from cyl_scan_traits_latest."
+    ),
     "gravi_scans_extended": (
         "One row per plate scan with its session, experiment, species and accession: read "
         "this instead of joining the gravi_ tables."
