@@ -6,6 +6,7 @@ Tools appear namespaced ``bloom_data_<name>`` on ``/mcp`` and at ``/bloom_data/m
 """
 
 from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from bloom_mcp.auth import auth_provider
 from bloom_mcp.contract import register
@@ -14,6 +15,13 @@ from . import count_rows, list_tables, query_table
 
 section = FastMCP("bloom_data", auth=auth_provider)
 
+# Reads only: clients may run these without asking the user to confirm a change.
+READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
+
 register(
-    section, list_tables.list_tables, query_table.query_table, count_rows.count_rows
+    section,
+    list_tables.list_tables,
+    query_table.query_table,
+    count_rows.count_rows,
+    annotations=READ_ONLY,
 )

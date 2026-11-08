@@ -94,3 +94,22 @@ def test_the_descriptions_quote_the_limits_in_force():
     fields = QueryTableParams.model_fields
     assert f"max {MAX_LIMIT}" in fields["limit"].description
     assert f"max {MAX_OFFSET:,}" in fields["offset"].description
+
+
+def test_the_description_names_the_cell_cut_and_nan_values():
+    assert str(MAX_CELL_CHARS) in query_table.__doc__
+    assert "NaN" in query_table.__doc__
+
+
+def test_a_table_with_no_readable_columns_is_refused_not_read_whole(reader):
+    reader.tables["species"] = [{"email": "a@b.org"}]
+    reader.table_columns = lambda: {"species": []}
+    with pytest.raises(BloomMCPError) as err:
+        query_table({"table": "species"})
+    assert "no columns" in err.value.message
+    assert reader.calls == []
+
+
+def test_a_count_needs_no_readable_column(reader):
+    reader.table_columns = lambda: {"species": []}
+    assert count_rows({"table": "species"}).count == 120

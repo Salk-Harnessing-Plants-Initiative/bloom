@@ -112,6 +112,10 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     offset=next_offset. On large tables, filter on an
     id column (experiment, species, scan) or the query may time out. For trait values, read
     cyl_scan_traits_latest.
+
+    Text or JSON values over 2000 characters are cut and end in "…[cut]" (a cut JSON value
+    comes back as text); truncated_values says when. Number columns can hold NaN or
+    Infinity, which arrive as the text "NaN" or "Infinity".
     """
     if params.offset > MAX_OFFSET:
         raise fix_request(
@@ -122,6 +126,11 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
         )
     allowed = readable_columns(params.table)
     columns = params.columns or allowed
+    if not columns:
+        # An empty select would make PostgREST return every column, hidden ones too.
+        raise fix_request(
+            f"'{params.table}' has no columns Bloom's data tools can read."
+        )
     check_columns(params.table, columns, allowed)
     check_columns(params.table, [f.column for f in params.filters], allowed)
     chosen = [params.order_by] if params.order_by else []

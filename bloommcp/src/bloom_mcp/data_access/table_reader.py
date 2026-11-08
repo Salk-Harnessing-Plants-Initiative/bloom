@@ -152,13 +152,9 @@ class PostgrestTableReader:
             logger.warning("bloom_data kept the last column list; reread failed")
 
     def _fetch_columns(self) -> dict[str, list[Column]]:
-        url, key = supabase_client.require_env()
         try:
-            response = httpx.get(
-                f"{url}/rest/v1/",
-                headers={"apikey": key, "Authorization": f"Bearer {key}"},
-                timeout=CLIENT_TIMEOUT_SECONDS,
-            )
+            # PostgREST's root path serves its schema description, through the same session.
+            response = self._client_factory().postgrest.session.get("")
             response.raise_for_status()
             definitions = response.json().get("definitions", {})
         except (httpx.HTTPError, ValueError) as exc:

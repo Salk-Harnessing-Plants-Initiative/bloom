@@ -11,7 +11,9 @@ from postgrest import SyncPostgrestClient
 
 from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
+    Column,
     ColumnsChanged,
+    DatabaseUnavailable,
     Filter,
     QueryTimedOut,
     RequestTooLong,
@@ -23,6 +25,16 @@ from bloom_mcp.data_access.table_reader import PostgrestTableReader
 BASE = "http://pg.test/rest/v1"
 
 
+class _Supabase:
+    """The two parts of supabase-py's client the reader uses."""
+
+    def __init__(self, postgrest):
+        self.postgrest = postgrest
+
+    def table(self, name):
+        return self.postgrest.from_(name)
+
+
 def _reader(reply):
     sent: list[httpx.Request] = []
 
@@ -31,7 +43,7 @@ def _reader(reply):
         return reply
 
     http = httpx.Client(base_url=BASE, transport=httpx.MockTransport(handle))
-    client = SyncPostgrestClient(BASE, http_client=http)
+    client = _Supabase(SyncPostgrestClient(BASE, http_client=http))
     return PostgrestTableReader(client_factory=lambda: client), sent
 
 
@@ -117,3 +129,48 @@ def test_postgrest_error_replies_map_to_their_errors(reply, error):
         reader.select("species", ["id"], [], [Sort("id")], 1, 0)
     assert type(err.value) is error
     assert "permission" not in str(err.value)
+
+
+_SCHEMA = {
+    "definitions": {
+        "cyl_scans": {
+            "properties": {
+                "id": {
+                    "description": "Note:\nThis is a Primary Key.<pk/>",
+                    "format": "bigint",
+                    "type": "integer",
+                },
+                "plant_id": {
+                    "description": "Note:\nThis is a Foreign Key to `cyl_plants.id`."
+                    "<fk table='cyl_plants' column='id'/>",
+                    "format": "bigint",
+                    "type": "integer",
+                },
+                "metadata": {"format": "jsonb"},
+                "odd": {},
+            }
+        }
+    }
+}
+
+
+def test_columns_are_read_from_postgrest_root_with_types_and_foreign_keys():
+    reader, sent = _reader(httpx.Response(200, json=_SCHEMA))
+    assert reader.table_columns()["cyl_scans"] == [
+        Column("id", "bigint"),
+        Column("plant_id", "bigint", "cyl_plants.id"),
+        Column("metadata", "jsonb"),
+        Column("odd", "unknown"),
+    ]
+    assert sent[0].method == "GET" and sent[0].url.path == "/rest/v1/"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [httpx.Response(503, text="unavailable"), httpx.Response(200, text="not json")],
+    ids=["status", "body"],
+)
+def test_an_unreadable_schema_is_database_unavailable(reply):
+    reader, _ = _reader(reply)
+    with pytest.raises(DatabaseUnavailable):
+        reader.table_columns()
