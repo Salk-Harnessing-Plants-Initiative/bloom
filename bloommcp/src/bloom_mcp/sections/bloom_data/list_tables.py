@@ -42,6 +42,10 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
     and rnaseq_ (expression), gene/genome/assemblies (genes and genomes). Use query_table
     and count_rows to read them. Follow `notes`: they say which table gives the answer the
     website shows.
+
+    Deleted experiments, species, scRNA datasets and gene candidates are left out of their
+    own tables, but rows that belong to them (waves, plants, scans, traits, cells) are not:
+    keep only rows whose parent id is still in the parent table.
     """
     if params.table:
         columns = readable_columns(params.table)

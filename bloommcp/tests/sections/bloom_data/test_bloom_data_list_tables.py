@@ -22,7 +22,8 @@ def test_lists_only_allow_listed_tables(reader):
     ]
     assert result.columns is None
     assert result.notes == {
-        "cyl_scan_traits_source": table_access.TABLE_NOTES["cyl_scan_traits_source"]
+        t: table_access.TABLE_NOTES[t]
+        for t in ("cyl_scan_traits_source", "cyl_scans_extended")
     }
 
 

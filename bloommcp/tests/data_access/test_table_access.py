@@ -91,3 +91,12 @@ def test_trait_values_are_read_only_through_the_views_that_apply_the_latest_rule
     assert not table_access.is_readable("cyl_scan_traits")
     assert "latest" in table_access.TABLE_NOTES["cyl_scan_traits_latest"]
     assert "is_latest" in table_access.TABLE_NOTES["cyl_scan_traits_source"]
+
+
+def test_views_that_show_deleted_experiments_say_so():
+    for view in ("cyl_scans_extended", "cyl_plants_extended", "cyl_wave_timeline"):
+        assert "deleted" in table_access.TABLE_NOTES[view]
+
+
+def test_the_older_deleted_flag_is_named():
+    assert "deleted = true" in table_access.TABLE_NOTES["cyl_experiments"]

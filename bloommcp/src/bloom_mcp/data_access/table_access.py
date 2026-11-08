@@ -221,6 +221,11 @@ _EMAIL = re.compile(
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"
 )
 
+_INCLUDES_DELETED_EXPERIMENTS = (
+    "Includes deleted experiments: keep only experiment_ids found in cyl_experiments with "
+    "deleted = false."
+)
+
 # Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
 TABLE_NOTES: dict[str, str] = {
     "cyl_scan_traits_latest": (
@@ -228,6 +233,14 @@ TABLE_NOTES: dict[str, str] = {
     ),
     "cyl_scan_traits_source": (
         "Every run's trait values. Only for comparing runs; is_latest marks the value to use."
+    ),
+    "cyl_experiments": "Skip rows with deleted = true: older deletions use this flag.",
+    # Views that read with their owner's rights, so deleted experiments come through.
+    "cyl_scans_extended": _INCLUDES_DELETED_EXPERIMENTS,
+    "cyl_plants_extended": _INCLUDES_DELETED_EXPERIMENTS,
+    "cyl_wave_timeline": (
+        "Includes deleted experiments: keep only experiment names found in cyl_experiments "
+        "with deleted = false."
     ),
 }
 

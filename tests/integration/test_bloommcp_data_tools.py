@@ -117,6 +117,33 @@ def test_every_readable_view_has_a_paging_key_on_its_own_columns(pg_conn):
     assert not bad, f"paging keys naming columns the view doesn't have: {bad}"
 
 
+def test_every_owner_rights_view_over_deletable_rows_has_a_deleted_note(pg_conn):
+    """A view without security_invoker skips the read rule that hides deleted rows, so a
+    readable one over a table with deleted rows fails here until its note says so."""
+    access = _table_access()
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT v.relname
+              FROM pg_depend d
+              JOIN pg_rewrite r ON r.oid = d.objid
+              JOIN pg_class v ON v.oid = r.ev_class
+              JOIN pg_class t ON t.oid = d.refobjid
+              JOIN pg_namespace n ON n.oid = v.relnamespace
+             WHERE n.nspname = 'public' AND v.relkind = 'v' AND t.oid <> v.oid
+               AND NOT coalesce(v.reloptions::text[] && ARRAY[
+                     'security_invoker=true', 'security_invoker=on'], false)
+               AND EXISTS (SELECT 1 FROM information_schema.columns c
+                            WHERE c.table_schema = 'public' AND c.table_name = t.relname
+                              AND c.column_name IN ('deleted', 'deleted_at'))
+            """
+        )
+        views = {row[0] for row in cur.fetchall()} & access.READABLE_TABLES
+    missing = sorted(v for v in views if "deleted" not in access.TABLE_NOTES.get(v, ""))
+    assert views, "expected the cylinder views that join cyl_experiments"
+    assert missing == [], f"add a deleted-rows note for: {missing}"
+
+
 def test_every_email_column_on_a_readable_table_is_hidden(pg_conn):
     """A new email column, or a newly readable table with one, fails here until it is hidden
     or its table is excluded."""
