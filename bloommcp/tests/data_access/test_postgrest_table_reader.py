@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
-from postgrest.types import CountMethod
 from postgrest.exceptions import APIError
+from postgrest.types import CountMethod
 
 from bloom_mcp.data_access.table_ports import (
+    BadFilterValue,
+    DatabaseUnavailable,
     Filter,
     QueryTimedOut,
     Sort,
@@ -112,8 +115,24 @@ def test_other_database_errors_keep_internals_out_of_the_message():
     )
     with pytest.raises(TableReadError) as err:
         _reader(client).select("species", ["id"], [], [Sort("id")], 10, 0)
+    assert type(err.value) is TableReadError
     assert "secret_x" not in str(err.value)
-    assert "42501" in str(err.value)
+    assert "42501" not in str(err.value)
+
+
+@pytest.mark.parametrize("code", ["22P02", "22003", "22007", "22008", "42883"])
+def test_a_filter_that_does_not_fit_its_column_becomes_bad_filter_value(code):
+    client = _Client(error=APIError({"code": code, "message": "invalid input syntax"}))
+    with pytest.raises(BadFilterValue) as err:
+        _reader(client).select("species", ["id"], [], [Sort("id")], 10, 0)
+    assert code not in str(err.value)
+
+
+def test_an_unreachable_database_becomes_database_unavailable():
+    client = _Client(error=httpx.ConnectError("connection refused to db:5432"))
+    with pytest.raises(DatabaseUnavailable) as err:
+        _reader(client).count("species", "id", [], exact=True)
+    assert "5432" not in str(err.value)
 
 
 @pytest.mark.parametrize("exact", [True, False])

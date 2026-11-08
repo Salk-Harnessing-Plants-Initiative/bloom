@@ -13,7 +13,13 @@ from postgrest.types import CountMethod
 
 from bloom_mcp import supabase_client
 
-from .table_ports import Filter, QueryTimedOut, TableReadError
+from .table_ports import (
+    BadFilterValue,
+    DatabaseUnavailable,
+    Filter,
+    QueryTimedOut,
+    TableReadError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +27,9 @@ logger = logging.getLogger(__name__)
 # own cancellation (a clear 57014) arrives first.
 CLIENT_TIMEOUT_SECONDS = 20
 STATEMENT_TIMEOUT_CODE = "57014"
+# A filter value of the wrong type for its column (text, number, date or time), and an
+# operator the column's type lacks (contains on a number).
+BAD_FILTER_CODES = frozenset({"22P02", "22003", "22007", "22008", "42883"})
 # PostgREST's schema description; reread after this long so new tables appear.
 COLUMNS_CACHE_SECONDS = 300
 
@@ -49,11 +58,16 @@ def _execute(query: Any) -> Any:
         if exc.code == STATEMENT_TIMEOUT_CODE:
             raise QueryTimedOut("statement timeout") from None
         logger.warning("bloom_data read failed: %s %s", exc.code, exc.message)
-        raise TableReadError(
-            f"The database refused the read (code {exc.code})."
-        ) from None
+        if exc.code in BAD_FILTER_CODES:
+            raise BadFilterValue("filter does not fit its column") from None
+        raise TableReadError("read refused") from None
     except httpx.TimeoutException:
         raise QueryTimedOut("client timeout") from None
+    except httpx.TransportError as exc:
+        logger.warning(
+            "bloom_data could not reach the database: %s", type(exc).__name__
+        )
+        raise DatabaseUnavailable("unreachable") from None
 
 
 class PostgrestTableReader:
@@ -89,9 +103,7 @@ class PostgrestTableReader:
             logger.warning(
                 "bloom_data could not read the API schema: %s", type(exc).__name__
             )
-            raise TableReadError(
-                "Could not read the list of tables; try again shortly."
-            ) from None
+            raise DatabaseUnavailable("schema unreadable") from None
         return {
             name: list(spec.get("properties", {})) for name, spec in definitions.items()
         }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .table_ports import Filter, QueryTimedOut, Sort
+from .table_ports import Filter, QueryTimedOut, Sort, TableReadError
 
 
 def _matches(row: dict[str, Any], f: Filter) -> bool:
@@ -32,7 +32,8 @@ FILTERED_GUESS = 70
 
 class FakeTableReader:
     """Tables as lists of dicts. `slow_tables` raise QueryTimedOut on select and exact count;
-    `calls` records reads and `counts` records `(table, exact)` for each count."""
+    `fail_with`, when set, is raised by every select and count; `calls` records reads and
+    `counts` records `(table, exact)` for each count."""
 
     def __init__(
         self,
@@ -42,6 +43,7 @@ class FakeTableReader:
         self.tables = tables
         self.estimates = dict(estimates or {})
         self.slow_tables: set[str] = set()
+        self.fail_with: TableReadError | None = None
         # The planner's guess for a filtered count: positive even when nothing matches.
         self.filtered_guess = FILTERED_GUESS
         self.calls: list[str] = []
@@ -57,6 +59,8 @@ class FakeTableReader:
 
     def select(self, table, columns, filters, order: list[Sort], limit, offset):
         self.calls.append(table)
+        if self.fail_with:
+            raise self.fail_with
         if table in self.slow_tables:
             raise QueryTimedOut("statement timeout")
         rows = self._filtered(table, filters)
@@ -72,6 +76,8 @@ class FakeTableReader:
     def count(self, table, column, filters, *, exact):
         self.calls.append(table)
         self.counts.append((table, exact))
+        if self.fail_with:
+            raise self.fail_with
         if exact and table in self.slow_tables:
             raise QueryTimedOut("statement timeout")
         if exact:

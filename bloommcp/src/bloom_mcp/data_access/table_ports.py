@@ -30,11 +30,19 @@ class Sort:
 
 
 class TableReadError(Exception):
-    """A read failed; the message never carries hosts, SQL or table internals."""
+    """A read failed; the message never carries hosts, SQL, database codes or internals."""
 
 
 class QueryTimedOut(TableReadError):
     """The database cancelled the query at bloom_agent's statement time limit."""
+
+
+class BadFilterValue(TableReadError):
+    """A filter doesn't fit its column's type: a wrong kind of value, or contains on non-text."""
+
+
+class DatabaseUnavailable(TableReadError):
+    """The database couldn't be reached."""
 
 
 class BloomDataReader(Protocol):

@@ -92,7 +92,7 @@ def test_email_is_never_returned(reader):
 def test_a_hidden_column_cannot_be_selected_filtered_or_ordered(reader, params):
     with pytest.raises(BloomMCPError) as err:
         query_table(params)
-    assert err.value.code == "tool_error"
+    assert err.value.code == "invalid_input"
     assert "email" in err.value.message
     assert reader.calls == []
 
@@ -100,7 +100,7 @@ def test_a_hidden_column_cannot_be_selected_filtered_or_ordered(reader, params):
 def test_an_excluded_table_is_refused_before_any_read(reader):
     with pytest.raises(BloomMCPError) as err:
         query_table({"table": "checkpoints"})
-    assert err.value.code == "tool_error"
+    assert err.value.code == "invalid_input"
     assert "list_tables" in err.value.remedy
     assert reader.calls == []
 
@@ -157,7 +157,7 @@ def test_log_columns_cannot_be_filtered_or_sorted(reader, column):
     ):
         with pytest.raises(BloomMCPError) as err:
             query_table({"table": "gene_candidates", **call})
-        assert err.value.code == "tool_error"
+        assert err.value.code == "invalid_input"
         assert column in err.value.message
 
 

@@ -68,7 +68,7 @@ def test_every_estimate_tells_claude_to_say_so():
 def test_an_excluded_table_is_refused(reader):
     with pytest.raises(BloomMCPError) as err:
         count_rows({"table": "chat_threads"})
-    assert err.value.code == "tool_error"
+    assert err.value.code == "invalid_input"
 
 
 def test_log_columns_cannot_be_filtered_in_a_count(reader):
@@ -79,4 +79,4 @@ def test_log_columns_cannot_be_filtered_in_a_count(reader):
                 "filters": [{"column": "status_logs", "op": "contains", "value": "@"}],
             }
         )
-    assert err.value.code == "tool_error"
+    assert err.value.code == "invalid_input"

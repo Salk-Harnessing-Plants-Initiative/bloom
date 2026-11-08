@@ -40,7 +40,7 @@ def test_describes_one_table_without_hidden_columns(reader):
 def test_describing_an_excluded_table_is_refused(reader):
     with pytest.raises(BloomMCPError) as err:
         list_tables({"table": "checkpoints"})
-    assert err.value.code == "tool_error"
+    assert err.value.code == "invalid_input"
 
 
 def test_describing_a_table_with_a_note_returns_it(reader):
@@ -55,4 +55,4 @@ def test_a_table_without_a_note_has_none(reader):
 def test_the_raw_traits_table_is_refused(reader):
     with pytest.raises(BloomMCPError) as err:
         list_tables({"table": "cyl_scan_traits"})
-    assert err.value.code == "tool_error"
+    assert err.value.code == "invalid_input"

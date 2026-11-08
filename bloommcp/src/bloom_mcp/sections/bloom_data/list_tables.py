@@ -8,7 +8,7 @@ from bloom_mcp.contract import as_mcp_tool
 from bloom_mcp.data_access import table_access
 from bloom_mcp.tools import _ports
 
-from ._common import DECLARED_ERRORS, readable_columns
+from ._common import readable_columns, reports_read_errors
 
 
 class ListTablesParams(BaseModel):
@@ -32,9 +32,8 @@ class ListTablesResult(BaseModel):
     )
 
 
-@as_mcp_tool(
-    input_model=ListTablesParams, output_model=ListTablesResult, errors=DECLARED_ERRORS
-)
+@as_mcp_tool(input_model=ListTablesParams, output_model=ListTablesResult)
+@reports_read_errors
 def list_tables(params: ListTablesParams) -> ListTablesResult:
     """List the Bloom tables you can read, or pass `table` to get its columns.
 

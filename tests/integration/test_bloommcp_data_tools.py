@@ -222,6 +222,12 @@ try:
     out["excluded"] = None
 except BloomMCPError as exc:
     out["excluded"] = exc.code
+try:
+    query_table({"table": "species", "filters": [
+        {"column": "id", "op": "eq", "value": "not-a-number"}]})
+    out["bad_value"] = None
+except BloomMCPError as exc:
+    out["bad_value"] = exc.to_dict()
 print(json.dumps(out, default=str))
 """
 
@@ -289,8 +295,15 @@ def test_a_filtered_count_for_a_missing_id_is_an_exact_zero(tool_results):
     assert tool_results["count_missing"]["approximate"] is False
 
 
+def test_a_wrong_type_filter_is_explained_without_the_database_code(tool_results):
+    error = tool_results["bad_value"]
+    assert error["code"] == "invalid_input"
+    assert "doesn't fit its column" in error["message"]
+    assert "22P02" not in f"{error['message']} {error['remedy']}"
+
+
 def test_an_excluded_table_is_refused(tool_results):
-    assert tool_results["excluded"] == "tool_error"
+    assert tool_results["excluded"] == "invalid_input"
 
 
 _GENE = "TEST_BLOOMMCP_EMAIL_REDACTION"

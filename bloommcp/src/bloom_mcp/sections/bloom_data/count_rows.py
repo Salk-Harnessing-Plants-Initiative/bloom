@@ -11,13 +11,12 @@ from bloom_mcp.data_access.table_ports import QueryTimedOut
 from bloom_mcp.tools import _ports
 
 from ._common import (
-    DECLARED_ERRORS,
     FilterParam,
     check_columns,
     check_filterable,
     readable_columns,
+    reports_read_errors,
     to_filters,
-    too_slow,
 )
 
 EXACT_NOTE = "Exact count."
@@ -49,9 +48,8 @@ class CountRowsResult(BaseModel):
     note: str
 
 
-@as_mcp_tool(
-    input_model=CountRowsParams, output_model=CountRowsResult, errors=DECLARED_ERRORS
-)
+@as_mcp_tool(input_model=CountRowsParams, output_model=CountRowsResult)
+@reports_read_errors
 def count_rows(params: CountRowsParams) -> CountRowsResult:
     """Count the rows of one of Bloom's tables or views, optionally filtered.
 
@@ -67,10 +65,7 @@ def count_rows(params: CountRowsParams) -> CountRowsResult:
     column = table_access.paging_key(params.table)[0]
 
     # The planner's guess is instant; it decides whether an exact count is affordable.
-    try:
-        planned = reader.count(params.table, column, filters, exact=False)
-    except QueryTimedOut:
-        raise too_slow() from None
+    planned = reader.count(params.table, column, filters, exact=False)
     if planned is not None and planned >= LARGE_COUNT_ROWS:
         return _estimate(params.table, planned, TOO_MANY_NOTE)
     try:

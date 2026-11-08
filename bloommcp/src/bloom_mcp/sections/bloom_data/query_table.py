@@ -9,17 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
 from bloom_mcp.data_access import table_access
-from bloom_mcp.data_access.table_ports import QueryTimedOut, Sort
+from bloom_mcp.data_access.table_ports import Sort
 from bloom_mcp.tools import _ports
 
 from ._common import (
-    DECLARED_ERRORS,
     FilterParam,
     check_columns,
     check_filterable,
     readable_columns,
+    reports_read_errors,
     to_filters,
-    too_slow,
 )
 
 DEFAULT_LIMIT = 50
@@ -90,9 +89,8 @@ def _order(table: str, order_by: str | None, descending: bool) -> list[Sort]:
     return [Sort(order_by, descending)] + [Sort(c) for c in key if c != order_by]
 
 
-@as_mcp_tool(
-    input_model=QueryTableParams, output_model=QueryTableResult, errors=DECLARED_ERRORS
-)
+@as_mcp_tool(input_model=QueryTableParams, output_model=QueryTableResult)
+@reports_read_errors
 def query_table(params: QueryTableParams) -> QueryTableResult:
     """Read rows from one of Bloom's tables (cylinder scans, plates, expression, genes, ...).
 
@@ -111,17 +109,9 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     filters = to_filters(params.filters)
     order = _order(params.table, params.order_by, params.descending)
 
-    try:
-        rows = _ports.table_reader().select(
-            params.table,
-            columns,
-            filters,
-            order,
-            params.limit + 1,
-            params.offset,
-        )
-    except QueryTimedOut:
-        raise too_slow() from None
+    rows = _ports.table_reader().select(
+        params.table, columns, filters, order, params.limit + 1, params.offset
+    )
 
     has_more = len(rows) > params.limit
     rows = rows[: params.limit]
