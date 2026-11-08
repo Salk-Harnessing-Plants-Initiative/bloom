@@ -277,6 +277,12 @@ def tool_results() -> dict:
     return _run_in_bloommcp(_SCRIPT)
 
 
+def test_list_tables_shows_every_allow_listed_table(tool_results):
+    """A table missing here is one bloom_agent lost its grant on, or PostgREST doesn't serve."""
+    missing = sorted(_table_access().READABLE_TABLES - set(tool_results["tables"]))
+    assert missing == [], f"allow-listed but not listed: {missing}"
+
+
 def test_list_tables_shows_data_tables_and_hides_chat_internals(tool_results):
     tables = tool_results["tables"]
     assert {"species", "genes", "cyl_scans", "gravi_scans", "scrna_datasets"} <= set(
@@ -438,6 +444,39 @@ def test_filters_take_every_character_literally(species_with_odd_names):
     for text, found in out["contains"].items():
         assert found == [n for n in sorted(names) if text in n.lower()], text
     assert out["in"] == sorted(names[4:])
+
+
+_PERSON_ID = -9201
+_PEOPLE_SCRIPT = f"""
+import json
+from bloom_mcp.sections.bloom_data.query_table import query_table
+print(json.dumps(query_table({{"table": "people", "filters": [
+    {{"column": "id", "op": "eq", "value": {_PERSON_ID}}}]}}).model_dump(), default=str))
+"""
+
+
+@pytest.fixture
+def person_with_email(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO people (id, name, email) VALUES (%s, %s, %s)",
+            (_PERSON_ID, "TEST_BLOOMMCP Ada", "ada.test@salk.edu"),
+        )
+    pg_conn.commit()
+    try:
+        yield
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM people WHERE id = %s", (_PERSON_ID,))
+        pg_conn.commit()
+
+
+def test_a_real_persons_email_is_not_returned(person_with_email):
+    result = _run_in_bloommcp(_PEOPLE_SCRIPT)
+    assert result["returned"] == 1
+    assert result["rows"][0]["name"] == "TEST_BLOOMMCP Ada"
+    assert "email" not in result["columns"]
+    assert "@" not in json.dumps(result)
 
 
 _GENE = "TEST_BLOOMMCP_EMAIL_REDACTION"
