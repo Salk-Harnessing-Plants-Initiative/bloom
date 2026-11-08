@@ -143,14 +143,19 @@ READABLE_TABLES = frozenset(
     }
 )
 
-# Never selected, filtered or ordered on: emails, and the video queues' renderer error text
-# (internal hosts and roles) and queue plumbing, which bloom_agent has no grant on anyway.
+# Never selected, filtered or ordered on: emails; the video queues' renderer error text and
+# queue plumbing, which bloom_agent has no grant on anyway; and the pipeline runs' raw error
+# text and pod names (internal hosts, roles and paths). A run's status still shows.
 HIDDEN_COLUMNS: dict[str, frozenset[str]] = {
     "people": frozenset({"email"}),
     "phenotypers": frozenset({"email"}),
     "cyl_scientists": frozenset({"email"}),
     "cyl_video_jobs": frozenset({"error_message", "msg_id", "reads"}),
     "gravi_plate_video_jobs": frozenset({"error_message", "msg_id", "reads"}),
+    "cyl_pipeline_runs": frozenset({"error_message"}),
+    "cyl_pipeline_run_scans": frozenset({"error_message"}),
+    "scrna_de_runs": frozenset({"error_message"}),
+    "rnaseq_runs": frozenset({"message", "step_pods"}),
 }
 
 # The unique key each read is sorted by, so pages never overlap or skip rows, in the order of

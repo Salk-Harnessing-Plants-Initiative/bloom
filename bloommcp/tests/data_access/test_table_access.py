@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from bloom_mcp.data_access import table_access
 
 
@@ -100,3 +102,17 @@ def test_views_that_show_deleted_experiments_say_so():
 
 def test_the_older_deleted_flag_is_named():
     assert "deleted = true" in table_access.TABLE_NOTES["cyl_experiments"]
+
+
+@pytest.mark.parametrize(
+    ("table", "columns"),
+    [
+        ("cyl_pipeline_runs", {"error_message"}),
+        ("cyl_pipeline_run_scans", {"error_message"}),
+        ("scrna_de_runs", {"error_message"}),
+        ("rnaseq_runs", {"message", "step_pods"}),
+    ],
+)
+def test_pipeline_error_text_and_pod_names_are_hidden(table, columns):
+    assert columns <= table_access.HIDDEN_COLUMNS[table]
+    assert "status" in table_access.visible_columns(table, ["status", *columns])

@@ -144,6 +144,41 @@ def test_every_owner_rights_view_over_deletable_rows_has_a_deleted_note(pg_conn)
     assert missing == [], f"add a deleted-rows note for: {missing}"
 
 
+def _public_columns(pg_conn) -> set[tuple[str, str]]:
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name, column_name FROM information_schema.columns"
+            " WHERE table_schema = 'public'"
+        )
+        return set(cur.fetchall())
+
+
+def test_every_hidden_column_exists(pg_conn):
+    """A renamed column would be readable under its new name, so a stale entry fails here."""
+    access = _table_access()
+    present = _public_columns(pg_conn)
+    stale = sorted(
+        f"{table}.{column}"
+        for table, columns in access.HIDDEN_COLUMNS.items()
+        for column in columns
+        if (table, column) not in present
+    )
+    assert stale == [], f"these hidden columns no longer exist: {stale}"
+
+
+def test_every_error_message_column_on_a_readable_table_is_hidden(pg_conn):
+    """Raw error text names internal hosts and paths; a new such column fails until hidden."""
+    access = _table_access()
+    exposed = sorted(
+        f"{table}.{column}"
+        for table, column in _public_columns(pg_conn)
+        if column in {"error_message", "message"}
+        and table in access.READABLE_TABLES
+        and column not in access.HIDDEN_COLUMNS.get(table, frozenset())
+    )
+    assert exposed == [], f"hide these or exclude their tables: {exposed}"
+
+
 def test_every_email_column_on_a_readable_table_is_hidden(pg_conn):
     """A new email column, or a newly readable table with one, fails here until it is hidden
     or its table is excluded."""
