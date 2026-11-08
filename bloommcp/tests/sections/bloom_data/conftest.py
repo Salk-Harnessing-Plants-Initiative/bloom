@@ -27,7 +27,10 @@ PEOPLE = [
     {"id": 1, "name": "Ada", "email": "ada@salk.edu"},
     {"id": 2, "name": "Ben", "email": "ben@salk.edu"},
 ]
-TRAITS = [{"id": 1, "scan_id": 10, "value": 0.5}]
+TRAITS = [
+    {"scan_id": 10, "source_id": 1, "trait_id": 7, "value": 0.5, "is_latest": False},
+    {"scan_id": 10, "source_id": 2, "trait_id": 7, "value": 0.6, "is_latest": True},
+]
 GENE_CANDIDATES = [
     {
         "gene": "AT1G01010",
@@ -50,6 +53,7 @@ def reader():
                 "species": SPECIES,
                 "people": PEOPLE,
                 "cyl_scan_traits": TRAITS,
+                "cyl_scan_traits_source": TRAITS,
                 "gene_candidates": GENE_CANDIDATES,
                 "genes": GENES,
                 "scrna_cluster_stats": CLUSTER_STATS,
@@ -57,7 +61,7 @@ def reader():
                 "checkpoints": [{"x": 1}],
             }
         ),
-        estimates={"species": 120, "people": 2, "cyl_scan_traits": 31_800_000},
+        estimates={"species": 120, "people": 2, "cyl_scan_traits_source": 31_800_000},
     )
     previous = _ports.table_reader()
     _ports.configure(table_reader=fake)

@@ -81,3 +81,13 @@ def test_paging_keys_name_readable_tables_and_default_to_id():
         "protein_uid",
         "orthogroup",
     )
+
+
+def test_every_note_names_a_readable_table():
+    assert set(table_access.TABLE_NOTES) <= table_access.READABLE_TABLES
+
+
+def test_trait_values_are_read_only_through_the_views_that_apply_the_latest_rule():
+    assert not table_access.is_readable("cyl_scan_traits")
+    assert "latest" in table_access.TABLE_NOTES["cyl_scan_traits_latest"]
+    assert "is_latest" in table_access.TABLE_NOTES["cyl_scan_traits_source"]

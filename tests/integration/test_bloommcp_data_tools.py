@@ -147,11 +147,12 @@ from bloom_mcp.sections.bloom_data.query_table import query_table
 out = {
     "tables": list_tables({}).tables,
     "people_columns": list_tables({"table": "people"}).columns,
+    "notes": list_tables({"contains": "cyl_scan_traits"}).model_dump(),
     "species": query_table({"table": "species", "limit": 1}).model_dump(),
     "people": query_table({"table": "people", "limit": 5}).model_dump(),
     "count_species": count_rows({"table": "species"}).model_dump(),
     "count_view": count_rows({"table": "cyl_scans_extended"}).model_dump(),
-    "count_missing": count_rows({"table": "cyl_scan_traits", "filters": [
+    "count_missing": count_rows({"table": "cyl_scan_traits_latest", "filters": [
         {"column": "scan_id", "op": "eq", "value": -1}]}).model_dump(),
 }
 try:
@@ -195,6 +196,12 @@ def test_list_tables_shows_data_tables_and_hides_chat_internals(tool_results):
         tables
     )
     assert not {"checkpoints", "chat_threads", "bloommcp_usage"} & set(tables)
+
+
+def test_trait_values_are_offered_only_through_the_latest_rule_views(tool_results):
+    listed = tool_results["notes"]
+    assert listed["tables"] == ["cyl_scan_traits_latest", "cyl_scan_traits_source"]
+    assert set(listed["notes"]) == set(listed["tables"])
 
 
 def test_people_email_is_never_listed_or_returned(tool_results):

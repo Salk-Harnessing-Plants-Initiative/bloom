@@ -20,16 +20,16 @@ def test_a_small_table_is_counted_exactly(reader):
 
 
 def test_a_whole_large_table_gets_the_estimate_and_is_never_counted(reader):
-    result = count_rows({"table": "cyl_scan_traits"})
+    result = count_rows({"table": "cyl_scan_traits_source"})
     assert (result.count, result.approximate) == (31_800_000, True)
-    assert ("cyl_scan_traits", True) not in reader.counts
+    assert ("cyl_scan_traits_source", True) not in reader.counts
     assert result.note == TOO_MANY_NOTE
 
 
 def test_a_filtered_count_on_a_large_table_is_exact(reader):
     result = count_rows(
         {
-            "table": "cyl_scan_traits",
+            "table": "cyl_scan_traits_source",
             "filters": [{"column": "scan_id", "op": "eq", "value": 99999}],
         }
     )
@@ -45,7 +45,7 @@ def test_a_filter_matching_too_many_rows_gets_the_estimate(reader):
     reader.filtered_guess = 500_000
     result = count_rows(
         {
-            "table": "cyl_scan_traits",
+            "table": "cyl_scan_traits_source",
             "filters": [{"column": "value", "op": "gt", "value": 0}],
         }
     )

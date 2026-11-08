@@ -112,9 +112,9 @@ def test_an_unknown_column_is_refused(reader):
 
 
 def test_a_timeout_asks_to_narrow_the_query(reader):
-    reader.slow_tables.add("cyl_scan_traits")
+    reader.slow_tables.add("cyl_scan_traits_source")
     with pytest.raises(BloomMCPError) as err:
-        query_table({"table": "cyl_scan_traits"})
+        query_table({"table": "cyl_scan_traits_source"})
     assert err.value.code == "tool_error"
     assert "filter" in err.value.message.lower()
 

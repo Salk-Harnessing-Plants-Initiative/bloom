@@ -98,7 +98,8 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
 
     Call list_tables first for table and column names. Returns at most 500 rows per call;
     when has_more is true, call again with offset=next_offset. On large tables, filter on an
-    id column (experiment, species, scan) or the query may time out.
+    id column (experiment, species, scan) or the query may time out. For trait values, read
+    cyl_scan_traits_latest.
     """
     allowed = readable_columns(params.table)
     columns = params.columns or allowed

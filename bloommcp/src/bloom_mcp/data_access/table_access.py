@@ -11,7 +11,9 @@ import re
 from typing import Any
 
 # Chat and usage internals, protein embedding vectors (thousands of numbers per row), and
-# tables holding staff emails Claude has no use for yet (gene progress logs, RhizoVision).
+# tables holding staff emails Claude has no use for yet (gene progress logs, RhizoVision),
+# and cyl_scan_traits: every run's values with no trait name or latest flag, read through its
+# views instead.
 EXCLUDED_TABLES = frozenset(
     {
         "bloommcp_usage",
@@ -21,6 +23,7 @@ EXCLUDED_TABLES = frozenset(
         "checkpoint_writes",
         "checkpoints",
         "cyl_experiment_trait_count_changes",
+        "cyl_scan_traits",
         "experiment_progress_logs",
         "protein_embeddings_esm2",
         "protein_embeddings_esm3",
@@ -63,7 +66,6 @@ READABLE_TABLES = frozenset(
         "cyl_scan_latest_source",
         "cyl_scan_timeline",
         "cyl_scan_trait_names",
-        "cyl_scan_traits",
         "cyl_scan_traits_latest",
         "cyl_scan_traits_source",
         "cyl_scan_videos",
@@ -219,6 +221,16 @@ _EMAIL = re.compile(
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"
 )
 
+# Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
+TABLE_NOTES: dict[str, str] = {
+    "cyl_scan_traits_latest": (
+        "Use for trait values: the latest run's value per scan and trait, as the website shows."
+    ),
+    "cyl_scan_traits_source": (
+        "Every run's trait values. Only for comparing runs; is_latest marks the value to use."
+    ),
+}
+
 # When the planner guesses at least this many matching rows, a count is its estimate, not exact.
 LARGE_COUNT_ROWS = 200_000
 
@@ -245,6 +257,10 @@ def redact_emails(value: Any) -> Any:
     if isinstance(value, dict):
         return {redact_emails(k): redact_emails(v) for k, v in value.items()}
     return value
+
+
+def table_notes(tables: list[str]) -> dict[str, str]:
+    return {t: TABLE_NOTES[t] for t in tables if t in TABLE_NOTES}
 
 
 def paging_key(table: str) -> tuple[str, ...]:

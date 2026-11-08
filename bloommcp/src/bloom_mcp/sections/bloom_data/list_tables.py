@@ -24,6 +24,9 @@ class ListTablesParams(BaseModel):
 
 class ListTablesResult(BaseModel):
     tables: list[str]
+    notes: dict[str, str] = Field(
+        description="Which table to use, for the listed tables that have a note."
+    )
     columns: list[str] | None = Field(
         description="The described table's columns, if one was asked for."
     )
@@ -37,15 +40,21 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
 
     Names start with their area: cyl_ (cylinder scans), gravi_ and plates_ (plates), scrna_
     and rnaseq_ (expression), gene/genome/assemblies (genes and genomes). Use query_table
-    and count_rows to read them.
+    and count_rows to read them. Follow `notes`: they say which table gives the answer the
+    website shows.
     """
     if params.table:
+        columns = readable_columns(params.table)
         return ListTablesResult(
-            tables=[params.table], columns=readable_columns(params.table)
+            tables=[params.table],
+            notes=table_access.table_notes([params.table]),
+            columns=columns,
         )
     names = sorted(
         t for t in _ports.table_reader().table_columns() if table_access.is_readable(t)
     )
     if params.contains:
         names = [t for t in names if params.contains.lower() in t.lower()]
-    return ListTablesResult(tables=names, columns=None)
+    return ListTablesResult(
+        tables=names, notes=table_access.table_notes(names), columns=None
+    )
