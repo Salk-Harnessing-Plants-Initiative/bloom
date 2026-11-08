@@ -5,7 +5,7 @@ from __future__ import annotations
 import operator
 from typing import Any
 
-from .table_ports import Filter, QueryTimedOut, Sort, TableReadError
+from .table_ports import Column, Filter, QueryTimedOut, Sort, TableReadError
 
 
 def _matches(row: dict[str, Any], f: Filter) -> bool:
@@ -30,6 +30,18 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
 
 
 FILTERED_GUESS = 70
+# A column's SQL type, guessed from its first row's Python value.
+_TYPES = (
+    (bool, "boolean"),
+    (int, "bigint"),
+    (float, "double precision"),
+    (dict, "jsonb"),
+    (list, "jsonb"),
+)
+
+
+def _guess_type(value: Any) -> str:
+    return next((t for kind, t in _TYPES if isinstance(value, kind)), "text")
 
 
 class FakeTableReader:
@@ -41,8 +53,11 @@ class FakeTableReader:
         self,
         tables: dict[str, list[dict[str, Any]]],
         estimates: dict[str, int | None] | None = None,
+        references: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self.tables = tables
+        # {table: {column: "other_table.column"}}: the fake's foreign keys.
+        self.references = dict(references or {})
         self.estimates = dict(estimates or {})
         self.slow_tables: set[str] = set()
         self.fail_with: TableReadError | None = None
@@ -51,9 +66,13 @@ class FakeTableReader:
         self.calls: list[str] = []
         self.counts: list[tuple[str, bool]] = []
 
-    def table_columns(self) -> dict[str, list[str]]:
+    def table_columns(self) -> dict[str, list[Column]]:
         return {
-            name: list(rows[0]) if rows else [] for name, rows in self.tables.items()
+            name: [
+                Column(c, _guess_type(v), self.references.get(name, {}).get(c))
+                for c, v in (rows[0] if rows else {}).items()
+            ]
+            for name, rows in self.tables.items()
         }
 
     def _filtered(self, table: str, filters: list[Filter]) -> list[dict[str, Any]]:

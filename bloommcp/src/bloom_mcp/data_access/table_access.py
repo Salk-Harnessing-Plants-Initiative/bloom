@@ -241,8 +241,21 @@ TABLE_NOTES: dict[str, str] = {
     ),
     "cyl_experiments": "Skip rows with deleted = true: older deletions use this flag.",
     # Views that read with their owner's rights, so deleted experiments come through.
-    "cyl_scans_extended": _INCLUDES_DELETED_EXPERIMENTS,
-    "cyl_plants_extended": _INCLUDES_DELETED_EXPERIMENTS,
+    "cyl_scans_extended": (
+        "One row per scan with its plant, wave, experiment and species: read this instead "
+        "of joining those tables. " + _INCLUDES_DELETED_EXPERIMENTS
+    ),
+    "cyl_plants_extended": (
+        "One row per plant with its wave, experiment and species: read this instead of "
+        "joining those tables. " + _INCLUDES_DELETED_EXPERIMENTS
+    ),
+    "cyl_plant_search": (
+        "Find cylinder plants by QR code, accession, species or experiment in one read."
+    ),
+    "gravi_scans_extended": (
+        "One row per plate scan with its session, experiment, species and accession: read "
+        "this instead of joining the gravi_ tables."
+    ),
     "cyl_wave_timeline": (
         "Includes deleted experiments: keep only experiment names found in cyl_experiments "
         "with deleted = false."

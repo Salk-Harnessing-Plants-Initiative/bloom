@@ -24,6 +24,14 @@ class Filter:
 
 
 @dataclass(frozen=True)
+class Column:
+    name: str
+    type: str
+    # "table.column" this column is a foreign key to, if any.
+    references: str | None = None
+
+
+@dataclass(frozen=True)
 class Sort:
     column: str
     descending: bool = False
@@ -48,7 +56,7 @@ class DatabaseUnavailable(TableReadError):
 class BloomDataReader(Protocol):
     """Reads Bloom's tables as bloom_agent."""
 
-    def table_columns(self) -> dict[str, list[str]]:
+    def table_columns(self) -> dict[str, list[Column]]:
         """Every table and view the API exposes, with its columns in order."""
         ...
 

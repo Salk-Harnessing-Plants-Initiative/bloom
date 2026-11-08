@@ -16,6 +16,7 @@ from bloom_mcp import supabase_client
 
 from .table_ports import (
     BadFilterValue,
+    Column,
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
@@ -33,6 +34,8 @@ STATEMENT_TIMEOUT_CODE = "57014"
 BAD_FILTER_CODES = frozenset({"22P02", "22003", "22007", "22008", "42883"})
 # PostgREST's schema description; reread after this long so new tables appear.
 COLUMNS_CACHE_SECONDS = 300
+# How PostgREST's schema description marks a foreign key.
+_FOREIGN_KEY = re.compile(r"<fk table='([^']+)' column='([^']+)'/>")
 
 
 def _regex_literal(value: Any) -> str:
@@ -47,6 +50,16 @@ def _in_list(values: list[Any]) -> str:
         '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"' for v in values
     )
     return f"({','.join(quoted)})"
+
+
+def _column(name: str, spec: dict[str, Any]) -> Column:
+    """A column from PostgREST's schema description: its SQL type and any foreign key."""
+    fk = _FOREIGN_KEY.search(spec.get("description", ""))
+    return Column(
+        name=name,
+        type=spec.get("format") or spec.get("type") or "unknown",
+        references=f"{fk[1]}.{fk[2]}" if fk else None,
+    )
 
 
 def _apply(query: Any, f: Filter) -> Any:
@@ -89,17 +102,17 @@ class PostgrestTableReader:
                 timeout_seconds=CLIENT_TIMEOUT_SECONDS
             )
         )
-        self._columns: dict[str, list[str]] | None = None
+        self._columns: dict[str, list[Column]] | None = None
         self._columns_at = 0.0
 
-    def table_columns(self) -> dict[str, list[str]]:
+    def table_columns(self) -> dict[str, list[Column]]:
         now = time.monotonic()
         if self._columns is None or now - self._columns_at > COLUMNS_CACHE_SECONDS:
             self._columns = self._fetch_columns()
             self._columns_at = now
         return self._columns
 
-    def _fetch_columns(self) -> dict[str, list[str]]:
+    def _fetch_columns(self) -> dict[str, list[Column]]:
         url, key = supabase_client.require_env()
         try:
             response = httpx.get(
@@ -115,7 +128,8 @@ class PostgrestTableReader:
             )
             raise DatabaseUnavailable("schema unreadable") from None
         return {
-            name: list(spec.get("properties", {})) for name, spec in definitions.items()
+            name: [_column(c, p) for c, p in spec.get("properties", {}).items()]
+            for name, spec in definitions.items()
         }
 
     def select(self, table, columns, filters, order, limit, offset):

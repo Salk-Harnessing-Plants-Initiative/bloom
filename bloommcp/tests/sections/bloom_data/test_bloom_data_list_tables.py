@@ -34,7 +34,25 @@ def test_filters_table_names(reader):
 def test_describes_one_table_without_hidden_columns(reader):
     result = list_tables({"table": "people"})
     assert result.tables == ["people"]
-    assert result.columns == ["id", "name"]
+    assert [c.name for c in result.columns] == ["id", "name"]
+
+
+def test_columns_carry_their_type(reader):
+    columns = {c.name: c.type for c in list_tables({"table": "species"}).columns}
+    assert columns == {"id": "bigint", "common_name": "text", "deleted_at": "text"}
+
+
+def test_a_foreign_key_to_a_readable_table_is_shown(reader):
+    reader.references = {"cyl_scans_extended": {"plant_id": "cyl_plants.id"}}
+    columns = {c.name: c for c in list_tables({"table": "cyl_scans_extended"}).columns}
+    assert columns["plant_id"].references == "cyl_plants.id"
+    assert columns["scan_id"].references is None
+
+
+def test_a_foreign_key_to_an_unreadable_table_is_left_out(reader):
+    reader.references = {"cyl_scans_extended": {"plant_id": "chat_threads.id"}}
+    columns = {c.name: c for c in list_tables({"table": "cyl_scans_extended"}).columns}
+    assert columns["plant_id"].references is None
 
 
 def test_describing_an_excluded_table_is_refused(reader):

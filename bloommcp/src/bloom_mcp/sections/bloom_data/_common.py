@@ -12,6 +12,7 @@ from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import table_access
 from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
+    Column,
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
@@ -88,14 +89,19 @@ class FilterParam(BaseModel):
     value: Any = Field(description="Value to compare with.")
 
 
-def readable_columns(table: str) -> list[str]:
+def readable_column_details(table: str) -> list[Column]:
     """The table's columns Claude may see; raises if the table isn't on the allow-list."""
     if not table_access.is_readable(table):
         raise fix_request(f"'{table}' is not a table Bloom's data tools can read.")
     columns = _ports.table_reader().table_columns().get(table)
     if columns is None:
         raise fix_request(f"'{table}' is not a table Bloom's data tools can read.")
-    return table_access.visible_columns(table, columns)
+    visible = set(table_access.visible_columns(table, [c.name for c in columns]))
+    return [c for c in columns if c.name in visible]
+
+
+def readable_columns(table: str) -> list[str]:
+    return [c.name for c in readable_column_details(table)]
 
 
 def check_columns(table: str, wanted: list[str], allowed: list[str]) -> None:

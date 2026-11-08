@@ -208,7 +208,10 @@ from bloom_mcp.sections.bloom_data.query_table import query_table
 
 out = {
     "tables": list_tables({}).tables,
-    "people_columns": list_tables({"table": "people"}).columns,
+    "people_columns": [c.name for c in list_tables({"table": "people"}).columns],
+    "scan_columns": list_tables({"table": "cyl_scans"}).model_dump()["columns"],
+    "described": {t: [c.model_dump() for c in list_tables({"table": t}).columns]
+                  for t in list_tables({}).tables},
     "notes": list_tables({"contains": "cyl_scan_traits"}).model_dump(),
     "species": query_table({"table": "species", "limit": 1}).model_dump(),
     "people": query_table({"table": "people", "limit": 5}).model_dump(),
@@ -270,6 +273,29 @@ def test_trait_values_are_offered_only_through_the_latest_rule_views(tool_result
     listed = tool_results["notes"]
     assert listed["tables"] == ["cyl_scan_traits_latest", "cyl_scan_traits_source"]
     assert set(listed["notes"]) == set(listed["tables"])
+
+
+def test_columns_show_their_type_and_the_table_they_point_to(tool_results):
+    columns = {c["name"]: c for c in tool_results["scan_columns"]}
+    assert columns["plant_id"] == {
+        "name": "plant_id",
+        "type": "bigint",
+        "references": "cyl_plants.id",
+    }
+    assert columns["date_scanned"]["type"] == "date"
+
+
+def test_every_reference_points_to_a_readable_table_and_column(tool_results):
+    described = tool_results["described"]
+    bad = sorted(
+        f"{table}.{c['name']} -> {c['references']}"
+        for table, columns in described.items()
+        for c in columns
+        if c["references"]
+        and c["references"].split(".")[1]
+        not in {x["name"] for x in described.get(c["references"].split(".")[0], [])}
+    )
+    assert bad == [], bad
 
 
 def test_people_email_is_never_listed_or_returned(tool_results):

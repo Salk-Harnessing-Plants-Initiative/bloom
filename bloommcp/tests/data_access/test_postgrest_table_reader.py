@@ -9,6 +9,7 @@ from postgrest.types import CountMethod
 
 from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
+    Column,
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
@@ -176,3 +177,46 @@ def test_a_count_that_hits_the_statement_timeout_becomes_query_timed_out():
     )
     with pytest.raises(QueryTimedOut):
         _reader(client).count("cyl_scan_traits", "id", [], exact=True)
+
+
+def test_columns_come_with_their_type_and_foreign_key(monkeypatch):
+    spec = {
+        "definitions": {
+            "cyl_scans": {
+                "properties": {
+                    "id": {
+                        "description": "Note:\nThis is a Primary Key.<pk/>",
+                        "format": "bigint",
+                        "type": "integer",
+                    },
+                    "plant_id": {
+                        "description": "Note:\nThis is a Foreign Key to `cyl_plants.id`."
+                        "<fk table='cyl_plants' column='id'/>",
+                        "format": "bigint",
+                        "type": "integer",
+                    },
+                    "metadata": {"format": "jsonb"},
+                    "odd": {},
+                }
+            }
+        }
+    }
+
+    class _Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return spec
+
+    monkeypatch.setattr(
+        "bloom_mcp.supabase_client.require_env", lambda: ("http://x", "k")
+    )
+    monkeypatch.setattr("httpx.get", lambda *a, **k: _Response())
+    columns = PostgrestTableReader(client_factory=lambda: None).table_columns()
+    assert columns["cyl_scans"] == [
+        Column("id", "bigint"),
+        Column("plant_id", "bigint", "cyl_plants.id"),
+        Column("metadata", "jsonb"),
+        Column("odd", "unknown"),
+    ]

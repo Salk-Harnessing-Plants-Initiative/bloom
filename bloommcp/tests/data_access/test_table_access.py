@@ -116,3 +116,16 @@ def test_the_older_deleted_flag_is_named():
 def test_pipeline_error_text_and_pod_names_are_hidden(table, columns):
     assert columns <= table_access.HIDDEN_COLUMNS[table]
     assert "status" in table_access.visible_columns(table, ["status", *columns])
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        "cyl_scans_extended",
+        "cyl_plants_extended",
+        "cyl_plant_search",
+        "gravi_scans_extended",
+    ],
+)
+def test_the_joining_views_have_a_note(view):
+    assert table_access.TABLE_NOTES[view]
