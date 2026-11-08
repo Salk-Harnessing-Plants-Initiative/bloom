@@ -7,18 +7,20 @@ import logging
 import sys
 import time
 from collections.abc import Callable
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import table_access
 from bloom_mcp.data_access.table_ports import (
+    STATEMENT_TIMEOUT_SECONDS,
     BadFilterValue,
     Column,
     ColumnsChanged,
     DatabaseUnavailable,
     Filter,
+    FilterOp,
     QueryTimedOut,
     RequestTooLong,
     TableReadError,
@@ -36,6 +38,7 @@ if not usage_log.handlers:
 LIST_TABLES_REMEDY = "Call list_tables to see the readable tables and their columns."
 
 _R = TypeVar("_R")
+_Result = TypeVar("_Result", bound=BaseModel)
 
 
 def fix_request(message: str, remedy: str = LIST_TABLES_REMEDY) -> BloomMCPError:
@@ -46,7 +49,8 @@ def fix_request(message: str, remedy: str = LIST_TABLES_REMEDY) -> BloomMCPError
 def too_slow() -> BloomMCPError:
     return BloomMCPError(
         code="tool_error",
-        message="The query took longer than the database allows (15 s); narrow it with a filter.",
+        message=f"The query took longer than the database allows ({STATEMENT_TIMEOUT_SECONDS} s); "
+        "narrow it with a filter.",
         remedy="Add a filter on an id column, such as an experiment, species or scan id, "
         "or ask for fewer rows.",
     )
@@ -111,11 +115,10 @@ class FilterParam(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     column: str = Field(description="Column to compare.")
-    op: Literal["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains", "is_null"] = (
-        Field(
-            description="eq, neq, gt, gte, lt, lte; in (value is a list); contains (case-insensitive "
-            "text match, every character taken literally); is_null (value true for empty, false for not empty)."
-        )
+    op: FilterOp = Field(
+        description="eq, neq, gt, gte, lt, lte; in (value is a list); contains (case-insensitive "
+        "text match, every character taken literally); is_null (value true for empty, false "
+        "for not empty)."
     )
     value: Any = Field(description="Value to compare with.")
 
@@ -207,11 +210,11 @@ def _rows(result: Any) -> int | None:
     return len(result.tables) if hasattr(result, "tables") else None
 
 
-def logs_call(func: Callable[..., _R]) -> Callable[..., _R]:
+def logs_call(func: Callable[..., _Result]) -> Callable[..., _Result]:
     """Logs one usage line per call; goes under @as_mcp_tool, above @reports_read_errors."""
 
     @functools.wraps(func)
-    def wrapper(params: Any) -> _R:
+    def wrapper(params: Any) -> _Result:
         started = time.monotonic()
         rows = chars = None
         outcome = "ok"

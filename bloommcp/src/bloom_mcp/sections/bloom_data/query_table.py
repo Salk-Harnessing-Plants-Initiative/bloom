@@ -56,12 +56,12 @@ class QueryTableParams(BaseModel):
         default=DEFAULT_LIMIT,
         ge=1,
         le=MAX_LIMIT,
-        description="Rows per page (max 500).",
+        description=f"Rows per page (max {MAX_LIMIT}).",
     )
     offset: int = Field(
         default=0,
         ge=0,
-        description="Rows to skip (max 10,000); use next_offset for the next page.",
+        description=f"Rows to skip (max {MAX_OFFSET:,}); use next_offset for the next page.",
     )
 
 

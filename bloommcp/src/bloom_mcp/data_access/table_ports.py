@@ -9,17 +9,20 @@ in-memory test double. The allow-list and limits live in the tools, not the adap
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
-# The comparisons query_table offers. `contains` is a case-insensitive substring match;
+# The comparisons the data tools offer. `contains` is a case-insensitive substring match;
 # `is_null` takes true (is null) or false (is not null).
-FILTER_OPS = ("eq", "neq", "gt", "gte", "lt", "lte", "in", "contains", "is_null")
+FilterOp = Literal["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains", "is_null"]
+
+# bloom_agent's statement_timeout: the database cancels a longer query.
+STATEMENT_TIMEOUT_SECONDS = 15
 
 
 @dataclass(frozen=True)
 class Filter:
     column: str
-    op: str
+    op: FilterOp
     value: Any
 
 

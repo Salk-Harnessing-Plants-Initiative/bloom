@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import operator
+from collections.abc import Callable
 from typing import Any
 
 from .table_ports import (
@@ -34,6 +35,13 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         "lte": operator.le,
     }[f.op]
     return compare(value, f.value)
+
+
+def _sort_key(column: str) -> Callable[[dict[str, Any]], tuple[bool, Any]]:
+    def key(row: dict[str, Any]) -> tuple[bool, Any]:
+        return (row.get(column) is None, row.get(column))
+
+    return key
 
 
 FILTERED_GUESS = 70
@@ -93,7 +101,15 @@ class FakeTableReader:
     def _filtered(self, table: str, filters: list[Filter]) -> list[dict[str, Any]]:
         return [r for r in self.tables[table] if all(_matches(r, f) for f in filters)]
 
-    def select(self, table, columns, filters, order: list[Sort], limit, offset):
+    def select(
+        self,
+        table: str,
+        columns: list[str],
+        filters: list[Filter],
+        order: list[Sort],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
         self.calls.append(table)
         if self.fail_with:
             raise self.fail_with
@@ -105,14 +121,12 @@ class FakeTableReader:
         rows = self._filtered(table, filters)
         # Stable sorts, last key first; nulls last ascending and first descending, as Postgres.
         for s in reversed(order):
-            rows = sorted(
-                rows,
-                key=lambda r, c=s.column: (r.get(c) is None, r.get(c)),
-                reverse=s.descending,
-            )
+            rows = sorted(rows, key=_sort_key(s.column), reverse=s.descending)
         return [{c: r.get(c) for c in columns} for r in rows[offset : offset + limit]]
 
-    def count(self, table, column, filters, *, exact):
+    def count(
+        self, table: str, column: str, filters: list[Filter], *, exact: bool
+    ) -> int | None:
         self.calls.append(table)
         self.counts.append((table, exact))
         if self.fail_with:

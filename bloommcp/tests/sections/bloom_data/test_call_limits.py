@@ -85,3 +85,12 @@ def test_one_row_larger_than_the_budget_is_still_returned(reader, monkeypatch):
     monkeypatch.setattr("bloom_mcp.sections.bloom_data.query_table.MAX_REPLY_CHARS", 10)
     result = query_table({"table": "species", "limit": 5})
     assert result.returned == 1 and result.cut_short and result.next_offset == 1
+
+
+def test_the_descriptions_quote_the_limits_in_force():
+    from bloom_mcp.sections.bloom_data.query_table import MAX_LIMIT, QueryTableParams
+
+    assert f"at most {MAX_LIMIT} rows" in query_table.__doc__
+    fields = QueryTableParams.model_fields
+    assert f"max {MAX_LIMIT}" in fields["limit"].description
+    assert f"max {MAX_OFFSET:,}" in fields["offset"].description

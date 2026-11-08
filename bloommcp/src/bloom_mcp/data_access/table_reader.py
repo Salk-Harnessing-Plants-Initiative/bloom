@@ -15,6 +15,7 @@ from postgrest.types import CountMethod
 from bloom_mcp import supabase_client
 
 from .table_ports import (
+    STATEMENT_TIMEOUT_SECONDS,
     BadFilterValue,
     Column,
     ColumnsChanged,
@@ -22,14 +23,15 @@ from .table_ports import (
     Filter,
     QueryTimedOut,
     RequestTooLong,
+    Sort,
     TableReadError,
 )
 
 logger = logging.getLogger(__name__)
 
-# bloom_agent's statement_timeout is 15 s; the client waits a little longer so the database's
+# Past bloom_agent's statement timeout, so the database's
 # own cancellation (a clear 57014) arrives first.
-CLIENT_TIMEOUT_SECONDS = 20
+CLIENT_TIMEOUT_SECONDS = STATEMENT_TIMEOUT_SECONDS + 5
 STATEMENT_TIMEOUT_CODE = "57014"
 # A filter value of the wrong type for its column (text, number, date or time), and an
 # operator the column's type lacks (contains on a number).
@@ -118,7 +120,7 @@ class PostgrestTableReader:
         )
         self._columns: dict[str, list[Column]] | None = None
         self._columns_at = 0.0
-        self._tried_at = -COLUMNS_RETRY_SECONDS
+        self._tried_at = -float(COLUMNS_RETRY_SECONDS)
 
     def table_columns(self) -> dict[str, list[Column]]:
         now = time.monotonic()
@@ -169,7 +171,15 @@ class PostgrestTableReader:
             for name, spec in definitions.items()
         }
 
-    def select(self, table, columns, filters, order, limit, offset):
+    def select(
+        self,
+        table: str,
+        columns: list[str],
+        filters: list[Filter],
+        order: list[Sort],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
         query = self._client_factory().table(table).select(",".join(columns))
         for f in filters:
             query = _apply(query, f)
@@ -178,7 +188,9 @@ class PostgrestTableReader:
         query = query.range(offset, offset + limit - 1)
         return _execute(query).data or []
 
-    def count(self, table, column, filters, *, exact):
+    def count(
+        self, table: str, column: str, filters: list[Filter], *, exact: bool
+    ) -> int | None:
         # A GET of one row, not a HEAD: a HEAD's error has no body, so a timeout's code is lost.
         mode = CountMethod.exact if exact else CountMethod.planned
         query = self._client_factory().table(table).select(column, count=mode)
