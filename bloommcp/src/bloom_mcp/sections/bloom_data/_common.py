@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import functools
+import logging
+import sys
+import time
 from collections.abc import Callable
 from typing import Any, Literal, TypeVar
 
@@ -20,6 +23,14 @@ from bloom_mcp.data_access.table_ports import (
     TableReadError,
 )
 from bloom_mcp.tools import _ports
+
+# One line per data-tool call on bloommcp's stdout (the container log): what Claude read,
+# never filter values. bloommcp sets no logging config, so this logger prints itself.
+usage_log = logging.getLogger("bloom_mcp.bloom_data.usage")
+usage_log.setLevel(logging.INFO)
+usage_log.propagate = False
+if not usage_log.handlers:
+    usage_log.addHandler(logging.StreamHandler(sys.stdout))
 
 LIST_TABLES_REMEDY = "Call list_tables to see the readable tables and their columns."
 
@@ -168,3 +179,44 @@ def to_filters(params: list[FilterParam]) -> list[Filter]:
 _EMPTY_REMEDY = (
     "To find empty values use op is_null with true (or false for values that are set)."
 )
+
+
+def _rows(result: Any) -> int | None:
+    for field in ("returned", "count"):
+        if hasattr(result, field):
+            return getattr(result, field)
+    return len(result.tables) if hasattr(result, "tables") else None
+
+
+def logs_call(func: Callable[..., _R]) -> Callable[..., _R]:
+    """Logs one usage line per call; goes under @as_mcp_tool, above @reports_read_errors."""
+
+    @functools.wraps(func)
+    def wrapper(params: Any) -> _R:
+        started = time.monotonic()
+        rows = chars = None
+        outcome = "ok"
+        try:
+            result = func(params)
+            rows, chars = _rows(result), len(result.model_dump_json())
+            return result
+        except BloomMCPError as exc:
+            outcome = exc.code
+            raise
+        except Exception:
+            outcome = "internal_error"
+            raise
+        finally:
+            filters = ",".join(f.column for f in getattr(params, "filters", [])) or "-"
+            usage_log.info(
+                "bloom_data tool=%s table=%s filters=%s rows=%s chars=%s ms=%d outcome=%s",
+                func.__name__,
+                getattr(params, "table", None) or "-",
+                filters,
+                rows,
+                chars,
+                (time.monotonic() - started) * 1000,
+                outcome,
+            )
+
+    return wrapper

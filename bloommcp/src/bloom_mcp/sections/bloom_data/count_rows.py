@@ -14,6 +14,7 @@ from ._common import (
     FilterParam,
     check_columns,
     check_filterable,
+    logs_call,
     readable_columns,
     reports_read_errors,
     to_filters,
@@ -49,6 +50,7 @@ class CountRowsResult(BaseModel):
 
 
 @as_mcp_tool(input_model=CountRowsParams, output_model=CountRowsResult)
+@logs_call
 @reports_read_errors
 def count_rows(params: CountRowsParams) -> CountRowsResult:
     """Count the rows of one of Bloom's tables or views, optionally filtered.

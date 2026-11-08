@@ -676,6 +676,12 @@ services:
     depends_on:
       - kong
     restart: unless-stopped
+    # One usage line per data-tool call goes to this log; cap it at 5 x 10 MB.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   # -------------------
   # Cloudflare tunnel → caddy:8880 (bloommcp's Salk connector)

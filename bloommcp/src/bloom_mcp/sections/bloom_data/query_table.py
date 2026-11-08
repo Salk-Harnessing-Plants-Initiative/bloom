@@ -17,6 +17,7 @@ from ._common import (
     check_columns,
     check_filterable,
     fix_request,
+    logs_call,
     readable_columns,
     reports_read_errors,
     to_filters,
@@ -101,6 +102,7 @@ def _order(table: str, order_by: str | None, descending: bool) -> list[Sort]:
 
 
 @as_mcp_tool(input_model=QueryTableParams, output_model=QueryTableResult)
+@logs_call
 @reports_read_errors
 def query_table(params: QueryTableParams) -> QueryTableResult:
     """Read rows from one of Bloom's tables (cylinder scans, plates, expression, genes, ...).
