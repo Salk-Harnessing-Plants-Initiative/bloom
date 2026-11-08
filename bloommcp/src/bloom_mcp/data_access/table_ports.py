@@ -49,6 +49,10 @@ class BadFilterValue(TableReadError):
     """A filter doesn't fit its column's type: a wrong kind of value, or contains on non-text."""
 
 
+class RequestTooLong(TableReadError):
+    """The request's URL (columns plus filters) is longer than the gateway accepts."""
+
+
 class DatabaseUnavailable(TableReadError):
     """The database couldn't be reached."""
 

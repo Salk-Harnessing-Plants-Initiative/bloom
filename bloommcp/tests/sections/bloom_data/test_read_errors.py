@@ -10,6 +10,7 @@ from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
     DatabaseUnavailable,
+    RequestTooLong,
     TableReadError,
 )
 from bloom_mcp.sections.bloom_data.count_rows import count_rows
@@ -27,9 +28,10 @@ _CALLS = [
     [
         (BadFilterValue("22P02 detail"), "invalid_input", "doesn't fit its column"),
         (DatabaseUnavailable("ConnectError"), "tool_error", "couldn't be reached"),
+        (RequestTooLong("414"), "invalid_input", "too long to send"),
         (TableReadError("42501 secret_x"), "tool_error", "couldn't run this read"),
     ],
-    ids=["bad value", "unreachable", "refused"],
+    ids=["bad value", "unreachable", "too long", "refused"],
 )
 def test_a_failed_read_is_reported_plainly(reader, call, raised, code, says):
     reader.fail_with = raised

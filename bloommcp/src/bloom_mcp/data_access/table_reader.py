@@ -20,6 +20,7 @@ from .table_ports import (
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
+    RequestTooLong,
     TableReadError,
 )
 
@@ -32,6 +33,8 @@ STATEMENT_TIMEOUT_CODE = "57014"
 # A filter value of the wrong type for its column (text, number, date or time), and an
 # operator the column's type lacks (contains on a number).
 BAD_FILTER_CODES = frozenset({"22P02", "22003", "22007", "22008", "42883"})
+# The gateway's answer when the URL is over its limit (about 8 KB).
+URI_TOO_LONG_CODE = "414"
 # PostgREST's schema description; reread after this long so new tables appear.
 COLUMNS_CACHE_SECONDS = 300
 # How PostgREST's schema description marks a foreign key.
@@ -78,10 +81,14 @@ def _execute(query: Any) -> Any:
     try:
         return query.execute()
     except APIError as exc:
-        if exc.code == STATEMENT_TIMEOUT_CODE:
+        # A database error's code is text; a gateway's HTTP status arrives as a number.
+        code = str(exc.code)
+        if code == STATEMENT_TIMEOUT_CODE:
             raise QueryTimedOut("statement timeout") from None
         logger.warning("bloom_data read failed: %s %s", exc.code, exc.message)
-        if exc.code in BAD_FILTER_CODES:
+        if code == URI_TOO_LONG_CODE:
+            raise RequestTooLong("url too long") from None
+        if code in BAD_FILTER_CODES:
             raise BadFilterValue("filter does not fit its column") from None
         raise TableReadError("read refused") from None
     except httpx.TimeoutException:

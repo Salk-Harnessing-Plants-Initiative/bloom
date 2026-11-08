@@ -16,6 +16,7 @@ from ._common import (
     FilterParam,
     check_columns,
     check_filterable,
+    fix_request,
     readable_columns,
     reports_read_errors,
     to_filters,
@@ -26,6 +27,10 @@ MAX_LIMIT = 500
 # Longer text or JSON values are cut, so one row can't fill the reply.
 MAX_CELL_CHARS = 2000
 TRUNCATED = "…[cut]"
+# Skipping rows makes Postgres walk them all; past this, filter on the key instead.
+MAX_OFFSET = 10_000
+# A page stops early once its rows reach this many characters, so one reply stays small.
+MAX_REPLY_CHARS = 100_000
 
 
 class QueryTableParams(BaseModel):
@@ -53,7 +58,9 @@ class QueryTableParams(BaseModel):
         description="Rows per page (max 500).",
     )
     offset: int = Field(
-        default=0, ge=0, description="Rows to skip; use next_offset for the next page."
+        default=0,
+        ge=0,
+        description="Rows to skip (max 10,000); use next_offset for the next page.",
     )
 
 
@@ -66,6 +73,10 @@ class QueryTableResult(BaseModel):
     has_more: bool
     next_offset: int | None
     truncated_values: bool = Field(description="True if some long values were cut.")
+    cut_short: bool = Field(
+        description="True if the page stopped before limit to keep the reply small; "
+        "continue with next_offset."
+    )
 
 
 def _cut(value: Any) -> tuple[Any, bool]:
@@ -94,11 +105,19 @@ def _order(table: str, order_by: str | None, descending: bool) -> list[Sort]:
 def query_table(params: QueryTableParams) -> QueryTableResult:
     """Read rows from one of Bloom's tables (cylinder scans, plates, expression, genes, ...).
 
-    Call list_tables first for table and column names. Returns at most 500 rows per call;
-    when has_more is true, call again with offset=next_offset. On large tables, filter on an
+    Call list_tables first for table and column names. Returns at most 500 rows per call,
+    fewer when the rows are large; when has_more is true, call again with
+    offset=next_offset. On large tables, filter on an
     id column (experiment, species, scan) or the query may time out. For trait values, read
     cyl_scan_traits_latest.
     """
+    if params.offset > MAX_OFFSET:
+        raise fix_request(
+            f"offset can't be over {MAX_OFFSET:,}: skipping that many rows is slow for "
+            "the database.",
+            "Filter instead: on the column you sort by, ask for values after the last "
+            "one you read (gt, or lt when descending), with offset 0.",
+        )
     allowed = readable_columns(params.table)
     columns = params.columns or allowed
     check_columns(params.table, columns, allowed)
@@ -116,13 +135,21 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     has_more = len(rows) > params.limit
     rows = rows[: params.limit]
     redacted = table_access.unfilterable_columns(params.table)
-    truncated = False
+    truncated = cut_short = False
+    page: list[dict[str, Any]] = []
+    size = 0
     for row in rows:
         for key, value in row.items():
             if key in redacted:
                 value = table_access.redact_emails(value)
             row[key], cut = _cut(value)
             truncated = truncated or cut
+        size += len(json.dumps(row, default=str))
+        if page and size > MAX_REPLY_CHARS:
+            has_more = cut_short = True
+            break
+        page.append(row)
+    rows = page
     return QueryTableResult(
         table=params.table,
         columns=columns,
@@ -132,4 +159,5 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
         has_more=has_more,
         next_offset=params.offset + len(rows) if has_more else None,
         truncated_values=truncated,
+        cut_short=cut_short,
     )

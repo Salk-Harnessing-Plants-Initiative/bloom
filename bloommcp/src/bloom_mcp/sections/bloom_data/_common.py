@@ -16,6 +16,7 @@ from bloom_mcp.data_access.table_ports import (
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
+    RequestTooLong,
     TableReadError,
 )
 from bloom_mcp.tools import _ports
@@ -48,6 +49,12 @@ def read_failed(exc: TableReadError) -> BloomMCPError:
             "A filter doesn't fit its column: a value of the wrong kind (text for a number, "
             "a malformed date or id), or contains on a column that isn't text.",
             "Fix the filter's value, or use eq or in instead of contains on that column.",
+        )
+    if isinstance(exc, RequestTooLong):
+        return fix_request(
+            "The request is too long to send: its filter values and columns don't fit "
+            "in one call.",
+            "Split a long in list into several calls, or ask for fewer columns.",
         )
     if isinstance(exc, DatabaseUnavailable):
         return BloomMCPError(
@@ -123,6 +130,8 @@ def check_filterable(table: str, wanted: list[str]) -> None:
 
 # One filter value: what eq, gt, contains and the members of an in list take.
 _SCALARS = (str, int, float, bool)
+# An in list goes into the request's URL; longer lists also make one slow query.
+MAX_IN_VALUES = 200
 
 
 def to_filters(params: list[FilterParam]) -> list[Filter]:
@@ -136,6 +145,11 @@ def to_filters(params: list[FilterParam]) -> list[Filter]:
         elif p.op == "in":
             if not isinstance(p.value, list):
                 raise fix_request(f"{where} needs a list of values.", "Pass a list.")
+            if len(p.value) > MAX_IN_VALUES:
+                raise fix_request(
+                    f"{where} has {len(p.value)} values; the most is {MAX_IN_VALUES}.",
+                    f"Split the list into calls of up to {MAX_IN_VALUES} values.",
+                )
             if not all(isinstance(v, _SCALARS) for v in p.value):
                 raise fix_request(
                     f"{where} takes only text, numbers or true/false.",

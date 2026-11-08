@@ -13,6 +13,7 @@ from bloom_mcp.data_access.table_ports import (
     DatabaseUnavailable,
     Filter,
     QueryTimedOut,
+    RequestTooLong,
     Sort,
     TableReadError,
 )
@@ -220,3 +221,11 @@ def test_columns_come_with_their_type_and_foreign_key(monkeypatch):
         Column("metadata", "jsonb"),
         Column("odd", "unknown"),
     ]
+
+
+def test_a_url_over_the_gateway_limit_becomes_request_too_long():
+    client = _Client(
+        error=APIError({"code": 414, "message": "JSON could not be generated"})
+    )
+    with pytest.raises(RequestTooLong):
+        _reader(client).select("species", ["id"], [], [Sort("id")], 10, 0)

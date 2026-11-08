@@ -217,6 +217,9 @@ out = {
     "people": query_table({"table": "people", "limit": 5}).model_dump(),
     "count_species": count_rows({"table": "species"}).model_dump(),
     "count_view": count_rows({"table": "cyl_scans_extended"}).model_dump(),
+    "longest_in": query_table({"table": "species", "columns": ["id"], "filters": [
+        {"column": "common_name", "op": "in",
+         "value": [f"TEST_BLOOMMCP {i:03d}" for i in range(200)]}]}).returned,
     "count_missing": count_rows({"table": "cyl_scan_traits_latest", "filters": [
         {"column": "scan_id", "op": "eq", "value": -1}]}).model_dump(),
 }
@@ -231,6 +234,12 @@ try:
     out["bad_value"] = None
 except BloomMCPError as exc:
     out["bad_value"] = exc.to_dict()
+try:
+    query_table({"table": "species", "filters": [{"column": "common_name", "op": "in",
+        "value": ["TEST_BLOOMMCP " + "x" * 60 + f" {i}" for i in range(200)]}]})
+    out["too_long"] = None
+except BloomMCPError as exc:
+    out["too_long"] = exc.to_dict()
 print(json.dumps(out, default=str))
 """
 
@@ -351,6 +360,16 @@ def test_a_wrong_type_filter_is_explained_without_the_database_code(tool_results
     assert error["code"] == "invalid_input"
     assert "doesn't fit its column" in error["message"]
     assert "22P02" not in f"{error['message']} {error['remedy']}"
+
+
+def test_200_short_in_values_fit_in_one_request(tool_results):
+    assert tool_results["longest_in"] == 0
+
+
+def test_a_request_over_the_gateway_limit_asks_to_split_the_list(tool_results):
+    error = tool_results["too_long"]
+    assert error["code"] == "invalid_input"
+    assert "Split" in error["remedy"]
 
 
 def test_an_excluded_table_is_refused(tool_results):
