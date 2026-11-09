@@ -108,8 +108,9 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
         raise fix_request(
             f"offset can't be over {MAX_OFFSET:,}: skipping that many rows is slow for "
             "the database.",
-            "Filter instead: on the column you sort by, ask for values after the last "
-            "one you read (gt, or lt when descending), with offset 0.",
+            "Filter instead, with offset 0: on the first column you sort by, ask for values "
+            "from the last one you read onward (gte, or lte when descending), then drop the "
+            "rows you already have.",
         )
     allowed = readable_columns(params.table)
     columns = params.columns or allowed
@@ -130,7 +131,7 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
         params.table, columns, filters, order, params.limit + 1, params.offset
     )
 
-    page = fit_page(rows, params.limit, table_access.unfilterable_columns(params.table))
+    page = fit_page(rows, params.limit, table_access.redacted_columns(params.table))
     return QueryTableResult(
         table=params.table,
         columns=columns,

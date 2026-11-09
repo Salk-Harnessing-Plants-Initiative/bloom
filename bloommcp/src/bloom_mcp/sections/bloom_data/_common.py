@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -213,6 +214,15 @@ _SCALARS = (str, int, float, bool)
 MAX_IN_VALUES = 200
 
 
+def plain_value(value: Any, *, allow_null: bool) -> bool:
+    """Text, a number or true/false, or a list of those; null only where allow_null.
+
+    Filters refuse null (is_null tests for it); a function input takes null as "unset".
+    """
+    values = value if isinstance(value, list) else [value]
+    return all(isinstance(v, _SCALARS) or (allow_null and v is None) for v in values)
+
+
 def to_filters(params: list[FilterParam]) -> list[Filter]:
     for p in params:
         where = f"Filter '{p.op}' on '{p.column}'"
@@ -229,14 +239,14 @@ def to_filters(params: list[FilterParam]) -> list[Filter]:
                     f"{where} has {len(p.value)} values; the most is {MAX_IN_VALUES}.",
                     f"Split the list into calls of up to {MAX_IN_VALUES} values.",
                 )
-            if not all(isinstance(v, _SCALARS) for v in p.value):
+            if not plain_value(p.value, allow_null=False):
                 raise fix_request(
                     f"{where} takes only text, numbers or true/false.",
                     _EMPTY_REMEDY,
                 )
         elif p.value is None:
             raise fix_request(f"{where} can't compare with null.", _EMPTY_REMEDY)
-        elif not isinstance(p.value, _SCALARS):
+        elif isinstance(p.value, list) or not plain_value(p.value, allow_null=False):
             raise fix_request(
                 f"{where} needs one value: text, a number or true/false.",
                 "Pass a single value; use op in for a list.",
@@ -254,6 +264,11 @@ def _rows(result: Any) -> int | None:
         if hasattr(result, field):
             return getattr(result, field)
     return len(result.tables) if hasattr(result, "tables") else None
+
+
+def _log_name(name: Any) -> str:
+    """A table, function or column name as one safe log token."""
+    return re.sub(r"[^\w.-]", "?", str(name))[:64] or "-"
 
 
 def logs_call(func: Callable[..., _Result]) -> Callable[..., _Result]:
@@ -275,14 +290,18 @@ def logs_call(func: Callable[..., _Result]) -> Callable[..., _Result]:
             outcome = "internal_error"
             raise
         finally:
-            filters = ",".join(f.column for f in getattr(params, "filters", [])) or "-"
+            filters = ",".join(
+                _log_name(f.column) for f in getattr(params, "filters", [])
+            )
             usage_log.info(
                 "bloom_data tool=%s table=%s filters=%s rows=%s chars=%s ms=%d outcome=%s",
                 func.__name__,
-                getattr(params, "table", None)
-                or getattr(params, "function", None)
-                or "-",
-                filters,
+                _log_name(
+                    getattr(params, "table", None)
+                    or getattr(params, "function", None)
+                    or "-"
+                ),
+                filters or "-",
                 rows,
                 chars,
                 (time.monotonic() - started) * 1000,

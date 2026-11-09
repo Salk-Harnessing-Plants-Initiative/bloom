@@ -77,3 +77,10 @@ def test_the_usage_line_does_not_depend_on_the_root_logger():
     assert usage_log.propagate is False
     assert usage_log.isEnabledFor(logging.INFO)
     assert usage_log.handlers
+
+
+def test_a_name_with_a_newline_stays_on_one_log_line(reader, lines):
+    with pytest.raises(BloomMCPError):
+        query_table({"table": "species\nbloom_data tool=fake", "columns": ["id"]})
+    assert len(lines) == 1 and "\n" not in lines[0]
+    assert "table=species?bloom_data" in lines[0]

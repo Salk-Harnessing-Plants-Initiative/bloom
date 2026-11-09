@@ -93,6 +93,23 @@ def test_every_readable_table_pages_by_its_primary_key_in_index_order(pg_conn):
     assert not wrong, f"declared paging key differs from the primary key: {wrong}"
 
 
+def test_every_readable_table_has_a_primary_key(pg_conn):
+    access = _table_access()
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relname FROM pg_class c
+             WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p')
+               AND c.relname = ANY (%s)
+               AND NOT EXISTS (SELECT 1 FROM pg_index i
+                                WHERE i.indrelid = c.oid AND i.indisprimary)
+            """,
+            (sorted(access.READABLE_TABLES),),
+        )
+        keyless = sorted(name for (name,) in cur.fetchall())
+    assert keyless == [], f"readable tables with no primary key to page by: {keyless}"
+
+
 def test_every_readable_view_has_a_paging_key_on_its_own_columns(pg_conn):
     access = _table_access()
     with pg_conn.cursor() as cur:
@@ -223,6 +240,12 @@ out = {
     "count_missing": count_rows({"table": "cyl_scan_traits_latest", "filters": [
         {"column": "scan_id", "op": "eq", "value": -1}]}).model_dump(),
 }
+# The planner's estimate, read live, and count_rows answering with it.
+from bloom_mcp.sections.bloom_data import count_rows as count_module
+from bloom_mcp.tools import _ports
+out["planned"] = _ports.table_reader().count("species", "id", [], exact=False)
+count_module.LARGE_COUNT_ROWS = 0
+out["count_estimated"] = count_rows({"table": "species"}).model_dump()
 try:
     query_table({"table": "checkpoints"})
     out["excluded"] = None
@@ -355,6 +378,13 @@ def test_query_table_reads_a_page(tool_results):
     page = tool_results["species"]
     assert page["returned"] <= 1
     assert page["offset"] == 0
+
+
+def test_count_rows_answers_with_the_planners_estimate_live(tool_results):
+    assert isinstance(tool_results["planned"], int) and tool_results["planned"] >= 0
+    estimated = tool_results["count_estimated"]
+    assert estimated["approximate"] is True
+    assert estimated["count"] == tool_results["planned"]
 
 
 def test_count_rows_counts_tables_and_views_exactly(tool_results):

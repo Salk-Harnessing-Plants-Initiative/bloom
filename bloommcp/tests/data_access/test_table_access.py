@@ -193,3 +193,24 @@ def test_the_wave_averages_say_they_mix_every_run():
     assert (
         "every pipeline run" in table_access.TABLE_NOTES["cyl_trait_by_experiment_wave"]
     )
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["josé@salk.edu", "o'brien@salk.edu", "o’brien@salk.edu", "a.b+c@lab.salk.edu"],
+)
+def test_unusual_addresses_are_hidden_whole(address):
+    assert (
+        table_access.redact_emails(f"by {address}.")
+        == f"by {table_access.EMAIL_HIDDEN}."
+    )
+
+
+def test_redacting_and_refusing_filters_are_separate_rules_covering_the_same_columns():
+    assert table_access.EMAIL_REDACTED_COLUMNS == table_access.UNFILTERABLE_COLUMNS
+    assert table_access.redacted_columns("gene_candidates")
+    assert table_access.unfilterable_columns("gene_candidates")
+
+
+def test_the_latest_trait_note_says_latest_is_per_scan():
+    assert "each scan's values" in table_access.TABLE_NOTES["cyl_scan_traits_latest"]

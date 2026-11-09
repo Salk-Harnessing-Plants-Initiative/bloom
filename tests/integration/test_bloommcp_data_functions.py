@@ -6,9 +6,24 @@ with the caller's rights and returns rows sorted by columns it really has.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from tests.integration.test_bloommcp_data_tools import _run_in_bloommcp
+
+pytestmark = pytest.mark.integration
+
+# Functions an allowed function calls that run with their owner's rights, each checked by
+# hand: it returns only counts.
+_OWNER_RIGHTS_CALLEES = frozenset({"compute_cyl_experiment_summary_counts_live"})
+
+_ALL_FUNCTIONS = """
+SELECT p.proname, p.prosrc, p.prosecdef, p.provolatile
+  FROM pg_proc p
+ WHERE p.pronamespace = 'public'::regnamespace AND p.prokind = 'f'
+   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
+"""
 
 _ACCESS_SCRIPT = """
 import json
@@ -152,3 +167,36 @@ def test_a_wrong_type_input_gets_function_wording(calls):
     assert calls["bad_type"]["code"] == "invalid_input"
     assert "input" in calls["bad_type"]["message"]
     assert "22P02" not in str(calls["bad_type"])
+
+
+def test_functions_called_by_allowed_ones_cannot_write_or_borrow_owner_rights(
+    access, pg_conn
+):
+    with pg_conn.cursor() as cur:
+        cur.execute(_ALL_FUNCTIONS)
+        functions = {
+            name: (src, definer, vol) for name, src, definer, vol in cur.fetchall()
+        }
+    calls = {
+        name: {
+            other
+            for other in functions
+            if other != name and re.search(rf"\b{re.escape(other)}\s*\(", src or "")
+        }
+        for name, (src, _, _) in functions.items()
+    }
+    reached: set[str] = set()
+    todo = list(access["readable"])
+    while todo:
+        for callee in calls.get(todo.pop(), set()) - reached:
+            reached.add(callee)
+            todo.append(callee)
+    bad = sorted(
+        name
+        for name in reached
+        if functions[name][2] == "v"
+        or (functions[name][1] and name not in _OWNER_RIGHTS_CALLEES)
+    )
+    assert bad == [], (
+        f"called by an allowed function, VOLATILE or SECURITY DEFINER: {bad}"
+    )

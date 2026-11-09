@@ -1,7 +1,7 @@
 """Which database functions bloommcp's data tools may call: read-only ones, by name.
 
 An allow-list, like the tables': a function not named here can't be called even if
-bloom_agent may execute it. tests/integration/test_bloommcp_data_tools.py fails when a
+bloom_agent may execute it. tests/integration/test_bloommcp_data_functions.py fails when a
 function bloom_agent can execute is in neither list, and when a readable one could write.
 """
 
@@ -31,6 +31,8 @@ def _by(*columns: str) -> tuple[Sort, ...]:
 
 
 _MOST_SIMILAR_FIRST = (Sort("similarity", descending=True), Sort("uid"))
+# Trait values are stored as 4-byte floats; these functions widen them, adding digits.
+_ROUND_VALUES = "trait_value is stored to about 7 significant digits: round it to that."
 _PAGED = f"Pages through up to {MAX_SEARCH_ROWS:,} matches."
 
 
@@ -50,12 +52,15 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     ),
     "get_experiment_traits": ReadableFunction(
         "Every trait value of one cylinder experiment, one row per scan and trait, from "
-        "the latest run unless source_id_ or run_id_ pins one.",
-        _by("scan_id", "trait_name", "source_id"),
+        "the latest run unless source_id_, run_id_ or recipe_key_ pins one. "
+        + _ROUND_VALUES,
+        # trait_value breaks ties between old rows with no source.
+        _by("scan_id", "trait_name", "source_id", "trait_value"),
     ),
     "get_scan_traits": ReadableFunction(
-        "One trait's values for every scan of a cylinder experiment, latest run by default.",
-        _by("scan_id"),
+        "One trait's values for every scan of a cylinder experiment, latest run by default. "
+        + _ROUND_VALUES,
+        _by("scan_id", "trait_value"),
     ),
     "list_experiment_trait_sources": ReadableFunction(
         "The pipeline runs that produced trait values for a cylinder experiment.",
@@ -81,20 +86,21 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
         page_input="max_results",
     ),
     "knn_search_esm2": ReadableFunction(
-        "Cross-species proteins most similar to one protein (ESM-2 embeddings). "
-        + _top_n(20),
+        "Cross-species proteins most similar to one protein (ESM-2 embeddings), given by "
+        "its uid from search_genes, not a gene id. " + _top_n(20),
         _MOST_SIMILAR_FIRST,
         count_input="match_count",
     ),
     "knn_search_esm3": ReadableFunction(
-        "Accession proteins most similar to one protein (ESM-3 embeddings). "
-        + _top_n(20),
+        "Accession proteins most similar to one protein (ESM-3 embeddings), given by its "
+        "uid from search_accession_genes, not a gene id. " + _top_n(20),
         _MOST_SIMILAR_FIRST,
         count_input="match_count",
     ),
     "best_match_per_accession": ReadableFunction(
-        "The most similar protein in each accession to one protein (ESM-3), for the "
-        "match_count closest accessions. " + _top_n(20),
+        "The most similar protein in each accession to one protein uid (ESM-3), for the "
+        "match_count closest accessions. Approximate: found through an index, so a "
+        "distant accession's best match can be missed. " + _top_n(20),
         _by("accession_id", "rank_in_accession", "uid"),
         count_input="match_count",
     ),
@@ -105,7 +111,9 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
         count_input="match_count",
     ),
     "get_orthogroup_info": ReadableFunction(
-        "Which proteins share an orthogroup with a query protein (active OrthoFinder run).",
+        "For each protein uid in result_protein_uids, its orthogroup and whether it shares "
+        "one with query_protein_uid (active OrthoFinder run); it checks only the uids "
+        "given.",
         _by("protein_uid", "orthogroup"),
     ),
     # Expression.

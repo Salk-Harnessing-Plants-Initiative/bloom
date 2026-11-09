@@ -16,8 +16,8 @@ from bloom_mcp.data_access.table_ports import (
     QueryTimedOut,
     TableReadError,
 )
-from bloom_mcp.sections.bloom_data._common import MAX_IN_VALUES
-from bloom_mcp.sections.bloom_data._page import DEFAULT_LIMIT
+from bloom_mcp.sections.bloom_data._common import MAX_IN_VALUES, plain_value
+from bloom_mcp.sections.bloom_data._page import DEFAULT_LIMIT, MAX_LIMIT
 from bloom_mcp.sections.bloom_data.call_function import call_function
 from bloom_mcp.sections.bloom_data.list_functions import list_functions
 
@@ -273,3 +273,39 @@ def test_the_experiment_searches_are_not_callable():
 def test_every_limit_input_names_one_kind():
     for entry in function_access.READABLE_FUNCTIONS.values():
         assert not (entry.page_input and entry.count_input)
+
+
+@pytest.mark.parametrize("name", ["get_experiment_traits", "get_scan_traits"])
+def test_trait_functions_break_ties_on_the_value(name):
+    order = function_access.READABLE_FUNCTIONS[name].order
+    assert order[-1].column == "trait_value"
+
+
+@pytest.mark.parametrize(
+    "name", ["knn_search_esm2", "knn_search_esm3", "best_match_per_accession"]
+)
+def test_similarity_searches_say_they_take_a_protein_uid(name):
+    assert "uid" in function_access.READABLE_FUNCTIONS[name].description
+
+
+def test_call_function_describes_its_limits_and_values():
+    doc = call_function.__doc__ or ""
+    assert f"at most {MAX_LIMIT} rows" in doc
+    assert "[cut]" in doc and "NaN" in doc and "recipe_key_" in doc
+
+
+@pytest.mark.parametrize(
+    ("value", "allow_null", "ok"),
+    [
+        ("x", False, True),
+        ([1, "a", True], False, True),
+        (None, False, False),
+        (None, True, True),
+        ([1, None], True, True),
+        ([1, None], False, False),
+        ({"a": 1}, True, False),
+        ([[1]], True, False),
+    ],
+)
+def test_one_value_check_serves_filters_and_inputs(value, allow_null, ok):
+    assert plain_value(value, allow_null=allow_null) is ok

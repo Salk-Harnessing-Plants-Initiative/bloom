@@ -49,6 +49,10 @@ BAD_FILTER_CODES = frozenset({"22P02", "22003", "22007", "22008", "42883"})
 # A Bloom function's own RAISE: input checks we wrote, so their text can be passed on.
 FUNCTION_RAISE_CODE = "P0001"
 MAX_REASON_CHARS = 200
+# The gateway's or PostgREST's answer when the database can't be reached.
+UNAVAILABLE_CODES = frozenset({"502", "503", "504", "PGRST000", "PGRST001", "PGRST002"})
+# PostgREST waited too long for one of its database connections.
+POOL_TIMEOUT_CODE = "PGRST003"
 # A column named in the read doesn't exist.
 UNDEFINED_COLUMN_CODE = "42703"
 # The gateway's answer when the URL is over its limit (about 8 KB).
@@ -121,6 +125,10 @@ def _apply(query: Any, f: Filter) -> Any:
     return getattr(query, f.op)(f.column, f.value)
 
 
+def _safe_code(code: str) -> str:
+    return re.sub(r"[^\w-]", "?", code)[:16]
+
+
 def _function_reason(message: str | None) -> str:
     """A function's own message on one short line, without its leading 'name: '."""
     line = " ".join((message or "").split())
@@ -150,7 +158,12 @@ def _run(query: Any) -> Any:
             raise QueryTimedOut("statement timeout") from None
         if code == FUNCTION_RAISE_CODE:
             raise FunctionRejected(_function_reason(exc.message)) from None
-        logger.warning("bloom_data read failed: %s %s", exc.code, exc.message)
+        # Only the code: PostgREST's message can repeat filter values.
+        logger.warning("bloom_data read failed: %s", _safe_code(code))
+        if code in UNAVAILABLE_CODES:
+            raise DatabaseUnavailable("database unavailable") from None
+        if code == POOL_TIMEOUT_CODE:
+            raise DatabaseBusy("no free connection") from None
         if code == UNDEFINED_COLUMN_CODE:
             raise ColumnsChanged("column dropped") from None
         if code == URI_TOO_LONG_CODE:

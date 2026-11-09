@@ -36,15 +36,21 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
+
+if TYPE_CHECKING:
+    from mcp.types import ToolAnnotations
 
 from .errors import BloomMCPError
 from .provenance import Provenance, resolve_seed
 
 
-def register(mcp: Any, *tools: Callable, annotations: Any = None) -> Any:
+def register(
+    mcp: Any, *tools: Callable, annotations: ToolAnnotations | None = None
+) -> Any:
     """Register contract-wrapped tools onto a FastMCP instance.
 
     The seam the spec mandates: keeps tools decoupled from the live `mcp`

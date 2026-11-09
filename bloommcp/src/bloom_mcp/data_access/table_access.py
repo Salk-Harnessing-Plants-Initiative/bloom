@@ -215,15 +215,18 @@ PAGING_KEYS: dict[str, tuple[str, ...]] = {
     "recent_phenotypes_by_plate_scanner": ("scanner_id", "rank_on_scanner"),
 }
 
-# Readable, but with email addresses replaced and never filtered or ordered on: the gene
-# candidate logs record the email of whoever changed a status.
+# Readable with email addresses replaced: the gene candidate logs record the email of
+# whoever changed a status.
 EMAIL_REDACTED_COLUMNS: dict[str, frozenset[str]] = {
     "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
 }
+# Never filtered or ordered on: a filter could test for an address the reply hides.
+UNFILTERABLE_COLUMNS: dict[str, frozenset[str]] = {
+    "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
+}
 EMAIL_HIDDEN = "[email hidden]"
-_EMAIL = re.compile(
-    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"
-)
+# \w covers accented letters; ' and ’ appear in names like o'brien.
+_EMAIL = re.compile(r"[\w.%+'’-]+@[\w-]+(?:\.[\w-]+)*\.[^\W\d_]{2,}")
 
 _INCLUDES_DELETED_EXPERIMENTS = (
     "Includes deleted experiments: keep only experiment_ids found in cyl_experiments with "
@@ -241,8 +244,9 @@ _FIND_EXPERIMENTS_BY_NAME = "To find experiments by name, filter name with conta
 # Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
 TABLE_NOTES: dict[str, str] = {
     "cyl_scan_traits_latest": (
-        "Use for trait values: the latest run's value per scan and trait, as the website "
-        "shows. " + _SCAN_EXPERIMENT
+        "Use for trait values: each scan's values from that scan's latest run, as the "
+        "website shows; a trait that run didn't produce is absent even if an older run had "
+        "it. " + _SCAN_EXPERIMENT
     ),
     "cyl_scan_traits_source": (
         "Every run's trait values. Only for comparing runs; is_latest marks the value to "
@@ -336,6 +340,10 @@ def visible_columns(table: str, columns: list[str]) -> list[str]:
 
 
 def unfilterable_columns(table: str) -> frozenset[str]:
+    return UNFILTERABLE_COLUMNS.get(table, frozenset())
+
+
+def redacted_columns(table: str) -> frozenset[str]:
     return EMAIL_REDACTED_COLUMNS.get(table, frozenset())
 
 

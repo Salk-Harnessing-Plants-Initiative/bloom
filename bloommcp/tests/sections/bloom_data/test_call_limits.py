@@ -23,7 +23,11 @@ def test_an_offset_past_the_limit_is_refused_before_any_read(reader):
     with pytest.raises(BloomMCPError) as err:
         query_table({"table": "species", "offset": MAX_OFFSET + 1})
     assert err.value.code == "invalid_input"
-    assert "gt" in err.value.remedy
+    # gte, not gt: the sort column can repeat, and gt would skip the rest of the last value.
+    assert (
+        "gte" in err.value.remedy
+        and "drop the rows you already have" in err.value.remedy
+    )
     assert reader.calls == []
 
 
@@ -113,3 +117,15 @@ def test_a_table_with_no_readable_columns_is_refused_not_read_whole(reader):
 def test_a_count_needs_no_readable_column(reader):
     reader.table_columns = lambda: {"species": []}
     assert count_rows({"table": "species"}).count == 120
+
+
+def test_emails_are_hidden_before_long_values_are_cut():
+    from bloom_mcp.data_access import table_access
+    from bloom_mcp.sections.bloom_data._page import MAX_CELL_CHARS, fit_page
+
+    # The address straddles the cut, so cutting first would leave part of it.
+    text = "x" * (MAX_CELL_CHARS - 8) + " ann.lee@salk.edu" + "y" * 50
+    page = fit_page([{"status_logs": text}], 1, frozenset({"status_logs"}))
+    value = page.rows[0]["status_logs"]
+    assert "ann." not in value and "@salk" not in value
+    assert table_access.EMAIL_HIDDEN[:8] in value or value.endswith("…[cut]")

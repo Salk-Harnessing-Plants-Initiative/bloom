@@ -14,6 +14,7 @@ from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
     Column,
     ColumnsChanged,
+    DatabaseBusy,
     DatabaseUnavailable,
     Filter,
     Function,
@@ -123,12 +124,30 @@ def test_a_count_reads_the_total_from_content_range(exact, mode):
             BadFilterValue,
         ),
         (httpx.Response(414, text="URI too long\n"), RequestTooLong),
+        (httpx.Response(503, text="Service Unavailable\n"), DatabaseUnavailable),
+        (
+            httpx.Response(503, json=_pg_error("PGRST001", "connection refused")),
+            DatabaseUnavailable,
+        ),
+        (
+            httpx.Response(504, json=_pg_error("PGRST003", "timed out acquiring")),
+            DatabaseBusy,
+        ),
         (
             httpx.Response(403, json=_pg_error("42501", "permission denied for x")),
             TableReadError,
         ),
     ],
-    ids=["timeout", "dropped column", "bad value", "url too long", "refused"],
+    ids=[
+        "timeout",
+        "dropped column",
+        "bad value",
+        "url too long",
+        "gateway 503",
+        "connection refused",
+        "pool timeout",
+        "refused",
+    ],
 )
 def test_postgrest_error_replies_map_to_their_errors(reply, error):
     reader, _ = _reader(reply)
@@ -259,3 +278,12 @@ def test_a_call_posts_its_inputs_and_sends_order_and_page():
         ("offset", "20"),
         ("limit", "10"),
     ]
+
+
+def test_a_failed_read_logs_only_its_code(caplog):
+    reader, _ = _reader(
+        httpx.Response(400, json=_pg_error("42501", "permission denied: secret-value"))
+    )
+    with pytest.raises(TableReadError):
+        reader.select("species", ["id"], [], [Sort("id")], 1, 0)
+    assert "42501" in caplog.text and "secret-value" not in caplog.text

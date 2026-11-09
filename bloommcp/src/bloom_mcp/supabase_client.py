@@ -99,11 +99,6 @@ def validate_env() -> None:
     _require_env()
 
 
-def require_env() -> tuple[str, str]:
-    """``(SUPABASE_URL, BLOOM_AGENT_KEY)``, for a direct HTTP call such as PostgREST's schema."""
-    return _require_env()
-
-
 def _validate_name(name: str) -> None:
     """Reject keys that would escape the prefix or cross the input/output
     convention. The prefix is added by this module — callers pass a bare

@@ -17,11 +17,10 @@ from ._common import (
     MAX_IN_VALUES,
     fix_request,
     logs_call,
+    plain_value,
     reports_call_errors,
 )
 from ._page import DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET, fit_page
-
-_SCALARS = (str, int, float, bool)
 
 
 class CallFunctionParams(BaseModel):
@@ -101,14 +100,13 @@ def _check_args(
             LIST_FUNCTIONS_REMEDY,
         )
     for name, value in args.items():
-        values = value if isinstance(value, list) else [value]
         if isinstance(value, list) and len(value) > MAX_IN_VALUES:
             raise fix_request(
                 f"'{function.name}' input '{name}' has {len(value)} values; the most is "
                 f"{MAX_IN_VALUES}.",
                 f"Split the list into calls of up to {MAX_IN_VALUES} values.",
             )
-        if not all(v is None or isinstance(v, _SCALARS) for v in values):
+        if not plain_value(value, allow_null=True):
             raise fix_request(
                 f"'{function.name}' input '{name}' takes text, a number, true/false, null, "
                 "or a list of those.",
@@ -135,8 +133,12 @@ def call_function(params: CallFunctionParams) -> CallFunctionResult:
 
     Returns at most 500 rows per call, fewer when the rows are large; when has_more is
     true, call again with offset=next_offset. A search returns at most 1,000 matches in
-    all; search_limit_reached says when it stopped there. Trait values come from the latest pipeline
-    run unless an input pins a source or run.
+    all; search_limit_reached says when it stopped there. Trait values come from the latest
+    pipeline run unless source_id_, run_id_ or recipe_key_ pins one.
+
+    Text or JSON values over 2000 characters are cut and end in "…[cut]"; truncated_values
+    says when. Number values can be NaN or Infinity, which arrive as the text "NaN" or
+    "Infinity".
     """
     function = _served(params.function)
     entry = function_access.READABLE_FUNCTIONS[params.function]
