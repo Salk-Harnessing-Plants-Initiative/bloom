@@ -168,19 +168,40 @@ describe("the list", () => {
   it("says who asked, and where each job is", () => {
     mount();
     expect(row(PLATE_ID).textContent).toContain("you");
-    expect(row(PLATE_ID).textContent).toContain("Queued — next up");
+    expect(row(PLATE_ID).textContent).toContain("Queued (next up)");
+    expect(row(PLATE_ID).textContent).toContain("10 min ago");
     expect(row(SCAN_ID).textContent).toContain("another member");
-    expect(row(SCAN_ID).textContent).toContain("Downloaded 10 of 72 frames");
+    expect(row(SCAN_ID).textContent).toContain("Rendering 13%");
     expect(within(row(SCAN_ID)).getByRole("progressbar").getAttribute("aria-valuenow")).toBe("10");
   });
 
-  it("gives a failed job's reason with its reference, and a finished one a link to watch it", () => {
+  it("gives a failed job a Retry link with its reason, and a finished one a Watch link", () => {
     plates = [plate({ status: "failed", error_code: "no_frames" })];
-    scans = [scan({ status: "rendered", stage: null })];
+    scans = [scan({ status: "rendered", stage: null, frames_done: 72, frames_total: 72 })];
     mount();
+    expect(row(PLATE_ID).textContent).toContain("Failed");
+    expect(within(row(PLATE_ID)).getByRole("link", { name: "Retry" }).getAttribute("href")).toBe(
+      "/app/plate-phenotypes/2/12/wave/1/P7"
+    );
     expect(row(PLATE_ID).textContent).toContain("no captures with an image");
     expect(row(PLATE_ID).textContent).toContain("(job 11111111)");
-    expect(within(row(SCAN_ID)).getByRole("link", { name: "watch it" })).toBeTruthy();
+    expect(within(row(SCAN_ID)).getByRole("link", { name: "Watch" }).getAttribute("href")).toBe("/app/phenotypes/1/3/7/9/44");
+    expect(row(SCAN_ID).textContent).not.toContain("could not be read");
+  });
+
+  it("says just now for a job asked for under a minute ago", () => {
+    plates = [plate({ created_at: "2026-10-29T10:29:40+00:00" })];
+    mount();
+    expect(row(PLATE_ID).textContent).toContain("just now");
+  });
+
+  it("notes frames a finished video could not read, and a kept video", () => {
+    plates = [plate({ status: "kept" })];
+    scans = [scan({ status: "rendered", stage: null, frames_done: 60, frames_total: 72 })];
+    mount();
+    expect(row(PLATE_ID).textContent).toContain("existing video was kept");
+    expect(within(row(PLATE_ID)).getByRole("link", { name: "Watch" })).toBeTruthy();
+    expect(row(SCAN_ID).textContent).toContain("12 of 72 frames could not be read");
   });
 
   it("highlights the job the visitor came to follow", () => {
@@ -211,7 +232,7 @@ describe("live updates", () => {
     mount();
     await subscribe();
     await emit("cyl_video_jobs", "UPDATE", { id: SCAN_ID, frames_done: 50 });
-    expect(row(SCAN_ID).textContent).toContain("Downloaded 50 of 72 frames");
+    expect(row(SCAN_ID).textContent).toContain("Rendering 69%");
   });
 
   it("adds a job someone just asked for", async () => {
@@ -239,7 +260,7 @@ describe("filters", () => {
   it("shows one kind of video", async () => {
     mount();
     await subscribe();
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "scan" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Type" }), { target: { value: "scan" } });
     await tick();
     expect(screen.queryByTestId(`job-${PLATE_ID}`)).toBeNull();
     expect(row(SCAN_ID)).toBeTruthy();
@@ -249,7 +270,7 @@ describe("filters", () => {
     plates = [plate({ status: "rendered" })];
     mount();
     await subscribe();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Only queued or rendering" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "In progress only" }));
     await tick();
     expect(screen.queryByTestId(`job-${PLATE_ID}`)).toBeNull();
     expect(row(SCAN_ID)).toBeTruthy();
@@ -261,12 +282,12 @@ describe("queue position", () => {
     const theirs = plate({ id: "44444444-0000-0000-0000-000000000000", requested_by: OTHER, created_at: at(10) });
     plates = [plate(), theirs];
     mount();
-    expect(row(PLATE_ID).textContent).toContain("Queued — 1 ahead");
+    expect(row(PLATE_ID).textContent).toContain("Queued (2nd in line)");
     await subscribe();
     fireEvent.click(screen.getByRole("checkbox", { name: "Only mine" }));
     await tick();
     expect(screen.queryByTestId(`job-${theirs.id}`)).toBeNull();
-    expect(row(PLATE_ID).textContent).toContain("Queued — 1 ahead");
+    expect(row(PLATE_ID).textContent).toContain("Queued (2nd in line)");
   });
 
   it("moves up as the job ahead finishes, whether or not it is listed", async () => {
@@ -276,9 +297,9 @@ describe("queue position", () => {
     await subscribe();
     // Rendering, it is still ahead; finished, the line moves.
     await emit("gravi_plate_video_jobs", "UPDATE", { id: theirs.id, status: "rendering" });
-    expect(row(PLATE_ID).textContent).toContain("Queued — 1 ahead");
+    expect(row(PLATE_ID).textContent).toContain("Queued (2nd in line)");
     await emit("gravi_plate_video_jobs", "UPDATE", { id: theirs.id, status: "rendered" });
-    expect(row(PLATE_ID).textContent).toContain("Queued — next up");
+    expect(row(PLATE_ID).textContent).toContain("Queued (next up)");
   });
 
   it("keeps a job that finishes during a resync finished, not the resync's older read", async () => {
@@ -293,7 +314,7 @@ describe("queue position", () => {
     await emit("gravi_plate_video_jobs", "UPDATE", { id: theirs.id, status: "rendered" });
     await act(async () => pending.resolve({ data: [strip(plate()), strip(theirs)], error: null }));
     await tick();
-    expect(row(PLATE_ID).textContent).toContain("Queued — next up");
+    expect(row(PLATE_ID).textContent).toContain("Queued (next up)");
   });
 
   it("says a worker may be stopped only when nothing of its kind is rendering", () => {
@@ -310,19 +331,34 @@ describe("queue position", () => {
 });
 
 describe("the job the visitor came for", () => {
-  it("says it carries on, with a way back to its page", () => {
+  const banner = () => screen.getByRole("status", { name: "Your video job" });
+
+  it("says it keeps going while queued or rendering", () => {
     mount({ highlightJobId: PLATE_ID, highlightedJob: plate() });
-    const banner = screen.getByRole("status", { name: "Your video job" });
-    expect(banner.textContent).toContain("This is the video you asked for");
-    expect(banner.textContent).toContain("carries on if you leave");
-    expect(within(banner).getByRole("link", { name: "Back to its page" }).getAttribute("href")).toBe(
+    expect(banner().textContent).toBe("Your video is highlighted below. You can leave this page, and it will keep going.");
+  });
+
+  it("offers to watch it once ready", () => {
+    plates = [plate({ status: "rendered" })];
+    mount({ highlightJobId: PLATE_ID, highlightedJob: plates[0] });
+    expect(banner().textContent).toContain("Your video is ready.");
+    expect(within(banner()).getByRole("link", { name: "Watch it" }).getAttribute("href")).toBe(
       "/app/plate-phenotypes/2/12/wave/1/P7"
     );
   });
 
-  it("says when the request joined someone else's", () => {
-    mount({ highlightJobId: SCAN_ID, highlightedJob: scan() });
-    expect(screen.getByRole("status", { name: "Your video job" }).textContent).toContain("joined one already in the queue");
+  it("offers to try again once failed", () => {
+    scans = [scan({ status: "failed", error_code: "no_frames" })];
+    mount({ highlightJobId: SCAN_ID, highlightedJob: scans[0] });
+    expect(banner().textContent).toContain("Your video couldn't be made.");
+    expect(within(banner()).getByRole("link", { name: "Try again" }).getAttribute("href")).toBe("/app/phenotypes/1/3/7/9/44");
+  });
+
+  it("follows the job's status as it finishes", async () => {
+    mount({ highlightJobId: PLATE_ID, highlightedJob: plate() });
+    await subscribe();
+    await emit("gravi_plate_video_jobs", "UPDATE", { id: PLATE_ID, status: "rendered" });
+    expect(banner().textContent).toContain("Your video is ready.");
   });
 
   it("shows the job in the banner when it is not on the first page, and follows it live", async () => {
@@ -332,12 +368,12 @@ describe("the job the visitor came for", () => {
     expect(within(banner).getByTestId(`job-${old.id}`)).toBeTruthy();
     await subscribe();
     await emit("gravi_plate_video_jobs", "UPDATE", { id: old.id, status: "rendering", stage: "encoding" });
-    expect(within(banner).getByTestId(`job-${old.id}`).textContent).toContain("Encoding");
+    expect(within(banner).getByTestId(`job-${old.id}`).textContent).toContain("Rendering (encoding)");
   });
 
-  it("says when the job could not be found", () => {
+  it("says when the job could not be loaded", () => {
     mount({ highlightJobId: "77777777-0000-0000-0000-000000000000", highlightedJob: null });
-    expect(screen.getByRole("status", { name: "Your video job" }).textContent).toContain("could not be found");
+    expect(screen.getByRole("status", { name: "Your video job" }).textContent).toContain("could not be loaded");
   });
 });
 

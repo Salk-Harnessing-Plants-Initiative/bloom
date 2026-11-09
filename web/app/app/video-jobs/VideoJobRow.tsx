@@ -10,12 +10,10 @@ import {
   SCAN_FAILURES,
   countedFrames,
   jobFailureMessage,
-  queuedNote,
-  renderingNote,
   type VideoJob,
   type VideoJobStatus,
 } from "@/lib/video-job";
-import { videoResultSummary } from "@/components/scan-video.helpers";
+import { finishedNote, queuedText, renderingText, requestedText } from "@/lib/video-jobs/progress-text";
 import {
   overdue,
   type ActiveJob,
@@ -23,14 +21,6 @@ import {
   type PlatePlace,
   type ScanPlace,
 } from "@/lib/video-jobs/list";
-
-/** What a finished job left behind, in the words its own button uses. */
-function doneNote(job: ListedJob, video: VideoJob): string | null {
-  if (job.status !== "rendered" && job.status !== "kept") return null;
-  if (job.kind === "scan") return videoResultSummary(video);
-  // A kept plate is current, or has frames the service cannot see; either way nothing changed.
-  return job.status === "rendered" ? "Video ready." : "Nothing new to add — the stored video was kept.";
-}
 
 function asVideoJob(job: ListedJob, ahead: number | null): VideoJob {
   return {
@@ -89,7 +79,8 @@ export function VideoJobRow({
   const { label, title, experiment } = what(job, plate, scan);
   const counted = countedFrames(video);
   const slow = now === null ? null : overdue(job, now, active);
-  const done = doneNote(job, video);
+  const finished = job.status === "rendered" || job.status === "kept";
+  const note = finished ? finishedNote(video) : null;
 
   return (
     <tr
@@ -112,14 +103,14 @@ export function VideoJobRow({
       <td className="px-3 py-3">
         <div>{requesterText(job.requested_by, currentUserId)}</div>
         <div className="text-xs text-stone-500">
-          {now === null ? "" : `${formatElapsed(job.created_at, now)} ago`}
+          {now === null ? "" : requestedText(job.created_at, now)}
         </div>
       </td>
       <td className="px-3 py-3">
-        {job.status === "queued" && <div>{queuedNote(video)}</div>}
+        {job.status === "queued" && <div>{queuedText(ahead)}</div>}
         {job.status === "rendering" && (
           <div>
-            <div>{renderingNote(video)}</div>
+            <div>{renderingText(video)}</div>
             <div
               role="progressbar"
               aria-label="Rendering"
@@ -140,21 +131,33 @@ export function VideoJobRow({
           </div>
         )}
         {job.status === "failed" && (
-          <div className="text-red-700">
-            {jobFailureMessage(video, job.kind === "plate" ? PLATE_FAILURES : SCAN_FAILURES)}
+          <div>
+            <div className="text-red-700">
+              Failed
+              {href && (
+                <>
+                  {": "}
+                  <Link href={href} className="font-medium text-lime-700 hover:underline">
+                    Retry
+                  </Link>
+                </>
+              )}
+            </div>
+            <div className="text-xs text-stone-500">
+              {jobFailureMessage(video, job.kind === "plate" ? PLATE_FAILURES : SCAN_FAILURES)}
+            </div>
           </div>
         )}
-        {done && (
+        {finished && (
           <div>
-            {done}
-            {href && (
-              <>
-                {" — "}
-                <Link href={href} className="text-lime-700 hover:underline">
-                  watch it
-                </Link>
-              </>
+            {href ? (
+              <Link href={href} className="font-medium text-lime-700 hover:underline">
+                Watch
+              </Link>
+            ) : (
+              "Ready"
             )}
+            {note && <div className="text-xs text-stone-500">{note}</div>}
           </div>
         )}
         {slow === "quiet" && now !== null && (
