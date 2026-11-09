@@ -232,6 +232,8 @@ _INCLUDES_DELETED_EXPERIMENTS = (
 )
 
 # Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
+_FIND_EXPERIMENTS_BY_NAME = "To find experiments by name, filter name with contains; count_rows gives the total."
+
 TABLE_NOTES: dict[str, str] = {
     "cyl_scan_traits_latest": (
         "Use for trait values: the latest run's value per scan and trait, as the website shows."
@@ -239,7 +241,11 @@ TABLE_NOTES: dict[str, str] = {
     "cyl_scan_traits_source": (
         "Every run's trait values. Only for comparing runs; is_latest marks the value to use."
     ),
-    "cyl_experiments": "Skip rows with deleted = true: older deletions use this flag.",
+    "cyl_experiments": (
+        "Skip rows with deleted = true: older deletions use this flag. "
+        + _FIND_EXPERIMENTS_BY_NAME
+    ),
+    "gravi_experiments": _FIND_EXPERIMENTS_BY_NAME,
     # Views that read with their owner's rights, so deleted experiments come through.
     "cyl_scans_extended": (
         "One row per scan with its plant, wave, experiment and species: read this instead "

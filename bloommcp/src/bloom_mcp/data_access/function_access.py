@@ -11,12 +11,19 @@ from dataclasses import dataclass
 
 from .table_ports import Sort
 
+# The most rows a search returns; the functions cap their own limit inputs here too.
+MAX_SEARCH_ROWS = 1000
+
 
 @dataclass(frozen=True)
 class ReadableFunction:
     description: str
     # Sorts the function's rows so pages never overlap.
     order: tuple[Sort, ...]
+    # A search's row-limit input: bloommcp sets it from offset and limit, Claude doesn't.
+    page_input: str | None = None
+    # A top-N input Claude sets, up to MAX_SEARCH_ROWS.
+    count_input: str | None = None
 
 
 def _by(*columns: str) -> tuple[Sort, ...]:
@@ -24,12 +31,18 @@ def _by(*columns: str) -> tuple[Sort, ...]:
 
 
 _MOST_SIMILAR_FIRST = (Sort("similarity", descending=True), Sort("uid"))
+_PAGED = f"Pages through up to {MAX_SEARCH_ROWS:,} matches."
+
+
+def _top_n(default: int) -> str:
+    return (
+        f"Set match_count to how many you need, up to {MAX_SEARCH_ROWS:,} "
+        f"(default {default:,})."
+    )
+
 
 READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     # Cylinder experiments and their traits; trait values are the latest run's by default.
-    "cyl_experiment_search": ReadableFunction(
-        "Find cylinder experiments by name, optionally within one species.", _by("id")
-    ),
     "get_experiment_summary_counts": ReadableFunction(
         "Plants and traits per cylinder experiment (all experiments when no id is given).",
         _by("experiment_id"),
@@ -54,35 +67,41 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     "get_trait_recipe_coverage": ReadableFunction(
         "Which scans have traits under which recipe.", _by("scan_id", "recipe_key")
     ),
-    # Plates.
-    "gravi_experiment_search": ReadableFunction(
-        "Find plate (GraviScan) experiments by name, optionally within one species.",
-        _by("id"),
-    ),
     # Genes and proteins.
     "search_genes": ReadableFunction(
-        "Find cross-species proteins by part of their uid or gene id.", _by("uid")
+        f"Find cross-species proteins by part of their uid or gene id. {_PAGED}",
+        _by("uid"),
+        page_input="max_results",
     ),
     "search_accession_genes": ReadableFunction(
         "Find accession proteins by part of their uid or gene id, optionally in one "
-        "accession.",
+        f"accession. {_PAGED}",
         _by("uid"),
+        page_input="max_results",
     ),
     "knn_search_esm2": ReadableFunction(
-        "Cross-species proteins most similar to one protein (ESM-2 embeddings).",
+        "Cross-species proteins most similar to one protein (ESM-2 embeddings). "
+        + _top_n(20),
         _MOST_SIMILAR_FIRST,
+        count_input="match_count",
     ),
     "knn_search_esm3": ReadableFunction(
-        "Accession proteins most similar to one protein (ESM-3 embeddings).",
+        "Accession proteins most similar to one protein (ESM-3 embeddings). "
+        + _top_n(20),
         _MOST_SIMILAR_FIRST,
+        count_input="match_count",
     ),
     "best_match_per_accession": ReadableFunction(
-        "The most similar protein in each accession to one protein (ESM-3).",
+        "The most similar protein in each accession to one protein (ESM-3), for the "
+        "match_count closest accessions. " + _top_n(20),
         _by("accession_id", "rank_in_accession", "uid"),
+        count_input="match_count",
     ),
     "compare_gene_across_accessions": ReadableFunction(
-        "One gene's variants across accessions, ranked by similarity to a reference.",
+        "One gene's variants across accessions, ranked by similarity to a reference. "
+        + _top_n(MAX_SEARCH_ROWS),
         _MOST_SIMILAR_FIRST,
+        count_input="match_count",
     ),
     "get_orthogroup_info": ReadableFunction(
         "Which proteins share an orthogroup with a query protein (active OrthoFinder run).",
@@ -90,7 +109,9 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     ),
     # Expression.
     "scrna_gene_search": ReadableFunction(
-        "Find genes in one scRNA dataset by part of their name.", _by("gene_name")
+        f"Find genes in one scRNA dataset by the start of their name. {_PAGED}",
+        _by("gene_name"),
+        page_input="lim",
     ),
 }
 
@@ -128,6 +149,9 @@ EXCLUDED_FUNCTIONS = frozenset(
         "scrna_cell_arrays",
         "scrna_embedding_arrays",
         "scrna_embedding_label_codes",
+        # Stop at 50 rows; filtering name on the experiment tables returns every match.
+        "cyl_experiment_search",
+        "gravi_experiment_search",
     }
 )
 

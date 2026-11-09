@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
 from bloom_mcp.data_access import function_access
+from bloom_mcp.data_access.function_access import MAX_SEARCH_ROWS, ReadableFunction
 from bloom_mcp.data_access.table_ports import Function
 from bloom_mcp.tools import _ports
 
@@ -52,6 +53,11 @@ class CallFunctionResult(BaseModel):
         description="True if the page stopped before limit to keep the reply small; "
         "continue with next_offset."
     )
+    search_limit_reached: bool = Field(
+        default=False,
+        description=f"True if the search stopped at its {MAX_SEARCH_ROWS:,}-match "
+        "limit: there may be more matches, so narrow the search.",
+    )
 
 
 def _served(name: str) -> Function:
@@ -70,8 +76,10 @@ def _served(name: str) -> Function:
     return served
 
 
-def _check_args(function: Function, args: dict[str, Any]) -> None:
-    names = {p.name for p in function.params}
+def _check_args(
+    function: Function, entry: ReadableFunction, args: dict[str, Any]
+) -> None:
+    names = {p.name for p in function.params} - {entry.page_input}
     unknown = sorted(set(args) - names)
     missing = sorted(
         p.name for p in function.params if p.required and p.name not in args
@@ -99,6 +107,17 @@ def _check_args(function: Function, args: dict[str, Any]) -> None:
                 "or a list of those.",
                 _LIST_FUNCTIONS,
             )
+    count = args.get(entry.count_input) if entry.count_input else None
+    if count is not None and (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or not 1 <= count <= MAX_SEARCH_ROWS
+    ):
+        raise fix_request(
+            f"'{function.name}' input '{entry.count_input}' takes a whole number from 1 "
+            f"to {MAX_SEARCH_ROWS:,}.",
+            f"Ask for at most {MAX_SEARCH_ROWS:,}.",
+        )
 
 
 @as_mcp_tool(input_model=CallFunctionParams, output_model=CallFunctionResult)
@@ -108,16 +127,27 @@ def call_function(params: CallFunctionParams) -> CallFunctionResult:
     """Call one of Bloom's read-only database functions (from list_functions) with its inputs.
 
     Returns at most 500 rows per call, fewer when the rows are large; when has_more is
-    true, call again with offset=next_offset. Trait values come from the latest pipeline
+    true, call again with offset=next_offset. A search returns at most 1,000 matches in
+    all; search_limit_reached says when it stopped there. Trait values come from the latest pipeline
     run unless an input pins a source or run.
     """
     function = _served(params.function)
-    _check_args(function, params.args)
-    order = list(function_access.READABLE_FUNCTIONS[params.function].order)
+    entry = function_access.READABLE_FUNCTIONS[params.function]
+    _check_args(function, entry, params.args)
+    args = dict(params.args)
+    # A search returns no more than its limit input, so ask for every row up to this page.
+    wanted = min(params.offset + params.limit + 1, MAX_SEARCH_ROWS)
+    if entry.page_input:
+        args[entry.page_input] = wanted
     rows = _ports.table_reader().call(
-        params.function, params.args, order, params.limit + 1, params.offset
+        params.function, args, list(entry.order), params.limit + 1, params.offset
     )
     page = fit_page(rows, params.limit)
+    limit_reached = (
+        entry.page_input is not None
+        and wanted == MAX_SEARCH_ROWS
+        and params.offset + len(rows) >= MAX_SEARCH_ROWS
+    )
     return CallFunctionResult(
         function=params.function,
         rows=page.rows,
@@ -127,4 +157,5 @@ def call_function(params: CallFunctionParams) -> CallFunctionResult:
         next_offset=page.next_offset(params.offset),
         truncated_values=page.truncated_values,
         cut_short=page.cut_short,
+        search_limit_reached=limit_reached,
     )

@@ -82,6 +82,8 @@ class FakeTableReader:
         self.filtered_guess = FILTERED_GUESS
         # {name: (its parameters, the rows it returns)}; `called` records each call's args.
         self.function_rows = dict(functions or {})
+        # function -> (limit input, its default): the function stops at that many rows.
+        self.limit_inputs: dict[str, tuple[str, int]] = {}
         self.called: list[tuple[str, dict[str, Any]]] = []
         self.calls: list[str] = []
         self.counts: list[tuple[str, bool]] = []
@@ -116,6 +118,10 @@ class FakeTableReader:
         rows = [dict(r) for r in self.function_rows[function][1]]
         for s in reversed(order):
             rows = sorted(rows, key=_sort_key(s.column), reverse=s.descending)
+        # Like the real searches: no more rows than the function's own limit input.
+        if function in self.limit_inputs:
+            name, default = self.limit_inputs[function]
+            rows = rows[: args.get(name, default)]
         return rows[offset : offset + limit]
 
     def refresh_columns(self) -> bool:

@@ -50,6 +50,7 @@ def list_functions(params: ListFunctionsParams) -> ListFunctionsResult:
                 params=[
                     ParamInfo(name=p.name, type=p.type, required=p.required)
                     for p in served[name].params
+                    if p.name != entry.page_input
                 ],
             )
             for name, entry in sorted(function_access.READABLE_FUNCTIONS.items())

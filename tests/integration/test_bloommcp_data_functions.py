@@ -33,11 +33,14 @@ def call(name, args):
 
 print(json.dumps({
     "listed": [f.name for f in list_functions({}).functions],
-    "search": call("cyl_experiment_search", {"p_query": "TEST_BLOOMMCP_NO_SUCH"}),
+    "search": call("search_genes", {"partial_id": "TEST_BLOOMMCP_NO_SUCH"}),
     "counts": call("get_experiment_summary_counts", {}),
-    "genes": call("search_genes", {"partial_id": "AT1G", "max_results": 5}),
+    "genes": call("search_genes", {"partial_id": "AT1G"}),
+    "page_input": call("search_genes", {"partial_id": "AT1G", "max_results": 5}),
+    "experiments": call("cyl_experiment_search", {"p_query": "x"}),
+    "nearest": call("knn_search_esm2", {"query_uid": "x", "match_count": 1001}),
     "writer": call("insert_cyl_qc_codes", {"qc_codes": []}),
-    "bad_arg": call("cyl_experiment_search", {"p_query": "x", "p_nope": 1}),
+    "bad_arg": call("search_genes", {"partial_id": "x", "p_nope": 1}),
 }, default=str))
 """
 
@@ -109,6 +112,20 @@ def test_list_functions_shows_every_allow_listed_function(access, calls):
 
 def test_a_search_with_no_match_returns_no_rows(calls):
     assert calls["search"]["returned"] == 0 and calls["search"]["has_more"] is False
+    assert calls["search"]["search_limit_reached"] is False
+
+
+def test_a_search_sets_its_own_row_limit(calls):
+    assert calls["page_input"]["code"] == "invalid_input"
+    assert "max_results" in calls["page_input"]["message"]
+
+
+def test_the_capped_experiment_search_is_refused(calls):
+    assert calls["experiments"]["code"] == "invalid_input"
+
+
+def test_a_top_n_count_over_1000_is_refused(calls):
+    assert calls["nearest"]["code"] == "invalid_input"
 
 
 def test_functions_with_and_without_inputs_answer(calls):
