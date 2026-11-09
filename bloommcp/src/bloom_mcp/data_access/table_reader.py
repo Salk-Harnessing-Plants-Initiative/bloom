@@ -22,6 +22,7 @@ from .table_ports import (
     DatabaseUnavailable,
     Filter,
     Function,
+    FunctionRejected,
     Param,
     QueryTimedOut,
     RequestTooLong,
@@ -38,6 +39,9 @@ STATEMENT_TIMEOUT_CODE = "57014"
 # A filter value of the wrong type for its column (text, number, date or time), and an
 # operator the column's type lacks (contains on a number).
 BAD_FILTER_CODES = frozenset({"22P02", "22003", "22007", "22008", "42883"})
+# A Bloom function's own RAISE: input checks we wrote, so their text can be passed on.
+FUNCTION_RAISE_CODE = "P0001"
+MAX_REASON_CHARS = 200
 # A column named in the read doesn't exist.
 UNDEFINED_COLUMN_CODE = "42703"
 # The gateway's answer when the URL is over its limit (about 8 KB).
@@ -110,6 +114,15 @@ def _apply(query: Any, f: Filter) -> Any:
     return getattr(query, f.op)(f.column, f.value)
 
 
+def _function_reason(message: str | None) -> str:
+    """A function's own message on one short line, without its leading 'name: '."""
+    line = " ".join((message or "").split())
+    line = re.sub(r"^\w+:\s*", "", line)
+    if len(line) > MAX_REASON_CHARS:
+        line = line[: MAX_REASON_CHARS - 1] + "…"
+    return line or "The function refused these inputs."
+
+
 def _execute(query: Any) -> Any:
     try:
         return query.execute()
@@ -118,6 +131,8 @@ def _execute(query: Any) -> Any:
         code = str(exc.code)
         if code == STATEMENT_TIMEOUT_CODE:
             raise QueryTimedOut("statement timeout") from None
+        if code == FUNCTION_RAISE_CODE:
+            raise FunctionRejected(_function_reason(exc.message)) from None
         logger.warning("bloom_data read failed: %s %s", exc.code, exc.message)
         if code == UNDEFINED_COLUMN_CODE:
             raise ColumnsChanged("column dropped") from None

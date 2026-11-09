@@ -17,6 +17,7 @@ from bloom_mcp.data_access.table_ports import (
     DatabaseUnavailable,
     Filter,
     Function,
+    FunctionRejected,
     Param,
     QueryTimedOut,
     RequestTooLong,
@@ -135,6 +136,26 @@ def test_postgrest_error_replies_map_to_their_errors(reply, error):
         reader.select("species", ["id"], [], [Sort("id")], 1, 0)
     assert type(err.value) is error
     assert "permission" not in str(err.value)
+
+
+@pytest.mark.parametrize(
+    ("message", "reason"),
+    [
+        (
+            "get_trait_recipe_coverage: give experiment_ids_, scan_ids_, or both",
+            "give experiment_ids_, scan_ids_, or both",
+        ),
+        ("two\nlines   here", "two lines here"),
+        ("x" * 500, "x" * 199 + "…"),
+        ("", "The function refused these inputs."),
+    ],
+    ids=["own message", "one line", "capped", "empty"],
+)
+def test_a_functions_own_message_comes_back_short(message, reason):
+    reader, _ = _reader(httpx.Response(400, json=_pg_error("P0001", message)))
+    with pytest.raises(FunctionRejected) as err:
+        reader.call("list_trait_recipes", {}, [Sort("recipe_key")], 1, 0)
+    assert err.value.reason == reason
 
 
 _SCHEMA = {

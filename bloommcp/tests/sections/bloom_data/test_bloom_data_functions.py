@@ -7,7 +7,15 @@ import pytest
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import function_access
 from bloom_mcp.data_access.function_access import MAX_SEARCH_ROWS
-from bloom_mcp.data_access.table_ports import Function, Param
+from bloom_mcp.data_access.table_ports import (
+    BadFilterValue,
+    DatabaseUnavailable,
+    Function,
+    FunctionRejected,
+    Param,
+    QueryTimedOut,
+    TableReadError,
+)
 from bloom_mcp.sections.bloom_data._common import MAX_IN_VALUES
 from bloom_mcp.sections.bloom_data._page import DEFAULT_LIMIT
 from bloom_mcp.sections.bloom_data.call_function import call_function
@@ -160,13 +168,32 @@ def test_an_allow_listed_function_the_api_does_not_serve_is_refused(functions):
         )
 
 
-def test_a_failed_call_is_reported_plainly(functions):
-    from bloom_mcp.data_access.table_ports import QueryTimedOut
-
-    functions.fail_with = QueryTimedOut("statement timeout")
+@pytest.mark.parametrize(
+    ("failure", "code", "says"),
+    [
+        (QueryTimedOut("statement timeout"), "tool_error", "took longer"),
+        (BadFilterValue("bad"), "invalid_input", "doesn't fit its type"),
+        (TableReadError("refused"), "tool_error", "couldn't run with these inputs"),
+        (DatabaseUnavailable("down"), "tool_error", "couldn't be reached"),
+    ],
+    ids=["timeout", "wrong type", "refused", "unreachable"],
+)
+def test_a_failed_call_gets_function_wording(functions, failure, code, says):
+    functions.fail_with = failure
     with pytest.raises(BloomMCPError) as err:
         call_function({"function": "search_genes", "args": {"partial_id": "x"}})
-    assert err.value.code == "tool_error" and "filter" in err.value.message
+    assert err.value.code == code and says in err.value.message
+    text = f"{err.value.message} {err.value.remedy}"
+    assert "filter" not in text and "list_tables" not in text
+
+
+def test_a_functions_own_message_is_passed_on(functions):
+    functions.fail_with = FunctionRejected("give experiment_ids_, scan_ids_, or both")
+    with pytest.raises(BloomMCPError) as err:
+        call_function({"function": "search_genes", "args": {"partial_id": "x"}})
+    assert err.value.code == "invalid_input"
+    assert err.value.message == "give experiment_ids_, scan_ids_, or both"
+    assert "list_functions" in err.value.remedy
 
 
 def test_no_function_is_both_readable_and_excluded():

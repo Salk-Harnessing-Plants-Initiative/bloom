@@ -41,6 +41,8 @@ print(json.dumps({
     "nearest": call("knn_search_esm2", {"query_uid": "x", "match_count": 1001}),
     "writer": call("insert_cyl_qc_codes", {"qc_codes": []}),
     "bad_arg": call("search_genes", {"partial_id": "x", "p_nope": 1}),
+    "raised": call("get_trait_recipe_coverage", {}),
+    "bad_type": call("get_experiment_traits", {"experiment_id_": "abc"}),
 }, default=str))
 """
 
@@ -139,3 +141,14 @@ def test_a_function_that_can_write_is_refused(calls):
 def test_an_unknown_input_is_refused(calls):
     assert calls["bad_arg"]["code"] == "invalid_input"
     assert "p_nope" in calls["bad_arg"]["message"]
+
+
+def test_a_functions_own_message_reaches_claude(calls):
+    assert calls["raised"]["code"] == "invalid_input"
+    assert calls["raised"]["message"].startswith("give experiment_ids_")
+
+
+def test_a_wrong_type_input_gets_function_wording(calls):
+    assert calls["bad_type"]["code"] == "invalid_input"
+    assert "input" in calls["bad_type"]["message"]
+    assert "22P02" not in str(calls["bad_type"])

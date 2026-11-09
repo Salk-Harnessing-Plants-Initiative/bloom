@@ -21,6 +21,7 @@ from bloom_mcp.data_access.table_ports import (
     DatabaseUnavailable,
     Filter,
     FilterOp,
+    FunctionRejected,
     QueryTimedOut,
     RequestTooLong,
     TableReadError,
@@ -36,6 +37,7 @@ if not usage_log.handlers:
     usage_log.addHandler(logging.StreamHandler(sys.stdout))
 
 LIST_TABLES_REMEDY = "Call list_tables to see the readable tables and their columns."
+LIST_FUNCTIONS_REMEDY = "Call list_functions to see the functions and their inputs."
 
 _R = TypeVar("_R")
 _Result = TypeVar("_Result", bound=BaseModel)
@@ -53,6 +55,32 @@ def too_slow() -> BloomMCPError:
         "narrow it with a filter.",
         remedy="Add a filter on an id column, such as an experiment, species or scan id, "
         "or ask for fewer rows.",
+    )
+
+
+def call_failed(exc: TableReadError) -> BloomMCPError:
+    """read_failed's wording for call_function, which has inputs, not filters."""
+    if isinstance(exc, FunctionRejected):
+        return fix_request(exc.reason, LIST_FUNCTIONS_REMEDY)
+    if isinstance(exc, QueryTimedOut):
+        return BloomMCPError(
+            code="tool_error",
+            message="The function took longer than the database allows "
+            f"({STATEMENT_TIMEOUT_SECONDS} s).",
+            remedy="Narrow it: fewer ids, a smaller match_count, or one experiment at a time.",
+        )
+    if isinstance(exc, BadFilterValue):
+        return fix_request(
+            "An input doesn't fit its type: text for a number, or a malformed date or id.",
+            "Check the inputs' types with list_functions.",
+        )
+    if isinstance(exc, (ColumnsChanged, RequestTooLong, DatabaseUnavailable)):
+        return read_failed(exc)
+    return BloomMCPError(
+        code="tool_error",
+        message="The function couldn't run with these inputs.",
+        remedy="Check its inputs with list_functions and retry; if it keeps failing, tell "
+        "the user the Bloom team can look into it.",
     )
 
 
@@ -92,23 +120,31 @@ def read_failed(exc: TableReadError) -> BloomMCPError:
     )
 
 
-def reports_read_errors(func: Callable[..., _R]) -> Callable[..., _R]:
-    """Turns a failed read into read_failed's message; goes under @as_mcp_tool."""
-
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> _R:
-        try:
+def _reports(
+    explain: Callable[[TableReadError], BloomMCPError],
+) -> Callable[[Callable[..., _R]], Callable[..., _R]]:
+    def decorate(func: Callable[..., _R]) -> Callable[..., _R]:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> _R:
             try:
-                return func(*args, **kwargs)
-            except ColumnsChanged:
-                # A migration dropped a cached column: reread the columns and try once more.
-                if not _ports.table_reader().refresh_columns():
-                    raise
-                return func(*args, **kwargs)
-        except TableReadError as exc:
-            raise read_failed(exc) from None
+                try:
+                    return func(*args, **kwargs)
+                except ColumnsChanged:
+                    # A migration dropped a cached column: reread the columns, try once more.
+                    if not _ports.table_reader().refresh_columns():
+                        raise
+                    return func(*args, **kwargs)
+            except TableReadError as exc:
+                raise explain(exc) from None
 
-    return wrapper
+        return wrapper
+
+    return decorate
+
+
+# Turn a failed read into a plain message; they go under @as_mcp_tool.
+reports_read_errors = _reports(read_failed)
+reports_call_errors = _reports(call_failed)
 
 
 class FilterParam(BaseModel):

@@ -77,6 +77,14 @@ class DatabaseUnavailable(TableReadError):
     """The database couldn't be reached."""
 
 
+class FunctionRejected(TableReadError):
+    """A Bloom function refused its inputs with a message of its own, written for callers."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class BloomDataReader(Protocol):
     """Reads Bloom's tables as bloom_agent."""
 

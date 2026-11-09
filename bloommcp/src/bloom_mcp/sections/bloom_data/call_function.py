@@ -12,11 +12,16 @@ from bloom_mcp.data_access.function_access import MAX_SEARCH_ROWS, ReadableFunct
 from bloom_mcp.data_access.table_ports import Function
 from bloom_mcp.tools import _ports
 
-from ._common import MAX_IN_VALUES, fix_request, logs_call, reports_read_errors
+from ._common import (
+    LIST_FUNCTIONS_REMEDY,
+    MAX_IN_VALUES,
+    fix_request,
+    logs_call,
+    reports_call_errors,
+)
 from ._page import DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET, fit_page
 
 _SCALARS = (str, int, float, bool)
-_LIST_FUNCTIONS = "Call list_functions to see the functions and their inputs."
 
 
 class CallFunctionParams(BaseModel):
@@ -63,7 +68,8 @@ class CallFunctionResult(BaseModel):
 def _served(name: str) -> Function:
     if not function_access.is_callable(name):
         raise fix_request(
-            f"'{name}' is not a function Bloom's data tools can call.", _LIST_FUNCTIONS
+            f"'{name}' is not a function Bloom's data tools can call.",
+            LIST_FUNCTIONS_REMEDY,
         )
     reader = _ports.table_reader()
     served = reader.functions().get(name)
@@ -71,7 +77,8 @@ def _served(name: str) -> Function:
         served = reader.functions().get(name)
     if served is None:
         raise fix_request(
-            f"'{name}' is not a function Bloom's data tools can call.", _LIST_FUNCTIONS
+            f"'{name}' is not a function Bloom's data tools can call.",
+            LIST_FUNCTIONS_REMEDY,
         )
     return served
 
@@ -91,7 +98,7 @@ def _check_args(
         ]
         raise fix_request(
             f"'{function.name}': {'; '.join(p for p in problems if p)}.",
-            _LIST_FUNCTIONS,
+            LIST_FUNCTIONS_REMEDY,
         )
     for name, value in args.items():
         values = value if isinstance(value, list) else [value]
@@ -105,7 +112,7 @@ def _check_args(
             raise fix_request(
                 f"'{function.name}' input '{name}' takes text, a number, true/false, null, "
                 "or a list of those.",
-                _LIST_FUNCTIONS,
+                LIST_FUNCTIONS_REMEDY,
             )
     count = args.get(entry.count_input) if entry.count_input else None
     if count is not None and (
@@ -122,7 +129,7 @@ def _check_args(
 
 @as_mcp_tool(input_model=CallFunctionParams, output_model=CallFunctionResult)
 @logs_call
-@reports_read_errors
+@reports_call_errors
 def call_function(params: CallFunctionParams) -> CallFunctionResult:
     """Call one of Bloom's read-only database functions (from list_functions) with its inputs.
 
