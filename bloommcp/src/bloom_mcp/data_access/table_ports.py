@@ -77,6 +77,10 @@ class DatabaseUnavailable(TableReadError):
     """The database couldn't be reached."""
 
 
+class DatabaseBusy(TableReadError):
+    """Every read slot stayed taken while this read waited."""
+
+
 class FunctionRejected(TableReadError):
     """A Bloom function refused its inputs with a message of its own, written for callers."""
 

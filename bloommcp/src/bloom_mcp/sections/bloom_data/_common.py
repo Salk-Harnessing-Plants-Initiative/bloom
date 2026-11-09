@@ -18,6 +18,7 @@ from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
     Column,
     ColumnsChanged,
+    DatabaseBusy,
     DatabaseUnavailable,
     Filter,
     FilterOp,
@@ -74,7 +75,9 @@ def call_failed(exc: TableReadError) -> BloomMCPError:
             "An input doesn't fit its type: text for a number, or a malformed date or id.",
             "Check the inputs' types with list_functions.",
         )
-    if isinstance(exc, (ColumnsChanged, RequestTooLong, DatabaseUnavailable)):
+    if isinstance(
+        exc, (ColumnsChanged, RequestTooLong, DatabaseBusy, DatabaseUnavailable)
+    ):
         return read_failed(exc)
     return BloomMCPError(
         code="tool_error",
@@ -105,6 +108,13 @@ def read_failed(exc: TableReadError) -> BloomMCPError:
             "The request is too long to send: its filter values and columns don't fit "
             "in one call.",
             "Split a long in list into several calls, or ask for fewer columns.",
+        )
+    if isinstance(exc, DatabaseBusy):
+        return BloomMCPError(
+            code="tool_error",
+            message="Bloom is busy with other reads right now.",
+            remedy="Try again in a moment, and run reads one after another rather than "
+            "many at once.",
         )
     if isinstance(exc, DatabaseUnavailable):
         return BloomMCPError(

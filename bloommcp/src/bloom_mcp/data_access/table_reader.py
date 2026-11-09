@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -19,6 +20,7 @@ from .table_ports import (
     BadFilterValue,
     Column,
     ColumnsChanged,
+    DatabaseBusy,
     DatabaseUnavailable,
     Filter,
     Function,
@@ -35,6 +37,11 @@ logger = logging.getLogger(__name__)
 # Past bloom_agent's statement timeout, so the database's
 # own cancellation (a clear 57014) arrives first.
 CLIENT_TIMEOUT_SECONDS = STATEMENT_TIMEOUT_SECONDS + 5
+# Claude's reads share PostgREST's 10 database connections with the website, so at most
+# this many run at once; the rest wait up to READ_SLOT_WAIT_SECONDS for a slot.
+MAX_CONCURRENT_READS = 3
+READ_SLOT_WAIT_SECONDS = 20
+_read_slots = threading.BoundedSemaphore(MAX_CONCURRENT_READS)
 STATEMENT_TIMEOUT_CODE = "57014"
 # A filter value of the wrong type for its column (text, number, date or time), and an
 # operator the column's type lacks (contains on a number).
@@ -124,6 +131,16 @@ def _function_reason(message: str | None) -> str:
 
 
 def _execute(query: Any) -> Any:
+    if not _read_slots.acquire(timeout=READ_SLOT_WAIT_SECONDS):
+        logger.warning("bloom_data read waited %s s for a slot", READ_SLOT_WAIT_SECONDS)
+        raise DatabaseBusy("no free read slot")
+    try:
+        return _run(query)
+    finally:
+        _read_slots.release()
+
+
+def _run(query: Any) -> Any:
     try:
         return query.execute()
     except APIError as exc:
