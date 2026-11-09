@@ -73,10 +73,47 @@ function placesInto(places: Places, plates: Map<number, PlatePlace>, scans: Map<
   for (const s of places.scans) scans.set(s.scan_id, s);
 }
 
+const bannerLink = "text-lime-700 underline hover:no-underline";
+
+/** The banner's line for the job the visitor came for, following its status. */
+function BannerText({ job, href }: { job: ListedJob; href: string | null }) {
+  if (job.status === "rendered" || job.status === "kept") {
+    return (
+      <p>
+        Your video is ready.
+        {href && (
+          <>
+            {" "}
+            <Link href={href} className={bannerLink}>
+              Watch it
+            </Link>
+          </>
+        )}
+      </p>
+    );
+  }
+  if (job.status === "failed") {
+    return (
+      <p>
+        Your video couldn&apos;t be made.
+        {href && (
+          <>
+            {" "}
+            <Link href={href} className={bannerLink}>
+              Try again
+            </Link>
+          </>
+        )}
+      </p>
+    );
+  }
+  return <p>Your video is highlighted below. You can leave this page, and it will keep going.</p>;
+}
+
 function emptyText(f: Filters): string {
   if (f.mineOnly && !f.activeOnly && f.kind === "all") return "You haven't asked for any videos";
   const what = f.kind === "plate" ? "plate time-lapses" : f.kind === "scan" ? "cylinder scan videos" : "videos";
-  if (f.activeOnly) return `No ${what} queued or rendering right now`;
+  if (f.activeOnly) return `No ${what} in progress right now`;
   return f.mineOnly ? `You haven't asked for any ${what}` : f.kind === "all" ? "No video jobs yet" : `No ${what} yet`;
 }
 
@@ -240,6 +277,8 @@ export function VideoJobsLive({
     />
   );
   const pinnedHref = pinned ? jobHref(pinned, places.plates, places.scans) : null;
+  // The listed row is re-read on every resync; the banner copy only follows live events.
+  const listedPinned = live.view.list.rows.find((j) => j.id === highlightJobId);
 
   return (
     <div>
@@ -251,21 +290,7 @@ export function VideoJobsLive({
         >
           {pinned ? (
             <>
-              <p>
-                {pinned.requested_by !== null && pinned.requested_by !== currentUserId
-                  ? "Your request joined one already in the queue, highlighted below."
-                  : "This is the video you asked for, highlighted below."}{" "}
-                It carries on if you leave this page.
-                {pinnedHref && (
-                  <>
-                    {" "}
-                    <Link href={pinnedHref} className="text-lime-700 underline hover:no-underline">
-                      Back to its page
-                    </Link>
-                    , where it plays once it is ready.
-                  </>
-                )}
-              </p>
+              <BannerText job={listedPinned ?? pinned} href={pinnedHref} />
               {!highlightedHere && (
                 <table className="mt-2 w-full text-sm">
                   <tbody>{row(pinned, true)}</tbody>
@@ -273,7 +298,7 @@ export function VideoJobsLive({
               )}
             </>
           ) : (
-            <p>That video job could not be found.</p>
+            <p>That video job could not be loaded.</p>
           )}
         </div>
       )}
@@ -294,18 +319,18 @@ export function VideoJobsLive({
               checked={filters.activeOnly}
               onChange={(e) => setFilter({ activeOnly: e.target.checked })}
             />
-            Only queued or rendering
+            In progress only
           </label>
           <label className="inline-flex items-center gap-2">
-            Show
+            Type
             <select
               value={filters.kind}
               onChange={(e) => setFilter({ kind: e.target.value as Kind })}
               className="rounded-md border border-stone-300 px-2 py-1"
             >
-              <option value="all">All videos</option>
-              <option value="plate">Plate time-lapses</option>
-              <option value="scan">Cylinder scans</option>
+              <option value="all">All</option>
+              <option value="plate">Plate time-lapse</option>
+              <option value="scan">Cylinder scan</option>
             </select>
           </label>
         </div>
