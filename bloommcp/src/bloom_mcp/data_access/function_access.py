@@ -44,7 +44,8 @@ def _top_n(default: int) -> str:
 READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     # Cylinder experiments and their traits; trait values are the latest run's by default.
     "get_experiment_summary_counts": ReadableFunction(
-        "Plants and traits per cylinder experiment (all experiments when no id is given).",
+        "Plants and traits per cylinder experiment. With no id it lists every experiment, "
+        "deleted ones included: keep only ids in cyl_experiments with deleted = false.",
         _by("experiment_id"),
     ),
     "get_experiment_traits": ReadableFunction(

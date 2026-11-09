@@ -55,7 +55,8 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
 
     Deleted experiments, species, scRNA datasets and gene candidates are left out of their
     own tables, but rows that belong to them (waves, plants, scans, traits, cells) are not:
-    keep only rows whose parent id is still in the parent table.
+    keep only rows whose parent id is still in the parent table. For cylinder experiments,
+    also skip deleted = true, which older deletions use.
     """
     if params.table:
         columns = [

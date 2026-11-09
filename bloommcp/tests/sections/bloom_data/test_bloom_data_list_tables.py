@@ -23,7 +23,7 @@ def test_lists_only_allow_listed_tables(reader):
     assert result.columns is None
     assert result.notes == {
         t: table_access.TABLE_NOTES[t]
-        for t in ("cyl_scan_traits_source", "cyl_scans_extended")
+        for t in ("cyl_scan_traits_source", "cyl_scans_extended", "scrna_cluster_stats")
     }
 
 

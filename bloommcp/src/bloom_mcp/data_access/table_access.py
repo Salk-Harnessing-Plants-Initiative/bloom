@@ -22,6 +22,7 @@ EXCLUDED_TABLES = frozenset(
         "checkpoint_migrations",
         "checkpoint_writes",
         "checkpoints",
+        "cyl_dataset_traits",
         "cyl_experiment_trait_count_changes",
         "cyl_scan_traits",
         "experiment_progress_logs",
@@ -43,7 +44,6 @@ READABLE_TABLES = frozenset(
         "cyl_accession_sample_counts",
         "cyl_camera_settings",
         "cyl_dataset_trait_names",
-        "cyl_dataset_traits",
         "cyl_datasets",
         "cyl_experiment_accessions",
         "cyl_experiment_trait_counts",
@@ -163,7 +163,6 @@ HIDDEN_COLUMNS: dict[str, frozenset[str]] = {
 # table's primary key is `id`. Views have no key; theirs come from the table each row maps to.
 PAGING_KEYS: dict[str, tuple[str, ...]] = {
     # Tables whose primary key isn't `id`.
-    "cyl_dataset_traits": ("dataset_id", "trait_id"),
     "cyl_experiment_trait_counts": ("experiment_id",),
     "cyl_pipeline_run_workflows": ("run_id", "argo_workflow_name"),
     "cyl_qc_set_codes": ("set_id", "code_id"),
@@ -230,20 +229,42 @@ _INCLUDES_DELETED_EXPERIMENTS = (
     "Includes deleted experiments: keep only experiment_ids found in cyl_experiments with "
     "deleted = false."
 )
-
-# Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
+_SCAN_EXPERIMENT = (
+    "Includes deleted experiments: to keep only live ones, take scan_ids from "
+    "cyl_scans_extended rows whose experiment_id is in cyl_experiments with deleted = false."
+)
+_INCLUDES_DELETED_DATASETS = (
+    "Includes deleted datasets: keep only dataset_ids found in scrna_datasets."
+)
 _FIND_EXPERIMENTS_BY_NAME = "To find experiments by name, filter name with contains; count_rows gives the total."
 
+# Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
 TABLE_NOTES: dict[str, str] = {
     "cyl_scan_traits_latest": (
-        "Use for trait values: the latest run's value per scan and trait, as the website shows."
+        "Use for trait values: the latest run's value per scan and trait, as the website "
+        "shows. " + _SCAN_EXPERIMENT
     ),
     "cyl_scan_traits_source": (
-        "Every run's trait values. Only for comparing runs; is_latest marks the value to use."
+        "Every run's trait values. Only for comparing runs; is_latest marks the value to "
+        "use. " + _SCAN_EXPERIMENT
     ),
     "cyl_experiments": (
         "Skip rows with deleted = true: older deletions use this flag. "
         + _FIND_EXPERIMENTS_BY_NAME
+    ),
+    "cyl_waves": _INCLUDES_DELETED_EXPERIMENTS,
+    "cyl_datasets": "For a dataset's traits, read cyl_dataset_trait_names.",
+    "cyl_plants": (
+        "Includes deleted experiments: read cyl_plants_extended instead, which has "
+        "experiment_id. " + _INCLUDES_DELETED_EXPERIMENTS
+    ),
+    "cyl_scans": (
+        "Includes deleted experiments: read cyl_scans_extended instead, which has "
+        "experiment_id. " + _INCLUDES_DELETED_EXPERIMENTS
+    ),
+    "cyl_scan_timeline": (
+        "Scans per day across all experiments, deleted ones included; for live experiments "
+        "only, count cyl_scans_extended by date_scanned instead."
     ),
     "gravi_experiments": _FIND_EXPERIMENTS_BY_NAME,
     # Views that read with their owner's rights, so deleted experiments come through.
@@ -263,12 +284,14 @@ TABLE_NOTES: dict[str, str] = {
         "(an atlas without cells) unless asked about them, as the website does."
     ),
     "scrna_de_runs": (
-        "Only status = 'complete' runs have results; the latest completed_at is current."
+        "Only status = 'complete' runs have results; the latest completed_at is current. "
+        + _INCLUDES_DELETED_DATASETS
     ),
     "scrna_de": (
         "Use only rows whose run_id is a complete run in scrna_de_runs; when two runs hold "
         "the same cluster_id and contrast, the newer run's row is current. tested = false "
-        "means the comparison was skipped and has no genes."
+        "means the comparison was skipped and has no genes. "
+        + _INCLUDES_DELETED_DATASETS
     ),
     "scrna_de_genes": (
         "Read through scrna_de: keep genes whose de_id is a current comparison there."
@@ -281,6 +304,17 @@ TABLE_NOTES: dict[str, str] = {
         "One row per plate scan with its session, experiment, species and accession: read "
         "this instead of joining the gravi_ tables."
     ),
+    **{
+        t: _INCLUDES_DELETED_DATASETS
+        for t in (
+            "scrna_cells",
+            "scrna_genes",
+            "scrna_clusters",
+            "scrna_counts",
+            "scrna_cluster_stats",
+            "scrna_genotypes",
+        )
+    },
     "cyl_wave_timeline": (
         "Includes deleted experiments: keep only experiment names found in cyl_experiments "
         "with deleted = false."

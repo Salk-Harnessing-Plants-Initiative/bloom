@@ -100,6 +100,52 @@ def test_views_that_show_deleted_experiments_say_so():
         assert "deleted" in table_access.TABLE_NOTES[view]
 
 
+@pytest.mark.parametrize(
+    "table",
+    [
+        "cyl_waves",
+        "cyl_plants",
+        "cyl_scans",
+        "cyl_scan_timeline",
+        "cyl_scan_traits_latest",
+        "cyl_scan_traits_source",
+    ],
+)
+def test_cylinder_tables_that_show_deleted_experiments_say_so(table):
+    assert "deleted" in table_access.TABLE_NOTES[table]
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "scrna_cells",
+        "scrna_genes",
+        "scrna_clusters",
+        "scrna_counts",
+        "scrna_cluster_stats",
+        "scrna_genotypes",
+        "scrna_de",
+        "scrna_de_runs",
+    ],
+)
+def test_scrna_tables_that_show_deleted_datasets_say_so(table):
+    assert "deleted datasets" in table_access.TABLE_NOTES[table]
+
+
+def test_the_summary_counts_name_deleted_experiments():
+    from bloom_mcp.data_access import function_access
+
+    entry = function_access.READABLE_FUNCTIONS["get_experiment_summary_counts"]
+    assert "deleted = false" in entry.description
+
+
+def test_dataset_traits_are_read_by_name():
+    # Its trait_id is a raw trait-value row, which looks like a cyl_traits id but isn't.
+    assert not table_access.is_readable("cyl_dataset_traits")
+    assert "cyl_dataset_trait_names" in table_access.TABLE_NOTES["cyl_datasets"]
+    assert table_access.is_readable("cyl_dataset_trait_names")
+
+
 def test_the_older_deleted_flag_is_named():
     assert "deleted = true" in table_access.TABLE_NOTES["cyl_experiments"]
 
