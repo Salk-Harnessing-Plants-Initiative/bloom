@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
@@ -62,6 +64,14 @@ class CallFunctionResult(BaseModel):
         description=f"True if the search stopped at its {MAX_SEARCH_ROWS:,}-match "
         "limit: there may be more matches, so narrow the search.",
     )
+
+
+def as_float4(value: Any) -> Any:
+    """The shortest decimal that reads back as the same 4-byte float, as the website's
+    CSV writes it: a stored 12.3 widened to 12.3000001907349 comes back as 12.3."""
+    if isinstance(value, float) and math.isfinite(value):
+        return float(str(np.float32(value)))
+    return value
 
 
 def _served(name: str) -> Function:
@@ -151,6 +161,9 @@ def call_function(params: CallFunctionParams) -> CallFunctionResult:
     rows = _ports.table_reader().call(
         params.function, args, list(entry.order), params.limit + 1, params.offset
     )
+    for row in rows:
+        for column in entry.float4_columns:
+            row[column] = as_float4(row.get(column))
     page = fit_page(rows, params.limit)
     limit_reached = (
         entry.page_input is not None

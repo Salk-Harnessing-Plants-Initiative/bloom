@@ -225,8 +225,9 @@ UNFILTERABLE_COLUMNS: dict[str, frozenset[str]] = {
     "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
 }
 EMAIL_HIDDEN = "[email hidden]"
-# \w covers accented letters; ' and ’ appear in names like o'brien.
-_EMAIL = re.compile(r"[\w.%+'’-]+@[\w-]+(?:\.[\w-]+)*\.[^\W\d_]{2,}")
+# \w covers accented letters; ' and ’ appear in names like o'brien. The lookbehind starts a
+# match only at the start of an address name, so long text without one stays fast.
+_EMAIL = re.compile(r"(?<![\w.%+'’-])[\w.%+'’-]+@[\w-]+(?:\.[\w-]+)*\.[^\W\d_]{2,}")
 
 _INCLUDES_DELETED_EXPERIMENTS = (
     "Includes deleted experiments: keep only experiment_ids found in cyl_experiments with "
@@ -235,6 +236,11 @@ _INCLUDES_DELETED_EXPERIMENTS = (
 _SCAN_EXPERIMENT = (
     "Includes deleted experiments: to keep only live ones, take scan_ids from "
     "cyl_scans_extended rows whose experiment_id is in cyl_experiments with deleted = false."
+)
+# Views that hide deleted_at deletions but not the older deleted = true flag.
+_OLDER_DELETIONS_SHOW = (
+    "Experiments deleted the older way (deleted = true) still show: keep only "
+    "experiment_ids found in cyl_experiments with deleted = false."
 )
 _INCLUDES_DELETED_DATASETS = (
     "Includes deleted datasets: keep only dataset_ids found in scrna_datasets."
@@ -281,8 +287,26 @@ TABLE_NOTES: dict[str, str] = {
         "joining those tables. " + _INCLUDES_DELETED_EXPERIMENTS
     ),
     "cyl_plant_search": (
-        "Find cylinder plants by QR code, accession, species or experiment in one read."
+        "Find cylinder plants by QR code, accession, species or experiment in one read. "
+        + _OLDER_DELETIONS_SHOW
     ),
+    "cyl_experiment_accessions": _OLDER_DELETIONS_SHOW,
+    "recent_experiments_by_cyl_scanner": _OLDER_DELETIONS_SHOW,
+    "cyl_accession_sample_counts": (
+        "Counts plants of experiments deleted the older way (deleted = true) too, with no "
+        "experiment_id to remove them: for exact plant counts per accession, count "
+        "cyl_plants_extended rows whose experiment_id is in cyl_experiments with "
+        "deleted = false."
+    ),
+    **{
+        t: _INCLUDES_DELETED_EXPERIMENTS
+        for t in (
+            "cyl_experiment_trait_counts",
+            "cyl_pipeline_run_experiments",
+            "cyl_qc_sets",
+            "cyl_video_jobs",
+        )
+    },
     "scrna_datasets": (
         "Skip name = 'NULL_DATASET' (a placeholder with no data) and kind = 'reference' "
         "(an atlas without cells) unless asked about them, as the website does."
@@ -303,7 +327,7 @@ TABLE_NOTES: dict[str, str] = {
     ),
     "cyl_trait_by_experiment_wave": (
         "Averages every pipeline run's values, not only the latest; for latest-run "
-        "figures, compute them from cyl_scan_traits_latest."
+        "figures, compute them from cyl_scan_traits_latest. " + _OLDER_DELETIONS_SHOW
     ),
     "gravi_scans_extended": (
         "One row per plate scan with its session, experiment, species and accession: read "
@@ -318,6 +342,9 @@ TABLE_NOTES: dict[str, str] = {
             "scrna_counts",
             "scrna_cluster_stats",
             "scrna_genotypes",
+            "scrna_cluster_neighbors",
+            "scrna_enrichment_runs",
+            "scrna_embedding_dataset_members",
         )
     },
     "cyl_wave_timeline": (

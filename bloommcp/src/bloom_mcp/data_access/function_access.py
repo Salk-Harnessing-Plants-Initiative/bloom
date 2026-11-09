@@ -24,6 +24,8 @@ class ReadableFunction:
     page_input: str | None = None
     # A top-N input Claude sets, up to MAX_SEARCH_ROWS.
     count_input: str | None = None
+    # Values stored as 4-byte floats that the function widens; shown as the website shows them.
+    float4_columns: tuple[str, ...] = ()
 
 
 def _by(*columns: str) -> tuple[Sort, ...]:
@@ -31,8 +33,6 @@ def _by(*columns: str) -> tuple[Sort, ...]:
 
 
 _MOST_SIMILAR_FIRST = (Sort("similarity", descending=True), Sort("uid"))
-# Trait values are stored as 4-byte floats; these functions widen them, adding digits.
-_ROUND_VALUES = "trait_value is stored to about 7 significant digits: round it to that."
 _PAGED = f"Pages through up to {MAX_SEARCH_ROWS:,} matches."
 
 
@@ -52,15 +52,15 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     ),
     "get_experiment_traits": ReadableFunction(
         "Every trait value of one cylinder experiment, one row per scan and trait, from "
-        "the latest run unless source_id_, run_id_ or recipe_key_ pins one. "
-        + _ROUND_VALUES,
+        "the latest run unless source_id_, run_id_ or recipe_key_ pins one.",
         # trait_value breaks ties between old rows with no source.
         _by("scan_id", "trait_name", "source_id", "trait_value"),
+        float4_columns=("trait_value",),
     ),
     "get_scan_traits": ReadableFunction(
-        "One trait's values for every scan of a cylinder experiment, latest run by default. "
-        + _ROUND_VALUES,
+        "One trait's values for every scan of a cylinder experiment, latest run by default.",
         _by("scan_id", "trait_value"),
+        float4_columns=("trait_value",),
     ),
     "list_experiment_trait_sources": ReadableFunction(
         "The pipeline runs that produced trait values for a cylinder experiment.",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from bloom_mcp.data_access import table_access
@@ -214,3 +216,69 @@ def test_redacting_and_refusing_filters_are_separate_rules_covering_the_same_col
 
 def test_the_latest_trait_note_says_latest_is_per_scan():
     assert "each scan's values" in table_access.TABLE_NOTES["cyl_scan_traits_latest"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a" * 200_000,
+        "a@" + "b" * 200_000,
+        "a@" + "b." * 100_000,
+        ("x" * 50 + " ") * 4_000 + "ann.lee@salk.edu",
+    ],
+    ids=["no at sign", "no dot", "dotted", "address at the end"],
+)
+def test_long_text_is_redacted_quickly(text):
+    started = time.monotonic()
+    redacted = table_access.redact_emails(text)
+    assert time.monotonic() - started < 0.5
+    assert "ann.lee" not in redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("John.Doe@SALK.EDU", "[email hidden]"),
+        ("a+b@sub.salk.edu and c@x.org", "[email hidden] and [email hidden]"),
+        ("(ann@salk.edu)", "([email hidden])"),
+        ("ü@ä.de", "[email hidden]"),
+    ],
+)
+def test_addresses_are_still_hidden_whole(text, expected):
+    assert table_access.redact_emails(text) == expected
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        "cyl_accession_sample_counts",
+        "cyl_experiment_accessions",
+        "cyl_trait_by_experiment_wave",
+        "cyl_plant_search",
+        "recent_experiments_by_cyl_scanner",
+    ],
+)
+def test_views_that_miss_the_older_deleted_flag_say_so(view):
+    assert "deleted = true" in table_access.TABLE_NOTES[view]
+
+
+def test_accession_plant_counts_point_to_a_table_that_can_drop_deleted_experiments():
+    assert (
+        "cyl_plants_extended" in table_access.TABLE_NOTES["cyl_accession_sample_counts"]
+    )
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "cyl_experiment_trait_counts",
+        "cyl_pipeline_run_experiments",
+        "cyl_qc_sets",
+        "cyl_video_jobs",
+        "scrna_cluster_neighbors",
+        "scrna_enrichment_runs",
+        "scrna_embedding_dataset_members",
+    ],
+)
+def test_more_child_tables_that_show_deleted_items_say_so(table):
+    assert "Includes deleted" in table_access.TABLE_NOTES[table]

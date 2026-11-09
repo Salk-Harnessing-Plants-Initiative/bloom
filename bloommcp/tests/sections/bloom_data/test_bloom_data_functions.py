@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from bloom_mcp.contract.errors import BloomMCPError
@@ -18,7 +19,7 @@ from bloom_mcp.data_access.table_ports import (
 )
 from bloom_mcp.sections.bloom_data._common import MAX_IN_VALUES, plain_value
 from bloom_mcp.sections.bloom_data._page import DEFAULT_LIMIT, MAX_LIMIT
-from bloom_mcp.sections.bloom_data.call_function import call_function
+from bloom_mcp.sections.bloom_data.call_function import as_float4, call_function
 from bloom_mcp.sections.bloom_data.list_functions import list_functions
 
 SEARCH = Function(
@@ -309,3 +310,54 @@ def test_call_function_describes_its_limits_and_values():
 )
 def test_one_value_check_serves_filters_and_inputs(value, allow_null, ok):
     assert plain_value(value, allow_null=allow_null) is ok
+
+
+def _website_float4(value: float) -> float:
+    """web/lib/cyl-trait-export/csv.ts formatFloat4: fewest digits that read back the same."""
+    stored = np.float32(value)
+    for digits in range(1, 10):
+        shown = float(f"{float(stored):.{digits}g}")
+        if np.float32(shown) == stored:
+            return shown
+    return float(stored)
+
+
+def test_float4_values_match_the_websites_csv():
+    rng = np.random.default_rng(1185)
+    values = np.concatenate(
+        [
+            rng.uniform(0.01, 5000, 5000),
+            rng.uniform(-1e-3, 1e-3, 500),
+            [0.0, 12345678.0],
+        ]
+    ).astype(np.float32)
+    for stored in values:
+        widened = float(stored)
+        assert as_float4(widened) == _website_float4(widened), widened
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        (12.300000190734863, 12.3),
+        (1234.5677490234375, 1234.5677),
+        ("NaN", "NaN"),
+        (None, None),
+        (7, 7),
+    ],
+)
+def test_widened_trait_values_come_back_as_stored(value, shown):
+    assert as_float4(value) == shown
+
+
+def test_trait_functions_return_trait_values_as_the_website_shows_them(functions):
+    traits = Function("get_scan_traits", (Param("experiment_id_", "bigint", True),))
+    functions.function_rows["get_scan_traits"] = (
+        traits,
+        [{"scan_id": 1, "trait_value": 12.300000190734863}],
+    )
+    result = call_function(
+        {"function": "get_scan_traits", "args": {"experiment_id_": 1}}
+    )
+    assert result.rows[0]["trait_value"] == 12.3
+    assert "12.3000001" not in result.model_dump_json()
