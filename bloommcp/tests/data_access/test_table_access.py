@@ -182,7 +182,10 @@ def test_the_scrna_notes_match_what_the_website_shows():
     assert "NULL_DATASET" in notes["scrna_datasets"]
     assert "reference" in notes["scrna_datasets"]
     assert "complete" in notes["scrna_de_runs"]
-    assert "newer run" in notes["scrna_de"] and "tested = false" in notes["scrna_de"]
+    assert "combine all its complete runs" in notes["scrna_de_runs"]
+    assert "cluster_id and contrast" in notes["scrna_de"]
+    assert "latest completed_at" in notes["scrna_de"]
+    assert "tested = false" in notes["scrna_de"]
     assert "scrna_de" in notes["scrna_de_genes"]
 
 

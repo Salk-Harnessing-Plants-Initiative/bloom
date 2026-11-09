@@ -284,14 +284,15 @@ TABLE_NOTES: dict[str, str] = {
         "(an atlas without cells) unless asked about them, as the website does."
     ),
     "scrna_de_runs": (
-        "Only status = 'complete' runs have results; the latest completed_at is current. "
-        + _INCLUDES_DELETED_DATASETS
+        "Only status = 'complete' runs have results. A dataset's results combine all its "
+        "complete runs: a later run replaces only the comparisons it re-ran, so don't "
+        "read just the latest run. " + _INCLUDES_DELETED_DATASETS
     ),
     "scrna_de": (
-        "Use only rows whose run_id is a complete run in scrna_de_runs; when two runs hold "
-        "the same cluster_id and contrast, the newer run's row is current. tested = false "
-        "means the comparison was skipped and has no genes. "
-        + _INCLUDES_DELETED_DATASETS
+        "Use only rows whose run_id is a complete run in scrna_de_runs. For each "
+        "dataset_id, cluster_id and contrast, the current row is the one from the run with "
+        "the latest completed_at, as the website shows. tested = false means the "
+        "comparison was skipped and has no genes. " + _INCLUDES_DELETED_DATASETS
     ),
     "scrna_de_genes": (
         "Read through scrna_de: keep genes whose de_id is a current comparison there."
