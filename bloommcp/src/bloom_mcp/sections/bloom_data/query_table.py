@@ -98,8 +98,8 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     fewer when the rows are large; when has_more is true, call again with
     offset=next_offset. On large tables, filter on an
     id column (experiment, species, scan) or the query may time out. For trait values, read
-    cyl_scan_traits_latest; to analyse them, use the sleap_roots_* tools, which run the
-    sleap-roots pipeline's analysis, and say so.
+    cyl_scan_traits_latest (values and the figures Bloom's pages show); for analysis use the
+    sleap_roots_* tools and say so; if unclear, ask the user.
 
     Text or JSON values over 2000 characters are cut and end in "…[cut]" (a cut JSON value
     comes back as text); truncated_values says when. Number columns can hold NaN or

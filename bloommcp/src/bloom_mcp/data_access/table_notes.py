@@ -22,25 +22,27 @@ _INCLUDES_DELETED_DATASETS = (
 )
 _FIND_EXPERIMENTS_BY_NAME = "To find experiments by name, filter name with contains; count_rows gives the total."
 
-# Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
-# Trait values come from the sleap-roots pipeline; analysing them is the sleap_roots tools' job.
-ANALYSE_WITH_SLEAP_ROOTS = (
-    "These trait values come from the sleap-roots pipeline. For any analysis of them "
-    "(summary statistics, QC and cleaning, outliers, heritability, PCA, UMAP, clustering, "
-    "correlations, plots) use the sleap_roots_* tools on the experiment instead of "
-    "computing from these rows, and tell the user the results come from the sleap-roots "
-    "pipeline."
+# Data tools give what Bloom's pages show; analysis is the sleap-roots tools' job.
+TRAIT_TOOL_RULE = (
+    "Trait values come from the sleap-roots pipeline. Use these rows for values and the "
+    "figures Bloom's pages show (a scan's values; per-wave or per-accession n, mean and "
+    "median). For analysis (QC and cleaning, outliers, heritability, PCA, UMAP, clustering, "
+    "correlations, statistical comparisons, plots) don't compute from these rows: use the "
+    "sleap-roots analysis tools (sleap_roots_*; pass the numeric cyl_experiments.id, and "
+    "most need qc_clean first) and say the results come from them. If a question could be "
+    "either, ask the user which they want."
 )
 
+# Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
 TABLE_NOTES: dict[str, str] = {
     "cyl_scan_traits_latest": (
         "Use for trait values: each scan's values from that scan's latest run, as the "
         "website shows; a trait that run didn't produce is absent even if an older run had "
-        "it. " + _SCAN_EXPERIMENT + " " + ANALYSE_WITH_SLEAP_ROOTS
+        "it. " + _SCAN_EXPERIMENT + " " + TRAIT_TOOL_RULE
     ),
     "cyl_scan_traits_source": (
         "Every run's trait values. Only for comparing runs; is_latest marks the value to "
-        "use. " + _SCAN_EXPERIMENT + " " + ANALYSE_WITH_SLEAP_ROOTS
+        "use. " + _SCAN_EXPERIMENT + " " + TRAIT_TOOL_RULE
     ),
     "cyl_experiments": (
         "Skip rows with deleted = true: older deletions use this flag. "
@@ -121,10 +123,11 @@ TABLE_NOTES: dict[str, str] = {
     ),
     "cyl_trait_by_experiment_wave": (
         "Averages every pipeline run's values, not only the latest, so it doesn't match "
-        "the website's figures. "
+        "the website's figures; for per-wave figures, take wave_number and plant_age_days "
+        "from cyl_scans_extended by scan_id and group cyl_scan_traits_latest by them. "
         + _OLDER_DELETIONS_SHOW
         + " "
-        + ANALYSE_WITH_SLEAP_ROOTS
+        + TRAIT_TOOL_RULE
     ),
     "gravi_scans_extended": (
         "One row per plate scan with its session, experiment, species and accession: read "

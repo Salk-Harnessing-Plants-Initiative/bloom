@@ -371,11 +371,9 @@ def test_list_functions_sends_experiment_name_searches_to_the_tables():
 
 @pytest.mark.parametrize("name", ["get_experiment_traits", "get_scan_traits"])
 def test_trait_functions_send_analysis_to_the_sleap_roots_tools(name):
-    from bloom_mcp.data_access.table_notes import ANALYSE_WITH_SLEAP_ROOTS
+    from bloom_mcp.data_access.table_notes import TRAIT_TOOL_RULE
 
-    assert (
-        ANALYSE_WITH_SLEAP_ROOTS in function_access.READABLE_FUNCTIONS[name].description
-    )
+    assert TRAIT_TOOL_RULE in function_access.READABLE_FUNCTIONS[name].description
 
 
 def test_the_table_tools_point_trait_analysis_to_sleap_roots():
@@ -383,4 +381,6 @@ def test_the_table_tools_point_trait_analysis_to_sleap_roots():
     from bloom_mcp.sections.bloom_data.query_table import query_table
 
     for tool in (list_tables, query_table):
-        assert "sleap_roots_*" in (tool.__doc__ or "")
+        doc = " ".join((tool.__doc__ or "").split())
+        assert "sleap_roots_*" in doc and "figures Bloom's pages show" in doc
+        assert "ask the user" in doc

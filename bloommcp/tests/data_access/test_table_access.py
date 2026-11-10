@@ -303,7 +303,31 @@ def test_the_marker_note_matches_how_the_website_picks_markers():
         "cyl_trait_by_experiment_wave",
     ],
 )
-def test_trait_tables_send_analysis_to_the_sleap_roots_tools(table):
+def test_trait_tables_split_website_figures_from_analysis(table):
     note = table_notes.TABLE_NOTES[table]
-    assert table_notes.ANALYSE_WITH_SLEAP_ROOTS in note
-    assert "sleap_roots_*" in note and "sleap-roots pipeline" in note
+    assert table_notes.TRAIT_TOOL_RULE in note
+
+
+def test_the_trait_rule_keeps_website_figures_and_routes_analysis():
+    rule = table_notes.TRAIT_TOOL_RULE
+    assert "figures Bloom's pages show" in rule and "mean and median" in rule
+    for analysis in (
+        "QC",
+        "heritability",
+        "PCA",
+        "clustering",
+        "correlations",
+        "plots",
+    ):
+        assert analysis in rule
+    assert (
+        "sleap_roots_*" in rule and "cyl_experiments.id" in rule and "qc_clean" in rule
+    )
+    assert "ask the user" in rule
+    assert "summary statistics" not in rule
+
+
+def test_wave_averages_point_to_latest_run_figures():
+    note = table_notes.TABLE_NOTES["cyl_trait_by_experiment_wave"]
+    assert "cyl_scans_extended by scan_id" in note
+    assert "group cyl_scan_traits_latest" in note
