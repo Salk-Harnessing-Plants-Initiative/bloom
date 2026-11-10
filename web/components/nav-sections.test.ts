@@ -29,8 +29,14 @@ describe("navSections", () => {
     expect(names).not.toContain("pipeline runs");
   });
 
+  it("lists Video Jobs in Tools right below the pipeline runs, on one line", () => {
+    const tools = navSections.find((s) => s.heading === "Tools")!.items;
+    const at = tools.findIndex((i) => i.href === "/app/rnaseq-runs");
+    expect(tools[at + 1]).toEqual({ name: "Video Jobs", href: "/app/video-jobs" });
+  });
+
   it("keeps every other entry as it was", () => {
-    const runs = new Set(["/app/cyl-pipeline-runs", "/app/rnaseq-runs"]);
+    const runs = new Set(["/app/cyl-pipeline-runs", "/app/rnaseq-runs", "/app/video-jobs"]);
     const withoutRuns = navSections.map((s) => ({ ...s, items: s.items.filter((i) => !runs.has(i.href)) }));
     expect(withoutRuns).toEqual([
       { heading: null, items: [{ name: "Home", href: "/app" }] },

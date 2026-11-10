@@ -175,7 +175,7 @@ dev-logs: logs
 
 .PHONY: prod-logs
 prod-logs:
-	docker compose -f docker-compose.prod.yml logs -f
+	docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f
 
 .PHONY: staging-logs
 staging-logs:
@@ -304,7 +304,7 @@ migrate-local:
 		--db-url "postgresql://$${PG_USER}:$${PG_PASSWORD}@127.0.0.1:$(POSTGRES_HOST_PORT)/$${PG_DB}?sslmode=disable" \
 		--debug \
 		--yes; \
-	echo "Applying bloom_* schema-USAGE grants as supabase_admin (supabase/grants/schema_grants.sql)..."; \
+	echo "Applying schema grants and function revokes as supabase_admin (supabase/grants/schema_grants.sql)..."; \
 	docker compose -f docker-compose.dev.yml --env-file .env.dev exec -T -e PGPASSWORD="$$PG_PASSWORD" db-dev \
 		psql -U "$$PG_USER" -d "$$PG_DB" -v ON_ERROR_STOP=1 \
 		< supabase/grants/schema_grants.sql
@@ -314,8 +314,8 @@ migrate-local:
 # storage/auth schemas, so a raw `GRANT USAGE ON SCHEMA storage` in a migration
 # silently no-ops. Applied here as supabase_admin ($$PG_USER) AFTER db push (roles
 # exist; outside the db-push role downgrade) the grant sticks. CI applies the same
-# file in compose-health-check; ongoing prod/staging apply it manually when grants
-# change. Supersedes the #330 repair grant.
+# file in compose-health-check; the prod/staging deploy applies it on every deploy.
+# Supersedes the #330 repair grant.
 
 # Preflight helper: fail fast with an actionable message if `uv` is not on PATH.
 # Used as a prerequisite by every target that invokes `uv run ...` below so the

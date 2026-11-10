@@ -32,7 +32,8 @@ test = [
     # required by tests/unit/test_supabase_client.py — the bloommcp helper
     # under test imports both at module level.
     "pandas>=2.0",
-    "supabase>=2.0",
+    # Below 2.34: it retries timed-out requests, so the configured timeout no longer bounds a call.
+    "supabase>=2.0,<2.34",
     # required by scripts/init_dev.py (the local dev credential generator) and
     # tests/unit/test_init_dev.py, which mints + verifies the ANON/SERVICE/AGENT
     # JWTs signed with JWT_SECRET.

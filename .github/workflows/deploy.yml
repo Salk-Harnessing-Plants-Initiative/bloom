@@ -149,6 +149,8 @@ jobs:
           MINIO_DATA_PATH=${{ secrets.PROD_MINIO_DATA_PATH }}
           BLOOM_AGENT_KEY=${{ secrets.PROD_BLOOM_AGENT_KEY }}
           CLOUDFLARE_API_TOKEN=${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.PROD_CLOUDFLARE_TUNNEL_TOKEN }}
+          BLOOMMCP_TUNNEL_SECRET=${{ secrets.PROD_BLOOMMCP_TUNNEL_SECRET }}
           # _EOF_MARKER_
           SECRETS
 
@@ -375,6 +377,41 @@ jobs:
             fi
             echo \"caddy restart count: \$restarts\"
           "
+
+      # Warns, never fails: Cloudflare may be slow or down, and the rest of the
+      # stack is unaffected. Skipped where the tunnel profile is off.
+      - name: Tunnel connection check (production)
+        continue-on-error: true
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -u
+            cd ${{ secrets.PROD_DEPLOY_PATH }} || { echo '::warning::deploy directory missing; tunnel check skipped'; exit 0; }
+            cid=\$(docker compose -f docker-compose.prod.yml --env-file .env.prod ps -a -q cloudflared)
+            if [ -z \"\$cid\" ]; then
+              if grep -Eq '^COMPOSE_PROFILES=.*tunnel' .env.prod; then
+                echo '::warning::the tunnel profile is on but there is no cloudflared container; the Salk connector is down.'
+              else
+                echo 'tunnel profile is off; skipping'
+              fi
+              exit 0
+            fi
+            # Asks cloudflared whether it is connected now; a fresh container gets up to ready_wait seconds.
+            ready_wait=60
+            waited=0
+            until docker exec \"\$cid\" cloudflared tunnel --metrics 127.0.0.1:20241 ready >/dev/null 2>&1; do
+              if [ \"\$waited\" -ge \"\$ready_wait\" ]; then
+                echo \"::warning::cloudflared has no live connection to Cloudflare after \${ready_wait}s; the Salk connector is down. Check its token and outbound port 7844.\"
+                started=\$(docker inspect --format='{{.State.StartedAt}}' \"\$cid\")
+                echo '::group::cloudflared logs since it started'
+                docker compose -f docker-compose.prod.yml --env-file .env.prod logs --since \"\$started\" --tail=50 cloudflared || true
+                echo '::endgroup::'
+                exit 0
+              fi
+              sleep 5
+              waited=\$((waited + 5))
+            done
+            echo \"cloudflared is connected (after \${waited}s)\"
+          " || echo "::warning::tunnel connection check could not run"
 
       # Restart Kong so bind-mounted kong.yml changes take effect — `up -d`
       # won't recreate kong when its image/env is unchanged, so route/plugin
@@ -682,9 +719,9 @@ jobs:
             exit 1
           }
 
-      # Apply bloom_* schema-USAGE grants (supabase/grants/schema_grants.sql) as
-      # supabase_admin — schema grants no-op under `supabase db push`. Mirrors CI/make.
-      - name: Apply schema-USAGE grants (production)
+      # Apply supabase/grants/schema_grants.sql (schema grants, function revokes) as
+      # supabase_admin — both no-op under `supabase db push`. Mirrors CI/make.
+      - name: Apply schema grants and function revokes (production)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail
@@ -1182,6 +1219,8 @@ jobs:
           MINIO_DATA_PATH=${{ secrets.STAGING_MINIO_DATA_PATH }}
           BLOOM_AGENT_KEY=${{ secrets.STAGING_BLOOM_AGENT_KEY }}
           CLOUDFLARE_API_TOKEN=${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.STAGING_CLOUDFLARE_TUNNEL_TOKEN }}
+          BLOOMMCP_TUNNEL_SECRET=${{ secrets.STAGING_BLOOMMCP_TUNNEL_SECRET }}
           # _EOF_MARKER_
           SECRETS
 
@@ -1354,6 +1393,41 @@ jobs:
             fi
             echo \"caddy restart count: \$restarts\"
           "
+
+      # Warns, never fails: Cloudflare may be slow or down, and the rest of the
+      # stack is unaffected. Skipped where the tunnel profile is off.
+      - name: Tunnel connection check (staging)
+        continue-on-error: true
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            set -u
+            cd ${{ secrets.STAGING_DEPLOY_PATH }} || { echo '::warning::deploy directory missing; tunnel check skipped'; exit 0; }
+            cid=\$(docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging ps -a -q cloudflared)
+            if [ -z \"\$cid\" ]; then
+              if grep -Eq '^COMPOSE_PROFILES=.*tunnel' .env.staging; then
+                echo '::warning::the tunnel profile is on but there is no cloudflared container; the Salk connector is down.'
+              else
+                echo 'tunnel profile is off; skipping'
+              fi
+              exit 0
+            fi
+            # Asks cloudflared whether it is connected now; a fresh container gets up to ready_wait seconds.
+            ready_wait=60
+            waited=0
+            until docker exec \"\$cid\" cloudflared tunnel --metrics 127.0.0.1:20241 ready >/dev/null 2>&1; do
+              if [ \"\$waited\" -ge \"\$ready_wait\" ]; then
+                echo \"::warning::cloudflared has no live connection to Cloudflare after \${ready_wait}s; the Salk connector is down. Check its token and outbound port 7844.\"
+                started=\$(docker inspect --format='{{.State.StartedAt}}' \"\$cid\")
+                echo '::group::cloudflared logs since it started'
+                docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging logs --since \"\$started\" --tail=50 cloudflared || true
+                echo '::endgroup::'
+                exit 0
+              fi
+              sleep 5
+              waited=\$((waited + 5))
+            done
+            echo \"cloudflared is connected (after \${waited}s)\"
+          " || echo "::warning::tunnel connection check could not run"
 
       # Restart Kong so bind-mounted kong.yml changes take effect. See
       # deploy-production's equivalent step for rationale.
@@ -1611,9 +1685,9 @@ jobs:
             exit 1
           }
 
-      # Apply bloom_* schema-USAGE grants (supabase/grants/schema_grants.sql) as
-      # supabase_admin — schema grants no-op under `supabase db push`. Mirrors CI/make.
-      - name: Apply schema-USAGE grants (staging)
+      # Apply supabase/grants/schema_grants.sql (schema grants, function revokes) as
+      # supabase_admin — both no-op under `supabase db push`. Mirrors CI/make.
+      - name: Apply schema grants and function revokes (staging)
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
             set -euo pipefail

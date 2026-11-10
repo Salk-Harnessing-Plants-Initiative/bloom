@@ -16,7 +16,7 @@
 #
 # Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
-#   meta, db-prod, supavisor, studio)
+#   meta, db-prod, supavisor, studio, cloudflared in the `tunnel` profile)
 #
 # Host-exposed ports:
 #   80/443  - caddy (reverse proxy, auto HTTPS)
@@ -64,6 +64,10 @@ services:
       # Required for ACME DNS-01 — consumed by the cloudflare DNS provider
       # plugin baked into the Caddy image (see caddy/Dockerfile + Caddyfile).
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      # Sent to bloommcp as X-Bloom-Tunnel on the tunnel entrance (:8880).
+      BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
+      TUNNEL_SUBNET: ${TUNNEL_SUBNET}
+      TUNNEL_CLOUDFLARED_IP: ${TUNNEL_CLOUDFLARED_IP}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Break-glass path: if ACME issuance fails catastrophically, drop
@@ -84,7 +88,11 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - supanet
+      supanet: {}
+      # Shared only with cloudflared; the tunnel entrance (:8880). Fixed, so Docker
+      # never hands cloudflared's address to Caddy.
+      tunnel:
+        ipv4_address: ${TUNNEL_CADDY_IP}
 
   #-------------------
   # BLOOM WEB
@@ -109,8 +117,8 @@ services:
     restart: unless-stopped
     # Bounds a runaway export to this container, and with the restart policy
     # turns an out-of-memory kill into a restart instead of a dead site.
-    # - Node 20 sizes its JS heap at about half this limit (node:20-alpine,
-    #   measured 2026-10-01: 1536m -> 792 MiB heap, 3g -> 1584 MiB). Two running
+    # - Node 24 sizes its JS heap at about 56% of this limit (node:24.22.1-alpine,
+    #   measured 2026-10-23: 1536m -> 864 MiB heap, 3g -> 1728 MiB). Two running
     #   exports (MAX_RUNNING_JOBS) plus the Next.js baseline are estimated at
     #   ~1 GB of heap; at 1536m V8 would abort before the container limit.
     # - Outside the heap, in the same limit: up to MAX_HELD_BYTES (768 MiB) of
@@ -171,7 +179,7 @@ services:
     depends_on:
       - kong
     healthcheck:
-      # node:20-alpine has BusyBox wget (supports --spider). curl is not installed.
+      # node:24-alpine has BusyBox wget (supports --spider). curl is not installed.
       # 127.0.0.1 (not localhost) — BusyBox tries IPv6 first; Next.js binds
       # IPv4 only, so localhost resolves to ::1 and the probe fails.
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
@@ -249,11 +257,8 @@ services:
       context: ./services/workflows
       dockerfile: Dockerfile
     read_only: true
-    # Bounds a runaway render to this container, so the OOM killer takes the
-    # uvicorn worker rather than choosing by resident size across the stack.
-    # Generous on purpose: a real plate does not fit the ~1.4 GB that
-    # tests/unit/test_workflows_single_worker.py derives from the frame
-    # ceilings and the tmpfs, and 8g is about 1% of this host.
+    # The size it had while videos rendered here; lower it once measured
+    # without them. The render budget now sits with plate-video-worker.
     mem_limit: 8g
     # Without this Docker allows twice mem_limit in swap, so a runaway render
     # would grind against disk indefinitely instead of being killed. Equal
@@ -296,15 +301,8 @@ services:
       - kong
       - db-prod
     restart: unless-stopped
-    # One worker: the per-scan lock in video.py and the per-plate lock in
-    # plate_encode.py both hold only within a single process, so raising this reopens the
-    # overwrite race they close — the object keys are deterministic and unversioned, so two
-    # workers would race to write the same one. The encode semaphore bounds concurrency but
-    # not that. Start here and watch — raise it when this one is actually saturated, or once
-    # the encode moves to a worker container and the database enforces the serialisation
-    # instead, whichever comes first.
-    # The worker containers now exist; the database half does not, so they are profiled
-    # off and dev-only until it does.
+    # One worker: start here and watch. Videos render in plate-video-worker and
+    # cyl-video-worker, so the count no longer guards their object keys.
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5100", "--workers", "1"]
 
   # Consumes the cyl_pipeline_dispatch pgmq queue (bloom #11/#404 Phase 2) and
@@ -522,14 +520,11 @@ services:
     stop_grace_period: 60s
     command: ["python", "rnaseq_status_poller.py"]
 
-  # Renders one plate on command. Behind a profile, so `up -d` never starts it.
-  # Dev-only until the render queue lands; see services/workflows/README.md.
+  # Consumes the gravi_plate_video_dispatch queue: one render at a time.
   plate-video-worker:
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
-    profiles:
-      - plate-video-worker
     read_only: true
     tmpfs:
       - /tmp:mode=1777,size=512m
@@ -551,20 +546,28 @@ services:
     depends_on:
       - kong
       - db-prod
-    # Rendering takes its arguments, so the default command only says how.
+    restart: unless-stopped
+    # Unhealthy once the loop has not touched its heartbeat for HEARTBEAT_STALE_SECONDS;
+    # Docker only reports it, and a stalled render exits on its own.
+    healthcheck:
+      test: ["CMD", "python", "video_worker_loop.py", "healthcheck"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes. A render
+    # still going after this is killed and handed out again, at most three times.
+    stop_grace_period: 5m
     command:
       - python
       - plate_video_worker.py
-      - --help
+      - run
 
-  # Renders one cyl scan on command. Behind a profile, so `up -d` never starts it.
-  # Dev-only until the render queue lands; see services/workflows/README.md.
+  # Consumes the cyl_video_dispatch queue: one render at a time.
   cyl-video-worker:
     build:
       context: ./services/workflows
       dockerfile: Dockerfile
-    profiles:
-      - cyl-video-worker
     read_only: true
     tmpfs:
       - /tmp:mode=1777,size=512m
@@ -587,10 +590,22 @@ services:
     depends_on:
       - kong
       - db-prod
+    restart: unless-stopped
+    # Unhealthy once the loop has not touched its heartbeat for HEARTBEAT_STALE_SECONDS;
+    # Docker only reports it, and a stalled render exits on its own.
+    healthcheck:
+      test: ["CMD", "python", "video_worker_loop.py", "healthcheck"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # SIGTERM finishes the job in hand; a full plate is about 2.5 minutes. A render
+    # still going after this is killed and handed out again, at most three times.
+    stop_grace_period: 5m
     command:
       - python
       - cyl_video_worker.py
-      - --help
+      - run
 
   # -------------------
   # Bloom MCP Server
@@ -629,15 +644,12 @@ services:
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
-      # OAuth login for external MCP clients. The URLs are set per environment
-      # in the defaults files; whether a login can actually complete is
-      # governed by GOTRUE_OAUTH_SERVER_ENABLED on the auth service. Where that
-      # is false, bloommcp still serves its discovery document but no client
-      # can register, so the flow ends in a clean 404 rather than a broken
-      # login. The API-key path is unaffected either way.
-      BLOOMMCP_PUBLIC_URL: ${BLOOMMCP_PUBLIC_URL:-}
-      BLOOMMCP_OAUTH_AUTHORIZATION_SERVER: ${BLOOMMCP_OAUTH_AUTHORIZATION_SERVER:-}
-      BLOOMMCP_OAUTH_JWKS_URI: ${BLOOMMCP_OAUTH_JWKS_URI:-}
+      # Salk connector: with Caddy's tunnel secret, verify AIRC's JWT; SITE_URL is for the sign-up hint and Bloom page links.
+      BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
+      BLOOMMCP_TUNNEL_JWKS_URL: ${BLOOMMCP_TUNNEL_JWKS_URL}
+      BLOOMMCP_TUNNEL_JWT_ISSUER: ${BLOOMMCP_TUNNEL_JWT_ISSUER}
+      BLOOMMCP_TUNNEL_JWT_AUDIENCE: ${BLOOMMCP_TUNNEL_JWT_AUDIENCE}
+      SITE_URL: ${SITE_URL}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
@@ -664,6 +676,47 @@ services:
     depends_on:
       - kong
     restart: unless-stopped
+    # One usage line per data-tool call goes to this log; cap it at 5 x 10 MB.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # -------------------
+  # Cloudflare tunnel → caddy:8880 (bloommcp's Salk connector)
+  # -------------------
+  # Behind a profile, so `up -d` starts it only where COMPOSE_PROFILES includes
+  # tunnel (prod and staging, not CI).
+  cloudflared:
+    image: ghcr.io/salk-harnessing-plants-initiative/cloudflare-cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    profiles:
+      - tunnel
+    # Metrics on loopback only, so nothing else on the network can read them.
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    # The image's own non-root user, pinned so a new image can't switch to root.
+    user: "65532:65532"
+    read_only: true
+    # Not yet measured here; cloudflared usually runs in well under 100 MB.
+    mem_limit: 256m
+    memswap_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Outbound only, and only on the tunnel network, so a wrong route on the
+    # Cloudflare side to caddy:<port> reaches only the :8880 entrance (Caddy drops it elsewhere).
+    # A fixed address, the only one :8880 accepts.
+    networks:
+      tunnel:
+        ipv4_address: ${TUNNEL_CLOUDFLARED_IP}
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    # cloudflared's own default grace period for closing tunnel connections.
+    stop_grace_period: 30s
 
   # -------------------
   #  Kong Gateway
@@ -743,20 +796,11 @@ services:
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_ENABLED: "true"
       GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_URI: "pg-functions://postgres/public/custom_access_token_hook"
 
-      # OAuth 2.1 server — lets MCP clients log in as a real user via bloom-web
-      # OAuth discovery must advertise absolute URLs. Without an issuer GoTrue
-      # emits relative endpoints a conforming client cannot resolve — discovery
-      # returns 200 and the flow dead-ends before registration.
-      # Asymmetric signing keys, required for ID tokens (the `openid`
-      # scope) — a shared HS256 secret cannot sign one. Empty array
-      # keeps GoTrue on the legacy secret, which is the default here.
+      # Token issuer and signing keys. An empty key array keeps GoTrue on the
+      # legacy HS256 secret, which is the default here.
       GOTRUE_JWT_KEYS: ${JWT_KEYS:-[]}
       GOTRUE_API_EXTERNAL_URL: ${API_EXTERNAL_URL}
       GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}/auth/v1
-      GOTRUE_OAUTH_SERVER_ENABLED: ${GOTRUE_OAUTH_SERVER_ENABLED:-false}
-      GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH:-/oauth/consent}
-      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: ${GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION:-false}
-      GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL: ${GOTRUE_OAUTH_SERVER_AUTHORIZATION_TTL:-600s}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/health"]
       interval: 10s
@@ -1166,3 +1210,15 @@ volumes:
 networks:
   supanet:
     driver: bridge
+  # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
+  # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880,
+  # and fixed addresses for both (TUNNEL_CADDY_IP, TUNNEL_CLOUDFLARED_IP). Any other container
+  # gets an address from TUNNEL_AUTO_RANGE, which leaves out both fixed addresses.
+  tunnel:
+    driver: bridge
+    # Caddy's tunnel rules match IPv4 addresses only; off even if a Docker-wide default turns it on.
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: ${TUNNEL_SUBNET}
+          ip_range: ${TUNNEL_AUTO_RANGE}

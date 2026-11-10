@@ -17,19 +17,23 @@ import logging
 import math
 import os
 import tempfile
-import threading
-from contextlib import contextmanager
 
 import numpy as np
 from PIL import Image
 
-import plate_progress
 from plate_timelapse import PLATE_FPS, annotate, label_for
 from plate_video import first_capture, plan_render
 from plate_video_path import (
     GRAVISCAN_IMAGES_BUCKET,
     GRAVISCAN_VIDEOS_BUCKET,
     plate_video_path,
+)
+from video_progress import (
+    STAGE_DOWNLOADING,
+    STAGE_ENCODING,
+    STAGE_UPLOADING,
+    ProgressCallback,
+    no_progress,
 )
 from video_writer import ENCODE_TIMEOUT_SECONDS, VideoWriter
 
@@ -41,17 +45,11 @@ logger = logging.getLogger(__name__)
 # legibility do.
 PLATE_VIDEO_WIDTH = 1440
 
-# How many plates may encode at once. One, so a single render may be sized
-# against the whole container rather than a share of it, which leaves the
-# ceilings below room to be wrong. A queue would serve a refused caller better
-# and is the intended successor; until then the second caller is asked back.
-MAX_CONCURRENT_ENCODES = 1
-
 # The largest frame the graviscan app can produce, plus headroom. Its scan
 # regions are fixed in millimetres and its resolutions are a fixed set, so the
 # largest is the 140x140mm 2-grid region at 1600 dpi: 8818x8818, 519 MB decoded
-# and 124 MB on the wire. tests/unit/test_workflows_single_worker.py checks both
-# against the container limit.
+# and 124 MB on the wire. tests/unit/test_plate_video_worker_memory.py checks both
+# against the worker's container limit.
 MAX_FRAME_DECODED_BYTES = 560 * 1024**2
 MAX_FRAME_BYTES = 192 * 1024**2
 
@@ -74,68 +72,6 @@ DEEP_MIN_PEAK = DEEP_FULL_SCALE // 2
 # cyl path has the same gap. A whole plate is deliberately unbounded either
 # way: 86 frames measured at 0.68s each, and a longer run should take longer
 # rather than be truncated.
-
-# BoundedSemaphore rather than Semaphore: a release that was never acquired is
-# a capacity leak in the direction nothing else would notice, and this raises on
-# it instead of quietly granting a slot past MAX_CONCURRENT_ENCODES.
-_encode_slots = threading.BoundedSemaphore(MAX_CONCURRENT_ENCODES)
-# Per process, so it serialises only within one worker. The object key is
-# derived from the plate and carries no version, so two workers would race to
-# write the same one; docker-compose.prod.yml pins this service to a single
-# uvicorn worker for that reason, and the encode semaphore does not substitute
-# for it — it bounds how many renders run, not which key they write.
-# The plate video worker is a second process this does not reach, which is why
-# it is dev-only until the queue enforces one active job per plate.
-_plate_locks: dict[str, threading.Lock] = {}
-# `dict.setdefault` is atomic under the GIL, so this guard is redundant on
-# CPython today and is not on a free-threaded build. Two threads each creating
-# a lock for one key is not a race that shows up as an error — both proceed,
-# and two encodes overwrite one object key.
-_plate_locks_guard = threading.Lock()
-
-
-@contextmanager
-def plate_lock(key: str, timeout: float | None = None):
-    """Exclusive use of one plate's video, or a refusal.
-
-    Keyed by the object key, so two requests for the same plate serialise while
-    different plates do not. The table stays bounded by real plates because the
-    caller takes this once the plate is known to exist.
-
-    Refuses by default, for the reason `encode_slot` does: the caller is a
-    synchronous request with a client already waiting, a whole plate is about a
-    minute, and `acquire` cannot be interrupted — so a queued thread outlives
-    the client's timeout and goes on holding an encode slot for a video nobody
-    is waiting for any more.
-    """
-    with _plate_locks_guard:
-        lock = _plate_locks.setdefault(key, threading.Lock())
-
-    # A timeout is only legal on a blocking acquire, so the default asks for
-    # the lock once and takes the answer.
-    waited = -1 if timeout is None else timeout
-    if not lock.acquire(blocking=timeout is not None, timeout=waited):
-        raise PlateBusy(f"{key} is already being rendered; try again shortly")
-    try:
-        yield
-    finally:
-        lock.release()
-
-
-@contextmanager
-def encode_slot(timeout: float | None = None):
-    """One of the concurrent-encode slots, or a refusal.
-
-    Refusing beats queueing: the caller is a synchronous request that already
-    has a client waiting, and a queue would hold the slot's worth of memory
-    while achieving nothing the client can see.
-    """
-    if not _encode_slots.acquire(blocking=timeout is not None, timeout=timeout):
-        raise EncoderBusy("another plate video is already encoding; try again shortly")
-    try:
-        yield
-    finally:
-        _encode_slots.release()
 
 
 def decoded_bytes(width: int, height: int, mode: str) -> int:
@@ -293,16 +229,9 @@ class FrameSizeMismatch(FrameUnreadable):
     """The frames are intact; this plate holds more than one frame size."""
 
 
-class EncoderBusy(RuntimeError):
-    """Every encode slot is taken. Not a failure — a reason to come back."""
-
-
-class PlateBusy(EncoderBusy):
-    """This plate is already being rendered. Also a reason to come back, and a
-    subclass so a caller that answers one of these answers both."""
-
-
-def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
+def encode_plate_video(
+    client, frames: list[dict], out_path: str, progress: ProgressCallback = no_progress
+) -> int:
     """Encode `frames` into an MP4 at `out_path`. Returns the frames written.
 
     Fails on the first unreadable frame rather than skipping it. `video.py`
@@ -325,8 +254,8 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
     written = 0
 
     try:
+        progress(STAGE_DOWNLOADING, 0, len(frames))
         for frame in frames:
-            plate_progress.advance("downloading", written + 1, len(frames))
             path = frame["object_path"]
             label = label_for(frame["capture_date"], started)
             try:
@@ -341,7 +270,9 @@ def encode_plate_video(client, frames: list[dict], out_path: str) -> int:
                     f"{path} does not match the rest of the plate: {exc}", path
                 ) from exc
             written += 1
-        plate_progress.advance("encoding", written, len(frames))
+            progress(STAGE_DOWNLOADING, written, len(frames))
+        # Reported before the one stage that cannot report, to renew the job's visibility.
+        progress(STAGE_ENCODING, written, len(frames))
         writer.close()
     except Exception as failure:
         cleanup = _tear_down(writer, out_path)
@@ -541,42 +472,35 @@ def publish_plate_video(
 
 
 def render_plate_video(
-    client, experiment_id: int, plate_id: str, wave_number: int | None
+    client,
+    experiment_id: int,
+    plate_id: str,
+    wave_number: int | None,
+    progress: ProgressCallback = no_progress,
 ) -> dict:
-    """Decide, encode, store, record. The one call a route makes.
+    """Decide, encode, store, record. The one call a render makes.
 
-    The plan is taken twice: once to decide, and again once the plate's lock is
-    held. Between those two a concurrent request for the same plate may have
-    rendered it, and re-encoding would overwrite a video identical to the one
-    about to be made — the second look turns that into a `keep`.
+    One render per plate at a time is the queue's to guarantee: it holds one
+    active job per plate and wave, and a worker renders one job at a time.
     """
     plan = plan_render(client, experiment_id, plate_id, wave_number)
     if plan["action"] != "render":
         return plan
 
-    # Plate first, so a duplicate request is told about its own plate.
-    with plate_lock(plan["key"]), encode_slot():
-        plan = plan_render(client, experiment_id, plate_id, wave_number)
-        if plan["action"] != "render":
-            return plan
-
-        with tempfile.TemporaryDirectory() as work:
-            # A constant name: the plate id is caller-supplied and would
-            # otherwise reach the filesystem and the ffmpeg command line.
-            video_path = os.path.join(work, "plate.mp4")
-            plate_progress.start(experiment_id, plate_id, wave_number)
-            try:
-                written = encode_plate_video(client, plan["frames"], video_path)
-                recorded = publish_plate_video(
-                    client,
-                    plan["key"],
-                    video_path,
-                    experiment_id=experiment_id,
-                    plate_id=plate_id,
-                    wave_number=wave_number,
-                    frame_count=written,
-                )
-            finally:
-                plate_progress.finish()
+    with tempfile.TemporaryDirectory() as work:
+        # A constant name: the plate id is caller-supplied and would otherwise
+        # reach the filesystem and the ffmpeg command line.
+        video_path = os.path.join(work, "plate.mp4")
+        written = encode_plate_video(client, plan["frames"], video_path, progress)
+        progress(STAGE_UPLOADING, written, len(plan["frames"]))
+        recorded = publish_plate_video(
+            client,
+            plan["key"],
+            video_path,
+            experiment_id=experiment_id,
+            plate_id=plate_id,
+            wave_number=wave_number,
+            frame_count=written,
+        )
 
     return {**plan, "action": "rendered", "recorded": recorded}

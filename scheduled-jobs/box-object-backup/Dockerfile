@@ -1,5 +1,5 @@
 # Base image digest-pinned to match the sibling services (bloomcli, bloommcp, workflows)
-FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634
+FROM python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
 # psql reads storage.objects; Debian 13's client (17) talks to the older server (15)
 RUN apt-get update \

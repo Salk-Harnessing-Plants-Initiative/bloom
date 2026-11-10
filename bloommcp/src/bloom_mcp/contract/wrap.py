@@ -36,15 +36,21 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
+
+if TYPE_CHECKING:
+    from mcp.types import ToolAnnotations
 
 from .errors import BloomMCPError
 from .provenance import Provenance, resolve_seed
 
 
-def register(mcp: Any, *tools: Callable) -> Any:
+def register(
+    mcp: Any, *tools: Callable, annotations: ToolAnnotations | None = None
+) -> Any:
     """Register contract-wrapped tools onto a FastMCP instance.
 
     The seam the spec mandates: keeps tools decoupled from the live `mcp`
@@ -74,7 +80,7 @@ def register(mcp: Any, *tools: Callable) -> Any:
     openspec/changes/add-bloommcp-caller-identity/design.md Decision 4.
     """
     for tool in tools:
-        mcp.tool()(tool)
+        mcp.tool(annotations=annotations)(tool)
     return mcp
 
 

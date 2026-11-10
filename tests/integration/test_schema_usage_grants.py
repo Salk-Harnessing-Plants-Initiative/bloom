@@ -2,7 +2,7 @@
 
 Run against the live compose stack. Migrations are applied first, then
 `supabase/grants/schema_grants.sql` is applied as supabase_admin (by
-`make migrate-local` locally, and by the `Apply bloom_* schema-USAGE grants` step in
+`make migrate-local` locally, and by the `Apply schema grants and function revokes` step in
 CI compose-health-check). Uses the `pg_conn` fixture (connects as POSTGRES_USER =
 supabase_admin, the schema owner).
 """

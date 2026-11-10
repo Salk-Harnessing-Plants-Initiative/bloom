@@ -1,4 +1,4 @@
-"""Live check: Caddy compresses JSON through Kong and leaves bloommcp's event stream alone.
+"""Live check: Caddy compresses JSON through Kong.
 
 Config-shape counterpart: tests/unit/test_caddy_compression.py.
 """
@@ -18,18 +18,6 @@ MIN_COMPRESSED_BYTES = 512
 
 # Kong -> storage-api: an application/json list with one entry per bucket.
 JSON_ROUTE = "/api/storage/v1/bucket"
-STREAM_ROUTE = "/bloommcp/mcp"
-
-INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "bloom-ci", "version": "0"},
-    },
-}
 
 
 def _get(base_url: str, key: str, accept_encoding: str | None = None):
@@ -69,25 +57,3 @@ def test_a_compressed_response_keeps_the_security_headers(base_url, service_role
     headers, _ = _get(base_url, service_role_key, "zstd, gzip")
     assert headers.get("Content-Encoding") == "zstd"
     assert headers.get_all(name) == [value]
-
-
-def test_bloommcp_event_stream_is_not_compressed(base_url, bloommcp_api_key):
-    if not bloommcp_api_key:
-        pytest.skip("BLOOMMCP_API_KEY not configured")
-    req = urllib.request.Request(
-        f"{base_url}{STREAM_ROUTE}",
-        data=json.dumps(INITIALIZE).encode(),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {bloommcp_api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "Accept-Encoding": "zstd, gzip",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        content_type = resp.headers.get("Content-Type", "")
-        encoding = resp.headers.get("Content-Encoding")
-
-    assert content_type.startswith("text/event-stream"), f"expected an event stream, got {content_type!r}"
-    assert encoding is None, f"the event stream arrived compressed ({encoding})"

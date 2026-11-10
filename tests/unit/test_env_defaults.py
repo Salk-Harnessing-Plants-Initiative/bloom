@@ -50,6 +50,9 @@ SENSITIVE_INVENTORY = {
     "LANGCHAIN_API_KEY",
     "BLOOM_AGENT_KEY",
     "CLOUDFLARE_API_TOKEN",
+    # bloommcp's Salk connector: the tunnel token and Caddy's internal secret.
+    "CLOUDFLARE_TUNNEL_TOKEN",
+    "BLOOMMCP_TUNNEL_SECRET",
     "DEPLOY_PATH",
     "MINIO_DATA_PATH",
     "WORKFLOWS_SUPABASE_EMAIL",
@@ -429,6 +432,35 @@ def test_validator_rejects_a_blank_scheduled_job_key(tmp_path, blanked):
     result = _run_validator_real_compose(tmp_path, content)
     assert result.returncode == 1, f"a blank {blanked} was accepted"
     assert blanked in result.stderr
+
+
+TUNNEL_SECRET_KEYS = ("CLOUDFLARE_TUNNEL_TOKEN", "BLOOMMCP_TUNNEL_SECRET")
+
+
+@pytest.mark.parametrize("how", ["missing", "empty"])
+@pytest.mark.parametrize("key", TUNNEL_SECRET_KEYS)
+def test_validator_refuses_a_missing_or_empty_tunnel_secret(tmp_path, key, how):
+    """Both come from compose `${VAR}` references, so the deploy stops without either."""
+    compose_text = COMPOSE_FILE.read_text()
+    referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)", compose_text))
+    assert key in referenced, f"{key} is not referenced by the compose file"
+    required = referenced - {"COMPOSE_PROJECT_NAME", "NEXT_PUBLIC_SUPABASE_COOKIE_NAME"}
+    defaults_text = PROD_DEFAULTS.read_text()
+    defaults_keys = {
+        line.split("=", 1)[0]
+        for line in defaults_text.splitlines()
+        if line and not line.startswith("#") and "=" in line
+    }
+    appended = [
+        f"{k}=" if k == key else f"{k}=fake-{k.lower()}"
+        for k in sorted(required - defaults_keys)
+        if not (k == key and how == "missing")
+    ]
+    content = defaults_text.rstrip("\n") + "\n" + "\n".join(appended) + "\n"
+
+    result = _run_validator_real_compose(tmp_path, content)
+    assert result.returncode == 1, f"an {how} {key} was accepted"
+    assert key in result.stderr
 
 
 def _run_validator_real_compose(tmp_path: Path, env_content: str) -> subprocess.CompletedProcess:

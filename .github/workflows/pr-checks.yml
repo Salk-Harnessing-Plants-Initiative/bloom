@@ -38,7 +38,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -699,7 +699,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install workspace deps
@@ -714,7 +714,8 @@ jobs:
     # It formerly `needs: docker-build`, which serialized the two jobs and gave
     # fail-fast — a failing CVE build skipped this expensive job. Dropping it
     # trades that saving for parallelism (both build their own stacks anyway).
-    runs-on: ubuntu-latest
+    # Pinned until Playwright installs Chromium on ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     # Cap the job. The GitHub default is 6h; a "No space left on device" fill
     # once left this job hanging for the full 6h before failing (issue #334).
     # Normal runtime is ~8-15 min, so 30 fails fast on any future hang.
@@ -876,6 +877,17 @@ jobs:
           # token-format check at startup. No real Cloudflare API call is ever
           # made in CI because port 443 isn't bound.
           echo "CLOUDFLARE_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> .env.ci
+          # Caddy's tunnel-entrance header value; no tunnel token, since cloudflared does not run in CI.
+          echo "BLOOMMCP_TUNNEL_SECRET=ci-tunnel-secret-not-real-0000000000000000" >> .env.ci
+          echo "TUNNEL_SUBNET=172.30.252.0/28" >> .env.ci
+          # cloudflared does not run in CI; the tunnel tests send from its address instead.
+          echo "TUNNEL_CADDY_IP=172.30.252.2" >> .env.ci
+          echo "TUNNEL_CLOUDFLARED_IP=172.30.252.3" >> .env.ci
+          echo "TUNNEL_AUTO_RANGE=172.30.252.8/29" >> .env.ci
+          # Required by compose; CI's bloommcp reads a local keys file instead (docker-compose.ci.yml).
+          echo "BLOOMMCP_TUNNEL_JWKS_URL=https://ci.invalid/.well-known/jwks.json" >> .env.ci
+          echo "BLOOMMCP_TUNNEL_JWT_ISSUER=bloom-mcp" >> .env.ci
+          echo "BLOOMMCP_TUNNEL_JWT_AUDIENCE=bloom-ci" >> .env.ci
           echo "KONG_PORT=8000" >> .env.ci
           echo "BLOOM_WEB_PORT=3000" >> .env.ci
           echo "STUDIO_PORT=3000" >> .env.ci
@@ -915,6 +927,11 @@ jobs:
           : "${JWT_JWKS:?generate_jwt_keys.py emitted no JWT_JWKS}"
           echo "JWT_KEYS=$JWT_KEYS" >> .env.ci
           echo "JWT_JWKS=$JWT_JWKS" >> .env.ci
+
+      # Stands in for AIRC's tunnel JWT keys: bloommcp reads the public half, the
+      # tunnel integration tests sign with the private half. Per run, never stored.
+      - name: Provision tunnel test keys
+        run: uv run --no-project --with cryptography --with pyjwt python scripts/generate_ci_tunnel_keys.py .ci-tunnel
 
       - name: Create MinIO data directory
         run: mkdir -p /tmp/minio-ci && chmod 777 /tmp/minio-ci
@@ -1024,12 +1041,12 @@ jobs:
             exit 1
           }
 
-      # bloom_* schema-USAGE grants (issue #333). `supabase db push` applies
+      # bloom_* schema-USAGE grants (issue #333) and function revokes (dblink). `supabase db push` applies
       # migrations as the downgraded `postgres`, which cannot grant on the
       # supabase_admin-owned storage/auth schemas (a raw grant there silently
       # no-ops). Apply the single-source grants file as supabase_admin, AFTER db
       # push has created the bloom_* roles. Same file `make migrate-local` applies.
-      - name: Apply bloom_* schema-USAGE grants
+      - name: Apply schema grants and function revokes
         env:
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
         run: |
@@ -1163,8 +1180,8 @@ jobs:
       # Playwright E2E tests — run after integration tests against the same
       # live compose stack. Skips gracefully if web/e2e/ is absent.
       #
-      # Node 20 is pinned explicitly to match the web-unit-tests job and the
-      # runtime image (web/Dockerfile.bloom-web.prod uses node:20). Without
+      # Node 24 is pinned explicitly to match the web-unit-tests job and the
+      # runtime image (web/Dockerfile.bloom-web.prod uses node:24). Without
       # this pin the runner's default Node is used, which can change between
       # runner releases and produce non-deterministic CI. Flagged by Copilot
       # review on PR #268.
@@ -1172,7 +1189,7 @@ jobs:
         if: hashFiles('web/e2e/**') != ''
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Cache Playwright browsers
