@@ -14,6 +14,14 @@ URL = "http://mail:5200"
 SECRET = "m" * 40
 
 
+@pytest.fixture(autouse=True)
+def _fresh_state(monkeypatch):
+    """Each test starts with no remembered addresses and nothing in flight."""
+    monkeypatch.setattr(signup_email, "_asked", {})
+    yield
+    assert signup_email._threads_idle(5)
+
+
 @pytest.fixture
 def configured(monkeypatch):
     monkeypatch.setenv(signup_email.URL_ENV, URL)
@@ -102,3 +110,73 @@ def test_the_answer_and_a_timeout_are_not_logged(configured, monkeypatch, caplog
         signup_email.request("ada@salk.edu")
         assert signup_email._threads_idle(2)
     assert caplog.text == ""
+
+
+def test_the_same_address_is_asked_about_once_per_window(
+    configured, posts, monkeypatch
+):
+    calls, _ = posts
+    now = [100.0]
+    monkeypatch.setattr(signup_email.time, "monotonic", lambda: now[0])
+    signup_email.request("ada@salk.edu")
+    assert signup_email._threads_idle(2)
+    signup_email.request("ada@salk.edu")
+    signup_email.request("ben@salk.edu")
+    assert signup_email._threads_idle(2)
+    assert [c[1]["email"] for c in calls] == ["ada@salk.edu", "ben@salk.edu"]
+    now[0] += signup_email.ASK_AGAIN_AFTER_SECONDS
+    signup_email.request("ada@salk.edu")
+    assert signup_email._threads_idle(2)
+    assert len(calls) == 3
+
+
+def test_at_most_two_requests_are_in_flight(configured, monkeypatch):
+    release = threading.Event()
+    calls = []
+
+    def slow_post(url, *, json, **kwargs):
+        calls.append(json["email"])
+        release.wait(5)
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(signup_email.httpx, "post", slow_post)
+    for name in ("a", "b", "c"):
+        signup_email.request(f"{name}@salk.edu")
+    release.set()
+    assert signup_email._threads_idle(5)
+    assert sorted(calls) == ["a@salk.edu", "b@salk.edu"]
+    # The skipped address wasn't remembered, so its next try asks.
+    signup_email.request("c@salk.edu")
+    assert signup_email._threads_idle(5)
+    assert "c@salk.edu" in calls
+
+
+def test_an_unreachable_service_lets_the_next_try_ask_again(configured, monkeypatch):
+    attempts = []
+
+    def broken(url, *, json, **kwargs):
+        attempts.append(json["email"])
+        raise httpx.ConnectError("no route")
+
+    monkeypatch.setattr(signup_email.httpx, "post", broken)
+    signup_email.request("ada@salk.edu")
+    assert signup_email._threads_idle(2)
+    signup_email.request("ada@salk.edu")
+    assert signup_email._threads_idle(2)
+    assert attempts == ["ada@salk.edu", "ada@salk.edu"]
+
+
+def test_a_thread_that_cant_start_never_raises(configured, monkeypatch, caplog):
+    class NoThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(signup_email.threading, "Thread", NoThread)
+    with caplog.at_level(logging.WARNING, logger=signup_email.logger.name):
+        signup_email.request("ada@salk.edu")
+    assert "could not start the sign-up email request: RuntimeError" in caplog.text
+    assert signup_email._active == 0
+    assert "ada@salk.edu" not in signup_email._asked

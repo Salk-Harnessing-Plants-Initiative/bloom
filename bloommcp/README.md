@@ -57,8 +57,9 @@ which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on AIRC's sig
   lookup fails. A POST holding one JSON-RPC request gets the refusal as a JSON-RPC error instead
   (HTTP 200, code `-32003`, `data.status` 403 or 503), since MCP clients show its message.
 - Someone refused for having no Bloom account is also emailed how to sign up and reconnect: bloommcp
-  asks the internal `mail` service in the background (`bloom_mcp.signup_email`); the service sends
-  at most one email per address every 2 hours. The refusal never waits on it.
+  asks the internal `mail` service in the background (`bloom_mcp.signup_email`), once per address
+  every 2 hours and at most two at a time, so Claude's retries make no extra requests; the service
+  also sends at most one email per address every 2 hours. The refusal never waits on it.
 - An admitted request runs with `BLOOMMCP_API_KEY` in place of a caller token, and its usage is
   recorded under the Bloom account's id. Queries still run as `bloom_agent`.
 
