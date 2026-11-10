@@ -284,7 +284,7 @@ services:
       # download_url is usable by outside callers.
       WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       # Reads the production model cards from the wandb registry for GET /model-cards
-      # (bloom#971). Only this service gets it; the six other containers built from its image don't.
+      # (bloom#971). Only this service gets it; the seven other containers built from its image don't.
       WANDB_API_KEY: ${WANDB_API_KEY}
       # Bloom's AWS user (bloomv2-workflows-job, the pipeline's), so the folder check can read a folder
       # a scientist shared with it. Unset, only folders anyone can read work.
@@ -520,7 +520,7 @@ services:
     stop_grace_period: 60s
     command: ["python", "rnaseq_status_poller.py"]
 
-  # Bloom's one email sender, for other containers: internal network only (no port, no
+  # Bloom's mail service for other containers: internal network only (no port, no
   # Caddy route); callers need MAIL_SERVICE_SECRET. Today: the connector sign-up email.
   mail:
     build:

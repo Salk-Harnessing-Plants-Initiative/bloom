@@ -336,7 +336,7 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
-  # Bloom's one email sender, for other containers: internal network only (no port, no
+  # Bloom's mail service for other containers: internal network only (no port, no
   # Caddy route); callers need MAIL_SERVICE_SECRET. Today: the connector sign-up email.
   mail:
     build:

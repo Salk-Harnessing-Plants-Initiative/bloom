@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 import httpx
 import pytest
@@ -57,20 +58,24 @@ def test_a_request_posts_the_address_with_the_secret(configured, posts):
 
 
 def test_request_returns_before_the_post_finishes(configured, monkeypatch):
+    """Fails if the post ran in the caller's thread: request() must return while it blocks."""
     release = threading.Event()
     started = threading.Event()
 
     def slow_post(url, **kwargs):
         started.set()
-        release.wait(5)
-        return httpx.Response(
-            200, json={"sent": True}, request=httpx.Request("POST", url)
-        )
+        assert release.wait(5)
+        return httpx.Response(200, request=httpx.Request("POST", url))
 
     monkeypatch.setattr(signup_email.httpx, "post", slow_post)
+    began = time.monotonic()
     signup_email.request("ada@salk.edu")
+    returned_after = time.monotonic() - began
+    assert not release.is_set()
+    assert returned_after < 0.5
     assert started.wait(2)
     release.set()
+    assert signup_email._threads_idle(2)
 
 
 @pytest.mark.parametrize("unset", [signup_email.URL_ENV, signup_email.SECRET_ENV])

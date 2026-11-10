@@ -1,4 +1,5 @@
-"""Bloom's internal mail service: the one place other containers ask to send email.
+"""Bloom's internal mail service, where other containers ask to send email (the run poller and
+GoTrue still send directly for now).
 
 It listens on Docker's internal network only (no host port, no Caddy route) and admits a
 caller only with MAIL_SERVICE_SECRET. Each route sends one fixed email; callers choose only
