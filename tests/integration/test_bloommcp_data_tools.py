@@ -363,7 +363,8 @@ _NOTE_COLUMNS = {
     "scrna_de_genes": {"de_id"},
     "cyl_experiments": {"deleted"},
     "cyl_scan_traits_source": {"is_latest"},
-    "cyl_scans_extended": {"experiment_id"},
+    "cyl_scans_extended": {"experiment_id", "scan_id"},
+    "cyl_scan_traits_latest": {"scan_id"},
     "cyl_plants_extended": {"experiment_id"},
     "cyl_wave_timeline": {"experiment_name"},
 }

@@ -62,8 +62,9 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
     and count_rows to read them. Follow `notes`: they say which table gives the answer the
     website shows, and which views already join the tables you need. Otherwise join
     tables by following each column's `references`. Traits: these tables give the figures
-    Bloom's pages show; for analysis (QC, heritability, PCA, clustering, correlations,
-    statistical comparisons, plots) use the sleap_roots_* tools; if unclear, ask the user.
+    Bloom's pages show; for analysis (QC and cleaning, outliers, heritability, PCA, UMAP,
+    clustering, correlations, statistical comparisons, plots) use the sleap_roots_* tools;
+    if unclear, ask the user.
 
     Deleted experiments, species, scRNA datasets and gene candidates are left out of their
     own tables, but rows that belong to them (waves, plants, scans, traits, cells) are not:

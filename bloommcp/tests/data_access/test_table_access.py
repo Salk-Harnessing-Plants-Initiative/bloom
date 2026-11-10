@@ -284,39 +284,27 @@ def test_more_child_tables_that_show_deleted_items_say_so(table):
     assert "Includes deleted" in table_notes.TABLE_NOTES[table]
 
 
-@pytest.mark.parametrize(
-    "table",
-    [
-        "cyl_scan_traits_latest",
-        "cyl_scan_traits_source",
-        "cyl_trait_by_experiment_wave",
-    ],
-)
-def test_trait_tables_split_website_figures_from_analysis(table):
-    note = table_notes.TABLE_NOTES[table]
-    assert table_notes.TRAIT_TOOL_RULE in note
+def test_only_the_latest_trait_table_carries_the_trait_rule():
+    notes = table_notes.TABLE_NOTES
+    assert table_notes.TRAIT_TOOL_RULE in notes["cyl_scan_traits_latest"]
+    for table in ("cyl_scan_traits_source", "cyl_trait_by_experiment_wave"):
+        assert table_notes.TRAIT_TOOL_RULE not in notes[table]
+        assert "cyl_scan_traits_latest or get_scan_traits" in notes[table]
 
 
-def test_the_trait_rule_keeps_website_figures_and_routes_analysis():
+def test_the_trait_rule_matches_the_traits_page_and_routes_analysis():
     rule = table_notes.TRAIT_TOOL_RULE
-    assert "figures Bloom's pages show" in rule and "mean and median" in rule
-    for analysis in (
-        "QC",
-        "heritability",
-        "PCA",
-        "clustering",
-        "correlations",
-        "plots",
-    ):
+    assert "wave and plant age" in rule and "skipping NaN" in rule
+    for figure in ("n,", "mean", "median", "min", "max"):
+        assert figure in rule
+    assert "get_scan_traits" in rule and "accession_name" in rule
+    for analysis in ("QC", "outliers", "heritability", "PCA", "UMAP", "clustering"):
         assert analysis in rule
-    assert (
-        "sleap_roots_*" in rule and "cyl_experiments.id" in rule and "qc_clean" in rule
-    )
-    assert "ask the user" in rule
-    assert "summary statistics" not in rule
+    assert "sleap_roots_qc_clean" in rule and "cyl_experiments.id" in rule
+    assert "if available" in rule and "ask the user" in rule
 
 
-def test_wave_averages_point_to_latest_run_figures():
+def test_the_wave_averages_dont_claim_the_websites_figures():
     note = table_notes.TABLE_NOTES["cyl_trait_by_experiment_wave"]
-    assert "cyl_scans_extended by scan_id" in note
-    assert "group cyl_scan_traits_latest" in note
+    assert "doesn't match the website's figures" in note
+    assert "TRAIT_TOOL_RULE" not in note and table_notes.TRAIT_TOOL_RULE not in note

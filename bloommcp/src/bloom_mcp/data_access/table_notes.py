@@ -24,13 +24,20 @@ _FIND_EXPERIMENTS_BY_NAME = "To find experiments by name, filter name with conta
 
 # Data tools give what Bloom's pages show; analysis is the sleap-roots tools' job.
 TRAIT_TOOL_RULE = (
-    "Trait values come from the sleap-roots pipeline. Use these rows for values and the "
-    "figures Bloom's pages show (a scan's values; per-wave or per-accession n, mean and "
-    "median). For analysis (QC and cleaning, outliers, heritability, PCA, UMAP, clustering, "
-    "correlations, statistical comparisons, plots) don't compute from these rows: use the "
-    "sleap-roots analysis tools (sleap_roots_*; pass the numeric cyl_experiments.id, and "
-    "most need qc_clean first) and say the results come from them. If a question could be "
-    "either, ask the user which they want."
+    "Trait values come from the sleap-roots pipeline. Use them for values and the figures "
+    "Bloom's traits page shows: for one trait, wave and plant age, each accession's n, "
+    "mean, median, min and max, skipping NaN. For one trait across an experiment, call "
+    "get_scan_traits: one row per scan with wave_number, plant_age_days, accession_name "
+    "and the latest value. For analysis (QC and cleaning, outliers, heritability, PCA, "
+    "UMAP, clustering, correlations, statistical comparisons, plots) don't compute from "
+    "trait rows: use the sleap-roots analysis tools if available (sleap_roots_*; pass the "
+    "numeric cyl_experiments.id; most need sleap_roots_qc_clean first) and say the results "
+    "come from them. If a question could be either, ask the user which they want."
+)
+# For trait tables that aren't the source of values or figures.
+_TRAITS_ELSEWHERE = (
+    "For values or the website's figures use cyl_scan_traits_latest or get_scan_traits; "
+    "for analysis, the sleap-roots analysis tools."
 )
 
 # Shown with the table in list_tables: which table to use where the wrong one gives a wrong answer.
@@ -42,7 +49,7 @@ TABLE_NOTES: dict[str, str] = {
     ),
     "cyl_scan_traits_source": (
         "Every run's trait values. Only for comparing runs; is_latest marks the value to "
-        "use. " + _SCAN_EXPERIMENT + " " + TRAIT_TOOL_RULE
+        "use. " + _SCAN_EXPERIMENT + " " + _TRAITS_ELSEWHERE
     ),
     "cyl_experiments": (
         "Skip rows with deleted = true: older deletions use this flag. "
@@ -113,11 +120,7 @@ TABLE_NOTES: dict[str, str] = {
     ),
     "cyl_trait_by_experiment_wave": (
         "Averages every pipeline run's values, not only the latest, so it doesn't match "
-        "the website's figures; for per-wave figures, take wave_number and plant_age_days "
-        "from cyl_scans_extended by scan_id and group cyl_scan_traits_latest by them. "
-        + _OLDER_DELETIONS_SHOW
-        + " "
-        + TRAIT_TOOL_RULE
+        "the website's figures. " + _OLDER_DELETIONS_SHOW + " " + _TRAITS_ELSEWHERE
     ),
     "gravi_scans_extended": (
         "One row per plate scan with its session, experiment, species and accession: read "
