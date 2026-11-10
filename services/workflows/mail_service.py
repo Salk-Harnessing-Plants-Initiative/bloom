@@ -5,6 +5,7 @@ caller only with MAIL_SERVICE_SECRET. Each route sends one fixed email; callers 
 the recipient, within that route's rules. Today: the connector sign-up email.
 """
 
+import collections
 import hmac
 import logging
 import os
@@ -20,18 +21,29 @@ import mail
 logger = logging.getLogger(__name__)
 
 SECRET = os.environ.get("MAIL_SERVICE_SECRET") or ""
+# A shorter secret is treated as unset: every caller is refused.
+MIN_SECRET_LENGTH = 32
 SITE_URL = (os.environ.get("SITE_URL") or "").rstrip("/")
 # One email per address per this long; remembered in memory, so a restart may send one more.
 RESEND_AFTER_SECONDS = 2 * 60 * 60
+# At most this many emails in any hour, whoever they go to: caps what a leaked secret can send.
+MAX_SENDS_PER_HOUR = 20
 MAX_EMAIL_LENGTH = 254
-# One address at salk.edu exactly: no spaces, commas or second @.
-_SALK_ADDRESS = re.compile(r"^[^\s@,;<>]+@salk\.edu$")
+# One address at salk.edu exactly, from the characters Salk addresses use.
+_SALK_ADDRESS = re.compile(r"^[a-z0-9._%+-]+@salk\.edu$")
 
 SIGNUP_SUBJECT = "Create your Bloom account to use Bloom in Claude"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 _last_sent: dict[str, float] = {}
+_recent_sends: collections.deque[float] = collections.deque()
 _lock = threading.Lock()
+
+if SECRET and len(SECRET) < MIN_SECRET_LENGTH:
+    logger.error(
+        "mail: MAIL_SERVICE_SECRET is under %d characters; refusing every caller",
+        MIN_SECRET_LENGTH,
+    )
 
 
 class SignupRequest(BaseModel):
@@ -41,7 +53,7 @@ class SignupRequest(BaseModel):
 def _check_secret(authorization: str | None) -> None:
     scheme, _, token = (authorization or "").partition(" ")
     if (
-        not SECRET
+        len(SECRET) < MIN_SECRET_LENGTH
         or scheme.lower() != "bearer"
         or not hmac.compare_digest(token.encode(), SECRET.encode())
     ):
@@ -76,9 +88,19 @@ def connector_signup(
     if not mail.configured() or not SITE_URL:
         return {"sent": False}
     with _lock:
+        now = time.monotonic()
         last = _last_sent.get(email)
-        if last is not None and time.monotonic() - last < RESEND_AFTER_SECONDS:
+        if last is not None and now - last < RESEND_AFTER_SECONDS:
             return {"sent": False}
+        while _recent_sends and now - _recent_sends[0] >= 60 * 60:
+            _recent_sends.popleft()
+        if len(_recent_sends) >= MAX_SENDS_PER_HOUR:
+            logger.error(
+                "mail: hourly limit of %d reached; refused %s",
+                MAX_SENDS_PER_HOUR,
+                email,
+            )
+            raise HTTPException(status_code=429, detail="hourly_limit")
         try:
             mail.send(mail.message(email, SIGNUP_SUBJECT, _signup_body(email)))
         except Exception as exc:  # noqa: BLE001 - reported to the caller as a code
@@ -86,6 +108,7 @@ def connector_signup(
                 "mail: sign-up email to %s failed: %s", email, type(exc).__name__
             )
             raise HTTPException(status_code=502, detail="relay_error") from None
-        _last_sent[email] = time.monotonic()
+        _last_sent[email] = now
+        _recent_sends.append(now)
     logger.info("mail: sign-up email sent to %s", email)
     return {"sent": True}

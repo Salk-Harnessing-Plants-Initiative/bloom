@@ -1,5 +1,7 @@
 """The internal mail service: callers with the secret only; the connector sign-up email."""
 
+import collections
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,7 @@ def sent(monkeypatch):
     monkeypatch.setattr(mail_service, "SITE_URL", "https://bloom.salk.edu")
     monkeypatch.setattr(mail, "SMTP_HOST", "neoemex1.salk.edu")
     monkeypatch.setattr(mail_service, "_last_sent", {})
+    monkeypatch.setattr(mail_service, "_recent_sends", collections.deque())
     messages = []
     monkeypatch.setattr(mail, "send", messages.append)
     return messages
@@ -63,7 +66,8 @@ def test_the_signup_email_goes_to_the_address_with_the_signup_link(client, sent)
 @pytest.mark.parametrize(
     "email",
     ["ada@gmail.com", "ada@salk.edu.evil.com", "a@salk.edu,b@salk.edu", "@salk.edu",
-     "ada @salk.edu", "x" * 250 + "@salk.edu", ""],
+     "ada @salk.edu", "x" * 250 + "@salk.edu", "", "a'b@salk.edu", 'a"b@salk.edu',
+     "a\nb@salk.edu", "a/b@salk.edu", "ada@salk.edu\r\nBcc: x@evil.com"],
 )  # fmt: skip
 def test_only_one_salk_address_is_accepted(client, sent, email):
     assert signup(client, email).status_code == 400
@@ -109,3 +113,35 @@ def test_health_needs_no_secret(client):
 
 def test_the_service_has_no_other_routes():
     assert {r.path for r in mail_service.app.routes} == {"/connector-signup", "/health"}
+
+
+def test_a_short_secret_refuses_everyone(client, sent, monkeypatch):
+    short = "s" * (mail_service.MIN_SECRET_LENGTH - 1)
+    monkeypatch.setattr(mail_service, "SECRET", short)
+    resp = signup(client, "ada@salk.edu", {"Authorization": f"Bearer {short}"})
+    assert resp.status_code == 401
+    assert sent == []
+
+
+def test_the_hourly_cap_stops_all_sending(client, sent, monkeypatch):
+    now = [5000.0]
+    monkeypatch.setattr(mail_service.time, "monotonic", lambda: now[0])
+    for i in range(mail_service.MAX_SENDS_PER_HOUR):
+        assert signup(client, f"user{i}@salk.edu").json() == {"sent": True}
+    resp = signup(client, "one.more@salk.edu")
+    assert resp.status_code == 429
+    assert resp.json()["detail"] == "hourly_limit"
+    assert len(sent) == mail_service.MAX_SENDS_PER_HOUR
+    now[0] += 3601
+    assert signup(client, "one.more@salk.edu").json() == {"sent": True}
+
+
+def test_a_failed_send_does_not_count_toward_the_cap(client, sent, monkeypatch):
+    def broken(msg):
+        raise ConnectionRefusedError("relay down")
+
+    monkeypatch.setattr(mail, "send", broken)
+    for _ in range(mail_service.MAX_SENDS_PER_HOUR + 1):
+        assert signup(client, "ada@salk.edu").status_code == 502
+    monkeypatch.setattr(mail, "send", sent.append)
+    assert signup(client, "ada@salk.edu").json() == {"sent": True}
