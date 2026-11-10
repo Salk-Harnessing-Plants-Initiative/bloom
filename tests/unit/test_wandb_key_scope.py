@@ -1,7 +1,7 @@
 """WANDB_API_KEY reaches the workflows service and nothing else.
 
 GET /model-cards (bloom#971) reads the production model cards from the wandb
-registry with it. Seven containers share the workflows image, but only the
+registry with it. Eight containers share the workflows image, but only the
 `workflows` service serves that route, so it is the only one given the key.
 Prod and staging both deploy from docker-compose.prod.yml, where
 scripts/validate_env.sh requires every referenced variable to be set, so the key
