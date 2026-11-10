@@ -5120,34 +5120,6 @@ export type Database = {
         }
         Relationships: []
       }
-      genome_gene_positions: {
-        Row: {
-          build_id: number | null
-          contig: string | null
-          gene_end: number | null
-          gene_id: string | null
-          gene_name: string | null
-          gene_start: number | null
-          strand: string | null
-          version_id: number | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "genome_browser_builds_version_id_fkey"
-            columns: ["version_id"]
-            isOneToOne: false
-            referencedRelation: "genome_reference_versions"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "genome_genes_build_id_fkey"
-            columns: ["build_id"]
-            isOneToOne: false
-            referencedRelation: "genome_browser_builds"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       gravi_scan_timeline: {
         Row: {
           count: number | null

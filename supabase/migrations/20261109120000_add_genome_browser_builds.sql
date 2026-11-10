@@ -6,7 +6,7 @@
 -- request. A browser build is one set of those five files for one ready version, stored at
 -- <genome>/v<N>/browser/b<B>/. This row records the folder, the five files' checksums and
 -- sizes, the tools used and whether the source GTF had to be sorted. Each build also records
--- where every gene of the GTF sits (genome_genes), read through genome_gene_positions, for gene
+-- where every gene of the GTF sits (genome_genes), readable once the build is ready, for gene
 -- search and for links from single-cell genes to the genome. A build is uploading, then ready
 -- or abandoned; an admin can withdraw a ready one, with a reason, and a new build of the same
 -- version can then be made. A ready build, its files and its genes never change. The build
@@ -322,18 +322,7 @@ CREATE TRIGGER genome_genes_guard
     BEFORE INSERT OR UPDATE OR DELETE ON public.genome_genes
     FOR EACH ROW EXECUTE FUNCTION public.genome_genes_guard();
 
--- 6. Gene positions of ready builds --------------------------------------------------------
-
--- What gene search and single-cell links read: unfinished and withdrawn builds are left out.
-CREATE OR REPLACE VIEW public.genome_gene_positions
-WITH (security_invoker = true) AS
-SELECT b.version_id, g.build_id, g.gene_id, g.gene_name, g.contig, g.gene_start, g.gene_end,
-       g.strand
-FROM public.genome_genes g
-JOIN public.genome_browser_builds b ON b.id = g.build_id
-WHERE b.status = 'ready';
-
--- 7. Access --------------------------------------------------------------------------------
+-- 6. Access --------------------------------------------------------------------------------
 
 ALTER TABLE public.genome_browser_builds ENABLE ROW LEVEL SECURITY;
 
@@ -360,30 +349,29 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.genome_browser_builds TO bloom_ad
 
 ALTER TABLE public.genome_genes ENABLE ROW LEVEL SECURITY;
 
+-- Readers see a build's genes only once it is ready: never half-loaded or withdrawn ones.
 DROP POLICY IF EXISTS admin_all_genome_genes ON public.genome_genes;
 CREATE POLICY admin_all_genome_genes ON public.genome_genes
     FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 DROP POLICY IF EXISTS user_read_genome_genes ON public.genome_genes;
 CREATE POLICY user_read_genome_genes ON public.genome_genes
-    FOR SELECT TO bloom_user USING (true);
+    FOR SELECT TO bloom_user USING (EXISTS (
+        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = build_id AND b.status = 'ready'));
 DROP POLICY IF EXISTS agent_read_genome_genes ON public.genome_genes;
 CREATE POLICY agent_read_genome_genes ON public.genome_genes
-    FOR SELECT TO bloom_agent USING (true);
+    FOR SELECT TO bloom_agent USING (EXISTS (
+        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = build_id AND b.status = 'ready'));
 DROP POLICY IF EXISTS workflows_read_genome_genes ON public.genome_genes;
 CREATE POLICY workflows_read_genome_genes ON public.genome_genes
-    FOR SELECT TO bloom_workflows USING (true);
+    FOR SELECT TO bloom_workflows USING (EXISTS (
+        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = build_id AND b.status = 'ready'));
 
--- The same as the builds: read for the three roles, rows added only through add_genome_genes.
+-- Read for the three roles (ready builds only), rows added only through add_genome_genes.
 REVOKE ALL ON public.genome_genes
     FROM anon, authenticated, bloom_user, bloom_agent, bloom_writer, bloom_workflows;
 REVOKE UPDATE, DELETE, TRUNCATE ON public.genome_genes FROM service_role;
 GRANT SELECT ON public.genome_genes TO bloom_user, bloom_agent, bloom_workflows;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.genome_genes TO bloom_admin;
-
-REVOKE ALL ON public.genome_gene_positions
-    FROM anon, authenticated, bloom_user, bloom_agent, bloom_writer, bloom_workflows;
-GRANT SELECT ON public.genome_gene_positions
-    TO bloom_user, bloom_agent, bloom_workflows, bloom_admin;
 
 REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_number() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_guard() FROM PUBLIC, anon, authenticated;

@@ -6,7 +6,6 @@
 
 BEGIN;
 
-DROP VIEW IF EXISTS public.genome_gene_positions;
 DROP TABLE IF EXISTS public.genome_genes;
 DROP FUNCTION IF EXISTS public.genome_genes_guard();
 DROP TABLE IF EXISTS public.genome_browser_builds;

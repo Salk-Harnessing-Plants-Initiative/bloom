@@ -1,6 +1,6 @@
 """
 Integration tests for a browser build's gene positions: adding them in batches, the gene count
-checked on finish, what the positions view shows, write-once rules, and who may do what.
+checked on finish, which genes readers see, write-once rules, and who may do what.
 """
 
 import json
@@ -54,16 +54,24 @@ def _gene(**overrides):
     return {**GENES[0], **overrides}
 
 
-def _positions(cur, version_id):
-    cur.execute("SELECT gene_id, gene_name, contig, gene_start, gene_end, strand "
-                "FROM genome_gene_positions WHERE version_id = %s ORDER BY gene_id",
-                (version_id,))
-    return cur.fetchall()
+def _positions(cur, version_id, role="bloom_user"):
+    """A version's genes as a reader sees them; no status filter, so the read rule must hide them."""
+    as_role(cur, role, WRITER)
+    cur.execute("SELECT g.gene_id, g.gene_name, g.contig, g.gene_start, g.gene_end, g.strand "
+                "FROM genome_genes g JOIN genome_browser_builds b ON b.id = g.build_id "
+                "WHERE b.version_id = %s ORDER BY g.gene_id", (version_id,))
+    rows = cur.fetchall()
+    as_admin(cur)
+    return rows
 
 
-def _gene_rows(cur, build_id):
+def _gene_rows(cur, build_id, role=None):
+    if role:
+        as_role(cur, role, WRITER)
     cur.execute("SELECT count(*) FROM genome_genes WHERE build_id = %s", (build_id,))
-    return cur.fetchone()[0]
+    count = cur.fetchone()[0]
+    as_admin(cur)
+    return count
 
 
 # --------------------------------------------------------------------------- #
@@ -147,20 +155,24 @@ def test_the_pipeline_can_add_genes(cur, version_id):
 
 
 # --------------------------------------------------------------------------- #
-# What the positions view shows
+# Which genes readers see
 # --------------------------------------------------------------------------- #
 
 
-def test_an_unfinished_builds_genes_are_not_shown(cur, version_id):
+@pytest.mark.parametrize("role", ["bloom_user", "bloom_agent", "bloom_workflows"])
+def test_an_unfinished_builds_genes_are_not_shown(cur, version_id, role):
     build_id, _, _ = start_build(cur, version_id)
     add_genes(cur, build_id)
-    assert _positions(cur, version_id) == []
+    assert _positions(cur, version_id, role) == []
+    assert _gene_rows(cur, build_id, role) == 0
+    assert _gene_rows(cur, build_id) == 2
 
 
 def test_a_withdrawn_builds_genes_are_not_shown(cur, version_id):
     build_id, _ = ready_build(cur, version_id)
     cur.execute("SELECT public.withdraw_genome_browser_build(%s, 'wrong GTF')", (build_id,))
     assert _positions(cur, version_id) == []
+    assert _gene_rows(cur, build_id, "bloom_agent") == 0
     assert _gene_rows(cur, build_id) == 2
 
 
@@ -176,9 +188,7 @@ def test_abandon_removes_the_genes(cur, version_id):
 @pytest.mark.parametrize("role", ["bloom_user", "bloom_agent", "bloom_workflows"])
 def test_the_positions_can_be_read(cur, version_id, role):
     ready_build(cur, version_id)
-    as_role(cur, role, WRITER)
-    assert len(_positions(cur, version_id)) == 2
-    as_admin(cur)
+    assert len(_positions(cur, version_id, role)) == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -213,16 +223,14 @@ def test_genes_cannot_be_added_to_a_ready_build(cur, version_id):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("relation", ["genome_genes", "genome_gene_positions"])
 @pytest.mark.parametrize("role, privilege, allowed", [
     ("bloom_user", "SELECT", True), ("bloom_agent", "SELECT", True),
     ("bloom_workflows", "SELECT", True), ("bloom_writer", "INSERT", False),
     ("bloom_workflows", "INSERT", False), ("bloom_user", "DELETE", False),
     ("anon", "SELECT", False), ("authenticated", "SELECT", False),
 ])
-def test_gene_access(cur, relation, role, privilege, allowed):
-    cur.execute("SELECT has_table_privilege(%s, %s, %s)",
-                (role, f"public.{relation}", privilege))
+def test_gene_access(cur, role, privilege, allowed):
+    cur.execute("SELECT has_table_privilege(%s, 'public.genome_genes', %s)", (role, privilege))
     assert cur.fetchone()[0] is allowed
 
 
@@ -231,6 +239,5 @@ def test_the_rollback_removes_the_genes(cur, version_id):
     for rollback in ROLLBACKS:
         cur.execute(_sql_body(rollback))
     cur.execute("SELECT to_regclass('public.genome_genes'), "
-                "to_regclass('public.genome_gene_positions'), "
                 "to_regprocedure('public.add_genome_genes(bigint, jsonb)')")
-    assert cur.fetchone() == (None, None, None)
+    assert cur.fetchone() == (None, None)
