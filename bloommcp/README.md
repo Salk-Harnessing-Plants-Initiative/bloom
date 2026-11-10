@@ -25,7 +25,9 @@ Installable `uv` package under `src/bloom_mcp/`:
   returned, rows are capped at 500 a page, and counts are exact unless too many rows match
   (then a labelled estimate). `list_functions` and `call_function` call the read-only
   database functions in `data_access/function_access.py`; PostgREST runs them in a
-  read-only transaction.
+  read-only transaction. `gene_lookup` gathers one gene's record, HPI notes, orthologs,
+  translation work and scRNA results (datasets, cluster markers, genotype comparisons)
+  through the same allow-list (`data_access/gene_reads.py`, `gene_expression.py`).
 - `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
   not tools themselves
 - `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping
