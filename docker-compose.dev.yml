@@ -353,6 +353,7 @@ services:
       - ALL
     environment:
       MAIL_LOG_DIR: /var/log/bloom-mail
+      MAIL_CONTACT: ${MAIL_CONTACT:-}
       MAIL_SERVICE_SECRET: ${MAIL_SERVICE_SECRET:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}

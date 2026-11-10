@@ -21,12 +21,14 @@ def configured() -> bool:
     return SMTP_HOST is not None
 
 
-def message(to: str, subject: str, body: str) -> EmailMessage:
-    """A plain-text message from Bloom's sender."""
+def message(to: str, subject: str, body: str, reply_to: str = "") -> EmailMessage:
+    """A plain-text message from Bloom's sender; replies go to `reply_to` when given."""
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = formataddr((SENDER_NAME, SENDER))
     msg["To"] = to
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.set_content(body)
     return msg
 

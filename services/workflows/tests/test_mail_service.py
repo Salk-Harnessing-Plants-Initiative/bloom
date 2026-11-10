@@ -20,6 +20,7 @@ def sent(monkeypatch):
     """The service configured, with sends recorded instead of reaching the relay."""
     monkeypatch.setattr(mail_service, "SECRET", SECRET)
     monkeypatch.setattr(mail_service, "SITE_URL", "https://bloom.salk.edu")
+    monkeypatch.setattr(mail_service, "CONTACT", "bfernando@salk.edu")
     monkeypatch.setattr(mail, "SMTP_HOST", "neoemex1.salk.edu")
     monkeypatch.setattr(mail_service, "_last_sent", {})
     monkeypatch.setattr(mail_service, "_recent_sends", collections.deque())
@@ -62,8 +63,11 @@ def test_the_signup_email_goes_to_the_address_with_the_signup_link(client, sent)
     assert msg["To"] == "ada@salk.edu"
     assert msg["Subject"] == mail_service.SIGNUP_SUBJECT
     body = msg.get_content()
-    assert "https://bloom.salk.edu/login" in body
-    assert "ada@salk.edu" in body and "Sign up" in body
+    assert body.startswith("You tried to use Bloom in Claude as ada@salk.edu")
+    assert "couldn't find an active account" in body
+    assert "https://bloom.salk.edu/login" in body and "Sign up" in body
+    assert "not your Salk password" in body
+    assert "Someone" not in body
 
 
 @pytest.mark.parametrize(
@@ -302,3 +306,19 @@ def test_a_body_longer_than_declared_is_cut_off(sent):
 
 def test_with_the_secret_a_normal_request_still_sends(client, sent):
     assert signup(client, "ada@salk.edu").json() == {"sent": True}
+
+
+def test_the_contact_is_named_and_gets_the_replies(client, sent):
+    signup(client, "ada@salk.edu")
+    [msg] = sent
+    assert msg["Reply-To"] == "bfernando@salk.edu"
+    assert "contact the Bloom team at bfernando@salk.edu, or reply" in msg.get_content()
+
+
+def test_without_a_contact_there_is_no_reply_to(client, sent, monkeypatch):
+    monkeypatch.setattr(mail_service, "CONTACT", "")
+    signup(client, "ada@salk.edu")
+    [msg] = sent
+    assert msg["Reply-To"] is None
+    assert "contact the Bloom team.\n" in msg.get_content()
+    assert "reply to this email" not in msg.get_content()

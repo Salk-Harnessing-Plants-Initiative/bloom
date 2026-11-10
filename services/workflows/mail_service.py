@@ -27,6 +27,8 @@ SECRET = os.environ.get("MAIL_SERVICE_SECRET") or ""
 # A shorter secret is treated as unset: every caller is refused.
 MIN_SECRET_LENGTH = 32
 SITE_URL = (os.environ.get("SITE_URL") or "").rstrip("/")
+# Who people write to about their account; named in the email and set as its Reply-To.
+CONTACT = (os.environ.get("MAIL_CONTACT") or "").strip()
 # One email per address per this long; remembered in memory, so a restart may send one more.
 RESEND_AFTER_SECONDS = 2 * 60 * 60
 # At most this many emails in any hour, whoever they go to: caps what a leaked secret can send.
@@ -159,13 +161,20 @@ app.add_middleware(GuardBeforeBody)
 
 
 def _signup_body(email: str) -> str:
+    if CONTACT:
+        ask = f"contact the Bloom team at {CONTACT}, or reply to this email."
+    else:
+        ask = "contact the Bloom team."
     return (
-        f"Someone signed in to Bloom from Claude as {email}, but there is no Bloom account "
-        "for this address yet.\n\n"
-        f"To use Bloom in Claude, open {SITE_URL}/login, choose Sign up, and create an "
-        "account with this same address. Then reconnect Bloom in Claude.\n\n"
-        "If you already have a Bloom account under a different address, contact the Bloom "
-        "team. This message was sent from an address that doesn't receive replies.\n"
+        f"You tried to use Bloom in Claude as {email}, but Bloom couldn't find an active "
+        "account for this address.\n\n"
+        "To use Bloom in Claude:\n"
+        f"1. Open {SITE_URL}/login and choose Sign up.\n"
+        "2. Create your account with this same Salk address and a new Bloom password "
+        "(not your Salk password).\n"
+        "3. Try Bloom in Claude again.\n\n"
+        "If you think you already have a Bloom account, for example under a different "
+        f"address, {ask}\n"
     )
 
 
@@ -205,7 +214,7 @@ def connector_signup(request: SignupRequest) -> dict:
         _last_sent[email] = now
         _recent_sends.append(now)
     try:
-        mail.send(mail.message(email, SIGNUP_SUBJECT, _signup_body(email)))
+        mail.send(mail.message(email, SIGNUP_SUBJECT, _signup_body(email), CONTACT))
     except Exception as exc:  # noqa: BLE001 - reported to the caller as a code
         with _lock:
             # Give the reservation back, so a later retry can send.
