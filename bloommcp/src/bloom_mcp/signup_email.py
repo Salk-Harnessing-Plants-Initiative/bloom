@@ -1,5 +1,6 @@
 """Asks Bloom's internal mail service to email a Salk user the connector refused for having no
-Bloom account. Runs in the background so the refusal never waits; failures are only logged.
+Bloom account. Runs in the background so the refusal never waits, and doesn't read the answer:
+the mail service keeps the log of what it sent. Only an unreachable service is logged here.
 
 Needs MAIL_SERVICE_URL and MAIL_SERVICE_SECRET; without either nothing is sent (dev, CI).
 """
@@ -40,22 +41,17 @@ def request(email: str) -> None:
 def _post(url: str, secret: str, email: str) -> None:
     global _active
     try:
-        resp = httpx.post(
+        # Fire and forget: the mail service decides and logs the outcome in its own log.
+        httpx.post(
             f"{url}/connector-signup",
             json={"email": email},
             headers={"Authorization": f"Bearer {secret}"},
             timeout=TIMEOUT_SECONDS,
         )
-        if resp.status_code != 200:
-            logger.warning(
-                "sign-up email for %s not sent: mail service answered %d",
-                email,
-                resp.status_code,
-            )
-        elif resp.json().get("sent"):
-            logger.info("sign-up email sent to %s", email)
+    except httpx.TimeoutException:
+        pass  # The service may still send; its log says.
     except Exception as exc:  # noqa: BLE001 - an email must never affect the refusal
-        logger.warning("sign-up email for %s not sent: %s", email, type(exc).__name__)
+        logger.warning("could not reach the mail service: %s", type(exc).__name__)
     finally:
         with _active_lock:
             _active -= 1

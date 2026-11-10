@@ -1,6 +1,9 @@
 """The internal mail service: callers with the secret only; the connector sign-up email."""
 
 import collections
+import logging
+import logging.handlers
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -145,3 +148,70 @@ def test_a_failed_send_does_not_count_toward_the_cap(client, sent, monkeypatch):
         assert signup(client, "ada@salk.edu").status_code == 502
     monkeypatch.setattr(mail, "send", sent.append)
     assert signup(client, "ada@salk.edu").json() == {"sent": True}
+
+
+def test_a_slow_send_holds_up_only_its_own_email(sent, monkeypatch):
+    """The lock covers only the checks: others send, and /health answers, meanwhile."""
+    release = threading.Event()
+    sending = threading.Event()
+
+    def send(msg):
+        if msg["To"] == "slow@salk.edu":
+            sending.set()
+            assert release.wait(5)
+        sent.append(msg)
+
+    monkeypatch.setattr(mail, "send", send)
+    results = {}
+    slow = threading.Thread(
+        target=lambda: results.update(
+            slow=signup(TestClient(mail_service.app), "slow@salk.edu").json()
+        )
+    )
+    slow.start()
+    assert sending.wait(2)
+    other = TestClient(mail_service.app)
+    assert signup(other, "fast@salk.edu").json() == {"sent": True}
+    assert signup(other, "slow@salk.edu").json() == {"sent": False}
+    assert other.get("/health").status_code == 200
+    release.set()
+    slow.join(5)
+    assert results["slow"] == {"sent": True}
+    assert sorted(m["To"] for m in sent) == ["fast@salk.edu", "slow@salk.edu"]
+
+
+def test_the_log_file_records_each_outcome(client, sent, monkeypatch, tmp_path):
+    monkeypatch.setattr(mail_service.logger, "handlers", [])
+    mail_service.setup_logging(str(tmp_path))
+    signup(client, "ada@salk.edu")
+    signup(client, "ada@salk.edu")
+
+    def broken(msg):
+        raise ConnectionRefusedError("relay down")
+
+    monkeypatch.setattr(mail, "send", broken)
+    signup(client, "ben@salk.edu")
+    for handler in mail_service.logger.handlers:
+        handler.flush()
+    log = (tmp_path / "mail.log").read_text()
+    assert "sent sign-up email to ada@salk.edu" in log
+    assert "skipped ada@salk.edu" in log
+    assert "failed ben@salk.edu: relay error ConnectionRefusedError" in log
+    signup(client, "ada@gmail.com")
+    signup(client, "ada@salk.edu", {"Authorization": "Bearer wrong"})
+    for handler in mail_service.logger.handlers:
+        handler.flush()
+    log = (tmp_path / "mail.log").read_text()
+    assert "refused a request for an address that isn't one Salk address" in log
+    assert "refused a caller without the right secret" in log
+    assert "ada@gmail.com" not in log
+    assert SECRET not in log
+
+
+def test_an_unwritable_log_dir_still_starts(monkeypatch, tmp_path):
+    monkeypatch.setattr(mail_service.logger, "handlers", [])
+    mail_service.setup_logging(str(tmp_path / "missing"))
+    assert all(
+        not isinstance(h, logging.handlers.RotatingFileHandler)
+        for h in mail_service.logger.handlers
+    )

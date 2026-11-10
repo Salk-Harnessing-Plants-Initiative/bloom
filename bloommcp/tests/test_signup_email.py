@@ -74,30 +74,31 @@ def test_without_url_or_secret_nothing_is_posted(configured, posts, monkeypatch,
     assert calls == []
 
 
-def test_a_failed_post_is_logged_not_raised(configured, monkeypatch, caplog):
-    done = threading.Event()
-
+def test_an_unreachable_service_is_logged_not_raised(configured, monkeypatch, caplog):
     def broken(url, **kwargs):
-        done.set()
         raise httpx.ConnectError("no route")
 
     monkeypatch.setattr(signup_email.httpx, "post", broken)
     with caplog.at_level(logging.WARNING, logger=signup_email.logger.name):
         signup_email.request("ada@salk.edu")
-        assert done.wait(2)
-        signup_email._threads_idle(2)
-    assert "ada@salk.edu" in caplog.text and "ConnectError" in caplog.text
+        assert signup_email._threads_idle(2)
+    assert "could not reach the mail service: ConnectError" in caplog.text
     assert SECRET not in caplog.text
 
 
-def test_an_error_status_is_logged_with_its_code(configured, monkeypatch, caplog):
-    def refused(url, **kwargs):
-        return httpx.Response(
-            502, json={"detail": "relay_error"}, request=httpx.Request("POST", url)
-        )
-
-    monkeypatch.setattr(signup_email.httpx, "post", refused)
+def test_the_answer_and_a_timeout_are_not_logged(configured, monkeypatch, caplog):
+    answers = iter(
+        [
+            lambda url: httpx.Response(502, request=httpx.Request("POST", url)),
+            lambda url: (_ for _ in ()).throw(httpx.ReadTimeout("slow")),
+        ]
+    )
+    monkeypatch.setattr(
+        signup_email.httpx, "post", lambda url, **kw: next(answers)(url)
+    )
     with caplog.at_level(logging.WARNING, logger=signup_email.logger.name):
         signup_email.request("ada@salk.edu")
-        signup_email._threads_idle(2)
-    assert "502" in caplog.text
+        assert signup_email._threads_idle(2)
+        signup_email.request("ada@salk.edu")
+        assert signup_email._threads_idle(2)
+    assert caplog.text == ""

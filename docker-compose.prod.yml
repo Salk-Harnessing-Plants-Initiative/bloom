@@ -536,6 +536,7 @@ services:
     cap_drop:
       - ALL
     environment:
+      MAIL_LOG_DIR: /var/log/bloom-mail
       MAIL_SERVICE_SECRET: ${MAIL_SERVICE_SECRET}
       SMTP_HOST: ${SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT}
@@ -543,6 +544,9 @@ services:
       SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
       SITE_URL: ${SITE_URL}
     command: ["uvicorn", "mail_service:app", "--host", "0.0.0.0", "--port", "5200"]
+    # Its log of every email outcome; a volume, so it survives restarts and deploys.
+    volumes:
+      - mail-log:/var/log/bloom-mail
     expose:
       - "5200"
     healthcheck:
@@ -1241,6 +1245,7 @@ services:
 
 volumes:
   db-config:
+  mail-log:
   caddy-data:
   caddy-config:
 

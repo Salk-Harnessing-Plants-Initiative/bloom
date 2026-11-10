@@ -8,6 +8,7 @@ the recipient, within that route's rules. Today: the connector sign-up email.
 import collections
 import hmac
 import logging
+import logging.handlers
 import os
 import re
 import threading
@@ -28,6 +29,11 @@ SITE_URL = (os.environ.get("SITE_URL") or "").rstrip("/")
 RESEND_AFTER_SECONDS = 2 * 60 * 60
 # At most this many emails in any hour, whoever they go to: caps what a leaked secret can send.
 MAX_SENDS_PER_HOUR = 20
+SEND_CAP_WINDOW_SECONDS = 60 * 60
+# A log of every outcome kept on a volume, so it survives restarts; capped at 5 x 1 MB.
+LOG_DIR = os.environ.get("MAIL_LOG_DIR") or ""
+LOG_FILE_BYTES = 1_000_000
+LOG_FILE_COUNT = 5
 MAX_EMAIL_LENGTH = 254
 # One address at salk.edu exactly, from the characters Salk addresses use.
 _SALK_ADDRESS = re.compile(r"^[a-z0-9._%+-]+@salk\.edu$")
@@ -39,9 +45,36 @@ _last_sent: dict[str, float] = {}
 _recent_sends: collections.deque[float] = collections.deque()
 _lock = threading.Lock()
 
+
+def setup_logging(log_dir: str = LOG_DIR) -> None:
+    """Outcomes go to stdout and, with MAIL_LOG_DIR, to a rotating mail.log there."""
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        stream = logging.StreamHandler()
+        stream.setFormatter(fmt)
+        logger.addHandler(stream)
+    if log_dir:
+        try:
+            handler = logging.handlers.RotatingFileHandler(
+                os.path.join(log_dir, "mail.log"),
+                maxBytes=LOG_FILE_BYTES,
+                backupCount=LOG_FILE_COUNT,
+            )
+        except OSError as exc:
+            logger.error(
+                "can't write the mail log in %s: %s", log_dir, type(exc).__name__
+            )
+        else:
+            handler.setFormatter(fmt)
+            logger.addHandler(handler)
+
+
+setup_logging()
+
 if SECRET and len(SECRET) < MIN_SECRET_LENGTH:
     logger.error(
-        "mail: MAIL_SERVICE_SECRET is under %d characters; refusing every caller",
+        "MAIL_SERVICE_SECRET is under %d characters; refusing every caller",
         MIN_SECRET_LENGTH,
     )
 
@@ -57,6 +90,7 @@ def _check_secret(authorization: str | None) -> None:
         or scheme.lower() != "bearer"
         or not hmac.compare_digest(token.encode(), SECRET.encode())
     ):
+        logger.warning("refused a caller without the right secret")
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -72,7 +106,7 @@ def _signup_body(email: str) -> str:
 
 
 @app.get("/health")
-def health() -> dict:
+async def health() -> dict:
     return {"ok": True}
 
 
@@ -84,31 +118,40 @@ def connector_signup(
     _check_secret(authorization)
     email = request.email.strip().lower()
     if len(email) > MAX_EMAIL_LENGTH or not _SALK_ADDRESS.match(email):
+        logger.warning("refused a request for an address that isn't one Salk address")
         raise HTTPException(status_code=400, detail="one salk.edu address required")
     if not mail.configured() or not SITE_URL:
+        logger.info(
+            "skipped %s: mail is not configured (SMTP_HOST or SITE_URL unset)", email
+        )
         return {"sent": False}
+    # The lock covers only the quick checks: the address and an hourly slot are reserved,
+    # then the send runs outside it, so a slow relay holds up only this one email.
     with _lock:
         now = time.monotonic()
         last = _last_sent.get(email)
         if last is not None and now - last < RESEND_AFTER_SECONDS:
+            logger.info("skipped %s: emailed in the last 2 hours", email)
             return {"sent": False}
-        while _recent_sends and now - _recent_sends[0] >= 60 * 60:
+        while _recent_sends and now - _recent_sends[0] >= SEND_CAP_WINDOW_SECONDS:
             _recent_sends.popleft()
         if len(_recent_sends) >= MAX_SENDS_PER_HOUR:
             logger.error(
-                "mail: hourly limit of %d reached; refused %s",
-                MAX_SENDS_PER_HOUR,
-                email,
+                "refused %s: hourly limit of %d reached", email, MAX_SENDS_PER_HOUR
             )
             raise HTTPException(status_code=429, detail="hourly_limit")
-        try:
-            mail.send(mail.message(email, SIGNUP_SUBJECT, _signup_body(email)))
-        except Exception as exc:  # noqa: BLE001 - reported to the caller as a code
-            logger.warning(
-                "mail: sign-up email to %s failed: %s", email, type(exc).__name__
-            )
-            raise HTTPException(status_code=502, detail="relay_error") from None
         _last_sent[email] = now
         _recent_sends.append(now)
-    logger.info("mail: sign-up email sent to %s", email)
+    try:
+        mail.send(mail.message(email, SIGNUP_SUBJECT, _signup_body(email)))
+    except Exception as exc:  # noqa: BLE001 - reported to the caller as a code
+        with _lock:
+            # Give the reservation back, so a later retry can send.
+            if _last_sent.get(email) == now:
+                del _last_sent[email]
+            if now in _recent_sends:
+                _recent_sends.remove(now)
+        logger.warning("failed %s: relay error %s", email, type(exc).__name__)
+        raise HTTPException(status_code=502, detail="relay_error") from None
+    logger.info("sent sign-up email to %s", email)
     return {"sent": True}

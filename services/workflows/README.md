@@ -584,6 +584,8 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 
 - `POST /connector-signup {"email"}`: bloommcp calls it when the Salk connector refuses someone for having no Bloom account. One `@salk.edu` address made of letters, digits and `. _ % + -` (400 otherwise); at most one email per address every 2 hours, kept in memory, so a restart may send one more; 502 `relay_error` if the relay fails. Without `SMTP_HOST` or `SITE_URL` it sends nothing and answers `{"sent": false}`.
 
+The lock covers only the quick checks: the address and an hourly slot are reserved, the send runs outside it (and the reservation is given back if it fails), so a slow relay holds up only that one email and `/health` always answers. Every outcome (sent, skipped, refused, relay failed) is written with a timestamp to `/var/log/bloom-mail/mail.log` on the `mail-log` volume (rotated at 1 MB, 5 files kept), and to the container's output. To read it on the server: `sudo docker exec <project>-mail-1 tail -n 50 /var/log/bloom-mail/mail.log`. bloommcp doesn't read the service's answer; it logs only when it can't reach the service.
+
 `mail.py` holds the relay code (Salk's relay, `SMTP_*`, STARTTLS) that the service and the run-finished email both use.
 
 ## Provisioning (per environment)

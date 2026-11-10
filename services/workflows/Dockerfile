@@ -21,7 +21,8 @@ COPY . .
 
 # Run as a non-root system user, matching langchain-agent and bloommcp
 RUN addgroup --system bloom && adduser --system --ingroup bloom bloom \
-    && chown -R bloom:bloom /app
+    && chown -R bloom:bloom /app \
+    && mkdir -p /var/log/bloom-mail && chown bloom:bloom /var/log/bloom-mail
 USER bloom
 
 EXPOSE 5100
