@@ -578,6 +578,14 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 `…_add_cyl_pipeline_run_status_polling.sql` (Phase 3); the gravi reads by
 `…_workflows_read_gravi.sql`.
 
+## Mail service
+
+`mail_service.py` runs as the `mail` container: Bloom's one sender of email for other containers. It listens on port 5200 on the internal network only (no host port, no Caddy route) and admits a caller only with `Authorization: Bearer <MAIL_SERVICE_SECRET>`. Each route sends one fixed email; the caller chooses only the recipient, within the route's rules.
+
+- `POST /connector-signup {"email"}`: bloommcp calls it when the Salk connector refuses someone for having no Bloom account. One `@salk.edu` address only (400 otherwise); at most one email per address every 2 hours, kept in memory, so a restart may send one more; 502 `relay_error` if the relay fails. Without `SMTP_HOST` or `SITE_URL` it sends nothing and answers `{"sent": false}`.
+
+`mail.py` holds the relay code (Salk's relay, `SMTP_*`, STARTTLS) that the service and the run-finished email both use.
+
 ## Provisioning (per environment)
 
 1. Create the Supabase auth user (Studio → Authentication, or the Auth Admin API) with an email + password. Studio is behind Kong's basic-auth, so the Studio route needs the `DASHBOARD` credential (the deploy secrets `PROD_/STAGING_DASHBOARD_USERNAME` and `_PASSWORD`); without it, use the Auth Admin API.

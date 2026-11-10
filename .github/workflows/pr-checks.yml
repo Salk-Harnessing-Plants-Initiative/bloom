@@ -879,6 +879,8 @@ jobs:
           echo "CLOUDFLARE_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> .env.ci
           # Caddy's tunnel-entrance header value; no tunnel token, since cloudflared does not run in CI.
           echo "BLOOMMCP_TUNNEL_SECRET=ci-tunnel-secret-not-real-0000000000000000" >> .env.ci
+          # The internal mail service's caller secret. CI has no relay at SMTP_HOST, so a send fails and is logged.
+          echo "MAIL_SERVICE_SECRET=ci-mail-secret-not-real-00000000000000000000" >> .env.ci
           echo "TUNNEL_SUBNET=172.30.252.0/28" >> .env.ci
           # cloudflared does not run in CI; the tunnel tests send from its address instead.
           echo "TUNNEL_CADDY_IP=172.30.252.2" >> .env.ci

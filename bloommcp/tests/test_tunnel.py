@@ -21,7 +21,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from starlette.testclient import TestClient
 
-from bloom_mcp import auth, supabase_client, tunnel
+from bloom_mcp import auth, signup_email, supabase_client, tunnel
 from bloom_mcp.identity import IdentityMiddleware
 
 SECRET = "s" * 40
@@ -123,6 +123,14 @@ def lookup(monkeypatch):
     fake = _FakeLookup()
     monkeypatch.setattr(supabase_client, "call_rpc", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def signup_requests(monkeypatch):
+    """Autouse so no test starts a real request to the mail service; records the addresses."""
+    calls = []
+    monkeypatch.setattr(signup_email, "request", calls.append)
+    return calls
 
 
 @pytest.fixture(autouse=True)
@@ -828,3 +836,28 @@ def test_health_with_tunnel_secret_is_not_checked(lookup):
     resp = _get(IdentityMiddleware(app), _tunnel_headers(), path="/health")
     assert resp.status_code == 200
     assert lookup.calls == []
+
+
+def test_unknown_account_requests_the_signup_email_once(monkeypatch, signup_requests):
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    resp = _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers("NewPerson@salk.edu"))
+    assert resp.status_code == 403
+    assert signup_requests == ["newperson@salk.edu"]
+
+
+def test_known_account_requests_no_signup_email(lookup, signup_requests):
+    assert _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL)).status_code == 200
+    assert signup_requests == []
+
+
+def test_lookup_failure_requests_no_signup_email(monkeypatch, signup_requests):
+    fake = _FakeLookup(error=ConnectionError("database unreachable"))
+    monkeypatch.setattr(supabase_client, "call_rpc", fake)
+    assert _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL)).status_code == 503
+    assert signup_requests == []
+
+
+def test_a_bad_token_requests_no_signup_email(lookup, signup_requests):
+    headers = [("X-Bloom-Tunnel", SECRET), ("Authorization", "Bearer not-a-token")]
+    assert _get(IdentityMiddleware(_RecordingApp()), headers).status_code == 403
+    assert signup_requests == []
