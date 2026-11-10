@@ -25,6 +25,10 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         return False
     if f.op == "contains":
         return str(f.value).lower() in str(value).lower()
+    if f.op == "iequals":
+        return str(value).lower() == str(f.value).lower()
+    if f.op == "istarts_with":
+        return str(value).lower().startswith(str(f.value).lower())
     if f.op == "in":
         return value in f.value
     compare = {

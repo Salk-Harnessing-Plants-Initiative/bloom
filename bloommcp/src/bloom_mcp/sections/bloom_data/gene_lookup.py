@@ -204,7 +204,13 @@ def gene_lookup(params: GeneLookupParams) -> GeneLookupResult:
     ]
     orthologs = gene_reads.orthogroups(reads, [g for g in groups if g], prefixes)
 
-    names = {gene_reads.agi(i) or i for i in gene_ids} or {query, query.upper()}
+    trimmed = gene_reads.stem(query)
+    names = {gene_reads.agi(i) or i for i in gene_ids} or {
+        query,
+        query.upper(),
+        trimmed,
+        trimmed.upper(),
+    }
     terms = {g["symbol"] for g in genes if g.get("symbol")} | {
         n for n in names if gene_reads.agi(n)
     }

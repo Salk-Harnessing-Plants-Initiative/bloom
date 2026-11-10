@@ -33,6 +33,9 @@ IN_CHUNK = 200
 
 # An Arabidopsis id with its annotation suffix: AT4G28110.Araport11.447 -> AT4G28110.
 _AGI = re.compile(r"^(AT[1-5CM]G\d{5})(\..+)?$", re.IGNORECASE)
+_BARE_AGI = re.compile(r"^AT[1-5CM]G\d{5}$", re.IGNORECASE)
+# A transcript number on the end of an id: AT4G28110.1, Glyma.01G000100.2.
+_TRANSCRIPT = re.compile(r"\.\d+$")
 
 COLUMNS: dict[str, tuple[str, ...]] = {
     "genes": (
@@ -136,20 +139,35 @@ def agi(gene_id: str) -> str | None:
     return match.group(1).upper() if match else None
 
 
+def stem(name: str) -> str:
+    """`name` without a transcript number on the end: AT4G28110.1 -> AT4G28110."""
+    return _TRANSCRIPT.sub("", name)
+
+
+def bare_agi(name: str) -> str | None:
+    """The AGI id `name` is, once its transcript number is dropped, else None."""
+    trimmed = stem(name)
+    return trimmed.upper() if _BARE_AGI.match(trimmed) else None
+
+
 def find_genes(reads: Reads, name: str) -> list[dict[str, Any]]:
-    """Genes whose id, id without its suffix, or symbol is `name`, ignoring case.
+    """Genes whose id or symbol is `name` or its stem, ignoring case; an AGI id also finds
+    its annotated id (AT4G28110 -> AT4G28110.Araport11.447). Whole values only, so MYB41
+    never matches MYB410.
 
     Not standard_name: it holds HPI line names (ATC2-myb41-1 is on MYB74).
     """
-    wanted = name.lower()
+    searches = [
+        Filter(column, "iequals", value)
+        for value in dict.fromkeys([name, stem(name)])
+        for column in ("gene_id", "symbol")
+    ]
+    if agi_id := bare_agi(name):
+        searches.append(Filter("gene_id", "istarts_with", agi_id + "."))
     found: dict[str, dict[str, Any]] = {}
-    for column in ("gene_id", "symbol"):
-        for row in reads.rows("genes", [Filter(column, "contains", name)]):
-            value = (row.get(column) or "").lower()
-            if value == wanted or (
-                column == "gene_id" and value.startswith(wanted + ".")
-            ):
-                found.setdefault(row["gene_id"], row)
+    for search in searches:
+        for row in reads.rows("genes", [search]):
+            found.setdefault(row["gene_id"], row)
     return sorted(found.values(), key=lambda r: r["gene_id"])[:MAX_GENES]
 
 
