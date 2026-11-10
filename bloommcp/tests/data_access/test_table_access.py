@@ -80,10 +80,10 @@ def test_paging_keys_name_readable_tables_and_default_to_id():
     assert set(table_access.PAGING_KEYS) <= table_access.READABLE_TABLES
     assert all(table_access.PAGING_KEYS.values())
     assert table_access.paging_key("species") == ("id",)
-    assert table_access.paging_key("orthogroups") == (
-        "run_id",
-        "protein_uid",
-        "orthogroup",
+    assert table_access.paging_key("gene_candidate_scientists") == (
+        "id",
+        "gene_candidate_id",
+        "scientist_id",
     )
 
 
