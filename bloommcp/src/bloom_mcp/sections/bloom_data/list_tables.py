@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
-from bloom_mcp.data_access import table_access
+from bloom_mcp.data_access import page_links, table_access, table_notes
 from bloom_mcp.tools import _ports
 
 from ._common import logs_call, readable_column_details, reports_read_errors
@@ -41,6 +41,16 @@ class ListTablesResult(BaseModel):
     )
 
 
+def _notes(tables: list[str]) -> dict[str, str]:
+    """Each table's note, then how to link its rows to Bloom's website."""
+    notes = table_notes.table_notes(tables)
+    joined = {
+        t: " ".join(filter(None, (notes.get(t), page_links.link_note(t))))
+        for t in tables
+    }
+    return {t: note for t, note in joined.items() if note}
+
+
 @as_mcp_tool(input_model=ListTablesParams, output_model=ListTablesResult)
 @logs_call
 @reports_read_errors
@@ -51,7 +61,9 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
     and rnaseq_ (expression), gene/genome/assemblies (genes and genomes). Use query_table
     and count_rows to read them. Follow `notes`: they say which table gives the answer the
     website shows, and which views already join the tables you need. Otherwise join
-    tables by following each column's `references`.
+    tables by following each column's `references`. For trait analysis (statistics, QC,
+    heritability, PCA, clustering, correlations, plots), use the sleap_roots_* tools, not
+    these tables.
 
     Deleted experiments, species, scRNA datasets and gene candidates are left out of their
     own tables, but rows that belong to them (waves, plants, scans, traits, cells) are not:
@@ -65,7 +77,7 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
         ]
         return ListTablesResult(
             tables=[params.table],
-            notes=table_access.table_notes([params.table]),
+            notes=_notes([params.table]),
             columns=columns,
         )
     names = sorted(
@@ -73,9 +85,7 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
     )
     if params.contains:
         names = [t for t in names if params.contains.lower() in t.lower()]
-    return ListTablesResult(
-        tables=names, notes=table_access.table_notes(names), columns=None
-    )
+    return ListTablesResult(tables=names, notes=_notes(names), columns=None)
 
 
 def _readable(reference: str | None) -> str | None:

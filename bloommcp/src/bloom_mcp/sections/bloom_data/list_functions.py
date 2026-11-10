@@ -38,8 +38,9 @@ def list_functions(params: ListFunctionsParams) -> ListFunctionsResult:
     """List Bloom's read-only database functions: searches and per-experiment summaries.
 
     Call one with call_function. They answer some questions in one step that would take
-    several table reads: finding experiments or genes by name, an experiment's traits,
-    the proteins most similar to one protein.
+    several table reads: finding genes by name, an experiment's traits, the proteins most
+    similar to one protein. To find experiments by name, filter cyl_experiments or
+    gravi_experiments on name with query_table instead.
     """
     served = _ports.table_reader().functions()
     return ListFunctionsResult(

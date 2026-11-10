@@ -361,3 +361,26 @@ def test_trait_functions_return_trait_values_as_the_website_shows_them(functions
     )
     assert result.rows[0]["trait_value"] == 12.3
     assert "12.3000001" not in result.model_dump_json()
+
+
+def test_list_functions_sends_experiment_name_searches_to_the_tables():
+    doc = list_functions.__doc__ or ""
+    assert "finding experiments" not in doc
+    assert "cyl_experiments" in doc and "query_table" in doc
+
+
+@pytest.mark.parametrize("name", ["get_experiment_traits", "get_scan_traits"])
+def test_trait_functions_send_analysis_to_the_sleap_roots_tools(name):
+    from bloom_mcp.data_access.table_notes import ANALYSE_WITH_SLEAP_ROOTS
+
+    assert (
+        ANALYSE_WITH_SLEAP_ROOTS in function_access.READABLE_FUNCTIONS[name].description
+    )
+
+
+def test_the_table_tools_point_trait_analysis_to_sleap_roots():
+    from bloom_mcp.sections.bloom_data.list_tables import list_tables
+    from bloom_mcp.sections.bloom_data.query_table import query_table
+
+    for tool in (list_tables, query_table):
+        assert "sleap_roots_*" in (tool.__doc__ or "")

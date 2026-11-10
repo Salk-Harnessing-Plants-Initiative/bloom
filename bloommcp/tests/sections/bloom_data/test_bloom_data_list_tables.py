@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from bloom_mcp.contract.errors import BloomMCPError
-from bloom_mcp.data_access import table_access
+from bloom_mcp.data_access import table_notes
 from bloom_mcp.sections.bloom_data.list_tables import list_tables
 
 
@@ -22,7 +22,7 @@ def test_lists_only_allow_listed_tables(reader):
     ]
     assert result.columns is None
     assert result.notes == {
-        t: table_access.TABLE_NOTES[t]
+        t: table_notes.TABLE_NOTES[t]
         for t in ("cyl_scan_traits_source", "cyl_scans_extended", "scrna_cluster_stats")
     }
 
