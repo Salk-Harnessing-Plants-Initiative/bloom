@@ -22,6 +22,9 @@ from pydantic import BaseModel
 import mail
 
 logger = logging.getLogger(__name__)
+# Callers without the secret: stdout only, so they can't flood mail.log's record of sends.
+unauthenticated = logging.getLogger(f"{__name__}.unauthenticated")
+unauthenticated.propagate = False
 
 SECRET = os.environ.get("MAIL_SERVICE_SECRET") or ""
 # A shorter secret is treated as unset: every caller is refused.
@@ -56,10 +59,12 @@ def setup_logging(log_dir: str = LOG_DIR) -> None:
     """Outcomes go to stdout and, with MAIL_LOG_DIR, to a rotating mail.log there."""
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-        stream = logging.StreamHandler()
-        stream.setFormatter(fmt)
-        logger.addHandler(stream)
+    unauthenticated.setLevel(logging.INFO)
+    for target in (logger, unauthenticated):
+        if not any(type(h) is logging.StreamHandler for h in target.handlers):
+            stream = logging.StreamHandler()
+            stream.setFormatter(fmt)
+            target.addHandler(stream)
     if log_dir:
         try:
             handler = logging.handlers.RotatingFileHandler(
@@ -80,8 +85,7 @@ setup_logging()
 
 if SECRET and len(SECRET) < MIN_SECRET_LENGTH:
     logger.error(
-        "MAIL_SERVICE_SECRET is under %d characters; refusing every caller",
-        MIN_SECRET_LENGTH,
+        "the caller secret is too short (32 characters minimum); refusing everyone"
     )
 
 
@@ -112,7 +116,7 @@ class GuardBeforeBody:
         headers = dict(scope["headers"])
         authorization = headers.get(b"authorization", b"").decode("latin-1")
         if not _has_secret(authorization):
-            logger.warning("refused a caller without the right secret")
+            unauthenticated.warning("refused a caller without the right secret")
             await _reply(send, 401, "unauthorized")
             return
         length = headers.get(b"content-length")

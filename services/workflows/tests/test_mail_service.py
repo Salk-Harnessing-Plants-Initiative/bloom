@@ -207,7 +207,7 @@ def test_the_log_file_records_each_outcome(client, sent, monkeypatch, tmp_path):
         handler.flush()
     log = (tmp_path / "mail.log").read_text()
     assert "refused a request for an address that isn't one Salk address" in log
-    assert "refused a caller without the right secret" in log
+    assert "refused a caller without the right secret" not in log
     assert "ada@gmail.com" not in log
     assert SECRET not in log
 
@@ -322,3 +322,15 @@ def test_without_a_contact_there_is_no_reply_to(client, sent, monkeypatch):
     assert msg["Reply-To"] is None
     assert "contact the Bloom team.\n" in msg.get_content()
     assert "reply to this email" not in msg.get_content()
+
+
+def test_unauthenticated_callers_are_logged_to_stdout_only(tmp_path, monkeypatch):
+    """A flood without the secret can't rotate the record of sends out of mail.log."""
+    monkeypatch.setattr(mail_service.logger, "handlers", [])
+    monkeypatch.setattr(mail_service.unauthenticated, "handlers", [])
+    mail_service.setup_logging(str(tmp_path))
+    kinds = [type(h) for h in mail_service.unauthenticated.handlers]
+    assert kinds == [logging.StreamHandler]
+    assert mail_service.unauthenticated.propagate is False
+    for handler in mail_service.logger.handlers:
+        handler.close()

@@ -52,10 +52,10 @@ def test_a_non_salk_address_is_refused(calls):
 def test_a_salk_address_reaches_the_send_step(calls):
     salk = calls["salk"]
     # CI: the relay refuses (502). Dev: no relay, so not sent (200). Never a 401 or 400.
-    assert (salk["status"], salk["body"]) in {
+    assert (salk["status"], salk["body"]) in [
         (502, {"detail": "relay_error"}),
         (200, {"sent": False}),
-    }
+    ]
 
 
 def test_health_answers(calls):
