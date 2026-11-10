@@ -384,3 +384,13 @@ def test_the_table_tools_point_trait_analysis_to_sleap_roots():
         doc = " ".join((tool.__doc__ or "").split())
         assert "sleap_roots_*" in doc and "figures Bloom's pages show" in doc
         assert "ask the user" in doc
+
+
+def test_trait_functions_carry_the_traits_page_link(functions, monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    functions.function_rows["get_scan_traits"] = functions.function_rows[
+        "get_experiment_traits"
+    ]
+    listed = {f.name: f.description for f in list_functions({}).functions}
+    assert "/app/traits/{species_id}/{experiment_id}" in listed["get_scan_traits"]
+    assert "/app/traits/" not in listed["search_genes"]

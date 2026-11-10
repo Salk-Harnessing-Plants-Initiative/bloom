@@ -74,3 +74,34 @@ def test_every_link_is_a_page_on_the_website(table):
             folder = folder / part
             assert folder.is_dir(), f"no route folder {folder}"
     assert (folder / "page.tsx").is_file(), f"no page at {folder}"
+
+
+def test_trait_figures_link_to_the_traits_page_on_their_wave_and_age(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    for name in ("cyl_scan_traits_latest", "get_scan_traits"):
+        note = page_links.link_note(name)
+        assert note is not None
+        assert (
+            "https://bloom.example/app/traits/{species_id}/{experiment_id}"
+            "?wave={wave_number}&age={plant_age_days}" in note
+        )
+        assert "picks the trait there" in note
+    assert "app/traits" not in (page_links.link_note("cyl_experiments") or "")
+
+
+@pytest.mark.skipif(not _ROUTES.is_dir(), reason="the web app isn't checked out here")
+def test_the_traits_page_reads_wave_and_age_from_the_link():
+    page = _ROUTES / "app" / "traits" / "[speciesId]" / "[experimentId]"
+    assert (page / "page.tsx").is_file()
+    params = (page / "parse-search-params.ts").read_text()
+    assert "searchParams.wave" in params and "searchParams.age" in params
+
+
+def test_trait_figure_link_columns_are_readable():
+    assert table_access.visible_columns("cyl_experiments", ["species_id", "id"]) == [
+        "species_id",
+        "id",
+    ]
+    assert table_access.visible_columns(
+        "cyl_scans_extended", ["wave_number", "plant_age_days"]
+    ) == ["wave_number", "plant_age_days"]

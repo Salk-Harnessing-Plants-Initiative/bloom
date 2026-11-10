@@ -34,14 +34,30 @@ PAGE_PARAMS: dict[str, dict[str, str]] = {
 }
 
 
-def link_note(table: str) -> str | None:
-    """The note telling Claude how to link a row of `table` to its Bloom page."""
-    pattern = PAGE_LINKS.get(table)
+# The traits page opened on one wave and plant age; the user picks the trait there.
+TRAITS_PAGE = (
+    "/app/traits/{species_id}/{experiment_id}?wave={wave_number}&age={plant_age_days}"
+)
+# Tables and functions whose trait figures link to TRAITS_PAGE.
+TRAIT_FIGURE_SOURCES = frozenset({"cyl_scan_traits_latest", "get_scan_traits"})
+
+
+def link_note(name: str) -> str | None:
+    """How to link a row of table `name`, or its trait figures, to Bloom's pages."""
     site = (os.environ.get("SITE_URL") or "").strip().rstrip("/")
-    if not pattern or not site:
+    if not site:
         return None
-    return (
-        f"Bloom page for a row: {site}{pattern}, with each {{column}} filled from the "
-        "row (read those columns too). Give this link when you mention the row; give none "
-        "when any of those columns is empty."
-    )
+    notes = []
+    if pattern := PAGE_LINKS.get(name):
+        notes.append(
+            f"Bloom page for a row: {site}{pattern}, with each {{column}} filled from the "
+            "row (read those columns too). Give this link when you mention the row; give "
+            "none when any of those columns is empty."
+        )
+    if name in TRAIT_FIGURE_SOURCES:
+        notes.append(
+            f"Link each wave-and-age set of trait figures to Bloom's traits page: "
+            f"{site}{TRAITS_PAGE}, with species_id and experiment_id from cyl_experiments; "
+            "say the user picks the trait there."
+        )
+    return " ".join(notes) or None

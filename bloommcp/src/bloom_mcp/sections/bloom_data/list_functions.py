@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
-from bloom_mcp.data_access import function_access
+from bloom_mcp.data_access import function_access, page_links
 from bloom_mcp.tools import _ports
 
 from ._common import logs_call, reports_read_errors
@@ -47,7 +47,9 @@ def list_functions(params: ListFunctionsParams) -> ListFunctionsResult:
         functions=[
             FunctionInfo(
                 name=name,
-                description=entry.description,
+                description=" ".join(
+                    filter(None, (entry.description, page_links.link_note(name)))
+                ),
                 params=[
                     ParamInfo(name=p.name, type=p.type, required=p.required)
                     for p in served[name].params
