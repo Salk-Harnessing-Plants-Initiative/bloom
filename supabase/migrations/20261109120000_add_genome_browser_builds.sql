@@ -378,9 +378,10 @@ REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_guard() FROM PUBLIC, ano
 REVOKE EXECUTE ON FUNCTION public.genome_genes_guard() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.genome_browser_build_roles() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.genome_browser_files_ok(JSONB) FROM PUBLIC, anon, authenticated;
--- The two pure helpers are read by whoever reads a build, and by the table's own check.
+-- The file roles are readable by the website and the pipeline; the file check only by admin,
+-- whose direct writes run the table's own check.
 GRANT EXECUTE ON FUNCTION public.genome_browser_build_roles()
-    TO bloom_user, bloom_agent, bloom_workflows, bloom_admin;
+    TO bloom_user, bloom_workflows, bloom_admin;
 GRANT EXECUTE ON FUNCTION public.genome_browser_files_ok(JSONB) TO bloom_admin;
 
 COMMIT;
