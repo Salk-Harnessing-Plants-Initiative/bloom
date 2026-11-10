@@ -284,7 +284,7 @@ services:
       # download_url is usable by outside callers.
       WORKFLOWS_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       # Reads the production model cards from the wandb registry for GET /model-cards
-      # (bloom#971). Only this service gets it; the six other containers built from its image don't.
+      # (bloom#971). Only this service gets it; the seven other containers built from its image don't.
       WANDB_API_KEY: ${WANDB_API_KEY}
       # Bloom's AWS user (bloomv2-workflows-job, the pipeline's), so the folder check can read a folder
       # a scientist shared with it. Unset, only folders anyone can read work.
@@ -520,6 +520,45 @@ services:
     stop_grace_period: 60s
     command: ["python", "rnaseq_status_poller.py"]
 
+  # Bloom's mail service for other containers: internal network only (no port, no
+  # Caddy route); callers need MAIL_SERVICE_SECRET. Today: the connector sign-up email.
+  mail:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    mem_limit: 256m
+    memswap_limit: 256m
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MAIL_LOG_DIR: /var/log/bloom-mail
+      MAIL_CONTACT: ${MAIL_CONTACT}
+      MAIL_SERVICE_SECRET: ${MAIL_SERVICE_SECRET}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
+      SITE_URL: ${SITE_URL}
+    command: ["uvicorn", "mail_service:app", "--host", "0.0.0.0", "--port", "5200"]
+    # Its log of every email outcome; a volume, so it survives restarts and deploys.
+    volumes:
+      - mail-log:/var/log/bloom-mail
+    expose:
+      - "5200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5200/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - supanet
+    restart: unless-stopped
+
   # Consumes the gravi_plate_video_dispatch queue: one render at a time.
   plate-video-worker:
     build:
@@ -650,6 +689,9 @@ services:
       BLOOMMCP_TUNNEL_JWT_ISSUER: ${BLOOMMCP_TUNNEL_JWT_ISSUER}
       BLOOMMCP_TUNNEL_JWT_AUDIENCE: ${BLOOMMCP_TUNNEL_JWT_AUDIENCE}
       SITE_URL: ${SITE_URL}
+      # The sign-up email for refused connector users, through the internal mail service.
+      MAIL_SERVICE_URL: http://mail:5200
+      MAIL_SERVICE_SECRET: ${MAIL_SERVICE_SECRET}
       # numba AOT cache. bloommcp imports umap-learn, which uses
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
@@ -1204,6 +1246,7 @@ services:
 
 volumes:
   db-config:
+  mail-log:
   caddy-data:
   caddy-config:
 

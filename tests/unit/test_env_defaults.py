@@ -53,6 +53,8 @@ SENSITIVE_INVENTORY = {
     # bloommcp's Salk connector: the tunnel token and Caddy's internal secret.
     "CLOUDFLARE_TUNNEL_TOKEN",
     "BLOOMMCP_TUNNEL_SECRET",
+    # The internal mail service's caller secret (bloommcp asks it to send email).
+    "MAIL_SERVICE_SECRET",
     "DEPLOY_PATH",
     "MINIO_DATA_PATH",
     "WORKFLOWS_SUPABASE_EMAIL",

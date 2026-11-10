@@ -336,6 +336,45 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
+  # Bloom's mail service for other containers: internal network only (no port, no
+  # Caddy route); callers need MAIL_SERVICE_SECRET. Today: the connector sign-up email.
+  mail:
+    build:
+      context: ./services/workflows
+      dockerfile: Dockerfile
+    read_only: true
+    mem_limit: 256m
+    memswap_limit: 256m
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MAIL_LOG_DIR: /var/log/bloom-mail
+      MAIL_CONTACT: ${MAIL_CONTACT:-}
+      MAIL_SERVICE_SECRET: ${MAIL_SERVICE_SECRET:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-}
+      SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-}
+      SITE_URL: ${SITE_URL:-}
+    command: ["uvicorn", "mail_service:app", "--host", "0.0.0.0", "--port", "5200"]
+    # Its log of every email outcome; a volume, so it survives restarts and deploys.
+    volumes:
+      - mail-log:/var/log/bloom-mail
+    expose:
+      - "5200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5200/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - supanet
+    restart: unless-stopped
+
   # Consumes the gravi_plate_video_dispatch queue: one render at a time.
   plate-video-worker:
     build:
@@ -459,6 +498,9 @@ services:
       BLOOMMCP_TUNNEL_JWT_ISSUER: ${BLOOMMCP_TUNNEL_JWT_ISSUER:-}
       BLOOMMCP_TUNNEL_JWT_AUDIENCE: ${BLOOMMCP_TUNNEL_JWT_AUDIENCE:-}
       SITE_URL: ${SITE_URL:-}
+      # The sign-up email for refused connector users; unset values send nothing.
+      MAIL_SERVICE_URL: http://mail:5200
+      MAIL_SERVICE_SECRET: ${MAIL_SERVICE_SECRET:-}
       # Storage backend (opt-in, default off — empty here behaves exactly like
       # unset). Set BLOOM_STORAGE_BACKEND=local in your own .env.dev, or run
       # `make dev-up-local`, to run FULLY LOCAL (offline) — reads inputs via
@@ -973,6 +1015,7 @@ services:
 
 volumes:
   db-config:
+  mail-log:
 
 networks:
   supanet:
