@@ -68,7 +68,7 @@ bloommcp hold the secret for and which accepts only cloudflared's fixed address.
 | `BLOOMMCP_TUNNEL_JWKS_URL` | AIRC's public keys for this environment's JWTs. Required with the secret. |
 | `BLOOMMCP_TUNNEL_JWT_ISSUER` / `BLOOMMCP_TUNNEL_JWT_AUDIENCE` | The `iss` and `aud` the JWT must carry (`bloom-mcp`; `bloom-staging` or `bloom-prod`). Required with the secret. |
 | `BLOOMMCP_TUNNEL_JWKS_FILE` | A local keys file used instead of the URL, for CI and tests only. |
-| `SITE_URL` | Bloom's address, named in the "create an account" refusal. |
+| `SITE_URL` | Bloom's address, named in the "create an account" refusal and used for the Bloom page links the data tools give Claude. Unset: no page links. |
 
 ## Development
 

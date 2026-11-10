@@ -40,8 +40,21 @@ def test_the_link_follows_the_tables_own_note(monkeypatch):
     assert "species" not in notes
 
 
+def test_every_link_names_the_route_param_of_each_placeholder():
+    for table, pattern in page_links.PAGE_LINKS.items():
+        assert set(_PLACEHOLDER.findall(pattern)) == set(page_links.PAGE_PARAMS[table])
+
+
+def test_a_link_note_says_to_skip_empty_columns(monkeypatch):
+    monkeypatch.setenv("SITE_URL", " https://bloom.example/ ")
+    note = page_links.link_note("rnaseq_runs")
+    assert note is not None
+    assert "https://bloom.example/app/rnaseq-runs/{id}" in note
+    assert "give none when any of those columns is empty" in note
+
+
 @pytest.mark.parametrize("table", sorted(page_links.PAGE_LINKS))
-def test_links_use_readable_visible_columns(table):
+def test_link_columns_are_readable_and_not_hidden(table):
     assert table_access.is_readable(table)
     columns = _PLACEHOLDER.findall(page_links.PAGE_LINKS[table])
     assert table_access.visible_columns(table, columns) == columns
@@ -52,12 +65,11 @@ def test_links_use_readable_visible_columns(table):
 def test_every_link_is_a_page_on_the_website(table):
     folder = _ROUTES
     for part in page_links.PAGE_LINKS[table].strip("/").split("/"):
-        if _PLACEHOLDER.fullmatch(part):
-            dynamic = [
-                d for d in folder.iterdir() if d.is_dir() and d.name.startswith("[")
-            ]
-            assert len(dynamic) == 1, f"{folder} has no single [param] folder"
-            folder = dynamic[0]
+        placeholder = _PLACEHOLDER.fullmatch(part)
+        if placeholder:
+            param = page_links.PAGE_PARAMS[table][placeholder.group(1)]
+            folder = folder / f"[{param}]"
+            assert folder.is_dir(), f"{{{placeholder.group(1)}}} doesn't fill {folder}"
         else:
             folder = folder / part
             assert folder.is_dir(), f"no route folder {folder}"
