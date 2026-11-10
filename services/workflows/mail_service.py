@@ -7,6 +7,7 @@ the recipient, within that route's rules. Today: the connector sign-up email.
 
 import collections
 import hmac
+import json
 import logging
 import logging.handlers
 import os
@@ -14,7 +15,7 @@ import re
 import threading
 import time
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 import mail
@@ -35,6 +36,8 @@ LOG_DIR = os.environ.get("MAIL_LOG_DIR") or ""
 LOG_FILE_BYTES = 1_000_000
 LOG_FILE_COUNT = 5
 MAX_EMAIL_LENGTH = 254
+# Largest request read: a sign-up request is about 40 bytes.
+MAX_BODY_BYTES = 1024
 # One address at salk.edu exactly, from the characters Salk addresses use.
 _SALK_ADDRESS = re.compile(r"^[a-z0-9._%+-]+@salk\.edu$")
 
@@ -83,15 +86,75 @@ class SignupRequest(BaseModel):
     email: str
 
 
-def _check_secret(authorization: str | None) -> None:
-    scheme, _, token = (authorization or "").partition(" ")
-    if (
-        len(SECRET) < MIN_SECRET_LENGTH
-        or scheme.lower() != "bearer"
-        or not hmac.compare_digest(token.encode(), SECRET.encode())
-    ):
-        logger.warning("refused a caller without the right secret")
-        raise HTTPException(status_code=401, detail="unauthorized")
+def _has_secret(authorization: str) -> bool:
+    scheme, _, token = authorization.partition(" ")
+    return (
+        len(SECRET) >= MIN_SECRET_LENGTH
+        and scheme.lower() == "bearer"
+        and hmac.compare_digest(token.encode(), SECRET.encode())
+    )
+
+
+class GuardBeforeBody:
+    """Checks the secret, then the declared size, from the headers alone, before anything
+    reads the body: a caller without the secret can't make the service parse or buffer it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] == "/health":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope["headers"])
+        authorization = headers.get(b"authorization", b"").decode("latin-1")
+        if not _has_secret(authorization):
+            logger.warning("refused a caller without the right secret")
+            await _reply(send, 401, "unauthorized")
+            return
+        length = headers.get(b"content-length")
+        if scope["method"] != "GET":
+            if length is None or not length.isdigit():
+                await _reply(send, 411, "length_required")
+                return
+            if int(length) > MAX_BODY_BYTES:
+                logger.warning("refused a %s-byte request", int(length))
+                await _reply(send, 413, "too_large")
+                return
+        await self.app(scope, _capped(receive), send)
+
+
+def _capped(receive):
+    """Stops reading once more than MAX_BODY_BYTES arrive, whatever was declared."""
+    seen = 0
+
+    async def capped():
+        nonlocal seen
+        message = await receive()
+        seen += len(message.get("body", b""))
+        if seen > MAX_BODY_BYTES:
+            return {"type": "http.disconnect"}
+        return message
+
+    return capped
+
+
+async def _reply(send, status: int, detail: str) -> None:
+    body = json.dumps({"detail": detail}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+app.add_middleware(GuardBeforeBody)
 
 
 def _signup_body(email: str) -> str:
@@ -111,11 +174,9 @@ async def health() -> dict:
 
 
 @app.post("/connector-signup")
-def connector_signup(
-    request: SignupRequest, authorization: str | None = Header(default=None)
-) -> dict:
-    """Emails a Salk user who has no Bloom account how to make one; at most every 2 hours."""
-    _check_secret(authorization)
+def connector_signup(request: SignupRequest) -> dict:
+    """Emails a Salk user who has no Bloom account how to make one; at most every 2 hours.
+    GuardBeforeBody has already checked the caller's secret and the request's size."""
     email = request.email.strip().lower()
     if len(email) > MAX_EMAIL_LENGTH or not _SALK_ADDRESS.match(email):
         logger.warning("refused a request for an address that isn't one Salk address")

@@ -580,7 +580,7 @@ claim/complete/fail functions by `…_add_cyl_pipeline_dispatch_functions.sql`
 
 ## Mail service
 
-`mail_service.py` runs as the `mail` container: Bloom's one sender of email for other containers. It listens on port 5200 on the internal network only (no host port, no Caddy route) and admits a caller only with `Authorization: Bearer <MAIL_SERVICE_SECRET>`; a secret under 32 characters refuses every caller. Whatever the caller, it sends at most 20 emails an hour (429 `hourly_limit` after that), so a leaked secret can't be used for bulk mail. Each route sends one fixed email; the caller chooses only the recipient, within the route's rules.
+`mail_service.py` runs as the `mail` container: Bloom's one sender of email for other containers. It listens on port 5200 on the internal network only (no host port, no Caddy route) and admits a caller only with `Authorization: Bearer <MAIL_SERVICE_SECRET>`, checked from the headers before any request body is read (no secret: 401 whatever the body; a body must declare its length and be at most 1 KB, else 411 or 413); a secret under 32 characters refuses every caller. Whatever the caller, it sends at most 20 emails an hour (429 `hourly_limit` after that), so a leaked secret can't be used for bulk mail. Each route sends one fixed email; the caller chooses only the recipient, within the route's rules.
 
 - `POST /connector-signup {"email"}`: bloommcp calls it when the Salk connector refuses someone for having no Bloom account. One `@salk.edu` address made of letters, digits and `. _ % + -` (400 otherwise); at most one email per address every 2 hours, kept in memory, so a restart may send one more; 502 `relay_error` if the relay fails. Without `SMTP_HOST` or `SITE_URL` it sends nothing and answers `{"sent": false}`.
 

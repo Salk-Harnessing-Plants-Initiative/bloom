@@ -215,3 +215,90 @@ def test_an_unwritable_log_dir_still_starts(monkeypatch, tmp_path):
         not isinstance(h, logging.handlers.RotatingFileHandler)
         for h in mail_service.logger.handlers
     )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [None, b"not json", b'{"wrong": 1}', b"x" * 5000],
+    ids=["no body", "not json", "wrong shape", "huge"],
+)
+def test_without_the_secret_the_body_is_never_read(client, sent, body):
+    """401 whatever the body: without the guard FastAPI would parse it first and answer 422."""
+    kwargs = {"content": body} if body is not None else {}
+    resp = client.post(
+        "/connector-signup", headers={"Content-Type": "application/json"}, **kwargs
+    )
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "unauthorized"}
+    assert sent == []
+
+
+def test_a_body_over_the_limit_is_refused_before_it_is_read(client, sent):
+    big = b'{"email": "' + b"a" * mail_service.MAX_BODY_BYTES + b'@salk.edu"}'
+    resp = client.post(
+        "/connector-signup",
+        content=big,
+        headers={**AUTH, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+    assert sent == []
+
+
+def test_a_body_without_a_declared_length_is_refused(client, sent):
+    def chunks():
+        yield b'{"email": "ada@salk.edu"}'
+
+    resp = client.post(
+        "/connector-signup",
+        content=chunks(),
+        headers={**AUTH, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 411
+    assert sent == []
+
+
+def test_a_body_longer_than_declared_is_cut_off(sent):
+    """A caller that lies about its length still can't make the service read past the limit."""
+    received = []
+
+    async def inner(scope, receive, send):
+        while True:
+            message = await receive()
+            received.append(message)
+            if message["type"] == "http.disconnect" or not message.get("more_body"):
+                break
+
+    import asyncio
+
+    guard = mail_service.GuardBeforeBody(inner)
+    chunk = b"x" * 600
+    messages = iter(
+        [
+            {"type": "http.request", "body": chunk, "more_body": True},
+            {"type": "http.request", "body": chunk, "more_body": True},
+            {"type": "http.request", "body": chunk, "more_body": False},
+        ]
+    )
+
+    async def receive():
+        return next(messages)
+
+    async def send(message):
+        pass
+
+    scope = {
+        "type": "http",
+        "path": "/connector-signup",
+        "method": "POST",
+        "headers": [
+            (b"authorization", f"Bearer {SECRET}".encode()),
+            (b"content-length", b"10"),
+        ],
+    }
+    asyncio.run(guard(scope, receive, send))
+    assert received[-1] == {"type": "http.disconnect"}
+    assert sum(len(m.get("body", b"")) for m in received) <= 600
+
+
+def test_with_the_secret_a_normal_request_still_sends(client, sent):
+    assert signup(client, "ada@salk.edu").json() == {"sent": True}
