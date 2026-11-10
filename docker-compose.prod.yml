@@ -644,7 +644,7 @@ services:
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
-      # Salk connector: with Caddy's tunnel secret, verify AIRC's JWT; SITE_URL is for the sign-up hint.
+      # Salk connector: with Caddy's tunnel secret, verify AIRC's JWT; SITE_URL is for the sign-up hint and Bloom page links.
       BLOOMMCP_TUNNEL_SECRET: ${BLOOMMCP_TUNNEL_SECRET}
       BLOOMMCP_TUNNEL_JWKS_URL: ${BLOOMMCP_TUNNEL_JWKS_URL}
       BLOOMMCP_TUNNEL_JWT_ISSUER: ${BLOOMMCP_TUNNEL_JWT_ISSUER}

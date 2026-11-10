@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -37,6 +38,16 @@ def _unavailable(reason: str):
 
 def _table_access():
     spec = importlib.util.spec_from_file_location("table_access", TABLE_ACCESS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sibling(name: str):
+    """Another data_access module loaded by path, as _table_access loads its own."""
+    spec = importlib.util.spec_from_file_location(
+        name, TABLE_ACCESS.with_name(f"{name}.py")
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -156,7 +167,8 @@ def test_every_owner_rights_view_over_deletable_rows_has_a_deleted_note(pg_conn)
             """
         )
         views = {row[0] for row in cur.fetchall()} & access.READABLE_TABLES
-    missing = sorted(v for v in views if "deleted" not in access.TABLE_NOTES.get(v, ""))
+    notes = _sibling("table_notes").TABLE_NOTES
+    missing = sorted(v for v in views if "deleted" not in notes.get(v, ""))
     assert views, "expected the cylinder views that join cyl_experiments"
     assert missing == [], f"add a deleted-rows note for: {missing}"
 
@@ -351,7 +363,8 @@ _NOTE_COLUMNS = {
     "scrna_de_genes": {"de_id"},
     "cyl_experiments": {"deleted"},
     "cyl_scan_traits_source": {"is_latest"},
-    "cyl_scans_extended": {"experiment_id"},
+    "cyl_scans_extended": {"experiment_id", "scan_id"},
+    "cyl_scan_traits_latest": {"scan_id"},
     "cyl_plants_extended": {"experiment_id"},
     "cyl_wave_timeline": {"experiment_name"},
 }
@@ -546,3 +559,16 @@ def test_emails_in_gene_candidate_logs_never_reach_claude(gene_candidate_with_em
     assert len(rows) == 1
     assert rows[0]["status_logs"][0]["status"] == "suspected"
     assert "@" not in json.dumps(rows)
+
+
+def test_every_page_link_fills_from_real_columns(tool_results):
+    links = _sibling("page_links")
+    described = tool_results["described"]
+    missing = {
+        table: sorted(
+            set(re.findall(r"\{(\w+)\}", pattern))
+            - {c["name"] for c in described[table]}
+        )
+        for table, pattern in links.PAGE_LINKS.items()
+    }
+    assert {t: m for t, m in missing.items() if m} == {}

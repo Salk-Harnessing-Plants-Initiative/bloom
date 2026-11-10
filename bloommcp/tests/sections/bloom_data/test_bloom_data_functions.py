@@ -361,3 +361,36 @@ def test_trait_functions_return_trait_values_as_the_website_shows_them(functions
     )
     assert result.rows[0]["trait_value"] == 12.3
     assert "12.3000001" not in result.model_dump_json()
+
+
+def test_list_functions_sends_experiment_name_searches_to_the_tables():
+    doc = list_functions.__doc__ or ""
+    assert "finding experiments" not in doc
+    assert "cyl_experiments" in doc and "query_table" in doc
+
+
+@pytest.mark.parametrize("name", ["get_experiment_traits", "get_scan_traits"])
+def test_trait_functions_send_analysis_to_the_sleap_roots_tools(name):
+    from bloom_mcp.data_access.table_notes import TRAIT_TOOL_RULE
+
+    assert TRAIT_TOOL_RULE in function_access.READABLE_FUNCTIONS[name].description
+
+
+def test_the_table_tools_point_trait_analysis_to_sleap_roots():
+    from bloom_mcp.sections.bloom_data.list_tables import list_tables
+    from bloom_mcp.sections.bloom_data.query_table import query_table
+
+    for tool in (list_tables, query_table):
+        doc = " ".join((tool.__doc__ or "").split())
+        assert "sleap_roots_*" in doc and "figures Bloom's pages show" in doc
+        assert "ask the user" in doc
+
+
+def test_trait_functions_carry_the_traits_page_link(functions, monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    functions.function_rows["get_scan_traits"] = functions.function_rows[
+        "get_experiment_traits"
+    ]
+    listed = {f.name: f.description for f in list_functions({}).functions}
+    assert "/app/traits/{species_id}/{experiment_id}" in listed["get_scan_traits"]
+    assert "/app/traits/" not in listed["search_genes"]

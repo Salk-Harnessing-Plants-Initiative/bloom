@@ -10,6 +10,13 @@ import pytest
 from bloom_mcp.data_access.fake_table_reader import FakeTableReader
 from bloom_mcp.tools import _ports
 
+
+@pytest.fixture(autouse=True)
+def _no_site_url(monkeypatch):
+    """No page links unless a test sets SITE_URL (the dev container exports one)."""
+    monkeypatch.delenv("SITE_URL", raising=False)
+
+
 # Shuffled, so a test passes only if the tool sorts by the paging key itself.
 SPECIES = [
     {"id": i, "common_name": f"plant {i}", "deleted_at": None} for i in range(1, 121)

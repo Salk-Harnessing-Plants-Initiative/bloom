@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from bloom_mcp.data_access import table_access
+from bloom_mcp.data_access import table_access, table_notes
 
 
 def test_no_table_is_both_readable_and_excluded():
@@ -88,18 +88,18 @@ def test_paging_keys_name_readable_tables_and_default_to_id():
 
 
 def test_every_note_names_a_readable_table():
-    assert set(table_access.TABLE_NOTES) <= table_access.READABLE_TABLES
+    assert set(table_notes.TABLE_NOTES) <= table_access.READABLE_TABLES
 
 
 def test_trait_values_are_read_only_through_the_views_that_apply_the_latest_rule():
     assert not table_access.is_readable("cyl_scan_traits")
-    assert "latest" in table_access.TABLE_NOTES["cyl_scan_traits_latest"]
-    assert "is_latest" in table_access.TABLE_NOTES["cyl_scan_traits_source"]
+    assert "latest" in table_notes.TABLE_NOTES["cyl_scan_traits_latest"]
+    assert "is_latest" in table_notes.TABLE_NOTES["cyl_scan_traits_source"]
 
 
 def test_views_that_show_deleted_experiments_say_so():
     for view in ("cyl_scans_extended", "cyl_plants_extended", "cyl_wave_timeline"):
-        assert "deleted" in table_access.TABLE_NOTES[view]
+        assert "deleted" in table_notes.TABLE_NOTES[view]
 
 
 @pytest.mark.parametrize(
@@ -114,7 +114,7 @@ def test_views_that_show_deleted_experiments_say_so():
     ],
 )
 def test_cylinder_tables_that_show_deleted_experiments_say_so(table):
-    assert "deleted" in table_access.TABLE_NOTES[table]
+    assert "deleted" in table_notes.TABLE_NOTES[table]
 
 
 @pytest.mark.parametrize(
@@ -131,7 +131,7 @@ def test_cylinder_tables_that_show_deleted_experiments_say_so(table):
     ],
 )
 def test_scrna_tables_that_show_deleted_datasets_say_so(table):
-    assert "deleted datasets" in table_access.TABLE_NOTES[table]
+    assert "deleted datasets" in table_notes.TABLE_NOTES[table]
 
 
 def test_the_summary_counts_name_deleted_experiments():
@@ -144,12 +144,12 @@ def test_the_summary_counts_name_deleted_experiments():
 def test_dataset_traits_are_read_by_name():
     # Its trait_id is a raw trait-value row, which looks like a cyl_traits id but isn't.
     assert not table_access.is_readable("cyl_dataset_traits")
-    assert "cyl_dataset_trait_names" in table_access.TABLE_NOTES["cyl_datasets"]
+    assert "cyl_dataset_trait_names" in table_notes.TABLE_NOTES["cyl_datasets"]
     assert table_access.is_readable("cyl_dataset_trait_names")
 
 
 def test_the_older_deleted_flag_is_named():
-    assert "deleted = true" in table_access.TABLE_NOTES["cyl_experiments"]
+    assert "deleted = true" in table_notes.TABLE_NOTES["cyl_experiments"]
 
 
 @pytest.mark.parametrize(
@@ -176,11 +176,11 @@ def test_pipeline_error_text_and_pod_names_are_hidden(table, columns):
     ],
 )
 def test_the_joining_views_have_a_note(view):
-    assert table_access.TABLE_NOTES[view]
+    assert table_notes.TABLE_NOTES[view]
 
 
 def test_the_scrna_notes_match_what_the_website_shows():
-    notes = table_access.TABLE_NOTES
+    notes = table_notes.TABLE_NOTES
     assert "NULL_DATASET" in notes["scrna_datasets"]
     assert "reference" in notes["scrna_datasets"]
     assert "complete" in notes["scrna_de_runs"]
@@ -193,7 +193,7 @@ def test_the_scrna_notes_match_what_the_website_shows():
 
 def test_the_wave_averages_say_they_mix_every_run():
     assert (
-        "every pipeline run" in table_access.TABLE_NOTES["cyl_trait_by_experiment_wave"]
+        "every pipeline run" in table_notes.TABLE_NOTES["cyl_trait_by_experiment_wave"]
     )
 
 
@@ -215,7 +215,7 @@ def test_redacting_and_refusing_filters_are_separate_rules_covering_the_same_col
 
 
 def test_the_latest_trait_note_says_latest_is_per_scan():
-    assert "each scan's values" in table_access.TABLE_NOTES["cyl_scan_traits_latest"]
+    assert "each scan's values" in table_notes.TABLE_NOTES["cyl_scan_traits_latest"]
 
 
 @pytest.mark.parametrize(
@@ -259,12 +259,12 @@ def test_addresses_are_still_hidden_whole(text, expected):
     ],
 )
 def test_views_that_miss_the_older_deleted_flag_say_so(view):
-    assert "deleted = true" in table_access.TABLE_NOTES[view]
+    assert "deleted = true" in table_notes.TABLE_NOTES[view]
 
 
 def test_accession_plant_counts_point_to_a_table_that_can_drop_deleted_experiments():
     assert (
-        "cyl_plants_extended" in table_access.TABLE_NOTES["cyl_accession_sample_counts"]
+        "cyl_plants_extended" in table_notes.TABLE_NOTES["cyl_accession_sample_counts"]
     )
 
 
@@ -281,4 +281,30 @@ def test_accession_plant_counts_point_to_a_table_that_can_drop_deleted_experimen
     ],
 )
 def test_more_child_tables_that_show_deleted_items_say_so(table):
-    assert "Includes deleted" in table_access.TABLE_NOTES[table]
+    assert "Includes deleted" in table_notes.TABLE_NOTES[table]
+
+
+def test_only_the_latest_trait_table_carries_the_trait_rule():
+    notes = table_notes.TABLE_NOTES
+    assert table_notes.TRAIT_TOOL_RULE in notes["cyl_scan_traits_latest"]
+    for table in ("cyl_scan_traits_source", "cyl_trait_by_experiment_wave"):
+        assert table_notes.TRAIT_TOOL_RULE not in notes[table]
+        assert "cyl_scan_traits_latest or get_scan_traits" in notes[table]
+
+
+def test_the_trait_rule_matches_the_traits_page_and_routes_analysis():
+    rule = table_notes.TRAIT_TOOL_RULE
+    assert "wave and plant age" in rule and "skipping NaN" in rule
+    for figure in ("n,", "mean", "median", "min", "max"):
+        assert figure in rule
+    assert "get_scan_traits" in rule and "accession_name" in rule
+    for analysis in ("QC", "outliers", "heritability", "PCA", "UMAP", "clustering"):
+        assert analysis in rule
+    assert "sleap_roots_qc_clean" in rule and "cyl_experiments.id" in rule
+    assert "if available" in rule and "ask the user" in rule
+
+
+def test_the_wave_averages_dont_claim_the_websites_figures():
+    note = table_notes.TABLE_NOTES["cyl_trait_by_experiment_wave"]
+    assert "doesn't match the website's figures" in note
+    assert "TRAIT_TOOL_RULE" not in note and table_notes.TRAIT_TOOL_RULE not in note

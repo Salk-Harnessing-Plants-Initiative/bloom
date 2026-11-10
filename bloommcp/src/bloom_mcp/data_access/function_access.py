@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .table_notes import TRAIT_TOOL_RULE
 from .table_ports import Sort
 
 # The most rows a search returns; the functions cap their own limit inputs here too.
@@ -52,13 +53,15 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     ),
     "get_experiment_traits": ReadableFunction(
         "Every trait value of one cylinder experiment, one row per scan and trait, from "
-        "the latest run unless source_id_, run_id_ or recipe_key_ pins one.",
+        "the latest run unless source_id_, run_id_ or recipe_key_ pins one. "
+        + TRAIT_TOOL_RULE,
         # trait_value breaks ties between old rows with no source.
         _by("scan_id", "trait_name", "source_id", "trait_value"),
         float4_columns=("trait_value",),
     ),
     "get_scan_traits": ReadableFunction(
-        "One trait's values for every scan of a cylinder experiment, latest run by default.",
+        "One trait's values for every scan of a cylinder experiment, latest run by default. "
+        + TRAIT_TOOL_RULE,
         _by("scan_id", "trait_value"),
         float4_columns=("trait_value",),
     ),
