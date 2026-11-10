@@ -32,7 +32,7 @@ from tests.integration.test_rnaseq_runs import _sql_body
 
 psycopg = pytest.importorskip("psycopg")
 
-ADD = "SELECT public.add_genome_genes(%s, %s)"
+ADD = "SELECT public.add_genome_browser_genes(%s, %s)"
 FINISH = "SELECT public.finish_genome_browser_build(%s, %s, %s, %s)"
 PIPELINE = "00000000-0000-0000-0000-00000000aaaa"
 
@@ -58,7 +58,7 @@ def _positions(cur, version_id, role="bloom_user"):
     """A version's genes as a reader sees them; no status filter, so the read rule must hide them."""
     as_role(cur, role, WRITER)
     cur.execute("SELECT g.gene_id, g.gene_name, g.contig, g.gene_start, g.gene_end, g.strand "
-                "FROM genome_genes g JOIN genome_browser_builds b ON b.id = g.build_id "
+                "FROM genome_browser_genes g JOIN genome_browser_builds b ON b.id = g.browser_build_id "
                 "WHERE b.version_id = %s ORDER BY g.gene_id", (version_id,))
     rows = cur.fetchall()
     as_admin(cur)
@@ -68,7 +68,7 @@ def _positions(cur, version_id, role="bloom_user"):
 def _gene_rows(cur, build_id, role=None):
     if role:
         as_role(cur, role, WRITER)
-    cur.execute("SELECT count(*) FROM genome_genes WHERE build_id = %s", (build_id,))
+    cur.execute("SELECT count(*) FROM genome_browser_genes WHERE browser_build_id = %s", (build_id,))
     count = cur.fetchone()[0]
     as_admin(cur)
     return count
@@ -135,11 +135,29 @@ def test_a_malformed_gene_is_refused(cur, version_id, gene):
             (psycopg.errors.CheckViolation, psycopg.errors.NotNullViolation))
 
 
-def test_a_gene_is_added_once_per_build(cur, version_id):
+def test_a_batch_sent_again_is_skipped(cur, version_id):
+    build_id, _, folder = start_build(cur, version_id)
+    assert add_genes(cur, build_id, GENES[:1]) == 1
+    assert add_genes(cur, build_id, GENES) == 1
+    assert add_genes(cur, build_id, GENES) == 0
+    assert _gene_rows(cur, build_id) == 2
+    put_files(cur, folder)
+    finish_build(cur, build_id)
+
+
+def test_a_gene_sent_again_at_a_different_position_is_refused(cur, version_id):
     build_id, _, _ = start_build(cur, version_id)
     add_genes(cur, build_id, GENES[:1])
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, ADD, (build_id, json.dumps(GENES[:1])), psycopg.errors.UniqueViolation)
+    refused(cur, ADD, (build_id, json.dumps([_gene(gene_end=6000)])),
+            psycopg.errors.UniqueViolation, match="AT1G01010 was already added .* different position")
+
+
+def test_a_gene_twice_in_one_batch_is_refused(cur, version_id):
+    build_id, _, _ = start_build(cur, version_id)
+    as_role(cur, "bloom_writer", WRITER)
+    refused(cur, ADD, (build_id, json.dumps([GENES[0], GENES[0]])),
+            psycopg.errors.UniqueViolation, match="AT1G01010 appears more than once")
 
 
 def test_another_writer_cannot_add_genes(cur, version_id):
@@ -198,9 +216,9 @@ def test_the_positions_can_be_read(cur, version_id, role):
 
 @pytest.mark.parametrize("status", ["ready", "withdrawn"])
 @pytest.mark.parametrize("statement", [
-    "UPDATE genome_genes SET gene_start = 1 WHERE build_id = %s",
-    "DELETE FROM genome_genes WHERE build_id = %s",
-    "INSERT INTO genome_genes (build_id, gene_id, contig, gene_start, gene_end, strand) "
+    "UPDATE genome_browser_genes SET gene_start = 1 WHERE browser_build_id = %s",
+    "DELETE FROM genome_browser_genes WHERE browser_build_id = %s",
+    "INSERT INTO genome_browser_genes (browser_build_id, gene_id, contig, gene_start, gene_end, strand) "
     "VALUES (%s, 'AT9G99999', 'Chr9', 1, 2, '+')",
 ])
 def test_a_finished_builds_genes_never_change(cur, version_id, status, statement):
@@ -230,7 +248,7 @@ def test_genes_cannot_be_added_to_a_ready_build(cur, version_id):
     ("anon", "SELECT", False), ("authenticated", "SELECT", False),
 ])
 def test_gene_access(cur, role, privilege, allowed):
-    cur.execute("SELECT has_table_privilege(%s, 'public.genome_genes', %s)", (role, privilege))
+    cur.execute("SELECT has_table_privilege(%s, 'public.genome_browser_genes', %s)", (role, privilege))
     assert cur.fetchone()[0] is allowed
 
 
@@ -238,6 +256,6 @@ def test_the_rollback_removes_the_genes(cur, version_id):
     ready_build(cur, version_id)
     for rollback in ROLLBACKS:
         cur.execute(_sql_body(rollback))
-    cur.execute("SELECT to_regclass('public.genome_genes'), "
-                "to_regprocedure('public.add_genome_genes(bigint, jsonb)')")
+    cur.execute("SELECT to_regclass('public.genome_browser_genes'), "
+                "to_regprocedure('public.add_genome_browser_genes(bigint, jsonb)')")
     assert cur.fetchone() == (None, None)

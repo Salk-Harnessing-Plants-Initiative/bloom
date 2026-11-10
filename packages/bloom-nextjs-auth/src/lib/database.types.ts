@@ -2174,9 +2174,9 @@ export type Database = {
           },
         ]
       }
-      genome_genes: {
+      genome_browser_genes: {
         Row: {
-          build_id: number
+          browser_build_id: number
           contig: string
           gene_end: number
           gene_id: string
@@ -2185,7 +2185,7 @@ export type Database = {
           strand: string
         }
         Insert: {
-          build_id: number
+          browser_build_id: number
           contig: string
           gene_end: number
           gene_id: string
@@ -2194,7 +2194,7 @@ export type Database = {
           strand: string
         }
         Update: {
-          build_id?: number
+          browser_build_id?: number
           contig?: string
           gene_end?: number
           gene_id?: string
@@ -2204,8 +2204,8 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "genome_genes_build_id_fkey"
-            columns: ["build_id"]
+            foreignKeyName: "genome_browser_genes_browser_build_id_fkey"
+            columns: ["browser_build_id"]
             isOneToOne: false
             referencedRelation: "genome_browser_builds"
             referencedColumns: ["id"]
@@ -5429,7 +5429,7 @@ export type Database = {
         Args: { p_run_id: number }
         Returns: boolean
       }
-      add_genome_genes: {
+      add_genome_browser_genes: {
         Args: { p_build_id: number; p_genes: Json }
         Returns: number
       }

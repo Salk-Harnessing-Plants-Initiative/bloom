@@ -46,7 +46,7 @@ FINISH = "SELECT public.finish_genome_browser_build(%s, %s, %s, %s)"
 START = "SELECT * FROM public.start_genome_browser_build(%s, '{}')"
 WRITER_FUNCTIONS = (
     "start_genome_browser_build(bigint, jsonb)",
-    "add_genome_genes(bigint, jsonb)",
+    "add_genome_browser_genes(bigint, jsonb)",
     "finish_genome_browser_build(bigint, jsonb, boolean, integer)",
     "abandon_genome_browser_build(bigint)",
 )
@@ -224,6 +224,14 @@ def test_withdraw_allows_a_new_build_in_a_new_folder(cur, genome, version_id):
     assert start_build(cur, version_id)[2] == f"{genome}/v1/browser/b2"
 
 
+def test_the_admin_role_itself_can_withdraw(cur, version_id):
+    build_id, _ = ready_build(cur, version_id)
+    as_role(cur, "bloom_admin", WRITER)
+    cur.execute("SELECT public.withdraw_genome_browser_build(%s, 'wrong GTF')", (build_id,))
+    as_admin(cur)
+    assert _build(cur, build_id)[0] == "withdrawn"
+
+
 def test_withdraw_needs_a_reason(cur, version_id):
     build_id, _ = ready_build(cur, version_id)
     refused(cur, "SELECT public.withdraw_genome_browser_build(%s, '  ')", (build_id,),
@@ -296,6 +304,21 @@ def test_a_ready_builds_file_cannot_be_added_again(cur, version_id):
     cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
     cur.execute("DELETE FROM storage.objects WHERE name = %s", (f"{folder}/genes.gtf.gz.tbi",))
     _insert_refused(cur, f"{folder}/genes.gtf.gz.tbi")
+
+
+@pytest.mark.parametrize("command", ["UPDATE", "DELETE"])
+def test_admin_can_change_an_uploading_builds_files(cur, version_id, command):
+    _, _, folder = start_build(cur, version_id)
+    put_files(cur, folder)
+    name = f"{folder}/genome.fa.gz.gzi"
+    cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
+    as_role(cur, "bloom_admin", WRITER)
+    cur.execute(
+        "UPDATE storage.objects SET metadata = '{\"size\": 2}' WHERE name = %s"
+        if command == "UPDATE" else "DELETE FROM storage.objects WHERE name = %s", (name,),
+    )
+    assert cur.rowcount == 1
+    as_admin(cur)
 
 
 @pytest.mark.parametrize("command", ["UPDATE", "DELETE"])

@@ -6,7 +6,7 @@
 -- request. A browser build is one set of those five files for one ready version, stored at
 -- <genome>/v<N>/browser/b<B>/. This row records the folder, the five files' checksums and
 -- sizes, the tools used and whether the source GTF had to be sorted. Each build also records
--- where every gene of the GTF sits (genome_genes), readable once the build is ready, for gene
+-- where every gene of the GTF sits (genome_browser_genes), readable once the build is ready, for gene
 -- search and for links from single-cell genes to the genome. A build is uploading, then ready
 -- or abandoned; an admin can withdraw a ready one, with a reason, and a new build of the same
 -- version can then be made. A ready build, its files and its genes never change. The build
@@ -45,7 +45,8 @@ SET search_path = pg_catalog, public
 AS $$
     SELECT p_files IS NOT NULL
        AND jsonb_typeof(p_files) = 'object'
-       AND (SELECT count(*) FROM jsonb_object_keys(p_files)) = 5
+       AND (SELECT count(*) FROM jsonb_object_keys(p_files))
+           = (SELECT count(*) FROM public.genome_browser_build_roles())
        AND NOT EXISTS (
              SELECT 1 FROM public.genome_browser_build_roles() r
               WHERE coalesce(p_files -> r.role ->> 'sha256', '') !~ '^[0-9a-f]{64}$'
@@ -81,8 +82,8 @@ CREATE TABLE IF NOT EXISTS public.genome_browser_builds (
 
 -- Each gene of a build, where the GTF places it (1-based, both ends included). A gene's span is
 -- its `gene` line, or its exons' span when the GTF has none.
-CREATE TABLE IF NOT EXISTS public.genome_genes (
-    build_id BIGINT NOT NULL,
+CREATE TABLE IF NOT EXISTS public.genome_browser_genes (
+    browser_build_id BIGINT NOT NULL,
     gene_id TEXT NOT NULL,
     gene_name TEXT,
     contig TEXT NOT NULL,
@@ -104,9 +105,9 @@ BEGIN
       ('genome_browser_builds', 'genome_browser_builds_version_build_key',
        'UNIQUE (version_id, build)'),
       ('genome_browser_builds', 'genome_browser_builds_folder_key', 'UNIQUE (folder)'),
-      ('genome_genes', 'genome_genes_pkey', 'PRIMARY KEY (build_id, gene_id)'),
-      ('genome_genes', 'genome_genes_build_id_fkey',
-       'FOREIGN KEY (build_id) REFERENCES genome_browser_builds(id)')
+      ('genome_browser_genes', 'genome_browser_genes_pkey', 'PRIMARY KEY (browser_build_id, gene_id)'),
+      ('genome_browser_genes', 'genome_browser_genes_browser_build_id_fkey',
+       'FOREIGN KEY (browser_build_id) REFERENCES genome_browser_builds(id)')
     ) AS k(tbl, name, def)
   LOOP
     SELECT pg_get_constraintdef(c.oid) INTO existing
@@ -138,14 +139,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS genome_browser_builds_one_live
     ON public.genome_browser_builds (version_id) WHERE status IN ('uploading', 'ready');
 
 -- Single-cell genes are looked up by id; the browser and expression tracks read a region.
-CREATE INDEX IF NOT EXISTS genome_genes_gene_id_idx ON public.genome_genes (gene_id);
-CREATE INDEX IF NOT EXISTS genome_genes_region_idx
-    ON public.genome_genes (build_id, contig, gene_start);
+CREATE INDEX IF NOT EXISTS genome_browser_genes_gene_id_idx ON public.genome_browser_genes (gene_id);
+CREATE INDEX IF NOT EXISTS genome_browser_genes_region_idx
+    ON public.genome_browser_genes (browser_build_id, contig, gene_start);
 -- Gene search by part of an id or name.
-CREATE INDEX IF NOT EXISTS genome_genes_gene_id_trgm
-    ON public.genome_genes USING gin (gene_id gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS genome_genes_gene_name_trgm
-    ON public.genome_genes USING gin (gene_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS genome_browser_genes_gene_id_trgm
+    ON public.genome_browser_genes USING gin (gene_id gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS genome_browser_genes_gene_name_trgm
+    ON public.genome_browser_genes USING gin (gene_name gin_trgm_ops);
 
 -- 4. Checks --------------------------------------------------------------------------------
 
@@ -180,18 +181,18 @@ ALTER TABLE public.genome_browser_builds
     END
   );
 
-ALTER TABLE public.genome_genes
-  DROP CONSTRAINT IF EXISTS genome_genes_gene_id_check,
-  ADD CONSTRAINT genome_genes_gene_id_check
+ALTER TABLE public.genome_browser_genes
+  DROP CONSTRAINT IF EXISTS genome_browser_genes_gene_id_check,
+  ADD CONSTRAINT genome_browser_genes_gene_id_check
     CHECK (btrim(gene_id) <> '' AND length(gene_id) <= 200),
-  DROP CONSTRAINT IF EXISTS genome_genes_gene_name_check,
-  ADD CONSTRAINT genome_genes_gene_name_check CHECK (length(gene_name) <= 200),
-  DROP CONSTRAINT IF EXISTS genome_genes_contig_check,
-  ADD CONSTRAINT genome_genes_contig_check CHECK (btrim(contig) <> '' AND length(contig) <= 200),
-  DROP CONSTRAINT IF EXISTS genome_genes_span_check,
-  ADD CONSTRAINT genome_genes_span_check CHECK (gene_start >= 1 AND gene_end >= gene_start),
-  DROP CONSTRAINT IF EXISTS genome_genes_strand_check,
-  ADD CONSTRAINT genome_genes_strand_check CHECK (strand IN ('+', '-', '.'));
+  DROP CONSTRAINT IF EXISTS genome_browser_genes_gene_name_check,
+  ADD CONSTRAINT genome_browser_genes_gene_name_check CHECK (length(gene_name) <= 200),
+  DROP CONSTRAINT IF EXISTS genome_browser_genes_contig_check,
+  ADD CONSTRAINT genome_browser_genes_contig_check CHECK (btrim(contig) <> '' AND length(contig) <= 200),
+  DROP CONSTRAINT IF EXISTS genome_browser_genes_span_check,
+  ADD CONSTRAINT genome_browser_genes_span_check CHECK (gene_start >= 1 AND gene_end >= gene_start),
+  DROP CONSTRAINT IF EXISTS genome_browser_genes_strand_check,
+  ADD CONSTRAINT genome_browser_genes_strand_check CHECK (strand IN ('+', '-', '.'));
 
 -- 5. What may change -----------------------------------------------------------------------
 
@@ -299,13 +300,13 @@ CREATE TRIGGER genome_browser_builds_guard
 
 -- A build's genes are added or removed only while it is uploading, for bloom_admin too, and a
 -- gene row is never edited.
-CREATE OR REPLACE FUNCTION public.genome_genes_guard()
+CREATE OR REPLACE FUNCTION public.genome_browser_genes_guard()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-    v_build_id BIGINT := CASE WHEN TG_OP = 'INSERT' THEN NEW.build_id ELSE OLD.build_id END;
+    v_build_id BIGINT := CASE WHEN TG_OP = 'INSERT' THEN NEW.browser_build_id ELSE OLD.browser_build_id END;
     v_status TEXT;
 BEGIN
     SELECT b.status INTO v_status FROM public.genome_browser_builds b WHERE b.id = v_build_id;
@@ -317,10 +318,10 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS genome_genes_guard ON public.genome_genes;
-CREATE TRIGGER genome_genes_guard
-    BEFORE INSERT OR UPDATE OR DELETE ON public.genome_genes
-    FOR EACH ROW EXECUTE FUNCTION public.genome_genes_guard();
+DROP TRIGGER IF EXISTS genome_browser_genes_guard ON public.genome_browser_genes;
+CREATE TRIGGER genome_browser_genes_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON public.genome_browser_genes
+    FOR EACH ROW EXECUTE FUNCTION public.genome_browser_genes_guard();
 
 -- 6. Access --------------------------------------------------------------------------------
 
@@ -347,35 +348,35 @@ REVOKE UPDATE, DELETE, TRUNCATE ON public.genome_browser_builds FROM service_rol
 GRANT SELECT ON public.genome_browser_builds TO bloom_user, bloom_agent, bloom_workflows;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.genome_browser_builds TO bloom_admin;
 
-ALTER TABLE public.genome_genes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.genome_browser_genes ENABLE ROW LEVEL SECURITY;
 
 -- Readers see a build's genes only once it is ready: never half-loaded or withdrawn ones.
-DROP POLICY IF EXISTS admin_all_genome_genes ON public.genome_genes;
-CREATE POLICY admin_all_genome_genes ON public.genome_genes
+DROP POLICY IF EXISTS admin_all_genome_browser_genes ON public.genome_browser_genes;
+CREATE POLICY admin_all_genome_browser_genes ON public.genome_browser_genes
     FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
-DROP POLICY IF EXISTS user_read_genome_genes ON public.genome_genes;
-CREATE POLICY user_read_genome_genes ON public.genome_genes
+DROP POLICY IF EXISTS user_read_genome_browser_genes ON public.genome_browser_genes;
+CREATE POLICY user_read_genome_browser_genes ON public.genome_browser_genes
     FOR SELECT TO bloom_user USING (EXISTS (
-        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = build_id AND b.status = 'ready'));
-DROP POLICY IF EXISTS agent_read_genome_genes ON public.genome_genes;
-CREATE POLICY agent_read_genome_genes ON public.genome_genes
+        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = browser_build_id AND b.status = 'ready'));
+DROP POLICY IF EXISTS agent_read_genome_browser_genes ON public.genome_browser_genes;
+CREATE POLICY agent_read_genome_browser_genes ON public.genome_browser_genes
     FOR SELECT TO bloom_agent USING (EXISTS (
-        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = build_id AND b.status = 'ready'));
-DROP POLICY IF EXISTS workflows_read_genome_genes ON public.genome_genes;
-CREATE POLICY workflows_read_genome_genes ON public.genome_genes
+        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = browser_build_id AND b.status = 'ready'));
+DROP POLICY IF EXISTS workflows_read_genome_browser_genes ON public.genome_browser_genes;
+CREATE POLICY workflows_read_genome_browser_genes ON public.genome_browser_genes
     FOR SELECT TO bloom_workflows USING (EXISTS (
-        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = build_id AND b.status = 'ready'));
+        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = browser_build_id AND b.status = 'ready'));
 
--- Read for the three roles (ready builds only), rows added only through add_genome_genes.
-REVOKE ALL ON public.genome_genes
+-- Read for the three roles (ready builds only), rows added only through add_genome_browser_genes.
+REVOKE ALL ON public.genome_browser_genes
     FROM anon, authenticated, bloom_user, bloom_agent, bloom_writer, bloom_workflows;
-REVOKE UPDATE, DELETE, TRUNCATE ON public.genome_genes FROM service_role;
-GRANT SELECT ON public.genome_genes TO bloom_user, bloom_agent, bloom_workflows;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.genome_genes TO bloom_admin;
+REVOKE UPDATE, DELETE, TRUNCATE ON public.genome_browser_genes FROM service_role;
+GRANT SELECT ON public.genome_browser_genes TO bloom_user, bloom_agent, bloom_workflows;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.genome_browser_genes TO bloom_admin;
 
 REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_number() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_guard() FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.genome_genes_guard() FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.genome_browser_genes_guard() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.genome_browser_build_roles() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.genome_browser_files_ok(JSONB) FROM PUBLIC, anon, authenticated;
 -- The file roles are readable by the website and the pipeline; the file check only by admin,

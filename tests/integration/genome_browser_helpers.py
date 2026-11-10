@@ -53,7 +53,7 @@ GENES = (
 
 def apply_migrations(c) -> None:
     """The genome migrations, then the annotation and browser migrations."""
-    c.execute("DROP TABLE IF EXISTS public.genome_genes CASCADE")
+    c.execute("DROP TABLE IF EXISTS public.genome_browser_genes CASCADE")
     c.execute("DROP TABLE IF EXISTS public.genome_browser_builds CASCADE")
     c.execute("DROP TABLE IF EXISTS public.genome_annotation_builds CASCADE")
     apply_genome_migrations(c)
@@ -86,7 +86,7 @@ def files_json(**overrides) -> str:
 
 def add_genes(cur, build_id, genes=GENES, user=WRITER, role="bloom_writer"):
     """Add genes to a build; returns how many were added."""
-    return call(cur, "SELECT public.add_genome_genes(%s, %s)", (build_id, json.dumps(genes)),
+    return call(cur, "SELECT public.add_genome_browser_genes(%s, %s)", (build_id, json.dumps(genes)),
                 user=user, role=role)[0]
 
 

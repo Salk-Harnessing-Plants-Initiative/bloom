@@ -28,7 +28,7 @@ EXCLUDED_TABLES = frozenset(
         "experiment_progress_logs",
         # Genome browser builds: excluded until the genome browser is in use.
         "genome_browser_builds",
-        "genome_genes",
+        "genome_browser_genes",
         "protein_embeddings_esm2",
         "protein_embeddings_esm3",
         "rhizovision_accessions",

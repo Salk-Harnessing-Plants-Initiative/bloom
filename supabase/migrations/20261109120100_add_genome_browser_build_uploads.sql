@@ -79,9 +79,10 @@ BEGIN
 END;
 $$;
 
--- Adds 1 to 5,000 genes to the caller's uploading build; returns how many. Each gene is
--- {"gene_id", "gene_name", "contig", "gene_start", "gene_end", "strand"}.
-CREATE OR REPLACE FUNCTION public.add_genome_genes(p_build_id BIGINT, p_genes JSONB)
+-- Adds 1 to 5,000 genes to the caller's uploading build; returns how many were new. Each gene
+-- is {"gene_id", "gene_name", "contig", "gene_start", "gene_end", "strand"}. Sending a batch
+-- again is safe: genes already added with the same position are skipped.
+CREATE OR REPLACE FUNCTION public.add_genome_browser_genes(p_build_id BIGINT, p_genes JSONB)
 RETURNS INTEGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -90,6 +91,7 @@ AS $$
 DECLARE
     v_row public.genome_browser_builds%ROWTYPE := public._own_browser_build(p_build_id);
     v_count INTEGER;
+    v_gene TEXT;
 BEGIN
     IF v_row.status <> 'uploading' THEN
         RAISE EXCEPTION 'browser build % is %, not uploading', p_build_id, v_row.status
@@ -100,13 +102,36 @@ BEGIN
         RAISE EXCEPTION 'send 1 to 5000 genes at a time, as a JSON array'
             USING ERRCODE = '22023';
     END IF;
-    INSERT INTO public.genome_genes (build_id, gene_id, gene_name, contig, gene_start, gene_end,
-                                     strand)
+    SELECT r.gene_id INTO v_gene
+      FROM jsonb_to_recordset(p_genes) AS r(gene_id TEXT)
+     WHERE r.gene_id IS NOT NULL GROUP BY r.gene_id HAVING count(*) > 1 ORDER BY r.gene_id LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'gene % appears more than once; a browser build holds one position per gene',
+            v_gene USING ERRCODE = '23505';
+    END IF;
+    SELECT n.gene_id INTO v_gene
+      FROM jsonb_to_recordset(p_genes) AS n(
+          gene_id TEXT, gene_name TEXT, contig TEXT, gene_start BIGINT, gene_end BIGINT,
+          strand TEXT
+      )
+      JOIN public.genome_browser_genes g
+        ON g.browser_build_id = p_build_id AND g.gene_id = n.gene_id
+     WHERE (g.gene_name, g.contig, g.gene_start, g.gene_end, g.strand)
+           IS DISTINCT FROM (n.gene_name, n.contig, n.gene_start, n.gene_end, n.strand)
+     ORDER BY n.gene_id LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'gene % was already added to browser build % at a different position',
+            v_gene, p_build_id USING ERRCODE = '23505';
+    END IF;
+
+    INSERT INTO public.genome_browser_genes (browser_build_id, gene_id, gene_name, contig,
+                                             gene_start, gene_end, strand)
     SELECT p_build_id, r.gene_id, r.gene_name, r.contig, r.gene_start, r.gene_end, r.strand
       FROM jsonb_to_recordset(p_genes) AS r(
           gene_id TEXT, gene_name TEXT, contig TEXT, gene_start BIGINT, gene_end BIGINT,
           strand TEXT
-      );
+      )
+    ON CONFLICT (browser_build_id, gene_id) DO NOTHING;
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
 END;
@@ -160,7 +185,7 @@ BEGIN
     IF p_gene_count IS NULL OR p_gene_count < 1 THEN
         RAISE EXCEPTION 'a browser build records at least one gene' USING ERRCODE = '22023';
     END IF;
-    SELECT count(*) INTO v_genes FROM public.genome_genes g WHERE g.build_id = p_build_id;
+    SELECT count(*) INTO v_genes FROM public.genome_browser_genes g WHERE g.browser_build_id = p_build_id;
     IF v_genes <> p_gene_count THEN
         RAISE EXCEPTION 'browser build % holds % genes, not %', p_build_id, v_genes,
             p_gene_count USING ERRCODE = '22023';
@@ -191,7 +216,7 @@ BEGIN
         RAISE EXCEPTION 'browser build % is %, not uploading', p_build_id, v_row.status
             USING ERRCODE = '55000';
     END IF;
-    DELETE FROM public.genome_genes WHERE build_id = p_build_id;
+    DELETE FROM public.genome_browser_genes WHERE browser_build_id = p_build_id;
     UPDATE public.genome_browser_builds SET status = 'abandoned' WHERE id = p_build_id;
     RETURN true;
 END;
@@ -232,7 +257,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.start_genome_browser_build(BIGINT, JSONB)
     FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public._own_browser_build(BIGINT) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.add_genome_genes(BIGINT, JSONB)
+REVOKE EXECUTE ON FUNCTION public.add_genome_browser_genes(BIGINT, JSONB)
     FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.finish_genome_browser_build(BIGINT, JSONB, BOOLEAN, INTEGER)
     FROM PUBLIC, anon, authenticated;
@@ -245,7 +270,7 @@ REVOKE EXECUTE ON FUNCTION public.may_upload_browser_file(TEXT) FROM PUBLIC, ano
 -- Builds are made by developer tools (bloomctl, as a writer) or the pipeline.
 GRANT EXECUTE ON FUNCTION public.start_genome_browser_build(BIGINT, JSONB)
     TO bloom_writer, bloom_workflows;
-GRANT EXECUTE ON FUNCTION public.add_genome_genes(BIGINT, JSONB)
+GRANT EXECUTE ON FUNCTION public.add_genome_browser_genes(BIGINT, JSONB)
     TO bloom_writer, bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.finish_genome_browser_build(BIGINT, JSONB, BOOLEAN, INTEGER)
     TO bloom_writer, bloom_workflows;
