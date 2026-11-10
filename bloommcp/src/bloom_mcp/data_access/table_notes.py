@@ -108,18 +108,8 @@ TABLE_NOTES: dict[str, str] = {
         "the latest completed_at, as the website shows. tested = false means the "
         "comparison was skipped and has no genes. " + _INCLUDES_DELETED_DATASETS
     ),
-    "scrna_cluster_stats": (
-        "markers holds each cluster's top marker genes as the website shows them (top: "
-        "gene, symbol, log2fc, q, pct_1, pct_2; n_significant). When it is empty, the "
-        "website takes them from the cluster's one-vs-rest comparison in scrna_de "
-        "(group_kind = 'cluster', group1 = cluster_id, group2 = 'rest', tested = true, "
-        "newest complete run; most cells if several): genes with log2fc > 0 and "
-        "fdr < 0.05, by fdr then log2fc, top 25. " + _INCLUDES_DELETED_DATASETS
-    ),
     "scrna_de_genes": (
-        "Read through scrna_de: keep genes whose de_id is a current comparison there. "
-        "When asked about DE genes, list the top ones (fdr < 0.05, largest |log2fc|) for "
-        "the comparisons asked about, named by joining gene_id to scrna_genes.id."
+        "Read through scrna_de: keep genes whose de_id is a current comparison there."
     ),
     "cyl_trait_by_experiment_wave": (
         "Averages every pipeline run's values, not only the latest, so it doesn't match "
@@ -140,6 +130,7 @@ TABLE_NOTES: dict[str, str] = {
             "scrna_genes",
             "scrna_clusters",
             "scrna_counts",
+            "scrna_cluster_stats",
             "scrna_genotypes",
             "scrna_cluster_neighbors",
             "scrna_enrichment_runs",

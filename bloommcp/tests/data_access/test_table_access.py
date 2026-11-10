@@ -284,17 +284,6 @@ def test_more_child_tables_that_show_deleted_items_say_so(table):
     assert "Includes deleted" in table_notes.TABLE_NOTES[table]
 
 
-def test_the_de_gene_note_leads_with_named_top_genes():
-    note = table_notes.TABLE_NOTES["scrna_de_genes"]
-    assert "fdr < 0.05" in note and "scrna_genes.id" in note
-
-
-def test_the_marker_note_matches_how_the_website_picks_markers():
-    note = table_notes.TABLE_NOTES["scrna_cluster_stats"]
-    assert "markers" in note and "group2 = 'rest'" in note
-    assert "log2fc > 0" in note and "fdr < 0.05" in note and "top 25" in note
-
-
 @pytest.mark.parametrize(
     "table",
     [
