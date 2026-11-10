@@ -218,15 +218,16 @@ PAGING_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 # Readable with email addresses replaced: the gene candidate logs record the email of
-# whoever changed a status, and progress messages can name one.
+# whoever changed a status, and a progress entry's text, links, images or tags can hold one.
+_PROGRESS_LOG_TEXT = frozenset({"message", "links", "images", "tags"})
 EMAIL_REDACTED_COLUMNS: dict[str, frozenset[str]] = {
     "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
-    "experiment_progress_logs": frozenset({"message"}),
+    "experiment_progress_logs": _PROGRESS_LOG_TEXT,
 }
 # Never filtered or ordered on: a filter could test for an address the reply hides.
 UNFILTERABLE_COLUMNS: dict[str, frozenset[str]] = {
     "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
-    "experiment_progress_logs": frozenset({"message"}),
+    "experiment_progress_logs": _PROGRESS_LOG_TEXT,
 }
 EMAIL_HIDDEN = "[email hidden]"
 # \w covers accented letters; ' and ’ appear in names like o'brien. The lookbehind starts a

@@ -31,6 +31,10 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         return str(value).lower().startswith(str(f.value).lower())
     if f.op == "in":
         return value in f.value
+    if value in ("NaN", "Infinity", "-Infinity") and isinstance(f.value, (int, float)):
+        # A number column's NaN or Infinity, held as PostgREST sends it; Postgres compares
+        # the number.
+        value = float(value)
     compare = {
         "eq": operator.eq,
         "neq": operator.ne,

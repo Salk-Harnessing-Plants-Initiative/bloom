@@ -3,19 +3,41 @@ cluster, and which genotype comparisons it passes, each picked as Bloom's pages 
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
+from . import gene_reads
 from .gene_reads import (
     DE_FDR_CUT,
     DE_LOG2FC_CUT,
+    IN_CHUNK,
     MARKER_FDR_CUT,
     OFF_SCALE_LOG2FC,
     Reads,
 )
-from .table_ports import Filter
+from .table_ports import Filter, Sort
 
 # What a one-vs-rest comparison's other side is called (REST_GROUP in cluster-markers.ts).
 REST_GROUP = "rest"
+# How many markers a cluster's panel lists (TOP_MARKERS in cluster-markers.ts).
+TOP_MARKERS = 25
+
+
+# Result columns PostgREST may send as text: Postgres's NaN and Infinity arrive as strings.
+_NUMBERS = ("log2fc", "fdr", "pct_1", "pct_2")
+
+
+def _number(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _finite(value: float | None) -> float | None:
+    """`value`, or None when it's NaN or infinite (JSON has no such numbers)."""
+    return value if value is not None and math.isfinite(value) else None
+
+
+def _absent(log2fc: float | None) -> bool:
+    return log2fc is not None and abs(log2fc) > OFF_SCALE_LOG2FC
 
 
 def _cells(row: dict[str, Any]) -> int:
@@ -90,9 +112,19 @@ def _one_vs_rest(
 def _genotype(
     comparisons: list[dict[str, Any]], runs: list[int]
 ) -> list[dict[str, Any]]:
-    """The genotype comparisons of the newest run that has any."""
-    newest = next((r for r in runs if any(c["run_id"] == r for c in comparisons)), None)
-    return [c for c in comparisons if c["run_id"] == newest]
+    """Every run's genotype comparisons, the newest run winning for each cluster and
+    contrast, as the page combines them (fetchAllComparisons)."""
+    rank = {run: i for i, run in enumerate(runs)}
+    seen: set[tuple[Any, Any]] = set()
+    kept = []
+    for c in sorted(
+        comparisons, key=lambda c: (rank.get(c["run_id"], len(rank)), c["id"])
+    ):
+        key = (c.get("cluster_id"), c.get("contrast"))
+        if key not in seen:
+            seen.add(key)
+            kept.append(c)
+    return kept
 
 
 def _de_rows(
@@ -107,7 +139,36 @@ def _de_rows(
         comparison_ids,
         (Filter("gene_id", "in", gene_row_ids),),
     )
-    return {r["de_id"]: r for r in rows}
+    return {r["de_id"]: {**r, **{k: _number(r.get(k)) for k in _NUMBERS}} for r in rows}
+
+
+def _comparisons(
+    reads: Reads, run_ids: list[int], kind: tuple[Filter, ...]
+) -> list[dict[str, Any]]:
+    """One dataset's tested comparisons of one kind, newest run first, so a cut at
+    MAX_ROWS drops the oldest runs."""
+    if not run_ids:
+        return []
+    found, more = reads.page(
+        "scrna_de",
+        [
+            Filter("run_id", "in", run_ids[:IN_CHUNK]),
+            Filter("tested", "eq", True),
+            *kind,
+        ],
+        [Sort("run_id", descending=True), Sort("id")],
+        limit=gene_reads.MAX_ROWS,
+    )
+    if more:
+        reads.incomplete.add("scrna_de")
+    return found
+
+
+_ONE_VS_REST = (
+    Filter("group_kind", "eq", "cluster"),
+    Filter("group2", "eq", REST_GROUP),
+)
+_GENOTYPE = (Filter("group_kind", "eq", "genotype"),)
 
 
 def add_results(reads: Reads, found: list[dict[str, Any]]) -> None:
@@ -116,68 +177,117 @@ def add_results(reads: Reads, found: list[dict[str, Any]]) -> None:
     for dataset in found:
         dataset["markers"], dataset["genotype_comparisons"] = [], []
     runs = _newest_first(reads, [d["id"] for d in measured])
-    run_ids = [r for ids in runs.values() for r in ids]
-    comparisons = reads.rows_in(
-        "scrna_de", "run_id", run_ids, (Filter("tested", "eq", True),)
-    )
     for dataset in measured:
         own_runs = runs.get(dataset["id"], [])
-        own = [c for c in comparisons if c["dataset_id"] == dataset["id"]]
         rest = [
             c
-            for c in own
-            if c["group_kind"] == "cluster"
-            and c["group2"] == REST_GROUP
-            and c["group1"] == c["cluster_id"]
+            for c in _comparisons(reads, own_runs, _ONE_VS_REST)
+            if c["group1"] == c["cluster_id"]
         ]
         markers = _one_vs_rest(rest, own_runs)
-        genotypes = _genotype(
-            [c for c in own if c["group_kind"] == "genotype"], own_runs
-        )
+        genotypes = _genotype(_comparisons(reads, own_runs, _GENOTYPE), own_runs)
         results = _de_rows(
             reads,
             [c["id"] for c in [*markers.values(), *genotypes]],
             dataset["gene_row_ids"],
         )
-        dataset["markers"] = _markers(reads, dataset["id"], markers, results)
-        dataset["genotype_comparisons"] = [
-            _genotype_hit(c, results[c["id"]])
+        hits = _marker_hits(markers, results)
+        passed = [
+            c
             for c in genotypes
             if c["id"] in results and _passes_de_cut(results[c["id"]])
         ]
+        labels = _labels(
+            reads, dataset["id"], [*hits, *(c["cluster_id"] for c in passed)]
+        )
+        panel = _on_panel(reads, dataset, markers, hits)
+        dataset["markers"] = _markers(hits, labels, panel)
+        dataset["genotype_comparisons"] = [
+            _genotype_hit(c, results[c["id"]], labels) for c in passed
+        ]
 
 
-def _markers(
-    reads: Reads,
-    dataset_id: int,
-    chosen: dict[str, dict[str, Any]],
-    results: dict[int, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    hits = {
+def _marker_hits(
+    chosen: dict[str, dict[str, Any]], results: dict[int, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """The gene's result in each cluster it is up in, past the marker cut."""
+    return {
         cluster: results[c["id"]]
         for cluster, c in chosen.items()
         if c["id"] in results
         and (results[c["id"]].get("log2fc") or 0) > 0
         and results[c["id"]]["fdr"] < MARKER_FDR_CUT
     }
-    if not hits:
-        return []
-    labels = reads.rows_in(
+
+
+def _labels(
+    reads: Reads, dataset_id: int, clusters: list[str | None]
+) -> dict[str, dict[str, Any]]:
+    """Each cluster's cell-type label row, by cluster id."""
+    rows = reads.rows_in(
         "scrna_clusters",
         "cluster_id",
-        list(hits),
+        [c for c in clusters if c is not None],
         (Filter("dataset_id", "eq", dataset_id),),
     )
-    by_cluster = {row["cluster_id"]: row for row in labels}
+    return {row["cluster_id"]: row for row in rows}
+
+
+def _on_panel(
+    reads: Reads,
+    dataset: dict[str, Any],
+    chosen: dict[str, dict[str, Any]],
+    hits: dict[str, dict[str, Any]],
+) -> dict[str, bool]:
+    """Whether each marker cluster's panel lists the gene: the panel shows the cluster's
+    saved top markers, or without them the top of its one-vs-rest comparison."""
+    if not hits:
+        return {}
+    stats = reads.rows_in(
+        "scrna_cluster_stats",
+        "cluster_id",
+        list(hits),
+        (Filter("dataset_id", "eq", dataset["id"]),),
+    )
+    saved = {r["cluster_id"]: (r.get("markers") or {}).get("top") or [] for r in stats}
+    name = (dataset.get("gene_name") or "").lower()
+    panel = {}
+    for cluster in hits:
+        if saved.get(cluster):
+            panel[cluster] = any(
+                str(m.get("gene", "")).lower() == name for m in saved[cluster]
+            )
+            continue
+        top, _ = reads.page(
+            "scrna_de_genes",
+            [
+                Filter("de_id", "eq", chosen[cluster]["id"]),
+                Filter("log2fc", "gt", 0),
+                Filter("fdr", "lt", MARKER_FDR_CUT),
+            ],
+            [Sort("fdr"), Sort("log2fc", descending=True)],
+            limit=TOP_MARKERS,
+        )
+        panel[cluster] = any(r["gene_id"] in dataset["gene_row_ids"] for r in top)
+    return panel
+
+
+def _markers(
+    hits: dict[str, dict[str, Any]],
+    labels: dict[str, dict[str, Any]],
+    panel: dict[str, bool],
+) -> list[dict[str, Any]]:
     return [
         {
             "cluster_id": cluster,
-            "cell_type": by_cluster.get(cluster, {}).get("name"),
-            "label_source": by_cluster.get(cluster, {}).get("source"),
-            "log2fc": hit["log2fc"],
+            "cell_type": labels.get(cluster, {}).get("name"),
+            "label_source": labels.get(cluster, {}).get("source"),
+            "log2fc": _finite(hit["log2fc"]),
+            "absent_in_one_group": _absent(hit["log2fc"]),
             "fdr": hit["fdr"],
             "pct_in_cluster": hit.get("pct_1"),
             "pct_elsewhere": hit.get("pct_2"),
+            "on_cluster_panel": panel.get(cluster, False),
         }
         for cluster, hit in sorted(hits.items(), key=lambda kv: kv[1]["fdr"])
     ]
@@ -187,13 +297,20 @@ def _passes_de_cut(row: dict[str, Any]) -> bool:
     return row["fdr"] < DE_FDR_CUT and abs(row.get("log2fc") or 0) > DE_LOG2FC_CUT
 
 
-def _genotype_hit(comparison: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+def _genotype_hit(
+    comparison: dict[str, Any],
+    row: dict[str, Any],
+    labels: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     log2fc = row.get("log2fc") or 0
+    cluster = comparison.get("cluster_id")
     return {
+        "cluster_id": cluster,
+        "cell_type": labels.get(cluster, {}).get("name") if cluster else None,
         "group1": comparison["group1"],
         "group2": comparison["group2"],
-        "log2fc": log2fc,
+        "log2fc": _finite(log2fc),
         "fdr": row["fdr"],
         "direction": "up" if log2fc > 0 else "down",
-        "absent_in_one_group": abs(log2fc) > OFF_SCALE_LOG2FC,
+        "absent_in_one_group": _absent(log2fc),
     }

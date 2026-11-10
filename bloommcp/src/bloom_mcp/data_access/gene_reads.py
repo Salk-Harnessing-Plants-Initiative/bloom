@@ -78,6 +78,7 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "dataset_id",
         "group_kind",
         "cluster_id",
+        "contrast",
         "group1",
         "group2",
         "n_group1",
@@ -85,6 +86,7 @@ COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "scrna_de_genes": ("id", "de_id", "gene_id", "log2fc", "fdr", "pct_1", "pct_2"),
     "scrna_clusters": ("id", "dataset_id", "cluster_id", "name", "source"),
+    "scrna_cluster_stats": ("dataset_id", "cluster_id", "markers"),
     "scrna_genotypes": ("id", "dataset_id", "name", "construct"),
 }
 
@@ -103,11 +105,16 @@ class Reads:
         order: list[Sort] | None = None,
         limit: int = MAX_ROWS,
     ) -> tuple[list[dict[str, Any]], bool]:
-        """Up to `limit` rows, and whether more matched."""
+        """Up to `limit` rows, and whether more matched; emails masked as the data tools
+        mask them."""
         order = order or [Sort(c) for c in table_access.paging_key(table)]
         found = self.reader.select(
             table, list(COLUMNS[table]), filters, order, limit + 1, 0
         )
+        redacted = table_access.redacted_columns(table)
+        for row in found:
+            for column in redacted & row.keys():
+                row[column] = table_access.redact_emails(row[column])
         return found[:limit], len(found) > limit
 
     def rows(self, table: str, filters: list[Filter]) -> list[dict[str, Any]]:
@@ -168,6 +175,8 @@ def find_genes(reads: Reads, name: str) -> list[dict[str, Any]]:
     for search in searches:
         for row in reads.rows("genes", [search]):
             found.setdefault(row["gene_id"], row)
+    if len(found) > MAX_GENES:
+        reads.incomplete.add("genes")
     return sorted(found.values(), key=lambda r: r["gene_id"])[:MAX_GENES]
 
 
@@ -203,8 +212,6 @@ def hpi_notes(reads: Reads, gene_ids: list[str]) -> list[dict[str, Any]]:
                 and names.get(link["scientist_id"])
             }
         )
-        for entry in progress:
-            entry["message"] = table_access.redact_emails(entry.get("message"))
         notes.append({**candidate, "scientists": scientists, "progress": progress})
     return notes
 

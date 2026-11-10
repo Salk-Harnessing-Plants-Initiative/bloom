@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 from urllib.parse import quote
@@ -13,7 +14,8 @@ from bloom_mcp.data_access import gene_expression, gene_reads
 from bloom_mcp.data_access.page_links import PAGE_LINKS
 from bloom_mcp.tools import _ports
 
-from ._common import fix_request, logs_call, reports_read_errors
+from ._common import fix_request, logs_call, reports_lookup_errors
+from ._page import MAX_CELL_CHARS, MAX_REPLY_CHARS, TRUNCATED
 
 GENES_PAGE = "/app/genes"
 ORTHOBROWSER_PAGE = "/app/orthofinder?search={search}"
@@ -78,22 +80,34 @@ class TranslationLine(BaseModel):
     modification: str | None
 
 
+_LOG2FC = "None when infinite: the gene is absent from one group (absent_in_one_group)."
+
+
 class Marker(BaseModel):
     cluster_id: str
     cell_type: str | None
     label_source: str | None
-    log2fc: float | None
+    log2fc: float | None = Field(description=_LOG2FC)
+    absent_in_one_group: bool
     fdr: float
     pct_in_cluster: float | None = Field(
         description="Share of the cluster's cells, 0–1."
     )
     pct_elsewhere: float | None = Field(description="Share of the other cells, 0–1.")
+    on_cluster_panel: bool = Field(
+        description="Whether the cluster's panel on the website lists the gene: it shows "
+        "only the top 25 markers."
+    )
 
 
 class GenotypeComparison(BaseModel):
+    cluster_id: str | None = Field(
+        description="The cluster compared within; null for the whole dataset."
+    )
+    cell_type: str | None
     group1: str | None
     group2: str | None
-    log2fc: float
+    log2fc: float | None = Field(description=_LOG2FC)
     fdr: float
     direction: str = Field(description="up or down in group1.")
     absent_in_one_group: bool
@@ -171,16 +185,53 @@ def _notes(
     return notes
 
 
+# Said when an answer was too long for one reply and lost progress entries.
+_SHORTENED = (
+    "Shortened to fit one reply: long text ends in …[cut], and HPI notes list {progress}. "
+    "Read gene_candidates and experiment_progress_logs with query_table for the rest."
+)
+
+
+def _cut_text(value: Any, limit: int) -> Any:
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + TRUNCATED
+    if isinstance(value, list):
+        return [_cut_text(v, limit) for v in value]
+    if isinstance(value, dict):
+        return {k: _cut_text(v, limit) for k, v in value.items()}
+    return value
+
+
+def _fit(result: GeneLookupResult) -> GeneLookupResult:
+    """`result` with long text cut as query_table cuts it, then, if the reply is still too
+    long, fewer progress entries."""
+    answer = _cut_text(result.model_dump(), MAX_CELL_CHARS)
+    shortened = None
+    for keep, progress in ((1, "only the newest progress entry"), (0, "no progress")):
+        if len(json.dumps(answer, default=str)) <= MAX_REPLY_CHARS:
+            break
+        for note in answer["hpi_notes"]:
+            note["progress"] = note["progress"][:keep]
+        shortened = progress
+    if shortened:
+        answer["notes"].append(_SHORTENED.format(progress=shortened))
+    return GeneLookupResult.model_validate(answer)
+
+
 @as_mcp_tool(input_model=GeneLookupParams, output_model=GeneLookupResult)
 @logs_call
-@reports_read_errors
+@reports_lookup_errors
 def gene_lookup(params: GeneLookupParams) -> GeneLookupResult:
     """Everything Bloom has on one gene: its record, HPI notes, orthologs, translation work,
     and the scRNA datasets that measured it, with the clusters (cell types) it marks.
 
-    Give a symbol (MYB41), an AGI id (AT4G28110) or a full Bloom gene id. Markers and
-    genotype comparisons are picked as Bloom's expression pages pick them. Give the links:
-    dataset pages, the Genes page for HPI notes, and the OrthoBrowser for orthologs.
+    Give a symbol (MYB41), an AGI id (AT4G28110) or a full Bloom gene id. A marker cluster
+    is one where the gene is significantly up against the rest of the cells in the newest
+    analysis. A cluster's panel on the website lists only its top 25 markers; when
+    on_cluster_panel is false, say the gene is a marker but ranks outside that top 25, and
+    that the full list is in the dataset page's differential expression results. Genotype
+    comparisons combine the analyses as that page does. Give the links: dataset pages, the
+    Genes page for HPI notes, and the OrthoBrowser for orthologs.
 
     Lead with what Bloom has. You may add what you know about the gene and look up papers
     on it, especially from Salk's Harnessing Plants Initiative (HPI); label all of that as
@@ -217,50 +268,52 @@ def gene_lookup(params: GeneLookupParams) -> GeneLookupResult:
     found = gene_expression.datasets(reads, sorted(names), sorted(terms))
     gene_expression.add_results(reads, found)
 
-    return GeneLookupResult(
-        query=query,
-        genes=[
-            GeneMatch(
-                **{k: g.get(k) for k in GeneMatch.model_fields if k != "assembly"},
-                assembly=prefixes.get(g.get("reference_id")),
-            )
-            for g in genes
-        ],
-        hpi_notes=[HpiNote(**n) for n in notes],
-        orthologs=[Orthogroup(**o) for o in orthologs],
-        translation_candidates=[
-            TranslationCandidate(
-                gene_candidate=c["gene_candidate"],
-                translation_candidate=c["translation_candidate"],
-                symbol=(c["gene"] or {}).get("symbol"),
-                ortho_group=(c["gene"] or {}).get("ortho_group"),
-            )
-            for c in candidates
-        ],
-        translation_lines=[
-            TranslationLine(
-                gene_id=ln["gene_id"],
-                name=ln.get("name"),
-                accession=ln.get("accession"),
-                modification=ln.get("modification_description"),
-            )
-            for ln in lines
-        ],
-        expression=[
-            DatasetHit(
-                dataset_id=d["id"],
-                name=d["name"],
-                kind=d.get("kind"),
-                gene_name=d["gene_name"],
-                link=_dataset_link(site, d),
-                constructs=d["constructs"],
-                markers=[Marker(**m) for m in d["markers"]],
-                genotype_comparisons=[
-                    GenotypeComparison(**c) for c in d["genotype_comparisons"]
-                ],
-            )
-            for d in found
-        ],
-        links=_links(site, genes, query),
-        notes=_notes(reads, genes, found),
+    return _fit(
+        GeneLookupResult(
+            query=query,
+            genes=[
+                GeneMatch(
+                    **{k: g.get(k) for k in GeneMatch.model_fields if k != "assembly"},
+                    assembly=prefixes.get(g.get("reference_id")),
+                )
+                for g in genes
+            ],
+            hpi_notes=[HpiNote(**n) for n in notes],
+            orthologs=[Orthogroup(**o) for o in orthologs],
+            translation_candidates=[
+                TranslationCandidate(
+                    gene_candidate=c["gene_candidate"],
+                    translation_candidate=c["translation_candidate"],
+                    symbol=(c["gene"] or {}).get("symbol"),
+                    ortho_group=(c["gene"] or {}).get("ortho_group"),
+                )
+                for c in candidates
+            ],
+            translation_lines=[
+                TranslationLine(
+                    gene_id=ln["gene_id"],
+                    name=ln.get("name"),
+                    accession=ln.get("accession"),
+                    modification=ln.get("modification_description"),
+                )
+                for ln in lines
+            ],
+            expression=[
+                DatasetHit(
+                    dataset_id=d["id"],
+                    name=d["name"],
+                    kind=d.get("kind"),
+                    gene_name=d["gene_name"],
+                    link=_dataset_link(site, d),
+                    constructs=d["constructs"],
+                    markers=[Marker(**m) for m in d["markers"]],
+                    genotype_comparisons=[
+                        GenotypeComparison(**c) for c in d["genotype_comparisons"]
+                    ],
+                )
+                for d in found
+            ],
+            links=_links(site, genes, query),
+            notes=_notes(reads, genes, found),
+        )
     )
