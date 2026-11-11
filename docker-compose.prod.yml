@@ -511,7 +511,9 @@ services:
       SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
       SITE_URL: ${SITE_URL}
     networks:
-      - supanet
+      # Fixed: one of the mail senders the host's port-25 rule allows.
+      supanet:
+        ipv4_address: ${RNASEQ_POLLER_IP}
     depends_on:
       - kong
       - db-prod
@@ -556,7 +558,9 @@ services:
       timeout: 5s
       retries: 3
     networks:
-      - supanet
+      # Fixed: one of the mail senders the host's port-25 rule allows.
+      supanet:
+        ipv4_address: ${MAIL_IP}
     restart: unless-stopped
 
   # Consumes the gravi_plate_video_dispatch queue: one render at a time.
@@ -808,7 +812,9 @@ services:
     cap_drop:
       - ALL
     networks:
-      - supanet
+      # Fixed: one of the mail senders the host's port-25 rule allows.
+      supanet:
+        ipv4_address: ${AUTH_IP}
     environment:
       GOTRUE_API_HOST: 0.0.0.0
       GOTRUE_API_PORT: 9999
@@ -968,6 +974,10 @@ services:
     networks:
       - supanet
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     volumes:
       - ./minio/init:/usr/local/bin/init
     environment:
@@ -1251,8 +1261,14 @@ volumes:
   caddy-config:
 
 networks:
+  # Pinned per environment so the host's port-25 rule (deploy/smtp-egress) can name the mail
+  # senders; automatic addresses come only from SUPANET_AUTO_RANGE, never a sender's.
   supanet:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${SUPANET_SUBNET}
+          ip_range: ${SUPANET_AUTO_RANGE}
   # cloudflared and Caddy only. Not internal: cloudflared needs outbound internet.
   # A fixed subnet per environment, so Caddy can drop tunnel traffic on every site but :8880,
   # and fixed addresses for both (TUNNEL_CADDY_IP, TUNNEL_CLOUDFLARED_IP). Any other container

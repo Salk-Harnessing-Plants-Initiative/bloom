@@ -1,0 +1,16 @@
+# Re-applies the port-25 rule after Docker starts (at boot and after Docker restarts).
+# Install: see README.md in this folder.
+[Unit]
+Description=Bloom: only the mail senders may reach port 25
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/bloom-smtp-egress /data/bloom/production/.env.prod /data/bloom/staging/.env.staging
+ExecStop=/usr/local/sbin/bloom-smtp-egress --remove
+
+[Install]
+WantedBy=multi-user.target
