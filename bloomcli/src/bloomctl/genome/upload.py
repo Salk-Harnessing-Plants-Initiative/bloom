@@ -48,8 +48,8 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
     """Upload a genome's FASTA and GTF to Bloom as the genome's next version.
 
     NAME is the genome, e.g. tair10_araport11. A new genome needs --species. Both files are
-    checked first: every GTF line must lie on a FASTA contig, within its length, and each gene
-    must have one position. They are then gzipped, the upload is described, and it goes ahead
+    checked first: every GTF line must lie on a FASTA contig, within its length, each gene
+    must have one position, and each transcript one gene. They are then gzipped, the upload is described, and it goes ahead
     once confirmed.
     Any member may upload a new genome; adding a version to an existing one needs a writer.
     """

@@ -182,3 +182,34 @@ def test_a_damaged_gzip_is_refused(tmp_path):
 
 def test_a_long_list_of_problems_says_how_many_more():
     assert _gtf.names([f"G{i}" for i in range(13)]).endswith("G9 and 3 more")
+
+
+# --- transcripts ----------------------------------------------------------------------------
+
+
+def test_a_transcript_in_two_genes_is_refused_by_name(tmp_path):
+    _refused(tmp_path, _line(attributes='gene_id "A"; transcript_id "T";')
+             + _line(attributes='gene_id "B"; transcript_id "T";'),
+             "transcripts belong to more than one gene in the GTF: T")
+
+
+def test_a_line_outside_its_gene_line_is_refused_by_gene(tmp_path):
+    _refused(tmp_path, _line(feature="gene", start="2", end="6", attributes='gene_id "G";')
+             + _line(start="5", end="9", attributes='gene_id "G"; transcript_id "T";'),
+             "genes have lines outside their `gene` line in the GTF: G")
+
+
+def test_a_line_outside_its_transcript_line_is_refused_by_transcript(tmp_path):
+    _refused(tmp_path, _line(feature="transcript", start="2", end="6",
+                             attributes='gene_id "G"; transcript_id "T";')
+             + _line(start="1", end="3", attributes='gene_id "G"; transcript_id "T";'),
+             "transcripts have lines outside their `transcript` line in the GTF: T")
+
+
+def test_gene_and_transcript_lines_that_cover_their_parts_are_fine(tmp_path):
+    gtf = (_line(feature="gene", start="1", end="9", attributes='gene_id "G";')
+           + _line(feature="transcript", start="2", end="8",
+                   attributes='gene_id "G"; transcript_id "T";')
+           + _line(start="2", end="4", attributes='gene_id "G"; transcript_id "T";')
+           + _line(start="6", end="8", attributes='gene_id "G"; transcript_id "T";'))
+    assert [(g["gene_start"], g["gene_end"]) for g in _genes(tmp_path, gtf)] == [(1, 9)]

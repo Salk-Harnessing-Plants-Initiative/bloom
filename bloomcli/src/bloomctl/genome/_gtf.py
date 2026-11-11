@@ -37,7 +37,7 @@ class GtfProblem(_files.FileProblem):
 
 
 @dataclass
-class _Gene:
+class Span:
     contigs: set[str] = field(default_factory=set)
     start: int = 0
     end: int = 0
@@ -49,6 +49,30 @@ class _Gene:
         self.start = start if not self.start else min(self.start, start)
         self.end = max(self.end, end)
         self.strands.add(strand)
+
+    def covers(self, other: Span) -> bool:
+        return not other.start or self.start <= other.start and other.end <= self.end
+
+    @property
+    def strand(self) -> str:
+        return next(iter(self.strands)) if len(self.strands) == 1 else "."
+
+
+@dataclass
+class Transcript:
+    """A transcript's gene, the span of its `transcript` lines and that of its other lines."""
+    genes: set[str] = field(default_factory=set)
+    line: Span = field(default_factory=Span)
+    parts: Span = field(default_factory=Span)
+
+    @property
+    def span(self) -> Span:
+        return self.line if self.line.start else self.parts
+
+
+def attributes(text: str) -> list[tuple[str, str]]:
+    """A GTF line's `key "value";` pairs, in order; a key may repeat."""
+    return _ATTRIBUTE.findall(text)
 
 
 def open_binary(path: Path) -> BinaryIO:
@@ -155,32 +179,45 @@ def records(numbered: Iterable[tuple[int, int, bytes]], lengths: dict[str, int]
 
 
 class GeneReader:
-    """One position per gene ID: its `gene` lines' span, or the span of its other lines."""
+    """One position per gene ID: its `gene` lines' span, or the span of its other lines; and
+    each transcript's gene and span. A `gene` or `transcript` line must cover the gene's or
+    transcript's other lines."""
 
     def __init__(self) -> None:
-        self.from_gene_lines: dict[str, _Gene] = {}
-        self.from_others: dict[str, _Gene] = {}
+        self.from_gene_lines: dict[str, Span] = {}
+        self.from_others: dict[str, Span] = {}
+        self.transcripts: dict[str, Transcript] = {}
 
     def add(self, columns: list[str]) -> None:
-        attributes = dict(_ATTRIBUTE.findall(columns[8]))
-        gene_id = attributes.get("gene_id", "").strip()
+        pairs = dict(attributes(columns[8]))
+        gene_id = pairs.get("gene_id", "").strip()
         if not gene_id:
             return
+        place = (columns[0], int(columns[3]), int(columns[4]), columns[6])
         table = self.from_gene_lines if columns[2] == "gene" else self.from_others
-        gene = table.setdefault(gene_id, _Gene())
-        gene.add(columns[0], int(columns[3]), int(columns[4]), columns[6])
+        gene = table.setdefault(gene_id, Span())
+        gene.add(*place)
         if gene.name is None:
-            gene.name = next((attributes[k].strip() for k in NAME_KEYS
-                              if attributes.get(k, "").strip()), None)
+            gene.name = next((pairs[k].strip() for k in NAME_KEYS
+                              if pairs.get(k, "").strip()), None)
+        transcript_id = pairs.get("transcript_id", "").strip()
+        if transcript_id and columns[2] != "gene":
+            transcript = self.transcripts.setdefault(transcript_id, Transcript())
+            transcript.genes.add(gene_id)
+            (transcript.line if columns[2] == "transcript" else transcript.parts).add(*place)
 
     def result(self) -> list[dict[str, Any]]:
-        found, split, too_long = [], [], []
+        self._check_transcripts()
+        found, split, too_long, outside = [], [], [], []
         for gene_id in sorted(self.from_gene_lines.keys() | self.from_others.keys()):
             gene = self.from_gene_lines.get(gene_id) or self.from_others[gene_id]
-            other = self.from_others.get(gene_id, _Gene())
+            other = self.from_others.get(gene_id, Span())
             contigs = gene.contigs | other.contigs
             if len(contigs) > 1:
                 split.append(gene_id)
+                continue
+            if gene is not other and not gene.covers(other):
+                outside.append(gene_id)
                 continue
             contig = next(iter(contigs))
             name = gene.name or other.name
@@ -190,17 +227,32 @@ class GeneReader:
             found.append({
                 "gene_id": gene_id, "gene_name": name, "contig": contig,
                 "gene_start": gene.start, "gene_end": gene.end,
-                "strand": next(iter(gene.strands)) if len(gene.strands) == 1 else ".",
+                "strand": gene.strand,
             })
         if split:
             raise GtfProblem(f"genes sit on more than one contig in the GTF: {names(split)}; "
                              "Bloom holds one position per gene")
+        if outside:
+            raise GtfProblem(f"genes have lines outside their `gene` line in the GTF: "
+                             f"{names(outside)}")
         if too_long:
             raise GtfProblem(f"genes have an ID, name or contig over {MAX_NAME_CHARS} "
                              f"characters: {names(too_long)}")
         if not found:
             raise GtfProblem("the GTF has no genes (no line carries a gene_id)")
         return sorted(found, key=lambda g: (g["contig"], g["gene_start"], g["gene_id"]))
+
+
+    def _check_transcripts(self) -> None:
+        shared = [t for t, v in self.transcripts.items() if len(v.genes) > 1]
+        if shared:
+            raise GtfProblem(f"transcripts belong to more than one gene in the GTF: "
+                             f"{names(sorted(shared))}")
+        outside = [t for t, v in self.transcripts.items()
+                   if v.line.start and not v.line.covers(v.parts)]
+        if outside:
+            raise GtfProblem(f"transcripts have lines outside their `transcript` line in the "
+                             f"GTF: {names(sorted(outside))}")
 
 
 def names(values: Iterable[str]) -> str:

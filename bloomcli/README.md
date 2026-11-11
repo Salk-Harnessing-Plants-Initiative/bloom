@@ -810,8 +810,9 @@ bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_202
 - Before anything is sent, the GTF is checked against the FASTA, line by line, and
   refused with the line, gene or contig named when it doesn't fit: every line must have 9
   tab-separated columns, a start of at least 1 no later than its end, and a contig the FASTA
-  has, within its length; each gene ID must sit on one contig, and IDs, names and contigs
-  are at most 200 characters. The FASTA must not repeat a contig name. Each gzipped file must
+  has, within its length; each gene ID must sit on one contig, each transcript ID belong to
+  one gene, a `gene` or `transcript` line must cover that gene's or transcript's other
+  lines, and IDs, names and contigs are at most 200 characters. The FASTA must not repeat a contig name. Each gzipped file must
   be at most 500 MB. A GTF in any order is fine.
 - The upload is described on the terminal and goes ahead once confirmed; `--yes`
   skips the question.
@@ -863,8 +864,13 @@ bloomctl genome index tair10_araport11.v2 -p staging
 ```
 
 - It downloads the version's FASTA and GTF, checked against Bloom's record, and makes
-  `genome.fa.gz` (bgzip) with `.fai` and `.gzi`, and `genes.gtf.gz` (in position order,
-  bgzip) with `.tbi`. The version's own files are not changed.
+  `genome.fa.gz` (bgzip) with `.fai` and `.gzi`, and `genes.gff3.gz` (the GTF as GFF3, in
+  position order, bgzip) with `.tbi`. The version's own files are not changed.
+- The GFF3 has one line per gene (`ID=gene:<gene_id>`) and per transcript
+  (`ID=transcript:<transcript_id>`), placed as the GTF check found them, with the GTF's own
+  `gene` and `transcript` lines' attributes; every other line keeps its columns and
+  attributes and gains its `Parent`. Lines without a `gene_id` are left out. The genome
+  browser reads GFF3 by region; it can't read a GTF that way.
 - It checks the GTF against the FASTA the same way `genome upload` does, before starting
   anything, so a version uploaded before those checks is refused with the same message.
 - Each gene's position is the span of its `gene` lines, or of its other lines when it has
@@ -878,7 +884,7 @@ bloomctl genome index tair10_araport11.v2 -p staging
   build; `4` an unfinished build; `1` a network or server error, worth retrying; `2` a usage
   error. The one line on stdout is the build, its folder and its gene count.
 - `--workdir` chooses where the files are built (a temporary folder by default). The
-  unzipped GTF is kept there while it is sorted.
+  unzipped GFF3 is kept there while it is sorted.
 - Needs a writer (`bloom_writer`) or the pipeline's (`bloom_workflows`) login.
 
 ## Access & roles

@@ -1,11 +1,12 @@
 """Building a genome version's browser files from its stored FASTA and GTF.
 
 The genome browser reads a genome by region, so it needs the FASTA in block gzip (bgzip) with its
-.fai and .gzi indexes, and the GTF in position order, bgzipped and tabix-indexed. Those five files,
-and every gene's position, make one browser build. Everything here runs before Bloom is told
-anything, so a genome that can't be built starts no build.
+.fai and .gzi indexes, and the genes in position order, bgzipped and tabix-indexed. The released
+browser reads genes by region only from GFF3, so the GTF is turned into GFF3 (see _gff3). Those
+five files, and every gene's position, make one browser build. Everything here runs before Bloom
+is told anything, so a genome that can't be built starts no build.
 
-Memory stays small for a large genome: the FASTA is streamed straight into bgzip, and the GTF is
+Memory stays small for a large genome: the FASTA is streamed straight into bgzip, and the GFF3 is
 sorted by keeping only each line's contig, start and place in an unzipped copy.
 """
 
@@ -20,7 +21,7 @@ from typing import Any, Iterator
 
 import click
 
-from . import _files, _gtf
+from . import _files, _gff3, _gtf
 
 INSTALL_HINT = "pip install 'bloomctl[genome-index]'"
 # Each file's role and its name in the build's folder, as genome_browser_build_roles() lists them.
@@ -28,8 +29,8 @@ ROLES = {
     "fasta": "genome.fa.gz",
     "fasta_fai": "genome.fa.gz.fai",
     "fasta_gzi": "genome.fa.gz.gzi",
-    "gtf": "genes.gtf.gz",
-    "gtf_tbi": "genes.gtf.gz.tbi",
+    "gff3": "genes.gff3.gz",
+    "gff3_tbi": "genes.gff3.gz.tbi",
 }
 # Bloom takes at most this many genes in one call.
 GENE_BATCH = 5000
@@ -70,7 +71,7 @@ def batches(genes: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
 
 
 def build(fasta_gz: Path, gtf_gz: Path, out: Path, work: Path) -> Built:
-    """The five files in `out` and the GTF's genes; `work` holds the unzipped GTF meanwhile."""
+    """The five files in `out` and the GTF's genes; `work` holds the unzipped GFF3 meanwhile."""
     pysam = require_htslib()
     work.mkdir(parents=True, exist_ok=True)
     try:
@@ -79,8 +80,8 @@ def build(fasta_gz: Path, gtf_gz: Path, out: Path, work: Path) -> Built:
         pysam.faidx(str(out / ROLES["fasta"]))
         if _fai_lengths(out / ROLES["fasta_fai"]) != lengths:
             raise IndexProblem("the FASTA's index doesn't match its sequences")
-        genes = _sorted_gtf(gtf_gz, lengths, work / "genes.gtf", out / ROLES["gtf"])
-        pysam.tabix_index(str(out / ROLES["gtf"]), preset="gff", force=True)
+        genes = _sorted_gff3(gtf_gz, lengths, work / "genes.gff3", out / ROLES["gff3"])
+        pysam.tabix_index(str(out / ROLES["gff3"]), preset="gff", force=True)
     except _gtf.GtfProblem as exc:
         raise IndexProblem(str(exc)) from exc
     except (OSError, EOFError, zlib.error, pysam.utils.SamtoolsError) as exc:
@@ -108,38 +109,48 @@ def _fai_lengths(fai: Path) -> dict[str, int]:
                                              fai.read_text().splitlines() if line)}
 
 
-def _sorted_gtf(source: Path, lengths: dict[str, int], plain: Path,
-                dest: Path) -> list[dict[str, Any]]:
-    """Check the GTF, read its genes, and write it bgzipped in position order.
+def _sorted_gff3(source: Path, lengths: dict[str, int], plain: Path,
+                 dest: Path) -> list[dict[str, Any]]:
+    """Check the GTF, read its genes, and write it as GFF3, bgzipped in position order.
 
-    One pass checks every record and copies it, unzipped, to `plain`, keeping per line only its
-    contig's place in the FASTA, its start and where it sits in the copy. A stable sort of those
-    keys gives the order; the lines are then copied from `plain` into `dest`. `#!` header lines
-    stay at the top; other comments are dropped.
+    One pass checks every record and writes its GFF3 line, unzipped, to `plain`, keeping per
+    line only its contig's place in the FASTA, its start, its level (a gene before its
+    transcripts before their parts) and where it sits in `plain`; the gene and transcript lines
+    follow once every line is read. A stable sort of those keys gives the order; the lines are
+    then copied from `plain` into `dest`. The GTF's `#!` header lines follow `##gff-version 3`.
     """
     import numpy
     from pysam.libcbgzf import BGZFile
 
     rank = {contig: i for i, contig in enumerate(lengths)}
-    ranks, starts, offsets, sizes = array("I"), array("Q"), array("Q"), array("I")
+    keys = {"rank": array("I"), "start": array("Q"), "level": array("B")}
+    offsets, sizes = array("Q"), array("I")
     headers: list[bytes] = []
-    reader = _gtf.GeneReader()
-    written = 0
+    reader, converter = _gtf.GeneReader(), _gff3.Converter()
+
     with _gtf.open_binary(source) as fh, plain.open("wb") as copy:
+        def keep(contig: str, start: int, level: int, line: bytes) -> None:
+            keys["rank"].append(rank[contig])
+            keys["start"].append(start)
+            keys["level"].append(level)
+            offsets.append(copy.tell())
+            sizes.append(len(line))
+            copy.write(line)
+
         for _, _, columns in _gtf.records(_keep_headers(_gtf.lines(fh, "GTF"), headers),
                                           lengths):
             reader.add(columns)
-            line = ("\t".join(columns) + "\n").encode()
-            copy.write(line)
-            ranks.append(rank[columns[0]])
-            starts.append(int(columns[3]))
-            offsets.append(written)
-            sizes.append(len(line))
-            written += len(line)
-    genes = reader.result()
-    order = numpy.lexsort((numpy.frombuffer(starts, dtype=numpy.uint64),
-                           numpy.frombuffer(ranks, dtype=numpy.uint32)))
+            line = converter.line(columns)
+            if line is not None:
+                keep(columns[0], int(columns[3]), _gff3.PART, line)
+        genes = reader.result()
+        for parent in converter.parents(reader, genes):
+            keep(*parent)
+    order = numpy.lexsort((numpy.frombuffer(keys["level"], dtype=numpy.uint8),
+                           numpy.frombuffer(keys["start"], dtype=numpy.uint64),
+                           numpy.frombuffer(keys["rank"], dtype=numpy.uint32)))
     with plain.open("rb") as copy, BGZFile(str(dest), "wb") as out:
+        out.write(_gff3.HEADER)
         for header in headers:
             out.write(header + b"\n")
         for i in order:

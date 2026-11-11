@@ -1,5 +1,5 @@
 """The browser-file recipe behind `bloomctl genome index`: the five files, read back by region,
-and what htslib refuses."""
+the genes written as GFF3, and what htslib refuses."""
 
 import gzip
 
@@ -36,9 +36,14 @@ def _build(tmp_path, fasta, gtf):
     return _index.build(fasta, gtf, out, tmp_path / "work")
 
 
-def _starts(built, contig):
-    return [line.split("\t")[3] for line in
-            pysam.TabixFile(str(built.files["gtf"].path)).fetch(contig)]
+def _rows(built, contig, *region):
+    return [line.split("\t") for line in
+            pysam.TabixFile(str(built.files["gff3"].path)).fetch(contig, *region)]
+
+
+def _text(built):
+    with gzip.open(built.files["gff3"].path, "rt") as fh:
+        return fh.read()
 
 
 def test_the_five_files_are_made_and_can_be_read_by_region(tmp_path, sources):
@@ -51,8 +56,40 @@ def test_the_five_files_are_made_and_can_be_read_by_region(tmp_path, sources):
     fasta = pysam.FastaFile(str(built.files["fasta"].path))
     assert list(fasta.references) == ["Chr1", "Chr2"]
     assert fasta.fetch("Chr1", 10, 14) == "GGGG"
-    gtf = pysam.TabixFile(str(built.files["gtf"].path))
-    assert [line.split("\t")[3] for line in gtf.fetch("Chr1", 10, 20)] == ["12", "17"]
+    assert [(r[2], r[3]) for r in _rows(built, "Chr1", 10, 20)] == [
+        ("gene", "12"), ("transcript", "12"), ("exon", "12"), ("exon", "17")]
+
+
+def test_the_genes_are_written_as_gff3_with_each_line_linked_to_its_parent(tmp_path, sources):
+    assert _text(_build(tmp_path, *sources)) == (
+        "##gff-version 3\n"
+        "#!genome-build TAIR10\n"
+        "Chr1\tAraport11\tgene\t3\t9\t.\t+\t.\tID=gene:AT1G01010;Name=NAC001;"
+        "gene_id=AT1G01010;gene_name=NAC001\n"
+        "Chr1\tAraport11\ttranscript\t3\t5\t.\t+\t.\tID=transcript:t1;"
+        "Parent=gene:AT1G01010;Name=t1;transcript_id=t1\n"
+        "Chr1\tAraport11\texon\t3\t5\t.\t+\t.\tParent=transcript:t1;gene_id=AT1G01010;"
+        "transcript_id=t1\n"
+        "Chr1\tAraport11\tgene\t12\t18\t.\t-\t.\tID=gene:AT1G01020;Name=AT1G01020;"
+        "gene_id=AT1G01020\n"
+        "Chr1\tAraport11\ttranscript\t12\t18\t.\t-\t.\tID=transcript:t2;"
+        "Parent=gene:AT1G01020;Name=t2;transcript_id=t2\n"
+        "Chr1\tAraport11\texon\t12\t15\t.\t-\t.\tParent=transcript:t2;gene_id=AT1G01020;"
+        "transcript_id=t2\n"
+        "Chr1\tAraport11\texon\t17\t18\t.\t-\t.\tParent=transcript:t2;gene_id=AT1G01020;"
+        "transcript_id=t2\n"
+        "Chr2\tAraport11\tgene\t1\t4\t.\t-\t.\tID=gene:AT2G01010;Name=AT2G01010;"
+        "gene_id=AT2G01010\n"
+    )
+
+
+def test_every_parent_is_a_line_of_the_file(tmp_path, sources):
+    rows = [line.split("\t") for line in _text(_build(tmp_path, *sources)).splitlines()
+            if not line.startswith("#")]
+    fields = [dict(a.split("=", 1) for a in row[8].split(";")) for row in rows]
+    ids = [f["ID"] for f in fields if "ID" in f]
+    assert len(ids) == len(set(ids))
+    assert {f["Parent"] for f in fields if "Parent" in f} <= set(ids)
 
 
 def test_the_genes_are_returned_with_the_files(tmp_path, sources):
@@ -64,17 +101,16 @@ def test_an_unsorted_gtf_is_written_in_position_order(tmp_path, sources):
     lines = GTF.splitlines(keepends=True)
     shuffled = lines[:2] + [lines[6], lines[4], lines[2], lines[5], lines[3]]
     built = _build(tmp_path, sources[0], _gz(tmp_path / "shuffled.gtf.gz", "".join(shuffled)))
-    assert _starts(built, "Chr1") == ["3", "3", "12", "17"]
-    assert _starts(built, "Chr2") == ["1"]
+    assert [(r[2], r[3]) for r in _rows(built, "Chr1")] == [
+        ("gene", "3"), ("transcript", "3"), ("exon", "3"),
+        ("gene", "12"), ("transcript", "12"), ("exon", "12"), ("exon", "17")]
+    assert [r[3] for r in _rows(built, "Chr2")] == ["1"]
 
 
 def test_the_header_lines_stay_and_plain_comments_go(tmp_path, sources):
-    built = _build(tmp_path, *sources)
-    with gzip.open(built.files["gtf"].path, "rt") as fh:
-        text = fh.read()
-    assert text.startswith("#!genome-build TAIR10\n")
+    text = _text(_build(tmp_path, *sources))
+    assert text.startswith("##gff-version 3\n#!genome-build TAIR10\n")
     assert "#a plain comment" not in text
-    assert len(text.splitlines()) == 6
 
 
 def test_the_same_input_gives_the_same_bytes(tmp_path, sources):

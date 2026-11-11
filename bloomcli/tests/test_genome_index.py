@@ -212,8 +212,8 @@ def test_each_file_is_sent_with_its_own_content_type(db, storage):
     _run(f"{GENOME}.v1")
     assert _content_types(storage) == {
         "genome.fa.gz": "application/gzip", "genome.fa.gz.fai": "text/plain",
-        "genome.fa.gz.gzi": "application/octet-stream", "genes.gtf.gz": "application/gzip",
-        "genes.gtf.gz.tbi": "application/octet-stream",
+        "genome.fa.gz.gzi": "application/octet-stream", "genes.gff3.gz": "application/gzip",
+        "genes.gff3.gz.tbi": "application/octet-stream",
     }
 
 

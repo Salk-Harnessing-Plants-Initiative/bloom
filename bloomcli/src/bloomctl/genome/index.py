@@ -1,8 +1,8 @@
 """`bloomctl genome index`: build a genome version's files for the genome browser.
 
 The version's stored FASTA and GTF are downloaded and checked against Bloom's record, turned into
-the five indexed files the browser reads (see _index), and every gene's position is read from the
-GTF. Only when all of that works is a build started; the files are then uploaded, the genes sent
+the five indexed files the browser reads, the genes as GFF3 (see _index), and every gene's
+position is read from the GTF. Only when all of that works is a build started; the files are then uploaded, the genes sent
 in batches, and the build finished. A failure or a stop signal after the start abandons the build.
 """
 
@@ -29,8 +29,8 @@ CONTENT_TYPES = {
     "fasta": "application/gzip",
     "fasta_fai": "text/plain",
     "fasta_gzi": "application/octet-stream",
-    "gtf": "application/gzip",
-    "gtf_tbi": "application/octet-stream",
+    "gff3": "application/gzip",
+    "gff3_tbi": "application/octet-stream",
 }
 # A batch of genes is sent again this many times after a lost answer or a server error;
 # sending again is safe.
