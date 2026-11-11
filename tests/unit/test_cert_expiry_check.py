@@ -211,7 +211,7 @@ MAIL = check.MailSettings(host="relay.test", port=2525, address="noreply@test", 
 def test_mail_goes_out_as_blooms_own_sender_through_its_relay():
     mail = check.mail_settings(PROD)
     assert (mail.host, mail.port) == ("neoemex1.salk.edu", 25)
-    assert mail.address == "noreply@bloom.salk.edu" and mail.name == "Bloom"
+    assert mail.address == "noreply@bloom.salk.edu" and mail.name == "Bloom · Salk HPI"
 
 
 def test_an_env_file_without_smtp_settings_is_refused(tmp_path):
