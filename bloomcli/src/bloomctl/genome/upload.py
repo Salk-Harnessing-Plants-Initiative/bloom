@@ -209,11 +209,12 @@ def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any],
     return rows[0]
 
 
-def _send(http, conn, profile: str, path: str, prepared: _files.Prepared, label: str):
+def _send(http, conn, profile: str, path: str, prepared: _files.Prepared, label: str,
+          content_type: str = "application/gzip"):
     """Send one file; sign in again once if the session runs out part-way. Returns the session."""
     ep = conn.endpoint
     try:
-        url = _transfer.create_upload(http, ep, BUCKET, path, prepared.size)
+        url = _transfer.create_upload(http, ep, BUCKET, path, prepared.size, content_type)
         with _progress.track(f"Uploading {visible(label)}") as update:
             try:
                 _transfer.send(http, ep, url, prepared.path, 0, prepared.size, update)

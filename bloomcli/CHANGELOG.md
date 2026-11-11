@@ -8,6 +8,17 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a20] - 2026-11-10 — genome browser builds
+
+### Added
+
+- `genome index <name>.vN` builds a ready genome version's files for the genome browser (bgzip
+  FASTA with `.fai` and `.gzi`, sorted bgzip GTF with `.tbi`), uploads them, and records every
+  gene's position. It refuses, before starting, a GTF that repeats a gene ID, names a contig the
+  FASTA lacks or runs past a contig's end. Needs the new `genome-index` extra
+  (`pip install 'bloomctl[genome-index]'`).
+- `genome list` shows each version's newest browser build and its status.
+
 ## [0.1.0a19] - 2026-10-21 — parallel gene uploads no longer collide
 
 ### Fixed
