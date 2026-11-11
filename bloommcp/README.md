@@ -58,6 +58,10 @@ which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on AIRC's sig
   (`bloom_user_for_email`, called as `bloom_agent`; cached 60 s). Otherwise: 403, or 503 if the
   lookup fails. A POST holding one JSON-RPC request gets the refusal as a JSON-RPC error instead
   (HTTP 200, code `-32003`, `data.status` 403 or 503), since MCP clients show its message.
+- Someone refused for having no Bloom account is also emailed how to sign up and reconnect: bloommcp
+  asks the internal `mail` service in the background (`bloom_mcp.signup_email`), once per address
+  every 2 hours and at most two at a time, so Claude's retries make no extra requests; the service
+  also sends at most one email per address every 2 hours. The refusal never waits on it.
 - An admitted request runs with `BLOOMMCP_API_KEY` in place of a caller token, and its usage is
   recorded under the Bloom account's id. Queries still run as `bloom_agent`.
 
@@ -70,6 +74,7 @@ bloommcp hold the secret for and which accepts only cloudflared's fixed address.
 | `BLOOMMCP_TUNNEL_JWKS_URL` | AIRC's public keys for this environment's JWTs. Required with the secret. |
 | `BLOOMMCP_TUNNEL_JWT_ISSUER` / `BLOOMMCP_TUNNEL_JWT_AUDIENCE` | The `iss` and `aud` the JWT must carry (`bloom-mcp`; `bloom-staging` or `bloom-prod`). Required with the secret. |
 | `BLOOMMCP_TUNNEL_JWKS_FILE` | A local keys file used instead of the URL, for CI and tests only. |
+| `MAIL_SERVICE_URL` / `MAIL_SERVICE_SECRET` | The internal mail service and its caller secret, for the sign-up email. Either unset: no email. |
 | `SITE_URL` | Bloom's address, named in the "create an account" refusal and used for the Bloom page links the data tools give Claude. Unset: no page links. |
 
 ## Development
