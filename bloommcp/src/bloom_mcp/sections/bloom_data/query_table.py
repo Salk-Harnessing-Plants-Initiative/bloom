@@ -14,7 +14,9 @@ from bloom_mcp.tools import _ports
 from ._common import (
     FilterParam,
     check_columns,
+    check_contains,
     check_filterable,
+    check_sortable,
     fix_request,
     logs_call,
     readable_columns,
@@ -47,7 +49,8 @@ class QueryTableParams(BaseModel):
     )
     order_by: str | None = Field(
         default=None,
-        description="Column to sort by; rows are always also sorted by the table's key.",
+        description="Column to sort by, one list_tables gives as sortable; rows are always "
+        "also sorted by the table's key.",
     )
     descending: bool = Field(
         default=False, description="Largest first (order_by, or the key if none)."
@@ -127,6 +130,8 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     chosen = [params.order_by] if params.order_by else []
     check_columns(params.table, chosen, allowed)
     check_filterable(params.table, [f.column for f in params.filters] + chosen)
+    check_sortable(params.table, params.order_by)
+    check_contains(params.table, params.filters)
     filters = to_filters(params.filters)
     order = _order(params.table, params.order_by, params.descending)
 
