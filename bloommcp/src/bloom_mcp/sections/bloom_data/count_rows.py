@@ -13,6 +13,7 @@ from bloom_mcp.tools import _ports
 from ._common import (
     FilterParam,
     check_columns,
+    check_contains,
     check_filterable,
     logs_call,
     readable_columns,
@@ -62,6 +63,7 @@ def count_rows(params: CountRowsParams) -> CountRowsResult:
     allowed = readable_columns(params.table)
     check_columns(params.table, [f.column for f in params.filters], allowed)
     check_filterable(params.table, [f.column for f in params.filters])
+    check_contains(params.table, params.filters)
     filters = to_filters(params.filters)
     reader = _ports.table_reader()
     column = table_access.paging_key(params.table)[0]
