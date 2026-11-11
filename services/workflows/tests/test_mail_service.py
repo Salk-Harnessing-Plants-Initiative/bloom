@@ -67,6 +67,7 @@ def test_the_signup_email_goes_to_the_address_with_the_signup_link(client, sent)
     assert "couldn't find an active account" in body
     assert "https://bloom.salk.edu/login" in body and "Sign up" in body
     assert "not your Salk password" in body
+    assert '3. Try the "Bloom Connector" in Claude again.' in body
     assert "Someone" not in body
 
 
@@ -312,7 +313,8 @@ def test_the_contact_is_named_and_gets_the_replies(client, sent):
     signup(client, "ada@salk.edu")
     [msg] = sent
     assert msg["Reply-To"] == "bfernando@salk.edu"
-    assert "contact the Bloom team at bfernando@salk.edu, or reply" in msg.get_content()
+    assert "contact the Bloom team at bfernando@salk.edu.\n" in msg.get_content()
+    assert "reply to this email" not in msg.get_content()
 
 
 def test_without_a_contact_there_is_no_reply_to(client, sent, monkeypatch):
