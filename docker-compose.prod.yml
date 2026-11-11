@@ -976,8 +976,10 @@ services:
     entrypoint: ["/bin/sh", "/usr/local/bin/init/create-buckets.sh"]
     security_opt:
       - no-new-privileges:true
+    # mc needs its default capabilities to write its config; NET_RAW would let it forge
+    # another container's address, which the port-25 rule relies on.
     cap_drop:
-      - ALL
+      - NET_RAW
     volumes:
       - ./minio/init:/usr/local/bin/init
     environment:

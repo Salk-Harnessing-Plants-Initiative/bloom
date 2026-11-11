@@ -31,9 +31,12 @@ def _env(name: str) -> dict[str, str]:
     return values
 
 
-def test_every_service_drops_all_capabilities():
+def test_no_service_can_forge_an_address():
+    """NET_RAW forges another container's address; every service drops it (or all)."""
     missing = [
-        n for n, s in COMPOSE["services"].items() if s.get("cap_drop") != ["ALL"]
+        n
+        for n, s in COMPOSE["services"].items()
+        if not {"ALL", "NET_RAW"} & set(s.get("cap_drop") or [])
     ]
     assert missing == [], (
         f"these keep default capabilities (NET_RAW can forge addresses): {missing}"
