@@ -135,10 +135,10 @@ def test_finish_records_the_five_files(cur, version_id):
 
 def test_finish_without_the_files_is_refused(cur, version_id):
     build_id, _, folder = start_build(cur, version_id)
-    put_files(cur, folder, only={"fasta", "fasta_fai", "fasta_gzi", "gtf"})
+    put_files(cur, folder, only={"fasta", "fasta_fai", "fasta_gzi", "gff3"})
     as_role(cur, "bloom_writer", WRITER)
     refused(cur, FINISH, (build_id, files_json(), 2), psycopg.errors.InvalidParameterValue,
-            match="genes.gtf.gz.tbi has not been uploaded")
+            match="genes.gff3.gz.tbi has not been uploaded")
 
 
 def test_finish_against_a_different_size_is_refused(cur, version_id):
@@ -150,12 +150,12 @@ def test_finish_against_a_different_size_is_refused(cur, version_id):
 
 
 @pytest.mark.parametrize("files, match", [
-    (files_json(gtf_tbi=None), "exactly the five"),
+    (files_json(gff3_tbi=None), "exactly the five"),
     (files_json(extra={"sha256": SHA, "bytes": 1}), "exactly the five"),
-    (files_json(gtf={"sha256": "E" * 64, "bytes": 2048}), "exactly the five"),
-    (files_json(gtf={"sha256": SHA, "bytes": 0}), "exactly the five"),
-    (files_json(gtf={"sha256": SHA, "bytes": -1}), "exactly the five"),
-    (files_json(gtf={"bytes": 2048}), "exactly the five"),
+    (files_json(gff3={"sha256": "E" * 64, "bytes": 2048}), "exactly the five"),
+    (files_json(gff3={"sha256": SHA, "bytes": 0}), "exactly the five"),
+    (files_json(gff3={"sha256": SHA, "bytes": -1}), "exactly the five"),
+    (files_json(gff3={"bytes": 2048}), "exactly the five"),
     (json.dumps(["genome.fa.gz"]), "exactly the five"),
 ])
 def test_finish_with_a_bad_file_record_is_refused(cur, version_id, files, match):
@@ -286,7 +286,7 @@ def test_another_writer_cannot_add_a_build_file(cur, version_id):
 def test_no_file_is_taken_outside_the_builds_five_names(cur, genome, version_id):
     _, _, folder = start_build(cur, version_id)
     for name in (f"{folder}/genome.fa", f"{folder}/notes.txt",
-                 f"{genome}/v1/browser/b9/genes.gtf.gz"):
+                 f"{genome}/v1/browser/b9/genes.gff3.gz"):
         _insert_refused(cur, name)
         _insert_refused(cur, name, role="bloom_workflows")
 
@@ -294,8 +294,8 @@ def test_no_file_is_taken_outside_the_builds_five_names(cur, genome, version_id)
 def test_a_ready_builds_file_cannot_be_added_again(cur, version_id):
     build_id, folder = ready_build(cur, version_id)
     cur.execute("SET LOCAL storage.allow_delete_query = 'true'")
-    cur.execute("DELETE FROM storage.objects WHERE name = %s", (f"{folder}/genes.gtf.gz.tbi",))
-    _insert_refused(cur, f"{folder}/genes.gtf.gz.tbi")
+    cur.execute("DELETE FROM storage.objects WHERE name = %s", (f"{folder}/genes.gff3.gz.tbi",))
+    _insert_refused(cur, f"{folder}/genes.gff3.gz.tbi")
 
 
 @pytest.mark.parametrize("command", ["UPDATE", "DELETE"])

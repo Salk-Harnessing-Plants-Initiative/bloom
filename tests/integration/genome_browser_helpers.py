@@ -39,8 +39,8 @@ FILES = {
     "fasta": ("genome.fa.gz", 4096),
     "fasta_fai": ("genome.fa.gz.fai", 120),
     "fasta_gzi": ("genome.fa.gz.gzi", 64),
-    "gtf": ("genes.gtf.gz", 2048),
-    "gtf_tbi": ("genes.gtf.gz.tbi", 256),
+    "gff3": ("genes.gff3.gz", 2048),
+    "gff3_tbi": ("genes.gff3.gz.tbi", 256),
 }
 # Two genes, as the build reads them from the GTF.
 GENES = (

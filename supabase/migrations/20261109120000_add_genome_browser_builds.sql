@@ -2,9 +2,9 @@
 --
 -- The browser-ready copies of a genome version. A genome version is uploaded as a plain-gzip
 -- FASTA and GTF, which no genome browser can read: it needs a bgzip-compressed FASTA with its
--- .fai and .gzi, and a position-sorted bgzip GTF with its .tbi, all read by HTTP range
--- request. A browser build is one set of those five files for one ready version, stored at
--- <genome>/v<N>/browser/b<B>/. This row records the folder, the five files' checksums and
+-- .fai and .gzi, and the genes as a position-sorted bgzip GFF3 with its .tbi (made from the
+-- GTF), all read by HTTP range request. A browser build is one set of those five files for
+-- one ready version, stored at <genome>/v<N>/browser/b<B>/. This row records the folder, the five files' checksums and
 -- sizes and the tools used. Each build also records
 -- where every gene of the GTF sits (genome_browser_genes), readable once the build is ready, for gene
 -- search and for links from single-cell genes to the genome. A build is uploading, then ready
@@ -30,8 +30,8 @@ AS $$
     VALUES ('fasta', 'genome.fa.gz'),
            ('fasta_fai', 'genome.fa.gz.fai'),
            ('fasta_gzi', 'genome.fa.gz.gzi'),
-           ('gtf', 'genes.gtf.gz'),
-           ('gtf_tbi', 'genes.gtf.gz.tbi');
+           ('gff3', 'genes.gff3.gz'),
+           ('gff3_tbi', 'genes.gff3.gz.tbi');
 $$;
 
 -- True when `files` holds exactly the five roles, each with a 64-hex SHA-256 and a positive
