@@ -52,6 +52,9 @@ docker run --rm ghcr.io/salk-harnessing-plants-initiative/bloomctl:staging \
 - **[read]** `bloomctl genome list` / `bloomctl genome download <name>[.vN]` — see which
   genomes and versions Bloom holds, and fetch a ready version's FASTA and GTF, checked
   against Bloom's record. See [below](#bloomctl-genome-list-and-download).
+- **[write]** `bloomctl genome index <name>.vN` — build a ready version's files for the
+  genome browser and record its genes. Needs `pip install 'bloomctl[genome-index]'`. See
+  [below](#bloomctl-genome-index).
 - **[write]** `bloomctl genome annotation upload <file>` / **[read]** `bloomctl genome
   annotation download <name>.vN --out <file>` — record a genome version's GO and pathway
   annotation (a `bloom-annotation/1` file from the GO and pathway workflow) as its next build, or
@@ -804,9 +807,13 @@ bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_202
 - The files can be plain or gzipped. A plain file is gzipped into a temporary
   folder first; the original is never changed. A gzipped file is read to the end
   to check it is intact, then sent as it is.
-- Before anything is sent, the FASTA must start with a `>` line, the GTF's first
-  record must have 9 tab-separated columns, and each gzipped file must be at most
-  500 MB.
+- Before anything is sent, the GTF is checked against the FASTA, line by line, and
+  refused with the line, gene or contig named when it doesn't fit: every line must have 9
+  tab-separated columns, a start of at least 1 no later than its end, and a contig the FASTA
+  has, within its length; each gene ID must sit on one contig, each transcript ID belong to
+  one gene, and IDs, names and contigs are at most 200 characters. A strand of `?` (unknown)
+  is accepted. The FASTA must not repeat a contig name. Each gzipped file must
+  be at most 500 MB. A GTF in any order is fine.
 - The upload is described on the terminal and goes ahead once confirmed; `--yes`
   skips the question.
 - Any signed-in member (`bloom_user`) may upload a **new** genome, as its v1.
@@ -842,7 +849,44 @@ bloomctl genome download tair10_araport11.v2 --to ref/ --unzip --version-file re
   match Bloom's record, which running again won't fix; `1` anything else, such as a network or
   storage error, worth retrying; `2` a usage error.
 - `list --output json` (or `csv`) gives one record per version.
+- `list` also shows each version's newest browser build and its status (`b1 ready`).
 - Any login can run both, including the pipeline's (`bloom_workflows`).
+
+## `bloomctl genome index`
+
+The genome browser reads a genome by region, so each ready version gets a browser build:
+five indexed files beside the version's own, under `<genome>/v<N>/browser/b<B>/`, and every
+gene's position.
+
+```bash
+pip install 'bloomctl[genome-index]'      # htslib, through pysam
+bloomctl genome index tair10_araport11.v2 -p staging
+```
+
+- It downloads the version's FASTA and GTF, checked against Bloom's record, and makes
+  `genome.fa.gz` (bgzip) with `.fai` and `.gzi`, and `genes.gff3.gz` (the GTF as GFF3, in
+  position order, bgzip) with `.tbi`. The version's own files are not changed.
+- The GFF3 has one line per gene (`ID=gene:<gene_id>`) and per transcript
+  (`ID=transcript:<transcript_id>`), placed as the GTF check found them, with the GTF's own
+  `gene` and `transcript` lines' attributes; every other line keeps its columns and
+  attributes and gains its `Parent`. Lines without a `gene_id` are left out. The genome
+  browser reads GFF3 by region; it can't read a GTF that way.
+- It checks the GTF against the FASTA the same way `genome upload` does, before starting
+  anything, so a version uploaded before those checks is refused with the same message.
+- Each gene's position is the span of all its lines, so a trans-spliced gene whose pieces
+  sit far apart (NCBI's organelle genes) is one span covering every piece. Its name comes from
+  `gene_name`, then `gene`, then `Name`.
+- A failure, Ctrl-C or a stop signal after the build started abandons it. A batch of genes
+  whose answer is lost, or that meets a server error, is sent again.
+- A version that already has a ready build is left alone, and its build is printed. One with
+  an unfinished build exits `4`; if that build is yours from a run that was stopped, add
+  `--replace-unfinished` to abandon it first.
+- Exit codes: `0` built, or already built; `3` the version can't be built or Bloom refused the
+  build; `4` an unfinished build; `1` a network or server error, worth retrying; `2` a usage
+  error. The one line on stdout is the build, its folder and its gene count.
+- `--workdir` chooses where the files are built (a temporary folder by default). The
+  unzipped GFF3 is kept there while it is sorted.
+- Needs a writer (`bloom_writer`) or the pipeline's (`bloom_workflows`) login.
 
 ## Access & roles
 
@@ -853,7 +897,7 @@ profile maps to determines what works:
 | Command tag                                                                                    | Required role                         | Intended user                                                                             |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
 | **[read]** (`download`, `download-for-predict`, `batch-download-for-predict`, `datasets list`, `scrna hdf5 download`, `scrna hdf5 list`, `genome list`, `genome download`) | `bloom_user` (any authenticated user) | anyone with a Bloom account                                                               |
-| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`, `genome upload`)                        | `bloom_writer` / `bloom_admin` (`genome upload`: `bloom_writer`, or a member for a new genome) | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
+| **[write]** (`ingest-result`, `batch-ingest-result`, `datasets create`, `scrna hdf5 upload`, `genome upload`, `genome index`)                        | `bloom_writer` / `bloom_admin` (`genome upload`: `bloom_writer`, or a member for a new genome) | automated pipelines (e.g. the trait-extraction write-back), or users granted write access |
 
 A read-only `bloom_user` can `list` datasets but **cannot** `create` one — the
 write path (the `create_cyl_dataset` / `insert_cyl_result_envelope` RPCs and the

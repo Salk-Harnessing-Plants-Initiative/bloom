@@ -21,7 +21,7 @@ import click
 from ..credentials import DEFAULT_PROFILE
 from ..scrna import _progress, _session, _transfer
 from ..scrna._text import visible
-from . import _files
+from . import _files, _gtf
 
 BUCKET = "genome-references"
 WRITER_ROLE = "bloom_writer"
@@ -48,13 +48,17 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
     """Upload a genome's FASTA and GTF to Bloom as the genome's next version.
 
     NAME is the genome, e.g. tair10_araport11. A new genome needs --species. Both files are
-    checked and gzipped first, the upload is described, and it goes ahead once confirmed.
+    checked first: every GTF line must lie on a FASTA contig, within its length, each gene
+    must have one position, and each transcript one gene. They are then gzipped, the upload is described, and it goes ahead
+    once confirmed.
     Any member may upload a new genome; adding a version to an existing one needs a writer.
     """
     if not _files.NAME_RULE.match(name):
         raise click.UsageError(f"NAME must be {_files.NAME_HELP}.")
     _checked(_files.check_fasta, fasta)
     _checked(_files.check_gtf, gtf)
+    with _progress.track(f"Checking {visible(gtf.name)} against {visible(fasta.name)}"):
+        _checked(_gtf.genes, gtf, _checked(_gtf.contig_lengths, fasta))
     if not yes and not _interactive():
         raise click.ClickException(
             "there is no terminal to ask for confirmation in. Pass --yes to go ahead without "
@@ -87,8 +91,8 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
         started = _start(conn.client, name, species_id, opts, member)
         try:
             with _transfer.open_client() as http:
-                conn = _send(http, conn, profile, started["fasta_path"], fasta_file, fasta.name)
-                conn = _send(http, conn, profile, started["gtf_path"], gtf_file, gtf.name)
+                conn = send(http, conn, profile, started["fasta_path"], fasta_file, fasta.name)
+                conn = send(http, conn, profile, started["gtf_path"], gtf_file, gtf.name)
             version = _finish(conn.client, started["version_id"], fasta_file, gtf_file)
         except BaseException:
             settled = _unfinished(conn.client, name, started) if member else (
@@ -209,11 +213,18 @@ def _start(client: Any, name: str, species_id: int | None, opts: dict[str, Any],
     return rows[0]
 
 
-def _send(http, conn, profile: str, path: str, prepared: _files.Prepared, label: str):
-    """Send one file; sign in again once if the session runs out part-way. Returns the session."""
+def send(http, conn, profile: str, path: str, prepared: _files.Prepared, label: str,
+         content_type: str = "application/gzip"):
+    """Send one file; sign in again once if the session runs out before or part-way. Returns the
+    session."""
     ep = conn.endpoint
     try:
-        url = _transfer.create_upload(http, ep, BUCKET, path, prepared.size)
+        try:
+            url = _transfer.create_upload(http, ep, BUCKET, path, prepared.size, content_type)
+        except _transfer.SessionExpired:
+            conn = _session.connect(profile)
+            ep = conn.endpoint
+            url = _transfer.create_upload(http, ep, BUCKET, path, prepared.size, content_type)
         with _progress.track(f"Uploading {visible(label)}") as update:
             try:
                 _transfer.send(http, ep, url, prepared.path, 0, prepared.size, update)

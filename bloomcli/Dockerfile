@@ -21,11 +21,11 @@ USER bloom
 
 # Install dependencies only (cached independently of source code changes).
 COPY --chown=bloom:bloom pyproject.toml uv.lock README.pypi.md ./
-RUN uv sync --frozen --no-dev --no-cache --no-install-project
+RUN uv sync --frozen --no-dev --no-cache --no-install-project --extra genome-index
 
 COPY --chown=bloom:bloom . .
 
 # Install the project itself now that src/ is present.
-RUN uv sync --frozen --no-dev --no-cache
+RUN uv sync --frozen --no-dev --no-cache --extra genome-index
 
 ENTRYPOINT ["bloomctl"]

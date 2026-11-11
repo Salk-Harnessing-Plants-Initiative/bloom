@@ -248,6 +248,8 @@ bloomctl genome download tair10_araport11.v1 --to ref/ --unzip   # a named versi
 - **Upload** checks the files first; uploading again makes the next version (writers only).
 - **Only `ready` versions** can be downloaded.
 - **Download** checks each file against Bloom's record; `--unzip` gives `genome.fa` and `genes.gtf`.
+- **Index** a ready version for the genome browser with `bloomctl genome index tair10_araport11.v1`
+  (needs `pip install 'bloomctl[genome-index]'`).
 - **Exit codes:** `3` not available or doesn't match (don't retry); `1` network error (retry).
 
 ### Genome commands

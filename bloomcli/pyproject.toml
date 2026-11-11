@@ -1,6 +1,6 @@
 [project]
 name = "bloomctl"
-version = "0.1.0a19"
+version = "0.1.0a20"
 description = "Bloom command-line tool for Bloom Database"
 # The PyPI landing page. README.md is the fuller in-repo doc.
 readme = "README.pypi.md"
@@ -55,6 +55,11 @@ test = [
     "pyyaml>=6",
     "h5py>=3.10",
     "numpy>=1.26",
+    "pysam>=0.24.1,<0.25",
+]
+# `genome index` builds a version's browser files with htslib (faidx, bgzip, tabix).
+genome-index = [
+    "pysam>=0.24.1,<0.25",
 ]
 
 [build-system]

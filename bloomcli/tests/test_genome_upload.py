@@ -259,6 +259,26 @@ def test_a_file_that_is_not_a_fasta_is_refused_before_signing_in(env, files, mon
     assert "TAIR10.fa is not a FASTA file" in result.output
 
 
+@pytest.mark.parametrize("gtf, fasta, said", [
+    (GTF + b'chr9\tAraport11\tgene\t1\t4\t.\t+\t.\tgene_id "AT9G01010";\n', FASTA,
+     "line 4 of the GTF is on chr9, which the FASTA doesn't have"),
+    (GTF + b'Chr2\tAraport11\tgene\t1\t9\t.\t+\t.\tgene_id "AT2G01010";\n', FASTA,
+     "past the end of Chr2 (4 bases in the FASTA)"),
+    (GTF + b'Chr2\tAraport11\texon\t1\t4\t.\t+\t.\tgene_id "AT1G01010";\n', FASTA,
+     "more than one contig in the GTF: AT1G01010"),
+    (GTF, FASTA + b">Chr2\nAC\n", "more than once in the FASTA: Chr2"),
+])
+def test_a_gtf_that_does_not_fit_its_fasta_is_refused_before_signing_in(
+    env, files, monkeypatch, gtf, fasta, said
+):
+    monkeypatch.setattr(_session, "connect", lambda _p: pytest.fail("it signed in"))
+    files[0].write_bytes(fasta)
+    files[1].write_bytes(gtf)
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert result.exit_code == 1
+    assert said in result.output and "Nothing was sent" in result.output
+
+
 def test_a_gtf_with_the_wrong_columns_is_refused(env, files, monkeypatch):
     monkeypatch.setattr(_session, "connect", lambda _p: pytest.fail("it signed in"))
     files[1].write_text("#comment\nChr1\tAraport11\tgene\t1\t10\n")
@@ -272,7 +292,7 @@ def test_a_damaged_gzip_file_is_refused(db, storage, tmp_path, files):
     broken.write_bytes(gzip.compress(FASTA * 50)[:-20])
     result = _upload((broken, files[1]), "--species", "Arabidopsis", "--yes")
     assert result.exit_code != 0
-    assert "damaged gzip file" in result.output
+    assert "the FASTA could not be read" in result.output and "Nothing was sent" in result.output
     assert db.calls == []
 
 

@@ -4,6 +4,7 @@ import json
 
 import pytest
 from click.testing import CliRunner
+from postgrest import APIError
 from scrna_fake_db import FakeClient
 
 from bloomctl.cli import cli
@@ -14,17 +15,24 @@ GENOMES = [
     {"id": 2, "name": "irgsp1", "species_id": 8, "description": None},
 ]
 VERSIONS = [
-    {"genome_id": 1, "version": 1, "status": "withdrawn", "assembly": "TAIR10",
+    {"id": 101, "genome_id": 1, "version": 1, "status": "withdrawn", "assembly": "TAIR10",
      "annotation": "Araport11-old", "fasta_bytes": 37_000_000, "gtf_bytes": 9_000_000,
      "ready_at": "2026-10-01T10:00:00Z", "withdrawn_reason": "wrong annotation"},
-    {"genome_id": 1, "version": 2, "status": "ready", "assembly": "TAIR10",
+    {"id": 102, "genome_id": 1, "version": 2, "status": "ready", "assembly": "TAIR10",
      "annotation": "Araport11", "fasta_bytes": 37_500_000, "gtf_bytes": 9_100_000,
      "ready_at": "2026-10-08T12:00:00Z", "withdrawn_reason": None},
-    {"genome_id": 1, "version": 3, "status": "uploading", "assembly": None, "annotation": None,
+    {"id": 103, "genome_id": 1, "version": 3, "status": "uploading", "assembly": None, "annotation": None,
      "fasta_bytes": None, "gtf_bytes": None, "ready_at": None, "withdrawn_reason": None},
-    {"genome_id": 2, "version": 1, "status": "abandoned", "assembly": "IRGSP-1.0",
+    {"id": 104, "genome_id": 2, "version": 1, "status": "abandoned", "assembly": "IRGSP-1.0",
      "annotation": None, "fasta_bytes": None, "gtf_bytes": None, "ready_at": None,
      "withdrawn_reason": None},
+]
+
+
+# v2's first browser build was withdrawn and its second is ready.
+BUILDS = [
+    {"version_id": 102, "build": 1, "status": "withdrawn"},
+    {"version_id": 102, "build": 2, "status": "ready"},
 ]
 
 
@@ -32,7 +40,7 @@ VERSIONS = [
 def genomes(env):
     env["client"] = FakeClient({
         "species": SPECIES, "genome_references": GENOMES,
-        "genome_reference_versions": VERSIONS,
+        "genome_reference_versions": VERSIONS, "genome_browser_builds": BUILDS,
     })
     return env["client"]
 
@@ -62,9 +70,10 @@ def test_json_has_one_record_per_version_in_genome_then_version_order(genomes):
         "genome": "tair10_araport11", "species": "Arabidopsis", "version": 2,
         "status": "ready", "assembly": "TAIR10", "annotation": "Araport11",
         "fasta_bytes": 37_500_000, "gtf_bytes": 9_100_000, "ready_at": "2026-10-08T12:00:00Z",
-        "withdrawn_reason": None,
+        "withdrawn_reason": None, "browser_build": 2, "browser_status": "ready",
     }
     assert records[1]["withdrawn_reason"] == "wrong annotation"
+    assert records[1]["browser_build"] is None
 
 
 def test_csv_has_a_header_and_one_row_per_version(genomes):
@@ -84,7 +93,8 @@ def test_a_genome_with_no_versions_yet_is_still_listed(env):
     assert json.loads(result.stdout) == [{
         "genome": "irgsp1", "species": "Rice", "version": None, "status": None,
         "assembly": None, "annotation": None, "fasta_bytes": None, "gtf_bytes": None,
-        "ready_at": None, "withdrawn_reason": None,
+        "ready_at": None, "withdrawn_reason": None, "browser_build": None,
+        "browser_status": None,
     }]
 
 
@@ -100,3 +110,24 @@ def test_no_genomes_says_so(env):
 def test_any_login_can_list(genomes, env):
     env["role"] = "bloom_user"
     assert _run().exit_code == 0
+
+
+def test_each_versions_newest_browser_build_is_shown(genomes):
+    result = _run()
+    assert result.exit_code == 0, result.output
+    assert "b2 ready" in result.output
+    assert "b1 withdrawn" not in result.output
+
+
+def test_a_bloom_without_browser_builds_still_lists_its_genomes(genomes, monkeypatch):
+    real_table = genomes.table
+
+    def table(name):
+        if name == "genome_browser_builds":
+            raise APIError({"message": "Could not find the table", "code": "PGRST205"})
+        return real_table(name)
+
+    monkeypatch.setattr(genomes, "table", table)
+    result = _run("--output", "json")
+    assert result.exit_code == 0, result.output
+    assert all(r["browser_build"] is None for r in json.loads(result.stdout))
