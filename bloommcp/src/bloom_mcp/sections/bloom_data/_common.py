@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract.errors import BloomMCPError
-from bloom_mcp.data_access import table_access
+from bloom_mcp.data_access import table_access, table_indexes
 from bloom_mcp.data_access.table_ports import (
     STATEMENT_TIMEOUT_SECONDS,
     BadFilterValue,
@@ -131,6 +131,22 @@ def read_failed(exc: TableReadError) -> BloomMCPError:
     )
 
 
+def lookup_failed(exc: TableReadError) -> BloomMCPError:
+    """read_failed's wording for gene_lookup, which takes only a gene name."""
+    if isinstance(exc, (DatabaseBusy, DatabaseUnavailable)):
+        return read_failed(exc)
+    slow = isinstance(exc, QueryTimedOut)
+    return BloomMCPError(
+        code="tool_error",
+        message="The gene lookup took longer than the database allows "
+        f"({STATEMENT_TIMEOUT_SECONDS} s)."
+        if slow
+        else "The gene lookup couldn't read Bloom's tables.",
+        remedy="Try again in a moment; if it keeps failing, tell the user the Bloom team "
+        "can look into it, and read the gene's tables with query_table meanwhile.",
+    )
+
+
 def _reports(
     explain: Callable[[TableReadError], BloomMCPError],
 ) -> Callable[[Callable[..., _R]], Callable[..., _R]]:
@@ -156,6 +172,7 @@ def _reports(
 # Turn a failed read into a plain message; they go under @as_mcp_tool.
 reports_read_errors = _reports(read_failed)
 reports_call_errors = _reports(call_failed)
+reports_lookup_errors = _reports(lookup_failed)
 
 
 class FilterParam(BaseModel):
@@ -205,6 +222,32 @@ def check_filterable(table: str, wanted: list[str]) -> None:
         raise fix_request(
             f"'{table}' can't be filtered or sorted on {', '.join(repr(c) for c in blocked)}.",
             "Read the column instead.",
+        )
+
+
+def check_sortable(table: str, order_by: str | None) -> None:
+    """Refuse a sort no index covers: the database would sort every row first."""
+    allowed = table_indexes.sortable_columns(table)
+    if order_by is not None and order_by not in allowed:
+        raise fix_request(
+            f"'{table}' can only be sorted by {', '.join(sorted(allowed))}.",
+            "Sort by one of those, or leave order_by out and sort the rows yourself.",
+        )
+
+
+def check_contains(table: str, filters: list[FilterParam]) -> None:
+    """Refuse `contains` on a large table's column with no trigram index behind it."""
+    allowed = table_indexes.contains_columns(table)
+    if allowed is None:
+        return
+    blocked = sorted({f.column for f in filters if f.op == "contains"} - allowed)
+    if blocked:
+        searchable = ", ".join(sorted(allowed)) or "no column"
+        raise fix_request(
+            f"'{table}' is too large for contains on {', '.join(blocked)}; "
+            f"contains works there on {searchable}.",
+            "Filter with eq or in on exact values (list them from a smaller table), "
+            "or add a filter on an id column.",
         )
 
 

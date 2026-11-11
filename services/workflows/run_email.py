@@ -3,7 +3,7 @@ The email a scientist gets when an RNA-seq run they started finishes.
 
 The status poller calls notify() in the pass that records the run's final status. It looks
 the requester's email up with rnaseq_run_requesters and sends one plain-text message through
-Salk's mail relay (the SMTP_* settings GoTrue's sign-in emails use): the outcome and its
+Salk's mail relay (mail.py): the outcome and its
 message, a link to the run page, a link to the dataset it loaded once the run is linked to it
 (its GO & pathways tab when the run made those results) and, for a run on an S3 folder, a reminder to remove Bloom's access to it if it was shared. Without SMTP_HOST (dev) nothing is sent. A failure is logged
 and never changes the run.
@@ -11,22 +11,15 @@ and never changes the run.
 
 import logging
 import os
-import smtplib
-import ssl
 from email.message import EmailMessage
-from email.utils import formataddr
 
+import mail
 from rnaseq_status import GO_STEPS, PHASES_KEY
 
 logger = logging.getLogger(__name__)
 
 REQUESTERS_FN = "rnaseq_run_requesters"
-SMTP_HOST = os.environ.get("SMTP_HOST") or None
-SMTP_PORT = int(os.environ.get("SMTP_PORT") or 25)
-SENDER = os.environ.get("SMTP_ADMIN_EMAIL") or "noreply@bloom.salk.edu"
-SENDER_NAME = os.environ.get("SMTP_SENDER_NAME") or "Bloom"
 SITE_URL = (os.environ.get("SITE_URL") or "").rstrip("/")
-SMTP_TIMEOUT_SECONDS = 15
 
 # The final statuses, and how the subject puts each.
 OUTCOMES = {
@@ -84,12 +77,9 @@ def build(run: dict, status, to: str, dataset_id=None) -> EmailMessage:
             f"If you shared {params['fastq_url']} with Bloom's AWS user so this run could read "
             "it, you can remove that access now.",
         ]
-    message = EmailMessage()
-    message["Subject"] = f"Bloom: your Cell Ranger run on {sample} {outcome}"
-    message["From"] = formataddr((SENDER_NAME, SENDER))
-    message["To"] = to
-    message.set_content("\n".join(lines) + "\n")
-    return message
+    return mail.message(
+        to, f"Bloom: your Cell Ranger run on {sample} {outcome}", "\n".join(lines) + "\n"
+    )
 
 
 def _requester(client, run_id) -> str | None:
@@ -99,16 +89,10 @@ def _requester(client, run_id) -> str | None:
     )
 
 
-def _send(message: EmailMessage) -> None:
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
-        smtp.starttls(context=ssl.create_default_context())
-        smtp.send_message(message)
-
-
 def notify(client, run: dict, status, dataset_id=None) -> None:
     """Emails the run's requester that it finished, with the dataset it loaded if linked.
     Never raises."""
-    if SMTP_HOST is None or status.status not in OUTCOMES:
+    if not mail.configured() or status.status not in OUTCOMES:
         return
     try:
         to = _requester(client, run["id"])
@@ -117,7 +101,7 @@ def notify(client, run: dict, status, dataset_id=None) -> None:
                 "run_email: run %s has no requester email; nothing sent", run["id"]
             )
             return
-        _send(build(run, status, to, dataset_id))
+        mail.send(build(run, status, to, dataset_id))
     except Exception as exc:  # noqa: BLE001 - an email must never change or stop the run
         logger.warning(
             "run_email: run %s's email was not sent: %s", run["id"], type(exc).__name__

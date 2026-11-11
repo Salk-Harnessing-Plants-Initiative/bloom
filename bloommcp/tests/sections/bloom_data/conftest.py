@@ -74,3 +74,15 @@ def reader():
     _ports.configure(table_reader=fake)
     yield fake
     _ports.configure(table_reader=previous)
+
+
+@pytest.fixture
+def genes_db():
+    """The gene lookup's fake Bloom (gene_lookup_data.TABLES), a fresh copy per test."""
+    from gene_lookup_data import TABLES
+
+    fake = FakeTableReader(copy.deepcopy(TABLES))
+    previous = _ports.table_reader()
+    _ports.configure(table_reader=fake)
+    yield fake
+    _ports.configure(table_reader=previous)

@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 # Chat and usage internals, protein embedding vectors (thousands of numbers per row), and
-# tables holding staff emails Claude has no use for yet (gene progress logs, RhizoVision),
+# tables holding staff emails Claude has no use for yet (RhizoVision),
 # and cyl_scan_traits: every run's values with no trait name or latest flag, read through its
 # views instead.
 EXCLUDED_TABLES = frozenset(
@@ -25,7 +25,6 @@ EXCLUDED_TABLES = frozenset(
         "cyl_dataset_traits",
         "cyl_experiment_trait_count_changes",
         "cyl_scan_traits",
-        "experiment_progress_logs",
         "protein_embeddings_esm2",
         "protein_embeddings_esm3",
         "rhizovision_accessions",
@@ -81,6 +80,7 @@ READABLE_TABLES = frozenset(
         "gene_candidate_scientists",
         "gene_candidate_support",
         "gene_candidates",
+        "experiment_progress_logs",
         "gene_orthologs",
         "gene_patents",
         "gene_progress_notes",
@@ -137,11 +137,13 @@ READABLE_TABLES = frozenset(
     }
 )
 
-# Never selected, filtered or ordered on: emails; the video queues' renderer error text and
+# Never selected, filtered or ordered on: emails, including who wrote a progress log; the
+# video queues' renderer error text and
 # queue plumbing, which bloom_agent has no grant on anyway; and the pipeline runs' raw error
 # text and pod names (internal hosts, roles and paths). A run's status still shows.
 HIDDEN_COLUMNS: dict[str, frozenset[str]] = {
     "people": frozenset({"email"}),
+    "experiment_progress_logs": frozenset({"user_email"}),
     "phenotypers": frozenset({"email"}),
     "cyl_scientists": frozenset({"email"}),
     "cyl_video_jobs": frozenset({"error_message", "msg_id", "reads"}),
@@ -207,13 +209,24 @@ PAGING_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 # Readable with email addresses replaced: the gene candidate logs record the email of
-# whoever changed a status.
+# whoever changed a status, and typed text, links, images or tags can hold one.
+_CANDIDATE_TEXT = frozenset(
+    {
+        "status_logs",
+        "legacy_progress_logs_jsonb",
+        "evidence_description",
+        "experiment_plans_and_progress",
+    }
+)
+_PROGRESS_LOG_TEXT = frozenset({"message", "links", "images", "tags"})
 EMAIL_REDACTED_COLUMNS: dict[str, frozenset[str]] = {
-    "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
+    "gene_candidates": _CANDIDATE_TEXT,
+    "experiment_progress_logs": _PROGRESS_LOG_TEXT,
 }
 # Never filtered or ordered on: a filter could test for an address the reply hides.
 UNFILTERABLE_COLUMNS: dict[str, frozenset[str]] = {
-    "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
+    "gene_candidates": _CANDIDATE_TEXT,
+    "experiment_progress_logs": _PROGRESS_LOG_TEXT,
 }
 EMAIL_HIDDEN = "[email hidden]"
 # \w covers accented letters; ' and ’ appear in names like o'brien. The lookbehind starts a

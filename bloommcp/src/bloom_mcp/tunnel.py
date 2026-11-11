@@ -27,6 +27,8 @@ from collections import OrderedDict
 import anyio
 import jwt
 
+from bloom_mcp import signup_email
+
 logger = logging.getLogger(__name__)
 
 SECRET_ENV = "BLOOMMCP_TUNNEL_SECRET"
@@ -316,6 +318,7 @@ async def bloom_user(email: str) -> str:
         )
     if user_id is None:
         logger.warning("tunnel refused: no Bloom account for %s", email)
+        signup_email.request(email)
         raise TunnelRefusal(403, _no_account_message(email))
     logger.info("tunnel lookup: Bloom account found for %s", email)
     _remember(email, user_id)

@@ -88,6 +88,7 @@ the wiki pages linked at the bottom of this doc.
    | `PROD_CLOUDFLARE_API_TOKEN`    | Caddy DNS-01 ACME token (zone: `bloom-acme.talmolab.org`)            |
    | `PROD_CLOUDFLARE_TUNNEL_TOKEN` | Token for bloommcp's Salk connector tunnel, from AIRC                |
    | `PROD_BLOOMMCP_TUNNEL_SECRET`  | Caddy's tunnel-entrance secret for bloommcp (`openssl rand -hex 32`) |
+   | `PROD_MAIL_SERVICE_SECRET`     | Caller secret for the internal `mail` service (`openssl rand -hex 32`) |
 
    Staging uses the same names with `STAGING_`. Prod and staging need separate
    tunnels from AIRC: never reuse a tunnel token across environments, or prod

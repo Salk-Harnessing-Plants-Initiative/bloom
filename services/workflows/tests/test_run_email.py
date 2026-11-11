@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import mail
 import rnaseq_status_poller as poller
 import run_email
 from rnaseq_status import RunStatus
@@ -76,10 +77,10 @@ class FakeSMTP:
 @pytest.fixture
 def relay(monkeypatch):
     FakeSMTP.sent, FakeSMTP.tls, FakeSMTP.fail = [], [], False
-    monkeypatch.setattr(run_email, "SMTP_HOST", "neoemex1.salk.edu")
-    monkeypatch.setattr(run_email, "SMTP_PORT", 25)
+    monkeypatch.setattr(mail, "SMTP_HOST", "neoemex1.salk.edu")
+    monkeypatch.setattr(mail, "SMTP_PORT", 25)
     monkeypatch.setattr(run_email, "SITE_URL", "https://bloom.salk.edu")
-    monkeypatch.setattr(run_email.smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(mail.smtplib, "SMTP", FakeSMTP)
     return FakeSMTP
 
 
@@ -182,12 +183,12 @@ def test_it_is_sent_to_the_requester_through_the_relay_over_tls(relay):
     assert client.rpcs == [("rnaseq_run_requesters", {"p_run_ids": [42]})]
     assert len(relay.sent) == 1 and len(relay.tls) == 1
     where, message = relay.sent[0]
-    assert where == ("neoemex1.salk.edu", 25, run_email.SMTP_TIMEOUT_SECONDS)
+    assert where == ("neoemex1.salk.edu", 25, mail.SMTP_TIMEOUT_SECONDS)
     assert message["To"] == "alice@salk.edu"
 
 
 def test_nothing_is_sent_without_a_relay(monkeypatch, relay):
-    monkeypatch.setattr(run_email, "SMTP_HOST", None)
+    monkeypatch.setattr(mail, "SMTP_HOST", None)
     client = FakeClient()
     run_email.notify(client, RUN, DONE)
     assert client.rpcs == [] and relay.sent == []
