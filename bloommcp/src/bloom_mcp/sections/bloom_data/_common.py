@@ -131,6 +131,22 @@ def read_failed(exc: TableReadError) -> BloomMCPError:
     )
 
 
+def lookup_failed(exc: TableReadError) -> BloomMCPError:
+    """read_failed's wording for gene_lookup, which takes only a gene name."""
+    if isinstance(exc, (DatabaseBusy, DatabaseUnavailable)):
+        return read_failed(exc)
+    slow = isinstance(exc, QueryTimedOut)
+    return BloomMCPError(
+        code="tool_error",
+        message="The gene lookup took longer than the database allows "
+        f"({STATEMENT_TIMEOUT_SECONDS} s)."
+        if slow
+        else "The gene lookup couldn't read Bloom's tables.",
+        remedy="Try again in a moment; if it keeps failing, tell the user the Bloom team "
+        "can look into it, and read the gene's tables with query_table meanwhile.",
+    )
+
+
 def _reports(
     explain: Callable[[TableReadError], BloomMCPError],
 ) -> Callable[[Callable[..., _R]], Callable[..., _R]]:
@@ -156,6 +172,7 @@ def _reports(
 # Turn a failed read into a plain message; they go under @as_mcp_tool.
 reports_read_errors = _reports(read_failed)
 reports_call_errors = _reports(call_failed)
+reports_lookup_errors = _reports(lookup_failed)
 
 
 class FilterParam(BaseModel):
