@@ -98,3 +98,9 @@ def test_characters_gff3_reserves_are_escaped(value, written):
 def test_an_escaped_value_is_carried_over():
     _, parts = _convert(_cols(attributes='gene_id "G"; note "a; b=c";'))
     assert _attrs(parts[0]) == "Parent=gene:G;gene_id=G;note=a%3B b%3Dc"
+
+
+def test_an_unknown_strand_stays_on_its_line_and_its_parents_have_none():
+    parents, parts = _convert(_cols(strand="?", attributes='gene_id "G"; transcript_id "T";'))
+    assert [p.split("\t")[6] for p in parents] == [".", "."]
+    assert parts[0].split("\t")[6] == "?"

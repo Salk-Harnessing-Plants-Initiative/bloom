@@ -23,8 +23,7 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 - `genome upload` checks the whole GTF against the FASTA before sending: every line on a contig
   the FASTA has and within its length, starts and ends in order, one contig per gene, one gene
-  per transcript, `gene` and `transcript` lines that cover their other lines, and Bloom's
-  200-character limits; a repeated FASTA contig is refused too. The message names the
+  per transcript, and Bloom's 200-character limits; a repeated FASTA contig is refused too. The message names the
   line, gene or contig.
 - An upload whose session runs out before a file starts signs in again, as it already did
   part-way through a file.

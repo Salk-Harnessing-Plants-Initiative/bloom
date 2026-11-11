@@ -811,8 +811,8 @@ bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_202
   refused with the line, gene or contig named when it doesn't fit: every line must have 9
   tab-separated columns, a start of at least 1 no later than its end, and a contig the FASTA
   has, within its length; each gene ID must sit on one contig, each transcript ID belong to
-  one gene, a `gene` or `transcript` line must cover that gene's or transcript's other
-  lines, and IDs, names and contigs are at most 200 characters. The FASTA must not repeat a contig name. Each gzipped file must
+  one gene, and IDs, names and contigs are at most 200 characters. A strand of `?` (unknown)
+  is accepted. The FASTA must not repeat a contig name. Each gzipped file must
   be at most 500 MB. A GTF in any order is fine.
 - The upload is described on the terminal and goes ahead once confirmed; `--yes`
   skips the question.
@@ -873,8 +873,9 @@ bloomctl genome index tair10_araport11.v2 -p staging
   browser reads GFF3 by region; it can't read a GTF that way.
 - It checks the GTF against the FASTA the same way `genome upload` does, before starting
   anything, so a version uploaded before those checks is refused with the same message.
-- Each gene's position is the span of its `gene` lines, or of its other lines when it has
-  none; its name comes from `gene_name`, then `gene`, then `Name`.
+- Each gene's position is the span of all its lines, so a trans-spliced gene whose pieces
+  sit far apart (NCBI's organelle genes) is one span covering every piece. Its name comes from
+  `gene_name`, then `gene`, then `Name`.
 - A failure, Ctrl-C or a stop signal after the build started abandons it. A batch of genes
   whose answer is lost, or that meets a server error, is sent again.
 - A version that already has a ready build is left alone, and its build is printed. One with

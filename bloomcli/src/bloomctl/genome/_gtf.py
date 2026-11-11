@@ -25,7 +25,8 @@ MAX_UNPACKED_BYTES = 8 * 1024**3
 # How many problems a message lists before saying how many more there are.
 NAMED_IN_MESSAGE = 10
 GTF_COLUMNS = 9
-STRANDS = ("+", "-", ".")
+# "?" is an unknown strand (NCBI uses it for trans-spliced organelle transcripts).
+STRANDS = ("+", "-", ".", "?")
 # Where a gene's name is read from, in order: Ensembl/Araport, NCBI RefSeq, GFF-style.
 NAME_KEYS = ("gene_name", "gene", "Name")
 _ATTRIBUTE = re.compile(r'\s*([^\s;]+)\s+"([^"]*)"\s*;?')
@@ -50,12 +51,18 @@ class Span:
         self.end = max(self.end, end)
         self.strands.add(strand)
 
-    def covers(self, other: Span) -> bool:
-        return not other.start or self.start <= other.start and other.end <= self.end
+    def widened(self, other: Span) -> Span:
+        """This span stretched to cover `other` too; the strand stays this span's own."""
+        if not other.start:
+            return self
+        return Span(self.contigs | other.contigs, min(self.start, other.start),
+                    max(self.end, other.end), self.strands, self.name or other.name)
 
     @property
     def strand(self) -> str:
-        return next(iter(self.strands)) if len(self.strands) == 1 else "."
+        """The one strand of every line, or "." when they differ or it is unknown."""
+        strand = next(iter(self.strands)) if len(self.strands) == 1 else "."
+        return "." if strand == "?" else strand
 
 
 @dataclass
@@ -67,7 +74,7 @@ class Transcript:
 
     @property
     def span(self) -> Span:
-        return self.line if self.line.start else self.parts
+        return self.line.widened(self.parts) if self.line.start else self.parts
 
 
 def attributes(text: str) -> list[tuple[str, str]]:
@@ -174,14 +181,14 @@ def records(numbered: Iterable[tuple[int, int, bytes]], lengths: dict[str, int]
             raise GtfProblem(f"line {number} of the GTF ends at {end}, past the end of "
                              f"{contig} ({lengths[contig]} bases in the FASTA)")
         if strand not in STRANDS:
-            raise GtfProblem(f"line {number} of the GTF has strand {strand!r}, not +, - or .")
+            raise GtfProblem(f"line {number} of the GTF has strand {strand!r}, not +, -, . or ?")
         yield number, offset, columns
 
 
 class GeneReader:
-    """One position per gene ID: its `gene` lines' span, or the span of its other lines; and
-    each transcript's gene and span. A `gene` or `transcript` line must cover the gene's or
-    transcript's other lines."""
+    """One position per gene ID and transcript ID: the span of all its lines, with the strand of
+    its own `gene` or `transcript` lines when it has them. A trans-spliced gene (pieces far
+    apart) becomes one span covering every piece."""
 
     def __init__(self) -> None:
         self.from_gene_lines: dict[str, Span] = {}
@@ -208,19 +215,15 @@ class GeneReader:
 
     def result(self) -> list[dict[str, Any]]:
         self._check_transcripts()
-        found, split, too_long, outside = [], [], [], []
+        found, split, too_long = [], [], []
         for gene_id in sorted(self.from_gene_lines.keys() | self.from_others.keys()):
-            gene = self.from_gene_lines.get(gene_id) or self.from_others[gene_id]
-            other = self.from_others.get(gene_id, Span())
-            contigs = gene.contigs | other.contigs
-            if len(contigs) > 1:
+            own, other = self.from_gene_lines.get(gene_id), self.from_others.get(gene_id, Span())
+            gene = own.widened(other) if own else other
+            if len(gene.contigs) > 1:
                 split.append(gene_id)
                 continue
-            if gene is not other and not gene.covers(other):
-                outside.append(gene_id)
-                continue
-            contig = next(iter(contigs))
-            name = gene.name or other.name
+            contig = next(iter(gene.contigs))
+            name = gene.name
             if max(len(gene_id), len(name or ""), len(contig)) > MAX_NAME_CHARS:
                 too_long.append(gene_id[:40])
                 continue
@@ -232,9 +235,6 @@ class GeneReader:
         if split:
             raise GtfProblem(f"genes sit on more than one contig in the GTF: {names(split)}; "
                              "Bloom holds one position per gene")
-        if outside:
-            raise GtfProblem(f"genes have lines outside their `gene` line in the GTF: "
-                             f"{names(outside)}")
         if too_long:
             raise GtfProblem(f"genes have an ID, name or contig over {MAX_NAME_CHARS} "
                              f"characters: {names(too_long)}")
@@ -242,17 +242,11 @@ class GeneReader:
             raise GtfProblem("the GTF has no genes (no line carries a gene_id)")
         return sorted(found, key=lambda g: (g["contig"], g["gene_start"], g["gene_id"]))
 
-
     def _check_transcripts(self) -> None:
         shared = [t for t, v in self.transcripts.items() if len(v.genes) > 1]
         if shared:
             raise GtfProblem(f"transcripts belong to more than one gene in the GTF: "
                              f"{names(sorted(shared))}")
-        outside = [t for t, v in self.transcripts.items()
-                   if v.line.start and not v.line.covers(v.parts)]
-        if outside:
-            raise GtfProblem(f"transcripts have lines outside their `transcript` line in the "
-                             f"GTF: {names(sorted(outside))}")
 
 
 def names(values: Iterable[str]) -> str:

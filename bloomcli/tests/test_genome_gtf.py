@@ -193,17 +193,35 @@ def test_a_transcript_in_two_genes_is_refused_by_name(tmp_path):
              "transcripts belong to more than one gene in the GTF: T")
 
 
-def test_a_line_outside_its_gene_line_is_refused_by_gene(tmp_path):
-    _refused(tmp_path, _line(feature="gene", start="2", end="6", attributes='gene_id "G";')
-             + _line(start="5", end="9", attributes='gene_id "G"; transcript_id "T";'),
-             "genes have lines outside their `gene` line in the GTF: G")
+# nad5 as NCBI RefSeq writes it: three gene pieces far apart on the circular mitochondrion, a
+# transcript line that runs from the contig's start, and a strand of "?" on another transcript.
+REFSEQ_NAD5 = (
+    _line(feature="gene", start="10", end="12", attributes='gene_id "nad5"; gene "nad5";')
+    + _line(feature="gene", start="17", end="19", attributes='gene_id "nad5"; gene "nad5";')
+    + _line(feature="transcript", start="1", end="12",
+            attributes='gene_id "nad5"; transcript_id "u1";')
+    + _line(feature="transcript", start="5", end="19", strand="?",
+            attributes='gene_id "nad5"; transcript_id "u2";')
+    + _line(start="17", end="19", attributes='gene_id "nad5"; transcript_id "u1";')
+)
 
 
-def test_a_line_outside_its_transcript_line_is_refused_by_transcript(tmp_path):
-    _refused(tmp_path, _line(feature="transcript", start="2", end="6",
-                             attributes='gene_id "G"; transcript_id "T";')
-             + _line(start="1", end="3", attributes='gene_id "G"; transcript_id "T";'),
-             "transcripts have lines outside their `transcript` line in the GTF: T")
+def test_a_trans_spliced_refseq_gene_becomes_one_span_covering_every_piece(tmp_path):
+    (gene,) = _genes(tmp_path, REFSEQ_NAD5)
+    assert (gene["gene_name"], gene["gene_start"], gene["gene_end"], gene["strand"]) == (
+        "nad5", 1, 19, "+")
+
+
+def test_a_transcript_spans_its_own_lines_and_its_parts(tmp_path):
+    reader = _gtf.GeneReader()
+    for raw in REFSEQ_NAD5.splitlines():
+        reader.add(raw.split("\t"))
+    spans = {t: (v.span.start, v.span.end, v.span.strand) for t, v in reader.transcripts.items()}
+    assert spans == {"u1": (1, 19, "+"), "u2": (5, 19, ".")}
+
+
+def test_an_unknown_strand_is_stored_as_none(tmp_path):
+    assert _genes(tmp_path, _line(strand="?"))[0]["strand"] == "."
 
 
 def test_gene_and_transcript_lines_that_cover_their_parts_are_fine(tmp_path):
