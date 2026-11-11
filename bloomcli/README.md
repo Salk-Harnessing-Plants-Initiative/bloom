@@ -807,9 +807,12 @@ bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11_202
 - The files can be plain or gzipped. A plain file is gzipped into a temporary
   folder first; the original is never changed. A gzipped file is read to the end
   to check it is intact, then sent as it is.
-- Before anything is sent, the FASTA must start with a `>` line, the GTF's first
-  record must have 9 tab-separated columns, and each gzipped file must be at most
-  500 MB.
+- Before anything is sent, the GTF is checked against the FASTA, line by line, and
+  refused with the line, gene or contig named when it doesn't fit: every line must have 9
+  tab-separated columns, a start of at least 1 no later than its end, and a contig the FASTA
+  has, within its length; each gene ID must sit on one contig, and IDs, names and contigs
+  are at most 200 characters. The FASTA must not repeat a contig name. Each gzipped file must
+  be at most 500 MB. A GTF in any order is fine.
 - The upload is described on the terminal and goes ahead once confirmed; `--yes`
   skips the question.
 - Any signed-in member (`bloom_user`) may upload a **new** genome, as its v1.
@@ -860,19 +863,22 @@ bloomctl genome index tair10_araport11.v2 -p staging
 ```
 
 - It downloads the version's FASTA and GTF, checked against Bloom's record, and makes
-  `genome.fa.gz` (bgzip) with `.fai` and `.gzi`, and `genes.gtf.gz` (sorted by position,
+  `genome.fa.gz` (bgzip) with `.fai` and `.gzi`, and `genes.gtf.gz` (in position order,
   bgzip) with `.tbi`. The version's own files are not changed.
-- Each gene's position comes from its `gene` line, or the span of its exons when there is
-  none; its name from `gene_name`.
-- It refuses, before starting anything, a GTF that repeats a gene ID or puts one gene on two
-  contigs, names a contig the FASTA lacks, or places a gene past its contig's end, and a file
-  over the 500 MB limit. The message names the genes or contigs.
-- A failure after the build started abandons it; run the command again for a new build.
-  A batch of genes whose answer is lost is sent again.
-- A version that already has a ready build is left alone; one whose build is still
-  uploading exits `4`. Exit codes otherwise: `3` the version can't be built or Bloom refused
-  the build; `1` anything else, such as a network error; `2` a usage error.
-- `--workdir` chooses where the files are built (a temporary folder by default).
+- It checks the GTF against the FASTA the same way `genome upload` does, before starting
+  anything, so a version uploaded before those checks is refused with the same message.
+- Each gene's position is the span of its `gene` lines, or of its other lines when it has
+  none; its name comes from `gene_name`, then `gene`, then `Name`.
+- A failure, Ctrl-C or a stop signal after the build started abandons it. A batch of genes
+  whose answer is lost, or that meets a server error, is sent again.
+- A version that already has a ready build is left alone, and its build is printed. One with
+  an unfinished build exits `4`; if that build is yours from a run that was stopped, add
+  `--replace-unfinished` to abandon it first.
+- Exit codes: `0` built, or already built; `3` the version can't be built or Bloom refused the
+  build; `4` an unfinished build; `1` a network or server error, worth retrying; `2` a usage
+  error. The one line on stdout is the build, its folder and its gene count.
+- `--workdir` chooses where the files are built (a temporary folder by default). The
+  unzipped GTF is kept there while it is sorted.
 - Needs a writer (`bloom_writer`) or the pipeline's (`bloom_workflows`) login.
 
 ## Access & roles

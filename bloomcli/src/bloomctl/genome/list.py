@@ -13,9 +13,9 @@ from ..scrna import _session
 COLUMNS = ["Genome", "Species", "Version", "Status", "Assembly", "Annotation", "FASTA", "GTF",
            "Ready", "Browser"]
 # Fields for --output json/csv, one record per version; machine output carries exact bytes.
-RECORD_FIELDS = ["genome", "species", "version", "status", "assembly", "annotation",
-                 "fasta_bytes", "gtf_bytes", "ready_at", "withdrawn_reason", "browser_build",
-                 "browser_status"]
+VERSION_FIELDS = ["version", "status", "assembly", "annotation", "fasta_bytes", "gtf_bytes",
+                  "ready_at", "withdrawn_reason"]
+RECORD_FIELDS = ["genome", "species", *VERSION_FIELDS, "browser_build", "browser_status"]
 VERSION_COLUMNS = ("id, genome_id, version, status, assembly, annotation, fasta_bytes, "
                    "gtf_bytes, ready_at, withdrawn_reason")
 # What PostgREST answers for a table it doesn't have: a Bloom from before browser builds.
@@ -63,7 +63,7 @@ def _records(client: Any) -> list[dict[str, Any]]:
         rows = sorted(versions.get(genome["id"], []), key=lambda v: v["version"]) or [{}]
         for v in rows:
             build = newest_build.get(v.get("id"), {})
-            records.append({**base, **{k: v.get(k) for k in RECORD_FIELDS[2:10]},
+            records.append({**base, **{k: v.get(k) for k in VERSION_FIELDS},
                             "browser_build": build.get("build"),
                             "browser_status": build.get("status")})
     return records

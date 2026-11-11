@@ -1,23 +1,26 @@
 """Building a genome version's browser files from its stored FASTA and GTF.
 
 The genome browser reads a genome by region, so it needs the FASTA in block gzip (bgzip) with its
-.fai and .gzi indexes, and the GTF sorted by position, bgzipped and tabix-indexed. Those five
-files, and every gene's position read from the GTF, make one browser build. Everything here runs
-before Bloom is told anything, so a genome that can't be built starts no build.
+.fai and .gzi indexes, and the GTF in position order, bgzipped and tabix-indexed. Those five files,
+and every gene's position, make one browser build. Everything here runs before Bloom is told
+anything, so a genome that can't be built starts no build.
+
+Memory stays small for a large genome: the FASTA is streamed straight into bgzip, and the GTF is
+sorted by keeping only each line's contig, start and place in an unzipped copy.
 """
 
 from __future__ import annotations
 
 import gzip
-import re
-import shutil
+import zlib
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 import click
 
-from . import _files
+from . import _files, _gtf
 
 INSTALL_HINT = "pip install 'bloomctl[genome-index]'"
 # Each file's role and its name in the build's folder, as genome_browser_build_roles() lists them.
@@ -30,10 +33,6 @@ ROLES = {
 }
 # Bloom takes at most this many genes in one call.
 GENE_BATCH = 5000
-# How many refused gene IDs or contigs a message names before saying how many more there are.
-NAMED_IN_MESSAGE = 10
-_ATTRIBUTE = re.compile(r'\s*([^\s;]+)\s+"([^"]*)"\s*;?')
-_GTF_COLUMNS = 9
 
 
 class IndexProblem(ValueError):
@@ -44,7 +43,6 @@ class IndexProblem(ValueError):
 class Built:
     files: dict[str, _files.Prepared]
     genes: list[dict[str, Any]]
-    gtf_was_sorted: bool
 
 
 def require_htslib() -> Any:
@@ -72,116 +70,96 @@ def batches(genes: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
 
 
 def build(fasta_gz: Path, gtf_gz: Path, out: Path, work: Path) -> Built:
-    """The five files in `out` and the GTF's genes; `work` holds the unzipped sources."""
+    """The five files in `out` and the GTF's genes; `work` holds the unzipped GTF meanwhile."""
     pysam = require_htslib()
     work.mkdir(parents=True, exist_ok=True)
-    plain_fasta = _gunzip(fasta_gz, work / "genome.fa")
-    fasta = out / ROLES["fasta"]
-    pysam.tabix_compress(str(plain_fasta), str(fasta), force=True)
-    pysam.faidx(str(fasta))
-    lengths = _contig_lengths(out / ROLES["fasta_fai"])
-
-    lines = _gtf_records(gtf_gz)
-    genes = _genes(lines)
-    _check_against_fasta(genes, lengths)
-    order = {contig: rank for rank, contig in enumerate(lengths)}
-    ranked = sorted(lines, key=lambda f: (order.get(f[0], len(order)), f[0], int(f[3])))
-    plain_gtf = work / "genes.gtf"
-    plain_gtf.write_text("".join("\t".join(f) + "\n" for f in ranked))
-    gtf = out / ROLES["gtf"]
-    pysam.tabix_compress(str(plain_gtf), str(gtf), force=True)
-    pysam.tabix_index(str(gtf), preset="gff", force=True)
-
+    try:
+        lengths = _gtf.contig_lengths(fasta_gz)
+        _bgzip_fasta(fasta_gz, out / ROLES["fasta"])
+        pysam.faidx(str(out / ROLES["fasta"]))
+        if _fai_lengths(out / ROLES["fasta_fai"]) != lengths:
+            raise IndexProblem("the FASTA's index doesn't match its sequences")
+        genes = _sorted_gtf(gtf_gz, lengths, work / "genes.gtf", out / ROLES["gtf"])
+        pysam.tabix_index(str(out / ROLES["gtf"]), preset="gff", force=True)
+    except _gtf.GtfProblem as exc:
+        raise IndexProblem(str(exc)) from exc
+    except (OSError, EOFError, zlib.error, pysam.utils.SamtoolsError) as exc:
+        raise IndexProblem(f"htslib could not index the files: {exc}") from exc
     files = {role: _prepared(out / name) for role, name in ROLES.items()}
-    return Built(files=files, genes=genes, gtf_was_sorted=ranked == lines)
+    return Built(files=files, genes=genes)
 
 
-def _gunzip(source: Path, dest: Path) -> Path:
-    with gzip.open(source, "rb") as src, dest.open("wb") as dst:
-        shutil.copyfileobj(src, dst, _files.READ_BYTES)
-    return dest
+def _bgzip_fasta(source: Path, dest: Path) -> None:
+    """Stream the stored FASTA into bgzip, refusing one that unpacks past the limit."""
+    from pysam.libcbgzf import BGZFile
+
+    read = 0
+    with gzip.open(source, "rb") as src, BGZFile(str(dest), "wb") as dst:
+        for block in iter(lambda: src.read(_files.READ_BYTES), b""):
+            read += len(block)
+            if read > _gtf.MAX_UNPACKED_BYTES:
+                raise _gtf.GtfProblem(f"the FASTA unpacks to more than "
+                                      f"{_gtf.MAX_UNPACKED_BYTES // 1024**3} GB")
+            dst.write(block)
 
 
-def _contig_lengths(fai: Path) -> dict[str, int]:
-    """Each contig's length, in the FASTA's order."""
+def _fai_lengths(fai: Path) -> dict[str, int]:
     return {row[0]: int(row[1]) for row in (line.split("\t") for line in
                                              fai.read_text().splitlines() if line)}
 
 
-def _gtf_records(gtf_gz: Path) -> list[list[str]]:
-    """The GTF's records as columns; comments and blank lines dropped."""
-    records = []
-    with gzip.open(gtf_gz, "rt", errors="replace") as fh:
-        for number, line in enumerate(fh, 1):
-            line = line.rstrip("\r\n")
-            if not line.strip() or line.startswith("#"):
-                continue
-            columns = line.split("\t")
-            if len(columns) != _GTF_COLUMNS or not (columns[3].isdigit() and columns[4].isdigit()):
-                raise IndexProblem(f"line {number} of the GTF is not a GTF record: {line[:80]!r}")
-            records.append(columns)
-    return records
+def _sorted_gtf(source: Path, lengths: dict[str, int], plain: Path,
+                dest: Path) -> list[dict[str, Any]]:
+    """Check the GTF, read its genes, and write it bgzipped in position order.
+
+    One pass checks every record and copies it, unzipped, to `plain`, keeping per line only its
+    contig's place in the FASTA, its start and where it sits in the copy. A stable sort of those
+    keys gives the order; the lines are then copied from `plain` into `dest`. `#!` header lines
+    stay at the top; other comments are dropped.
+    """
+    import numpy
+    from pysam.libcbgzf import BGZFile
+
+    rank = {contig: i for i, contig in enumerate(lengths)}
+    ranks, starts, offsets, sizes = array("I"), array("Q"), array("Q"), array("I")
+    headers: list[bytes] = []
+    reader = _gtf.GeneReader()
+    written = 0
+    with _gtf.open_binary(source) as fh, plain.open("wb") as copy:
+        for _, _, columns in _gtf.records(_keep_headers(_gtf.lines(fh, "GTF"), headers),
+                                          lengths):
+            reader.add(columns)
+            line = ("\t".join(columns) + "\n").encode()
+            copy.write(line)
+            ranks.append(rank[columns[0]])
+            starts.append(int(columns[3]))
+            offsets.append(written)
+            sizes.append(len(line))
+            written += len(line)
+    genes = reader.result()
+    order = numpy.lexsort((numpy.frombuffer(starts, dtype=numpy.uint64),
+                           numpy.frombuffer(ranks, dtype=numpy.uint32)))
+    with plain.open("rb") as copy, BGZFile(str(dest), "wb") as out:
+        for header in headers:
+            out.write(header + b"\n")
+        for i in order:
+            copy.seek(offsets[i])
+            out.write(copy.read(sizes[i]))
+    plain.unlink()
+    return genes
 
 
-def _attributes(column: str) -> dict[str, str]:
-    return {key: value for key, value in _ATTRIBUTE.findall(column)}
-
-
-def _genes(records: list[list[str]]) -> list[dict[str, Any]]:
-    """One position per gene ID: its `gene` line, or the span of its other lines."""
-    gene_lines: dict[str, list[list[str]]] = {}
-    other_lines: dict[str, list[list[str]]] = {}
-    for record in records:
-        gene_id = _attributes(record[8]).get("gene_id", "").strip()
-        if gene_id:
-            target = gene_lines if record[2] == "gene" else other_lines
-            target.setdefault(gene_id, []).append(record)
-    repeated = sorted(g for g, lines in gene_lines.items() if len(lines) > 1)
-    if repeated:
-        raise IndexProblem(f"gene IDs appear more than once in the GTF: {_names(repeated)}; a "
-                           "browser build holds one position per gene")
-    genes, split = [], []
-    for gene_id in sorted(gene_lines.keys() | other_lines.keys()):
-        lines = gene_lines.get(gene_id) or other_lines[gene_id]
-        contigs = {line[0] for line in gene_lines.get(gene_id, []) + other_lines.get(gene_id, [])}
-        if len(contigs) > 1:
-            split.append(gene_id)
-            continue
-        strands = {line[6] for line in lines}
-        names = [_attributes(line[8]).get("gene_name", "").strip() for line in lines]
-        genes.append({
-            "gene_id": gene_id,
-            "gene_name": next((n for n in names if n), None),
-            "contig": lines[0][0],
-            "gene_start": min(int(line[3]) for line in lines),
-            "gene_end": max(int(line[4]) for line in lines),
-            "strand": strands.pop() if len(strands) == 1 and strands <= {"+", "-"} else ".",
-        })
-    if split:
-        raise IndexProblem(f"genes sit on more than one contig in the GTF: {_names(split)}; a "
-                           "browser build holds one position per gene")
-    if not genes:
-        raise IndexProblem("the GTF has no genes (no line carries a gene_id)")
-    return sorted(genes, key=lambda g: (g["contig"], g["gene_start"], g["gene_id"]))
-
-
-def _check_against_fasta(genes: list[dict[str, Any]], lengths: dict[str, int]) -> None:
-    missing = sorted({g["contig"] for g in genes} - lengths.keys())
-    if missing:
-        raise IndexProblem(f"the GTF names contigs the FASTA doesn't have: {_names(missing)}")
-    for gene in genes:
-        if gene["gene_end"] > lengths[gene["contig"]]:
-            raise IndexProblem(
-                f"gene {gene['gene_id']} ends at {gene['gene_end']}, past the end of "
-                f"{gene['contig']} ({lengths[gene['contig']]} bases in the FASTA)"
-            )
-
-
-def _names(values: Iterable[str]) -> str:
-    values = list(values)
-    shown = ", ".join(values[:NAMED_IN_MESSAGE])
-    more = len(values) - NAMED_IN_MESSAGE
-    return f"{shown} and {more} more" if more > 0 else shown
+def _keep_headers(numbered: Iterator[tuple[int, int, bytes]], headers: list[bytes]
+                  ) -> Iterator[tuple[int, int, bytes]]:
+    """Pass every line on, keeping the `#!` header lines that come before the first record."""
+    seen_record = False
+    for item in numbered:
+        raw = item[2]
+        if not seen_record and raw.startswith(b"#!"):
+            headers.append(raw)
+        elif raw.strip() and not raw.startswith(b"#"):
+            seen_record = True
+        yield item
 
 
 def _prepared(path: Path) -> _files.Prepared:

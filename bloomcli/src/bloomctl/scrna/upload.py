@@ -7,14 +7,13 @@ so a dataset row never names a file storage does not hold; then the cells are wr
 
 from __future__ import annotations
 
-import signal
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import click
 
+from .._signals import stop_signals_interrupt
 from ..credentials import DEFAULT_PROFILE
 from . import (
     _cells,
@@ -305,7 +304,7 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
     """Load the cells and counts, or add the labels, now that the file is stored."""
     name = opts["name"].strip()
     try:
-        with _interrupted_by_stop_signals():
+        with stop_signals_interrupt():
             if opts["add_labels"]:
                 with _progress.track("Labelling cells", _progress.CELLS) as update:
                     dataset_id, added = _load.add_labels(
@@ -340,26 +339,6 @@ def _write(writer, opts, species_id: int, species: str, cells: dict, fingerprint
                    f"Finished dataset {dataset_id} ({name!r}): every gene's counts are stored")
     else:
         click.echo(f"{outcome.capitalize()} dataset {dataset_id} ({name!r}): {stored:,} cells")
-
-
-# What closing the terminal or terminating the process sends; a hard kill cannot be caught.
-STOP_SIGNALS = tuple(
-    getattr(signal, name) for name in ("SIGTERM", "SIGHUP") if hasattr(signal, name)
-)
-
-
-@contextmanager
-def _interrupted_by_stop_signals():
-    """While the load writes, a stop signal is handled as Ctrl-C, so it is noted before exiting."""
-    def interrupt(_signum, _frame):
-        raise KeyboardInterrupt
-
-    previous = {sig: signal.signal(sig, interrupt) for sig in STOP_SIGNALS}
-    try:
-        yield
-    finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
 
 
 def _release(stage: Path, staged: _object.Staged) -> None:
