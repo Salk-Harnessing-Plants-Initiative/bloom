@@ -166,7 +166,7 @@ app.add_middleware(GuardBeforeBody)
 
 def _signup_body(email: str) -> str:
     if CONTACT:
-        ask = f"contact the Bloom team at {CONTACT}, or reply to this email."
+        ask = f"contact the Bloom team at {CONTACT}."
     else:
         ask = "contact the Bloom team."
     return (
@@ -176,7 +176,7 @@ def _signup_body(email: str) -> str:
         f"1. Open {SITE_URL}/login and choose Sign up.\n"
         "2. Create your account with this same Salk address and a new Bloom password "
         "(not your Salk password).\n"
-        "3. Try Bloom in Claude again.\n\n"
+        '3. Try the "Bloom Connector" in Claude again.\n\n'
         "If you think you already have a Bloom account, for example under a different "
         f"address, {ask}\n"
     )
