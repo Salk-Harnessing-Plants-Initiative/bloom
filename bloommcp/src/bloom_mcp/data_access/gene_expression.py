@@ -47,7 +47,8 @@ def _cells(row: dict[str, Any]) -> int:
 def datasets(
     reads: Reads, names: list[str], construct_terms: list[str]
 ) -> list[dict[str, Any]]:
-    """Live datasets that measured one of `names`, or whose genotype construct names the gene.
+    """Live datasets that measured one of `names`, one entry per gene measured, or whose
+    genotype construct names the gene.
 
     bloom_agent reads no deleted dataset, so a gene row whose dataset isn't read is dropped.
     """
@@ -67,14 +68,18 @@ def datasets(
     for dataset in sorted(found, key=lambda d: d["id"]):
         own = [g for g in genes if g["dataset_id"] == dataset["id"]]
         named = {c["construct"] for c in constructs if c["dataset_id"] == dataset["id"]}
-        result.append(
-            {
-                **dataset,
-                "gene_name": own[0]["gene_name"] if own else None,
-                "gene_row_ids": [g["id"] for g in own],
-                "constructs": sorted(named),
-            }
-        )
+        by_name: dict[str | None, list[int]] = {}
+        for g in own:
+            by_name.setdefault(g["gene_name"], []).append(g["id"])
+        for gene_name, row_ids in sorted(by_name.items()) or [(None, [])]:
+            result.append(
+                {
+                    **dataset,
+                    "gene_name": gene_name,
+                    "gene_row_ids": row_ids,
+                    "constructs": sorted(named),
+                }
+            )
     return result
 
 

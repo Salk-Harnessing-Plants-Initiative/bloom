@@ -91,6 +91,22 @@ def test_progress_log_emails_are_hidden_from_every_data_tool(column):
     assert column in table_access.unfilterable_columns("experiment_progress_logs")
 
 
+@pytest.mark.parametrize(
+    "column", ["evidence_description", "experiment_plans_and_progress"]
+)
+def test_hpi_free_text_emails_are_hidden_from_every_data_tool(column):
+    assert column in table_access.redacted_columns("gene_candidates")
+    assert column in table_access.unfilterable_columns("gene_candidates")
+
+
+def test_an_email_typed_in_hpi_text_is_hidden(genes_db):
+    genes_db.tables["gene_candidates"][0]["experiment_plans_and_progress"] = (
+        "Ask ada@salk.edu"
+    )
+    [note] = lookup("MYB41").hpi_notes
+    assert note.experiment_plans_and_progress == "Ask [email hidden]"
+
+
 def test_every_read_masks_the_columns_the_data_tools_mask(monkeypatch):
     monkeypatch.setitem(gene_reads.COLUMNS, "gene_candidates", ("gene", "status_logs"))
     fake = FakeTableReader(
@@ -142,3 +158,28 @@ def test_a_slow_read_gives_advice_the_lookup_can_follow(genes_db):
 def test_the_description_puts_bloom_first_and_labels_outside_knowledge():
     doc = " ".join((gene_lookup.__doc__ or "").split())
     assert "not from Bloom" in doc and "Salk" in doc and "HPI" in doc
+
+
+def test_a_reply_too_long_without_progress_cuts_its_longest_lists():
+    from bloom_mcp.sections.bloom_data._page import MAX_REPLY_CHARS
+
+    genes = [
+        {
+            "gene_id": f"G{i:05d}",
+            "symbol": "DUP",
+            "ortho_group": f"OG{i}",
+            "reference_id": None,
+        }
+        for i in range(gene_reads.MAX_GENES)
+    ]
+    members = [
+        {"gene_id": f"G{i:05d}.m{j:03d}.with.a.long.crop.style.id", "ortho_group": f"OG{i}",
+         "reference_id": None}
+        for i in range(gene_reads.MAX_GENES)
+        for j in range(gene_reads.MAX_ORTHOLOGS - 1)
+    ]  # fmt: skip
+    fake = FakeTableReader({t: [] for t in TABLES} | {"genes": genes + members})
+    result = lookup_in(fake, "DUP")
+    assert len(result.model_dump_json()) <= MAX_REPLY_CHARS
+    [note] = [n for n in result.notes if "shortened" in n.lower()]
+    assert "orthologs" in note and "progress" not in note

@@ -91,3 +91,21 @@ def test_a_blank_name_is_refused(genes_db):
     with pytest.raises(BloomMCPError) as err:
         lookup("  ")
     assert err.value.code == "invalid_input"
+
+
+PDF12 = {"gene_id": "AT5G44420.Araport11.447", "symbol": "PDF1.2", "reference_id": None}
+PDF1 = {"gene_id": "AT2G42840.Araport11.447", "symbol": "PDF1", "reference_id": None}
+
+
+@pytest.mark.parametrize("name", ["PDF1.2", "pdf1.2"])
+def test_a_dotted_symbol_is_not_trimmed_to_another_gene(name):
+    fake = FakeTableReader({t: [] for t in TABLES} | {"genes": [PDF12, PDF1]})
+    assert [g.gene_id for g in lookup_in(fake, name).genes] == [PDF12["gene_id"]]
+
+
+def test_a_dotted_name_missing_from_the_gene_table_is_not_trimmed(genes_db):
+    genes_db.tables["genes"] = []
+    genes_db.tables["scrna_genes"].append(
+        {"id": 301, "dataset_id": 16, "gene_name": "PDF1"}
+    )
+    assert lookup("PDF1.2").expression == []

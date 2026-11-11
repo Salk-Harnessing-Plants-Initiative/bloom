@@ -185,11 +185,17 @@ def _notes(
     return notes
 
 
-# Said when an answer was too long for one reply and lost progress entries.
-_SHORTENED = (
-    "Shortened to fit one reply: long text ends in …[cut], and HPI notes list {progress}. "
-    "Read gene_candidates and experiment_progress_logs with query_table for the rest."
+# The answer's lists, halved longest first when trimming progress isn't enough.
+_LISTS = (
+    "genes",
+    "hpi_notes",
+    "orthologs",
+    "translation_candidates",
+    "translation_lines",
+    "expression",
 )
+# Room left for the note that says what was shortened.
+_NOTE_ROOM = 1000
 
 
 def _cut_text(value: Any, limit: int) -> Any:
@@ -202,19 +208,42 @@ def _cut_text(value: Any, limit: int) -> Any:
     return value
 
 
+def _size(value: Any) -> int:
+    return len(json.dumps(value, default=str))
+
+
 def _fit(result: GeneLookupResult) -> GeneLookupResult:
-    """`result` with long text cut as query_table cuts it, then, if the reply is still too
-    long, fewer progress entries."""
+    """`result` with long text cut as query_table cuts it; if the reply is still too long,
+    fewer progress entries, then the longest lists halved until it fits."""
     answer = _cut_text(result.model_dump(), MAX_CELL_CHARS)
-    shortened = None
-    for keep, progress in ((1, "only the newest progress entry"), (0, "no progress")):
-        if len(json.dumps(answer, default=str)) <= MAX_REPLY_CHARS:
+    budget = MAX_REPLY_CHARS - _NOTE_ROOM
+    progress = None
+    for keep, words in ((1, "only the newest progress entry"), (0, "no progress")):
+        if _size(answer) <= budget or not any(
+            n["progress"] for n in answer["hpi_notes"]
+        ):
             break
         for note in answer["hpi_notes"]:
             note["progress"] = note["progress"][:keep]
-        shortened = progress
-    if shortened:
-        answer["notes"].append(_SHORTENED.format(progress=shortened))
+        progress = words
+    halved: set[str] = set()
+    while _size(answer) > budget:
+        longest = max(_LISTS, key=lambda k: _size(answer[k]))
+        if not answer[longest]:
+            break
+        answer[longest] = answer[longest][: len(answer[longest]) // 2]
+        halved.add(longest)
+    parts = [f"HPI notes list {progress}"] if progress else []
+    if halved:
+        parts.append(
+            "only the first part of " + ", ".join(sorted(halved)) + " is listed"
+        )
+    if parts:
+        answer["notes"].append(
+            "Shortened to fit one reply (long text ends in …[cut]): "
+            + "; ".join(parts)
+            + ". Read the rest with query_table."
+        )
     return GeneLookupResult.model_validate(answer)
 
 
@@ -255,12 +284,11 @@ def gene_lookup(params: GeneLookupParams) -> GeneLookupResult:
     ]
     orthologs = gene_reads.orthogroups(reads, [g for g in groups if g], prefixes)
 
-    trimmed = gene_reads.stem(query)
+    agi_id = gene_reads.bare_agi(query)
     names = {gene_reads.agi(i) or i for i in gene_ids} or {
         query,
         query.upper(),
-        trimmed,
-        trimmed.upper(),
+        *([agi_id] if agi_id else []),
     }
     terms = {g["symbol"] for g in genes if g.get("symbol")} | {
         n for n in names if gene_reads.agi(n)

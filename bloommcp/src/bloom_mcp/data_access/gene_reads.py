@@ -158,17 +158,16 @@ def bare_agi(name: str) -> str | None:
 
 
 def find_genes(reads: Reads, name: str) -> list[dict[str, Any]]:
-    """Genes whose id or symbol is `name` or its stem, ignoring case; an AGI id also finds
-    its annotated id (AT4G28110 -> AT4G28110.Araport11.447). Whole values only, so MYB41
-    never matches MYB410.
+    """Genes whose id or symbol is `name`, or whose id is its stem, ignoring case; an AGI
+    id also finds its annotated id (AT4G28110 -> AT4G28110.Araport11.447). Whole values
+    only, so MYB41 never matches MYB410, and symbols are never trimmed (PDF1.2 isn't PDF1).
 
     Not standard_name: it holds HPI line names (ATC2-myb41-1 is on MYB74).
     """
     searches = [
-        Filter(column, "iequals", value)
+        Filter("gene_id", "iequals", value)
         for value in dict.fromkeys([name, stem(name)])
-        for column in ("gene_id", "symbol")
-    ]
+    ] + [Filter("symbol", "iequals", name)]
     if agi_id := bare_agi(name):
         searches.append(Filter("gene_id", "istarts_with", agi_id + "."))
     found: dict[str, dict[str, Any]] = {}

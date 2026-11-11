@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from gene_lookup_data import (
+    TABLES,
     _de,
     _hit,
     _set_hit,
@@ -15,6 +16,7 @@ from gene_lookup_data import (
 )
 
 from bloom_mcp.data_access import gene_expression, gene_reads
+from bloom_mcp.data_access.fake_table_reader import FakeTableReader
 from bloom_mcp.sections.bloom_data.gene_lookup import gene_lookup
 
 
@@ -101,13 +103,43 @@ def test_a_genotype_comparison_names_its_cluster_and_cell_type(genes_db):
 
 
 def test_a_cut_comparison_list_keeps_the_newest_run(genes_db, monkeypatch):
-    # Run 2 holds c4's newest marker and the genotype comparison; run 1 is older.
-    monkeypatch.setattr(gene_reads, "MAX_ROWS", 3)
+    # Two rows per read: oldest-first would keep run 1's c4 (3.0) and genotype rows only.
+    genes_db.tables["scrna_de"].append(
+        _de(20, 1, "genotype", "old", "Col-0", 40, 40, cluster="c5")
+    )
+    monkeypatch.setattr(gene_reads, "MAX_ROWS", 2)
     result = lookup("MYB41")
     [dataset] = result.expression
     assert {m.cluster_id: m.log2fc for m in dataset.markers}["c4"] == 1.5
-    assert [c.group1 for c in dataset.genotype_comparisons] == ["pFACT"]
+    whole = [c for c in dataset.genotype_comparisons if c.cluster_id is None]
+    assert [c.group1 for c in whole] == ["pFACT"]
     assert any("incomplete" in n and "scrna_de" in n for n in result.notes)
+
+
+def test_a_genotype_comparison_past_the_fdr_cut_is_left_out(genes_db):
+    _set_hit(genes_db, 14, fdr=0.06)
+    [dataset] = lookup("MYB41").expression
+    assert dataset.genotype_comparisons == []
+
+
+def test_two_genes_in_one_dataset_keep_their_own_results():
+    reads = gene_reads.Reads(
+        FakeTableReader(
+            {t: [] for t in TABLES}
+            | {
+                "scrna_datasets": [{"id": 14, "name": "d", "species_id": 1, "kind": "full", "deleted_at": None}],
+                "scrna_genes": [
+                    {"id": 1, "dataset_id": 14, "gene_name": "AT5G44420"},
+                    {"id": 2, "dataset_id": 14, "gene_name": "AT2G42840"},
+                ],
+            }
+        )
+    )  # fmt: skip
+    found = gene_expression.datasets(reads, ["AT5G44420", "AT2G42840"], [])
+    assert {(d["gene_name"], tuple(d["gene_row_ids"])) for d in found} == {
+        ("AT5G44420", (1,)),
+        ("AT2G42840", (2,)),
+    }
 
 
 def _panel(markers):

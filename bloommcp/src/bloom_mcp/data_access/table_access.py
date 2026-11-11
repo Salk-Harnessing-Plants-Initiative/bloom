@@ -218,15 +218,23 @@ PAGING_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 # Readable with email addresses replaced: the gene candidate logs record the email of
-# whoever changed a status, and a progress entry's text, links, images or tags can hold one.
+# whoever changed a status, and typed text, links, images or tags can hold one.
+_CANDIDATE_TEXT = frozenset(
+    {
+        "status_logs",
+        "legacy_progress_logs_jsonb",
+        "evidence_description",
+        "experiment_plans_and_progress",
+    }
+)
 _PROGRESS_LOG_TEXT = frozenset({"message", "links", "images", "tags"})
 EMAIL_REDACTED_COLUMNS: dict[str, frozenset[str]] = {
-    "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
+    "gene_candidates": _CANDIDATE_TEXT,
     "experiment_progress_logs": _PROGRESS_LOG_TEXT,
 }
 # Never filtered or ordered on: a filter could test for an address the reply hides.
 UNFILTERABLE_COLUMNS: dict[str, frozenset[str]] = {
-    "gene_candidates": frozenset({"status_logs", "legacy_progress_logs_jsonb"}),
+    "gene_candidates": _CANDIDATE_TEXT,
     "experiment_progress_logs": _PROGRESS_LOG_TEXT,
 }
 EMAIL_HIDDEN = "[email hidden]"
