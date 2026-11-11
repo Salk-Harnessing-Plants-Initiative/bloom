@@ -33,15 +33,7 @@ def _by(*columns: str) -> tuple[Sort, ...]:
     return tuple(Sort(c) for c in columns)
 
 
-_MOST_SIMILAR_FIRST = (Sort("similarity", descending=True), Sort("uid"))
 _PAGED = f"Pages through up to {MAX_SEARCH_ROWS:,} matches."
-
-
-def _top_n(default: int) -> str:
-    return (
-        f"Set match_count to how many you need, up to {MAX_SEARCH_ROWS:,} "
-        f"(default {default:,})."
-    )
 
 
 READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
@@ -75,49 +67,6 @@ READABLE_FUNCTIONS: dict[str, ReadableFunction] = {
     ),
     "get_trait_recipe_coverage": ReadableFunction(
         "Which scans have traits under which recipe.", _by("scan_id", "recipe_key")
-    ),
-    # Genes and proteins.
-    "search_genes": ReadableFunction(
-        f"Find cross-species proteins by part of their uid or gene id. {_PAGED}",
-        _by("uid"),
-        page_input="max_results",
-    ),
-    "search_accession_genes": ReadableFunction(
-        "Find accession proteins by part of their uid or gene id, optionally in one "
-        f"accession. {_PAGED}",
-        _by("uid"),
-        page_input="max_results",
-    ),
-    "knn_search_esm2": ReadableFunction(
-        "Cross-species proteins most similar to one protein (ESM-2 embeddings), given by "
-        "its uid from search_genes, not a gene id. " + _top_n(20),
-        _MOST_SIMILAR_FIRST,
-        count_input="match_count",
-    ),
-    "knn_search_esm3": ReadableFunction(
-        "Accession proteins most similar to one protein (ESM-3 embeddings), given by its "
-        "uid from search_accession_genes, not a gene id. " + _top_n(20),
-        _MOST_SIMILAR_FIRST,
-        count_input="match_count",
-    ),
-    "best_match_per_accession": ReadableFunction(
-        "The most similar protein in each accession to one protein uid (ESM-3), for the "
-        "match_count closest accessions. Approximate: found through an index, so a "
-        "distant accession's best match can be missed. " + _top_n(20),
-        _by("accession_id", "rank_in_accession", "uid"),
-        count_input="match_count",
-    ),
-    "compare_gene_across_accessions": ReadableFunction(
-        "One gene's variants across accessions, ranked by similarity to a reference. "
-        + _top_n(MAX_SEARCH_ROWS),
-        _MOST_SIMILAR_FIRST,
-        count_input="match_count",
-    ),
-    "get_orthogroup_info": ReadableFunction(
-        "For each protein uid in result_protein_uids, its orthogroup and whether it shares "
-        "one with query_protein_uid (active OrthoFinder run); it checks only the uids "
-        "given.",
-        _by("protein_uid", "orthogroup"),
     ),
     # Expression.
     "scrna_gene_search": ReadableFunction(
