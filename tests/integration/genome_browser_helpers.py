@@ -90,10 +90,10 @@ def add_genes(cur, build_id, genes=GENES, user=WRITER, role="bloom_writer"):
                 user=user, role=role)[0]
 
 
-def finish_build(cur, build_id, files=None, sorted_gtf=True, gene_count=len(GENES),
+def finish_build(cur, build_id, files=None, gene_count=len(GENES),
                  user=WRITER, role="bloom_writer"):
-    return call(cur, "SELECT public.finish_genome_browser_build(%s, %s, %s, %s)",
-                (build_id, files_json() if files is None else files, sorted_gtf, gene_count),
+    return call(cur, "SELECT public.finish_genome_browser_build(%s, %s, %s)",
+                (build_id, files_json() if files is None else files, gene_count),
                 user=user, role=role)
 
 

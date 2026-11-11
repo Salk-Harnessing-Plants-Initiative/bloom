@@ -2123,7 +2123,6 @@ export type Database = {
           files: Json | null
           folder: string
           gene_count: number | null
-          gtf_was_sorted: boolean | null
           id: number
           ready_at: string | null
           status: string
@@ -2139,7 +2138,6 @@ export type Database = {
           files?: Json | null
           folder: string
           gene_count?: number | null
-          gtf_was_sorted?: boolean | null
           id?: number
           ready_at?: string | null
           status?: string
@@ -2155,7 +2153,6 @@ export type Database = {
           files?: Json | null
           folder?: string
           gene_count?: number | null
-          gtf_was_sorted?: boolean | null
           id?: number
           ready_at?: string | null
           status?: string
@@ -5362,7 +5359,6 @@ export type Database = {
           files: Json | null
           folder: string
           gene_count: number | null
-          gtf_was_sorted: boolean | null
           id: number
           ready_at: string | null
           status: string
@@ -5681,12 +5677,7 @@ export type Database = {
         Returns: number
       }
       finish_genome_browser_build: {
-        Args: {
-          p_build_id: number
-          p_files: Json
-          p_gene_count: number
-          p_gtf_was_sorted: boolean
-        }
+        Args: { p_build_id: number; p_files: Json; p_gene_count: number }
         Returns: number
       }
       finish_genome_version: {

@@ -33,7 +33,7 @@ from tests.integration.test_rnaseq_runs import _sql_body
 psycopg = pytest.importorskip("psycopg")
 
 ADD = "SELECT public.add_genome_browser_genes(%s, %s)"
-FINISH = "SELECT public.finish_genome_browser_build(%s, %s, %s, %s)"
+FINISH = "SELECT public.finish_genome_browser_build(%s, %s, %s)"
 PIPELINE = "00000000-0000-0000-0000-00000000aaaa"
 
 
@@ -104,7 +104,7 @@ def test_finish_with_a_different_gene_count_is_refused(cur, version_id, count):
     put_files(cur, folder)
     add_genes(cur, build_id)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, FINISH, (build_id, files_json(), True, count),
+    refused(cur, FINISH, (build_id, files_json(), count),
             psycopg.errors.InvalidParameterValue, match=f"holds 2 genes, not {count}")
 
 
@@ -112,7 +112,7 @@ def test_finish_with_no_genes_is_refused(cur, version_id):
     build_id, _, folder = start_build(cur, version_id)
     put_files(cur, folder)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, FINISH, (build_id, files_json(), True, 0),
+    refused(cur, FINISH, (build_id, files_json(), 0),
             psycopg.errors.InvalidParameterValue, match="at least one gene")
 
 
@@ -150,14 +150,14 @@ def test_a_gene_sent_again_at_a_different_position_is_refused(cur, version_id):
     add_genes(cur, build_id, GENES[:1])
     as_role(cur, "bloom_writer", WRITER)
     refused(cur, ADD, (build_id, json.dumps([_gene(gene_end=6000)])),
-            psycopg.errors.UniqueViolation, match="AT1G01010 was already added .* different position")
+            psycopg.errors.UniqueViolation, match="AT1G01010 was already added .* different details")
 
 
 def test_a_gene_twice_in_one_batch_is_refused(cur, version_id):
     build_id, _, _ = start_build(cur, version_id)
     as_role(cur, "bloom_writer", WRITER)
     refused(cur, ADD, (build_id, json.dumps([GENES[0], GENES[0]])),
-            psycopg.errors.UniqueViolation, match="AT1G01010 appears more than once")
+            psycopg.errors.InvalidParameterValue, match="AT1G01010 appears more than once")
 
 
 def test_another_writer_cannot_add_genes(cur, version_id):

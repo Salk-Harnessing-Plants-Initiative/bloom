@@ -42,12 +42,12 @@ from tests.integration.genome_reference_helpers import (
 
 psycopg = pytest.importorskip("psycopg")
 
-FINISH = "SELECT public.finish_genome_browser_build(%s, %s, %s, %s)"
+FINISH = "SELECT public.finish_genome_browser_build(%s, %s, %s)"
 START = "SELECT * FROM public.start_genome_browser_build(%s, '{}')"
 WRITER_FUNCTIONS = (
     "start_genome_browser_build(bigint, jsonb)",
     "add_genome_browser_genes(bigint, jsonb)",
-    "finish_genome_browser_build(bigint, jsonb, boolean, integer)",
+    "finish_genome_browser_build(bigint, jsonb, integer)",
     "abandon_genome_browser_build(bigint)",
 )
 
@@ -71,7 +71,7 @@ def version_id(cur, genome):
 
 
 def _build(cur, build_id):
-    cur.execute("SELECT status, files, gtf_was_sorted, ready_at IS NOT NULL "
+    cur.execute("SELECT status, files, ready_at IS NOT NULL "
                 "FROM genome_browser_builds WHERE id = %s", (build_id,))
     return cur.fetchone()
 
@@ -84,7 +84,7 @@ def _build(cur, build_id):
 def test_builds_are_numbered_per_version_with_their_folder(cur, genome, version_id):
     build_id, number, folder = start_build(cur, version_id)
     assert (number, folder) == (1, f"{genome}/v1/browser/b1")
-    assert _build(cur, build_id) == ("uploading", None, None, False)
+    assert _build(cur, build_id) == ("uploading", None, False)
 
 
 def test_the_tools_used_are_kept(cur, version_id):
@@ -126,8 +126,8 @@ def test_an_unknown_version_is_refused(cur):
 
 def test_finish_records_the_five_files(cur, version_id):
     build_id, folder = ready_build(cur, version_id)
-    status, files, sorted_gtf, has_ready_at = _build(cur, build_id)
-    assert (status, sorted_gtf, has_ready_at) == ("ready", True, True)
+    status, files, has_ready_at = _build(cur, build_id)
+    assert (status, has_ready_at) == ("ready", True)
     assert files == {
         name: {"sha256": SHA, "bytes": size} for name, (_, size) in FILES.items()
     }
@@ -137,7 +137,7 @@ def test_finish_without_the_files_is_refused(cur, version_id):
     build_id, _, folder = start_build(cur, version_id)
     put_files(cur, folder, only={"fasta", "fasta_fai", "fasta_gzi", "gtf"})
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, FINISH, (build_id, files_json(), True, 2), psycopg.errors.InvalidParameterValue,
+    refused(cur, FINISH, (build_id, files_json(), 2), psycopg.errors.InvalidParameterValue,
             match="genes.gtf.gz.tbi has not been uploaded")
 
 
@@ -145,7 +145,7 @@ def test_finish_against_a_different_size_is_refused(cur, version_id):
     build_id, _, folder = start_build(cur, version_id)
     put_files(cur, folder)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, FINISH, (build_id, files_json(fasta_gzi={"sha256": SHA, "bytes": 65}), True, 2),
+    refused(cur, FINISH, (build_id, files_json(fasta_gzi={"sha256": SHA, "bytes": 65}), 2),
             psycopg.errors.InvalidParameterValue, match="is 64 bytes in storage, not 65")
 
 
@@ -162,7 +162,7 @@ def test_finish_with_a_bad_file_record_is_refused(cur, version_id, files, match)
     build_id, _, folder = start_build(cur, version_id)
     put_files(cur, folder)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, FINISH, (build_id, files, True, 2), psycopg.errors.InvalidParameterValue,
+    refused(cur, FINISH, (build_id, files, 2), psycopg.errors.InvalidParameterValue,
             match=match)
 
 
@@ -170,14 +170,14 @@ def test_another_writer_cannot_finish(cur, version_id):
     build_id, _, folder = start_build(cur, version_id)
     put_files(cur, folder)
     as_role(cur, "bloom_writer", OTHER_WRITER)
-    refused(cur, FINISH, (build_id, files_json(), True, 2), psycopg.errors.InsufficientPrivilege,
+    refused(cur, FINISH, (build_id, files_json(), 2), psycopg.errors.InsufficientPrivilege,
             match="someone else")
 
 
 def test_a_build_finishes_once(cur, version_id):
     build_id, _ = ready_build(cur, version_id)
     as_role(cur, "bloom_writer", WRITER)
-    refused(cur, FINISH, (build_id, files_json(), True, 2),
+    refused(cur, FINISH, (build_id, files_json(), 2),
             psycopg.errors.ObjectNotInPrerequisiteState, match="is ready, not uploading")
 
 
@@ -188,14 +188,6 @@ def test_the_pipeline_can_make_a_build(cur, version_id):
     add_genes(cur, build_id, user=pipeline, role="bloom_workflows")
     finish_build(cur, build_id, user=pipeline, role="bloom_workflows")
     assert _build(cur, build_id)[0] == "ready"
-
-
-def test_a_build_records_an_unsorted_source_gtf(cur, version_id):
-    build_id, _, folder = start_build(cur, version_id)
-    put_files(cur, folder)
-    add_genes(cur, build_id)
-    finish_build(cur, build_id, sorted_gtf=False)
-    assert _build(cur, build_id)[2] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -239,7 +231,7 @@ def test_withdraw_needs_a_reason(cur, version_id):
 
 
 @pytest.mark.parametrize("assignment", [
-    "files = '{}'", "gtf_was_sorted = false", "gene_count = 9", "folder = 'x'",
+    "files = '{}'", "gene_count = 9", "folder = 'x'",
     "tool_versions = '{}'",
     "build = 7", "status = 'uploading'", "status = 'abandoned'",
 ])

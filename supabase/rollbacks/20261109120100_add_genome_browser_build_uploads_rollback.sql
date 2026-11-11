@@ -34,7 +34,7 @@ UPDATE storage.buckets
 DROP FUNCTION IF EXISTS public.may_upload_browser_file(TEXT);
 DROP FUNCTION IF EXISTS public.withdraw_genome_browser_build(BIGINT, TEXT);
 DROP FUNCTION IF EXISTS public.abandon_genome_browser_build(BIGINT);
-DROP FUNCTION IF EXISTS public.finish_genome_browser_build(BIGINT, JSONB, BOOLEAN, INTEGER);
+DROP FUNCTION IF EXISTS public.finish_genome_browser_build(BIGINT, JSONB, INTEGER);
 DROP FUNCTION IF EXISTS public.add_genome_browser_genes(BIGINT, JSONB);
 DROP FUNCTION IF EXISTS public._own_browser_build(BIGINT);
 DROP FUNCTION IF EXISTS public.start_genome_browser_build(BIGINT, JSONB);

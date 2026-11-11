@@ -5,7 +5,7 @@
 -- .fai and .gzi, and a position-sorted bgzip GTF with its .tbi, all read by HTTP range
 -- request. A browser build is one set of those five files for one ready version, stored at
 -- <genome>/v<N>/browser/b<B>/. This row records the folder, the five files' checksums and
--- sizes, the tools used and whether the source GTF had to be sorted. Each build also records
+-- sizes and the tools used. Each build also records
 -- where every gene of the GTF sits (genome_browser_genes), readable once the build is ready, for gene
 -- search and for links from single-cell genes to the genome. A build is uploading, then ready
 -- or abandoned; an admin can withdraw a ready one, with a reason, and a new build of the same
@@ -69,8 +69,6 @@ CREATE TABLE IF NOT EXISTS public.genome_browser_builds (
     folder TEXT NOT NULL,
     -- Set when the build is finished: the five roles, each with its SHA-256 and size.
     files JSONB,
-    -- Whether the version's GTF had to be position-sorted before indexing.
-    gtf_was_sorted BOOLEAN,
     -- Set when the build is finished: how many genes it records.
     gene_count INTEGER,
     created_by UUID NOT NULL,
@@ -160,15 +158,15 @@ ALTER TABLE public.genome_browser_builds
   ADD CONSTRAINT genome_browser_builds_tool_versions_check CHECK (
     jsonb_typeof(tool_versions) = 'object' AND length(tool_versions::text) <= 2000
   ),
-  -- A ready or withdrawn build has its five files, whether its GTF was sorted, its gene count
-  -- and ready_at; any other build has none of them.
+  -- A ready or withdrawn build has its five files, its gene count and ready_at; any other build
+  -- has none of them.
   DROP CONSTRAINT IF EXISTS genome_browser_builds_finished_check,
   ADD CONSTRAINT genome_browser_builds_finished_check CHECK (
     CASE WHEN status IN ('ready', 'withdrawn') THEN
-      num_nulls(files, gtf_was_sorted, gene_count, ready_at) = 0
+      num_nulls(files, gene_count, ready_at) = 0
       AND public.genome_browser_files_ok(files) AND gene_count >= 1
     ELSE
-      num_nonnulls(files, gtf_was_sorted, gene_count, ready_at) = 0
+      num_nonnulls(files, gene_count, ready_at) = 0
     END
   ),
   DROP CONSTRAINT IF EXISTS genome_browser_builds_withdrawn_check,
@@ -237,8 +235,8 @@ CREATE TRIGGER genome_browser_builds_number
     BEFORE INSERT ON public.genome_browser_builds
     FOR EACH ROW EXECUTE FUNCTION public.genome_browser_builds_number();
 
--- A build's identity and folder never change. Its file record, sorted flag, gene count and
--- ready_at are set once, when it is finished. Status moves only uploading -> ready | abandoned and
+-- A build's identity and folder never change. Its file record, gene count and ready_at are set
+-- once, when it is finished. Status moves only uploading -> ready | abandoned and
 -- ready -> withdrawn. A ready or withdrawn build cannot be deleted.
 CREATE OR REPLACE FUNCTION public.genome_browser_builds_guard()
 RETURNS TRIGGER
@@ -266,7 +264,6 @@ BEGIN
 
     IF OLD.status <> 'uploading' AND (
         NEW.files IS DISTINCT FROM OLD.files
-        OR NEW.gtf_was_sorted IS DISTINCT FROM OLD.gtf_was_sorted
         OR NEW.gene_count IS DISTINCT FROM OLD.gene_count
         OR NEW.ready_at IS DISTINCT FROM OLD.ready_at
     ) THEN

@@ -81,7 +81,7 @@ $$;
 
 -- Adds 1 to 5,000 genes to the caller's uploading build; returns how many were new. Each gene
 -- is {"gene_id", "gene_name", "contig", "gene_start", "gene_end", "strand"}. Sending a batch
--- again is safe: genes already added with the same position are skipped.
+-- again is safe: a gene already added with all the same details is skipped.
 CREATE OR REPLACE FUNCTION public.add_genome_browser_genes(p_build_id BIGINT, p_genes JSONB)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -107,7 +107,7 @@ BEGIN
      WHERE r.gene_id IS NOT NULL GROUP BY r.gene_id HAVING count(*) > 1 ORDER BY r.gene_id LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'gene % appears more than once; a browser build holds one position per gene',
-            v_gene USING ERRCODE = '23505';
+            v_gene USING ERRCODE = '22023';
     END IF;
     SELECT n.gene_id INTO v_gene
       FROM jsonb_to_recordset(p_genes) AS n(
@@ -120,7 +120,7 @@ BEGIN
            IS DISTINCT FROM (n.gene_name, n.contig, n.gene_start, n.gene_end, n.strand)
      ORDER BY n.gene_id LIMIT 1;
     IF FOUND THEN
-        RAISE EXCEPTION 'gene % was already added to browser build % at a different position',
+        RAISE EXCEPTION 'gene % was already added to browser build % with different details',
             v_gene, p_build_id USING ERRCODE = '23505';
     END IF;
 
@@ -139,11 +139,10 @@ $$;
 
 -- Finishes the caller's build: each of the five files must be stored under the build's folder
 -- at exactly the stated size, and the build must hold exactly p_gene_count genes. Records the
--- files, whether the GTF had to be sorted and the gene count; returns the build number.
+-- files and the gene count; returns the build number.
 CREATE OR REPLACE FUNCTION public.finish_genome_browser_build(
     p_build_id BIGINT,
     p_files JSONB,
-    p_gtf_was_sorted BOOLEAN,
     p_gene_count INTEGER
 ) RETURNS INTEGER
 LANGUAGE plpgsql
@@ -165,9 +164,6 @@ BEGIN
     IF NOT public.genome_browser_files_ok(p_files) THEN
         RAISE EXCEPTION 'a browser build records exactly the five files, each with a 64 '
                         'lowercase hex sha256 and a positive bytes' USING ERRCODE = '22023';
-    END IF;
-    IF p_gtf_was_sorted IS NULL THEN
-        RAISE EXCEPTION 'say whether the GTF had to be sorted' USING ERRCODE = '22023';
     END IF;
     FOR v_file IN SELECT r.role, r.basename FROM public.genome_browser_build_roles() r
                    ORDER BY r.role
@@ -191,8 +187,7 @@ BEGIN
             p_gene_count USING ERRCODE = '22023';
     END IF;
     UPDATE public.genome_browser_builds
-       SET status = 'ready', files = p_files, gtf_was_sorted = p_gtf_was_sorted,
-           gene_count = v_genes, ready_at = now()
+       SET status = 'ready', files = p_files, gene_count = v_genes, ready_at = now()
      WHERE id = p_build_id;
     RETURN v_row.build;
 END;
@@ -259,7 +254,7 @@ REVOKE EXECUTE ON FUNCTION public.start_genome_browser_build(BIGINT, JSONB)
 REVOKE EXECUTE ON FUNCTION public._own_browser_build(BIGINT) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.add_genome_browser_genes(BIGINT, JSONB)
     FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.finish_genome_browser_build(BIGINT, JSONB, BOOLEAN, INTEGER)
+REVOKE EXECUTE ON FUNCTION public.finish_genome_browser_build(BIGINT, JSONB, INTEGER)
     FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.abandon_genome_browser_build(BIGINT)
     FROM PUBLIC, anon, authenticated;
@@ -272,7 +267,7 @@ GRANT EXECUTE ON FUNCTION public.start_genome_browser_build(BIGINT, JSONB)
     TO bloom_writer, bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.add_genome_browser_genes(BIGINT, JSONB)
     TO bloom_writer, bloom_workflows;
-GRANT EXECUTE ON FUNCTION public.finish_genome_browser_build(BIGINT, JSONB, BOOLEAN, INTEGER)
+GRANT EXECUTE ON FUNCTION public.finish_genome_browser_build(BIGINT, JSONB, INTEGER)
     TO bloom_writer, bloom_workflows;
 GRANT EXECUTE ON FUNCTION public.abandon_genome_browser_build(BIGINT)
     TO bloom_writer, bloom_workflows;

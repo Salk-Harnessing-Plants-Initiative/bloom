@@ -1234,7 +1234,6 @@ erDiagram
   jsonb tool_versions
   text folder
   jsonb files
-  boolean gtf_was_sorted
   integer gene_count
   uuid created_by
   timestamp_with_time_zone created_at
