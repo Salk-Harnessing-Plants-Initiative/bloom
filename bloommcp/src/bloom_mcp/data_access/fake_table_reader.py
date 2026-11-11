@@ -25,8 +25,16 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         return False
     if f.op == "contains":
         return str(f.value).lower() in str(value).lower()
+    if f.op == "iequals":
+        return str(value).lower() == str(f.value).lower()
+    if f.op == "istarts_with":
+        return str(value).lower().startswith(str(f.value).lower())
     if f.op == "in":
         return value in f.value
+    if value in ("NaN", "Infinity", "-Infinity") and isinstance(f.value, (int, float)):
+        # A number column's NaN or Infinity, held as PostgREST sends it; Postgres compares
+        # the number.
+        value = float(value)
     compare = {
         "eq": operator.eq,
         "neq": operator.ne,

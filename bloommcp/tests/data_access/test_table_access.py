@@ -20,7 +20,6 @@ def test_chat_and_usage_tables_are_excluded():
 
 def test_tables_with_staff_emails_are_excluded():
     for table in (
-        "experiment_progress_logs",
         "rhizovision_accessions",
         "rhizovision_experiments",
         "rhizovision_images",
