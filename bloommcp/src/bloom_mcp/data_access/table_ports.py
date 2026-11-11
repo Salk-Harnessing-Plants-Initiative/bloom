@@ -14,6 +14,9 @@ from typing import Any, Literal, Protocol
 # The comparisons the data tools offer. `contains` is a case-insensitive substring match;
 # `is_null` takes true (is null) or false (is not null).
 FilterOp = Literal["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains", "is_null"]
+# Only for bloommcp's own reads, not offered to Claude: case-insensitive whole-value and
+# prefix matches.
+InternalOp = Literal["iequals", "istarts_with"]
 
 # bloom_agent's statement_timeout: the database cancels a longer query.
 STATEMENT_TIMEOUT_SECONDS = 15
@@ -22,7 +25,7 @@ STATEMENT_TIMEOUT_SECONDS = 15
 @dataclass(frozen=True)
 class Filter:
     column: str
-    op: FilterOp
+    op: FilterOp | InternalOp
     value: Any
 
 

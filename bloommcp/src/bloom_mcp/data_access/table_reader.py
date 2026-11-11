@@ -116,6 +116,10 @@ def _function(name: str, spec: dict[str, Any]) -> Function:
 def _apply(query: Any, f: Filter) -> Any:
     if f.op == "contains":
         return query.filter(f.column, "imatch", _regex_literal(f.value))
+    if f.op == "iequals":
+        return query.filter(f.column, "imatch", f"^{_regex_literal(f.value)}$")
+    if f.op == "istarts_with":
+        return query.filter(f.column, "imatch", f"^{_regex_literal(f.value)}")
     if f.op == "in":
         return query.filter(f.column, "in", _in_list(list(f.value)))
     if f.op == "is_null":
