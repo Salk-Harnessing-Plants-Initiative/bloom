@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -15,8 +14,6 @@ MAX_SIDE = 1568
 FALLBACK_SIDES = (1200, 900)
 # Larger images are linked, not decoded (about 12,000 x 12,000).
 MAX_PIXELS = 150_000_000
-# One decode at a time bounds bloommcp's memory.
-_decode = threading.Lock()
 
 
 class ImageUnreadable(Exception):
@@ -53,31 +50,28 @@ class Converted:
 
 def to_png(data: bytes, *, page: int, crop: Crop | None, max_bytes: int) -> Converted:
     """The page, cropped at full resolution, scaled to MAX_SIDE at most, as PNG."""
-    with _decode:
-        try:
-            image = Image.open(io.BytesIO(data))
-            width, height = image.size
-            if width * height > MAX_PIXELS:
-                raise ImageTooLarge("too many pixels")
-            pages = getattr(image, "n_frames", 1)
-            if not 0 <= page < pages:
-                raise BadImageRequest(f"page {page} is outside 0 to {pages - 1}")
-            image.seek(page)
-            width, height = image.size
-            mode = image.mode
-            if crop is not None:
-                image = image.crop(_box(crop, width, height))
-            image, stretched = _viewable(image)
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-            raise ImageUnreadable(type(exc).__name__) from None
-        for side in (MAX_SIDE, *FALLBACK_SIDES):
-            shown = _fit(image, side)
-            png = _png(shown)
-            if len(png) <= max_bytes:
-                return Converted(
-                    png, width, height, *shown.size, mode, pages, stretched
-                )
-        raise ImageTooLarge("too large even when scaled")
+    try:
+        image = Image.open(io.BytesIO(data))
+        width, height = image.size
+        if width * height > MAX_PIXELS:
+            raise ImageTooLarge("too many pixels")
+        pages = getattr(image, "n_frames", 1)
+        if not 0 <= page < pages:
+            raise BadImageRequest(f"page {page} is outside 0 to {pages - 1}")
+        image.seek(page)
+        width, height = image.size
+        mode = image.mode
+        if crop is not None:
+            image = image.crop(_box(crop, width, height))
+        image, stretched = _viewable(image)
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ImageUnreadable(type(exc).__name__) from None
+    for side in (MAX_SIDE, *FALLBACK_SIDES):
+        shown = _fit(image, side)
+        png = _png(shown)
+        if len(png) <= max_bytes:
+            return Converted(png, width, height, *shown.size, mode, pages, stretched)
+    raise ImageTooLarge("too large even when scaled")
 
 
 def _box(crop: Crop, width: int, height: int) -> tuple[int, int, int, int]:

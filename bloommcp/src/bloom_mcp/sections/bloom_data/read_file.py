@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from bloom_mcp.contract import ToolImage, WithImages, as_mcp_tool
 from bloom_mcp.data_access import file_access as fa
 from bloom_mcp.data_access import image_convert as ic
+from bloom_mcp.data_access import image_slots as slots
 from bloom_mcp.data_access.file_ports import FileNotFound, FileReader, FileReadError
 from bloom_mcp.tools import _ports
 
@@ -29,6 +32,16 @@ TOO_LARGE_NOTE = (
     "(list_tables notes say how to build it) and ask them to save the preview shown "
     "there and upload it to this chat. `url` downloads the full original, e.g. for Fiji."
 )
+
+_PAGE_OR_UPLOAD = (
+    "or give the user the Bloom page for this scan or plate (list_tables notes say how "
+    "to build it) to save the preview there and upload it to this chat."
+)
+BUSY_NOTE = "Bloom is busy with other images: try again in a minute, " + _PAGE_OR_UPLOAD
+OUT_OF_TIME_NOTE = (
+    "Not converted within this call's time: ask again for this path, " + _PAGE_OR_UPLOAD
+)
+CALL_LIMIT_NOTE = "Over this call's image limit; open it in a call of its own."
 
 
 class CropParam(BaseModel):
@@ -85,12 +98,12 @@ class ReadFileResult(BaseModel):
     note: str
 
 
-class _Budget:
-    """What is left of the call's image allowance."""
+@dataclass
+class _Read:
+    """One path's result, and its PNG when it is an image to attach."""
 
-    def __init__(self) -> None:
-        self.image_bytes = fa.MAX_CALL_IMAGE_BYTES
-        self.images: list[ToolImage] = []
+    file: FileResult
+    png: bytes | None = None
 
 
 @as_mcp_tool(input_model=ReadFileParams, output_model=ReadFileResult)
@@ -99,10 +112,32 @@ def read_file(params: ReadFileParams) -> ReadFileResult | WithImages:
     """Open cylinder and plate scan images to view, and get links to scan videos."""
     _check(params)
     reader = _ports.file_reader()
-    budget = _Budget()
-    files = [_read(reader, params, p, budget) for p in params.paths]
+    call_deadline = slots.deadline()
+    with ThreadPoolExecutor(max_workers=slots.MAX_IMAGE_SLOTS) as pool:
+        reads = list(
+            pool.map(lambda p: _read(reader, params, p, call_deadline), params.paths)
+        )
+    files, images = _attach(reader, params.bucket, reads)
     result = ReadFileResult(bucket=params.bucket, files=files, note=NOTE)
-    return WithImages(result, budget.images) if budget.images else result
+    return WithImages(result, images) if images else result
+
+
+def _attach(
+    reader: FileReader, bucket: str, reads: list[_Read]
+) -> tuple[list[FileResult], list[ToolImage]]:
+    """Attaches images in path order until the call's image limit; links the rest."""
+    left, files, images = fa.MAX_CALL_IMAGE_BYTES, [], []
+    for read in reads:
+        if read.png is None:
+            files.append(read.file)
+        elif len(read.png) > left:
+            f = read.file
+            files.append(_link(reader, bucket, f.path, f.size_bytes, CALL_LIMIT_NOTE))
+        else:
+            left -= len(read.png)
+            images.append(ToolImage(read.png, "image/png"))
+            files.append(read.file)
+    return files, images
 
 
 def _check(params: ReadFileParams) -> None:
@@ -124,50 +159,48 @@ def _check(params: ReadFileParams) -> None:
 
 
 def _read(
-    reader: FileReader, params: ReadFileParams, path: str, budget: _Budget
-) -> FileResult:
+    reader: FileReader, params: ReadFileParams, path: str, call_deadline: float
+) -> _Read:
     bucket = params.bucket
     try:
         size = reader.size(bucket, path)
-        kind = fa.file_kind(path)
-        if kind == "image" and size <= fa.MAX_SOURCE_IMAGE_BYTES:
-            return _image(reader, params, path, size, budget)
-        return _link(
-            reader, bucket, path, size, TOO_LARGE_NOTE if kind == "image" else None
-        )
+        if fa.file_kind(path) != "image":
+            return _Read(_link(reader, bucket, path, size, None))
+        if size > fa.MAX_SOURCE_IMAGE_BYTES:
+            return _Read(_link(reader, bucket, path, size, TOO_LARGE_NOTE))
+        try:
+            with slots.image_slot(call_deadline):
+                return _image(reader, params, path, size)
+        except slots.NoSlot as exc:
+            note = BUSY_NOTE if exc.reason == "busy" else OUT_OF_TIME_NOTE
+            return _Read(_link(reader, bucket, path, size, note))
     except FileNotFound:
-        return FileResult(
-            path=path, kind="error", note=f"No file at this path in {bucket}."
-        )
+        note = f"No file at this path in {bucket}."
+        return _Read(FileResult(path=path, kind="error", note=note))
     except FileReadError:
-        return FileResult(
-            path=path, kind="error", note="Couldn't read this file; try again."
-        )
+        note = "Couldn't read this file; try again."
+        return _Read(FileResult(path=path, kind="error", note=note))
 
 
-def _image(
-    reader: FileReader, params: ReadFileParams, path: str, size: int, budget: _Budget
-) -> FileResult:
+def _image(reader: FileReader, params: ReadFileParams, path: str, size: int) -> _Read:
     bucket, crop = params.bucket, params.crop
-    limit = min(fa.MAX_IMAGE_BYTES, budget.image_bytes)
     try:
         converted = ic.to_png(
             reader.download(bucket, path),
             page=params.page,
             crop=ic.Crop(**crop.model_dump()) if crop else None,
-            max_bytes=limit,
+            max_bytes=fa.MAX_IMAGE_BYTES,
         )
     except ic.BadImageRequest as exc:
-        return FileResult(path=path, kind="error", size_bytes=size, note=f"{exc}.")
+        return _Read(
+            FileResult(path=path, kind="error", size_bytes=size, note=f"{exc}.")
+        )
     except ic.ImageTooLarge:
-        note = TOO_LARGE_NOTE
-        if limit < fa.MAX_IMAGE_BYTES:
-            note = "Over this call's image limit; open it in a call of its own."
-        return _link(reader, bucket, path, size, note)
+        return _Read(_link(reader, bucket, path, size, TOO_LARGE_NOTE))
     except ic.ImageUnreadable:
-        return _link(reader, bucket, path, size, "Not an image that can be shown.")
-    budget.image_bytes -= len(converted.png)
-    budget.images.append(ToolImage(converted.png, "image/png"))
+        return _Read(
+            _link(reader, bucket, path, size, "Not an image that can be shown.")
+        )
     info = ImageInfo(
         width=converted.width,
         height=converted.height,
@@ -178,11 +211,12 @@ def _image(
         contrast_stretched=converted.contrast_stretched,
     )
     url = reader.signed_url(bucket, path, fa.SIGNED_URL_SECONDS)
-    return FileResult(path=path, kind="image", size_bytes=size, url=url, image=info)
+    file = FileResult(path=path, kind="image", size_bytes=size, url=url, image=info)
+    return _Read(file, converted.png)
 
 
 def _link(
-    reader: FileReader, bucket: str, path: str, size: int, note: str | None
+    reader: FileReader, bucket: str, path: str, size: int | None, note: str | None
 ) -> FileResult:
     url = reader.signed_url(bucket, path, fa.SIGNED_URL_SECONDS)
     return FileResult(path=path, kind="link", size_bytes=size, url=url, note=note)
@@ -199,6 +233,8 @@ the object_path values with bucket images.
 Images (PNG, JPEG, TIFF, including 16-bit and multi-page) are converted on the server
 to lossless PNG, scaled so the longer side is at most {ic.MAX_SIDE} px, the most you
 can see. For detail, read again with `crop`: that region comes at the original's full
-resolution. Videos come back as a download link with their size. Describe what you
-see, but take lengths, areas and counts from the traits, not the pictures.
+resolution. Videos come back as a download link with their size. If an image's note
+says Bloom is busy, out of time or the image is too large, tell the user and offer the
+Bloom page to save the preview and upload it. Describe what you see, but take lengths,
+areas and counts from the traits, not the pictures.
 """
