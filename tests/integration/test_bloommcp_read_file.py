@@ -7,7 +7,6 @@ Unit counterpart: bloommcp/tests/sections/bloom_data/test_read_file.py.
 
 from __future__ import annotations
 
-import json
 import struct
 import urllib.error
 import urllib.request
