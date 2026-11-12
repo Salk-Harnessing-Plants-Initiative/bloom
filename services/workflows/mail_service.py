@@ -39,9 +39,8 @@ SEND_CAP_WINDOW_SECONDS = 60 * 60
 LOG_DIR = os.environ.get("MAIL_LOG_DIR") or ""
 LOG_FILE_BYTES = 1_000_000
 LOG_FILE_COUNT = 5
-# Addresses sent the sign-up email, one per line beside mail.log: each address gets it once.
+# Addresses sent the sign-up email, one per line on the same volume: each gets it once.
 EMAILED_FILE = "signup-emailed.txt"
-_SENT_LINE = re.compile(r" INFO sent sign-up email to (\S+)$")
 MAX_EMAIL_LENGTH = 254
 # Largest request read: a sign-up request is about 40 bytes.
 MAX_BODY_BYTES = 1024
@@ -85,26 +84,17 @@ setup_logging()
 
 
 def load_emailed(log_dir: str = LOG_DIR) -> set[str]:
-    """Addresses already emailed: the emailed file plus the sends in mail.log and its backups."""
+    """Addresses already sent the sign-up email, from the emailed file on the volume."""
     if not log_dir:
         return set()
-    emailed: set[str] = set()
-    logs = ["mail.log", *(f"mail.log.{i}" for i in range(1, LOG_FILE_COUNT + 1))]
-    for name in [EMAILED_FILE, *logs]:
-        try:
-            with open(os.path.join(log_dir, name), encoding="utf-8") as f:
-                lines = f.read().splitlines()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            logger.error("can't read %s: %s", name, type(exc).__name__)
-            continue
-        if name == EMAILED_FILE:
-            emailed.update(line.strip() for line in lines if line.strip())
-        else:
-            sends = (_SENT_LINE.search(line) for line in lines)
-            emailed.update(m.group(1) for m in sends if m)
-    return emailed
+    try:
+        with open(
+            os.path.join(log_dir, EMAILED_FILE), encoding="utf-8", errors="replace"
+        ) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return set()
+    return {line.strip().lower() for line in lines if line.strip()}
 
 
 def _record_emailed(email: str) -> None:

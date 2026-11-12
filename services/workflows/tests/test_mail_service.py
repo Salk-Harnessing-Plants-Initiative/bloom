@@ -3,6 +3,9 @@
 import collections
 import logging
 import logging.handlers
+import os
+import subprocess
+import sys
 import threading
 
 import pytest
@@ -13,6 +16,7 @@ import mail_service
 
 SECRET = "s" * 40
 AUTH = {"Authorization": f"Bearer {SECRET}"}
+WORKFLOWS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.fixture
@@ -101,16 +105,40 @@ def test_the_emailed_list_survives_a_restart(client, sent, monkeypatch, tmp_path
     assert len(sent) == 1
 
 
-def test_sends_already_in_mail_log_count_as_emailed(tmp_path):
+def _emailed_at_start(log_dir):
+    """The emailed list a freshly started service loads from MAIL_LOG_DIR."""
+    code = "import mail_service; print(sorted(mail_service._emailed))"
+    env = {**os.environ, "MAIL_LOG_DIR": str(log_dir)}
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=WORKFLOWS_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip().splitlines()[-1]
+
+
+def test_a_started_service_loads_the_emailed_file(tmp_path):
+    (tmp_path / "signup-emailed.txt").write_text("ada@salk.edu\n")
+    assert _emailed_at_start(tmp_path) == "['ada@salk.edu']"
+
+
+def test_sends_in_mail_log_are_not_read(tmp_path):
     (tmp_path / "mail.log").write_text(
         "2026-11-11 16:52:09,221 INFO sent sign-up email to ada@salk.edu\n"
-        "2026-11-11 17:00:00,000 INFO skipped ben@salk.edu: already emailed\n"
     )
-    (tmp_path / "mail.log.1").write_text(
-        "2026-11-10 09:00:00,000 INFO sent sign-up email to cy@salk.edu\n"
-        "2026-11-10 09:01:00,000 WARNING failed dee@salk.edu: relay error OSError\n"
+    assert mail_service.load_emailed(str(tmp_path)) == set()
+
+
+def test_hand_edited_lines_are_trimmed_and_lowercased(tmp_path):
+    (tmp_path / "signup-emailed.txt").write_bytes(
+        b"  Ada@Salk.edu \n\nben@salk.edu\ncy\xe9@salk.edu\n"
     )
-    assert mail_service.load_emailed(str(tmp_path)) == {"ada@salk.edu", "cy@salk.edu"}
+    loaded = mail_service.load_emailed(str(tmp_path))
+    assert {"ada@salk.edu", "ben@salk.edu"} <= loaded
+    assert len(loaded) == 3
 
 
 def test_without_a_log_dir_nothing_is_loaded():

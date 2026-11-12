@@ -41,7 +41,7 @@ def _forget_old(now: float) -> None:
 
 def request(email: str) -> None:
     """Starts a background request for the sign-up email to ``email``; returns at once.
-    Skipped for an address asked about in the last 2 hours, or when two are in flight."""
+    Skipped within ASK_AGAIN_AFTER_SECONDS of the last ask, or when two are in flight."""
     url = (os.environ.get(URL_ENV) or "").rstrip("/")
     secret = os.environ.get(SECRET_ENV) or ""
     if not url or not secret:
