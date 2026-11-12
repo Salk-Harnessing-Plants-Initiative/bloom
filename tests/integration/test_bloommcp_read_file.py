@@ -1,5 +1,6 @@
-"""Live check of bloommcp's read_file: bloom_agent opens a stored PNG frame and a TIFF
-plate scan shrunk by Storage's image service, reads a text file, and gets a link for a video.
+"""Live check of bloommcp's read_file: bloom_agent downloads a stored PNG frame and a TIFF
+plate scan and gets them back as PNG (scaled, or cropped at full resolution), reads a text
+file, and gets a link for a video.
 
 Unit counterpart: bloommcp/tests/sections/bloom_data/test_read_file.py.
 """
@@ -20,11 +21,11 @@ from tests.integration.test_bloommcp_data_tools import _run_in_bloommcp, _unavai
 
 pytestmark = pytest.mark.integration
 
-WIDE = 1500
+WIDE = 2000
 
 
 def _png(width: int, height: int) -> bytes:
-    """A grey 8-bit PNG, wider than read_file's image width."""
+    """A grey 8-bit PNG, wider than read_file shows a whole image."""
 
     def chunk(kind: bytes, data: bytes) -> bytes:
         body = kind + data
@@ -101,8 +102,8 @@ import base64, io, json
 from PIL import Image
 from bloom_mcp.sections.bloom_data.read_file import read_file
 folder = {folder!r}
-def run(bucket, paths):
-    out = read_file({{"bucket": bucket, "paths": paths}})
+def run(bucket, paths, **extra):
+    out = read_file({{"bucket": bucket, "paths": paths, **extra}})
     data = getattr(out, "structured_content", None) or out.model_dump(mode="json")
     images = [base64.b64decode(c.data) for c in getattr(out, "content", []) if c.type == "image"]
     widths = [Image.open(io.BytesIO(i)).size[0] for i in images]
@@ -110,6 +111,8 @@ def run(bucket, paths):
 print(json.dumps({{
     "image": run("images", [folder + "/frame.png", folder + "/missing.png"]),
     "plate": run("graviscan-images", [folder + "/plate.tif"]),
+    "crop": run("graviscan-images", [folder + "/plate.tif"],
+                crop={{"x": 100, "y": 0, "width": 1200, "height": 4}}),
     "text": run("scrna", [folder + "/meta.json"]),
     "video": run("videos", [folder + "/scan.mp4"]),
 }}))
@@ -121,18 +124,24 @@ def results(stored) -> dict:
     return _run_in_bloommcp(_SCRIPT.format(folder=stored))
 
 
-def test_an_image_comes_back_shrunk(results):
+def test_an_image_comes_back_scaled(results):
     image, missing = results["image"]["files"]
     assert image["kind"] == "image", image
     assert results["image"]["images"] == 1
-    assert results["image"]["widths"] == [1000]
+    assert results["image"]["widths"] == [1568]
     assert missing["kind"] == "error"
 
 
 def test_a_tiff_plate_scan_comes_back_viewable(results):
     (f,) = results["plate"]["files"]
     assert f["kind"] == "image", f
-    assert results["plate"]["widths"] == [1000]
+    assert results["plate"]["widths"] == [1568]
+
+
+def test_a_crop_keeps_full_resolution(results):
+    (f,) = results["crop"]["files"]
+    assert f["kind"] == "image" and f["image"]["width"] == WIDE
+    assert results["crop"]["widths"] == [1200]
 
 
 def test_a_text_file_is_read(results):

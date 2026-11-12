@@ -20,10 +20,6 @@ class FileReader(Protocol):
 
     def download(self, bucket: str, path: str) -> bytes: ...
 
-    def download_image(self, bucket: str, path: str, width: int) -> bytes:
-        """The image shrunk to `width` pixels by Storage's image service."""
-        ...
-
     def signed_url(self, bucket: str, path: str, seconds: int) -> str:
         """A download link on Bloom's public address, valid for `seconds`."""
         ...

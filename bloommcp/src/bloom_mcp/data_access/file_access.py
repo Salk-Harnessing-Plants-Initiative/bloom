@@ -25,25 +25,17 @@ FILE_COLUMNS: dict[tuple[str, str], str] = {
 
 MAX_PATHS = 8
 MAX_PATH_CHARS = 1024
-# Images are shrunk to this width by Storage's image service before they are read.
-IMAGE_WIDTH = 1000
-# Larger originals are linked, not resized.
-MAX_SOURCE_IMAGE_BYTES = 50_000_000
-MAX_IMAGE_BYTES = 3_000_000
-MAX_CALL_IMAGE_BYTES = 12_000_000
+# Larger originals are linked, not downloaded and converted.
+MAX_SOURCE_IMAGE_BYTES = 300_000_000
+# Claude's limit for one image, and what one call may return in all.
+MAX_IMAGE_BYTES = 5_000_000
+MAX_CALL_IMAGE_BYTES = 20_000_000
 # Larger text files are linked, not downloaded.
 MAX_TEXT_FILE_BYTES = 20_000_000
 SIGNED_URL_SECONDS = 3600
 
 _IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "tif", "tiff"})
 _TEXT_EXTENSIONS = frozenset({"json", "csv", "tsv", "txt"})
-# Image formats Claude can view, by their first bytes.
-_IMAGE_SIGNATURES = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
-)
 
 
 def file_kind(path: str) -> FileKind:
@@ -69,16 +61,6 @@ def path_problem(path: str) -> str | None:
         return "has an empty, '.' or '..' folder"
     if any(ord(c) < 32 or ord(c) == 127 for c in path):
         return "has a control character"
-    return None
-
-
-def image_mime(data: bytes) -> str | None:
-    """The image's type when it is one Claude can view, else None."""
-    for signature, mime in _IMAGE_SIGNATURES:
-        if data.startswith(signature):
-            return mime
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
     return None
 
 

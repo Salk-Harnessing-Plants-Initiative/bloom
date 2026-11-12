@@ -35,11 +35,7 @@ class _Bucket:
 def bucket(monkeypatch):
     holder = {"bucket": _Bucket()}
 
-    def client(name, **kwargs):
-        holder["accept"] = kwargs.get("accept")
-        return holder["bucket"]
-
-    monkeypatch.setattr(fr, "get_bucket_client", client)
+    monkeypatch.setattr(fr, "get_bucket_client", lambda name, **_: holder["bucket"])
     return holder
 
 
@@ -76,21 +72,6 @@ def test_a_missing_size_is_a_read_error(bucket):
     bucket["bucket"] = _Bucket(info={"metadata": {}})
     with pytest.raises(FileReadError):
         fr.StorageFileReader().size("images", "a.png")
-
-
-def test_images_are_asked_for_as_webp(bucket):
-    """Plate scans are TIFF: the image service converts only when WebP is accepted."""
-    fr.StorageFileReader().download_image("graviscan-images", "a.tif", 1000)
-    assert "image/webp" in bucket["accept"]
-    fr.StorageFileReader().download("scrna", "a.json")
-    assert bucket["accept"] is None
-
-
-def test_images_are_shrunk_by_the_image_service(bucket):
-    fr.StorageFileReader().download_image("images", "a.png", 1000)
-    assert bucket["bucket"].seen == [
-        {"transform": {"width": 1000, "resize": "contain"}}
-    ]
 
 
 def test_links_use_the_public_address(bucket, monkeypatch):

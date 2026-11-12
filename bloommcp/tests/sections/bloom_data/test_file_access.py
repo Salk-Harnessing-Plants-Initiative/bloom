@@ -7,11 +7,6 @@ import pytest
 from bloom_mcp.data_access import file_access as fa
 from bloom_mcp.data_access import table_access
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 8
-JPEG = b"\xff\xd8\xff\xe0" + b"\0" * 8
-WEBP = b"RIFF\0\0\0\0WEBPVP8 "
-TIFF = b"II*\0" + b"\0" * 8
-
 
 @pytest.mark.parametrize(
     "path,kind",
@@ -60,22 +55,6 @@ def test_plain_paths_pass(path):
     assert fa.path_problem(path) is None
 
 
-@pytest.mark.parametrize(
-    "data,mime",
-    [
-        (PNG, "image/png"),
-        (JPEG, "image/jpeg"),
-        (b"GIF89a....", "image/gif"),
-        (WEBP, "image/webp"),
-        (TIFF, None),
-        (b"", None),
-        (b"{}", None),
-    ],
-)
-def test_image_mime_from_first_bytes(data, mime):
-    assert fa.image_mime(data) == mime
-
-
 def test_logs_and_bloommcp_outputs_are_not_readable():
     assert "run-logs" not in fa.READABLE_BUCKETS
     assert "bloommcp-data" not in fa.READABLE_BUCKETS
@@ -101,5 +80,4 @@ def test_file_note_names_the_column_and_bucket():
 
 def test_limits_hold_together():
     assert fa.MAX_IMAGE_BYTES <= fa.MAX_CALL_IMAGE_BYTES
-    assert fa.IMAGE_WIDTH <= 2500  # Storage's image service refuses wider
     assert fa.MAX_PATHS == 8

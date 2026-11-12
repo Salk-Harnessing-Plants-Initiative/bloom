@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import ToolImage, WithImages, as_mcp_tool
 from bloom_mcp.data_access import file_access as fa
+from bloom_mcp.data_access import image_convert as ic
 from bloom_mcp.data_access.file_ports import FileNotFound, FileReader, FileReadError
 from bloom_mcp.data_access.table_access import redact_emails
 from bloom_mcp.tools import _ports
@@ -18,10 +19,19 @@ from ._page import MAX_REPLY_CHARS
 _COLUMNS = "; ".join(f"{t}.{c} ({b})" for (t, c), b in fa.FILE_COLUMNS.items())
 PATH_REMEDY = f"Take paths from these columns, with their bucket: {_COLUMNS}."
 NOTE = (
-    "Images are attached after this JSON, in the order of `files` with kind image. They "
-    "are for looking; measurements come from the trait tables. Give the user any link; "
-    "it works for an hour."
+    "Images are attached after this JSON, in the order of `files` with kind image, as "
+    "lossless PNG. They are for looking; measurements come from the trait tables. Give "
+    "the user any link; it works for an hour."
 )
+
+
+class CropParam(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: int = Field(ge=0, description="Left edge, in the original's pixels.")
+    y: int = Field(ge=0, description="Top edge, in the original's pixels.")
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
 
 
 class ReadFileParams(BaseModel):
@@ -30,6 +40,25 @@ class ReadFileParams(BaseModel):
     bucket: str = Field(description="Bucket the paths are in.")
     paths: list[str] = Field(
         description=f"Up to {fa.MAX_PATHS} paths in that bucket, from a table's path column."
+    )
+    crop: CropParam | None = Field(
+        default=None,
+        description="A region of each image at full resolution, in the original's "
+        "pixels (see image.width and image.height from a first read).",
+    )
+    page: int = Field(default=0, ge=0, description="Page of a multi-page TIFF, from 0.")
+
+
+class ImageInfo(BaseModel):
+    width: int = Field(description="The original's width in pixels.")
+    height: int
+    mode: str = Field(description="The original's pixel mode, e.g. L, RGB, I;16.")
+    pages: int
+    shown_width: int = Field(description="Width of the image attached.")
+    shown_height: int
+    contrast_stretched: bool = Field(
+        description="A deeper-than-8-bit image stretched from its darkest to brightest "
+        "pixel to be visible; brightness is not comparable between images."
     )
 
 
@@ -40,8 +69,9 @@ class FileResult(BaseModel):
     text: str | None = Field(default=None, description="A text file's contents.")
     truncated: bool = Field(default=False, description="Text cut at the reply limit.")
     url: str | None = Field(
-        default=None, description="Download link, valid for an hour."
+        default=None, description="Download link to the original, valid for an hour."
     )
+    image: ImageInfo | None = None
     note: str | None = None
 
 
@@ -65,16 +95,18 @@ class _Budget:
 def read_file(params: ReadFileParams) -> ReadFileResult | WithImages:
     """Open files Bloom stores for scans and datasets: see images, read text files.
 
-    Paths come from table columns; read the rows first. Images (PNG, JPEG, TIFF) come
-    back shrunk to about 1,000 px for you to look at; JSON, CSV, TSV and TXT come back
-    as text up to the reply limit; videos and other files come back as a download link
-    with their size. Pass several frames of one scan in one call. Describe what you
-    see, but take lengths, areas and counts from the traits, not the pictures.
+    Paths come from table columns; read the rows first. Images (PNG, JPEG, TIFF,
+    including 16-bit and multi-page) are converted on the server to lossless PNG, scaled
+    so the longer side is at most 1,568 px, the most you can see. For detail, read again
+    with `crop`: that region comes at the original's full resolution. JSON, CSV, TSV and
+    TXT come back as text up to the reply limit; videos and other files come back as a
+    download link with their size. Pass several frames of one scan in one call. Describe
+    what you see, but take lengths, areas and counts from the traits, not the pictures.
     """
     _check(params)
     reader = _ports.file_reader()
     budget = _Budget()
-    files = [_read(reader, params.bucket, p, budget) for p in params.paths]
+    files = [_read(reader, params, p, budget) for p in params.paths]
     result = ReadFileResult(bucket=params.bucket, files=files, note=NOTE)
     return WithImages(result, budget.images) if budget.images else result
 
@@ -97,12 +129,15 @@ def _check(params: ReadFileParams) -> None:
             raise fix_request(f"The path '{path[:100]}' {problem}.", PATH_REMEDY)
 
 
-def _read(reader: FileReader, bucket: str, path: str, budget: _Budget) -> FileResult:
+def _read(
+    reader: FileReader, params: ReadFileParams, path: str, budget: _Budget
+) -> FileResult:
+    bucket = params.bucket
     try:
         size = reader.size(bucket, path)
         kind = fa.file_kind(path)
         if kind == "image" and size <= fa.MAX_SOURCE_IMAGE_BYTES:
-            return _image(reader, bucket, path, size, budget)
+            return _image(reader, params, path, size, budget)
         if kind == "text" and size <= fa.MAX_TEXT_FILE_BYTES:
             return _text(reader, bucket, path, size, budget)
         note = "Too large to open here." if kind != "other" else None
@@ -118,20 +153,37 @@ def _read(reader: FileReader, bucket: str, path: str, budget: _Budget) -> FileRe
 
 
 def _image(
-    reader: FileReader, bucket: str, path: str, size: int, budget: _Budget
+    reader: FileReader, params: ReadFileParams, path: str, size: int, budget: _Budget
 ) -> FileResult:
-    data = reader.download_image(bucket, path, fa.IMAGE_WIDTH)
-    mime = fa.image_mime(data)
-    if mime is None:
-        return _link(reader, bucket, path, size, "Not a format you can view.")
-    if len(data) > min(fa.MAX_IMAGE_BYTES, budget.image_bytes):
-        note = "Over this call's image limit; open it in a call of its own."
-        if len(data) > fa.MAX_IMAGE_BYTES:
-            note = "Too large to view even when shrunk."
+    bucket, crop = params.bucket, params.crop
+    limit = min(fa.MAX_IMAGE_BYTES, budget.image_bytes)
+    try:
+        converted = ic.to_png(
+            reader.download(bucket, path),
+            page=params.page,
+            crop=ic.Crop(**crop.model_dump()) if crop else None,
+            max_bytes=limit,
+        )
+    except ic.BadImageRequest as exc:
+        return FileResult(path=path, kind="error", size_bytes=size, note=f"{exc}.")
+    except ic.ImageUnreadable:
+        note = "Not an image that can be shown, or too large to convert."
+        if limit < fa.MAX_IMAGE_BYTES:
+            note = "Over this call's image limit; open it in a call of its own."
         return _link(reader, bucket, path, size, note)
-    budget.image_bytes -= len(data)
-    budget.images.append(ToolImage(data, mime))
-    return FileResult(path=path, kind="image", size_bytes=size)
+    budget.image_bytes -= len(converted.png)
+    budget.images.append(ToolImage(converted.png, "image/png"))
+    info = ImageInfo(
+        width=converted.width,
+        height=converted.height,
+        mode=converted.mode,
+        pages=converted.pages,
+        shown_width=converted.shown_width,
+        shown_height=converted.shown_height,
+        contrast_stretched=converted.contrast_stretched,
+    )
+    url = reader.signed_url(bucket, path, fa.SIGNED_URL_SECONDS)
+    return FileResult(path=path, kind="image", size_bytes=size, url=url, image=info)
 
 
 def _text(
