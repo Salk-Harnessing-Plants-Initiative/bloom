@@ -1,4 +1,4 @@
-"""read_file — open files Bloom stores: images to view, text to read, links for the rest."""
+"""read_file — open scan images Claude can view, and links to scan videos."""
 
 from __future__ import annotations
 
@@ -10,11 +10,9 @@ from bloom_mcp.contract import ToolImage, WithImages, as_mcp_tool
 from bloom_mcp.data_access import file_access as fa
 from bloom_mcp.data_access import image_convert as ic
 from bloom_mcp.data_access.file_ports import FileNotFound, FileReader, FileReadError
-from bloom_mcp.data_access.table_access import redact_emails
 from bloom_mcp.tools import _ports
 
 from ._common import fix_request, logs_call
-from ._page import MAX_REPLY_CHARS
 
 _COLUMNS = "; ".join(f"{t}.{c} ({b})" for (t, c), b in fa.FILE_COLUMNS.items())
 PATH_REMEDY = f"Take paths from these columns, with their bucket: {_COLUMNS}."
@@ -72,10 +70,8 @@ class ImageInfo(BaseModel):
 
 class FileResult(BaseModel):
     path: str
-    kind: Literal["image", "text", "link", "error"]
+    kind: Literal["image", "link", "error"]
     size_bytes: int | None = None
-    text: str | None = Field(default=None, description="A text file's contents.")
-    truncated: bool = Field(default=False, description="Text cut at the reply limit.")
     url: str | None = Field(
         default=None, description="Download link to the original, valid for an hour."
     )
@@ -90,10 +86,9 @@ class ReadFileResult(BaseModel):
 
 
 class _Budget:
-    """What is left of the call's text and image allowance."""
+    """What is left of the call's image allowance."""
 
     def __init__(self) -> None:
-        self.chars = MAX_REPLY_CHARS
         self.image_bytes = fa.MAX_CALL_IMAGE_BYTES
         self.images: list[ToolImage] = []
 
@@ -101,7 +96,7 @@ class _Budget:
 @as_mcp_tool(input_model=ReadFileParams, output_model=ReadFileResult)
 @logs_call
 def read_file(params: ReadFileParams) -> ReadFileResult | WithImages:
-    """Open files Bloom stores for scans and datasets: see images, read text files."""
+    """Open cylinder and plate scan images to view, and get links to scan videos."""
     _check(params)
     reader = _ports.file_reader()
     budget = _Budget()
@@ -137,10 +132,9 @@ def _read(
         kind = fa.file_kind(path)
         if kind == "image" and size <= fa.MAX_SOURCE_IMAGE_BYTES:
             return _image(reader, params, path, size, budget)
-        if kind == "text" and size <= fa.MAX_TEXT_FILE_BYTES:
-            return _text(reader, bucket, path, size, budget)
-        notes = {"image": TOO_LARGE_NOTE, "text": "Too large to open here."}
-        return _link(reader, bucket, path, size, notes.get(kind))
+        return _link(
+            reader, bucket, path, size, TOO_LARGE_NOTE if kind == "image" else None
+        )
     except FileNotFound:
         return FileResult(
             path=path, kind="error", note=f"No file at this path in {bucket}."
@@ -187,27 +181,6 @@ def _image(
     return FileResult(path=path, kind="image", size_bytes=size, url=url, image=info)
 
 
-def _text(
-    reader: FileReader, bucket: str, path: str, size: int, budget: _Budget
-) -> FileResult:
-    if budget.chars <= 0:
-        return FileResult(
-            path=path,
-            kind="error",
-            size_bytes=size,
-            note="The reply limit was used up; open this path in a call of its own.",
-        )
-    text = redact_emails(
-        reader.download(bucket, path).decode("utf-8", errors="replace")
-    )
-    truncated = len(text) > budget.chars
-    text = text[: budget.chars]
-    budget.chars -= len(text)
-    return FileResult(
-        path=path, kind="text", size_bytes=size, text=text, truncated=truncated
-    )
-
-
 def _link(
     reader: FileReader, bucket: str, path: str, size: int, note: str | None
 ) -> FileResult:
@@ -215,7 +188,7 @@ def _link(
     return FileResult(path=path, kind="link", size_bytes=size, url=url, note=note)
 
 
-read_file.__doc__ = f"""Open files Bloom stores for scans and datasets: see images, read text files.
+read_file.__doc__ = f"""Open cylinder and plate scan images to view, and get links to scan videos.
 
 Paths come from these table columns (list_tables notes say the same per table). Read
 the rows first, then pass up to {fa.MAX_PATHS} of their paths with the bucket:
@@ -226,7 +199,6 @@ the object_path values with bucket images.
 Images (PNG, JPEG, TIFF, including 16-bit and multi-page) are converted on the server
 to lossless PNG, scaled so the longer side is at most {ic.MAX_SIDE} px, the most you
 can see. For detail, read again with `crop`: that region comes at the original's full
-resolution. JSON, CSV, TSV and TXT come back as text up to the reply limit; videos and
-other files come back as a download link with their size. Describe what you see, but
-take lengths, areas and counts from the traits, not the pictures.
+resolution. Videos come back as a download link with their size. Describe what you
+see, but take lengths, areas and counts from the traits, not the pictures.
 """

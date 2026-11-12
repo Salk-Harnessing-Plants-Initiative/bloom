@@ -14,10 +14,10 @@ from bloom_mcp.data_access import table_access, table_indexes
         ("exp/plant/1.png", "image"),
         ("a/B.JPG", "image"),
         ("a/frame.tiff", "image"),
-        ("counts/x_1_/genes.json", "text"),
-        ("de/table.CSV", "text"),
-        ("a/b.tsv", "text"),
-        ("a/notes.txt", "text"),
+        ("counts/x_1_/genes.json", "other"),
+        ("de/table.CSV", "other"),
+        ("videos/1.webm", "other"),
+        ("a/notes.txt", "other"),
         ("videos/12.mp4", "other"),
         ("data/x.h5ad", "other"),
         ("noextension", "other"),
@@ -55,9 +55,13 @@ def test_plain_paths_pass(path):
     assert fa.path_problem(path) is None
 
 
-def test_logs_and_bloommcp_outputs_are_not_readable():
-    assert "run-logs" not in fa.READABLE_BUCKETS
-    assert "bloommcp-data" not in fa.READABLE_BUCKETS
+def test_only_scan_image_and_video_buckets_are_readable():
+    assert fa.READABLE_BUCKETS == {
+        "images",
+        "graviscan-images",
+        "videos",
+        "graviscan-videos",
+    }
 
 
 def test_every_file_column_is_on_a_readable_table_and_bucket():

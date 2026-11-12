@@ -1,6 +1,6 @@
 """Live check of bloommcp's read_file: bloom_agent downloads a stored PNG frame and a TIFF
-plate scan and gets them back as PNG (scaled, or cropped at full resolution), reads a text
-file, and gets a link for a video.
+plate scan and gets them back as PNG (scaled, or cropped at full resolution), and gets a
+link for a video.
 
 Unit counterpart: bloommcp/tests/sections/bloom_data/test_read_file.py.
 """
@@ -86,7 +86,6 @@ def stored():
     files = {
         ("images", f"{folder}/frame.png"): (_png(WIDE, 4), "image/png"),
         ("graviscan-images", f"{folder}/plate.tif"): (_tiff(WIDE, 4), "image/tiff"),
-        ("scrna", f"{folder}/meta.json"): (b'{"cells": 3}', "application/json"),
         ("videos", f"{folder}/scan.mp4"): (b"\0" * 64, "video/mp4"),
     }
     for (bucket, path), (body, kind) in files.items():
@@ -113,7 +112,6 @@ print(json.dumps({{
     "plate": run("graviscan-images", [folder + "/plate.tif"]),
     "crop": run("graviscan-images", [folder + "/plate.tif"],
                 crop={{"x": 100, "y": 0, "width": 1200, "height": 4}}),
-    "text": run("scrna", [folder + "/meta.json"]),
     "video": run("videos", [folder + "/scan.mp4"]),
 }}))
 """
@@ -142,11 +140,6 @@ def test_a_crop_keeps_full_resolution(results):
     (f,) = results["crop"]["files"]
     assert f["kind"] == "image" and f["image"]["width"] == WIDE
     assert results["crop"]["widths"] == [1200]
-
-
-def test_a_text_file_is_read(results):
-    (f,) = results["text"]["files"]
-    assert f["kind"] == "text" and json.loads(f["text"]) == {"cells": 3}
 
 
 def test_a_video_gets_a_link(results):

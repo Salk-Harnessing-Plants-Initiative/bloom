@@ -1,10 +1,9 @@
-"""read_file: images as lossless PNG, text to read, links for the rest, within limits."""
+"""read_file: scan images as lossless PNG, links for videos, within limits."""
 
 from __future__ import annotations
 
 import base64
 import io
-import json
 
 import numpy as np
 import pytest
@@ -16,7 +15,6 @@ from bloom_mcp.data_access import file_access as fa
 from bloom_mcp.data_access import image_convert as ic
 from bloom_mcp.data_access.fake_file_reader import FakeFileReader
 from bloom_mcp.sections.bloom_data import read_file as rf
-from bloom_mcp.sections.bloom_data._page import MAX_REPLY_CHARS
 from bloom_mcp.tools import _ports
 
 
@@ -38,9 +36,8 @@ def files():
             ("images", "exp/1/2.png"): _image(100, 50, "PNG", 7),
             ("graviscan-images", "gravi/p.tif"): PLATE,
             ("images", "exp/1/fake.png"): b"not an image",
-            ("scrna", "counts/a.json"): b'{"gene": "AT1G01010", "by": "ada@salk.edu"}',
             ("videos", "12.mp4"): b"\0" * 50,
-            ("scrna", "d/x.h5ad"): b"\0" * 10,
+            ("graviscan-videos", "v/plate.mp4"): b"\0" * 10,
             ("images", "exp/broken.png"): FRAME,
         },
         broken={("images", "exp/broken.png")},
@@ -114,18 +111,11 @@ def test_a_file_that_is_not_an_image_gets_a_link(files):
     assert result.files[0].note == "Not an image that can be shown."
 
 
-def test_text_comes_back_with_emails_hidden(files):
-    result, images = _read("scrna", "counts/a.json")
-    (f,) = result.files
-    assert f.kind == "text" and not f.truncated and images == []
-    assert json.loads(f.text) == {"gene": "AT1G01010", "by": "[email hidden]"}
-
-
-def test_videos_and_binary_files_get_a_link_without_download(files):
+def test_videos_get_a_link_without_download(files):
     result, _ = _read("videos", "12.mp4")
     (f,) = result.files
     assert f.kind == "link" and f.size_bytes == 50 and f.url and f.note is None
-    result, _ = _read("scrna", "d/x.h5ad")
+    result, _ = _read("graviscan-videos", "v/plate.mp4")
     assert result.files[0].kind == "link"
     assert not [c for c in files.calls if c[0] == "download"]
 
@@ -136,13 +126,6 @@ def test_one_failed_path_does_not_stop_the_rest(files):
     assert missing.kind == "error" and "No file" in missing.note
     assert broken.kind == "error" and "try again" in broken.note
     assert ok.kind == "image" and len(images) == 1
-
-
-def test_a_large_text_file_is_linked_not_downloaded(files, monkeypatch):
-    monkeypatch.setattr(fa, "MAX_TEXT_FILE_BYTES", 10)
-    result, _ = _read("scrna", "counts/a.json")
-    assert result.files[0].kind == "link"
-    assert ("download", "scrna", "counts/a.json") not in files.calls
 
 
 def test_a_large_original_image_is_linked_not_downloaded(files, monkeypatch):
@@ -158,15 +141,6 @@ def test_an_image_with_too_many_pixels_points_to_the_bloom_page(files, monkeypat
     result, images = _read("graviscan-images", "gravi/p.tif")
     assert result.files[0].kind == "link" and images == []
     assert "Bloom page" in result.files[0].note and "upload" in result.files[0].note
-
-
-def test_text_is_cut_at_the_reply_limit_across_files(files):
-    files.files[("scrna", "big.txt")] = b"a" * (MAX_REPLY_CHARS - 10)
-    result, _ = _read("scrna", "big.txt", "counts/a.json", "counts/a.json")
-    first, second, third = result.files
-    assert first.kind == "text" and not first.truncated
-    assert second.kind == "text" and second.truncated and len(second.text) == 10
-    assert third.kind == "error" and "reply limit" in third.note
 
 
 def test_images_past_the_call_limit_get_links(files, monkeypatch):

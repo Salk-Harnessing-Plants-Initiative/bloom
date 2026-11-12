@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-FileKind = Literal["image", "text", "other"]
+FileKind = Literal["image", "other"]
 
-# Buckets of scan images, videos and single-cell files. Pipeline logs (run-logs) and
-# bloommcp's own outputs (bloommcp-data, read through get_download_links) are left out.
+# Cylinder and plate scan images and videos. Other buckets (pipeline logs, single-cell
+# files, bloommcp's own outputs) are left out.
 READABLE_BUCKETS = frozenset(
-    {"images", "graviscan-images", "scrna", "videos", "graviscan-videos"}
+    {"images", "graviscan-images", "videos", "graviscan-videos"}
 )
 
 # The table columns that hold a path in each bucket, for the tool and table notes.
@@ -18,9 +18,6 @@ FILE_COLUMNS: dict[tuple[str, str], str] = {
     ("gravi_images", "object_path"): "graviscan-images",
     ("cyl_scan_videos", "path"): "videos",
     ("gravi_plate_videos", "object_path"): "graviscan-videos",
-    ("scrna_counts", "counts_object_path"): "scrna",
-    ("scrna_de", "file_path"): "scrna",
-    ("scrna_enrichment_runs", "file_path"): "scrna",
 }
 
 # How to find a table's rows for one item, so its paths can be read.
@@ -29,9 +26,6 @@ FILE_FIND: dict[str, str] = {
     "gravi_images": "filter scan_id",
     "cyl_scan_videos": "filter scan_id",
     "gravi_plate_videos": "filter experiment_id",
-    "scrna_counts": "filter dataset_id",
-    "scrna_de": "filter dataset_id",
-    "scrna_enrichment_runs": "filter dataset_id",
 }
 
 MAX_PATHS = 8
@@ -41,22 +35,17 @@ MAX_SOURCE_IMAGE_BYTES = 300_000_000
 # Claude's limit for one image, and what one call may return in all.
 MAX_IMAGE_BYTES = 5_000_000
 MAX_CALL_IMAGE_BYTES = 20_000_000
-# Larger text files are linked, not downloaded.
-MAX_TEXT_FILE_BYTES = 20_000_000
 SIGNED_URL_SECONDS = 3600
 
 _IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "tif", "tiff"})
-_TEXT_EXTENSIONS = frozenset({"json", "csv", "tsv", "txt"})
 
 
 def file_kind(path: str) -> FileKind:
-    """image, text or other, from the path's extension."""
+    """image or other, from the path's extension."""
     name = path.rsplit("/", 1)[-1]
     extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if extension in _IMAGE_EXTENSIONS:
         return "image"
-    if extension in _TEXT_EXTENSIONS:
-        return "text"
     return "other"
 
 
