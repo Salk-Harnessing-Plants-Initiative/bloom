@@ -145,14 +145,18 @@ def get_postgrest_client(*, timeout_seconds: float | None = None) -> supabase.Cl
     return supabase.create_client(url, key, options=options)
 
 
-def get_bucket_client(bucket: str, *, timeout_seconds: float):
+def get_bucket_client(
+    bucket: str, *, timeout_seconds: float, accept: str | None = None
+):
     """A storage client for `bucket` as bloom_agent, for read_file's reads.
 
     bloom_agent reads every bucket (`agent_read_objects`); read_file's own
-    allow-list decides which ones Claude may open.
+    allow-list decides which ones Claude may open. `accept` sets the Accept header.
     """
     url, key = _require_env()
     options = supabase.ClientOptions(storage_client_timeout=timeout_seconds)
+    if accept:
+        options.headers = {**options.headers, "Accept": accept}
     return supabase.create_client(url, key, options=options).storage.from_(bucket)
 
 

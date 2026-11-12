@@ -20,6 +20,8 @@ from .file_ports import FileNotFound, FileReadError
 logger = logging.getLogger(__name__)
 
 STORAGE_TIMEOUT_SECONDS = 30
+# The image service converts to WebP only when asked; plate scans are TIFF, which Claude can't view.
+IMAGE_ACCEPT = "image/webp,image/png,image/jpeg"
 _NOT_FOUND = frozenset({"404", "not_found", "notfound", "nosuchkey"})
 
 _T = TypeVar("_T")
@@ -32,11 +34,14 @@ def _not_found(exc: StorageApiError) -> bool:
     return status in _NOT_FOUND or code in _NOT_FOUND or "not found" in message
 
 
-def _call(bucket: str, path: str, action: Callable[[Any], _T]) -> _T:
+def _call(
+    bucket: str, path: str, action: Callable[[Any], _T], accept: str | None = None
+) -> _T:
     try:
-        return action(
-            get_bucket_client(bucket, timeout_seconds=STORAGE_TIMEOUT_SECONDS)
+        client = get_bucket_client(
+            bucket, timeout_seconds=STORAGE_TIMEOUT_SECONDS, accept=accept
         )
+        return action(client)
     except StorageApiError as exc:
         if _not_found(exc):
             raise FileNotFound(path) from None
@@ -59,7 +64,7 @@ class StorageFileReader:
 
     def download_image(self, bucket: str, path: str, width: int) -> bytes:
         options = {"transform": {"width": width, "resize": "contain"}}
-        return _call(bucket, path, lambda b: b.download(path, options))
+        return _call(bucket, path, lambda b: b.download(path, options), IMAGE_ACCEPT)
 
     def signed_url(self, bucket: str, path: str, seconds: int) -> str:
         url = _extract_signed_url(
