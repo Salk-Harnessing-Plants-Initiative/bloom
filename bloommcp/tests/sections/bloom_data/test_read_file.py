@@ -111,6 +111,7 @@ def test_a_page_past_the_last_is_reported(files):
 def test_a_file_that_is_not_an_image_gets_a_link(files):
     result, images = _read("images", "exp/1/fake.png")
     assert result.files[0].kind == "link" and images == []
+    assert result.files[0].note == "Not an image that can be shown."
 
 
 def test_text_comes_back_with_emails_hidden(files):
@@ -148,7 +149,15 @@ def test_a_large_original_image_is_linked_not_downloaded(files, monkeypatch):
     monkeypatch.setattr(fa, "MAX_SOURCE_IMAGE_BYTES", 10)
     result, images = _read("images", "exp/1/1.png")
     assert result.files[0].kind == "link" and images == []
+    assert result.files[0].note == rf.TOO_LARGE_NOTE
     assert ("download", "images", "exp/1/1.png") not in files.calls
+
+
+def test_an_image_with_too_many_pixels_points_to_the_bloom_page(files, monkeypatch):
+    monkeypatch.setattr(ic, "MAX_PIXELS", 100)
+    result, images = _read("graviscan-images", "gravi/p.tif")
+    assert result.files[0].kind == "link" and images == []
+    assert "Bloom page" in result.files[0].note and "upload" in result.files[0].note
 
 
 def test_text_is_cut_at_the_reply_limit_across_files(files):

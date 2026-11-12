@@ -114,16 +114,17 @@ def test_a_png_over_the_byte_cap_is_sent_smaller_still_lossless():
 
 
 def test_nothing_fits_the_byte_cap():
-    with pytest.raises(ic.ImageUnreadable):
+    with pytest.raises(ic.ImageTooLarge):
         ic.to_png(_encode(_noise(2000, 2000)), page=0, crop=None, max_bytes=100)
 
 
 def test_not_an_image():
-    with pytest.raises(ic.ImageUnreadable):
+    with pytest.raises(ic.ImageUnreadable) as err:
         ic.to_png(b"not an image", page=0, crop=None, max_bytes=BIG)
+    assert not isinstance(err.value, ic.ImageTooLarge)
 
 
 def test_too_many_pixels_is_refused_before_decoding(monkeypatch):
     monkeypatch.setattr(ic, "MAX_PIXELS", 100)
-    with pytest.raises(ic.ImageUnreadable):
+    with pytest.raises(ic.ImageTooLarge):
         ic.to_png(_encode(_noise(20, 20)), page=0, crop=None, max_bytes=BIG)

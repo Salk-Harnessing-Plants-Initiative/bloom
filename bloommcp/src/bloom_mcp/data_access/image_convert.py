@@ -20,7 +20,11 @@ _decode = threading.Lock()
 
 
 class ImageUnreadable(Exception):
-    """Not an image Pillow can open, or too large to decode."""
+    """Not an image Pillow can open."""
+
+
+class ImageTooLarge(ImageUnreadable):
+    """Too many pixels to decode, or too many bytes even when scaled."""
 
 
 class BadImageRequest(Exception):
@@ -54,7 +58,7 @@ def to_png(data: bytes, *, page: int, crop: Crop | None, max_bytes: int) -> Conv
             image = Image.open(io.BytesIO(data))
             width, height = image.size
             if width * height > MAX_PIXELS:
-                raise ImageUnreadable("too large")
+                raise ImageTooLarge("too many pixels")
             pages = getattr(image, "n_frames", 1)
             if not 0 <= page < pages:
                 raise BadImageRequest(f"page {page} is outside 0 to {pages - 1}")
@@ -73,7 +77,7 @@ def to_png(data: bytes, *, page: int, crop: Crop | None, max_bytes: int) -> Conv
                 return Converted(
                     png, width, height, *shown.size, mode, pages, stretched
                 )
-        raise ImageUnreadable("too large even when scaled")
+        raise ImageTooLarge("too large even when scaled")
 
 
 def _box(crop: Crop, width: int, height: int) -> tuple[int, int, int, int]:

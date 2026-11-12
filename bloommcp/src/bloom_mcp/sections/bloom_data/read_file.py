@@ -25,6 +25,14 @@ NOTE = (
 )
 
 
+# An image too large to show: the user can save the website's preview and upload it.
+TOO_LARGE_NOTE = (
+    "Too large to show here. Give the user the Bloom page for this scan or plate "
+    "(list_tables notes say how to build it) and ask them to save the preview shown "
+    "there and upload it to this chat. `url` downloads the full original, e.g. for Fiji."
+)
+
+
 class CropParam(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -131,8 +139,8 @@ def _read(
             return _image(reader, params, path, size, budget)
         if kind == "text" and size <= fa.MAX_TEXT_FILE_BYTES:
             return _text(reader, bucket, path, size, budget)
-        note = "Too large to open here." if kind != "other" else None
-        return _link(reader, bucket, path, size, note)
+        notes = {"image": TOO_LARGE_NOTE, "text": "Too large to open here."}
+        return _link(reader, bucket, path, size, notes.get(kind))
     except FileNotFound:
         return FileResult(
             path=path, kind="error", note=f"No file at this path in {bucket}."
@@ -157,11 +165,13 @@ def _image(
         )
     except ic.BadImageRequest as exc:
         return FileResult(path=path, kind="error", size_bytes=size, note=f"{exc}.")
-    except ic.ImageUnreadable:
-        note = "Not an image that can be shown, or too large to convert."
+    except ic.ImageTooLarge:
+        note = TOO_LARGE_NOTE
         if limit < fa.MAX_IMAGE_BYTES:
             note = "Over this call's image limit; open it in a call of its own."
         return _link(reader, bucket, path, size, note)
+    except ic.ImageUnreadable:
+        return _link(reader, bucket, path, size, "Not an image that can be shown.")
     budget.image_bytes -= len(converted.png)
     budget.images.append(ToolImage(converted.png, "image/png"))
     info = ImageInfo(
