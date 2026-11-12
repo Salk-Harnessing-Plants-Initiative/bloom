@@ -32,8 +32,6 @@ MIN_SECRET_LENGTH = 32
 SITE_URL = (os.environ.get("SITE_URL") or "").rstrip("/")
 # Who people write to about their account; named in the email and set as its Reply-To.
 CONTACT = (os.environ.get("MAIL_CONTACT") or "").strip()
-# One email per address per this long; remembered in memory, so a restart may send one more.
-RESEND_AFTER_SECONDS = 2 * 60 * 60
 # At most this many emails in any hour, whoever they go to: caps what a leaked secret can send.
 MAX_SENDS_PER_HOUR = 20
 SEND_CAP_WINDOW_SECONDS = 60 * 60
@@ -41,6 +39,9 @@ SEND_CAP_WINDOW_SECONDS = 60 * 60
 LOG_DIR = os.environ.get("MAIL_LOG_DIR") or ""
 LOG_FILE_BYTES = 1_000_000
 LOG_FILE_COUNT = 5
+# Addresses sent the sign-up email, one per line beside mail.log: each address gets it once.
+EMAILED_FILE = "signup-emailed.txt"
+_SENT_LINE = re.compile(r" INFO sent sign-up email to (\S+)$")
 MAX_EMAIL_LENGTH = 254
 # Largest request read: a sign-up request is about 40 bytes.
 MAX_BODY_BYTES = 1024
@@ -50,7 +51,6 @@ _SALK_ADDRESS = re.compile(r"^[a-z0-9._%+-]+@salk\.edu$")
 SIGNUP_SUBJECT = "Create your Bloom account to use Bloom in Claude"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-_last_sent: dict[str, float] = {}
 _recent_sends: collections.deque[float] = collections.deque()
 _lock = threading.Lock()
 
@@ -82,6 +82,42 @@ def setup_logging(log_dir: str = LOG_DIR) -> None:
 
 
 setup_logging()
+
+
+def load_emailed(log_dir: str = LOG_DIR) -> set[str]:
+    """Addresses already emailed: the emailed file plus the sends in mail.log and its backups."""
+    if not log_dir:
+        return set()
+    emailed: set[str] = set()
+    logs = ["mail.log", *(f"mail.log.{i}" for i in range(1, LOG_FILE_COUNT + 1))]
+    for name in [EMAILED_FILE, *logs]:
+        try:
+            with open(os.path.join(log_dir, name), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.error("can't read %s: %s", name, type(exc).__name__)
+            continue
+        if name == EMAILED_FILE:
+            emailed.update(line.strip() for line in lines if line.strip())
+        else:
+            sends = (_SENT_LINE.search(line) for line in lines)
+            emailed.update(m.group(1) for m in sends if m)
+    return emailed
+
+
+def _record_emailed(email: str) -> None:
+    if not LOG_DIR:
+        return
+    try:
+        with open(os.path.join(LOG_DIR, EMAILED_FILE), "a", encoding="utf-8") as f:
+            f.write(email + "\n")
+    except OSError as exc:
+        logger.error("can't record %s as emailed: %s", email, type(exc).__name__)
+
+
+_emailed = load_emailed()
 
 if SECRET and len(SECRET) < MIN_SECRET_LENGTH:
     logger.error(
@@ -189,7 +225,7 @@ async def health() -> dict:
 
 @app.post("/connector-signup")
 def connector_signup(request: SignupRequest) -> dict:
-    """Emails a Salk user who has no Bloom account how to make one; at most every 2 hours.
+    """Emails a Salk user who has no Bloom account how to make one, once per address.
     GuardBeforeBody has already checked the caller's secret and the request's size."""
     email = request.email.strip().lower()
     if len(email) > MAX_EMAIL_LENGTH or not _SALK_ADDRESS.match(email):
@@ -204,9 +240,8 @@ def connector_signup(request: SignupRequest) -> dict:
     # then the send runs outside it, so a slow relay holds up only this one email.
     with _lock:
         now = time.monotonic()
-        last = _last_sent.get(email)
-        if last is not None and now - last < RESEND_AFTER_SECONDS:
-            logger.info("skipped %s: emailed in the last 2 hours", email)
+        if email in _emailed:
+            logger.info("skipped %s: already emailed", email)
             return {"sent": False}
         while _recent_sends and now - _recent_sends[0] >= SEND_CAP_WINDOW_SECONDS:
             _recent_sends.popleft()
@@ -215,18 +250,18 @@ def connector_signup(request: SignupRequest) -> dict:
                 "refused %s: hourly limit of %d reached", email, MAX_SENDS_PER_HOUR
             )
             raise HTTPException(status_code=429, detail="hourly_limit")
-        _last_sent[email] = now
+        _emailed.add(email)
         _recent_sends.append(now)
     try:
         mail.send(mail.message(email, SIGNUP_SUBJECT, _signup_body(email), CONTACT))
     except Exception as exc:  # noqa: BLE001 - reported to the caller as a code
         with _lock:
             # Give the reservation back, so a later retry can send.
-            if _last_sent.get(email) == now:
-                del _last_sent[email]
+            _emailed.discard(email)
             if now in _recent_sends:
                 _recent_sends.remove(now)
         logger.warning("failed %s: relay error %s", email, type(exc).__name__)
         raise HTTPException(status_code=502, detail="relay_error") from None
     logger.info("sent sign-up email to %s", email)
+    _record_emailed(email)
     return {"sent": True}

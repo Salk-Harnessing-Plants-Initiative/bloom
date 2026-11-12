@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 URL_ENV = "MAIL_SERVICE_URL"
 SECRET_ENV = "MAIL_SERVICE_SECRET"
 TIMEOUT_SECONDS = 5
-# Claude retries a refused connection several times; ask once per address in this window
-# (the mail service's own window), so retries make no further requests.
+# Each Claude connect is refused again; ask at most once per address in this window to cut
+# repeat requests. The mail service sends each address the email only once.
 ASK_AGAIN_AFTER_SECONDS = 2 * 60 * 60
 # Requests in flight at once; past this a new one is skipped (the person will retry).
 MAX_IN_FLIGHT = 2

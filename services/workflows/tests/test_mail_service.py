@@ -22,7 +22,8 @@ def sent(monkeypatch):
     monkeypatch.setattr(mail_service, "SITE_URL", "https://bloom.salk.edu")
     monkeypatch.setattr(mail_service, "CONTACT", "bfernando@salk.edu")
     monkeypatch.setattr(mail, "SMTP_HOST", "neoemex1.salk.edu")
-    monkeypatch.setattr(mail_service, "_last_sent", {})
+    monkeypatch.setattr(mail_service, "_emailed", set())
+    monkeypatch.setattr(mail_service, "LOG_DIR", "")
     monkeypatch.setattr(mail_service, "_recent_sends", collections.deque())
     messages = []
     monkeypatch.setattr(mail, "send", messages.append)
@@ -82,18 +83,43 @@ def test_only_one_salk_address_is_accepted(client, sent, email):
     assert sent == []
 
 
-def test_a_second_request_within_two_hours_sends_nothing(client, sent, monkeypatch):
+def test_an_address_is_emailed_only_once(client, sent, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(mail_service.time, "monotonic", lambda: now[0])
     assert signup(client, "ada@salk.edu").json() == {"sent": True}
-    now[0] += mail_service.RESEND_AFTER_SECONDS - 1
+    now[0] += 30 * 24 * 60 * 60
     assert signup(client, "ADA@salk.edu").json() == {"sent": False}
-    now[0] += 2
+    assert len(sent) == 1
+
+
+def test_the_emailed_list_survives_a_restart(client, sent, monkeypatch, tmp_path):
+    monkeypatch.setattr(mail_service, "LOG_DIR", str(tmp_path))
     assert signup(client, "ada@salk.edu").json() == {"sent": True}
-    assert len(sent) == 2
+    restarted = mail_service.load_emailed(str(tmp_path))
+    monkeypatch.setattr(mail_service, "_emailed", restarted)
+    assert signup(client, "ada@salk.edu").json() == {"sent": False}
+    assert len(sent) == 1
 
 
-def test_a_relay_failure_is_502_and_does_not_count(client, sent, monkeypatch):
+def test_sends_already_in_mail_log_count_as_emailed(tmp_path):
+    (tmp_path / "mail.log").write_text(
+        "2026-11-11 16:52:09,221 INFO sent sign-up email to ada@salk.edu\n"
+        "2026-11-11 17:00:00,000 INFO skipped ben@salk.edu: already emailed\n"
+    )
+    (tmp_path / "mail.log.1").write_text(
+        "2026-11-10 09:00:00,000 INFO sent sign-up email to cy@salk.edu\n"
+        "2026-11-10 09:01:00,000 WARNING failed dee@salk.edu: relay error OSError\n"
+    )
+    assert mail_service.load_emailed(str(tmp_path)) == {"ada@salk.edu", "cy@salk.edu"}
+
+
+def test_without_a_log_dir_nothing_is_loaded():
+    assert mail_service.load_emailed("") == set()
+
+
+def test_a_relay_failure_is_502_and_does_not_count(client, sent, monkeypatch, tmp_path):
+    monkeypatch.setattr(mail_service, "LOG_DIR", str(tmp_path))
+
     def broken(msg):
         raise ConnectionRefusedError("relay down")
 
@@ -101,6 +127,7 @@ def test_a_relay_failure_is_502_and_does_not_count(client, sent, monkeypatch):
     resp = signup(client, "ada@salk.edu")
     assert resp.status_code == 502
     assert resp.json()["detail"] == "relay_error"
+    assert mail_service.load_emailed(str(tmp_path)) == set()
     monkeypatch.setattr(mail, "send", sent.append)
     assert signup(client, "ada@salk.edu").json() == {"sent": True}
 
