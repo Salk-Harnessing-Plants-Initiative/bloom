@@ -93,16 +93,7 @@ class _Budget:
 @as_mcp_tool(input_model=ReadFileParams, output_model=ReadFileResult)
 @logs_call
 def read_file(params: ReadFileParams) -> ReadFileResult | WithImages:
-    """Open files Bloom stores for scans and datasets: see images, read text files.
-
-    Paths come from table columns; read the rows first. Images (PNG, JPEG, TIFF,
-    including 16-bit and multi-page) are converted on the server to lossless PNG, scaled
-    so the longer side is at most 1,568 px, the most you can see. For detail, read again
-    with `crop`: that region comes at the original's full resolution. JSON, CSV, TSV and
-    TXT come back as text up to the reply limit; videos and other files come back as a
-    download link with their size. Pass several frames of one scan in one call. Describe
-    what you see, but take lengths, areas and counts from the traits, not the pictures.
-    """
+    """Open files Bloom stores for scans and datasets: see images, read text files."""
     _check(params)
     reader = _ports.file_reader()
     budget = _Budget()
@@ -212,3 +203,20 @@ def _link(
 ) -> FileResult:
     url = reader.signed_url(bucket, path, fa.SIGNED_URL_SECONDS)
     return FileResult(path=path, kind="link", size_bytes=size, url=url, note=note)
+
+
+read_file.__doc__ = f"""Open files Bloom stores for scans and datasets: see images, read text files.
+
+Paths come from these table columns (list_tables notes say the same per table). Read
+the rows first, then pass up to {fa.MAX_PATHS} of their paths with the bucket:
+{fa.file_guide()}
+Example, a scan's frames: query_table cyl_images with scan_id eq the scan, then pass
+the object_path values with bucket images.
+
+Images (PNG, JPEG, TIFF, including 16-bit and multi-page) are converted on the server
+to lossless PNG, scaled so the longer side is at most {ic.MAX_SIDE} px, the most you
+can see. For detail, read again with `crop`: that region comes at the original's full
+resolution. JSON, CSV, TSV and TXT come back as text up to the reply limit; videos and
+other files come back as a download link with their size. Describe what you see, but
+take lengths, areas and counts from the traits, not the pictures.
+"""

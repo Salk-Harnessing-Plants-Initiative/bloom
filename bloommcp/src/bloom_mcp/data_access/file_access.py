@@ -23,6 +23,17 @@ FILE_COLUMNS: dict[tuple[str, str], str] = {
     ("scrna_enrichment_runs", "file_path"): "scrna",
 }
 
+# How to find a table's rows for one item, so its paths can be read.
+FILE_FIND: dict[str, str] = {
+    "cyl_images": "filter scan_id; sort the frames by frame_number yourself",
+    "gravi_images": "filter scan_id",
+    "cyl_scan_videos": "filter scan_id",
+    "gravi_plate_videos": "filter experiment_id",
+    "scrna_counts": "filter dataset_id",
+    "scrna_de": "filter dataset_id",
+    "scrna_enrichment_runs": "filter dataset_id",
+}
+
 MAX_PATHS = 8
 MAX_PATH_CHARS = 1024
 # Larger originals are linked, not downloaded and converted.
@@ -70,4 +81,11 @@ def file_note(table: str) -> str | None:
     if not columns:
         return None
     parts = [f"{c} is a file path in the {b} bucket" for c, b in columns]
-    return "; ".join(parts) + ": open it with read_file."
+    return "; ".join(parts) + f" ({FILE_FIND[table]}): open it with read_file."
+
+
+def file_guide() -> str:
+    """Every path column with its bucket and how to find its rows, for read_file."""
+    return "\n".join(
+        f"- {t}.{c} -> bucket {b}: {FILE_FIND[t]}" for (t, c), b in FILE_COLUMNS.items()
+    )
