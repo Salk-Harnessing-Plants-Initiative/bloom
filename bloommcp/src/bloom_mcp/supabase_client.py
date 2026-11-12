@@ -145,6 +145,17 @@ def get_postgrest_client(*, timeout_seconds: float | None = None) -> supabase.Cl
     return supabase.create_client(url, key, options=options)
 
 
+def get_bucket_client(bucket: str, *, timeout_seconds: float):
+    """A storage client for `bucket` as bloom_agent, for read_file's reads.
+
+    bloom_agent reads every bucket (`agent_read_objects`); read_file's own
+    allow-list decides which ones Claude may open.
+    """
+    url, key = _require_env()
+    options = supabase.ClientOptions(storage_client_timeout=timeout_seconds)
+    return supabase.create_client(url, key, options=options).storage.from_(bucket)
+
+
 def read_input_csv(name: str) -> pd.DataFrame:
     """Load `bloommcp_input/{name}` from the `bloommcp-data` bucket as a
     DataFrame.

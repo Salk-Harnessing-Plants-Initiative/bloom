@@ -11,7 +11,8 @@ not replace. On every call it:
    kwarg-injection contract — not name inference),
 4. maps any raised exception to a structured `BloomMCPError` (never a raw
    traceback, never leaked internals), and
-5. validates the declared Pydantic **output** model (→ `BloomMCPError`).
+5. validates the declared Pydantic **output** model (→ `BloomMCPError`); a tool that
+   returns `WithImages` has its result validated and sent with the images.
 
 **Seed provenance integrity.** The resolved seed is recorded in `Provenance`
 *only when it is actually applied* — i.e. the delegate declares a
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from mcp.types import ToolAnnotations
 
 from .errors import BloomMCPError
+from .images import WithImages, tool_result
 from .provenance import Provenance, resolve_seed
 
 
@@ -157,6 +159,11 @@ def as_mcp_tool(
             except Exception as exc:  # noqa: BLE001 — mapped, never re-raised raw
                 raise BloomMCPError.from_exception(exc, declared=errors) from None
 
+            if isinstance(result, WithImages):
+                return tool_result(_validated(result.result), result.images)
+            return _validated(result)
+
+        def _validated(result: Any) -> BaseModel:
             if isinstance(result, output_model):
                 return result
             try:
