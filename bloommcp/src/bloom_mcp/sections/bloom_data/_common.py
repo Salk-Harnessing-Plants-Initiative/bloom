@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract.errors import BloomMCPError
+from bloom_mcp.contract.images import WithImages
 from bloom_mcp.data_access import table_access, table_indexes
 from bloom_mcp.data_access.table_ports import (
     STATEMENT_TIMEOUT_SECONDS,
@@ -306,7 +307,10 @@ def _rows(result: Any) -> int | None:
     for field in ("returned", "count"):
         if hasattr(result, field):
             return getattr(result, field)
-    return len(result.tables) if hasattr(result, "tables") else None
+    for listed in ("tables", "files"):
+        if hasattr(result, listed):
+            return len(getattr(result, listed))
+    return None
 
 
 def _log_name(name: Any) -> str:
@@ -324,7 +328,8 @@ def logs_call(func: Callable[..., _Result]) -> Callable[..., _Result]:
         outcome = "ok"
         try:
             result = func(params)
-            rows, chars = _rows(result), len(result.model_dump_json())
+            body = result.result if isinstance(result, WithImages) else result
+            rows, chars = _rows(body), len(body.model_dump_json())
             return result
         except BloomMCPError as exc:
             outcome = exc.code

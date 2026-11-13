@@ -105,3 +105,29 @@ def test_trait_figure_link_columns_are_readable():
     assert table_access.visible_columns(
         "cyl_scans_extended", ["wave_number", "plant_age_days"]
     ) == ["wave_number", "plant_age_days"]
+
+
+def test_a_plate_page_url_is_filled_and_encoded(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example/")
+    row = {"species_id": 1, "experiment_id": 5, "wave_number": 2, "plate_id": "P 7/a"}
+    assert page_links.page_url("gravi_scans_extended", row) == (
+        "https://bloom.example/app/plate-phenotypes/1/5/wave/2/P%207%2Fa"
+    )
+
+
+def test_no_page_url_without_a_site_or_a_column(monkeypatch):
+    row = {"species_id": 1, "experiment_id": 5, "wave_number": 2, "plate_id": "P"}
+    monkeypatch.delenv("SITE_URL", raising=False)
+    assert page_links.page_url("gravi_scans_extended", row) is None
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    assert (
+        page_links.page_url("gravi_scans_extended", {**row, "plate_id": None}) is None
+    )
+
+
+def test_a_plate_scan_with_no_wave_links_to_the_websites_none_wave(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    row = {"species_id": 1, "experiment_id": 5, "wave_number": None, "plate_id": "P"}
+    assert page_links.page_url("gravi_scans_extended", row) == (
+        "https://bloom.example/app/plate-phenotypes/1/5/wave/none/P"
+    )

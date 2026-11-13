@@ -84,3 +84,13 @@ def test_a_name_with_a_newline_stays_on_one_log_line(reader, lines):
         query_table({"table": "species\nbloom_data tool=fake", "columns": ["id"]})
     assert len(lines) == 1 and "\n" not in lines[0]
     assert "table=species?bloom_data" in lines[0]
+
+
+def test_read_file_logs_the_table_and_file_count_never_paths(lines):
+    from read_file_data import installed, read
+
+    with installed():
+        read("cyl_images", 1, 2)
+    (line,) = lines
+    assert "tool=read_file" in line and "table=cyl_images" in line and "rows=2" in line
+    assert "outcome=ok" in line and "exp/10" not in line

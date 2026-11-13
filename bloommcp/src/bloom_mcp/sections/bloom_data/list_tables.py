@@ -5,7 +5,13 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
-from bloom_mcp.data_access import page_links, table_access, table_indexes, table_notes
+from bloom_mcp.data_access import (
+    file_access,
+    page_links,
+    table_access,
+    table_indexes,
+    table_notes,
+)
 from bloom_mcp.tools import _ports
 
 from ._common import logs_call, readable_column_details, reports_read_errors
@@ -51,10 +57,15 @@ class ListTablesResult(BaseModel):
 
 
 def _notes(tables: list[str]) -> dict[str, str]:
-    """Each table's note, then how to link its rows to Bloom's website."""
+    """Each table's note, how to link its rows to Bloom's website, and its file paths."""
     notes = table_notes.table_notes(tables)
     joined = {
-        t: " ".join(filter(None, (notes.get(t), page_links.link_note(t))))
+        t: " ".join(
+            filter(
+                None,
+                (notes.get(t), page_links.link_note(t), file_access.file_note(t)),
+            )
+        )
         for t in tables
     }
     return {t: note for t, note in joined.items() if note}

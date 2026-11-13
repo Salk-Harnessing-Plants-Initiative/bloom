@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 URL_ENV = "MAIL_SERVICE_URL"
 SECRET_ENV = "MAIL_SERVICE_SECRET"
 TIMEOUT_SECONDS = 5
-# Claude retries a refused connection several times; ask once per address in this window
-# (the mail service's own window), so retries make no further requests.
+# Each Claude connect is refused again; ask at most once per address in this window to cut
+# repeat requests. The mail service sends each address the email only once.
 ASK_AGAIN_AFTER_SECONDS = 2 * 60 * 60
 # Requests in flight at once; past this a new one is skipped (the person will retry).
 MAX_IN_FLIGHT = 2
@@ -41,7 +41,7 @@ def _forget_old(now: float) -> None:
 
 def request(email: str) -> None:
     """Starts a background request for the sign-up email to ``email``; returns at once.
-    Skipped for an address asked about in the last 2 hours, or when two are in flight."""
+    Skipped within ASK_AGAIN_AFTER_SECONDS of the last ask, or when two are in flight."""
     url = (os.environ.get(URL_ENV) or "").rstrip("/")
     secret = os.environ.get(SECRET_ENV) or ""
     if not url or not secret:
