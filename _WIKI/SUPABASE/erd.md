@@ -126,6 +126,8 @@ erDiagram
 "public.gravi_plate_video_jobs" }o--|| "public.gravi_experiments" : "FOREIGN KEY (experiment_id) REFERENCES gravi_experiments(id)"
 "public.cyl_video_jobs" }o--|| "public.cyl_experiments" : "FOREIGN KEY (experiment_id) REFERENCES cyl_experiments(id)"
 "public.cyl_video_jobs" }o--|| "public.cyl_scans" : "FOREIGN KEY (scan_id) REFERENCES cyl_scans(id)"
+"public.genome_browser_builds" }o--|| "public.genome_reference_versions" : "FOREIGN KEY (version_id) REFERENCES genome_reference_versions(id)"
+"public.genome_browser_genes" }o--|| "public.genome_browser_builds" : "FOREIGN KEY (browser_build_id) REFERENCES genome_browser_builds(id)"
 
 "public.species" {
   bigint id
@@ -1223,5 +1225,29 @@ erDiagram
   timestamp_with_time_zone started_at
   timestamp_with_time_zone updated_at
   timestamp_with_time_zone completed_at
+}
+"public.genome_browser_builds" {
+  bigint id
+  bigint version_id FK
+  integer build
+  text status
+  jsonb tool_versions
+  text folder
+  jsonb files
+  integer gene_count
+  uuid created_by
+  timestamp_with_time_zone created_at
+  timestamp_with_time_zone ready_at
+  text withdrawn_reason
+  timestamp_with_time_zone withdrawn_at
+}
+"public.genome_browser_genes" {
+  bigint browser_build_id FK
+  text gene_id
+  text gene_name
+  text contig
+  bigint gene_start
+  bigint gene_end
+  text strand
 }
 ```
