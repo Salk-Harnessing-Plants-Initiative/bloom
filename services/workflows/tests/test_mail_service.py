@@ -141,6 +141,12 @@ def test_hand_edited_lines_are_trimmed_and_lowercased(tmp_path):
     assert len(loaded) == 3
 
 
+def test_an_unreadable_emailed_file_stops_the_start(tmp_path):
+    (tmp_path / "signup-emailed.txt").mkdir()
+    with pytest.raises(OSError):
+        mail_service.load_emailed(str(tmp_path))
+
+
 def test_without_a_log_dir_nothing_is_loaded():
     assert mail_service.load_emailed("") == set()
 
