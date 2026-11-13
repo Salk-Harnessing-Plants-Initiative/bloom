@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
+from .tiff_header import tiff_problem
+
 # Claude's vision scales a longer side down to about this, so larger gains no detail.
 MAX_SIDE = 1568
 # Smaller sides tried, in turn, when the PNG is over the per-image byte cap.
@@ -74,6 +76,8 @@ class Converted:
 
 def to_png(data: bytes, *, crop: Crop | None, max_bytes: int) -> Converted:
     """The first page, cropped at full resolution, scaled to MAX_SIDE at most, as PNG."""
+    if problem := tiff_problem(data):
+        raise ImageTooLarge(f"a crafted or broken TIFF ({problem})")
     try:
         image = Image.open(io.BytesIO(data), formats=FORMATS)
         width, height, mode = image.width, image.height, image.mode
