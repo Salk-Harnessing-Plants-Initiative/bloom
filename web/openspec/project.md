@@ -18,7 +18,7 @@ Bloom is a web application for sharing and exploring scientific data within the 
 - **Tailwind CSS** - Utility-first CSS framework
 - **Material UI (MUI)** - Component library (@mui/material, @mui/icons-material, @mui/x-data-grid)
 - **D3.js** - Data visualization library
-- **JBrowse** (@jbrowse/react-app, @jbrowse/core) - Genomic data browser
+- **JBrowse** (@jbrowse/react-app2, @jbrowse/core) - Genomic data browser
 - **html2canvas** - Screenshot generation
 
 ### Backend Services
