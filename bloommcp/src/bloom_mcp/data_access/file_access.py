@@ -24,34 +24,45 @@ class FileTable:
     find_column: str
     find_hint: str = ""
     id_type: type = int
+    # Image tables are converted for Claude; video tables only ever get a link.
+    images: bool = True
 
 
 FILE_TABLES: dict[str, FileTable] = {
     "cyl_images": FileTable(
-        "object_path",
-        "images",
-        ("scan_id", "frame_number"),
-        "scan_id",
-        "; sort the frames by frame_number yourself",
+        path_column="object_path",
+        bucket="images",
+        labels=("scan_id", "frame_number"),
+        find_column="scan_id",
+        find_hint="; sort the frames by frame_number yourself",
     ),
     "gravi_images": FileTable(
-        "object_path", "graviscan-images", ("scan_id",), "scan_id"
+        path_column="object_path",
+        bucket="graviscan-images",
+        labels=("scan_id",),
+        find_column="scan_id",
     ),
     "cyl_scan_videos": FileTable(
-        "path", "videos", ("scan_id",), "scan_id", id_type=str
+        path_column="path",
+        bucket="videos",
+        labels=("scan_id",),
+        find_column="scan_id",
+        id_type=str,
+        images=False,
     ),
     "gravi_plate_videos": FileTable(
-        "object_path",
-        "graviscan-videos",
-        ("experiment_id", "plate_id", "wave_number"),
-        "experiment_id",
+        path_column="object_path",
+        bucket="graviscan-videos",
+        labels=("experiment_id", "plate_id", "wave_number"),
+        find_column="experiment_id",
+        images=False,
     ),
 }
 
 MAX_FILES = 8
 MAX_PATH_CHARS = 1024
-# Larger originals are linked, not downloaded and converted.
-MAX_SOURCE_IMAGE_BYTES = 300_000_000
+# Larger originals are linked, not downloaded (plate_encode's limit; real plates <= 75 MB).
+MAX_SOURCE_IMAGE_BYTES = 192 * 1024**2
 # Claude's 5 MiB image limit counts base64, a third larger than the PNG.
 MAX_IMAGE_BYTES = 3_900_000
 MAX_CALL_IMAGE_BYTES = 15_000_000

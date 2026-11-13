@@ -347,7 +347,6 @@ def logs_call(func: Callable[..., _Result]) -> Callable[..., _Result]:
                 _log_name(
                     getattr(params, "table", None)
                     or getattr(params, "function", None)
-                    or getattr(params, "bucket", None)
                     or "-"
                 ),
                 filters or "-",

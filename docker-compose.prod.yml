@@ -653,6 +653,10 @@ services:
     build:
       context: ./bloommcp
       dockerfile: Dockerfile
+    # read_file holds up to 3 plate scans (~0.7 GB at most) and the analysis tools load
+    # whole experiments. Equal values mean no swap: hit the ceiling and restart.
+    mem_limit: 16g
+    memswap_limit: 16g
     read_only: true
     tmpfs:
       - /tmp:mode=1777,size=100m

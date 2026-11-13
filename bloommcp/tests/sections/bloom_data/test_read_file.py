@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pytest
+from PIL import Image
 from read_file_data import FRAME, VIDEO_ID, installed, read
 
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import file_access as fa
 from bloom_mcp.data_access import image_convert as ic
 from bloom_mcp.data_access.file_ports import FileReadError
+from bloom_mcp.data_access.image_slots import NoSlot
 from bloom_mcp.data_access.table_ports import DatabaseBusy
 from bloom_mcp.sections.bloom_data import read_file as rf
 
@@ -38,12 +42,13 @@ def test_frames_come_back_as_png_in_order_labelled_with_their_row(fakes):
     assert [i.size for i in images] == [(ic.MAX_SIDE, 784), (100, 50)]
     assert (first.id, first.labels) == (1, {"scan_id": 10, "frame_number": 1})
     assert labels == [
-        "cyl_images id 1, scan_id 10, frame_number 1",
+        "cyl_images id 1, scan_id 10, frame_number 1, shown at 1568 x 784",
         "cyl_images id 2, scan_id 10, frame_number 2",
     ]
     assert (first.image.width, first.image.height) == (2000, 1000)
     assert first.size_bytes == len(FRAME) and first.url and "exp/10/1.png" in first.url
     assert first.image.full_scale is None and not first.image.more_pages
+    assert first.image.scaled and not second.image.scaled and first.image.bits == 8
     assert np.asarray(images[1]).max() == 7
 
 
@@ -69,7 +74,7 @@ def test_a_tiff_plate_scan_comes_back_viewable(fakes):
     result, (image,), labels = read("gravi_images", 1)
     assert result.files[0].kind == "image" and result.files[0].image.mode == "L"
     assert image.format == "PNG" and np.asarray(image).max() == 200
-    assert labels == ["gravi_images id 1, scan_id 20"]
+    assert labels == ["gravi_images id 1, scan_id 20, shown at 1568 x 1045"]
 
 
 def test_a_crop_is_cut_from_the_original_at_full_resolution(fakes):
@@ -88,16 +93,15 @@ def test_a_crop_outside_one_image_is_reported_for_that_image(fakes):
     assert large.kind == "image" and [i.size for i in images] == [(1000, 1000)]
 
 
-def test_a_page_that_does_not_exist_is_reported(fakes):
-    result, _, _ = read("gravi_images", 1, page=3)
-    assert result.files[0].kind == "error" and "page 3" in result.files[0].note
+def test_there_is_no_page_parameter(fakes):
+    _refused(table="gravi_images", ids=[1], page=1)
 
 
 def test_missing_rows_rows_without_files_and_missing_files(fakes):
     result, images, _ = read("cyl_images", 99, 4, 6, 1)
     no_row, no_file, gone, ok = result.files
     assert no_row.kind == "error" and no_row.note == "No row with this id."
-    assert no_file.note == "This row has no file yet."
+    assert no_file.note == "This row has no stored file."
     assert no_file.labels == {"scan_id": 10, "frame_number": 4}
     assert gone.note == "The file is missing from storage."
     assert ok.kind == "image" and len(images) == 1
@@ -167,20 +171,21 @@ def test_a_large_original_image_is_linked_not_downloaded(fakes, monkeypatch):
     assert _downloads(files) == []
 
 
-def test_an_image_with_too_many_pixels_points_to_the_bloom_page(fakes, monkeypatch):
-    monkeypatch.setattr(ic, "MAX_PIXELS", 100)
+def test_an_image_too_large_to_decode_gets_a_link_to_the_original(fakes, monkeypatch):
+    monkeypatch.setattr(ic, "MAX_DECODED_BYTES", 100)
     result, images, _ = read("gravi_images", 1)
     assert result.files[0].kind == "link" and images == []
-    assert result.files[0].note == rf.TOO_LARGE_NOTE
+    assert result.files[0].note == rf.TOO_LARGE_NOTE and result.files[0].url
 
 
 def test_images_past_the_call_limit_get_links_with_their_url(fakes, monkeypatch):
-    size = len(ic.to_png(FRAME, page=0, crop=None, max_bytes=10**8).png)
+    size = len(ic.to_png(FRAME, crop=None, max_bytes=10**8).png)
     monkeypatch.setattr(fa, "MAX_CALL_IMAGE_BYTES", size + 1)
     result, images, _ = read("cyl_images", 1, 9)
     assert sorted(f.kind for f in result.files) == ["image", "link"]
     (link,) = [f for f in result.files if f.kind == "link"]
     assert link.note == rf.CALL_LIMIT_NOTE and link.url and len(images) == 1
+    assert link.image.width == 2000  # kept, so Claude can still plan a crop
 
 
 def test_repeated_ids_are_read_once(fakes):
@@ -238,3 +243,117 @@ def test_a_database_failure_is_reported_like_other_reads(fakes):
 def test_no_images_means_a_plain_result(fakes):
     out = rf.read_file({"table": "cyl_scan_videos", "ids": [VIDEO_ID]})
     assert isinstance(out, rf.ReadFileResult)
+
+
+def test_a_link_that_cannot_be_signed_is_an_error_not_a_link_without_url(
+    fakes, monkeypatch
+):
+    _, files = fakes
+
+    def no_link(*args):
+        raise FileReadError("sign")
+
+    monkeypatch.setattr(files, "signed_url", no_link)
+    result, _, _ = read("cyl_scan_videos", VIDEO_ID)
+    (f,) = result.files
+    assert f.kind == "error" and f.url is None and f.note == rf.READ_FAILED_NOTE
+
+
+def test_a_later_image_is_shrunk_to_fit_what_is_left(fakes, monkeypatch):
+    full = len(ic.to_png(FRAME, crop=None, max_bytes=10**8).png)
+    small = len(ic._png(ic._fit(Image.open(io.BytesIO(FRAME)), 1200)))
+    monkeypatch.setattr(rf.slots, "MAX_IMAGE_SLOTS", 1)  # one at a time, in id order
+    monkeypatch.setattr(fa, "MAX_CALL_IMAGE_BYTES", full + small)
+    result, images, _ = read("cyl_images", 1, 9)
+    assert [f.kind for f in result.files] == ["image", "image"]
+    assert [i.size[0] for i in images] == [ic.MAX_SIDE, 1200]
+
+
+def test_too_large_to_decode_is_not_reported_as_the_call_limit(fakes, monkeypatch):
+    monkeypatch.setattr(fa, "MAX_CALL_IMAGE_BYTES", 1000)
+    monkeypatch.setattr(ic, "MAX_DECODED_BYTES", 100)
+    result, _, _ = read("cyl_images", 1)
+    assert result.files[0].note == rf.TOO_LARGE_NOTE
+
+
+def test_out_of_budget_after_scaling_is_the_call_limit(fakes, monkeypatch):
+    monkeypatch.setattr(fa, "MAX_CALL_IMAGE_BYTES", 1000)
+    result, images, _ = read("cyl_images", 1)
+    assert result.files[0].note == rf.CALL_LIMIT_NOTE and images == []
+
+
+def test_a_slot_missed_for_time_says_out_of_time(fakes, monkeypatch):
+    monkeypatch.setattr(
+        rf.slots, "image_slot", lambda deadline: (_ for _ in ()).throw(NoSlot("time"))
+    )
+    result, _, _ = read("cyl_images", 1)
+    assert result.files[0].note == rf.OUT_OF_TIME_NOTE
+
+
+def test_no_link_is_signed_after_the_deadline(fakes, monkeypatch):
+    _, files = fakes
+    # On time for the size check, late by the time the link would be signed.
+    answers = iter([False] + [True] * 10)
+    monkeypatch.setattr(rf._Call, "late", lambda self: next(answers))
+    result, _, _ = read("cyl_scan_videos", VIDEO_ID)
+    assert ("size", "videos", "videos/10.mp4") in files.calls
+    assert result.files[0].note == rf.OUT_OF_TIME_NOTE
+    assert not [c for c in files.calls if c[0] == "signed_url"]
+
+
+def test_a_download_larger_than_the_limit_is_not_converted(fakes, monkeypatch):
+    _, files = fakes
+    monkeypatch.setattr(files, "size", lambda bucket, path: 10)
+    monkeypatch.setattr(fa, "MAX_SOURCE_IMAGE_BYTES", len(FRAME) - 1)
+    result, images, _ = read("cyl_images", 1)
+    assert result.files[0].note == rf.TOO_LARGE_NOTE and images == []
+
+
+def test_a_16_bit_scan_reports_its_scale_peak_and_dimness(fakes):
+    tables, files = fakes
+    deep = io.BytesIO()
+    Image.fromarray(np.full((8, 8), 4000, dtype=np.uint16)).save(deep, format="TIFF")
+    files.files[("graviscan-images", "gravi/p.tif")] = deep.getvalue()
+    result, _, _ = read("gravi_images", 1)
+    info = result.files[0].image
+    assert (info.full_scale, info.peak, info.dim, info.bits) == (65535, 4000, True, 16)
+
+
+def test_a_multi_page_file_says_only_the_first_page_is_shown(fakes):
+    _, files = fakes
+    frames = [Image.new("L", (40, 30), 10), Image.new("L", (60, 50), 200)]
+    out = io.BytesIO()
+    frames[0].save(out, format="TIFF", save_all=True, append_images=frames[1:])
+    files.files[("graviscan-images", "gravi/p.tif")] = out.getvalue()
+    result, (image,), _ = read("gravi_images", 1)
+    assert result.files[0].image.more_pages and np.asarray(image).max() == 10
+
+
+def test_a_video_row_is_never_converted_even_with_an_image_name(fakes):
+    tables, files = fakes
+    tables.tables["gravi_plate_videos"][0]["object_path"] = "v/plate.png"
+    files.files[("graviscan-videos", "v/plate.png")] = FRAME
+    result, images, _ = read("gravi_plate_videos", 1)
+    assert result.files[0].kind == "link" and images == []
+
+
+def test_upper_case_uuids_find_their_row(fakes):
+    result, _, _ = read("cyl_scan_videos", VIDEO_ID.upper())
+    assert result.files[0].kind == "link" and result.files[0].id == VIDEO_ID
+
+
+@pytest.mark.parametrize("row_id", ["²", "١٢", 0, -1, 2**63])
+def test_ids_that_are_not_plain_positive_bigints_are_refused(fakes, row_id):
+    _refused(table="cyl_images", ids=[row_id])
+
+
+def test_labels_are_kept_short(fakes):
+    tables, _ = fakes
+    tables.tables["cyl_images"][0]["frame_number"] = "x" * 500
+    _, _, labels = read("cyl_images", 1)
+    assert len(labels[0]) < 200
+
+
+def test_links_last_an_hour(fakes):
+    result, _, _ = read("cyl_scan_videos", VIDEO_ID)
+    assert result.files[0].url.endswith("t=3600")

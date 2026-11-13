@@ -115,3 +115,34 @@ def test_limits_hold_together():
 def test_a_path_the_storage_client_would_split_differently_is_refused(monkeypatch):
     monkeypatch.setattr(fa, "relative_path_to_parts", lambda path: ("other", "x.png"))
     assert fa.path_problem("a/b.png") == "would be read as a different path"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "%2e%2e/x.png",
+        "a/b.png?x",
+        "x.h5ad#.png",
+        "http:x/y.png",
+        "/abs.png",
+        "a\\b.png",
+    ],
+)
+def test_each_character_rule_holds_without_the_split_check(monkeypatch, path):
+    monkeypatch.setattr(fa, "relative_path_to_parts", lambda p: tuple(p.split("/")))
+    assert fa.path_problem(path) is not None
+
+
+def test_the_real_split_check_passes_plain_paths():
+    assert fa.relative_path_to_parts("cyl-images/a_1.png") == ("cyl-images", "a_1.png")
+
+
+def test_the_limits_the_pr_states():
+    from bloom_mcp.data_access import file_reader, image_slots
+
+    assert fa.MAX_CALL_IMAGE_BYTES == 15_000_000
+    assert fa.MAX_SOURCE_IMAGE_BYTES == 192 * 1024**2
+    assert fa.SIGNED_URL_SECONDS == 3600
+    assert image_slots.MAX_IMAGE_SLOTS == 3
+    assert (image_slots.SLOT_WAIT_SECONDS, image_slots.CALL_SECONDS) == (15, 60)
+    assert file_reader.STORAGE_TIMEOUT_SECONDS == 30
