@@ -24,6 +24,9 @@ def image(width: int, height: int, fmt: str, value: int = 100) -> bytes:
 
 FRAME = image(2000, 1000, "PNG", 50)
 SMALL = image(100, 50, "PNG", 7)
+SITE = "https://bloom.example"
+SCAN_PAGE = f"{SITE}/app/phenotypes/1/2/3/4/10"
+PLATE_PAGE = f"{SITE}/app/plate-phenotypes/1/5/wave/2/P%207"
 PLATE = image(3000, 2000, "TIFF", 200)
 TRUNCATED = image(500, 500, "PNG", 9)[:200]
 VIDEO_ID = "6f1c2a3b-4d5e-4f60-8a71-92b3c4d5e6f7"
@@ -44,6 +47,24 @@ ROWS = {
         ]
     ],
     "gravi_images": [{"id": 1, "scan_id": 20, "object_path": "gravi/p.tif"}],
+    "cyl_scans_extended": [
+        {
+            "scan_id": 10,
+            "species_id": 1,
+            "experiment_id": 2,
+            "wave_id": 3,
+            "accession_id": 4,
+        }
+    ],
+    "gravi_scans_extended": [
+        {
+            "scan_id": 20,
+            "species_id": 1,
+            "experiment_id": 5,
+            "wave_number": 2,
+            "plate_id": "P 7",
+        }
+    ],
     "cyl_scan_videos": [{"id": VIDEO_ID, "scan_id": 10, "path": "videos/10.mp4"}],
     "gravi_plate_videos": [
         {

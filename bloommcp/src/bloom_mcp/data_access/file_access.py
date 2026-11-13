@@ -26,6 +26,8 @@ class FileTable:
     id_type: type = int
     # Image tables are converted for Claude; video tables only ever get a link.
     images: bool = True
+    # The view whose scan_id row gives an image's Bloom page (page_links).
+    page_view: str | None = None
 
 
 FILE_TABLES: dict[str, FileTable] = {
@@ -35,12 +37,14 @@ FILE_TABLES: dict[str, FileTable] = {
         labels=("scan_id", "frame_number"),
         find_column="scan_id",
         find_hint="; sort the frames by frame_number yourself",
+        page_view="cyl_scans_extended",
     ),
     "gravi_images": FileTable(
         path_column="object_path",
         bucket="graviscan-images",
         labels=("scan_id",),
         find_column="scan_id",
+        page_view="gravi_scans_extended",
     ),
     "cyl_scan_videos": FileTable(
         path_column="path",

@@ -6,7 +6,13 @@ matching the route's [param] in PAGE_PARAMS. With SITE_URL unset no link note is
 
 from __future__ import annotations
 
+import logging
 import os
+from typing import Any
+import re
+from urllib.parse import quote
+
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
 PAGE_LINKS: dict[str, str] = {
     "cyl_experiments": "/app/phenotypes/{species_id}/{id}",
@@ -14,6 +20,9 @@ PAGE_LINKS: dict[str, str] = {
         "/app/phenotypes/{species_id}/{experiment_id}/{wave_id}/{accession_id}/{scan_id}"
     ),
     "gravi_experiments": "/app/plate-phenotypes/{species_id}/{id}",
+    "gravi_scans_extended": (
+        "/app/plate-phenotypes/{species_id}/{experiment_id}/wave/{wave_number}/{plate_id}"
+    ),
     "scrna_datasets": "/app/expression/{species_id}/{id}",
     "rnaseq_runs": "/app/rnaseq-runs/{id}",
 }
@@ -29,6 +38,12 @@ PAGE_PARAMS: dict[str, dict[str, str]] = {
         "scan_id": "scanId",
     },
     "gravi_experiments": {"species_id": "speciesId", "id": "experimentId"},
+    "gravi_scans_extended": {
+        "species_id": "speciesId",
+        "experiment_id": "experimentId",
+        "wave_number": "waveNumber",
+        "plate_id": "plateId",
+    },
     "scrna_datasets": {"species_id": "speciesId", "id": "datasetId"},
     "rnaseq_runs": {"id": "runId"},
 }
@@ -61,3 +76,45 @@ def link_note(name: str) -> str | None:
             "say the user picks the trait there."
         )
     return " ".join(notes) or None
+
+
+def page_columns(name: str) -> list[str]:
+    """The columns a row of `name` needs for its Bloom page link."""
+    return _PLACEHOLDER.findall(PAGE_LINKS[name])
+
+
+def page_url(name: str, row: dict[str, Any]) -> str | None:
+    """The Bloom page for one row of `name`; None without SITE_URL or a column."""
+    site = (os.environ.get("SITE_URL") or "").strip().rstrip("/")
+    values = {c: row.get(c) for c in page_columns(name)}
+    if not site or any(v is None for v in values.values()):
+        return None
+    path = PAGE_LINKS[name].format(
+        **{c: quote(str(v), safe="") for c, v in values.items()}
+    )
+    return site + path
+
+
+def scan_pages(reader: Any, view: str, scan_ids: list) -> dict[Any, str]:
+    """Bloom page per scan_id, read from `view` in one select; empty if that fails."""
+    from .table_ports import Filter, Sort
+
+    if not scan_ids:
+        return {}
+    columns = list(dict.fromkeys(["scan_id", *page_columns(view)]))
+    try:
+        rows = reader.select(
+            view,
+            columns,
+            [Filter("scan_id", "in", scan_ids)],
+            [Sort("scan_id")],
+            len(scan_ids),
+            0,
+        )
+    except Exception as exc:  # noqa: BLE001 — a page link is a convenience; never fail a read
+        logging.getLogger(__name__).warning(
+            "scan pages unavailable: %s", type(exc).__name__
+        )
+        return {}
+    pages = {r.get("scan_id"): page_url(view, r) for r in rows}
+    return {k: v for k, v in pages.items() if v}

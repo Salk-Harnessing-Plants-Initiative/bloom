@@ -109,7 +109,7 @@ def test_a_busy_server_says_so_and_offers_the_bloom_page(fakes, no_slots):
     _, files = fakes
     result, images, _ = read("cyl_images", 1)
     (f,) = result.files
-    assert f.kind == "error" and f.note == rf.BUSY_NOTE and images == []
+    assert f.kind == "page" and f.note == rf.BUSY_NOTE and images == []
     assert "upload" in f.note and _downloads(files) == []
 
 
@@ -140,7 +140,7 @@ def test_a_failure_inside_a_slot_gives_the_slot_back(fakes, monkeypatch, failure
         monkeypatch.setattr(files, "download", fails)
     for _ in range(slots.MAX_IMAGE_SLOTS + 1):
         result, images, _ = read("cyl_images", 1)
-        assert images == [] and result.files[0].kind in ("error", "link")
+        assert images == [] and result.files[0].kind in ("error", "page")
     assert _all_slots_free()
 
 

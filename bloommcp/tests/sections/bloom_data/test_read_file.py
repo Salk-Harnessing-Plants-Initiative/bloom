@@ -7,7 +7,7 @@ import io
 import numpy as np
 import pytest
 from PIL import Image
-from read_file_data import FRAME, VIDEO_ID, installed, read
+from read_file_data import FRAME, PLATE_PAGE, SCAN_PAGE, SITE, VIDEO_ID, installed, read
 
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import file_access as fa
@@ -19,7 +19,8 @@ from bloom_mcp.sections.bloom_data import read_file as rf
 
 
 @pytest.fixture
-def fakes():
+def fakes(monkeypatch):
+    monkeypatch.setenv("SITE_URL", SITE)
     with installed() as both:
         yield both
 
@@ -46,7 +47,9 @@ def test_frames_come_back_as_png_in_order_labelled_with_their_row(fakes):
         "cyl_images id 2, scan_id 10, frame_number 2",
     ]
     assert (first.image.width, first.image.height) == (2000, 1000)
-    assert first.size_bytes == len(FRAME) and first.url and "exp/10/1.png" in first.url
+    assert (
+        first.size_bytes == len(FRAME) and first.url is None and first.page_url is None
+    )
     assert first.image.full_scale is None and not first.image.more_pages
     assert first.image.scaled and not second.image.scaled and first.image.bits == 8
     assert np.asarray(images[1]).max() == 7
@@ -110,14 +113,14 @@ def test_missing_rows_rows_without_files_and_missing_files(fakes):
 def test_a_truncated_frame_fails_alone(fakes):
     result, images, _ = read("cyl_images", 8, 1)
     bad, ok = result.files
-    assert bad.kind == "link" and "damaged" in bad.note
+    assert bad.kind == "page" and "damaged" in bad.note and bad.page_url == SCAN_PAGE
     assert ok.kind == "image" and len(images) == 1
 
 
 def test_a_file_that_is_not_an_image_gets_a_link(fakes):
     result, images, _ = read("cyl_images", 3)
-    assert result.files[0].kind == "link" and images == []
-    assert result.files[0].note.startswith("Can't be shown:")
+    assert result.files[0].kind == "page" and images == []
+    assert result.files[0].note.startswith("Can't be shown here:")
 
 
 def test_any_failure_inside_one_file_leaves_the_others(fakes, monkeypatch):
@@ -135,16 +138,10 @@ def test_any_failure_inside_one_file_leaves_the_others(fakes, monkeypatch):
     assert result.files[0].note == rf.READ_FAILED_NOTE and len(images) == 1
 
 
-def test_an_image_is_kept_when_its_link_cannot_be_signed(fakes, monkeypatch):
+def test_images_never_get_a_download_link(fakes):
     _, files = fakes
-
-    def no_link(*args):
-        raise FileReadError("sign")
-
-    monkeypatch.setattr(files, "signed_url", no_link)
-    result, images, _ = read("cyl_images", 1)
-    assert result.files[0].kind == "image" and result.files[0].url is None
-    assert len(images) == 1
+    read("cyl_images", 1, 8)
+    assert not [c for c in files.calls if c[0] == "signed_url"]
 
 
 def test_videos_get_a_link_without_download(fakes):
@@ -166,25 +163,28 @@ def test_a_large_original_image_is_linked_not_downloaded(fakes, monkeypatch):
     _, files = fakes
     monkeypatch.setattr(fa, "MAX_SOURCE_IMAGE_BYTES", len(FRAME) - 1)
     result, images, _ = read("cyl_images", 1)
-    assert result.files[0].kind == "link" and images == []
-    assert result.files[0].note == rf.TOO_LARGE_NOTE
-    assert _downloads(files) == []
+    (f,) = result.files
+    assert f.kind == "page" and images == [] and f.url is None
+    assert f.note == rf.TOO_LARGE_NOTE and f.page_url == SCAN_PAGE
+    assert "upload it to this chat" in f.note and _downloads(files) == []
 
 
 def test_an_image_too_large_to_decode_gets_a_link_to_the_original(fakes, monkeypatch):
     monkeypatch.setattr(ic, "MAX_DECODED_BYTES", 100)
     result, images, _ = read("gravi_images", 1)
-    assert result.files[0].kind == "link" and images == []
-    assert result.files[0].note == rf.TOO_LARGE_NOTE and result.files[0].url
+    (f,) = result.files
+    assert f.kind == "page" and images == [] and f.note == rf.TOO_LARGE_NOTE
+    assert f.page_url == PLATE_PAGE
 
 
 def test_images_past_the_call_limit_get_links_with_their_url(fakes, monkeypatch):
     size = len(ic.to_png(FRAME, crop=None, max_bytes=10**8).png)
     monkeypatch.setattr(fa, "MAX_CALL_IMAGE_BYTES", size + 1)
     result, images, _ = read("cyl_images", 1, 9)
-    assert sorted(f.kind for f in result.files) == ["image", "link"]
-    (link,) = [f for f in result.files if f.kind == "link"]
-    assert link.note == rf.CALL_LIMIT_NOTE and link.url and len(images) == 1
+    assert sorted(f.kind for f in result.files) == ["image", "page"]
+    (link,) = [f for f in result.files if f.kind == "page"]
+    assert link.note == rf.CALL_LIMIT_NOTE and link.page_url == SCAN_PAGE
+    assert len(images) == 1
     assert link.image.width == 2000  # kept, so Claude can still plan a crop
 
 
@@ -297,7 +297,7 @@ def test_no_link_is_signed_after_the_deadline(fakes, monkeypatch):
     monkeypatch.setattr(rf._Call, "late", lambda self: next(answers))
     result, _, _ = read("cyl_scan_videos", VIDEO_ID)
     assert ("size", "videos", "videos/10.mp4") in files.calls
-    assert result.files[0].note == rf.OUT_OF_TIME_NOTE
+    assert result.files[0].note == rf.VIDEO_LATE_NOTE
     assert not [c for c in files.calls if c[0] == "signed_url"]
 
 
@@ -357,3 +357,25 @@ def test_labels_are_kept_short(fakes):
 def test_links_last_an_hour(fakes):
     result, _, _ = read("cyl_scan_videos", VIDEO_ID)
     assert result.files[0].url.endswith("t=3600")
+
+
+def test_no_page_url_without_a_site(fakes, monkeypatch):
+    monkeypatch.delenv("SITE_URL")
+    result, _, _ = read("cyl_images", 8)
+    assert result.files[0].kind == "page" and result.files[0].page_url is None
+
+
+def test_a_failed_page_lookup_never_fails_the_read(fakes):
+    tables, _ = fakes
+    del tables.tables["cyl_scans_extended"]
+    result, images, _ = read("cyl_images", 8, 1)
+    assert [f.kind for f in result.files] == ["page", "image"] and len(images) == 1
+    assert result.files[0].page_url is None
+
+
+def test_pages_are_looked_up_once_per_call_and_only_when_needed(fakes):
+    tables, _ = fakes
+    read("cyl_images", 1, 2)
+    assert "cyl_scans_extended" not in tables.calls
+    read("cyl_images", 8, 3)
+    assert tables.calls.count("cyl_scans_extended") == 1
