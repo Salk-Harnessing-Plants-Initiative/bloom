@@ -274,3 +274,20 @@ def test_pillows_own_bomb_check_reads_as_too_large(monkeypatch):
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 50)
     with pytest.raises(ic.ImageTooLarge):
         _png_of(_encode(_noise(20, 20)))
+
+
+def test_a_jpeg_with_too_many_scans_never_reaches_pillow(monkeypatch):
+    def must_not_open(*args, **kwargs):
+        raise AssertionError("Pillow opened a crafted JPEG")
+
+    crafted = b"\xff\xd8\xff\xe0" + b"\xff\xda\x00\x08" * (ic.MAX_JPEG_SCANS + 1)
+    monkeypatch.setattr(ic.Image, "open", must_not_open)
+    with pytest.raises(ic.ImageTooLarge, match="scans"):
+        _png_of(crafted)
+
+
+@pytest.mark.parametrize("progressive", [False, True])
+def test_real_jpegs_pass_the_scan_check(progressive):
+    data = _encode(_noise(200, 100, "RGB"), "JPEG", progressive=progressive)
+    assert data.count(b"\xff\xda") <= ic.MAX_JPEG_SCANS
+    assert _png_of(data).shown_width == 200

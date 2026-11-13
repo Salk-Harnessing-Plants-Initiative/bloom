@@ -28,6 +28,10 @@ FORMATS = ("PNG", "TIFF", "JPEG")
 FULL_SCALE = 65535
 DIM_PEAK = FULL_SCALE // 2
 _TIFF_BITS_PER_SAMPLE = 258
+# A baseline JPEG has 1 scan and a progressive one about 10; each repeat is decoded in
+# turn, so a crafted file with thousands holds a slot for minutes.
+MAX_JPEG_SCANS = 64
+_JPEG_START, _JPEG_SCAN = b"\xff\xd8\xff", b"\xff\xda"
 
 _DEEP = frozenset({"I;16", "I;16B", "I;16L", "I;16N", "I"})
 _TO_RGB = frozenset({"P", "CMYK", "YCbCr", "LAB", "HSV", "RGBX"})
@@ -78,6 +82,8 @@ def to_png(data: bytes, *, crop: Crop | None, max_bytes: int) -> Converted:
     """The first page, cropped at full resolution, scaled to MAX_SIDE at most, as PNG."""
     if problem := tiff_problem(data):
         raise ImageTooLarge(f"a crafted or broken TIFF ({problem})")
+    if data.startswith(_JPEG_START) and data.count(_JPEG_SCAN) > MAX_JPEG_SCANS:
+        raise ImageTooLarge(f"a JPEG with over {MAX_JPEG_SCANS} scans")
     try:
         image = Image.open(io.BytesIO(data), formats=FORMATS)
         width, height, mode = image.width, image.height, image.mode

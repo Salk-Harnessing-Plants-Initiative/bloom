@@ -42,6 +42,7 @@ TOO_LARGE_NOTE = "Too large to show here. " + _UPLOAD
 BUSY_NOTE = "Bloom is busy with other images: try again in a minute. " + _UPLOAD
 OUT_OF_TIME_NOTE = "Not read within this call's time: ask again for this id. " + _UPLOAD
 VIDEO_LATE_NOTE = "Not read within this call's time: ask again for this id."
+NOT_IMAGE_NOTE = "This row's file isn't an image this tool shows. " + _UPLOAD
 CALL_LIMIT_NOTE = "Over this call's image limit; open it in a call of its own."
 READ_FAILED_NOTE = (
     "Couldn't read this file; try again, and tell the Bloom team if it keeps failing."
@@ -240,8 +241,10 @@ def _read(call: _Call, item: _Pending) -> _Outcome:
                 return _page(item, None, OUT_OF_TIME_NOTE)
             return _error(item.id, item.labels, VIDEO_LATE_NOTE)
         size = call.reader.size(item.source.bucket, item.path)
-        if not image:
+        if not item.source.images:
             return _link(call, item, size)
+        if not image:
+            return _page(item, size, NOT_IMAGE_NOTE)
         if size > fa.MAX_SOURCE_IMAGE_BYTES:
             return _page(item, size, TOO_LARGE_NOTE)
         try:

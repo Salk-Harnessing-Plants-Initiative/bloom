@@ -7,7 +7,16 @@ import io
 import numpy as np
 import pytest
 from PIL import Image
-from read_file_data import FRAME, PLATE_PAGE, SCAN_PAGE, SITE, VIDEO_ID, installed, read
+from read_file_data import (
+    FRAME,
+    OTHER_SCAN_PAGE,
+    PLATE_PAGE,
+    SCAN_PAGE,
+    SITE,
+    VIDEO_ID,
+    installed,
+    read,
+)
 
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import file_access as fa
@@ -379,3 +388,29 @@ def test_pages_are_looked_up_once_per_call_and_only_when_needed(fakes):
     assert "cyl_scans_extended" not in tables.calls
     read("cyl_images", 8, 3)
     assert tables.calls.count("cyl_scans_extended") == 1
+
+
+def test_each_frame_gets_its_own_scans_page(fakes):
+    tables, _ = fakes
+    result, images, _ = read("cyl_images", 8, 10)
+    assert [f.kind for f in result.files] == ["page", "page"] and images == []
+    assert [f.page_url for f in result.files] == [SCAN_PAGE, OTHER_SCAN_PAGE]
+    assert tables.calls.count("cyl_scans_extended") == 1
+
+
+def test_an_image_table_row_that_is_not_an_image_never_gets_a_link(fakes):
+    tables, files = fakes
+    tables.tables["gravi_images"][0]["object_path"] = "exp/10/notes.bin"
+    files.files[("graviscan-images", "exp/10/notes.bin")] = b"not an image file"
+    result, images, _ = read("gravi_images", 1)
+    (f,) = result.files
+    assert f.kind == "page" and f.url is None and f.note == rf.NOT_IMAGE_NOTE
+    assert images == [] and not [c for c in files.calls if c[0] == "signed_url"]
+
+
+def test_a_cylinder_video_row_is_never_converted_either(fakes):
+    tables, files = fakes
+    tables.tables["cyl_scan_videos"][0]["path"] = "videos/10.png"
+    files.files[("videos", "videos/10.png")] = FRAME
+    result, images, _ = read("cyl_scan_videos", VIDEO_ID)
+    assert result.files[0].kind == "link" and images == []

@@ -121,6 +121,13 @@ def test_no_page_url_without_a_site_or_a_column(monkeypatch):
     assert page_links.page_url("gravi_scans_extended", row) is None
     monkeypatch.setenv("SITE_URL", "https://bloom.example")
     assert (
-        page_links.page_url("gravi_scans_extended", {**row, "wave_number": None})
-        is None
+        page_links.page_url("gravi_scans_extended", {**row, "plate_id": None}) is None
+    )
+
+
+def test_a_plate_scan_with_no_wave_links_to_the_websites_none_wave(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    row = {"species_id": 1, "experiment_id": 5, "wave_number": None, "plate_id": "P"}
+    assert page_links.page_url("gravi_scans_extended", row) == (
+        "https://bloom.example/app/plate-phenotypes/1/5/wave/none/P"
     )

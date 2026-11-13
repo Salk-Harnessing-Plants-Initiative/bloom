@@ -26,6 +26,7 @@ FRAME = image(2000, 1000, "PNG", 50)
 SMALL = image(100, 50, "PNG", 7)
 SITE = "https://bloom.example"
 SCAN_PAGE = f"{SITE}/app/phenotypes/1/2/3/4/10"
+OTHER_SCAN_PAGE = f"{SITE}/app/phenotypes/6/7/8/9/11"
 PLATE_PAGE = f"{SITE}/app/plate-phenotypes/1/5/wave/2/P%207"
 PLATE = image(3000, 2000, "TIFF", 200)
 TRUNCATED = image(500, 500, "PNG", 9)[:200]
@@ -45,7 +46,8 @@ ROWS = {
             (8, "exp/10/truncated.png"),
             (9, "exp/10/3.png"),
         ]
-    ],
+    ]
+    + [{"id": 10, "scan_id": 11, "frame_number": 1, "object_path": "exp/11/bad.png"}],
     "gravi_images": [{"id": 1, "scan_id": 20, "object_path": "gravi/p.tif"}],
     "cyl_scans_extended": [
         {
@@ -54,7 +56,14 @@ ROWS = {
             "experiment_id": 2,
             "wave_id": 3,
             "accession_id": 4,
-        }
+        },
+        {
+            "scan_id": 11,
+            "species_id": 6,
+            "experiment_id": 7,
+            "wave_id": 8,
+            "accession_id": 9,
+        },
     ],
     "gravi_scans_extended": [
         {
@@ -83,6 +92,7 @@ FILES = {
     ("images", "exp/10/fake.png"): b"not an image",
     ("images", "exp/10/broken.png"): FRAME,
     ("images", "exp/10/truncated.png"): TRUNCATED,
+    ("images", "exp/11/bad.png"): TRUNCATED,
     ("graviscan-images", "gravi/p.tif"): PLATE,
     ("videos", "videos/10.mp4"): b"\0" * 50,
     ("graviscan-videos", "v/plate.mp4"): b"\0" * 10,

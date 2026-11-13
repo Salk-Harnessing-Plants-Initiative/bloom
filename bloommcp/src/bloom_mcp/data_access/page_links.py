@@ -14,6 +14,11 @@ from urllib.parse import quote
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
+# Columns the website puts in a page link even when null, as this segment (waveKey).
+NULL_SEGMENTS: dict[tuple[str, str], str] = {
+    ("gravi_scans_extended", "wave_number"): "none"
+}
+
 PAGE_LINKS: dict[str, str] = {
     "cyl_experiments": "/app/phenotypes/{species_id}/{id}",
     "cyl_scans_extended": (
@@ -86,7 +91,10 @@ def page_columns(name: str) -> list[str]:
 def page_url(name: str, row: dict[str, Any]) -> str | None:
     """The Bloom page for one row of `name`; None without SITE_URL or a column."""
     site = (os.environ.get("SITE_URL") or "").strip().rstrip("/")
-    values = {c: row.get(c) for c in page_columns(name)}
+    values = {
+        c: NULL_SEGMENTS.get((name, c)) if row.get(c) is None else row.get(c)
+        for c in page_columns(name)
+    }
     if not site or any(v is None for v in values.values()):
         return None
     path = PAGE_LINKS[name].format(
