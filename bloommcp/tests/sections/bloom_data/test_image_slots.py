@@ -1,4 +1,4 @@
-"""Images run a few at a time across calls; a call never waits past its time."""
+"""Images run a few at a time across calls; a call never starts work past its time."""
 
 from __future__ import annotations
 
@@ -6,21 +6,21 @@ import threading
 import time
 
 import pytest
+from read_file_data import installed, read
 
 from bloom_mcp.data_access import image_slots as slots
-from bloom_mcp.data_access.fake_file_reader import FakeFileReader
 from bloom_mcp.sections.bloom_data import read_file as rf
-from bloom_mcp.tools import _ports
-from test_read_file import FRAME, _read
+
+FRAME_IDS = (1, 9)
 
 
 @pytest.fixture
-def frames():
-    fake = FakeFileReader({("images", f"s/{i}.png"): FRAME for i in range(8)})
-    previous = _ports.file_reader()
-    _ports.configure(file_reader=fake)
-    yield fake
-    _ports.configure(file_reader=previous)
+def fakes(monkeypatch):
+    with installed() as (tables, files):
+        # Every frame row points at a good image, so all eight can convert.
+        for row in tables.tables["cyl_images"]:
+            row["object_path"] = "exp/10/1.png"
+        yield tables, files
 
 
 @pytest.fixture
@@ -31,39 +31,54 @@ def no_slots(monkeypatch):
     monkeypatch.setattr(slots, "SLOT_WAIT_SECONDS", 0.05)
 
 
-def test_images_are_downloaded_and_converted_in_parallel(frames, monkeypatch):
+def _downloads(files):
+    return [c for c in files.calls if c[0] == "download"]
+
+
+def _all_slots_free() -> bool:
+    taken = [slots._slots.acquire(timeout=0) for _ in range(slots.MAX_IMAGE_SLOTS)]
+    for ok in taken:
+        if ok:
+            slots._slots.release()
+    return all(taken)
+
+
+def test_images_are_downloaded_and_converted_in_parallel(fakes, monkeypatch):
+    _, files = fakes
     together = threading.Barrier(slots.MAX_IMAGE_SLOTS, timeout=5)
-    download = frames.download
+    download = files.download
 
     def meet_then_download(bucket, path):
         together.wait()  # passes only when MAX_IMAGE_SLOTS downloads run at once
         return download(bucket, path)
 
-    monkeypatch.setattr(frames, "download", meet_then_download)
-    paths = [f"s/{i}.png" for i in range(slots.MAX_IMAGE_SLOTS)]
-    result, images = _read("images", *paths)
-    assert [f.kind for f in result.files] == ["image"] * len(paths)
-    assert len(images) == len(paths)
+    monkeypatch.setattr(files, "download", meet_then_download)
+    result, images, _ = read("cyl_images", *range(1, slots.MAX_IMAGE_SLOTS + 1))
+    assert [f.kind for f in result.files] == ["image"] * slots.MAX_IMAGE_SLOTS
+    assert len(images) == slots.MAX_IMAGE_SLOTS
 
 
-def test_results_keep_the_order_of_the_paths(frames, monkeypatch):
-    download = frames.download
+def test_results_keep_the_order_of_the_ids(fakes, monkeypatch):
+    _, files = fakes
+    download = files.download
+    seen = []
 
     def slower_first(bucket, path):
-        time.sleep(0.2 if path == "s/0.png" else 0)
+        seen.append(path)
+        time.sleep(0.2 if len(seen) == 1 else 0)
         return download(bucket, path)
 
-    monkeypatch.setattr(frames, "download", slower_first)
-    paths = ["s/0.png", "s/missing.png", "s/2.png"]
-    result, images = _read("images", *paths)
-    assert [f.path for f in result.files] == paths
+    monkeypatch.setattr(files, "download", slower_first)
+    result, _, labels = read("cyl_images", 3, 99, 1)
+    assert [f.id for f in result.files] == [3, 99, 1]
     assert [f.kind for f in result.files] == ["image", "error", "image"]
-    assert len(images) == 2
+    assert labels[0].startswith("cyl_images id 3,")
 
 
-def test_no_more_than_the_slots_run_at_once(frames, monkeypatch):
+def test_no_more_than_the_slots_run_at_once(fakes, monkeypatch):
+    _, files = fakes
     running, peak, lock = 0, 0, threading.Lock()
-    download = frames.download
+    download = files.download
 
     def counted(bucket, path):
         nonlocal running, peak
@@ -75,48 +90,58 @@ def test_no_more_than_the_slots_run_at_once(frames, monkeypatch):
             running -= 1
         return download(bucket, path)
 
-    monkeypatch.setattr(frames, "download", counted)
-    calls = [
-        threading.Thread(
-            target=_read, args=("images", *[f"s/{i}.png" for i in range(8)])
-        )
-        for _ in range(3)
-    ]
+    monkeypatch.setattr(files, "download", counted)
+    results = []
+
+    def one_call():
+        results.append(read("cyl_images", *range(1, 9)))
+
+    calls = [threading.Thread(target=one_call) for _ in range(3)]
     for c in calls:
         c.start()
     for c in calls:
         c.join()
     assert 1 < peak <= slots.MAX_IMAGE_SLOTS
+    assert [len(images) for _, images, _ in results] == [8, 8, 8]
 
 
-def test_a_busy_server_says_so_and_offers_the_bloom_page(frames, no_slots):
-    result, images = _read("images", "s/0.png")
+def test_a_busy_server_says_so_and_offers_the_bloom_page(fakes, no_slots):
+    _, files = fakes
+    result, images, _ = read("cyl_images", 1)
     (f,) = result.files
-    assert f.kind == "link" and f.note == rf.BUSY_NOTE and images == []
-    assert "upload" in f.note and not [c for c in frames.calls if c[0] == "download"]
+    assert f.kind == "error" and f.note == rf.BUSY_NOTE and images == []
+    assert "upload" in f.note and _downloads(files) == []
 
 
-def test_a_call_out_of_time_starts_no_new_image(frames, monkeypatch):
+def test_a_call_out_of_time_reads_nothing_more(fakes, monkeypatch):
+    _, files = fakes
     monkeypatch.setattr(slots, "CALL_SECONDS", 0)
-    result, images = _read("images", "s/0.png", "s/1.png")
+    result, images, _ = read("cyl_images", 1, 2)
     assert [f.note for f in result.files] == [rf.OUT_OF_TIME_NOTE] * 2
-    assert images == [] and not [c for c in frames.calls if c[0] == "download"]
+    assert images == [] and files.calls == []
 
 
-def test_videos_need_no_slot(frames, no_slots):
-    frames.files[("videos", "1.mp4")] = b"\0" * 5
-    result, _ = _read("videos", "1.mp4")
+def test_videos_need_no_slot(fakes, no_slots):
+    result, _, _ = read("gravi_plate_videos", 1)
     assert result.files[0].kind == "link" and result.files[0].note is None
 
 
-def test_a_failed_image_gives_its_slot_back(frames):
-    frames.broken.add(("images", "s/0.png"))
+@pytest.mark.parametrize("failure", ["download", "truncated", "crash"])
+def test_a_failure_inside_a_slot_gives_the_slot_back(fakes, monkeypatch, failure):
+    tables, files = fakes
+    if failure == "truncated":
+        tables.tables["cyl_images"][0]["object_path"] = "exp/10/truncated.png"
+    else:
+        error = OSError("down") if failure == "download" else RuntimeError("bug")
+
+        def fails(bucket, path):
+            raise error
+
+        monkeypatch.setattr(files, "download", fails)
     for _ in range(slots.MAX_IMAGE_SLOTS + 1):
-        _read("images", "s/0.png")
-    for _ in range(slots.MAX_IMAGE_SLOTS):
-        assert slots._slots.acquire(timeout=0)
-    for _ in range(slots.MAX_IMAGE_SLOTS):
-        slots._slots.release()
+        result, images, _ = read("cyl_images", 1)
+        assert images == [] and result.files[0].kind in ("error", "link")
+    assert _all_slots_free()
 
 
 def test_slot_wait_never_passes_the_call_deadline(monkeypatch, no_slots):

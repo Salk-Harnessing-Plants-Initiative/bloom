@@ -19,7 +19,7 @@ from .file_ports import FileNotFound, FileReadError
 
 logger = logging.getLogger(__name__)
 
-STORAGE_TIMEOUT_SECONDS = 60
+STORAGE_TIMEOUT_SECONDS = 30
 _NOT_FOUND = frozenset({"404", "not_found", "notfound", "nosuchkey"})
 
 _T = TypeVar("_T")

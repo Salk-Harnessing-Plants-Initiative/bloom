@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 
 import pytest
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from pydantic import BaseModel, ConfigDict
 
 from bloom_mcp.contract import BloomMCPError, ToolImage, WithImages, as_mcp_tool
@@ -57,3 +57,15 @@ def test_a_plain_result_is_unchanged():
         return _Out(n=params.n)
 
     assert tool({"n": 2}) == _Out(n=2)
+
+
+def test_a_label_is_sent_just_before_its_image():
+    images = [ToolImage(b"a", "image/png", "scan 1"), ToolImage(b"b", "image/png")]
+    out = _tool(images)({"n": 1})
+    kinds = [(c.type, getattr(c, "text", None)) for c in out.content]
+    assert kinds == [
+        ("text", '{"n":1}'),
+        ("text", "scan 1"),
+        ("image", None),
+        ("image", None),
+    ]

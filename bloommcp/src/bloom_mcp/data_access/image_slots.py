@@ -12,7 +12,8 @@ from typing import Literal
 MAX_IMAGE_SLOTS = 3
 # The longest one image waits for a free slot.
 SLOT_WAIT_SECONDS = 15
-# No new image is started this long after a call began, so the reply always arrives.
+# No storage call or image starts this long after a call began; one already running
+# finishes, so a call can run past this by one file's work.
 CALL_SECONDS = 60
 
 _slots = threading.BoundedSemaphore(MAX_IMAGE_SLOTS)

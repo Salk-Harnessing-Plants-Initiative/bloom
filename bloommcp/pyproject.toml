@@ -64,7 +64,7 @@ dependencies = [
     # Visualization
     "matplotlib>=3.7.0",
     # read_file converts stored images (TIFF, 16-bit, multi-page) to PNG.
-    "pillow>=10.0.0",
+    "pillow>=11.3.0",
     # Security floor for h2, transitive via httpx[http2]: CVE-2026-71554
     # (fixed in 4.4.1), disclosed 2026-08-06. Open floor per repo convention.
     "h2>=4.4.1",

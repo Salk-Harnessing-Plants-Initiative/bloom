@@ -86,19 +86,11 @@ def test_a_name_with_a_newline_stays_on_one_log_line(reader, lines):
     assert "table=species?bloom_data" in lines[0]
 
 
-def test_read_file_logs_the_bucket_and_file_count_never_paths(lines):
-    from bloom_mcp.data_access.fake_file_reader import FakeFileReader
-    from bloom_mcp.sections.bloom_data.read_file import read_file
-    from bloom_mcp.tools import _ports
+def test_read_file_logs_the_table_and_file_count_never_paths(lines):
+    from read_file_data import installed, read
 
-    previous = _ports.file_reader()
-    _ports.configure(
-        file_reader=FakeFileReader({("images", "secret/1.png"): b"\x89PNG\r\n\x1a\n"})
-    )
-    try:
-        read_file({"bucket": "images", "paths": ["secret/1.png", "secret/2.png"]})
-    finally:
-        _ports.configure(file_reader=previous)
+    with installed():
+        read("cyl_images", 1, 2)
     (line,) = lines
-    assert "tool=read_file" in line and "table=images" in line and "rows=2" in line
-    assert "outcome=ok" in line and "secret" not in line
+    assert "tool=read_file" in line and "table=cyl_images" in line and "rows=2" in line
+    assert "outcome=ok" in line and "exp/10" not in line
