@@ -35,6 +35,10 @@ dependencies = [
     # mcp<2.0,>=1.24.0, so 1.28.1 fits without a fastmcp bump). Open floor per
     # repo convention.
     "mcp>=1.28.1",
+    # dnspython CVE-2026-128089 (fixed in 2.9.2) and opentelemetry-api
+    # CVE-2026-126360 (fixed in 1.45.2), disclosed 2026-11. Transitive.
+    "dnspython>=2.9.2",
+    "opentelemetry-api>=1.45.2",
     # Supabase PostgREST + Storage client, used by bloom_mcp.supabase_client
     # for CSV exchange via the bloommcp-data bucket. Upper bound load-bearing,
     # see the httpx pin above.
