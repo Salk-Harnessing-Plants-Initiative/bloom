@@ -545,3 +545,18 @@ live code and held up.
       via exact CI invocation **1620 passed / 33 deselected**, 0 failed. `ruff`/`black` clean on
       every touched file; `openspec validate --strict` passes.
 
+
+## 15. Archive ordering — read before archiving this change
+
+> **NOT A TASK — a constraint on whoever archives this change.** Deliberately not a checkbox:
+> this change's own work is complete, and a permanently-unchecked box would make
+> `openspec list` report it as incomplete forever (#784 review).
+>
+> **Archive this change BEFORE `add-bloommcp-corr-pair-disclosure` (#784/#785).** That change
+> MODIFIES three requirements defined here — "Zero-Variance Traits Disclosed In Correlation
+> Counts", "Low-Overlap Trait Pairs Excluded And Disclosed", and "Rendered Heatmap Masking
+> Mismatch Is Disclosed" — and `openspec validate --strict` does **not** check that a
+> MODIFIED target exists. Archiving in the wrong order would create
+> `openspec/specs/bloommcp-viz-tools/spec.md` from that change's deltas alone and silently
+> drop every requirement this change established, with no error. Mirrored from
+> `openspec/changes/add-bloommcp-corr-pair-disclosure/proposal.md`.
