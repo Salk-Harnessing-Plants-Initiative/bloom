@@ -68,7 +68,8 @@ def test_the_poller_is_hardened_like_the_service(compose_file):
     assert service.get("read_only") is True
     assert service.get("cap_drop") == ["ALL"]
     assert "no-new-privileges:true" in service.get("security_opt", [])
-    assert service.get("networks") == services["workflows"].get("networks")
+    # The same network as the service; in prod with a fixed address, as a mail sender.
+    assert set(service.get("networks")) == set(services["workflows"].get("networks"))
     # It writes nothing to /tmp, so it gets the cyl poller's small RAM disk.
     assert _mount_options(service["tmpfs"][0]) == _mount_options(
         services[REFERENCE]["tmpfs"][0]

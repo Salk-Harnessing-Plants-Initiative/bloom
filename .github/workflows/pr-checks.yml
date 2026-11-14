@@ -881,6 +881,12 @@ jobs:
           echo "BLOOMMCP_TUNNEL_SECRET=ci-tunnel-secret-not-real-0000000000000000" >> .env.ci
           # The internal mail service's caller secret. CI has no relay at SMTP_HOST, so a send fails and is logged.
           echo "MAIL_SERVICE_SECRET=ci-mail-secret-not-real-00000000000000000000" >> .env.ci
+          # The internal network's range and the mail senders' fixed addresses (no port-25 rule in CI).
+          echo "SUPANET_SUBNET=172.29.0.0/16" >> .env.ci
+          echo "SUPANET_AUTO_RANGE=172.29.128.0/17" >> .env.ci
+          echo "MAIL_IP=172.29.0.2" >> .env.ci
+          echo "AUTH_IP=172.29.0.3" >> .env.ci
+          echo "RNASEQ_POLLER_IP=172.29.0.4" >> .env.ci
           echo "TUNNEL_SUBNET=172.30.252.0/28" >> .env.ci
           # cloudflared does not run in CI; the tunnel tests send from its address instead.
           echo "TUNNEL_CADDY_IP=172.30.252.2" >> .env.ci
