@@ -30,6 +30,7 @@ from tests.integration.genome_reference_helpers import (
     uploaded,
 )
 from tests.integration.annotation_enrichment_helpers import ROLLBACKS as ANNOTATION_ROLLBACKS
+from tests.integration.genome_browser_helpers import ROLLBACKS as BROWSER_ROLLBACKS
 from tests.integration.test_rnaseq_runs import _find_one, _sql_body
 
 psycopg = pytest.importorskip("psycopg")
@@ -369,8 +370,9 @@ def test_internal_functions_are_not_callable(cur, function):
 
 def test_the_rollbacks_remove_everything(cur, species_id, genome):
     start(cur, genome, species=species_id)
-    # Newest first: annotations and enrichment, members' genome uploads, the uploads, the tables.
-    for rollback in ANNOTATION_ROLLBACKS:
+    # Newest first: browser builds, annotations and enrichment, members' genome uploads, the
+    # uploads, the tables.
+    for rollback in BROWSER_ROLLBACKS + ANNOTATION_ROLLBACKS:
         cur.execute(_sql_body(rollback))
     cur.execute(_sql_body(MEMBER_UPLOADS_ROLLBACK))
     cur.execute(_sql_body(UPLOADS_ROLLBACK))

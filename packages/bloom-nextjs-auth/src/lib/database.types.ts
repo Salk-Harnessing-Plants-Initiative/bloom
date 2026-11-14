@@ -2115,6 +2115,100 @@ export type Database = {
           },
         ]
       }
+      genome_browser_builds: {
+        Row: {
+          build: number
+          created_at: string
+          created_by: string
+          files: Json | null
+          folder: string
+          gene_count: number | null
+          id: number
+          ready_at: string | null
+          status: string
+          tool_versions: Json
+          version_id: number
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+        }
+        Insert: {
+          build: number
+          created_at?: string
+          created_by: string
+          files?: Json | null
+          folder: string
+          gene_count?: number | null
+          id?: number
+          ready_at?: string | null
+          status?: string
+          tool_versions?: Json
+          version_id: number
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+        }
+        Update: {
+          build?: number
+          created_at?: string
+          created_by?: string
+          files?: Json | null
+          folder?: string
+          gene_count?: number | null
+          id?: number
+          ready_at?: string | null
+          status?: string
+          tool_versions?: Json
+          version_id?: number
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "genome_browser_builds_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "genome_reference_versions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      genome_browser_genes: {
+        Row: {
+          browser_build_id: number
+          contig: string
+          gene_end: number
+          gene_id: string
+          gene_name: string | null
+          gene_start: number
+          strand: string
+        }
+        Insert: {
+          browser_build_id: number
+          contig: string
+          gene_end: number
+          gene_id: string
+          gene_name?: string | null
+          gene_start: number
+          strand: string
+        }
+        Update: {
+          browser_build_id?: number
+          contig?: string
+          gene_end?: number
+          gene_id?: string
+          gene_name?: string | null
+          gene_start?: number
+          strand?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "genome_browser_genes_browser_build_id_fkey"
+            columns: ["browser_build_id"]
+            isOneToOne: false
+            referencedRelation: "genome_browser_builds"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       genome_reference_versions: {
         Row: {
           annotation: string | null
@@ -5256,6 +5350,30 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      _own_browser_build: {
+        Args: { p_build_id: number }
+        Returns: {
+          build: number
+          created_at: string
+          created_by: string
+          files: Json | null
+          folder: string
+          gene_count: number | null
+          id: number
+          ready_at: string | null
+          status: string
+          tool_versions: Json
+          version_id: number
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "genome_browser_builds"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       _own_enrichment_run: {
         Args: { p_run_id: number }
         Returns: {
@@ -5295,6 +5413,10 @@ export type Database = {
         Args: { p_build_id: number }
         Returns: boolean
       }
+      abandon_genome_browser_build: {
+        Args: { p_build_id: number }
+        Returns: boolean
+      }
       abandon_genome_version: {
         Args: { p_version_id: number }
         Returns: boolean
@@ -5302,6 +5424,10 @@ export type Database = {
       abandon_scrna_enrichment_run: {
         Args: { p_run_id: number }
         Returns: boolean
+      }
+      add_genome_browser_genes: {
+        Args: { p_build_id: number; p_genes: Json }
+        Returns: number
       }
       add_species: {
         Args: { p_common_name: string; p_genus: string; p_species: string }
@@ -5550,6 +5676,10 @@ export type Database = {
         }
         Returns: number
       }
+      finish_genome_browser_build: {
+        Args: { p_build_id: number; p_files: Json; p_gene_count: number }
+        Returns: number
+      }
       finish_genome_version: {
         Args: {
           p_fasta_bytes: number
@@ -5571,6 +5701,14 @@ export type Database = {
         }
         Returns: undefined
       }
+      genome_browser_build_roles: {
+        Args: never
+        Returns: {
+          basename: string
+          role: string
+        }[]
+      }
+      genome_browser_files_ok: { Args: { p_files: Json }; Returns: boolean }
       genome_name_ok: { Args: { p_name: string }; Returns: boolean }
       get_experiment_summary_counts: {
         Args: { experiment_id_?: number; run_id_?: string; source_id_?: number }
@@ -5848,6 +5986,7 @@ export type Database = {
         Returns: undefined
       }
       may_upload_annotation_file: { Args: { p_name: string }; Returns: boolean }
+      may_upload_browser_file: { Args: { p_name: string }; Returns: boolean }
       may_upload_enrichment_file: { Args: { p_name: string }; Returns: boolean }
       member_may_upload_genome_file: {
         Args: { p_name: string; p_owner_id: string }
@@ -6004,6 +6143,14 @@ export type Database = {
           file_path: string
         }[]
       }
+      start_genome_browser_build: {
+        Args: { p_tool_versions?: Json; p_version_id: number }
+        Returns: {
+          build: number
+          build_id: number
+          folder: string
+        }[]
+      }
       start_genome_version: {
         Args: {
           p_annotation?: string
@@ -6055,6 +6202,10 @@ export type Database = {
         Returns: boolean
       }
       withdraw_genome_annotation_build: {
+        Args: { p_build_id: number; p_reason: string }
+        Returns: undefined
+      }
+      withdraw_genome_browser_build: {
         Args: { p_build_id: number; p_reason: string }
         Returns: undefined
       }
