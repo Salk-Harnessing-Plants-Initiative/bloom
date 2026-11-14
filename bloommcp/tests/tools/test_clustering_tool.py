@@ -1450,3 +1450,379 @@ def test_single_trait_scatter_pca_degrades_gracefully_through_the_tool(injected_
         plots=["create_cluster_scatter_pca"],
     )
     assert "create_cluster_scatter_pca.png" in result.outputs
+
+
+# ── Font-style override (#680) ──────────────────────────────────────────────
+#
+# Mirrors the equivalent block in test_pca_analysis_tool.py / test_umap_analysis_tool.py.
+# Element-level coverage of apply_font_style itself (family-only, size-only, suptitle,
+# multi-axes, legend title) lives in test_plots_helpers.py and is not repeated here; these
+# tests only prove the two ClusteringParams fields reach generate_figures and that the
+# ceiling/ordering contract holds at this tool's boundary.
+#
+# Harness note: patch clustering_tool._clustering_plot_calls, whose real signature is
+# keyword-only — (result_dict, result, *, scatter_pca_result_dict). The precedent is
+# test_figure_cleanup_on_partial_plotter_failure_no_run_committed above, NOT
+# test_plotters_invoked_once_with_correct_args, which patches the upstream plotters on
+# sleap_roots_analyze and so cannot see the styling generate_figures applies after the
+# plotter returns.
+
+
+def _styled_fig(plt, *, with_legend: bool = False, title_kwargs: dict | None = None):
+    """A real Figure carrying the text elements the spec enumerates."""
+    fig, ax = plt.subplots()
+    ax.set_title("t", **(title_kwargs or {}))
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    if with_legend:
+        ax.plot([1, 2], [1, 2], label="cluster 0")
+        ax.legend(title="Cluster")
+    return fig
+
+
+def _fake_plot_calls(plt, captured: dict, keys: tuple[str, ...], **fig_kwargs):
+    """Return a _clustering_plot_calls stand-in producing one real Figure per key."""
+
+    def _factory(key: str):
+        def _make():
+            fig = _styled_fig(
+                plt,
+                with_legend=(key == "create_cluster_scatter_pca"),
+                **fig_kwargs,
+            )
+            captured[key] = fig
+            return fig
+
+        return _make
+
+    def _fake_calls(result_dict, result, **kwargs):
+        return {key: _factory(key) for key in keys}
+
+    return _fake_calls
+
+
+_BOTH_KEYS = ("create_cluster_scatter_pca", "create_cluster_size_barplot")
+_BARPLOT_ONLY = ("create_cluster_size_barplot",)
+
+
+def test_plot_font_style_fields_exist():
+    """Red anchor for the ignored-value tests below: ClusteringParams declares no
+    model_config, so pydantic v2's default extra="ignore" silently DROPS unknown kwargs.
+    Without this, every test that merely asserts "no error and no PNG" would pass before
+    the fields exist, for the wrong reason."""
+    assert {"plot_font_family", "plot_font_size"} <= set(ClusteringParams.model_fields)
+
+
+def test_plot_font_family_and_size_forwarded_and_applied(injected_ports, monkeypatch):
+    """plot_font_family/plot_font_size flow from ClusteringParams through
+    generate_figures onto EVERY generated figure — two figures, not one, is what proves
+    the override is applied per iteration rather than once."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    _reader, store = injected_ports
+    captured: dict = {}
+    monkeypatch.setattr(
+        clustering_tool,
+        "_clustering_plot_calls",
+        _fake_plot_calls(plt, captured, _BOTH_KEYS),
+    )
+
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=True,
+        plots=None,
+        plot_font_family="serif",
+        plot_font_size=22,
+    )
+
+    assert set(captured) == set(_BOTH_KEYS)
+    for fig in captured.values():
+        ax = fig.axes[0]
+        assert ax.title.get_fontfamily() == ["serif"]
+        assert ax.title.get_fontsize() == 22
+        assert ax.xaxis.label.get_fontfamily() == ["serif"]
+        assert ax.yaxis.label.get_fontsize() == 22
+        for label in ax.get_xticklabels():
+            assert label.get_fontfamily() == ["serif"]
+
+    # The scatter stand-in carries a legend: pin the spec's "legend text and title" clause.
+    legend = captured["create_cluster_scatter_pca"].axes[0].get_legend()
+    assert [t.get_fontfamily() for t in legend.get_texts()] == [["serif"]]
+    assert legend.get_title().get_fontfamily() == ["serif"]
+    assert legend.get_title().get_fontsize() == 22
+
+    for key in _BOTH_KEYS:
+        assert f"{key}.png" in result.outputs
+    assert len(store.list_runs(_EXPERIMENT, "clustering")) == 1
+    assert plt.get_fignums() == []
+
+
+@pytest.mark.parametrize("method_kwargs", _METHOD_CALLS.values(), ids=_METHOD_CALLS)
+def test_plot_font_style_applies_for_every_method(
+    injected_ports, monkeypatch, method_kwargs
+):
+    """The font-style path is not method-dependent."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        clustering_tool,
+        "_clustering_plot_calls",
+        _fake_plot_calls(plt, captured, _BARPLOT_ONLY),
+    )
+
+    _run(
+        include_plots=True,
+        plots=["create_cluster_size_barplot"],
+        plot_font_family="serif",
+        **method_kwargs,
+    )
+
+    title = captured["create_cluster_size_barplot"].axes[0].title
+    assert title.get_fontfamily() == ["serif"]
+
+
+def test_default_call_leaves_upstream_plotter_styling_untouched(
+    injected_ports, monkeypatch
+):
+    """The change's central no-regression claim, as a test rather than a review gate:
+    with both fields omitted, apply_font_style must return before touching the figure, so
+    a deliberately non-default plotter styling survives verbatim."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        clustering_tool,
+        "_clustering_plot_calls",
+        _fake_plot_calls(
+            plt,
+            captured,
+            _BARPLOT_ONLY,
+            title_kwargs={"fontfamily": "monospace", "fontsize": 7},
+        ),
+    )
+
+    _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=True,
+        plots=["create_cluster_size_barplot"],
+    )
+
+    title = captured["create_cluster_size_barplot"].axes[0].title
+    assert title.get_fontfamily() == ["monospace"]
+    assert title.get_fontsize() == 7
+
+
+@pytest.mark.parametrize("include_plots", [True, False])
+@pytest.mark.parametrize("value", [0, -1, 101, float("inf"), float("nan")])
+def test_plot_font_size_out_of_range_is_invalid_input_regardless_of_include_plots(
+    injected_ports, value, include_plots
+):
+    """The message must name BOTH the submitted value and the ceiling — that is the entire
+    reason the check is a tool-body call rather than a Field(gt=0, le=100) constraint
+    (check_plot_style_ceiling's docstring / #721). Asserting only the code would let a
+    refactor back to a Field constraint keep every test in this block green."""
+    import matplotlib.pyplot as plt
+
+    _reader, store = injected_ports
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=include_plots,
+            plot_font_size=value,
+        )
+    assert exc.value.code == "invalid_input"
+    assert "plot_font_size" in exc.value.message
+    assert repr(value) in exc.value.message
+    assert "100" in exc.value.message
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+    assert plt.get_fignums() == []
+
+
+def test_plot_font_size_rejected_before_the_experiment_is_read(injected_ports):
+    """Spy, don't raise: as_mcp_tool routes any non-BloomMCPError through
+    BloomMCPError.from_exception, so a raising sentinel would surface as an opaque
+    internal_error whose message is a correlation id."""
+    reader, store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3, plot_font_size=101)
+
+    assert exc.value.code == "invalid_input"
+    assert reader.load_experiment.call_count == 0
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_method_control_conflict_is_reported_before_the_font_size_ceiling(
+    injected_ports,
+):
+    """Ordering, half one: the ceiling check sits after _reject_wrong_method_controls, so
+    a request wrong on both axes reports the more structural error (design.md).
+
+    Green both before and after the change by construction — a regression pin on the
+    placement decision, gated by test_plot_font_style_fields_exist."""
+    with pytest.raises(BloomMCPError) as exc:
+        _run(method="kmeans", n_clusters=3, n_components=2, plot_font_size=101)
+
+    assert exc.value.code == "invalid_input"
+    assert "n_components" in exc.value.message
+    assert "plot_font_size" not in exc.value.message
+
+
+def test_font_size_ceiling_is_reported_before_plot_key_validation(injected_ports):
+    """Ordering, half two — a genuine contract change: validate_plot_keys runs after
+    reader.load_experiment, so inserting the ceiling check before the read flips which
+    error this input reports (today: the bad key; after: the ceiling)."""
+    reader, store = injected_ports
+    reader.load_experiment = MagicMock(wraps=reader.load_experiment)
+
+    with pytest.raises(BloomMCPError) as exc:
+        _run(
+            method="kmeans",
+            n_clusters=3,
+            include_plots=True,
+            plots=["not_a_real_plot"],
+            plot_font_size=101,
+        )
+
+    assert exc.value.code == "invalid_input"
+    assert "plot_font_size" in exc.value.message
+    assert "not_a_real_plot" not in exc.value.message
+    assert reader.load_experiment.call_count == 0
+    assert store.list_runs(_EXPERIMENT, "clustering") == []
+
+
+def test_plot_font_size_at_ceiling_is_accepted(injected_ports, monkeypatch):
+    """100 is the inclusive ceiling — it must reach the figure AND commit the run, not
+    merely survive model construction."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    _reader, store = injected_ports
+    captured: dict = {}
+    monkeypatch.setattr(
+        clustering_tool,
+        "_clustering_plot_calls",
+        _fake_plot_calls(plt, captured, _BARPLOT_ONLY),
+    )
+
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=True,
+        plots=["create_cluster_size_barplot"],
+        plot_font_size=100,
+    )
+
+    assert captured["create_cluster_size_barplot"].axes[0].title.get_fontsize() == 100
+    assert "create_cluster_size_barplot.png" in result.outputs
+    assert len(store.list_runs(_EXPERIMENT, "clustering")) == 1
+
+
+def test_plot_font_size_just_above_zero_is_accepted(injected_ports):
+    """The lower bound is exclusive of 0 only. Deliberately not asserting the APPLIED
+    size: matplotlib clamps sub-1pt to 1.0."""
+    result = _run(
+        method="kmeans", n_clusters=3, include_plots=False, plot_font_size=0.01
+    )
+    assert not any(k.endswith(".png") for k in result.outputs)
+
+
+def test_plot_font_fields_ignored_when_include_plots_false(injected_ports):
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=False,
+        plot_font_family="serif",
+        plot_font_size=22,
+    )
+    assert set(result.outputs) == {"labels.csv", "cluster_result.json"}
+
+
+@pytest.mark.parametrize("family", ["NotARealFont-12345", ""])
+def test_unresolvable_plot_font_family_is_not_rejected(
+    injected_ports, monkeypatch, family
+):
+    """matplotlib stores the unresolved name and falls back only at render (reporting
+    `findfont: ... not found` through logging, not warnings), so the third assertion is
+    what keeps this from passing for the wrong reason."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        clustering_tool,
+        "_clustering_plot_calls",
+        _fake_plot_calls(plt, captured, _BARPLOT_ONLY),
+    )
+
+    result = _run(
+        method="kmeans",
+        n_clusters=3,
+        include_plots=True,
+        plots=["create_cluster_size_barplot"],
+        plot_font_family=family,
+    )
+
+    assert "create_cluster_size_barplot.png" in result.outputs
+    assert captured["create_cluster_size_barplot"].axes[0].title.get_fontfamily() == [
+        family
+    ]
+
+
+def test_font_style_fields_are_recorded_in_provenance_params(injected_ports):
+    """Provenance.stamp(params=data.model_dump()) records both fields on EVERY run —
+    including default ones, whose params gain two nulls. The recorded family is the
+    REQUESTED one; matplotlib may have rendered a fallback (spec.md)."""
+    _reader, store = injected_ports
+    seen: list[dict] = []
+    real_create_run = store.create_run
+
+    def _spy(**kwargs):
+        seen.append(dict(kwargs["provenance"].params))
+        return real_create_run(**kwargs)
+
+    store.create_run = _spy
+
+    _run(method="kmeans", n_clusters=3)
+    _run(
+        method="kmeans",
+        n_clusters=3,
+        plot_font_family="NotARealFont-12345",
+        plot_font_size=22,
+    )
+
+    default_params, styled_params = seen
+    assert default_params["plot_font_family"] is None
+    assert default_params["plot_font_size"] is None
+    assert styled_params["plot_font_family"] == "NotARealFont-12345"
+    assert styled_params["plot_font_size"] == 22
+
+
+def test_plot_font_size_ceiling_is_in_the_json_schema():
+    """Removing the Field(gt=0, le=...) constraint (so the rejection can name the
+    submitted value) must not make the ceiling undiscoverable to a schema-reading
+    caller — restored via json_schema_extra."""
+    schema = ClusteringParams.model_json_schema()
+    font_size_schema = schema["properties"]["plot_font_size"]
+    assert font_size_schema["maximum"] == 100
+    assert font_size_schema["exclusiveMinimum"] == 0
+    # Schema metadata, not an enforced constraint: construction must still succeed.
+    ClusteringParams(experiment="x.csv", n_clusters=3, plot_font_size=99999)
