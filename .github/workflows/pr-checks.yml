@@ -886,6 +886,8 @@ jobs:
           echo "TUNNEL_CADDY_IP=172.30.252.2" >> .env.ci
           echo "TUNNEL_CLOUDFLARED_IP=172.30.252.3" >> .env.ci
           echo "TUNNEL_AUTO_RANGE=172.30.252.8/29" >> .env.ci
+          echo "MAILNET_SUBNET=172.30.242.0/28" >> .env.ci
+          echo "MAILNET_BRIDGE=bloom-mail-ci" >> .env.ci
           # Required by compose; CI's bloommcp reads a local keys file instead (docker-compose.ci.yml).
           echo "BLOOMMCP_TUNNEL_JWKS_URL=https://ci.invalid/.well-known/jwks.json" >> .env.ci
           echo "BLOOMMCP_TUNNEL_JWT_ISSUER=bloom-mcp" >> .env.ci

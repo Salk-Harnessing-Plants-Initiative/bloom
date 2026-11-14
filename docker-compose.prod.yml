@@ -511,7 +511,10 @@ services:
       SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
       SITE_URL: ${SITE_URL}
     networks:
-      - supanet
+      supanet: {}
+      # Traffic leaving bloom-dev goes out through mailnet, the one network allowed to reach the relay.
+      mailnet:
+        gw_priority: 1
     depends_on:
       - kong
       - db-prod
@@ -556,7 +559,10 @@ services:
       timeout: 5s
       retries: 3
     networks:
-      - supanet
+      supanet: {}
+      # Traffic leaving bloom-dev goes out through mailnet, the one network allowed to reach the relay.
+      mailnet:
+        gw_priority: 1
     restart: unless-stopped
 
   # Consumes the gravi_plate_video_dispatch queue: one render at a time.
@@ -812,7 +818,10 @@ services:
     cap_drop:
       - ALL
     networks:
-      - supanet
+      supanet: {}
+      # Traffic leaving bloom-dev goes out through mailnet, the one network allowed to reach the relay.
+      mailnet:
+        gw_priority: 1
     environment:
       GOTRUE_API_HOST: 0.0.0.0
       GOTRUE_API_PORT: 9999
@@ -1269,3 +1278,12 @@ networks:
       config:
         - subnet: ${TUNNEL_SUBNET}
           ip_range: ${TUNNEL_AUTO_RANGE}
+  # Mail senders only; the host's port-25 rule allows only this bridge (deploy/smtp-egress).
+  mailnet:
+    driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.name: ${MAILNET_BRIDGE}
+    ipam:
+      config:
+        - subnet: ${MAILNET_SUBNET}
