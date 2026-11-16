@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
-from bloom_mcp.data_access import table_access
+from bloom_mcp.data_access import page_links, table_access
 from bloom_mcp.data_access.table_ports import Sort
 from bloom_mcp.tools import _ports
 
@@ -106,6 +106,9 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     heritability, PCA, UMAP, clustering, correlations, statistical comparisons, plots) use
     the sleap_roots_* tools and say so; if unclear, ask the user.
 
+    Rows of a table with a Bloom page (experiments, scans, plates, scRNA datasets, RNA-seq
+    runs) carry page_url, the row's page on Bloom; give it when you mention the row.
+
     Text or JSON values over 2000 characters are cut and end in "…[cut]" (a cut JSON value
     comes back as text); truncated_values says when. Number columns can hold NaN or
     Infinity, which arrive as the text "NaN" or "Infinity".
@@ -135,9 +138,14 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     filters = to_filters(params.filters)
     order = _order(params.table, params.order_by, params.descending)
 
+    linked = params.table in page_links.PAGE_LINKS
+    link_columns = page_links.page_columns(params.table) if linked else []
+    selected = list(dict.fromkeys([*columns, *link_columns]))
     rows = _ports.table_reader().select(
-        params.table, columns, filters, order, params.limit + 1, params.offset
+        params.table, selected, filters, order, params.limit + 1, params.offset
     )
+    if linked:
+        page_links.add_page_urls(params.table, rows, columns)
 
     page = fit_page(rows, params.limit, table_access.redacted_columns(params.table))
     return QueryTableResult(

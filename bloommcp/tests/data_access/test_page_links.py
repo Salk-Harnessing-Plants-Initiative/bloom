@@ -45,12 +45,13 @@ def test_every_link_names_the_route_param_of_each_placeholder():
         assert set(_PLACEHOLDER.findall(pattern)) == set(page_links.PAGE_PARAMS[table])
 
 
-def test_a_link_note_says_to_skip_empty_columns(monkeypatch):
+def test_a_link_note_points_to_page_url_and_empty_columns(monkeypatch):
     monkeypatch.setenv("SITE_URL", " https://bloom.example/ ")
     note = page_links.link_note("rnaseq_runs")
     assert note is not None
     assert "https://bloom.example/app/rnaseq-runs/{id}" in note
-    assert "give none when any of those columns is empty" in note
+    assert "page_url" in note
+    assert "A row with no page_url has no page" in note
 
 
 @pytest.mark.parametrize("table", sorted(page_links.PAGE_LINKS))
