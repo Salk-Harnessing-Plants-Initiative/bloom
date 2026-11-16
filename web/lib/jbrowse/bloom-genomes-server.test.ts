@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BROWSER_URL_TTL, loadBrowserConfig, whyNotOffered } from "./bloom-genomes-server";
+import {
+  BROWSABLE_SELECT,
+  LINKED_VERSION_SELECT,
+  REDIRECT_MAX_AGE_S,
+  SIGNED_URL_TTL_S,
+  loadBrowserConfig,
+  signBuildFile,
+  whyNotOffered,
+} from "./bloom-genomes-server";
 import { browserConfig } from "./config";
 
 const ROLES = [
@@ -11,15 +19,22 @@ const ROLES = [
   { role: "gff3_tbi", basename: "genes.gff3.gz.tbi" },
 ];
 
-const buildRow = (name: string, version: number) => ({
-  folder: `${name}/v${version}/browser/b1`,
+const buildRow = (
+  id: number,
+  name: string,
+  version: number,
+  species: { genus: string | null; species: string | null } = { genus: "arabidopsis", species: "THALIANA" },
+) => ({
+  id,
   genome_reference_versions: {
     version,
-    genome_references: { name, species: { genus: "Arabidopsis", species: "thaliana" } },
+    assembly: "TAIR10",
+    annotation: null,
+    genome_references: { name, species },
   },
 });
 
-/** A query builder that records its filters and resolves to `result`. */
+/** A query builder that records its calls and resolves to `result`. */
 function query(result: { data: unknown; error: unknown }) {
   const calls: unknown[][] = [];
   const builder: Record<string, unknown> = {
@@ -35,128 +50,105 @@ function query(result: { data: unknown; error: unknown }) {
   return builder as typeof builder & { calls: unknown[][] };
 }
 
-type Signed = { path: string; signedUrl: string | null; error: string | null };
-type Sign = (paths: string[]) => { data: Signed[]; error: unknown };
-
 function client({
   rows = { data: [] as unknown, error: null as unknown },
   roles = { data: ROLES as unknown, error: null as unknown },
-  sign = ((paths: string[]) => ({
-    data: paths.map((path) => ({ path, signedUrl: `http://kong:8000/storage/v1/object/sign/${path}?token=t`, error: null })),
-    error: null as unknown,
-  })) as Sign,
+  signed = { data: { signedUrl: "http://kong:8000/storage/v1/object/sign/x?token=t" } as unknown, error: null as unknown },
 } = {}) {
   const table = query(rows);
-  const createSignedUrls = vi.fn(async (paths: string[], _ttl: number) => sign(paths));
+  const createSignedUrl = vi.fn(async () => signed);
   const supabase = {
     from: vi.fn(() => table),
     rpc: vi.fn(async () => roles),
-    storage: { from: vi.fn(() => ({ createSignedUrls })) },
+    storage: { from: vi.fn(() => ({ createSignedUrl })) },
   };
-  return { supabase: supabase as never, table, createSignedUrls, raw: supabase };
+  return { supabase: supabase as never, table, createSignedUrl, raw: supabase };
 }
 
 describe("loadBrowserConfig", () => {
-  const ORIGINAL = process.env.NEXT_PUBLIC_SUPABASE_URL;
   beforeEach(() => {
-    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://bloom.example/api";
+    vi.spyOn(console, "error").mockImplementation(() => {});
   });
   afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
-    else process.env.NEXT_PUBLIC_SUPABASE_URL = ORIGINAL;
+    vi.restoreAllMocks();
   });
 
-  it("asks only for ready builds of ready versions", async () => {
-    const { supabase, table } = client();
+  it("reads ready builds of ready versions, both statuses filtered through inner joins", async () => {
+    const { supabase, raw, table } = client();
     await loadBrowserConfig(supabase);
+    expect(raw.from).toHaveBeenCalledWith("genome_browser_builds");
+    expect(table.calls).toContainEqual(["select", BROWSABLE_SELECT]);
+    expect(BROWSABLE_SELECT).toContain("genome_reference_versions!inner(");
+    expect(BROWSABLE_SELECT).toContain("genome_references!inner(");
     expect(table.calls).toContainEqual(["eq", "status", "ready"]);
     expect(table.calls).toContainEqual(["eq", "genome_reference_versions.status", "ready"]);
   });
 
-  it("is the outside assemblies, with no URLs to refresh, when nothing is browsable", async () => {
-    const { supabase, createSignedUrls } = client();
-    const loaded = await loadBrowserConfig(supabase);
-    expect(loaded).toEqual({ config: browserConfig(), bloomGenomes: [], validForMs: null, error: null });
-    expect(createSignedUrls).not.toHaveBeenCalled();
+  it("is the outside assemblies when nothing is browsable", async () => {
+    const { supabase, raw } = client();
+    expect(await loadBrowserConfig(supabase)).toEqual({
+      config: browserConfig(),
+      bloomGenomes: [],
+      error: null,
+    });
+    expect(raw.storage.from).not.toHaveBeenCalled();
   });
 
-  it("adds each browsable version, its five files signed in one call", async () => {
-    const { supabase, raw, createSignedUrls } = client({
-      rows: { data: [buildRow("zm.b73", 1), buildRow("at.col0", 2)], error: null },
+  it("adds each browsable version by genome then numeric version, signing nothing", async () => {
+    const { supabase, raw } = client({
+      rows: {
+        data: [buildRow(3, "zm.b73", 1), buildRow(5, "at.col0", 10), buildRow(4, "at.col0", 2)],
+        error: null,
+      },
     });
     const loaded = await loadBrowserConfig(supabase);
 
     expect(loaded.error).toBeNull();
-    expect(loaded.bloomGenomes).toEqual(["at.col0.v2", "zm.b73.v1"]);
-    expect(loaded.validForMs).toBe(BROWSER_URL_TTL * 1000);
-    expect(raw.storage.from).toHaveBeenCalledWith("genome-references");
-    expect(createSignedUrls).toHaveBeenCalledTimes(1);
-    expect(createSignedUrls.mock.calls[0][0]).toEqual([
-      "at.col0/v2/browser/b1/genome.fa.gz",
-      "at.col0/v2/browser/b1/genome.fa.gz.fai",
-      "at.col0/v2/browser/b1/genome.fa.gz.gzi",
-      "at.col0/v2/browser/b1/genes.gff3.gz",
-      "at.col0/v2/browser/b1/genes.gff3.gz.tbi",
-      "zm.b73/v1/browser/b1/genome.fa.gz",
-      "zm.b73/v1/browser/b1/genome.fa.gz.fai",
-      "zm.b73/v1/browser/b1/genome.fa.gz.gzi",
-      "zm.b73/v1/browser/b1/genes.gff3.gz",
-      "zm.b73/v1/browser/b1/genes.gff3.gz.tbi",
-    ]);
-    expect(createSignedUrls.mock.calls[0][1]).toBe(BROWSER_URL_TTL);
-
+    expect(loaded.bloomGenomes).toEqual(["at.col0.v2", "at.col0.v10", "zm.b73.v1"]);
+    expect(raw.storage.from).not.toHaveBeenCalled();
     const assembly = loaded.config.assemblies.find((a) => a.name === "at.col0.v2") as unknown as {
       displayName: string;
       sequence: { adapter: { fastaLocation: { uri: string } } };
     };
-    expect(assembly.displayName).toBe("at.col0 v2 (Arabidopsis thaliana)");
-    // Signed against the internal gateway, handed to the browser on the public host.
-    expect(assembly.sequence.adapter.fastaLocation.uri).toBe(
-      "https://bloom.example/api/storage/v1/object/sign/at.col0/v2/browser/b1/genome.fa.gz?token=t",
+    // Species casing normalised as on the Species page.
+    expect(assembly.displayName).toBe("at.col0 v2 — TAIR10 (Arabidopsis thaliana)");
+    expect(assembly.sequence.adapter.fastaLocation.uri).toBe("/app/jbrowse/files/4/fasta");
+    expect(loaded.config.assemblies).toHaveLength(browserConfig().assemblies.length + 3);
+  });
+
+  it("leaves the species out of the label when the row has neither part", async () => {
+    const { supabase } = client({
+      rows: { data: [buildRow(4, "at.col0", 2, { genus: null, species: null })], error: null },
+    });
+    const loaded = await loadBrowserConfig(supabase);
+    const assembly = loaded.config.assemblies.at(-1) as unknown as { displayName: string };
+    expect(assembly.displayName).toBe("at.col0 v2 — TAIR10");
+  });
+
+  it("keeps the outside assemblies with a short reason, and logs the detail, when the read fails", async () => {
+    const { supabase } = client({ rows: { data: null, error: { message: "permission denied for table x" } } });
+    const loaded = await loadBrowserConfig(supabase);
+    expect(loaded).toEqual({
+      config: browserConfig(),
+      bloomGenomes: [],
+      error: "Bloom's own genomes could not be read.",
+    });
+    expect(console.error).toHaveBeenCalledWith(
+      "[genome browser]",
+      new Error("reading browser builds: permission denied for table x"),
     );
-    expect(loaded.config.assemblies).toHaveLength(browserConfig().assemblies.length + 2);
-  });
-
-  it("keeps the outside assemblies and says why when a file cannot be signed", async () => {
-    const { supabase } = client({
-      rows: { data: [buildRow("at.col0", 2)], error: null },
-      sign: (paths) => ({
-        data: paths.map((path) => ({
-          path,
-          signedUrl: path.endsWith(".tbi") ? null : `https://x/${path}`,
-          error: path.endsWith(".tbi") ? "Object not found" : null,
-        })),
-        error: null,
-      }),
-    });
-    const loaded = await loadBrowserConfig(supabase);
-    expect(loaded.config).toEqual(browserConfig());
-    expect(loaded.bloomGenomes).toEqual([]);
-    expect(loaded.error).toBe("signing at.col0/v2/browser/b1/genes.gff3.gz.tbi: Object not found");
-  });
-
-  it("says why when the builds cannot be read", async () => {
-    const { supabase } = client({ rows: { data: null, error: { message: "permission denied" } } });
-    const loaded = await loadBrowserConfig(supabase);
-    expect(loaded.config).toEqual(browserConfig());
-    expect(loaded.error).toBe("reading browser builds: permission denied");
-  });
-
-  it("refuses when the database names a role differently", async () => {
-    const { supabase } = client({
-      rows: { data: [buildRow("at.col0", 2)], error: null },
-      roles: { data: ROLES.filter((r) => r.role !== "fasta_gzi"), error: null },
-    });
-    expect((await loadBrowserConfig(supabase)).error).toBe("no file name for browser roles: fasta_gzi");
   });
 });
 
 describe("whyNotOffered", () => {
   it("looks the version up by genome name and number", async () => {
-    const { supabase, table } = client({
+    const { supabase, raw, table } = client({
       rows: { data: { status: "ready", genome_browser_builds: [] }, error: null },
     });
     await expect(whyNotOffered(supabase, "at.col0.v2")).resolves.toBe("not built");
+    expect(raw.from).toHaveBeenCalledWith("genome_reference_versions");
+    expect(table.calls).toContainEqual(["select", LINKED_VERSION_SELECT]);
+    expect(LINKED_VERSION_SELECT).toContain("genome_references!inner(name)");
     expect(table.calls).toContainEqual(["eq", "genome_references.name", "at.col0"]);
     expect(table.calls).toContainEqual(["eq", "version", 2]);
   });
@@ -167,15 +159,73 @@ describe("whyNotOffered", () => {
     expect(raw.from).not.toHaveBeenCalled();
   });
 
-  it("is unknown when no such version exists", async () => {
-    const { supabase } = client({ rows: { data: null, error: null } });
-    await expect(whyNotOffered(supabase, "at.col0.v9")).resolves.toBe("unknown");
+  it.each([
+    [null, "unknown"],
+    [{ status: "abandoned", genome_browser_builds: [] }, "abandoned"],
+    [{ status: "withdrawn", genome_browser_builds: [{ status: "ready" }] }, "withdrawn"],
+    [{ status: "ready", genome_browser_builds: [{ status: "withdrawn" }] }, "files withdrawn"],
+    [{ status: "ready", genome_browser_builds: [{ status: "ready" }] }, null],
+  ])("reads %j as %j", async (data, reason) => {
+    const { supabase } = client({ rows: { data, error: null } });
+    await expect(whyNotOffered(supabase, "at.col0.v2")).resolves.toBe(reason);
   });
 
-  it("is withdrawn when the version's build was withdrawn", async () => {
-    const { supabase } = client({
-      rows: { data: { status: "ready", genome_browser_builds: [{ status: "withdrawn" }] }, error: null },
+  it("throws when the lookup fails", async () => {
+    const { supabase } = client({ rows: { data: null, error: { message: "boom" } } });
+    await expect(whyNotOffered(supabase, "at.col0.v2")).rejects.toThrow("reading genome version at.col0.v2: boom");
+  });
+});
+
+describe("signBuildFile", () => {
+  const ORIGINAL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://bloom.example/api";
+  });
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = ORIGINAL;
+  });
+
+  const ready = { data: { folder: "at.col0/v2/browser/b1", genome_reference_versions: { status: "ready" } }, error: null };
+
+  it("signs the role's file in the build's folder, for the TTL, on the public host", async () => {
+    const { supabase, raw, table, createSignedUrl } = client({ rows: ready });
+    await expect(signBuildFile(supabase, 4, "fasta_gzi")).resolves.toEqual({
+      status: "signed",
+      url: "https://bloom.example/api/storage/v1/object/sign/x?token=t",
     });
-    await expect(whyNotOffered(supabase, "at.col0.v2")).resolves.toBe("withdrawn");
+    expect(raw.from).toHaveBeenCalledWith("genome_browser_builds");
+    expect(table.calls).toContainEqual(["eq", "id", 4]);
+    expect(table.calls).toContainEqual(["eq", "status", "ready"]);
+    expect(table.calls).toContainEqual(["eq", "genome_reference_versions.status", "ready"]);
+    expect(raw.storage.from).toHaveBeenCalledWith("genome-references");
+    expect(createSignedUrl).toHaveBeenCalledWith("at.col0/v2/browser/b1/genome.fa.gz.gzi", SIGNED_URL_TTL_S);
+  });
+
+  it("lets the browser reuse a redirect only while its signature still works", () => {
+    expect(REDIRECT_MAX_AGE_S).toBeLessThan(SIGNED_URL_TTL_S);
+  });
+
+  it("is not found for an unknown role, without a lookup", async () => {
+    const { supabase, raw } = client({ rows: ready });
+    await expect(signBuildFile(supabase, 4, "genes.gtf")).resolves.toEqual({ status: "not found" });
+    expect(raw.from).not.toHaveBeenCalled();
+  });
+
+  it("is not found when the build is not a ready build of a ready version", async () => {
+    const { supabase, createSignedUrl } = client({ rows: { data: null, error: null } });
+    await expect(signBuildFile(supabase, 4, "fasta")).resolves.toEqual({ status: "not found" });
+    expect(createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the build read fails", { rows: { data: null, error: { message: "boom" } } }, "reading build 4: boom"],
+    ["the role names fail", { rows: ready, roles: { data: null, error: { message: "denied" } } }, "reading file names: denied"],
+    ["the role has no file name", { rows: ready, roles: { data: [], error: null } }, "no file name for role fasta"],
+    ["signing fails", { rows: ready, signed: { data: null, error: { message: "Object not found" } } }, "signing at.col0/v2/browser/b1/genome.fa.gz: Object not found"],
+    ["storage returns no URL", { rows: ready, signed: { data: { signedUrl: null }, error: null } }, "no signed URL for at.col0/v2/browser/b1/genome.fa.gz"],
+  ])("fails with a reason when %s", async (_case, setup, reason) => {
+    const { supabase } = client(setup as never);
+    await expect(signBuildFile(supabase, 4, "fasta")).resolves.toEqual({ status: "failed", reason });
   });
 });

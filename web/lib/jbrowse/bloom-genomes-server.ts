@@ -1,44 +1,46 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { Database } from "@/lib/database.types";
+import { scientificName } from "@/lib/species-options";
 import { toPublicStorageUrl } from "@/lib/supabase/storage-url";
 
 import {
   BUILD_ROLES,
   assemblyName,
-  bloomGenomeConfig,
   mergeBrowserConfig,
   parseGenomeVersion,
   unavailableReason,
   type BloomGenome,
-  type BuildFileUrls,
+  type LoadedBrowserConfig,
   type UnavailableReason,
 } from "./bloom-genomes";
-import { browserConfig, type BrowserConfig } from "./config";
+import { browserConfig } from "./config";
 
-/** How long a browser file URL stays valid; the page fetches fresh ones before then. */
-export const BROWSER_URL_TTL = 3600;
+/** How long a signed build-file URL works, in seconds. */
+export const SIGNED_URL_TTL_S = 3600;
+
+/** How long the browser may reuse a file's redirect, in seconds; below the TTL so a cached
+ * redirect never points at an expired signature. */
+export const REDIRECT_MAX_AGE_S = SIGNED_URL_TTL_S - 300;
 
 const BUCKET = "genome-references";
 
+/** The build read: the build, its version, the genome and its species. `!inner` with the two
+ * status filters keeps only ready builds of ready versions. */
+export const BROWSABLE_SELECT =
+  "id, genome_reference_versions!inner(version, status, assembly, annotation, genome_references!inner(name, species(genus, species)))";
+
+/** The link lookup: a version by genome name and number, with its builds' statuses. */
+export const LINKED_VERSION_SELECT = "status, genome_references!inner(name), genome_browser_builds(status)";
+
 type Client = SupabaseClient<Database>;
 
-/** The browser's configuration and what it holds of Bloom's own genomes. */
-export interface LoadedBrowserConfig {
-  config: BrowserConfig;
-  /** Assembly names of Bloom's genome versions in `config`. */
-  bloomGenomes: string[];
-  /** How long the signed URLs in `config` work from now, in ms; null when it has none.
-   * A duration, so the browser times it on its own clock. */
-  validForMs: number | null;
-  /** Why Bloom's genomes could not be added; the outside assemblies are still in `config`. */
-  error: string | null;
-}
-
 interface BuildRow {
-  folder: string;
+  id: number;
   genome_reference_versions: {
     version: number;
+    assembly: string | null;
+    annotation: string | null;
     genome_references: {
       name: string;
       species: { genus: string | null; species: string | null } | null;
@@ -50,80 +52,41 @@ interface BuildRow {
 export async function fetchBrowsableGenomes(supabase: Client): Promise<BloomGenome[]> {
   const { data, error } = await supabase
     .from("genome_browser_builds")
-    .select(
-      "folder, genome_reference_versions!inner(version, status, genome_references!inner(name, species(genus, species)))",
-    )
+    .select(BROWSABLE_SELECT)
     .eq("status", "ready")
     .eq("genome_reference_versions.status", "ready");
   if (error) throw new Error(`reading browser builds: ${error.message}`);
+  // supabase-js types a nested `!inner` embed as possibly an array; it is one row here.
   return ((data ?? []) as unknown as BuildRow[])
     .map((row) => {
       const v = row.genome_reference_versions;
-      const s = v.genome_references.species;
+      const species = v.genome_references.species;
       return {
+        buildId: row.id,
         genome: v.genome_references.name,
         version: v.version,
-        species: [s?.genus, s?.species].filter(Boolean).join(" ") || null,
-        folder: row.folder,
+        assembly: v.assembly,
+        annotation: v.annotation,
+        species: (species && scientificName(species)) || null,
       };
     })
     .sort((a, b) => a.genome.localeCompare(b.genome) || a.version - b.version);
 }
 
-/** Each genome's five files signed with the caller's credentials, in one Storage call. */
-export async function signBuildFiles(
-  supabase: Client,
-  genomes: BloomGenome[],
-): Promise<BuildFileUrls[]> {
-  if (genomes.length === 0) return [];
-  const { data: roles, error: rolesError } = await supabase.rpc("genome_browser_build_roles");
-  if (rolesError) throw new Error(`reading browser file names: ${rolesError.message}`);
-  const basename = new Map((roles ?? []).map((r) => [r.role, r.basename]));
-  const missing = BUILD_ROLES.filter((role) => !basename.has(role));
-  if (missing.length) throw new Error(`no file name for browser roles: ${missing.join(", ")}`);
-
-  const paths = genomes.flatMap((g) => BUILD_ROLES.map((role) => `${g.folder}/${basename.get(role)}`));
-  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrls(paths, BROWSER_URL_TTL);
-  if (error) throw new Error(`signing browser files: ${error.message}`);
-  const signed = new Map((data ?? []).map((entry) => [entry.path, entry]));
-
-  return genomes.map((g, i) => {
-    const urls = {} as BuildFileUrls;
-    BUILD_ROLES.forEach((role, j) => {
-      const path = paths[i * BUILD_ROLES.length + j];
-      const url = toPublicStorageUrl(signed.get(path)?.signedUrl);
-      if (!url) {
-        const reason = signed.get(path)?.error ?? "no signed URL returned";
-        throw new Error(`signing ${path}: ${reason}`);
-      }
-      urls[role] = url;
-    });
-    return urls;
-  });
-}
-
-/** The outside assemblies plus Bloom's browsable genomes, with freshly signed file URLs. */
+/** The outside assemblies plus Bloom's browsable genomes. A failure is logged and leaves the
+ * outside assemblies with a short reason. */
 export async function loadBrowserConfig(supabase: Client): Promise<LoadedBrowserConfig> {
   const outside = browserConfig();
   try {
     const genomes = await fetchBrowsableGenomes(supabase);
-    const urls = await signBuildFiles(supabase, genomes);
     return {
-      config: mergeBrowserConfig(
-        outside,
-        genomes.map((g, i) => bloomGenomeConfig(g, urls[i])),
-      ),
+      config: mergeBrowserConfig(outside, genomes),
       bloomGenomes: genomes.map((g) => assemblyName(g.genome, g.version)),
-      validForMs: genomes.length ? BROWSER_URL_TTL * 1000 : null,
       error: null,
     };
   } catch (err) {
-    return {
-      config: outside,
-      bloomGenomes: [],
-      validForMs: null,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    console.error("[genome browser]", err);
+    return { config: outside, bloomGenomes: [], error: "Bloom's own genomes could not be read." };
   }
 }
 
@@ -133,7 +96,7 @@ export async function whyNotOffered(supabase: Client, link: string): Promise<Una
   if (!parsed) return "unknown";
   const { data, error } = await supabase
     .from("genome_reference_versions")
-    .select("status, genome_references!inner(name), genome_browser_builds(status)")
+    .select(LINKED_VERSION_SELECT)
     .eq("genome_references.name", parsed.genome)
     .eq("version", parsed.version)
     .maybeSingle();
@@ -142,4 +105,41 @@ export async function whyNotOffered(supabase: Client, link: string): Promise<Una
   return unavailableReason(
     row ? { status: row.status, builds: row.genome_browser_builds.map((b) => b.status) } : null,
   );
+}
+
+export type SignedBuildFile =
+  | { status: "signed"; url: string }
+  | { status: "not found" }
+  | { status: "failed"; reason: string };
+
+/** One file of a ready build of a ready version, signed with the caller's credentials. */
+export async function signBuildFile(
+  supabase: Client,
+  buildId: number,
+  role: string,
+): Promise<SignedBuildFile> {
+  if (!(BUILD_ROLES as readonly string[]).includes(role)) return { status: "not found" };
+
+  const { data: build, error } = await supabase
+    .from("genome_browser_builds")
+    .select("folder, genome_reference_versions!inner(status)")
+    .eq("id", buildId)
+    .eq("status", "ready")
+    .eq("genome_reference_versions.status", "ready")
+    .maybeSingle();
+  if (error) return { status: "failed", reason: `reading build ${buildId}: ${error.message}` };
+  if (!build) return { status: "not found" };
+
+  const { data: roles, error: rolesError } = await supabase.rpc("genome_browser_build_roles");
+  if (rolesError) return { status: "failed", reason: `reading file names: ${rolesError.message}` };
+  const basename = roles?.find((r) => r.role === role)?.basename;
+  if (!basename) return { status: "failed", reason: `no file name for role ${role}` };
+
+  const path = `${build.folder}/${basename}`;
+  const { data: signed, error: signError } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(path, SIGNED_URL_TTL_S);
+  if (signError) return { status: "failed", reason: `signing ${path}: ${signError.message}` };
+  const url = toPublicStorageUrl(signed?.signedUrl);
+  return url ? { status: "signed", url } : { status: "failed", reason: `no signed URL for ${path}` };
 }

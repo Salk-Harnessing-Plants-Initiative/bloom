@@ -1,41 +1,64 @@
+import { genomeVersionLabel } from "@/lib/scrna-jobs";
+
 import type { BrowserConfig } from "./config";
 
-/** A genome version Bloom can show: ready, with a ready browser build in `folder`. */
+/** A genome version Bloom can show: ready, with the ready browser build `buildId`. */
 export interface BloomGenome {
+  buildId: number;
   genome: string;
   version: number;
+  assembly: string | null;
+  annotation: string | null;
   species: string | null;
-  folder: string;
 }
 
-/** The five browser files of a build, by role, as URLs the browser can read. */
-export interface BuildFileUrls {
-  fasta: string;
-  fasta_fai: string;
-  fasta_gzi: string;
-  gff3: string;
-  gff3_tbi: string;
+/** The browser's configuration and the assembly names of Bloom's genome versions in it. */
+export interface LoadedBrowserConfig {
+  config: BrowserConfig;
+  bloomGenomes: string[];
+  /** A short reason Bloom's genomes are missing; the outside assemblies are still in `config`. */
+  error: string | null;
 }
 
+/** The five files of a browser build, as named by `genome_browser_build_roles()`. */
 export const BUILD_ROLES = ["fasta", "fasta_fai", "fasta_gzi", "gff3", "gff3_tbi"] as const;
+export type BuildRole = (typeof BUILD_ROLES)[number];
 
-const uri = (url: string) => ({ uri: url, locationType: "UriLocation" });
+/** Largest version number a link can name (the column is a Postgres integer). */
+const MAX_VERSION = 2_147_483_647;
+
+/** The stable Bloom address of one build file; it redirects to a freshly signed storage URL. */
+export function buildFileUri(buildId: number, role: BuildRole): string {
+  return `/app/jbrowse/files/${buildId}/${role}`;
+}
+
+const location = (buildId: number, role: BuildRole) => ({
+  uri: buildFileUri(buildId, role),
+  locationType: "UriLocation",
+});
 
 /** The browser's name for a genome version, also the `?genome=` link value. */
 export function assemblyName(genome: string, version: number): string {
   return `${genome}.v${version}`;
 }
 
+/** The gene track's ID for a genome version's assembly. */
+export function geneTrackId(assembly: string): string {
+  return `${assembly}-genes`;
+}
+
 /** `<genome>.v<N>` split into its genome and version; null when it is not that shape. */
 export function parseGenomeVersion(text: string): { genome: string; version: number } | null {
   const match = /^(.+)\.v([1-9][0-9]*)$/.exec(text);
-  return match ? { genome: match[1], version: Number(match[2]) } : null;
+  if (!match) return null;
+  const version = Number(match[2]);
+  return version <= MAX_VERSION ? { genome: match[1], version } : null;
 }
 
 /** One genome version's assembly (sequence) and gene track for JBrowse. */
-export function bloomGenomeConfig(g: BloomGenome, urls: BuildFileUrls) {
+export function bloomGenomeConfig(g: BloomGenome) {
   const name = assemblyName(g.genome, g.version);
-  const label = `${g.genome} v${g.version}`;
+  const label = genomeVersionLabel({ id: g.buildId, ...g });
   return {
     assembly: {
       name,
@@ -45,32 +68,31 @@ export function bloomGenomeConfig(g: BloomGenome, urls: BuildFileUrls) {
         trackId: `${name}-sequence`,
         adapter: {
           type: "BgzipFastaAdapter",
-          fastaLocation: uri(urls.fasta),
-          faiLocation: uri(urls.fasta_fai),
-          gziLocation: uri(urls.fasta_gzi),
+          fastaLocation: location(g.buildId, "fasta"),
+          faiLocation: location(g.buildId, "fasta_fai"),
+          gziLocation: location(g.buildId, "fasta_gzi"),
         },
       },
     },
     track: {
       type: "FeatureTrack",
-      trackId: `${name}-genes`,
-      name: `${label} genes`,
+      trackId: geneTrackId(name),
+      name: `${g.genome} v${g.version} genes`,
+      description: `Browser build ${g.buildId}`,
       assemblyNames: [name],
       adapter: {
         type: "Gff3TabixAdapter",
-        gffGzLocation: uri(urls.gff3),
-        index: { location: uri(urls.gff3_tbi), indexType: "TBI" },
+        gffGzLocation: location(g.buildId, "gff3"),
+        index: { location: location(g.buildId, "gff3_tbi"), indexType: "TBI" },
       },
     },
   };
 }
 
 /** The outside assemblies followed by Bloom's genomes. */
-export function mergeBrowserConfig(
-  outside: BrowserConfig,
-  bloom: ReturnType<typeof bloomGenomeConfig>[],
-): BrowserConfig {
-  if (bloom.length === 0) return outside;
+export function mergeBrowserConfig(outside: BrowserConfig, genomes: BloomGenome[]): BrowserConfig {
+  if (genomes.length === 0) return outside;
+  const bloom = genomes.map(bloomGenomeConfig);
   return {
     ...outside,
     assemblies: [...outside.assemblies, ...bloom.map((b) => b.assembly)],
@@ -78,7 +100,13 @@ export function mergeBrowserConfig(
   };
 }
 
-export type UnavailableReason = "unknown" | "not ready" | "withdrawn" | "not built";
+export type UnavailableReason =
+  | "unknown"
+  | "not ready"
+  | "abandoned"
+  | "withdrawn"
+  | "files withdrawn"
+  | "not built";
 
 /** Why a linked genome version is not offered, from its status and its builds' statuses;
  * null when it is offered. */
@@ -87,9 +115,11 @@ export function unavailableReason(
 ): UnavailableReason | null {
   if (!version) return "unknown";
   if (version.status === "withdrawn") return "withdrawn";
+  if (version.status === "abandoned") return "abandoned";
   if (version.status !== "ready") return "not ready";
   if (version.builds.includes("ready")) return null;
-  return version.builds.includes("withdrawn") ? "withdrawn" : "not built";
+  if (version.builds.includes("uploading")) return "not built";
+  return version.builds.includes("withdrawn") ? "files withdrawn" : "not built";
 }
 
 /** What the page says about a `?genome=` link whose version is not offered. */
@@ -98,18 +128,27 @@ export function notOfferedMessage(link: string, reason: UnavailableReason): stri
     case "unknown":
       return `Bloom has no genome version "${link}".`;
     case "not ready":
-      return `${link} has not finished uploading, so it cannot be browsed.`;
+      return `${link} has not finished uploading, so it cannot be browsed yet.`;
+    case "abandoned":
+      return `${link}'s upload was abandoned, so it cannot be browsed.`;
     case "withdrawn":
       return `${link} has been withdrawn, so it cannot be browsed.`;
+    case "files withdrawn":
+      return `${link}'s browser files were withdrawn; it becomes browsable again once they are rebuilt.`;
     case "not built":
       return `${link} has no browser files yet; it becomes browsable once they are built.`;
   }
 }
 
-/** How long before the signed URLs expire the page fetches fresh ones. */
-export const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+/** The page's line about a `?genome=` link that does not name a version. */
+export const INVALID_LINK_MESSAGE =
+  "This genome link does not name a genome version; it should end in .v1, .v2 and so on.";
 
-/** Whether the page should fetch fresh signed URLs now. */
-export function refreshDue(expiresAt: number | null, now: number): boolean {
-  return expiresAt !== null && now >= expiresAt - REFRESH_MARGIN_MS;
+/** What the page says about Bloom's own genomes above the browser. */
+export function bloomGenomesNote(count: number, error: string | null): string {
+  if (error) return `${error} The reference genomes below still work.`;
+  if (count === 0) {
+    return "Bloom has no browsable genome versions yet; a version becomes browsable once its browser files are built. The reference genomes below are served from outside Bloom.";
+  }
+  return `${count} Bloom genome version${count === 1 ? "" : "s"} listed with the reference genomes; a version appears once its browser files are built.`;
 }

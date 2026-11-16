@@ -1,18 +1,12 @@
 import JBrowseClient from "@/components/jbrowse-client";
-import { notOfferedMessage } from "@/lib/jbrowse/bloom-genomes";
+import {
+  INVALID_LINK_MESSAGE,
+  bloomGenomesNote,
+  notOfferedMessage,
+  parseGenomeVersion,
+} from "@/lib/jbrowse/bloom-genomes";
 import { loadBrowserConfig, whyNotOffered } from "@/lib/jbrowse/bloom-genomes-server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-
-/** What the page says about Bloom's own genomes above the browser. */
-function bloomGenomesNote(count: number, error: string | null): string {
-  if (error) {
-    return `Bloom's own genomes could not be loaded (${error}). The reference genomes below still work.`;
-  }
-  if (count === 0) {
-    return "Bloom has no browsable genome versions yet; a version becomes browsable once its browser files are built. The reference genomes below are served from outside Bloom.";
-  }
-  return `${count} Bloom genome version${count === 1 ? "" : "s"} listed with the reference genomes; a version appears once its browser files are built.`;
-}
 
 export default async function GenomeBrowser({
   searchParams,
@@ -23,14 +17,19 @@ export default async function GenomeBrowser({
   const loaded = await loadBrowserConfig(supabase);
 
   const { genome } = await searchParams;
-  const link = typeof genome === "string" ? genome.trim() : "";
+  const link = (Array.isArray(genome) ? genome[0] : genome)?.trim() ?? "";
   let linkNotice: string | null = null;
   if (link && !loaded.error && !loaded.config.assemblies.some((a) => a.name === link)) {
-    try {
-      const reason = await whyNotOffered(supabase, link);
-      linkNotice = reason ? notOfferedMessage(link, reason) : `${link} could not be opened.`;
-    } catch (err) {
-      linkNotice = `${link} could not be opened: ${err instanceof Error ? err.message : String(err)}`;
+    if (!parseGenomeVersion(link)) {
+      linkNotice = INVALID_LINK_MESSAGE;
+    } else {
+      try {
+        const reason = await whyNotOffered(supabase, link);
+        linkNotice = reason ? notOfferedMessage(link, reason) : `${link} could not be opened.`;
+      } catch (err) {
+        console.error("[genome browser]", err);
+        linkNotice = `${link} could not be checked.`;
+      }
     }
   }
 
@@ -40,7 +39,7 @@ export default async function GenomeBrowser({
       <p className="px-4 text-sm text-stone-600">
         {bloomGenomesNote(loaded.bloomGenomes.length, loaded.error)}
       </p>
-      <JBrowseClient initial={loaded} />
+      <JBrowseClient loaded={loaded} />
     </div>
   );
 }
