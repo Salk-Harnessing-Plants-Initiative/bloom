@@ -76,6 +76,8 @@ describe("bloomGenomeConfig", () => {
     expect(track.assemblyNames).toEqual(["athaliana.col-0.hpiv02.v2"]);
     expect(track.description).toBe("Browser build 7");
     expect(track.formatDetails.feature).toContain("/app/orthofinder?search=");
+    // JBrowse 4.3 hands formatDetails a plain object; get() would throw and blank the panel.
+    expect(track.formatDetails.feature).not.toContain("get(");
     expect(track.adapter).toEqual({
       type: "Gff3TabixAdapter",
       gffGzLocation: loc("/app/jbrowse/files/7/gff3"),

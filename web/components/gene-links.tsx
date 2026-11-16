@@ -17,7 +17,9 @@ import {
 } from "@/lib/jbrowse/gene-links";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 
-const LINK = "text-lime-700 hover:underline";
+const LINK =
+  "rounded border border-lime-600 px-1.5 py-0.5 text-lime-700 hover:bg-lime-50";
+const OFF = "cursor-help rounded border border-stone-200 px-1.5 py-0.5 text-stone-400";
 
 /** A dataset's browsable genome, or why it has none; asked once per dataset per page. */
 const datasetBuilds = new Map<number, Promise<ReadyBuild | NoPlaceReason>>();
@@ -50,13 +52,13 @@ export function GeneLinks({
   build: ReadyBuild | NoPlaceReason | undefined;
 }) {
   return (
-    <span className="ml-2 inline-flex gap-2 whitespace-nowrap font-sans text-[10px] font-normal">
+    <span className="ml-2 inline-flex gap-1.5 whitespace-nowrap align-middle font-sans text-[11px] font-normal">
       {build && typeof build !== "string" ? (
         <Link href={geneInGenomeLink(build.assembly, gene)} className={LINK} title={`Open ${gene} in ${build.label}`}>
           Genome browser
         </Link>
       ) : (
-        <span className="cursor-help text-stone-300" title={build ? NO_PLACE_TEXT[build] : "Looking up the genome…"}>
+        <span className={OFF} title={build ? NO_PLACE_TEXT[build] : "Looking up the genome…"}>
           Genome browser
         </span>
       )}
@@ -84,7 +86,7 @@ export function useDatasetGeneLinks(datasetId: number): (gene: string) => ReactN
 /** Links to each Bloom genome version holding a gene, then its orthologs. */
 export function BloomGenomeLinks({ gene, places }: { gene: string; places: GenePlace[] }) {
   return (
-    <span className="ml-2 inline-flex flex-wrap gap-2 whitespace-nowrap font-sans text-[10px] font-normal">
+    <span className="ml-2 inline-flex flex-wrap gap-1.5 align-middle font-sans text-[11px] font-normal">
       {places.map((place) => (
         <Link
           key={place.assembly}

@@ -20,6 +20,7 @@ export const navSections: NavSection[] = [
       { name: "Plate\nPhenotypes", href: "/app/plate-phenotypes" },
       { name: "Traits", href: "/app/traits" },
       { name: "Genes", href: "/app/genes" },
+      { name: "Genome\nBrowser", href: "/app/jbrowse" },
       { name: "Expression", href: "/app/expression" },
       { name: "Multi-dataset\nIntegration", href: "/app/integrations" },
     ],
