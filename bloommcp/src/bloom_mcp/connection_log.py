@@ -68,6 +68,7 @@ def reason(body: bytes) -> str:
             error = error.get("message")
         if isinstance(error, str):
             text = error
+    text = "".join(c if c.isprintable() else " " for c in text)
     text = " ".join(text.split())
     return text[:MAX_REASON_CHARS] or "(no body)"
 

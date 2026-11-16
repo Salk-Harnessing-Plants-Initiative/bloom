@@ -931,3 +931,11 @@ def test_a_rejected_connector_request_names_the_user(lookup, connection_lines):
         f"connector sign-in: {EMAIL}",
         f"mcp request rejected: 400 ok ({EMAIL})",
     ]
+
+
+def test_a_refused_connector_request_is_not_logged_as_rejected(
+    monkeypatch, connection_lines
+):
+    monkeypatch.setattr(supabase_client, "call_rpc", _FakeLookup(accounts={}))
+    _get(IdentityMiddleware(_RecordingApp()), _tunnel_headers(EMAIL))
+    assert connection_lines == []

@@ -234,7 +234,7 @@ class IdentityMiddleware:
 
             try:
                 identity = verify_identity_header(value)
-                who = "not via the connector"
+                who = None
             except IdentityConfigError as exc:
                 await _json_response(scope, receive, send, status=500, error=str(exc))
                 return
@@ -249,15 +249,18 @@ class IdentityMiddleware:
         async def _send(message):
             if message["type"] == "http.response.start":
                 response_status["status"] = message["status"]
-            elif _is_logged_rejection(response_status.get("status")):
+            elif who is not None and _is_logged_rejection(
+                response_status.get("status")
+            ):
                 room = MAX_ERROR_BODY_BYTES - len(error_body)
                 error_body.extend(message.get("body", b"")[:room])
             await send(message)
 
         await self.app(scope, receive, _send if should_record else send)
 
+        # Only connector requests: the log is for diagnosing Salk users' connections.
         status = response_status.get("status")
-        if should_record and _is_logged_rejection(status):
+        if who is not None and _is_logged_rejection(status):
             connection_log.rejected(status, bytes(error_body), who)
 
         if should_record and response_status.get("status") != 401:

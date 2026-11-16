@@ -9,6 +9,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from bloom_mcp import connection_log as cl
+from bloom_mcp import tunnel
 from bloom_mcp.identity import MAX_ERROR_BODY_BYTES, IdentityMiddleware
 
 MISSING_SESSION = json.dumps(
@@ -44,6 +45,25 @@ def _no_usage_recording(monkeypatch):
     monkeypatch.setattr(usage, "record_usage_async", lambda i, a: None)
 
 
+EMAIL = "jdoe@salk.edu"
+
+
+@pytest.fixture(autouse=True)
+def connector(monkeypatch):
+    """Every request arrives through the Salk connector as EMAIL, unless a test says not."""
+
+    async def salk_user(headers):
+        return EMAIL
+
+    async def bloom_user(email):
+        return "00000000-0000-0000-0000-000000000001"
+
+    monkeypatch.setattr(tunnel, "is_tunnel_request", lambda headers: True)
+    monkeypatch.setattr(tunnel, "api_key", lambda: "test-api-key")
+    monkeypatch.setattr(tunnel, "salk_user", salk_user)
+    monkeypatch.setattr(tunnel, "bloom_user", bloom_user)
+
+
 class _App:
     """Responds with ``status`` and ``chunks`` as the body, in that many messages."""
 
@@ -69,7 +89,14 @@ def test_a_rejected_request_logs_its_status_and_reason(lines, status):
     resp = _post(_App(status, MISSING_SESSION))
     assert resp.status_code == status
     reason = "Bad Request: Missing session ID"
-    assert lines == [f"mcp request rejected: {status} {reason} (not via the connector)"]
+    assert lines == [f"mcp request rejected: {status} {reason} ({EMAIL})"]
+
+
+def test_a_request_not_via_the_connector_is_not_logged(lines, monkeypatch):
+    monkeypatch.setattr(tunnel, "is_tunnel_request", lambda headers: False)
+    resp = _post(_App(404, MISSING_SESSION), path="/nope")
+    assert resp.status_code == 404
+    assert lines == []
 
 
 @pytest.mark.parametrize("status", [200, 202, 401, 500])
@@ -108,6 +135,9 @@ def test_only_the_start_of_a_long_body_is_kept(lines, monkeypatch):
         (b"", "(no body)"),
         (b'{"detail": "x"}', '{"detail": "x"}'),
         (b"\xff\xfe", "\ufffd\ufffd"),
+        (b'{"error": {"code": -32600}}', '{"error": {"code": -32600}}'),
+        (b'{"error": 404}', '{"error": 404}'),
+        (b"esc\x1b[31m bel\x07 nul\x00 del\x7f", "esc [31m bel nul del"),
     ],
 )
 def test_reason_reads_the_error_message(body, expected):
@@ -155,3 +185,20 @@ def test_a_body_cut_mid_json_still_logs_the_message(lines):
 )
 def test_reason_reads_a_cut_message(body, expected):
     assert cl.reason(body) == expected
+
+
+def test_the_real_sdk_rejection_logs_its_message(lines, monkeypatch):
+    # The MCP SDK's own 400, so an SDK change to its error body fails here.
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret")
+    from bloom_mcp import server
+
+    with TestClient(server.build_app()) as client:
+        resp = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={"Accept": "application/json, text/event-stream"},
+        )
+    assert resp.status_code == 400
+    assert lines == [
+        f"mcp request rejected: 400 Bad Request: Missing session ID ({EMAIL})"
+    ]
