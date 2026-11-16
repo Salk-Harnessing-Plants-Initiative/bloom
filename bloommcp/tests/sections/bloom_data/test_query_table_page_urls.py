@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from bloom_mcp.data_access.table_ports import ColumnsChanged
 from bloom_mcp.sections.bloom_data.query_table import query_table
 
 SITE = "https://bloom.example"
@@ -51,3 +52,25 @@ def test_tables_without_a_page_are_unchanged(reader, monkeypatch):
     monkeypatch.setenv("SITE_URL", SITE)
     result = query_table({"table": "species", "columns": ["id"], "limit": 2})
     assert result.rows == [{"id": 1}, {"id": 2}]
+
+
+def test_a_link_column_missing_live_costs_the_link_not_the_read(
+    experiments, monkeypatch
+):
+    for row in experiments.tables["cyl_experiments"]:
+        del row["species_id"]
+    select = experiments.select
+
+    def live_select(table, columns, *args):
+        # PostgREST refuses a select naming a column the table doesn't have.
+        known = {c.name for c in experiments.table_columns()[table]}
+        if set(columns) - known:
+            raise ColumnsChanged("column dropped")
+        return select(table, columns, *args)
+
+    monkeypatch.setattr(experiments, "select", live_select)
+    result = query_table({"table": "cyl_experiments", "columns": ["name"]})
+    assert result.rows == [
+        {"name": "T3 HORST MYB Nile Red CYL"},
+        {"name": "no species yet"},
+    ]

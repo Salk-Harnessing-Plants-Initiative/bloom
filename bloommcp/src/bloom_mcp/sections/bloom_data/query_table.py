@@ -139,7 +139,12 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     order = _order(params.table, params.order_by, params.descending)
 
     linked = params.table in page_links.PAGE_LINKS
-    link_columns = page_links.page_columns(params.table) if linked else []
+    # Only readable link columns, so a column missing live costs the link, not the read.
+    link_columns = (
+        [c for c in page_links.page_columns(params.table) if c in allowed]
+        if linked
+        else []
+    )
     selected = list(dict.fromkeys([*columns, *link_columns]))
     rows = _ports.table_reader().select(
         params.table, selected, filters, order, params.limit + 1, params.offset
