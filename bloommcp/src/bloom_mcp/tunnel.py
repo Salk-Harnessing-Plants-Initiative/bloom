@@ -308,6 +308,7 @@ async def bloom_user(email: str) -> str:
     """The Bloom account id for ``email``, from the cache or the database."""
     cached = _cached(email)
     if cached is not None:
+        connection_log.signed_in(email)
         return cached
     try:
         user_id = await anyio.to_thread.run_sync(_query, email)

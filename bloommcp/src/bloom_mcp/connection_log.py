@@ -6,9 +6,16 @@ import json
 import logging
 import re
 import sys
+import threading
+import time
+from collections import OrderedDict
 
 # Long enough for an MCP SDK error message; a response body is never logged whole.
 MAX_REASON_CHARS = 200
+# A user is logged as signed in again only after this long without a request.
+SIGN_IN_GAP_SECONDS = 3600
+# Users whose last request is remembered; the least recent is forgotten first.
+MAX_TRACKED_USERS = 1024
 # The start of a JSON "message" value, for a body cut before its JSON ends.
 _CUT_MESSAGE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)')
 
@@ -19,8 +26,27 @@ if not connection_log.handlers:
     connection_log.addHandler(logging.StreamHandler(sys.stdout))
 
 
+_now = time.monotonic
+_last_seen: OrderedDict[str, float] = OrderedDict()
+_last_seen_lock = threading.Lock()
+
+
 def signed_in(email: str) -> None:
-    connection_log.info("connector sign-in: %s", email)
+    """Call on every admitted connector request; logs a user's first one after a gap."""
+    now = _now()
+    with _last_seen_lock:
+        last = _last_seen.get(email)
+        _last_seen[email] = now
+        _last_seen.move_to_end(email)
+        while len(_last_seen) > MAX_TRACKED_USERS:
+            _last_seen.popitem(last=False)
+    if last is None or now - last > SIGN_IN_GAP_SECONDS:
+        connection_log.info("connector sign-in: %s", email)
+
+
+def forget_sign_ins() -> None:
+    with _last_seen_lock:
+        _last_seen.clear()
 
 
 def rejected(status: int, body: bytes, who: str) -> None:

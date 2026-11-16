@@ -878,17 +878,51 @@ class _Lines(logging.Handler):
 
 @pytest.fixture
 def connection_lines():
+    connection_log.forget_sign_ins()
     handler = _Lines()
     connection_log.connection_log.addHandler(handler)
     yield handler.lines
     connection_log.connection_log.removeHandler(handler)
+    connection_log.forget_sign_ins()
 
 
-def test_a_sign_in_is_logged_once_per_lookup(lookup, connection_lines):
+@pytest.fixture
+def clock(monkeypatch):
+    """One clock for the account cache and the sign-in log."""
+    now = [1000.0]
+    monkeypatch.setattr(tunnel, "_now", lambda: now[0])
+    monkeypatch.setattr(connection_log, "_now", lambda: now[0])
+    return now
+
+
+def test_an_active_user_is_logged_once_across_cache_expiries(
+    lookup, connection_lines, clock
+):
+    middleware = IdentityMiddleware(_RecordingApp())
+    for _ in range(5):
+        _get(middleware, _tunnel_headers(EMAIL))
+        clock[0] += tunnel.CACHE_TTL_SECONDS + 1
+    assert len(lookup.calls) == 5
+    assert connection_lines == [f"connector sign-in: {EMAIL}"]
+
+
+def test_a_user_back_after_a_gap_is_logged_again(lookup, connection_lines, clock):
     middleware = IdentityMiddleware(_RecordingApp())
     _get(middleware, _tunnel_headers(EMAIL))
+    clock[0] += connection_log.SIGN_IN_GAP_SECONDS + 1
     _get(middleware, _tunnel_headers(EMAIL))
-    assert connection_lines == [f"connector sign-in: {EMAIL}"]
+    assert connection_lines == [f"connector sign-in: {EMAIL}"] * 2
+
+
+def test_each_user_is_logged(lookup, connection_lines):
+    lookup.accounts["other@salk.edu"] = str(uuid.uuid4())
+    middleware = IdentityMiddleware(_RecordingApp())
+    _get(middleware, _tunnel_headers(EMAIL))
+    _get(middleware, _tunnel_headers("other@salk.edu"))
+    assert connection_lines == [
+        f"connector sign-in: {EMAIL}",
+        "connector sign-in: other@salk.edu",
+    ]
 
 
 def test_a_rejected_connector_request_names_the_user(lookup, connection_lines):
