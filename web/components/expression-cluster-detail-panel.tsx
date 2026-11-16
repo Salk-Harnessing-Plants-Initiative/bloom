@@ -10,6 +10,7 @@ import {
   type OneVsRest,
 } from "@/components/expression-lib/cluster-markers";
 import type { TransgeneCount } from "@/components/expression-lib/transgene";
+import { useDatasetGeneLinks } from "@/components/gene-links";
 
 export interface ExpressionClusterDetailPanelProps {
   datasetId: number;
@@ -38,6 +39,7 @@ export function ExpressionClusterDetailPanel({
   cellCount,
   onShowFullList,
 }: ExpressionClusterDetailPanelProps) {
+  const geneLinks = useDatasetGeneLinks(datasetId);
   const [stats, setStats] = useState<ClusterStatsRow | null>(null);
   // Without stored markers, the top of the dataset's one-vs-rest analysis.
   const [deMarkers, setDeMarkers] = useState<ClusterMarkers | null>(null);
@@ -191,6 +193,7 @@ export function ExpressionClusterDetailPanel({
                     ) : (
                       <span className="font-mono">{m.gene}</span>
                     )}
+                    {geneLinks(m.gene)}
                     {mixedSources && m.source && (
                       <span className="ml-1 rounded bg-stone-100 px-1 text-[9px] uppercase tracking-wide text-stone-500">
                         {m.source}

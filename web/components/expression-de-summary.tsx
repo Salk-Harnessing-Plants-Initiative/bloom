@@ -38,7 +38,9 @@ type Loaded = { results: PassingResult[]; truncated: boolean };
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
 
 /** Every cell type of the analysis at once, at the tab's cuts. */
-export default function DeSummary({ comparisons, cuts, onSelect }: {
+export default function DeSummary({ comparisons, cuts, onSelect, geneLinks }: {
+  /** Links shown after each gene name. */
+  geneLinks?: (gene: string) => React.ReactNode;
   /** The analysis's comparisons, as the panel read them. */
   comparisons: DeEntry[];
   cuts: Cuts;
@@ -184,11 +186,11 @@ export default function DeSummary({ comparisons, cuts, onSelect }: {
             </Tabs>
             {tab === 0 && (
               <GenesTable tally={tally} groups={groups} showContrast={showContrast}
-                          coloured={coloured} onSelect={onSelect} />
+                          coloured={coloured} onSelect={onSelect} geneLinks={geneLinks} />
             )}
             {tab === 1 && (
               <ResultsTable places={places} showContrast={showContrast}
-                            coloured={coloured} onSelect={onSelect} />
+                            coloured={coloured} onSelect={onSelect} geneLinks={geneLinks} />
             )}
             {tab === 2 && <CellTypeGrid grid={grid} coloured={coloured} onSelect={onSelect} />}
           </>

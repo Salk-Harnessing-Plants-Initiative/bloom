@@ -15,6 +15,7 @@ import {
   type UnavailableReason,
 } from "./bloom-genomes";
 import { browserConfig } from "./config";
+import { browserLink, isRegion, placeGenes } from "./gene-links";
 
 /** How long a signed build-file URL works, in seconds. */
 export const SIGNED_URL_TTL_S = 3600;
@@ -82,11 +83,12 @@ export async function loadBrowserConfig(supabase: Client): Promise<LoadedBrowser
     return {
       config: mergeBrowserConfig(outside, genomes),
       bloomGenomes: genomes.map((g) => assemblyName(g.genome, g.version)),
+      bloomBuilds: Object.fromEntries(genomes.map((g) => [assemblyName(g.genome, g.version), g.buildId])),
       error: null,
     };
   } catch (err) {
     console.error("[genome browser]", err);
-    return { config: outside, bloomGenomes: [], error: "Bloom's own genomes could not be read." };
+    return { config: outside, bloomGenomes: [], bloomBuilds: {}, error: "Bloom's own genomes could not be read." };
   }
 }
 
@@ -142,4 +144,21 @@ export async function signBuildFile(
   if (signError) return { status: "failed", reason: `signing ${path}: ${signError.message}` };
   const url = toPublicStorageUrl(signed?.signedUrl);
   return url ? { status: "signed", url } : { status: "failed", reason: `no signed URL for ${path}` };
+}
+
+/** Where a `?genome=<offered version>&loc=<gene>` link should go instead: the gene's span, or the
+ * whole genome with the gene named as missing; null when `loc` needs no lookup. */
+export async function geneLinkRedirect(
+  supabase: Client,
+  loaded: Pick<LoadedBrowserConfig, "bloomBuilds">,
+  link: string,
+  loc: string,
+): Promise<string | null> {
+  const buildId = loaded.bloomBuilds[link];
+  if (buildId === undefined || !loc || isRegion(loc)) return null;
+  const places = await placeGenes(supabase, { buildId, assembly: link, label: link }, [loc]);
+  const place = places.get(loc);
+  return place
+    ? browserLink(place)
+    : `/app/jbrowse?genome=${encodeURIComponent(link)}&missing=${encodeURIComponent(loc)}`;
 }

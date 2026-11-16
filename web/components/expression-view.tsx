@@ -27,6 +27,7 @@ import {
 } from "@/components/expression-lib/cell-type-labels";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 import type { DeFocus } from "@/components/expression-lib/de-types";
+import { useDatasetGeneLinks } from "@/components/gene-links";
 import type { Database } from "@/lib/database.types";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
@@ -60,6 +61,7 @@ const NOTHING_FOCUSED: ReadonlySet<string> = new Set();
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
 export function ExpressionView({ datasetId, onShowDe }: ExpressionViewProps) {
+  const geneLinks = useDatasetGeneLinks(datasetId);
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
@@ -304,7 +306,8 @@ export function ExpressionView({ datasetId, onShowDe }: ExpressionViewProps) {
             </span>
           ) : geneName && dataRange ? (
             <span className="text-xs text-stone-500">
-              Cells are coloured by {geneName}; clear the search to see cell types again.
+              Cells are coloured by {geneName}
+              {geneLinks(geneName)}; clear the search to see cell types again.
             </span>
           ) : geneName ? (
             <span className="text-xs text-stone-500" role="status">

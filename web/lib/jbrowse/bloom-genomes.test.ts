@@ -75,6 +75,7 @@ describe("bloomGenomeConfig", () => {
     expect(track.trackId).toBe(geneTrackId("athaliana.col-0.hpiv02.v2"));
     expect(track.assemblyNames).toEqual(["athaliana.col-0.hpiv02.v2"]);
     expect(track.description).toBe("Browser build 7");
+    expect(track.formatDetails.feature).toContain("/app/orthofinder?search=");
     expect(track.adapter).toEqual({
       type: "Gff3TabixAdapter",
       gffGzLocation: loc("/app/jbrowse/files/7/gff3"),

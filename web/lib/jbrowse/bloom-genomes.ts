@@ -16,6 +16,8 @@ export interface BloomGenome {
 export interface LoadedBrowserConfig {
   config: BrowserConfig;
   bloomGenomes: string[];
+  /** Each Bloom genome version's browser build ID, by assembly name. */
+  bloomBuilds: Record<string, number>;
   /** A short reason Bloom's genomes are missing; the outside assemblies are still in `config`. */
   error: string | null;
 }
@@ -26,6 +28,10 @@ export type BuildRole = (typeof BUILD_ROLES)[number];
 
 /** Largest version number a link can name (the column is a Postgres integer). */
 const MAX_VERSION = 2_147_483_647;
+
+/** A gene's details in the browser gain a link to its orthologs on Bloom's OrthoFinder page. */
+export const ORTHOLOGS_DETAIL =
+  "jexl:get(feature,'gene_id') ? {Orthologs: '<a href=\"/app/orthofinder?search=' + get(feature,'gene_id') + '\">Find orthologs</a>'} : {}";
 
 /** The stable Bloom address of one build file; it redirects to a freshly signed storage URL. */
 export function buildFileUri(buildId: number, role: BuildRole): string {
@@ -79,6 +85,7 @@ export function bloomGenomeConfig(g: BloomGenome) {
       trackId: geneTrackId(name),
       name: `${g.genome} v${g.version} genes`,
       description: `Browser build ${g.buildId}`,
+      formatDetails: { feature: ORTHOLOGS_DETAIL },
       assemblyNames: [name],
       adapter: {
         type: "Gff3TabixAdapter",
