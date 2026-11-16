@@ -121,3 +121,37 @@ def test_reason_is_capped():
 def test_the_logger_prints_itself_at_info():
     assert cl.connection_log.propagate is False
     assert cl.connection_log.isEnabledFor(logging.INFO)
+
+
+VALIDATION_ERROR = json.dumps(
+    {
+        "jsonrpc": "2.0",
+        "id": "server-error",
+        "error": {
+            "code": -32602,
+            "message": "Validation error: 4 validation errors for JSONRPCMessage\n"
+            + "params\n  Input should be a valid dictionary " * 40,
+        },
+    }
+).encode()
+
+
+def test_a_body_cut_mid_json_still_logs_the_message(lines):
+    assert len(VALIDATION_ERROR) > MAX_ERROR_BODY_BYTES
+    _post(_App(400, VALIDATION_ERROR))
+    assert lines[0].startswith(
+        "mcp request rejected: 400 Validation error: 4 validation errors for "
+        "JSONRPCMessage params Input should be"
+    )
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (b'{"error": {"message": "Bad \\"quoted\\" input', 'Bad "quoted" input'),
+        (b'{"error": {"message": "cut in an escape \\u00', "cut in an escape \\u00"),
+        (b'{"error": {"code": -1, "mess', '{"error": {"code": -1, "mess'),
+    ],
+)
+def test_reason_reads_a_cut_message(body, expected):
+    assert cl.reason(body) == expected
