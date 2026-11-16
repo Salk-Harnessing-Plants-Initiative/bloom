@@ -4,9 +4,13 @@ export interface LaunchTarget {
   loc: string;
 }
 
-/** The `?reference=<assembly>&gene=<gene>` link from the genes page; null when either is missing. */
+/** Where a link opens: `?genome=<name>.v<N>&loc=<gene or region>` for a Bloom genome version,
+ * or the genes page's `?reference=<assembly>&gene=<gene>`; null when neither pair is complete. */
 export function launchTarget(params: URLSearchParams): LaunchTarget | null {
-  const assembly = params.get("reference")?.trim();
-  const loc = params.get("gene")?.trim();
-  return assembly && loc ? { assembly, loc } : null;
+  for (const [assemblyKey, locKey] of [["genome", "loc"], ["reference", "gene"]]) {
+    const assembly = params.get(assemblyKey)?.trim();
+    const loc = params.get(locKey)?.trim();
+    if (assembly && loc) return { assembly, loc };
+  }
+  return null;
 }

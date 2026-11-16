@@ -13,7 +13,28 @@ describe("launchTarget", () => {
     });
   });
 
-  it.each(["", "reference=Athaliana.Col-0.HPIv02", "gene=AT1G01010", "reference=%20&gene=X"])(
+  it("opens a Bloom genome version at a gene or region", () => {
+    expect(launchTarget(params("genome=at.col0.v2&loc=Chr1:100..200"))).toEqual({
+      assembly: "at.col0.v2",
+      loc: "Chr1:100..200",
+    });
+  });
+
+  it("prefers the genome link when a URL carries both", () => {
+    expect(launchTarget(params("genome=at.col0.v2&loc=AT1G01010&reference=R&gene=G"))?.assembly).toBe(
+      "at.col0.v2",
+    );
+  });
+
+  it.each([
+    "",
+    "reference=Athaliana.Col-0.HPIv02",
+    "gene=AT1G01010",
+    "reference=%20&gene=X",
+    "genome=at.col0.v2",
+    "loc=Chr1:1..2",
+    "genome=at.col0.v2&gene=X",
+  ])(
     "opens nothing for %j",
     (query) => {
       expect(launchTarget(params(query))).toBeNull();
