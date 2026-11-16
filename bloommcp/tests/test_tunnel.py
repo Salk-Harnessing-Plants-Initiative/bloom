@@ -13,6 +13,7 @@ validation and the real app.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 
@@ -21,7 +22,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from starlette.testclient import TestClient
 
-from bloom_mcp import auth, signup_email, supabase_client, tunnel
+from bloom_mcp import auth, connection_log, signup_email, supabase_client, tunnel
 from bloom_mcp.identity import IdentityMiddleware
 
 SECRET = "s" * 40
@@ -861,3 +862,38 @@ def test_a_bad_token_requests_no_signup_email(lookup, signup_requests):
     headers = [("X-Bloom-Tunnel", SECRET), ("Authorization", "Bearer not-a-token")]
     assert _get(IdentityMiddleware(_RecordingApp()), headers).status_code == 403
     assert signup_requests == []
+
+
+# --- Connection log ---------------------------------------------------------
+
+
+class _Lines(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.lines: list[str] = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
+@pytest.fixture
+def connection_lines():
+    handler = _Lines()
+    connection_log.connection_log.addHandler(handler)
+    yield handler.lines
+    connection_log.connection_log.removeHandler(handler)
+
+
+def test_a_sign_in_is_logged_once_per_lookup(lookup, connection_lines):
+    middleware = IdentityMiddleware(_RecordingApp())
+    _get(middleware, _tunnel_headers(EMAIL))
+    _get(middleware, _tunnel_headers(EMAIL))
+    assert connection_lines == [f"connector sign-in: {EMAIL}"]
+
+
+def test_a_rejected_connector_request_names_the_user(lookup, connection_lines):
+    _get(IdentityMiddleware(_RecordingApp(status=400)), _tunnel_headers(EMAIL))
+    assert connection_lines == [
+        f"connector sign-in: {EMAIL}",
+        f"mcp request rejected: 400 ok ({EMAIL})",
+    ]

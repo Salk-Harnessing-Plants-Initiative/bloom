@@ -58,7 +58,11 @@ import re
 
 import jwt
 
+from bloom_mcp import connection_log
+
 ANONYMOUS = "anonymous"
+# Enough of a rejected response's body to hold its error message.
+MAX_ERROR_BODY_BYTES = 1024
 
 _UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
@@ -209,7 +213,8 @@ class IdentityMiddleware:
         if path != "/health" and tunnel.is_tunnel_request(headers):
             try:
                 key = tunnel.api_key()
-                identity = await tunnel.bloom_user(await tunnel.salk_user(headers))
+                who = await tunnel.salk_user(headers)
+                identity = await tunnel.bloom_user(who)
             except tunnel.TunnelRefusal as exc:
                 await _refuse_tunnel_request(scope, receive, send, exc)
                 return
@@ -229,6 +234,7 @@ class IdentityMiddleware:
 
             try:
                 identity = verify_identity_header(value)
+                who = "not via the connector"
             except IdentityConfigError as exc:
                 await _json_response(scope, receive, send, status=500, error=str(exc))
                 return
@@ -238,13 +244,21 @@ class IdentityMiddleware:
 
         should_record = path != "/health"
         response_status: dict[str, int] = {}
+        error_body = bytearray()
 
         async def _send(message):
             if message["type"] == "http.response.start":
                 response_status["status"] = message["status"]
+            elif _is_logged_rejection(response_status.get("status")):
+                room = MAX_ERROR_BODY_BYTES - len(error_body)
+                error_body.extend(message.get("body", b"")[:room])
             await send(message)
 
         await self.app(scope, receive, _send if should_record else send)
+
+        status = response_status.get("status")
+        if should_record and _is_logged_rejection(status):
+            connection_log.rejected(status, bytes(error_body), who)
 
         if should_record and response_status.get("status") != 401:
             from bloom_mcp.storage_backend import is_local_backend
@@ -259,6 +273,11 @@ class IdentityMiddleware:
                 from bloom_mcp.usage import record_usage_async
 
                 record_usage_async(identity or ANONYMOUS, _action_from_path(path))
+
+
+def _is_logged_rejection(status: int | None) -> bool:
+    """A 4xx other than 401; a 401 is a caller without the API key, not a connector problem."""
+    return status is not None and 400 <= status < 500 and status != 401
 
 
 async def _read_body(receive, limit: int) -> bytes | None:
