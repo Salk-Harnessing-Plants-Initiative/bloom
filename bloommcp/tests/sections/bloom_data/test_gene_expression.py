@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -82,6 +83,9 @@ TABLES = {
         {"id": 12, "dataset_id": 3, "gene_name": "AT2G02020"},
         {"id": 13, "dataset_id": 3, "gene_name": "AT3G03030"},
         {"id": 14, "dataset_id": 3, "gene_name": "Glyma.01G000100"},
+        # Listed by symbol: PDF1.2 is its own gene, not PDF1.
+        {"id": 15, "dataset_id": 3, "gene_name": "PDF1"},
+        {"id": 16, "dataset_id": 3, "gene_name": "PDF1.2"},
     ],
     "scrna_counts": [
         {
@@ -108,6 +112,23 @@ TABLES = {
         {
             "gene_id": "AT4G28110.Araport11.447",
             "symbol": "MYB41",
+            "standard_name": None,
+            "short_description": None,
+            "ortho_group": None,
+            "reference_id": None,
+        },
+        # One symbol on two genes.
+        {
+            "gene_id": "AT2G02020.Araport11.1",
+            "symbol": "PAIR",
+            "standard_name": None,
+            "short_description": None,
+            "ortho_group": None,
+            "reference_id": None,
+        },
+        {
+            "gene_id": "AT3G03030.Araport11.1",
+            "symbol": "PAIR",
             "standard_name": None,
             "short_description": None,
             "ortho_group": None,
@@ -248,3 +269,52 @@ def test_a_name_in_another_case_still_finds_the_datasets_gene(bloom):
     [gene] = _run(["glyma.01g000100"]).genes
     assert gene.gene_name == "Glyma.01G000100"
     assert gene.note == "This dataset stores no expression for this gene."
+
+
+def test_a_symbol_is_never_trimmed_to_another_gene(bloom):
+    [gene] = _run(["PDF1.2"]).genes
+    assert gene.gene_name == "PDF1.2"
+
+
+def test_an_agi_transcript_finds_the_datasets_gene(bloom):
+    [gene] = _run(["AT4G28110.1"]).genes
+    assert gene.gene_name == "AT4G28110"
+    assert gene.groups
+
+
+def test_at_most_max_genes_are_read_in_all_and_the_rest_are_named(bloom, monkeypatch):
+    monkeypatch.setattr(ge, "MAX_GENES", 2)
+    result = _run(["AT4G28110", "PAIR"])
+    assert [(g.requested, g.gene_name) for g in result.genes] == [
+        ("AT4G28110", "AT4G28110"),
+        ("PAIR", "AT2G02020"),
+    ]
+    [note] = result.notes
+    assert "not read: AT3G03030." in note
+
+
+def test_no_note_when_every_match_is_read(bloom):
+    assert _run(["PAIR"]).notes == []
+
+
+def _size(result):
+    return len(json.dumps(result.model_dump(), default=str))
+
+
+def test_genes_are_left_out_from_the_end_to_fit_one_reply(bloom, monkeypatch):
+    full = _run(["AT4G28110", "AT1G01010"], split="genotype")
+    monkeypatch.setattr(ge, "MAX_REPLY_CHARS", _size(full) - 1)
+    first, last = _run(["AT4G28110", "AT1G01010"], split="genotype").genes
+    assert first.groups == full.genes[0].groups
+    assert last.groups == []
+    assert last.note == (
+        "Left out to fit one reply: ask for this gene in its own call or without split."
+    )
+
+
+def test_every_gene_is_left_out_when_none_fits(bloom, monkeypatch):
+    monkeypatch.setattr(ge, "MAX_REPLY_CHARS", 10)
+    result = _run(["AT4G28110", "AT1G01010"])
+    assert result.returned == 0
+    assert all(g.note.startswith("Left out to fit one reply") for g in result.genes)
+    assert all(not g.note.endswith("without split.") for g in result.genes)

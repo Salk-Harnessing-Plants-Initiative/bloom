@@ -181,9 +181,10 @@ def find_genes(reads: Reads, name: str) -> list[dict[str, Any]]:
 
 
 def scrna_names(reads: Reads, name: str) -> list[str]:
-    """The names a scRNA dataset may list `name` under: the name, its stem and upper-case
-    forms, and the plain AGI id of each Bloom gene it names (MYB41 -> AT4G28110)."""
-    names = {name, name.upper(), stem(name), stem(name).upper()}
+    """The names a scRNA dataset may list `name` under: the name, its upper-case form, and
+    the plain AGI id of each Bloom gene it names (MYB41 -> AT4G28110). Only ids lose a
+    transcript number, never symbols (PDF1.2 isn't PDF1)."""
+    names = {name, name.upper()}
     if agi_id := bare_agi(name):
         names.add(agi_id)
     for gene in find_genes(reads, name):
