@@ -26,8 +26,13 @@ vi.mock("next/navigation", () => ({
     throw new Error("NEXT_NOT_FOUND");
   },
 }));
+/** The props the cockpit was last given. */
+const cockpit = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
 vi.mock("@/components/expression-cockpit", () => ({
-  ExpressionCockpit: () => <div data-testid="cockpit" />,
+  ExpressionCockpit: (props: Record<string, unknown>) => {
+    cockpit.props = props;
+    return <div data-testid="cockpit" />;
+  },
 }));
 vi.mock("@/components/expression-dataset-banner", () => ({ default: () => null }));
 vi.mock("@/components/scientist-badge", () => ({ default: () => null }));
@@ -48,8 +53,13 @@ vi.mock("@/lib/rnaseq-reports", async (importOriginal) => ({
 
 import Dataset from "./page";
 
-async function renderPage() {
-  render(await Dataset({ params: Promise.resolve({ datasetId: "1", speciesId: "2" }) }));
+async function renderPage(searchParams?: { tab?: string; gene?: string | string[] }) {
+  render(
+    await Dataset({
+      params: Promise.resolve({ datasetId: "1", speciesId: "2" }),
+      searchParams: searchParams && Promise.resolve(searchParams),
+    }),
+  );
 }
 
 beforeEach(() => {
@@ -77,6 +87,25 @@ describe("the dataset page", () => {
     };
     await renderPage();
     expect(screen.getByTestId("cockpit")).toBeTruthy();
+  });
+
+  it("opens the cockpit on the tab and genes the link names", async () => {
+    lookup.result = {
+      data: { id: 1, name: "MYB41", kind: "full", species: { common_name: "thale cress" }, people: null },
+      error: null,
+    };
+    await renderPage({ tab: "genes", gene: ["AT4G28110,AT1G01010", "AT4G28110"] });
+    expect(cockpit.props?.initialTab).toBe("genes");
+    expect(cockpit.props?.genes).toEqual(["AT4G28110", "AT1G01010"]);
+  });
+
+  it("opens the cockpit on no genes without a gene in the link", async () => {
+    lookup.result = {
+      data: { id: 1, name: "MYB41", kind: "full", species: { common_name: "thale cress" }, people: null },
+      error: null,
+    };
+    await renderPage();
+    expect(cockpit.props?.genes).toEqual([]);
   });
 
   describe("the Cell Ranger QC section", () => {

@@ -17,6 +17,7 @@ import type { DeFocus } from "@/components/expression-lib/de-types";
 
 type Tab = "report" | "umap" | "genes" | "de" | "go"; // | "correlation" | "download";
 const TABS: readonly Tab[] = ["report", "umap", "genes", "de", "go"];
+const NO_GENES: readonly string[] = [];
 
 export interface ExpressionCockpitProps {
   datasetId: number;
@@ -25,6 +26,8 @@ export interface ExpressionCockpitProps {
   initialTab?: string;
   /** The run whose Cell Ranger report the Mapping report tab shows; no tab without one. */
   reportRunId?: number | null;
+  /** Genes named in the link (`?gene=`): Genes by cell type opens on them, UMAP on the first. */
+  genes?: readonly string[];
 }
 
 /** The tabs around a dataset: its mapping report (when its run stored one), UMAP, genes by cell
@@ -34,6 +37,7 @@ export function ExpressionCockpit({
   datasetName,
   initialTab,
   reportRunId = null,
+  genes = NO_GENES,
 }: ExpressionCockpitProps) {
   const available = TABS.filter((t) => t !== "report" || reportRunId !== null);
   const first = available.find((t) => t === initialTab) ?? "umap";
@@ -95,12 +99,17 @@ export function ExpressionCockpit({
         )}
         {opened.has("umap") && (
           <div hidden={tab !== "umap"}>
-            <ExpressionView datasetId={datasetId} datasetName={datasetName} onShowDe={showDe} />
+            <ExpressionView
+              datasetId={datasetId}
+              datasetName={datasetName}
+              onShowDe={showDe}
+              linkedGene={genes[0]}
+            />
           </div>
         )}
         {opened.has("genes") && (
           <div hidden={tab !== "genes"}>
-            <ExpressionGenesByCellType datasetId={datasetId} />
+            <ExpressionGenesByCellType datasetId={datasetId} linkedGenes={genes} />
           </div>
         )}
         {opened.has("de") && (

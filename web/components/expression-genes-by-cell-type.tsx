@@ -15,21 +15,26 @@ import {
   type Split,
 } from "@/components/expression-lib/gene-stats";
 import { createGeneReader, type GeneRead } from "@/components/expression-lib/gene-values";
+import { resolveLinkedGenes } from "@/components/expression-lib/linked-genes";
 import { loadStartingGenes } from "@/components/expression-lib/starting-genes";
 import {
   fetchClusters,
   fetchDataset,
+  searchGenes,
   type CellArraysRow,
 } from "@/components/expression-lib/scrna-client";
 import type { Database } from "@/lib/database.types";
 
 type Cluster = Database["public"]["Tables"]["scrna_clusters"]["Row"];
-type Source = "markers" | "de" | "none";
+type Source = "markers" | "de" | "link" | "none";
 
 /** Where the genes the tab opened on came from; `count` is how many it opened on. */
 function sourceNote(source: Source, count: number): string {
   if (source === "markers") {
     return "By default, each cell type's top marker genes. Add or remove genes as you like.";
+  }
+  if (source === "link") {
+    return "Opened on the genes in the link. Add or remove genes as you like.";
   }
   if (source === "de") {
     return `By default, ${count} ${count === 1 ? "gene" : "genes"} from the differential expression results (FDR < 0.05, |log2FC| > 0.5). Add or remove genes as you like.`;
@@ -48,7 +53,16 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 /** A dataset's genes against its cell types: a dot plot of the chosen genes,
  *  and one gene's distribution in each cell type, either split by genotype or
  *  transgene status. */
-export function ExpressionGenesByCellType({ datasetId }: { datasetId: number }) {
+const NO_LINKED_GENES: readonly string[] = [];
+
+/** `linkedGenes`, from the page's `?gene=`, replace the genes the tab would open on. */
+export function ExpressionGenesByCellType({
+  datasetId,
+  linkedGenes = NO_LINKED_GENES,
+}: {
+  datasetId: number;
+  linkedGenes?: readonly string[];
+}) {
   const reader = useMemo(() => createGeneReader(datasetId), [datasetId]);
   const activeReader = useRef(reader);
   const requested = useRef(new Set<string>());
@@ -61,6 +75,7 @@ export function ExpressionGenesByCellType({ datasetId }: { datasetId: number }) 
   const [source, setSource] = useState<Source | null>(null);
   const [startCount, setStartCount] = useState(0);
   const [startError, setStartError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState<string[]>([]);
   const [reads, setReads] = useState<ReadonlyMap<string, GeneRead>>(new Map());
   const [split, setSplit] = useState<Split>("none");
   const [perGene, setPerGene] = useState(true);
@@ -77,6 +92,7 @@ export function ExpressionGenesByCellType({ datasetId }: { datasetId: number }) 
     setGenes([]);
     setSource(null);
     setStartError(null);
+    setNotFound([]);
     setReads(new Map());
     setSplit("none");
     setChosen(null);
@@ -97,6 +113,15 @@ export function ExpressionGenesByCellType({ datasetId }: { datasetId: number }) 
         if (!cancelled) setLoadError(message(err));
         return;
       }
+      if (linkedGenes.length > 0) {
+        const linked = await resolveLinkedGenes(linkedGenes, (q, limit) => searchGenes(datasetId, q, limit));
+        if (cancelled) return;
+        setGenes(linked.genes);
+        setStartCount(linked.genes.length);
+        setNotFound(linked.notFound);
+        setSource("link");
+        return;
+      }
       try {
         const clusterIds = [...catalogue].sort((a, b) => a.ordinal - b.ordinal).map((c) => c.cluster_id);
         const start = await loadStartingGenes(datasetId, clusterIds);
@@ -113,7 +138,7 @@ export function ExpressionGenesByCellType({ datasetId }: { datasetId: number }) 
     return () => {
       cancelled = true;
     };
-  }, [datasetId, reader]);
+  }, [datasetId, reader, linkedGenes]);
 
   // Each gene is read once; one that failed for a reason other than having no
   // stored expression is read again if it is added again.
@@ -231,6 +256,9 @@ export function ExpressionGenesByCellType({ datasetId }: { datasetId: number }) 
         <div className="flex flex-col gap-1 text-xs text-stone-500" role="status">
           {source && <span>{sourceNote(source, startCount)}</span>}
           {loading > 0 && <span>Loading {loading} of {genes.length} genes…</span>}
+          {notFound.length > 0 && (
+            <span className="text-amber-800">Not in this dataset: {notFound.join(", ")}</span>
+          )}
           {missing.length > 0 && (
             <span className="text-amber-800">
               No stored expression in this dataset for: {missing.join(", ")}

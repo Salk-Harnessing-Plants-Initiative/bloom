@@ -27,6 +27,10 @@ vi.mock("@/components/expression-lib/gene-values", () => ({
 vi.mock("@/components/expression-lib/scrna-client", () => ({
   fetchClusters: vi.fn(async () => CLUSTERS),
   fetchDataset: vi.fn(async () => ({ expression_units: "log1p normalised counts" })),
+  // The page's gene search: prefix matches, ignoring case.
+  searchGenes: vi.fn(async (_dataset: number, q: string) =>
+    ["g1", "g2", "gX"].filter((g) => g.toLowerCase().startsWith(q.toLowerCase())),
+  ),
 }));
 
 vi.mock("@/components/expression-lib/starting-genes", () => ({
@@ -57,6 +61,18 @@ describe("the Genes by cell type tab", () => {
     ).toBeTruthy();
     expect(screen.getByText(/No stored expression in this dataset for: gX/)).toBeTruthy();
     expect(screen.getAllByTestId("dotplot-column")).toHaveLength(2);
+  });
+
+  it("opens on the genes in the link instead of its starting genes", async () => {
+    vi.mocked(loadStartingGenes).mockClear();
+    render(<ExpressionGenesByCellType datasetId={1} linkedGenes={["G2", "nope"]} />);
+    await waitFor(() => expect(screen.getAllByTestId("dotplot-row")).toHaveLength(1));
+    expect(screen.getByRole("heading", { name: "g2 expression by cell type" })).toBeTruthy();
+    expect(
+      screen.getByText("Opened on the genes in the link. Add or remove genes as you like."),
+    ).toBeTruthy();
+    expect(screen.getByText("Not in this dataset: nope")).toBeTruthy();
+    expect(loadStartingGenes).not.toHaveBeenCalled();
   });
 
   it("says how many genes it took from the DE results, when it opens on those", async () => {
