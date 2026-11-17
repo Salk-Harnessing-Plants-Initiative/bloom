@@ -61,7 +61,7 @@ which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on AIRC's sig
 - Someone refused for having no Bloom account is also emailed how to sign up and reconnect: bloommcp
   asks the internal `mail` service in the background (`bloom_mcp.signup_email`), once per address
   every 2 hours and at most two at a time, so Claude's retries make no extra requests; the service
-  also sends at most one email per address every 2 hours. The refusal never waits on it.
+  sends each address the email only once. The refusal never waits on it.
 - An admitted request runs with `BLOOMMCP_API_KEY` in place of a caller token, and its usage is
   recorded under the Bloom account's id. Queries still run as `bloom_agent`.
 
