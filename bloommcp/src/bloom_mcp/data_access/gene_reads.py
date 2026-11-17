@@ -85,7 +85,8 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "n_group2",
     ),
     "scrna_de_genes": ("id", "de_id", "gene_id", "log2fc", "fdr", "pct_1", "pct_2"),
-    "scrna_clusters": ("id", "dataset_id", "cluster_id", "name", "source"),
+    "scrna_clusters": ("id", "dataset_id", "cluster_id", "name", "source", "ordinal"),
+    "scrna_counts": ("id", "dataset_id", "gene_id", "counts_object_path"),
     "scrna_cluster_stats": ("dataset_id", "cluster_id", "markers"),
     "scrna_genotypes": ("id", "dataset_id", "name", "construct"),
 }
@@ -177,6 +178,17 @@ def find_genes(reads: Reads, name: str) -> list[dict[str, Any]]:
     if len(found) > MAX_GENES:
         reads.incomplete.add("genes")
     return sorted(found.values(), key=lambda r: r["gene_id"])[:MAX_GENES]
+
+
+def scrna_names(reads: Reads, name: str) -> list[str]:
+    """The names a scRNA dataset may list `name` under: the name, its stem and upper-case
+    forms, and the plain AGI id of each Bloom gene it names (MYB41 -> AT4G28110)."""
+    names = {name, name.upper(), stem(name), stem(name).upper()}
+    if agi_id := bare_agi(name):
+        names.add(agi_id)
+    for gene in find_genes(reads, name):
+        names.add(agi(gene["gene_id"]) or gene["gene_id"])
+    return sorted(names)
 
 
 def assembly_prefixes(reads: Reads, genes: list[dict[str, Any]]) -> dict[int, str]:

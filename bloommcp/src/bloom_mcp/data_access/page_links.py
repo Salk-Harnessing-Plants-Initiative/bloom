@@ -83,6 +83,15 @@ def link_note(name: str) -> str | None:
     return " ".join(notes) or None
 
 
+def expression_page(dataset: dict[str, Any], genes: list[str]) -> str | None:
+    """A scRNA dataset's page opened on Genes by cell type for `genes`; None without SITE_URL
+    or a species. Without genes, the dataset's page as it opens."""
+    url = page_url("scrna_datasets", dataset)
+    if url is None or not genes:
+        return url
+    return f"{url}?tab=genes&gene={quote(','.join(genes), safe=',')}"
+
+
 def page_columns(name: str) -> list[str]:
     """The columns a row of `name` needs for its Bloom page link."""
     return _PLACEHOLDER.findall(PAGE_LINKS[name])

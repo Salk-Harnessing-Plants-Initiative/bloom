@@ -16,6 +16,7 @@ from bloom_mcp.contract import register
 from . import (
     call_function,
     count_rows,
+    gene_expression,
     gene_lookup,
     list_functions,
     list_tables,
@@ -36,6 +37,7 @@ register(
     list_functions.list_functions,
     call_function.call_function,
     gene_lookup.gene_lookup,
+    gene_expression.gene_expression,
     read_file.read_file,
     annotations=READ_ONLY,
 )
