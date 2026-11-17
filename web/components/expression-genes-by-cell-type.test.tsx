@@ -43,6 +43,7 @@ vi.mock("@/components/expression-gene-search", () => ({
 
 import { ExpressionGenesByCellType } from "./expression-genes-by-cell-type";
 import { loadStartingGenes } from "@/components/expression-lib/starting-genes";
+import { searchGenes } from "@/components/expression-lib/scrna-client";
 
 afterEach(cleanup);
 
@@ -73,6 +74,55 @@ describe("the Genes by cell type tab", () => {
     ).toBeTruthy();
     expect(screen.getByText("Not in this dataset: nope")).toBeTruthy();
     expect(loadStartingGenes).not.toHaveBeenCalled();
+  });
+
+  it("says a name whose lookup failed could not be looked up, not that the dataset lacks it", async () => {
+    vi.mocked(searchGenes).mockRejectedValueOnce(new Error("gateway timeout"));
+    render(<ExpressionGenesByCellType datasetId={1} linkedGenes={["g1", "g2"]} />);
+    await waitFor(() => expect(screen.getByText("Could not look up: g1")).toBeTruthy());
+    expect(screen.queryByText(/Not in this dataset/)).toBeNull();
+    await waitFor(() => expect(screen.getAllByTestId("dotplot-row")).toHaveLength(1));
+  });
+
+  it("opens on its usual genes when none of the link's genes is in the dataset", async () => {
+    vi.mocked(loadStartingGenes).mockClear();
+    render(<ExpressionGenesByCellType datasetId={1} linkedGenes={["nope"]} />);
+    await waitFor(() => expect(screen.getAllByTestId("dotplot-row")).toHaveLength(2));
+    expect(loadStartingGenes).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Not in this dataset: nope")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "By default, each cell type's top marker genes. Add or remove genes as you like.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("keeps the tab as it is when handed the same genes again in a new array", async () => {
+    const { rerender } = render(<ExpressionGenesByCellType datasetId={1} linkedGenes={["g1"]} />);
+    await waitFor(() => expect(screen.getAllByTestId("dotplot-row")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "By genotype" }));
+    await waitFor(() => expect(screen.getAllByTestId("dotplot-column")).toHaveLength(4));
+    const searches = vi.mocked(searchGenes).mock.calls.length;
+    rerender(<ExpressionGenesByCellType datasetId={1} linkedGenes={["g1"]} />);
+    expect(vi.mocked(searchGenes).mock.calls.length).toBe(searches);
+    expect(screen.getAllByTestId("dotplot-column")).toHaveLength(4);
+  });
+
+  it("shows only the latest link's genes when the link changes mid-lookup", async () => {
+    let release: (genes: string[]) => void = () => {};
+    vi.mocked(searchGenes).mockImplementationOnce(
+      () => new Promise<string[]>((resolve) => (release = resolve)),
+    );
+    const { rerender } = render(<ExpressionGenesByCellType datasetId={1} linkedGenes={["g1"]} />);
+    await waitFor(() => expect(vi.mocked(searchGenes)).toHaveBeenCalled());
+    rerender(<ExpressionGenesByCellType datasetId={1} linkedGenes={["g2"]} />);
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "g2 expression by cell type" })).toBeTruthy(),
+    );
+    release(["g1"]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getAllByTestId("dotplot-row")).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "g1 expression by cell type" })).toBeNull();
   });
 
   it("says how many genes it took from the DE results, when it opens on those", async () => {

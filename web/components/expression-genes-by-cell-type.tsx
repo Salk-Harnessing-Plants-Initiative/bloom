@@ -50,12 +50,12 @@ const SPLITS: { key: Split; label: string }[] = [
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-/** A dataset's genes against its cell types: a dot plot of the chosen genes,
- *  and one gene's distribution in each cell type, either split by genotype or
- *  transgene status. */
 const NO_LINKED_GENES: readonly string[] = [];
 
-/** `linkedGenes`, from the page's `?gene=`, replace the genes the tab would open on. */
+/** A dataset's genes against its cell types: a dot plot of the chosen genes,
+ *  and one gene's distribution in each cell type, either split by genotype or
+ *  transgene status. `linkedGenes`, from the page's `?gene=`, replace the genes
+ *  it opens on when the dataset has any of them. */
 export function ExpressionGenesByCellType({
   datasetId,
   linkedGenes = NO_LINKED_GENES,
@@ -64,6 +64,9 @@ export function ExpressionGenesByCellType({
   linkedGenes?: readonly string[];
 }) {
   const reader = useMemo(() => createGeneReader(datasetId), [datasetId]);
+  // Keyed on the names, so a new array holding the same names doesn't reopen the tab.
+  const linkedKey = linkedGenes.join("\n");
+  const linked = useMemo(() => (linkedKey ? linkedKey.split("\n") : []), [linkedKey]);
   const activeReader = useRef(reader);
   const requested = useRef(new Set<string>());
 
@@ -76,6 +79,7 @@ export function ExpressionGenesByCellType({
   const [startCount, setStartCount] = useState(0);
   const [startError, setStartError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState<string[]>([]);
+  const [lookupFailed, setLookupFailed] = useState<string[]>([]);
   const [reads, setReads] = useState<ReadonlyMap<string, GeneRead>>(new Map());
   const [split, setSplit] = useState<Split>("none");
   const [perGene, setPerGene] = useState(true);
@@ -93,6 +97,7 @@ export function ExpressionGenesByCellType({
     setSource(null);
     setStartError(null);
     setNotFound([]);
+    setLookupFailed([]);
     setReads(new Map());
     setSplit("none");
     setChosen(null);
@@ -113,14 +118,18 @@ export function ExpressionGenesByCellType({
         if (!cancelled) setLoadError(message(err));
         return;
       }
-      if (linkedGenes.length > 0) {
-        const linked = await resolveLinkedGenes(linkedGenes, (q, limit) => searchGenes(datasetId, q, limit));
+      if (linked.length > 0) {
+        const found = await resolveLinkedGenes(linked, (q, limit) => searchGenes(datasetId, q, limit));
         if (cancelled) return;
-        setGenes(linked.genes);
-        setStartCount(linked.genes.length);
-        setNotFound(linked.notFound);
-        setSource("link");
-        return;
+        setNotFound(found.notFound);
+        setLookupFailed(found.failed);
+        // None of the link's genes found: open on the usual genes instead of nothing.
+        if (found.genes.length > 0) {
+          setGenes(found.genes);
+          setStartCount(found.genes.length);
+          setSource("link");
+          return;
+        }
       }
       try {
         const clusterIds = [...catalogue].sort((a, b) => a.ordinal - b.ordinal).map((c) => c.cluster_id);
@@ -138,7 +147,7 @@ export function ExpressionGenesByCellType({
     return () => {
       cancelled = true;
     };
-  }, [datasetId, reader, linkedGenes]);
+  }, [datasetId, reader, linked]);
 
   // Each gene is read once; one that failed for a reason other than having no
   // stored expression is read again if it is added again.
@@ -258,6 +267,9 @@ export function ExpressionGenesByCellType({
           {loading > 0 && <span>Loading {loading} of {genes.length} genes…</span>}
           {notFound.length > 0 && (
             <span className="text-amber-800">Not in this dataset: {notFound.join(", ")}</span>
+          )}
+          {lookupFailed.length > 0 && (
+            <span className="text-rose-700">Could not look up: {lookupFailed.join(", ")}</span>
           )}
           {missing.length > 0 && (
             <span className="text-amber-800">

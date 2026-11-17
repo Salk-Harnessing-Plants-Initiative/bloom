@@ -39,31 +39,43 @@ describe("resolveLinkedGenes", () => {
     expect(await resolveLinkedGenes(["at4g28110", "myb41"], search)).toEqual({
       genes: ["AT4G28110", "MYB41"],
       notFound: [],
+      failed: [],
     });
   });
 
   it("matches whole names only, not a longer name the search also finds", async () => {
-    expect(await resolveLinkedGenes(["AT4G2811"], search)).toEqual({ genes: [], notFound: ["AT4G2811"] });
+    expect(await resolveLinkedGenes(["AT4G2811"], search)).toEqual({
+      genes: [],
+      notFound: ["AT4G2811"],
+      failed: [],
+    });
   });
 
   it("lists names the dataset doesn't have and keeps the others", async () => {
     expect(await resolveLinkedGenes(["NOPE1", "AT1G01010"], search)).toEqual({
       genes: ["AT1G01010"],
       notFound: ["NOPE1"],
+      failed: [],
     });
   });
 
-  it("counts a name whose search fails as not found", async () => {
-    const failing = vi.fn(async () => {
-      throw new Error("network");
+  it("lists a name whose search failed apart from the names the dataset lacks", async () => {
+    const flaky = vi.fn(async (q: string) => {
+      if (q === "AT1G01010") throw new Error("network");
+      return search(q);
     });
-    expect(await resolveLinkedGenes(["AT1G01010"], failing)).toEqual({
-      genes: [],
-      notFound: ["AT1G01010"],
+    expect(await resolveLinkedGenes(["AT1G01010", "NOPE1", "MYB41"], flaky)).toEqual({
+      genes: ["MYB41"],
+      notFound: ["NOPE1"],
+      failed: ["AT1G01010"],
     });
   });
 
   it("drops two names that resolve to the same gene", async () => {
-    expect(await resolveLinkedGenes(["MYB41", "myb41"], search)).toEqual({ genes: ["MYB41"], notFound: [] });
+    expect(await resolveLinkedGenes(["MYB41", "myb41"], search)).toEqual({
+      genes: ["MYB41"],
+      notFound: [],
+      failed: [],
+    });
   });
 });

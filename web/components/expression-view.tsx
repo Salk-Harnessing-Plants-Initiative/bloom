@@ -86,17 +86,19 @@ export function ExpressionView({ datasetId, onShowDe, linkedGene }: ExpressionVi
     // A gene picked on one dataset may not exist in the next.
     setGeneName(null);
   }, [datasetId]);
-  // The link's gene, as this dataset spells it; set once per dataset, after the reset above.
-  const [linkNotFound, setLinkNotFound] = useState<string | null>(null);
+  // The link's gene, as this dataset spells it; set once per dataset, after the reset above,
+  // unless the user has picked a gene meanwhile.
+  const [linkProblem, setLinkProblem] = useState<string | null>(null);
   useEffect(() => {
-    setLinkNotFound(null);
+    setLinkProblem(null);
     if (!linkedGene) return;
     let cancelled = false;
     void resolveLinkedGenes([linkedGene], (q, limit) => searchGenes(datasetId, q, limit)).then(
-      ({ genes }) => {
+      ({ genes, failed }) => {
         if (cancelled) return;
-        if (genes.length > 0) setGeneName(genes[0]);
-        else setLinkNotFound(linkedGene);
+        if (genes.length > 0) setGeneName((picked) => picked ?? genes[0]);
+        else if (failed.length > 0) setLinkProblem(`Could not look up ${linkedGene}.`);
+        else setLinkProblem(`${linkedGene} is not in this dataset.`);
       },
     );
     return () => {
@@ -318,9 +320,9 @@ export function ExpressionView({ datasetId, onShowDe, linkedGene }: ExpressionVi
               disabled={!meta}
             />
           </div>
-          {linkNotFound && !geneName ? (
+          {linkProblem && !geneName ? (
             <span role="status" className="text-xs text-amber-800">
-              {linkNotFound} is not in this dataset.
+              {linkProblem}
             </span>
           ) : geneError ? (
             <span role="alert" className="text-xs text-rose-700">
