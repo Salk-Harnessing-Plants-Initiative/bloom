@@ -32,6 +32,8 @@ SIGNIFICANT_FDR = 0.05
 NEEDED = ("params", "names", "logfoldchanges", "pvals", "pvals_adj")
 # The var column holding each gene's symbol, shown next to its id in the markers.
 SYMBOL_COLUMN = "gene_symbols"
+# rank_genes_groups' own methods; their run names say scanpy, any other method's stays as given.
+SCANPY_METHODS = ("wilcoxon", "t-test", "t-test_overestim_var", "logreg")
 
 
 @dataclass(frozen=True)
@@ -107,10 +109,18 @@ def _result(stored: Any, key: str, annotation: str, cells: dict,
     comparisons = [
         Comparison(g, sizes[g], total - sizes[g], _genes(stored, g)) for g in sorted(groups)
     ]
-    method = f"scanpy-{params.get('method', 'unknown')}-one-vs-rest"
+    method = f"{_method_name(params.get('method'))}-one-vs-rest"
     fingerprint = json.dumps({"method": method, "params": params}, sort_keys=True)
     return Result(method, params, hashlib.sha256(fingerprint.encode()).hexdigest(), comparisons,
                   symbols or {})
+
+
+def _method_name(method: Any) -> str:
+    """scanpy's own methods as scanpy-<method>; any other method's name as the file gives it."""
+    name = str(method).strip() if method is not None else ""
+    if not name:
+        return "unknown"
+    return f"scanpy-{name}" if name in SCANPY_METHODS else name
 
 
 def _genes(stored: dict, group: str) -> list[dict]:
