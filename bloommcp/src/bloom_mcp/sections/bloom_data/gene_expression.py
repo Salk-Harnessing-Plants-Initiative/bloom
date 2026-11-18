@@ -139,10 +139,12 @@ def _read_at_most(
         matches = _matches(reads, dataset_id, name)
         if not matches:
             picked.append((name, None))
+        read = {gene["id"] for _, gene in picked if gene is not None}
         room = MAX_GENES - sum(1 for _, gene in picked if gene is not None)
         picked += [(name, gene) for gene in matches[:room]]
-        left_out += [gene["gene_name"] for gene in matches[room:]]
-    return picked, left_out
+        # A gene already read under another name isn't "not read".
+        left_out += [g["gene_name"] for g in matches[room:] if g["id"] not in read]
+    return picked, list(dict.fromkeys(left_out))
 
 
 def _size(result: GeneExpressionResult) -> int:

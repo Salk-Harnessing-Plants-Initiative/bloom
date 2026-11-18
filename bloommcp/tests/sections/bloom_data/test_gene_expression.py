@@ -312,6 +312,28 @@ def test_at_most_max_genes_are_read_in_all_and_the_rest_are_named(bloom, monkeyp
     assert "not read: AT3G03030." in note
 
 
+def test_a_name_with_no_match_takes_no_place(bloom, monkeypatch):
+    monkeypatch.setattr(ge, "MAX_GENES", 2)
+    result = _run(["NOPE1", "PAIR"])
+    assert [g.gene_name for g in result.genes] == [None, "AT2G02020", "AT3G03030"]
+    assert result.notes == []
+
+
+def test_a_gene_already_read_under_another_name_is_not_noted_as_not_read(
+    bloom, monkeypatch
+):
+    monkeypatch.setattr(ge, "MAX_GENES", 2)
+    result = _run(["PAIR", "AT2G02020"])
+    assert [g.gene_name for g in result.genes] == ["AT2G02020", "AT3G03030"]
+    assert result.notes == []
+
+
+def test_a_gene_not_read_under_two_names_is_noted_once(bloom, monkeypatch):
+    monkeypatch.setattr(ge, "MAX_GENES", 1)
+    [note] = _run(["AT4G28110", "PAIR", "AT3G03030"]).notes
+    assert "not read: AT2G02020, AT3G03030." in note
+
+
 def test_no_note_when_every_match_is_read(bloom):
     assert _run(["PAIR"]).notes == []
 
