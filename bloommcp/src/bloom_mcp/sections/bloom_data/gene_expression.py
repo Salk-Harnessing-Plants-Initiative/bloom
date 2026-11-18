@@ -17,8 +17,8 @@ from ._common import fix_request, logs_call, reports_lookup_errors
 from ._page import MAX_REPLY_CHARS
 
 MAX_GENES = 5
-# Most cells a dataset may have for this tool to read them all; past it, the page link only.
-MAX_CELLS = 500_000
+# Most cells read per dataset, ~6x prod's biggest (32,522 on 2026-11-17); past it, the link only.
+MAX_CELLS = 200_000
 # Decimal places kept in the statistics: plenty for log-normalised values, short replies.
 DIGITS = 4
 # A dataset kind with no cells of its own (the website treats it as not found).

@@ -16,8 +16,8 @@ from .file_access import path_problem
 from .file_ports import FileNotFound, FileReader, FileReadError
 
 BUCKET = "scrna"
-# Far above any per-gene file on prod (set from storage sizes); larger ones are not read.
-MAX_COUNTS_BYTES = 64 * 1024**2
+# ~18x prod's largest per-gene file (0.9 MB on 2026-11-17); larger ones are not read.
+MAX_COUNTS_BYTES = 16 * 1024**2
 # Longest cell key shown in a note; a damaged file's key can be any length.
 MAX_SHOWN_KEY = 20
 
