@@ -132,3 +132,19 @@ def test_a_plate_scan_with_no_wave_links_to_the_websites_none_wave(monkeypatch):
     assert page_links.page_url("gravi_scans_extended", row) == (
         "https://bloom.example/app/plate-phenotypes/1/5/wave/none/P"
     )
+
+
+def test_the_expression_page_opens_on_the_genes_named(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example/")
+    dataset = {"id": 3, "species_id": 16}
+    assert page_links.expression_page(dataset, ["AT4G28110", "AT1G01010"]) == (
+        "https://bloom.example/app/expression/16/3?tab=genes&gene=AT4G28110,AT1G01010"
+    )
+    assert page_links.expression_page(dataset, ["a b&c"]).endswith("gene=a%20b%26c")
+    assert (
+        page_links.expression_page(dataset, [])
+        == "https://bloom.example/app/expression/16/3"
+    )
+    assert page_links.expression_page({"id": 3, "species_id": None}, ["G"]) is None
+    monkeypatch.delenv("SITE_URL")
+    assert page_links.expression_page(dataset, ["G"]) is None

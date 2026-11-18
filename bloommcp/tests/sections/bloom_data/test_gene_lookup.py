@@ -63,7 +63,10 @@ def test_links_follow_site_url(genes_db, monkeypatch):
         == "https://bloom.example/app/orthofinder?search=myb41"
     )
     assert result.links.genes_page == "https://bloom.example/app/genes"
-    assert result.expression[0].link == "https://bloom.example/app/expression/1/14"
+    hit = result.expression[0]
+    assert hit.link == (
+        f"https://bloom.example/app/expression/1/14?tab=genes&gene={hit.gene_name}"
+    )
 
 
 def test_the_orthobrowser_search_falls_back_to_the_gene_id(genes_db, monkeypatch):
