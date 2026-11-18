@@ -70,8 +70,8 @@ MAX_SOURCE_IMAGE_BYTES = 192 * 1024**2
 # Claude's 10 MB image limit counts base64, a third larger than the PNG.
 # https://platform.claude.com/docs/en/build-with-claude/vision#image-limits-and-costs
 MAX_IMAGE_BYTES = 7_000_000
-# Three full-size images per call, one per conversion slot.
-MAX_CALL_IMAGE_BYTES = 21_000_000
+# One call's reply holds up to three full-size images; later ones are shrunk or linked.
+MAX_CALL_IMAGE_BYTES = 3 * MAX_IMAGE_BYTES
 SIGNED_URL_SECONDS = 3600
 
 _IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "tif", "tiff"})

@@ -140,6 +140,7 @@ def test_the_real_split_check_passes_plain_paths():
 def test_the_limits_the_pr_states():
     from bloom_mcp.data_access import file_reader, image_slots
 
+    assert fa.MAX_IMAGE_BYTES == 7_000_000
     assert fa.MAX_CALL_IMAGE_BYTES == 21_000_000
     assert fa.MAX_SOURCE_IMAGE_BYTES == 192 * 1024**2
     assert fa.SIGNED_URL_SECONDS == 3600

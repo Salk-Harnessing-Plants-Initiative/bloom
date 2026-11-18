@@ -175,6 +175,30 @@ def test_a_large_16_bit_scan_is_shown_at_the_full_longest_side(width):
     assert out.shown_width == ic.MAX_SIDE
 
 
+def test_block_mean_averages_each_k_by_k_block():
+    pixels = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    assert np.array_equal(ic._block_mean(pixels, 2), [[2.5, 4.5], [10.5, 12.5]])
+
+
+def test_block_mean_drops_the_edge_that_does_not_fill_a_block():
+    pixels = np.ones((5, 7), dtype=np.uint16)
+    assert ic._block_mean(pixels, 3).shape == (1, 2)
+
+
+@pytest.mark.parametrize("k, width", [(2, 5153), (3, 7729)])
+def test_a_large_16_bit_scan_is_block_averaged_before_scaling(k, width):
+    # Each block opens on a bright column and rises by 13 per block, so its mean is
+    # 30000 / k + 13 j: far from any one pixel of the block.
+    column = np.arange(width)
+    row = np.where(column % k == 0, 30000, 0) + 13 * (column // k)
+    out = _png_of(_deep(np.tile(row, (k * 30, 1))))
+    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 30)
+    mean = 30000 / k + 13 * np.arange(ic.MAX_SIDE)
+    expected = np.rint(mean * 255 / ic.FULL_SCALE).astype(int)
+    shown = np.asarray(_open(out.png)).astype(int)
+    assert np.abs(shown - expected).max() <= 1
+
+
 def test_a_large_16_bit_crop_is_shown_at_the_full_longest_side():
     crop = ic.Crop(x=0, y=0, width=3000, height=1500)
     out = _png_of(_deep(np.full((1600, 3200), 30000)), crop)
