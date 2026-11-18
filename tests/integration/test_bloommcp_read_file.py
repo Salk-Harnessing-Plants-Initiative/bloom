@@ -27,7 +27,7 @@ from tests.integration.test_bloommcp_data_tools import _run_in_bloommcp, _unavai
 
 pytestmark = pytest.mark.integration
 
-WIDE = 2000
+WIDE = 4000
 
 
 def _png(width: int, height: int) -> bytes:
@@ -174,7 +174,7 @@ def test_frames_come_back_scaled_and_labelled(results):
     frame, plate, gone = results["frames"]["files"]
     assert frame["kind"] == "image" and frame["labels"]["frame_number"] == 1
     assert plate["kind"] == "image" and plate["image"]["full_scale"] == 65535
-    assert [w for w, _ in results["frames"]["sizes"]] == [1568, 1568]
+    assert [w for w, _ in results["frames"]["sizes"]] == [2576, 2576]
     assert results["frames"]["first"][1] == 128
 
 

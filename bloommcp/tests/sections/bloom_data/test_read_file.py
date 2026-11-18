@@ -49,13 +49,13 @@ def test_frames_come_back_as_png_in_order_labelled_with_their_row(fakes):
     result, images, labels = read("cyl_images", 1, 2)
     first, second = result.files
     assert [f.kind for f in result.files] == ["image", "image"]
-    assert [i.size for i in images] == [(ic.MAX_SIDE, 784), (100, 50)]
+    assert [i.size for i in images] == [(ic.MAX_SIDE, 1288), (100, 50)]
     assert (first.id, first.labels) == (1, {"scan_id": 10, "frame_number": 1})
     assert labels == [
-        "cyl_images id 1, scan_id 10, frame_number 1, shown at 1568 x 784",
+        "cyl_images id 1, scan_id 10, frame_number 1, shown at 2576 x 1288",
         "cyl_images id 2, scan_id 10, frame_number 2",
     ]
-    assert (first.image.width, first.image.height) == (2000, 1000)
+    assert (first.image.width, first.image.height) == (4000, 2000)
     assert (
         first.size_bytes == len(FRAME) and first.url is None and first.page_url is None
     )
@@ -86,7 +86,7 @@ def test_a_tiff_plate_scan_comes_back_viewable(fakes):
     result, (image,), labels = read("gravi_images", 1)
     assert result.files[0].kind == "image" and result.files[0].image.mode == "L"
     assert image.format == "PNG" and np.asarray(image).max() == 200
-    assert labels == ["gravi_images id 1, scan_id 20, shown at 1568 x 1045"]
+    assert labels == ["gravi_images id 1, scan_id 20, shown at 2576 x 1717"]
 
 
 def test_a_crop_is_cut_from_the_original_at_full_resolution(fakes):
@@ -194,7 +194,7 @@ def test_images_past_the_call_limit_get_links_with_their_url(fakes, monkeypatch)
     (link,) = [f for f in result.files if f.kind == "page"]
     assert link.note == rf.CALL_LIMIT_NOTE and link.page_url == SCAN_PAGE
     assert len(images) == 1
-    assert link.image.width == 2000  # kept, so Claude can still plan a crop
+    assert link.image.width == 4000  # kept, so Claude can still plan a crop
 
 
 def test_repeated_ids_are_read_once(fakes):
@@ -270,12 +270,12 @@ def test_a_link_that_cannot_be_signed_is_an_error_not_a_link_without_url(
 
 def test_a_later_image_is_shrunk_to_fit_what_is_left(fakes, monkeypatch):
     full = len(ic.to_png(FRAME, crop=None, max_bytes=10**8).png)
-    small = len(ic._png(ic._fit(Image.open(io.BytesIO(FRAME)), 1200)))
+    small = len(ic._png(ic._fit(Image.open(io.BytesIO(FRAME)), ic.FALLBACK_SIDES[0])))
     monkeypatch.setattr(rf.slots, "MAX_IMAGE_SLOTS", 1)  # one at a time, in id order
     monkeypatch.setattr(fa, "MAX_CALL_IMAGE_BYTES", full + small)
     result, images, _ = read("cyl_images", 1, 9)
     assert [f.kind for f in result.files] == ["image", "image"]
-    assert [i.size[0] for i in images] == [ic.MAX_SIDE, 1200]
+    assert [i.size[0] for i in images] == [ic.MAX_SIDE, ic.FALLBACK_SIDES[0]]
 
 
 def test_too_large_to_decode_is_not_reported_as_the_call_limit(fakes, monkeypatch):

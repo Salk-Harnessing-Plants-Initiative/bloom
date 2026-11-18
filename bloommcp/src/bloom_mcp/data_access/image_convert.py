@@ -14,10 +14,12 @@ from PIL import Image, UnidentifiedImageError
 
 from .tiff_header import tiff_problem
 
-# Claude's vision scales a longer side down to about this, so larger gains no detail.
-MAX_SIDE = 1568
+# Claude 4.7+ vision scales a longer side down to this, so larger gains no detail;
+# it also stays under the 3,000 px limit once a request holds over 20 images.
+# https://platform.claude.com/docs/en/build-with-claude/vision#image-limits-and-costs
+MAX_SIDE = 2576
 # Smaller sides tried, in turn, when the PNG is over the per-image byte cap.
-FALLBACK_SIDES = (1200, 900)
+FALLBACK_SIDES = (2000, 1568)
 # Peak memory per source pixel, and the most one image may use (plate_encode's).
 SHALLOW_BYTES_PER_PIXEL = 7
 DEEP_BYTES_PER_PIXEL = 15

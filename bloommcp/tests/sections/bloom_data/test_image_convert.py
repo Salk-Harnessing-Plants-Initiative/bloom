@@ -53,8 +53,8 @@ def test_a_small_tiff_comes_back_pixel_for_pixel():
 def test_a_large_image_is_scaled_to_the_longest_side_claude_sees():
     out = _png_of(_encode(_noise(4000, 1000)))
     assert (out.width, out.height) == (4000, 1000)
-    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 392)
-    assert _open(out.png).size == (ic.MAX_SIDE, 392)
+    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 644)
+    assert _open(out.png).size == (ic.MAX_SIDE, 644)
 
 
 def test_scaling_matches_lanczos():
@@ -168,16 +168,16 @@ def test_a_crop_and_the_whole_image_show_the_same_pixels_the_same():
     assert np.array_equal(part, whole[10:30, 10:30])
 
 
-@pytest.mark.parametrize("width", [1569, 4000])
+@pytest.mark.parametrize("width", [2577, 4000])
 def test_a_large_16_bit_scan_is_shown_at_the_full_longest_side(width):
     out = _png_of(_deep(np.full((100, width), 30000)))
     assert out.shown_width == ic.MAX_SIDE
 
 
 def test_a_large_16_bit_crop_is_shown_at_the_full_longest_side():
-    crop = ic.Crop(x=0, y=0, width=2000, height=1000)
-    out = _png_of(_deep(np.full((1200, 2500), 30000)), crop)
-    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 784)
+    crop = ic.Crop(x=0, y=0, width=3000, height=1500)
+    out = _png_of(_deep(np.full((1600, 3200), 30000)), crop)
+    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 1288)
 
 
 def test_a_multi_page_tiff_shows_its_first_page_and_says_there_are_more():
@@ -227,8 +227,9 @@ def test_the_smallest_fallback_is_tried_last():
     for side in ic.FALLBACK_SIDES:
         fitted = ic._fit(Image.open(io.BytesIO(data)), side)
         sizes[side] = len(ic._png(fitted))
-    out = ic.to_png(data, crop=None, max_bytes=sizes[900])
-    assert out.shown_width == 900 and middle > sizes[1200] > sizes[900]
+    first, last = ic.FALLBACK_SIDES[0], ic.FALLBACK_SIDES[-1]
+    out = ic.to_png(data, crop=None, max_bytes=sizes[last])
+    assert out.shown_width == last and middle > sizes[first] > sizes[last]
 
 
 def test_nothing_fits_the_byte_cap():
