@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from bloom_mcp.data_access import file_access as fa
 from bloom_mcp.data_access import image_convert as ic
 
 BIG = 10_000_000
@@ -215,13 +216,13 @@ def test_a_float_image_is_refused_not_guessed():
 
 
 def test_a_png_over_the_byte_cap_is_sent_smaller_still_lossless():
-    big = _png_of(_encode(_noise(3000, 3000)))
-    out = ic.to_png(_encode(_noise(3000, 3000)), crop=None, max_bytes=len(big.png) - 1)
+    big = _png_of(_encode(_noise(4000, 2000)))
+    out = ic.to_png(_encode(_noise(4000, 2000)), crop=None, max_bytes=len(big.png) - 1)
     assert out.shown_width == ic.FALLBACK_SIDES[0] and len(out.png) < len(big.png)
 
 
 def test_the_smallest_fallback_is_tried_last():
-    data = _encode(_noise(3000, 3000))
+    data = _encode(_noise(4000, 2000))
     middle = len(ic.to_png(data, crop=None, max_bytes=BIG).png)
     sizes = {}
     for side in ic.FALLBACK_SIDES:
@@ -230,6 +231,54 @@ def test_the_smallest_fallback_is_tried_last():
     first, last = ic.FALLBACK_SIDES[0], ic.FALLBACK_SIDES[-1]
     out = ic.to_png(data, crop=None, max_bytes=sizes[last])
     assert out.shown_width == last and middle > sizes[first] > sizes[last]
+
+
+@pytest.mark.parametrize(
+    "size, shown",
+    [
+        ((8818, 8818), (1932, 1932)),
+        ((3000, 2000), (2352, 1568)),
+        ((4000, 3000), (2212, 1659)),
+        ((4960, 6850), (1642, 2268)),
+        ((4000, 2000), (2576, 1288)),
+        ((2048, 1080), (2048, 1080)),
+    ],
+)
+def test_the_size_sent_is_the_size_claude_sees(size, shown):
+    assert ic.fitted_size(*size, ic.MAX_SIDE) == shown
+    assert ic.tokens(*shown) <= ic.MAX_TOKENS
+
+
+def test_every_fallback_fits_the_token_budget():
+    for size in [(8818, 8818), (3000, 2000), (4960, 6850), (10000, 300)]:
+        for side in (ic.MAX_SIDE, *ic.FALLBACK_SIDES):
+            width, height = ic.fitted_size(*size, side)
+            assert ic.tokens(width, height) <= ic.MAX_TOKENS
+            assert max(width, height) <= side
+
+
+def test_a_square_crop_is_scaled_to_the_token_budget():
+    crop = ic.Crop(x=0, y=0, width=2576, height=2576)
+    out = _png_of(_encode(_noise(3000, 3000)), crop)
+    assert (out.shown_width, out.shown_height) == (1932, 1932)
+
+
+def test_a_fallback_the_same_size_as_the_last_try_is_skipped():
+    data = _encode(_noise(3000, 3000))
+    first = ic.to_png(data, crop=None, max_bytes=BIG)
+    out = ic.to_png(data, crop=None, max_bytes=len(first.png) - 1)
+    assert first.shown_width == 1932 and out.shown_width == 1568
+
+
+def test_the_limits_match_claudes_high_resolution_tier():
+    assert (ic.MAX_SIDE, ic.MAX_TOKENS, ic.TILE) == (2576, 4784, 28)
+    assert ic.FALLBACK_SIDES == (2000, 1568, 900)
+
+
+def test_a_detailed_rgb_image_is_still_shown_under_the_real_cap():
+    data = _encode(_noise(1600, 1600, "RGB"))
+    out = ic.to_png(data, crop=None, max_bytes=fa.MAX_IMAGE_BYTES)
+    assert out.shown_width == ic.FALLBACK_SIDES[-1] == 900
 
 
 def test_nothing_fits_the_byte_cap():

@@ -86,7 +86,7 @@ def test_a_tiff_plate_scan_comes_back_viewable(fakes):
     result, (image,), labels = read("gravi_images", 1)
     assert result.files[0].kind == "image" and result.files[0].image.mode == "L"
     assert image.format == "PNG" and np.asarray(image).max() == 200
-    assert labels == ["gravi_images id 1, scan_id 20, shown at 2576 x 1717"]
+    assert labels == ["gravi_images id 1, scan_id 20, shown at 2352 x 1568"]
 
 
 def test_a_crop_is_cut_from_the_original_at_full_resolution(fakes):
