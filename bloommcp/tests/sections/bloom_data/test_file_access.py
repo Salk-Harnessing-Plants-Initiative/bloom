@@ -106,8 +106,8 @@ def test_read_files_description_lists_every_table_from_the_catalog():
 
 
 def test_limits_hold_together():
-    # Claude's 5 MiB image limit is on base64, 4/3 of the PNG's bytes.
-    assert fa.MAX_IMAGE_BYTES * 4 / 3 <= 5 * 1024 * 1024
+    # Claude's 10 MB image limit is on base64, 4/3 of the PNG's bytes.
+    assert fa.MAX_IMAGE_BYTES * 4 / 3 <= 10_000_000
     assert fa.MAX_IMAGE_BYTES <= fa.MAX_CALL_IMAGE_BYTES
     assert fa.MAX_FILES == 8
 
@@ -140,7 +140,8 @@ def test_the_real_split_check_passes_plain_paths():
 def test_the_limits_the_pr_states():
     from bloom_mcp.data_access import file_reader, image_slots
 
-    assert fa.MAX_CALL_IMAGE_BYTES == 15_000_000
+    assert fa.MAX_IMAGE_BYTES == 7_000_000
+    assert fa.MAX_CALL_IMAGE_BYTES == 21_000_000
     assert fa.MAX_SOURCE_IMAGE_BYTES == 192 * 1024**2
     assert fa.SIGNED_URL_SECONDS == 3600
     assert image_slots.MAX_IMAGE_SLOTS == 3

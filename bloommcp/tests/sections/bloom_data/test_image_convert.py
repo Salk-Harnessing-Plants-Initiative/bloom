@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from bloom_mcp.data_access import file_access as fa
 from bloom_mcp.data_access import image_convert as ic
 
 BIG = 10_000_000
@@ -53,8 +54,8 @@ def test_a_small_tiff_comes_back_pixel_for_pixel():
 def test_a_large_image_is_scaled_to_the_longest_side_claude_sees():
     out = _png_of(_encode(_noise(4000, 1000)))
     assert (out.width, out.height) == (4000, 1000)
-    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 392)
-    assert _open(out.png).size == (ic.MAX_SIDE, 392)
+    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 644)
+    assert _open(out.png).size == (ic.MAX_SIDE, 644)
 
 
 def test_scaling_matches_lanczos():
@@ -168,16 +169,40 @@ def test_a_crop_and_the_whole_image_show_the_same_pixels_the_same():
     assert np.array_equal(part, whole[10:30, 10:30])
 
 
-@pytest.mark.parametrize("width", [1569, 4000])
+@pytest.mark.parametrize("width", [2577, 4000])
 def test_a_large_16_bit_scan_is_shown_at_the_full_longest_side(width):
     out = _png_of(_deep(np.full((100, width), 30000)))
     assert out.shown_width == ic.MAX_SIDE
 
 
+def test_block_mean_averages_each_k_by_k_block():
+    pixels = np.arange(16, dtype=np.uint16).reshape(4, 4)
+    assert np.array_equal(ic._block_mean(pixels, 2), [[2.5, 4.5], [10.5, 12.5]])
+
+
+def test_block_mean_drops_the_edge_that_does_not_fill_a_block():
+    pixels = np.ones((5, 7), dtype=np.uint16)
+    assert ic._block_mean(pixels, 3).shape == (1, 2)
+
+
+@pytest.mark.parametrize("k, width", [(2, 5153), (3, 7729)])
+def test_a_large_16_bit_scan_is_block_averaged_before_scaling(k, width):
+    # Each block opens on a bright column and rises by 13 per block, so its mean is
+    # 30000 / k + 13 j: far from any one pixel of the block.
+    column = np.arange(width)
+    row = np.where(column % k == 0, 30000, 0) + 13 * (column // k)
+    out = _png_of(_deep(np.tile(row, (k * 30, 1))))
+    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 30)
+    mean = 30000 / k + 13 * np.arange(ic.MAX_SIDE)
+    expected = np.rint(mean * 255 / ic.FULL_SCALE).astype(int)
+    shown = np.asarray(_open(out.png)).astype(int)
+    assert np.abs(shown - expected).max() <= 1
+
+
 def test_a_large_16_bit_crop_is_shown_at_the_full_longest_side():
-    crop = ic.Crop(x=0, y=0, width=2000, height=1000)
-    out = _png_of(_deep(np.full((1200, 2500), 30000)), crop)
-    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 784)
+    crop = ic.Crop(x=0, y=0, width=3000, height=1500)
+    out = _png_of(_deep(np.full((1600, 3200), 30000)), crop)
+    assert (out.shown_width, out.shown_height) == (ic.MAX_SIDE, 1288)
 
 
 def test_a_multi_page_tiff_shows_its_first_page_and_says_there_are_more():
@@ -215,20 +240,69 @@ def test_a_float_image_is_refused_not_guessed():
 
 
 def test_a_png_over_the_byte_cap_is_sent_smaller_still_lossless():
-    big = _png_of(_encode(_noise(3000, 3000)))
-    out = ic.to_png(_encode(_noise(3000, 3000)), crop=None, max_bytes=len(big.png) - 1)
+    big = _png_of(_encode(_noise(4000, 2000)))
+    out = ic.to_png(_encode(_noise(4000, 2000)), crop=None, max_bytes=len(big.png) - 1)
     assert out.shown_width == ic.FALLBACK_SIDES[0] and len(out.png) < len(big.png)
 
 
 def test_the_smallest_fallback_is_tried_last():
-    data = _encode(_noise(3000, 3000))
+    data = _encode(_noise(4000, 2000))
     middle = len(ic.to_png(data, crop=None, max_bytes=BIG).png)
     sizes = {}
     for side in ic.FALLBACK_SIDES:
         fitted = ic._fit(Image.open(io.BytesIO(data)), side)
         sizes[side] = len(ic._png(fitted))
-    out = ic.to_png(data, crop=None, max_bytes=sizes[900])
-    assert out.shown_width == 900 and middle > sizes[1200] > sizes[900]
+    first, last = ic.FALLBACK_SIDES[0], ic.FALLBACK_SIDES[-1]
+    out = ic.to_png(data, crop=None, max_bytes=sizes[last])
+    assert out.shown_width == last and middle > sizes[first] > sizes[last]
+
+
+@pytest.mark.parametrize(
+    "size, shown",
+    [
+        ((8818, 8818), (1932, 1932)),
+        ((3000, 2000), (2352, 1568)),
+        ((4000, 3000), (2212, 1659)),
+        ((4960, 6850), (1642, 2268)),
+        ((4000, 2000), (2576, 1288)),
+        ((2048, 1080), (2048, 1080)),
+    ],
+)
+def test_the_size_sent_is_the_size_claude_sees(size, shown):
+    assert ic.fitted_size(*size, ic.MAX_SIDE) == shown
+    assert ic.tokens(*shown) <= ic.MAX_TOKENS
+
+
+def test_every_fallback_fits_the_token_budget():
+    for size in [(8818, 8818), (3000, 2000), (4960, 6850), (10000, 300)]:
+        for side in (ic.MAX_SIDE, *ic.FALLBACK_SIDES):
+            width, height = ic.fitted_size(*size, side)
+            assert ic.tokens(width, height) <= ic.MAX_TOKENS
+            assert max(width, height) <= side
+
+
+def test_a_square_crop_is_scaled_to_the_token_budget():
+    crop = ic.Crop(x=0, y=0, width=2576, height=2576)
+    out = _png_of(_encode(_noise(3000, 3000)), crop)
+    assert (out.shown_width, out.shown_height) == (1932, 1932)
+
+
+def test_a_fallback_the_same_size_as_the_last_try_is_skipped():
+    data = _encode(_noise(3000, 3000))
+    first = ic.to_png(data, crop=None, max_bytes=BIG)
+    out = ic.to_png(data, crop=None, max_bytes=len(first.png) - 1)
+    assert first.shown_width == 1932 and out.shown_width == 1568
+
+
+def test_the_limits_match_claudes_high_resolution_tier():
+    assert (ic.MAX_SIDE, ic.MAX_TOKENS, ic.TILE) == (2576, 4784, 28)
+    assert ic.FALLBACK_SIDES == (2000, 1568, 900)
+
+
+def test_a_detailed_rgb_image_is_still_shown_under_the_real_cap():
+    data = _encode(_noise(1600, 1600, "RGB"))
+    out = ic.to_png(data, crop=None, max_bytes=fa.MAX_IMAGE_BYTES)
+    assert out.shown_width == ic.FALLBACK_SIDES[-1] == 900
 
 
 def test_nothing_fits_the_byte_cap():

@@ -14,10 +14,15 @@ from PIL import Image, UnidentifiedImageError
 
 from .tiff_header import tiff_problem
 
-# Claude's vision scales a longer side down to about this, so larger gains no detail.
-MAX_SIDE = 1568
-# Smaller sides tried, in turn, when the PNG is over the per-image byte cap.
-FALLBACK_SIDES = (1200, 900)
+# Claude 4.7+ vision shrinks an image until its longer side is at most MAX_SIDE and it
+# costs at most MAX_TOKENS (one per TILE x TILE px), so an image within both is seen
+# as sent. MAX_SIDE also stays under the 3,000 px limit for requests over 20 images.
+# https://platform.claude.com/docs/en/build-with-claude/vision#image-limits-and-costs
+MAX_SIDE = 2576
+MAX_TOKENS = 4784
+TILE = 28
+# Smaller longer sides tried, in turn, when the PNG is over the per-image byte cap.
+FALLBACK_SIDES = (2000, 1568, 900)
 # Peak memory per source pixel, and the most one image may use (plate_encode's).
 SHALLOW_BYTES_PER_PIXEL = 7
 DEEP_BYTES_PER_PIXEL = 15
@@ -79,7 +84,7 @@ class Converted:
 
 
 def to_png(data: bytes, *, crop: Crop | None, max_bytes: int) -> Converted:
-    """The first page, cropped at full resolution, scaled to MAX_SIDE at most, as PNG."""
+    """The first page, cropped at full resolution, scaled to what Claude sees, as PNG."""
     if problem := tiff_problem(data):
         raise ImageTooLarge(f"a crafted or broken TIFF ({problem})")
     if data.startswith(_JPEG_START) and data.count(_JPEG_SCAN) > MAX_JPEG_SCANS:
@@ -98,7 +103,11 @@ def to_png(data: bytes, *, crop: Crop | None, max_bytes: int) -> Converted:
         deep = mode in _DEEP or bits > 8
         if deep and peak is None:
             peak = int(np.asarray(shown).max()) * 257 if shown.size[0] else 0
+        tried: set[tuple[int, int]] = set()
         for side in (MAX_SIDE, *FALLBACK_SIDES):
+            if (size := fitted_size(*shown.size, side)) in tried:
+                continue
+            tried.add(size)
             fitted = _fit(shown, side)
             png = _png(fitted)
             if len(png) <= max_bytes:
@@ -179,8 +188,10 @@ def _viewable(image: Image.Image) -> tuple[Image.Image, int | None]:
     # The same scale for every image, as plate videos use, so one hot pixel can't
     # darken the rest and brightness compares between images.
     reduced = _block_mean(pixels, max(1, max(image.size) // MAX_SIDE))
-    eight = (reduced * (255.0 / FULL_SCALE)).round().astype(np.uint8)
-    return Image.fromarray(eight), peak
+    # In place, so a full-size float copy is made once, not three times.
+    np.multiply(reduced, 255.0 / FULL_SCALE, out=reduced)
+    np.rint(reduced, out=reduced)
+    return Image.fromarray(reduced.astype(np.uint8)), peak
 
 
 def _block_mean(pixels: np.ndarray, k: int) -> np.ndarray:
@@ -192,11 +203,31 @@ def _block_mean(pixels: np.ndarray, k: int) -> np.ndarray:
     return blocks.mean(axis=(1, 3), dtype=np.float32)
 
 
+def tokens(width: int, height: int) -> int:
+    """What Claude 4.7+ charges for an image of this size."""
+    return -(-width // TILE) * -(-height // TILE)
+
+
+def fitted_size(width: int, height: int, side: int) -> tuple[int, int]:
+    """The largest size of this shape within `side` and MAX_TOKENS, never enlarged."""
+    longest = max(width, height)
+
+    def scaled(target: int) -> tuple[int, int]:
+        scale = target / longest
+        return max(1, round(width * scale)), max(1, round(height * scale))
+
+    # Start from the area estimate, then step down past tile rounding.
+    by_tokens = longest * (MAX_TOKENS * TILE * TILE / (width * height)) ** 0.5
+    target = min(longest, side, int(by_tokens))
+    while target > 1 and tokens(*scaled(target)) > MAX_TOKENS:
+        target -= 1
+    return scaled(target)
+
+
 def _fit(image: Image.Image, side: int) -> Image.Image:
-    if max(image.size) <= side:
+    size = fitted_size(image.width, image.height, side)
+    if size == image.size:
         return image
-    scale = side / max(image.size)
-    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
     return image.resize(size, Image.Resampling.LANCZOS)
 
 
