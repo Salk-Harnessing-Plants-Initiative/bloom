@@ -188,8 +188,10 @@ def _viewable(image: Image.Image) -> tuple[Image.Image, int | None]:
     # The same scale for every image, as plate videos use, so one hot pixel can't
     # darken the rest and brightness compares between images.
     reduced = _block_mean(pixels, max(1, max(image.size) // MAX_SIDE))
-    eight = (reduced * (255.0 / FULL_SCALE)).round().astype(np.uint8)
-    return Image.fromarray(eight), peak
+    # In place, so a full-size float copy is made once, not three times.
+    np.multiply(reduced, 255.0 / FULL_SCALE, out=reduced)
+    np.rint(reduced, out=reduced)
+    return Image.fromarray(reduced.astype(np.uint8)), peak
 
 
 def _block_mean(pixels: np.ndarray, k: int) -> np.ndarray:
