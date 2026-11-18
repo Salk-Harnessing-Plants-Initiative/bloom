@@ -21,18 +21,13 @@ npm run format:check           # Prettier check only
 # TypeScript type checking (no script exists — run directly)
 cd web && npx tsc --noEmit
 
-# Python — the LangGraph agent (langchain/)
-cd langchain && uv run black --check .
-cd langchain && uv run ruff check .
-cd langchain && uv run mypy . --ignore-missing-imports
-
 # Python — the FastMCP server (bloommcp/)
 cd bloommcp && uv run black --check .
 cd bloommcp && uv run ruff check .
 cd bloommcp && uv run mypy . --ignore-missing-imports
 
-# All Python services at once
-cd langchain && uv run black --check . && uv run ruff check . && cd ../bloommcp && uv run black --check . && uv run ruff check .
+# All at once for bloommcp
+cd bloommcp && uv run black --check . && uv run ruff check .
 
 # Pre-commit hooks (runs all configured checks)
 uv run pre-commit run --all-files
@@ -70,14 +65,11 @@ cd web && npx tsc --noEmit
 
 ## Python Linting
 
-Python linting applies to two services: the LangGraph agent (`langchain/`) and the FastMCP server (`bloommcp/`).
+Python linting applies to the FastMCP server (`bloommcp/`).
 
 ### Black (Formatter)
 
 ```bash
-cd langchain && uv run black --check .   # Check only
-cd langchain && uv run black .           # Auto-format
-
 cd bloommcp && uv run black --check .    # Check only
 cd bloommcp && uv run black .            # Auto-format
 ```
@@ -85,9 +77,6 @@ cd bloommcp && uv run black .            # Auto-format
 ### Ruff (Linter)
 
 ```bash
-cd langchain && uv run ruff check .          # Check only
-cd langchain && uv run ruff check --fix .    # Auto-fix
-
 cd bloommcp && uv run ruff check .           # Check only
 cd bloommcp && uv run ruff check --fix .     # Auto-fix
 ```
@@ -95,7 +84,6 @@ cd bloommcp && uv run ruff check --fix .     # Auto-fix
 ### mypy (Type Checker)
 
 ```bash
-cd langchain && uv run mypy . --ignore-missing-imports
 cd bloommcp && uv run mypy . --ignore-missing-imports
 ```
 
@@ -106,7 +94,7 @@ Uses `--ignore-missing-imports` because some data science libraries (scipy, scik
 `.pre-commit-config.yaml` runs these hooks automatically on `git commit`:
 
 - **General:** trailing-whitespace, end-of-file-fixer, check-yaml, check-added-large-files, check-merge-conflict, check-toml
-- **Python:** Black, Ruff, mypy targeting `^(langchain|bloommcp)/`
+- **Python:** Black and Ruff targeting `^(bloommcp|services/workflows|bloomcli|scheduled-jobs)/`
 - **JS/TS:** Prettier on `.(js|jsx|ts|tsx|json|md)$`
 
 ```bash
@@ -150,8 +138,8 @@ npm run format
 ### Python formatting
 
 ```bash
-# Fix all Python formatting in both services
-cd langchain && uv run black . && uv run ruff check --fix . && cd ../bloommcp && uv run black . && uv run ruff check --fix .
+# Fix Python formatting in bloommcp
+cd bloommcp && uv run black . && uv run ruff check --fix .
 ```
 
 ### Pre-commit hook failures

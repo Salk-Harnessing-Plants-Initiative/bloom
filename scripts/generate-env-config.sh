@@ -139,11 +139,6 @@ echo "${PREFIX}_BLOOM_MCP_URL                      | http://bloommcp:8811/mcp"
 echo "${PREFIX}_CORS_ORIGINS                       | $SITE_URL"
 echo "${PREFIX}_OPENAI_API_KEY                     | sk-placeholder"
 
-# LangChain
-echo "${PREFIX}_LANGCHAIN_TRACING_V2               | false"
-echo "${PREFIX}_LANGCHAIN_API_KEY                  | "
-echo "${PREFIX}_LANGCHAIN_PROJECT                  | bloom-${ENV}"
-
 # Deploy
 echo "${PREFIX}_DEPLOY_PATH                        | $DEPLOY_PATH"
 

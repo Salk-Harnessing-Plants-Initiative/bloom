@@ -84,8 +84,7 @@ bloom-mcp = "bloom_mcp.server:main"
 
 # Test stack lives in the `test` extra (not a dev dependency-group) so CI invokes
 # it as `uv run --extra test pytest` — the repo-wide convention enforced by
-# tests/unit/test_ci_workflow_uv_conventions.py and matching langchain /
-# video-worker. The extra is opt-in, so `uv sync --no-dev` keeps it out of the
+# tests/unit/test_ci_workflow_uv_conventions.py and matching video-worker. The extra is opt-in, so `uv sync --no-dev` keeps it out of the
 # prod image.
 [project.optional-dependencies]
 test = [

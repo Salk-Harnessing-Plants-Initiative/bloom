@@ -27,7 +27,6 @@
 #   authoritative list is the env heredocs in .github/workflows/deploy.yml.
 #   Common ones:
 #     <PREFIX>_OPENAI_API_KEY        — provided by you / OpenAI
-#     <PREFIX>_LANGCHAIN_API_KEY     — provided by LangSmith
 #     <PREFIX>_MINIO_DATA_PATH       — host filesystem path
 #     <PREFIX>_MINIO_ROOT_USER       — MinIO admin user (typically "supabase")
 #     <PREFIX>_DASHBOARD_USERNAME    — Studio admin user (typically "admin")

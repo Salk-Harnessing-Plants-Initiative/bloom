@@ -6,7 +6,6 @@
 #   {DOMAIN_MAIN}/api/client-info → bloom-web (public {api_url, anon_key} for
 #                              CLI bootstrap — exact path, ahead of /api/*)
 #   {DOMAIN_MAIN}/api/*        → kong (Supabase API gateway, /api prefix stripped)
-#   {DOMAIN_MAIN}/langchain/*  → langchain-agent (FastAPI, prefix preserved)
 #   {DOMAIN_STUDIO}            → kong → studio (Supabase Studio, gated by Kong's
 #                              `dashboard` service basic-auth — Studio has none of
 #                              its own, so Kong is in its availability path)
@@ -107,9 +106,8 @@
 	# Only the tunnel entrance may set this; bloommcp trusts a token only with it.
 	request_header -X-Bloom-Tunnel
 
-	# Compress these text types, except on the stream route: encode holds headers until the first body byte.
-	@compress not path /langchain/*
-	encode @compress zstd gzip {
+	# Compress these text types only; event streams are left out because encode holds headers until the first body byte.
+	encode zstd gzip {
 		match {
 			header Content-Type application/json*
 			header Content-Type application/javascript*
@@ -158,15 +156,6 @@
 		# Supabase API — strip /api prefix, proxy to Kong
 		handle_path /api/* {
 			reverse_proxy kong:{$KONG_PORT}
-		}
-
-		# LangChain agent — preserve /langchain prefix (FastAPI routes are
-		# defined as /langchain/chat, /langchain/chat/stream, etc).
-		# flush_interval -1 forwards SSE chunks immediately without buffering.
-		handle /langchain/* {
-			reverse_proxy langchain-agent:5002 {
-				flush_interval -1
-			}
 		}
 
 		# Workflows API — strip /workflows prefix, proxy to FastAPI on 5100.

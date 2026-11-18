@@ -47,7 +47,6 @@ SENSITIVE_INVENTORY = {
     "SUPAVISOR_ENC_KEY",
     "SECRET_KEY_BASE",
     "OPENAI_API_KEY",
-    "LANGCHAIN_API_KEY",
     "BLOOM_AGENT_KEY",
     "CLOUDFLARE_API_TOKEN",
     # bloommcp's Salk connector: the tunnel token and Caddy's internal secret.
@@ -185,7 +184,6 @@ def test_env_disambiguating_values_differ():
         "CORS_ORIGINS", "BLOOM_PLOTS_URL",
         "CADDY_HTTP_LISTEN_PORT", "CADDY_HTTPS_LISTEN_PORT",
         "POSTGRES_HOST_PORT",
-        "LANGCHAIN_PROJECT",
         # WORKFLOWS_K8S_ENV_LABEL's entire purpose (design.md's "fourth
         # environment label" decision) is disambiguating prod from staging in
         # the shared runai-busch-lab namespace — a copy-paste accident

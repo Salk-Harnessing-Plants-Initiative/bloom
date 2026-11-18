@@ -3,7 +3,7 @@
 CVE-2023-30533
 CVE-2024-22363
 
-# Upstream vendor image CVEs. Our own images (bloom-web, langchain-agent,
+# Upstream vendor image CVEs. Our own images (bloom-web,
 # bloommcp, bloomcli, workflows, box-object-backup) have none of the entries
 # below; caddy has only CVE-2026-56854, explained in its entry. Each entry lists
 # the pinned upstream images that still carry it, and those fixes arrive with

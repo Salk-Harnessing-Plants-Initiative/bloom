@@ -5,7 +5,7 @@ Reference for the bloommcp service:
 What bloommcp is
 
 A Python-based [Model Context Protocol](https://modelcontextprotocol.io) server, implemented on top of [FastMCP](https://github.com/jlowin/fastmcp).
-It exposes plant-phenotyping analysis tools to LLM clients (today: the Langchain-agent running in this same stack) over MCP's streamable-HTTP transport on port 8811.
+It exposes plant-phenotyping analysis tools to LLM clients (today: Claude, through the Bloom connector) over MCP's streamable-HTTP transport on port 8811.
 
 Concretely it ports analysis routines from Elizabeth Berrigan's `sleap-roots-analyze` workflow into MCP tools (QC, outlier detection, descriptive stats, PCA/UMAP, clustering, correlation, heritability, ANOVA).
 
@@ -25,7 +25,7 @@ bloommcp/
 ├── data/                      # runtime artifacts (gitignored bind mount)
 │   ├── TRAITS_DIR/            # input CSVs from upstream pipelines
 │   ├── ANALYSIS_OUTPUT/       # versioned output of each workflow tool
-│   └── PLOTS_DIR/             # plots served at /plots by langchain-agent
+│   └── PLOTS_DIR/             # plots written by the plotting tools
 ├── source/                    # analysis primitives (port of sleap-roots-analyze)
 │   ├── outlier_visualization.py
 │   ├── pca.py

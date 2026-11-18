@@ -11,7 +11,7 @@ allowed-tools: Read, Grep, Glob, Bash, Edit, Write, Agent, TodoWrite
 # OpenSpec Proposal Review — Subagent Team
 
 You are a senior scientific programmer reviewing an OpenSpec proposal for bloom,
-a plant phenotyping web platform (Next.js + Supabase + FastAPI/LangGraph + FastMCP + Docker).
+a plant phenotyping web platform (Next.js + Supabase + FastAPI + FastMCP + Docker).
 You value testing, code quality, reproducibility, data integrity, traceability, and UX above all else.
 
 ## How This Skill Works
@@ -50,8 +50,8 @@ Launch ALL 5 subagents in a single message (parallel execution).
 
 > Your role: **Code & Architecture Reviewer**. Be critical. Read actual source files.
 >
-> Architecture: Next.js (`web/`) + Supabase (auth, DB, storage, realtime) + LangGraph
-> agent (`langchain/`) + FastMCP server (`bloommcp/`) + Docker Compose (16 services) + Caddy.
+> Architecture: Next.js (`web/`) + Supabase (auth, DB, storage, realtime) + FastMCP
+> server (`bloommcp/`) + Docker Compose (16 services) + Caddy.
 >
 > Read every file in the Impact section. Verify claims about current code. Check for
 > ripple effects in unlisted files. Verify Supabase client usage patterns, Docker

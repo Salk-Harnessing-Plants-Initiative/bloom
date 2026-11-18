@@ -8,7 +8,7 @@ tags: [openspec, review, subagents, workflow]
 # OpenSpec Proposal Review — Subagent Team
 
 You are a senior scientific programmer reviewing an OpenSpec proposal for the Bloom monorepo,
-a plant phenotyping web platform (Next.js + Supabase + FastAPI/LangGraph + FastMCP + Docker). You value
+a plant phenotyping web platform (Next.js + Supabase + FastAPI + FastMCP + Docker). You value
 testing, code quality, reproducibility, data integrity, traceability, scientific accuracy, correctness, and
 documentation that is clear, succinct, and DRY.
 
@@ -34,7 +34,7 @@ Before launching subagents, collect essential context that each agent will need:
 2. Read the CURRENT specs being modified (from `openspec/specs/`)
 3. Read `openspec/AGENTS.md` for OpenSpec conventions
 4. Read `openspec/project.md` for project conventions
-5. Note the affected code files listed in the Impact section (which service: `web/`, `langchain/`, `bloommcp/`, `services/`, etc.)
+5. Note the affected code files listed in the Impact section (which service: `web/`, `bloommcp/`, `bloomcli/`, `services/`, etc.)
 6. Note any related GitHub issues mentioned
 
 Embed the full proposal text, current spec text, and file lists into each subagent prompt.
@@ -77,7 +77,7 @@ description: "Review OpenSpec format quality"
 >
 > - `proposal.md` must have: ## Why, ## What Changes, ## Impact
 > - ## Why should be 1-2 sentences explaining the problem/opportunity
-> - ## Impact must list: affected specs AND affected code files (note which service: web/, langchain/, bloommcp/, services/)
+> - ## Impact must list: affected specs AND affected code files (note which service: web/, bloommcp/, bloomcli/, services/)
 > - BREAKING changes must be marked with **BREAKING**
 > - Change ID must be verb-led kebab-case
 >
@@ -136,7 +136,7 @@ description: "Review TDD and testing plan"
 > **Project testing infrastructure** (READ the actual files — do not assume):
 >
 > - Bloom is a polyglot monorepo. Determine which service(s) the proposal touches and read their test setup.
-> - **Python services** (`langchain/`, `bloommcp/`, `services/*`) use `uv` + pytest. Tests run per-service
+> - **Python services** (`bloommcp/`, `bloomcli/`, `services/*`) use `uv` + pytest. Tests run per-service
 >   (`cd <service> && uv run pytest`) or from the repo root (`uv run --extra test pytest`; the root
 >   pyproject.toml is `bloom-tests`).
 > - **TypeScript/JS** (`web/`) uses the configured JS test tooling — read `package.json` to confirm.
@@ -152,7 +152,7 @@ description: "Review TDD and testing plan"
 > 2. **Test specificity**: Is each test specific enough to implement? Not vague like "verify it works"
 > 3. **Correct test framework**: Are the right tools used for the right layer?
 >    - Pure functions / config validation → pytest (Python) or the JS unit runner
->    - API routes / MCP tools / LangGraph nodes → integration tests against the service
+>    - API routes / MCP tools → integration tests against the service
 >    - Infrastructure (CI workflows, Docker, packaging) → what CAN be tested locally vs only in CI?
 >    - CLI / entry points → subprocess or isolated-run tests
 > 4. **Missing tests**:
@@ -266,7 +266,7 @@ description: "Review documentation impact"
 >
 > **Documentation to read and check** (READ what exists — do not assume a fixed file list):
 >
-> - Top-level `README.md` and any per-service `README.md` (`web/`, `langchain/`, `bloommcp/`, `services/*`)
+> - Top-level `README.md` and any per-service `README.md` (`web/`, `bloommcp/`, `bloomcli/`, `services/*`)
 > - Anything under `docs/` relevant to the change (setup, testing, release, architecture)
 > - `openspec/project.md` — project conventions
 > - Any CHANGELOG present

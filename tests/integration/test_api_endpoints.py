@@ -67,7 +67,7 @@ HEADER_ROUTES = [
     "/api/auth/v1/health",  # /api/* -> kong -> gotrue
     "/api/rest/v1/",  # /api/* -> kong -> postgrest
     "/api/storage/v1/bucket",  # /api/* -> kong -> storage-api
-    "/langchain/models",  # /langchain/* -> agent (prefix preserved)
+    "/langchain/models",  # retired agent path -> bloom-web catch-all
     "/workflows/health",  # Caddy's own `respond 404`
     "/workflows/runs",  # /workflows/* -> workflows
     "/",  # catch-all -> bloom-web
