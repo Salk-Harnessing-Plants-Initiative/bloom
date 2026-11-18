@@ -18,6 +18,8 @@ from .file_ports import FileNotFound, FileReader, FileReadError
 BUCKET = "scrna"
 # Far above any per-gene file on prod (set from storage sizes); larger ones are not read.
 MAX_COUNTS_BYTES = 64 * 1024**2
+# Longest cell key shown in a note; a damaged file's key can be any length.
+MAX_SHOWN_KEY = 20
 
 
 class CountsProblem(Exception):
@@ -58,21 +60,37 @@ def _parse(data: bytes) -> dict[str, Any]:
     raise CountsProblem("Its stored file is not a map of cells to values.")
 
 
+def _index(key: str, cell_count: int) -> int:
+    """The cell number `key` names, or -1 when it isn't a cell number below `cell_count`."""
+    digits = key.lstrip("0") or "0"
+    if not (key.isascii() and key.isdigit()) or len(digits) > len(str(cell_count)):
+        return -1
+    return int(digits)
+
+
+def _shown(key: str) -> str:
+    return repr(key if len(key) <= MAX_SHOWN_KEY else key[:MAX_SHOWN_KEY] + "…")
+
+
 def _dense(sparse: dict[str, Any], cell_count: int) -> list[float]:
     values = [0.0] * cell_count
     for key, value in sparse.items():
-        index = int(key) if key.isascii() and key.isdigit() else -1
+        index = _index(key, cell_count)
         if not 0 <= index < cell_count:
             # The file was written against a different set of cells.
             raise CountsProblem(
-                f"Its stored file names cell {key!r}, but the dataset holds "
+                f"Its stored file names cell {_shown(key)}, but the dataset holds "
                 f"{cell_count} cells, so the file doesn't match this dataset."
             )
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise CountsProblem(f"Its stored file has a non-number for cell {key}.")
-        if not math.isfinite(value):
+        try:
+            number = float(value)
+        except OverflowError:
+            number = math.inf
+        if not math.isfinite(number):
             raise CountsProblem(
                 f"Its stored file has a non-finite value for cell {key}."
             )
-        values[index] = float(value)
+        values[index] = number
     return values

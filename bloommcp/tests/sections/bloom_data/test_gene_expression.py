@@ -86,6 +86,9 @@ TABLES = {
         # Listed by symbol: PDF1.2 is its own gene, not PDF1.
         {"id": 15, "dataset_id": 3, "gene_name": "PDF1"},
         {"id": 16, "dataset_id": 3, "gene_name": "PDF1.2"},
+        {"id": 17, "dataset_id": 3, "gene_name": "AT5G05050"},
+        # Another dataset's gene, never read for dataset 3.
+        {"id": 20, "dataset_id": 4, "gene_name": "AT9G09090"},
     ],
     "scrna_counts": [
         {
@@ -106,6 +109,19 @@ TABLES = {
             "dataset_id": 3,
             "gene_id": 13,
             "counts_object_path": "counts/MYB41_root_3_/AT3G03030.json",
+        },
+        {
+            "id": 5,
+            "dataset_id": 3,
+            "gene_id": 17,
+            "counts_object_path": "counts/MYB41_root_3_/AT5G05050.json",
+        },
+        # Another dataset's file for gene 12, which dataset 3 stores none for.
+        {
+            "id": 6,
+            "dataset_id": 4,
+            "gene_id": 12,
+            "counts_object_path": "counts/Atlas_4_/AT2G02020.json",
         },
     ],
     "genes": [
@@ -142,6 +158,9 @@ FILES = {
     ("scrna", "counts/MYB41 root/AT1G01010.json"): b'[{"0": 1.0}, {"4": 3.0}]',
     # Written against other cells.
     ("scrna", "counts/MYB41_root_3_/AT3G03030.json"): b'{"9": 1.0}',
+    # Values that need rounding.
+    ("scrna", "counts/MYB41_root_3_/AT5G05050.json"): b'{"0": 1, "1": 0.123456789}',
+    ("scrna", "counts/Atlas_4_/AT2G02020.json"): b'{"0": 1.0}',
 }
 CELL_ARRAYS = Function("scrna_cell_arrays", (Param("ds_id", "bigint", True),))
 
@@ -318,3 +337,47 @@ def test_every_gene_is_left_out_when_none_fits(bloom, monkeypatch):
     assert result.returned == 0
     assert all(g.note.startswith("Left out to fit one reply") for g in result.genes)
     assert all(not g.note.endswith("without split.") for g in result.genes)
+
+
+def test_every_statistic_matches_the_websites(bloom):
+    [gene] = _run(["AT4G28110"]).genes
+    cortex, xylem, _ = (r.model_dump() for r in gene.groups)
+    # Cortex holds 0 and 4; X holds 2 and 1.
+    assert cortex == {
+        "cell_type": "Cortex",
+        "part": None,
+        "cells": 2,
+        "expressing": 1,
+        "share": 0.5,
+        "mean": 2.0,
+        "min": 0.0,
+        "q1": 1.0,
+        "median": 2.0,
+        "q3": 3.0,
+        "max": 4.0,
+    }
+    assert (xylem["share"], xylem["min"], xylem["q1"], xylem["median"]) == (
+        1.0,
+        1.0,
+        1.25,
+        1.5,
+    )
+    assert (xylem["q3"], xylem["max"]) == (1.75, 2.0)
+
+
+def test_numbers_are_rounded_to_four_places(bloom):
+    [cortex, *_] = _run(["AT5G05050"]).genes[0].groups
+    assert (cortex.mean, cortex.min, cortex.q1) == (0.5617, 0.1235, 0.3426)
+
+
+@pytest.mark.parametrize("name", ["AT9G09090", "at9g09090"])
+def test_another_datasets_gene_is_not_found(bloom, name):
+    [gene] = _run([name]).genes
+    assert (gene.gene_name, gene.note) == (None, "Not a gene in this dataset.")
+
+
+def test_another_datasets_file_is_never_read(bloom):
+    _, files = bloom
+    [gene] = _run(["AT2G02020"]).genes
+    assert gene.note == "This dataset stores no expression for this gene."
+    assert not any("Atlas_4_" in call[2] for call in files.calls)

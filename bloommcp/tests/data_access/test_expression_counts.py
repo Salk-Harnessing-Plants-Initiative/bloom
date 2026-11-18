@@ -45,6 +45,8 @@ def test_a_cell_outside_the_dataset_fails_the_gene(key):
         (b'{"1": "high"}', "non-number"),
         (b'{"1": true}', "non-number"),
         (b'{"1": NaN}', "non-finite"),
+        (b'{"1": 1e400}', "non-finite"),
+        (b'{"1": 1' + b"0" * 400 + b"}", "non-finite"),
     ],
 )
 def test_a_damaged_file_fails_the_gene(body, match):
@@ -76,3 +78,14 @@ def test_a_file_over_the_cap_is_not_downloaded(monkeypatch):
     with pytest.raises(ec.CountsProblem, match="over the"):
         ec.gene_values(files, PATH, 4)
     assert [c[0] for c in files.calls] == ["size"]
+
+
+def test_a_huge_cell_key_fails_the_gene_with_a_short_note():
+    key = "1" * 5000
+    with pytest.raises(ec.CountsProblem, match="doesn't match this dataset") as raised:
+        ec.gene_values(_files(f'{{"{key}": 1}}'.encode()), PATH, 4)
+    assert len(str(raised.value)) < 200
+
+
+def test_a_cell_key_with_leading_zeros_is_that_cell():
+    assert ec.gene_values(_files(b'{"001": 2}'), PATH, 4) == [0.0, 2.0, 0.0, 0.0]
