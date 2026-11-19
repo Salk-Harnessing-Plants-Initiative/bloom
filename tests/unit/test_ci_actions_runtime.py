@@ -99,7 +99,8 @@ ALL_USES = [u for p in _files() for u in _uses_in(p)]
 REMOTE_USES = _remote(ALL_USES)
 
 
-def test_workflows_use_actions():
+def test_scan_finds_actions():
+    # Guards against a scan that finds nothing, which would make every check below pass.
     assert len(REMOTE_USES) > 50
 
 
@@ -132,9 +133,8 @@ def test_every_action_runs_on_node24():
     old = []
     for u in REMOTE_USES:
         floor = FIRST_NODE24.get(_action(u.ref))
-        label = (
-            u.comment or u.ref.split("@", 1)[-1]
-        )  # a bare tag carries its own version
+        # A bare tag carries its own version.
+        label = u.comment or u.ref.split("@", 1)[-1]
         m = _VERSION.match(label)
         if floor is None or m is None:
             continue  # reported by the tests above
@@ -181,3 +181,19 @@ def test_every_sha_is_the_release_its_comment_names():
                 f"{where}  {repo}@{sha}  # {tag} (tag is {commit or 'missing'})"
             )
     assert not wrong, "SHA does not match its version comment:\n" + "\n".join(wrong)
+
+
+def test_ci_runs_the_pin_check():
+    workflow = yaml.safe_load((GITHUB_DIR / "workflows" / "pr-checks.yml").read_text())
+    unit_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if "pytest tests/unit/ " in step.get("run", "")
+    ]
+    assert unit_steps, "pr-checks.yml has no step running pytest tests/unit/"
+    for step in unit_steps:
+        env = step.get("env") or {}
+        assert (
+            str(env.get("CHECK_ACTION_PINS")) == "1"
+        ), f"step {step.get('name')!r} must set CHECK_ACTION_PINS: \"1\""
