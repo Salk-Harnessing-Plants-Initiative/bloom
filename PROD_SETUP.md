@@ -83,7 +83,7 @@ the wiki pages linked at the bottom of this doc.
    | `PROD_DASHBOARD_PASSWORD`      | Supabase Studio dashboard password                                   |
    | `PROD_BLOOMMCP_API_KEY`        | bloommcp tool-auth key                                               |
    | `PROD_OPENAI_API_KEY`          | OpenAI for Supabase Studio's AI assistant                            |
-   | `PROD_BLOOM_AGENT_KEY`         | Service role for the agent's Supabase access                         |
+   | `PROD_BLOOM_AGENT_KEY`         | bloommcp's read-only Supabase key (`bloom_agent` role)               |
    | `PROD_CLOUDFLARE_API_TOKEN`    | Caddy DNS-01 ACME token (zone: `bloom-acme.talmolab.org`)            |
    | `PROD_CLOUDFLARE_TUNNEL_TOKEN` | Token for bloommcp's Salk connector tunnel, from AIRC                |
    | `PROD_BLOOMMCP_TUNNEL_SECRET`  | Caddy's tunnel-entrance secret for bloommcp (`openssl rand -hex 32`) |

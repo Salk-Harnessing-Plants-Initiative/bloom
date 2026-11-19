@@ -481,6 +481,8 @@ MINIO_ROOT_USER=<your-minio-user>
 MINIO_ROOT_PASSWORD=<your-minio-password>
 MINIO_DEFAULT_BUCKET=bloom-storage
 
+# Service endpoints (bloommcp, video-worker)
+
 SUPABASE_URL=http://kong:8000
 S3_ENDPOINT=http://supabase-minio:9000
 

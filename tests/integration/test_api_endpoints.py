@@ -67,7 +67,6 @@ HEADER_ROUTES = [
     "/api/auth/v1/health",  # /api/* -> kong -> gotrue
     "/api/rest/v1/",  # /api/* -> kong -> postgrest
     "/api/storage/v1/bucket",  # /api/* -> kong -> storage-api
-    "/langchain/models",  # retired agent path -> bloom-web catch-all
     "/workflows/health",  # Caddy's own `respond 404`
     "/workflows/runs",  # /workflows/* -> workflows
     "/",  # catch-all -> bloom-web
@@ -107,7 +106,7 @@ def test_security_headers_present(header_responses, path, name, value):
     in SINGLE_VALUE_HEADERS are the exception — any duplicate voids them, so
     they are held to exactly one occurrence on every route here as well as on
     the consoles.
-    No upstream sets any of these today, across all seven behind the routes
+    No upstream sets any of these today, across all six behind the routes
     above — this is the guard for the day one of them starts.
     """
     received = header_responses[path].get_all(name)
