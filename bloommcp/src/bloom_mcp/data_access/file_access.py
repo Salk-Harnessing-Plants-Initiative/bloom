@@ -67,9 +67,11 @@ MAX_FILES = 8
 MAX_PATH_CHARS = 1024
 # Larger originals are linked, not downloaded (plate_encode's limit; real plates <= 75 MB).
 MAX_SOURCE_IMAGE_BYTES = 192 * 1024**2
-# Claude's 5 MiB image limit counts base64, a third larger than the PNG.
-MAX_IMAGE_BYTES = 3_900_000
-MAX_CALL_IMAGE_BYTES = 15_000_000
+# Claude's 10 MB image limit counts base64, a third larger than the PNG.
+# https://platform.claude.com/docs/en/build-with-claude/vision#image-limits-and-costs
+MAX_IMAGE_BYTES = 7_000_000
+# One call's reply holds up to three full-size images; later ones are shrunk or linked.
+MAX_CALL_IMAGE_BYTES = 3 * MAX_IMAGE_BYTES
 SIGNED_URL_SECONDS = 3600
 
 _IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "tif", "tiff"})

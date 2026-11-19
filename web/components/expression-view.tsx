@@ -12,7 +12,8 @@ import {
   describeFocus,
   focusIsSet,
 } from "@/components/expression-lib/umap-packing";
-import type { CellArraysRow } from "@/components/expression-lib/scrna-client";
+import { searchGenes, type CellArraysRow } from "@/components/expression-lib/scrna-client";
+import { resolveLinkedGenes } from "@/components/expression-lib/linked-genes";
 import { ExpressionSampleToggles } from "./expression-sample-toggles";
 import { ExpressionGeneSearch } from "@/components/expression-gene-search";
 import { ExpressionColorbar } from "@/components/expression-colorbar";
@@ -39,6 +40,8 @@ export interface ExpressionViewProps {
   datasetName?: string;
   /** Opens a cluster's one-vs-rest comparison in the DE tab. */
   onShowDe?: (target: DeFocus) => void;
+  /** A gene named in the page's link (`?gene=`) to colour the map by when it opens. */
+  linkedGene?: string;
 }
 
 interface LoadedMeta {
@@ -59,7 +62,7 @@ const NOTHING_HIDDEN: ReadonlySet<string> = new Set();
 const NOTHING_FOCUSED: ReadonlySet<string> = new Set();
 
 /** Composes the UMAP canvas + gene search + colorbar + cluster sidebar for a dataset. */
-export function ExpressionView({ datasetId, onShowDe }: ExpressionViewProps) {
+export function ExpressionView({ datasetId, onShowDe, linkedGene }: ExpressionViewProps) {
   const [meta, setMeta] = useState<LoadedMeta | null>(null);
   const [geneName, setGeneName] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
@@ -83,6 +86,25 @@ export function ExpressionView({ datasetId, onShowDe }: ExpressionViewProps) {
     // A gene picked on one dataset may not exist in the next.
     setGeneName(null);
   }, [datasetId]);
+  // The link's gene, as this dataset spells it; set once per dataset, after the reset above,
+  // unless the user has picked a gene meanwhile.
+  const [linkProblem, setLinkProblem] = useState<string | null>(null);
+  useEffect(() => {
+    setLinkProblem(null);
+    if (!linkedGene) return;
+    let cancelled = false;
+    void resolveLinkedGenes([linkedGene], (q, limit) => searchGenes(datasetId, q, limit)).then(
+      ({ genes, failed }) => {
+        if (cancelled) return;
+        if (genes.length > 0) setGeneName((picked) => picked ?? genes[0]);
+        else if (failed.length > 0) setLinkProblem(`Could not look up ${linkedGene}.`);
+        else setLinkProblem(`${linkedGene} is not in this dataset.`);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId, linkedGene]);
   // The gene's whole range, as the map reports it, and the part of it the
   // colours span, which the colour bar narrows.
   const [dataRange, setDataRange] = useState<{ min: number; max: number } | null>(null);
@@ -298,7 +320,11 @@ export function ExpressionView({ datasetId, onShowDe }: ExpressionViewProps) {
               disabled={!meta}
             />
           </div>
-          {geneError ? (
+          {linkProblem && !geneName ? (
+            <span role="status" className="text-xs text-amber-800">
+              {linkProblem}
+            </span>
+          ) : geneError ? (
             <span role="alert" className="text-xs text-rose-700">
               {geneError}
             </span>
