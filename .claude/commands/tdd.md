@@ -25,14 +25,13 @@ Bloom is a polyglot monorepo. Python services are managed with `uv` and tested w
 ```bash
 # Per-service: run pytest from inside the service directory
 cd bloommcp && uv run pytest                 # FastMCP server
-cd langchain && uv run pytest                # LangGraph agent
 cd services/video-worker && uv run pytest    # a service under services/
 
 # Root: the root pyproject.toml is `bloom-tests`; run with the test extra
 uv run --extra test pytest                   # all wired-up tests from the repo root
 ```
 
-Throughout this workflow, replace `<service>` with the directory you're working in (e.g. `bloommcp`, `langchain`, `services/video-worker`) and `<module>` with the module under test.
+Throughout this workflow, replace `<service>` with the directory you're working in (e.g. `bloommcp`, `services/workflows`, `services/video-worker`) and `<module>` with the module under test.
 
 ## TDD Cycle
 

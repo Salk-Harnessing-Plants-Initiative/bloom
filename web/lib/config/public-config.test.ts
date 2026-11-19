@@ -9,7 +9,7 @@
  * These tests exercise the *deferred-read* semantics of getPublicConfig:
  *   - The function reads `process.env` at call time, not at module load.
  *     Mutating an env var between calls MUST be reflected in the next call.
- *   - The returned object's keys are exactly the 8 declared public-config keys.
+ *   - The returned object's keys are exactly the 7 declared public-config keys.
  *
  * Plus the JWT decoder used by the cross-environment fence (Decision 14):
  *   - Round-trips through base64url substitution (`-` ↔ `+`, `_` ↔ `/`) plus
@@ -32,7 +32,6 @@ const EXPECTED_KEYS: ReadonlyArray<keyof PublicConfig> = [
   "supabaseUrl",
   "supabaseAnonKey",
   "supabaseCookieName",
-  "mcpUrl",
   "appUrl",
   "commitSha",
   "storageUrl",
@@ -40,11 +39,10 @@ const EXPECTED_KEYS: ReadonlyArray<keyof PublicConfig> = [
 ];
 
 describe("getPublicConfig", () => {
-  it("returns a record with exactly the 8 declared keys", () => {
+  it("returns a record with exactly the 7 declared keys", () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.test";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
     process.env.NEXT_PUBLIC_SUPABASE_COOKIE_NAME = "sb-test";
-    process.env.NEXT_PUBLIC_MCP_URL = "http://mcp.test";
     process.env.NEXT_PUBLIC_APP_URL = "https://app.test";
     process.env.NEXT_PUBLIC_COMMIT_SHA = "abc1234";
     process.env.NEXT_PUBLIC_STORAGE_URL = "https://storage.test";

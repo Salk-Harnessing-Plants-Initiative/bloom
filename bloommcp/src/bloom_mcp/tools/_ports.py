@@ -18,6 +18,8 @@ from bloom_mcp.data_access import (
     RawSourced,
     SupabaseReader,
 )
+from bloom_mcp.data_access.file_ports import FileReader
+from bloom_mcp.data_access.file_reader import StorageFileReader
 from bloom_mcp.data_access.table_ports import BloomDataReader
 from bloom_mcp.data_access.table_reader import PostgrestTableReader
 from bloom_mcp.result_store import ResultStore, RunHandle, SupabaseResultStore
@@ -25,6 +27,7 @@ from bloom_mcp.result_store import ResultStore, RunHandle, SupabaseResultStore
 _reader: ExperimentReader = SupabaseReader()
 _store: ResultStore = SupabaseResultStore()
 _table_reader: BloomDataReader = PostgrestTableReader()
+_file_reader: FileReader = StorageFileReader()
 
 
 def configure(
@@ -32,15 +35,18 @@ def configure(
     reader: Optional[ExperimentReader] = None,
     store: Optional[ResultStore] = None,
     table_reader: Optional[BloomDataReader] = None,
+    file_reader: Optional[FileReader] = None,
 ) -> None:
     """Inject concrete adapters (server boot / tests). Unset args keep current."""
-    global _reader, _store, _table_reader
+    global _reader, _store, _table_reader, _file_reader
     if reader is not None:
         _reader = reader
     if store is not None:
         _store = store
     if table_reader is not None:
         _table_reader = table_reader
+    if file_reader is not None:
+        _file_reader = file_reader
 
 
 def reader() -> ExperimentReader:
@@ -56,6 +62,11 @@ def store() -> ResultStore:
 def table_reader() -> BloomDataReader:
     """The injected table reader for the bloom_data tools."""
     return _table_reader
+
+
+def file_reader() -> FileReader:
+    """The injected stored-file reader for read_file."""
+    return _file_reader
 
 
 def raw_source_for(filename: str) -> Optional[Path]:

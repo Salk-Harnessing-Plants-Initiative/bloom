@@ -35,7 +35,6 @@ cd web && npx tsc --noEmit && npm run build
 Matches the `python-audit` job:
 
 ```bash
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 ```
@@ -52,7 +51,6 @@ To scan for vulnerabilities locally (requires Trivy installed):
 
 ```bash
 trivy image bloom-web:latest --severity CRITICAL,HIGH
-trivy image langchain-agent:latest --severity CRITICAL,HIGH
 trivy image bloommcp:latest --severity CRITICAL,HIGH
 ```
 
@@ -80,12 +78,10 @@ Python linting is recommended locally but **not enforced in CI**:
 
 ```bash
 # Check formatting
-cd langchain && uv run black --check . && uv run ruff check .
-cd ../bloommcp && uv run black --check . && uv run ruff check .
+cd bloommcp && uv run black --check . && uv run ruff check .
 
 # Auto-fix formatting
-cd langchain && uv run black . && uv run ruff check --fix .
-cd ../bloommcp && uv run black . && uv run ruff check --fix .
+cd bloommcp && uv run black . && uv run ruff check --fix .
 ```
 
 ## Optional: ESLint (NOT separately in CI)
@@ -108,7 +104,6 @@ npm audit --audit-level=critical
 cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 
@@ -148,7 +143,7 @@ cd web && npx tsc --noEmit 2>&1 | head -50
 
 ```bash
 # Update the vulnerable package
-cd langchain  # or bloommcp
+cd bloommcp  # or the affected service
 uv add <package-name>
 uv lock
 ```
@@ -170,7 +165,7 @@ docker compose -f docker-compose.prod.yml build bloom-web
 docker compose -f docker-compose.prod.yml ps
 
 # Check specific service logs
-docker compose -f docker-compose.prod.yml logs langchain-agent --tail=50
+docker compose -f docker-compose.prod.yml logs bloommcp --tail=50
 docker compose -f docker-compose.prod.yml logs db-prod --tail=50
 
 # Run specific test

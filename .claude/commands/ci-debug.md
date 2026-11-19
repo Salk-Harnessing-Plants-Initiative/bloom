@@ -7,7 +7,7 @@ tags: [ci, github-actions, debugging, testing]
 
 # CI Debug - GitHub Actions Pipeline
 
-Guide for debugging CI failures in Bloom (Next.js + FastAPI/LangGraph + FastMCP + Docker + Supabase).
+Guide for debugging CI failures in Bloom (Next.js + FastAPI + FastMCP + Docker + Supabase).
 
 ## CI Pipeline Overview
 
@@ -17,7 +17,7 @@ Guide for debugging CI failures in Bloom (Next.js + FastAPI/LangGraph + FastMCP 
 |---|---|---|
 | `build-and-audit` | npm CVE audit, TypeScript check, Next.js build | `npm ci`, `npm audit --audit-level=critical`, `npx tsc --noEmit`, `npm run build` |
 | `python-audit` | Python CVE scanning | `uv export --frozen --no-hashes` piped to `uvx pip-audit@2.10.0` per service (pinned per the `python-dependency-management` spec) |
-| `docker-build` | Build + Trivy scan Docker images | Build `bloom-web`, `langchain-agent`, `bloommcp`; Trivy CRITICAL gate |
+| `docker-build` | Build + Trivy scan Docker images | Build `bloom-web`, `bloommcp`, `caddy`, `workflows`; Trivy CRITICAL gate |
 | `compose-health-check` | Full stack integration tests | Start prod compose, wait 180s for health, `uv run --extra test pytest tests/integration/` |
 | `extract-pinned-images` | Extract pinned images for matrix scan | Grep `image:` from compose |
 | `scan-pinned-images` | CVE scan each pinned image (matrix) | Trivy per-image |
@@ -54,7 +54,7 @@ gh run view <RUN_ID> --log-failed
 | `npm audit` fails | CVE in npm dependency | Update vulnerable package |
 | `tsc` type errors | TypeScript compilation issues | `cd web && npx tsc --noEmit` locally |
 | `npm run build` fails | Next.js build error | `cd web && npm run build` locally |
-| `pip-audit` fails | CVE in Python dependency | Update in `langchain/pyproject.toml` or `bloommcp/pyproject.toml` and run `uv lock` |
+| `pip-audit` fails | CVE in Python dependency | Update in the service's `pyproject.toml` (e.g. `bloommcp/pyproject.toml`) and run `uv lock` |
 | Docker build fails | Dockerfile or dependency issue | `docker compose -f docker-compose.prod.yml build` |
 | Trivy CRITICAL | Critical CVE in Docker image | Update base image or dependency |
 | Health check timeout | Service not starting | Check container logs |
@@ -97,7 +97,6 @@ cd web && npx tsc --noEmit && npm run build
 **Debug locally:**
 
 ```bash
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 ```
@@ -110,7 +109,7 @@ cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.
 ### 3. `docker-build`
 
 **What it does:**
-1. Builds three Docker images: `bloom-web`, `langchain-agent`, `bloommcp`
+1. Builds the Docker images: `bloom-web`, `bloommcp`, `caddy`, `workflows`
 2. Scans each with Trivy for CRITICAL and HIGH vulnerabilities
 3. Posts CVE report as a sticky PR comment
 4. Fails if any CRITICAL CVE is found
@@ -123,7 +122,6 @@ docker compose -f docker-compose.prod.yml build
 
 # Build specific service
 docker compose -f docker-compose.prod.yml build bloom-web
-docker compose -f docker-compose.prod.yml build langchain-agent
 docker compose -f docker-compose.prod.yml build bloommcp
 
 # Run Trivy scan (if installed)
@@ -157,7 +155,6 @@ docker compose -f docker-compose.prod.yml ps
 
 # Check specific container logs
 docker compose -f docker-compose.prod.yml logs bloom-web
-docker compose -f docker-compose.prod.yml logs langchain-agent
 docker compose -f docker-compose.prod.yml logs bloommcp
 docker compose -f docker-compose.prod.yml logs db-prod
 
@@ -260,7 +257,7 @@ No `.env.example` exists in this repo. In CI, `.env.ci` is generated from GitHub
 - `SITE_URL`, `API_EXTERNAL_URL`
 - `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`
 - `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, `S3_ENDPOINT`, `S3_BUCKET`
-- `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (for LangGraph agent)
+- `OPENAI_API_KEY` (Supabase Studio's AI assistant)
 
 For local development, check the `compose-health-check` job in `.github/workflows/pr-checks.yml` for the full list.
 
@@ -274,7 +271,6 @@ export CI=true
 npm ci && npm audit --audit-level=critical && cd web && npx tsc --noEmit && npm run build && cd ..
 
 # Phase 2: python-audit
-cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 cd services/video-worker && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
 

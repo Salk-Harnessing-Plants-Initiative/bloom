@@ -33,10 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 24
           cache: 'npm'
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # setup-uv also installs Python via .python-version if present; single
       # Python manager per job, SHA-pinned per the pin-python-deps supply-chain
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
@@ -138,7 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
@@ -157,12 +157,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Run Python unit tests
+        env:
+          # Also check each pinned action SHA against its version tag (needs network).
+          CHECK_ACTION_PINS: "1"
         run: uv run --extra test pytest tests/unit/ -v --tb=short
 
       - name: Run bloom_mcp package tests
@@ -186,7 +189,7 @@ jobs:
       # design.md Decision 9).
       - name: Upload plot-snapshot diff images (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: plot-snapshot-diffs
           path: /tmp/pytest-of-*/**/*-failed-diff.png
@@ -230,9 +233,6 @@ jobs:
       - name: Verify uv lockfiles are synced
         run: python scripts/check-uv-locks.py
 
-      - name: Audit langchain dependencies
-        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 --ignore-vuln PYSEC-2025-183 -r /dev/stdin
-
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
         run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 --ignore-vuln PYSEC-2025-183 --ignore-vuln PYSEC-2024-277 -r /dev/stdin
@@ -247,7 +247,8 @@ jobs:
 
       # Checks bloomcli (bloomctl CLI) Python packages for vulnerabilities
       - name: Audit bloomcli dependencies
-        run: cd bloomcli && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 -r /dev/stdin
+        # The genome-index extra (pysam, which carries htslib) reads uploaded genome files.
+        run: cd bloomcli && uv export --frozen --no-hashes --extra genome-index | uvx pip-audit@2.10.0 -r /dev/stdin
 
   # bloom #737: the vendored copy of sleap-roots-pipeline's canonical
   # sleap-roots-pipeline.yaml (services/workflows/vendored/) must stay in sync
@@ -265,7 +266,7 @@ jobs:
       relevant: ${{ steps.filter.outputs.relevant }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
 
@@ -291,7 +292,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Check vendored Argo Workflow drift
         run: python3 scripts/check_vendored_workflow_drift.py
@@ -306,7 +307,7 @@ jobs:
       changed: ${{ steps.filter.outputs.changed }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
 
@@ -328,13 +329,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Build box-object-backup image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: ./scheduled-jobs/box-object-backup
           file: scheduled-jobs/box-object-backup/Dockerfile
@@ -359,7 +360,7 @@ jobs:
         run: docker compose -f scheduled-jobs/box-object-backup/compose.yml config --quiet
 
       - name: Scan box-object-backup image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'box-object-backup:ci'
           severity: 'CRITICAL,HIGH'
@@ -368,7 +369,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Check box-object-backup for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'box-object-backup:ci'
           severity: 'CRITICAL'
@@ -378,14 +379,14 @@ jobs:
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
-    # This job builds all five images (bloom-web/langchain/bloommcp/caddy/
-    # workflows) + Trivy-scans them on the same ~14 GB-free runner — the same
+    # This job builds all four images (bloom-web/bloommcp/caddy/workflows)
+    # + Trivy-scans them on the same ~14 GB-free runner — the same
     # disk-heavy pattern as compose-health-check (issue #334). Protect it too:
     # free disk before building. Cap the runtime so a wedge can't hang for 6h.
     timeout-minutes: 30
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Free up disk space
         uses: ./.github/actions/free-disk-space
@@ -396,7 +397,7 @@ jobs:
       # per-image cache scope in the GitHub Actions cache, so unchanged layers
       # are restored across runs instead of rebuilt cold every PR.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Build bloom-web image
         # NEXT_PUBLIC_* build args are still REQUIRED until PR-3 §6 of the
@@ -408,7 +409,7 @@ jobs:
         # the Dockerfile, (b) drop these --build-arg flags here, and
         # (c) add tests/unit/test_dockerfile_no_next_public_args.py to
         # fence the absence on both sides.
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: web/Dockerfile.bloom-web.prod
@@ -422,19 +423,8 @@ jobs:
           cache-from: type=gha,scope=bloom-web
           cache-to: type=gha,mode=max,scope=bloom-web
 
-      - name: Build langchain-agent image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./langchain
-          file: langchain/Dockerfile
-          tags: langchain-agent:ci
-          load: true
-          provenance: false
-          cache-from: type=gha,scope=langchain-agent
-          cache-to: type=gha,mode=max,scope=langchain-agent
-
       - name: Build bloommcp image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: ./bloommcp
           file: bloommcp/Dockerfile
@@ -445,7 +435,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=bloommcp
 
       - name: Build caddy image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: ./caddy
           file: caddy/Dockerfile
@@ -456,7 +446,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=caddy
 
       - name: Build workflows image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: ./services/workflows
           file: services/workflows/Dockerfile
@@ -467,7 +457,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=workflows
 
       - name: Build bloomcli image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: ./bloomcli
           file: bloomcli/Dockerfile
@@ -479,7 +469,7 @@ jobs:
 
       # Scan built images for CVEs and generate markdown report
       - name: Scan bloom-web image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'bloom-web:ci'
           severity: 'CRITICAL,HIGH'
@@ -489,19 +479,8 @@ jobs:
           output: 'trivy-bloom-web.txt'
           trivyignores: '.trivyignore'
 
-      - name: Scan langchain-agent image
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'langchain-agent:ci'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '0'
-          format: 'table'
-          scanners: 'vuln'
-          output: 'trivy-langchain.txt'
-          trivyignores: '.trivyignore'
-
       - name: Scan bloommcp image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'bloommcp:ci'
           severity: 'CRITICAL,HIGH'
@@ -512,7 +491,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Scan caddy image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'caddy:ci'
           severity: 'CRITICAL,HIGH'
@@ -523,7 +502,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Scan workflows image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'workflows:ci'
           severity: 'CRITICAL,HIGH'
@@ -534,7 +513,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Scan bloomcli image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'bloomcli:ci'
           severity: 'CRITICAL,HIGH'
@@ -552,7 +531,7 @@ jobs:
             echo ""
             echo "| Image | Critical | High |"
             echo "|-------|----------|------|"
-            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
+            for img in bloom-web bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
                 # Sum Trivy's per-target Total lines; the table leaves repeated severity cells blank.
@@ -567,7 +546,7 @@ jobs:
 
       - name: Upload Trivy report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: trivy-built-images-report
           # The raw per-image scans carry the full CVE lists.
@@ -576,23 +555,15 @@ jobs:
             trivy-*.txt
 
       - name: Check bloom-web for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'bloom-web:ci'
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
 
-      - name: Check langchain-agent for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'langchain-agent:ci'
-          severity: 'CRITICAL'
-          exit-code: '1'
-          trivyignores: '.trivyignore'
-
       - name: Check bloommcp for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'bloommcp:ci'
           severity: 'CRITICAL'
@@ -600,7 +571,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Check caddy for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'caddy:ci'
           severity: 'CRITICAL'
@@ -608,7 +579,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Check workflows for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'workflows:ci'
           severity: 'CRITICAL'
@@ -616,7 +587,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Check bloomcli for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: 'bloomcli:ci'
           severity: 'CRITICAL'
@@ -626,7 +597,7 @@ jobs:
       # Post after the CVE gates so the comment only appears once a pass/fail exists.
       - name: Post Trivy report as PR comment
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88  # v3.0.5
         with:
           header: trivy-docker-build
           path: trivy-report.md
@@ -636,7 +607,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Need full history so the lint can diff against origin/main
           fetch-depth: 0
@@ -653,7 +624,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Diffs against the base SHA and compares with origin/staging
           fetch-depth: 0
@@ -673,7 +644,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Need history on both sides so the lint can diff against the base ref
           fetch-depth: 0
@@ -694,10 +665,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -732,7 +703,7 @@ jobs:
     steps:
       # Reclaim ~25 GB before anything runs. ubuntu-latest ships only ~14 GB
       # free on /, and this job builds the full prod compose stack
-      # (web/langchain/bloommcp/caddy) AND installs the Supabase CLI .deb AND
+      # (web/bloommcp/caddy) AND installs the Supabase CLI .deb AND
       # Playwright+Chromium on top — which overflowed the disk on PR #323
       # ("No space left on device", then a 6h hang). These language SDKs are
       # preinstalled on the runner but never used by this job. Inline rm (no
@@ -753,10 +724,10 @@ jobs:
           echo "Disk after cleanup:"; df -h /
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # This job builds the full prod compose stack (web/langchain/bloommcp/
-      # caddy) AND installs the Supabase CLI + Playwright/Chromium — which
+      # This job builds the full prod compose stack (web/bloommcp/caddy)
+      # AND installs the Supabase CLI + Playwright/Chromium — which
       # overflowed the runner's ~14 GB free on / (issue #334). Reclaim ~25 GB
       # right after checkout (the local composite action needs the repo
       # present), well before any heavy disk use. The 20 GB floor fails fast if
@@ -776,7 +747,7 @@ jobs:
 
       # Enables the type=gha layer cache on the compose builds below (mirrors docker-build).
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Install Supabase CLI
         run: |
@@ -825,12 +796,6 @@ jobs:
           echo "SUPABASE_URL_HOSTS_ALLOWED=kong:8000=kong:8000" >> .env.ci
           echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
           echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
-          # bloom-web bakes NEXT_PUBLIC_MCP_URL as a build arg
-          # (docker-compose.prod.yml). Without it here the CI image builds
-          # with an empty value — CI/prod-shape drift. http://localhost
-          # mirrors the other browser-facing CI URLs (Caddy on the runner
-          # host). Flagged by Copilot review on PR #268.
-          echo "NEXT_PUBLIC_MCP_URL=http://localhost" >> .env.ci
           echo "SUPABASE_PUBLIC_URL=http://localhost/api" >> .env.ci
           echo "POOLER_TENANT_ID=default" >> .env.ci
           echo "POOLER_DEFAULT_POOL_SIZE=5" >> .env.ci
@@ -850,15 +815,8 @@ jobs:
           echo "DOMAIN_MINIO=minio.localhost" >> .env.ci
           echo "DOMAIN_FLASK=api.localhost" >> .env.ci
           echo "BLOOM_PLOTS_DIR=/app/data/PLOTS_DIR" >> .env.ci
-          echo "BLOOM_PLOTS_URL=http://localhost:5002/plots" >> .env.ci
           echo "BLOOMMCP_API_KEY=ci-placeholder" >> .env.ci
-          echo "BLOOM_MCP_URL=http://bloommcp:8811/mcp" >> .env.ci
           echo "OPENAI_API_KEY=sk-ci-not-real" >> .env.ci
-          echo "LANGCHAIN_TRACING_V2=false" >> .env.ci
-          echo "LANGCHAIN_API_KEY=" >> .env.ci
-          echo "LANGCHAIN_PROJECT=bloom-ci" >> .env.ci
-          echo "LOCAL_LLM_URL=http://disabled" >> .env.ci
-          echo "LOCAL_LLM_MODEL=skip" >> .env.ci
           echo "CORS_ORIGINS=http://localhost" >> .env.ci
           echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
@@ -905,7 +863,6 @@ jobs:
           echo "SECRET_KEY_BASE=${{ secrets.CI_SECRET_KEY_BASE }}" >> .env.ci
           echo "MINIO_ROOT_PASSWORD=${{ secrets.CI_MINIO_PASSWORD }}" >> .env.ci
           echo "DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}" >> .env.ci
-          echo "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres" >> .env.ci
           echo "BLOOM_AGENT_KEY=${{ secrets.CI_BLOOM_AGENT_KEY }}" >> .env.ci
 
       # #646 was invisible to CI because CI never provisioned an asymmetric pair:
@@ -1081,7 +1038,7 @@ jobs:
       # Only a successful redraw is uploaded; a tbls failure fails the step with no artifact.
       - name: Upload the redrawn ER diagram
         if: steps.erd.outputs.stale == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: erd
           path: ${{ runner.temp }}/erd/erd.md
@@ -1189,14 +1146,14 @@ jobs:
       # review on PR #268.
       - name: Setup Node.js for Playwright
         if: hashFiles('web/e2e/**') != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 24
           cache: 'npm'
 
       - name: Cache Playwright browsers
         if: hashFiles('web/e2e/**') != ''
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json', 'package-lock.json') }}
@@ -1220,7 +1177,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure() && hashFiles('web/e2e/**') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: playwright-report
           path: web/playwright-report/
@@ -1243,8 +1200,6 @@ jobs:
           docker compose $COMPOSE_FILES --env-file .env.ci logs caddy --tail=100
           echo "=== bloom-web logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloom-web --tail=200
-          echo "=== langchain-agent logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
@@ -1260,9 +1215,7 @@ jobs:
 
   # Exercise the *documented dev workflow* end to end on docker-compose.dev.yml
   # (compose-health-check above uses the prod compose). Self-contained: `make
-  # init` generates all local secrets, so no CI_* secrets are needed. langchain-
-  # agent is unhealthy here (no OPENAI_API_KEY) but `make check` treats it as an
-  # optional warning, so a correct core stack still passes.
+  # init` generates all local secrets, so no CI_* secrets are needed.
   dev-stack-smoke:
     name: Dev stack smoke (init -> dev-up -> migrate-local -> check)
     runs-on: ubuntu-latest
@@ -1271,7 +1224,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Parity / defense-in-depth: this job builds the dev compose stack, which
       # is lighter than compose-health-check (no Playwright) but shares the same
@@ -1287,7 +1240,7 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "22"
 
@@ -1417,8 +1370,6 @@ jobs:
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs kong --tail=50
           echo "=== bloommcp logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50
-          echo "=== langchain-agent logs ==="
-          docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50
 
       # Guarded: if: always() fires both when the workflow-level
       # cancel-in-progress concurrency group cancels this job and when an
@@ -1438,7 +1389,7 @@ jobs:
       images: ${{ steps.extract.outputs.images }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Extract images from docker-compose.prod.yml
         id: extract
@@ -1456,13 +1407,13 @@ jobs:
         image: ${{ fromJson(needs.extract-pinned-images.outputs.images) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Pull image
         run: docker pull "${{ matrix.image }}"
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: '${{ matrix.image }}'
           severity: 'CRITICAL,HIGH'
@@ -1488,7 +1439,7 @@ jobs:
 
       - name: Upload summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: trivy-pinned-${{ steps.sanitize.outputs.name }}
           path: summary.txt
@@ -1506,7 +1457,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all scan summaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: trivy-pinned-*
           path: results
@@ -1530,7 +1481,7 @@ jobs:
 
       - name: Post as PR comment
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88  # v3.0.5
         with:
           header: trivy-pinned-images
           path: pinned-report.md

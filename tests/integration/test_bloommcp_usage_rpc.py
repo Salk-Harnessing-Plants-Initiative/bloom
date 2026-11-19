@@ -84,10 +84,9 @@ def test_repeat_call_increments_count_and_updates_last_action(pg_conn):
 def test_two_anonymous_calls_collapse_into_one_row(pg_conn):
     """Asserts the DELTA this test's own two calls produce, not an absolute
     floor of 2: the shared 'anonymous' identity is also used by real,
-    already-committed system traffic outside this test's transaction — e.g.
-    langchain-agent's own MCP-client bootstrap (`get_tools()` at startup,
-    against a live bloommcp) sends no `X-Bloom-Identity` header, so
-    `IdentityMiddleware` records it under this same sentinel — so an
+    already-committed system traffic outside this test's transaction — any
+    MCP client that sends no `X-Bloom-Identity` header is recorded by
+    `IdentityMiddleware` under this same sentinel — so an
     absolute `request_count == 2` is flaky depending on how much such
     traffic already landed in this environment before the test ran."""
     with pg_conn.cursor() as cur:

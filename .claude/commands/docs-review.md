@@ -22,9 +22,6 @@ find . -type f -name "*.md" \
 # List OpenSpec proposals
 openspec list
 
-# Find FastAPI routes in langchain service
-grep -rn "router\." langchain/
-
 # Find FastAPI routes in bloommcp service
 grep -rn "router\." bloommcp/
 
@@ -44,11 +41,8 @@ find . -name "*.md" ! -path "*/node_modules/*" -mtime -7 -ls
 # Validate all OpenSpec proposals
 openspec validate --strict
 
-# Check FastAPI routes in langchain service
-cd langchain && uv run python -c "from app import app; import uvicorn; print('routes ok')"
-
 # Verify environment variables documented
-diff <(grep -o "os.environ.get(['\"].*['\"])" langchain/config.py | sort -u) \
+diff <(grep -rho "os.environ.get(['\"][A-Z_]*['\"]" bloommcp/src | grep -o "[A-Z_]\{2,\}" | sort -u) \
      <(grep "^[A-Z_]*=" .env.dev | cut -d= -f1 | sort -u)
 
 # Check Docker services match documentation
@@ -66,7 +60,7 @@ Identify which documentation exists and find gaps:
 ls -lh README.md CLAUDE.md ARCHITECTURE.md DEVELOPMENT.md API.md TESTING.md DEPLOYMENT.md 2>/dev/null || echo "Some files missing"
 
 # Check package documentation
-ls -lh langchain/README.md bloommcp/README.md web/README.md packages/*/README.md 2>/dev/null || echo "Package docs missing"
+ls -lh bloommcp/README.md web/README.md packages/*/README.md 2>/dev/null || echo "Package docs missing"
 
 # Check OpenSpec
 ls -lh openspec/project.md openspec/AGENTS.md
@@ -81,7 +75,7 @@ find . -maxdepth 2 -name "*.md" -exec stat -f "%Sm %N" -t "%Y-%m-%d" {} \; | sor
 - [ ] README.md exists and is up to date (<30 days)
 - [ ] CLAUDE.md has Bloom-specific guidelines
 - [ ] ARCHITECTURE.md exists (if not, create it)
-- [ ] API.md or langchain/README.md exists with endpoint documentation
+- [ ] API.md or bloommcp/README.md exists with endpoint documentation
 - [ ] web/README.md has component and routing documentation
 - [ ] DEVELOPMENT.md has complete setup instructions
 - [ ] TESTING.md exists with integration test guidance
@@ -138,18 +132,9 @@ grep -r "\- \[ \]" openspec/changes/*/tasks.md
 
 ### Workflow 3: Python Services Documentation Review
 
-Ensure the LangGraph agent (`langchain/`) and FastMCP server (`bloommcp/`) endpoints are documented:
+Ensure the FastMCP server (`bloommcp/`) endpoints are documented:
 
 ```bash
-# List FastAPI routes in langchain service
-cd langchain && uv run python -c "
-from app import app
-for route in app.routes:
-    if hasattr(route, 'methods'):
-        methods = ','.join(sorted(route.methods))
-        print(f'{methods:10} {route.path}')
-"
-
 # List FastAPI routes in bloommcp service
 cd bloommcp && uv run python -c "
 from app import app
@@ -162,7 +147,7 @@ for route in app.routes:
 
 **Python Services Documentation Checklist:**
 
-- [ ] **API.md or langchain/README.md exists** with comprehensive endpoint documentation
+- [ ] **API.md or bloommcp/README.md exists** with comprehensive endpoint documentation
 - [ ] Each endpoint documented with:
   - [ ] HTTP method and path
   - [ ] Request parameters (query, body, headers)
@@ -171,15 +156,11 @@ for route in app.routes:
   - [ ] Authentication requirements (JWT or public)
   - [ ] Example curl commands
   - [ ] Error codes and meanings (400, 401, 404, 500)
-- [ ] **LangGraph agent documented**
-  - [ ] Agent graph structure and tools
-  - [ ] Streaming response support
-  - [ ] Tool-calling integration with FastMCP server
   - [ ] Error handling and retry logic
 - [ ] **FastMCP server documented**
   - [ ] Available MCP tools and resources
   - [ ] Input/output schemas
-  - [ ] Integration with LangGraph agent
+  - [ ] How Claude reaches it through the Bloom connector
 - [ ] **S3/MinIO integration documented**
   - [ ] boto3 configuration (credentials, endpoint)
   - [ ] Bucket names and structure
@@ -213,7 +194,7 @@ ls -lh supabase/migrations/
 **Infrastructure Documentation Checklist:**
 
 - [ ] **docker-compose.dev.yml documented**
-  - [ ] Service descriptions (LangGraph agent, FastMCP server, web app, Supabase, MinIO, Caddy, Kong)
+  - [ ] Service descriptions (FastMCP server, web app, Supabase, MinIO, Caddy, Kong)
   - [ ] Port mappings explained
   - [ ] Volume mounts documented (minio_data/, volumes/)
   - [ ] Environment variables listed
@@ -290,7 +271,7 @@ grep "@mui/material" web -r --include="*.tsx" | cut -d: -f1 | sort -u | head -10
 
 ### API.md Template (Python Services)
 
-Use this template to document the LangGraph agent and FastMCP server endpoints:
+Use this template to document the FastMCP server endpoints:
 
 ````markdown
 # Bloom API Documentation
@@ -306,77 +287,6 @@ Authorization: Bearer <jwt_token>
 \```
 
 Get a token from Supabase Auth after user login.
-
-## LangGraph Agent Endpoints (`langchain/`)
-
-### GET /health
-
-**Health Check**
-
-Returns the status of the LangGraph agent service.
-
-**Authentication:** Not required
-
-**Response:**
-\```json
-{
-  "status": "ok",
-  "service": "langchain-agent"
-}
-\```
-
-**Status Codes:**
-
-- 200: Success
-
----
-
-### POST /agent/invoke
-
-**Invoke LangGraph Agent**
-
-Runs the LangGraph agent with the provided input and returns the result.
-
-**Authentication:** Required (JWT)
-
-**Request Body:**
-\```json
-{
-  "input": "Analyze scan 123",
-  "scanner_id": 123
-}
-\```
-
-**Parameters:**
-
-- `input` (string, required): Natural language instruction for the agent
-- `scanner_id` (integer, optional): ID of the scanner in database
-
-**Response (Success):**
-\```json
-{
-  "output": "Analysis complete",
-  "tool_calls": [],
-  "scanner_id": 123
-}
-\```
-
-**Status Codes:**
-
-- 200: Success
-- 400: Bad request (invalid parameters)
-- 401: Unauthorized (missing or invalid JWT)
-- 500: Server error (agent invocation failed)
-
-**Example:**
-\```bash
-curl -X POST http://localhost:8000/agent/invoke \
-  -H "Authorization: Bearer <jwt_token>" \
-  -H "Content-Type: application/json" \
-  -d '{"input": "Analyze scan 123", "scanner_id": 123}'
-\```
-
----
 
 ## FastMCP Server Endpoints (`bloommcp/`)
 
@@ -464,7 +374,6 @@ Bloom is a full-stack application for biological/scientific data visualization, 
 ## Technology Stack
 
 - **Frontend**: Next.js 16, React 19, TypeScript, Material-UI
-- **LangGraph Agent**: FastAPI + LangGraph (Python 3.11) with uv package manager
 - **FastMCP Server**: FastMCP (Python 3.11) with uv package manager
 - **Database**: PostgreSQL (via self-hosted Supabase)
 - **Object Storage**: MinIO (S3-compatible)
@@ -481,8 +390,6 @@ Bloom is a full-stack application for biological/scientific data visualization, 
 [Caddy:80/443] (production) or direct (development)
 ├─→ [Next.js:3000]            (bloom-web)
 │    ↓ (API calls)
-├─→ [LangGraph Agent:8001]    (langchain-agent)
-│    ↓ (tool calls)
 ├─→ [FastMCP Server:8002]     (bloommcp)
 │    ↓ (database queries)
 └─→ [Kong:8000]               (Supabase API Gateway)
@@ -503,21 +410,13 @@ MinIO (supabase-minio): ports 9100-9101
 - Server-side rendering (SSR) with App Router
 - Material-UI components
 - Supabase Auth integration
-- API client for LangGraph agent and FastMCP endpoints
-
-#### LangGraph Agent (`langchain/`, container `langchain-agent`)
-
-- FastAPI + LangGraph service for AI-powered data analysis
-- S3/MinIO integration for image storage
-- JWT authentication (validates Supabase tokens)
-- Tool-calling integration with FastMCP server
-- Logging with Python logging module
+- API client for Supabase and the workflows API
 
 #### FastMCP Server (`bloommcp/`, container `bloommcp`)
 
 - FastMCP server exposing plant data tools
 - MCP tools for querying scan data, images, and experiments
-- Used by the LangGraph agent for structured data access
+- Used by Claude, through the Bloom connector, for structured data access
 
 #### Supabase Stack (Kong on port 8000)
 
@@ -540,7 +439,6 @@ MinIO (supabase-minio): ports 9100-9101
 - Reverse proxy for all services
 - Subpath routing:
   - `/` → Next.js frontend
-  - `/api/agent/` → LangGraph agent
   - `/api/mcp/` → FastMCP server
   - `/supabase_kong/` → Supabase services
 - Automatic HTTPS with Let's Encrypt
@@ -558,19 +456,15 @@ MinIO (supabase-minio): ports 9100-9101
 ### 2. AI Analysis Workflow
 
 \```
-[Researcher sends analysis request]
+[Researcher asks Claude a question]
 ↓
-[Web UI] → [LangGraph Agent /agent/invoke]
+[Claude → Bloom connector → FastMCP Server]
 ↓
-[Agent builds graph with tool nodes]
-↓
-[Tool call: FastMCP Server → fetch scan data from PostgreSQL]
+[Tool call: fetch scan data from PostgreSQL]
 ↓
 [Tool call: fetch images from MinIO/S3]
 ↓
-[Agent processes and returns analysis]
-↓
-[Return result to Web UI]
+[Claude returns the answer]
 \```
 
 ### 3. Authentication Flow
@@ -580,7 +474,7 @@ MinIO (supabase-minio): ports 9100-9101
 ↓
 [JWT Token returned to client]
 ↓
-[Client includes token in LangGraph agent / FastMCP requests]
+[Client includes token in FastMCP requests]
 ↓
 [Services validate JWT signature with JWT_SECRET]
 \```
@@ -707,9 +601,6 @@ make rebuild-dev-fresh
 # All services
 docker compose -f docker-compose.dev.yml logs -f
 
-# LangGraph agent only
-docker compose -f docker-compose.dev.yml logs -f langchain-agent
-
 # FastMCP server only
 docker compose -f docker-compose.dev.yml logs -f bloommcp
 
@@ -719,7 +610,6 @@ docker compose -f docker-compose.dev.yml logs -f web
 
 ### Health Checks
 
-- LangGraph agent: `curl http://localhost:8001/health`
 - FastMCP server: `curl http://localhost:8002/health`
 - Supabase: `curl http://localhost:8000/rest/v1/`
 - MinIO: Browse to `http://localhost:9101`
@@ -865,8 +755,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<same-as-SUPABASE_KEY>
 npm install
 
 # Install Python service dependencies
-cd langchain && uv sync --all-extras
-cd ../bloommcp && uv sync --all-extras
+cd bloommcp && uv sync --all-extras
 \```
 
 ### 5. Start Services
@@ -895,9 +784,6 @@ make load-test-data
 
 \```bash
 
-# Test LangGraph agent
-curl http://localhost:8001/health
-
 # Test FastMCP server
 curl http://localhost:8002/health
 
@@ -924,18 +810,11 @@ make dev-up
 make dev-logs
 
 # View logs (specific service)
-docker compose -f docker-compose.dev.yml logs -f langchain-agent
+docker compose -f docker-compose.dev.yml logs -f bloommcp
 docker compose -f docker-compose.dev.yml logs -f web
 \```
 
 ### Making Code Changes
-
-**LangGraph agent (Python, `langchain/`):**
-
-- Edit files in `langchain/`
-- FastAPI auto-reloads on file changes (debug mode)
-- Install new dependencies: `cd langchain && uv add <package>`
-- Run tests: `uv run --extra test pytest tests/integration/ -v --tb=short`
 
 **FastMCP server (Python, `bloommcp/`):**
 
@@ -1007,8 +886,8 @@ make dev-up
 make rebuild-dev-fresh
 
 # Rebuild specific service
-docker compose -f docker-compose.dev.yml build langchain-agent
-docker compose -f docker-compose.dev.yml up -d langchain-agent
+docker compose -f docker-compose.dev.yml build bloommcp
+docker compose -f docker-compose.dev.yml up -d bloommcp
 \```
 
 ### Run Tests
@@ -1028,7 +907,7 @@ cd web && npx tsc --noEmit
 \```bash
 
 # Python (recommended locally but NOT currently enforced in CI)
-cd langchain
+cd bloommcp
 uv run black .
 uv run ruff check --fix .
 uv run mypy .
@@ -1090,7 +969,7 @@ chmod 770 volumes/minio-dev
    docker compose -f docker-compose.dev.yml logs supabase-kong | grep "JWT secret"
    \```
 3. Update `.env.dev` with correct secret
-4. Restart services: `docker compose -f docker-compose.dev.yml restart langchain-agent bloommcp`
+4. Restart services: `docker compose -f docker-compose.dev.yml restart bloommcp`
 
 ### Issue: Database Connection Error
 
@@ -1150,7 +1029,7 @@ Follow Conventional Commits:
 <type>(<scope>): <subject>
 
 # Examples
-feat(langchain): add LangGraph agent endpoint for scan analysis
+feat(bloommcp): add a tool for scan analysis
 fix(web): correct authentication flow
 docs(readme): update setup instructions
 chore(deps): upgrade Next.js to v16
@@ -1204,7 +1083,6 @@ Settings (`.vscode/settings.json`):
 ## Resources
 
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
 - [FastMCP Documentation](https://gofastmcp.com/)
 - [Next.js Documentation](https://nextjs.org/docs)
 - [Supabase Documentation](https://supabase.com/docs)
@@ -1222,13 +1100,12 @@ Settings (`.vscode/settings.json`):
 - [ ] **CLAUDE.md** - AI assistant instructions and project context
 - [ ] **ARCHITECTURE.md** - System design, service architecture
 - [ ] **DEVELOPMENT.md** - Local setup, development workflow
-- [ ] **API.md** or **langchain/README.md** - LangGraph agent and FastMCP API endpoints
+- [ ] **API.md** or **bloommcp/README.md** - FastMCP API endpoints
 - [ ] **TESTING.md** - Test strategy, running integration tests
 - [ ] **DEPLOYMENT.md** - Production deployment guide
 
 ### Package Documentation
 
-- [ ] **langchain/README.md** - LangGraph agent, API endpoints, tools
 - [ ] **bloommcp/README.md** - FastMCP server, available tools
 - [ ] **web/README.md** - Next.js app, components, routing
 - [ ] **packages/\*/README.md** - Any shared packages
@@ -1292,7 +1169,7 @@ Settings (`.vscode/settings.json`):
 \```bash
 
 # Extract all env vars from code
-grep -r "os.environ.get\|process.env" langchain/ bloommcp/ web/ --include="*.py" --include="*.ts" --include="*.tsx"
+grep -r "os.environ.get\|process.env" bloommcp/ web/ --include="*.py" --include="*.ts" --include="*.tsx"
 
 # Compare with .env.dev.example
 
