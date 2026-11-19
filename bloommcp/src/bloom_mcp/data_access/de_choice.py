@@ -5,8 +5,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import gene_reads
 from .gene_reads import Reads
-from .table_ports import Filter
+from .table_ports import Filter, Sort
+
+# What a one-vs-rest comparison's other side is called (REST_GROUP in cluster-markers.ts).
+REST_GROUP = "rest"
+# How many markers the cluster panel lists (TOP_MARKERS in cluster-markers.ts).
+TOP_MARKERS = 25
 
 
 def cells(row: dict[str, Any]) -> int:
@@ -14,6 +20,16 @@ def cells(row: dict[str, Any]) -> int:
 
 
 def newest_first(reads: Reads, dataset_ids: list[int]) -> dict[int, list[int]]:
+    """Each dataset's complete DE run ids, newest first."""
+    return {
+        dataset: [r["id"] for r in runs]
+        for dataset, runs in complete_runs(reads, dataset_ids).items()
+    }
+
+
+def complete_runs(
+    reads: Reads, dataset_ids: list[int]
+) -> dict[int, list[dict[str, Any]]]:
     """Each dataset's complete DE runs, newest first."""
     runs = reads.rows_in(
         "scrna_de_runs",
@@ -22,10 +38,28 @@ def newest_first(reads: Reads, dataset_ids: list[int]) -> dict[int, list[int]]:
         (Filter("status", "eq", "complete"),),
     )
     runs.sort(key=lambda r: (r.get("completed_at") or "", r["id"]), reverse=True)
-    by_dataset: dict[int, list[int]] = {}
+    by_dataset: dict[int, list[dict[str, Any]]] = {}
     for run in runs:
-        by_dataset.setdefault(run["dataset_id"], []).append(run["id"])
+        by_dataset.setdefault(run["dataset_id"], []).append(run)
     return by_dataset
+
+
+def comparisons(
+    reads: Reads, run_ids: list[int], filters: list[Filter]
+) -> list[dict[str, Any]]:
+    """Comparisons in the newest IN_CHUNK of `run_ids` matching `filters`, newest run
+    first, so a cut at MAX_ROWS drops the oldest runs."""
+    if not run_ids:
+        return []
+    found, more = reads.page(
+        "scrna_de",
+        [Filter("run_id", "in", run_ids[: gene_reads.IN_CHUNK]), *filters],
+        [Sort("run_id", descending=True), Sort("id")],
+        limit=gene_reads.MAX_ROWS,
+    )
+    if more:
+        reads.incomplete.add("scrna_de")
+    return found
 
 
 def one_vs_rest(

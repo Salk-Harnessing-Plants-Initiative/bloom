@@ -38,3 +38,9 @@ def test_nan_equals_nan():
 def test_nan_sorts_after_infinity_and_before_null():
     assert _ids([], [Sort("log2fc")]) == [3, 1, 4, 2, 5]
     assert _ids([], [Sort("log2fc", descending=True)]) == [5, 2, 4, 1, 3]
+
+
+def test_a_text_cell_spelled_nan_stays_text_against_a_text_value():
+    reader = FakeTableReader({"t": [{"id": 1, "name": "NaN"}, {"id": 2, "name": "b"}]})
+    rows = reader.select("t", ["id"], [Filter("name", "gt", "A")], [], 100, 0)
+    assert [r["id"] for r in rows] == [1, 2]

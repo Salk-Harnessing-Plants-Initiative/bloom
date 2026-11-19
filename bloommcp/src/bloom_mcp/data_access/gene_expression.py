@@ -7,22 +7,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from . import de_choice, gene_reads
+from . import de_choice
 from .gene_reads import (
     DE_FDR_CUT,
     DE_LOG2FC_CUT,
-    IN_CHUNK,
     MARKER_FDR_CUT,
     OFF_SCALE_LOG2FC,
     Reads,
 )
 from .table_ports import Filter, Sort
-
-# What a one-vs-rest comparison's other side is called (REST_GROUP in cluster-markers.ts).
-REST_GROUP = "rest"
-# How many markers a cluster's panel lists (TOP_MARKERS in cluster-markers.ts).
-TOP_MARKERS = 25
-
 
 # Result columns PostgREST may send as text: Postgres's NaN and Infinity arrive as strings.
 _NUMBERS = ("log2fc", "fdr", "pct_1", "pct_2")
@@ -98,28 +91,13 @@ def _de_rows(
 def _comparisons(
     reads: Reads, run_ids: list[int], kind: tuple[Filter, ...]
 ) -> list[dict[str, Any]]:
-    """One dataset's tested comparisons of one kind, newest run first, so a cut at
-    MAX_ROWS drops the oldest runs."""
-    if not run_ids:
-        return []
-    found, more = reads.page(
-        "scrna_de",
-        [
-            Filter("run_id", "in", run_ids[:IN_CHUNK]),
-            Filter("tested", "eq", True),
-            *kind,
-        ],
-        [Sort("run_id", descending=True), Sort("id")],
-        limit=gene_reads.MAX_ROWS,
-    )
-    if more:
-        reads.incomplete.add("scrna_de")
-    return found
+    """One dataset's tested comparisons of one kind."""
+    return de_choice.comparisons(reads, run_ids, [Filter("tested", "eq", True), *kind])
 
 
 _ONE_VS_REST = (
     Filter("group_kind", "eq", "cluster"),
-    Filter("group2", "eq", REST_GROUP),
+    Filter("group2", "eq", de_choice.REST_GROUP),
 )
 _GENOTYPE = (Filter("group_kind", "eq", "genotype"),)
 
@@ -221,7 +199,7 @@ def _on_panel(
                 Filter("fdr", "lt", MARKER_FDR_CUT),
             ],
             [Sort("fdr"), Sort("log2fc", descending=True)],
-            limit=TOP_MARKERS,
+            limit=de_choice.TOP_MARKERS,
         )
         panel[cluster] = any(r["gene_id"] in dataset["gene_row_ids"] for r in top)
     return panel

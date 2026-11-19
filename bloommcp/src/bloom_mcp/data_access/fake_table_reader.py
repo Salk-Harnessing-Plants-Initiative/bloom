@@ -34,7 +34,9 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         return str(value).lower().startswith(str(f.value).lower())
     if f.op == "in":
         return value in f.value
-    value = _number(value)
+    target = _number(f.value)
+    if _is_number(target):
+        value = _number(value)
     compare = {
         "eq": operator.eq,
         "neq": operator.ne,
@@ -43,7 +45,6 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         "lt": operator.lt,
         "lte": operator.le,
     }[f.op]
-    target = _number(f.value)
     if _is_number(value) and _is_number(target):
         return compare(_pg_order(value), _pg_order(target))
     return compare(value, target)

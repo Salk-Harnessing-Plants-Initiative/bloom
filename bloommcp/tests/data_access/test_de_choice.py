@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bloom_mcp.data_access import de_choice
+from bloom_mcp.data_access import de_choice, gene_reads
 from bloom_mcp.data_access.fake_table_reader import FakeTableReader
 from bloom_mcp.data_access.gene_reads import Reads
 
@@ -75,3 +75,36 @@ def test_one_vs_rest_over_the_most_cells_then_lowest_id():
         _comparison(4, 1, "c4", n1=99, n2=999),
     ]
     assert de_choice.one_vs_rest(comparisons, [2, 1])["c4"]["id"] == 2
+
+
+def _rows(n_runs):
+    return [
+        {"id": i, "run_id": i, "group_kind": "genotype"} for i in range(1, n_runs + 1)
+    ]
+
+
+def test_comparisons_are_read_newest_run_first():
+    r = Reads(FakeTableReader({"scrna_de": _rows(3)}))
+    found = de_choice.comparisons(r, [3, 1, 2], [])
+    assert [c["run_id"] for c in found] == [3, 2, 1]
+
+
+def test_comparisons_read_at_most_in_chunk_runs(monkeypatch):
+    # The newest IN_CHUNK runs only, so the run list stays within the gateway's URL limit.
+    monkeypatch.setattr(gene_reads, "IN_CHUNK", 2)
+    r = Reads(FakeTableReader({"scrna_de": _rows(3)}))
+    found = de_choice.comparisons(r, [3, 2, 1], [])
+    assert [c["run_id"] for c in found] == [3, 2]
+
+
+def test_a_cut_comparison_read_is_marked_incomplete(monkeypatch):
+    monkeypatch.setattr(gene_reads, "MAX_ROWS", 1)
+    r = Reads(FakeTableReader({"scrna_de": _rows(2)}))
+    assert len(de_choice.comparisons(r, [2, 1], [])) == 1
+    assert "scrna_de" in r.incomplete
+
+
+def test_no_runs_read_nothing():
+    reader = FakeTableReader({"scrna_de": _rows(1)})
+    assert de_choice.comparisons(Reads(reader), [], []) == []
+    assert reader.calls == []
