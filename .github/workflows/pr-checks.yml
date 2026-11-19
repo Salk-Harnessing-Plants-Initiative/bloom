@@ -811,9 +811,7 @@ jobs:
           echo "DOMAIN_MINIO=minio.localhost" >> .env.ci
           echo "DOMAIN_FLASK=api.localhost" >> .env.ci
           echo "BLOOM_PLOTS_DIR=/app/data/PLOTS_DIR" >> .env.ci
-          echo "BLOOM_PLOTS_URL=http://localhost:5002/plots" >> .env.ci
           echo "BLOOMMCP_API_KEY=ci-placeholder" >> .env.ci
-          echo "BLOOM_MCP_URL=http://bloommcp:8811/mcp" >> .env.ci
           echo "OPENAI_API_KEY=sk-ci-not-real" >> .env.ci
           echo "CORS_ORIGINS=http://localhost" >> .env.ci
           echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci

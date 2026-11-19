@@ -181,7 +181,7 @@ def test_env_disambiguating_values_differ():
         "SITE_URL", "API_EXTERNAL_URL", "NEXT_PUBLIC_SUPABASE_URL",
         "NEXT_PUBLIC_APP_URL", "SUPABASE_PUBLIC_URL",
         "STUDIO_SUPABASE_PUBLIC_URL", "MINIO_BROWSER_REDIRECT_URL",
-        "CORS_ORIGINS", "BLOOM_PLOTS_URL",
+        "CORS_ORIGINS",
         "CADDY_HTTP_LISTEN_PORT", "CADDY_HTTPS_LISTEN_PORT",
         "POSTGRES_HOST_PORT",
         # WORKFLOWS_K8S_ENV_LABEL's entire purpose (design.md's "fourth

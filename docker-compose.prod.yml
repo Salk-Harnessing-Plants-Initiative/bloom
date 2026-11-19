@@ -618,7 +618,6 @@ services:
       BLOOM_TRAITS_DIR: /app/data/TRAITS_DIR
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
-      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
       # Verifies an optional X-Bloom-Identity header for usage tracking (#406)
       # — never used as DB/Storage authority. Same secret GoTrue/PostgREST

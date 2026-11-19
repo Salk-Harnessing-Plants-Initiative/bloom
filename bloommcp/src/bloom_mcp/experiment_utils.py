@@ -64,30 +64,9 @@ def _resolve_plots_dir() -> str:
     return ""
 
 
-def _resolve_plots_url() -> str:
-    """``BLOOM_PLOTS_URL`` if set, else a self-served URL under ``BLOOM_LOCAL_ROOT``
-    fully-local mode (#642), else empty.
-
-    Mirrors ``_resolve_plots_dir()`` exactly, including its ``_fully_local_root()``
-    gate — reads ``is_local_backend()`` (and therefore ``BLOOM_STORAGE_BACKEND``)
-    only when ``BLOOM_LOCAL_ROOT`` is itself set, preserving the side-effect-free
-    import contract in every deployment that hasn't opted in.
-    """
-    explicit = os.getenv("BLOOM_PLOTS_URL")
-    if explicit:
-        return explicit
-    local_root = _fully_local_root()
-    if local_root is not None:
-        from bloom_mcp.storage_backend import self_serve_base_url
-
-        return f"{self_serve_base_url()}/plots"
-    return ""
-
-
 TRAITS_DIR = Path(os.getenv("BLOOM_TRAITS_DIR", ""))
 OUTPUT_DIR = Path(os.getenv("BLOOM_OUTPUT_DIR", ""))
 PLOTS_DIR = Path(_resolve_plots_dir())
-PLOTS_URL = _resolve_plots_url()
 
 
 def _ensure_subfolder(path: Path, label: str) -> None:
@@ -239,7 +218,7 @@ def _validate_dirs() -> None:
 
 
 def validate_env() -> None:
-    """Validate the BLOOM_*_DIR / BLOOM_PLOTS_URL env and the data dirs.
+    """Validate the BLOOM_*_DIR env and the data dirs.
 
     Deferred from import to an explicit call (server startup) so the package
     imports with no env; mirrors :func:`bloom_mcp.supabase_client.validate_env`.
@@ -247,8 +226,8 @@ def validate_env() -> None:
     When ``BLOOM_STORAGE_BACKEND=local`` and ``BLOOM_LOCAL_ROOT`` is set,
     ``BLOOM_LOCAL_ROOT`` itself is validated first (one clear error if it's
     missing, not a directory, or not writable — see ``_validate_local_root_dir``),
-    and ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR`` /
-    ``BLOOM_PLOTS_URL`` drop out of the required-vars check below (#642); in
+    and ``BLOOM_TRAITS_DIR`` / ``BLOOM_OUTPUT_DIR`` / ``BLOOM_PLOTS_DIR``
+    drop out of the required-vars check below (#642); in
     every other combination they remain exactly as required as before this
     change.
     """
@@ -257,15 +236,11 @@ def validate_env() -> None:
         _validate_local_root_dir(local_root)
 
     optional_when_local = (
-        {"BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR", "BLOOM_PLOTS_URL"}
+        {"BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"}
         if local_root is not None
         else set()
     )
-    required = [
-        k
-        for k in list(_REQUIRED_DIRS) + ["BLOOM_PLOTS_URL"]
-        if k not in optional_when_local
-    ]
+    required = [k for k in _REQUIRED_DIRS if k not in optional_when_local]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
         raise RuntimeError(
