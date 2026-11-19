@@ -71,7 +71,7 @@ COLUMNS: dict[str, tuple[str, ...]] = {
     "accessions": ("id", "name"),
     "scrna_datasets": ("id", "name", "species_id", "kind"),
     "scrna_genes": ("id", "dataset_id", "gene_name"),
-    "scrna_de_runs": ("id", "dataset_id", "completed_at"),
+    "scrna_de_runs": ("id", "dataset_id", "completed_at", "method"),
     "scrna_de": (
         "id",
         "run_id",
@@ -83,6 +83,8 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "group2",
         "n_group1",
         "n_group2",
+        "tested",
+        "n_genes_tested",
     ),
     "scrna_de_genes": ("id", "de_id", "gene_id", "log2fc", "fdr", "pct_1", "pct_2"),
     "scrna_clusters": ("id", "dataset_id", "cluster_id", "name", "source", "ordinal"),
