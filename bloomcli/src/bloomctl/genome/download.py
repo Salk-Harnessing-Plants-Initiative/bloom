@@ -22,6 +22,7 @@ import click
 import httpx
 
 from ..credentials import DEFAULT_PROFILE
+from ..exits import EXIT_REFUSED, Refused
 from ..scrna import _session, _transfer
 from ..scrna._text import visible
 from . import _files
@@ -36,13 +37,11 @@ VERSION_COLUMNS = ("id, version, status, withdrawn_reason, fasta_path, fasta_sha
 READY = "ready"
 # Exit codes: 0 done; 3 not available or doesn't match (asking again won't help); 1 anything
 # else, such as a network or storage error (worth retrying); 2 a usage error.
-EXIT_UNAVAILABLE = 3
+EXIT_UNAVAILABLE = EXIT_REFUSED
 
 
-class Unavailable(click.ClickException):
+class Unavailable(Refused):
     """A refusal that asking again won't fix: no such version, not ready, or not Bloom's file."""
-
-    exit_code = EXIT_UNAVAILABLE
 
 
 @click.command(name="download")
@@ -146,9 +145,9 @@ def _not_ready(name: str, version: dict[str, Any]) -> str:
 
 
 def fetch(http, conn, profile: str, label: str, version: dict[str, Any], kind: str, plain: str,
-           to: Path, unzip: bool):
+          to: Path, unzip: bool, announce: bool = True):
     """Put one checked file in place, or keep the right one already there. Returns the session,
-    which a long download may have renewed."""
+    which a long download may have renewed. `announce` says where each file went."""
     stored = f"{plain}.gz"
     final = to / (plain if unzip else stored)
     expected = (version[f"{kind}_sha256"], version[f"{kind}_bytes"])
@@ -191,7 +190,8 @@ def fetch(http, conn, profile: str, label: str, version: dict[str, Any], kind: s
         ) from exc
     finally:
         tmp.unlink(missing_ok=True)
-    click.echo(f"Downloaded {final}", err=True)
+    if announce:
+        click.echo(f"Downloaded {final}", err=True)
     return conn
 
 

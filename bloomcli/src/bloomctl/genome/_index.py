@@ -15,7 +15,7 @@ from __future__ import annotations
 import gzip
 import zlib
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -34,6 +34,8 @@ ROLES = {
 }
 # Bloom takes at most this many genes in one call.
 GENE_BATCH = 5000
+# The longest contig a tabix (.tbi) index can hold.
+MAX_CONTIG_BASES = 2**29 - 1
 
 
 class IndexProblem(ValueError):
@@ -44,6 +46,8 @@ class IndexProblem(ValueError):
 class Built:
     files: dict[str, _files.Prepared]
     genes: list[dict[str, Any]]
+    # What is worth saying about the GTF but not refusing.
+    notes: list[str] = field(default_factory=list)
 
 
 def require_htslib() -> Any:
@@ -76,18 +80,22 @@ def build(fasta_gz: Path, gtf_gz: Path, out: Path, work: Path) -> Built:
     work.mkdir(parents=True, exist_ok=True)
     try:
         lengths = _gtf.contig_lengths(fasta_gz)
+        too_long = [c for c, n in lengths.items() if n > MAX_CONTIG_BASES]
+        if too_long:
+            raise IndexProblem(f"contigs over {MAX_CONTIG_BASES:,} bases, the most the browser's "
+                               f"gene index can hold: {_gtf.names(too_long)}")
         _bgzip_fasta(fasta_gz, out / ROLES["fasta"])
         pysam.faidx(str(out / ROLES["fasta"]))
-        if _fai_lengths(out / ROLES["fasta_fai"]) != lengths:
-            raise IndexProblem("the FASTA's index doesn't match its sequences")
-        genes = _sorted_gff3(gtf_gz, lengths, work / "genes.gff3", out / ROLES["gff3"])
+        _same_contigs(_fai_lengths(out / ROLES["fasta_fai"]), lengths)
+        notes: list[str] = []
+        genes = _sorted_gff3(gtf_gz, lengths, work / "genes.gff3", out / ROLES["gff3"], notes)
         pysam.tabix_index(str(out / ROLES["gff3"]), preset="gff", force=True)
     except _gtf.GtfProblem as exc:
         raise IndexProblem(str(exc)) from exc
     except (OSError, EOFError, zlib.error, pysam.utils.SamtoolsError) as exc:
         raise IndexProblem(f"htslib could not index the files: {exc}") from exc
     files = {role: _prepared(out / name) for role, name in ROLES.items()}
-    return Built(files=files, genes=genes)
+    return Built(files=files, genes=genes, notes=notes)
 
 
 def _bgzip_fasta(source: Path, dest: Path) -> None:
@@ -105,12 +113,22 @@ def _bgzip_fasta(source: Path, dest: Path) -> None:
 
 
 def _fai_lengths(fai: Path) -> dict[str, int]:
-    return {row[0]: int(row[1]) for row in (line.split("\t") for line in
-                                             fai.read_text().splitlines() if line)}
+    rows = (line.split(b"\t") for line in fai.read_bytes().splitlines() if line)
+    return {row[0].decode("utf-8", "backslashreplace"): int(row[1]) for row in rows}
+
+
+def _same_contigs(indexed: dict[str, int], checked: dict[str, int]) -> None:
+    """htslib's contigs must be the ones the FASTA check read; names the first that differs."""
+    if indexed == checked:
+        return
+    differs = next(c for c in [*checked, *indexed] if indexed.get(c) != checked.get(c))
+    raise IndexProblem(f"htslib reads contig {_gtf.quoted(differs)} as "
+                       f"{indexed.get(differs, 'missing')}, the FASTA check as "
+                       f"{checked.get(differs, 'missing')} bases")
 
 
 def _sorted_gff3(source: Path, lengths: dict[str, int], plain: Path,
-                 dest: Path) -> list[dict[str, Any]]:
+                 dest: Path, notes: list[str]) -> list[dict[str, Any]]:
     """Check the GTF, read its genes, and write it as GFF3, bgzipped in position order.
 
     One pass checks every record and writes its GFF3 line, unzipped, to `plain`, keeping per
@@ -118,6 +136,7 @@ def _sorted_gff3(source: Path, lengths: dict[str, int], plain: Path,
     transcripts before their parts) and where it sits in `plain`; the gene and transcript lines
     follow once every line is read. A stable sort of those keys gives the order; the lines are
     then copied from `plain` into `dest`. The GTF's `#!` header lines follow `##gff-version 3`.
+    What is worth saying but not refusing goes in `notes`.
     """
     import numpy
     from pysam.libcbgzf import BGZFile
@@ -146,6 +165,7 @@ def _sorted_gff3(source: Path, lengths: dict[str, int], plain: Path,
         genes = reader.result()
         for parent in converter.parents(reader, genes):
             keep(*parent)
+    notes.extend(reader.notes + converter.notes)
     order = numpy.lexsort((numpy.frombuffer(keys["level"], dtype=numpy.uint8),
                            numpy.frombuffer(keys["start"], dtype=numpy.uint64),
                            numpy.frombuffer(keys["rank"], dtype=numpy.uint32)))
@@ -162,12 +182,14 @@ def _sorted_gff3(source: Path, lengths: dict[str, int], plain: Path,
 
 def _keep_headers(numbered: Iterator[tuple[int, int, bytes]], headers: list[bytes]
                   ) -> Iterator[tuple[int, int, bytes]]:
-    """Pass every line on, keeping the `#!` header lines that come before the first record."""
+    """Pass every line on, keeping the `#!` header lines that come before the first record,
+    checked like any line and without `<` or `>`."""
     seen_record = False
     for item in numbered:
         raw = item[2]
         if not seen_record and raw.startswith(b"#!"):
-            headers.append(raw)
+            text = _gtf._text(raw, item[0], "GTF")
+            headers.append(_gff3.column(text).encode())
         elif raw.strip() and not raw.startswith(b"#"):
             seen_record = True
         yield item

@@ -57,7 +57,8 @@ test = [
     "numpy>=1.26",
     "pysam>=0.24.1,<0.25",
 ]
-# `genome index` builds a version's browser files with htslib (faidx, bgzip, tabix).
+# `genome index` builds a version's browser files with htslib (faidx, bgzip, tabix). pysam bundles
+# htslib, which pip-audit doesn't see: check htslib's release notes when bumping pysam.
 genome-index = [
     "pysam>=0.24.1,<0.25",
 ]

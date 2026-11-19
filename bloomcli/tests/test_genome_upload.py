@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import importlib
 
+import click
 import httpx
 import pytest
 from click.testing import CliRunner
@@ -261,9 +262,9 @@ def test_a_file_that_is_not_a_fasta_is_refused_before_signing_in(env, files, mon
 
 @pytest.mark.parametrize("gtf, fasta, said", [
     (GTF + b'chr9\tAraport11\tgene\t1\t4\t.\t+\t.\tgene_id "AT9G01010";\n', FASTA,
-     "line 4 of the GTF is on chr9, which the FASTA doesn't have"),
+     "line 4 of the GTF is on 'chr9', which the FASTA doesn't have"),
     (GTF + b'Chr2\tAraport11\tgene\t1\t9\t.\t+\t.\tgene_id "AT2G01010";\n', FASTA,
-     "past the end of Chr2 (4 bases in the FASTA)"),
+     "past the end of 'Chr2' (4 bases in the FASTA)"),
     (GTF + b'Chr2\tAraport11\texon\t1\t4\t.\t+\t.\tgene_id "AT1G01010";\n', FASTA,
      "more than one contig in the GTF: AT1G01010"),
     (GTF, FASTA + b">Chr2\nAC\n", "more than once in the FASTA: Chr2"),
@@ -277,6 +278,18 @@ def test_a_gtf_that_does_not_fit_its_fasta_is_refused_before_signing_in(
     result = _upload(files, "--species", "Arabidopsis", "--yes")
     assert result.exit_code == 1
     assert said in result.output and "Nothing was sent" in result.output
+
+
+def test_what_the_gtf_check_notes_is_said_before_signing_in(env, files, monkeypatch):
+    def stop(_profile):
+        raise click.ClickException("stopped at sign-in")
+
+    monkeypatch.setattr(_session, "connect", stop)
+    files[1].write_bytes(GTF + b'Chr2\tAraport11\texon\t1\t4\t.\t+\t.\ttranscript_id "t9";\n'
+                         + b'Chr1\tAraport11\tgene\t12\t14\t.\t+\t.\tgene_id "AT1G01010";\n')
+    result = _upload(files, "--species", "Arabidopsis", "--yes")
+    assert "1 GTF lines have no gene_id and are left out." in result.stderr
+    assert "1 genes have several gene lines" in result.stderr and "AT1G01010" in result.stderr
 
 
 def test_a_gtf_with_the_wrong_columns_is_refused(env, files, monkeypatch):

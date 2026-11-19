@@ -2,6 +2,7 @@
 the genes written as GFF3, and what htslib refuses."""
 
 import gzip
+from pathlib import Path
 
 import pysam
 import pytest
@@ -158,3 +159,79 @@ def test_the_tools_used_are_named_with_their_versions():
 
     assert _index.tool_versions() == {"bloomctl": __version__, "pysam": pysam.__version__,
                                       "htslib": pysam.version.__htslib_version__}
+
+
+# --- NCBI RefSeq's trans-spliced nad1, built and read back ---------------------------------
+
+NAD1 = (Path(__file__).parent / "fixtures" / "refseq_nad1.gtf").read_bytes()
+# The mitochondrion's length in TAIR10.1; its bases don't matter here.
+MITOCHONDRION = b">NC_037304.1 Arabidopsis thaliana mitochondrion\n" + b"ACGT" * 91_952 + b"\n"
+
+
+@pytest.fixture
+def nad1(tmp_path):
+    return _build(tmp_path, _gz(tmp_path / "mt.fa.gz", MITOCHONDRION),
+                  _gz(tmp_path / "nad1.gtf.gz", NAD1))
+
+
+def test_refseq_nad1_reads_back_by_region_as_one_gene(nad1):
+    rows = _rows(nad1, "NC_037304.1", 82_900, 83_400)
+    assert [(r[2], r[3], r[4], r[6]) for r in rows[:2]] == [
+        ("gene", "58315", "234132", "+"), ("transcript", "58315", "234132", ".")]
+    assert {r[2] for r in rows[2:]} == {"exon", "CDS", "start_codon"}
+    assert nad1.genes == [{"gene_id": "DA397_mgp34", "gene_name": "nad1",
+                           "contig": "NC_037304.1", "gene_start": 58315, "gene_end": 234132,
+                           "strand": "+"}]
+
+
+def test_refseq_nad1_s_parents_cover_their_children_and_exist(nad1):
+    rows = _rows(nad1, "NC_037304.1")
+    fields = [dict(a.split("=", 1) for a in row[8].rstrip("\n").split(";")) for row in rows]
+    span = {f["ID"]: (int(r[3]), int(r[4])) for r, f in zip(rows, fields) if "ID" in f}
+    for row, f in zip(rows, fields):
+        if "Parent" in f:
+            start, end = span[f["Parent"]]
+            assert start <= int(row[3]) and int(row[4]) <= end
+    assert [r[6] for r in rows if r[2] == "exon"] == ["+", "+", "-", "+", "+"]
+    assert any("DA397_mgp34" in n for n in nad1.notes)
+
+
+# --- refused or said ------------------------------------------------------------------------
+
+
+def test_a_contig_too_long_for_the_gene_index_is_refused_up_front(tmp_path, sources,
+                                                                  monkeypatch):
+    monkeypatch.setattr(_index, "MAX_CONTIG_BASES", 15)
+    with pytest.raises(_index.IndexProblem, match="contigs over 15 bases.*: Chr1$"):
+        _build(tmp_path, *sources)
+    assert not (tmp_path / "out" / _index.ROLES["fasta"]).exists()
+
+
+def test_a_fasta_htslib_reads_differently_names_the_contig(tmp_path, sources, monkeypatch):
+    monkeypatch.setattr(_index, "_fai_lengths", lambda _fai: {"Chr1": 20, "Chr2": 9})
+    with pytest.raises(_index.IndexProblem, match="contig 'Chr2' as 9, the FASTA check as 10"):
+        _build(tmp_path, *sources)
+
+
+def test_header_lines_are_checked_and_lose_markup(tmp_path, sources):
+    gtf = _gz(tmp_path / "h.gtf.gz", "#!note <b>x</b>\n" + GTF)
+    assert _text(_build(tmp_path, sources[0], gtf)).startswith(
+        "##gff-version 3\n#!note bx/b\n")
+    bad = _gz(tmp_path / "bad.gtf.gz", b"#!note \xff\n" + GTF.encode())
+    with pytest.raises(_index.IndexProblem, match="line 1 of the GTF is not UTF-8"):
+        _build(tmp_path, sources[0], bad)
+
+
+def test_what_is_worth_saying_comes_back_with_the_files(tmp_path, sources):
+    gtf = _gz(tmp_path / "n.gtf.gz", GTF + 'Chr2\tx\texon\t1\t4\t.\t+\t.\ttranscript_id "t9";\n')
+    assert _build(tmp_path, sources[0], gtf).notes == [
+        "1 GTF lines have no gene_id and are left out."]
+
+
+def test_bgzip_stops_at_the_unpacked_limit(tmp_path, monkeypatch):
+    from bloomctl.genome import _gtf
+
+    monkeypatch.setattr(_gtf, "MAX_UNPACKED_BYTES", 10)
+    monkeypatch.setattr(_files, "READ_BYTES", 8)
+    with pytest.raises(_gtf.GtfProblem, match="unpacks to more than"):
+        _index._bgzip_fasta(_gz(tmp_path / "f.fa.gz", FASTA), tmp_path / "out.fa.gz")

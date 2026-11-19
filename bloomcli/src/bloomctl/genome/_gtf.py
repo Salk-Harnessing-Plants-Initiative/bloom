@@ -18,10 +18,14 @@ from . import _files
 
 # Bloom's limits on a gene's ID, name and contig (genome_browser_genes' checks).
 MAX_NAME_CHARS = 200
-# A longer line is not a GTF record; reading stops instead of holding it.
-MAX_LINE_BYTES = 1024 * 1024
+# A longer line is not a GTF record (or FASTA header); reading stops instead of holding it.
+MAX_LINE_BYTES = 64 * 1024
 # The most a stored file may unpack to before it is refused.
 MAX_UNPACKED_BYTES = 8 * 1024**3
+# The most genes and transcripts one GTF may hold: far past any genome (wheat has ~270,000
+# genes), and a bound on the memory a crafted file can take.
+MAX_GENES = 1_000_000
+MAX_TRANSCRIPTS = 3_000_000
 # How many problems a message lists before saying how many more there are.
 NAMED_IN_MESSAGE = 10
 GTF_COLUMNS = 9
@@ -29,8 +33,13 @@ GTF_COLUMNS = 9
 STRANDS = ("+", "-", ".", "?")
 # Where a gene's name is read from, in order: Ensembl/Araport, NCBI RefSeq, GFF-style.
 NAME_KEYS = ("gene_name", "gene", "Name")
-_ATTRIBUTE = re.compile(r'\s*([^\s;]+)\s+"([^"]*)"\s*;?')
+# `key "value";` (a quote inside written \") or `key value;` (GENCODE's `exon_number 1;`).
+_ATTRIBUTE = re.compile(r'\s*([^\s;"]+)\s+(?:"((?:[^"\\]|\\.)*)"|([^\s;"]+))\s*;?')
+_ESCAPED = re.compile(r"\\(.)")
 _POSITION = re.compile(r"[0-9]{1,12}")
+# What a gene or transcript ID may not hold: it would end a quoted value, read as HTML in the
+# browser, or break a line.
+_BAD_ID = re.compile(r'[<>"\x00-\x1f\x7f]')
 
 
 class GtfProblem(_files.FileProblem):
@@ -44,23 +53,29 @@ class Span:
     end: int = 0
     strands: set[str] = field(default_factory=set)
     name: str | None = None
+    lines: int = 0
 
     def add(self, contig: str, start: int, end: int, strand: str) -> None:
         self.contigs.add(contig)
         self.start = start if not self.start else min(self.start, start)
         self.end = max(self.end, end)
         self.strands.add(strand)
+        self.lines += 1
 
     def widened(self, other: Span) -> Span:
         """This span stretched to cover `other` too; the strand stays this span's own."""
         if not other.start:
             return self
         return Span(self.contigs | other.contigs, min(self.start, other.start),
-                    max(self.end, other.end), self.strands, self.name or other.name)
+                    max(self.end, other.end), self.strands, self.name or other.name,
+                    self.lines + other.lines)
+
+    def covers(self, other: Span) -> bool:
+        return not other.start or (self.start <= other.start and other.end <= self.end)
 
     @property
     def strand(self) -> str:
-        """The one strand of every line, or "." when they differ or it is unknown."""
+        """The one strand of this span's lines, or "." when they differ or it is unknown."""
         strand = next(iter(self.strands)) if len(self.strands) == 1 else "."
         return "." if strand == "?" else strand
 
@@ -78,8 +93,9 @@ class Transcript:
 
 
 def attributes(text: str) -> list[tuple[str, str]]:
-    """A GTF line's `key "value";` pairs, in order; a key may repeat."""
-    return _ATTRIBUTE.findall(text)
+    """A GTF line's `key "value";` or `key value;` pairs, in order; a key may repeat."""
+    return [(m[1], _ESCAPED.sub(r"\1", m[2]) if m[2] is not None else m[3])
+            for m in _ATTRIBUTE.finditer(text)]
 
 
 def open_binary(path: Path) -> BinaryIO:
@@ -108,6 +124,7 @@ def contig_lengths(fasta: Path) -> dict[str, int]:
     """Each contig's name and length, in the FASTA's order; refuses a repeated or blank name.
 
     Read in chunks, so a sequence on one very long line is fine; only a header line is limited.
+    A name ends at the first ASCII whitespace, as htslib reads it.
     """
     lengths: dict[str, int] = {}
     repeated: list[str] = []
@@ -127,10 +144,7 @@ def contig_lengths(fasta: Path) -> dict[str, int]:
                     if not at_line_start and len(chunk) > MAX_LINE_BYTES:
                         raise GtfProblem(f"line {number} of the FASTA is a header longer "
                                          f"than {MAX_LINE_BYTES:,} bytes")
-                    header = _text(chunk[1:].rstrip(b"\r\n"), number, "FASTA").split(maxsplit=1)
-                    if not header:
-                        raise GtfProblem(f"line {number} of the FASTA is a '>' line with no name")
-                    name = header[0]
+                    name = _contig_name(chunk, number)
                     if name in lengths:
                         repeated.append(name)
                     lengths[name] = 0
@@ -149,13 +163,30 @@ def contig_lengths(fasta: Path) -> dict[str, int]:
     return lengths
 
 
-def genes(gtf: Path, lengths: dict[str, int]) -> list[dict[str, Any]]:
-    """Every gene's position, checked against the FASTA; refuses a GTF Bloom can't use."""
+def _contig_name(header: bytes, number: int) -> str:
+    """A header line's contig name, split on ASCII whitespace as htslib does."""
+    fields = header[1:].rstrip(b"\r\n").split(maxsplit=1)
+    if not fields:
+        raise GtfProblem(f"line {number} of the FASTA is a '>' line with no name")
+    name = _text(fields[0], number, "FASTA")
+    if any(c in "%<>" or c.isspace() or not c.isprintable() for c in name):
+        raise GtfProblem(f"line {number} of the FASTA names contig {quoted(name)}, which holds "
+                         "whitespace other than a space or tab, a control character, %, < or >")
+    return name
+
+
+def genes(gtf: Path, lengths: dict[str, int], notes: list[str] | None = None
+          ) -> list[dict[str, Any]]:
+    """Every gene's position, checked against the FASTA; refuses a GTF Bloom can't use. What is
+    worth saying but not refusing goes in `notes`."""
     reader = GeneReader()
     with open_binary(gtf) as fh:
         for _, _, columns in records(lines(fh, "GTF"), lengths):
             reader.add(columns)
-    return reader.result()
+    found = reader.result()
+    if notes is not None:
+        notes.extend(reader.notes)
+    return found
 
 
 def records(numbered: Iterable[tuple[int, int, bytes]], lengths: dict[str, int]
@@ -175,50 +206,72 @@ def records(numbered: Iterable[tuple[int, int, bytes]], lengths: dict[str, int]
             raise GtfProblem(f"line {number} of the GTF runs from {start} to {end}; a start is "
                              "at least 1 and no later than its end")
         if contig not in lengths:
-            raise GtfProblem(f"line {number} of the GTF is on {contig}, which the FASTA "
+            raise GtfProblem(f"line {number} of the GTF is on {quoted(contig)}, which the FASTA "
                              "doesn't have")
         if int(end) > lengths[contig]:
             raise GtfProblem(f"line {number} of the GTF ends at {end}, past the end of "
-                             f"{contig} ({lengths[contig]} bases in the FASTA)")
+                             f"{quoted(contig)} ({lengths[contig]} bases in the FASTA)")
         if strand not in STRANDS:
             raise GtfProblem(f"line {number} of the GTF has strand {strand!r}, not +, -, . or ?")
         yield number, offset, columns
 
 
 class GeneReader:
-    """One position per gene ID and transcript ID: the span of all its lines, with the strand of
-    its own `gene` or `transcript` lines when it has them. A trans-spliced gene (pieces far
-    apart) becomes one span covering every piece."""
+    """One position per gene ID and transcript ID: the span of all its lines. A gene's strand is
+    that of its own `gene` lines when it has them (`.` when those disagree or are `?`), else of
+    all its lines; an exon on the other strand doesn't change it. A trans-spliced gene (pieces
+    far apart, several `gene` lines) becomes one span covering every piece."""
 
     def __init__(self) -> None:
         self.from_gene_lines: dict[str, Span] = {}
         self.from_others: dict[str, Span] = {}
         self.transcripts: dict[str, Transcript] = {}
+        self.gene_count = 0
+        self.without_gene_id = 0
+        self.bad_ids: set[str] = set()
+        self.notes: list[str] = []
 
     def add(self, columns: list[str]) -> None:
         pairs = dict(attributes(columns[8]))
         gene_id = pairs.get("gene_id", "").strip()
         if not gene_id:
+            self.without_gene_id += 1
             return
+        transcript_id = pairs.get("transcript_id", "").strip()
+        for value in (gene_id, transcript_id):
+            if _BAD_ID.search(value):
+                self.bad_ids.add(value[:40])
         place = (columns[0], int(columns[3]), int(columns[4]), columns[6])
+        if gene_id not in self.from_gene_lines and gene_id not in self.from_others:
+            if self.gene_count >= MAX_GENES:
+                raise GtfProblem(f"the GTF has more than {MAX_GENES:,} genes")
+            self.gene_count += 1
         table = self.from_gene_lines if columns[2] == "gene" else self.from_others
         gene = table.setdefault(gene_id, Span())
         gene.add(*place)
         if gene.name is None:
             gene.name = next((pairs[k].strip() for k in NAME_KEYS
                               if pairs.get(k, "").strip()), None)
-        transcript_id = pairs.get("transcript_id", "").strip()
         if transcript_id and columns[2] != "gene":
-            transcript = self.transcripts.setdefault(transcript_id, Transcript())
+            transcript = self.transcripts.get(transcript_id)
+            if transcript is None:
+                if len(self.transcripts) >= MAX_TRANSCRIPTS:
+                    raise GtfProblem(f"the GTF has more than {MAX_TRANSCRIPTS:,} transcripts")
+                transcript = self.transcripts[transcript_id] = Transcript()
             transcript.genes.add(gene_id)
             (transcript.line if columns[2] == "transcript" else transcript.parts).add(*place)
 
     def result(self) -> list[dict[str, Any]]:
+        if self.bad_ids:
+            raise GtfProblem(f'gene or transcript IDs hold <, >, " or a control character: '
+                             f"{names(sorted(self.bad_ids))}")
         self._check_transcripts()
-        found, split, too_long = [], [], []
+        found, split, too_long, widened = [], [], [], []
         for gene_id in sorted(self.from_gene_lines.keys() | self.from_others.keys()):
             own, other = self.from_gene_lines.get(gene_id), self.from_others.get(gene_id, Span())
             gene = own.widened(other) if own else other
+            if own and (own.lines > 1 or not own.covers(other)):
+                widened.append(gene_id)
             if len(gene.contigs) > 1:
                 split.append(gene_id)
                 continue
@@ -240,6 +293,14 @@ class GeneReader:
                              f"characters: {names(too_long)}")
         if not found:
             raise GtfProblem("the GTF has no genes (no line carries a gene_id)")
+        if widened:
+            self.notes.append(
+                f"{len(widened):,} genes have several gene lines, or lines outside their gene "
+                "line, and are each kept as one span covering all their lines (right for a "
+                f"trans-spliced gene; check the GTF if it reuses an ID): {names(widened)}")
+        if self.without_gene_id:
+            self.notes.append(f"{self.without_gene_id:,} GTF lines have no gene_id and are left "
+                              "out.")
         return sorted(found, key=lambda g: (g["contig"], g["gene_start"], g["gene_id"]))
 
     def _check_transcripts(self) -> None:
@@ -254,6 +315,11 @@ def names(values: Iterable[str]) -> str:
     shown = ", ".join(values[:NAMED_IN_MESSAGE])
     more = len(values) - NAMED_IN_MESSAGE
     return f"{shown} and {more} more" if more > 0 else shown
+
+
+def quoted(contig: str) -> str:
+    """A contig name in a message, quoted so a stray character shows."""
+    return f"'{contig}'"
 
 
 def _text(raw: bytes, number: int, what: str) -> str:

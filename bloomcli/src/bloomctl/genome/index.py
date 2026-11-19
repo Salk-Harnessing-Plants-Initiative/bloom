@@ -2,8 +2,9 @@
 
 The version's stored FASTA and GTF are downloaded and checked against Bloom's record, turned into
 the five indexed files the browser reads, the genes as GFF3 (see _index), and every gene's
-position is read from the GTF. Only when all of that works is a build started; the files are then uploaded, the genes sent
-in batches, and the build finished. A failure or a stop signal after the start abandons the build.
+position is read from the GTF. Only when all of that works is a build started; the files are
+then uploaded, the genes sent in batches, and the build finished. A stop signal anywhere removes
+the temporary files; a failure or a stop after the start also abandons the build.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import httpx
 
 from .._signals import stop_signals_interrupt
 from ..credentials import DEFAULT_PROFILE
-from ..go_pathways import InProgress
+from ..exits import InProgress, Transient
 from ..scrna import _session, _transfer
 from ..scrna._text import visible
 from . import _files, _index
@@ -35,18 +36,17 @@ CONTENT_TYPES = {
 # A batch of genes is sent again this many times after a lost answer or a server error;
 # sending again is safe.
 GENE_SEND_TRIES = 3
-# PostgREST's codes for a database it could not reach, alongside HTTP 5xx.
-TRANSIENT_CODES = {"PGRST001", "PGRST002"}
-
-
-class Transient(click.ClickException):
-    """A server or network error; running the command again may work."""
+# Errors a rerun can get past, alongside HTTP 5xx: PostgREST could not reach the database or
+# timed out waiting for a connection; a statement timeout, a lock not granted in time, a
+# serialisation failure or a deadlock.
+TRANSIENT_CODES = {"PGRST001", "PGRST002", "PGRST003", "57014", "55P03", "40001", "40P01"}
 
 
 @click.command(name="index")
 @click.argument("genome")
 @click.option("--workdir", type=click.Path(file_okay=False, path_type=Path),
-              help="Where to build the files (default: a temporary folder).")
+              help="Where to build the files: a folder only you can write to (default: a "
+                   "temporary folder).")
 @click.option("--replace-unfinished", is_flag=True,
               help="Abandon this version's unfinished build first, when you started it (an "
                    "earlier run that was stopped).")
@@ -79,24 +79,35 @@ def index(genome: str, workdir: Path | None, replace_unfinished: bool, profile: 
     exact = f"{name}.v{version['version']}"
     ready = _existing(conn.client, version, exact, replace_unfinished)
     if ready is not None:
-        click.echo(f"{exact} already has browser build b{ready['build']}; nothing to do.",
-                   err=True)
-        _say(exact, ready, ready.get("gene_count"))
+        _say_ready(ready, exact)
         return
     if workdir is not None:
         workdir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="bloomctl-genome-index-", dir=workdir) as tmp:
+    # A stop signal is Ctrl-C from here on, so the temporary folder is always removed.
+    with stop_signals_interrupt(), tempfile.TemporaryDirectory(
+            prefix="bloomctl-genome-index-", dir=workdir) as tmp:
         built, run = _prepare(conn, profile, exact, version, Path(tmp))
+        for note in built.notes:
+            click.echo(visible(note), err=True)
         started = _start(run["conn"].client, version["id"], exact)
+        if started is None:
+            _say_ready(_existing(run["conn"].client, version, exact, False), exact)
+            return
         try:
-            with stop_signals_interrupt():
-                _upload(run, profile, started, built)
-                _add_genes(run["conn"].client, started["build_id"], built.genes)
-                _finish(run["conn"].client, started["build_id"], built)
+            _upload(run, profile, started, built)
+            _add_genes(run["conn"].client, started["build_id"], built.genes)
+            _finish(run["conn"].client, started["build_id"], built)
         except BaseException:
             if _abandon(run["conn"].client, started, exact) != "ready":
                 raise
     _say(exact, started, len(built.genes))
+
+
+def _say_ready(ready: dict[str, Any] | None, exact: str) -> None:
+    if ready is None:
+        raise InProgress(f"{exact} already has a browser build in progress.")
+    click.echo(f"{exact} already has browser build b{ready['build']}; nothing to do.", err=True)
+    _say(exact, ready, ready.get("gene_count"))
 
 
 def _say(exact: str, build: dict[str, Any], genes: int | None) -> None:
@@ -140,7 +151,9 @@ def _prepare(conn, profile: str, exact: str, version: dict[str, Any], tmp: Path)
     out.mkdir()
     with _transfer.open_client() as http:
         for kind, plain in (("fasta", "genome.fa"), ("gtf", "genes.gtf")):
-            conn = fetch(http, conn, profile, exact, version, kind, plain, sources, False)
+            conn = fetch(http, conn, profile, exact, version, kind, plain, sources, False,
+                         announce=False)
+    click.echo(f"Downloaded {exact}'s FASTA and GTF, checked against Bloom's record.", err=True)
     try:
         built = _index.build(sources / "genome.fa.gz", sources / "genes.gtf.gz", out,
                              tmp / "work")
@@ -172,17 +185,24 @@ def _rpc(client: Any, what: str, function: str, args: dict[str, Any]) -> Any:
                         "same command again.") from exc
 
 
-def _start(client: Any, version_id: int, exact: str) -> dict[str, Any]:
+def _start(client: Any, version_id: int, exact: str) -> dict[str, Any] | None:
+    """The new build; None when another run's build became ready first."""
     try:
         rows = _rpc(client, f"start a browser build of {exact}", "start_genome_browser_build",
                     {"p_version_id": version_id, "p_tool_versions": _index.tool_versions()})
     except Unavailable as exc:
-        if "already has browser build" in exc.message:
-            raise InProgress(f"{exact} already has a browser build in progress.") from exc
-        raise
+        if "already has browser build" not in exc.message:
+            raise
+        if "(ready)" in exc.message:
+            return None
+        raise InProgress(f"{exact} already has a browser build in progress.") from exc
     except Transient as exc:
         raise Transient(f"{exc.message} If Bloom started the build anyway, add "
                         "--replace-unfinished.") from exc
+    except KeyboardInterrupt:
+        click.echo(f"Stopped while starting a browser build of {exact}; if Bloom started it, "
+                   "run again with --replace-unfinished.", err=True)
+        raise
     rows = rows if isinstance(rows, list) else [rows]
     if not rows:
         raise click.ClickException("Bloom did not return the new build. Nothing was sent.")

@@ -49,16 +49,20 @@ def upload(name: str, fasta: Path, gtf: Path, profile: str, yes: bool, **opts: A
 
     NAME is the genome, e.g. tair10_araport11. A new genome needs --species. Both files are
     checked first: every GTF line must lie on a FASTA contig, within its length, each gene
-    must have one position, and each transcript one gene. They are then gzipped, the upload is described, and it goes ahead
-    once confirmed.
-    Any member may upload a new genome; adding a version to an existing one needs a writer.
+    must have one position, and each transcript one gene. They are then gzipped, the upload
+    is described, and it goes ahead once confirmed. Any member may upload a new genome;
+    adding a version to an existing one needs a writer. Exits 1 on any failure, the message
+    saying whether anything was sent; 2 for a usage error.
     """
     if not _files.NAME_RULE.match(name):
         raise click.UsageError(f"NAME must be {_files.NAME_HELP}.")
     _checked(_files.check_fasta, fasta)
     _checked(_files.check_gtf, gtf)
     with _progress.track(f"Checking {visible(gtf.name)} against {visible(fasta.name)}"):
-        _checked(_gtf.genes, gtf, _checked(_gtf.contig_lengths, fasta))
+        notes: list[str] = []
+        _checked(_gtf.genes, gtf, _checked(_gtf.contig_lengths, fasta), notes)
+    for note in notes:
+        click.echo(visible(note), err=True)
     if not yes and not _interactive():
         raise click.ClickException(
             "there is no terminal to ask for confirmation in. Pass --yes to go ahead without "

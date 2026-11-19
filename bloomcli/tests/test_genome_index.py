@@ -1,179 +1,28 @@
-"""bloomctl genome index — the command end to end, against fake storage and Bloom's browser-build
-functions kept in memory, each following the SQL in the browser-build migrations."""
+"""bloomctl genome index — the command end to end, against fake storage and the browser-build
+functions in genome_browser_fake, which make the migrations' checks."""
 
 import base64
 import gzip
-import hashlib
 import importlib
 
 import httpx
 import pytest
-from click.testing import CliRunner
-from postgrest import APIError
-from scrna_fake_db import FakeClient
+from genome_browser_fake import GENOME, GTF_GZ, BrowserDB, stock
+from genome_browser_fake import refusal as _refusal
+from genome_browser_fake import replace_gtf as _replace_gtf
+from genome_browser_fake import run_index as _run
+from genome_browser_fake import sha as _sha
 
-from bloomctl.cli import cli
 from bloomctl.genome import _index
 
 index_module = importlib.import_module("bloomctl.genome.index")
 
-GENOME = "tair10_araport11"
-FASTA_GZ = gzip.compress(b">Chr1\nACGTACGTACGGGGCCCCAA\n>Chr2\nTTTTAAAAGG\n", mtime=0)
-GTF_GZ = gzip.compress(
-    b'Chr1\tAraport11\tgene\t3\t9\t.\t+\t.\tgene_id "AT1G01010"; gene_name "NAC001";\n'
-    b'Chr1\tAraport11\texon\t12\t18\t.\t-\t.\tgene_id "AT1G01020"; transcript_id "t2";\n'
-    b'Chr2\tAraport11\tgene\t1\t4\t.\t-\t.\tgene_id "AT2G01010";\n',
-    mtime=0,
-)
 FOLDER = f"{GENOME}/v1/browser/b1"
-ME = "writer-uid"
-
-
-def _sha(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _refusal(message, code="22023"):
-    return APIError({"message": message, "code": code})
-
-
-class _Call:
-    def __init__(self, run):
-        self._run = run
-
-    def execute(self):
-        return type("R", (), {"data": self._run()})()
-
-
-class BrowserDB:
-    """The genome tables and the browser-build functions, kept in memory."""
-
-    def __init__(self, storage, version_status="ready"):
-        self.storage = storage
-        version = {
-            "id": 101, "genome_id": 1, "version": 1, "status": version_status,
-            "withdrawn_reason": None,
-            "fasta_path": f"{GENOME}/v1/genome.fa.gz", "fasta_sha256": _sha(FASTA_GZ),
-            "fasta_bytes": len(FASTA_GZ),
-            "gtf_path": f"{GENOME}/v1/genes.gtf.gz", "gtf_sha256": _sha(GTF_GZ),
-            "gtf_bytes": len(GTF_GZ),
-        }
-        self.base = FakeClient({
-            "genome_references": [{"id": 1, "name": GENOME}],
-            "genome_reference_versions": [version],
-            "genome_browser_builds": [],
-        })
-        self.builds = self.base.tables["genome_browser_builds"]
-        self.genes: dict[int, dict[str, dict]] = {}
-        self.calls: list[tuple[str, dict]] = []
-        # Each name: the answers its next calls give instead of running (an exception each).
-        self.fail: dict[str, list[Exception]] = {}
-        # Each name: how many calls take effect, then fail as a lost connection.
-        self.lose_answer: dict[str, int] = {}
-
-    def table(self, name):
-        return self.base.table(name)
-
-    def rpc(self, name, args):
-        def run():
-            self.calls.append((name, args))
-            if self.fail.get(name):
-                raise self.fail[name].pop(0)
-            result = getattr(self, name)(**args)
-            if self.lose_answer.get(name, 0) > 0:
-                self.lose_answer[name] -= 1
-                raise httpx.ReadTimeout("the answer was lost")
-            return result
-
-        return _Call(run)
-
-    def called(self, name):
-        return [a for n, a in self.calls if n == name]
-
-    def add_build(self, status, created_by=ME, **extra):
-        build = {"id": 7 + len(self.builds), "version_id": 101, "build": len(self.builds) + 1,
-                 "status": status, "folder": f"{GENOME}/v1/browser/b{len(self.builds) + 1}",
-                 "created_by": created_by, "gene_count": None, **extra}
-        self.builds.append(build)
-        self.genes[build["id"]] = {}
-        return build
-
-    def _own(self, build_id):
-        build = next((b for b in self.builds if b["id"] == build_id), None)
-        if build is None:
-            raise _refusal(f"no browser build {build_id}")
-        if build["created_by"] != ME:
-            raise _refusal(f"browser build {build_id} was started by someone else", "42501")
-        return build
-
-    def start_genome_browser_build(self, p_version_id, p_tool_versions):
-        live = next((b for b in self.builds if b["status"] in ("uploading", "ready")), None)
-        if live:
-            raise _refusal(f"genome version {p_version_id} already has browser build "
-                           f"{live['build']} ({live['status']})", "55000")
-        build = self.add_build("uploading", tool_versions=p_tool_versions)
-        return [{"build_id": build["id"], "build": build["build"], "folder": build["folder"]}]
-
-    def add_genome_browser_genes(self, p_build_id, p_genes):
-        build = self._own(p_build_id)
-        if build["status"] != "uploading":
-            raise _refusal(f"browser build {p_build_id} is {build['status']}", "55000")
-        if not 1 <= len(p_genes) <= 5000:
-            raise _refusal("send 1 to 5000 genes at a time")
-        held, added = self.genes[p_build_id], 0
-        for gene in p_genes:
-            if gene["gene_start"] < 1 or len(gene["gene_id"]) > 200:
-                raise _refusal("violates check constraint", "23514")
-            if gene["gene_id"] in held:
-                if held[gene["gene_id"]] != gene:
-                    raise _refusal(f"gene {gene['gene_id']} was already added with different "
-                                   "details", "23505")
-                continue
-            held[gene["gene_id"]] = gene
-            added += 1
-        return added
-
-    def finish_genome_browser_build(self, p_build_id, p_files, p_gene_count):
-        build = self._own(p_build_id)
-        for role, name in _index.ROLES.items():
-            stored = self.storage.objects.get(f"genome-references/{build['folder']}/{name}")
-            if stored is None or len(stored) != p_files[role]["bytes"]:
-                raise _refusal(f"{name} has not been uploaded")
-        if p_gene_count != len(self.genes[p_build_id]):
-            raise _refusal(f"browser build {p_build_id} holds {len(self.genes[p_build_id])} "
-                           f"genes, not {p_gene_count}")
-        build.update(status="ready", files=p_files, gene_count=p_gene_count)
-        return build["build"]
-
-    def abandon_genome_browser_build(self, p_build_id):
-        build = self._own(p_build_id)
-        if build["status"] == "abandoned":
-            return False
-        if build["status"] != "uploading":
-            raise _refusal(f"browser build {p_build_id} is {build['status']}, not uploading",
-                           "55000")
-        build["status"] = "abandoned"
-        self.genes[p_build_id] = {}
-        return True
 
 
 @pytest.fixture
 def db(env, storage):
-    env["client"] = BrowserDB(storage)
-    storage.objects[f"genome-references/{GENOME}/v1/genome.fa.gz"] = FASTA_GZ
-    storage.objects[f"genome-references/{GENOME}/v1/genes.gtf.gz"] = GTF_GZ
-    return env["client"]
-
-
-def _run(*args):
-    return CliRunner().invoke(cli, ["genome", "index", *args])
-
-
-def _replace_gtf(db, storage, gtf: bytes):
-    data = gzip.compress(gtf, mtime=0)
-    storage.objects[f"genome-references/{GENOME}/v1/genes.gtf.gz"] = data
-    db.base.tables["genome_reference_versions"][0].update(gtf_sha256=_sha(data),
-                                                          gtf_bytes=len(data))
+    return stock(env, storage)
 
 
 def _content_types(storage):
