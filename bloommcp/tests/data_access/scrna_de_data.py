@@ -39,12 +39,26 @@ GENE_NAMES = {1: "ZETA", 2: "ALPHA", 3: "MID", 4: "BETA", 5: "NANGENE", 6: "INFG
 
 TABLES = {
     "scrna_datasets": [
-        {"id": 14, "name": "MYB41 roots", "kind": "full", "deleted_at": None},
+        {
+            "id": 14,
+            "name": "MYB41 roots",
+            "species_id": 1,
+            "kind": "full",
+            "deleted_at": None,
+        },
         {
             "id": 15,
             "name": "Old roots",
+            "species_id": 1,
             "kind": "full",
             "deleted_at": "2026-05-01T00:00:00Z",
+        },
+        {
+            "id": 16,
+            "name": "Root atlas",
+            "species_id": 1,
+            "kind": "reference",
+            "deleted_at": None,
         },
     ],  # fmt: skip
     "scrna_clusters": CLUSTERS,
