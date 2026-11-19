@@ -16,6 +16,9 @@ from typing import Any
 
 import click
 
+# Exit codes: see exits; kept importable from here.
+from .exits import EXIT_IN_PROGRESS, EXIT_REFUSED, InProgress, Refused  # noqa: F401
+
 ANNOTATION_FORMAT = "bloom-annotation/1"
 ENRICHMENT_FORMAT = "bloom-enrichment/1"
 ANNOTATION_BUCKET = "genome-references"
@@ -23,24 +26,6 @@ ENRICHMENT_BUCKET = "scrna"
 SOURCES = ("eggnog", "tair-go", "mercator")
 UPLOAD_OPTIONS = {"content-type": "application/gzip", "upsert": "false"}
 _VERSION_LABEL = re.compile(r"^(?P<genome>.+)\.v(?P<version>[1-9][0-9]*)$")
-
-# Exit codes: 0 done; 3 refused, or nothing to fetch (asking again won't help); 4 a build of that
-# version and source is still uploading (worth waiting for); 1 anything else, such as a network
-# error (worth retrying); 2 a usage error.
-EXIT_REFUSED = 3
-EXIT_IN_PROGRESS = 4
-
-
-class Refused(click.ClickException):
-    """Bloom said no, or there is nothing to fetch; asking again won't help."""
-
-    exit_code = EXIT_REFUSED
-
-
-class InProgress(click.ClickException):
-    """A build is still uploading; it may be ready later."""
-
-    exit_code = EXIT_IN_PROGRESS
 
 
 def _refusals() -> tuple[type[Exception], ...]:

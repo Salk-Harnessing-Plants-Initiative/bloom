@@ -161,7 +161,8 @@ def object_size(entry: dict[str, Any]) -> int:
     return int((entry.get("metadata") or {}).get("size") or 0)
 
 
-def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size: int) -> str:
+def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size: int,
+                  content_type: str = "application/gzip") -> str:
     """Start a resumable upload; return its address on the gateway."""
     response = http.post(
         ep.url("upload/resumable"),
@@ -169,7 +170,7 @@ def create_upload(http: httpx.Client, ep: Endpoint, bucket: str, path: str, size
             "Tus-Resumable": TUS_VERSION,
             "Upload-Length": str(size),
             "Upload-Metadata": _metadata(
-                bucketName=bucket, objectName=path, contentType="application/gzip"
+                bucketName=bucket, objectName=path, contentType=content_type
             ),
             "x-upsert": "false",
         }),
