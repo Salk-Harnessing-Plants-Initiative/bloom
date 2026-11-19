@@ -780,6 +780,39 @@ matches; a mismatch leaves nothing behind. A file already at the destination wit
 the right fingerprint is left alone, and a different one is never overwritten.
 
 
+## Worked example: a genome in the genome browser
+
+From FASTA and GTF files to a genome you can open in the genome browser. Upload needs a writer
+login (or any member for a new genome); index needs a writer or the pipeline's login.
+
+```bash
+# 1. Install bloomctl with the genome-index extra (htslib, through pysam), and log in once.
+pip install "bloomctl[genome-index]==0.1.0a20"
+bloomctl login --server https://staging.bloom.salk.edu -p staging
+
+# 2. Upload the genome's FASTA and GTF as a new version (skip if the version is in Bloom).
+#    Both files are checked first; anything worth knowing about the GTF prints to stderr.
+bloomctl genome upload tair10_araport11 --fasta TAIR10.fa.gz --gtf Araport11.gtf.gz \
+  --species Arabidopsis --assembly TAIR10 --annotation Araport11 -p staging
+#    → tair10_araport11 v1: ready
+
+# 3. Build that version's genome browser files and record its genes.
+bloomctl genome index tair10_araport11.v1 -p staging
+#    → tair10_araport11.v1 browser build b1 (id <id>): tair10_araport11/v1/browser/b1, <n> genes
+
+# 4. Check it: the version is ready and its newest browser build is "b1 ready".
+bloomctl genome list -p staging
+
+# If a run was stopped part-way, it says the build is unfinished (exit 4); clear your own
+# stopped build and build again:
+bloomctl genome index tair10_araport11.v1 --replace-unfinished -p staging
+```
+
+Result: the version's files and genes are in Bloom, ready for the web app's genome browser.
+Running `genome index` again on a built version just prints its build. Details:
+[`genome upload`](#bloomctl-genome-upload), [`genome list`](#bloomctl-genome-list-and-download),
+[`genome index`](#bloomctl-genome-index).
+
 ## `bloomctl genome upload`
 
 Reference genomes for the Cell Ranger workflow are kept in Bloom with numbered
