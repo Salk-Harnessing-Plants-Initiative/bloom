@@ -3,11 +3,16 @@
 Each `uses:` must look like `owner/repo@<40-char sha>  # vX.Y.Z`, and the version in
 the comment must be at least the first release of that action built for Node 24.
 Local actions (`./...`) and `docker://` images are skipped.
+
+The offline checks trust the version comment. Run with CHECK_ACTION_PINS=1 to also
+confirm, over the network, that each SHA is the commit its comment's tag points to.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
@@ -138,3 +143,41 @@ def test_every_action_runs_on_node24():
             need = "v" + ".".join(map(str, floor))
             old.append(f"{u.where()}  {_action(u.ref)} {label} (needs {need} or later)")
     assert not old, "actions below their first Node 24 release:\n" + "\n".join(old)
+
+
+def _pins() -> dict[tuple[str, str, str], str]:
+    """(repo, sha, tag) -> first place it is used, for every SHA pin with a version."""
+    pins: dict[tuple[str, str, str], str] = {}
+    for u in REMOTE_USES:
+        sha = u.ref.split("@", 1)[1] if "@" in u.ref else ""
+        if _SHA.match(sha) and _VERSION.match(u.comment):
+            pins.setdefault((_action(u.ref), sha, u.comment), u.where())
+    return pins
+
+
+def _tag_commit(repo: str, tag: str) -> str | None:
+    out = subprocess.run(
+        ["git", "ls-remote", f"https://github.com/{repo}", f"refs/tags/{tag}*"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    refs = {ref: sha for sha, ref in (line.split("\t") for line in out.splitlines())}
+    # An annotated tag's commit is on the peeled `^{}` ref.
+    return refs.get(f"refs/tags/{tag}^{{}}") or refs.get(f"refs/tags/{tag}")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CHECK_ACTION_PINS"),
+    reason="network check; set CHECK_ACTION_PINS=1 to run",
+)
+def test_every_sha_is_the_release_its_comment_names():
+    wrong = []
+    for (repo, sha, tag), where in sorted(_pins().items()):
+        commit = _tag_commit(repo, tag)
+        if commit != sha:
+            wrong.append(
+                f"{where}  {repo}@{sha}  # {tag} (tag is {commit or 'missing'})"
+            )
+    assert not wrong, "SHA does not match its version comment:\n" + "\n".join(wrong)
