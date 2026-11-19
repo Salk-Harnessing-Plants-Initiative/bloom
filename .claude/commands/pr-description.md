@@ -33,7 +33,6 @@ Standardized template for Bloom pull request descriptions.
 - [ ] `cd web && npx tsc --noEmit` — no type errors
 - [ ] `npm run lint` — no ESLint errors (optional, not in CI)
 - [ ] Python linting clean (optional, not in CI):
-  - `cd langchain && uv run black --check . && uv run ruff check .`
   - `cd bloommcp && uv run black --check . && uv run ruff check .`
 
 ## Breaking Changes
@@ -90,9 +89,9 @@ Closes #<issue_number>
 
 ## Package-Specific Checklists
 
-### LangGraph Agent / FastMCP Changes
+### FastMCP Changes
 
-If the PR modifies `langchain/` or `bloommcp/`:
+If the PR modifies `bloommcp/`:
 
 - [ ] FastAPI routes follow existing patterns
 - [ ] Python dependencies updated in `pyproject.toml` with `uv add` and `uv lock`
@@ -164,11 +163,11 @@ gh pr edit <number> --body "..."
 ```markdown
 ## Summary
 
-Add organism management API endpoints to the LangGraph agent, allowing users to create, read, update, and delete organisms via the web interface.
+Add organism management API endpoints, allowing users to create, read, update, and delete organisms via the web interface.
 
 ## Changes
 
-- Add CRUD endpoints in `langchain/routes/organisms.py`
+- Add CRUD endpoints in `web/app/api/organisms/route.ts`
 - Add Supabase migration for organisms table with RLS policies
 - Add organism list component in `web/app/organisms/page.tsx`
 - Add integration test for organism endpoints

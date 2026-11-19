@@ -94,6 +94,24 @@ def test_a_select_sends_columns_filters_order_and_page():
     ]
 
 
+def test_case_insensitive_equals_and_prefix_are_anchored_and_escaped():
+    reader, sent = _reader(httpx.Response(200, json=[]))
+    reader.select(
+        "genes",
+        ["gene_id"],
+        [
+            Filter("symbol", "iequals", "MYB-41*"),
+            Filter("gene_id", "istarts_with", "AT4G28110."),
+        ],
+        [Sort("gene_id")],
+        10,
+        0,
+    )
+    params = dict(_params(sent[0]))
+    assert params["symbol"] == r"imatch.^MYB\-41\*$"
+    assert params["gene_id"] == r"imatch.^AT4G28110\."
+
+
 @pytest.mark.parametrize(("exact", "mode"), [(True, "exact"), (False, "planned")])
 def test_a_count_reads_the_total_from_content_range(exact, mode):
     reader, sent = _reader(

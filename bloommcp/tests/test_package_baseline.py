@@ -28,7 +28,6 @@ _BLOOM_ENV_VARS = (
     "BLOOM_TRAITS_DIR",
     "BLOOM_OUTPUT_DIR",
     "BLOOM_PLOTS_DIR",
-    "BLOOM_PLOTS_URL",
 )
 
 
@@ -202,7 +201,6 @@ def test_experiment_utils_validate_env_raises_when_dirs_unset(monkeypatch):
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -258,7 +256,6 @@ def _boot_env(monkeypatch, tmp_path, *, local: bool) -> None:
         d = tmp_path / var
         d.mkdir()
         monkeypatch.setenv(var, str(d))
-    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://localhost/plots")
     if local:
         monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
         monkeypatch.delenv("SUPABASE_URL", raising=False)

@@ -1,8 +1,8 @@
 -- Rollback for 20261109120000_add_genome_browser_builds.sql
 -- Manual break-glass only; nothing runs it automatically. Drops genome_browser_builds and
--- genome_browser_genes, which forgets every browser build and its gene positions; delete the files under
--- <genome>/v<N>/browser/ in genome-references through the Storage API. Run the rollback of
--- 20261109120100 first.
+-- genome_browser_genes, which forgets every browser build and its gene positions; delete the
+-- files under <genome>/v<N>/browser/ in genome-references through the Storage API. Run the
+-- rollback of 20261109120100 first.
 
 BEGIN;
 

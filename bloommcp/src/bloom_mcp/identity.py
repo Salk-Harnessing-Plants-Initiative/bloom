@@ -6,9 +6,9 @@ This module resolves a *verified* caller identity purely for usage tracking —
 it is never used as a database/Storage authorization principal, and nothing
 here changes which role performs a DB/Storage call.
 
-Verification mirrors ``langchain/deps.py:get_current_user()`` exactly: PyJWT,
-``algorithms=["HS256"]``, ``audience="authenticated"``, extracts the ``sub``
-claim. Two additions beyond ``deps.py``: the resolved ``sub`` is (a) required
+Verification is PyJWT with ``algorithms=["HS256"]`` and
+``audience="authenticated"``, extracting the ``sub`` claim. Two further
+checks: the resolved ``sub`` is (a) required
 to look like a Supabase user id (a UUID) and not equal the reserved literal
 ``"anonymous"`` — see ``ANONYMOUS`` below, the sentinel ``bloommcp_usage``
 uses for callers with no header at all — and (b) normalized to lowercase, so

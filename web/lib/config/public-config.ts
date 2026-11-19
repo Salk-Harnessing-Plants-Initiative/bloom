@@ -42,8 +42,6 @@ export type PublicConfig = {
   supabaseAnonKey: string | undefined;
   /** Auth-cookie name (must diverge between staging and prod). */
   supabaseCookieName: string | undefined;
-  /** Bloom MCP server URL. */
-  mcpUrl: string | undefined;
   /** Public app URL (used by oauth callback flows). */
   appUrl: string | undefined;
   /** Short git SHA exposed by `/api/health` as the liveness fingerprint. */
@@ -66,7 +64,6 @@ export function getPublicConfig(): PublicConfig {
     supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
     supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     supabaseCookieName: process.env.NEXT_PUBLIC_SUPABASE_COOKIE_NAME,
-    mcpUrl: process.env.NEXT_PUBLIC_MCP_URL,
     appUrl: process.env.NEXT_PUBLIC_APP_URL,
     commitSha: process.env.NEXT_PUBLIC_COMMIT_SHA,
     storageUrl: process.env.NEXT_PUBLIC_STORAGE_URL,

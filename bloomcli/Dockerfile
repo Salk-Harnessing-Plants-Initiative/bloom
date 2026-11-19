@@ -1,4 +1,4 @@
-# Base image digest-pinned to match sibling services (langchain, bloommcp)
+# Base image digest-pinned to match sibling services (bloommcp, workflows)
 FROM python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
 # Install uv from official image (pinned to version + immutable digest so rebuilds

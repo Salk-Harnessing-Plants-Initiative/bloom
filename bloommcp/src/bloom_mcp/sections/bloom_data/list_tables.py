@@ -5,7 +5,13 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
-from bloom_mcp.data_access import page_links, table_access, table_notes
+from bloom_mcp.data_access import (
+    file_access,
+    page_links,
+    table_access,
+    table_indexes,
+    table_notes,
+)
 from bloom_mcp.tools import _ports
 
 from ._common import logs_call, readable_column_details, reports_read_errors
@@ -39,13 +45,27 @@ class ListTablesResult(BaseModel):
     columns: list[ColumnInfo] | None = Field(
         description="The described table's columns, if one was asked for."
     )
+    sortable: list[str] | None = Field(
+        default=None,
+        description="The described table's columns query_table may sort by; no others.",
+    )
+    contains_columns: list[str] | None = Field(
+        default=None,
+        description="On a large table, the only columns a contains filter may use; "
+        "null means any column.",
+    )
 
 
 def _notes(tables: list[str]) -> dict[str, str]:
-    """Each table's note, then how to link its rows to Bloom's website."""
+    """Each table's note, how to link its rows to Bloom's website, and its file paths."""
     notes = table_notes.table_notes(tables)
     joined = {
-        t: " ".join(filter(None, (notes.get(t), page_links.link_note(t))))
+        t: " ".join(
+            filter(
+                None,
+                (notes.get(t), page_links.link_note(t), file_access.file_note(t)),
+            )
+        )
         for t in tables
     }
     return {t: note for t, note in joined.items() if note}
@@ -76,10 +96,13 @@ def list_tables(params: ListTablesParams) -> ListTablesResult:
             ColumnInfo(name=c.name, type=c.type, references=_readable(c.references))
             for c in readable_column_details(params.table)
         ]
+        searchable = table_indexes.contains_columns(params.table)
         return ListTablesResult(
             tables=[params.table],
             notes=_notes([params.table]),
             columns=columns,
+            sortable=sorted(table_indexes.sortable_columns(params.table)),
+            contains_columns=None if searchable is None else sorted(searchable),
         )
     names = sorted(
         t for t in _ports.table_reader().table_columns() if table_access.is_readable(t)

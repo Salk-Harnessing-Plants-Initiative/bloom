@@ -103,19 +103,8 @@ docker-compose.prod copy.yml
 DOCUMENTATION.md
 TROUBLESHOOTING.md
 prompts/
-# Re-include the langchain agent's prompt module (the gitignore rule above
-# catches Claude-Code planning folders named `prompts/`; this re-includes
-# the production code path the agent uses for graph-node prompts).
-!langchain/prompts/
-!langchain/prompts/**
-# ...but keep Python build artifacts ignored (the `**` re-include above is broad
-# enough to otherwise track __pycache__/*.pyc under the prompt module).
-langchain/prompts/**/__pycache__/
-langchain/prompts/**/*.pyc
 .claude/settings.local.json
 .claude/draft-pr/
-langchain/ANALYSIS_OUTPUT/
-langchain/PLOTS_DIR/
 scripts/compute_de_genes.py
 scripts/compute_de_local.py
 scripts/compute_de.py
@@ -134,7 +123,7 @@ reference/
 supabase/.temp/
 
 # Stray uv lockfiles outside the known service dirs.
-# The tracked service uv.locks (langchain/, bloommcp/, services/video-worker/,
+# The tracked service uv.locks (bloommcp/, services/video-worker/,
 # services/workflows/, bloomcli/) are unaffected because gitignore doesn't
 # apply to already-tracked files —
 # `scripts/check-uv-locks.py` enforces those. This rule keeps a one-off

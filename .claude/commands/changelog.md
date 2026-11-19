@@ -22,7 +22,7 @@ git log $(git describe --tags --abbrev=0)..HEAD --oneline
 git log --author="<name>" --oneline
 
 # View changes to specific package
-git log --oneline -- langchain/ bloommcp/
+git log --oneline -- bloommcp/ bloomcli/
 git log --oneline -- web/
 
 # View current version (if package.json exists)
@@ -382,7 +382,7 @@ Before cutting a release:
 - [ ] Links at bottom are updated
 - [ ] Breaking changes are clearly marked
 - [ ] Notable changes are user-friendly and descriptive
-- [ ] Package-specific changes are labeled (**langchain**, **bloommcp**, **web**, etc.)
+- [ ] Package-specific changes are labeled (**bloommcp**, **bloomcli**, **web**, etc.)
 
 ## Semantic Versioning Quick Reference
 

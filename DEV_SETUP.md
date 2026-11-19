@@ -79,10 +79,7 @@ mismatched keys. `.env.dev` is git-ignored and never leaves your machine.
 
 Only needed for specific features / conflicts:
 
-- `OPENAI_API_KEY`, `LANGCHAIN_API_KEY`, `LOCAL_LLM_URL` — set these if you need
-  the LLM agent. Without them, `langchain-agent` won't become healthy (it builds
-  a model at startup); that's expected and `make check` treats it as an optional
-  warning, not a failure. The core stack (incl. `bloommcp`) is unaffected.
+- `OPENAI_API_KEY` — only for Supabase Studio's AI assistant. Nothing else needs it.
 - `WANDB_API_KEY` — a wandb key that can read the `sleap-roots-models` registry.
   With it, the cylinder pipeline's confirm dialog warns about scans past their
   models' validated age or with no model; without it the dialog shows
@@ -181,7 +178,6 @@ You should see containers for:
 - supabase-kong
 - supabase-auth
 - supabase-rest
-- langchain-agent (LangChain AI agent)
 - bloommcp (FastMCP Bloom analysis tools)
 
 ### Step 3: Access the Application
@@ -277,7 +273,6 @@ make upload-images
 | ---------------- | ---------------------- | ----- | -------------------------------- |
 | Bloom Web        | http://localhost:3000  | 3000  | Next.js frontend with hot reload |
 | Supabase Studio  | http://localhost:55323 | 55323 | Database management UI           |
-| LangChain Agent  | http://localhost:5002  | 5002  | AI agent chat API                |
 | Bloom MCP Server | http://localhost:8811  | 8811  | FastMCP Bloom analysis tools     |
 | Swagger UI       | http://localhost:8085  | 8085  | PostgREST API browser            |
 | MinIO Console    | http://localhost:9101  | 9101  | Storage management console       |
@@ -308,25 +303,6 @@ make upload-images
 Kong reaches Realtime by the `realtime-dev.supabase-realtime` alias because Realtime
 takes the tenant name (`realtime-dev`) from the first label of the Host header.
 Its REST API (`/realtime/v1/api/*`) takes the service-role key only; the anon key gets `403`.
-
-**LangChain Agent** (http://localhost:5002):
-
-| Method | Endpoint | Description              |
-| ------ | -------- | ------------------------ |
-| POST   | /chat    | Send message to AI agent |
-| GET    | /health  | Health check             |
-
----
-
-## AI Agent
-
-### Verify Agent is Running
-
-```bash
-curl http://localhost:5002/health
-```
-
-The LangChain agent connects to the Bloom MCP server (port 8811) which provides 39 Bloom analysis tools for plant phenotyping data.
 
 ---
 
@@ -406,21 +382,14 @@ cd web && npm install
 make rebuild-dev-fresh
 ```
 
-### LangChain Agent / MCP Server errors
+### MCP Server errors
 
 ```bash
-# Check agent logs
-docker logs bloom_v2_dev-langchain-agent-1
-
 # Check MCP server logs
 docker logs bloom_v2_dev-bloommcp-1
 
-# Restart services
-docker restart bloom_v2_dev-langchain-agent-1
+# Restart it
 docker restart bloom_v2_dev-bloommcp-1
-
-# Test agent health
-curl http://localhost:5002/health
 ```
 
 ### Data Loading Fails
@@ -496,9 +465,8 @@ After successful setup:
 1. Explore the frontend at http://localhost:3000
 2. View database in Studio at http://localhost:55323
 3. Test API endpoints with curl or Postman
-4. Test AI agent at http://localhost:5002
-5. Start developing your features
-6. See [PROD_SETUP.md](./PROD_SETUP.md) for production deployment
+4. Start developing your features
+5. See [PROD_SETUP.md](./PROD_SETUP.md) for production deployment
 
 ---
 
@@ -513,7 +481,7 @@ MINIO_ROOT_USER=<your-minio-user>
 MINIO_ROOT_PASSWORD=<your-minio-password>
 MINIO_DEFAULT_BUCKET=bloom-storage
 
-# LangChain Agent
+# Service endpoints (bloommcp, video-worker)
 
 SUPABASE_URL=http://kong:8000
 S3_ENDPOINT=http://supabase-minio:9000

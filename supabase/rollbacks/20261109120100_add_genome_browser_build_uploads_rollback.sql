@@ -7,6 +7,7 @@
 BEGIN;
 
 DROP POLICY IF EXISTS admin_keep_finished_browser_files_delete ON storage.objects;
+DROP POLICY IF EXISTS admin_keep_finished_browser_files_insert ON storage.objects;
 DROP POLICY IF EXISTS admin_keep_finished_browser_files_update ON storage.objects;
 DROP POLICY IF EXISTS workflows_insert_own_browser_file ON storage.objects;
 

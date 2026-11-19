@@ -25,7 +25,9 @@ Installable `uv` package under `src/bloom_mcp/`:
   returned, rows are capped at 500 a page, and counts are exact unless too many rows match
   (then a labelled estimate). `list_functions` and `call_function` call the read-only
   database functions in `data_access/function_access.py`; PostgREST runs them in a
-  read-only transaction.
+  read-only transaction. `gene_lookup` gathers one gene's record, HPI notes, orthologs,
+  translation work and scRNA results (datasets, cluster markers, genotype comparisons)
+  through the same allow-list (`data_access/gene_reads.py`, `gene_expression.py`).
 - `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
   not tools themselves
 - `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping
@@ -59,7 +61,7 @@ which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on AIRC's sig
 - Someone refused for having no Bloom account is also emailed how to sign up and reconnect: bloommcp
   asks the internal `mail` service in the background (`bloom_mcp.signup_email`), once per address
   every 2 hours and at most two at a time, so Claude's retries make no extra requests; the service
-  also sends at most one email per address every 2 hours. The refusal never waits on it.
+  sends each address the email only once. The refusal never waits on it.
 - An admitted request runs with `BLOOMMCP_API_KEY` in place of a caller token, and its usage is
   recorded under the Bloom account's id. Queries still run as `bloom_agent`.
 

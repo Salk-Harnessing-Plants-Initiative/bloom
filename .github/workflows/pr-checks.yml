@@ -230,9 +230,6 @@ jobs:
       - name: Verify uv lockfiles are synced
         run: python scripts/check-uv-locks.py
 
-      - name: Audit langchain dependencies
-        run: cd langchain && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 --ignore-vuln PYSEC-2025-183 -r /dev/stdin
-
       # Checks bloommcp server Python packages for vulnerabilities
       - name: Audit bloommcp dependencies
         run: cd bloommcp && uv export --frozen --no-hashes | uvx pip-audit@2.10.0 --ignore-vuln PYSEC-2025-183 --ignore-vuln PYSEC-2024-277 -r /dev/stdin
@@ -379,8 +376,8 @@ jobs:
   docker-build:
     name: Build Docker Images & Scan for CVEs
     runs-on: ubuntu-latest
-    # This job builds all five images (bloom-web/langchain/bloommcp/caddy/
-    # workflows) + Trivy-scans them on the same ~14 GB-free runner — the same
+    # This job builds all four images (bloom-web/bloommcp/caddy/workflows)
+    # + Trivy-scans them on the same ~14 GB-free runner — the same
     # disk-heavy pattern as compose-health-check (issue #334). Protect it too:
     # free disk before building. Cap the runtime so a wedge can't hang for 6h.
     timeout-minutes: 30
@@ -422,17 +419,6 @@ jobs:
             NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token
           cache-from: type=gha,scope=bloom-web
           cache-to: type=gha,mode=max,scope=bloom-web
-
-      - name: Build langchain-agent image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./langchain
-          file: langchain/Dockerfile
-          tags: langchain-agent:ci
-          load: true
-          provenance: false
-          cache-from: type=gha,scope=langchain-agent
-          cache-to: type=gha,mode=max,scope=langchain-agent
 
       - name: Build bloommcp image
         uses: docker/build-push-action@v6
@@ -490,17 +476,6 @@ jobs:
           output: 'trivy-bloom-web.txt'
           trivyignores: '.trivyignore'
 
-      - name: Scan langchain-agent image
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'langchain-agent:ci'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '0'
-          format: 'table'
-          scanners: 'vuln'
-          output: 'trivy-langchain.txt'
-          trivyignores: '.trivyignore'
-
       - name: Scan bloommcp image
         uses: aquasecurity/trivy-action@v0.35.0
         with:
@@ -553,7 +528,7 @@ jobs:
             echo ""
             echo "| Image | Critical | High |"
             echo "|-------|----------|------|"
-            for img in bloom-web langchain bloommcp caddy workflows bloomcli; do
+            for img in bloom-web bloommcp caddy workflows bloomcli; do
               file="trivy-${img}.txt"
               if [ -f "$file" ]; then
                 # Sum Trivy's per-target Total lines; the table leaves repeated severity cells blank.
@@ -580,14 +555,6 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'bloom-web:ci'
-          severity: 'CRITICAL'
-          exit-code: '1'
-          trivyignores: '.trivyignore'
-
-      - name: Check langchain-agent for critical CVEs
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'langchain-agent:ci'
           severity: 'CRITICAL'
           exit-code: '1'
           trivyignores: '.trivyignore'
@@ -733,7 +700,7 @@ jobs:
     steps:
       # Reclaim ~25 GB before anything runs. ubuntu-latest ships only ~14 GB
       # free on /, and this job builds the full prod compose stack
-      # (web/langchain/bloommcp/caddy) AND installs the Supabase CLI .deb AND
+      # (web/bloommcp/caddy) AND installs the Supabase CLI .deb AND
       # Playwright+Chromium on top — which overflowed the disk on PR #323
       # ("No space left on device", then a 6h hang). These language SDKs are
       # preinstalled on the runner but never used by this job. Inline rm (no
@@ -756,8 +723,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # This job builds the full prod compose stack (web/langchain/bloommcp/
-      # caddy) AND installs the Supabase CLI + Playwright/Chromium — which
+      # This job builds the full prod compose stack (web/bloommcp/caddy)
+      # AND installs the Supabase CLI + Playwright/Chromium — which
       # overflowed the runner's ~14 GB free on / (issue #334). Reclaim ~25 GB
       # right after checkout (the local composite action needs the repo
       # present), well before any heavy disk use. The 20 GB floor fails fast if
@@ -826,12 +793,6 @@ jobs:
           echo "SUPABASE_URL_HOSTS_ALLOWED=kong:8000=kong:8000" >> .env.ci
           echo "SUPABASE_COOKIE_NAME=sb-ci-auth-token" >> .env.ci
           echo "NEXT_PUBLIC_APP_URL=http://localhost" >> .env.ci
-          # bloom-web bakes NEXT_PUBLIC_MCP_URL as a build arg
-          # (docker-compose.prod.yml). Without it here the CI image builds
-          # with an empty value — CI/prod-shape drift. http://localhost
-          # mirrors the other browser-facing CI URLs (Caddy on the runner
-          # host). Flagged by Copilot review on PR #268.
-          echo "NEXT_PUBLIC_MCP_URL=http://localhost" >> .env.ci
           echo "SUPABASE_PUBLIC_URL=http://localhost/api" >> .env.ci
           echo "POOLER_TENANT_ID=default" >> .env.ci
           echo "POOLER_DEFAULT_POOL_SIZE=5" >> .env.ci
@@ -851,15 +812,8 @@ jobs:
           echo "DOMAIN_MINIO=minio.localhost" >> .env.ci
           echo "DOMAIN_FLASK=api.localhost" >> .env.ci
           echo "BLOOM_PLOTS_DIR=/app/data/PLOTS_DIR" >> .env.ci
-          echo "BLOOM_PLOTS_URL=http://localhost:5002/plots" >> .env.ci
           echo "BLOOMMCP_API_KEY=ci-placeholder" >> .env.ci
-          echo "BLOOM_MCP_URL=http://bloommcp:8811/mcp" >> .env.ci
           echo "OPENAI_API_KEY=sk-ci-not-real" >> .env.ci
-          echo "LANGCHAIN_TRACING_V2=false" >> .env.ci
-          echo "LANGCHAIN_API_KEY=" >> .env.ci
-          echo "LANGCHAIN_PROJECT=bloom-ci" >> .env.ci
-          echo "LOCAL_LLM_URL=http://disabled" >> .env.ci
-          echo "LOCAL_LLM_MODEL=skip" >> .env.ci
           echo "CORS_ORIGINS=http://localhost" >> .env.ci
           echo "CADDY_HTTP_LISTEN_PORT=80" >> .env.ci
           echo "CADDY_HTTPS_LISTEN_PORT=443" >> .env.ci
@@ -906,7 +860,6 @@ jobs:
           echo "SECRET_KEY_BASE=${{ secrets.CI_SECRET_KEY_BASE }}" >> .env.ci
           echo "MINIO_ROOT_PASSWORD=${{ secrets.CI_MINIO_PASSWORD }}" >> .env.ci
           echo "DB_ENC_KEY=${{ secrets.CI_DB_ENC_KEY }}" >> .env.ci
-          echo "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:${{ secrets.CI_POSTGRES_PASSWORD }}@db-prod:5432/postgres" >> .env.ci
           echo "BLOOM_AGENT_KEY=${{ secrets.CI_BLOOM_AGENT_KEY }}" >> .env.ci
 
       # #646 was invisible to CI because CI never provisioned an asymmetric pair:
@@ -1244,8 +1197,6 @@ jobs:
           docker compose $COMPOSE_FILES --env-file .env.ci logs caddy --tail=100
           echo "=== bloom-web logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloom-web --tail=200
-          echo "=== langchain-agent logs ==="
-          docker compose $COMPOSE_FILES --env-file .env.ci logs langchain-agent --tail=50
           echo "=== bloommcp logs ==="
           docker compose $COMPOSE_FILES --env-file .env.ci logs bloommcp --tail=50
 
@@ -1261,9 +1212,7 @@ jobs:
 
   # Exercise the *documented dev workflow* end to end on docker-compose.dev.yml
   # (compose-health-check above uses the prod compose). Self-contained: `make
-  # init` generates all local secrets, so no CI_* secrets are needed. langchain-
-  # agent is unhealthy here (no OPENAI_API_KEY) but `make check` treats it as an
-  # optional warning, so a correct core stack still passes.
+  # init` generates all local secrets, so no CI_* secrets are needed.
   dev-stack-smoke:
     name: Dev stack smoke (init -> dev-up -> migrate-local -> check)
     runs-on: ubuntu-latest
@@ -1418,8 +1367,6 @@ jobs:
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs kong --tail=50
           echo "=== bloommcp logs ==="
           docker compose -f docker-compose.dev.yml --env-file .env.dev logs bloommcp --tail=50
-          echo "=== langchain-agent logs ==="
-          docker compose -f docker-compose.dev.yml --env-file .env.dev logs langchain-agent --tail=50
 
       # Guarded: if: always() fires both when the workflow-level
       # cancel-in-progress concurrency group cancels this job and when an

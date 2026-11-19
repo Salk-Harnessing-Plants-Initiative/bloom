@@ -127,6 +127,8 @@ def test_a_batch_must_be_1_to_5000_genes(cur, version_id, genes):
 @pytest.mark.parametrize("gene", [
     _gene(gene_id=" "), _gene(gene_id=None), _gene(contig=""), _gene(gene_start=0),
     _gene(gene_end=3000), _gene(strand="x"), _gene(gene_id="A" * 201),
+    _gene(gene_name=""), _gene(gene_name="  "), _gene(gene_name="N" * 201),
+    _gene(contig="Chr 1"), _gene(contig="C" * 201), _gene(strand="?"),
 ])
 def test_a_malformed_gene_is_refused(cur, version_id, gene):
     build_id, _, _ = start_build(cur, version_id)
@@ -151,6 +153,14 @@ def test_a_gene_sent_again_at_a_different_position_is_refused(cur, version_id):
     as_role(cur, "bloom_writer", WRITER)
     refused(cur, ADD, (build_id, json.dumps([_gene(gene_end=6000)])),
             psycopg.errors.UniqueViolation, match="AT1G01010 was already added .* different details")
+
+
+def test_a_gene_sent_again_with_another_name_is_refused(cur, version_id):
+    build_id, _, _ = start_build(cur, version_id)
+    add_genes(cur, build_id, GENES[:1])
+    as_role(cur, "bloom_writer", WRITER)
+    refused(cur, ADD, (build_id, json.dumps([_gene(gene_name="NAC1")])),
+            psycopg.errors.UniqueViolation, match="different details")
 
 
 def test_a_gene_twice_in_one_batch_is_refused(cur, version_id):
@@ -191,6 +201,16 @@ def test_a_withdrawn_builds_genes_are_not_shown(cur, version_id):
     cur.execute("SELECT public.withdraw_genome_browser_build(%s, 'wrong GTF')", (build_id,))
     assert _positions(cur, version_id) == []
     assert _gene_rows(cur, build_id, "bloom_agent") == 0
+    assert _gene_rows(cur, build_id) == 2
+
+
+@pytest.mark.parametrize("role", ["bloom_user", "bloom_agent", "bloom_workflows"])
+def test_a_withdrawn_versions_genes_are_not_shown(cur, version_id, role):
+    build_id, _ = ready_build(cur, version_id)
+    cur.execute("UPDATE public.genome_reference_versions SET status = 'withdrawn', "
+                "withdrawn_reason = 'wrong assembly' WHERE id = %s", (version_id,))
+    assert _positions(cur, version_id, role) == []
+    assert _gene_rows(cur, build_id, role) == 0
     assert _gene_rows(cur, build_id) == 2
 
 

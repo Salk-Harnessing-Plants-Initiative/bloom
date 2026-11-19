@@ -1,10 +1,14 @@
 import { getUser } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 
-const ORTHOBROWSER_URL =
-  "https://resources.michael.salk.edu/misc/hpi_orthobrowser/index.html";
+import { orthobrowserUrl } from "./orthobrowser-url";
 
-export default async function OrthofinderPage() {
+export default async function OrthofinderPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ search?: string | string[] }>;
+}) {
+  const { search } = (await searchParams) ?? {};
   const user = await getUser();
   const mixpanel = process.env.MIXPANEL_TOKEN
     ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
@@ -30,7 +34,7 @@ export default async function OrthofinderPage() {
       </div>
 
       <iframe
-        src={ORTHOBROWSER_URL}
+        src={orthobrowserUrl(search)}
         className="w-full border-0 rounded-lg flex-grow"
         title="HPI OrthoBrowser"
         allowFullScreen

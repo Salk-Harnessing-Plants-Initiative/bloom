@@ -231,14 +231,9 @@ Drop input CSVs in `bloommcp-data/input/`; outputs and plots appear under
 hand, nothing else to pre-create (see auto-create below).
 
 Both snippets above boot on just the two variables shown — no
-`BLOOM_STORAGE_URL`/`BLOOM_PLOTS_URL` needed. `output_links` resolves via a
-direct filesystem path regardless (no URL var needed, ever, for outputs — see
-"Reaching outputs" above); `BLOOM_PLOTS_URL` defaults to a self-served `/plots`
-URL under this tier. Running `bloommcp` directly is where the plots half of
-this matters most — nothing served `/plots` before self-serving landed. In the
-docker-compose snippet, `BLOOM_PLOTS_URL` was already served by
-langchain-agent's own mount regardless, so only the standalone case gains
-anything new there.
+`BLOOM_STORAGE_URL` needed. `output_links` resolves via a direct filesystem
+path regardless (no URL var needed, ever, for outputs — see "Reaching outputs"
+above), and in this tier bloommcp serves the plots folder itself at `/plots`.
 
 Resulting on-disk output layout (the storage key becomes the path under the
 output root):
@@ -284,7 +279,7 @@ output root):
   against.
 - **Backend-aware boot.** In `local` mode `server.main()` skips
   `validate_supabase_env()` and validates the local input root instead.
-  `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR` / `BLOOM_PLOTS_URL`
+  `BLOOM_TRAITS_DIR` / `BLOOM_OUTPUT_DIR` / `BLOOM_PLOTS_DIR`
   are required **unless** `BLOOM_LOCAL_ROOT` is also set, in which case only
   `BLOOM_LOCAL_ROOT` itself must exist and be writable — an invalid
   `BLOOM_STORAGE_BACKEND` value still fails fast in every mode. Production and

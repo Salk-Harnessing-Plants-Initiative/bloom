@@ -37,7 +37,7 @@ Audits each service's full transitive dependency tree via its lockfile. A temp f
 # the temp file when `exit 1` fired mid-loop).
 (
   trap "rm -f /tmp/reqs.txt" EXIT
-  for svc in langchain bloommcp services/video-worker bloomcli; do
+  for svc in bloommcp services/video-worker bloomcli; do
     echo "=== Auditing $svc ==="
     (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
@@ -60,7 +60,6 @@ docker build -f web/Dockerfile.bloom-web.prod \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder \
   --build-arg NEXT_PUBLIC_SUPABASE_COOKIE_NAME=sb-localhost-auth-token \
   -t bloom-web:test .
-docker build -f langchain/Dockerfile -t langchain:test ./langchain
 docker build -f bloommcp/Dockerfile -t bloommcp:test ./bloommcp
 docker build -f bloomcli/Dockerfile -t bloomcli:test ./bloomcli
 ```
@@ -68,7 +67,6 @@ docker build -f bloomcli/Dockerfile -t bloomcli:test ./bloomcli
 Smoke-test that each Python image's non-root user can import its key packages (catches venv ownership / PATH issues before CI):
 
 ```bash
-docker run --rm --entrypoint python langchain:test -c "import langchain; import langgraph; import fastapi"
 docker run --rm --entrypoint python bloommcp:test -c "import fastmcp; import statsmodels; import umap"
 ```
 
@@ -153,8 +151,7 @@ Also run `/copilot-review` to fetch inline Copilot comments. Address all review 
 Python linting is recommended but **NOT enforced in CI**:
 
 ```bash
-cd langchain && uv run black --check . && uv run ruff check .
-cd ../bloommcp && uv run black --check . && uv run ruff check .
+cd bloommcp && uv run black --check . && uv run ruff check .
 ```
 
 ## Step 8: Documentation & Changelog
@@ -191,7 +188,7 @@ cd web && npx tsc --noEmit && npm run build && cd ..
 # Subshell + EXIT trap so /tmp/reqs.txt is cleaned up on success AND failure.
 (
   trap "rm -f /tmp/reqs.txt" EXIT
-  for svc in langchain bloommcp services/video-worker bloomcli; do
+  for svc in bloommcp services/video-worker bloomcli; do
     (cd "$svc" && uv export --frozen --no-hashes > /tmp/reqs.txt && uvx pip-audit@2.10.0 -r /tmp/reqs.txt) || exit 1
   done
 )
