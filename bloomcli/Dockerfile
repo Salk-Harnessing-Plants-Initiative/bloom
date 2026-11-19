@@ -9,8 +9,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.11@sha256:77280f2f771df71f90786c314fe1bbc1e02
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"
 
 # bloomctl's dependencies (click, rich, httpx, supabase, python-dotenv,
-# cryptography, sleap-roots-contracts, h5py, numpy) all ship
-# prebuilt wheels — no apt-get block needed here, unlike bloommcp's matplotlib/scipy.
+# cryptography, sleap-roots-contracts, h5py, numpy, and pysam with its bundled htslib from the
+# genome-index extra) all ship prebuilt wheels — no apt-get block needed here, unlike
+# bloommcp's matplotlib/scipy.
 
 RUN addgroup --system bloom && adduser --system --ingroup bloom bloom \
     && mkdir -p /opt/venv \
@@ -21,11 +22,11 @@ USER bloom
 
 # Install dependencies only (cached independently of source code changes).
 COPY --chown=bloom:bloom pyproject.toml uv.lock README.pypi.md ./
-RUN uv sync --frozen --no-dev --no-cache --no-install-project
+RUN uv sync --frozen --no-dev --no-cache --no-install-project --extra genome-index
 
 COPY --chown=bloom:bloom . .
 
 # Install the project itself now that src/ is present.
-RUN uv sync --frozen --no-dev --no-cache
+RUN uv sync --frozen --no-dev --no-cache --extra genome-index
 
 ENTRYPOINT ["bloomctl"]
