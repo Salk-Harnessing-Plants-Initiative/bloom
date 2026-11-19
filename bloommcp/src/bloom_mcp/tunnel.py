@@ -27,7 +27,7 @@ from collections import OrderedDict
 import anyio
 import jwt
 
-from bloom_mcp import signup_email
+from bloom_mcp import connection_log, signup_email
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +308,7 @@ async def bloom_user(email: str) -> str:
     """The Bloom account id for ``email``, from the cache or the database."""
     cached = _cached(email)
     if cached is not None:
+        connection_log.signed_in(email)
         return cached
     try:
         user_id = await anyio.to_thread.run_sync(_query, email)
@@ -320,7 +321,7 @@ async def bloom_user(email: str) -> str:
         logger.warning("tunnel refused: no Bloom account for %s", email)
         signup_email.request(email)
         raise TunnelRefusal(403, _no_account_message(email))
-    logger.info("tunnel lookup: Bloom account found for %s", email)
+    connection_log.signed_in(email)
     _remember(email, user_id)
     return user_id
 
