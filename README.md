@@ -21,7 +21,6 @@ Before starting, ensure you have:
 ```
 bloom-v2/
 ├── web/                    # Next.js frontend application
-├── langchain/              # LangChain AI agent (ReAct agent with chat API)
 ├── bloommcp/               # FastMCP server (Bloom analysis tools)
 ├── supabase/              # Supabase configuration and migrations
 │   └── migrations/        # Database migration files
@@ -41,7 +40,6 @@ bloom-v2/
 - **Frontend**: Next.js (hot reload) - http://localhost:3000
 - **Database**: PostgreSQL via Supabase - `localhost:${POSTGRES_HOST_PORT:-5432}`
 - **Storage**: MinIO Console - http://localhost:9101
-- **AI Agent**: LangChain agent - http://localhost:5002
 - **MCP Server**: Bloom FastMCP (Bloom tools) - http://localhost:8811
 - **Swagger UI**: PostgREST API browser - http://localhost:8085
 - **Studio**: Supabase Studio - http://localhost:55323
@@ -51,7 +49,6 @@ bloom-v2/
 - **Frontend**: Next.js (optimized build) - http://yourdomain.com
 - **Database**: PostgreSQL via Supabase
 - **Storage**: MinIO S3
-- **AI Agent**: LangChain agent
 - **MCP Server**: Bloom FastMCP (Bloom tools)
 - **All services behind Nginx reverse proxy**
 

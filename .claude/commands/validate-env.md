@@ -34,8 +34,7 @@ npm ci     # Install dependencies from lockfile
 python --version    # Should be 3.11+
 uv --version
 
-# Install dependencies for both Python services
-cd langchain && uv sync && cd ..
+# Install dependencies for bloommcp
 cd bloommcp && uv sync && cd ..
 ```
 
@@ -46,7 +45,7 @@ make dev-up
 docker compose -f docker-compose.dev.yml ps
 ```
 
-Key services: `bloom-web`, `langchain-agent`, `bloommcp`, `db-dev`, `supabase-minio`, `kong`, `auth`, `rest`, `realtime`, `storage`, `studio`, `supavisor`, `imgproxy`, `meta`, `swagger-ui`
+Key services: `bloom-web`, `bloommcp`, `db-dev`, `supabase-minio`, `kong`, `auth`, `rest`, `realtime`, `storage`, `studio`, `supavisor`, `imgproxy`, `meta`, `swagger-ui`
 
 ## Check 4: Database
 
@@ -90,7 +89,7 @@ docker system prune -af --volumes
 ```bash
 rm -rf node_modules web/node_modules packages/*/node_modules
 npm ci
-cd langchain && uv sync && cd ../bloommcp && uv sync && cd ..
+cd bloommcp && uv sync && cd ..
 ```
 
 ### Rebuild from scratch

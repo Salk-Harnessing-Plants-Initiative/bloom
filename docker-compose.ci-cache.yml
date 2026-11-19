@@ -19,13 +19,6 @@ services:
       cache_to:
         - type=gha,mode=max,scope=bloom-web
 
-  langchain-agent:
-    build:
-      cache_from:
-        - type=gha,scope=langchain-agent
-      cache_to:
-        - type=gha,mode=max,scope=langchain-agent
-
   bloommcp:
     build:
       cache_from:

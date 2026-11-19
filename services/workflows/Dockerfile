@@ -4,7 +4,7 @@
 # libx264 encoding from stdin.
 FROM ghcr.io/salk-harnessing-plants-initiative/mwader-static-ffmpeg:8.1.2@sha256:33f770f812cbfc3de96c547157fc9faf8bd95a36481753439ffa761045167585 AS ffmpeg
 
-# Base image digest-pinned to match sibling services (langchain, bloommcp)
+# Base image digest-pinned to match sibling services (bloommcp, bloomcli)
 FROM python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
 WORKDIR /app
@@ -19,7 +19,7 @@ RUN uv pip install --system --no-cache .
 
 COPY . .
 
-# Run as a non-root system user, matching langchain-agent and bloommcp
+# Run as a non-root system user, matching bloommcp
 RUN addgroup --system bloom && adduser --system --ingroup bloom bloom \
     && chown -R bloom:bloom /app \
     && mkdir -p /var/log/bloom-mail && chown bloom:bloom /var/log/bloom-mail

@@ -25,7 +25,7 @@ Seven invariants total. Five are on .github/workflows/pr-checks.yml:
 
 Plus one assertion on the repo root:
 6. ``docker-compose.ci.yml`` MUST exist and declare ``build:`` blocks for
-   ``bloom-web``, ``langchain-agent``, and ``bloommcp`` so PR CI can keep
+   ``bloom-web`` and ``bloommcp`` so PR CI can keep
    building locally even after ``docker-compose.prod.yml`` flips its custom
    services to ``image: ghcr.io/...`` in PR-3.
 
@@ -35,7 +35,6 @@ And a CI/prod build-arg parity assertion:
    ``docker-compose.prod.yml``. Any referenced var the generator omits gets
    substituted as empty when compose-health-check builds the image, baking an
    empty ``NEXT_PUBLIC_*`` into the JS bundle — silent CI/prod-shape drift.
-   Copilot review on PR #268 flagged ``NEXT_PUBLIC_MCP_URL`` specifically.
 
 The "no ``--build-arg NEXT_PUBLIC_*`` in docker-build" invariant has been
 DEFERRED to PR-3 §6 (which removes the matching ``ARG`` lines from
@@ -61,7 +60,7 @@ COMPOSE_CI = REPO_ROOT / "docker-compose.ci.yml"
 WEB_PROD_DOCKERFILE = REPO_ROOT / "web" / "Dockerfile.bloom-web.prod"
 
 EXPECTED_COMPOSE_FILES = "-f docker-compose.prod.yml -f docker-compose.ci.yml"
-CUSTOM_SERVICES = ("bloom-web", "langchain-agent", "bloommcp")
+CUSTOM_SERVICES = ("bloom-web", "bloommcp")
 
 
 def _runtime_node_major() -> str:
@@ -240,8 +239,7 @@ def test_env_ci_sets_bloom_web_next_public_build_arg_vars() -> None:
     build args whose values are ``${ENV_VAR}`` references. compose-health-check
     builds that image with ``--env-file .env.ci``; any referenced var the
     generator omits substitutes to empty, silently shipping an empty
-    NEXT_PUBLIC_* in the bundle. Copilot review on PR #268 caught
-    NEXT_PUBLIC_MCP_URL missing from the generator.
+    NEXT_PUBLIC_* in the bundle.
     """
     prod = yaml.safe_load(
         (REPO_ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")

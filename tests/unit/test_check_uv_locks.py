@@ -21,7 +21,7 @@ import pytest
 
 # ---------- helpers ----------
 
-SERVICES = ("langchain", "bloommcp", "services/video-worker")
+SERVICES = ("bloommcp", "services/video-worker", "services/workflows")
 
 
 def _fake_repo(tmp_path: Path, services_with_pyproject: tuple[str, ...] = SERVICES) -> Path:
@@ -57,8 +57,8 @@ def test_uv_missing_returns_127(check_uv_locks_module, monkeypatch, capsys):
 
 def test_missing_pyproject_skips(check_uv_locks_module, monkeypatch, tmp_path, capsys):
     """A service dir without pyproject.toml should be skipped, not cause failure."""
-    # Only langchain has a pyproject; bloommcp and video-worker are absent.
-    _fake_repo(tmp_path, services_with_pyproject=("langchain",))
+    # Only workflows has a pyproject; bloommcp and video-worker are absent.
+    _fake_repo(tmp_path, services_with_pyproject=("services/workflows",))
 
     monkeypatch.setattr(
         check_uv_locks_module.subprocess,
@@ -125,7 +125,7 @@ def test_subprocess_timeout_is_caught_and_recorded(
 
     def fake_run(cmd, cwd, **kw):
         calls.append(cwd.name)
-        if cwd.name == "langchain":
+        if cwd.name == "bloommcp":
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=120)
         return _FakeCompleted(0)
 
@@ -135,10 +135,10 @@ def test_subprocess_timeout_is_caught_and_recorded(
 
     # Return code reflects a failure (timeout is treated as drift/failure).
     assert rc == 1
-    # All three services were attempted (one stuck service did not block the rest).
-    assert calls == ["langchain", "bloommcp", "video-worker"]
+    # Every service was attempted (one stuck service did not block the rest).
+    assert calls == ["bloommcp", "video-worker", "workflows"]
     err = capsys.readouterr().err
-    assert "langchain" in err
+    assert "bloommcp" in err
     assert "timeout" in err.lower() or "timed out" in err.lower()
 
 
@@ -153,7 +153,7 @@ def test_subprocess_filenotfound_is_caught_and_recorded(
 
     def fake_run(cmd, cwd, **kw):
         calls.append(cwd.name)
-        if cwd.name == "langchain":
+        if cwd.name == "bloommcp":
             raise FileNotFoundError("uv: No such file or directory")
         return _FakeCompleted(0)
 
@@ -163,9 +163,9 @@ def test_subprocess_filenotfound_is_caught_and_recorded(
 
     assert rc == 1
     # Processing continued past the FileNotFoundError to the other services.
-    assert calls == ["langchain", "bloommcp", "video-worker"]
+    assert calls == ["bloommcp", "video-worker", "workflows"]
     err = capsys.readouterr().err
-    assert "langchain" in err
+    assert "bloommcp" in err
     # Install-hint URL surfaces so the developer knows what to do.
     assert "https://docs.astral.sh/uv" in err
 
@@ -184,7 +184,7 @@ def test_real_subprocess_against_clean_tmp_repo(
     with the real binary on a known-clean repo.
     """
     # Build a minimal service directory with a valid pyproject.toml + lock.
-    service_dir = tmp_path / "langchain"
+    service_dir = tmp_path / "bloomcli"
     service_dir.mkdir()
     (service_dir / "pyproject.toml").write_text(
         '[project]\n'
@@ -202,13 +202,13 @@ def test_real_subprocess_against_clean_tmp_repo(
     )
     assert (service_dir / "uv.lock").exists()
 
-    # Only langchain exists under tmp_path; bloommcp + video-worker are skipped.
+    # Only bloomcli exists under tmp_path; bloommcp + video-worker are skipped.
     rc = check_uv_locks_module.check_services(tmp_path)
 
     assert rc == 0, "check_services should return 0 for a clean tmp repo"
     captured = capsys.readouterr()
     # The per-service "check ..." progress line proves the real subprocess ran.
-    assert "check langchain" in captured.out
+    assert "check bloomcli" in captured.out
     # The two missing services should surface as skips, not failures.
     assert "skip  bloommcp" in captured.out
     assert "skip  services/video-worker" in captured.out

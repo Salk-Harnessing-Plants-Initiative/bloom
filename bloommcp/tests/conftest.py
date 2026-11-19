@@ -22,7 +22,6 @@ _TMP = tempfile.mkdtemp(prefix="bloom_mcp_tests_")
 os.environ.setdefault("BLOOM_TRAITS_DIR", _TMP)
 os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP)
-os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost/plots")
 
 
 # --- In-memory Supabase Storage boundary (Tier 2 adapter tests) ---------------

@@ -114,10 +114,9 @@ def build_app() -> Starlette:
 
     In fully-local mode (`BLOOM_STORAGE_BACKEND=local`), also mounts `/plots`
     as `StaticFiles`, serving the local plots root the plotting tools
-    themselves write to — so a served URL built from either
-    `storage_backend.self_serve_base_url()`'s default or an explicit
-    `BLOOM_PLOTS_URL` pointing at this same address actually resolves
-    standalone, with no docker-compose. Unauthenticated beyond
+    themselves write to — so a URL built from
+    `storage_backend.self_serve_base_url()` actually resolves standalone, with
+    no docker-compose. Unauthenticated beyond
     `IdentityMiddleware`'s optional identity check (matching `/health`'s
     precedent) — see openspec update-bloommcp-local-url-defaults design.md
     Decision 3. Absent entirely on the default (Supabase) backend.

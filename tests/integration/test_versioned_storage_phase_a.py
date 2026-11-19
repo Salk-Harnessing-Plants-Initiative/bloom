@@ -42,7 +42,6 @@ _TMP_BASE = tempfile.mkdtemp(prefix="bloommcp_phase_a_default_")
 os.environ.setdefault("BLOOM_TRAITS_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_OUTPUT_DIR", _TMP_BASE)
 os.environ.setdefault("BLOOM_PLOTS_DIR", _TMP_BASE)
-os.environ.setdefault("BLOOM_PLOTS_URL", "http://test.invalid")
 
 from pydantic import ValidationError  # noqa: E402
 
