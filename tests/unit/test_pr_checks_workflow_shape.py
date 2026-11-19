@@ -19,7 +19,7 @@ Seven invariants total. Five are on .github/workflows/pr-checks.yml:
 4. A Playwright step MUST exist in ``compose-health-check`` that runs
    ``cd web && npm run test:e2e`` after the stack is verified healthy.
 5. The ``compose-health-check`` job MUST pin Node.js via
-   ``actions/setup-node@v4`` with the runtime image's Node major BEFORE the
+   an ``actions/setup-node`` step with the runtime image's Node major BEFORE the
    Playwright/npm steps so CI is deterministic across runner-default
    changes (Copilot review finding on PR #268).
 
@@ -195,12 +195,7 @@ def test_compose_health_check_pins_runtime_node_before_npm_steps() -> None:
     for idx, step in enumerate(steps):
         uses = step.get("uses") or ""
         if uses.startswith("actions/setup-node@"):
-            # Tolerate v4 (current) or any newer major; the spec only
-            # requires the action to be present and pin the runtime's Node.
-            assert uses.startswith("actions/setup-node@v"), (
-                f"compose-health-check uses {uses!r} for setup-node — "
-                "must reference a pinned major version (e.g. v4)"
-            )
+            # SHA pinning and the action's version are checked in test_ci_actions_runtime.py.
             with_block = step.get("with") or {}
             node_version = with_block.get("node-version")
             assert str(node_version) in (runtime_major, f"{runtime_major}.x"), (
@@ -217,7 +212,7 @@ def test_compose_health_check_pins_runtime_node_before_npm_steps() -> None:
         ):
             first_npm_idx = idx
     assert setup_node_idx is not None, (
-        "compose-health-check must include an 'actions/setup-node@v4' step "
+        "compose-health-check must include an 'actions/setup-node' step "
         f"pinning Node {runtime_major} before any npm/Playwright step."
     )
     assert first_npm_idx is not None, (
@@ -225,7 +220,7 @@ def test_compose_health_check_pins_runtime_node_before_npm_steps() -> None:
         "— inconsistent with Invariant 4 above"
     )
     assert setup_node_idx < first_npm_idx, (
-        f"actions/setup-node@v4 is at step {setup_node_idx} but the first "
+        f"actions/setup-node is at step {setup_node_idx} but the first "
         f"npm/Playwright step is at {first_npm_idx}; the Node pin must "
         "come BEFORE any step that needs Node."
     )
