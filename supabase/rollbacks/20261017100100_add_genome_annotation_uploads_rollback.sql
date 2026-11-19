@@ -1,8 +1,8 @@
 -- Rollback for 20261017100100_add_genome_annotation_uploads.sql
 -- Manual break-glass only; nothing runs it automatically. Drops the annotation upload
 -- functions and storage rules, and restores the writer upload rule for genome-references to
--- the genome files only. Run it after the rollbacks of 20261017100300 and 20261017100200, and
--- before the rollback of 20261017100000.
+-- the genome files only. Run it after the rollbacks of 20261109120100 and 20261109120000 (the
+-- browser builds), 20261017100300 and 20261017100200, and before the rollback of 20261017100000.
 
 BEGIN;
 
