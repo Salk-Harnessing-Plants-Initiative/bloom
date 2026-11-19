@@ -1,7 +1,6 @@
 """`bloom_mcp.identity` — X-Bloom-Identity header verification.
 
-Mirrors `langchain/deps.py:get_current_user()`'s verification exactly (PyJWT,
-`algorithms=["HS256"]`, `audience="authenticated"`), plus a UUID-shape +
+PyJWT verification (`algorithms=["HS256"]`, `audience="authenticated"`), plus a UUID-shape +
 reserved-sentinel guard on `sub` unique to this module (see identity.py
 docstring / openspec design.md Decision 1). All tests run with no live
 Supabase (see conftest).

@@ -110,6 +110,6 @@ def _report_only_scans() -> list[dict]:
 def test_report_only_scans_count_vulnerabilities_only() -> None:
     # Secret findings print their own Total lines, which would inflate the counts.
     scans = _report_only_scans()
-    assert len(scans) == 7
+    assert len(scans) == 6
     for scan in scans:
         assert scan["with"].get("scanners") == "vuln", scan.get("name")

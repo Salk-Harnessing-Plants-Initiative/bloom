@@ -74,3 +74,9 @@ def test_the_raw_traits_table_is_refused(reader):
     with pytest.raises(BloomMCPError) as err:
         list_tables({"table": "cyl_scan_traits"})
     assert err.value.code == "invalid_input"
+
+
+def test_a_file_table_notes_how_to_open_its_files(reader):
+    reader.tables["cyl_images"] = [{"id": 1, "scan_id": 2, "object_path": "a.png"}]
+    note = list_tables({"table": "cyl_images"}).notes["cyl_images"]
+    assert "read_file" in note and "table cyl_images" in note

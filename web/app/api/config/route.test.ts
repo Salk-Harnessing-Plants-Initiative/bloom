@@ -33,7 +33,6 @@ const PUBLIC_CONFIG_KEYS = [
   "appUrl",
   "bloomUrl",
   "commitSha",
-  "mcpUrl",
   "storageUrl",
   "supabaseAnonKey",
   "supabaseCookieName",
@@ -50,7 +49,6 @@ function setHappyPathEnv(): void {
     ref: "bloomdev",
   });
   process.env.NEXT_PUBLIC_SUPABASE_COOKIE_NAME = "sb-bloom-auth-token";
-  process.env.NEXT_PUBLIC_MCP_URL = "http://mcp.test";
   process.env.NEXT_PUBLIC_APP_URL = "https://app.test";
   process.env.NEXT_PUBLIC_COMMIT_SHA = "abc1234";
   process.env.NEXT_PUBLIC_STORAGE_URL = "https://storage.test";
@@ -253,7 +251,6 @@ describe("/api/config — dev-mode early-return", () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = "http://localhost:54321";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "dev-anon-key-not-a-real-jwt";
     process.env.NEXT_PUBLIC_SUPABASE_COOKIE_NAME = "sb-localhost-auth-token";
-    process.env.NEXT_PUBLIC_MCP_URL = "http://localhost:5002";
     // Deliberately leave SUPABASE_URL and SUPABASE_URL_HOSTS_ALLOWED unset
     // — mirrors the typical local dev pattern where SUPABASE_URL is only
     // set in containerized environments.

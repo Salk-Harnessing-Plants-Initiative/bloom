@@ -1,8 +1,7 @@
 """list_available_experiments — discovery tool: list available experiments.
 
 Not a ``sleap-roots-analyze`` wrapper — reads through the injected
-``ExperimentReader`` port. Always-included in the agent's tool set (see
-``ALWAYS_INCLUDE_MCP_TOOLS`` in ``langchain/helpers/foundational_tools.py``).
+``ExperimentReader`` port.
 """
 
 from datetime import UTC, datetime, timedelta

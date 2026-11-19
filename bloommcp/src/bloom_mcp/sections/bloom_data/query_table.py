@@ -7,14 +7,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
-from bloom_mcp.data_access import table_access
+from bloom_mcp.data_access import page_links, table_access
 from bloom_mcp.data_access.table_ports import Sort
 from bloom_mcp.tools import _ports
 
 from ._common import (
     FilterParam,
     check_columns,
+    check_contains,
     check_filterable,
+    check_sortable,
     fix_request,
     logs_call,
     readable_columns,
@@ -47,7 +49,8 @@ class QueryTableParams(BaseModel):
     )
     order_by: str | None = Field(
         default=None,
-        description="Column to sort by; rows are always also sorted by the table's key.",
+        description="Column to sort by, one list_tables gives as sortable; rows are always "
+        "also sorted by the table's key.",
     )
     descending: bool = Field(
         default=False, description="Largest first (order_by, or the key if none)."
@@ -103,6 +106,9 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     heritability, PCA, UMAP, clustering, correlations, statistical comparisons, plots) use
     the sleap_roots_* tools and say so; if unclear, ask the user.
 
+    Rows of a table with a Bloom page (experiments, scans, plates, scRNA datasets, RNA-seq
+    runs) carry page_url, the row's page on Bloom; give it when you mention the row.
+
     Text or JSON values over 2000 characters are cut and end in "…[cut]" (a cut JSON value
     comes back as text); truncated_values says when. Number columns can hold NaN or
     Infinity, which arrive as the text "NaN" or "Infinity".
@@ -127,12 +133,24 @@ def query_table(params: QueryTableParams) -> QueryTableResult:
     chosen = [params.order_by] if params.order_by else []
     check_columns(params.table, chosen, allowed)
     check_filterable(params.table, [f.column for f in params.filters] + chosen)
+    check_sortable(params.table, params.order_by)
+    check_contains(params.table, params.filters)
     filters = to_filters(params.filters)
     order = _order(params.table, params.order_by, params.descending)
 
-    rows = _ports.table_reader().select(
-        params.table, columns, filters, order, params.limit + 1, params.offset
+    linked = params.table in page_links.PAGE_LINKS
+    # Only readable link columns, so a column missing live costs the link, not the read.
+    link_columns = (
+        [c for c in page_links.page_columns(params.table) if c in allowed]
+        if linked
+        else []
     )
+    selected = list(dict.fromkeys([*columns, *link_columns]))
+    rows = _ports.table_reader().select(
+        params.table, selected, filters, order, params.limit + 1, params.offset
+    )
+    if linked:
+        page_links.add_page_urls(params.table, rows, columns)
 
     page = fit_page(rows, params.limit, table_access.redacted_columns(params.table))
     return QueryTableResult(

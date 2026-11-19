@@ -3,8 +3,8 @@
 # ─────────────────────────────────────────────────────────────────────
 #
 # Purpose
-#   This overlay restores `build:` blocks for the three custom services
-#   (bloom-web, langchain-agent, bloommcp) so that PR CI's
+#   This overlay restores `build:` blocks for the two custom services
+#   (bloom-web, bloommcp) so that PR CI's
 #   `compose-health-check` job — which runs BEFORE any image is pushed
 #   to GHCR for the PR's branch — can still bring up the full stack by
 #   building locally. Production compose stays `image:`-only and pulls
@@ -51,11 +51,6 @@ services:
     build:
       context: .
       dockerfile: ./web/Dockerfile.bloom-web.prod
-
-  langchain-agent:
-    build:
-      context: ./langchain
-      dockerfile: Dockerfile
 
   bloommcp:
     build:

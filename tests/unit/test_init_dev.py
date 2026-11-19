@@ -139,7 +139,6 @@ def _mini_template() -> str:
         "MINIO_ROOT_PASSWORD=CHANGEME\n"
         "DASHBOARD_PASSWORD=CHANGEME\n"
         "BLOOMMCP_API_KEY=CHANGEME\n"
-        "LANGCHAIN_POSTGRES_URL=postgresql://supabase_admin:CHANGEME@db-dev:5432/postgres\n"
         "OPENAI_API_KEY=\n"
     )
 

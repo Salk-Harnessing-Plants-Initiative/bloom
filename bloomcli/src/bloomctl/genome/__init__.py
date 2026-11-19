@@ -6,6 +6,7 @@ bucket, and a version's files never change once it is uploaded.
   upload    — store a FASTA and GTF as a genome's next version (a member: a new genome only)
   list      — every genome, its species and its versions, with their status
   download  — a version's FASTA and GTF, checked against Bloom's record
+  index     — build a version's files for the genome browser (needs bloomctl[genome-index])
   annotation upload|download — a version's GO and pathway annotation builds
 """
 
@@ -15,6 +16,7 @@ import click
 
 from .annotation import annotation as annotation_cmd
 from .download import download as download_cmd
+from .index import index as index_cmd
 from .list import list_genomes as list_cmd
 from .upload import upload as upload_cmd
 
@@ -27,4 +29,5 @@ def genome() -> None:
 genome.add_command(upload_cmd)
 genome.add_command(list_cmd)
 genome.add_command(download_cmd)
+genome.add_command(index_cmd)
 genome.add_command(annotation_cmd)

@@ -1,8 +1,8 @@
 """Config-shape test for response compression in `caddy/Caddyfile`.
 
 The type list is explicit because Caddy's default covers every `text/*` type,
-event streams included. The stream route skips `encode` entirely, since it holds
-a response's headers until the first body byte.
+event streams included, and `encode` holds a response's headers until the first
+body byte.
 """
 
 from __future__ import annotations
@@ -20,9 +20,6 @@ from tests.unit._caddyfile_helpers import (
 )
 
 EXPECTED_FORMATS = ["zstd", "gzip"]
-
-ENCODE_MATCHER = "@compress"
-STREAM_ROUTES = {"/langchain/*"}
 
 # JSON, HTML, JavaScript, CSS and plain text.
 EXPECTED_TYPES = {
@@ -97,18 +94,6 @@ def _encode_tokens() -> tuple[str | None, list[str]]:
     return None, tokens
 
 
-def _matcher_definition(name: str) -> list[list[str]]:
-    """Token lists of every site-level definition of the named matcher."""
-    site = _site()
-    masked = mask_quoted(site)
-    found = []
-    for match in re.finditer(rf"^[ \t]*{re.escape(name)}[ \t]+(.+)$", site, re.MULTILINE):
-        depth = masked.count("{", 0, match.start()) - masked.count("}", 0, match.start())
-        if depth == 0:
-            found.append(match.group(1).split())
-    return found
-
-
 def _top_level_lines(block: str) -> list[str]:
     """Non-blank lines at the block's own depth, nested blocks' bodies excluded."""
     masked = mask_quoted(block)
@@ -159,17 +144,9 @@ def test_site_block_compresses_with_zstd_then_gzip():
     assert formats == EXPECTED_FORMATS
 
 
-def test_encode_is_scoped_by_the_compress_matcher():
+def test_encode_applies_to_every_path():
     matcher, _ = _encode_tokens()
-    assert matcher == ENCODE_MATCHER, f"`encode` must be scoped by {ENCODE_MATCHER}, found {matcher}"
-
-
-def test_the_stream_routes_skip_encode():
-    definitions = _matcher_definition(ENCODE_MATCHER)
-    assert len(definitions) == 1, f"expected one site-level {ENCODE_MATCHER}, found {len(definitions)}"
-    tokens = definitions[0]
-    assert tokens[:2] == ["not", "path"], f"{ENCODE_MATCHER} must be `not path ...`, found {tokens}"
-    assert set(tokens[2:]) == STREAM_ROUTES
+    assert matcher is None, f"`encode` must not be scoped by a matcher, found {matcher}"
 
 
 def test_encode_block_holds_only_the_match_block():

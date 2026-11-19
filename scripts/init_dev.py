@@ -52,7 +52,6 @@ GENERATED_KEY_NAMES = (
     "DASHBOARD_PASSWORD",
     "DB_ENC_KEY",
     "JWT_SECRET",
-    "LANGCHAIN_POSTGRES_URL",
     "MINIO_ROOT_PASSWORD",
     "NEXT_PUBLIC_SUPABASE_ANON_KEY",
     "POSTGRES_PASSWORD",
@@ -111,10 +110,6 @@ def generate_secrets(now: int | None = None) -> dict[str, str]:
     }
     for key, role in _JWT_ROLES.items():
         values[key] = _mint_jwt(role, jwt_secret, now)
-    # LANGCHAIN_POSTGRES_URL embeds the generated Postgres password.
-    values["LANGCHAIN_POSTGRES_URL"] = (
-        f"postgresql://supabase_admin:{values['POSTGRES_PASSWORD']}@db-dev:5432/postgres"
-    )
     assert set(values) == set(GENERATED_KEY_NAMES), "generated keys drifted from GENERATED_KEY_NAMES"
     return values
 
@@ -199,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     # Names come from the constant, never from the secret-valued dict.
     print("Generated keys: " + ", ".join(GENERATED_KEY_NAMES))
     print(
-        "Next: set OPENAI_API_KEY / LANGCHAIN_API_KEY if you need those features, "
+        "Next: set OPENAI_API_KEY if you want Studio's AI assistant, "
         "then `make dev-up`."
     )
     return 0

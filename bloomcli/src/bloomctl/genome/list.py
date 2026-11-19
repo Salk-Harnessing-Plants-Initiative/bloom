@@ -11,12 +11,15 @@ from ..credentials import DEFAULT_PROFILE
 from ..scrna import _session
 
 COLUMNS = ["Genome", "Species", "Version", "Status", "Assembly", "Annotation", "FASTA", "GTF",
-           "Ready"]
+           "Ready", "Browser"]
 # Fields for --output json/csv, one record per version; machine output carries exact bytes.
-RECORD_FIELDS = ["genome", "species", "version", "status", "assembly", "annotation",
-                 "fasta_bytes", "gtf_bytes", "ready_at", "withdrawn_reason"]
-VERSION_COLUMNS = ("genome_id, version, status, assembly, annotation, fasta_bytes, gtf_bytes, "
-                   "ready_at, withdrawn_reason")
+VERSION_FIELDS = ["version", "status", "assembly", "annotation", "fasta_bytes", "gtf_bytes",
+                  "ready_at", "withdrawn_reason"]
+RECORD_FIELDS = ["genome", "species", *VERSION_FIELDS, "browser_build", "browser_status"]
+VERSION_COLUMNS = ("id, genome_id, version, status, assembly, annotation, fasta_bytes, "
+                   "gtf_bytes, ready_at, withdrawn_reason")
+# What PostgREST answers for a table it doesn't have: a Bloom from before browser builds.
+NO_SUCH_TABLE = {"PGRST205", "42P01"}
 
 
 @click.command(name="list")
@@ -52,13 +55,41 @@ def _records(client: Any) -> list[dict[str, Any]]:
     versions: dict[int, list[dict[str, Any]]] = {}
     for v in read("genome versions", "genome_reference_versions", VERSION_COLUMNS):
         versions.setdefault(v["genome_id"], []).append(v)
+    newest_build = _newest_builds(client)
     records = []
     for genome in sorted(read("genomes", "genome_references", "id, name, species_id"),
                          key=lambda g: g["name"]):
         base = {"genome": genome["name"], "species": species.get(genome["species_id"])}
         rows = sorted(versions.get(genome["id"], []), key=lambda v: v["version"]) or [{}]
-        records += [{**base, **{k: v.get(k) for k in RECORD_FIELDS[2:]}} for v in rows]
+        for v in rows:
+            build = newest_build.get(v.get("id"), {})
+            records.append({**base, **{k: v.get(k) for k in VERSION_FIELDS},
+                            "browser_build": build.get("build"),
+                            "browser_status": build.get("status")})
     return records
+
+
+def _newest_builds(client: Any) -> dict[int, dict[str, Any]]:
+    """Each version's newest browser build; none when Bloom has no browser builds table yet."""
+    from postgrest import APIError
+
+    from .._postgrest import queried
+
+    def read() -> list[dict[str, Any]]:
+        try:
+            return client.table("genome_browser_builds").select("version_id, build, status") \
+                .execute().data or []
+        except APIError as exc:
+            if getattr(exc, "code", None) in NO_SUCH_TABLE:
+                return []
+            raise
+
+    rows = queried("browser builds", read)
+    newest: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if row["build"] > newest.get(row["version_id"], {}).get("build", 0):
+            newest[row["version_id"]] = row
+    return newest
 
 
 def _mb(size: int | None) -> str:
@@ -71,4 +102,5 @@ def _row(r: dict[str, Any]) -> list[str]:
         status = f"{status}: {r['withdrawn_reason']}"
     return [r["genome"], r["species"] or "", "" if r["version"] is None else f"v{r['version']}",
             status, r["assembly"] or "", r["annotation"] or "", _mb(r["fasta_bytes"]),
-            _mb(r["gtf_bytes"]), (r["ready_at"] or "")[:10]]
+            _mb(r["gtf_bytes"]), (r["ready_at"] or "")[:10],
+            f"b{r['browser_build']} {r['browser_status']}" if r["browser_build"] else ""]

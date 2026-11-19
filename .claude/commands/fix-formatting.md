@@ -13,7 +13,7 @@ Automatically fix formatting and style issues for both TypeScript and Python cod
 
 ```bash
 # Auto-fix all formatting issues (TypeScript + Python)
-npm run format && cd langchain && uv run black . && uv run ruff check --fix . && cd ../bloommcp && uv run black . && uv run ruff check --fix .
+npm run format && cd bloommcp && uv run black . && uv run ruff check --fix .
 ```
 
 Individual fixes:
@@ -21,9 +21,6 @@ Individual fixes:
 ```bash
 # TypeScript only (Prettier + ESLint)
 npm run format
-
-# Python only — LangGraph agent
-cd langchain && uv run black . && uv run ruff check --fix .
 
 # Python only — FastMCP server
 cd bloommcp && uv run black . && uv run ruff check --fix .
@@ -83,9 +80,8 @@ These require manual fixes:
 # Fix TypeScript/JavaScript
 npm run format
 
-# Fix Python — both services
-cd langchain && uv run black . && uv run ruff check --fix .
-cd ../bloommcp && uv run black . && uv run ruff check --fix .
+# Fix Python — bloommcp
+cd bloommcp && uv run black . && uv run ruff check --fix .
 ```
 
 ### Pre-commit Auto-fix
@@ -147,7 +143,6 @@ git diff
 
 # Review by area
 git diff web/
-git diff langchain/
 git diff bloommcp/
 ```
 
@@ -197,7 +192,7 @@ Python formatting uses default configs. Black defaults to line-length 88, Python
 
 **File**: `.pre-commit-config.yaml`
 
-Pre-commit hooks target `^(langchain|bloommcp)/` for Python tools (Black, Ruff, mypy) and `.(js|jsx|ts|tsx|json|md)$` for Prettier.
+Pre-commit hooks target `^(bloommcp|services/workflows|bloomcli|scheduled-jobs)/` for Python tools (Black, Ruff) and `.(js|jsx|ts|tsx|json|md)$` for Prettier.
 
 ```bash
 # Install pre-commit hooks
@@ -219,7 +214,7 @@ npx prettier --version
 ### "Black not found"
 
 ```bash
-cd langchain && uv sync
+cd bloommcp && uv sync
 uv run black --version
 ```
 

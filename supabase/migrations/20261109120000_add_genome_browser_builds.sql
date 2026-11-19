@@ -3,14 +3,15 @@
 -- The browser-ready copies of a genome version. A genome version is uploaded as a plain-gzip
 -- FASTA and GTF, which no genome browser can read: it needs a bgzip-compressed FASTA with its
 -- .fai and .gzi, and the genes as a position-sorted bgzip GFF3 with its .tbi (made from the
--- GTF), all read by HTTP range request. A browser build is one set of those five files for
--- one ready version, stored at <genome>/v<N>/browser/b<B>/. This row records the folder, the five files' checksums and
--- sizes and the tools used. Each build also records
--- where every gene of the GTF sits (genome_browser_genes), readable once the build is ready, for gene
--- search and for links from single-cell genes to the genome. A build is uploading, then ready
--- or abandoned; an admin can withdraw a ready one, with a reason, and a new build of the same
--- version can then be made. A ready build, its files and its genes never change. The build
--- functions and storage rules are added by 20261109120100.
+-- GTF), all read by HTTP range request. A browser build is one set of those five files for one
+-- ready version, stored at <genome>/v<N>/browser/b<B>/. Its row records the folder, the five
+-- files' checksums and sizes, and the tools used. Each build also records where every gene of
+-- the GTF sits (genome_browser_genes), readable while the build and its version are ready, for
+-- gene search and for links from single-cell genes to the genome. A build is uploading, then
+-- ready or abandoned; an admin can withdraw a ready one, with a reason, and a new build of the
+-- same version can then be made. A ready build, its files and its genes never change, and no
+-- build row is deleted, so a number and its folder are never used twice. The build functions
+-- and storage rules are added by 20261109120100.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -20,7 +21,8 @@ SET LOCAL lock_timeout = '5s';
 -- 1. The five files ------------------------------------------------------------------------
 
 -- Every build holds exactly these five files, under the build's folder. One definition, used
--- by the file record's check, the storage rules and whoever reads a build.
+-- by the file record's check, the storage rules and whoever reads a build. Never change it:
+-- every finished build's record and file protection is checked against it.
 CREATE OR REPLACE FUNCTION public.genome_browser_build_roles()
 RETURNS TABLE(role TEXT, basename TEXT)
 LANGUAGE sql
@@ -34,8 +36,8 @@ AS $$
            ('gff3_tbi', 'genes.gff3.gz.tbi');
 $$;
 
--- True when `files` holds exactly the five roles, each with a 64-hex SHA-256 and a positive
--- byte count, e.g. {"fasta": {"sha256": "ab..", "bytes": 1234}, ...}.
+-- True when `files` holds exactly the five roles, each exactly {"sha256": <64 lowercase hex>,
+-- "bytes": <positive whole number>}, e.g. {"fasta": {"sha256": "ab..", "bytes": 1234}, ...}.
 CREATE OR REPLACE FUNCTION public.genome_browser_files_ok(p_files JSONB)
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -49,8 +51,13 @@ AS $$
            = (SELECT count(*) FROM public.genome_browser_build_roles())
        AND NOT EXISTS (
              SELECT 1 FROM public.genome_browser_build_roles() r
-              WHERE coalesce(p_files -> r.role ->> 'sha256', '') !~ '^[0-9a-f]{64}$'
-                 OR coalesce(p_files -> r.role ->> 'bytes', '') !~ '^[1-9][0-9]*$'
+              WHERE CASE WHEN jsonb_typeof(p_files -> r.role) = 'object' THEN
+                      (SELECT count(*) FROM jsonb_object_keys(p_files -> r.role)) <> 2
+                      OR jsonb_typeof(p_files -> r.role -> 'sha256') IS DISTINCT FROM 'string'
+                      OR (p_files -> r.role ->> 'sha256') !~ '^[0-9a-f]{64}$'
+                      OR jsonb_typeof(p_files -> r.role -> 'bytes') IS DISTINCT FROM 'number'
+                      OR (p_files -> r.role ->> 'bytes') !~ '^[1-9][0-9]{0,17}$'
+                    ELSE true END
            );
 $$;
 
@@ -62,7 +69,7 @@ CREATE TABLE IF NOT EXISTS public.genome_browser_builds (
     -- Numbered per version, from 1.
     build INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'uploading',
-    -- The tools used, e.g. {"htslib": "1.21", "pysam": "0.23.0"}.
+    -- The tools used, e.g. {"bloomctl": "0.1.0a20", "htslib": "1.21", "pysam": "0.23.0"}.
     tool_versions JSONB NOT NULL DEFAULT '{}'::jsonb,
     -- Where the five objects live in the genome-references bucket, set from the genome, version
     -- and build; each object is this folder and the role's basename.
@@ -78,8 +85,8 @@ CREATE TABLE IF NOT EXISTS public.genome_browser_builds (
     withdrawn_at TIMESTAMPTZ
 );
 
--- Each gene of a build, where the GTF places it (1-based, both ends included). A gene's span is
--- its `gene` line, or its exons' span when the GTF has none.
+-- Each gene of a build (1-based, both ends included): the span of all its GTF lines, which is its
+-- `gene` line unless a trans-spliced gene's parts lie outside it; strand `.` when they disagree.
 CREATE TABLE IF NOT EXISTS public.genome_browser_genes (
     browser_build_id BIGINT NOT NULL,
     gene_id TEXT NOT NULL,
@@ -103,9 +110,8 @@ BEGIN
       ('genome_browser_builds', 'genome_browser_builds_version_build_key',
        'UNIQUE (version_id, build)'),
       ('genome_browser_builds', 'genome_browser_builds_folder_key', 'UNIQUE (folder)'),
-      ('genome_browser_genes', 'genome_browser_genes_pkey', 'PRIMARY KEY (browser_build_id, gene_id)'),
-      ('genome_browser_genes', 'genome_browser_genes_browser_build_id_fkey',
-       'FOREIGN KEY (browser_build_id) REFERENCES genome_browser_builds(id)')
+      ('genome_browser_genes', 'genome_browser_genes_pkey',
+       'PRIMARY KEY (browser_build_id, gene_id)')
     ) AS k(tbl, name, def)
   LOOP
     SELECT pg_get_constraintdef(c.oid) INTO existing
@@ -130,6 +136,15 @@ BEGIN
     ALTER TABLE public.genome_browser_builds ADD CONSTRAINT genome_browser_builds_version_id_fkey
       FOREIGN KEY (version_id) REFERENCES public.genome_reference_versions(id);
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'genome_browser_genes_browser_build_id_fkey'
+       AND conrelid = 'public.genome_browser_genes'::regclass
+  ) THEN
+    ALTER TABLE public.genome_browser_genes
+      ADD CONSTRAINT genome_browser_genes_browser_build_id_fkey
+      FOREIGN KEY (browser_build_id) REFERENCES public.genome_browser_builds(id);
+  END IF;
 END $$;
 
 -- At most one build of a version is being made or in use.
@@ -137,7 +152,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS genome_browser_builds_one_live
     ON public.genome_browser_builds (version_id) WHERE status IN ('uploading', 'ready');
 
 -- Single-cell genes are looked up by id; the browser and expression tracks read a region.
-CREATE INDEX IF NOT EXISTS genome_browser_genes_gene_id_idx ON public.genome_browser_genes (gene_id);
+CREATE INDEX IF NOT EXISTS genome_browser_genes_gene_id_idx
+    ON public.genome_browser_genes (gene_id);
 CREATE INDEX IF NOT EXISTS genome_browser_genes_region_idx
     ON public.genome_browser_genes (browser_build_id, contig, gene_start);
 -- Gene search by part of an id or name.
@@ -184,11 +200,15 @@ ALTER TABLE public.genome_browser_genes
   ADD CONSTRAINT genome_browser_genes_gene_id_check
     CHECK (btrim(gene_id) <> '' AND length(gene_id) <= 200),
   DROP CONSTRAINT IF EXISTS genome_browser_genes_gene_name_check,
-  ADD CONSTRAINT genome_browser_genes_gene_name_check CHECK (length(gene_name) <= 200),
+  ADD CONSTRAINT genome_browser_genes_gene_name_check
+    CHECK (btrim(gene_name) <> '' AND length(gene_name) <= 200),
+  -- A contig is a FASTA sequence name, which holds no spaces.
   DROP CONSTRAINT IF EXISTS genome_browser_genes_contig_check,
-  ADD CONSTRAINT genome_browser_genes_contig_check CHECK (btrim(contig) <> '' AND length(contig) <= 200),
+  ADD CONSTRAINT genome_browser_genes_contig_check
+    CHECK (contig ~ '^\S+$' AND length(contig) <= 200),
   DROP CONSTRAINT IF EXISTS genome_browser_genes_span_check,
-  ADD CONSTRAINT genome_browser_genes_span_check CHECK (gene_start >= 1 AND gene_end >= gene_start),
+  ADD CONSTRAINT genome_browser_genes_span_check
+    CHECK (gene_start >= 1 AND gene_end >= gene_start),
   DROP CONSTRAINT IF EXISTS genome_browser_genes_strand_check,
   ADD CONSTRAINT genome_browser_genes_strand_check CHECK (strand IN ('+', '-', '.'));
 
@@ -214,7 +234,7 @@ BEGIN
       FROM public.genome_reference_versions v
       JOIN public.genome_references g ON g.id = v.genome_id
      WHERE v.id = NEW.version_id
-       FOR UPDATE OF v;
+       FOR NO KEY UPDATE OF v;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'no genome version %', NEW.version_id USING ERRCODE = '23503';
     END IF;
@@ -236,20 +256,21 @@ CREATE TRIGGER genome_browser_builds_number
     FOR EACH ROW EXECUTE FUNCTION public.genome_browser_builds_number();
 
 -- A build's identity and folder never change. Its file record, gene count and ready_at are set
--- once, when it is finished. Status moves only uploading -> ready | abandoned and
--- ready -> withdrawn. A ready or withdrawn build cannot be deleted.
+-- once, when it is finished, and only while its version is ready and the count matches its
+-- genes. Status moves only uploading -> ready | abandoned (with its genes removed) and
+-- ready -> withdrawn. No build is deleted, so its number and folder are never reused.
 CREATE OR REPLACE FUNCTION public.genome_browser_builds_guard()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SET search_path = pg_catalog, public
 AS $$
+DECLARE
+    v_version_status TEXT;
+    v_genes BIGINT;
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        IF OLD.status IN ('ready', 'withdrawn') THEN
-            RAISE EXCEPTION 'browser build % is %; withdraw it instead of deleting it',
-                OLD.id, OLD.status USING ERRCODE = '55000';
-        END IF;
-        RETURN OLD;
+        RAISE EXCEPTION 'browser build % is %; abandon or withdraw it instead of deleting it',
+            OLD.id, OLD.status USING ERRCODE = '55000';
     END IF;
 
     IF NEW.id IS DISTINCT FROM OLD.id
@@ -278,6 +299,26 @@ BEGIN
             USING ERRCODE = '55000';
     END IF;
 
+    IF OLD.status = 'uploading' AND NEW.status = 'ready' THEN
+        SELECT v.status INTO v_version_status FROM public.genome_reference_versions v
+         WHERE v.id = NEW.version_id FOR KEY SHARE;
+        IF v_version_status IS DISTINCT FROM 'ready' THEN
+            RAISE EXCEPTION 'genome version % is %, so browser build % cannot be made ready',
+                NEW.version_id, v_version_status, OLD.id USING ERRCODE = '55000';
+        END IF;
+        SELECT count(*) INTO v_genes FROM public.genome_browser_genes g
+         WHERE g.browser_build_id = OLD.id;
+        IF NEW.gene_count IS DISTINCT FROM v_genes THEN
+            RAISE EXCEPTION 'browser build % holds % genes, not %', OLD.id, v_genes,
+                NEW.gene_count USING ERRCODE = '22023';
+        END IF;
+    ELSIF OLD.status = 'uploading' AND NEW.status = 'abandoned'
+          AND EXISTS (SELECT 1 FROM public.genome_browser_genes g
+                       WHERE g.browser_build_id = OLD.id) THEN
+        RAISE EXCEPTION 'browser build % still holds genes; abandon it with '
+                        'abandon_genome_browser_build', OLD.id USING ERRCODE = '55000';
+    END IF;
+
     IF NEW.status = 'withdrawn' AND OLD.status = 'ready' THEN
         NEW.withdrawn_at := now();
     ELSIF NEW.withdrawn_reason IS DISTINCT FROM OLD.withdrawn_reason
@@ -303,10 +344,13 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-    v_build_id BIGINT := CASE WHEN TG_OP = 'INSERT' THEN NEW.browser_build_id ELSE OLD.browser_build_id END;
+    v_build_id BIGINT := CASE WHEN TG_OP = 'INSERT' THEN NEW.browser_build_id
+                              ELSE OLD.browser_build_id END;
     v_status TEXT;
 BEGIN
-    SELECT b.status INTO v_status FROM public.genome_browser_builds b WHERE b.id = v_build_id;
+    -- The share lock waits for a finish in progress, so no gene lands in a build just made ready.
+    SELECT b.status INTO v_status FROM public.genome_browser_builds b
+     WHERE b.id = v_build_id FOR SHARE;
     IF TG_OP = 'UPDATE' OR v_status IS DISTINCT FROM 'uploading' THEN
         RAISE EXCEPTION 'browser build % is %; its genes cannot change', v_build_id,
             coalesce(v_status, 'missing') USING ERRCODE = '55000';
@@ -347,35 +391,48 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.genome_browser_builds TO bloom_ad
 
 ALTER TABLE public.genome_browser_genes ENABLE ROW LEVEL SECURITY;
 
--- Readers see a build's genes only once it is ready: never half-loaded or withdrawn ones.
+-- Readers see a build's genes only while the build and its version are ready: never
+-- half-loaded ones, nor those of a withdrawn build or version.
 DROP POLICY IF EXISTS admin_all_genome_browser_genes ON public.genome_browser_genes;
 CREATE POLICY admin_all_genome_browser_genes ON public.genome_browser_genes
     FOR ALL TO bloom_admin USING (true) WITH CHECK (true);
 DROP POLICY IF EXISTS user_read_genome_browser_genes ON public.genome_browser_genes;
 CREATE POLICY user_read_genome_browser_genes ON public.genome_browser_genes
     FOR SELECT TO bloom_user USING (EXISTS (
-        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = browser_build_id AND b.status = 'ready'));
+        SELECT 1 FROM public.genome_browser_builds b
+          JOIN public.genome_reference_versions v ON v.id = b.version_id
+         WHERE b.id = browser_build_id AND b.status = 'ready' AND v.status = 'ready'));
 DROP POLICY IF EXISTS agent_read_genome_browser_genes ON public.genome_browser_genes;
 CREATE POLICY agent_read_genome_browser_genes ON public.genome_browser_genes
     FOR SELECT TO bloom_agent USING (EXISTS (
-        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = browser_build_id AND b.status = 'ready'));
+        SELECT 1 FROM public.genome_browser_builds b
+          JOIN public.genome_reference_versions v ON v.id = b.version_id
+         WHERE b.id = browser_build_id AND b.status = 'ready' AND v.status = 'ready'));
 DROP POLICY IF EXISTS workflows_read_genome_browser_genes ON public.genome_browser_genes;
 CREATE POLICY workflows_read_genome_browser_genes ON public.genome_browser_genes
     FOR SELECT TO bloom_workflows USING (EXISTS (
-        SELECT 1 FROM public.genome_browser_builds b WHERE b.id = browser_build_id AND b.status = 'ready'));
+        SELECT 1 FROM public.genome_browser_builds b
+          JOIN public.genome_reference_versions v ON v.id = b.version_id
+         WHERE b.id = browser_build_id AND b.status = 'ready' AND v.status = 'ready'));
 
--- Read for the three roles (ready builds only), rows added only through add_genome_browser_genes.
+-- Read for the three roles (ready builds of ready versions only); rows are added only through
+-- add_genome_browser_genes.
 REVOKE ALL ON public.genome_browser_genes
     FROM anon, authenticated, bloom_user, bloom_agent, bloom_writer, bloom_workflows;
 REVOKE UPDATE, DELETE, TRUNCATE ON public.genome_browser_genes FROM service_role;
 GRANT SELECT ON public.genome_browser_genes TO bloom_user, bloom_agent, bloom_workflows;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.genome_browser_genes TO bloom_admin;
 
-REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_number() FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_guard() FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.genome_browser_genes_guard() FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.genome_browser_build_roles() FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.genome_browser_files_ok(JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_number()
+    FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.genome_browser_builds_guard()
+    FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.genome_browser_genes_guard()
+    FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.genome_browser_build_roles()
+    FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.genome_browser_files_ok(JSONB)
+    FROM PUBLIC, anon, authenticated;
 -- The file roles are readable by the website and the pipeline; the file check only by admin,
 -- whose direct writes run the table's own check.
 GRANT EXECUTE ON FUNCTION public.genome_browser_build_roles()

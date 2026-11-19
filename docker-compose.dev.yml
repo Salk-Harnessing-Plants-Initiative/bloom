@@ -38,51 +38,6 @@ services:
       - supanet
     command: sh -c "apt-get update >/dev/null && apt-get install -y --no-install-recommends socat >/dev/null && socat TCP-LISTEN:8000,fork,reuseaddr TCP:kong:8000 &npm run dev"
 
-  langchain-agent:
-    build:
-      context: ./langchain
-      dockerfile: Dockerfile
-    ports:
-      - "${LANGCHAIN_PORT}:5002"
-    environment:
-      SUPABASE_URL: http://kong:8000
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL: gpt-4o-mini
-      BLOOM_MCP_URL: http://bloommcp:8811/mcp
-      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
-      BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
-      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
-      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
-      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
-      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
-      JWT_SECRET: ${JWT_SECRET}
-      BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_PORT: ${POSTGRES_PORT}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      LOCAL_LLM_URL: ${LOCAL_LLM_URL}
-      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL}
-      CORS_ORIGINS: "http://localhost:3000"
-    volumes:
-      - ./langchain:/app
-      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
-    networks:
-      - supanet
-    healthcheck:
-      # Probe with python, not curl — curl is not installed in this image.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5002/health')"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    depends_on:
-      - kong
-      - bloommcp
-      - db-dev
-    restart: unless-stopped
-
   workflows:
     build:
       context: ./services/workflows
@@ -474,19 +429,18 @@ services:
       # the internal kong host so they're usable by outside callers — mirrors
       # the workflows service's identical WORKFLOWS_PUBLIC_SUPABASE_URL above.
       BLOOM_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      # bloommcp authenticates to PostgREST + Storage as bloom_agent — same
-      # JWT langchain-agent uses. SERVICE_ROLE_KEY is deliberately NOT passed
+      # bloommcp authenticates to PostgREST + Storage as bloom_agent.
+      # SERVICE_ROLE_KEY is deliberately NOT passed
       # in so a future code path can't silently bypass the
       # agent_insert_bloommcp_data / agent_update_bloommcp_data policies.
       BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
       BLOOM_TRAITS_DIR: /app/data/TRAITS_DIR
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
-      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
       # Verifies an optional X-Bloom-Identity header for usage tracking (#406)
-      # — never used as DB/Storage authority. Same secret GoTrue/PostgREST/
-      # langchain-agent already use; validated lazily (only if/when a request
+      # — never used as DB/Storage authority. Same secret GoTrue/PostgREST
+      # already use; validated lazily (only if/when a request
       # actually carries the header), so leaving it set here has no effect
       # until a client sends that header.
       JWT_SECRET: ${JWT_SECRET}

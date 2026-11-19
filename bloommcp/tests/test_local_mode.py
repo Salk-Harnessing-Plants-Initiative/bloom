@@ -40,7 +40,6 @@ def _local_dirs(monkeypatch, tmp_path):
     """Point every required dir at existing temp dirs; select the local backend."""
     for var in ("BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"):
         monkeypatch.setenv(var, str(tmp_path))
-    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://localhost/plots")
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
     monkeypatch.setenv("BLOOM_STORAGE_LOCAL_ROOT", str(tmp_path))
     monkeypatch.setattr(eu, "TRAITS_DIR", tmp_path)
@@ -72,7 +71,6 @@ def test_default_backend_wires_supabase_reader(spy_run, monkeypatch, tmp_path):
 
     for var in ("BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"):
         monkeypatch.setenv(var, str(tmp_path))
-    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://localhost/plots")
     monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
     monkeypatch.setenv("SUPABASE_URL", "http://kong:8000")
     monkeypatch.setenv("BLOOM_AGENT_KEY", "fake-jwt")
@@ -108,19 +106,9 @@ def test_fully_local_boot_validates_local_input_root(spy_run, monkeypatch, tmp_p
         spy_run.main()
 
 
-def test_fully_local_still_fails_fast_on_missing_data_dir(
-    spy_run, monkeypatch, tmp_path
-):
-    _local_dirs(monkeypatch, tmp_path)
-    monkeypatch.delenv("BLOOM_PLOTS_URL", raising=False)
-    with pytest.raises(RuntimeError, match="BLOOM_PLOTS_URL"):
-        spy_run.main()
-
-
 def test_invalid_backend_value_fails_fast(spy_run, monkeypatch, tmp_path):
     for var in ("BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"):
         monkeypatch.setenv(var, str(tmp_path))
-    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://localhost/plots")
     monkeypatch.setattr(eu, "TRAITS_DIR", tmp_path)
     monkeypatch.setattr(eu, "OUTPUT_DIR", tmp_path)
     monkeypatch.setattr(eu, "PLOTS_DIR", tmp_path)
@@ -132,10 +120,22 @@ def test_invalid_backend_value_fails_fast(spy_run, monkeypatch, tmp_path):
         spy_run.main()
 
 
+def test_validate_env_needs_no_plots_url(monkeypatch, tmp_path):
+    """Nothing reads a plots URL, so the default tier boots without one."""
+    for var in ("BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"):
+        monkeypatch.setenv(var, str(tmp_path))
+    monkeypatch.delenv("BLOOM_PLOTS_URL", raising=False)
+    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
+    monkeypatch.setattr(eu, "TRAITS_DIR", tmp_path)
+    monkeypatch.setattr(eu, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(eu, "PLOTS_DIR", tmp_path)
+    eu.validate_env()  # must not raise
+    assert not hasattr(eu, "PLOTS_URL")
+
+
 def test_default_backend_still_requires_supabase(spy_run, monkeypatch, tmp_path):
     for var in ("BLOOM_TRAITS_DIR", "BLOOM_OUTPUT_DIR", "BLOOM_PLOTS_DIR"):
         monkeypatch.setenv(var, str(tmp_path))
-    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://localhost/plots")
     monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("BLOOM_AGENT_KEY", raising=False)
@@ -158,7 +158,6 @@ def test_ports_import_is_pure_without_supabase_env():
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
         "BLOOM_STORAGE_BACKEND",
         "BLOOM_STORAGE_LOCAL_ROOT",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
@@ -181,7 +180,6 @@ def test_server_import_is_pure_including_experiment_local_root():
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
         "BLOOM_STORAGE_BACKEND",
         "BLOOM_STORAGE_LOCAL_ROOT",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
@@ -297,7 +295,6 @@ def _local_root_env(monkeypatch, tmp_path, **overrides):
         "BLOOM_PLOTS_DIR",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
         "BLOOM_STORAGE_LOCAL_ROOT",
-        "BLOOM_PLOTS_URL",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
@@ -307,12 +304,11 @@ def _local_root_env(monkeypatch, tmp_path, **overrides):
     for k, v in overrides.items():
         monkeypatch.setenv(k, str(v))
     sb.reset_backend_for_tests()
-    # PLOTS_DIR/PLOTS_URL are frozen module constants (resolved once at
-    # import); simulate what they resolve to given this env, matching this
+    # PLOTS_DIR is a frozen module constant (resolved once at
+    # import); simulate what it resolves to given this env, matching this
     # file's existing convention of monkeypatching the constant directly (see
     # _local_dirs above).
     monkeypatch.setattr(eu, "PLOTS_DIR", Path(eu._resolve_plots_dir()))
-    monkeypatch.setattr(eu, "PLOTS_URL", eu._resolve_plots_url())
     return root
 
 
@@ -371,51 +367,6 @@ def test_plots_dir_ignores_local_root_on_default_backend(monkeypatch, tmp_path):
     assert eu._resolve_plots_dir() == ""
 
 
-# ── BLOOM_PLOTS_URL self-serve default under BLOOM_LOCAL_ROOT (#642) ────────
-
-
-def test_plots_url_resolves_under_local_root(monkeypatch, tmp_path):
-    root = tmp_path / "local_root"
-    root.mkdir()
-    monkeypatch.delenv("BLOOM_PLOTS_URL", raising=False)
-    monkeypatch.delenv("BLOOMMCP_PUBLIC_URL", raising=False)
-    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(root))
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    sb.reset_backend_for_tests()
-    assert eu._resolve_plots_url() == "http://localhost:8811/plots"
-
-
-def test_plots_url_explicit_override_wins_over_local_root(monkeypatch, tmp_path):
-    root = tmp_path / "local_root"
-    root.mkdir()
-    monkeypatch.setenv("BLOOM_PLOTS_URL", "http://elsewhere:9000/plots")
-    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(root))
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    sb.reset_backend_for_tests()
-    assert eu._resolve_plots_url() == "http://elsewhere:9000/plots"
-
-
-def test_plots_url_ignores_local_root_on_default_backend(monkeypatch, tmp_path):
-    root = tmp_path / "local_root"
-    root.mkdir()
-    monkeypatch.delenv("BLOOM_PLOTS_URL", raising=False)
-    monkeypatch.setenv("BLOOM_LOCAL_ROOT", str(root))
-    monkeypatch.delenv("BLOOM_STORAGE_BACKEND", raising=False)  # default: supabase
-    sb.reset_backend_for_tests()
-    assert eu._resolve_plots_url() == ""
-
-
-def test_plots_url_ignores_explicit_plots_dir_without_local_root(monkeypatch, tmp_path):
-    """Granular explicit-override tier (no BLOOM_LOCAL_ROOT): BLOOM_PLOTS_URL
-    stays unconditionally required/unaffected, even with backend=local."""
-    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
-    monkeypatch.setenv("BLOOM_STORAGE_BACKEND", "local")
-    monkeypatch.setenv("BLOOM_PLOTS_DIR", str(tmp_path))
-    monkeypatch.delenv("BLOOM_PLOTS_URL", raising=False)
-    sb.reset_backend_for_tests()
-    assert eu._resolve_plots_url() == ""
-
-
 # ── BLOOM_LOCAL_ROOT top-level validation ───────────────────────────────────
 
 
@@ -452,12 +403,11 @@ def test_validate_env_fails_when_local_root_not_writable(monkeypatch, tmp_path):
 
 
 def test_validate_env_succeeds_with_only_local_root_set(monkeypatch, tmp_path):
-    """The four legacy dir/URL vars are unset entirely (not merely pointed at a
+    """The three legacy dir vars are unset entirely (not merely pointed at a
     bad path) — validate_env() must not raise "Missing required environment
     variables"."""
     _local_root_env(monkeypatch, tmp_path)
     eu.validate_env()  # must not raise
-    assert eu.PLOTS_URL == "http://localhost:8811/plots"
 
 
 def test_fully_local_boot_succeeds_with_only_backend_and_local_root_set(
@@ -591,7 +541,6 @@ def test_default_backend_ignores_local_root_entirely(monkeypatch, tmp_path):
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
     ):
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(RuntimeError, match="BLOOM_TRAITS_DIR"):
@@ -611,7 +560,6 @@ def test_import_succeeds_with_local_root_set_and_invalid_backend():
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
         "BLOOM_STORAGE_BACKEND",
         "BLOOM_STORAGE_LOCAL_ROOT",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
@@ -648,22 +596,6 @@ def test_is_local_backend_not_consulted_when_local_root_unset(monkeypatch):
     assert eu._fully_local_root() is None
 
 
-def test_is_local_backend_not_consulted_when_local_root_unset_for_plots_url(
-    monkeypatch,
-):
-    """Same pin as test_is_local_backend_not_consulted_when_local_root_unset,
-    for _resolve_plots_url()'s reuse of the same _fully_local_root() gate."""
-    monkeypatch.delenv("BLOOM_LOCAL_ROOT", raising=False)
-
-    def _boom():
-        raise AssertionError(
-            "is_local_backend() was called despite BLOOM_LOCAL_ROOT being unset"
-        )
-
-    monkeypatch.setattr(sb, "is_local_backend", _boom)
-    assert eu._resolve_plots_url() == os.getenv("BLOOM_PLOTS_URL", "")
-
-
 def test_plots_dir_module_constant_reflects_local_root_at_real_import(tmp_path):
     """Exercises the REAL import-time wiring of PLOTS_DIR in a fresh interpreter
     — every other test either calls _resolve_plots_dir() directly or manually
@@ -678,7 +610,6 @@ def test_plots_dir_module_constant_reflects_local_root_at_real_import(tmp_path):
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
         "BLOOM_STORAGE_LOCAL_ROOT",
         "BLOOM_EXPERIMENT_LOCAL_ROOT",
         "SUPABASE_URL",
