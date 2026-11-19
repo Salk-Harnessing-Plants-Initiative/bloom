@@ -48,7 +48,7 @@ def test_newer_run_replaces_only_the_cell_types_it_reran():
         _comparison(2, 1, "c7"),
         _comparison(3, 2, "c4"),
     ]
-    kept = de_choice.genotype(comparisons, [2, 1])
+    kept = de_choice.pick_genotype(comparisons, [2, 1])
     assert {c["cluster_id"]: c["id"] for c in kept} == {"c4": 3, "c7": 2}
 
 
@@ -57,13 +57,13 @@ def test_each_contrast_is_chosen_on_its_own():
         _comparison(1, 1, "c4", contrast="a"),
         _comparison(2, 2, "c4", contrast="b"),
     ]
-    kept = de_choice.genotype(comparisons, [2, 1])
+    kept = de_choice.pick_genotype(comparisons, [2, 1])
     assert sorted(c["id"] for c in kept) == [1, 2]
 
 
 def test_one_vs_rest_comes_from_the_newest_run_that_has_one():
     comparisons = [_comparison(1, 1, "c3"), _comparison(2, 2, "c4")]
-    chosen = de_choice.one_vs_rest(comparisons, [2, 1])
+    chosen = de_choice.pick_one_vs_rest(comparisons, [2, 1])
     assert {k: v["id"] for k, v in chosen.items()} == {"c3": 1, "c4": 2}
 
 
@@ -74,7 +74,7 @@ def test_one_vs_rest_over_the_most_cells_then_lowest_id():
         _comparison(3, 2, "c4", n1=60, n2=490),
         _comparison(4, 1, "c4", n1=99, n2=999),
     ]
-    assert de_choice.one_vs_rest(comparisons, [2, 1])["c4"]["id"] == 2
+    assert de_choice.pick_one_vs_rest(comparisons, [2, 1])["c4"]["id"] == 2
 
 
 def _rows(n_runs):
@@ -95,6 +95,19 @@ def test_comparisons_read_at_most_in_chunk_runs(monkeypatch):
     r = Reads(FakeTableReader({"scrna_de": _rows(3)}))
     found = de_choice.comparisons(r, [3, 2, 1], [])
     assert [c["run_id"] for c in found] == [3, 2]
+
+
+def test_runs_past_in_chunk_mark_the_answer_incomplete(monkeypatch):
+    monkeypatch.setattr(gene_reads, "IN_CHUNK", 2)
+    r = Reads(FakeTableReader({"scrna_de": _rows(3)}))
+    de_choice.comparisons(r, [3, 2, 1], [])
+    assert "scrna_de_runs" in r.incomplete
+
+
+def test_runs_within_in_chunk_are_complete():
+    r = Reads(FakeTableReader({"scrna_de": _rows(2)}))
+    de_choice.comparisons(r, [2, 1], [])
+    assert r.incomplete == set()
 
 
 def test_a_cut_comparison_read_is_marked_incomplete(monkeypatch):

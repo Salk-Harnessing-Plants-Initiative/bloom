@@ -1,4 +1,5 @@
-"""The gene lookup's reads: the gene, its HPI notes, orthologs and translation work.
+"""The gene lookup's reads: the gene, its HPI notes, orthologs and translation work; and
+the Reads helper, row limits and website cuts the scRNA reads share.
 
 Each read goes through the table reader as bloom_agent, with only the columns in COLUMNS,
 so the allow-list, hidden columns and deleted-row rules hold as for query_table. The
@@ -96,7 +97,7 @@ COLUMNS: dict[str, tuple[str, ...]] = {
 
 @dataclass
 class Reads:
-    """One lookup's reads, and whether any came back cut at MAX_ROWS."""
+    """One tool call's reads, and whether any came back cut at MAX_ROWS."""
 
     reader: BloomDataReader
     incomplete: set[str] = field(default_factory=set)

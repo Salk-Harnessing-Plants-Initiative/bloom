@@ -35,7 +35,7 @@ CLUSTERS = [_cluster(n, NAMES[n - 1]) for n in range(1, 13)]
 # Gene names chosen so name order differs from id order: id 1 is ZETA.
 GENE_NAMES = {1: "ZETA", 2: "ALPHA", 3: "MID", 4: "BETA", 5: "NANGENE", 6: "INFGENE",
               7: "BIGGENE", 8: "EDGE", 9: "DOWN1", 10: "DOWN2", 11: "WEAK",
-              12: "LATE", 13: "atMYB41", 14: "ATZ1"}  # fmt: skip
+              12: "LATE", 13: "atMYB41", 14: "ATZ1", 15: "ATMYB41"}  # fmt: skip
 
 TABLES = {
     "scrna_datasets": [
@@ -170,14 +170,20 @@ TABLES = {
         # The whole-dataset comparison (204): mixed-case names tied at 0.001.
         _gene(40, 204, 14, 1.0, 0.001),
         _gene(41, 204, 13, 1.0, 0.001),
+        _gene(42, 204, 15, 1.0, 0.001),
         _gene(24, 202, 4, 0.5, 0.001),
         _gene(25, 202, 12, 3.0, 0.05),
-        # c1's one-vs-rest (103), for the panel's fallback: ZETA and MID are markers
-        # (log2FC > 0), MID only by the marker rule; ALPHA is down, BETA misses the FDR cut.
+        _gene(26, 202, 10, -0.5, 0.001),  # DOWN2 on the down cut
+        # c1's one-vs-rest (103), for the panel's fallback: atMYB41, ZETA and MID are
+        # markers, atMYB41 first by FDR despite its small log2FC; ALPHA is down, WEAK at
+        # log2FC 0, LATE on the FDR cut and BETA past it.
         _gene(30, 103, 3, 0.3, 0.01),
         _gene(31, 103, 1, 2.0, 0.01),
         _gene(32, 103, 2, -1.0, 0.001),
         _gene(33, 103, 4, 1.0, 0.06),
+        _gene(34, 103, 13, 0.2, 0.001),
+        _gene(35, 103, 11, 0.0, 0.0001),
+        _gene(36, 103, 12, 1.0, 0.05),
     ],
     "scrna_cluster_stats": [
         {
@@ -185,10 +191,27 @@ TABLES = {
             "cluster_id": "c4",
             "markers": {
                 "top": [
-                    {"gene": "BETA", "log2fc": 1.5, "q": 0.0001, "pct_1": 0.8},
+                    {
+                        "gene": "BETA",
+                        "log2fc": 1.5,
+                        "q": 0.0001,
+                        "pct_1": 0.8,
+                        "pct_2": 0.1,
+                        "symbol": "B1",
+                        "source": "wilcoxon",
+                    },
                     {"log2fc": 9.0, "q": 0.0},
+                    {"gene": "BARE"},
+                    {
+                        "gene": "HUGE",
+                        "log2fc": 27.0,
+                        "q": 0.001,
+                        "pct_1": True,
+                        "symbol": 5,
+                        "source": ["x"],
+                    },
                 ],
-                "n_significant": 7,
+                "n_significant": 7.0,
             },
         },
         {"dataset_id": 14, "cluster_id": "c7", "markers": None},
@@ -204,3 +227,8 @@ TABLES = {
 def reads() -> Reads:
     """Reads over a fresh copy of TABLES."""
     return Reads(FakeTableReader(copy.deepcopy(TABLES)))
+
+
+def comparison(de_id: int) -> dict:
+    """The comparison row `de_id`."""
+    return next(c for c in TABLES["scrna_de"] if c["id"] == de_id)

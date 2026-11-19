@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from . import de_choice
+from . import cluster_panel, de_choice
 from .gene_reads import (
     DE_FDR_CUT,
     DE_LOG2FC_CUT,
@@ -15,7 +15,7 @@ from .gene_reads import (
     OFF_SCALE_LOG2FC,
     Reads,
 )
-from .table_ports import Filter, Sort
+from .table_ports import Filter
 
 # Result columns PostgREST may send as text: Postgres's NaN and Infinity arrive as strings.
 _NUMBERS = ("log2fc", "fdr", "pct_1", "pct_2")
@@ -88,18 +88,8 @@ def _de_rows(
     return {r["de_id"]: {**r, **{k: _number(r.get(k)) for k in _NUMBERS}} for r in rows}
 
 
-def _comparisons(
-    reads: Reads, run_ids: list[int], kind: tuple[Filter, ...]
-) -> list[dict[str, Any]]:
-    """One dataset's tested comparisons of one kind."""
-    return de_choice.comparisons(reads, run_ids, [Filter("tested", "eq", True), *kind])
-
-
-_ONE_VS_REST = (
-    Filter("group_kind", "eq", "cluster"),
-    Filter("group2", "eq", de_choice.REST_GROUP),
-)
-_GENOTYPE = (Filter("group_kind", "eq", "genotype"),)
+# One dataset's tested genotype comparisons.
+_GENOTYPE = [Filter("tested", "eq", True), Filter("group_kind", "eq", "genotype")]
 
 
 def add_results(reads: Reads, found: list[dict[str, Any]]) -> None:
@@ -110,14 +100,9 @@ def add_results(reads: Reads, found: list[dict[str, Any]]) -> None:
     runs = de_choice.newest_first(reads, [d["id"] for d in measured])
     for dataset in measured:
         own_runs = runs.get(dataset["id"], [])
-        rest = [
-            c
-            for c in _comparisons(reads, own_runs, _ONE_VS_REST)
-            if c["group1"] == c["cluster_id"]
-        ]
-        markers = de_choice.one_vs_rest(rest, own_runs)
-        genotypes = de_choice.genotype(
-            _comparisons(reads, own_runs, _GENOTYPE), own_runs
+        markers = de_choice.read_one_vs_rest(reads, own_runs)
+        genotypes = de_choice.pick_genotype(
+            de_choice.comparisons(reads, own_runs, _GENOTYPE), own_runs
         )
         results = _de_rows(
             reads,
@@ -172,35 +157,19 @@ def _on_panel(
     chosen: dict[str, dict[str, Any]],
     hits: dict[str, dict[str, Any]],
 ) -> dict[str, bool]:
-    """Whether each marker cluster's panel lists the gene: the panel shows the cluster's
-    saved top markers, or without them the top of its one-vs-rest comparison."""
+    """Whether each marker cluster's panel lists the gene, as cluster_panel reads it."""
     if not hits:
         return {}
-    stats = reads.rows_in(
-        "scrna_cluster_stats",
-        "cluster_id",
-        list(hits),
-        (Filter("dataset_id", "eq", dataset["id"]),),
-    )
-    saved = {r["cluster_id"]: (r.get("markers") or {}).get("top") or [] for r in stats}
+    saved = cluster_panel.stored(reads, dataset["id"], list(hits))
     name = (dataset.get("gene_name") or "").lower()
     panel = {}
     for cluster in hits:
-        if saved.get(cluster):
+        if cluster in saved:
             panel[cluster] = any(
-                str(m.get("gene", "")).lower() == name for m in saved[cluster]
+                m["gene"].lower() == name for m in saved[cluster]["top"]
             )
             continue
-        top, _ = reads.page(
-            "scrna_de_genes",
-            [
-                Filter("de_id", "eq", chosen[cluster]["id"]),
-                Filter("log2fc", "gt", 0),
-                Filter("fdr", "lt", MARKER_FDR_CUT),
-            ],
-            [Sort("fdr"), Sort("log2fc", descending=True)],
-            limit=de_choice.TOP_MARKERS,
-        )
+        top, _ = cluster_panel.fallback(reads, chosen[cluster]["id"])
         panel[cluster] = any(r["gene_id"] in dataset["gene_row_ids"] for r in top)
     return panel
 
