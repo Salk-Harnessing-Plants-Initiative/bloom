@@ -65,14 +65,16 @@ class Side(BaseModel):
 
 class Comparison(BaseModel):
     contrast: str | None
-    group1: str
-    group2: str
+    group1: str | None
+    group2: str | None
     cells_group1: int | None
     cells_group2: int | None
     method: str | None = Field(description="The DE run's method.")
     tested: bool
     sides: list[Side]
-    note: str | None = Field(description="Why there are no genes, when there are none.")
+    note: str | None = Field(
+        description="Why there are no genes, or what none passing means."
+    )
 
 
 class CellType(BaseModel):
@@ -83,7 +85,7 @@ class CellType(BaseModel):
         description="Genotype comparisons in this cell type."
     )
     note: str | None = Field(
-        description="Why there are no markers, when there are none."
+        description="Why markers or genotype comparisons are missing."
     )
 
 
@@ -98,27 +100,37 @@ class ScrnaDeResult(BaseModel):
     whole_dataset: list[Comparison] = Field(
         description="Genotype comparisons over every cell, when no cell type is named."
     )
+    contrasts: list[str] = Field(
+        description="The genotype contrasts these cell types have, for the contrast input."
+    )
     unknown_cell_types: list[str] = Field(description="Names that match no cell type.")
     left_out_cell_types: list[str] = Field(
-        description="Cluster ids past this call's cell type limit."
+        description="Cluster ids not in this reply: past the cell type limit or left out "
+        "to fit one reply. Ask for them by name."
     )
     incomplete: bool = Field(description="Some read hit Bloom's row limit.")
     notes: list[str]
 
 
 def fit(result: ScrnaDeResult, limit: int) -> ScrnaDeResult:
-    """`result` with gene lists emptied until it fits `limit` characters: genotype genes
-    from the last comparison back, then markers from the last cell type back."""
+    """`result` cut to `limit` characters: gene lists emptied (cell types' genotype genes
+    from the last back, then the whole dataset's, then markers), then cell types left out
+    from the last back, then whole-dataset comparisons."""
     if _size(result) <= limit:
         return result
     result.notes.append(FIT_NOTE)
-    comparisons = [c for t in result.cell_types for c in t.genotype]
-    sides = [s for c in [*comparisons, *result.whole_dataset] for s in c.sides]
+    cell_sides = [s for t in result.cell_types for c in t.genotype for s in c.sides]
+    whole_sides = [s for c in result.whole_dataset for s in c.sides]
     markers = [t.markers for t in result.cell_types if t.markers]
-    for holder in [*reversed(sides), *reversed(markers)]:
+    for holder in [*reversed(cell_sides), *reversed(whole_sides), *reversed(markers)]:
         if _size(result) <= limit:
-            break
+            return result
         holder.genes = []
+    # Dropped from the last back, so each goes in front: page order is kept.
+    while result.cell_types and _size(result) > limit:
+        result.left_out_cell_types.insert(0, result.cell_types.pop().cluster_id)
+    while result.whole_dataset and _size(result) > limit:
+        result.whole_dataset.pop()
     return result
 
 

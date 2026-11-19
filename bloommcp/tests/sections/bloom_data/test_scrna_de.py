@@ -10,6 +10,7 @@ from data_access.scrna_de_data import TABLES
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import gene_reads
 from bloom_mcp.data_access.fake_table_reader import FakeTableReader
+from bloom_mcp.sections.bloom_data._page import TRUNCATED
 from bloom_mcp.sections.bloom_data import scrna_de as tool
 from bloom_mcp.tools import _ports
 
@@ -207,6 +208,41 @@ def test_comparisons_past_the_cap_are_listed_without_genes(db, monkeypatch):
     assert any("not read" in n for n in result.notes)
 
 
+def _tested_xylem_comparison(db):
+    """A tested genotype comparison in c3, one of the first 10 cell types, with a gene."""
+    db.tables["scrna_de"].append(
+        {"id": 205, "run_id": 1, "dataset_id": 14, "group_kind": "genotype",
+         "cluster_id": "c3", "contrast": "myb41_vs_Col-0", "group1": "myb41",
+         "group2": "Col-0", "n_group1": 80, "n_group2": 90, "tested": True,
+         "n_genes_tested": 2000}
+    )  # fmt: skip
+    db.tables["scrna_de_genes"].append(
+        {"id": 50, "de_id": 205, "dataset_id": 14, "gene_id": 1, "log2fc": 2.0,
+         "pvalue": 0.0001, "fdr": 0.001, "pct_1": 0.8, "pct_2": 0.1}
+    )  # fmt: skip
+
+
+def test_the_whole_dataset_is_read_before_cell_types(db, monkeypatch):
+    _tested_xylem_comparison(db)
+    monkeypatch.setattr(tool, "MAX_COMPARISONS", 1)
+    result = _call(kind="genotype")
+    [whole] = result.whole_dataset
+    assert whole.sides and whole.note is None
+    [xylem] = _cell(result, "c3").genotype
+    assert xylem.sides == [] and "not read" in xylem.note.lower()
+
+
+def test_a_long_reply_keeps_the_whole_dataset_genes_longest(db, monkeypatch):
+    _tested_xylem_comparison(db)
+    size = len(_call(kind="genotype").model_dump_json())
+    monkeypatch.setattr(tool, "MAX_REPLY_CHARS", size - 1)
+    result = _call(kind="genotype")
+    [whole] = result.whole_dataset
+    [xylem] = _cell(result, "c3").genotype
+    assert all(s.genes for s in whole.sides if s.passing)
+    assert any(not s.genes for s in xylem.sides)
+
+
 def test_the_call_deadline_stops_new_reads(db, monkeypatch):
     monkeypatch.setattr(tool, "CALL_SECONDS", -1)
     result = _call(cell_types=["c1"], kind="both")
@@ -248,6 +284,111 @@ def test_a_slow_read_says_how_to_narrow_the_call(db):
     with pytest.raises(BloomMCPError, match="fewer cell types") as err:
         _call(cell_types=["c1"], kind="genotype")
     assert "gene lookup" not in str(err.value)
+
+
+# Empty answers say why
+
+
+def test_a_contrast_matches_in_any_case(db):
+    result = _call(cell_types=["c1"], kind="genotype", contrast="MYB41_VS_COL-0")
+    assert [c.contrast for c in _cell(result, "c1").genotype] == ["myb41_vs_Col-0"]
+
+
+def test_an_unknown_contrast_names_the_ones_there_are(db):
+    result = _call(cell_types=["c1"], kind="genotype", contrast="myb41 vs Col-0")
+    assert _cell(result, "c1").genotype == []
+    [note] = [n for n in result.notes if "myb41 vs Col-0" in n]
+    assert "myb41_vs_Col-0" in note and "oe_vs_Col-0" in note
+    assert result.contrasts == ["myb41_vs_Col-0", "oe_vs_Col-0"]
+
+
+def test_a_contrast_with_markers_alone_says_it_is_unused(db):
+    result = _call(cell_types=["c1"], contrast="myb41_vs_Col-0")
+    assert any("contrast" in n and "genotype" in n for n in result.notes)
+
+
+def test_a_cell_type_without_genotype_comparisons_says_so(db):
+    c7 = _cell(_call(cell_types=["c7"], kind="genotype"), "c7")
+    assert c7.genotype == [] and "no genotype comparison" in c7.note.lower()
+
+
+def test_a_dataset_without_genotype_de_says_so(db):
+    db.tables["scrna_de"] = [
+        c for c in db.tables["scrna_de"] if c["group_kind"] != "genotype"
+    ]
+    result = _call(kind="genotype")
+    assert any("no genotype comparison" in n.lower() for n in result.notes)
+
+
+def test_blank_cell_types_still_read_the_whole_dataset(db):
+    assert _call(cell_types=[" "], kind="genotype").whole_dataset
+
+
+def _no_passing_comparison(db):
+    db.tables["scrna_de"].append(
+        {"id": 206, "run_id": 1, "dataset_id": 14, "group_kind": "genotype",
+         "cluster_id": "c3", "contrast": "myb41_vs_Col-0", "group1": "myb41",
+         "group2": "Col-0", "n_group1": 80, "n_group2": 90, "tested": True,
+         "n_genes_tested": 2000}
+    )  # fmt: skip
+    db.tables["scrna_de_genes"].append(
+        {"id": 51, "de_id": 206, "dataset_id": 14, "gene_id": 1, "log2fc": 2.0,
+         "pvalue": 0.04, "fdr": 0.4, "pct_1": 0.8, "pct_2": 0.1}
+    )  # fmt: skip
+
+
+def test_no_gene_passing_is_not_evidence_of_no_difference(db):
+    _no_passing_comparison(db)
+    [comparison] = _cell(_call(cell_types=["c3"], kind="genotype"), "c3").genotype
+    assert all(s.passing == 0 for s in comparison.sides)
+    assert comparison.note == (
+        "No gene passes the cuts. This is not evidence of no difference: with 80 myb41 "
+        "and 90 Col-0 cells, only large changes survive the adjustment for testing "
+        "2,000 genes at once."
+    )
+
+
+def test_a_comparison_without_group_names_falls_back_as_the_website_does(db):
+    db.tables["scrna_de"].append(
+        {"id": 207, "run_id": 1, "dataset_id": 14, "group_kind": "genotype",
+         "cluster_id": "c6", "contrast": None, "group1": None, "group2": None,
+         "n_group1": None, "n_group2": None, "tested": True, "n_genes_tested": 10}
+    )  # fmt: skip
+    db.tables["scrna_de_genes"].append(
+        {"id": 52, "de_id": 207, "dataset_id": 14, "gene_id": 1, "log2fc": 2.0,
+         "pvalue": 0.0001, "fdr": 0.001, "pct_1": 0.8, "pct_2": 0.1}
+    )  # fmt: skip
+    [comparison] = _cell(_call(cell_types=["c6"], kind="genotype"), "c6").genotype
+    assert [s.higher_in for s in comparison.sides] == ["c6", "the rest"]
+
+
+# Long text and long replies
+
+
+def test_long_stored_text_is_cut(db):
+    db.tables["scrna_clusters"][0]["name"] = "x" * 5000
+    db.tables["scrna_cluster_stats"][0]["markers"]["top"][0]["symbol"] = "s" * 5000
+    result = _call(cell_types=["c1", "c4"])
+    c1, c4 = _cell(result, "c1"), _cell(result, "c4")
+    assert c1.name.endswith(TRUNCATED) and len(c1.name) < 2100
+    assert c4.markers.genes[0].symbol.endswith(TRUNCATED)
+
+
+def test_a_reply_too_long_even_without_genes_drops_cell_types(db, monkeypatch):
+    monkeypatch.setattr(tool, "MAX_REPLY_CHARS", 2500)
+    result = _call(kind="both")
+    assert len(result.model_dump_json()) <= 2500
+    # Kept and left out together are still the page's order, c12 to c1.
+    shown = [c.cluster_id for c in result.cell_types]
+    assert shown + result.left_out_cell_types == [f"c{n}" for n in range(12, 0, -1)]
+    assert len(result.left_out_cell_types) > 2
+
+
+# Limits are the documented ones
+
+
+def test_the_limits_are_20_comparisons_and_40_seconds():
+    assert (tool.MAX_COMPARISONS, tool.CALL_SECONDS) == (20, 40)
 
 
 # Description

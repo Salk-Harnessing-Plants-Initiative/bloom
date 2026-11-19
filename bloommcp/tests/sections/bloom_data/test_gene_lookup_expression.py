@@ -35,7 +35,7 @@ def test_markers_use_the_newest_run_with_the_comparison_over_most_cells(genes_db
         "Endodermis",
         "nuclei",
     )
-    assert (markers["c4"].pct_in_cluster, markers["c4"].pct_elsewhere) == (0.8, 0.1)
+    assert (markers["c4"].pct_in_cell_type, markers["c4"].pct_elsewhere) == (0.8, 0.1)
 
 
 def test_an_untested_newer_comparison_leaves_the_older_tested_one(genes_db):
@@ -65,12 +65,13 @@ def test_a_gene_down_in_a_cluster_is_not_its_marker(genes_db):
 def test_genotype_comparisons_come_from_the_newest_run_that_has_them(genes_db):
     [dataset] = lookup("MYB41").expression
     [comparison] = dataset.genotype_comparisons
-    assert (comparison.group1, comparison.group2, comparison.direction) == (
+    assert (comparison.group1, comparison.group2, comparison.higher_in) == (
         "pFACT",
         "Col-0",
-        "up",
+        "pFACT",
     )
-    assert not comparison.absent_in_one_group
+    assert not comparison.found_in_one_group_only
+    assert not comparison.likely_found_in_one_group_only
 
 
 def test_an_untested_genotype_comparison_hides_no_tested_one(genes_db):
@@ -101,10 +102,17 @@ def test_an_infinite_fold_change_is_read_as_absent_from_one_group(genes_db):
     _set_hit(genes_db, 14, log2fc="-Infinity")
     [dataset] = lookup("MYB41").expression
     marker = next(m for m in dataset.markers if m.cluster_id == "c4")
-    assert marker.log2fc is None and marker.absent_in_one_group
+    assert marker.log2fc is None and marker.found_in_one_group_only
     [comparison] = dataset.genotype_comparisons
-    assert comparison.log2fc is None and comparison.absent_in_one_group
-    assert comparison.direction == "down"
+    assert comparison.log2fc is None and comparison.found_in_one_group_only
+    assert comparison.higher_in == "Col-0"
+
+
+def test_a_large_finite_fold_change_is_likely_from_one_group_only(genes_db):
+    _set_hit(genes_db, 14, log2fc=25.0)
+    [comparison] = lookup("MYB41").expression[0].genotype_comparisons
+    assert comparison.log2fc == 25.0 and comparison.likely_found_in_one_group_only
+    assert not comparison.found_in_one_group_only
 
 
 def test_a_nan_result_passes_no_cut(genes_db):
@@ -123,9 +131,9 @@ def test_a_genotype_comparison_names_its_cluster_and_cell_type(genes_db):
     [dataset] = lookup("MYB41").expression
     by_cluster = {c.cluster_id: c for c in dataset.genotype_comparisons}
     assert set(by_cluster) == {None, "c3"}
-    assert (by_cluster["c3"].cell_type, by_cluster["c3"].direction) == (
+    assert (by_cluster["c3"].cell_type, by_cluster["c3"].higher_in) == (
         "Endodermis",
-        "down",
+        "Col-0",
     )
     assert by_cluster[None].cell_type is None
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import unicodedata
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any, Literal
 
 from . import cluster_panel, de_choice, gene_reads
@@ -103,11 +104,16 @@ def genotype(
 
 
 def panel_markers(
-    reads: Reads, dataset_id: int, cluster_ids: list[str], run_ids: list[int]
+    reads: Reads,
+    dataset_id: int,
+    cluster_ids: list[str],
+    run_ids: list[int],
+    late: Callable[[], bool] = lambda: False,
 ) -> dict[str, dict[str, Any]]:
     """Each cell type's markers as the cluster panel shows them: the stored markers, or
     without them the top of its one-vs-rest comparison from `run_ids` (every complete run,
-    newest first). Cell types with neither are left out."""
+    newest first). Cell types with neither are left out; once `late()`, the rest are
+    "not_read"."""
     found = {
         cluster: {
             "from": "stored",
@@ -124,6 +130,9 @@ def panel_markers(
     for cluster, comparison in de_choice.read_one_vs_rest(
         reads, run_ids, missing
     ).items():
+        if late():
+            found[cluster] = {"from": "not_read", "top": [], "n_significant": None}
+            continue
         rows, more = cluster_panel.fallback(reads, comparison["id"])
         names = _gene_names(reads, [r["gene_id"] for r in rows])
         count_filters = cluster_panel.fallback_filters(comparison["id"])

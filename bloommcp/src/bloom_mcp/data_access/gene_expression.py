@@ -30,8 +30,15 @@ def _finite(value: float | None) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
 
-def _absent(log2fc: float | None) -> bool:
-    return log2fc is not None and abs(log2fc) > OFF_SCALE_LOG2FC
+def _one_group(log2fc: float | None) -> dict[str, bool]:
+    """Infinite: found in one group only; finite past OFF_SCALE_LOG2FC: likely so."""
+    infinite = log2fc is not None and math.isinf(log2fc)
+    return {
+        "found_in_one_group_only": infinite,
+        "likely_found_in_one_group_only": not infinite
+        and log2fc is not None
+        and abs(log2fc) > OFF_SCALE_LOG2FC,
+    }
 
 
 def datasets(
@@ -185,9 +192,9 @@ def _markers(
             "cell_type": labels.get(cluster, {}).get("name"),
             "label_source": labels.get(cluster, {}).get("source"),
             "log2fc": _finite(hit["log2fc"]),
-            "absent_in_one_group": _absent(hit["log2fc"]),
+            **_one_group(hit["log2fc"]),
             "fdr": hit["fdr"],
-            "pct_in_cluster": hit.get("pct_1"),
+            "pct_in_cell_type": hit.get("pct_1"),
             "pct_elsewhere": hit.get("pct_2"),
             "on_cluster_panel": panel.get(cluster, False),
         }
@@ -213,6 +220,6 @@ def _genotype_hit(
         "group2": comparison["group2"],
         "log2fc": _finite(log2fc),
         "fdr": row["fdr"],
-        "direction": "up" if log2fc > 0 else "down",
-        "absent_in_one_group": _absent(log2fc),
+        "higher_in": comparison["group1"] if log2fc > 0 else comparison["group2"],
+        **_one_group(log2fc),
     }

@@ -175,6 +175,14 @@ def test_a_stored_off_scale_fold_change_is_flagged():
     assert not huge["found_in_one_group_only"]
 
 
+def test_markers_stop_when_the_call_runs_late():
+    # c4's stored markers are read; c1's comparison isn't.
+    found = scrna_de_reads.panel_markers(
+        reads(), 14, ["c4", "c1"], [2, 1], lambda: True
+    )
+    assert found["c4"]["from"] == "stored" and found["c1"]["from"] == "not_read"
+
+
 def test_no_stored_markers_and_no_comparison_means_no_markers():
     assert scrna_de_reads.panel_markers(reads(), 14, ["c7", "c2"], [2, 1]) == {}
 

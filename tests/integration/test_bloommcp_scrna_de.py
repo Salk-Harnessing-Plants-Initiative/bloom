@@ -54,9 +54,11 @@ def dataset():
     ids: dict = {}
     try:
         with conn.cursor() as cur:
+            # A name of its own: common_name is unique, and other live tests add species.
             cur.execute(
                 "INSERT INTO public.species (common_name, genus, species) "
-                "VALUES ('ci cress', 'Ci', 'differentialis') RETURNING id"
+                "VALUES (%s, 'Ci', 'differentialis') RETURNING id",
+                (f"ci-de-cress-{uuid.uuid4().hex[:8]}",),
             )
             ids["species"] = cur.fetchone()[0]
             cur.execute(
@@ -105,27 +107,35 @@ def dataset():
                 )
         yield ids
     finally:
-        with conn.cursor() as cur:
-            if "dataset" in ids:
-                for table in (
-                    "scrna_de",
-                    "scrna_de_runs",
-                    "scrna_cluster_stats",
-                    "scrna_genes",
-                    "scrna_clusters",
-                ):
-                    cur.execute(
-                        f"DELETE FROM public.{table} WHERE dataset_id = %s",  # noqa: S608
-                        (ids["dataset"],),
-                    )
-                cur.execute(
-                    "DELETE FROM public.scrna_datasets WHERE id = %s", (ids["dataset"],)
-                )
-            if "species" in ids:
-                cur.execute(
-                    "DELETE FROM public.species WHERE id = %s", (ids["species"],)
-                )
-        conn.close()
+        _clean_up(conn, ids)
+
+
+def _clean_up(conn, ids: dict) -> None:
+    """Every delete is tried, so one failure doesn't leave the rest in the shared database."""
+    deletes = [
+        (f"DELETE FROM public.{table} WHERE dataset_id = %s", "dataset")  # noqa: S608
+        for table in (
+            "scrna_de",
+            "scrna_de_runs",
+            "scrna_cluster_stats",
+            "scrna_genes",
+            "scrna_clusters",
+        )
+    ] + [
+        ("DELETE FROM public.scrna_datasets WHERE id = %s", "dataset"),
+        ("DELETE FROM public.species WHERE id = %s", "species"),
+    ]
+    failed = []
+    with conn.cursor() as cur:
+        for sql, key in deletes:
+            if key not in ids:
+                continue
+            try:
+                cur.execute(sql, (ids[key],))
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{sql}: {exc}")
+    conn.close()
+    assert not failed, failed
 
 
 _SCRIPT = """
