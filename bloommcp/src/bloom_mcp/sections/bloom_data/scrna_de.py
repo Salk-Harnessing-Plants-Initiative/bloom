@@ -117,7 +117,11 @@ def _cell_type(
     if params.kind != "genotype" and markers is None:
         notes.append(build.OUT_OF_TIME if out_of_time else NO_MARKERS)
     if params.kind != "markers" and not genotype:
-        notes.append(NO_GENOTYPE)
+        notes.append(
+            NO_GENOTYPE
+            if params.contrast is None
+            else f"No {build.text(params.contrast.strip())} comparison for this cell type."
+        )
     return CellType(
         cluster_id=build.text(cluster["cluster_id"]),
         name=build.text(cluster.get("name")),
