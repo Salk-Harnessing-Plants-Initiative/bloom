@@ -22,6 +22,7 @@ import click
 import httpx
 
 from ..credentials import DEFAULT_PROFILE
+from ..exits import EXIT_REFUSED, Refused
 from ..scrna import _session, _transfer
 from ..scrna._text import visible
 from . import _files
@@ -36,13 +37,11 @@ VERSION_COLUMNS = ("id, version, status, withdrawn_reason, fasta_path, fasta_sha
 READY = "ready"
 # Exit codes: 0 done; 3 not available or doesn't match (asking again won't help); 1 anything
 # else, such as a network or storage error (worth retrying); 2 a usage error.
-EXIT_UNAVAILABLE = 3
+EXIT_UNAVAILABLE = EXIT_REFUSED
 
 
-class Unavailable(click.ClickException):
+class Unavailable(Refused):
     """A refusal that asking again won't fix: no such version, not ready, or not Bloom's file."""
-
-    exit_code = EXIT_UNAVAILABLE
 
 
 @click.command(name="download")
@@ -71,7 +70,7 @@ def download(genome: str, to: Path, unzip: bool, version_file: Path | None, prof
         raise click.UsageError(f"GENOME must be a name ({_files.NAME_HELP}), optionally with .vN.")
     name = named["name"]
     conn = _session.connect(profile)
-    version = _version(conn.client, name, named["version"])
+    version = ready_version(conn.client, name, named["version"])
     exact = f"{name}.v{version['version']}"
     label = f"{name} v{version['version']}"
     try:
@@ -80,7 +79,7 @@ def download(genome: str, to: Path, unzip: bool, version_file: Path | None, prof
         raise click.ClickException(f"cannot write to {to}: {exc.strerror or exc}.") from exc
     with _transfer.open_client() as http:
         for kind, plain in FILES:
-            conn = _fetch(http, conn, profile, label, version, kind, plain, to, unzip)
+            conn = fetch(http, conn, profile, label, version, kind, plain, to, unzip)
     _say_version(exact, version_file)
 
 
@@ -100,8 +99,11 @@ def _say_version(exact: str, version_file: Path | None) -> None:
         ) from exc
 
 
-def _version(client: Any, name: str, wanted: str | None) -> dict[str, Any]:
-    """The version to download: the one named, or the newest ready one; refuse any other."""
+def ready_version(client: Any, name: str, wanted: str | None,
+                  refusal: str = "only a ready version is downloaded. Nothing was written."
+                  ) -> dict[str, Any]:
+    """The version to use: the one named, or the newest ready one; refuse any other, ending the
+    refusal with `refusal`."""
     from .._postgrest import queried
 
     genomes = queried(
@@ -129,8 +131,7 @@ def _version(client: Any, name: str, wanted: str | None) -> dict[str, Any]:
     if version is None:
         raise Unavailable(f"{name} has no v{wanted}.")
     if version["status"] != READY:
-        raise Unavailable(f"{_not_ready(name, version)}; only a ready version is downloaded. "
-                          "Nothing was written.")
+        raise Unavailable(f"{_not_ready(name, version)}; {refusal}")
     return version
 
 
@@ -143,10 +144,10 @@ def _not_ready(name: str, version: dict[str, Any]) -> str:
     return f"{label} is still uploading"
 
 
-def _fetch(http, conn, profile: str, label: str, version: dict[str, Any], kind: str, plain: str,
-           to: Path, unzip: bool):
+def fetch(http, conn, profile: str, label: str, version: dict[str, Any], kind: str, plain: str,
+          to: Path, unzip: bool, announce: bool = True):
     """Put one checked file in place, or keep the right one already there. Returns the session,
-    which a long download may have renewed."""
+    which a long download may have renewed. `announce` says where each file went."""
     stored = f"{plain}.gz"
     final = to / (plain if unzip else stored)
     expected = (version[f"{kind}_sha256"], version[f"{kind}_bytes"])
@@ -189,7 +190,8 @@ def _fetch(http, conn, profile: str, label: str, version: dict[str, Any], kind: 
         ) from exc
     finally:
         tmp.unlink(missing_ok=True)
-    click.echo(f"Downloaded {final}", err=True)
+    if announce:
+        click.echo(f"Downloaded {final}", err=True)
     return conn
 
 

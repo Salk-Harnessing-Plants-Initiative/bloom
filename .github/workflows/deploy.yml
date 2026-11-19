@@ -63,7 +63,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up SSH
         run: |
@@ -756,7 +756,7 @@ jobs:
       # auto-closed by it specifically (never a human's own close).
       - name: Reopen deploy-gated issues on migration failure (production)
         if: failure() && steps.migrate_prod.outcome == 'failure'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1104,7 +1104,7 @@ jobs:
       DEPLOY_REF: ${{ github.event_name == 'push' && github.sha || 'origin/staging' }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up SSH
         run: |
@@ -1716,7 +1716,7 @@ jobs:
       # that motivated this fix).
       - name: Reopen deploy-gated issues on migration failure (staging)
         if: failure() && steps.migrate_staging.outcome == 'failure'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;

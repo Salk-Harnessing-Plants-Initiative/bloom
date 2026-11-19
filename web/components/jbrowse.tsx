@@ -3,6 +3,9 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
+import type { BrowserConfig } from "@/lib/jbrowse/config";
+import { launchTarget } from "@/lib/jbrowse/launch";
+
 // Lazy load JBrowse only on client side
 let createViewState: any;
 let JBrowseApp: any;
@@ -10,15 +13,15 @@ let getEnv: any;
 
 type ViewModel = any;
 
-function JBrowse() {
+function JBrowse({ config }: { config: BrowserConfig }) {
   const searchParams = useSearchParams();
-  const reference = searchParams.get("reference"); 
-  const gene = searchParams.get("gene");
+  const target = launchTarget(searchParams);
+  const reference = target?.assembly;
+  const gene = target?.loc;
 
   const [viewState, setViewState] = useState<ViewModel>();
   const [isLoading, setIsLoading] = useState(true);
   const [loadingStatus, setLoadingStatus] = useState("Initializing JBrowse...");
-  const [config, setConfig] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
@@ -30,7 +33,7 @@ function JBrowse() {
         setLoadingStatus("Loading JBrowse libraries...");
         
         const [jbrowseReactApp, jbrowseCore] = await Promise.all([
-          import("@jbrowse/react-app"),
+          import("@jbrowse/react-app2"),
           import("@jbrowse/core/util"),
         ]);
 
@@ -38,17 +41,8 @@ function JBrowse() {
         JBrowseApp = jbrowseReactApp.JBrowseApp;
         getEnv = jbrowseCore.getEnv;
         
-        setLoadingStatus("Loading genome assemblies (98 genomes)...");
-        // Load config separately to show progress
-        const configModule = await import("./config");
-        const loadedConfig = configModule.default;
-        setConfig(loadedConfig);
-
         setLoadingStatus("Initializing genome browser...");
-        console.log(loadedConfig);
-        const state = createViewState({
-          config: loadedConfig,
-        });
+        const state = createViewState({ config });
         const { pluginManager } = getEnv(state);
         setViewState(state);
 
@@ -91,7 +85,7 @@ function JBrowse() {
     };
 
     loadJBrowse();
-  }, [reference, gene, retryCount]);
+  }, [config, reference, gene, retryCount]);
 
   if (error) {
     return (
@@ -117,11 +111,6 @@ function JBrowse() {
         <div className="text-center space-y-4">
           <div className="w-16 h-16 border-4 border-gray-300 border-t-blue-500 rounded-full animate-spin mx-auto"></div>
           <div className="text-gray-700 text-lg font-medium">{loadingStatus}</div>
-          {loadingStatus.includes("98 genomes") && (
-            <div className="text-sm text-gray-500 max-w-md">
-              Loading comprehensive genome database. First load may take a few seconds...
-            </div>
-          )}
         </div>
       </div>
     );

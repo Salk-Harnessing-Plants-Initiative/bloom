@@ -1,6 +1,7 @@
 import { getUser } from "@/lib/supabase/server";
 // import Mixpanel from "mixpanel";
 import JBrowseClient from "@/components/jbrowse-client";
+import { browserConfig } from "@/lib/jbrowse/config";
 
 export default async function Genotypes() {
   const user = await getUser();
@@ -16,7 +17,7 @@ export default async function Genotypes() {
 
   return (
     <div>
-      <JBrowseClient />
+      <JBrowseClient config={browserConfig()} />
     </div>
   );
 }
