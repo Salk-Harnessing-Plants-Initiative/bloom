@@ -1,12 +1,13 @@
 """The gene lookup's expression reads: which scRNA datasets measured a gene, where it marks a
-cluster, and which genotype comparisons it passes, each picked as Bloom's pages pick them."""
+cluster, and which genotype comparisons it passes, each picked as Bloom's pages pick them.
+"""
 
 from __future__ import annotations
 
 import math
 from typing import Any
 
-from . import gene_reads
+from . import de_choice, gene_reads
 from .gene_reads import (
     DE_FDR_CUT,
     DE_LOG2FC_CUT,
@@ -38,10 +39,6 @@ def _finite(value: float | None) -> float | None:
 
 def _absent(log2fc: float | None) -> bool:
     return log2fc is not None and abs(log2fc) > OFF_SCALE_LOG2FC
-
-
-def _cells(row: dict[str, Any]) -> int:
-    return (row.get("n_group1") or 0) + (row.get("n_group2") or 0)
 
 
 def datasets(
@@ -81,55 +78,6 @@ def datasets(
                 }
             )
     return result
-
-
-def _newest_first(reads: Reads, dataset_ids: list[int]) -> dict[int, list[int]]:
-    """Each dataset's complete DE runs, newest first."""
-    runs = reads.rows_in(
-        "scrna_de_runs",
-        "dataset_id",
-        dataset_ids,
-        (Filter("status", "eq", "complete"),),
-    )
-    runs.sort(key=lambda r: (r.get("completed_at") or "", r["id"]), reverse=True)
-    by_dataset: dict[int, list[int]] = {}
-    for run in runs:
-        by_dataset.setdefault(run["dataset_id"], []).append(run["id"])
-    return by_dataset
-
-
-def _one_vs_rest(
-    comparisons: list[dict[str, Any]], runs: list[int]
-) -> dict[str, dict[str, Any]]:
-    """Per cluster, its comparison against the rest in the newest run that has one; with
-    several (one per library), the one over the most cells (findOneVsRest)."""
-    chosen: dict[str, dict[str, Any]] = {}
-    for cluster in {c["cluster_id"] for c in comparisons}:
-        own = [c for c in comparisons if c["cluster_id"] == cluster]
-        newest = next(r for r in runs if any(c["run_id"] == r for c in own))
-        chosen[cluster] = max(
-            (c for c in own if c["run_id"] == newest),
-            key=lambda c: (_cells(c), -c["id"]),
-        )
-    return chosen
-
-
-def _genotype(
-    comparisons: list[dict[str, Any]], runs: list[int]
-) -> list[dict[str, Any]]:
-    """Every run's genotype comparisons, the newest run winning for each cluster and
-    contrast, as the page combines them (fetchAllComparisons)."""
-    rank = {run: i for i, run in enumerate(runs)}
-    seen: set[tuple[Any, Any]] = set()
-    kept = []
-    for c in sorted(
-        comparisons, key=lambda c: (rank.get(c["run_id"], len(rank)), c["id"])
-    ):
-        key = (c.get("cluster_id"), c.get("contrast"))
-        if key not in seen:
-            seen.add(key)
-            kept.append(c)
-    return kept
 
 
 def _de_rows(
@@ -181,7 +129,7 @@ def add_results(reads: Reads, found: list[dict[str, Any]]) -> None:
     measured = [d for d in found if d["gene_row_ids"]]
     for dataset in found:
         dataset["markers"], dataset["genotype_comparisons"] = [], []
-    runs = _newest_first(reads, [d["id"] for d in measured])
+    runs = de_choice.newest_first(reads, [d["id"] for d in measured])
     for dataset in measured:
         own_runs = runs.get(dataset["id"], [])
         rest = [
@@ -189,8 +137,10 @@ def add_results(reads: Reads, found: list[dict[str, Any]]) -> None:
             for c in _comparisons(reads, own_runs, _ONE_VS_REST)
             if c["group1"] == c["cluster_id"]
         ]
-        markers = _one_vs_rest(rest, own_runs)
-        genotypes = _genotype(_comparisons(reads, own_runs, _GENOTYPE), own_runs)
+        markers = de_choice.one_vs_rest(rest, own_runs)
+        genotypes = de_choice.genotype(
+            _comparisons(reads, own_runs, _GENOTYPE), own_runs
+        )
         results = _de_rows(
             reads,
             [c["id"] for c in [*markers.values(), *genotypes]],
