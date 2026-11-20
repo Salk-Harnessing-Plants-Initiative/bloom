@@ -3,8 +3,8 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-import type { BrowserConfig } from "@/lib/jbrowse/config";
-import { launchTarget } from "@/lib/jbrowse/launch";
+import type { LoadedBrowserConfig } from "@/lib/jbrowse/bloom-genomes";
+import { launchPlan, launchTarget } from "@/lib/jbrowse/launch";
 
 // Lazy load JBrowse only on client side
 let createViewState: any;
@@ -13,16 +13,19 @@ let getEnv: any;
 
 type ViewModel = any;
 
-function JBrowse({ config }: { config: BrowserConfig }) {
+function JBrowse({ loaded }: { loaded: LoadedBrowserConfig }) {
   const searchParams = useSearchParams();
-  const target = launchTarget(searchParams);
-  const reference = target?.assembly;
-  const gene = target?.loc;
+  const plan = launchPlan(launchTarget(searchParams), loaded);
+  const reference = plan?.assembly;
+  const loc = plan?.loc;
+  const tracks = plan?.tracks.join("\n") ?? "";
+  const config = loaded.config;
 
   const [viewState, setViewState] = useState<ViewModel>();
   const [isLoading, setIsLoading] = useState(true);
   const [loadingStatus, setLoadingStatus] = useState("Initializing JBrowse...");
   const [error, setError] = useState<string | null>(null);
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
@@ -45,17 +48,20 @@ function JBrowse({ config }: { config: BrowserConfig }) {
         const state = createViewState({ config });
         const { pluginManager } = getEnv(state);
         setViewState(state);
+        setLaunchError(null);
 
-        if (reference && gene) {
-          setLoadingStatus(`Loading ${reference} at ${gene}...`);
-          pluginManager.evaluateAsyncExtensionPoint(
-            'LaunchView-LinearGenomeView',
-            {
-              tracks: [],
-              loc: gene,
+        if (reference) {
+          setLoadingStatus(`Loading ${reference}${loc ? ` at ${loc}` : ""}...`);
+          // Without a location JBrowse shows the whole assembly.
+          Promise.resolve(
+            pluginManager.evaluateAsyncExtensionPoint("LaunchView-LinearGenomeView", {
+              tracks: tracks ? tracks.split("\n") : [],
+              loc,
               assembly: reference,
               session: state.session,
-            },
+            }),
+          ).catch((err: unknown) =>
+            setLaunchError(`${reference} could not be opened${loc ? ` at ${loc}` : ""}: ${err instanceof Error ? err.message : String(err)}`),
           );
         }
 
@@ -85,7 +91,7 @@ function JBrowse({ config }: { config: BrowserConfig }) {
     };
 
     loadJBrowse();
-  }, [config, reference, gene, retryCount]);
+  }, [config, reference, loc, tracks, retryCount]);
 
   if (error) {
     return (
@@ -118,6 +124,7 @@ function JBrowse({ config }: { config: BrowserConfig }) {
 
   return (
     <div className="p-4">
+      {launchError && <p className="pb-2 text-sm text-red-700">{launchError}</p>}
       <JBrowseApp viewState={viewState} />
     </div>
   );

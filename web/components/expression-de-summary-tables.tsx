@@ -63,7 +63,8 @@ function Shown<T>({ rows, children }: { rows: T[]; children: (shown: T[]) => Rea
 }
 
 /** One row per gene, with a chip for each place it passes. */
-export function GenesTable({ tally, groups, showContrast, coloured, onSelect }: {
+export function GenesTable({ tally, groups, showContrast, coloured, onSelect, geneLinks }: {
+  geneLinks?: (gene: string) => React.ReactNode;
   tally: { genes: GeneTally[]; cellTypesTested: number };
   groups: { a: string; b: string } | null;
   showContrast: boolean;
@@ -94,7 +95,7 @@ export function GenesTable({ tally, groups, showContrast, coloured, onSelect }: 
             <TableBody>
               {shown.map((gene) => (
                 <TableRow key={gene.geneId}>
-                  <TableCell>{gene.gene}</TableCell>
+                  <TableCell>{gene.gene}{geneLinks?.(gene.gene)}</TableCell>
                   <TableCell>{`${gene.cellTypes} of ${tally.cellTypesTested}`}</TableCell>
                   {gene.higher ? (
                     gene.higher.map((h) => <TableCell key={h.group}>{h.cellTypes}</TableCell>)
@@ -134,7 +135,8 @@ export function GenesTable({ tally, groups, showContrast, coloured, onSelect }: 
 }
 
 /** Every passing result, each opening its comparison. */
-export function ResultsTable({ places, showContrast, coloured, onSelect }: {
+export function ResultsTable({ places, showContrast, coloured, onSelect, geneLinks }: {
+  geneLinks?: (gene: string) => React.ReactNode;
   places: Place[];
   showContrast: boolean;
   coloured: boolean;
@@ -169,7 +171,7 @@ export function ResultsTable({ places, showContrast, coloured, onSelect }: {
                     if (e.key === "Enter" || e.key === " ") onSelect(place.entry);
                   }}
                 >
-                  <TableCell>{place.result.gene}</TableCell>
+                  <TableCell>{place.result.gene}{geneLinks?.(place.result.gene)}</TableCell>
                   <TableCell>{place.entry.cluster_id}</TableCell>
                   {showContrast && <TableCell>{comparisonLabel(place.entry)}</TableCell>}
                   <TableCell>{place.higherIn}</TableCell>

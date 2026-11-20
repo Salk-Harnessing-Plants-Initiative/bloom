@@ -32,12 +32,17 @@ const RPC_ERRORS: Record<string, string> = {
   "22023": "Check the genus, species and common name.",
 };
 
-/** "Arabidopsis (Arabidopsis thaliana)", from however the row is cased. */
-export function speciesOption(row: SpeciesRow): SpeciesOption {
+/** "Arabidopsis thaliana", from however the row is cased; "" when neither part is set. */
+export function scientificName(row: Pick<SpeciesRow, "genus" | "species">): string {
   const genus = row.genus
     ? row.genus[0].toUpperCase() + row.genus.slice(1).toLowerCase()
     : "";
-  const scientific = [genus, row.species?.toLowerCase()].filter(Boolean).join(" ");
+  return [genus, row.species?.toLowerCase()].filter(Boolean).join(" ");
+}
+
+/** "Arabidopsis (Arabidopsis thaliana)", from however the row is cased. */
+export function speciesOption(row: SpeciesRow): SpeciesOption {
+  const scientific = scientificName(row);
   const common = row.common_name ?? scientific;
   return {
     id: row.id,

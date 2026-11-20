@@ -2,6 +2,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
+vi.mock("@/components/gene-links", () => ({
+  useDatasetGeneLinks: () => (gene: string) => <a href={`/links/${gene}`}>links {gene}</a>,
+}));
+
 vi.mock("./expression-lib/cluster-markers", () => ({
   fetchClusterStats: vi.fn(async () => null),
   findOneVsRest: vi.fn(async () => null),
