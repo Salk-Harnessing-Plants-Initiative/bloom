@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BROWSABLE_SELECT,
   LINKED_VERSION_SELECT,
+  SIGNABLE_BUILD_SELECT,
   REDIRECT_MAX_AGE_S,
   SIGNED_URL_TTL_S,
   loadBrowserConfig,
@@ -195,6 +196,8 @@ describe("signBuildFile", () => {
       url: "https://bloom.example/api/storage/v1/object/sign/x?token=t",
     });
     expect(raw.from).toHaveBeenCalledWith("genome_browser_builds");
+    expect(table.calls).toContainEqual(["select", SIGNABLE_BUILD_SELECT]);
+    expect(SIGNABLE_BUILD_SELECT).toBe("folder, genome_reference_versions!inner(status)");
     expect(table.calls).toContainEqual(["eq", "id", 4]);
     expect(table.calls).toContainEqual(["eq", "status", "ready"]);
     expect(table.calls).toContainEqual(["eq", "genome_reference_versions.status", "ready"]);

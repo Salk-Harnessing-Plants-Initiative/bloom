@@ -1,6 +1,9 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+
+import { passesWithoutLogin } from '@/lib/signed-out-paths'
+
 export const runtime = 'nodejs'
 
 export async function middleware(request: NextRequest) {
@@ -72,17 +75,7 @@ export async function middleware(request: NextRequest) {
   console.log('[Middleware] User →', user?.email || 'NO USER')
 
   // only redirect unauthenticated users on protected routes
-  const path = request.nextUrl.pathname
-  const isPublic =
-    path.startsWith('/login') ||
-    path.startsWith('/forgot-password') ||
-    path.startsWith('/reset-password') ||
-    path.startsWith('/verify') ||
-    path.startsWith('/auth') ||
-    path.startsWith('/error') ||
-    path.startsWith('/api') // allow internal routes
-
-  if (!user && !isPublic) {
+  if (!user && !passesWithoutLogin(request.nextUrl.pathname)) {
     console.log('[Middleware] Redirecting to /login')
     const url = request.nextUrl.clone()
     url.pathname = '/login'

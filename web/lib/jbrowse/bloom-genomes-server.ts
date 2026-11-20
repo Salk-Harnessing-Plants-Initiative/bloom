@@ -30,6 +30,11 @@ const BUCKET = "genome-references";
 export const BROWSABLE_SELECT =
   "id, genome_reference_versions!inner(version, status, assembly, annotation, genome_references!inner(name, species(genus, species)))";
 
+/** The file route's build read: the folder of a ready build whose version is ready. `!inner`
+ * makes the version's status filter drop the build, so a withdrawn version's files are never
+ * signed. */
+export const SIGNABLE_BUILD_SELECT = "folder, genome_reference_versions!inner(status)";
+
 /** The link lookup: a version by genome name and number, with its builds' statuses. */
 export const LINKED_VERSION_SELECT = "status, genome_references!inner(name), genome_browser_builds(status)";
 
@@ -122,7 +127,7 @@ export async function signBuildFile(
 
   const { data: build, error } = await supabase
     .from("genome_browser_builds")
-    .select("folder, genome_reference_versions!inner(status)")
+    .select(SIGNABLE_BUILD_SELECT)
     .eq("id", buildId)
     .eq("status", "ready")
     .eq("genome_reference_versions.status", "ready")
