@@ -5,23 +5,24 @@ the DE tab's cuts."""
 from __future__ import annotations
 
 import math
+import unicodedata
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any, Literal
 
-from . import de_choice, gene_reads
-from .gene_reads import (
-    DE_FDR_CUT,
-    DE_LOG2FC_CUT,
-    MARKER_FDR_CUT,
-    OFF_SCALE_LOG2FC,
-    Reads,
-)
+from . import cluster_panel, de_choice, gene_reads
+from .gene_reads import DE_FDR_CUT, DE_LOG2FC_CUT, OFF_SCALE_LOG2FC, Reads
 from .table_ports import Filter, Sort
 
 # Most cell types one call returns.
 MAX_CELL_TYPES = 10
 
 Direction = Literal["up", "down"]
+DIRECTIONS: tuple[Direction, ...] = ("up", "down")
+
+# ICU's root order of printable ASCII, as localeCompare sorts it; letters ignore case here.
+_ICU_ORDER = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz"
+_ICU_RANK = {c: i for i, c in enumerate(_ICU_ORDER)}
 
 
 def live_dataset(reads: Reads, dataset_id: int) -> dict[str, Any] | None:
@@ -77,26 +78,6 @@ def is_tested(comparison: dict[str, Any]) -> bool:
     )
 
 
-def one_vs_rest(
-    reads: Reads, run_ids: list[int], cluster_ids: list[str]
-) -> dict[str, dict[str, Any]]:
-    """Each cell type's tested one-vs-rest comparison, chosen as findOneVsRest chooses."""
-    if not cluster_ids:
-        return {}
-    found = de_choice.comparisons(
-        reads,
-        run_ids,
-        [
-            Filter("group_kind", "eq", "cluster"),
-            Filter("group2", "eq", de_choice.REST_GROUP),
-            Filter("tested", "eq", True),
-            Filter("cluster_id", "in", cluster_ids),
-        ],
-    )
-    own = [c for c in found if c["group1"] == c["cluster_id"]]
-    return de_choice.one_vs_rest(own, run_ids)
-
-
 def genotype(
     reads: Reads,
     run_ids: list[int],
@@ -106,7 +87,8 @@ def genotype(
     whole: bool,
 ) -> list[dict[str, Any]]:
     """Genotype comparisons of `cluster_ids` (and the whole dataset when `whole`), tested
-    or not, the newest run winning per cell type and contrast (fetchAllComparisons)."""
+    or not, the newest run winning per cell type and contrast (fetchAllComparisons).
+    Callers keep `cluster_ids` short: it goes into the URL whole."""
     kind = [Filter("group_kind", "eq", "genotype")]
     if contrast is not None:
         kind.append(Filter("contrast", "eq", contrast))
@@ -118,88 +100,61 @@ def genotype(
         for scope in scopes
         for c in de_choice.comparisons(reads, run_ids, [*kind, scope])
     ]
-    return de_choice.genotype(found, run_ids)
+    return de_choice.pick_genotype(found, run_ids)
 
 
 def panel_markers(
-    reads: Reads, dataset_id: int, cluster_ids: list[str], run_ids: list[int]
+    reads: Reads,
+    dataset_id: int,
+    cluster_ids: list[str],
+    run_ids: list[int],
+    late: Callable[[], bool] = lambda: False,
 ) -> dict[str, dict[str, Any]]:
     """Each cell type's markers as the cluster panel shows them: the stored markers, or
-    without them the top of its one-vs-rest comparison. Cell types with neither are left
-    out."""
-    rows = reads.rows_in(
-        "scrna_cluster_stats",
-        "cluster_id",
-        cluster_ids,
-        (Filter("dataset_id", "eq", dataset_id),),
-    )
-    found = {}
-    for row in rows:
-        stored = _parse_markers(row.get("markers"))
-        if stored and stored["top"]:
-            found[row["cluster_id"]] = {"from": "stored", **stored}
+    without them the top of its one-vs-rest comparison from `run_ids` (every complete run,
+    newest first). Cell types with neither are left out; once `late()`, the rest are
+    "not_read"."""
+    found = {
+        cluster: {
+            "from": "stored",
+            "top": [
+                _result(m, m["gene"], m["symbol"], m["source"]) for m in parsed["top"]
+            ],
+            "n_significant": parsed["n_significant"],
+        }
+        for cluster, parsed in cluster_panel.stored(
+            reads, dataset_id, cluster_ids
+        ).items()
+    }
     missing = [c for c in cluster_ids if c not in found]
-    for cluster, comparison in one_vs_rest(reads, run_ids, missing).items():
+    for cluster, comparison in de_choice.read_one_vs_rest(
+        reads, run_ids, missing
+    ).items():
+        if late():
+            found[cluster] = {"from": "not_read", "top": [], "n_significant": None}
+            continue
+        rows, more = cluster_panel.fallback(reads, comparison["id"])
+        names = _gene_names(reads, [r["gene_id"] for r in rows])
+        count_filters = cluster_panel.fallback_filters(comparison["id"])
         found[cluster] = {
             "from": "comparison",
-            **_comparison_markers(reads, comparison),
+            "top": [_result(r, names.get(r["gene_id"])) for r in rows],
+            "n_significant": _count(reads, count_filters) if more else len(rows),
         }
     return found
 
 
-def _parse_markers(raw: Any) -> dict[str, Any] | None:
-    """The stored markers cleaned as parseMarkers cleans them; q is the FDR."""
-    if not isinstance(raw, dict) or not isinstance(raw.get("top"), list):
-        return None
-
-    def number(entry: dict[str, Any], key: str, default: float) -> float:
-        value = entry.get(key)
-        return value if isinstance(value, (int, float)) else default
-
-    top = [
-        {
-            "gene": m["gene"],
-            "symbol": m.get("symbol") or None,
-            "log2fc": number(m, "log2fc", 0),
-            "fdr": number(m, "q", 1),
-            "pct_1": number(m, "pct_1", 0),
-            "pct_2": number(m, "pct_2", 0),
-            "source": m.get("source") or None,
-        }
-        for m in raw["top"]
-        if isinstance(m, dict) and isinstance(m.get("gene"), str)
-    ]
-    n = raw.get("n_significant")
-    return {"top": top, "n_significant": n if isinstance(n, int) else 0}
-
-
-def _comparison_markers(reads: Reads, comparison: dict[str, Any]) -> dict[str, Any]:
-    """The panel's fallback (fetchDeMarkers): higher in the cluster and below the FDR cut,
-    ranked by FDR then log2FC."""
-    filters = [
-        Filter("de_id", "eq", comparison["id"]),
-        Filter("log2fc", "gt", 0),
-        Filter("fdr", "lt", MARKER_FDR_CUT),
-    ]
-    order = [Sort("fdr"), Sort("log2fc", descending=True), Sort("id")]
-    rows, more = reads.page(
-        "scrna_de_genes", filters, order, limit=de_choice.TOP_MARKERS
-    )
-    names = _gene_names(reads, [r["gene_id"] for r in rows])
-    return {
-        "top": [_gene(r, names.get(r["gene_id"])) for r in rows],
-        "n_significant": _count(reads, filters) if more else len(rows),
-    }
-
-
 def de_genes(
-    reads: Reads, de_id: int, top: int
-) -> dict[Direction, tuple[list[dict[str, Any]], int | None]]:
+    reads: Reads, comparison: dict[str, Any], top: int
+) -> dict[Direction, tuple[list[dict[str, Any]], int | None]] | None:
     """The comparison's `top` genes up and down passing the DE tab's cuts, ranked as the
     website's summary ranks them (FDR, then gene name, then gene id), and how many pass
-    in each direction (None when the count is unknown)."""
+    in each direction (None when the count is unknown). None when the comparison wasn't
+    tested: the website shows "not tested", not "no genes"."""
+    if not is_tested(comparison):
+        return None
     top = max(0, min(top, gene_reads.MAX_ROWS))
-    found = {d: _passing(reads, de_id, d, top) for d in ("up", "down")}
+    found = {d: _passing(reads, comparison["id"], d, top) for d in DIRECTIONS}
     names = _gene_names(
         reads, [r["gene_id"] for rows, _, _ in found.values() for r in rows]
     )
@@ -207,7 +162,10 @@ def de_genes(
     for direction, (rows, more, filters) in found.items():
         ranked = sorted(rows, key=lambda r: _rank(r, names))[:top]
         count = _count(reads, filters) if more else len(rows)
-        result[direction] = ([_gene(r, names.get(r["gene_id"])) for r in ranked], count)
+        result[direction] = (
+            [_result(r, names.get(r["gene_id"])) for r in ranked],
+            count,
+        )
     return result
 
 
@@ -232,9 +190,25 @@ def _passing(
 
 
 def _rank(row: dict[str, Any], names: dict[int, str]) -> tuple[Any, ...]:
-    # Case-folded first, as localeCompare compares letters before case.
     name = names.get(row["gene_id"]) or ""
-    return (row["fdr"], name.casefold(), name, row["gene_id"])
+    return (row["fdr"], name_order(name), name, row["gene_id"])
+
+
+def name_order(name: str) -> tuple[Any, ...]:
+    """A sort key ordering names as the website's localeCompare does (ICU root): letters,
+    then accents, then case with lower case first."""
+    letters: list[int] = []
+    accents: list[tuple[str, ...]] = []
+    cases: list[int] = []
+    for ch in unicodedata.normalize("NFD", name):
+        if unicodedata.combining(ch) and accents:
+            accents[-1] += (ch,)
+            continue
+        low = ch.lower()
+        letters.append(_ICU_RANK.get(low, len(_ICU_ORDER) + ord(low)))
+        accents.append(())
+        cases.append(0 if ch == low else 1)
+    return (letters, accents, cases)
 
 
 def _count(reads: Reads, filters: list[Filter]) -> int | None:
@@ -252,11 +226,18 @@ def _number(value: Any) -> float | None:
     return number if number is not None and math.isfinite(number) else None
 
 
-def _gene(row: dict[str, Any], name: str | None) -> dict[str, Any]:
+def _result(
+    row: dict[str, Any],
+    gene: str | None,
+    symbol: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """One gene's result, the same shape for stored markers, computed markers and DE."""
     raw = None if row.get("log2fc") is None else float(row["log2fc"])
     log2fc = _number(raw)
     return {
-        "gene": name,
+        "gene": gene,
+        "symbol": symbol,
         "log2fc": log2fc,
         "found_in_one_group_only": raw is not None and math.isinf(raw),
         "likely_found_in_one_group_only": log2fc is not None
@@ -264,4 +245,5 @@ def _gene(row: dict[str, Any], name: str | None) -> dict[str, Any]:
         "fdr": row["fdr"],
         "pct_1": _number(row.get("pct_1")),
         "pct_2": _number(row.get("pct_2")),
+        "source": source,
     }

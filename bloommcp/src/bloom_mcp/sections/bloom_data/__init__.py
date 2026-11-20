@@ -3,7 +3,8 @@
 General tools over allow-lists (``bloom_mcp.data_access.table_access`` and
 ``function_access``): list the tables, read rows (capped and paged), count rows (exact, or
 a labelled estimate when too many match), list and call the read-only functions, look
-up one gene across the gene, HPI and expression tables, and open stored files.
+up one gene across the gene, HPI and expression tables, read one scRNA dataset's markers
+and DE, and open stored files.
 Tools appear namespaced ``bloom_data_<name>`` on ``/mcp`` and at ``/bloom_data/mcp``.
 """
 
@@ -22,6 +23,7 @@ from . import (
     list_tables,
     query_table,
     read_file,
+    scrna_de,
 )
 
 section = FastMCP("bloom_data", auth=auth_provider)
@@ -39,5 +41,6 @@ register(
     gene_lookup.gene_lookup,
     gene_expression.gene_expression,
     read_file.read_file,
+    scrna_de.scrna_de,
     annotations=READ_ONLY,
 )

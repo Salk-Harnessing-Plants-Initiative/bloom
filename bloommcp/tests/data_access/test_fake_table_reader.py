@@ -44,3 +44,10 @@ def test_a_text_cell_spelled_nan_stays_text_against_a_text_value():
     reader = FakeTableReader({"t": [{"id": 1, "name": "NaN"}, {"id": 2, "name": "b"}]})
     rows = reader.select("t", ["id"], [Filter("name", "gt", "A")], [], 100, 0)
     assert [r["id"] for r in rows] == [1, 2]
+
+
+def test_a_text_column_with_a_cell_spelled_nan_sorts_as_text():
+    rows = [{"id": 1, "name": "b"}, {"id": 2, "name": "NaN"}, {"id": 3, "name": "a"}]
+    reader = FakeTableReader({"t": rows})
+    found = reader.select("t", ["id"], [], [Sort("name")], 100, 0)
+    assert [r["id"] for r in found] == [2, 3, 1]

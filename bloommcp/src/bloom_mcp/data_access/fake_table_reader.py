@@ -64,9 +64,14 @@ def _pg_order(value: float) -> tuple[int, float]:
     return (1, 0.0) if math.isnan(value) else (0, value)
 
 
-def _sort_key(column: str) -> Callable[[dict[str, Any]], tuple[bool, Any]]:
+def _sort_key(
+    column: str, rows: list[dict[str, Any]]
+) -> Callable[[dict[str, Any]], tuple[bool, Any]]:
+    # NaN or Infinity text is a number only in a column of numbers.
+    numeric = any(_is_number(r.get(column)) for r in rows)
+
     def key(row: dict[str, Any]) -> tuple[bool, Any]:
-        value = _number(row.get(column))
+        value = _number(row.get(column)) if numeric else row.get(column)
         return (value is None, _pg_order(value) if _is_number(value) else value)
 
     return key
@@ -144,7 +149,7 @@ class FakeTableReader:
             raise self.fail_with
         rows = [dict(r) for r in self.function_rows[function][1]]
         for s in reversed(order):
-            rows = sorted(rows, key=_sort_key(s.column), reverse=s.descending)
+            rows = sorted(rows, key=_sort_key(s.column, rows), reverse=s.descending)
         # Like the real searches: no more rows than the function's own limit input.
         if function in self.limit_inputs:
             name, default = self.limit_inputs[function]
@@ -178,7 +183,7 @@ class FakeTableReader:
         rows = self._filtered(table, filters)
         # Stable sorts, last key first; nulls last ascending and first descending, as Postgres.
         for s in reversed(order):
-            rows = sorted(rows, key=_sort_key(s.column), reverse=s.descending)
+            rows = sorted(rows, key=_sort_key(s.column, rows), reverse=s.descending)
         return [{c: r.get(c) for c in columns} for r in rows[offset : offset + limit]]
 
     def count(
