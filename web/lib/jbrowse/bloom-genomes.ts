@@ -1,6 +1,7 @@
 import { genomeVersionLabel } from "@/lib/scrna-jobs";
 
 import type { BrowserConfig } from "./config";
+import { CONTIG_COLOURS, geneDisplays } from "./theme";
 
 /** A genome version Bloom can show: ready, with the ready browser build `buildId`. */
 export interface BloomGenome {
@@ -82,6 +83,7 @@ export function bloomGenomeConfig(g: BloomGenome) {
     assembly: {
       name,
       displayName: g.species ? `${label} (${g.species})` : label,
+      refNameColors: CONTIG_COLOURS,
       sequence: {
         type: "ReferenceSequenceTrack",
         trackId: `${name}-sequence`,
@@ -100,6 +102,7 @@ export function bloomGenomeConfig(g: BloomGenome) {
       description: `Browser build ${g.buildId}`,
       formatDetails: { feature: ORTHOLOGS_DETAIL },
       assemblyNames: [name],
+      displays: geneDisplays(geneTrackId(name)),
       adapter: {
         type: "Gff3TabixAdapter",
         gffGzLocation: location(g.buildId, "gff3"),

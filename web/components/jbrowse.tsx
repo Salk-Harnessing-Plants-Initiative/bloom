@@ -101,7 +101,7 @@ function JBrowse({ loaded }: { loaded: LoadedBrowserConfig }) {
           {retryCount >= 3 && (
             <button 
               onClick={() => window.location.reload()} 
-              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+              className="px-4 py-2 bg-lime-700 text-white rounded hover:bg-lime-800"
             >
               Refresh Page
             </button>
@@ -115,8 +115,8 @@ function JBrowse({ loaded }: { loaded: LoadedBrowserConfig }) {
     return (
       <div className="flex items-center justify-center h-full p-4">
         <div className="text-center space-y-4">
-          <div className="w-16 h-16 border-4 border-gray-300 border-t-blue-500 rounded-full animate-spin mx-auto"></div>
-          <div className="text-gray-700 text-lg font-medium">{loadingStatus}</div>
+          <div className="w-16 h-16 border-4 border-stone-300 border-t-lime-700 rounded-full animate-spin mx-auto"></div>
+          <div className="text-stone-700 text-lg font-medium">{loadingStatus}</div>
         </div>
       </div>
     );

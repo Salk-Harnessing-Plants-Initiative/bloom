@@ -1,4 +1,5 @@
 import outsideGenomes from "./outside-genomes.json";
+import { withBloomLook } from "./theme";
 
 /** A JBrowse configuration, as `createViewState` reads it. */
 export interface BrowserConfig {
@@ -7,7 +8,7 @@ export interface BrowserConfig {
   [key: string]: unknown;
 }
 
-/** The genome browser's configuration, built on the server: the HPI genomes hosted outside Bloom. */
+/** The genome browser's configuration, built on the server: the HPI genomes hosted outside Bloom, in Bloom's look. */
 export function browserConfig(): BrowserConfig {
-  return outsideGenomes;
+  return withBloomLook(outsideGenomes);
 }
