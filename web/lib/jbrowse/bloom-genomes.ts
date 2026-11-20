@@ -167,11 +167,11 @@ export function notOfferedMessage(link: string, reason: UnavailableReason): stri
 export const INVALID_LINK_MESSAGE =
   "This genome link does not name a genome version; it should end in .v1, .v2 and so on.";
 
-/** What the page says about Bloom's own genomes above the browser. */
-export function bloomGenomesNote(count: number, error: string | null): string {
-  if (error) return `${error} The reference genomes below still work.`;
-  if (count === 0) {
-    return "Bloom has no browsable genome versions yet; a version becomes browsable once its browser files are built. The reference genomes below are served from outside Bloom.";
-  }
-  return `${count} Bloom genome version${count === 1 ? "" : "s"} listed with the reference genomes; a version appears once its browser files are built.`;
+/** The lines above the browser: Bloom's genomes not loaded, then a link's problems; none when
+ * all is well. */
+export function pageNotes(loadError: string | null, ...notices: (string | null | undefined)[]): string[] {
+  return [
+    ...(loadError ? [`${loadError} The reference genomes below still work.`] : []),
+    ...notices.filter((n): n is string => Boolean(n)),
+  ];
 }

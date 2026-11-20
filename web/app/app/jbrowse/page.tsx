@@ -4,8 +4,8 @@ import { GenomeGeneSearch } from "@/components/genome-gene-search";
 import JBrowseClient from "@/components/jbrowse-client";
 import {
   INVALID_LINK_MESSAGE,
-  bloomGenomesNote,
   notOfferedMessage,
+  pageNotes,
   parseGenomeVersion,
 } from "@/lib/jbrowse/bloom-genomes";
 import { geneLinkRedirect, loadBrowserConfig, whyNotOffered } from "@/lib/jbrowse/bloom-genomes-server";
@@ -52,12 +52,11 @@ export default async function GenomeBrowser({
 
   return (
     <div className="space-y-2">
-      {linkNotice && <p className="px-4 text-sm text-red-700">{linkNotice}</p>}
-      <p className="px-4 text-sm text-stone-600">
-        {bloomGenomesNote(loaded.bloomGenomes.length, loaded.error)} Open a genome from the
-        start screen, then switch on its tracks with the track selector; links from other pages
-        open with the genes shown.
-      </p>
+      {pageNotes(loaded.error, linkNotice).map((note) => (
+        <p key={note} className="px-4 text-sm text-red-700">
+          {note}
+        </p>
+      ))}
       {loaded.bloomGenomes.length > 0 && <GenomeGeneSearch />}
       <JBrowseClient loaded={loaded} />
     </div>

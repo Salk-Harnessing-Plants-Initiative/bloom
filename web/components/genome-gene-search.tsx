@@ -48,7 +48,7 @@ export function GenomeGeneSearch() {
         type="search"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Find a gene in Bloom's genomes (ID or name)"
+        placeholder="Find a gene by ID or name, e.g. AT1G01010"
         aria-label="Find a gene in Bloom's genomes"
         className="w-80 rounded border border-stone-300 px-2 py-1"
       />
