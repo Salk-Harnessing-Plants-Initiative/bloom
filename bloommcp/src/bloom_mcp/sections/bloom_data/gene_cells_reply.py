@@ -29,7 +29,9 @@ class GeneCellsResult(BaseModel):
     gene: str | None = Field(description="The gene as asked for.")
     gene_name: str | None = Field(description="The dataset's name for the gene.")
     cells_in_scope: int = Field(description="Cells of the cell types asked for (all).")
-    cells_expressing: int = Field(description="Of those, cells with a value above 0.")
+    cells_expressing: int | None = Field(
+        description="Of those, cells with a value above 0; None without a gene."
+    )
     offset: int
     returned: int = Field(description="Cells on this page.")
     cells: list[CellRow] = Field(description="Expressing cells, highest value first.")

@@ -5,7 +5,14 @@ from __future__ import annotations
 import time
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StringConstraints,
+    model_validator,
+)
 
 from bloom_mcp.contract import WithImages, as_mcp_tool
 from bloom_mcp.data_access import expression_counts, expression_stats, gene_reads
@@ -38,9 +45,10 @@ class GeneCellsParams(BaseModel):
     dataset_id: StrictInt = Field(
         ge=1, description="The scRNA dataset's id (scrna_datasets.id)."
     )
-    gene: Name = Field(
+    gene: Name | None = Field(
+        default=None,
         description="One gene name, symbol (MYB41) or id (AT4G28110), as the gene lookup "
-        "gives it."
+        "gives it. Needed unless color_by is a group.",
     )
     cell_types: list[Annotated[str, StringConstraints(max_length=200)]] = Field(
         default_factory=list,
@@ -59,9 +67,22 @@ class GeneCellsParams(BaseModel):
     )
     plot: Literal["umap"] | None = Field(
         default=None,
-        description='"umap" also sends one image of the dataset\'s UMAP coloured by the '
-        "gene, as Bloom draws it. Ask on the first page only; it costs reply tokens.",
+        description='"umap" also sends one image of the dataset\'s UMAP, as Bloom draws it. '
+        "Ask on the first page only; it costs reply tokens.",
     )
+    color_by: Literal["gene", "cell_type", "genotype", "replicate"] = Field(
+        default="gene",
+        description="What the UMAP is coloured by. Anything but gene draws the UMAP "
+        "without plot, and then gene may be left out.",
+    )
+
+    @model_validator(mode="after")
+    def _gene_for_gene_colours(self) -> GeneCellsParams:
+        if self.color_by == "gene" and self.gene is None:
+            raise ValueError(
+                'Give a gene, or color_by "cell_type", "genotype" or "replicate".'
+            )
+        return self
 
 
 def _scope(
@@ -141,7 +162,9 @@ def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult | WithImages:
     the totals; read the first page and the totals, and follow next_offset only when the
     question needs every cell. cell_types narrows to some cell types. page_url opens the
     dataset's UMAP on Bloom coloured by the gene. plot="umap" also sends that UMAP as an
-    image, drawn from the same values; if it can't be drawn, a note says why.
+    image, drawn from the same values; color_by "cell_type", "genotype" or "replicate" sends
+    the UMAP coloured by that instead (no gene needed). If an image can't be drawn, a note
+    says why.
     """
     deadline = time.monotonic() + CALL_SECONDS
     reads = gene_reads.Reads(_ports.table_reader())
@@ -153,48 +176,75 @@ def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult | WithImages:
     names, scope, notes = _scope(cells, clusters, params.cell_types)
     in_scope = range(len(cells)) if scope is None else sorted(scope)
 
-    gene, gene_notes = _gene(reads, params.dataset_id, params.gene)
-    notes += gene_notes
+    gene, values = None, None
+    if params.gene is not None:
+        gene, gene_notes = _gene(reads, params.dataset_id, params.gene)
+        notes += gene_notes
+    by_gene = params.color_by == "gene"
     result = GeneCellsResult(
         dataset_id=params.dataset_id,
         dataset_name=dataset["name"],
         gene=params.gene,
         gene_name=gene["gene_name"] if gene else None,
         cells_in_scope=len(in_scope),
-        cells_expressing=0,
+        cells_expressing=None if params.gene is None else 0,
         offset=params.offset,
         returned=0,
         cells=[],
         next_offset=None,
-        page_url=umap_page(dataset, gene["gene_name"] if gene else None),
+        page_url=umap_page(dataset, gene["gene_name"] if gene and by_gene else None),
         notes=notes,
     )
-    if gene is None:
-        return result
-    if time.monotonic() >= deadline:
-        result.notes.append(OUT_OF_TIME)
-        return result
-    try:
-        values = _scrna_dataset.gene_values(reads, params.dataset_id, gene, len(cells))
-    except expression_counts.CountsProblem as problem:
-        result.notes.append(str(problem))
-        return result
+    if gene is not None:
+        values = _values(
+            reads, params.dataset_id, gene, len(cells), deadline, result.notes
+        )
 
-    expressing = sorted(
-        (i for i in in_scope if values[i] > 0), key=lambda i: (-values[i], i)
-    )
-    result.cells_expressing = len(expressing)
-    end = params.offset + params.limit
-    rows = [
-        _row(i, values[i], cells[i], names[i]) for i in expressing[params.offset : end]
-    ]
+    rows: list[CellRow] = []
+    more = False
+    if values is not None:
+        expressing = sorted(
+            (i for i in in_scope if values[i] > 0), key=lambda i: (-values[i], i)
+        )
+        result.cells_expressing = len(expressing)
+        end = params.offset + params.limit
+        rows = [
+            _row(i, values[i], cells[i], names[i])
+            for i in expressing[params.offset : end]
+        ]
+        more = len(expressing) > end
+
     image = None
-    if params.plot == "umap":
+    if not by_gene:
+        title = f"{dataset['name']} by {params.color_by.replace('_', ' ')}"
+        image, reasons = gene_cells_plot.group_umap(
+            cells, clusters, scope, params.color_by, title, deadline
+        )
+        result.notes += reasons
+    elif params.plot == "umap" and values is not None and gene is not None:
         title = f"{gene['gene_name']} in {dataset['name']}"
-        image, reason = gene_cells_plot.gene_umap(
+        image, reasons = gene_cells_plot.gene_umap(
             cells, clusters, values, scope, title, deadline
         )
-        if reason:
-            result.notes.append(reason)
-    result = fit(result, rows, len(expressing) > end, MAX_REPLY_CHARS)
+        result.notes += reasons
+    result = fit(result, rows, more, MAX_REPLY_CHARS)
     return WithImages(result, [image]) if image else result
+
+
+def _values(
+    reads: gene_reads.Reads,
+    dataset_id: int,
+    gene: dict[str, Any],
+    cell_count: int,
+    deadline: float,
+    notes: list[str],
+) -> list[float] | None:
+    """The gene's value in every cell, or None with a note saying why."""
+    if time.monotonic() >= deadline:
+        notes.append(OUT_OF_TIME)
+        return None
+    try:
+        return _scrna_dataset.gene_values(reads, dataset_id, gene, cell_count)
+    except expression_counts.CountsProblem as problem:
+        notes.append(str(problem))
+        return None

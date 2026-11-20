@@ -8,11 +8,12 @@ import io
 import numpy as np
 import pytest
 from fastmcp.tools import ToolResult
+from matplotlib.colors import to_rgb
 from PIL import Image
 from scrna_expression_data import SITE
 
 from bloom_mcp.contract.errors import BloomMCPError
-from bloom_mcp.data_access.scrna_plots import _png
+from bloom_mcp.data_access.scrna_plots import _png, umap_groups
 from bloom_mcp.sections.bloom_data import gene_cells as tool
 from bloom_mcp.sections.bloom_data import gene_cells_plot
 from bloom_mcp.sections.bloom_data.gene_cells_reply import GeneCellsResult
@@ -119,3 +120,90 @@ def test_an_unknown_plot_is_refused_before_any_read(expression_db):
 def test_the_values_drawn_are_floats(expression_db, drawn):
     _run(plot="umap")
     assert isinstance(drawn["values"], np.ndarray) and drawn["values"].dtype == float
+
+
+@pytest.fixture
+def grouped(monkeypatch):
+    """The arguments the group UMAP was drawn with."""
+    seen = {}
+    real = gene_cells_plot.umap.group_figure
+
+    def record(x, y, groups, colours, none, names, codes, labels, focus, title, **kw):
+        seen.update(groups=groups, colours=colours, none=none, names=names, title=title)
+        seen.update(kw)
+        return real(
+            x, y, groups, colours, none, names, codes, labels, focus, title, **kw
+        )
+
+    monkeypatch.setattr(gene_cells_plot.umap, "group_figure", record)
+    return seen
+
+
+def test_gene_colours_need_a_gene_before_any_read(expression_db):
+    reader, _ = expression_db
+    with pytest.raises(BloomMCPError):
+        tool.scrna_gene_cells({"dataset_id": 3})
+    assert reader.calls == []
+
+
+def test_cell_type_colours_need_no_gene_or_plot(expression_db, grouped):
+    out = tool.scrna_gene_cells({"dataset_id": 3, "color_by": "cell_type"})
+    result, [image] = _split(out)
+    assert (result.gene, result.cells, result.cells_in_scope) == (None, [], 5)
+    assert result.cells_expressing is None
+    assert result.page_url == f"{SITE}/app/expression/16/3?tab=umap"
+    assert image.size == (1200, 900)
+    assert grouped["title"] == "MYB41 root by cell type"
+
+
+def test_cell_types_use_their_stored_colour_or_grey(expression_db, grouped):
+    tool.scrna_gene_cells({"dataset_id": 3, "color_by": "cell_type"})
+    assert list(grouped["groups"]) == [0, 0, 1, 1, -1]
+    assert grouped["colours"] == [to_rgb("#1f77b4"), umap_groups.MISSING_COLOUR]
+    assert grouped["none"] == (*umap_groups.NO_CELL_TYPE_COLOUR, 1.0)
+    assert grouped["none_name"] == "No cell type"
+
+
+def test_genotypes_take_the_palette_in_name_order(expression_db, grouped):
+    tool.scrna_gene_cells({"dataset_id": 3, "color_by": "genotype"})
+    assert grouped["names"] == ["Col-0", "pFACT"]
+    assert list(grouped["groups"]) == [0, 1, 1, 0, -1]
+    assert grouped["colours"] == umap_groups.palette(2)
+    assert grouped["none"] == umap_groups.NO_VALUE
+
+
+def test_the_same_call_gives_the_same_picture(expression_db):
+    once = tool.scrna_gene_cells({"dataset_id": 3, "color_by": "replicate"})
+    again = tool.scrna_gene_cells({"dataset_id": 3, "color_by": "replicate"})
+    assert once.content[-1].data == again.content[-1].data
+
+
+def test_no_genotype_recorded_greys_every_cell_with_a_note(expression_db, grouped):
+    reader, _ = expression_db
+    function, cells = reader.function_rows["scrna_cell_arrays"]
+    for cell in cells:
+        cell["genotype"] = None
+    result, [_] = _split(
+        tool.scrna_gene_cells({"dataset_id": 3, "color_by": "genotype"})
+    )
+    assert grouped["names"] == [] and list(grouped["groups"]) == [-1] * 5
+    assert any("No cell records a genotype" in n for n in result.notes)
+
+
+def test_twenty_five_replicates_get_twenty_five_colours(expression_db, grouped):
+    reader, _ = expression_db
+    function, _cells = reader.function_rows["scrna_cell_arrays"]
+    many = [
+        {"x": float(i), "y": 0.0, "cluster_ordinal": 0, "genotype": None,
+         "replicate": f"r{i:02d}", "facets": None}
+        for i in range(25)
+    ]  # fmt: skip
+    reader.function_rows["scrna_cell_arrays"] = (function, many)
+    tool.scrna_gene_cells({"dataset_id": 3, "color_by": "replicate"})
+    assert len(set(grouped["colours"])) == 25
+
+
+def test_a_gene_with_group_colours_still_pages_its_cells(expression_db, grouped):
+    result, [_] = _split(_run(color_by="genotype"))
+    assert [c.cell for c in result.cells] == [1, 2, 3]
+    assert result.page_url == f"{SITE}/app/expression/16/3?tab=umap"

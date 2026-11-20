@@ -11,6 +11,7 @@ from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from . import _png, umap_labels
 
@@ -20,7 +21,7 @@ TEXT = (0.9, 0.9, 0.92)
 # The website's 4 px points, in matplotlib's points squared.
 POINT_SIZE = (4 * 72 / _png.DPI) ** 2
 MAP_AXES = "umap"
-OUTSIDE, ZERO, EXPRESSING = "outside", "zero", "expressing"
+OUTSIDE, ZERO, EXPRESSING, GROUPS = "outside", "zero", "expressing", "groups"
 VIRIDIS = colormaps["viridis"]
 
 
@@ -83,4 +84,47 @@ def gene_figure(
     bar.ax.tick_params(colors=TEXT)
     bar.outline.set_visible(False)
     _labels(ax, x, y, codes, names, focus)
+    return fig
+
+
+def group_figure(
+    x: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    colours: list[tuple[float, float, float]],
+    none_colour: tuple[float, ...],
+    group_names: list[str],
+    label_codes: np.ndarray,
+    label_names: list[str],
+    focus: np.ndarray | None,
+    title: str,
+    *,
+    none_name: str | None = None,
+) -> Figure:
+    """The UMAP with each cell in its group's colour, in stored cell order, with a legend;
+    `groups` index `colours` and `group_names` (-1: `none_colour`). Cell-type names are
+    written on the map from `label_codes`."""
+    fig, ax = _axes(title)
+    lit = np.ones(len(x), dtype=bool) if focus is None else focus
+    if focus is not None:
+        _points(ax, x[~lit], y[~lit], [FOCUS_GREY], OUTSIDE)
+    table = np.array([(*c, 1.0) for c in colours] + [tuple(none_colour)])
+    _points(ax, x[lit], y[lit], table[groups[lit]], GROUPS)
+    entries = [(name, (*colour, 1.0)) for name, colour in zip(group_names, colours)]
+    if none_name and (groups == -1).any():
+        entries.append((none_name, tuple(none_colour)))
+    handles = [
+        Line2D([], [], marker="o", linestyle="", color=c, label=n) for n, c in entries
+    ]
+    legend = ax.legend(
+        handles=handles,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        frameon=False,
+        fontsize=8,
+        ncol=max(1, len(handles) // 30 + 1),
+    )
+    for text in legend.get_texts():
+        text.set_color(TEXT)
+    _labels(ax, x, y, label_codes, label_names, focus)
     return fig
