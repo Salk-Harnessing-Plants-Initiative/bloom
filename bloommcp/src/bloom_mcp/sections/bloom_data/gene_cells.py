@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
 
-from bloom_mcp.contract import as_mcp_tool
+from bloom_mcp.contract import WithImages, as_mcp_tool
 from bloom_mcp.data_access import expression_counts, expression_stats, gene_reads
 from bloom_mcp.data_access.page_links import umap_page
 from bloom_mcp.data_access.table_ports import Filter
 from bloom_mcp.tools import _ports
 
-from . import _scrna_dataset
+from . import _scrna_dataset, gene_cells_plot
 from ._common import logs_call, reports_lookup_errors
 from ._page import MAX_REPLY_CHARS, _cut
 from .gene_cells_reply import CellRow, GeneCellsResult, fit
@@ -56,6 +56,11 @@ class GeneCellsParams(BaseModel):
         ge=1,
         le=MAX_LIMIT,
         description=f"Cells per page, at most {MAX_LIMIT}.",
+    )
+    plot: Literal["umap"] | None = Field(
+        default=None,
+        description='"umap" also sends one image of the dataset\'s UMAP coloured by the '
+        "gene, as Bloom draws it. Ask on the first page only; it costs reply tokens.",
     )
 
 
@@ -125,7 +130,7 @@ def _row(i: int, value: float, cell: dict[str, Any], cell_type: str) -> CellRow:
 @as_mcp_tool(input_model=GeneCellsParams, output_model=GeneCellsResult)
 @logs_call
 @reports_lookup_errors
-def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult:
+def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult | WithImages:
     """One gene's value in each cell of one scRNA dataset that expresses it (value above 0),
     highest value first, with each cell's cell type, genotype, replicate, other labels and
     UMAP position.
@@ -135,7 +140,8 @@ def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult:
     type, use bloom_data_gene_expression instead. cells_in_scope and cells_expressing give
     the totals; read the first page and the totals, and follow next_offset only when the
     question needs every cell. cell_types narrows to some cell types. page_url opens the
-    dataset's UMAP on Bloom coloured by the gene.
+    dataset's UMAP on Bloom coloured by the gene. plot="umap" also sends that UMAP as an
+    image, drawn from the same values; if it can't be drawn, a note says why.
     """
     deadline = time.monotonic() + CALL_SECONDS
     reads = gene_reads.Reads(_ports.table_reader())
@@ -182,4 +188,13 @@ def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult:
     rows = [
         _row(i, values[i], cells[i], names[i]) for i in expressing[params.offset : end]
     ]
-    return fit(result, rows, len(expressing) > end, MAX_REPLY_CHARS)
+    image = None
+    if params.plot == "umap":
+        title = f"{gene['gene_name']} in {dataset['name']}"
+        image, reason = gene_cells_plot.gene_umap(
+            cells, clusters, values, scope, title, deadline
+        )
+        if reason:
+            result.notes.append(reason)
+    result = fit(result, rows, len(expressing) > end, MAX_REPLY_CHARS)
+    return WithImages(result, [image]) if image else result
