@@ -1,4 +1,5 @@
 import { geneTrackId, type LoadedBrowserConfig } from "./bloom-genomes";
+import { densityTrackId } from "./gene-density";
 import type { PicksPlan } from "./several-genes";
 
 /** Where a link asks the browser to open: an assembly, and a location (a region, or a gene on
@@ -31,7 +32,9 @@ export function launchPlan(
   loaded: Pick<LoadedBrowserConfig, "config" | "bloomGenomes">,
 ): LaunchPlan | null {
   if (!target || !loaded.config.assemblies.some((a) => a.name === target.assembly)) return null;
-  const tracks = loaded.bloomGenomes.includes(target.assembly) ? [geneTrackId(target.assembly)] : [];
+  const tracks = loaded.bloomGenomes.includes(target.assembly)
+    ? [geneTrackId(target.assembly), densityTrackId(target.assembly)]
+    : [];
   return { ...target, tracks };
 }
 

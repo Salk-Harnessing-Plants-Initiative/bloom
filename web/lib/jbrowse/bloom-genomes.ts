@@ -1,6 +1,7 @@
 import { genomeVersionLabel } from "@/lib/scrna-jobs";
 
 import type { BrowserConfig } from "./config";
+import { densityTrack } from "./gene-density";
 import { CONTIG_COLOURS, geneDisplays } from "./theme";
 
 /** A genome version Bloom can show: ready, with the ready browser build `buildId`. */
@@ -75,7 +76,7 @@ export function parseGenomeVersion(text: string): { genome: string; version: num
   return version <= MAX_VERSION ? { genome: match[1], version } : null;
 }
 
-/** One genome version's assembly (sequence) and gene track for JBrowse. */
+/** One genome version's assembly (sequence), gene track and gene-density track for JBrowse. */
 export function bloomGenomeConfig(g: BloomGenome) {
   const name = assemblyName(g.genome, g.version);
   const label = genomeVersionLabel({ id: g.buildId, ...g });
@@ -109,6 +110,7 @@ export function bloomGenomeConfig(g: BloomGenome) {
         index: { location: location(g.buildId, "gff3_tbi"), indexType: "TBI" },
       },
     },
+    density: densityTrack(name, g.buildId, `${g.genome} v${g.version}`),
   };
 }
 
@@ -119,7 +121,7 @@ export function mergeBrowserConfig(outside: BrowserConfig, genomes: BloomGenome[
   return {
     ...outside,
     assemblies: [...outside.assemblies, ...bloom.map((b) => b.assembly)],
-    tracks: [...outside.tracks, ...bloom.map((b) => b.track)],
+    tracks: [...outside.tracks, ...bloom.flatMap((b) => [b.track, b.density])],
   };
 }
 

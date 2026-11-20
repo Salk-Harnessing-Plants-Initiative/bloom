@@ -108,7 +108,11 @@ describe("mergeBrowserConfig", () => {
   it("adds Bloom's genomes after the outside ones without changing them", () => {
     const merged = mergeBrowserConfig(outside, [genome]);
     expect(merged.assemblies.map((a) => a.name)).toEqual(["Outside.A", "athaliana.col-0.hpiv02.v2"]);
-    expect(merged.tracks).toHaveLength(2);
+    expect((merged.tracks as { trackId: string }[]).map((t) => t.trackId)).toEqual([
+      "outside-genes",
+      "athaliana.col-0.hpiv02.v2-genes",
+      "athaliana.col-0.hpiv02.v2-gene-density",
+    ]);
     expect(merged.configuration).toEqual({ theme: "x" });
     expect(outside.assemblies).toHaveLength(1);
   });

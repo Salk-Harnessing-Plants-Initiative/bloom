@@ -15,6 +15,7 @@ import {
   type UnavailableReason,
 } from "./bloom-genomes";
 import { browserConfig } from "./config";
+import type { GeneStart } from "./gene-density";
 import { browserLink, isRegion, placeGenes, type GenePlace } from "./gene-links";
 import {
   groupRegions,
@@ -199,3 +200,57 @@ export async function placePicks(
   };
 }
 
+/** Genes read per request when reading a whole build. */
+const GENE_PAGE = 10_000;
+
+export type BuildGeneStarts =
+  | { status: "ok"; genes: GeneStart[] }
+  | { status: "not found" }
+  | { status: "failed"; reason: string };
+
+/** Every gene's contig and start in a ready build of a ready version, read in pages and checked
+ * against the gene count the build recorded, so a short read is never shown as fewer genes. */
+export async function readBuildGeneStarts(supabase: Client, buildId: number): Promise<BuildGeneStarts> {
+  const { data: build, error } = await supabase
+    .from("genome_browser_builds")
+    .select("gene_count, genome_reference_versions!inner(status)")
+    .eq("id", buildId)
+    .eq("status", "ready")
+    .eq("genome_reference_versions.status", "ready")
+    .maybeSingle();
+  if (error) return { status: "failed", reason: `reading build ${buildId}: ${error.message}` };
+  if (!build) return { status: "not found" };
+
+  const genes: GeneStart[] = [];
+  for (let from = 0; ; from += GENE_PAGE) {
+    const { data, error: pageError } = await supabase
+      .from("genome_browser_genes")
+      .select("contig, gene_start")
+      .eq("browser_build_id", buildId)
+      .order("gene_id")
+      .range(from, from + GENE_PAGE - 1);
+    if (pageError) return { status: "failed", reason: `reading build ${buildId}'s genes: ${pageError.message}` };
+    const rows = (data ?? []) as { contig: string; gene_start: number }[];
+    genes.push(...rows.map((r) => ({ contig: r.contig, start: r.gene_start })));
+    if (rows.length < GENE_PAGE) break;
+  }
+  const expected = (build as { gene_count: number | null }).gene_count;
+  if (expected !== null && genes.length !== expected) {
+    return { status: "failed", reason: `read ${genes.length} of build ${buildId}'s ${expected} genes` };
+  }
+  return { status: "ok", genes };
+}
+
+/** Whether a browser build is ready and its version too: checked before answering from memory,
+ * so a withdrawn build stops being served. */
+export async function buildIsReady(supabase: Client, buildId: number): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("genome_browser_builds")
+    .select("id, genome_reference_versions!inner(status)")
+    .eq("id", buildId)
+    .eq("status", "ready")
+    .eq("genome_reference_versions.status", "ready")
+    .maybeSingle();
+  if (error) throw new Error(`reading build ${buildId}: ${error.message}`);
+  return data !== null;
+}

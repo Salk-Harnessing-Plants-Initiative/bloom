@@ -55,7 +55,7 @@ describe("launchPlan", () => {
     expect(launchPlan({ assembly: "at.col0.v2", loc: "Chr1:1..9" }, loaded)).toEqual({
       assembly: "at.col0.v2",
       loc: "Chr1:1..9",
-      tracks: ["at.col0.v2-genes"],
+      tracks: ["at.col0.v2-genes", "at.col0.v2-gene-density"],
     });
   });
 

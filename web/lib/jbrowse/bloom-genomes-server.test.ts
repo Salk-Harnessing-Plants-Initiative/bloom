@@ -9,6 +9,8 @@ import {
   geneLinkRedirect,
   loadBrowserConfig,
   placePicks,
+  readBuildGeneStarts,
+  buildIsReady,
   signBuildFile,
   whyNotOffered,
 } from "./bloom-genomes-server";
@@ -44,7 +46,7 @@ function query(result: { data: unknown; error: unknown }) {
     calls,
     then: (resolve: (r: unknown) => unknown) => Promise.resolve(result).then(resolve),
   };
-  for (const method of ["select", "eq", "in", "maybeSingle"]) {
+  for (const method of ["select", "eq", "in", "maybeSingle", "order", "range"]) {
     builder[method] = (...args: unknown[]) => {
       calls.push([method, ...args]);
       return builder;
@@ -321,3 +323,63 @@ describe("placePicks", () => {
   });
 });
 
+describe("readBuildGeneStarts", () => {
+  /** A client whose queries answer in turn: the build, then each page of genes. */
+  function paged(build: unknown, pages: unknown[][]) {
+    const results = [{ data: build, error: null }, ...pages.map((data) => ({ data, error: null }))];
+    const tables: ReturnType<typeof query>[] = [];
+    const supabase = {
+      from: vi.fn(() => {
+        const t = query(results.shift() ?? { data: [], error: null });
+        tables.push(t);
+        return t;
+      }),
+    };
+    return { supabase: supabase as never, tables };
+  }
+  const gene = (i: number) => ({ contig: "Chr1", gene_start: i });
+
+  it("reads a ready build's gene starts in pages, checking the count", async () => {
+    const page = Array.from({ length: 10_000 }, (_, i) => gene(i + 1));
+    const { supabase, tables } = paged({ gene_count: 10_002 }, [page, [gene(1), gene(2)]]);
+    const result = await readBuildGeneStarts(supabase, 4);
+    expect(result.status === "ok" && result.genes.length).toBe(10_002);
+    expect(tables[0].calls).toContainEqual(["eq", "status", "ready"]);
+    expect(tables[0].calls).toContainEqual(["eq", "genome_reference_versions.status", "ready"]);
+    expect(tables[1].calls).toContainEqual(["eq", "browser_build_id", 4]);
+    expect(tables[1].calls).toContainEqual(["range", 0, 9_999]);
+    expect(tables[2].calls).toContainEqual(["range", 10_000, 19_999]);
+  });
+
+  it("finds nothing for a build that is not ready", async () => {
+    const { supabase } = paged(null, []);
+    await expect(readBuildGeneStarts(supabase, 4)).resolves.toEqual({ status: "not found" });
+  });
+
+  it("fails when fewer genes are read than the build recorded", async () => {
+    const { supabase } = paged({ gene_count: 3 }, [[gene(1), gene(2)]]);
+    await expect(readBuildGeneStarts(supabase, 4)).resolves.toEqual({
+      status: "failed",
+      reason: "read 2 of build 4's 3 genes",
+    });
+  });
+});
+
+describe("buildIsReady", () => {
+  it("is true only for a ready build of a ready version", async () => {
+    const { supabase, table } = client({ rows: { data: { id: 4 }, error: null } });
+    await expect(buildIsReady(supabase, 4)).resolves.toBe(true);
+    expect(table.calls).toContainEqual(["eq", "status", "ready"]);
+    expect(table.calls).toContainEqual(["eq", "genome_reference_versions.status", "ready"]);
+  });
+
+  it("is false for a build that is not ready", async () => {
+    const { supabase } = client({ rows: { data: null, error: null } });
+    await expect(buildIsReady(supabase, 4)).resolves.toBe(false);
+  });
+
+  it("throws when the build cannot be read", async () => {
+    const { supabase } = client({ rows: { data: null, error: { message: "down" } } });
+    await expect(buildIsReady(supabase, 4)).rejects.toThrow("down");
+  });
+});
