@@ -80,20 +80,6 @@ class GeneExpressionResult(BaseModel):
     notes: list[str] = Field(description="Genes matched but not read in this call.")
 
 
-def _matches(
-    reads: gene_reads.Reads, dataset_id: int, name: str
-) -> list[dict[str, Any]]:
-    """The dataset's genes `name` names: exact names first, else any case."""
-    in_dataset = Filter("dataset_id", "eq", dataset_id)
-    names = gene_reads.scrna_names(reads, name)
-    found = reads.rows("scrna_genes", [in_dataset, Filter("gene_name", "in", names)])
-    if not found:
-        found = reads.rows(
-            "scrna_genes", [in_dataset, Filter("gene_name", "iequals", name)]
-        )
-    return sorted(found, key=lambda g: g["gene_name"])
-
-
 def _read_at_most(
     reads: gene_reads.Reads, dataset_id: int, names: list[str]
 ) -> tuple[list[tuple[str, dict[str, Any] | None]], list[str]]:
@@ -102,7 +88,7 @@ def _read_at_most(
     picked: list[tuple[str, dict[str, Any] | None]] = []
     left_out: list[str] = []
     for name in names:
-        matches = _matches(reads, dataset_id, name)
+        matches = _scrna_dataset.matches(reads, dataset_id, name)
         if not matches:
             picked.append((name, None))
         read = {gene["id"] for _, gene in picked if gene is not None}
@@ -147,22 +133,8 @@ def _expression(
     cell_count: int,
     groups: list[expression_stats.CellGroup],
 ) -> GeneExpression:
-    counts = reads.rows(
-        "scrna_counts",
-        [Filter("dataset_id", "eq", dataset_id), Filter("gene_id", "eq", gene["id"])],
-    )
-    path = next(
-        (c["counts_object_path"] for c in counts if c.get("counts_object_path")), None
-    )
-    if path is None:
-        return GeneExpression(
-            requested=requested,
-            gene_name=gene["gene_name"],
-            groups=[],
-            note="This dataset stores no expression for this gene.",
-        )
     try:
-        values = expression_counts.gene_values(_ports.file_reader(), path, cell_count)
+        values = _scrna_dataset.gene_values(reads, dataset_id, gene, cell_count)
     except expression_counts.CountsProblem as problem:
         return GeneExpression(
             requested=requested,
@@ -195,7 +167,8 @@ def gene_expression(params: GeneExpressionParams) -> GeneExpressionResult:
     it for "where is this gene expressed?" or "is it higher in the transgene?". Find the
     datasets that measured a gene with the gene lookup. Answer with the numbers and give
     the user page_url to see the plot. A gene with no numbers says why in its note. At most
-    5 genes are read per call; notes name any other matches.
+    5 genes are read per call; notes name any other matches. For a gene's value in each
+    cell (where on the UMAP, which replicate), use bloom_data_scrna_gene_cells.
     """
     requested = [g.strip() for g in params.genes if g.strip()]
     if not requested:

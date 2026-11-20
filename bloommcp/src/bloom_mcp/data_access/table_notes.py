@@ -20,6 +20,10 @@ _OLDER_DELETIONS_SHOW = (
 _INCLUDES_DELETED_DATASETS = (
     "Includes deleted datasets: keep only dataset_ids found in scrna_datasets."
 )
+_GENE_CELLS = (
+    "For one gene's value in each cell, with cell type and UMAP position, use "
+    "bloom_data_scrna_gene_cells."
+)
 _FIND_EXPERIMENTS_BY_NAME = "To find experiments by name, filter name with contains; count_rows gives the total."
 
 # Data tools give what Bloom's pages show; analysis is the sleap-roots tools' job.
@@ -139,6 +143,10 @@ TABLE_NOTES: dict[str, str] = {
             "scrna_enrichment_runs",
             "scrna_embedding_dataset_members",
         )
+    },
+    **{
+        t: _INCLUDES_DELETED_DATASETS + " " + _GENE_CELLS
+        for t in ("scrna_cells", "scrna_counts")
     },
     "cyl_wave_timeline": (
         "Includes deleted experiments: keep only experiment names found in cyl_experiments "

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from bloom_mcp.data_access import expression_counts, gene_reads
 from bloom_mcp.data_access import scrna_de_reads as de
 from bloom_mcp.data_access.gene_reads import Reads
+from bloom_mcp.data_access.table_ports import Filter
 from bloom_mcp.tools import _ports
 
 from ._common import fix_request
@@ -44,3 +46,33 @@ def cells(dataset_id: int) -> list[dict[str, Any]]:
             "Give the user the dataset's page link to see the genes there.",
         )
     return found
+
+
+def matches(reads: Reads, dataset_id: int, name: str) -> list[dict[str, Any]]:
+    """The dataset's genes `name` names: exact names first, else any case."""
+    in_dataset = Filter("dataset_id", "eq", dataset_id)
+    names = gene_reads.scrna_names(reads, name)
+    found = reads.rows("scrna_genes", [in_dataset, Filter("gene_name", "in", names)])
+    if not found:
+        found = reads.rows(
+            "scrna_genes", [in_dataset, Filter("gene_name", "iequals", name)]
+        )
+    return sorted(found, key=lambda g: g["gene_name"])
+
+
+def gene_values(
+    reads: Reads, dataset_id: int, gene: dict[str, Any], cell_count: int
+) -> list[float]:
+    """The gene's value in every cell, by cell order; CountsProblem says why not."""
+    counts = reads.rows(
+        "scrna_counts",
+        [Filter("dataset_id", "eq", dataset_id), Filter("gene_id", "eq", gene["id"])],
+    )
+    path = next(
+        (c["counts_object_path"] for c in counts if c.get("counts_object_path")), None
+    )
+    if path is None:
+        raise expression_counts.CountsProblem(
+            "This dataset stores no expression for this gene."
+        )
+    return expression_counts.gene_values(_ports.file_reader(), path, cell_count)

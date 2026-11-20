@@ -10,6 +10,9 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ### Added
 
+- `bloom_data_scrna_gene_cells`: one gene's expressing cells in an scRNA dataset, highest value
+  first, with each cell's cell type, genotype, replicate and UMAP position, in pages.
+
 - Salk connector: with `BLOOMMCP_TUNNEL_SECRET` set, a request from Caddy's tunnel entrance is
   admitted for the Bloom account matching the `email` in AIRC's verified JWT, and usage is recorded under
   that account. Startup fails on a secret under 32 characters, or without `BLOOMMCP_API_KEY`
