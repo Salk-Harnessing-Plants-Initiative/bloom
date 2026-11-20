@@ -13,17 +13,13 @@ from bloom_mcp.data_access.page_links import expression_page
 from bloom_mcp.data_access.table_ports import Filter
 from bloom_mcp.tools import _ports
 
+from . import _scrna_dataset
 from ._common import fix_request, logs_call, reports_lookup_errors
 from ._page import MAX_REPLY_CHARS
 
 MAX_GENES = 5
-# Most cells read per dataset, ~6x prod's biggest (32,522 on 2026-11-17); past it, the link only.
-MAX_CELLS = 200_000
 # Decimal places kept in the statistics: plenty for log-normalised values, short replies.
 DIGITS = 4
-# A dataset kind with no cells of its own (the website treats it as not found).
-REFERENCE_KIND = "reference"
-CELL_ARRAYS = "scrna_cell_arrays"
 
 
 class GeneExpressionParams(BaseModel):
@@ -82,36 +78,6 @@ class GeneExpressionResult(BaseModel):
     genes: list[GeneExpression]
     returned: int = Field(description="Genes with numbers.")
     notes: list[str] = Field(description="Genes matched but not read in this call.")
-
-
-def _dataset(reads: gene_reads.Reads, dataset_id: int) -> dict[str, Any]:
-    found = reads.rows(
-        "scrna_datasets",
-        [Filter("id", "eq", dataset_id), Filter("deleted_at", "is_null", True)],
-    )
-    if not found:
-        raise fix_request(
-            f"No scRNA dataset {dataset_id}.",
-            "Use a dataset id from the gene lookup or scrna_datasets.",
-        )
-    if found[0].get("kind") == REFERENCE_KIND:
-        raise fix_request(
-            f"Dataset {dataset_id} is a reference atlas with no cells of its own.",
-            "Use one of the datasets the gene lookup lists for the gene.",
-        )
-    return found[0]
-
-
-def _cells(dataset_id: int) -> list[dict[str, Any]]:
-    cells = _ports.table_reader().call(
-        CELL_ARRAYS, {"ds_id": dataset_id}, [], MAX_CELLS + 1, 0
-    )
-    if len(cells) > MAX_CELLS:
-        raise fix_request(
-            f"Dataset {dataset_id} has over {MAX_CELLS:,} cells, more than this tool reads.",
-            "Give the user the dataset's page link to see the genes there.",
-        )
-    return cells
 
 
 def _matches(
@@ -235,8 +201,8 @@ def gene_expression(params: GeneExpressionParams) -> GeneExpressionResult:
     if not requested:
         raise fix_request("Give at least one gene name.", "For example AT4G28110.")
     reads = gene_reads.Reads(_ports.table_reader())
-    dataset = _dataset(reads, params.dataset_id)
-    cells = _cells(params.dataset_id)
+    dataset = _scrna_dataset.dataset(reads, params.dataset_id)
+    cells = _scrna_dataset.cells(params.dataset_id)
     clusters = reads.rows(
         "scrna_clusters", [Filter("dataset_id", "eq", params.dataset_id)]
     )
