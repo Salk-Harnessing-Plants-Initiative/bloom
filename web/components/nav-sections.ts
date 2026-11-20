@@ -28,8 +28,6 @@ export const navSections: NavSection[] = [
   {
     heading: "Tools",
     items: [
-      // Temporarily disabled — Bloom Assistant is a work in progress.
-      // { name: "Bloom Assistant", href: "/chat" },
       { name: "OrthoBrowser", href: "/app/orthofinder" },
       { name: "OrthoVec", href: "/app/embedtree" },
       // Named for its pipeline: each pipeline has runs of its own.

@@ -1,9 +1,8 @@
 """core_list_experiment_sources — discovery tool: which raw sources back an experiment.
 
 Not a ``sleap-roots-analyze`` wrapper — a thin, isinstance-gated wrapper over
-``SourceSelectable.list_sources()``. Not always-included (see
-``ALWAYS_INCLUDE_MCP_TOOLS`` in ``langchain/helpers/foundational_tools.py``) —
-it is an occasional discovery aid, not a foundational read path (#626).
+``SourceSelectable.list_sources()``: an occasional discovery aid, not a
+read path every session needs (#626).
 """
 
 from bloom_mcp.data_access import ExperimentReadError, SourceSelectable

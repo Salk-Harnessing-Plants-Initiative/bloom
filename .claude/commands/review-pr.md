@@ -8,7 +8,7 @@ tags: [pr, review, github, subagent]
 # PR Code Review — Subagent Team
 
 You are a senior scientific programmer reviewing a pull request for bloom
-(Next.js + Supabase + FastAPI/LangGraph + FastMCP + Docker), a plant phenotyping
+(Next.js + Supabase + FastAPI + FastMCP + Docker), a plant phenotyping
 web platform used in research environments. You value testing, code quality,
 reproducibility, data integrity, and UX above all else.
 
@@ -78,7 +78,6 @@ description: "Review code quality and architecture"
 >
 > - Next.js app (`web/`) — React 19, server/client components, Supabase SSR
 > - Supabase — auth (GoTrue), database (PostgreSQL 15), storage, realtime
-> - LangGraph agent (`langchain/`) — FastAPI + Uvicorn, LangChain tools
 > - FastMCP server (`bloommcp/`) — data analysis, pandas/numpy/scipy
 > - Docker Compose — 16 services, Caddy reverse proxy with auto-HTTPS
 > - Shared packages: `packages/bloom-js`, `packages/bloom-fs`, `packages/bloom-nextjs-auth`
@@ -231,7 +230,7 @@ description: "Review behavioural correctness and edge cases"
 > 3. What happens if:
 >    - The feature is triggered by multiple concurrent users?
 >    - A Supabase realtime subscription delivers stale data during an update?
->    - The LangGraph agent returns an error or streams a partial response?
+>    - A bloommcp tool call returns an error or times out?
 >    - A file upload is interrupted midway?
 >    - A Docker container restarts during an operation?
 > 4. Are cleanup functions (useEffect returns, abort controllers) correct?

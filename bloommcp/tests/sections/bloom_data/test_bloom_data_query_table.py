@@ -204,10 +204,11 @@ def test_descending_without_order_by_reverses_the_key(reader):
 
 
 def test_a_chosen_sort_column_is_tie_broken_by_the_key(reader):
+    reader.tables["cyl_scans"] = [{"id": i, "plant_id": i % 2} for i in (5, 3, 1, 4, 2)]
     rows = query_table(
-        {"table": "cyl_scans_extended", "order_by": "experiment_id", "descending": True}
+        {"table": "cyl_scans", "order_by": "plant_id", "descending": True}
     ).rows
-    assert [(r["experiment_id"], r["scan_id"]) for r in rows] == [
+    assert [(r["plant_id"], r["id"]) for r in rows] == [
         (1, 1),
         (1, 3),
         (1, 5),

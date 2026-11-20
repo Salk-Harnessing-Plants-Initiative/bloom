@@ -3,12 +3,11 @@
 -- Making a genome version's browser build. A writer or the pipeline starts a build for a ready
 -- version, uploads the five bgzip and index files to the folder it is given, adds the GTF's genes
 -- in batches, and finishes the build with each file's SHA-256 and size and the gene count;
--- finishing checks every one of the five is stored at exactly that size and the build holds
--- exactly that many genes, and makes the build ready. A build that stops is abandoned, which
--- removes its genes; an admin
--- withdraws a ready one. The files are made by `bloomctl genome index`. Only the caller's own
--- uploading build's five names may be added, and nobody may replace or delete a ready or
--- withdrawn build's files.
+-- finishing checks every one of the five is stored at exactly that size (the SHA-256 is the
+-- uploader's, recorded) and the build holds exactly that many genes, and makes the build ready.
+-- A build that stops is abandoned, which removes its genes; an admin withdraws a ready one. The
+-- files are made by `bloomctl genome index`. Only the caller's own uploading build's five names
+-- may be added, and nobody may add, replace or delete a ready or withdrawn build's files.
 -- Forward-only; rollback in supabase/rollbacks/.
 
 BEGIN;
@@ -39,6 +38,10 @@ BEGIN
     IF p_tool_versions IS NULL OR jsonb_typeof(p_tool_versions) <> 'object' THEN
         RAISE EXCEPTION 'tool versions must be a JSON object' USING ERRCODE = '22023';
     END IF;
+    -- Taken before the check, so a second start waits and is then refused here, not by the
+    -- unique index.
+    PERFORM 1 FROM public.genome_reference_versions v WHERE v.id = p_version_id
+        FOR NO KEY UPDATE;
     SELECT * INTO v_live FROM public.genome_browser_builds b
      WHERE b.version_id = p_version_id AND b.status IN ('uploading', 'ready');
     IF FOUND THEN
@@ -106,8 +109,8 @@ BEGIN
       FROM jsonb_to_recordset(p_genes) AS r(gene_id TEXT)
      WHERE r.gene_id IS NOT NULL GROUP BY r.gene_id HAVING count(*) > 1 ORDER BY r.gene_id LIMIT 1;
     IF FOUND THEN
-        RAISE EXCEPTION 'gene % appears more than once; a browser build holds one position per gene',
-            v_gene USING ERRCODE = '22023';
+        RAISE EXCEPTION 'gene % appears more than once; a browser build holds one position '
+                        'per gene', v_gene USING ERRCODE = '22023';
     END IF;
     SELECT n.gene_id INTO v_gene
       FROM jsonb_to_recordset(p_genes) AS n(
@@ -181,7 +184,8 @@ BEGIN
     IF p_gene_count IS NULL OR p_gene_count < 1 THEN
         RAISE EXCEPTION 'a browser build records at least one gene' USING ERRCODE = '22023';
     END IF;
-    SELECT count(*) INTO v_genes FROM public.genome_browser_genes g WHERE g.browser_build_id = p_build_id;
+    SELECT count(*) INTO v_genes FROM public.genome_browser_genes g
+     WHERE g.browser_build_id = p_build_id;
     IF v_genes <> p_gene_count THEN
         RAISE EXCEPTION 'browser build % holds % genes, not %', p_build_id, v_genes,
             p_gene_count USING ERRCODE = '22023';
@@ -194,7 +198,8 @@ END;
 $$;
 
 -- Marks the caller's unfinished build abandoned and removes its genes; returns whether it
--- changed. Files it left stay in storage until an admin clears them.
+-- changed. Files it left stay in storage until an admin clears them; the build's number and
+-- folder are not used again.
 CREATE OR REPLACE FUNCTION public.abandon_genome_browser_build(p_build_id BIGINT)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -307,7 +312,21 @@ CREATE POLICY workflows_insert_own_browser_file ON storage.objects
     FOR INSERT TO bloom_workflows
     WITH CHECK (bucket_id = 'genome-references' AND public.may_upload_browser_file(name));
 
--- A ready or withdrawn build's files stay as they are, for bloom_admin too.
+-- A ready or withdrawn build's files stay as they are, for bloom_admin too: not replaced,
+-- deleted, or put back with other contents if one goes missing.
+DROP POLICY IF EXISTS admin_keep_finished_browser_files_insert ON storage.objects;
+CREATE POLICY admin_keep_finished_browser_files_insert ON storage.objects
+    AS RESTRICTIVE
+    FOR INSERT TO bloom_admin
+    WITH CHECK (
+        bucket_id <> 'genome-references'
+        OR NOT EXISTS (
+            SELECT 1 FROM public.genome_browser_builds b, public.genome_browser_build_roles() r
+            WHERE b.status IN ('ready', 'withdrawn')
+              AND objects.name = b.folder || '/' || r.basename
+        )
+    );
+
 DROP POLICY IF EXISTS admin_keep_finished_browser_files_update ON storage.objects;
 CREATE POLICY admin_keep_finished_browser_files_update ON storage.objects
     AS RESTRICTIVE

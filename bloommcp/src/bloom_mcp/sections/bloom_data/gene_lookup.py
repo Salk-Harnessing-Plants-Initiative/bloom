@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
 from bloom_mcp.data_access import gene_expression, gene_reads
-from bloom_mcp.data_access.page_links import PAGE_LINKS
+from bloom_mcp.data_access.page_links import expression_page
 from bloom_mcp.tools import _ports
 
 from ._common import fix_request, logs_call, reports_lookup_errors
@@ -148,9 +148,11 @@ def _site() -> str:
 
 
 def _dataset_link(site: str, dataset: dict[str, Any]) -> str | None:
-    if not site or dataset.get("species_id") is None:
+    """The dataset's page, opened on the gene's expression when the dataset measured it."""
+    if not site:
         return None
-    return site + PAGE_LINKS["scrna_datasets"].format(**dataset)
+    gene = dataset.get("gene_name")
+    return expression_page(dataset, [gene] if gene else [])
 
 
 def _links(site: str, genes: list[dict[str, Any]], query: str) -> Links:
@@ -259,8 +261,10 @@ def gene_lookup(params: GeneLookupParams) -> GeneLookupResult:
     analysis. A cluster's panel on the website lists only its top 25 markers; when
     on_cluster_panel is false, say the gene is a marker but ranks outside that top 25, and
     that the full list is in the dataset page's differential expression results. Genotype
-    comparisons combine the analyses as that page does. Give the links: dataset pages, the
-    Genes page for HPI notes, and the OrthoBrowser for orthologs.
+    comparisons combine the analyses as that page does. Give the links: dataset pages (each
+    opens the plot of the gene's expression), the Genes page for HPI notes, and the
+    OrthoBrowser for orthologs. For how much the gene is expressed in each cell type of a
+    dataset, call gene_expression with the dataset's id.
 
     Lead with what Bloom has. You may add what you know about the gene and look up papers
     on it, especially from Salk's Harnessing Plants Initiative (HPI); label all of that as

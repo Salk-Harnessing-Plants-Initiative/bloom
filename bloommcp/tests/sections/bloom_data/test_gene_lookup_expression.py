@@ -15,7 +15,7 @@ from gene_lookup_data import (
     lookup,
 )
 
-from bloom_mcp.data_access import gene_expression, gene_reads
+from bloom_mcp.data_access import de_choice, gene_expression, gene_reads
 from bloom_mcp.data_access.fake_table_reader import FakeTableReader
 from bloom_mcp.sections.bloom_data.gene_lookup import gene_lookup
 
@@ -160,7 +160,7 @@ def test_without_a_saved_list_the_panel_is_the_top_of_the_analysis(genes_db):
     # c4's chosen comparison is de 11; push MYB41 out of its top 25 there.
     genes_db.tables["scrna_de_genes"] += [
         {"de_id": 11, "gene_id": 1000 + i, "log2fc": 2.0, "fdr": 1e-6}
-        for i in range(gene_expression.TOP_MARKERS)
+        for i in range(de_choice.TOP_MARKERS)
     ]
     [dataset] = lookup("MYB41").expression
     assert _panel(dataset.markers) == {"c3": True, "c4": False}
@@ -206,6 +206,11 @@ def test_the_cuts_match_the_websites():
     assert gene_reads.OFF_SCALE_LOG2FC == const(
         "expression-differential-analysis.tsx", "OFF_SCALE_LOG2FC"
     )
-    assert gene_expression.TOP_MARKERS == const(
+    assert de_choice.TOP_MARKERS == const(
         "expression-lib/cluster-markers.ts", "TOP_MARKERS"
     )
+    rest = re.search(
+        r'const REST_GROUP = "(\w+)";',
+        (_WEB / "expression-lib/cluster-markers.ts").read_text(),
+    )
+    assert rest and de_choice.REST_GROUP == rest.group(1)

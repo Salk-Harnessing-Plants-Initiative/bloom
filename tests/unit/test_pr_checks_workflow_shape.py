@@ -19,13 +19,13 @@ Seven invariants total. Five are on .github/workflows/pr-checks.yml:
 4. A Playwright step MUST exist in ``compose-health-check`` that runs
    ``cd web && npm run test:e2e`` after the stack is verified healthy.
 5. The ``compose-health-check`` job MUST pin Node.js via
-   ``actions/setup-node@v4`` with the runtime image's Node major BEFORE the
+   an ``actions/setup-node`` step with the runtime image's Node major BEFORE the
    Playwright/npm steps so CI is deterministic across runner-default
    changes (Copilot review finding on PR #268).
 
 Plus one assertion on the repo root:
 6. ``docker-compose.ci.yml`` MUST exist and declare ``build:`` blocks for
-   ``bloom-web``, ``langchain-agent``, and ``bloommcp`` so PR CI can keep
+   ``bloom-web`` and ``bloommcp`` so PR CI can keep
    building locally even after ``docker-compose.prod.yml`` flips its custom
    services to ``image: ghcr.io/...`` in PR-3.
 
@@ -35,7 +35,6 @@ And a CI/prod build-arg parity assertion:
    ``docker-compose.prod.yml``. Any referenced var the generator omits gets
    substituted as empty when compose-health-check builds the image, baking an
    empty ``NEXT_PUBLIC_*`` into the JS bundle — silent CI/prod-shape drift.
-   Copilot review on PR #268 flagged ``NEXT_PUBLIC_MCP_URL`` specifically.
 
 The "no ``--build-arg NEXT_PUBLIC_*`` in docker-build" invariant has been
 DEFERRED to PR-3 §6 (which removes the matching ``ARG`` lines from
@@ -61,7 +60,7 @@ COMPOSE_CI = REPO_ROOT / "docker-compose.ci.yml"
 WEB_PROD_DOCKERFILE = REPO_ROOT / "web" / "Dockerfile.bloom-web.prod"
 
 EXPECTED_COMPOSE_FILES = "-f docker-compose.prod.yml -f docker-compose.ci.yml"
-CUSTOM_SERVICES = ("bloom-web", "langchain-agent", "bloommcp")
+CUSTOM_SERVICES = ("bloom-web", "bloommcp")
 
 
 def _runtime_node_major() -> str:
@@ -196,12 +195,7 @@ def test_compose_health_check_pins_runtime_node_before_npm_steps() -> None:
     for idx, step in enumerate(steps):
         uses = step.get("uses") or ""
         if uses.startswith("actions/setup-node@"):
-            # Tolerate v4 (current) or any newer major; the spec only
-            # requires the action to be present and pin the runtime's Node.
-            assert uses.startswith("actions/setup-node@v"), (
-                f"compose-health-check uses {uses!r} for setup-node — "
-                "must reference a pinned major version (e.g. v4)"
-            )
+            # SHA pinning and the action's version are checked in test_ci_actions_runtime.py.
             with_block = step.get("with") or {}
             node_version = with_block.get("node-version")
             assert str(node_version) in (runtime_major, f"{runtime_major}.x"), (
@@ -218,7 +212,7 @@ def test_compose_health_check_pins_runtime_node_before_npm_steps() -> None:
         ):
             first_npm_idx = idx
     assert setup_node_idx is not None, (
-        "compose-health-check must include an 'actions/setup-node@v4' step "
+        "compose-health-check must include an 'actions/setup-node' step "
         f"pinning Node {runtime_major} before any npm/Playwright step."
     )
     assert first_npm_idx is not None, (
@@ -226,7 +220,7 @@ def test_compose_health_check_pins_runtime_node_before_npm_steps() -> None:
         "— inconsistent with Invariant 4 above"
     )
     assert setup_node_idx < first_npm_idx, (
-        f"actions/setup-node@v4 is at step {setup_node_idx} but the first "
+        f"actions/setup-node is at step {setup_node_idx} but the first "
         f"npm/Playwright step is at {first_npm_idx}; the Node pin must "
         "come BEFORE any step that needs Node."
     )
@@ -240,8 +234,7 @@ def test_env_ci_sets_bloom_web_next_public_build_arg_vars() -> None:
     build args whose values are ``${ENV_VAR}`` references. compose-health-check
     builds that image with ``--env-file .env.ci``; any referenced var the
     generator omits substitutes to empty, silently shipping an empty
-    NEXT_PUBLIC_* in the bundle. Copilot review on PR #268 caught
-    NEXT_PUBLIC_MCP_URL missing from the generator.
+    NEXT_PUBLIC_* in the bundle.
     """
     prod = yaml.safe_load(
         (REPO_ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")

@@ -27,7 +27,6 @@ from typing import Iterable
 # Services to check, relative to repo root. Keep in sync with the pre-commit
 # hook's `files:` filter in .pre-commit-config.yaml.
 SERVICES = (
-    "langchain",
     "bloommcp",
     "services/video-worker",
     "services/workflows",

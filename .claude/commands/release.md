@@ -70,8 +70,7 @@ gh run list --branch main --limit 5
 /lint
 
 # Or manually:
-cd langchain && uv run black --check . && uv run ruff check . && uv run mypy .
-cd ../bloommcp && uv run black --check . && uv run ruff check . && uv run mypy .
+cd bloommcp && uv run black --check . && uv run ruff check . && uv run mypy .
 npm run lint && cd web && npx tsc --noEmit
 
 # Run integration tests
@@ -133,7 +132,7 @@ git log --oneline --no-merges | head -20
 
 **Decision Matrix:**
 
-- New LangGraph agent or FastMCP features? → MINOR bump
+- New FastMCP or web features? → MINOR bump
 - Just bug fixes? → PATCH bump
 - Breaking API changes? → MAJOR bump
 
@@ -352,7 +351,6 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose ps
 
 # Check logs for errors
-docker compose -f docker-compose.prod.yml logs --tail=50 langchain-agent
 docker compose -f docker-compose.prod.yml logs --tail=50 bloommcp
 docker compose -f docker-compose.prod.yml logs --tail=50 web
 ```
@@ -366,7 +364,6 @@ Monitor the release:
 gh release view v$NEW_VERSION
 
 # Test deployed application
-curl https://your-domain.com/api/health  # LangGraph agent health check
 curl https://your-domain.com/           # Next.js app
 
 # Or test locally with prod images
@@ -456,7 +453,7 @@ Before each release, verify:
 
    ```bash
    cd web && npx tsc --noEmit
-   cd langchain && uv run mypy .
+   cd bloommcp && uv run mypy .
    ```
 
 3. **Documentation**: All docs up to date

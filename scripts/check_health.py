@@ -293,21 +293,12 @@ def check_migrations(conn, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
 # Service checks (docker compose) — local only.
 # --------------------------------------------------------------------------- #
 
-# Services that require user-supplied config to become healthy and are NOT part
-# of the core dev substrate, so an unhealthy one is a warning, not a failure:
-#   - langchain-agent needs LOCAL_LLM_URL / OPENAI_API_KEY (it builds a model at
-#     import; with no LLM configured it can't start).
-OPTIONAL_SERVICES = {"langchain-agent"}
+def _classify_service_rows(rows: list[dict]) -> list[str]:
+    """Service-health problems: any service unhealthy, or exited non-zero.
 
-
-def _classify_service_rows(rows: list[dict]) -> tuple[list[str], list[str]]:
-    """Split service-health issues into hard problems vs optional warnings.
-
-    Pure (no docker) so it is unit-testable. A service in OPTIONAL_SERVICES that
-    is unhealthy/exited yields a warning; any other does a problem.
+    Pure (no docker) so it is unit-testable.
     """
     problems: list[str] = []
-    warnings: list[str] = []
     for svc in rows:
         name = svc.get("Service") or svc.get("Name", "?")
         health = (svc.get("Health") or "").lower()
@@ -317,19 +308,13 @@ def _classify_service_rows(rows: list[dict]) -> tuple[list[str], list[str]]:
             issue = f"service {name} health={health}"
         elif state == "exited" and str(svc.get("ExitCode", "0")) not in ("0", "None"):
             issue = f"service {name} exited (code {svc.get('ExitCode')})"
-        if not issue:
-            continue
-        if name in OPTIONAL_SERVICES:
-            warnings.append(
-                f"{issue} (optional — set LOCAL_LLM_URL / OPENAI_API_KEY to enable it)"
-            )
-        else:
+        if issue:
             problems.append(issue)
-    return problems, warnings
+    return problems
 
 
 def _services_still_settling(rows: list[dict]) -> list[str]:
-    """Required (non-optional) services whose healthcheck is still 'starting'.
+    """Services whose healthcheck is still 'starting'.
 
     Healthchecks first fire ~30s after start (e.g. bloommcp/realtime), so a
     `make check` run right after `make dev-up` can catch them mid-`starting`.
@@ -338,8 +323,6 @@ def _services_still_settling(rows: list[dict]) -> list[str]:
     out = []
     for svc in rows:
         name = svc.get("Service") or svc.get("Name", "?")
-        if name in OPTIONAL_SERVICES:
-            continue
         if (svc.get("Health") or "").lower() == "starting":
             out.append(name)
     return out
@@ -368,17 +351,14 @@ def _compose_ps_rows() -> tuple[list[dict] | None, list[str]]:
     return [json.loads(line) for line in raw.splitlines() if line.strip()], []
 
 
-def check_services_healthy(
-    timeout: float = 90.0, interval: float = 3.0
-) -> tuple[list[str], list[str]]:
-    """Return (problems, warnings) for compose service health, after bounded-
-    waiting for required services to leave 'starting'. Optional LLM services that
-    are down are warnings, not problems."""
+def check_services_healthy(timeout: float = 90.0, interval: float = 3.0) -> list[str]:
+    """Problems with compose service health, after bounded-waiting for services
+    to leave 'starting'."""
     deadline = time.monotonic() + timeout
     while True:
         rows, errors = _compose_ps_rows()
         if rows is None:
-            return errors, []
+            return errors
         if not _services_still_settling(rows) or time.monotonic() >= deadline:
             return _classify_service_rows(rows)
         time.sleep(interval)
@@ -410,18 +390,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     all_problems: list[str] = []
-    all_warnings: list[str] = []
 
     if not args.skip_services:
-        svc_problems, svc_warnings = check_services_healthy()
-        all_problems += [f"[services] {p}" for p in svc_problems]
-        all_warnings += [f"[services] {w}" for w in svc_warnings]
+        all_problems += [f"[services] {p}" for p in check_services_healthy()]
 
     try:
         conn = _connect()
     except Exception as exc:  # noqa: BLE001 — surface any connection failure
         all_problems.append(f"[db] could not connect to Postgres: {exc}")
-        _report(all_problems, all_warnings)
+        _report(all_problems)
         return 1
 
     try:
@@ -435,13 +412,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    _report(all_problems, all_warnings)
+    _report(all_problems)
     return 1 if all_problems else 0
 
 
-def _report(problems: list[str], warnings: list[str] | None = None) -> None:
-    for w in warnings or []:
-        print(f"  ⚠ {w}")
+def _report(problems: list[str]) -> None:
     if problems:
         print("Local dev stack is NOT healthy:")
         for p in problems:
@@ -449,8 +424,6 @@ def _report(problems: list[str], warnings: list[str] | None = None) -> None:
     else:
         print("Local dev stack is healthy: services up, roles + auth/storage "
               "schemas present, all migrations applied, no id sequence behind.")
-        if warnings:
-            print("(optional services are down — see warnings above)")
 
 
 if __name__ == "__main__":

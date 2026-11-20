@@ -810,7 +810,6 @@ def _configure_live_env() -> None:
     os.environ["BLOOM_TRAITS_DIR"] = str(traits)
     os.environ["BLOOM_OUTPUT_DIR"] = str(out)
     os.environ["BLOOM_PLOTS_DIR"] = str(plots)
-    os.environ.setdefault("BLOOM_PLOTS_URL", "http://localhost/plots")
     # The make target exports the host gateway; default only for bare invocations.
     os.environ.setdefault("SUPABASE_URL", "http://localhost:8000")
 

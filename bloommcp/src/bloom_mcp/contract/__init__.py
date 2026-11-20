@@ -8,6 +8,7 @@ and error handling are guaranteed by the contract, not per-tool boilerplate.
 from __future__ import annotations
 
 from .errors import BloomMCPError
+from .images import ToolImage, WithImages
 from .models import OutputLink, RunLinks
 from .provenance import Provenance, resolve_environment, resolve_seed
 from .wrap import as_mcp_tool, register
@@ -21,4 +22,6 @@ __all__ = [
     "resolve_seed",
     "RunLinks",
     "OutputLink",
+    "ToolImage",
+    "WithImages",
 ]

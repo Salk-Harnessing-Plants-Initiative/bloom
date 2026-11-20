@@ -59,7 +59,6 @@ def test_version_flag_exits_before_env_validation(monkeypatch, capsys, flag):
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
         "BLOOM_STORAGE_BACKEND",
     ):
         monkeypatch.delenv(var, raising=False)

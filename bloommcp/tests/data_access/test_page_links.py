@@ -45,12 +45,13 @@ def test_every_link_names_the_route_param_of_each_placeholder():
         assert set(_PLACEHOLDER.findall(pattern)) == set(page_links.PAGE_PARAMS[table])
 
 
-def test_a_link_note_says_to_skip_empty_columns(monkeypatch):
+def test_a_link_note_points_to_page_url_and_empty_columns(monkeypatch):
     monkeypatch.setenv("SITE_URL", " https://bloom.example/ ")
     note = page_links.link_note("rnaseq_runs")
     assert note is not None
     assert "https://bloom.example/app/rnaseq-runs/{id}" in note
-    assert "give none when any of those columns is empty" in note
+    assert "page_url" in note
+    assert "A row with no page_url has no page" in note
 
 
 @pytest.mark.parametrize("table", sorted(page_links.PAGE_LINKS))
@@ -105,3 +106,45 @@ def test_trait_figure_link_columns_are_readable():
     assert table_access.visible_columns(
         "cyl_scans_extended", ["wave_number", "plant_age_days"]
     ) == ["wave_number", "plant_age_days"]
+
+
+def test_a_plate_page_url_is_filled_and_encoded(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example/")
+    row = {"species_id": 1, "experiment_id": 5, "wave_number": 2, "plate_id": "P 7/a"}
+    assert page_links.page_url("gravi_scans_extended", row) == (
+        "https://bloom.example/app/plate-phenotypes/1/5/wave/2/P%207%2Fa"
+    )
+
+
+def test_no_page_url_without_a_site_or_a_column(monkeypatch):
+    row = {"species_id": 1, "experiment_id": 5, "wave_number": 2, "plate_id": "P"}
+    monkeypatch.delenv("SITE_URL", raising=False)
+    assert page_links.page_url("gravi_scans_extended", row) is None
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    assert (
+        page_links.page_url("gravi_scans_extended", {**row, "plate_id": None}) is None
+    )
+
+
+def test_a_plate_scan_with_no_wave_links_to_the_websites_none_wave(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example")
+    row = {"species_id": 1, "experiment_id": 5, "wave_number": None, "plate_id": "P"}
+    assert page_links.page_url("gravi_scans_extended", row) == (
+        "https://bloom.example/app/plate-phenotypes/1/5/wave/none/P"
+    )
+
+
+def test_the_expression_page_opens_on_the_genes_named(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example/")
+    dataset = {"id": 3, "species_id": 16}
+    assert page_links.expression_page(dataset, ["AT4G28110", "AT1G01010"]) == (
+        "https://bloom.example/app/expression/16/3?tab=genes&gene=AT4G28110,AT1G01010"
+    )
+    assert page_links.expression_page(dataset, ["a b&c"]).endswith("gene=a%20b%26c")
+    assert (
+        page_links.expression_page(dataset, [])
+        == "https://bloom.example/app/expression/16/3"
+    )
+    assert page_links.expression_page({"id": 3, "species_id": None}, ["G"]) is None
+    monkeypatch.delenv("SITE_URL")
+    assert page_links.expression_page(dataset, ["G"]) is None

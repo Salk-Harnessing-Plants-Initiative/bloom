@@ -55,31 +55,24 @@ def test_migration_file_versions_reads_real_migrations():
     )
 
 
-def test_optional_llm_service_unhealthy_is_a_warning_not_a_failure():
-    """langchain-agent needs user-supplied LLM config (LOCAL_LLM_URL/OPENAI_API_KEY)
-    to ever be healthy, so a fresh `make dev-up` must NOT report the whole stack
-    unhealthy because of it — it's a warning."""
+def test_all_healthy_services_have_no_problems():
     rows = [
         {"Service": "db-dev", "Health": "healthy", "State": "running"},
-        {"Service": "langchain-agent", "Health": "unhealthy", "State": "running"},
+        {"Service": "bloommcp", "Health": "healthy", "State": "running"},
     ]
-    problems, warnings = check_health._classify_service_rows(rows)
-    assert not problems, f"optional service must not fail the check: {problems}"
-    assert any("langchain-agent" in w for w in warnings)
+    assert check_health._classify_service_rows(rows) == []
 
 
 def test_core_service_unhealthy_is_a_failure():
     rows = [{"Service": "db-dev", "Health": "unhealthy", "State": "running"}]
-    problems, warnings = check_health._classify_service_rows(rows)
+    problems = check_health._classify_service_rows(rows)
     assert any("db-dev" in p for p in problems)
-    assert not warnings
 
 
-def test_bloommcp_is_required_not_optional():
-    """Once its healthcheck targets /health, bloommcp should be genuinely healthy
-    in dev (it has generated keys), so it stays REQUIRED."""
+def test_bloommcp_unhealthy_is_a_failure():
+    """bloommcp has generated keys in dev, so it must be healthy."""
     rows = [{"Service": "bloommcp", "Health": "unhealthy", "State": "running"}]
-    problems, warnings = check_health._classify_service_rows(rows)
+    problems = check_health._classify_service_rows(rows)
     assert any("bloommcp" in p for p in problems)
 
 
@@ -119,17 +112,15 @@ def test_exited_core_service_with_nonzero_code_is_a_failure():
     reports State=exited with a non-zero ExitCode and an EMPTY Health field (a
     dead container has no healthcheck result). That must still be a problem."""
     rows = [{"Service": "realtime", "Health": "", "State": "exited", "ExitCode": 1}]
-    problems, warnings = check_health._classify_service_rows(rows)
+    problems = check_health._classify_service_rows(rows)
     assert any("realtime" in p and "exited" in p for p in problems), problems
-    assert not warnings
 
 
 def test_exited_oneshot_service_with_zero_code_is_not_a_failure():
     """A one-shot init container (e.g. minio-init) legitimately exits 0 — a
     completed job, not a failure."""
     rows = [{"Service": "minio-init", "Health": "", "State": "exited", "ExitCode": 0}]
-    problems, warnings = check_health._classify_service_rows(rows)
-    assert problems == [] and warnings == []
+    assert check_health._classify_service_rows(rows) == []
 
 
 def test_starting_required_service_is_settling():
@@ -139,12 +130,6 @@ def test_starting_required_service_is_settling():
         {"Service": "db-dev", "Health": "healthy", "State": "running"},
     ]
     assert check_health._services_still_settling(rows) == ["bloommcp"]
-
-
-def test_optional_starting_service_is_not_settling():
-    """An optional service (langchain-agent) starting must not hold up the check."""
-    rows = [{"Service": "langchain-agent", "Health": "starting", "State": "running"}]
-    assert check_health._services_still_settling(rows) == []
 
 
 def test_all_healthy_means_settled():

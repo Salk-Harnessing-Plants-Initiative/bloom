@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import operator
 from collections.abc import Callable
 from typing import Any
@@ -15,6 +16,8 @@ from .table_ports import (
     Sort,
     TableReadError,
 )
+
+_SPECIALS = ("NaN", "Infinity", "-Infinity")
 
 
 def _matches(row: dict[str, Any], f: Filter) -> bool:
@@ -31,10 +34,9 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         return str(value).lower().startswith(str(f.value).lower())
     if f.op == "in":
         return value in f.value
-    if value in ("NaN", "Infinity", "-Infinity") and isinstance(f.value, (int, float)):
-        # A number column's NaN or Infinity, held as PostgREST sends it; Postgres compares
-        # the number.
-        value = float(value)
+    target = _number(f.value)
+    if _is_number(target):
+        value = _number(value)
     compare = {
         "eq": operator.eq,
         "neq": operator.ne,
@@ -43,12 +45,29 @@ def _matches(row: dict[str, Any], f: Filter) -> bool:
         "lt": operator.lt,
         "lte": operator.le,
     }[f.op]
-    return compare(value, f.value)
+    if _is_number(value) and _is_number(target):
+        return compare(_pg_order(value), _pg_order(target))
+    return compare(value, target)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _number(value: Any) -> Any:
+    """A number column's NaN or Infinity, held as text as PostgREST sends it, as a float."""
+    return float(value) if value in _SPECIALS else value
+
+
+def _pg_order(value: float) -> tuple[int, float]:
+    """Postgres orders NaN above every number, and NaN equals NaN."""
+    return (1, 0.0) if math.isnan(value) else (0, value)
 
 
 def _sort_key(column: str) -> Callable[[dict[str, Any]], tuple[bool, Any]]:
     def key(row: dict[str, Any]) -> tuple[bool, Any]:
-        return (row.get(column) is None, row.get(column))
+        value = _number(row.get(column))
+        return (value is None, _pg_order(value) if _is_number(value) else value)
 
     return key
 

@@ -16,7 +16,7 @@ def _version(path: Path) -> str:
 
 def test_the_root_python_matches_the_services():
     root = _version(REPO_ROOT / ".python-version")
-    for service in ("bloommcp", "langchain", "services/video-worker"):
+    for service in ("bloommcp", "services/video-worker"):
         assert _version(REPO_ROOT / service / ".python-version") == root, service
 
 
