@@ -92,6 +92,14 @@ def expression_page(dataset: dict[str, Any], genes: list[str]) -> str | None:
     return f"{url}?tab=genes&gene={quote(','.join(genes), safe=',')}"
 
 
+def umap_page(dataset: dict[str, Any], gene: str | None) -> str | None:
+    """A scRNA dataset's UMAP tab, coloured by `gene` when given; None without SITE_URL."""
+    url = page_url("scrna_datasets", dataset)
+    if url is None:
+        return None
+    return f"{url}?tab=umap" + (f"&gene={quote(gene)}" if gene else "")
+
+
 def page_columns(name: str) -> list[str]:
     """The columns a row of `name` needs for its Bloom page link."""
     return _PLACEHOLDER.findall(PAGE_LINKS[name])
